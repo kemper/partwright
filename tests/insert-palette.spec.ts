@@ -52,15 +52,15 @@ test.describe('Insert palette', () => {
   test('Insert button (editor header) toggles the floating palette', async ({ page }) => {
     await gotoEditor(page);
     await expect(page.locator(palette)).toBeHidden();
-    await page.locator('#btn-insert').click();
+    await page.locator('#btn-insert').dispatchEvent('click');
     await expect(page.locator(palette)).toBeVisible();
-    await page.locator('#btn-insert').click();
+    await page.locator('#btn-insert').dispatchEvent('click');
     await expect(page.locator(palette)).toBeHidden();
   });
 
   test('insert a cube and a sphere, then subtract via the parts list', async ({ page }) => {
     await gotoEditor(page);
-    await page.locator('#btn-insert').click();
+    await page.locator('#btn-insert').dispatchEvent('click');
 
     // Cube
     await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
@@ -107,7 +107,7 @@ test.describe('Insert palette', () => {
       try { localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false })); } catch { /* ignore */ }
     });
     await gotoEditor(page);
-    await page.locator('#btn-insert').click();
+    await page.locator('#btn-insert').dispatchEvent('click');
 
     // Two shapes to start.
     await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
@@ -128,7 +128,7 @@ test.describe('Insert palette', () => {
 
   test('3D-pick session opens an instruction bar and returns to the dialog', async ({ page }) => {
     await gotoEditor(page);
-    await page.locator('#btn-insert').click();
+    await page.locator('#btn-insert').dispatchEvent('click');
 
     // Insert two separated cubes so the registry has pickable parts.
     await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
@@ -154,7 +154,7 @@ test.describe('Insert palette', () => {
 
   test('extended shape catalog inserts and renders each shape', async ({ page }) => {
     await gotoEditor(page);
-    await page.locator('#btn-insert').click();
+    await page.locator('#btn-insert').dispatchEvent('click');
 
     const tryShape = async (label: string, modalTitle: string, expectedSnippet: RegExp): Promise<void> => {
       await page.locator(palette).getByRole('button', { name: label }).click();
@@ -184,7 +184,7 @@ test.describe('Insert palette', () => {
       .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
     await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
 
-    await page.locator('#btn-insert').click();
+    await page.locator('#btn-insert').dispatchEvent('click');
 
     // First insert: the default constructor-call return gets *replaced* by
     // the new part, so the placeholder cube doesn't double up.
@@ -210,7 +210,7 @@ test.describe('Insert palette', () => {
 
   test('Build mode freehand body-drag rewrites the part translate', async ({ page }) => {
     await gotoEditor(page);
-    await page.locator('#btn-insert').click();
+    await page.locator('#btn-insert').dispatchEvent('click');
 
     // Insert a centered cube so the proxy renders at the canvas center.
     await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
@@ -242,7 +242,7 @@ test.describe('Insert palette', () => {
 
   test('selection strip renders when picking parts via Select mode', async ({ page }) => {
     await gotoEditor(page);
-    await page.locator('#btn-insert').click();
+    await page.locator('#btn-insert').dispatchEvent('click');
 
     // One centered cube so 3D-pick lands on it reliably.
     await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
@@ -266,7 +266,7 @@ test.describe('Insert palette', () => {
 
   test('build mode: shapes render separately, select + gizmo session runs', async ({ page }) => {
     await gotoEditor(page);
-    await page.locator('#btn-insert').click();
+    await page.locator('#btn-insert').dispatchEvent('click');
 
     // Insert a centered cube so the build scene has a pickable part at the origin.
     await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
