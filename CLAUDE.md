@@ -206,6 +206,7 @@ The AI chat input supports `/command` shortcuts (`src/ai/slashCommands.ts`). A l
 | `/review` | Open the cross-provider review modal |
 | `/export` | Download the conversation as Markdown |
 | `/models` (alias `/settings`) | Open AI settings modal |
+| `/portrait` (alias `/bust`) | Prefill a prompt to model a stylized 3D bust from a photo you attach |
 | `/help` (alias `/commands`) | List all commands in chat |
 
 The command names and descriptions are defined in `SLASH_COMMANDS` in `slashCommands.ts`; the panel's handler map is type-checked against `SlashCommandName` so a name can't exist without a handler. Tests: `tests/unit/slashCommands.test.ts` (unit), `tests/ai-slash-commands.spec.ts` (e2e).
@@ -248,7 +249,7 @@ Static site, no backend. Vanilla TypeScript + Vite.
 - `src/import/parsers/stl.ts` — STL import (binary + ASCII)
 - `src/import/codegen.ts` — Generates `Manifold.ofMesh(api.imports[i])` wrapper code
 - `src/import/importedMesh.ts` — Active-imports register exposed to the sandbox as `api.imports`
-- `src/surface/modifiers.ts` — Surface modifier pipeline: `applyFuzzy` (noise-displaced skin), `applySmooth` (Taubin smoothing pass), `applyVoxelize` (mesh → voxel grid), `applyScale` (non-destructive resize). Each returns a `ModifierResult` — either `'manifold'` (baked mesh + wrapper code, mirroring the STL import path) or `'voxel'` (encoded grid + inline `voxels.decode(…)` code). Pure math lives in sibling modules: `fuzzySkin.ts`, `smoothSurface.ts`, `voxelizeMesh.ts`, `meshSubdivide.ts`, `colorTransfer.ts`, `scaleMesh.ts`. Unit tests: `tests/unit/surface.test.ts`.
+- `src/surface/modifiers.ts` — Surface modifier pipeline (`SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize'`): `applyFuzzy` (noise-displaced skin), the fabric-texture family `applyKnit` / `applyCable` / `applyWaffle` / `applyFur` / `applyWoven` (stockinette knit, cable knit, waffle stitch, fur/velvet, woven fabric — displaced along normals over a UV unwrap, with WebGPU compute where available), `applySmooth` (Taubin smoothing pass), `applyVoxelize` (mesh → voxel grid), `applyScale` (non-destructive resize). Each modifier also has an `apply*Patch` variant that textures only a selected triangle set. Each returns a `ModifierResult` — either `'manifold'` (baked mesh + wrapper code, mirroring the STL import path) or `'voxel'` (encoded grid + inline `voxels.decode(…)` code). Pure math lives in sibling modules: `fuzzySkin.ts`, `knitTexture.ts`, `knitTextureGPU.ts`, `cableKnit.ts`, `waffleStitch.ts`, `furVelvet.ts`, `wovenFabric.ts`, `smoothSurface.ts`, `voxelizeMesh.ts`, `meshSubdivide.ts`, `colorTransfer.ts`, `scaleMesh.ts`, plus the UV layers `uvParameterize.ts`, `uvUnwrap.ts`, and `placement.ts` (region placement). Unit tests: `tests/unit/surface.test.ts`.
 
 ### Modeling engines (three of them)
 
