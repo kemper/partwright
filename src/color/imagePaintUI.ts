@@ -34,6 +34,7 @@ import { getCurrentMesh as getPaintMesh } from './paintMode';
 import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { viewportToolsMount } from '../ui/popoverMenu';
+import { panelDockRightOffset } from '../ui/viewportPanelDrag';
 import { forceDeactivate as closeAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as closeAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as closeAnnotateSelect } from '../annotations/selectMode';
@@ -191,6 +192,15 @@ function openPanel(): void {
   isOpen = true;
   imagePaintBtn!.className = btnClass(true);
   panel?.classList.remove('hidden');
+  // Launched from the sticky Tools menu, shift left so the open list stays
+  // visible beside the panel. Desktop + undragged only; mobile is a bottom
+  // sheet (positioned by its inset-x classes), and a dragged panel keeps its
+  // user-chosen spot.
+  if (panel && panelLeft < 0 && window.matchMedia('(min-width: 768px)').matches) {
+    panel.style.right = `${panelDockRightOffset()}px`;
+    panel.style.left = 'auto';
+    panel.style.top = '48px';
+  }
   updateStampMode();
 }
 
@@ -198,6 +208,12 @@ function closePanel(): void {
   isOpen = false;
   imagePaintBtn!.className = btnClass(false);
   panel?.classList.add('hidden');
+  // Drop any inline docking offset so the responsive classes govern next open.
+  if (panel && panelLeft < 0) {
+    panel.style.right = '';
+    panel.style.left = '';
+    panel.style.top = '';
+  }
   updateStampMode();
 }
 

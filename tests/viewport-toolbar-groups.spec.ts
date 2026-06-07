@@ -1,8 +1,10 @@
-// Golden-path coverage for the grouped viewport overlay bar: the View / Inspect
-// / Tools popovers that collapse the previously-flat strip of ~16 buttons.
+// Golden-path coverage for the viewport overlay bar: the display toggles that
+// sit directly on the strip (edges/grid/dims/lock) plus the Inspect / Tools
+// popovers that collect the tool-launching buttons. The popovers are sticky —
+// clicking an item inside leaves the list open so you can flip tools in a row.
 //
-// Uses `dispatchEvent('click')` on the group buttons to dodge the onboarding
-// tour backdrop that intercepts real pointer events on first paint.
+// Uses `dispatchEvent('click')` on the buttons to dodge the onboarding tour
+// backdrop that intercepts real pointer events on first paint.
 
 import { test, expect } from 'playwright/test';
 
@@ -21,37 +23,42 @@ async function openEditor(page: import('playwright/test').Page) {
 }
 
 test.describe('viewport toolbar groups', () => {
-  test('the bar collapses to primaries plus three labelled group buttons', async ({ page }) => {
+  test('the bar shows primaries, direct display toggles, and two group buttons', async ({ page }) => {
     await openEditor(page);
     // Always-visible primaries.
     await expect(page.locator('#triangle-count')).toBeVisible();
     await expect(page.locator('#reset-view')).toBeVisible();
-    // The three group buttons.
-    await expect(page.locator('#viewport-view-group-btn')).toBeVisible();
-    await expect(page.locator('#viewport-inspect-group-btn')).toBeVisible();
-    await expect(page.locator('#viewport-tools-group-btn')).toBeVisible();
-  });
-
-  test('View popover holds the display toggles; Inspect holds measure + cross-section', async ({ page }) => {
-    await openEditor(page);
-
-    // Display toggles live inside the View popover and are hidden until opened.
-    await expect(page.locator('#wireframe-toggle')).toBeHidden();
-    await page.locator('#viewport-view-group-btn').dispatchEvent('click');
+    // Display toggles sit directly on the bar — visible immediately, no menu.
     await expect(page.locator('#wireframe-toggle')).toBeVisible();
     await expect(page.locator('#grid-toggle')).toBeVisible();
     await expect(page.locator('#dimensions-toggle')).toBeVisible();
     await expect(page.locator('#orbit-lock-toggle')).toBeVisible();
-
-    // Opening Inspect closes View (single popover at a time) and reveals the
-    // read-only analysis tools.
-    await page.locator('#viewport-inspect-group-btn').dispatchEvent('click');
-    await expect(page.locator('#wireframe-toggle')).toBeHidden();
-    await expect(page.locator('#measure-toggle')).toBeVisible();
-    await expect(page.locator('#clip-toggle')).toBeVisible();
+    // The View menu is gone; only Inspect and Tools remain as popovers.
+    await expect(page.locator('#viewport-view-group-btn')).toHaveCount(0);
+    await expect(page.locator('#viewport-inspect-group-btn')).toBeVisible();
+    await expect(page.locator('#viewport-tools-group-btn')).toBeVisible();
   });
 
-  test('Tools popover collects the editing tools and a tool opens from it', async ({ page }) => {
+  test('Inspect popover holds measure + cross-section and stays open across picks', async ({ page }) => {
+    await openEditor(page);
+
+    // Hidden until opened.
+    await expect(page.locator('#measure-toggle')).toBeHidden();
+    await page.locator('#viewport-inspect-group-btn').dispatchEvent('click');
+    await expect(page.locator('#measure-toggle')).toBeVisible();
+    await expect(page.locator('#clip-toggle')).toBeVisible();
+
+    // Sticky: picking a tool inside leaves the list open (no closeOnSelect).
+    await page.locator('#measure-toggle').dispatchEvent('click');
+    await expect(page.locator('#measure-toggle')).toBeVisible();
+    await expect(page.locator('#clip-toggle')).toBeVisible();
+
+    // Clicking the group button again closes it.
+    await page.locator('#viewport-inspect-group-btn').dispatchEvent('click');
+    await expect(page.locator('#measure-toggle')).toBeHidden();
+  });
+
+  test('Tools popover collects the editing tools and stays open when a tool opens', async ({ page }) => {
     await openEditor(page);
     await page.locator('#viewport-tools-group-btn').dispatchEvent('click');
 
@@ -60,9 +67,17 @@ test.describe('viewport toolbar groups', () => {
       await expect(page.locator(`#viewport-tools-menu ${id}`)).toHaveCount(1);
     }
 
-    // Selecting a tool from the popover opens its panel.
+    // Selecting a tool opens its panel AND keeps the Tools menu open so the user
+    // can switch to another tool without re-opening the list.
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await expect(page.locator('#paint-toggle')).toBeVisible();
+    await expect(page.locator('#annotate-toggle')).toBeVisible();
+
+    // Opening a sibling popover (Inspect) closes Tools — single popover at a time.
+    await page.locator('#viewport-inspect-group-btn').dispatchEvent('click');
+    await expect(page.locator('#paint-toggle')).toBeHidden();
+    await expect(page.locator('#measure-toggle')).toBeVisible();
   });
 
   test('grouped viewport tools are reachable from the command palette', async ({ page }) => {

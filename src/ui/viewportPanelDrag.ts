@@ -3,6 +3,27 @@
 // visible area of its offset parent. Position resets on each open (not
 // persisted) — the panel always starts below the clip-controls toolbar.
 
+// px gap between a docked panel and the viewport's right edge (mirrors the
+// toolbar's own right-2 inset). Also reused as the gap between an open Tools
+// menu and a panel shifted to sit beside it.
+const PANEL_EDGE_GAP = 8;
+
+/**
+ * Right offset (px) for a top-right docked viewport panel. Normally the panel
+ * hugs the right edge (PANEL_EDGE_GAP). But when the sticky viewport Tools menu
+ * is open, that corner is occupied by the still-open tool list — so on desktop
+ * we shift the panel left to sit *beside* the menu, keeping the list visible for
+ * one-click tool switching. Mobile panels are bottom sheets, so they're left be.
+ */
+export function panelDockRightOffset(): number {
+  if (!window.matchMedia('(min-width: 768px)').matches) return PANEL_EDGE_GAP;
+  const menu = document.getElementById('viewport-tools-menu');
+  if (menu && !menu.classList.contains('hidden') && menu.offsetWidth > 0) {
+    return PANEL_EDGE_GAP + menu.offsetWidth + PANEL_EDGE_GAP;
+  }
+  return PANEL_EDGE_GAP;
+}
+
 /** Position the panel below the #clip-controls toolbar buttons.
  *  Prefers the panel's own offset parent as the coordinate reference so
  *  top/right values land in the correct space. Falls back to clip-controls'
@@ -16,7 +37,7 @@ export function setInitialPanelPosition(panel: HTMLElement): void {
       const cr = controls.getBoundingClientRect();
       const hr = host.getBoundingClientRect();
       panel.style.top = `${Math.round(cr.bottom - hr.top + 4)}px`;
-      panel.style.right = '8px';
+      panel.style.right = `${panelDockRightOffset()}px`;
       panel.style.left = 'auto';
       panel.style.bottom = 'auto';
       return;
@@ -24,7 +45,7 @@ export function setInitialPanelPosition(panel: HTMLElement): void {
   }
   // Fallback when clip-controls isn't in the DOM yet.
   panel.style.top = '48px';
-  panel.style.right = '8px';
+  panel.style.right = `${panelDockRightOffset()}px`;
   panel.style.left = 'auto';
   panel.style.bottom = 'auto';
 }

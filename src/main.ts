@@ -5467,9 +5467,9 @@ async function main() {
   });
   viewportPane.appendChild(paramsPanel.element);
   // Customize is a contextual primary: hidden until a model declares params,
-  // then surfaced top-level (just before the View group) as a strong "this model
-  // is tweakable" signal — not buried inside the Tools popover.
-  const customizeAnchor = clipControls.querySelector('#viewport-view-group');
+  // then surfaced top-level (just before the Inspect popover) as a strong "this
+  // model is tweakable" signal — not buried inside the Tools popover.
+  const customizeAnchor = clipControls.querySelector('#viewport-inspect-group');
   if (customizeAnchor) clipControls.insertBefore(customizeBtn, customizeAnchor);
   else clipControls.appendChild(customizeBtn);
 
@@ -6433,7 +6433,7 @@ async function main() {
   reliefViewportBtn.addEventListener('click', () => toggleReliefStudio());
   // Relief edit is a contextual primary too (shown only in relief sessions), so
   // it sits top-level alongside Customize rather than inside the Tools popover.
-  const reliefAnchor = clipControls.querySelector('#viewport-view-group');
+  const reliefAnchor = clipControls.querySelector('#viewport-inspect-group');
   if (reliefAnchor) clipControls.insertBefore(reliefViewportBtn, reliefAnchor);
   else clipControls.appendChild(reliefViewportBtn);
 

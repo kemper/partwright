@@ -3,7 +3,7 @@
 // Promoted out of `toolbar.ts` (Import/Export dropdowns) so the viewport overlay
 // bar can reuse the same labelled-section / divider look, plus a self-contained
 // `createPopoverGroup` flyout used to collapse the bar's many buttons into a few
-// labelled groups (View / Inspect / Tools). One source of truth for menu chrome.
+// labelled groups (Inspect / Tools). One source of truth for menu chrome.
 
 /** Small uppercase section label inside a menu (e.g. "From file", "3D model"). */
 export function createMenuSectionHeader(text: string): HTMLElement {
@@ -49,12 +49,6 @@ export interface PopoverGroupOptions {
   label: string;
   /** Button tooltip / aria-label. */
   title: string;
-  /**
-   * Close the popover when an item button inside it is clicked. True for action
-   * menus (Inspect/Tools — picking a tool should reveal its panel); false for
-   * preference menus (View — users flip several toggles in a row).
-   */
-  closeOnSelect?: boolean;
 }
 
 /**
@@ -104,13 +98,10 @@ export function createPopoverGroup(opts: PopoverGroupOptions): PopoverGroup {
     isOpen() ? close() : open();
   });
 
-  if (opts.closeOnSelect) {
-    // Closing on item click reveals the tool's own panel. Skip clicks that aren't
-    // on an actionable button (e.g. a section header) so headers don't dismiss.
-    menu.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).closest('button')) close();
-    });
-  }
+  // The menu is sticky: clicking an item inside it (a toggle, a tool) runs that
+  // item's own handler but does NOT dismiss the menu, so users can flip several
+  // toggles or switch tools in a row without re-opening it. It closes only via
+  // the group button, opening a sibling popover, click-outside, or Escape.
 
   // Click-outside and Escape close the menu. Singleton bar — listeners persist
   // for the life of the page, matching the Import/Export dropdown pattern.
