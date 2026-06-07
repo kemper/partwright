@@ -51,6 +51,16 @@ export function updateReliefSettings(sessionId: string, patch: Partial<ReliefSet
   return next;
 }
 
+/** Drop a session's persisted relief settings. Called from the session-delete
+ *  cascade so a removed session doesn't leak a stale localStorage entry — the
+ *  IndexedDB-side reliefSources blob is cascade-deleted alongside it (db.ts). */
+export function clearReliefSettings(sessionId: string): void {
+  const store = read();
+  if (!(sessionId in store)) return;
+  delete store[sessionId];
+  write(store);
+}
+
 export function isReliefSession(sessionId: string | null | undefined): boolean {
   if (!sessionId) return false;
   return getReliefSettings(sessionId)?.isRelief === true;

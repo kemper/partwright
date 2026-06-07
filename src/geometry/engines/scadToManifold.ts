@@ -24,6 +24,13 @@ export function parseBinarySTLToMeshGL(bytes: Uint8Array): MeshData | null {
   const tris: number[] = [];
 
   // Weld tolerance: quantize coordinates to 5 decimal places before hashing.
+  // `1e5` is the inverse of the tolerance, not a tolerance itself —
+  // `round(v * 1e5) / 1e5` snaps to a 1e-5 grid, i.e. a 1e-5 weld tolerance.
+  // That deliberately mirrors getConfig().import.stlWeldTolerance's default
+  // (1e-5, see APP_CONFIG_DEFAULTS in src/config/appConfig.ts). We inline the
+  // literal here because this runs in the engine Worker, where getConfig()
+  // can't read the user's localStorage override anyway (it returns the static
+  // defaults), so threading the config through would buy nothing.
   const quantize = (v: number) => Math.round(v * 1e5) / 1e5;
 
   let offset = 84;
