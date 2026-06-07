@@ -337,7 +337,7 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
   }
 
   const meta = document.createElement('div');
-  meta.className = 'text-[10px] text-zinc-500 mt-1.5 flex items-center gap-2';
+  meta.className = 'text-[10px] text-zinc-500 mt-1.5 flex items-center gap-2 flex-wrap';
   const badge = languageBadge(language);
   const langBadge = document.createElement('span');
   langBadge.className = `font-semibold border rounded px-1 ${badge.classes}`;

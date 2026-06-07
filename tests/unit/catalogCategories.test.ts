@@ -28,4 +28,12 @@ describe('printTestedBadge', () => {
     expect(printTestedBadge(false).search).toContain('untested');
     expect(printTestedBadge(true).search).not.toContain('untested');
   });
+
+  it('untested tokens never contain the "print-tested" substring (filter matches substrings)', () => {
+    // The catalog filter uses haystack.includes(token), so searching
+    // "print-tested" must surface only verified tiles — the untested token
+    // must not collide with it.
+    expect(printTestedBadge(false).search).not.toContain('print-tested');
+    expect(printTestedBadge(true).search).toContain('print-tested');
+  });
 });

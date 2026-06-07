@@ -64,7 +64,10 @@ export function printTestedBadge(printTested: boolean | undefined): PrintTestedB
         label: 'Untested',
         classes: 'text-zinc-500 border-zinc-600/70',
         title: 'Not print-tested yet — this model has not been verified with a physical print.',
-        search: 'untested not-print-tested',
+        // Just `untested` — avoid any token containing the `print-tested`
+        // substring, so searching "print-tested" surfaces only verified tiles
+        // (the filter matches substrings, see catalogFilter.ts).
+        search: 'untested',
       };
 }
 

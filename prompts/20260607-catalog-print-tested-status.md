@@ -60,3 +60,17 @@ fit for a no-backend SPA — the "upload" is a git commit, photos added via a
 GitHub PR / web drag-drop or locally), or (B) host photos externally
 (Cloudflare Images/R2, etc.) and store URLs in the manifest. Recommended (A)
 and asked the user to choose before building the photo-display side.
+
+### Follow-up: work-reviewer fixes
+
+A review pass on the green PR surfaced two should-fixes, both applied:
+
+1. The in-app meta row lacked `flex-wrap` (the static renderer had it). With a
+   third chip now on the row and `overflow-hidden` on the tile, chips could clip
+   on narrow widths instead of wrapping. Added `flex-wrap` so both renderers
+   match.
+2. Search-token collision: the untested token `not-print-tested` *contains* the
+   substring `print-tested`, and the filter matches substrings — so searching
+   "print-tested" matched every tile, not just verified ones. Dropped it to just
+   `untested`, and added a unit case asserting untested tokens never contain
+   `print-tested`.
