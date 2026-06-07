@@ -15,6 +15,15 @@ import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
+import {
+  createToolPanelHeader,
+  TOOL_PANEL_CLASS,
+  TOOL_TOGGLE_IDLE,
+  TOOL_TOGGLE_ACTIVE,
+} from './toolPanel';
+import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
+import { openViewportPanel, closeViewportPanel, type ViewportPanel } from './viewportPanelRegistry';
+import { viewportToolsMount } from './popoverMenu';
 import { getScene, getMeshGroup, setGizmoLock } from '../renderer/viewport';
 import {
   emitPrimitive,
@@ -54,13 +63,10 @@ export interface InsertPaletteCallbacks {
   setCode: (code: string) => void;
   getSelection: () => { from: number; to: number; text: string };
   run: (code?: string) => void;
-  isLocked: () => boolean;
   showToast: (msg: string, opts?: { variant?: 'neutral' | 'warn' | 'success' }) => void;
   getMeshData: () => MeshData | null;
   getCamera: () => THREE.Camera | null;
   getCanvas: () => HTMLCanvasElement | null;
-  /** Called right before the panel opens so other overlays (e.g. paint) close. */
-  onOpen?: () => void;
 }
 
 // Spatial registry mapping a part name → its center/bbox, recorded when we
@@ -111,26 +117,43 @@ const OP_TITLE: Record<BooleanOpKind, string> = {
 // Public API
 // ---------------------------------------------------------------------------
 
+let toolBtn: HTMLButtonElement | null = null;
+
+/** Registry entry so the shared viewport-panel registry can close us when
+ *  another tool (Paint, Voxel, Surface, etc.) opens — and vice versa. */
+const insertRegistryEntry: ViewportPanel = { close(): void { if (isInsertPaletteOpen()) closeInsertPalette(); } };
+
+function onInsertEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  // Defer to any open modal dialog stacked on top of the panel.
+  if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+  closeInsertPalette();
+}
+
 export function initInsertPalette(container: HTMLElement, callbacks: InsertPaletteCallbacks): void {
   cb = callbacks;
 
-  // The toolbar button. Lives next to Paint / Simplify / Measure in the
-  // viewport overlay so it's always visible regardless of editor-pane
-  // collapse state — and keeps the `#btn-insert` id existing tests depend on.
-  const btn = document.createElement('button');
-  btn.id = 'btn-insert';
-  btn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  btn.textContent = '➕ Insert';
-  btn.title = 'Insert shapes and boolean operations as code';
-  btn.addEventListener('click', toggleInsertPalette);
-  // Sit before the paint button when present so the toolbar reads
-  // Insert · Paint · Simplify · Measure · …
-  const paintBtn = container.querySelector('#paint-toggle');
-  if (paintBtn) container.insertBefore(btn, paintBtn);
-  else container.appendChild(btn);
+  // The toolbar button. Lives in the Tools popover next to Paint / Simplify /
+  // Measure so it's always visible regardless of editor-pane collapse state.
+  toolBtn = document.createElement('button');
+  toolBtn.id = 'btn-insert';
+  toolBtn.className = TOOL_TOGGLE_IDLE;
+  toolBtn.textContent = '➕ Insert';
+  toolBtn.title = 'Insert shapes and boolean operations as code';
+  toolBtn.addEventListener('click', toggleInsertPalette);
+  // Sit before the paint button when the Tools popover already exists so the
+  // toolbar reads Insert · Paint · Simplify · Measure · …
+  const mount = viewportToolsMount(container);
+  const paintBtn = mount.querySelector('#paint-toggle');
+  if (paintBtn) mount.insertBefore(toolBtn, paintBtn);
+  else mount.appendChild(toolBtn);
 
   panel = buildPanel();
-  container.appendChild(panel);
+  // The panel is anchored to the positioned viewport pane (clipControls'
+  // parent), the same place every shared tool panel docks — so it sits above
+  // the model and the drag-positioning math measures against the full viewport.
+  const overlayHost = container.parentElement ?? container;
+  overlayHost.appendChild(panel);
 }
 
 function isInsertPaletteOpen(): boolean {
@@ -139,12 +162,21 @@ function isInsertPaletteOpen(): boolean {
 
 function openInsertPalette(): void {
   if (!panel) return;
-  cb?.onOpen?.();
   panel.classList.remove('hidden');
+  setInitialPanelPosition(panel);
+  toolBtn?.classList.remove(...TOOL_TOGGLE_IDLE.split(/\s+/));
+  toolBtn?.classList.add(...TOOL_TOGGLE_ACTIVE.split(/\s+/));
+  openViewportPanel(insertRegistryEntry);
+  document.addEventListener('keydown', onInsertEscape);
 }
 
 function closeInsertPalette(): void {
-  panel?.classList.add('hidden');
+  if (!panel || !isInsertPaletteOpen()) return;
+  panel.classList.add('hidden');
+  toolBtn?.classList.remove(...TOOL_TOGGLE_ACTIVE.split(/\s+/));
+  toolBtn?.classList.add(...TOOL_TOGGLE_IDLE.split(/\s+/));
+  closeViewportPanel(insertRegistryEntry);
+  document.removeEventListener('keydown', onInsertEscape);
 }
 
 export function toggleInsertPalette(): void {
@@ -152,13 +184,12 @@ export function toggleInsertPalette(): void {
   else openInsertPalette();
 }
 
-/** Show / hide the editor-header Insert button. Called from the language-
- *  change handler so the palette only appears for languages whose codegen we
- *  support (manifold-js + scad) — voxel and replicad sessions hide it. */
+/** Show / hide the toolbar Insert button. Called from the language-change
+ *  handler so the palette only appears for languages whose codegen we support
+ *  (manifold-js + scad) — voxel and replicad sessions hide it. */
 export function setInsertPaletteAvailable(available: boolean): void {
-  const btn = document.getElementById('btn-insert');
-  if (!btn) return;
-  btn.classList.toggle('hidden', !available);
+  if (!toolBtn) return;
+  toolBtn.classList.toggle('hidden', !available);
   if (!available && isInsertPaletteOpen()) closeInsertPalette();
 }
 
@@ -184,26 +215,25 @@ function paletteButton(label: string, title: string, onClick: () => void): HTMLB
 }
 
 function buildPanel(): HTMLElement {
-  const p = document.createElement('div');
-  p.id = 'insert-palette-panel';
-  p.className =
-    'hidden absolute top-10 right-2 z-30 bg-zinc-800/95 backdrop-blur border border-zinc-600/60 rounded-lg p-2.5 shadow-xl';
-  p.style.minWidth = '220px';
-  p.style.maxWidth = '260px';
+  // Standard tool-panel chrome: shell + draggable header + scrollable body.
+  // The shell is a long-lived singleton: open()/close() toggle the `hidden`
+  // class rather than re-mounting, so the chip strip's DOM refs survive.
+  const shell = document.createElement('div');
+  shell.id = 'insert-palette-panel';
+  shell.className = `hidden ${TOOL_PANEL_CLASS} w-[18rem] max-w-[calc(100vw-1rem)] max-h-[calc(100%-3.5rem)] select-none`;
+  shell.setAttribute('role', 'dialog');
+  shell.setAttribute('aria-modal', 'false');
+  shell.setAttribute('aria-label', 'Insert');
 
-  const header = document.createElement('div');
-  header.className = 'flex items-center justify-between mb-1';
-  const title = document.createElement('div');
-  title.className = 'text-xs font-semibold text-zinc-100';
-  title.textContent = 'Insert';
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'text-zinc-400 hover:text-zinc-200 text-xs px-1';
-  closeBtn.textContent = '✕';
-  closeBtn.title = 'Close';
-  closeBtn.addEventListener('click', closeInsertPalette);
-  header.appendChild(title);
-  header.appendChild(closeBtn);
-  p.appendChild(header);
+  const header = createToolPanelHeader('Insert', closeInsertPalette, 'Close insert palette');
+  shell.appendChild(header);
+  attachViewportPanelDrag(header, shell);
+
+  // Sections below populate the scrollable body, not the chrome shell itself.
+  // Aliasing back to `p` keeps the (large) section-build code below readable.
+  const p = document.createElement('div');
+  p.className = 'flex-1 min-h-0 overflow-y-auto px-3 py-2.5 flex flex-col gap-1.5 text-sm text-zinc-200';
+  shell.appendChild(p);
 
   p.appendChild(sectionLabel('Shapes'));
   const shapeRow = document.createElement('div');
@@ -282,7 +312,7 @@ function buildPanel(): HTMLElement {
   // Paint the selection strip and the disabled-state of the quick actions.
   setTimeout(rerenderSelectionUI, 0);
 
-  return p;
+  return shell;
 }
 
 // ---------------------------------------------------------------------------
@@ -529,10 +559,6 @@ function buildPrimitiveForm(
 
 function openPrimitiveModal(kind: PrimitiveKind): void {
   if (!cb) return;
-  if (cb.isLocked()) {
-    cb.showToast('Editor is locked by color regions — unlock to edit code.', { variant: 'warn' });
-    return;
-  }
 
   const shell = createModalShell({ title: `Insert ${kind}`, maxWidth: 'sm' });
   const lang = cb.getLanguage();
@@ -620,10 +646,6 @@ interface Operand {
 
 function beginOperation(op: BooleanOpKind): void {
   if (!cb) return;
-  if (cb.isLocked()) {
-    cb.showToast('Editor is locked by color regions — unlock to edit code.', { variant: 'warn' });
-    return;
-  }
   // If the selection already has enough parts, skip the operand-picker modal
   // and apply the op immediately. Order matches the selection (insertion order).
   if (selection.size >= 2) {
@@ -1030,10 +1052,6 @@ function hashHue(name: string): number {
 function startBuildSession(): void {
   if (!cb) return;
   if (buildCleanup) { buildCleanup(); }
-  if (cb.isLocked()) {
-    cb.showToast('Editor is locked by color regions — unlock to edit code.', { variant: 'warn' });
-    return;
-  }
   const canvas = cb.getCanvas();
   const camera = cb.getCamera();
   if (!canvas || !camera) {
@@ -1051,7 +1069,8 @@ function startBuildSession(): void {
     return;
   }
 
-  cb.onOpen?.(); // close paint/simplify so their gizmos don't fight ours
+  // Single-open exclusion across viewport tools is handled by the registry;
+  // simply close the palette so its panel doesn't shadow the build session.
   closeInsertPalette();
 
   const scene = getScene();
@@ -1346,10 +1365,6 @@ let selectSessionCleanup: (() => void) | null = null;
 
 function startSelectMode(): void {
   if (!cb) return;
-  if (cb.isLocked()) {
-    cb.showToast('Editor is locked by color regions — unlock to edit code.', { variant: 'warn' });
-    return;
-  }
   if (selectSessionCleanup) return; // already running
   const canvas = cb.getCanvas();
   const camera = cb.getCamera();
@@ -1477,10 +1492,6 @@ function startSelectMode(): void {
 
 function applyQuickDuplicate(): void {
   if (!cb) return;
-  if (cb.isLocked()) {
-    cb.showToast('Editor is locked by color regions — unlock to edit code.', { variant: 'warn' });
-    return;
-  }
   if (selection.size === 0) {
     cb.showToast('Nothing selected — pick parts with 🎯 Select first.', { variant: 'warn' });
     return;
@@ -1526,10 +1537,6 @@ function applyQuickDuplicate(): void {
 
 function openMirrorPicker(): void {
   if (!cb) return;
-  if (cb.isLocked()) {
-    cb.showToast('Editor is locked by color regions — unlock to edit code.', { variant: 'warn' });
-    return;
-  }
   if (selection.size === 0) {
     cb.showToast('Nothing selected — pick parts with 🎯 Select first.', { variant: 'warn' });
     return;
@@ -1586,10 +1593,6 @@ function applyQuickMirror(axisKey: MirrorAxis): void {
 
 function applyQuickDelete(): void {
   if (!cb) return;
-  if (cb.isLocked()) {
-    cb.showToast('Editor is locked by color regions — unlock to edit code.', { variant: 'warn' });
-    return;
-  }
   if (selection.size === 0) {
     cb.showToast('Nothing selected — pick parts with 🎯 Select first.', { variant: 'warn' });
     return;
