@@ -242,12 +242,18 @@ test.describe('Insert palette', () => {
 
   test('selection strip renders when picking parts via Select mode', async ({ page }) => {
     await gotoEditor(page);
+    // Pin a clean starter so the catalog sampler's existing `const box`
+    // doesn't satisfy the assertions before our palette insert runs.
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
+
     await page.locator('#btn-insert').dispatchEvent('click');
 
     // One centered cube so 3D-pick lands on it reliably.
     await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
-    await expect.poll(() => getCode(page)).toContain('const box');
+    await expect.poll(() => getCode(page)).toMatch(/const\s+box\s*=/);
 
     // Delete quick-action starts disabled — selection is empty.
     const deleteBtn = page.locator(palette).getByRole('button', { name: 'Delete' });
@@ -266,6 +272,12 @@ test.describe('Insert palette', () => {
 
   test('build mode: shapes render separately, select + gizmo session runs', async ({ page }) => {
     await gotoEditor(page);
+    // Pin a deterministic starter so the catalog sampler's existing parts
+    // don't compete with the palette-inserted cube for proxy raycast.
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
+
     await page.locator('#btn-insert').dispatchEvent('click');
 
     // Insert a centered cube so the build scene has a pickable part at the origin.
