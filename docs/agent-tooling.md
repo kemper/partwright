@@ -16,7 +16,7 @@ agents below can run on different model tiers.
 |---|---|---|---|---|
 | `work-reviewer` | `.claude/agents/work-reviewer.md` | `opus` | read-only (`Read, Grep, Glob, Bash`) | Reviews the branch diff vs `origin/main` for correctness, back-compat, security, **and** UI consistency. Never edits. |
 | `explore` | `.claude/agents/explore.md` | `sonnet` | read-only + `mcp__typescript__*` | Codebase discovery / "where is X / who uses Y". Overrides the built-in Explore agent (which defaults to Haiku) with Sonnet + symbol-aware tools. |
-| `voxel-sculpt` | `.claude/agents/voxel-sculpt.md` | `sonnet` | `Read, Write, Edit, Bash` | Iterates a voxel-language snippet (photo→figurine, catalog toy) through the headless `model:preview` render→look→adjust loop until it matches a target *and* passes the printability gates. Returns **text only**. |
+| `model-sculpt` | `.claude/agents/model-sculpt.md` | `sonnet` | `Read, Write, Edit, Bash` | Iterates a model snippet (photo→figurine, catalog toy, mechanical part) through the headless `model:preview` render→look→adjust loop until it matches a target *and* passes the printability gates. Engine-aware: **manifold-js / voxel / scad** (not replicad — see below). Returns **text only**. Driven by the `/sculpt` skill. |
 
 All three are checked in, so every session and teammate gets the same behavior.
 The `work-reviewer` runs the static-analysis scripts below as part of its review
@@ -29,7 +29,7 @@ and reasons about the hits against the diff.
 > in-session, run its instructions through `general-purpose`: point that agent at
 > the file and tell it to follow the instructions exactly.
 
-> Why a `voxel-sculpt` agent? Sculpting a model to look like a photo is an
+> Why a `model-sculpt` agent? Sculpting a model to look like a photo is an
 > iterative render→**look**→adjust loop, and every preview PNG the modeller
 > Reads to judge a pass stays in context and is re-billed on every later turn of
 > the *main* session. Delegating the loop moves those image tokens into the
@@ -39,6 +39,17 @@ and reasons about the hits against the diff.
 > *without* Reading it into its own context). Net effect: a many-pass visual
 > iteration costs the main thread a few sentences instead of a stack of images.
 > It runs on Sonnet so the cheap-to-judge geometry loop doesn't burn Opus tokens.
+>
+> **Engine coverage mirrors the headless preview tier.** `model:preview` runs
+> `manifold-js`, `voxel`, and `scad` in Node (no browser), so `model-sculpt`
+> sculpts in any of those three — the only per-engine differences are the API
+> idioms and the one-piece check (a `keepLargest()` weld for the voxel grid,
+> `componentCount === 1` for the manifold-js / scad solids). **`replicad`/BREP is
+> excluded**: its OpenCASCADE WASM won't init under Node SSR, so it can't preview
+> headlessly and must be verified in the browser. The `/sculpt` skill
+> (`.claude/skills/sculpt.md`) is the launcher — it picks the engine, briefs
+> `model-sculpt`, and surfaces the preview via `SendUserFile` **without** the main
+> agent Reading it, keeping the cost invariant intact.
 
 > Why override `explore`? The stock Explore agent runs on Haiku — fine for
 > locating a string, weaker for this codebase's cross-file reference questions
