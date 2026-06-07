@@ -266,6 +266,35 @@ export class VoxelGrid {
     return this;
   }
 
+  /** Rotate the whole grid about the origin around one axis, by a multiple of
+   *  90° (the only angles that keep voxels on the integer lattice). Positive
+   *  degrees follow the right-hand rule (CCW looking down the +axis). Rotation
+   *  is about (0,0,0), so `translate` first if you want a different pivot.
+   *  Handy for reorienting a model built facing one way — e.g. spin a +Y-facing
+   *  figure to face the −Y front with `v.rotate('z', 180)`. Chainable.
+   *
+   *  Voxels rotated past the asymmetric grid edge (COORD_MIN..COORD_MAX) are
+   *  dropped, same as `translate`/`mirror`; models near the origin are safe. */
+  rotate(axis: 'x' | 'y' | 'z', degrees: number): this {
+    const ax = assertEnum(axis, ['x', 'y', 'z'] as const, 'rotate(axis)');
+    const deg = assertNumber(degrees, 'rotate(degrees)', { integer: true })!;
+    if (deg % 90 !== 0) throw new ValidationError(`rotate(degrees): voxel rotation must be a multiple of 90°, got ${deg}.`);
+    const t = ((deg % 360) + 360) % 360; // 0, 90, 180, 270
+    if (t === 0) return this;
+    const c = t === 180 ? -1 : 0;          // cos of 0/90/180/270 as exact ints
+    const s = t === 90 ? 1 : t === 270 ? -1 : 0; // sin of same
+    const rotated = new Map<number, number>();
+    this.forEach((x, y, z, col) => {
+      let nx = x, ny = y, nz = z;
+      if (ax === 'z') { nx = x * c - y * s; ny = x * s + y * c; }
+      else if (ax === 'x') { ny = y * c - z * s; nz = y * s + z * c; }
+      else { nx = x * c + z * s; nz = z * c - x * s; }
+      if (inRange(nx, ny, nz)) rotated.set(packKey(nx, ny, nz), col);
+    });
+    this.cells = rotated;
+    return this;
+  }
+
   /** Add a mirrored copy of every voxel across the given axis's 0-plane (cell
    *  `n` maps to cell `-1-n`, so the geometry mirrors exactly about 0). */
   mirror(axis: 'x' | 'y' | 'z'): this {
