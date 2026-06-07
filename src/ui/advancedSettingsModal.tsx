@@ -196,6 +196,36 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ai', 'maxConsecutiveAutoResumes', v)}
         />
         <Field
+          label="Max transient API retries"
+          unit="retries"
+          hint="How many times a provider call is retried after a transient failure (HTTP 429/5xx, dropped stream) before the turn surfaces a hard error."
+          tooltip="Provider servers occasionally return rate-limit (429) or server (5xx) errors, or drop the streaming connection. Rather than tearing the whole agent loop down — which is especially disruptive mid auto-continue — the chat loop retries the same request with exponential backoff up to this many times. These retries do NOT consume the agent's per-turn iteration budget. Set to 0 to disable and fail fast. Note: this value is read from defaults inside the agent Worker, so overriding it only affects the local (WebGPU) provider."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.maxTransientRetries}
+          value={c.ai.maxTransientRetries}
+          min={0} max={10} integer
+          onChange={v => set('ai', 'maxTransientRetries', v)}
+        />
+        <Field
+          label="Transient retry base backoff"
+          unit="ms"
+          hint="Base wait between transient-error retries; grows exponentially with jitter."
+          tooltip="The first transient-error retry waits up to this long, the second up to 2×, the third up to 4×, and so on (with random jitter), capped by the max backoff below. Larger values are gentler on a struggling server but slow recovery from a brief blip."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.transientRetryBaseMs}
+          value={c.ai.transientRetryBaseMs}
+          min={100} max={30_000} integer
+          onChange={v => set('ai', 'transientRetryBaseMs', v)}
+        />
+        <Field
+          label="Transient retry max backoff"
+          unit="ms"
+          hint="Ceiling on a single transient-error backoff wait."
+          tooltip="Caps how long any one transient-error retry will wait, so exponential growth can't stall the turn for minutes. The actual wait is a random value up to min(base · 2^(attempt-1), this ceiling)."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.transientRetryMaxMs}
+          value={c.ai.transientRetryMaxMs}
+          min={1_000} max={120_000} integer
+          onChange={v => set('ai', 'transientRetryMaxMs', v)}
+        />
+        <Field
           label="Slow-tool warning threshold"
           unit="ms"
           hint="Tool calls exceeding this time emit a console warning (does not affect behavior)."

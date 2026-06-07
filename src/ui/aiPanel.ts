@@ -1956,7 +1956,8 @@ async function discardPartial(messageId: string): Promise<void> {
 
 /** Rendered for turns that errored mid-flight — visually distinct so the
  *  user can spot the failure point in a long chat, and offers a Retry that
- *  re-sends the immediately preceding user message. */
+ *  *resumes* the agent loop from the existing (persisted) history rather than
+ *  re-sending the original prompt. */
 function renderErrorBubble(msg: ChatMessage): HTMLElement {
   const card = document.createElement('div');
   card.className = 'max-w-[95%] rounded border border-red-700/60 bg-red-900/15 px-3 py-2 flex flex-col gap-2';
@@ -1975,8 +1976,9 @@ function renderErrorBubble(msg: ChatMessage): HTMLElement {
   actions.className = 'flex items-center gap-2 pt-1';
   const retryBtn = document.createElement('button');
   retryBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
-  retryBtn.textContent = '↻ Retry last message';
-  retryBtn.addEventListener('click', () => { void retryLastUserMessage(msg.id); });
+  retryBtn.textContent = '↻ Retry';
+  retryBtn.title = 'Resume the agent from where it failed — all completed work above is kept, nothing is replayed.';
+  retryBtn.addEventListener('click', () => { void retryFailedTurn(msg.id); });
   actions.appendChild(retryBtn);
 
   const dismissBtn = document.createElement('button');
@@ -1992,34 +1994,36 @@ function renderErrorBubble(msg: ChatMessage): HTMLElement {
   return card;
 }
 
-/** Find the most recent user message before this error, dismiss the error
- *  bubble, and replay the user message verbatim. */
-async function retryLastUserMessage(errorMsgId: string): Promise<void> {
+/** Recover from a failed turn by *resuming* the agent loop from the existing
+ *  history, exactly like the amber "Keep going" notice — NOT by re-sending the
+ *  original prompt. Re-prompting used to append a duplicate request on top of
+ *  all the completed work (tool calls, renders, saved versions), which both
+ *  confused the model about the current state and made the long run look like
+ *  it had been thrown away. Here we only drop the in-memory error bubble and
+ *  re-issue the request against the persisted conversation; the model picks up
+ *  from its last tool results / message. Completed work is never touched. */
+async function retryFailedTurn(errorMsgId: string): Promise<void> {
   if (state.inFlight) {
     setTransientStatus('Wait for the current turn to finish before retrying.');
     return;
   }
-  const errorIdx = state.history.findIndex(m => m.id === errorMsgId);
-  if (errorIdx < 0) return;
-  let lastUser: ChatMessage | null = null;
-  for (let i = errorIdx - 1; i >= 0; i--) {
-    const m = state.history[i];
-    if (m.role === 'user' && m.blocks.some(b => b.type === 'text' || b.type === 'image')) {
-      lastUser = m;
-      break;
-    }
-  }
-  if (!lastUser) {
-    setTransientStatus('Nothing to retry — couldn\'t find your last message.');
-    return;
-  }
+  if (!writeOwner) return;
+  if (state.history.findIndex(m => m.id === errorMsgId) < 0) return;
+
+  const settings = loadSettings();
+  const apiKey = await preflightTurn(settings, () => { void retryFailedTurn(errorMsgId); });
+  if (apiKey === PREFLIGHT_ABORT) return;
+
+  // Drop the in-memory error bubble (it was never persisted) but keep every
+  // completed turn intact, then resume with empty userBlocks: the provider
+  // request builders drop the trailing empty user message, so the model
+  // continues from the last real turn instead of replaying the seed prompt.
   state.history = state.history.filter(m => m.id !== errorMsgId);
   renderTranscript();
-  if (!inputEl) return;
-  const text = lastUser.blocks.find(b => b.type === 'text')?.text ?? '';
-  state.pendingImages = lastUser.blocks.filter(b => b.type === 'image').map(b => (b as { source: ImageSource }).source);
-  inputEl.value = text;
-  await sendMessage();
+  progressState.retryCount = 0;
+  stalledByWatchdog = false;
+  pinTranscriptToBottom();
+  await runTurnWithStallRetry(apiKey, settings.toggles, []);
 }
 
 /** Rendered for turns that auto-stopped early but can be picked back up — the
