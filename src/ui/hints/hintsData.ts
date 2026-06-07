@@ -50,11 +50,14 @@ export const DEFAULT_CTA_LABEL = 'Check it out →';
 
 // Order here is the rotation order for a fresh user; the ticker prioritizes
 // unseen hints and then cycles. Targets/ids are verified against the live DOM:
-//   #viewport-tools-group-btn  — the "Tools ▾" popover trigger (clip-controls)
-//   #paint-toggle              — Paint button (inside the Tools popover)
-//   #surface-viewport-toggle   — ✦ Surface button (inside the Tools popover)
-//   #lang-toggle               — JS/SCAD/BREP/VOXEL engine switch (toolbar)
-//   #import-wrapper            — Import dropdown (toolbar)
+//   #viewport-tools-group-btn   — the "Tools ▾" popover trigger (clip-controls)
+//   #paint-toggle               — Paint button (inside the Tools popover)
+//   #surface-viewport-toggle    — ✦ Surface button (inside the Tools popover)
+//   #viewport-inspect-group-btn — the "Inspect ▾" popover trigger (toolbar)
+//   #measure-toggle             — 📏 Measure button (inside the Inspect popover)
+//   #lang-toggle                — JS/SCAD/BREP/VOXEL engine switch (toolbar)
+//   #import-wrapper             — Import dropdown (toolbar)
+//   #export-wrapper             — Export dropdown (toolbar)
 export const HINTS: Hint[] = [
   {
     id: 'command-palette',
@@ -139,5 +142,46 @@ export const HINTS: Hint[] = [
       placement: 'bottom',
       label: 'Import meshes, source files, or whole sessions here.',
     },
+  },
+  {
+    id: 'export-formats',
+    text: 'Export your model to STL, OBJ, 3MF, GLB, STEP, or VOX for printing or other CAD tools.',
+    ctaLabel: 'Show export →',
+    cta: {
+      kind: 'coach',
+      target: '#export-wrapper',
+      placement: 'bottom',
+      label: 'Export to STL, OBJ, 3MF, GLB, STEP & more here.',
+    },
+  },
+  {
+    id: 'inspect-tools',
+    text: 'Measure distances between points and slice the model with a cross-section plane.',
+    ctaLabel: 'Find the tools →',
+    cta: {
+      kind: 'coach',
+      openSelector: '#viewport-inspect-group-btn',
+      target: '#measure-toggle',
+      placement: 'bottom',
+      label: 'Measure & cross-section the model from here.',
+    },
+  },
+  {
+    id: 'share-link',
+    text: 'Share a read-only link to your design — anyone can open it and fork their own copy.',
+    ctaLabel: 'Copy a link →',
+    cta: { kind: 'command', id: 'share-link' },
+  },
+  {
+    id: 'data-usage',
+    text: 'See exactly what Partwright stores in your browser — and wipe it all, including AI API keys, anytime.',
+    ctaLabel: 'Open Data tab →',
+    cta: { kind: 'command', id: 'tab-data' },
+  },
+  {
+    id: 'guided-tour',
+    text: 'New here? Take the guided tour for a quick walkthrough of the editor.',
+    ctaLabel: 'Start the tour →',
+    cta: { kind: 'command', id: 'retake-tour' },
   },
 ];
