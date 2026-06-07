@@ -51,6 +51,8 @@ export interface ToolbarCallbacks {
   onGoHome: () => void;
   /** Toggle the AI chat drawer — drives the prominent "Use AI" button in the toolbar. */
   onToggleAi: () => void;
+  /** Open the Flexi-Maker panel to split the model with flexible connectors. */
+  onOpenFlexiMaker: () => void;
 }
 
 /** Update the unseen-error badge count on the diagnostics rail button.
@@ -288,6 +290,13 @@ export function createToolbar(
   langHelpBtn.setAttribute('aria-label', 'Open language help');
   langHelpBtn.addEventListener('click', () => { void callbacks.onLanguageHelp(); });
   toolbar.appendChild(langHelpBtn);
+
+  // Flexi-Maker — split model with flexible print-in-place connectors
+  const flexiBtn = createButton('btn-flexi-maker', '✂ Flexi');
+  flexiBtn.title = 'Flexi-Maker — split model with flexible print-in-place connectors';
+  flexiBtn.classList.add('ml-2');
+  flexiBtn.addEventListener('click', callbacks.onOpenFlexiMaker);
+  toolbar.appendChild(flexiBtn);
 
   // Hints ticker host — fills the flexible middle of the toolbar, between the
   // language help "?" and the "Use AI" button. Kept flex-1 so it also acts as
