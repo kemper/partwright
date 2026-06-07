@@ -171,15 +171,18 @@ export async function runTurn(
   }
 
   // Strip non-serialisable fields before sending across the thread boundary.
-  // toolCallTimeoutMs is read here (main thread has localStorage) and passed to
-  // the Worker which has no localStorage access.
+  // The whole `ai` config section is read here (main thread has localStorage)
+  // and passed to the Worker, which has none — so the providers' getConfig()
+  // reads inside the Worker see the user's overrides (thinking budgets,
+  // max-output tokens, transient-retry/auto-resume tuning, tool-call timeout)
+  // rather than falling back to defaults.
   const workerInput: AgentWorkerInput = {
     apiKey:             input.apiKey,
     toggles:            input.toggles,
     sessionId:          input.sessionId,
     history:            input.history,
     userBlocks:         input.userBlocks,
-    toolCallTimeoutMs:  getConfig().ai.toolCallTimeoutMs,
+    aiConfig:           getConfig().ai,
   };
 
   return new Promise<ChatMessage[]>((resolve, reject) => {

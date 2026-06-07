@@ -9,9 +9,13 @@ export function httpStatusOf(err: unknown): number | null {
   const e = err as { status?: unknown; message?: unknown };
   if (typeof e?.status === 'number') return e.status;
   const msg = typeof e?.message === 'string' ? e.message : '';
-  // Matches "OpenAI 503:", "Gemini 500:", "Anthropic 529 …" — an optional
-  // provider name followed by a 3-digit status near the start of the message.
-  const m = msg.match(/(?:^|\b)(?:OpenAI|Gemini|Anthropic|Custom)?\s*(\d{3})\b/);
+  // The raw-fetch providers throw "<Provider> <status>: <body>" (and custom
+  // throws "<status>: <body>" with no name), so anchor to the START of the
+  // message and require the trailing colon. Matching a bare 3-digit run
+  // anywhere (the old pattern) could pick a status out of the error *body*
+  // (e.g. "OpenAI 400: … model gpt-512 …") and misclassify a fatal request as
+  // transient or vice-versa.
+  const m = msg.match(/^(?:OpenAI|Gemini|Anthropic|Custom)?\s*(\d{3}):/);
   return m ? Number(m[1]) : null;
 }
 

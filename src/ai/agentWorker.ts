@@ -20,6 +20,7 @@ import { runTurn, type RunTurnInput, type RunTurnCallbacks } from './chatLoop';
 import { setEventForwarder } from './diagnostics';
 import type { ChatBlock } from './types';
 import type { ToolExecResult } from './tools';
+import { applyWorkerAiConfig, getConfig, type AppConfig } from '../config/appConfig';
 
 // The chat loop records each provider API call via diagnostics.recordEvent.
 // Inside this Worker those land in the Worker's own module-instance ring
@@ -37,9 +38,11 @@ setEventForwarder((event) => {
  *  signal, onDrainQueuedBlocks and executeToolFn are managed by the Worker
  *  itself rather than transferred (functions and signals can't cross threads). */
 export type AgentWorkerInput = Omit<RunTurnInput, 'signal' | 'onDrainQueuedBlocks' | 'executeToolFn'> & {
-  /** Tool-call round-trip timeout (ms). Read from the main-thread app config
-   *  and passed here because Workers have no localStorage access. */
-  toolCallTimeoutMs?: number;
+  /** The main thread's `ai` config section. Workers have no localStorage, so
+   *  this carries the user's overrides (thinking budgets, max-output tokens,
+   *  transient-retry/auto-resume tuning, tool-call timeout) across the boundary;
+   *  the Worker seeds its config cache from it before running the turn. */
+  aiConfig?: AppConfig['ai'];
 };
 
 // Pending tool-call promises keyed by callId.
@@ -104,7 +107,10 @@ self.onmessage = async (event: MessageEvent) => {
   // ── run_turn ───────────────────────────────────────────────────────────
   if (msg.type === 'run_turn') {
     const input = msg.input as AgentWorkerInput;
-    activeToolCallTimeoutMs = input.toolCallTimeoutMs ?? 60_000;
+    // Seed the Worker's config cache with the user's overrides BEFORE anything
+    // reads getConfig() (providers, transient-retry, thinking budgets).
+    if (input.aiConfig) applyWorkerAiConfig(input.aiConfig);
+    activeToolCallTimeoutMs = getConfig().ai.toolCallTimeoutMs;
     abortController = new AbortController();
 
     // Map every RunTurnCallbacks slot to a postMessage so the main thread
