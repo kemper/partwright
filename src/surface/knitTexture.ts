@@ -28,7 +28,6 @@ import {
   extractPositions,
   computeVertexNormals,
   bboxOf,
-  triplanarCoords,
 } from './meshSubdivide';
 import { unwrapMesh, type UVAlgorithm } from './uvParameterize';
 import { knitDisplaceGPU, type KnitGPUParams } from './knitTextureGPU';
@@ -84,87 +83,6 @@ function distToSeg(px: number, py: number, ax: number, ay: number, bx: number, b
   if (len2 < 1e-14) return Math.hypot(px - ax, py - ay);
   const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
   return Math.hypot(px - ax - t * dx, py - ay - t * dy);
-}
-
-// --- Main algorithm -----------------------------------------------------------
-
-/** Apply knit-stitch displacement, returning a new position-only MeshData. */
-export function knitTexture(mesh: MeshData, opts: KnitTextureOptions): MeshData {
-  const amplitude = Math.max(0, opts.amplitude);
-  const stitchW = Math.max(1e-4, opts.stitchWidth);
-  const stitchH = Math.max(1e-4, opts.stitchHeight ?? stitchW * 1.4);
-  const rowOffset = opts.rowOffset ?? 0.5;
-  const roundness = Math.max(0, Math.min(1, opts.roundness ?? 0.5));
-  const variation = Math.max(0, Math.min(1, opts.variation ?? 0.1));
-  const seed = (opts.seed ?? 1) | 0;
-  const angleRad = ((opts.grainAngleDeg ?? 0) * Math.PI) / 180;
-  const cosA = Math.cos(angleRad);
-  const sinA = Math.sin(angleRad);
-
-  // Densify so a coarse mesh shows the stitch pattern. Target edge roughly
-  // stitch_min/4, but never smaller than diag/400 to avoid triangle explosion.
-  let base: MeshData = mesh;
-  if (opts.subdivide !== false && amplitude > 0) {
-    const quality = Math.max(1, Math.min(5, Math.round(opts.quality ?? 3)));
-    const qScale = 2 ** ((quality - 3) / 2);  // 0.5 at q=1, 1.0 at q=3, 2.0 at q=5
-    const diag = Math.hypot(...bboxOf(extractPositions(mesh)).size);
-    const targetEdge = Math.max(Math.min(stitchW, stitchH) / (4 * qScale), diag / (400 * qScale));
-    base = subdivideToMaxEdge(mesh, { maxEdge: targetEdge, maxRounds: 6 });
-  }
-
-  const positions = base.numProp === 3
-    ? Float32Array.from(base.vertProperties)
-    : extractPositions(base);
-  const normals = computeVertexNormals(positions, base.triVerts);
-
-  const TAU = 2 * Math.PI;
-
-  for (let v = 0; v < base.numVert; v++) {
-    const px = positions[v * 3], py = positions[v * 3 + 1], pz = positions[v * 3 + 2];
-    const nx = normals[v * 3], ny = normals[v * 3 + 1], nz = normals[v * 3 + 2];
-
-    // Triplanar blend: sample the stitch pattern from all three axis planes
-    // weighted by how much the surface normal faces each plane. This makes
-    // the pattern follow the surface on every face of a cube or sphere
-    // instead of degenerating into columns when a face is perpendicular to Z.
-    const { pairs, weights } = triplanarCoords(px, py, pz, nx, ny, nz);
-    let d = 0;
-    for (let i = 0; i < 3; i++) {
-      const [s, t] = pairs[i];
-      const gx = cosA * s + sinA * t;   // column axis (grain-rotated)
-      const gz = -sinA * s + cosA * t;  // row    axis (perpendicular)
-
-      const col = gx / stitchW;
-      const row = gz / stitchH;
-
-      const rowInt = Math.floor(row);
-      const evenRow = ((rowInt % 2) + 2) % 2 === 0;
-      const colShifted = col + (evenRow ? 0 : rowOffset);
-
-      const uf = ((colShifted % 1) + 1) % 1;
-      const vf = ((row % 1) + 1) % 1;
-
-      const colInt = Math.floor(colShifted);
-      const stitchScale = 1 + variation * (hash2(colInt, rowInt, seed) * 2 - 1);
-
-      const uWave = Math.cos(uf * TAU);
-      const vShape = (1 + Math.cos(vf * TAU)) / 2;
-      d += weights[i] * amplitude * stitchScale * uWave * (1 - roundness + roundness * vShape);
-    }
-
-    positions[v * 3]     = px + nx * d;
-    positions[v * 3 + 1] = py + ny * d;
-    positions[v * 3 + 2] = pz + nz * d;
-  }
-
-  return {
-    vertProperties: positions,
-    triVerts: base.triVerts,
-    numVert: base.numVert,
-    numTri: base.numTri,
-    numProp: 3,
-    triColors: base.triColors,
-  };
 }
 
 // --- UV-unwrap path -----------------------------------------------------------

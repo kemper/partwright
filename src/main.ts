@@ -46,6 +46,7 @@ import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { confirmDialog, promptDialog } from './ui/dialogs';
+import { updateAppHistory, currentURLPathAndSearch } from './ui/appHistory';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive } from './ui/aiPanel';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
@@ -1916,20 +1917,6 @@ function getTabFromURL(): TabName {
   return 'interactive';
 }
 
-function currentURLPathAndSearch(): string {
-  return `${window.location.pathname}${window.location.search}`;
-}
-
-function updateAppHistory(url: string, mode: 'push' | 'replace'): void {
-  if (url === currentURLPathAndSearch()) return;
-  if (mode === 'push') {
-    window.history.pushState(null, '', url);
-  } else {
-    window.history.replaceState(null, '', url);
-  }
-}
-
-
 // Hide landing/help and show the editor UI
 function showEditorUI(landingEl: HTMLElement | null, helpEl: HTMLElement | null, editorUI: HTMLElement) {
   if (landingEl) landingEl.classList.add('hidden');
@@ -2215,6 +2202,64 @@ async function main() {
     else {
       if (reliefStudio.isOpen()) reliefStudio.hide();
       if (studioCollapsedEditor) { expandEditor(); studioCollapsedEditor = false; }
+    }
+  }
+
+  // Validate the optional sub-objects an AI/console caller may pass to
+  // importImageAsRelief / importSvgAsRelief. The clamp* helpers below tolerate
+  // bad numerics by falling back to defaults, but the rest of the
+  // window.partwright API rejects unknown keys and wrong types outright
+  // (CLAUDE.md: "unknown keys rejected") so a typo like `{ widthToDeep: 100 }`
+  // is loud rather than silently ignored. Throws ValidationError; callers wrap
+  // this in guard() to surface it as { error }. The numeric bounds mirror the
+  // clamp* ranges below.
+  const RELIEF_COMMON_KEYS = ['widthMm', 'layerHeight', 'baseThickness', 'maxHeight', 'resolution', 'smoothing', 'removeBackground'] as const;
+  const RELIEF_QUANTIZED_KEYS = ['clusters', 'colorSpace', 'dither', 'output', 'shape', 'cornerRadiusMm', 'chamferMm', 'paintingMode', 'invertHeights', 'holes', 'holeEnabled', 'holeDiameterMm', 'holeOffsetMm', 'manualBackground', 'doubleSided', 'backMirror'] as const;
+  const RELIEF_PREPROCESS_KEYS = ['brightness', 'contrast', 'saturation', 'levelsLow', 'levelsHigh'] as const;
+  const RELIEF_CROP_KEYS = ['left', 'top', 'right', 'bottom'] as const;
+  function validateReliefOptionArgs(args: { options?: unknown; quantized?: unknown; preprocess?: unknown; crop?: unknown }, fn: string): void {
+    if (args.options !== undefined) {
+      const o = assertObject(args.options, `${fn}(options)`)!;
+      assertNoUnknownKeys(o, RELIEF_COMMON_KEYS, `${fn}(options)`);
+      assertNumber(o.widthMm, `${fn}(options).widthMm`, { optional: true, min: 1, max: 2000 });
+      assertNumber(o.layerHeight, `${fn}(options).layerHeight`, { optional: true, min: 0.02, max: 2 });
+      assertNumber(o.baseThickness, `${fn}(options).baseThickness`, { optional: true, min: 0, max: 50 });
+      assertNumber(o.maxHeight, `${fn}(options).maxHeight`, { optional: true, min: 0.1, max: 100 });
+      assertNumber(o.resolution, `${fn}(options).resolution`, { optional: true, min: 8, max: 512 });
+      assertNumber(o.smoothing, `${fn}(options).smoothing`, { optional: true, min: 0, max: 20 });
+      assertBoolean(o.removeBackground, `${fn}(options).removeBackground`, { optional: true });
+    }
+    if (args.quantized !== undefined) {
+      const q = assertObject(args.quantized, `${fn}(quantized)`)!;
+      assertNoUnknownKeys(q, RELIEF_QUANTIZED_KEYS, `${fn}(quantized)`);
+      assertNumber(q.clusters, `${fn}(quantized).clusters`, { optional: true, min: 2, max: 12, integer: true });
+      if (q.colorSpace !== undefined) assertEnum(q.colorSpace, ['rgb', 'lab'], `${fn}(quantized).colorSpace`);
+      assertBoolean(q.dither, `${fn}(quantized).dither`, { optional: true });
+      if (q.output !== undefined) assertEnum(q.output, ['relief', 'flat', 'silhouette'], `${fn}(quantized).output`);
+      if (q.shape !== undefined) assertEnum(q.shape, ['rect', 'rounded', 'circle'], `${fn}(quantized).shape`);
+      assertNumber(q.cornerRadiusMm, `${fn}(quantized).cornerRadiusMm`, { optional: true, min: 0, max: 50 });
+      assertNumber(q.chamferMm, `${fn}(quantized).chamferMm`, { optional: true, min: 0, max: 5 });
+      if (q.paintingMode !== undefined) assertEnum(q.paintingMode, ['multi-color', 'single-nozzle'], `${fn}(quantized).paintingMode`);
+      assertBoolean(q.invertHeights, `${fn}(quantized).invertHeights`, { optional: true });
+      assertBoolean(q.doubleSided, `${fn}(quantized).doubleSided`, { optional: true });
+      assertBoolean(q.backMirror, `${fn}(quantized).backMirror`, { optional: true });
+    }
+    if (args.preprocess !== undefined) {
+      const p = assertObject(args.preprocess, `${fn}(preprocess)`)!;
+      assertNoUnknownKeys(p, RELIEF_PREPROCESS_KEYS, `${fn}(preprocess)`);
+      assertNumber(p.brightness, `${fn}(preprocess).brightness`, { optional: true, min: -1, max: 1 });
+      assertNumber(p.contrast, `${fn}(preprocess).contrast`, { optional: true, min: -1, max: 1 });
+      assertNumber(p.saturation, `${fn}(preprocess).saturation`, { optional: true, min: -1, max: 1 });
+      assertNumber(p.levelsLow, `${fn}(preprocess).levelsLow`, { optional: true, min: 0, max: 254 });
+      assertNumber(p.levelsHigh, `${fn}(preprocess).levelsHigh`, { optional: true, min: 1, max: 255 });
+    }
+    if (args.crop !== undefined) {
+      const c = assertObject(args.crop, `${fn}(crop)`)!;
+      assertNoUnknownKeys(c, RELIEF_CROP_KEYS, `${fn}(crop)`);
+      assertNumber(c.left, `${fn}(crop).left`, { min: 0, max: 1 });
+      assertNumber(c.top, `${fn}(crop).top`, { min: 0, max: 1 });
+      assertNumber(c.right, `${fn}(crop).right`, { min: 0, max: 1 });
+      assertNumber(c.bottom, `${fn}(crop).bottom`, { min: 0, max: 1 });
     }
   }
 
@@ -3158,8 +3203,7 @@ async function main() {
 
     // All tolerances failed. Offer render-only fallback — most users importing
     // a Baby Yoda / Eiffel Tower scan just want to look at it, not boolean-op it.
-    const accepted = await showInlineConfirm(
-      editorUI,
+    const accepted = await confirmDialog(
       `${file.name} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
       `You can still import it as render-only: the mesh displays and exports normally, but boolean operations, paint, and cross-sections won't work.\n\n` +
       `For full editing, repair the mesh first in MeshLab or Blender, then re-import.\n\n` +
@@ -3896,15 +3940,18 @@ async function main() {
     if (!currentMeshData) return;
     const settings = loadPrinterSettings();
     let isManifold = false;
+    let renderOnly = false;
     try {
       const geo = JSON.parse(geometryDataEl.textContent || '{}');
       isManifold = !!geo.isManifold;
+      renderOnly = geo.manifoldStatus === 'render-only (not manifold)';
     } catch { /* default false */ }
     const report: PrintabilityReport = analyzePrintability(currentMeshData, {
       bed: settings.bed,
       nozzleWidth: settings.nozzleWidth,
       overhangAngleDeg: settings.overhangAngleDeg,
       isManifold,
+      renderOnly,
     });
     const fails = report.checks.filter(c => c.level === 'fail');
     const warns = report.checks.filter(c => c.level === 'warn');
@@ -4460,6 +4507,14 @@ async function main() {
     { id: 'tool-annotate', title: 'Annotate (draw / text)', hint: 'Tools', keywords: 'draw pen text label note markup sketch arrow', run: () => document.getElementById('annotate-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-quality', title: 'Quality: simplify / enhance', hint: 'Tools', keywords: 'simplify enhance decimate reduce triangles quality curvature smoothness', run: () => document.getElementById('simplify-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-customize', title: 'Customize parameters', hint: 'Tools', keywords: 'parameters params sliders tweak knobs', run: () => document.getElementById('customize-toggle')?.click(), enabled: () => isEditorActive() && !document.getElementById('customize-toggle')?.classList.contains('hidden') },
+    // These tools moved behind the Tools/Inspect popovers after the view-menu
+    // refactor, so the palette is their only keyboard/search entry point. Each
+    // fires the existing overlay toggle by id (click() works even collapsed).
+    { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', keywords: 'fuzzy knit cable waffle fur woven smooth voxelize texture modifier displace', run: () => document.getElementById('surface-viewport-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-resize', title: 'Resize / scale model', hint: 'Tools', keywords: 'scale resize size dimensions grow shrink mm', run: () => document.getElementById('resize-viewport-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-place', title: 'Place / orient on bed', hint: 'Tools', keywords: 'place orient rotate move position lay flat drop floor center bed', run: () => document.getElementById('place-viewport-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => document.getElementById('print-tools-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-voxel-paint', title: 'Voxel Studio (edit voxels)', hint: 'Tools', keywords: 'voxel studio paint edit cube blocky pixel sculpt', run: () => document.getElementById('voxel-paint-toggle')?.click(), enabled: () => isEditorActive() && getActiveLanguage() === 'voxel' },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
     { id: 'toggle-diagnostics', title: 'Toggle diagnostics', hint: 'View', keywords: 'errors warnings console workers webworkers threads memory wasm performance restarts crash timing health log', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
@@ -5044,7 +5099,12 @@ async function main() {
   async function handleIdeaPhotoToRelief(file: File): Promise<void> {
     await enterEditorForIdea();
     if (window.location.pathname !== '/editor') return;
-    openReliefImportFlow(file);
+    // The "smooth relief / lithophane" idea tile promises a non-blocky, tonal
+    // result, so open the wizard in 'luminance' mode rather than the global
+    // default ('quantized' — flat blocky colour clusters). Clone the defaults
+    // so we only override the mode.
+    const initialOptions: ReliefOptions = { ...structuredClone(DEFAULT_RELIEF_OPTIONS), mode: 'luminance' };
+    openReliefImportFlow(file, initialOptions);
     updateDocumentTitle({ page: 'editor' });
   }
 
@@ -5485,13 +5545,21 @@ async function main() {
   let _workCameraSaveTimer: number | undefined;
   onOrbitEnd(() => {
     if (_workCameraSaveTimer !== undefined) clearTimeout(_workCameraSaveTimer);
+    // Capture which session this orbit belongs to. setSessionWorkCamera writes
+    // to whatever session is active *at fire time*, so if the user switches
+    // sessions within the debounce window the pending save would otherwise
+    // stamp the new session's row with the old session's pose. Discard the
+    // save if the active session changed before the timer elapses.
+    const orbitedSessionId = getState().session?.id ?? null;
     // Snapshot inside the debounced callback, not here: 'end' fires at gesture
     // release while OrbitControls damping is still gliding, so reading the pose
     // now would persist a pre-settle angle. By the time the debounce elapses the
     // camera has come to rest, so the saved view matches what the user sees.
     _workCameraSaveTimer = window.setTimeout(() => {
       _workCameraSaveTimer = undefined;
-      if (currentMeshData === null || !getState().session) return;
+      if (currentMeshData === null) return;
+      const cur = getState().session;
+      if (!cur || cur.id !== orbitedSessionId) return; // session changed — discard
       void setSessionWorkCamera(getCameraPose());
     }, getConfig().ui.workCameraSaveDebounceMs);
   });
@@ -7333,9 +7401,11 @@ async function main() {
   }
 
   // Build a modifier result from an id + options (shared by apply and preview).
-  // All three modifiers receive the color-baked mesh when preserveColor is on:
-  // fuzzy/smooth carry triColors (with _painted) through subdivision so the
-  // result already has correct per-triangle paint — no post-hoc transfer needed.
+  // Every modifier receives the color-baked mesh when preserveColor is on:
+  // the texture/smooth paths carry triColors (with _painted) through subdivision
+  // so the result already has correct per-triangle paint — no post-hoc transfer.
+  // `quality` (mesh-detail) is threaded into each opts object so the surface
+  // panel's detail slider takes effect in both preview and apply.
   function buildSurfaceModifier(
     id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
@@ -7350,6 +7420,7 @@ async function main() {
         scale: (opts?.scale as number) ?? base.scale,
         octaves: (opts?.octaves as number) ?? base.octaves,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyFuzzyPatch(mesh, fuzzyOpts, sel);
       return applyFuzzy(mesh, fuzzyOpts);
@@ -7366,6 +7437,7 @@ async function main() {
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         variation: (opts?.variation as number) ?? base.variation,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
         // LSCM/harmonic require disk topology — only use them on a selected patch.
         // On a closed mesh they produce partial coverage; fall back to BFS.
         algorithm: (sel && sel.size > 0)
@@ -7386,6 +7458,7 @@ async function main() {
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         variation: (opts?.variation as number) ?? base.variation,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyCablePatch(mesh, cableOpts, sel);
       return applyCable(mesh, cableOpts);
@@ -7400,6 +7473,7 @@ async function main() {
         sharpness: (opts?.sharpness as number) ?? base.sharpness,
         rowOffset: (opts?.rowOffset as number) ?? base.rowOffset,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyWafflePatch(mesh, waffleOpts, sel);
       return applyWaffle(mesh, waffleOpts);
@@ -7414,6 +7488,7 @@ async function main() {
         octaves: (opts?.octaves as number) ?? base.octaves,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyFurPatch(mesh, furOpts, sel);
       return applyFur(mesh, furOpts);
@@ -7428,6 +7503,7 @@ async function main() {
         underDepth: (opts?.underDepth as number) ?? base.underDepth,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyWovenPatch(mesh, wovenOpts, sel);
       return applyWoven(mesh, wovenOpts);
@@ -7455,7 +7531,8 @@ async function main() {
      *  color-clearing modifier, or offer "preserve colors"). */
     modelHasColor(): boolean { return modelHasColor(); },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
-     *  Call clearSurfacePreview() / re-run to restore. id: 'fuzzy'|'knit'|'smooth'|'voxelize'. */
+     *  Call clearSurfacePreview() / re-run to restore.
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'smooth'|'voxelize'. */
     previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
       try {
         previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
@@ -8671,6 +8748,13 @@ async function main() {
       if (!args || typeof args !== 'object') return { error: 'importImageAsRelief: expected an object { src, mode?, options?, quantized?, crop? }' };
       const src = (args as { src?: unknown }).src;
       if (typeof src !== 'string' || src.length === 0) return { error: 'importImageAsRelief: src must be a non-empty data: or http(s) URL string' };
+      const argCheck = guard(() => {
+        const mode = (args as { mode?: unknown }).mode;
+        if (mode !== undefined) assertEnum(mode, ['luminance', 'quantized', 'ai'], 'importImageAsRelief(mode)');
+        validateReliefOptionArgs(args, 'importImageAsRelief');
+        return true;
+      });
+      if (typeof argCheck === 'object' && argCheck !== null && 'error' in argCheck) return argCheck;
       try {
         const image = await dataUrlToImageData(src);
         const opts: ReliefOptions = structuredClone(DEFAULT_RELIEF_OPTIONS);
@@ -8695,6 +8779,11 @@ async function main() {
       if (!args || typeof args !== 'object') return { error: 'importSvgAsRelief: expected an object { svgText, options?, quantized? }' };
       const svgText = (args as { svgText?: unknown }).svgText;
       if (typeof svgText !== 'string' || svgText.length === 0) return { error: 'importSvgAsRelief: svgText must be a non-empty SVG string' };
+      const argCheck = guard(() => {
+        validateReliefOptionArgs(args, 'importSvgAsRelief');
+        return true;
+      });
+      if (typeof argCheck === 'object' && argCheck !== null && 'error' in argCheck) return argCheck;
       try {
         const opts: ReliefOptions = structuredClone(DEFAULT_RELIEF_OPTIONS);
         const o = (args as { options?: unknown }).options;
@@ -9792,6 +9881,7 @@ async function main() {
         nozzleWidth: opts?.nozzleWidth ?? settings.nozzleWidth,
         overhangAngleDeg: opts?.overhangAngleDeg ?? settings.overhangAngleDeg,
         isManifold: stats.isManifold === true,
+        renderOnly: stats.manifoldStatus === 'render-only (not manifold)',
       });
     },
 
@@ -10822,6 +10912,10 @@ async function main() {
       cylinder?: { center?: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number };
       slab?: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number };
       normalCone?: { axis: [number, number, number]; angleDeg: number };
+      /** Cylinder selector only — mirrors `paintInCylinder.topOnly`. Keeps just
+       *  the outward-radial faces so the dry-run matches what a
+       *  `paintInCylinder({ topOnly: true })` commit would actually paint. */
+      topOnly?: boolean;
       point?: [number, number, number];
       radius?: number;
       triangleIds?: number[];
@@ -10872,9 +10966,12 @@ async function main() {
         if (c.rMin < 0 || c.rMax <= c.rMin) return { error: 'cylinder requires rMin >= 0 and rMax > rMin' };
         if (c.zMax <= c.zMin) return { error: 'cylinder requires zMax > zMin' };
         if (c.center !== undefined && (!Array.isArray(c.center) || c.center.length !== 2)) return { error: 'cylinder.center must be [x, y]' };
-        const coneErr = validateNormalCone(opts.normalCone);
+        // Resolve topOnly into a cone the same way paintInCylinder does, so the
+        // preview's selection matches a topOnly commit instead of over-reporting.
+        const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+        const coneErr = validateNormalCone(cone);
         if (coneErr) return { error: coneErr };
-        triangles = collectTrianglesByCylinder(mesh, c.center ?? [0, 0], c.rMin, c.rMax, c.zMin, c.zMax, opts.normalCone, opts.coverageMode, opts.maxTriangleArea);
+        triangles = collectTrianglesByCylinder(mesh, c.center ?? [0, 0], c.rMin, c.rMax, c.zMin, c.zMax, cone, opts.coverageMode, opts.maxTriangleArea);
       } else if (opts.slab !== undefined) {
         const s = opts.slab;
         if (typeof s !== 'object' || s === null) return { error: 'slab must be { axis|normal, offset, thickness }' };
@@ -13684,90 +13781,6 @@ function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'load
       el.className += 'text-red-400';
       break;
   }
-}
-
-interface ConfirmOptions {
-  /** Optional bold title above the message. */
-  title?: string;
-  /** Label for the confirm button. Default 'Continue'. */
-  confirmLabel?: string;
-  /** Label for the cancel button. Default 'Cancel'. */
-  cancelLabel?: string;
-}
-
-/** Modal confirmation dialog with semi-transparent backdrop overlay.
- *  Message preserves newlines (single `\n` becomes a soft break, `\n\n` a
- *  paragraph break) so callers can lay out multi-line prompts cleanly.
- *  Returns a Promise that resolves true (confirm) or false (cancel / Escape / click overlay). */
-function showInlineConfirm(_container: HTMLElement, message: string, options: ConfirmOptions = {}): Promise<boolean> {
-  return new Promise((resolve) => {
-    // Remove any existing modal
-    document.querySelector('.confirm-modal-overlay')?.remove();
-
-    // Backdrop overlay
-    const overlay = document.createElement('div');
-    overlay.className = 'confirm-modal-overlay fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center';
-
-    // Modal box — wider than the default 'max-w-sm' so multi-line prompts
-    // don't reflow into long thin columns.
-    const modal = document.createElement('div');
-    modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-5 max-w-md mx-4 animate-modal-in';
-
-    if (options.title) {
-      const title = document.createElement('h2');
-      title.className = 'text-zinc-100 text-base font-semibold mb-2';
-      title.textContent = options.title;
-      modal.appendChild(title);
-    }
-
-    const msg = document.createElement('p');
-    // `whitespace-pre-line` preserves \n as line breaks while still collapsing
-    // other whitespace runs, so single-line callers behave unchanged.
-    msg.className = 'text-zinc-200 text-sm leading-relaxed mb-5 whitespace-pre-line';
-    msg.textContent = message;
-
-    const btnGroup = document.createElement('div');
-    btnGroup.className = 'flex items-center justify-end gap-2';
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'px-4 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors';
-    cancelBtn.textContent = options.cancelLabel ?? 'Cancel';
-
-    const continueBtn = document.createElement('button');
-    continueBtn.className = 'px-4 py-1.5 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors';
-    continueBtn.textContent = options.confirmLabel ?? 'Continue';
-
-    btnGroup.appendChild(cancelBtn);
-    btnGroup.appendChild(continueBtn);
-    modal.appendChild(msg);
-    modal.appendChild(btnGroup);
-    overlay.appendChild(modal);
-
-    let resolved = false;
-    function finish(result: boolean) {
-      if (resolved) return;
-      resolved = true;
-      overlay.remove();
-      document.removeEventListener('keydown', onKey);
-      resolve(result);
-    }
-
-    continueBtn.addEventListener('click', () => finish(true));
-    cancelBtn.addEventListener('click', () => finish(false));
-
-    // Click on overlay (outside modal) dismisses
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) finish(false);
-    });
-
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') finish(false);
-    }
-    document.addEventListener('keydown', onKey);
-
-    document.body.appendChild(overlay);
-    continueBtn.focus();
-  });
 }
 
 main().catch(console.error);

@@ -26,6 +26,43 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'June 7, 2026',
+    headline: 'Voxel rotation, print-ready AI, voice input, and remembered views',
+    groups: [
+      {
+        label: 'Voxel',
+        items: [
+          {
+            title: 'Rotate voxel models',
+            body: 'Voxel code gained a rotate() operation for 90° turns on the lattice, so you can reorient a voxel build along any axis without rebuilding it cube by cube.',
+          },
+        ],
+      },
+      {
+        label: 'AI assistant',
+        items: [
+          {
+            title: '3D-printable mode',
+            body: 'A new 3D-printable toggle feeds the assistant FDM design guidance — wall thickness, overhangs, and bed-friendly geometry — so the models it builds come out print-ready. On by default.',
+          },
+          {
+            title: 'Voice input',
+            body: 'A mic button in the AI panel lets you dictate prompts instead of typing them.',
+          },
+        ],
+      },
+      {
+        label: 'Sessions',
+        items: [
+          {
+            title: 'Remembered camera view',
+            body: 'Each session now remembers its working view, so reopening a model frames it the way you left it instead of resetting the camera.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'June 5, 2026',
     headline: 'Filament palettes, the Self-Modeling Studio, and a searchable catalog',
     groups: [

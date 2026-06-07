@@ -81,7 +81,8 @@ test.describe('Relief Studio', () => {
       const created = await pw.importImageAsRelief({
         src,
         mode: 'quantized',
-        options: { resolution: 32, quantized: { output: 'relief', clusters: 2 } },
+        options: { resolution: 32 },
+        quantized: { output: 'relief', clusters: 2 },
       }) as { sessionId?: string; error?: string };
       const geo = pw.getGeometryData() as {
         isManifold?: boolean;

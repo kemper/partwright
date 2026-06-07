@@ -68,6 +68,7 @@ function notifyActiveChange(): void {
 export function activate(): void {
   if (active) return;
   deactivateMode('paint');
+  deactivateMode('voxelStudio');
   closeSimplifyMenu();
   deactivateMode('select');
 

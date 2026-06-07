@@ -5,6 +5,7 @@
 import { useSignal } from '@preact/signals';
 import type { ComponentChildren } from 'preact';
 import { mountPreactModal } from './preact/mount';
+import { BUTTON_PRIMARY } from './styleConstants';
 import { partwrightMarkSvg } from './brand';
 import {
   buildInfo,
@@ -143,7 +144,7 @@ function AboutFooter(props: { close: () => void }) {
       >{copyLabel.value}</button>
       <button
         type="button"
-        class="px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white"
+        class={BUTTON_PRIMARY}
         onClick={props.close}
       >Done</button>
     </>

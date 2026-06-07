@@ -7,6 +7,11 @@ interface TourStep {
   title: string;
   description: string;
   placement: 'top' | 'bottom' | 'left' | 'right';
+  /** A popover trigger to click open before spotlighting `target`, for targets
+   *  that live inside a collapsed popover (Inspect/Tools). Without this the
+   *  target reports a 0×0 rect and the spotlight lands on an empty corner.
+   *  Mirrors the same field on the editor hints (hintsData.ts). */
+  openSelector?: string;
 }
 
 const STEPS: TourStep[] = [
@@ -51,6 +56,7 @@ const STEPS: TourStep[] = [
     description:
       'Inspect a model without changing it: 📏 Measure the distance between two points, and ✂ Cross Section slices through it with a draggable plane. The same toolbar toggles the grid, bounding-box dimensions, and orbit lock.',
     placement: 'left',
+    openSelector: '#viewport-inspect-group-btn',
   },
   {
     target: '#paint-toggle',
@@ -58,6 +64,7 @@ const STEPS: TourStep[] = [
     description:
       'Paint coplanar regions for multi-color 3D prints (exported via 3MF or OBJ). Surface-following geodesic and airbrush brushes follow curvature, you can label and paint regions by name from code, and voxel models paint cube-by-cube. Painting locks the version read-only until you unlock it.',
     placement: 'left',
+    openSelector: '#viewport-tools-group-btn',
   },
   {
     target: '#simplify-toggle',
@@ -65,6 +72,7 @@ const STEPS: TourStep[] = [
     description:
       'Reduce a dense model’s triangle count to a target budget — great for shrinking imported STLs or heavy booleans. Set a target, click Apply to run it, then save the result as a new version.',
     placement: 'left',
+    openSelector: '#viewport-tools-group-btn',
   },
   {
     target: '#parts-rail',
@@ -234,12 +242,26 @@ function cleanup(): void {
 function showStep(): void {
   if (!spotlight || !tooltip) return;
 
-  // Find next valid step (skip missing targets)
+  // Find next valid step (skip missing targets). For a step whose target is
+  // nested in a collapsed popover, open the popover first (openSelector) so the
+  // spotlight doesn't land on a 0×0 element in an empty corner; if it's STILL
+  // zero-size after opening, the tool isn't available in this session, so skip.
+  // The rect check is scoped to openSelector steps on purpose: a top-level
+  // target like #editor-container can briefly report a 0×0 rect at tour start
+  // (before layout settles) yet is a valid first step, so plain steps keep the
+  // original existence-only check and are never skipped for size.
   while (currentStep < STEPS.length) {
     const step = STEPS[currentStep];
-    const target = document.querySelector(step.target);
-    if (target) break;
-    currentStep++;
+    const target = document.querySelector(step.target) as HTMLElement | null;
+    if (!target) { currentStep++; continue; }
+    if (step.openSelector) {
+      const opener = document.querySelector(step.openSelector) as HTMLElement | null;
+      // Only click if collapsed — clicking an open popover would toggle it shut.
+      if (opener && opener.getAttribute('aria-expanded') !== 'true') opener.click();
+      const rect = target.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) { currentStep++; continue; }
+    }
+    break;
   }
 
   if (currentStep >= STEPS.length) {

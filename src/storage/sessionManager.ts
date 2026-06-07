@@ -43,6 +43,7 @@ import {
   type AttachedImage,
 } from './db';
 import { publishTabSync, onTabSync } from './tabSync';
+import { clearReliefSettings } from '../relief/reliefSettings';
 import { listMessages as dbListMessages, putMessages as dbPutMessages } from '../ai/db';
 import { getSpendingSummary } from '../ai/settings';
 import type { ChatMessage } from '../ai/types';
@@ -568,6 +569,10 @@ export async function listSessions(): Promise<Session[]> {
 
 export async function deleteSession(id: string): Promise<void> {
   await dbDeleteSession(id);
+  // The IndexedDB cascade (dbDeleteSession) sweeps the relief *source* blob,
+  // but the per-session relief settings live in localStorage — clear them here
+  // so a deleted session doesn't leak a stale entry.
+  clearReliefSettings(id);
   publishTabSync({ kind: 'session-deleted', sessionId: id });
   if (currentState.session?.id === id) {
     await closeSession();

@@ -41,6 +41,12 @@ export interface PrintabilityOptions {
   overhangAngleDeg: number;
   /** Whether the source manifold is watertight/valid. From geometry stats. */
   isManifold: boolean;
+  /** True when `isManifold` is false purely because the geometry is a
+   *  render-only import (e.g. a colour relief) that carries no live Manifold to
+   *  re-measure — NOT because the mesh was found non-watertight. Such meshes are
+   *  validated watertight at build time, so the watertightness check is reported
+   *  as `info` (unverified) rather than `fail`. Mirrors `computePrintability`. */
+  renderOnly?: boolean;
 }
 
 type Vec3 = [number, number, number];
@@ -215,7 +221,7 @@ function estimateThinWalls(mesh: MeshData, nozzleWidth: number, bbDiag: number):
 }
 
 export function analyzePrintability(mesh: MeshData, opts: PrintabilityOptions): PrintabilityReport {
-  const { bed, nozzleWidth, overhangAngleDeg, isManifold } = opts;
+  const { bed, nozzleWidth, overhangAngleDeg, isManifold, renderOnly = false } = opts;
   const bb = boundingBox(mesh);
   const checks: PrintabilityCheck[] = [];
 
@@ -302,7 +308,9 @@ export function analyzePrintability(mesh: MeshData, opts: PrintabilityOptions): 
       }
     }
   } else if (!isManifold) {
-    checks.push({ id: 'walls', level: 'info', text: 'Wall-thickness check skipped — needs a watertight (manifold) model.' });
+    checks.push({ id: 'walls', level: 'info', text: renderOnly
+      ? 'Wall-thickness check skipped — render-only import has no live manifold to sample.'
+      : 'Wall-thickness check skipped — needs a watertight (manifold) model.' });
   }
 
   const smallestDimension = bb ? Math.min(...bb.dimensions) : null;
@@ -337,8 +345,12 @@ export function analyzePrintability(mesh: MeshData, opts: PrintabilityOptions): 
   // ── Manifold / watertight ───────────────────────────────────────────────
   if (isManifold) {
     checks.push({ id: 'manifold', level: 'pass', text: 'Watertight (manifold) — slices cleanly.' });
+  } else if (renderOnly) {
+    // Verified watertight when the import was created; there's just no live
+    // Manifold to re-measure now. Unverified, not a defect — don't block.
+    checks.push({ id: 'manifold', level: 'info', text: 'Watertightness unverified — render-only import (validated watertight when created; no live manifold to re-measure).' });
   } else {
-    checks.push({ id: 'manifold', level: 'fail', text: 'Not watertight — render-only or non-manifold geometry will not slice reliably. Repair before printing.' });
+    checks.push({ id: 'manifold', level: 'fail', text: 'Not watertight — non-manifold geometry will not slice reliably. Repair before printing.' });
   }
 
   const ok = !checks.some(c => c.level === 'fail');

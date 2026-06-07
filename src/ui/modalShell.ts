@@ -98,6 +98,15 @@ export function createModalShell(opts: ModalShellOptions): ModalShell {
   const closeBtn = document.createElement('button');
   closeBtn.className = 'px-2 py-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 text-sm';
   closeBtn.textContent = '✕';
+  // The bare ✕ glyph reads as "multiplication x" to a screen reader, so give it
+  // an accessible name. Use a distinct verb ("Dismiss") rather than "Close" or
+  // "Close <title>": the dialog is already named via aria-labelledby, and a
+  // "Close"/title-derived name would shadow a modal's own footer "Close" button
+  // or a title substring (e.g. "Import from URL" → "Import") under role-name
+  // queries — an ambiguity for both assistive tech and tests. `title` keeps the
+  // familiar "Close" tooltip for sighted users.
+  closeBtn.setAttribute('aria-label', 'Dismiss');
+  closeBtn.title = 'Close';
   header.appendChild(closeBtn);
   modal.appendChild(header);
 

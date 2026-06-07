@@ -11,6 +11,14 @@ describe('httpStatusOf', () => {
     expect(httpStatusOf(new Error('OpenAI 500: internal error'))).toBe(500);
     expect(httpStatusOf(new Error('Gemini 503: service unavailable'))).toBe(503);
     expect(httpStatusOf(new Error('Custom 502: bad gateway'))).toBe(502);
+    // Custom endpoints throw with no provider-name prefix ("<status>: <body>").
+    expect(httpStatusOf(new Error('400: bad request'))).toBe(400);
+  });
+
+  it('ignores 3-digit runs in the error body (only the leading status counts)', () => {
+    // The status must be at the start before the colon — a digit run inside the
+    // body (e.g. a model name) must not be mistaken for the HTTP status.
+    expect(httpStatusOf(new Error('OpenAI 400: unknown model gpt-512 not found'))).toBe(400);
   });
 
   it('returns null when there is no status', () => {
