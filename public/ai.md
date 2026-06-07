@@ -109,6 +109,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Twisted / bent body (one expression) | `api.sdf.<shape>(...).twist(deg)` -> `/ai/sdf.md` | (`linear_extrude(twist=)` for the extrusion case only) | (mesh-only; not in BREP) |
 | Constant-thickness shell of any shape | `node.shell(t)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Implicit surface / raw SDF function | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
+| Reshape a smooth surface locally like clay (bulge/dent/relax a spot) | `activateMeshSculpt()` → `sculptAt({point, normal})` → `commitMeshSculpt()` -> `/ai/sculpt.md` | (not available) | (mesh-only; not in BREP) |
 | Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) | (mesh-only; not in BREP) |
 | Arbitrary vertex warp (bend extrusion) | `.warp(fn)` | (not available) | (mesh-only; not in BREP) |
 
@@ -148,6 +149,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
 | `annotations` | When the user has marked up the model with the Annotate tool (or you need to write annotations programmatically). |
 | `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
+| `sculpt` | Before interactively reshaping a manifold-js mesh like clay — local push / pull / smooth with a brush (`activateMeshSculpt`, `sculptAt`, `commitMeshSculpt`). Distinct from procedural surface textures and from voxel editing. |
 | `iteration-workflow` | Before calling `runAndSave`, `forkVersion`, `modifyAndTest`, `createSessionWithVersions`, or managing session notes — the full versioning and iteration workflow. |
 | `gotchas` | When something looks wrong — boolean overlap requirements, disconnected components, `paintRegion` on smooth surfaces, `probeRay` normals, `rotate` direction, re-running invalidating painted colors. |
 | `visual-verification` | Before declaring a build done — all-faces check, edge overlay options, feature-specific checks, stat-based validation. |

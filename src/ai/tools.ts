@@ -428,13 +428,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'readDoc',
-    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, print-fit, reference-images, file-io, annotations, printing, relief, textures, mechanisms, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, print-fit, reference-images, file-io, annotations, printing, relief, textures, sculpt, mechanisms, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
     input_schema: {
       type: 'object',
       properties: {
         name: {
           type: 'string',
-          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'printing', 'relief', 'textures', 'mechanisms'],
+          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'printing', 'relief', 'textures', 'sculpt', 'mechanisms'],
           description: 'Subdoc name without the .md extension.',
         },
       },
@@ -1089,6 +1089,78 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'activateMeshSculpt',
+    description: `Start an interactive Mesh Sculpt session on the current manifold-js model — clay-style push/pull/smooth of the actual triangle surface (distinct from the procedural surface textures and from voxel editing). Auto-densifies a coarse mesh so the brush has vertices to move, and locks the editor while active.
+
+**Workflow:** activateMeshSculpt → (optional) subdivideSculptMesh for finer detail → setSculptTool / setSculptBrush → get a surface point+normal with probePixel({ imageUrl, pixel }) → sculptAt({ point, normal }) one or more times → renderViews to check → commitMeshSculpt to bake it into a new version (or cancelMeshSculpt to discard). meshSculptUndo / meshSculptRedo step through strokes.
+
+Only works on manifold-js models. Returns { ok, triangles } or { error }.`,
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'setSculptTool',
+    description: `Set the active Mesh Sculpt brush: "push" (bulge outward along the normal), "pull" (dent inward), or "smooth" (relax bumps toward the local average). Requires an active session.`,
+    input_schema: {
+      type: 'object',
+      properties: { tool: { type: 'string', enum: ['push', 'pull', 'smooth'], description: 'Brush tool.' } },
+      required: ['tool'],
+    },
+  },
+  {
+    name: 'setSculptBrush',
+    description: `Tune the Mesh Sculpt brush. radius is in world units (how far the brush reaches); strength is 0..1 (push/pull scale it by the radius; smooth uses it as the relax amount). Requires an active session. Returns the resolved { radius, strength }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        radius: { type: 'number', description: 'Brush radius in world units.' },
+        strength: { type: 'number', description: 'Brush strength 0..1.' },
+      },
+    },
+  },
+  {
+    name: 'sculptAt',
+    description: `Apply one brush dab at a world-space surface point with its surface normal — typically obtained from probePixel({ imageUrl, pixel }), which raycasts a rendered pixel to { point, normal }. Optional tool/radius/strength override the session defaults for this dab. Call repeatedly to build up a form. Requires an active session. Returns { ok, moved, triangles }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'World-space [x,y,z] on the surface.' },
+        normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Surface normal [x,y,z] at the point.' },
+        tool: { type: 'string', enum: ['push', 'pull', 'smooth'], description: 'Override the active tool for this dab.' },
+        radius: { type: 'number', description: 'Override brush radius (world units) for this dab.' },
+        strength: { type: 'number', description: 'Override brush strength (0..1) for this dab.' },
+      },
+      required: ['point', 'normal'],
+    },
+  },
+  {
+    name: 'subdivideSculptMesh',
+    description: `Densify the live sculpt mesh (split every triangle into 4) for finer detail. Clears the sculpt undo history. Requires an active session. Returns { ok, triangles }.`,
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'meshSculptUndo',
+    description: `Undo the last sculpt stroke in the active session. Returns { ok, undone }.`,
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'meshSculptRedo',
+    description: `Redo the last undone sculpt stroke in the active session. Returns { ok, redone }.`,
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'commitMeshSculpt',
+    description: `Bake the sculpted mesh into a new version (emits Manifold.ofMesh(api.imports[0]), exactly like the surface modifiers) and save it. Ends the session and unlocks the editor. preserveColor (default true) re-resolves paint onto the result. Returns { ok, label, geometry, colorsCarried, warnings? }.`,
+    input_schema: {
+      type: 'object',
+      properties: { preserveColor: { type: 'boolean', description: 'Carry existing paint onto the baked mesh. Default true.' } },
+    },
+  },
+  {
+    name: 'cancelMeshSculpt',
+    description: `Discard the active Mesh Sculpt session without saving and restore the model.`,
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'applyFuzzySkin',
     description: `Apply a fuzzy-skin surface texture to the current model — a 3D-printing finish that roughens the surface with fine, irregular noise displacement along per-vertex normals. Saves a new version.
 
@@ -1530,7 +1602,8 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric',
+  'activateMeshSculpt', 'setSculptTool', 'setSculptBrush', 'sculptAt', 'subdivideSculptMesh', 'meshSculptUndo', 'meshSculptRedo', 'commitMeshSculpt', 'cancelMeshSculpt']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -1670,7 +1743,7 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
-const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas', 'visual-verification', 'spending', 'manifold-api']);
+const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'printing', 'relief', 'textures', 'sculpt', 'mechanisms', 'iteration-workflow', 'gotchas', 'visual-verification', 'spending', 'manifold-api']);
 
 /** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
  *  local providers — both run inside the user's browser tab, so this is
@@ -2020,6 +2093,24 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.getReliefSwapGuide();
     case 'setReliefPreviewMode':
       return api.setReliefPreviewMode(input.mode);
+    case 'activateMeshSculpt':
+      return api.activateMeshSculpt();
+    case 'setSculptTool':
+      return api.setSculptTool(input.tool);
+    case 'setSculptBrush':
+      return api.setSculptBrush(input);
+    case 'sculptAt':
+      return api.sculptAt(input);
+    case 'subdivideSculptMesh':
+      return api.subdivideSculptMesh();
+    case 'meshSculptUndo':
+      return api.meshSculptUndo();
+    case 'meshSculptRedo':
+      return api.meshSculptRedo();
+    case 'commitMeshSculpt':
+      return api.commitMeshSculpt(input);
+    case 'cancelMeshSculpt':
+      return api.cancelMeshSculpt();
     case 'applyFuzzySkin':
       return api.applyFuzzySkin(input);
     case 'applyKnitTexture':

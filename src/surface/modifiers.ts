@@ -119,6 +119,22 @@ export { type WaffleStitchOptions };
 export { type FurVelvetOptions };
 export { type WovenFabricOptions };
 
+/** Wrap a hand-sculpted mesh (from the interactive Mesh Sculpt session) as a
+ *  baked manifold result — same commit shape as fuzzy skin / smooth, so it
+ *  reuses the whole color-carry + save path. The mesh already has its final
+ *  vertex positions; we only emit the rebuild wrapper. */
+export function buildSculptResult(mesh: MeshData, dabs: number): ModifierManifoldResult {
+  return {
+    kind: 'manifold',
+    label: 'sculpted',
+    mesh,
+    code: manifoldWrapper([
+      `Sculpted on ${today()} — ${dabs} brush ${dabs === 1 ? 'dab' : 'dabs'} baked.`,
+      `The sculpted mesh is baked onto api.imports[0]. Re-open Mesh Sculpt to keep shaping.`,
+    ]),
+  };
+}
+
 export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierManifoldResult {
   const baked = fuzzySkin(mesh, opts);
   return {

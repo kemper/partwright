@@ -117,7 +117,7 @@ import { appendVoxelEditsToCode, editOpCount } from './geometry/voxel/editCodege
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, applyTransform, buildSculptResult, type ModifierResult } from './surface/modifiers';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, rotateAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
@@ -152,6 +152,8 @@ import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './c
 import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
+import * as meshSculpt from './surface/meshSculpt';
+import { initMeshSculptUI, setMeshSculptAvailable, syncActiveState as syncMeshSculptUI } from './ui/meshSculptUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
 import { initPrintToolsUI, isPrintToolsOpen, forceDeactivate as closePrintToolsMenu, type PrintToolsHandlers } from './ui/printToolsUI';
 import { analyzePrintability, type PrintabilityReport } from './geometry/printability';
@@ -2052,6 +2054,14 @@ async function main() {
     if (voxelPaint.isActive()) {
       voxelPaint.deactivate();
       syncVoxelPaintUI();
+    }
+    cancelMeshSculptIfActive();
+  }
+
+  function cancelMeshSculptIfActive(): void {
+    if (meshSculpt.isActive()) {
+      meshSculpt.deactivate();
+      syncMeshSculptUI();
     }
   }
 
@@ -6473,6 +6483,59 @@ async function main() {
   });
   setVoxelPaintAvailable(getActiveLanguage() === 'voxel');
 
+  // Mesh Sculpt — interactive push/pull/smooth of a smooth manifold-js mesh.
+  // The session edits a live in-memory mesh; "Apply" bakes it to a new version
+  // through the same commitSurfaceModifier path the surface modifiers use.
+  // Shared activation used by both the toolbar button and the AI/console API:
+  // capture the current mesh (with paint baked in for color carry) and start a
+  // session wired to the viewport + editor lock. Returns null on success or an
+  // error string. Throws are converted to error strings by callers.
+  function startMeshSculpt(): string | null {
+    const mesh = meshForModifier(true);
+    return meshSculpt.activate(mesh, {
+      onMeshUpdate: (m) => { updateMesh(m, { skipAutoFrame: true }); },
+      onLockChange: (locked) => { setReadOnlyReason('meshSculpt', locked); },
+      onStateChange: () => { syncMeshSculptUI(); },
+    });
+  }
+
+  initMeshSculptUI(clipControls, {
+    activate: async () => {
+      try {
+        const err = startMeshSculpt();
+        if (err) showToast(`Mesh Sculpt: ${err}`, { variant: 'warn' });
+      } catch (e) {
+        showToast(`Mesh Sculpt: ${e instanceof Error ? e.message : String(e)}`, { variant: 'warn' });
+      }
+      syncMeshSculptUI();
+    },
+    deactivate: async () => {
+      meshSculpt.deactivate();
+      runCode(getValue());
+      syncMeshSculptUI();
+    },
+    apply: async () => {
+      const result = await commitMeshSculpt(true);
+      if ('error' in result) showToast(`Mesh Sculpt: ${result.error}`, { variant: 'warn' });
+      else showToast('Sculpt baked to a new version', { variant: 'success' });
+      syncMeshSculptUI();
+    },
+  });
+  setMeshSculptAvailable(getActiveLanguage() === 'manifold-js');
+
+  // Commit the live Mesh Sculpt session: deactivate (releasing the lock +
+  // pointer handler), then bake the sculpted mesh into a new version exactly
+  // like fuzzy skin / smooth. `preserveColor` re-resolves paint onto the result.
+  async function commitMeshSculpt(preserveColor = true): Promise<Record<string, unknown>> {
+    if (!meshSculpt.isActive()) return { error: 'Mesh Sculpt is not active.' };
+    const sculpted = meshSculpt.getMesh();
+    if (!sculpted) return { error: 'Mesh Sculpt has no mesh to apply.' };
+    const dabs = meshSculpt.dabsApplied();
+    meshSculpt.deactivate();
+    syncMeshSculptUI();
+    return commitSurfaceModifier(buildSculptResult(sculpted, dabs), preserveColor);
+  }
+
   // Single source of truth for committing Voxel Studio edits as a new version.
   // `mode` picks how the edits land in the editor:
   //   • 'replace' — overwrite the code with voxels.decode(<full grid>) ("Save
@@ -6751,6 +6814,7 @@ async function main() {
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
     setVoxelPaintAvailable(lang === 'voxel');
+    setMeshSculptAvailable(lang === 'manifold-js');
     notifyQualityLangChanged(lang);
     syncEditorTitle(getState());
     const loadingLabel =
@@ -7448,6 +7512,80 @@ async function main() {
     },
     /** Discard a live surface preview and restore the current model's mesh. */
     clearSurfacePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
+    // ── Mesh Sculpt (interactive clay-style push/pull/smooth) ────────────────
+    /** Start a Mesh Sculpt session on the current manifold-js model. Densifies a
+     *  coarse mesh automatically, locks the editor, and renders the live mesh.
+     *  Drive it with sculptAt(...), undo/redo, subdivide, then commitMeshSculpt().
+     *  Returns `{ ok, triangles }` or `{ error }`. */
+    activateMeshSculpt(): { ok: true; triangles: number } | { error: string } {
+      try {
+        if (getActiveLanguage() !== 'manifold-js') {
+          return { error: 'Mesh Sculpt only works on manifold-js models. Switch the engine first.' };
+        }
+        const err = startMeshSculpt();
+        syncMeshSculptUI();
+        if (err) return { error: err };
+        return { ok: true, triangles: meshSculpt.triangleCount() };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Set the active brush tool: 'push' | 'pull' | 'smooth'. */
+    setSculptTool(tool: 'push' | 'pull' | 'smooth'): { ok: true } | { error: string } {
+      if (!meshSculpt.isActive()) return { error: 'Mesh Sculpt is not active — call activateMeshSculpt() first.' };
+      if (tool !== 'push' && tool !== 'pull' && tool !== 'smooth') return { error: `Unknown tool "${tool}" — use push, pull, or smooth.` };
+      meshSculpt.setTool(tool);
+      return { ok: true };
+    },
+    /** Set brush radius (world units) and/or strength (0..1) for the session. */
+    setSculptBrush(opts?: { radius?: number; strength?: number }): { ok: true; radius: number; strength: number } | { error: string } {
+      if (!meshSculpt.isActive()) return { error: 'Mesh Sculpt is not active — call activateMeshSculpt() first.' };
+      if (typeof opts?.radius === 'number') meshSculpt.setRadius(opts.radius);
+      if (typeof opts?.strength === 'number') meshSculpt.setIntensity(opts.strength);
+      return { ok: true, radius: meshSculpt.getRadius(), strength: meshSculpt.getIntensity() };
+    },
+    /** Apply one brush dab at a world-space point + surface normal (e.g. from
+     *  probePixel). Optional per-call tool/radius/strength override the session
+     *  defaults. Returns `{ ok, moved }` (whether any vertex moved). */
+    sculptAt(opts: { point: [number, number, number]; normal: [number, number, number]; tool?: 'push' | 'pull' | 'smooth'; radius?: number; strength?: number }): { ok: true; moved: boolean; triangles: number } | { error: string } {
+      if (!meshSculpt.isActive()) return { error: 'Mesh Sculpt is not active — call activateMeshSculpt() first.' };
+      const p = opts?.point, n = opts?.normal;
+      if (!Array.isArray(p) || p.length !== 3 || !Array.isArray(n) || n.length !== 3) {
+        return { error: 'sculptAt needs point:[x,y,z] and normal:[x,y,z].' };
+      }
+      const moved = meshSculpt.applyAt(
+        [p[0], p[1], p[2]], [n[0], n[1], n[2]],
+        { tool: opts.tool, radius: opts.radius, intensity: opts.strength },
+      );
+      return { ok: true, moved, triangles: meshSculpt.triangleCount() };
+    },
+    /** Densify the live sculpt mesh (1→4 subdivision) for finer detail. Clears
+     *  the sculpt undo history. */
+    subdivideSculptMesh(): { ok: true; triangles: number } | { error: string } {
+      return meshSculpt.subdivide();
+    },
+    /** Undo the last sculpt stroke. Returns `{ ok, undone }`. */
+    meshSculptUndo(): { ok: true; undone: boolean } | { error: string } {
+      if (!meshSculpt.isActive()) return { error: 'Mesh Sculpt is not active.' };
+      return { ok: true, undone: meshSculpt.undo() };
+    },
+    /** Redo the last undone sculpt stroke. Returns `{ ok, redone }`. */
+    meshSculptRedo(): { ok: true; redone: boolean } | { error: string } {
+      if (!meshSculpt.isActive()) return { error: 'Mesh Sculpt is not active.' };
+      return { ok: true, redone: meshSculpt.redo() };
+    },
+    /** Bake the sculpted mesh into a new version (Manifold.ofMesh). `preserveColor`
+     *  (default true) re-resolves paint onto the result. Returns the standard
+     *  modifier result `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async commitMeshSculpt(opts?: { preserveColor?: boolean }) {
+      return commitMeshSculpt(opts?.preserveColor ?? true);
+    },
+    /** Cancel the sculpt session without saving and restore the model. */
+    cancelMeshSculpt(): { ok: true } {
+      meshSculpt.deactivate();
+      runCode(getValue());
+      syncMeshSculptUI();
+      return { ok: true };
+    },
+
     /** Apply a fuzzy-skin surface texture to the current model; saves a new version.
      *  `preserveColor` (default true) re-resolves paint regions onto the new mesh.
      *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
