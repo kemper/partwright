@@ -34,6 +34,8 @@ import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoad
 import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
 import { errorLog } from '../diagnostics/errorLog';
+import { showToast } from './toast';
+import { createVoiceController, isVoiceInputSupported, type VoiceController } from './voiceInput';
 
 interface PanelState {
   open: boolean;
@@ -160,6 +162,7 @@ let forwardBtnRef: HTMLButtonElement | null = null;
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let inputEl: HTMLTextAreaElement | null = null;
+let voiceController: VoiceController | null = null;
 let planApprovalBarEl: HTMLElement | null = null;
 
 // The docked panel is an editor tool: it only takes layout space on the editor
@@ -880,6 +883,45 @@ function buildDrawer(): void {
     });
   });
   inputBtnRow.appendChild(fileBtn);
+
+  // Microphone — voice-to-text dictation via the browser-native Web Speech API.
+  // Only shown where the browser supports it (Chrome/Edge/Safari, not Firefox).
+  if (isVoiceInputSupported()) {
+    const micBtn = document.createElement('button');
+    micBtn.id = 'btn-ai-mic';
+    const micIdleClass = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700';
+    const micActiveClass = 'shrink-0 px-2 py-1 rounded text-[11px] text-white bg-red-600 hover:bg-red-500 border border-red-500 animate-pulse';
+    micBtn.className = micIdleClass;
+    micBtn.textContent = '🎤';
+    micBtn.title = 'Dictate your message (voice to text). Click again to stop.';
+    micBtn.setAttribute('aria-label', 'Dictate message with voice input');
+
+    // Text already in the box when dictation starts; spoken words append to it.
+    let micBaseText = '';
+    voiceController = createVoiceController({
+      onTranscript: (transcript, _isFinal) => {
+        if (!inputEl) return;
+        const sep = micBaseText && !/\s$/.test(micBaseText) ? ' ' : '';
+        inputEl.value = transcript ? micBaseText + sep + transcript : micBaseText;
+        // Drive the same downstream behaviour as manual typing (slash menu, etc).
+        inputEl.dispatchEvent(new Event('input'));
+      },
+      onStateChange: listening => {
+        micBtn.className = listening ? micActiveClass : micIdleClass;
+        micBtn.title = listening
+          ? 'Listening… click to stop dictation.'
+          : 'Dictate your message (voice to text). Click again to stop.';
+        micBtn.setAttribute('aria-pressed', String(listening));
+        if (listening && inputEl) {
+          micBaseText = inputEl.value;
+          inputEl.focus();
+        }
+      },
+      onError: message => showToast(message, { variant: 'warn', source: 'ai' }),
+    });
+    micBtn.addEventListener('click', () => { voiceController?.toggle(); });
+    inputBtnRow.appendChild(micBtn);
+  }
 
   const inputBtnSpacer = document.createElement('div');
   inputBtnSpacer.className = 'flex-1';
@@ -2410,6 +2452,9 @@ function renderPendingImages(): void {
  *  turn with the queued blocks as the new user message. */
 function queueCurrentInput(): void {
   if (!inputEl) return;
+  // Sending commits the text — halt any in-progress dictation so it doesn't
+  // keep appending to a box we're about to clear.
+  voiceController?.stop();
   const text = inputEl.value.trim();
   if (text.length === 0 && state.pendingImages.length === 0) return;
   const blocks: ChatBlock[] = [];
@@ -2774,6 +2819,9 @@ async function sendMessage(): Promise<void> {
   // against the same transcript. The viewer overlay offers "Take control".
   if (!writeOwner) return;
   if (!inputEl) return;
+  // Sending commits the text — halt any in-progress dictation so it doesn't
+  // keep appending to a box we're about to clear.
+  voiceController?.stop();
   const text = inputEl.value.trim();
   if (text.length === 0 && state.pendingImages.length === 0) return;
 
