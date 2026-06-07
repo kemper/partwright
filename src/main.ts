@@ -2217,6 +2217,64 @@ async function main() {
     }
   }
 
+  // Validate the optional sub-objects an AI/console caller may pass to
+  // importImageAsRelief / importSvgAsRelief. The clamp* helpers below tolerate
+  // bad numerics by falling back to defaults, but the rest of the
+  // window.partwright API rejects unknown keys and wrong types outright
+  // (CLAUDE.md: "unknown keys rejected") so a typo like `{ widthToDeep: 100 }`
+  // is loud rather than silently ignored. Throws ValidationError; callers wrap
+  // this in guard() to surface it as { error }. The numeric bounds mirror the
+  // clamp* ranges below.
+  const RELIEF_COMMON_KEYS = ['widthMm', 'layerHeight', 'baseThickness', 'maxHeight', 'resolution', 'smoothing', 'removeBackground'] as const;
+  const RELIEF_QUANTIZED_KEYS = ['clusters', 'colorSpace', 'dither', 'output', 'shape', 'cornerRadiusMm', 'chamferMm', 'paintingMode', 'invertHeights', 'holes', 'holeEnabled', 'holeDiameterMm', 'holeOffsetMm', 'manualBackground', 'doubleSided', 'backMirror'] as const;
+  const RELIEF_PREPROCESS_KEYS = ['brightness', 'contrast', 'saturation', 'levelsLow', 'levelsHigh'] as const;
+  const RELIEF_CROP_KEYS = ['left', 'top', 'right', 'bottom'] as const;
+  function validateReliefOptionArgs(args: { options?: unknown; quantized?: unknown; preprocess?: unknown; crop?: unknown }, fn: string): void {
+    if (args.options !== undefined) {
+      const o = assertObject(args.options, `${fn}(options)`)!;
+      assertNoUnknownKeys(o, RELIEF_COMMON_KEYS, `${fn}(options)`);
+      assertNumber(o.widthMm, `${fn}(options).widthMm`, { optional: true, min: 1, max: 2000 });
+      assertNumber(o.layerHeight, `${fn}(options).layerHeight`, { optional: true, min: 0.02, max: 2 });
+      assertNumber(o.baseThickness, `${fn}(options).baseThickness`, { optional: true, min: 0, max: 50 });
+      assertNumber(o.maxHeight, `${fn}(options).maxHeight`, { optional: true, min: 0.1, max: 100 });
+      assertNumber(o.resolution, `${fn}(options).resolution`, { optional: true, min: 8, max: 512 });
+      assertNumber(o.smoothing, `${fn}(options).smoothing`, { optional: true, min: 0, max: 20 });
+      assertBoolean(o.removeBackground, `${fn}(options).removeBackground`, { optional: true });
+    }
+    if (args.quantized !== undefined) {
+      const q = assertObject(args.quantized, `${fn}(quantized)`)!;
+      assertNoUnknownKeys(q, RELIEF_QUANTIZED_KEYS, `${fn}(quantized)`);
+      assertNumber(q.clusters, `${fn}(quantized).clusters`, { optional: true, min: 2, max: 12, integer: true });
+      if (q.colorSpace !== undefined) assertEnum(q.colorSpace, ['rgb', 'lab'], `${fn}(quantized).colorSpace`);
+      assertBoolean(q.dither, `${fn}(quantized).dither`, { optional: true });
+      if (q.output !== undefined) assertEnum(q.output, ['relief', 'flat', 'silhouette'], `${fn}(quantized).output`);
+      if (q.shape !== undefined) assertEnum(q.shape, ['rect', 'rounded', 'circle'], `${fn}(quantized).shape`);
+      assertNumber(q.cornerRadiusMm, `${fn}(quantized).cornerRadiusMm`, { optional: true, min: 0, max: 50 });
+      assertNumber(q.chamferMm, `${fn}(quantized).chamferMm`, { optional: true, min: 0, max: 5 });
+      if (q.paintingMode !== undefined) assertEnum(q.paintingMode, ['multi-color', 'single-nozzle'], `${fn}(quantized).paintingMode`);
+      assertBoolean(q.invertHeights, `${fn}(quantized).invertHeights`, { optional: true });
+      assertBoolean(q.doubleSided, `${fn}(quantized).doubleSided`, { optional: true });
+      assertBoolean(q.backMirror, `${fn}(quantized).backMirror`, { optional: true });
+    }
+    if (args.preprocess !== undefined) {
+      const p = assertObject(args.preprocess, `${fn}(preprocess)`)!;
+      assertNoUnknownKeys(p, RELIEF_PREPROCESS_KEYS, `${fn}(preprocess)`);
+      assertNumber(p.brightness, `${fn}(preprocess).brightness`, { optional: true, min: -1, max: 1 });
+      assertNumber(p.contrast, `${fn}(preprocess).contrast`, { optional: true, min: -1, max: 1 });
+      assertNumber(p.saturation, `${fn}(preprocess).saturation`, { optional: true, min: -1, max: 1 });
+      assertNumber(p.levelsLow, `${fn}(preprocess).levelsLow`, { optional: true, min: 0, max: 254 });
+      assertNumber(p.levelsHigh, `${fn}(preprocess).levelsHigh`, { optional: true, min: 1, max: 255 });
+    }
+    if (args.crop !== undefined) {
+      const c = assertObject(args.crop, `${fn}(crop)`)!;
+      assertNoUnknownKeys(c, RELIEF_CROP_KEYS, `${fn}(crop)`);
+      assertNumber(c.left, `${fn}(crop).left`, { min: 0, max: 1 });
+      assertNumber(c.top, `${fn}(crop).top`, { min: 0, max: 1 });
+      assertNumber(c.right, `${fn}(crop).right`, { min: 0, max: 1 });
+      assertNumber(c.bottom, `${fn}(crop).bottom`, { min: 0, max: 1 });
+    }
+  }
+
   // Clamp the common knobs to sane physical/perf bounds. The wizard enforces
   // these via input attributes, but the programmatic (AI/console) path bypasses
   // the UI, so guard here against OOM (huge resolution) and degenerate values.
@@ -5043,7 +5101,12 @@ async function main() {
   async function handleIdeaPhotoToRelief(file: File): Promise<void> {
     await enterEditorForIdea();
     if (window.location.pathname !== '/editor') return;
-    openReliefImportFlow(file);
+    // The "smooth relief / lithophane" idea tile promises a non-blocky, tonal
+    // result, so open the wizard in 'luminance' mode rather than the global
+    // default ('quantized' — flat blocky colour clusters). Clone the defaults
+    // so we only override the mode.
+    const initialOptions: ReliefOptions = { ...structuredClone(DEFAULT_RELIEF_OPTIONS), mode: 'luminance' };
+    openReliefImportFlow(file, initialOptions);
     updateDocumentTitle({ page: 'editor' });
   }
 
@@ -8655,6 +8718,13 @@ async function main() {
       if (!args || typeof args !== 'object') return { error: 'importImageAsRelief: expected an object { src, mode?, options?, quantized?, crop? }' };
       const src = (args as { src?: unknown }).src;
       if (typeof src !== 'string' || src.length === 0) return { error: 'importImageAsRelief: src must be a non-empty data: or http(s) URL string' };
+      const argCheck = guard(() => {
+        const mode = (args as { mode?: unknown }).mode;
+        if (mode !== undefined) assertEnum(mode, ['luminance', 'quantized', 'ai'], 'importImageAsRelief(mode)');
+        validateReliefOptionArgs(args, 'importImageAsRelief');
+        return true;
+      });
+      if (typeof argCheck === 'object' && argCheck !== null && 'error' in argCheck) return argCheck;
       try {
         const image = await dataUrlToImageData(src);
         const opts: ReliefOptions = structuredClone(DEFAULT_RELIEF_OPTIONS);
@@ -8679,6 +8749,11 @@ async function main() {
       if (!args || typeof args !== 'object') return { error: 'importSvgAsRelief: expected an object { svgText, options?, quantized? }' };
       const svgText = (args as { svgText?: unknown }).svgText;
       if (typeof svgText !== 'string' || svgText.length === 0) return { error: 'importSvgAsRelief: svgText must be a non-empty SVG string' };
+      const argCheck = guard(() => {
+        validateReliefOptionArgs(args, 'importSvgAsRelief');
+        return true;
+      });
+      if (typeof argCheck === 'object' && argCheck !== null && 'error' in argCheck) return argCheck;
       try {
         const opts: ReliefOptions = structuredClone(DEFAULT_RELIEF_OPTIONS);
         const o = (args as { options?: unknown }).options;
