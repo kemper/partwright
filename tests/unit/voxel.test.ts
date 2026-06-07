@@ -84,6 +84,35 @@ describe('VoxelGrid', () => {
     const v = new VoxelGrid();
     expect(() => v.set(COORD_MAX + 1, 0, 0, '#fff')).toThrow();
   });
+
+  it('rotate(z, 180) sends a +Y feature to −Y and preserves color', () => {
+    const v = new VoxelGrid();
+    v.set(2, 5, 1, '#abc');            // a feature on +Y
+    v.rotate('z', 180);
+    expect(v.has(2, 5, 1)).toBe(false);
+    expect(v.get(-2, -5, 1)).toBe(0xaabbcc); // 180° about Z: (x,y) → (−x,−y)
+    expect(v.size).toBe(1);
+  });
+
+  it('rotate follows the right-hand rule for each axis (90°)', () => {
+    expect(new VoxelGrid().set(3, 0, 0, '#fff').rotate('z', 90).has(0, 3, 0)).toBe(true);  // +X → +Y
+    expect(new VoxelGrid().set(0, 3, 0, '#fff').rotate('x', 90).has(0, 0, 3)).toBe(true);  // +Y → +Z
+    expect(new VoxelGrid().set(0, 0, 3, '#fff').rotate('y', 90).has(3, 0, 0)).toBe(true);  // +Z → +X
+  });
+
+  it('rotate is exact and reversible (4×90° returns to start)', () => {
+    const v = new VoxelGrid().fillBox([0, 0, 0], [2, 4, 1], '#123');
+    const n = v.size;
+    v.rotate('z', 90).rotate('z', 90).rotate('z', 90).rotate('z', 90);
+    expect(v.size).toBe(n);
+    expect(v.has(0, 0, 0)).toBe(true);
+    expect(v.has(2, 4, 1)).toBe(true);
+  });
+
+  it('rotate rejects non-90° multiples and normalizes negatives', () => {
+    expect(() => new VoxelGrid().rotate('z', 45)).toThrow();
+    expect(new VoxelGrid().set(3, 0, 0, '#fff').rotate('z', -90).has(0, -3, 0)).toBe(true); // −90° = 270°
+  });
 });
 
 describe('encodeGrid / decodeGrid', () => {

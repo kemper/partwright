@@ -26,6 +26,148 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'June 5, 2026',
+    headline: 'Filament palettes, the Self-Modeling Studio, and a searchable catalog',
+    groups: [
+      {
+        label: 'Filament palette & multi-color',
+        items: [
+          {
+            title: 'Filament palette manager',
+            body: 'A standalone palette manager opens from a new 🧵 Palette pill in the viewport: define your printer’s filament slots, reorder or reset them, and constrain new colors to the palette. The paint panel keeps a live swatch row, a custom-color picker, and an over-budget badge (colors used vs. slot capacity), with a “Manage…” link into the full editor — edits propagate everywhere live.',
+          },
+          {
+            title: 'Slot-aware painting',
+            body: 'Painting with a slot stamps each region with a stable slot id, so a multi-color model maps cleanly onto a printer’s AMS/filament slots — recolor a slot and every region on it recolors at once. Multi-color 3MF export now orders its materials by slot so the material index follows AMS slot order, and the export step warns you when a model is over palette budget or when exporting to color-less STL.',
+          },
+          {
+            title: 'Build a palette from a photo',
+            body: 'Import palette colors straight from an image: the manager auto-detects the dominant colors and gives you a click-to-eyedrop canvas to pick exact filament colors from a screenshot. A “Recent colors” history keeps colors you’ve used so you can re-add them as slots.',
+          },
+          {
+            title: 'Reconcile a model against the palette',
+            body: 'A “Colors in this model” view tags every color as on- or off-palette and offers Replace (swap to a palette or recent color), Merge (collapse one color into another), and Apply-palette auto-match (snap every color to its nearest slot). Save, switch, rename, and delete named palette collections for different printers or projects.',
+          },
+        ],
+      },
+      {
+        label: 'Self-Modeling Studio',
+        items: [
+          {
+            title: 'Photo → multi-view → 3D',
+            body: 'A guided Studio (Import → “Photo → 3D”) turns a single photo into a model: upload a source image, generate a turntable of alternate angles with a Gemini image model (or upload the angles by hand), curate the tiles, then either carve a voxel model from the silhouettes or hand the angle set straight to the AI modeler. Cardinal / Isometric / Full angle-set presets pick how many views to use.',
+          },
+          {
+            title: 'The AI reads your reference images',
+            body: 'The assistant can now pull in attached images as a single labeled grid, so the Studio’s reference angles — and any photos you attach — actually feed the AI’s vision when it models for you.',
+          },
+        ],
+      },
+      {
+        label: 'Catalog',
+        items: [
+          {
+            title: 'Searchable, filterable catalog',
+            body: 'Both the /catalog page and the in-editor catalog overlay gained a search box and per-language filter pills, so you can narrow a growing gallery by keyword or by modeling language. A new curated “Fidget Toys” group leads the catalog.',
+          },
+          {
+            title: 'Print-in-place fidgets',
+            body: 'The spiral fidget cone is now a real print-in-place mechanism — a cone split by a helical slab into two interleaved ribbons that twist apart straight off the bed, with a built-in clearance gap.',
+          },
+        ],
+      },
+      {
+        label: 'Painting & editor',
+        items: [
+          {
+            title: 'Wrap tolerance stops paint at sharp edges',
+            body: 'The paintbrush gained a “Wrap tolerance” slider (0–180°, default 90°): a stroke crosses an edge only when the two faces bend by no more than the tolerance, so paint flows over gentle curves but stops at a sharp fold instead of bleeding onto an adjacent face or the next wall of a hollow part.',
+          },
+          {
+            title: 'Starters you can experiment with',
+            body: 'The JavaScript, OpenSCAD, and BREP starters are now capability samplers — a row of primitives, booleans, and operations to poke at — and the voxel starter is a layered pine tree with ornaments and a star. The Quality panel’s curvature preview also gained an explicit Apply button.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'June 4, 2026',
+    headline: 'Fabric textures, image paint, region-targeted modifiers, and a catalog refresh',
+    groups: [
+      {
+        label: 'Surface textures',
+        items: [
+          {
+            title: 'Fabric & knit textures',
+            body: 'A new family of surface modifiers wraps a model in stitched fabric: V-strand knit (stockinette), cable knit, waffle stitch, fur / velvet, and woven fabric. The displacement follows the surface via UV unwrapping — BFS triangle unfolding, with LSCM and harmonic-field layouts for cleaner whole-mesh maps — and runs on a WebGPU compute shader where the browser supports it. A mesh-detail slider trades triangle count for fidelity, and the textures are available to the AI assistant too.',
+          },
+          {
+            title: 'Apply modifiers to part of a model',
+            body: 'Every surface modifier — fuzzy skin, smooth, voxelize, and the new fabric textures — now takes a click-to-select flood-fill region selector, so you can texture just one area. Additive multi-region selection, a color-sensitivity control, and triplanar blending round out a redesigned selector UX inside a draggable Surface panel.',
+          },
+        ],
+      },
+      {
+        label: 'Painting',
+        items: [
+          {
+            title: 'Image paint',
+            body: 'Project an image onto the model surface as color regions: click to stamp it where you point, with a hover preview, rotation, and a smooth (stamp-then-refine) mode that subdivides the footprint so the picture conforms to curvature. Alpha-channel flood fill drops the background, and SVG inputs stamp at full vector quality.',
+          },
+          {
+            title: 'Smarter color bucket',
+            body: 'The bucket now walks and persists the real connected region, with a live flood-fill preview that tracks the tolerance slider. Region selection uses an explicit Preview button instead of auto-previewing on every click.',
+          },
+        ],
+      },
+      {
+        label: 'Catalog',
+        items: [
+          {
+            title: 'Catalog quality pass',
+            body: 'Redesigned 8 catalog entries and colorized 6 more, added 5 voxel creatures, and shipped five new models — a chain, a hot dog, a voxel castle, a watchtower, and a retro TV.',
+          },
+        ],
+      },
+      {
+        label: 'Viewport & rendering',
+        items: [
+          {
+            title: 'Reset view & zoom limit',
+            body: 'A reset-view button returns the camera to its default framing, and a zoom-out limit keeps a model from shrinking away into the distance.',
+          },
+          {
+            title: 'Cancel long renders instead of timing out',
+            body: 'Heavy renders no longer hit a hard execution timeout — they run until you cancel them with the Cancel button, so a slow-but-valid model finishes instead of being killed. Out-of-memory failures in the manifold-js engine now surface a clear hint instead of an opaque crash.',
+          },
+          {
+            title: 'Mesh-quality knobs',
+            body: 'The Quality panel’s simplify / enhance controls gained edge-length and size-threshold knobs for finer command over triangle reduction and refinement.',
+          },
+        ],
+      },
+      {
+        label: 'Diagnostics',
+        items: [
+          {
+            title: 'Worker health & engine memory',
+            body: 'The diagnostics log gained a worker-health panel that surfaces the geometry Worker’s state and each engine’s WASM heap usage. Disconnected-component results now also raise a transient warning toast.',
+          },
+        ],
+      },
+      {
+        label: 'Reliability',
+        items: [
+          {
+            title: 'Resilient sessions',
+            body: 'The geometry Worker now recovers automatically after a fatal WASM fault, autosaved drafts clear on save (with a warning if you save error-state code), and paint, annotations, and parameters survive switching between parts. SCAD parts cache their mesh so flipping between parts skips a recompile, and Customizer number fields can now exceed their declared min / max.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'May 31 – June 3, 2026',
     headline: 'Multi-file OpenSCAD, unified viewport panels, and instant static pages',
     groups: [

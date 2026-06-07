@@ -11,6 +11,7 @@ import type { MeshData } from '../geometry/types';
 
 export interface PaintAccessors {
   getColor(): [number, number, number];
+  getSlotId(): string | null;
   getCurrentMesh(): MeshData | null;
   shapeSmoothDescriptorFields(mesh: MeshData): { smooth: boolean; maxEdge: number };
 }
@@ -29,6 +30,10 @@ function require(): PaintAccessors {
 
 export function getColor(): [number, number, number] {
   return require().getColor();
+}
+
+export function getSlotId(): string | null {
+  return require().getSlotId();
 }
 
 export function getCurrentMesh(): MeshData | null {

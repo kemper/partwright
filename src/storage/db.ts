@@ -23,6 +23,20 @@ export interface Session {
    *  from the AI types) and `preset` mirrors the settings preset. Sessions saved
    *  before this field gains `toggles` simply restore provider/model only. */
   aiPreference?: { provider: string; model: string; toggles?: Record<string, unknown>; preset?: string };
+  /** Pinned thumbnail camera angle (degrees). When set, captured thumbnails
+   *  (catalog tiles, gallery, version snapshots) render from this azimuth /
+   *  elevation instead of the default iso 3/4 view — so a faced model can show
+   *  its front in the tile without baking orientation into the geometry. Set
+   *  via `partwright.setThumbnailCamera({ azimuth, elevation })`; absent ⇒ the
+   *  default iso view. Persisted so re-bakes and reloads reuse the angle. */
+  thumbCamera?: { azimuth: number; elevation: number };
+  /** Persisted interactive working-view camera (world-space position + orbit
+   *  target). Unlike `thumbCamera` (which only steers thumbnail capture), this
+   *  records the angle/zoom the user last orbited the live viewport to, so it
+   *  survives reload / reopening the session instead of snapping back to the
+   *  default 3/4 framing. Written (debounced) when the user finishes an orbit;
+   *  restored on session open. Absent ⇒ auto-frame on open. */
+  workCamera?: { position: [number, number, number]; target: [number, number, number] };
 }
 
 /** A modeling target within a session. A session holds one or more parts; each
@@ -294,10 +308,19 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 export function generateId(): string {
+  // 12-char base62 IDs for local IndexedDB record keys (sessions, parts,
+  // versions, images, chat messages). Sourced from crypto.getRandomValues
+  // rather than Math.random — these aren't security tokens, but a secure
+  // source keeps the entropy unimpeachable and clears static-analysis flags.
+  // Rejection sampling (drop bytes ≥ 248 = 4×62) keeps the distribution
+  // uniform, avoiding the modulo bias of a raw `byte % 62`.
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let id = '';
-  for (let i = 0; i < 12; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
+  while (id.length < 12) {
+    const bytes = crypto.getRandomValues(new Uint8Array(12 - id.length));
+    for (const b of bytes) {
+      if (b < 248) id += chars[b % 62];
+    }
   }
   return id;
 }
@@ -577,7 +600,7 @@ export function legacyImagesObjectToArray(obj: LegacyImagesObject): AttachedImag
   return result;
 }
 
-export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference'>>): Promise<void> {
+export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference' | 'thumbCamera' | 'workCamera'>>): Promise<void> {
   const store = await tx('sessions', 'readwrite');
   // Read-modify-write inside one transaction: queue the put from the get's
   // callback (awaiting between them risks auto-commit), then await oncomplete.

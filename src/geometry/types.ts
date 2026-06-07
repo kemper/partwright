@@ -73,6 +73,11 @@ export interface MeshResult {
    *  whether it truly hit it or failed far below. Only set for manifold-js runs;
    *  absent for the other engines (which own separate heaps). */
   engineHeapBytes?: number;
+  /** Number of occupied voxels in the grid this run produced. Only set by the
+   *  voxel engine; absent for the mesh/CSG/BREP engines. Surfaced in the
+   *  geometry-data stats so agents can confirm a voxel model's size without
+   *  re-decoding the grid themselves. */
+  voxelCount?: number;
 }
 
 export interface CrossSectionResult {

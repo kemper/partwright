@@ -6,14 +6,15 @@ import type { MeshData } from '../geometry/types';
 import { pickFace, type FacePickResult } from './facePicker';
 import { projectBrushFootprint, invalidateProjection, disposeProjection } from './projectionPaint';
 import { disposeBaseRemap } from './baseRemap';
-import { buildAdjacency, findColorRegion, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
+import { buildAdjacency, findColorRegion, findCoplanarRegion, gateRegionByBend, getTriangleNormal, type AdjacencyGraph } from './adjacency';
 import { addRegion, getRegions, buildTriColors } from './regions';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 import { smoothEdgeForResolution } from './slabPaint';
 import { setPaintAccessors } from './paintAccessors';
-import { tangentBasis, type BrushShape } from './subdivide';
+import { getSlotById, hexToRgb } from './palette';
+import { tangentBasis, wrapAngleGate, type BrushShape } from './subdivide';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
 export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box' | 'replace';
@@ -21,6 +22,11 @@ export type { BrushShape };
 
 let active = false;
 let currentColor: [number, number, number] = [1, 0.2, 0.2]; // default red
+// Active palette slot, or null for an ad-hoc (unslotted) colour. Painted
+// regions are stamped with this so they map onto a filament/AMS slot and follow
+// slot recolours. `setSlot` keeps `currentColor` in sync with the slot's hex;
+// `setColor` (the custom picker) clears it back to unslotted.
+let currentSlotId: string | null = null;
 let currentTool: PaintTool = 'brush';
 /** Color-distance tolerance for the bucket tool in color mode. Range [0, 1]
  *  where 0 = exact color match only, 1 = fill entire connected component.
@@ -60,6 +66,16 @@ let brushSurface: 'geodesic' | 'slab' = 'slab';
 /** Paint depth in mesh units: how far through the surface a slab-mode stroke may
  *  reach. 0 = auto (half the brush radius), resolved at commit time. */
 let brushPaintDepth = 0;
+
+/** Wrap tolerance in degrees (0–180): paint flows across an edge only when the
+ *  two faces bend by ≤ this angle, so a stroke follows gentle curves / bumpy
+ *  near-coplanar facets but stops at a sharp corner. 90° (default) stops at
+ *  right-angle folds — the outside of a box, or the inner walls of a hollow one;
+ *  180° lets paint wrap across any edge (the pre-slider behaviour). Applies to
+ *  both surface modes. */
+let brushWrapAngle = 90;
+export const WRAP_ANGLE_MIN = 0;
+export const WRAP_ANGLE_MAX = 180;
 
 /** Airbrush spray: when on, the brush sprays a soft speckle instead of a solid
  *  fill. It honours the active surface mode (slab by default, geodesic if
@@ -140,10 +156,26 @@ export function isActive(): boolean { return active; }
 
 export function setColor(color: [number, number, number]): void {
   currentColor = color;
+  currentSlotId = null; // ad-hoc colour — no longer tied to a palette slot
 }
 
 export function getColor(): [number, number, number] {
   return currentColor;
+}
+
+/** Select a palette slot as the active paint colour. Looks up the slot's hex so
+ *  the brush/bucket/slab/box tools paint with it, and stamps painted regions
+ *  with `slotId` for filament/AMS mapping and slot-recolour. Unknown ids are
+ *  ignored. */
+export function setSlot(slotId: string): void {
+  const slot = getSlotById(slotId);
+  if (!slot) return;
+  currentColor = hexToRgb(slot.hex);
+  currentSlotId = slot.id;
+}
+
+export function getSlotId(): string | null {
+  return currentSlotId;
 }
 
 export function setTool(tool: PaintTool): void {
@@ -265,6 +297,15 @@ export function getBrushPaintDepth(): number {
   return brushPaintDepth;
 }
 
+/** Set the wrap tolerance (degrees, 0–180): max edge bend paint may flow across. */
+export function setBrushWrapAngle(deg: number): void {
+  brushWrapAngle = Math.max(WRAP_ANGLE_MIN, Math.min(WRAP_ANGLE_MAX, Math.round(deg)));
+}
+
+export function getBrushWrapAngle(): number {
+  return brushWrapAngle;
+}
+
 /** True when the active brush settings will subdivide the mesh on commit. */
 export function brushWillSubdivide(): boolean {
   return (brushSmooth || brushSpray) && brushRadius > 0;
@@ -311,7 +352,7 @@ export function getCurrentMesh(): MeshData | null {
 
 // Publish the state accessors the drag tools (boxDrag/slabDrag) need, so they
 // don't import this module back (which would be a circular dependency).
-setPaintAccessors({ getColor, getCurrentMesh, shapeSmoothDescriptorFields });
+setPaintAccessors({ getColor, getSlotId, getCurrentMesh, shapeSmoothDescriptorFields });
 
 
 /** Rebuild adjacency graph for a new mesh. Call this whenever updateMesh fires. */
@@ -630,9 +671,12 @@ function commitBrushStroke(): void {
         maxEdge: brushTargetEdge(),
         surface: brushSurface,
         depth: brushPaintDepth,
+        wrapAngleDeg: brushWrapAngle,
         spray: brushSpray ? { strength: brushSprayStrength, softness: brushSpraySoftness, seed: spraySeed++ } : undefined,
       },
       new Set<number>(),
+      true,
+      currentSlotId ?? undefined,
     );
   } else if (brushSession && brushSession.size > 0) {
     // Projection paint collects ids in the *current* (possibly refined) mesh's
@@ -642,7 +686,7 @@ function commitBrushStroke(): void {
     const ids = triangleToBase
       ? [...new Set([...brushSession].map(t => triangleToBase!(t)))]
       : [...brushSession];
-    addRegion(name, color, 'paintbrush', { kind: 'triangles', ids }, brushSession);
+    addRegion(name, color, 'paintbrush', { kind: 'triangles', ids }, brushSession, true, currentSlotId ?? undefined);
     if (onRegionPainted) onRegionPainted();
   }
 }
@@ -653,7 +697,8 @@ function commitBrushStroke(): void {
  *  back faces are excluded by the projection's depth test, so paint never bleeds
  *  through to the far side of a thin wall. */
 function collectBrushFootprint(event: MouseEvent, result: FacePickResult, target: Set<number>): void {
-  target.add(result.triangleIndex);
+  const seed = result.triangleIndex;
+  target.add(seed);
   if (brushRadius <= 0 || !currentMesh) return;
   const proj = projectBrushFootprint({
     event,
@@ -662,7 +707,21 @@ function collectBrushFootprint(event: MouseEvent, result: FacePickResult, target
     shape: brushShape,
     hitPoint: result.point,
   });
-  if (proj) for (const t of proj) target.add(t);
+  if (!proj) return;
+  // Apply the wrap tolerance: the screen-projection footprint is a flat spatial
+  // set with no surface gate, so on its own it wraps over any edge inside the
+  // brush disk. Restrict it to the part connected to the picked triangle without
+  // crossing an edge sharper than the tolerance — the same dihedral gate the
+  // smooth/geodesic brush applies in `buildGeodesicField`, so non-wrapping
+  // behaves identically with smooth edges on or off. 180° (cos -1) is a no-op.
+  const maxBendCos = wrapAngleGate(brushWrapAngle);
+  if (maxBendCos <= -1 || !adjacency) {
+    for (const t of proj) target.add(t);
+    return;
+  }
+  const footprint = new Set<number>(proj);
+  footprint.add(seed);
+  for (const t of gateRegionByBend(footprint, seed, adjacency, maxBendCos)) target.add(t);
 }
 
 // ---------------------------------------------------------------------------
@@ -865,6 +924,8 @@ function onPointerUp(event: PointerEvent): void {
       'face-pick',
       { kind: 'coplanar', seedPoint: result.point, seedNormal: normal, normalTolerance: bucketTolerance },
       region,
+      true,
+      currentSlotId ?? undefined,
     );
   } else {
     const seedTri = result.triangleIndex;
@@ -885,6 +946,8 @@ function onPointerUp(event: PointerEvent): void {
       'face-pick',
       { kind: 'colorFlood', seedPoint: result.point, seedNormal: normal, seedColor, colorTolerance: bucketColorTolerance },
       region,
+      true,
+      currentSlotId ?? undefined,
     );
   }
 

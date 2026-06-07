@@ -76,6 +76,21 @@ Inspect `paintPreview`'s `largestTriangleArea` to choose a sensible
 topology and don't need either workaround — the centroid default is
 fine there.
 
+**Catalog entries: prefer `byLabel` over coordinate paint.** `paintInBox` /
+`paintNear` / `paintFaces` bake a `triangles` list of per-triangle IDs into the
+saved file — on complex models this can run to 10–20 MB. `paintByLabels` stores
+only the label name and re-resolves on load, keeping catalog files under ~300 KB.
+For any model destined for the catalog, design the paint scheme with `label()` +
+`paintByLabels` from the start; reach for coordinate selectors only for geometry
+you didn't author (imported STL, `fuseAll` BREP), and check the file size after
+export.
+
+**Catalog thumbnail lighting.** The catalog 3/4 tile uses flat/ambient shading —
+near-white, cream, or low-saturation colors collapse to gray under it. Push the
+hue warmer and saturation noticeably higher than you'd pick on a white-background
+swatch. Sanity-check a near-white region with a vivid test color first; if it
+shows correctly, the region is wired right and the color just needs to be bolder.
+
 **Verify from multiple angles.** Use `renderViews()` for verification
 rather than a single `renderView` call. The default `views: 'auto'`
 picks angles by the model's bounding box: flat disks get [Top, Iso]
@@ -365,6 +380,7 @@ partwright.paintStroke({
   shape: 'circle',               // circle | square | diamond
   // surface: 'geodesic',        // 'geodesic' (default) | 'slab' — see below
   // depth: 0,                   // slab only: how far through the wall paint reaches (0 = auto = ½ radius)
+  // wrapAngleDeg: 90,           // wrap tolerance 0–180: max edge bend paint flows across (90 stops at right-angle corners; API default 180 = wrap freely) — see below
   color: [0.9, 0.2, 0.2],
 });
 // -> { id, name, triangles, resolution, maxEdge, meshTriangleCount } or { error }
@@ -373,6 +389,8 @@ partwright.paintStroke({
 The painted edge is **clipped to the exact outline** (the mesh is cut along the brush's analytic boundary), so a square gets dead-straight edges and a circle a clean curve — even on a coarse mesh, and watertight. Because the edge is exact, `resolution` only controls how many segments a *curve* is approximated with (straight square/diamond edges are crisp at any setting and stay nearly free — a slab square paints in ~10 triangles). Default `resolution` is **64** (plenty smooth with the clip); raise it for very large curves, or use the absolute `maxEdge` override for explicit sizing.
 
 **The brush is a *surface* tool, not a 3D ball.** `surface: 'geodesic'` (the default) flood-fills the footprint along the *connected* surface from the stroke, so paint follows curves and wraps over edges but never bleeds through to the opposite wall of a thin or hollow part — no tuning needed. `surface: 'slab'` instead keeps a thin shell within `depth` (mesh units) of the picked surface along its normal; raise `depth` to deliberately reach through a wall, lower it to hug the surface (`0` = auto = half the radius). Sessions saved before this feature load as `slab`. The interactive brush exposes the same controls — `getBrushSurface()` / `setBrushSurface('geodesic'|'slab')` and `setBrushDepth(u)`.
+
+**Wrap tolerance — stop a stroke at sharp edges (`wrapAngleDeg`).** Applies to *both* surface modes. It's the maximum edge bend (degrees, 0–180) paint may flow across as the stroke follows the surface: the spread crosses an edge only when the two faces bend by ≤ this angle, so it flows smoothly over gentle curves and bumpy near-coplanar facets but **stops at a sharp fold**. `90` stops at right-angle corners — paint on one exterior face of a box won't reach the adjacent faces, and a stroke inside one wall of a hollow part won't bleed onto the next wall — while `180` (the `paintStroke` API default) wraps across any edge. The interactive brush adds a **Wrap tolerance** slider (default 90°) and `getBrushWrapAngle()` / `setBrushWrapAngle(deg)`. A finite gate (< 180°) builds the surface-connectivity field even in slab mode, so it's a touch more work than an ungated slab stroke.
 
 **Airbrush — soft speckle (`paintAirbrush`).** Sprays a geodesic soft-edged region whose boundary fades out via a stochastic per-triangle **dither**, not colour blending — every triangle stays one printable colour. Coverage = `strength` (0..1, core density; default 0.4 for a light spackle) fading to 0 across the outer `softness` (0..1) band; `seed` makes the speckle reproducible. It's always surface-following (never bleeds through a wall) and works with any `shape` (circle/square/diamond spackle). It's a mode of the interactive brush too — the brush panel's **Spray** toggle (Slab is disabled while spraying, since a spray is geodesic-only).
 
@@ -483,9 +501,24 @@ partwright.paintInOrientedBox({
 });
 ```
 
-**Smoothing applies to the analytic shape tools.** `paintSlab` and `paintInOrientedBox` persist a *re-resolvable* descriptor (the slab plane / oriented box), so their boundary can be subdivided for a clean edge and reconstructed deterministically on reload — smoothing is on by default, exactly like `paintStroke`. The id-baking selectors (`paintInBox`, `paintNear`, `paintInCylinder`, `paintFaces`, `paintConnected`, …) lock onto the existing tessellation, so they cannot be smoothed; refine the mesh first (`.refine(n)` in the model code) if you need a finer edge from those.
+**Two kinds of region — durable descriptors vs. baked triangle ids.** This distinction matters more than any other when you paint several regions in a session:
 
-**Verifying paint before you commit it.** `paintPreview` accepts the same selectors as `paintInBox` / `paintNear` / `paintFaces`, *without* adding a region. Default: count-only (free sanity check). Pass `withImage: true` to also get a thumbnail with the candidate triangles tinted bright yellow on top of any existing paint.
+- **Re-resolvable analytic descriptors** — `paintSlab`, `paintInOrientedBox`, `paintInCylinder`, and `paintStroke` persist *what they meant* (the slab plane, oriented box, cylindrical shell, or brush path), not a fixed triangle list. On every reconcile they re-collect against the live mesh, so they **survive both subdivision and a model re-run**, and their boundary can be subdivided for a clean edge (smoothing is on by default for these). These are the robust choice.
+- **`paintByLabel`** is the most durable of all: it re-resolves by *name* from the label map each time, so it tracks the geometry through any re-tessellation as long as the label exists. If a feature is its own part, `api.label(part, "handle")` it in the model code and `paintByLabel("handle", color)` — no coordinates to guess.
+- **Id-baking selectors** — `paintInBox`, `paintNear`, `paintFaces`, `paintConnected` — lock onto the *current* tessellation and store raw triangle ids. They **cannot be smoothed** (refine the mesh first with `.refine(n)` if you need a finer edge), and their ids are valid only against the base mesh they were taken on. They are carried across in-session subdivision via a parent→children remap, but a **model re-run replaces the base mesh and the ids no longer point at the same surface** — that's the usual cause of a previously-good region reporting `triangleCount: 0` or landing on the wrong faces. After any code change, repaint id-baked regions or, better, re-express them as an analytic/`byLabel` descriptor.
+
+> **Ordering heuristic:** prefer the durable forms (analytic descriptors, `paintByLabel`) so order doesn't matter. If you must use id-baked selectors alongside smoothing paints, commit the mesh-changing ops first (or keep them in a single saved version), since a later subdivision/re-run is what disturbs raw ids.
+
+**Painting a feature that sticks out past a round body — select by radius, not a box plane.** A flat box face cutting across a curved junction (e.g. a handle meeting a cylindrical mug wall) leaves a ragged, stair-stepped boundary, because the box plane and the curved surface disagree. Select by *radial distance from the part's axis* instead — `paintInCylinder({ rMin, rMax, zMin, zMax })` (or a `normalCone` to grab only the outward-facing skin) — so the boundary follows the curve cleanly. Radius-based selection is the canonical tool for inner/outer walls of mugs, vases, and any revolved shape.
+
+**Verifying paint before you commit it.** `paintPreview` accepts the same selectors as `paintInBox` / `paintNear` / `paintFaces` *and* the analytic `cylinder` / `slab` forms, *without* adding a region. Default: count-only (free sanity check). Pass `withImage: true` to also get a thumbnail with the candidate triangles tinted bright yellow on top of any existing paint. The `cylinder` / `slab` previews show the **unsmoothed** selection (preview never subdivides) — use it to validate a radial shell or slab offset/thickness in one cheap call before committing the real smoothing paint:
+
+```js
+// Validate the inner wall of a mug before painting it:
+partwright.paintPreview({ cylinder: { rMin: 18, rMax: 22, zMin: 2, zMax: 88 } });
+// Validate a slab band:
+partwright.paintPreview({ slab: { axis: "z", offset: 0, thickness: 5 } });
+```
 
 ```js
 const dry = partwright.paintPreview({

@@ -19,6 +19,15 @@ import { closestPointOnTriangle } from './adjacency';
 
 export type BrushShape = 'circle' | 'square' | 'diamond';
 
+/** Convert a wrap-tolerance angle (degrees, 0–180) to the `maxBendCos` threshold
+ *  `buildGeodesicField` gates edge crossings with: the cosine of the maximum
+ *  dihedral angle paint may flow across. 180° → −1 (no gate, cross any edge);
+ *  90° → 0 (stop at right-angle corners); 0° → 1 (coplanar only). */
+export function wrapAngleGate(angleDeg: number): number {
+  const clamped = Math.max(0, Math.min(180, angleDeg));
+  return Math.cos((clamped * Math.PI) / 180);
+}
+
 export interface BrushStroke {
   /** World-space surface points sampled along the stroke. */
   samples: [number, number, number][];
@@ -173,7 +182,10 @@ export function strokeSignedDist(
   px: number, py: number, pz: number,
   stroke: BrushStroke,
 ): number {
-  if (stroke.surface === 'geodesic' && stroke.geoField && !stroke.geoField.reachableAt(px, py, pz)) {
+  // A geoField is present in geodesic mode, and in slab mode too once the wrap
+  // tolerance gate is on — in both cases an unreachable point is off the painted
+  // surface region (across a too-sharp edge or a wall gap), so it can't paint.
+  if (stroke.geoField && !stroke.geoField.reachableAt(px, py, pz)) {
     return Infinity;
   }
   const { samples, radius: r, shape } = stroke;
@@ -286,7 +298,6 @@ function brushClassifier(stroke: BrushStroke): TriClassifier {
   if (stroke.spray) return sprayClassifier(stroke);
   const { radius: r, shape } = stroke;
   const slab = slabActive(stroke);
-  const geodesic = stroke.surface === 'geodesic' && !!stroke.geoField;
   const depth = stroke.depth ?? Infinity;
   const normals = stroke.sampleNormals;
   const tangents = stroke.sampleTangents;
@@ -303,7 +314,7 @@ function brushClassifier(stroke: BrushStroke): TriClassifier {
         sp[0], sp[1], sp[2],
         a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2],
       );
-      if (geodesic && stroke.geoField && !stroke.geoField.reachableAt(cp[0], cp[1], cp[2])) continue;
+      if (stroke.geoField && !stroke.geoField.reachableAt(cp[0], cp[1], cp[2])) continue;
       const dx = cp[0] - sp[0], dy = cp[1] - sp[1], dz = cp[2] - sp[2];
       let d: number;
       if (slab && normals) {
@@ -512,11 +523,20 @@ export interface GeodesicField {
  *  the surface around curves and over edges but never jumps the gap through a
  *  thin / hollow wall — and, unlike the slab, needs no depth tuning. All work is
  *  bounded to a local AABB (samples padded by 2·radius) so it stays cheap on
- *  large base meshes. */
+ *  large base meshes.
+ *
+ *  `maxBendCos` (the "wrap tolerance") gates edge crossings by dihedral angle:
+ *  the flood fill only walks from one triangle to an edge-neighbour when the
+ *  cosine of the angle between their face normals is ≥ `maxBendCos`. So paint
+ *  flows smoothly over gentle curves / bumpy near-coplanar facets (cos ≈ 1) but
+ *  stops at a sharp fold — a 90° corner (cos 0), whether the convex outside of a
+ *  box or the concave inside of a hollow one, blocks at `maxBendCos > 0`. The
+ *  default −1 (cos 180°) lets paint cross any edge, i.e. no gate. */
 export function buildGeodesicField(
   base: MeshData,
   samples: [number, number, number][],
   radius: number,
+  maxBendCos = -1,
 ): GeodesicField {
   const { triVerts, numVert } = base;
   const r2 = radius * radius;
@@ -696,6 +716,35 @@ export function buildGeodesicField(
     return out;
   };
 
+  // Per-active-triangle unit face normals — only needed for the dihedral wrap
+  // gate, so skip the work entirely when it's off (maxBendCos = -1). Winding is
+  // taken as-authored: a consistently-wound manifold (the engine's output) gives
+  // adjacent faces a meaningful signed dihedral, so a 90° fold reads as cos 0 and
+  // a thin-fin 180° fold as cos −1 regardless of convex/concave.
+  const gateActive = maxBendCos > -1;
+  let triNrm: Float64Array | null = null;
+  if (gateActive) {
+    triNrm = new Float64Array(active.length * 3);
+    for (let li = 0; li < active.length; li++) {
+      const [a, b, c] = coords[li];
+      const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+      const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const len = Math.hypot(nx, ny, nz) || 1;
+      triNrm[li * 3] = nx / len; triNrm[li * 3 + 1] = ny / len; triNrm[li * 3 + 2] = nz / len;
+    }
+  }
+  // True when an edge between two active triangles is gentle enough to cross
+  // (their faces bend by ≤ the wrap-tolerance angle). Always true when the gate
+  // is off, so the flood fill is byte-identical to the pre-gate behaviour.
+  const canCross = (li: number, nb: number): boolean => {
+    if (!triNrm) return true;
+    const dot = triNrm[li * 3] * triNrm[nb * 3]
+      + triNrm[li * 3 + 1] * triNrm[nb * 3 + 1]
+      + triNrm[li * 3 + 2] * triNrm[nb * 3 + 2];
+    return dot >= maxBendCos;
+  };
+
   // Flood fill from each sample's nearest active triangle.
   const reachable = new Uint8Array(active.length);
   const stack: number[] = [];
@@ -707,6 +756,7 @@ export function buildGeodesicField(
     const li = stack.pop()!;
     for (const nb of neighbors(li)) {
       if (reachable[nb]) continue;
+      if (!canCross(li, nb)) continue;
       if (withinR(nb)) { reachable[nb] = 1; stack.push(nb); }
     }
   }
@@ -1010,12 +1060,70 @@ function subdivideSelected(
   return { mesh: newMesh, childToParent: Int32Array.from(childParent) };
 }
 
-/** Rebuild a refined mesh from a pristine base mesh and an ordered list of
- *  refine regions (brush strokes, slabs, oriented shapes). Each region refines
- *  the (possibly already-refined) mesh near its own boundary until the boundary
- *  triangles fall below its `maxEdge`. Returns the refined mesh and a
- *  `childToParent` map from each final triangle back to its base-mesh triangle
- *  index (used to carry colour regions across the refinement). */
+/** Refine a specific set of triangles until all their edges are ≤ maxEdge.
+ *  Unlike buildRefinedMesh (which takes a spatial RefineRegion), this accepts
+ *  an explicit triangle index set — useful for stamp smooth mode where the
+ *  boundary is determined by the paint result, not a geometric predicate.
+ *
+ *  `overlaps` (optional) confines the refinement: each pass only subdivides a
+ *  tracked triangle when it still overlaps the region. As a big seed triangle
+ *  splits 1→4, children that fall outside the region fail `overlaps` and stop,
+ *  so the fine tessellation stays inside the stamp footprint instead of flooding
+ *  the whole base triangle (which is what made a 12-tri cube balloon to 500k). */
+export function buildRefinedMeshFromSet(
+  base: MeshData,
+  seedTris: Set<number>,
+  maxEdge: number,
+  overlaps?: (a: number[], b: number[], c: number[]) => boolean,
+): { mesh: MeshData; childToParent: Int32Array } {
+  if (seedTris.size === 0) {
+    const id = new Int32Array(base.numTri);
+    for (let i = 0; i < id.length; i++) id[i] = i;
+    return { mesh: base, childToParent: id };
+  }
+
+  const maxEdge2 = maxEdge * maxEdge;
+  let mesh = base;
+  let comp = new Int32Array(base.numTri);
+  for (let i = 0; i < comp.length; i++) comp[i] = i;
+
+  let current = new Set<number>(seedTris);
+
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    const selected = new Set<number>();
+    for (const t of current) {
+      if (t >= mesh.numTri) continue;
+      const a = triVertex(mesh, mesh.triVerts[t * 3]);
+      const b = triVertex(mesh, mesh.triVerts[t * 3 + 1]);
+      const c = triVertex(mesh, mesh.triVerts[t * 3 + 2]);
+      if (maxEdgeLen2(a, b, c) <= maxEdge2) continue;
+      if (overlaps && !overlaps(a, b, c)) continue;
+      selected.add(t);
+    }
+    if (selected.size === 0) break;
+    if (mesh.numTri + selected.size * 3 > MAX_REFINED_TRIANGLES) break;
+
+    const { mesh: nm, childToParent } = subdivideSelected(mesh, selected);
+    comp = composeMaps(comp, childToParent);
+
+    const p2c = childrenByParent(childToParent);
+    const next = new Set<number>();
+    for (const t of current) {
+      const ch = p2c.get(t);
+      if (ch) { for (const c of ch) next.add(c); }
+      else next.add(t);
+    }
+    current = next;
+    mesh = nm;
+  }
+
+  return { mesh, childToParent: comp };
+}
+
+/** Refine each region of a mesh until its boundary triangles fall below the
+ *  region's `maxEdge`. Returns the refined mesh and a `childToParent` map
+ *  from each final triangle back to its base-mesh triangle index (used to
+ *  carry colour regions across the refinement). */
 export function buildRefinedMesh(
   base: MeshData,
   regions: RefineRegion[],

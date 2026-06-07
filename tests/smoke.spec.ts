@@ -180,9 +180,9 @@ test.describe('AI chat panel', () => {
     await expect(page.locator('input[type="password"]')).toBeVisible();
     await expect(page.locator('button:has-text("Connect Anthropic API")')).toBeVisible();
 
-    // Done closes the modal; no key was persisted. The AI control now lives in
+    // Close closes the modal; no key was persisted. The AI control now lives in
     // the rail and shows the disconnected state via its status dot (grey).
-    await page.locator('.bg-zinc-800.rounded-xl button:text-is("Done")').click();
+    await page.locator('.bg-zinc-800.rounded-xl button:text-is("Close")').click();
     await expect(page.locator('input[type="password"]')).toHaveCount(0);
     await expect(page.locator('#ai-status-dot')).toHaveClass(/bg-zinc-500/);
   });
@@ -234,7 +234,7 @@ test.describe('AI chat panel', () => {
   test('toggle pills carry tooltips explaining what they do', async ({ page }) => {
     await page.goto('/editor');
     await openAiPanel(page);
-    const pillNames = ['📸 Auto-render', '▶ Run', '💾 Save', '🎨 Paint'];
+    const pillNames = ['📸 Auto-render', '▶ Run', '💾 Save', '🎨 Paint', '🖨 3D-printable'];
     for (const name of pillNames) {
       const pill = page.locator('#ai-panel button', { hasText: name });
       await expect(pill).toBeVisible();
@@ -243,6 +243,50 @@ test.describe('AI chat panel', () => {
       expect(title!.length).toBeGreaterThan(20);
       expect(title!.toLowerCase()).toMatch(/on|off|click/);
     }
+  });
+
+  test('the 3D-printable pill is ON by default and flips off', async ({ page }) => {
+    await page.goto('/editor');
+    await openAiPanel(page);
+    const pill = page.locator('#ai-panel button', { hasText: /🖨 3D-printable/ });
+    await expect(pill).toBeVisible();
+    // Default-on: standard preset ships printOptimized: true, so a fresh
+    // session presents the pill pressed.
+    await expect(pill).toHaveAttribute('aria-pressed', 'true');
+    await pill.dispatchEvent('click');
+    await expect(pill).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  test('the system-prompt bubble shows the prompt and updates with the 3D-printable pill', async ({ page }) => {
+    await page.goto('/editor');
+    await openAiPanel(page);
+    const bubble = page.locator('#ai-transcript details[data-system-prompt-box]');
+    await expect(bubble).toBeVisible();
+    // Expand it; the body fills async from the same assembly the chat loop uses.
+    await bubble.locator('summary').click();
+    const body = bubble.locator('pre');
+    await expect(body).toContainText('Design for 3D printing', { timeout: 15000 });
+    // Flipping the pill OFF must drop the guidance from the live preview without
+    // a full page reload (applyToggleChange refreshes the bubble in place).
+    await page.locator('#ai-panel button', { hasText: /🖨 3D-printable/ }).dispatchEvent('click');
+    await expect(body).not.toContainText('Design for 3D printing', { timeout: 15000 });
+  });
+
+  test('3D-printable toggle injects FDM design guidance into the system suffix', async ({ page }) => {
+    await page.goto('/editor');
+    const result = await page.evaluate(async () => {
+      const { loadSettings } = await import('/src/ai/settings.ts');
+      const { toggleSuffix } = await import('/src/ai/systemPrompt.ts');
+      const base = loadSettings().toggles;
+      const on = toggleSuffix({ ...base, printOptimized: true, planFirst: false });
+      const off = toggleSuffix({ ...base, printOptimized: false, planFirst: false });
+      return {
+        onHas: on.includes('Design for 3D printing') && on.includes('45°'),
+        offHas: off.includes('Design for 3D printing'),
+      };
+    });
+    expect(result.onHas).toBe(true);
+    expect(result.offHas).toBe(false);
   });
 
   test('the AI drawer (and app bundle) does not load on the landing route', async ({ page }) => {

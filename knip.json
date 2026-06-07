@@ -10,7 +10,9 @@
     "src/sw.ts",
     "tests/**/*.spec.ts",
     "tests/unit/**/*.test.ts",
-    "scripts/*.mjs"
+    "scripts/**/*.mjs",
+    "bin/*.mjs",
+    "src/tools/previewModel.ts"
   ],
   "project": ["src/**/*.{ts,tsx}"],
   "paths": {

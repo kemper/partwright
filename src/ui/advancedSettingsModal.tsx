@@ -104,6 +104,38 @@ function Field(props: FieldProps) {
   );
 }
 
+interface ToggleFieldProps {
+  label: string;
+  hint?: string;
+  defaultValue: boolean;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}
+
+function ToggleField(props: ToggleFieldProps) {
+  const { label, hint, defaultValue, value, onChange } = props;
+  const changed = value !== defaultValue;
+  return (
+    <div class="flex flex-col gap-1">
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={value}
+          class="w-4 h-4 accent-blue-500"
+          onChange={e => onChange((e.currentTarget as HTMLInputElement).checked)}
+        />
+        <span class="text-xs font-medium text-zinc-300 flex-1">{label}</span>
+        {changed && (
+          <span class="text-[9px] text-amber-400 border border-amber-400/30 rounded px-1 py-px uppercase tracking-wide">
+            modified
+          </span>
+        )}
+      </label>
+      {hint && <p class="text-[10px] text-zinc-500 leading-snug pl-6">{hint}</p>}
+    </div>
+  );
+}
+
 interface SectionProps {
   title: string;
   children: ComponentChildren;
@@ -136,7 +168,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
     );
   });
 
-  function set<S extends keyof AppConfig>(section: S, key: keyof AppConfig[S], value: number): void {
+  function set<S extends keyof AppConfig>(section: S, key: keyof AppConfig[S], value: number | boolean): void {
     const next = cloneConfig(cfg.value);
     (next[section] as Record<string, unknown>)[key as string] = value;
     cfg.value = next;
@@ -162,6 +194,36 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.maxConsecutiveAutoResumes}
           min={1} max={64} integer
           onChange={v => set('ai', 'maxConsecutiveAutoResumes', v)}
+        />
+        <Field
+          label="Max transient API retries"
+          unit="retries"
+          hint="How many times a provider call is retried after a transient failure (HTTP 429/5xx, dropped stream) before the turn surfaces a hard error."
+          tooltip="Provider servers occasionally return rate-limit (429) or server (5xx) errors, or drop the streaming connection. Rather than tearing the whole agent loop down — which is especially disruptive mid auto-continue — the chat loop retries the same request with exponential backoff up to this many times. These retries do NOT consume the agent's per-turn iteration budget. Set to 0 to disable and fail fast. Note: this value is read from defaults inside the agent Worker, so overriding it only affects the local (WebGPU) provider."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.maxTransientRetries}
+          value={c.ai.maxTransientRetries}
+          min={0} max={10} integer
+          onChange={v => set('ai', 'maxTransientRetries', v)}
+        />
+        <Field
+          label="Transient retry base backoff"
+          unit="ms"
+          hint="Base wait between transient-error retries; grows exponentially with jitter."
+          tooltip="The first transient-error retry waits up to this long, the second up to 2×, the third up to 4×, and so on (with random jitter), capped by the max backoff below. Larger values are gentler on a struggling server but slow recovery from a brief blip."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.transientRetryBaseMs}
+          value={c.ai.transientRetryBaseMs}
+          min={100} max={30_000} integer
+          onChange={v => set('ai', 'transientRetryBaseMs', v)}
+        />
+        <Field
+          label="Transient retry max backoff"
+          unit="ms"
+          hint="Ceiling on a single transient-error backoff wait."
+          tooltip="Caps how long any one transient-error retry will wait, so exponential growth can't stall the turn for minutes. The actual wait is a random value up to min(base · 2^(attempt-1), this ceiling)."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.transientRetryMaxMs}
+          value={c.ai.transientRetryMaxMs}
+          min={1_000} max={120_000} integer
+          onChange={v => set('ai', 'transientRetryMaxMs', v)}
         />
         <Field
           label="Slow-tool warning threshold"
@@ -206,20 +268,11 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
       </Section>
 
       <Section title="AI — geometry timeouts">
-        <div class="text-[10px] text-zinc-500 leading-snug">Execution timeout per modeling engine. The engine Worker is restarted if a run exceeds the ceiling.</div>
-        <Field
-          label="Manifold-JS timeout"
-          unit="ms"
-          tooltip="Wall-clock ceiling for a single manifold-js geometry evaluation. If the code run exceeds this, the engine Worker is restarted and an error is surfaced. The manifold-3d kernel is typically fast — this mainly guards against infinite loops in user code. Increase for extremely complex mesh operations."
-          defaultValue={APP_CONFIG_DEFAULTS.ai.geometryTimeoutManifoldMs}
-          value={c.ai.geometryTimeoutManifoldMs}
-          min={5_000} max={600_000} integer
-          onChange={v => set('ai', 'geometryTimeoutManifoldMs', v)}
-        />
+        <div class="text-[10px] text-zinc-500 leading-snug">Safety timeouts for background Worker operations that have no Cancel button. Rendering itself is <em>not</em> timed out — a slow run is bounded by the elapsed-time counter and the Cancel button instead.</div>
         <Field
           label="OpenSCAD timeout"
           unit="ms"
-          tooltip="Wall-clock ceiling for a single OpenSCAD evaluation. SCAD compiles BOSL2-style libraries from source on every run, and complex gear or thread models can legitimately take over a minute on slow hardware. The 3-minute default gives ample headroom for heavy parametric models."
+          tooltip="Wall-clock ceiling for OpenSCAD Worker operations that have no Cancel affordance — source validation and include-dependency detection. SCAD compiles BOSL2-style libraries from source on every run, so the 3-minute default gives ample headroom. (The render path itself has no timeout.)"
           defaultValue={APP_CONFIG_DEFAULTS.ai.geometryTimeoutScadMs}
           value={c.ai.geometryTimeoutScadMs}
           min={5_000} max={600_000} integer
@@ -228,7 +281,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="BREP/replicad timeout"
           unit="ms"
-          tooltip="Wall-clock ceiling for a single replicad/OpenCASCADE evaluation. OCCT Boolean operations on complex STEP-imported assemblies can rival SCAD's worst cases. Increase if you're working with large imported STEP files or heavily-filleted BREP models."
+          tooltip="Wall-clock ceiling for replicad/OpenCASCADE Worker operations that have no Cancel affordance — STEP export/import and BREP-shape cleanup. OCCT operations on complex STEP assemblies can be slow, so increase this if you work with large imported STEP files. (The render path itself has no timeout.)"
           defaultValue={APP_CONFIG_DEFAULTS.ai.geometryTimeoutReplicadMs}
           value={c.ai.geometryTimeoutReplicadMs}
           min={5_000} max={600_000} integer
@@ -561,6 +614,24 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={500} max={30_000} integer
           onChange={v => set('renderer', 'thumbnailTimeoutMs', v)}
         />
+        <Field
+          label="Enhance warn triangles"
+          unit="tris"
+          tooltip="When the Quality panel's Apply projects an enhance result above this triangle count, it asks for a Proceed/Cancel confirmation first — a model this dense is slow to display and edit."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.enhanceWarnTriangles}
+          value={c.renderer.enhanceWarnTriangles}
+          min={10_000} max={50_000_000} integer
+          onChange={v => set('renderer', 'enhanceWarnTriangles', v)}
+        />
+        <Field
+          label="Enhance max triangles"
+          unit="tris"
+          tooltip="Hard ceiling on an enhance result. The geometry worker refuses to return a refined mesh larger than this, and Apply won't run a target above it — prevents a runaway refine from freezing the page when the giant result is committed to the viewport."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.enhanceMaxTriangles}
+          value={c.renderer.enhanceMaxTriangles}
+          min={100_000} max={100_000_000} integer
+          onChange={v => set('renderer', 'enhanceMaxTriangles', v)}
+        />
       </Section>
 
       <Section title="Import">
@@ -635,6 +706,23 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
       </Section>
 
       <Section title="UI">
+        <ToggleField
+          label="Show editor hints"
+          hint={'The "Did you know?" strip at the top of the editor that rotates through tips. Off hides it everywhere; the strip’s ✕ only hides it for the current tab.'}
+          defaultValue={APP_CONFIG_DEFAULTS.ui.editorHintsEnabled}
+          value={c.ui.editorHintsEnabled}
+          onChange={v => set('ui', 'editorHintsEnabled', v)}
+        />
+        <Field
+          label="Hint rotation interval"
+          unit="ms"
+          hint="How long each editor hint shows before the strip rotates to the next."
+          tooltip="The 'Did you know?' strip auto-advances to the next tip after this long. Hovering the strip pauses rotation; the ‹ › arrows step manually. Raise it to read each tip longer; lower it to cycle faster."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.hintRotationMs}
+          value={c.ui.hintRotationMs}
+          min={3_000} max={60_000} integer
+          onChange={v => set('ui', 'hintRotationMs', v)}
+        />
         <Field
           label="Toast duration"
           unit="ms"
@@ -672,6 +760,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.companionDraftDebounceMs}
           min={0} max={5_000} integer
           onChange={v => set('ui', 'companionDraftDebounceMs', v)}
+        />
+        <Field
+          label="Working-view camera save debounce"
+          unit="ms"
+          tooltip="After you finish orbiting or zooming the 3D viewport, the app waits this long before saving the camera angle to the session so it's restored on reload. Coalesces a burst of adjustments into one write. Lower it to capture the angle sooner; raise it to write less often."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.workCameraSaveDebounceMs}
+          value={c.ui.workCameraSaveDebounceMs}
+          min={0} max={5_000} integer
+          onChange={v => set('ui', 'workCameraSaveDebounceMs', v)}
         />
         <Field
           label="Surface preview debounce"

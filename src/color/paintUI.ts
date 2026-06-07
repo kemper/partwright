@@ -7,6 +7,8 @@ import {
   isActive,
   setColor,
   getColor,
+  setSlot,
+  getSlotId,
   setTool,
   getTool,
   setBucketTolerance,
@@ -28,6 +30,10 @@ import {
   getBrushSmoothDivisor,
   setBrushPaintDepth,
   getBrushPaintDepth,
+  setBrushWrapAngle,
+  getBrushWrapAngle,
+  WRAP_ANGLE_MIN,
+  WRAP_ANGLE_MAX,
   setBrushSurface,
   getBrushSurface,
   setBrushSpray,
@@ -50,6 +56,14 @@ import {
   type PaintTool,
   type BrushShape,
 } from './paintMode';
+import {
+  getActivePalette,
+  getPaletteCapacity,
+  isPaletteConstrained,
+  onPaletteChange,
+} from './palette';
+import { usedSlotIds } from './regions';
+import { openPaletteManager } from './paletteManager';
 import {
   getRegions,
   onChange as onRegionsChange,
@@ -77,32 +91,12 @@ import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/t
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
 import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, getShapeType, getShapeVisible, setShapeVisible, onShapeVisibilityChange, type BoxMode, type ShapeType } from './boxDrag';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
+import { forceDeactivate as closePrintToolsMenu } from '../ui/printToolsUI';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
-import { registerExclusiveMode } from '../ui/modeExclusion';
-
-const PRESET_COLORS: [number, number, number][] = [
-  // Warm
-  [0.92, 0.26, 0.21], // red
-  [1.00, 0.60, 0.00], // orange
-  [1.00, 0.76, 0.03], // yellow
-  [0.55, 0.36, 0.22], // brown
-  // Cool
-  [0.55, 0.85, 0.20], // lime
-  [0.30, 0.69, 0.31], // green
-  [0.00, 0.74, 0.83], // teal
-  [0.13, 0.59, 0.95], // blue
-  // Purples / pinks
-  [0.10, 0.20, 0.55], // navy
-  [0.61, 0.15, 0.69], // purple
-  [0.93, 0.05, 0.65], // magenta
-  [0.91, 0.12, 0.39], // pink
-  // Neutrals
-  [1.00, 1.00, 1.00], // white
-  [0.75, 0.75, 0.75], // light gray
-  [0.35, 0.35, 0.35], // dark gray
-  [0.00, 0.00, 0.00], // black
-];
+import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
+import { viewportToolsMount } from '../ui/popoverMenu';
+import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 
 let paintBtn: HTMLButtonElement | null = null;
 let pickerPanel: HTMLElement | null = null;
@@ -126,7 +120,7 @@ const shapeSmoothSyncs: (() => void)[] = [];
 export function initPaintUI(controlsContainer: HTMLElement): void {
   paintBtn = document.createElement('button');
   paintBtn.id = 'paint-toggle';
-  paintBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  paintBtn.className = TOOL_TOGGLE_IDLE;
   paintBtn.textContent = '\uD83C\uDFA8 Paint';
   paintBtn.title = 'Paint color regions on model faces';
 
@@ -136,12 +130,18 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
 
   paintBtn.addEventListener('click', togglePaintMode);
 
-  const measureBtn = controlsContainer.querySelector('#measure-toggle');
-  if (measureBtn) {
-    controlsContainer.insertBefore(paintBtn, measureBtn);
-  } else {
-    controlsContainer.appendChild(paintBtn);
-  }
+  const toolsMount = viewportToolsMount(controlsContainer);
+  toolsMount.appendChild(paintBtn);
+
+  // Standalone palette manager entry point — edit filament slots without
+  // entering paint mode. Edits propagate to the paint swatches and relief.
+  const paletteBtn = document.createElement('button');
+  paletteBtn.id = 'palette-manager-toggle';
+  paletteBtn.className = TOOL_TOGGLE_IDLE;
+  paletteBtn.textContent = '🧵 Palette';
+  paletteBtn.title = 'Manage the filament palette (slots, colours, capacity)';
+  paletteBtn.addEventListener('click', () => openPaletteManager());
+  toolsMount.insertBefore(paletteBtn, paintBtn);
 
   pickerPanel = createPickerPanel();
   // Anchor the panel to the positioned viewport pane (the toolbar's parent)
@@ -186,6 +186,8 @@ function togglePaintMode(): void {
     forceDeactivateAnnotateText();
     forceDeactivateAnnotateSelect();
     closeSimplifyMenu();
+    closePrintToolsMenu();
+    deactivateMode('imagePaint');
     activate();
     updateButtonState(true);
     if (pickerPanel) setInitialPanelPosition(pickerPanel);
@@ -198,11 +200,111 @@ function togglePaintMode(): void {
 
 function updateButtonState(active: boolean): void {
   if (!paintBtn) return;
-  if (active) {
-    paintBtn.className = 'px-2 py-1 rounded text-xs bg-blue-500/30 backdrop-blur text-blue-300 border border-blue-500/50 transition-colors';
-  } else {
-    paintBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  paintBtn.className = active ? TOOL_TOGGLE_ACTIVE : TOOL_TOGGLE_IDLE;
+}
+
+/** Build the palette section: the slot swatch grid, an over-budget badge, the
+ *  custom-colour picker (hidden when the palette is constrained), and a
+ *  collapsible inline palette editor. */
+function createPaletteSection(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'mb-2';
+
+  // Header: "Palette" + over-budget badge + edit toggle.
+  const head = document.createElement('div');
+  head.className = 'flex items-center justify-between mb-1.5';
+  const title = document.createElement('div');
+  title.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
+  title.textContent = 'Palette';
+  head.appendChild(title);
+
+  const headRight = document.createElement('div');
+  headRight.className = 'flex items-center gap-1.5';
+  const budget = document.createElement('span');
+  budget.className = 'hidden px-1.5 py-0.5 rounded text-[9px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40';
+  headRight.appendChild(budget);
+  const manageBtn = document.createElement('button');
+  manageBtn.className = 'text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors';
+  manageBtn.textContent = 'Manage…';
+  manageBtn.title = 'Open the filament palette manager (add, recolour, reorder slots + capacity)';
+  manageBtn.addEventListener('click', () => openPaletteManager());
+  headRight.appendChild(manageBtn);
+  head.appendChild(headRight);
+  wrap.appendChild(head);
+
+  // Swatch grid (one swatch per palette slot).
+  const grid = document.createElement('div');
+  grid.className = 'grid grid-cols-4 gap-1.5 mb-2';
+  wrap.appendChild(grid);
+
+  // Custom (ad-hoc, unslotted) colour — hidden when the palette is constrained.
+  const customRow = document.createElement('div');
+  customRow.className = 'flex items-center gap-1.5';
+  const colorInput = document.createElement('input');
+  colorInput.type = 'color';
+  colorInput.className = 'w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent';
+  colorInput.title = 'Custom color (unslotted)';
+  colorInput.addEventListener('input', () => {
+    const hex = colorInput.value;
+    setColor([
+      parseInt(hex.slice(1, 3), 16) / 255,
+      parseInt(hex.slice(3, 5), 16) / 255,
+      parseInt(hex.slice(5, 7), 16) / 255,
+    ]);
+    renderSwatches(); // drop the active-slot ring — we're now on an ad-hoc colour
+  });
+  const customLabel = document.createElement('span');
+  customLabel.className = 'text-[10px] text-zinc-500';
+  customLabel.textContent = 'Custom';
+  customRow.appendChild(colorInput);
+  customRow.appendChild(customLabel);
+  wrap.appendChild(customRow);
+
+  function renderSwatches(): void {
+    grid.replaceChildren();
+    const slots = getActivePalette().slots;
+    const activeId = getSlotId();
+    slots.forEach((slot, i) => {
+      const swatch = document.createElement('button');
+      swatch.className = 'w-6 h-6 rounded border-2 border-transparent hover:border-white/50 transition-colors';
+      swatch.style.backgroundColor = slot.hex;
+      swatch.title = `Slot ${i + 1}: ${slot.name} (${slot.hex})`;
+      if (slot.id === activeId) swatch.classList.add('border-white/80', 'ring-1', 'ring-white/30');
+      swatch.addEventListener('click', () => {
+        setSlot(slot.id);
+        renderSwatches();
+      });
+      grid.appendChild(swatch);
+    });
   }
+
+  function renderBudget(): void {
+    const used = usedSlotIds().size;
+    const cap = getPaletteCapacity();
+    if (used > cap) {
+      budget.textContent = `${used}/${cap} slots`;
+      budget.title = `This model uses ${used} filament colours but the palette capacity is ${cap}. Your printer may not have enough slots.`;
+      budget.classList.remove('hidden');
+    } else {
+      budget.classList.add('hidden');
+    }
+  }
+
+  function renderConstrain(): void {
+    customRow.classList.toggle('hidden', isPaletteConstrained());
+  }
+
+  // Don't pre-select a slot: that would override the default paint colour with
+  // the first slot's (white), surprising the user and any code relying on the
+  // red default. Slots are opt-in — the swatch grid shows no active ring until
+  // the user picks one, and the custom colour stays the unslotted default.
+  renderSwatches();
+  renderBudget();
+  renderConstrain();
+  onPaletteChange(() => { renderSwatches(); renderBudget(); renderConstrain(); });
+  onRegionsChange(() => { renderBudget(); renderSwatches(); });
+
+  return wrap;
 }
 
 function updateBadge(): void {
@@ -227,20 +329,8 @@ function createPickerPanel(): HTMLElement {
   // no matter how long the region list grows.
   panel.className = 'hidden z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl absolute rounded-lg w-60 max-h-[calc(100%-3.5rem)]';
 
-  // === Header: drag handle + title + \u00D7 close button ===
-  const header = document.createElement('div');
-  header.className = 'shrink-0 flex items-center justify-between gap-2 px-2.5 py-2 border-b border-zinc-700/70';
-  const headerTitle = document.createElement('div');
-  headerTitle.className = 'text-[11px] text-zinc-300 font-medium';
-  headerTitle.textContent = '\uD83C\uDFA8 Paint';
-  header.appendChild(headerTitle);
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'shrink-0 -mr-1 w-7 h-7 flex items-center justify-center rounded text-base leading-none text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 transition-colors';
-  closeBtn.title = 'Close paint menu';
-  closeBtn.setAttribute('aria-label', 'Close paint menu');
-  closeBtn.textContent = '\u00D7';
-  closeBtn.addEventListener('click', () => { togglePaintMode(); });
-  header.appendChild(closeBtn);
+  // === Header: drag handle + title + \u00D7 close button (shared tool-panel chrome) ===
+  const header = createToolPanelHeader('\uD83C\uDFA8 Paint', () => { togglePaintMode(); }, 'Close paint menu');
   panel.appendChild(header);
   attachViewportPanelDrag(header, panel);
 
@@ -264,56 +354,14 @@ function createPickerPanel(): HTMLElement {
   toolRow.appendChild(createToolButton('replace', '\u{1F504} Replace', 'Replace one color with another across all matching regions (click mesh to pick source, then Replace all)'));
   content.appendChild(toolRow);
 
-  // === Color picker ===
-  const title = document.createElement('div');
-  title.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5 font-medium';
-  title.textContent = 'Color';
-  content.appendChild(title);
-
-  const grid = document.createElement('div');
-  grid.className = 'grid grid-cols-4 gap-1.5 mb-2';
-
-  for (const color of PRESET_COLORS) {
-    const swatch = document.createElement('button');
-    swatch.className = 'w-6 h-6 rounded border-2 border-transparent hover:border-white/50 transition-colors';
-    swatch.style.backgroundColor = rgbToCSS(color);
-    swatch.title = rgbToHex(color);
-    swatch.addEventListener('click', () => {
-      setColor(color);
-      updateActiveSwatch(grid, swatch);
-    });
-    grid.appendChild(swatch);
-  }
-  const first = grid.children[0] as HTMLElement;
-  if (first) first.classList.add('border-white/80', 'ring-1', 'ring-white/30');
-  content.appendChild(grid);
-
-  const customRow = document.createElement('div');
-  customRow.className = 'flex items-center gap-1.5';
-
-  const colorInput = document.createElement('input');
-  colorInput.type = 'color';
-  colorInput.value = rgbToHex(PRESET_COLORS[0]);
-  colorInput.className = 'w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent';
-  colorInput.title = 'Custom color';
-  colorInput.addEventListener('input', () => {
-    const hex = colorInput.value;
-    const r = parseInt(hex.slice(1, 3), 16) / 255;
-    const g = parseInt(hex.slice(3, 5), 16) / 255;
-    const b = parseInt(hex.slice(5, 7), 16) / 255;
-    setColor([r, g, b]);
-    for (const child of Array.from(grid.children)) {
-      (child as HTMLElement).classList.remove('border-white/80', 'ring-1', 'ring-white/30');
-    }
-  });
-
-  const customLabel = document.createElement('span');
-  customLabel.className = 'text-[10px] text-zinc-500';
-  customLabel.textContent = 'Custom';
-
-  customRow.appendChild(colorInput);
-  customRow.appendChild(customLabel);
-  content.appendChild(customRow);
+  // === Palette (filament slots) ===
+  // The swatch grid is driven by the shared colour palette, so each swatch maps
+  // to a filament/AMS slot. Painting with a swatch attributes the region to that
+  // slot, so recolouring a slot recolours every region on it and export can group
+  // by slot order. The custom picker still allows ad-hoc (unslotted) colour
+  // unless the palette is constrained.
+  const paletteSection = createPaletteSection();
+  content.appendChild(paletteSection);
 
   // === Bucket tool controls (tolerance slider + number input) ===
   bucketControls = createBucketControls();
@@ -889,6 +937,63 @@ function createBrushControls(): HTMLElement {
   };
   syncDepthVisibility();
 
+  // Wrap tolerance — how sharp an edge paint may flow across. Applies to both
+  // surface modes: lower stops the stroke at corners (stays on one face), higher
+  // lets it wrap around edges. 180° = wrap freely (the pre-slider behaviour).
+  const wrapLabel = document.createElement('div');
+  wrapLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  wrapLabel.textContent = 'Wrap tolerance';
+  wrap.appendChild(wrapLabel);
+
+  const wrapRow = document.createElement('div');
+  wrapRow.className = 'flex items-center gap-2';
+
+  const wrapSlider = document.createElement('input');
+  wrapSlider.type = 'range';
+  wrapSlider.min = String(WRAP_ANGLE_MIN);
+  wrapSlider.max = String(WRAP_ANGLE_MAX);
+  wrapSlider.step = '1';
+  wrapSlider.value = String(getBrushWrapAngle());
+  wrapSlider.className = 'flex-1 accent-blue-500 min-w-0';
+  wrapSlider.title = 'How sharp an edge paint flows across. Lower keeps the stroke on one face (stops at corners); higher wraps around edges. 90° stops at right-angle folds; 180° wraps freely.';
+
+  const wrapInput = document.createElement('input');
+  wrapInput.type = 'number';
+  wrapInput.min = String(WRAP_ANGLE_MIN);
+  wrapInput.max = String(WRAP_ANGLE_MAX);
+  wrapInput.step = '1';
+  wrapInput.value = String(getBrushWrapAngle());
+  wrapInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  wrapInput.title = 'Wrap tolerance in degrees (0–180). Edges that bend more than this block the stroke.';
+
+  const wrapUnit = document.createElement('span');
+  wrapUnit.className = 'text-[10px] text-zinc-500';
+  wrapUnit.textContent = '°';
+
+  wrapSlider.addEventListener('input', () => {
+    setBrushWrapAngle(parseInt(wrapSlider.value, 10));
+    wrapInput.value = String(getBrushWrapAngle());
+  });
+  const applyWrap = (): void => {
+    const raw = parseInt(wrapInput.value, 10);
+    if (!Number.isFinite(raw)) { wrapInput.value = String(getBrushWrapAngle()); return; }
+    setBrushWrapAngle(raw);
+    wrapSlider.value = String(getBrushWrapAngle());
+    wrapInput.value = String(getBrushWrapAngle());
+  };
+  wrapInput.addEventListener('change', applyWrap);
+  wrapInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyWrap(); wrapInput.blur(); } });
+
+  wrapRow.appendChild(wrapSlider);
+  wrapRow.appendChild(wrapInput);
+  wrapRow.appendChild(wrapUnit);
+  wrap.appendChild(wrapRow);
+
+  const wrapHelp = document.createElement('div');
+  wrapHelp.className = 'text-[10px] text-zinc-500 mt-1';
+  wrapHelp.textContent = 'Stops at corners ←——→ Wraps around edges';
+  wrap.appendChild(wrapHelp);
+
   // Spray (airbrush) — soft geodesic speckle instead of a solid fill. Forces
   // geodesic (a spray can't punch through a wall) and reveals strength/softness.
   const sprayLabel = document.createElement('div');
@@ -1430,13 +1535,6 @@ function updateRedoButton(): void {
   redoBtn.classList.toggle('cursor-not-allowed', !can);
 }
 
-function updateActiveSwatch(grid: HTMLElement, activeSwatch: HTMLElement): void {
-  for (const child of Array.from(grid.children)) {
-    (child as HTMLElement).classList.remove('border-white/80', 'ring-1', 'ring-white/30');
-  }
-  activeSwatch.classList.add('border-white/80', 'ring-1', 'ring-white/30');
-}
-
 // Active hover-release closure for the labels list. Releasing it inside
 // `updateLabelList` before `innerHTML = ''` matters: if a fresh run fires
 // `setPaintLabels` while the user's pointer is over a row, the row DOM is
@@ -1552,6 +1650,8 @@ function createLabelRow(label: LabelInfo, alreadyPainted: boolean): HTMLElement 
       'paintbrush',
       { kind: 'byLabel', label: label.name },
       new Set(label.triangles),
+      true,
+      getSlotId() ?? undefined,
     );
   });
 
