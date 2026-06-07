@@ -49,7 +49,7 @@ function getGeo(page: Page): Promise<Record<string, unknown>> {
 const palette = '#insert-palette-panel';
 
 test.describe('Insert palette', () => {
-  test('Insert button (editor header) toggles the floating palette', async ({ page }) => {
+  test('Insert button (Tools popover) toggles the floating palette', async ({ page }) => {
     await gotoEditor(page);
     await expect(page.locator(palette)).toBeHidden();
     await page.locator('#btn-insert').dispatchEvent('click');

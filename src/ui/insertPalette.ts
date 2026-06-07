@@ -154,18 +154,43 @@ export function initInsertPalette(container: HTMLElement, callbacks: InsertPalet
   // the model and the drag-positioning math measures against the full viewport.
   const overlayHost = container.parentElement ?? container;
   overlayHost.appendChild(panel);
+
+  // Sessions don't share registry/spec state. Without a reset, a part named
+  // `box` from session A would persist into session B and either contaminate
+  // 3D-pick (stale bbox) or trip `pruneSelection` only if the name *also*
+  // appears in B's code. Clear everything on session change so each session
+  // starts from a blank palette-side cache.
+  window.addEventListener('session-changed', resetInsertPaletteState);
+}
+
+/** Drop palette-side caches that don't carry between sessions: the selection
+ *  set, the spatial registry, the spec-by-name map. Also closes the panel so
+ *  a stale chip strip doesn't paint over the new session's empty state. */
+function resetInsertPaletteState(): void {
+  selection.clear();
+  registry.clear();
+  specByName.clear();
+  if (isInsertPaletteOpen()) closeInsertPalette();
+  rerenderSelectionUI();
 }
 
 function isInsertPaletteOpen(): boolean {
   return !!panel && !panel.classList.contains('hidden');
 }
 
+function setToolBtnState(active: boolean): void {
+  if (!toolBtn) return;
+  // Match paintUI.ts's pattern (line 203 on main): assign the whole class
+  // string rather than tokenizing & swapping. Avoids regex drift if either
+  // shared constant gains a class with internal whitespace later.
+  toolBtn.className = active ? TOOL_TOGGLE_ACTIVE : TOOL_TOGGLE_IDLE;
+}
+
 function openInsertPalette(): void {
   if (!panel) return;
   panel.classList.remove('hidden');
   setInitialPanelPosition(panel);
-  toolBtn?.classList.remove(...TOOL_TOGGLE_IDLE.split(/\s+/));
-  toolBtn?.classList.add(...TOOL_TOGGLE_ACTIVE.split(/\s+/));
+  setToolBtnState(true);
   openViewportPanel(insertRegistryEntry);
   document.addEventListener('keydown', onInsertEscape);
 }
@@ -173,8 +198,7 @@ function openInsertPalette(): void {
 function closeInsertPalette(): void {
   if (!panel || !isInsertPaletteOpen()) return;
   panel.classList.add('hidden');
-  toolBtn?.classList.remove(...TOOL_TOGGLE_ACTIVE.split(/\s+/));
-  toolBtn?.classList.add(...TOOL_TOGGLE_IDLE.split(/\s+/));
+  setToolBtnState(false);
   closeViewportPanel(insertRegistryEntry);
   document.removeEventListener('keydown', onInsertEscape);
 }
