@@ -9,17 +9,36 @@ TypeScript language-server MCP for symbol-aware discovery.
 Claude Code resolves a subagent's model in this precedence (highest first):
 `CLAUDE_CODE_SUBAGENT_MODEL` env var → per-invocation `model` → the agent
 file's `model:` frontmatter → inherit the main session. We rely on per-agent
-frontmatter and deliberately do **not** set the global env var, so the two
+frontmatter and deliberately do **not** set the global env var, so the
 agents below can run on different model tiers.
 
 | Agent | File | Model | Tools | Role |
 |---|---|---|---|---|
 | `work-reviewer` | `.claude/agents/work-reviewer.md` | `opus` | read-only (`Read, Grep, Glob, Bash`) | Reviews the branch diff vs `origin/main` for correctness, back-compat, security, **and** UI consistency. Never edits. |
 | `explore` | `.claude/agents/explore.md` | `sonnet` | read-only + `mcp__typescript__*` | Codebase discovery / "where is X / who uses Y". Overrides the built-in Explore agent (which defaults to Haiku) with Sonnet + symbol-aware tools. |
+| `voxel-sculpt` | `.claude/agents/voxel-sculpt.md` | `sonnet` | `Read, Write, Edit, Bash` | Iterates a voxel-language snippet (photo→figurine, catalog toy) through the headless `model:preview` render→look→adjust loop until it matches a target *and* passes the printability gates. Returns **text only**. |
 
-Both are checked in, so every session and teammate gets the same behavior. The
-`work-reviewer` runs the static-analysis scripts below as part of its review and
-reasons about the hits against the diff.
+All three are checked in, so every session and teammate gets the same behavior.
+The `work-reviewer` runs the static-analysis scripts below as part of its review
+and reasons about the hits against the diff.
+
+> **Gotcha: a freshly-added agent file is not selectable in the session that
+> created it.** Claude Code loads the agent registry at session start, so the
+> Agent tool errors with "agent type not found" for a `.claude/agents/*.md` you
+> just wrote — it becomes available next session. To smoke-test a new definition
+> in-session, run its instructions through `general-purpose`: point that agent at
+> the file and tell it to follow the instructions exactly.
+
+> Why a `voxel-sculpt` agent? Sculpting a model to look like a photo is an
+> iterative render→**look**→adjust loop, and every preview PNG the modeller
+> Reads to judge a pass stays in context and is re-billed on every later turn of
+> the *main* session. Delegating the loop moves those image tokens into the
+> subagent's disposable context: it Reads the PNGs, judges them, and returns only
+> a text verdict + the final file/preview paths. The main agent then decides
+> whether to `SendUserFile` the preview (it can ship the PNG to the user
+> *without* Reading it into its own context). Net effect: a many-pass visual
+> iteration costs the main thread a few sentences instead of a stack of images.
+> It runs on Sonnet so the cheap-to-judge geometry loop doesn't burn Opus tokens.
 
 > Why override `explore`? The stock Explore agent runs on Haiku — fine for
 > locating a string, weaker for this codebase's cross-file reference questions
