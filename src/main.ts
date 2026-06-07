@@ -8581,6 +8581,10 @@ async function main() {
     /** Close the current session */
     async closeSession() {
       await closeSession();
+      // Forget the framed session so re-opening it (or any session) auto-frames
+      // its model rather than preserving the angle from before it was closed —
+      // matches the "opening a session always frames" contract.
+      lastFramedSessionId = null;
     },
 
     /** Delete a session and all its versions */
