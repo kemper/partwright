@@ -10806,6 +10806,10 @@ async function main() {
       cylinder?: { center?: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number };
       slab?: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number };
       normalCone?: { axis: [number, number, number]; angleDeg: number };
+      /** Cylinder selector only — mirrors `paintInCylinder.topOnly`. Keeps just
+       *  the outward-radial faces so the dry-run matches what a
+       *  `paintInCylinder({ topOnly: true })` commit would actually paint. */
+      topOnly?: boolean;
       point?: [number, number, number];
       radius?: number;
       triangleIds?: number[];
@@ -10856,9 +10860,12 @@ async function main() {
         if (c.rMin < 0 || c.rMax <= c.rMin) return { error: 'cylinder requires rMin >= 0 and rMax > rMin' };
         if (c.zMax <= c.zMin) return { error: 'cylinder requires zMax > zMin' };
         if (c.center !== undefined && (!Array.isArray(c.center) || c.center.length !== 2)) return { error: 'cylinder.center must be [x, y]' };
-        const coneErr = validateNormalCone(opts.normalCone);
+        // Resolve topOnly into a cone the same way paintInCylinder does, so the
+        // preview's selection matches a topOnly commit instead of over-reporting.
+        const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+        const coneErr = validateNormalCone(cone);
         if (coneErr) return { error: coneErr };
-        triangles = collectTrianglesByCylinder(mesh, c.center ?? [0, 0], c.rMin, c.rMax, c.zMin, c.zMax, opts.normalCone, opts.coverageMode, opts.maxTriangleArea);
+        triangles = collectTrianglesByCylinder(mesh, c.center ?? [0, 0], c.rMin, c.rMax, c.zMin, c.zMax, cone, opts.coverageMode, opts.maxTriangleArea);
       } else if (opts.slab !== undefined) {
         const s = opts.slab;
         if (typeof s !== 'object' || s === null) return { error: 'slab must be { axis|normal, offset, thickness }' };

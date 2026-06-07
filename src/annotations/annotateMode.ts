@@ -80,6 +80,7 @@ function notifyActiveChange(): void {
 export function activate(): void {
   if (active) return;
   deactivateMode('paint');
+  deactivateMode('voxelStudio');
   closeSimplifyMenu();
   deactivateMode('select');
   // Detach text mode's handlers but keep the session plane alive — pen and

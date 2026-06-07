@@ -188,6 +188,7 @@ function togglePaintMode(): void {
     closeSimplifyMenu();
     closePrintToolsMenu();
     deactivateMode('imagePaint');
+    deactivateMode('voxelStudio');
     activate();
     updateButtonState(true);
     if (pickerPanel) setInitialPanelPosition(pickerPanel);
