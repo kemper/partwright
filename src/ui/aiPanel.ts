@@ -889,8 +889,8 @@ function buildDrawer(): void {
   if (isVoiceInputSupported()) {
     const micBtn = document.createElement('button');
     micBtn.id = 'btn-ai-mic';
-    const micIdleClass = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700';
-    const micActiveClass = 'shrink-0 px-2 py-1 rounded text-[11px] text-white bg-red-600 hover:bg-red-500 border border-red-500 animate-pulse';
+    const micIdleClass = 'shrink-0 px-2.5 py-1 rounded text-lg leading-none text-blue-300 bg-zinc-800 hover:bg-zinc-700 border border-blue-500/40 hover:border-blue-500';
+    const micActiveClass = 'shrink-0 px-2.5 py-1 rounded text-lg leading-none text-white bg-red-600 hover:bg-red-500 border border-red-500 animate-pulse';
     micBtn.className = micIdleClass;
     micBtn.textContent = '🎤';
     micBtn.title = 'Dictate your message (voice to text). Click again to stop.';
