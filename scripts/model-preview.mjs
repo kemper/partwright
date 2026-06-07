@@ -15,12 +15,13 @@ import { resolve, dirname, basename, join } from 'node:path';
 import { runPreview, composePng } from './cli/preview.mjs';
 
 function parseArgs(argv) {
-  const a = { params: {}, size: 480, json: false, png: null, file: null };
+  const a = { params: {}, size: 480, json: false, png: null, file: null, lang: 'manifold-js' };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--json') a.json = true;
     else if (t === '--size') a.size = parseInt(argv[++i], 10);
     else if (t === '--png') a.png = argv[++i];
+    else if (t === '--lang') a.lang = argv[++i];
     else if (t === '-p' || t === '--param') { const [k, ...v] = argv[++i].split('='); a.params[k] = coerce(v.join('=')); }
     else if (!a.file && !t.startsWith('-')) a.file = t;
   }
@@ -32,7 +33,7 @@ async function main() {
   const a = parseArgs(process.argv.slice(2));
   if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [-p k=v]'); process.exit(2); }
   const file = resolve(a.file);
-  const result = await runPreview(file, { params: a.params });
+  const result = await runPreview(file, { params: a.params, lang: a.lang });
 
   if (!result.ok) {
     console.log(JSON.stringify({ ok: false, error: result.error, diagnostics: result.diagnostics }, null, 2));

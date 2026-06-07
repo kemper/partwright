@@ -681,6 +681,29 @@ export function getCameraState(): { azimuth: number; elevation: number; distance
   };
 }
 
+/** Snapshot the exact live camera pose (world-space position + orbit target).
+ *  Unlike getCameraState (rounded azimuth/elevation/distance for the API), this
+ *  keeps full precision so it can be restored losslessly — used to preserve the
+ *  user's interactive view across version switches within a session. */
+export function getCameraPose(): { position: [number, number, number]; target: [number, number, number] } {
+  return {
+    position: [camera.position.x, camera.position.y, camera.position.z],
+    target: [controls.target.x, controls.target.y, controls.target.z],
+  };
+}
+
+/** Restore a pose captured with getCameraPose. The companion to frameModel's
+ *  auto-frame: callers let updateMesh reframe (so clip range / grid / near-far
+ *  adapt to the new geometry's bounds) and then call this to put the camera
+ *  back where the user had it. */
+export function setCameraPose(pose: { position: [number, number, number]; target: [number, number, number] }): void {
+  camera.position.set(pose.position[0], pose.position[1], pose.position[2]);
+  controls.target.set(pose.target[0], pose.target[1], pose.target[2]);
+  controls.update();
+  if (clippingEnabled) updateClipPlaneVisual();
+  needsRender = true;
+}
+
 export function getCanvas(): HTMLCanvasElement {
   return renderer.domElement;
 }
