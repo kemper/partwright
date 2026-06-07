@@ -55,6 +55,13 @@ export function setOnContextRestored(fn: () => void): void { onContextRestored =
 let needsRender = true;
 let lastPointerActivity = 0;
 
+// Subscribers notified when the user finishes an orbit/pan/zoom gesture (the
+// OrbitControls 'end' event). Used to debounce-persist the working-view camera.
+// Programmatic camera moves (setCameraPose, frameModel) drive 'change', not
+// 'end', so they never trigger these.
+const orbitEndListeners: Array<() => void> = [];
+export function onOrbitEnd(cb: () => void): void { orbitEndListeners.push(cb); }
+
 // === Adaptive resolution ===
 // Full (capped) device pixel ratio when the camera is still; a reduced ratio
 // while actively orbiting/panning/zooming, where the lower fragment count keeps
@@ -133,7 +140,7 @@ export function initViewport(container: HTMLElement): {
   scene.background = new THREE.Color(bgFor(getTheme()));
 
   camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
-  camera.position.set(15, 15, 15);
+  camera.position.set(15, -15, 15);
   camera.up.set(0, 0, 1);
 
   const canvas = document.createElement('canvas');
@@ -181,6 +188,7 @@ export function initViewport(container: HTMLElement): {
     interacting = false;
     applyRenderScale(1);
     needsRender = true;
+    orbitEndListeners.forEach(cb => cb());
   });
 
   // Any pointer activity anywhere in the viewport region may drive a scene
@@ -679,6 +687,29 @@ export function getCameraState(): { azimuth: number; elevation: number; distance
       Math.round(controls.target.z * 100) / 100,
     ],
   };
+}
+
+/** Snapshot the exact live camera pose (world-space position + orbit target).
+ *  Unlike getCameraState (rounded azimuth/elevation/distance for the API), this
+ *  keeps full precision so it can be restored losslessly — used to preserve the
+ *  user's interactive view across version switches within a session. */
+export function getCameraPose(): { position: [number, number, number]; target: [number, number, number] } {
+  return {
+    position: [camera.position.x, camera.position.y, camera.position.z],
+    target: [controls.target.x, controls.target.y, controls.target.z],
+  };
+}
+
+/** Restore a pose captured with getCameraPose. The companion to frameModel's
+ *  auto-frame: callers let updateMesh reframe (so clip range / grid / near-far
+ *  adapt to the new geometry's bounds) and then call this to put the camera
+ *  back where the user had it. */
+export function setCameraPose(pose: { position: [number, number, number]; target: [number, number, number] }): void {
+  camera.position.set(pose.position[0], pose.position[1], pose.position[2]);
+  controls.target.set(pose.target[0], pose.target[1], pose.target[2]);
+  controls.update();
+  if (clippingEnabled) updateClipPlaneVisual();
+  needsRender = true;
 }
 
 export function getCanvas(): HTMLCanvasElement {

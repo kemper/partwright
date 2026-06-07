@@ -5,6 +5,7 @@ import {
   computeVertexNormals,
   maxEdgeLength,
   extractPositions,
+  estimateRefineTriangles,
   bboxOf,
 } from '../../src/surface/meshSubdivide';
 import { fuzzySkin } from '../../src/surface/fuzzySkin';
@@ -39,6 +40,20 @@ describe('meshSubdivide', () => {
     expect(out.numTri).toBeGreaterThan(c.numTri);
     expect(out.numProp).toBe(3);
     expect(maxEdgeLength(out.vertProperties, out.triVerts)).toBeLessThanOrEqual(before / 3 + 1e-6);
+  });
+
+  it('estimateRefineTriangles grows ~quadratically as the target length shrinks', () => {
+    const c = cube(10); // longest edge is a face diagonal ≈ 14.14
+    // A length >= the longest edge means no split: ~1 sub-triangle each.
+    expect(estimateRefineTriangles(extractPositions(c), c.triVerts, 100)).toBe(c.numTri);
+    // Halving the length roughly quadruples each triangle's k² contribution, so
+    // a much smaller length yields a far larger estimate.
+    const coarse = estimateRefineTriangles(extractPositions(c), c.triVerts, 5);
+    const fine = estimateRefineTriangles(extractPositions(c), c.triVerts, 1);
+    expect(fine).toBeGreaterThan(coarse);
+    expect(coarse).toBeGreaterThan(c.numTri);
+    // Non-positive length is a no-op estimate (the base count).
+    expect(estimateRefineTriangles(extractPositions(c), c.triVerts, 0)).toBe(c.numTri);
   });
 
   it('dedupes shared edge midpoints (stays watertight, no vertex explosion)', () => {

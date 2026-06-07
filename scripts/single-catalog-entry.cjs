@@ -21,6 +21,12 @@
 //                 you have access to `partwright` (alias for
 //                 window.partwright).
 //
+//   Env (optional):
+//     THUMB_AZIMUTH / THUMB_ELEVATION — pin the catalog tile's camera angle
+//       (degrees) instead of the default iso 3/4 view. Both must be set.
+//       Azimuth 0=front(+Y), 90=right(+X), 180=back(−Y); elevation 0=horizon,
+//       90=top. e.g. THUMB_AZIMUTH=225 THUMB_ELEVATION=30 node scripts/...
+//
 // Requires `npm run dev` already running on http://localhost:5173.
 // Writes <slug-with-underscores>.partwright.json into public/catalog/ and
 // merges a manifest entry. Re-running with the same slug overwrites.
@@ -65,6 +71,15 @@ async function main() {
   }
   const code = fs.readFileSync(codeFile, 'utf8');
   const paintBody = paintFile ? fs.readFileSync(paintFile, 'utf8') : null;
+  // Optional thumbnail-camera pin: set THUMB_AZIMUTH / THUMB_ELEVATION (degrees)
+  // to render this entry's catalog tile from a chosen 3/4 angle instead of the
+  // default iso view — so a faced model can show its front without baking
+  // orientation into the geometry. Both must be set for the pin to apply.
+  const thumbAz = process.env.THUMB_AZIMUTH !== undefined ? Number(process.env.THUMB_AZIMUTH) : undefined;
+  const thumbEl = process.env.THUMB_ELEVATION !== undefined ? Number(process.env.THUMB_ELEVATION) : undefined;
+  const thumbCamera = (Number.isFinite(thumbAz) && Number.isFinite(thumbEl))
+    ? { azimuth: thumbAz, elevation: thumbEl }
+    : null;
   const fileBase = slug.replace(/-/g, '_');
   const outPath = path.join(CATALOG_DIR, `${fileBase}.partwright.json`);
 
@@ -86,7 +101,7 @@ async function main() {
   await page.goto(`${BASE_URL}/editor`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!(window.partwright && window.partwright.runAndSave), null, { timeout: 30000 });
 
-  const result = await page.evaluate(async ({ name, language, code, paintBody }) => {
+  const result = await page.evaluate(async ({ name, language, code, paintBody, thumbCamera }) => {
     if (window.partwright.getActiveLanguage() !== language) {
       await window.partwright.setActiveLanguage(language);
     }
@@ -104,6 +119,11 @@ async function main() {
     }
     if (!warmed) return { error: 'engine warmup timeout' };
     await window.partwright.createSession(name);
+    // Pin the thumbnail camera before saving any version so every captured
+    // tile (v0 and the optional colored pass) uses the chosen angle.
+    if (thumbCamera && window.partwright.setThumbnailCamera) {
+      await window.partwright.setThumbnailCamera(thumbCamera);
+    }
     const r = await window.partwright.runAndSave(code, 'v0', {});
     if (r && r.error) return { error: r.error, geometry: r.geometry };
     if (!r || !r.version) return { error: 'no version saved: ' + JSON.stringify(r).slice(0, 400) };
@@ -133,7 +153,7 @@ async function main() {
     const data = await window.partwright.exportSession(undefined, { includeThumbnails: true });
     if (data && data.error) return { error: data.error };
     return { ok: true, data, stats: r.geometry, paint: paintReport };
-  }, { name, language, code, paintBody });
+  }, { name, language, code, paintBody, thumbCamera });
 
   await browser.close();
 

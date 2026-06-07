@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { getScene, requestRender } from '../renderer/viewport';
+import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
+import { attachViewportPanelDrag, setInitialPanelPosition, type PanelDragHandle } from './viewportPanelDrag';
+import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 
 export interface FlexiMakerDeps {
   getCurrentCode(): string;
@@ -181,6 +184,7 @@ return Manifold.compose([_bot, _top]);
 
 export function mountFlexiMaker(host: HTMLElement, deps: FlexiMakerDeps): FlexiMakerHandle {
   let previewActive = false;
+  let dragHandle: PanelDragHandle | null = null;
 
   function makeDefaultState(): FlexiState {
     const b = deps.getModelBounds();
@@ -199,60 +203,32 @@ export function mountFlexiMaker(host: HTMLElement, deps: FlexiMakerDeps): FlexiM
 
   const state: FlexiState = makeDefaultState();
 
-  // Panel element
+  // Panel — shared tool-panel chrome (z-20, zinc-800/95, rounded, shadow, etc.)
   const panel = document.createElement('div');
   panel.id = 'flexi-maker-panel';
   panel.className =
-    'hidden absolute top-2 right-2 z-10 w-[264px] max-w-[calc(100vw-1rem)] ' +
-    'max-h-[calc(100%-1rem)] flex flex-col bg-zinc-800/90 backdrop-blur ' +
-    'border border-zinc-600/50 rounded-lg shadow-xl overflow-hidden select-none';
+    `${TOOL_PANEL_CLASS} hidden w-[264px] max-w-[calc(100vw-1rem)] ` +
+    'max-h-[calc(100%-3.5rem)] select-none';
 
-  // === Header (draggable) ===
+  // Header — shared drag-handle chrome
   const header = document.createElement('div');
-  header.className =
-    'flex items-center gap-2 px-3 py-2 border-b border-zinc-700/70 shrink-0 ' +
-    'cursor-grab active:cursor-grabbing touch-none';
+  header.className = TOOL_PANEL_HEADER;
 
-  const titleEl = document.createElement('span');
-  titleEl.className = 'text-sm font-medium text-zinc-100 flex-1';
+  const titleEl = document.createElement('div');
+  titleEl.className = TOOL_PANEL_TITLE;
   titleEl.textContent = '✂ Flexi-Maker';
+  header.appendChild(titleEl);
 
   const closeBtn = document.createElement('button');
-  closeBtn.type = 'button';
-  closeBtn.className =
-    'shrink-0 w-8 h-8 flex items-center justify-center rounded text-zinc-400 ' +
-    'hover:text-zinc-100 hover:bg-zinc-700/70 transition-colors text-lg leading-none';
+  closeBtn.className = TOOL_PANEL_CLOSE;
   closeBtn.textContent = '×';
-  closeBtn.title = 'Close Flexi-Maker';
+  closeBtn.title = 'Close Flexi-Maker panel';
+  closeBtn.setAttribute('aria-label', 'Close Flexi-Maker panel');
   closeBtn.addEventListener('click', () => handle.hide());
-
-  header.appendChild(titleEl);
   header.appendChild(closeBtn);
   panel.appendChild(header);
 
-  // Drag behavior using Pointer Events (works for mouse + touch)
-  let dragging = false, dragOffX = 0, dragOffY = 0;
-  header.addEventListener('pointerdown', (e) => {
-    if ((e.target as Element).closest('button')) return;
-    dragging = true;
-    dragOffX = e.clientX - panel.getBoundingClientRect().left;
-    dragOffY = e.clientY - panel.getBoundingClientRect().top;
-    header.setPointerCapture(e.pointerId);
-  });
-  header.addEventListener('pointermove', (e) => {
-    if (!dragging) return;
-    const hr = host.getBoundingClientRect();
-    const x = Math.max(0, Math.min(e.clientX - hr.left - dragOffX, hr.width - panel.offsetWidth));
-    const y = Math.max(0, Math.min(e.clientY - hr.top - dragOffY, hr.height - panel.offsetHeight));
-    panel.style.right = 'auto';
-    panel.style.bottom = 'auto';
-    panel.style.left = `${x}px`;
-    panel.style.top = `${y}px`;
-  });
-  header.addEventListener('pointerup', () => { dragging = false; });
-  header.addEventListener('pointercancel', () => { dragging = false; });
-
-  // === Scrollable body ===
+  // Scrollable body
   const body = document.createElement('div');
   body.className = 'flex flex-col gap-3 px-3 py-3 overflow-y-auto min-h-0';
 
@@ -265,7 +241,7 @@ export function mountFlexiMaker(host: HTMLElement, deps: FlexiMakerDeps): FlexiM
 
   function sectionLbl(text: string): HTMLElement {
     const el = document.createElement('div');
-    el.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-semibold';
+    el.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
     el.textContent = text;
     return el;
   }
@@ -299,7 +275,7 @@ export function mountFlexiMaker(host: HTMLElement, deps: FlexiMakerDeps): FlexiM
     input.max = String(max);
     input.step = String(step);
     input.value = String(initVal);
-    input.className = 'w-full h-1.5 accent-cyan-400 cursor-pointer rounded touch-none';
+    input.className = 'w-full h-1.5 accent-blue-400 cursor-pointer rounded touch-none';
 
     input.addEventListener('input', () => {
       const v = parseFloat(input.value);
@@ -365,7 +341,7 @@ export function mountFlexiMaker(host: HTMLElement, deps: FlexiMakerDeps): FlexiM
   const countBtnRow = document.createElement('div');
   countBtnRow.className = 'flex gap-1';
 
-  const activeCntCls = 'flex-1 py-1 rounded text-[11px] font-semibold bg-cyan-500/20 border border-cyan-500/50 text-cyan-200 min-w-[28px]';
+  const activeCntCls = 'flex-1 py-1 rounded text-[11px] font-semibold bg-blue-500/20 border border-blue-500/50 text-blue-300 min-w-[28px]';
   const inactiveCntCls = 'flex-1 py-1 rounded text-[11px] text-zinc-400 bg-zinc-700/50 border border-zinc-600/50 hover:text-zinc-200 min-w-[28px]';
 
   const cntBtns: HTMLButtonElement[] = [];
@@ -390,10 +366,11 @@ export function mountFlexiMaker(host: HTMLElement, deps: FlexiMakerDeps): FlexiM
 
   body.appendChild(ringSection);
 
-  // === Status / footer ===
+  // Status line
   const statusEl = document.createElement('div');
   statusEl.className = 'text-[10px] text-zinc-500 min-h-[14px] leading-tight px-3 pb-1 shrink-0';
 
+  // Footer
   const footer = document.createElement('div');
   footer.className = 'flex gap-2 px-3 py-2 border-t border-zinc-700/70 shrink-0';
 
@@ -407,8 +384,8 @@ export function mountFlexiMaker(host: HTMLElement, deps: FlexiMakerDeps): FlexiM
   const applyBtn = document.createElement('button');
   applyBtn.type = 'button';
   applyBtn.className =
-    'flex-1 px-2 py-1.5 rounded text-xs bg-cyan-600 text-white font-medium ' +
-    'hover:bg-cyan-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+    'flex-1 px-2 py-1.5 rounded text-xs bg-blue-600 text-white font-medium ' +
+    'hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
   applyBtn.textContent = 'Apply & Save';
 
   footer.appendChild(previewBtn);
@@ -418,6 +395,16 @@ export function mountFlexiMaker(host: HTMLElement, deps: FlexiMakerDeps): FlexiM
   panel.appendChild(statusEl);
   panel.appendChild(footer);
   host.appendChild(panel);
+
+  // Registry entry — enables mutual exclusion with other tool panels
+  const registryEntry = { close(): void { handle.hide(); } };
+
+  // Escape-to-close (added/removed on show/hide)
+  const onEscape = (e: KeyboardEvent): void => {
+    if (e.key !== 'Escape') return;
+    if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+    handle.hide();
+  };
 
   // === Event handlers ===
 
@@ -440,7 +427,7 @@ export function mountFlexiMaker(host: HTMLElement, deps: FlexiMakerDeps): FlexiM
     const base = 'text-[10px] min-h-[14px] leading-tight px-3 pb-1 shrink-0 ';
     const colors: Record<string, string> = {
       idle: 'text-zinc-500', running: 'text-zinc-400',
-      preview: 'text-cyan-400', done: 'text-emerald-400', error: 'text-red-400',
+      preview: 'text-blue-400', done: 'text-emerald-400', error: 'text-red-400',
     };
     statusEl.className = base + (colors[kind] ?? 'text-zinc-500');
     const msgs: Record<string, string> = {
@@ -511,6 +498,12 @@ export function mountFlexiMaker(host: HTMLElement, deps: FlexiMakerDeps): FlexiM
     show() {
       if (handle.isOpen()) return;
       panel.classList.remove('hidden');
+      setInitialPanelPosition(panel);
+      if (!dragHandle) dragHandle = attachViewportPanelDrag(header, panel);
+      openViewportPanel(registryEntry);
+      document.addEventListener('keydown', onEscape);
+
+      // Sync height range and cut plane visual with current model
       const b = deps.getModelBounds();
       if (b) {
         const mid = (b.min[2] + b.max[2]) / 2;
@@ -523,6 +516,8 @@ export function mountFlexiMaker(host: HTMLElement, deps: FlexiMakerDeps): FlexiM
     },
     hide() {
       panel.classList.add('hidden');
+      document.removeEventListener('keydown', onEscape);
+      closeViewportPanel(registryEntry);
       removeCutPlaneVisual();
       if (previewActive) { deps.restorePreview(); previewActive = false; }
       previewBtn.textContent = 'Preview cut';
@@ -533,6 +528,8 @@ export function mountFlexiMaker(host: HTMLElement, deps: FlexiMakerDeps): FlexiM
     isOpen() { return !panel.classList.contains('hidden'); },
     dispose() {
       removeCutPlaneVisual();
+      document.removeEventListener('keydown', onEscape);
+      dragHandle?.destroy();
       panel.remove();
     },
   };

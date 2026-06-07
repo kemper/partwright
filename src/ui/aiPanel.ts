@@ -3,13 +3,14 @@
 // input row, the cost meter, and the compact button. State lives in the
 // ai/* modules; this file is mostly DOM wiring.
 
-import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
+import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
+import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
-import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
+import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
 import { generateId } from '../storage/db';
@@ -33,6 +34,8 @@ import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoad
 import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
 import { errorLog } from '../diagnostics/errorLog';
+import { showToast } from './toast';
+import { createVoiceController, isVoiceInputSupported, type VoiceController } from './voiceInput';
 
 interface PanelState {
   open: boolean;
@@ -159,6 +162,7 @@ let forwardBtnRef: HTMLButtonElement | null = null;
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let inputEl: HTMLTextAreaElement | null = null;
+let voiceController: VoiceController | null = null;
 let planApprovalBarEl: HTMLElement | null = null;
 
 // The docked panel is an editor tool: it only takes layout space on the editor
@@ -212,6 +216,15 @@ let mountTarget: HTMLElement | null = null;
 /** Set by the watchdog when it abort()s mid-stream so sendMessage knows
  *  this was a stall recovery (auto-resume), not a user-initiated stop. */
 let stalledByWatchdog = false;
+
+/** Whether the collapsible "System prompt" disclosure at the top of the
+ *  transcript is expanded. Persisted across transcript re-renders (which wipe
+ *  and rebuild the container) so flipping a toggle doesn't snap it shut. */
+let systemPromptBubbleOpen = false;
+/** Monotonic token guarding the async system-prompt fill — the bubble is
+ *  recreated on every re-render, so a stale in-flight assemble must not
+ *  overwrite a newer bubble's body. */
+let systemPromptFillSeq = 0;
 
 export interface AiPanelOptions {
   /** main.ts hands in a navigation helper so the panel can move the user
@@ -474,6 +487,9 @@ function recordSessionAiPreference(): void {
 function applyToggleChange(partial: Parameters<typeof setToggles>[1]): void {
   saveSettings(setToggles(loadSettings(), partial));
   recordSessionAiPreference();
+  // The toggle suffix (capabilities, 3D-printable guidance, …) is part of what
+  // the system-prompt preview shows; keep it live as pills flip.
+  refreshSystemPromptBubble();
 }
 
 /** Restore the session's remembered AI config into THIS tab's settings — called
@@ -751,8 +767,12 @@ function buildDrawer(): void {
 
   // Bottom section — rewind, toggles, cost, input
   const bottomSection = document.createElement('div');
-  bottomSection.className = 'flex flex-col shrink-0 overflow-hidden';
-  bottomSection.style.height = '220px';
+  // min-height (not a fixed height) so the section can grow to keep the input
+  // readable: when sibling rows below appear (progress, pending images, queued
+  // badge, a wrapped toggle strip) they no longer compress the textarea — the
+  // whole section expands instead, preserving the textarea's 3-row floor.
+  bottomSection.className = 'flex flex-col shrink-0';
+  bottomSection.style.minHeight = '220px';
   initInputResizer(inputResizeHandle, bottomSection);
 
 
@@ -794,8 +814,14 @@ function buildDrawer(): void {
 
   const ta = document.createElement('textarea');
   ta.placeholder = 'Ask the AI to model something…  (type / for commands)';
-  ta.rows = 2;
-  ta.className = 'w-full flex-1 min-h-0 px-2 py-1.5 rounded bg-zinc-800 border border-zinc-600 text-zinc-100 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 resize-none';
+  ta.rows = 3;
+  // Hard 3-row floor: `flex-1` still lets the textarea grow to fill the pane,
+  // but min-height keeps it readable/typeable no matter what siblings claim
+  // space below. 3 rows of text-sm (20px line-height) + py-1.5 padding +
+  // border ≈ 74px. Replaces the old `min-h-0`, which let flexbox squish it
+  // all the way to 0.
+  ta.className = 'w-full flex-1 px-2 py-1.5 rounded bg-zinc-800 border border-zinc-600 text-zinc-100 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 resize-none';
+  ta.style.minHeight = '74px';
   ta.addEventListener('keydown', e => {
     // When the slash-command menu is open it owns the arrow/Tab/Enter/Escape
     // keys so the user can navigate and run a command without it being sent
@@ -869,6 +895,45 @@ function buildDrawer(): void {
     });
   });
   inputBtnRow.appendChild(fileBtn);
+
+  // Microphone — voice-to-text dictation via the browser-native Web Speech API.
+  // Only shown where the browser supports it (Chrome/Edge/Safari, not Firefox).
+  if (isVoiceInputSupported()) {
+    const micBtn = document.createElement('button');
+    micBtn.id = 'btn-ai-mic';
+    const micIdleClass = 'shrink-0 px-2.5 py-1 rounded text-lg leading-none text-blue-300 bg-zinc-800 hover:bg-zinc-700 border border-blue-500/40 hover:border-blue-500';
+    const micActiveClass = 'shrink-0 px-2.5 py-1 rounded text-lg leading-none text-white bg-red-600 hover:bg-red-500 border border-red-500 animate-pulse';
+    micBtn.className = micIdleClass;
+    micBtn.textContent = '🎤';
+    micBtn.title = 'Dictate your message (voice to text). Click again to stop.';
+    micBtn.setAttribute('aria-label', 'Dictate message with voice input');
+
+    // Text already in the box when dictation starts; spoken words append to it.
+    let micBaseText = '';
+    voiceController = createVoiceController({
+      onTranscript: (transcript, _isFinal) => {
+        if (!inputEl) return;
+        const sep = micBaseText && !/\s$/.test(micBaseText) ? ' ' : '';
+        inputEl.value = transcript ? micBaseText + sep + transcript : micBaseText;
+        // Drive the same downstream behaviour as manual typing (slash menu, etc).
+        inputEl.dispatchEvent(new Event('input'));
+      },
+      onStateChange: listening => {
+        micBtn.className = listening ? micActiveClass : micIdleClass;
+        micBtn.title = listening
+          ? 'Listening… click to stop dictation.'
+          : 'Dictate your message (voice to text). Click again to stop.';
+        micBtn.setAttribute('aria-pressed', String(listening));
+        if (listening && inputEl) {
+          micBaseText = inputEl.value;
+          inputEl.focus();
+        }
+      },
+      onError: message => showToast(message, { variant: 'warn', source: 'ai' }),
+    });
+    micBtn.addEventListener('click', () => { voiceController?.toggle(); });
+    inputBtnRow.appendChild(micBtn);
+  }
 
   const inputBtnSpacer = document.createElement('div');
   inputBtnSpacer.className = 'flex-1';
@@ -1022,7 +1087,7 @@ function initInputResizer(handle: HTMLElement, bottomSection: HTMLElement): void
     const delta = startY - e.clientY;
     const minH = 100;
     const maxH = 520;
-    bottomSection.style.height = `${Math.max(minH, Math.min(maxH, startHeight + delta))}px`;
+    bottomSection.style.minHeight = `${Math.max(minH, Math.min(maxH, startHeight + delta))}px`;
   });
 
   const onInputResizeEnd = (e: PointerEvent) => {
@@ -1307,6 +1372,15 @@ function renderToggleStrip(): void {
     'Plan first: when ON, the AI writes a step-by-step plan before doing any work. You approve or reject the plan before execution starts. Useful for complex requests where you want to review the approach first.',
     () => {
       applyToggleChange({ planFirst: !toggles.planFirst });
+      renderToggleStrip();
+    },
+  ));
+  primary.appendChild(togglePill(
+    '🖨 3D-printable',
+    toggles.printOptimized,
+    'Design for 3D printing: when ON, the AI is told to make print-friendly geometry from the start — a flat base on the build plate, the ~45° overhang rule (avoid supports), no floating islands, printable wall/feature sizes, and clearances for moving parts. Injects guidance only; it doesn\'t restrict any tool, so it works alongside the other toggles. ON by default; turn it OFF for purely on-screen models you won\'t print.',
+    () => {
+      applyToggleChange({ printOptimized: !toggles.printOptimized });
       renderToggleStrip();
     },
   ));
@@ -1771,6 +1845,11 @@ function renderTranscript(): void {
   }
 
   transcriptEl.replaceChildren();
+  // Pin the collapsible system-prompt preview at the very top — above the first
+  // message and even the empty state — so the user can always read exactly what
+  // the model is being told this session (the base prompt + live toggle suffix,
+  // including the 3D-printable guidance when that pill is on).
+  transcriptEl.appendChild(renderSystemPromptBubble());
   const hasHistory = state.history.length > 0;
   const hasQueue = state.queuedBlocks.length > 0;
   if (!hasHistory && !hasQueue) {
@@ -1945,7 +2024,8 @@ async function discardPartial(messageId: string): Promise<void> {
 
 /** Rendered for turns that errored mid-flight — visually distinct so the
  *  user can spot the failure point in a long chat, and offers a Retry that
- *  re-sends the immediately preceding user message. */
+ *  *resumes* the agent loop from the existing (persisted) history rather than
+ *  re-sending the original prompt. */
 function renderErrorBubble(msg: ChatMessage): HTMLElement {
   const card = document.createElement('div');
   card.className = 'max-w-[95%] rounded border border-red-700/60 bg-red-900/15 px-3 py-2 flex flex-col gap-2';
@@ -1964,8 +2044,9 @@ function renderErrorBubble(msg: ChatMessage): HTMLElement {
   actions.className = 'flex items-center gap-2 pt-1';
   const retryBtn = document.createElement('button');
   retryBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
-  retryBtn.textContent = '↻ Retry last message';
-  retryBtn.addEventListener('click', () => { void retryLastUserMessage(msg.id); });
+  retryBtn.textContent = '↻ Retry';
+  retryBtn.title = 'Resume the agent from where it failed — all completed work above is kept, nothing is replayed.';
+  retryBtn.addEventListener('click', () => { void retryFailedTurn(msg.id); });
   actions.appendChild(retryBtn);
 
   const dismissBtn = document.createElement('button');
@@ -1981,34 +2062,36 @@ function renderErrorBubble(msg: ChatMessage): HTMLElement {
   return card;
 }
 
-/** Find the most recent user message before this error, dismiss the error
- *  bubble, and replay the user message verbatim. */
-async function retryLastUserMessage(errorMsgId: string): Promise<void> {
+/** Recover from a failed turn by *resuming* the agent loop from the existing
+ *  history, exactly like the amber "Keep going" notice — NOT by re-sending the
+ *  original prompt. Re-prompting used to append a duplicate request on top of
+ *  all the completed work (tool calls, renders, saved versions), which both
+ *  confused the model about the current state and made the long run look like
+ *  it had been thrown away. Here we only drop the in-memory error bubble and
+ *  re-issue the request against the persisted conversation; the model picks up
+ *  from its last tool results / message. Completed work is never touched. */
+async function retryFailedTurn(errorMsgId: string): Promise<void> {
   if (state.inFlight) {
     setTransientStatus('Wait for the current turn to finish before retrying.');
     return;
   }
-  const errorIdx = state.history.findIndex(m => m.id === errorMsgId);
-  if (errorIdx < 0) return;
-  let lastUser: ChatMessage | null = null;
-  for (let i = errorIdx - 1; i >= 0; i--) {
-    const m = state.history[i];
-    if (m.role === 'user' && m.blocks.some(b => b.type === 'text' || b.type === 'image')) {
-      lastUser = m;
-      break;
-    }
-  }
-  if (!lastUser) {
-    setTransientStatus('Nothing to retry — couldn\'t find your last message.');
-    return;
-  }
+  if (!writeOwner) return;
+  if (state.history.findIndex(m => m.id === errorMsgId) < 0) return;
+
+  const settings = loadSettings();
+  const apiKey = await preflightTurn(settings, () => { void retryFailedTurn(errorMsgId); });
+  if (apiKey === PREFLIGHT_ABORT) return;
+
+  // Drop the in-memory error bubble (it was never persisted) but keep every
+  // completed turn intact, then resume with empty userBlocks: the provider
+  // request builders drop the trailing empty user message, so the model
+  // continues from the last real turn instead of replaying the seed prompt.
   state.history = state.history.filter(m => m.id !== errorMsgId);
   renderTranscript();
-  if (!inputEl) return;
-  const text = lastUser.blocks.find(b => b.type === 'text')?.text ?? '';
-  state.pendingImages = lastUser.blocks.filter(b => b.type === 'image').map(b => (b as { source: ImageSource }).source);
-  inputEl.value = text;
-  await sendMessage();
+  progressState.retryCount = 0;
+  stalledByWatchdog = false;
+  pinTranscriptToBottom();
+  await runTurnWithStallRetry(apiKey, settings.toggles, []);
 }
 
 /** Rendered for turns that auto-stopped early but can be picked back up — the
@@ -2267,6 +2350,70 @@ function renderThinkingBox(text: string): HTMLElement {
   return chip;
 }
 
+/** Collapsible "System prompt" disclosure pinned at the top of the transcript.
+ *  Shows the exact prompt sent to the model on every turn — the base system
+ *  prompt for the active provider PLUS the live per-turn toggle suffix (the
+ *  capabilities list, auto-continue note, and the 3D-printable design guidance
+ *  when that pill is on). The model never echoes the system prompt into the
+ *  chat, so this is the only place the user can read what the AI is actually
+ *  being told. Collapsed by default; the body is filled lazily on first expand
+ *  (and re-filled when toggles change while open). Keeping the body empty while
+ *  collapsed also keeps the bubble out of text-based `details` locators in the
+ *  e2e suite — the full prompt text overlaps a lot of tool-chip fixtures. */
+function renderSystemPromptBubble(): HTMLElement {
+  const chip = document.createElement('details');
+  chip.dataset.systemPromptBox = '1';
+  chip.open = systemPromptBubbleOpen;
+  chip.className = 'self-stretch text-[11px] rounded border border-amber-800/50 bg-amber-950/20 px-2 py-1';
+  const summary = document.createElement('summary');
+  summary.className = 'cursor-pointer text-amber-300/90 select-none';
+  summary.textContent = '📄 System prompt';
+  summary.title = 'The full system prompt sent to the model on every turn, including the live toggle guidance (capabilities, auto-continue, and the 3D-printable design rules when that pill is on). Expand to read exactly what the AI is told.';
+  chip.appendChild(summary);
+  const pre = document.createElement('pre');
+  pre.className = 'mt-1 text-[10px] text-zinc-400 overflow-x-auto whitespace-pre-wrap leading-snug max-h-72 overflow-y-auto';
+  chip.appendChild(pre);
+  chip.addEventListener('toggle', () => {
+    systemPromptBubbleOpen = chip.open;
+    if (chip.open) fillSystemPromptBody(pre);
+  });
+  // Setting `open` via property doesn't fire `toggle`, so restore the filled
+  // body ourselves when a re-render recreates an already-open bubble.
+  if (chip.open) fillSystemPromptBody(pre);
+  return chip;
+}
+
+/** Fill (or re-fill) a system-prompt bubble's body from the same assembly the
+ *  chat loop uses, so it's faithful rather than a reconstruction. Reads live
+ *  toggles each call. The seq guard stops a stale in-flight assemble (the
+ *  bubble is recreated on every transcript re-render) from clobbering a newer
+ *  body. */
+function fillSystemPromptBody(pre: HTMLElement): void {
+  pre.textContent = 'Assembling…';
+  const seq = ++systemPromptFillSeq;
+  const toggles = loadSettings().toggles;
+  void buildActiveSystemPrompt(toggles)
+    .then((base) => {
+      if (seq !== systemPromptFillSeq) return;
+      pre.textContent = `${base}\n\n${toggleSuffix(toggles)}`;
+    })
+    .catch(() => {
+      if (seq !== systemPromptFillSeq) return;
+      pre.textContent = 'Could not assemble the system prompt (the prompt doc failed to load). It is still sent to the model.';
+    });
+}
+
+/** Re-fill the system-prompt preview in place (without rebuilding the whole
+ *  transcript) so flipping a toggle pill updates it immediately. Only acts when
+ *  the bubble is expanded — collapsed bodies are left empty (filled on expand),
+ *  which is what keeps the bubble out of text-based e2e `details` locators. */
+function refreshSystemPromptBubble(): void {
+  const chip = transcriptEl?.querySelector<HTMLDetailsElement>('details[data-system-prompt-box]');
+  if (!chip || !chip.open) return;
+  const pre = chip.querySelector<HTMLElement>('pre');
+  if (pre) fillSystemPromptBody(pre);
+}
+
 /** Open box used while reasoning streams: a capped-height scrolling preview
  *  so the user sees thought arrive live. `collapseLiveThinking` turns it
  *  into the quiet collapsed form once the next step (answer/tool) begins. */
@@ -2399,6 +2546,9 @@ function renderPendingImages(): void {
  *  turn with the queued blocks as the new user message. */
 function queueCurrentInput(): void {
   if (!inputEl) return;
+  // Sending commits the text — halt any in-progress dictation so it doesn't
+  // keep appending to a box we're about to clear.
+  voiceController?.stop();
   const text = inputEl.value.trim();
   if (text.length === 0 && state.pendingImages.length === 0) return;
   const blocks: ChatBlock[] = [];
@@ -2622,6 +2772,7 @@ const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
   export: () => { exportCurrentChat(); },
   models: () => { void showAiSettingsModal({ onChange: afterAiSettingsChange }); },
   help: () => { openSlashHelp(); },
+  portrait: () => { prefillAiInput(PHOTO_BUST_PROMPT); },
 };
 
 /** Interpret the current input as a slash command. Returns true when it was a
@@ -2762,6 +2913,9 @@ async function sendMessage(): Promise<void> {
   // against the same transcript. The viewer overlay offers "Take control".
   if (!writeOwner) return;
   if (!inputEl) return;
+  // Sending commits the text — halt any in-progress dictation so it doesn't
+  // keep appending to a box we're about to clear.
+  voiceController?.stop();
   const text = inputEl.value.trim();
   if (text.length === 0 && state.pendingImages.length === 0) return;
 

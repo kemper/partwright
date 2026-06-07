@@ -19,7 +19,7 @@ import {
   getRegions,
   onChange as onRegionsChange,
   removeLastRegion,
-  clearRegions,
+  clearRegionsBySource,
   isVisible as isPaintVisible,
   setVisible as setPaintVisible,
   canUndoClear,
@@ -33,6 +33,10 @@ import {
 import { getCurrentMesh as getPaintMesh } from './paintMode';
 import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
+import { viewportToolsMount } from '../ui/popoverMenu';
+import { setInitialPanelPosition, attachViewportPanelDrag } from '../ui/viewportPanelDrag';
+import { createToolPanelHeader } from '../ui/toolPanel';
+import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { forceDeactivate as closeAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as closeAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as closeAnnotateSelect } from '../annotations/selectMode';
@@ -60,12 +64,6 @@ let pickedImageThumb: ImageData | null = null;    // downscaled for the preview 
 let previewCanvas: HTMLCanvasElement | null = null;
 let previewCtx: CanvasRenderingContext2D | null = null;
 let sourceLabel: HTMLElement | null = null;
-
-// Panel drag state
-let dragAnchorX = 0;
-let dragAnchorY = 0;
-let panelLeft = -1; // -1 = not yet dragged (use CSS right: 8px)
-let panelTop = 48;
 
 // Settings state
 let opts: {
@@ -107,6 +105,21 @@ export function setSmoothStampCallback(cb: SmoothStampCallback): void {
   smoothStampCb = cb;
 }
 
+// The stamp flow (smooth or flat) already produces the final mesh and resolves
+// every region's triangles itself, so committing the new stamp region must NOT
+// kick off the paint reconciler — when brush strokes (or other refine regions)
+// are present the reconciler would rebuild the mesh from base and wipe both the
+// just-placed stamp (its colours live in runtime perTriColors, not the
+// descriptor) and the existing brush paint. main.ts registers a hook that wraps
+// the region commit so it runs with the reconciler suspended, then refreshes the
+// composited colours directly. Falls back to running the commit as-is.
+type StampCommitHook = (commit: () => void) => void;
+let stampCommitHook: StampCommitHook | null = null;
+
+export function setStampCommitHook(hook: StampCommitHook): void {
+  stampCommitHook = hook;
+}
+
 // Hint element for stamp instructions
 let stampHintEl: HTMLElement | null = null;
 
@@ -132,14 +145,15 @@ export function initImagePaintUI(controlsContainer: HTMLElement): void {
 
   imagePaintBtn.addEventListener('click', toggleImagePaint);
 
-  // Insert right after the paint toggle button
-  const paintBtn = controlsContainer.querySelector('#paint-toggle');
+  // Insert right after the paint toggle button, within the Tools popover (or the
+  // bar itself as fallback). insertBefore needs the same parent as the reference
+  // node, so anchor off whichever container actually holds the paint button.
+  const toolsMount = viewportToolsMount(controlsContainer);
+  const paintBtn = toolsMount.querySelector('#paint-toggle');
   if (paintBtn?.nextSibling) {
-    controlsContainer.insertBefore(imagePaintBtn, paintBtn.nextSibling);
-  } else if (paintBtn) {
-    controlsContainer.appendChild(imagePaintBtn);
+    toolsMount.insertBefore(imagePaintBtn, paintBtn.nextSibling);
   } else {
-    controlsContainer.appendChild(imagePaintBtn);
+    toolsMount.appendChild(imagePaintBtn);
   }
 
   panel = buildPanel();
@@ -170,10 +184,33 @@ function toggleImagePaint(): void {
   }
 }
 
+/** Registry entry so opening any other tool panel closes Image Paint, and
+ *  opening Image Paint closes whatever else is open (single panel at a time). */
+const imagePanelEntry = { close: (): void => { if (isOpen) closePanel(); } };
+
+function onImagePaintEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  // Let a centered dialog (e.g. a confirm) consume Escape first.
+  if (document.querySelector('[role="dialog"]')) return;
+  if (isOpen) closePanel();
+}
+
 function openPanel(): void {
   isOpen = true;
   imagePaintBtn!.className = btnClass(true);
+  openViewportPanel(imagePanelEntry); // close any other open tool panel
   panel?.classList.remove('hidden');
+  // Desktop: dock beneath the toolbar (or the open Tools menu), right-aligned —
+  // same as every other tool panel. Mobile: a bottom sheet positioned by its
+  // inset-x classes, so clear any inline offsets left from a desktop session.
+  if (panel) {
+    if (window.matchMedia('(min-width: 768px)').matches) {
+      setInitialPanelPosition(panel);
+    } else {
+      panel.style.top = ''; panel.style.right = ''; panel.style.left = ''; panel.style.bottom = '';
+    }
+  }
+  document.addEventListener('keydown', onImagePaintEscape);
   updateStampMode();
 }
 
@@ -181,6 +218,8 @@ function closePanel(): void {
   isOpen = false;
   imagePaintBtn!.className = btnClass(false);
   panel?.classList.add('hidden');
+  document.removeEventListener('keydown', onImagePaintEscape);
+  closeViewportPanel(imagePanelEntry);
   updateStampMode();
 }
 
@@ -345,7 +384,7 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
 
   stampCounter++;
   const triangles = new Set(result.perTriColors.keys());
-  addRegion(
+  const commit = () => addRegion(
     `Stamp ${stampCounter}`,
     result.avgColor,
     'imagePaint',
@@ -364,8 +403,13 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
     },
     triangles,
     true,
+    undefined, // unslotted — image-paint carries per-triangle colours, not a palette slot
     result.perTriColors,
   );
+  // Commit through the reconcile-suspending hook when wired (see setStampCommitHook),
+  // so adding the stamp can't trigger a mesh rebuild that drops it or existing paint.
+  if (stampCommitHook) stampCommitHook(commit);
+  else commit();
 }
 
 // ─── Panel construction ───────────────────────────────────────────────────────
@@ -381,55 +425,10 @@ function buildPanel(): HTMLElement {
     'md:inset-x-auto md:bottom-auto md:left-auto md:right-2 md:top-12 md:w-64 md:max-h-[calc(100%-3.5rem)] md:rounded-lg',
   ].join(' ');
 
-  // ── Header / drag handle ──
-  const header = document.createElement('div');
-  header.className = 'shrink-0 flex items-center justify-between gap-2 px-2.5 py-2 border-b border-zinc-700/70 cursor-grab active:cursor-grabbing select-none';
-  header.title = 'Drag to reposition';
-
-  const titleEl = document.createElement('div');
-  titleEl.className = 'text-[11px] text-zinc-300 font-medium';
-  titleEl.textContent = '🖼️ Image Paint';
-  header.appendChild(titleEl);
-
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'shrink-0 -mr-1 w-7 h-7 flex items-center justify-center rounded text-base leading-none text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 transition-colors';
-  closeBtn.title = 'Close image paint panel';
-  closeBtn.setAttribute('aria-label', 'Close');
-  closeBtn.textContent = '✕';
-  closeBtn.addEventListener('click', toggleImagePaint);
-  header.appendChild(closeBtn);
-
-  // Drag-to-move
-  header.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0 || !el) return;
-    // Don't capture drag when the user is clicking an interactive child (e.g. the
-    // close button) — setPointerCapture + preventDefault would swallow the click.
-    if ((e.target as HTMLElement).closest('button')) return;
-    const rect = el.getBoundingClientRect();
-    // Initialize absolute left/top from current render position on first drag
-    if (panelLeft < 0) {
-      panelLeft = rect.left;
-      panelTop = rect.top;
-      el.style.right = '';
-      el.style.top = '';
-    }
-    dragAnchorX = e.clientX - panelLeft;
-    dragAnchorY = e.clientY - panelTop;
-    header.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  });
-  header.addEventListener('pointermove', (e) => {
-    if (!header.hasPointerCapture(e.pointerId) || !el) return;
-    panelLeft = e.clientX - dragAnchorX;
-    panelTop = e.clientY - dragAnchorY;
-    el.style.left = `${panelLeft}px`;
-    el.style.top = `${panelTop}px`;
-  });
-  header.addEventListener('pointerup', (e) => {
-    if (header.hasPointerCapture(e.pointerId)) header.releasePointerCapture(e.pointerId);
-  });
-
+  // ── Header / drag handle (shared tool-panel chrome) ──
+  const header = createToolPanelHeader('🖼️ Image Paint', toggleImagePaint, 'Close image paint panel');
   el.appendChild(header);
+  attachViewportPanelDrag(header, el);
 
   // ── Scrollable content ──
   const content = document.createElement('div');
@@ -494,8 +493,8 @@ function buildPanel(): HTMLElement {
   const clearBtn = document.createElement('button');
   clearBtn.className = 'px-2 py-1 rounded text-[10px] bg-red-700/60 text-red-200 hover:bg-red-600/60 transition-colors';
   clearBtn.textContent = 'Clear';
-  clearBtn.title = 'Remove all paint regions';
-  clearBtn.addEventListener('click', clearRegions);
+  clearBtn.title = 'Remove all image stamps (keeps brush paint and other regions)';
+  clearBtn.addEventListener('click', () => clearRegionsBySource('imagePaint'));
   footer.appendChild(clearBtn);
 
   el.appendChild(footer);

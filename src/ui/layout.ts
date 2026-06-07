@@ -2,6 +2,7 @@ import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
 import { showAdvancedSettingsModal } from './advancedSettingsModal';
 import { showAboutModal } from './aboutModal';
 import { loadSettings, saveSettings } from '../ai/settings';
+import { createPopoverGroup } from './popoverMenu';
 
 export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
@@ -703,13 +704,35 @@ function createRailItem(canonical: string, display: string, icon: string, active
   return btn;
 }
 
+// Shared pill styling for the toggle buttons that now live inside the View /
+// Inspect popovers. Kept identical to the old inline strings so the toggle-init
+// code (which only ever swaps these classes by id) is unaffected by the move.
+const VIEWPORT_PILL = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50 text-left';
+
+function makeViewportPill(id: string, text: string, title: string, className = VIEWPORT_PILL): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = id;
+  btn.className = className;
+  btn.textContent = text;
+  btn.title = title;
+  return btn;
+}
+
+// The viewport overlay bar. Historically a flat row of ~16 buttons that grew with
+// every feature. Now: the always-visible primaries plus the display toggles
+// (edges/grid/dims/lock — frequent one-click view-state flips) sit directly on
+// the bar, and the tool-launching buttons collapse into two labelled popover
+// groups (Inspect / Tools) so the strip stays short while everything is one
+// click (and one ⌘K search) away. Button ids are unchanged — the toggle-wiring
+// in main.ts finds them by id wherever they live, and the injected tool buttons
+// mount into the Tools popover via `viewportToolsMount`.
 function createClipControls(): HTMLElement {
   const container = document.createElement('div');
   container.id = 'clip-controls';
   container.className = 'absolute top-2 right-2 z-10 flex flex-wrap justify-end items-center gap-2 max-w-[calc(100%-1rem)]';
 
-  // Live triangle count of the displayed model — sits at the left of the bar.
-  // Non-interactive readout, updated on every mesh change (run/paint/simplify).
+  // Live triangle count of the displayed model — always-visible readout, updated
+  // on every mesh change (run/paint/simplify).
   const triCount = document.createElement('div');
   triCount.id = 'triangle-count';
   triCount.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 border border-zinc-600/50 tabular-nums select-none';
@@ -717,67 +740,40 @@ function createClipControls(): HTMLElement {
   triCount.textContent = '— tris';
   container.appendChild(triCount);
 
-  // Mesh edge (wireframe) toggle (off by default) — sits left of the grid toggle
-  const wireBtn = document.createElement('button');
-  wireBtn.id = 'wireframe-toggle';
-  wireBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  wireBtn.textContent = '△ Edges';
-  wireBtn.title = 'Show mesh edges';
-  container.appendChild(wireBtn);
-
-  // Grid toggle (off by default)
-  const gridBtn = document.createElement('button');
-  gridBtn.id = 'grid-toggle';
-  gridBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  gridBtn.textContent = '\u25A6 Grid';
-  gridBtn.title = 'Show grid plane';
-  container.appendChild(gridBtn);
-
-  // Dimensions toggle (on by default)
-  const dimBtn = document.createElement('button');
-  dimBtn.id = 'dimensions-toggle';
-  dimBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/20 backdrop-blur text-blue-400 [@media(hover:hover)]:hover:bg-blue-500/30 transition-colors border border-blue-500/30';
-  dimBtn.textContent = '\u2B1A Dims';
-  dimBtn.title = 'Toggle bounding box dimensions';
-  container.appendChild(dimBtn);
-
-  // Orbit lock toggle
-  const lockBtn = document.createElement('button');
-  lockBtn.id = 'orbit-lock-toggle';
-  lockBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  lockBtn.textContent = '\uD83D\uDD13 Lock';
-  lockBtn.title = 'Lock camera rotation';
-  container.appendChild(lockBtn);
-
-  // Reset view \u2014 re-frames the camera to the default 3/4 angle of the model.
-  const resetBtn = document.createElement('button');
-  resetBtn.id = 'reset-view';
-  resetBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  resetBtn.textContent = '\u21BB Reset View';
-  resetBtn.title = 'Reset camera to the default view';
+  // Reset view — kept as an always-visible primary (frequent, one-shot action).
+  const resetBtn = makeViewportPill('reset-view', '↻ Reset View', 'Reset camera to the default view');
   container.appendChild(resetBtn);
 
-  // Visual separator between the view toggles (above) and the tools that follow
-  // (Measure, Cross Section, plus the injected Paint/Annotate/Simplify buttons).
-  const divider = document.createElement('div');
-  divider.className = 'hidden md:block w-px self-stretch bg-zinc-600/50 mx-0.5';
-  container.appendChild(divider);
+  // Display toggles — the buttons that only change how the model is *shown*
+  // (edges, grid, dimensions, camera lock). These live directly on the bar as
+  // one-click pills (not collapsed into a menu): they're frequent, mutually
+  // independent flips, and a menu round-trip per toggle was pure friction.
+  container.appendChild(makeViewportPill('wireframe-toggle', '△ Edges', 'Show mesh edges'));
+  container.appendChild(makeViewportPill('grid-toggle', '▦ Grid', 'Show grid plane'));
+  // Dimensions defaults on — give it the active blue styling to match its state.
+  container.appendChild(makeViewportPill(
+    'dimensions-toggle', '⬚ Dims', 'Toggle bounding box dimensions',
+    'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/20 backdrop-blur text-blue-400 [@media(hover:hover)]:hover:bg-blue-500/30 transition-colors border border-blue-500/30 text-left',
+  ));
+  container.appendChild(makeViewportPill('orbit-lock-toggle', '\uD83D\uDD13 Lock', 'Lock camera rotation'));
 
-  // Measure toggle button
-  const measureBtn = document.createElement('button');
-  measureBtn.id = 'measure-toggle';
-  measureBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  measureBtn.textContent = '\uD83D\uDCCF Measure';
-  measureBtn.title = 'Measure distance between two points on your model';
-  container.appendChild(measureBtn);
+  // Inspect popover — read-only analysis tools that never mutate the model. The
+  // menu is sticky: clicking an item activates the tool but leaves the list open
+  // so you can flip between Measure and Cross Section without re-opening it. It
+  // closes on the group button, a sibling popover, click-outside, or Escape.
+  const inspectGroup = createPopoverGroup({ id: 'viewport-inspect', label: 'Inspect', title: 'Measure distances and cross-section the model' });
+  inspectGroup.menu.appendChild(makeViewportPill('measure-toggle', '\uD83D\uDCCF Measure', 'Measure distance between two points on your model'));
+  inspectGroup.menu.appendChild(makeViewportPill('clip-toggle', '✂ Cross Section', 'Toggle cross-section clipping plane'));
+  container.appendChild(inspectGroup.wrapper);
 
-  // Clip toggle button
-  const toggleBtn = document.createElement('button');
-  toggleBtn.id = 'clip-toggle';
-  toggleBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  toggleBtn.textContent = '\u2702 Cross Section';
-  toggleBtn.title = 'Toggle cross-section clipping plane';
-  container.appendChild(toggleBtn);
+  // Tools popover — the mutate/decorate tools (Paint, Annotate, Surface, Resize,
+  // Quality, ...). Starts empty; each tool module appends its button here at init
+  // via `viewportToolsMount`. The menu is sticky: picking a tool reveals its
+  // floating panel but keeps the list open, so switching between tools is one
+  // click each instead of re-opening Tools every time. Stable id
+  // `viewport-tools-menu` is the injection contract.
+  const toolsGroup = createPopoverGroup({ id: 'viewport-tools', label: 'Tools', title: 'Editing tools: paint, annotate, surface modifiers, resize, quality' });
+  container.appendChild(toolsGroup.wrapper);
 
   return container;
 }

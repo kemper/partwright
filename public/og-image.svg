@@ -90,5 +90,5 @@
   </g>
   <text x="560" y="300" font-family="'Sora','Segoe UI',system-ui,sans-serif" font-size="86" font-weight="800" fill="#fafafa" letter-spacing="-3">Partwright</text>
   <text x="563" y="356" font-family="'Space Grotesk','Segoe UI',system-ui,sans-serif" font-size="29" fill="#a1a1aa">AI-driven parametric CAD in your browser</text>
-  <text x="563" y="404" font-family="'Space Grotesk','Segoe UI',system-ui,sans-serif" font-size="22" fill="#f59e0b">Describe a part. Get a printable model.</text>
+  <text x="563" y="404" font-family="'Space Grotesk','Segoe UI',system-ui,sans-serif" font-size="22" fill="#f59e0b">Describe something. Get a printable model.</text>
 </svg>

@@ -3,7 +3,23 @@
 // visible area of its offset parent. Position resets on each open (not
 // persisted) — the panel always starts below the clip-controls toolbar.
 
-/** Position the panel below the #clip-controls toolbar buttons.
+// px gap between a docked panel and the bar/menu above it (mirrors the toolbar's
+// own right-2 inset, reused as the vertical breathing room under the menu).
+const PANEL_EDGE_GAP = 8;
+
+/** The bottom edge (viewport-relative px) that a docked panel should sit under:
+ *  normally the toolbar, but the open horizontal Tools menu when it's showing,
+ *  so the panel drops *beneath* the menu row rather than under it. */
+function dockUnderBottom(controls: HTMLElement): number {
+  const menu = document.getElementById('viewport-tools-menu');
+  if (menu && !menu.classList.contains('hidden') && menu.offsetWidth > 0) {
+    return menu.getBoundingClientRect().bottom;
+  }
+  return controls.getBoundingClientRect().bottom;
+}
+
+/** Position the panel below the #clip-controls toolbar buttons (or below the
+ *  open Tools menu), docked to the right edge.
  *  Prefers the panel's own offset parent as the coordinate reference so
  *  top/right values land in the correct space. Falls back to clip-controls'
  *  positioned ancestor for callers that position while the panel is hidden
@@ -13,10 +29,9 @@ export function setInitialPanelPosition(panel: HTMLElement): void {
   if (controls) {
     const host = (panel.offsetParent ?? controls.offsetParent ?? controls.parentElement) as HTMLElement | null;
     if (host) {
-      const cr = controls.getBoundingClientRect();
       const hr = host.getBoundingClientRect();
-      panel.style.top = `${Math.round(cr.bottom - hr.top + 4)}px`;
-      panel.style.right = '8px';
+      panel.style.top = `${Math.round(dockUnderBottom(controls) - hr.top + PANEL_EDGE_GAP / 2)}px`;
+      panel.style.right = `${PANEL_EDGE_GAP}px`;
       panel.style.left = 'auto';
       panel.style.bottom = 'auto';
       return;
@@ -24,7 +39,7 @@ export function setInitialPanelPosition(panel: HTMLElement): void {
   }
   // Fallback when clip-controls isn't in the DOM yet.
   panel.style.top = '48px';
-  panel.style.right = '8px';
+  panel.style.right = `${PANEL_EDGE_GAP}px`;
   panel.style.left = 'auto';
   panel.style.bottom = 'auto';
 }

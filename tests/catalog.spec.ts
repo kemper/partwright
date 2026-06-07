@@ -20,10 +20,11 @@ test.describe('Catalog page (static)', () => {
     expect(await page.evaluate(() => 'partwright' in window)).toBe(false);
 
     const sections = page.locator('main section[data-category]');
-    await expect(sections).toHaveCount(6);
+    await expect(sections).toHaveCount(8);
 
+    // Curated groups lead (fidget-toys, then print-fit); engine-derived categories follow.
     const ids = await sections.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.category));
-    expect(ids).toEqual(['customizable', 'manifold', 'sdf', 'voxel', 'scad', 'brep']);
+    expect(ids).toEqual(['fidget-toys', 'print-fit', 'customizable', 'manifold', 'sdf', 'voxel', 'scad', 'brep']);
 
     const count = await sections.count();
     for (let i = 0; i < count; i++) {
@@ -44,10 +45,102 @@ test.describe('Catalog page (static)', () => {
     expect(tileCount).toBeGreaterThan(0);
 
     await expect(customizable.locator('span:has-text("Parametric")')).toHaveCount(tileCount);
+    // Every customizable tile is parametric. Parametric badges may also appear in
+    // curated groups (fidget-toys, print-fit), but nowhere else — so the
+    // page-wide badge total equals the customizable + curated-group badge counts.
+    const fidget = page.locator('main section[data-category="fidget-toys"]');
+    const fidgetBadges = await fidget.locator('span:has-text("Parametric")').count();
+    const printFit = page.locator('main section[data-category="print-fit"]');
+    const printFitBadges = await printFit.locator('span:has-text("Parametric")').count();
     const totalBadges = await page.locator('main span:has-text("Parametric")').count();
-    expect(totalBadges).toBe(tileCount);
+    expect(totalBadges).toBe(tileCount + fidgetBadges + printFitBadges);
 
     await expect(customizable).toContainText('Layer Cake');
+  });
+
+  test('the curated Fidget Toys group leads the catalog and holds the mechanical fidget(s)', async ({ page }) => {
+    await gotoCatalog(page);
+
+    const sections = page.locator('main section[data-category]');
+    await expect(sections.first()).toHaveAttribute('data-category', 'fidget-toys');
+
+    const fidget = page.locator('main section[data-category="fidget-toys"]');
+    await expect(fidget.locator('h2')).toHaveText('Fidget Toys');
+    // Currently one verified print-in-place mechanism (the spiral cone); the
+    // remaining fidgets are being rebuilt as mechanisms in follow-up work.
+    expect(await fidget.locator('div.grid > a').count()).toBe(1);
+    await expect(fidget).toContainText('Spiral Fidget Cone');
+  });
+
+  test('every tile carries a print-tested status chip (default: Untested)', async ({ page }) => {
+    await gotoCatalog(page);
+
+    const tiles = page.locator('main a[data-catalog-tile]');
+    const tileCount = await tiles.count();
+    expect(tileCount).toBeGreaterThan(0);
+
+    // Each tile shows exactly one print-status chip — verified or untested.
+    for (const tile of await tiles.all()) {
+      const chips = tile.locator('span:has-text("Print-tested"), span:has-text("Untested")');
+      await expect(chips).toHaveCount(1);
+    }
+
+    // With nothing marked print-tested yet, every chip reads "Untested".
+    await expect(page.locator('main a[data-catalog-tile] span:has-text("Untested")')).toHaveCount(tileCount);
+
+    // The status is searchable: filtering on "untested" keeps the untested tiles.
+    const search = page.locator('[data-catalog-search]');
+    await search.fill('untested');
+    expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBeGreaterThan(0);
+    await search.fill('');
+  });
+
+  test('search narrows tiles, updates section counts, and hides empty sections', async ({ page }) => {
+    await gotoCatalog(page);
+
+    const search = page.locator('[data-catalog-search]');
+    await expect(search).toBeVisible();
+    await search.fill('cube');
+
+    // Every visible tile matches the query; non-matching are hidden.
+    const visibleTiles = page.locator('main a[data-catalog-tile]:not(.hidden)');
+    expect(await visibleTiles.count()).toBeGreaterThan(0);
+    for (const hay of await visibleTiles.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.search ?? ''))) {
+      expect(hay).toContain('cube');
+    }
+
+    // Each visible section's count badge equals its visible-tile count; sections
+    // with no matches are hidden.
+    for (const sec of await page.locator('main section[data-category]').all()) {
+      const visible = await sec.locator('a[data-catalog-tile]:not(.hidden)').count();
+      if (visible === 0) {
+        await expect(sec).toBeHidden();
+      } else {
+        await expect(sec.locator('[data-catalog-count]')).toHaveText(String(visible));
+      }
+    }
+
+    // Clearing the search restores everything.
+    await search.fill('');
+    expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBeGreaterThan(10);
+  });
+
+  test('a language pill hides that language and keeps the others', async ({ page }) => {
+    await gotoCatalog(page);
+
+    const scadPill = page.locator('[data-catalog-pill="scad"]');
+    await expect(scadPill).toHaveAttribute('aria-pressed', 'true');
+    await scadPill.click();
+    await expect(scadPill).toHaveAttribute('aria-pressed', 'false');
+
+    // All SCAD tiles hidden; JS tiles still shown.
+    await expect(page.locator('main a[data-language="scad"]:not(.hidden)')).toHaveCount(0);
+    expect(await page.locator('main a[data-language="manifold-js"]:not(.hidden)').count()).toBeGreaterThan(0);
+
+    // Toggling back restores SCAD tiles.
+    await scadPill.click();
+    await expect(scadPill).toHaveAttribute('aria-pressed', 'true');
+    expect(await page.locator('main a[data-language="scad"]:not(.hidden)').count()).toBeGreaterThan(0);
   });
 
   test('a tile is a link to /editor?catalog= and imports the session on click', async ({ page }) => {
@@ -67,5 +160,12 @@ test.describe('Catalog page (static)', () => {
     await expect(page.locator('#catalog-page')).toBeVisible({ timeout: 20_000 });
     // Soft render — the app is still loaded (no full navigation reset it).
     expect(await page.evaluate(() => 'partwright' in window)).toBe(true);
+
+    // The in-app overlay carries the same search + filter surface, wired live.
+    const search = page.locator('#catalog-page [data-catalog-search]');
+    await expect(search).toBeVisible();
+    await search.fill('zzzznomatchzzzz');
+    await expect(page.locator('#catalog-page [data-catalog-empty]')).toBeVisible();
+    await expect(page.locator('#catalog-page a[data-catalog-tile]:not(.hidden)')).toHaveCount(0);
   });
 });

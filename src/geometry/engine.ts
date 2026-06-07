@@ -354,6 +354,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
       paramsSchema: (msg.paramsSchema as MeshResult['paramsSchema']) ?? undefined,
       engineHeapBytes: msg.engineHeapBytes as number | undefined,
+      voxelCount: msg.voxelCount as number | undefined,
     };
     pending.resolve(result);
     // A WASM trap (OOM / abort) reported as a *result* leaves the Worker's
@@ -487,6 +488,10 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     const error = msg.error as string | null;
     if (error) {
       pending.reject(new Error(error));
+      return;
+    }
+    if (msg.exceeded) {
+      pending.resolve({ mesh: null, triangleCount: msg.triangleCount as number, exceeded: true });
       return;
     }
     if (msg.cancelled || !msg.mesh) {
@@ -865,8 +870,13 @@ export async function simplifyInWorker(
 // ── Enhance Worker client ───────────────────────────────────────────────────
 
 export interface EnhanceWorkerResult {
-  mesh: MeshData;
+  /** The refined mesh, or null when the result was refused for exceeding the
+   *  hard triangle cap (see `exceeded`). */
+  mesh: MeshData | null;
   triangleCount: number;
+  /** True when the refine would have exceeded `maxTriangles`; the mesh was
+   *  discarded in the Worker and never committed. */
+  exceeded?: boolean;
 }
 
 export class EnhanceAbortError extends Error {
@@ -929,8 +939,12 @@ export async function enhanceInWorker(
       numProp: mesh.numProp,
     };
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
+    // Read the hard cap on the main thread (where getConfig sees the user's
+    // override) and pass it through — the Worker's own getConfig only sees
+    // static defaults.
+    const maxTriangles = getConfig().renderer.enhanceMaxTriangles;
     engineWorker!.postMessage(
-      { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength,
+      { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength, maxTriangles,
         ...(directEdgeLength && directEdgeLength > 0 ? { edgeLength: directEdgeLength } : {}) },
       transfer,
     );

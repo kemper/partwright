@@ -199,6 +199,20 @@ export function simplifyToTolerance(
 
 export type EnhanceResult = SimplifyResult;
 
+/** Returned in place of an EnhanceResult when a refine would exceed the hard
+ *  triangle cap. The mesh is discarded (never materialised on the JS heap or
+ *  handed to the main thread) so a runaway refine can't freeze the UI — the
+ *  caller surfaces this as a "too large, not applied" warning. */
+export interface EnhanceExceeded {
+  exceeded: true;
+  /** The triangle count the refine would have produced. */
+  triangleCount: number;
+}
+
+export function isEnhanceExceeded(r: unknown): r is EnhanceExceeded {
+  return typeof r === 'object' && r !== null && (r as EnhanceExceeded).exceeded === true;
+}
+
 /** Single-pass refine so no edge exceeds `length` — subdivides every edge
  *  longer than `length`, which inherently densifies the LARGER triangles first
  *  and leaves already-fine ones untouched (the "by edge length / triangle size"
@@ -210,7 +224,8 @@ export type EnhanceResult = SimplifyResult;
 export function refineToEdgeLength(
   manifold: SimplifiableManifold,
   length: number,
-): EnhanceResult | null {
+  maxTriangles?: number,
+): EnhanceResult | EnhanceExceeded | null {
   if (typeof manifold.refineToLength !== 'function') return null;
   if (!(length > 0)) return null;
   const baseTri = manifold.numTri();
@@ -224,6 +239,14 @@ export function refineToEdgeLength(
   if (n <= baseTri) {
     release(candidate);
     return null;
+  }
+  // Hard cap: never copy a mesh this large to the JS heap / main thread. The
+  // WASM call already ran (on the Worker thread, so the UI stayed responsive),
+  // but materialising and committing a multi-million-triangle mesh is what
+  // freezes the page — so we discard it and report the count instead.
+  if (maxTriangles && maxTriangles > 0 && n > maxTriangles) {
+    release(candidate);
+    return { exceeded: true, triangleCount: n };
   }
   const result: EnhanceResult = { mesh: toMeshData(candidate), triangleCount: n, tolerance: length };
   release(candidate);
@@ -243,10 +266,14 @@ export async function enhanceToTriangleBudget(
   maxEdgeLength: number,
   onProgress?: SimplifyProgress,
   shouldCancel?: () => boolean,
+  maxTriangles?: number,
 ): Promise<EnhanceResult | null> {
   if (typeof manifold.refineToLength !== 'function') return null;
   const baseTri = manifold.numTri();
-  const target = Math.floor(targetTriangles);
+  // The search aims for at most `target` triangles; clamp it to the hard cap so
+  // the count knob can never request a main-thread-freezing result.
+  const cap = maxTriangles && maxTriangles > 0 ? maxTriangles : Infinity;
+  const target = Math.min(Math.floor(targetTriangles), cap);
   if (!Number.isFinite(target) || target <= baseTri) return null;
   if (!(maxEdgeLength > 0)) return null;
 

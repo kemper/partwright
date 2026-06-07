@@ -179,14 +179,15 @@ test.describe('extended paint controls', () => {
     expect(result.bad.error).toBeTruthy();
   });
 
-  test('mesh-edge toggle sits left of the grid toggle and defaults off', async ({ page }) => {
+  test('mesh-edge toggle sits above the grid toggle on the bar and defaults off', async ({ page }) => {
     await openEditor(page);
+    // Edges/Grid are direct pills on the viewport bar — visible without a menu.
     const wireBtn = page.locator('#wireframe-toggle');
     await expect(wireBtn).toBeVisible();
     await expect(page.locator('#grid-toggle')).toBeVisible();
     // Default: edges hidden, so the button invites showing them.
     await expect(wireBtn).toHaveAttribute('title', 'Show mesh edges');
-    // DOM order places the wireframe button before the grid button (i.e. to its left).
+    // DOM order places the wireframe button before the grid button.
     const wireIsBeforeGrid = await page.evaluate(() => {
       const w = document.querySelector('#wireframe-toggle')!;
       const g = document.querySelector('#grid-toggle')!;

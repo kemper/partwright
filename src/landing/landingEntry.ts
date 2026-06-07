@@ -39,6 +39,7 @@ const FEATURED_CATALOG_COUNT = 8;
 function init(): void {
   enhanceCopyPrompt();
   rewritePromptOrigin();
+  initAnchorScroll();
   void fillCatalog();
   void fillRecentSessions();
 
@@ -48,6 +49,54 @@ function init(): void {
   window.addEventListener('pageshow', (e) => {
     if ((e as PageTransitionEvent).persisted) void fillRecentSessions();
   });
+}
+
+// ---------- In-page anchor scroll + Back-button support ----------
+
+// The landing page scrolls inside #landing-inline (position:fixed; overflow-y:
+// auto) because <body> is overflow-hidden — the document itself never scrolls.
+// Browsers only restore scroll position on Back/Forward for the *document*
+// scroller, not an inner container, so a native `#hash` jump (e.g. "Try with an
+// AI agent →", or "For AI agents" in the header) leaves #landing-inline stuck
+// scrolled-down when you press Back. We take over same-page anchor navigation:
+// push a history entry on click, then re-sync the inner scroll to the URL hash
+// on click *and* on popstate, so Back returns to the top (or wherever the
+// previous hash pointed) and Forward returns to the section.
+function initAnchorScroll(): void {
+  const scroller = document.getElementById('landing-inline');
+  if (!scroller) return;
+
+  const scrollToHash = (hash: string, smooth: boolean): void => {
+    const behavior: ScrollBehavior = smooth ? 'smooth' : 'auto';
+    if (!hash || hash === '#') {
+      scroller.scrollTo({ top: 0, behavior });
+      return;
+    }
+    const target = document.getElementById(decodeURIComponent(hash.slice(1)));
+    if (target) target.scrollIntoView({ behavior, block: 'start' });
+  };
+
+  // Intercept clicks on same-page anchors so we own history + scrolling.
+  scroller.addEventListener('click', (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const anchor = (e.target as Element | null)?.closest('a[href^="#"]') as HTMLAnchorElement | null;
+    if (!anchor) return;
+    const hash = anchor.getAttribute('href') ?? '';
+    if (hash.length < 2) return; // ignore bare "#"
+    e.preventDefault();
+    if (hash !== window.location.hash) window.history.pushState(null, '', hash);
+    scrollToHash(hash, true);
+  });
+
+  // Back/Forward within the landing page only changes the hash (same document),
+  // so re-sync the inner scroll to whatever the URL now points at.
+  window.addEventListener('popstate', () => scrollToHash(window.location.hash, true));
+
+  // Deep link that arrives with a hash (e.g. "/#li-agent-section" from another
+  // page's header): jump to it once layout has settled.
+  if (window.location.hash.length > 1) {
+    requestAnimationFrame(() => scrollToHash(window.location.hash, false));
+  }
 }
 
 // ---------- Copy prompt ----------

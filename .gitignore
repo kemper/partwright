@@ -51,3 +51,6 @@ playwright/.cache/
 # iterates with a temporary id like "test-foo". Real entries don't use the
 # test_ prefix.
 /public/catalog/test_*.partwright.json
+
+# partwright CLI daemon state (pid/ports, logs, persistent Chromium profile)
+.partwright/

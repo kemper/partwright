@@ -11,7 +11,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import type { MeshData } from '../geometry/types';
 import { getScene, getCamera, getRenderer, setGizmoLock } from '../renderer/viewport';
 import { addRegion, getRegions } from './regions';
-import { getColor, getCurrentMesh, shapeSmoothDescriptorFields } from './paintAccessors';
+import { getColor, getSlotId, getCurrentMesh, shapeSmoothDescriptorFields } from './paintAccessors';
 import { findShapeTriangles, type OrientedBox, type ShapeType } from './boxPaint';
 import { meshBounds } from './slabPaint';
 
@@ -307,6 +307,8 @@ export function commitBox(): number {
     'slab',
     { kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, shape: shapeType, smooth, maxEdge },
     triangles,
+    true,
+    getSlotId() ?? undefined,
   );
 
   // Dim the shape so the user can see the painted result underneath.

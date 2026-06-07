@@ -12,6 +12,8 @@
 // Kept dependency-free so the pure helpers below stay unit-testable and both
 // the page and the modal can import the list without a network fetch.
 
+import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
+
 export type IdeaCategory = 'starter' | 'technique' | 'interactive';
 
 /** Built-in interactive flow an "interactive" idea triggers. The handler lives
@@ -101,6 +103,15 @@ export const IDEAS: Idea[] = [
     prompt: 'Build a coffee mug about 90mm tall with a 5mm-thick wall, a rounded base, and a comfortable handle on the side.',
   },
   {
+    id: 'photo-bust',
+    title: 'A stylized bust from your photo',
+    blurb: 'Attach a photo and the AI analyses it, then sculpts a clean stylized 3D bust of the person.',
+    category: 'starter',
+    emoji: '\u{1F5FF}', // moai — a sculpted head
+    tags: ['photo', 'portrait', 'bust', 'face', 'selfie', 'character'],
+    prompt: PHOTO_BUST_PROMPT,
+  },
+  {
     id: 'phone-stand',
     title: 'A desk phone stand',
     blurb: 'Holds your phone at a viewing angle with a cable pass-through.',
@@ -144,6 +155,15 @@ export const IDEAS: Idea[] = [
     emoji: '⌨\u{FE0F}',
     tags: ['keycap', 'keyboard', 'mx', 'mechanical'],
     prompt: 'Design a Cherry MX compatible keycap (1u) with a slightly dished/concave top surface and the cross-shaped stem socket underneath.',
+  },
+  {
+    id: 'printer-tolerance-coupon',
+    title: 'A printer tolerance coupon',
+    blurb: 'Find the clearance your printer actually produces for M3 hardware.',
+    category: 'starter',
+    emoji: '\u{1F4CF}',
+    tags: ['calibration', 'tolerance', 'clearance', 'screw', 'test'],
+    prompt: 'Use api.printFit.clearanceCoupon to make an M3 clearance calibration coupon — a bar of through-holes at increasing clearances, each engraved with its value, so I can print it and find the best fit for my printer.',
   },
 
   // ---- Technique showcases (prompt + "learn more") ----
@@ -206,6 +226,16 @@ export const IDEAS: Idea[] = [
     tags: ['gear', 'openscad', 'bosl2', 'scad', 'mechanical'],
     prompt: 'Switch to OpenSCAD and use BOSL2 to make a 20-tooth spur gear, 6mm thick, with a 5mm center bore.',
     learnMore: '/ai/bosl2.md',
+  },
+  {
+    id: 'print-fit-joinery',
+    title: 'Hardware-ready joinery (print-fit)',
+    blurb: 'Screw bosses, snap-fits, and dovetails sized to actually assemble.',
+    category: 'technique',
+    emoji: '\u{1F529}',
+    tags: ['print-fit', 'screw', 'insert', 'snap-fit', 'dovetail', 'hardware', 'enclosure'],
+    prompt: 'Use the api.printFit helpers to build a two-part enclosure: a base with M3 heat-set insert bosses in the corners and a lid with matching counterbored screw holes, plus an alignment pin and socket so the halves register. Arrange the two parts side by side.',
+    learnMore: '/ai/print-fit.md',
   },
 ];
 
