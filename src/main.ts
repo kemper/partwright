@@ -28,7 +28,7 @@ import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -414,6 +414,24 @@ function syncParamsPanel(schema: ParamSpec[] | undefined): void {
 }
 
 let currentMeshData: MeshData | null = null;
+/** Session id whose geometry the viewport last framed. Lets the render paths
+ *  tell a *re-render within the active session* (version switch or re-run —
+ *  preserve the user's current interactive camera angle) apart from the first
+ *  render of a freshly-opened session (let the camera auto-frame the new model). */
+let lastFramedSessionId: string | null = null;
+type CameraPose = { position: [number, number, number]; target: [number, number, number] };
+/** Snapshot the live camera pose to restore after a re-render, but only when the
+ *  active session's geometry is already on screen — i.e. the impending render is
+ *  a version switch or re-run within the session, where the user's interactive
+ *  angle/zoom should be kept instead of snapping back to the default 3/4 framing.
+ *  Returns null for the first render of a freshly-opened session (let it
+ *  auto-frame). Restore with `if (pose) setCameraPose(pose)` after the render. */
+function captureCameraToPreserve(): CameraPose | null {
+  const sid = getState().session?.id ?? null;
+  return currentMeshData !== null && sid !== null && sid === lastFramedSessionId
+    ? getCameraPose()
+    : null;
+}
 /** WASM heap high-water (bytes) reported by the geometry Worker for the most
  *  recent manifold-js run. Surfaced in the geometry-data stats and engine-error
  *  log so users can see how close a run came to the ~4 GB ceiling. Undefined
@@ -2678,7 +2696,7 @@ async function main() {
         // shows the active version's code. Re-render the active version so the
         // editor text and viewport agree again.
         const st = getState();
-        if (st.currentVersion) await runCodeSync(st.currentVersion.code);
+        if (st.currentVersion) await runCodeSync(st.currentVersion.code, { preserveCamera: true });
         const partWord = result.addedParts.length === 1 ? 'part' : 'parts';
         showToast(`Merged ${result.addedParts.length} ${partWord} into this session.`, { variant: 'success' });
         return true;
@@ -4574,6 +4592,15 @@ async function main() {
     // after navigation would write the wrong session's voxels into the new
     // editor. Also unlocks the editor and clears the floating panel.
     cancelVoxelPaintIfActive();
+    // Preserve the user's interactive camera angle across version switches
+    // *within* a session. Loading a version re-renders the geometry, whose
+    // updateMesh auto-frames the camera back to the default 3/4 view — undoing
+    // any orbit/zoom the user set. We snapshot the live pose here and restore it
+    // after the new geometry is in (frameModel still runs, so clip range / grid /
+    // near-far adapt to the new model's bounds — only the camera is put back).
+    // runCodeSync applies the same preserve on the cache-miss compile and on the
+    // debounced auto-run that re-renders ~300ms after a version load.
+    const preservedCameraPose = captureCameraToPreserve();
     // Each version remembers the language it was authored in (per-version
     // since schema 1.8); fall back to the session-level hint, then to the
     // engine default. Lets a single session hold mixed JS + SCAD versions
@@ -4650,8 +4677,11 @@ async function main() {
       setStatus(statusBar, 'ready', 'Ready');
     } else {
       // Cache miss: compile the code and, on success, populate the cache.
+      // preserveCamera keeps the user's interactive angle across the switch
+      // (see captureCameraToPreserve); the cache-hit branch above relies on the
+      // preservedCameraPose restore at the end of this function instead.
       const meshBeforeRun = currentMeshData;
-      const applied = await runCodeSync(version.code);
+      const applied = await runCodeSync(version.code, { preserveCamera: true });
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
       if (!applied) return;
@@ -4675,6 +4705,13 @@ async function main() {
         }
       }
     }
+
+    // Restore the pre-switch camera angle (see capture above), or record this
+    // session as framed so the *next* switch within it preserves the angle.
+    if (preservedCameraPose) {
+      setCameraPose(preservedCameraPose);
+    }
+    lastFramedSessionId = getState().session?.id ?? null;
 
     await rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
@@ -8544,6 +8581,10 @@ async function main() {
     /** Close the current session */
     async closeSession() {
       await closeSession();
+      // Forget the framed session so re-opening it (or any session) auto-frames
+      // its model rather than preserving the angle from before it was closed —
+      // matches the "opening a session always frames" contract.
+      lastFramedSessionId = null;
     },
 
     /** Delete a session and all its versions */
@@ -8704,7 +8745,7 @@ async function main() {
       // Restore this version's Customizer overrides before the re-run so it
       // renders with the values it was saved at (matches loadVersionIntoEditor).
       currentParamValues = { ...(version.paramValues ?? {}) };
-      await runCodeSync(version.code);
+      await runCodeSync(version.code, { preserveCamera: true });
       await rehydrateColorRegions(version.geometryData);
       applyVersionAnnotations(version);
       // Labels are runtime state from the just-executed code. Surface
@@ -8744,7 +8785,7 @@ async function main() {
         // Restore this version's Customizer overrides before the re-run so it
         // renders with the values it was saved at (matches loadVersion).
         currentParamValues = { ...(version.paramValues ?? {}) };
-        await runCodeSync(version.code);
+        await runCodeSync(version.code, { preserveCamera: true });
         await rehydrateColorRegions(version.geometryData);
         applyVersionAnnotations(version);
       }
@@ -12720,7 +12761,7 @@ async function main() {
     });
   }
 
-  function runCode(code?: string, opts: { surfaceErrors?: boolean } = {}) {
+  function runCode(code?: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean } = {}) {
     // Never execute the sharer's untrusted code in a read-only preview. Fork first.
     if (isSharedPreview()) return;
     const src = code ?? getValue();
@@ -12745,7 +12786,15 @@ async function main() {
       // cancel only this specific run (not an explicit run that superseded it).
       const myRafGen = _runGeneration + 1;
       _rafOwnedGeneration = myRafGen;
-      await runCodeSync(src, opts);
+      // runCode is the interactive entry point (editor auto-run, Run button,
+      // command palette, quality/param changes), so it preserves the user's
+      // current camera angle by default — re-rendering edited code shouldn't
+      // snap the view back to the default 3/4 framing. The same-session gate in
+      // captureCameraToPreserve still auto-frames the first render of a session
+      // (e.g. runCode(defaultCode) on a freshly-created session). Programmatic
+      // runs (partwright.run/runAndSave) call runCodeSync directly and keep
+      // auto-framing. A caller can opt out with preserveCamera: false.
+      await runCodeSync(src, { preserveCamera: true, ...opts });
       // If we still own the generation slot and the run is done, clear it.
       if (_rafOwnedGeneration === myRafGen) _rafOwnedGeneration = -1;
     });
@@ -12780,7 +12829,7 @@ async function main() {
     cancelInlineBtn.classList.add('hidden');
   }
 
-  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean } = {}): Promise<boolean> {
+  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean } = {}): Promise<boolean> {
     // Hard refusal in shared-preview mode: this is the single execution
     // chokepoint that the console API (partwright.run / runAndSave) also routes
     // through, so guarding it here keeps the sharer's untrusted code from ever
@@ -12965,6 +13014,13 @@ async function main() {
       // "shattered shards" bug. Gate on hasRefineDescriptors() (not just brush
       // strokes) so slab/box smooth regions rebuild too, exactly as the
       // visibility-toggle path does via reconcilePaintedGeometry.
+      //
+      // Snapshot the camera before the auto-framing updateMesh runs when this
+      // run is a version switch (opts.preserveCamera) within an already-framed
+      // session: keep the user's interactive angle instead of snapping to the
+      // default 3/4 view. Genuine new-code runs (pw.run, live edits) leave this
+      // null so the new model auto-frames as before.
+      const preservedCameraPose = opts.preserveCamera ? captureCameraToPreserve() : null;
       if (hasColorRegions() && hasRefineDescriptors()) {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();
@@ -12994,6 +13050,9 @@ async function main() {
         updateMesh(result.mesh);
         updatePaintMesh(result.mesh); // always pass uncolored mesh for adjacency
       }
+      // Put the camera back where the user had it (no-op on a session's first
+      // render, where captureCameraToPreserve returned null and we auto-frame).
+      if (preservedCameraPose) setCameraPose(preservedCameraPose);
 
       updateGeometryData(elapsed, src);
       syncClipSliderBounds();
@@ -13005,6 +13064,11 @@ async function main() {
       simplifyBaselineModelRegions = null;
       refreshSimplifyIfOpen();
       setStatus(statusBar, 'ready', 'Ready');
+      // Record the session this freshly-framed geometry belongs to, so the next
+      // version switch within it preserves the user's camera angle (see
+      // loadVersionIntoEditor). A fresh compile auto-frames, which is the
+      // baseline we want each new session to start from.
+      lastFramedSessionId = getState().session?.id ?? null;
     }
     return true;
   }

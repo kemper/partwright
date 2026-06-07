@@ -42,6 +42,9 @@ subsequent call.
 partwright preview <file.js> [--png out.png] [--json] [--size N] [-p k=v ...]
 partwright run     <file.js> [-p k=v ...]            # stats JSON only, no PNG
 
+partwright preview <file.js> [--lang manifold-js|voxel|scad] [--png out] [--json] [--size N] [-p k=v]
+partwright photo <image> [--palette p.json] [--max N] [--mode billboard|heightmap] [--depth N] [--bg] [--crop x,y,w,h] [--out model.js] [--png out]
+
 partwright daemon start [--app-port N] [--control-port N]
 partwright daemon stop
 partwright daemon status
@@ -84,8 +87,27 @@ the CLI itself failed, while `ok:false` is a tractable in-model error.
 here). It loads the file against the real engine via Vite SSR and prints the rich
 stat block (`isManifold`, `componentCount`, per-component volumes/bboxes, genus,
 edge stats, declared labels, `warnings[]`). Unless `--json` is passed it also
-writes a 4-view PNG (front/right/top/iso), software-rasterized — flat shading,
-model-declared label colors only. `run` is `preview --json` (stats, no PNG).
+writes a 4-view PNG (front/right/top/iso), software-rasterized — flat shading.
+
+**Multi-engine (`--lang`).** `preview`/`run` dispatch across the engines that
+run without a browser: `manifold-js` (default), `voxel` (pure-JS grid mesher),
+and `scad` (OpenSCAD's Emscripten WASM loads cleanly under Node). For these the
+rasterizer uses the mesh's own per-triangle colors, so voxel/painted models show
+their real colors — not just label colors. `replicad` is **not** stateless: its
+OpenCASCADE WASM resolves its `.wasm` to a server-style path that doesn't exist
+on Node's filesystem, so preview it through the Phase-2 daemon
+(`partwright iterate --lang replicad <file>`), which drives the real app.
+
+**`photo`** turns a raster image into a palette-constrained voxel model — the CLI
+front door to the same image→voxel pipeline the in-app import modal uses
+(`src/import/imageToVoxel.ts`): decode + EXIF-orient + high-quality downsample
+(sharp) → snap every pixel to the nearest palette colour (perceptual LAB
+distance) → optional background removal → emit runnable `voxels.decode(…)` editor
+code, mesh it, and write a 4-view preview PNG + stats (voxel count, dims, and a
+per-slot palette-usage histogram) in one shot. `--palette p.json` takes a JSON
+array of `"#rrggbb"` strings or `{name,hex}` objects; omit it for the app's
+default 6-slot palette. `--mode heightmap` makes brightness drive per-column
+depth (a bas-relief sculpt) instead of a flat `--depth` billboard.
 
 What Phase 1 **cannot** show: brush-painted vertex colors, annotations, edge
 overlays, surface modifiers, anything stateful (sessions/versions). Those live in
