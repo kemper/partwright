@@ -8170,11 +8170,12 @@ async function main() {
     async setThumbnailCamera(camera: { azimuth: number; elevation: number } | 'current' | null) {
       let resolved: { azimuth: number; elevation: number } | null;
       if (camera === 'current') {
-        // Viewport azimuth is measured as atan2(dx, −dy); the thumbnail camera
-        // (buildViewCamera) uses atan2(dx, dy). They differ by a 180° mirror,
-        // so convert: thumbAz = 180 − viewportAz.
+        // Viewport azimuth (getCameraState) and the thumbnail camera
+        // (buildViewCamera) now use the same convention — atan2(dx, −dy), with
+        // azimuth 0 = front (−Y) — so the live viewport angle maps straight
+        // through to the pinned thumbnail camera with no mirror.
         const cs = getCameraState();
-        resolved = { azimuth: ((180 - cs.azimuth) % 360 + 360) % 360, elevation: cs.elevation };
+        resolved = { azimuth: ((cs.azimuth % 360) + 360) % 360, elevation: cs.elevation };
       } else if (camera === null) {
         resolved = null;
       } else {
