@@ -120,9 +120,21 @@ return Curves.sweep(profile, path);
 `closed: true` treats the path as a loop (no end caps, last segment wraps to
 first). Use this for torus-like sweeps.
 
+`Curves.sweep` (and `loft` / `revolveAxis`) return a **regular `Manifold`** —
+not some special curve type. So you can union it, subtract it, and crucially
+**`api.label()` it**: `const handle = api.label(Curves.sweep(profile, path),
+"handle")`. Label it before unioning it into the body and you can recolor the
+whole feature later with one `paintByLabel("handle", color)` call — no triangle
+coordinates to guess. (The `api.label "must be a Manifold"` error only fires for
+a `CrossSection` or a raw `Mesh`, never for a `Curves.*` result.)
+
 ### `Curves.revolveAxis(profile, axis, {angle?, segments?})`
-Like `Manifold.revolve`, but the axis can be any `[x,y,z]` direction instead of
-just +Y. Useful when the natural axis of your part is X or skew.
+`Manifold.revolve` spins the XY profile (X = radial distance, Y = height) and
+produces a **Z-up** solid — internally it revolves about Y, then remaps Y→Z, so
+the result's axis of symmetry is **+Z** (height runs +Z). `revolveAxis` is the
+same revolve with that natural +Z axis rotated to any `[x,y,z]` direction —
+useful when the natural axis of your part is X or skew. Passing `[0,0,1]` is
+identical to a plain `Manifold.revolve`.
 
 ```js
 // Revolve around the X axis instead of Y.
