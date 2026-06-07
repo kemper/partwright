@@ -12,10 +12,15 @@
 //   - it supports OpenAI function/tool calling, which Partwright's geometry
 //     tools depend on.
 //
-// This card is pure onboarding: copy-paste install/login commands plus a
-// one-click "Use this endpoint" that fills the Base URL field below and tests
-// it. The connection itself still flows through the existing Custom provider —
-// no new provider, transport, or settings are introduced.
+// CLIProxyAPI refuses to start while its config still holds the template
+// `your-api-key-N` values, so setting a real key is a *required* step, not a
+// nicety. We generate a strong random key in the browser, hand the user a
+// one-liner that writes it into the config and restarts the bridge, and offer
+// a button to paste that same key into the endpoint's API-key field — so the
+// value the proxy expects and the value Partwright sends always match.
+//
+// This card is pure onboarding: the connection itself still flows through the
+// existing Custom provider — no new provider, transport, or settings.
 
 import type { ComponentChildren } from 'preact';
 import { useSignal } from '@preact/signals';
@@ -24,25 +29,41 @@ import { Section, Pill, PrimaryButton } from './primitives';
 
 /** CLIProxyAPI's default OpenAI-compatible base URL. */
 const CLI_BRIDGE_ENDPOINT = 'http://localhost:8317/v1';
+/** Where CLIProxyAPI serves its status / config-error page. */
+const CLI_BRIDGE_STATUS_URL = 'http://localhost:8317';
 
 const REPO_URL = 'https://github.com/router-for-me/CLIProxyAPI';
 
-type OsKey = 'mac' | 'windows' | 'other';
-
-interface InstallSpec {
-  label: string;
-  /** Steps shown when this OS is selected. The login step is shared and
-   *  appended separately. */
-  install: { cmd: string; note?: string } | { docs: true };
+/** A strong random API key, generated in the browser. Prefixed so it's
+ *  recognizable in a config file; hex body has no shell/sed metacharacters,
+ *  so it drops safely into the generated one-liner. */
+export function generateApiKey(): string {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return 'pw-' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 }
 
-const INSTALL: Record<OsKey, InstallSpec> = {
+type OsKey = 'mac' | 'windows' | 'other';
+
+interface OsSpec {
+  label: string;
+  install: { cmd: string; note?: string } | { docs: true };
+  /** Writes the API key into the config and restarts the bridge. A runnable
+   *  command, or a manual instruction when the path/tooling varies too much
+   *  to script reliably. */
+  fixAndRestart: (key: string) => { cmd: string } | { manual: string };
+}
+
+const OS: Record<OsKey, OsSpec> = {
   mac: {
     label: 'macOS',
     install: {
       cmd: 'brew install cliproxyapi && brew services start cliproxyapi',
       note: 'Installs the bridge and starts it as a background service.',
     },
+    fixAndRestart: key => ({
+      cmd: `sed -i '' -E "s/your-api-key-[0-9]+/${key}/g" "$(brew --prefix)/etc/cliproxyapi.conf" && brew services restart cliproxyapi`,
+    }),
   },
   windows: {
     label: 'Windows',
@@ -50,10 +71,16 @@ const INSTALL: Record<OsKey, InstallSpec> = {
       cmd: 'winget install LuisPater.CLIProxyAPI',
       note: 'Then run cli-proxy-api in a terminal to start the server.',
     },
+    fixAndRestart: () => ({
+      manual: 'Open the config file named on the status page, replace the three your-api-key-N values with the key above, then stop and re-run cli-proxy-api.',
+    }),
   },
   other: {
     label: 'Linux / other',
     install: { docs: true },
+    fixAndRestart: key => ({
+      cmd: `sed -i -E "s/your-api-key-[0-9]+/${key}/g" <config-path-from-the-status-page>`,
+    }),
   },
 };
 
@@ -64,9 +91,13 @@ function detectOs(): OsKey {
   return 'other';
 }
 
-export function CliBridgeSetup(props: { onUseEndpoint: (url: string) => void }) {
+export function CliBridgeSetup(props: {
+  apiKeyExample: string;
+  onUseEndpoint: (url: string) => void;
+}) {
   const os = useSignal<OsKey>(detectOs());
-  const spec = INSTALL[os.value];
+  const spec = OS[os.value];
+  const fix = spec.fixAndRestart(props.apiKeyExample);
 
   return (
     <Section label="Use a Claude or Codex subscription">
@@ -74,12 +105,12 @@ export function CliBridgeSetup(props: { onUseEndpoint: (url: string) => void }) 
         <p
           class="text-[11px] text-zinc-300 leading-snug"
           /* eslint-disable-next-line react/no-danger */
-          dangerouslySetInnerHTML={{ __html: 'Already pay for a <strong>Claude Pro/Max</strong> (or ChatGPT/Codex) plan? Run <strong><a class="text-blue-400 hover:text-blue-300 underline" href="' + REPO_URL + '" target="_blank" rel="noopener noreferrer">CLIProxyAPI</a></strong> — a small local bridge that turns your subscription into an OpenAI-compatible endpoint on <code>localhost</code>. No API key, no per-token billing. Partwright connects to it as a Custom endpoint.' }}
+          dangerouslySetInnerHTML={{ __html: 'Already pay for a <strong>Claude Pro/Max</strong> (or ChatGPT/Codex) plan? Run <strong><a class="text-blue-400 hover:text-blue-300 underline" href="' + REPO_URL + '" target="_blank" rel="noopener noreferrer">CLIProxyAPI</a></strong> — a small local bridge that turns your subscription into an OpenAI-compatible endpoint on <code>localhost</code>. No per-token billing. Partwright connects to it as a Custom endpoint.' }}
         />
 
         <div class="flex flex-wrap gap-1">
-          {(Object.keys(INSTALL) as OsKey[]).map(k => (
-            <Pill key={k} active={os.value === k} label={INSTALL[k].label} onClick={() => { os.value = k; }} />
+          {(Object.keys(OS) as OsKey[]).map(k => (
+            <Pill key={k} active={os.value === k} label={OS[k].label} onClick={() => { os.value = k; }} />
           ))}
         </div>
 
@@ -95,34 +126,48 @@ export function CliBridgeSetup(props: { onUseEndpoint: (url: string) => void }) 
               {spec.install.note && <p class="text-[10px] text-zinc-500">{spec.install.note}</p>}
             </>
           )}
+          <p
+            class="text-[10px] text-zinc-500 leading-snug"
+            /* eslint-disable-next-line react/no-danger */
+            dangerouslySetInnerHTML={{ __html: 'Open <a class="text-blue-400 hover:text-blue-300 underline" href="' + CLI_BRIDGE_STATUS_URL + '" target="_blank" rel="noopener noreferrer">' + CLI_BRIDGE_STATUS_URL + '</a> any time to confirm it\'s running — or to see config errors to fix (e.g. <em>"Example API key detected"</em> → do step 2).' }}
+          />
         </Step>
 
-        <Step n={2} title="Log in with your subscription">
+        <Step n={2} title="Set an API key (required)">
+          <p class="text-[11px] text-zinc-400 leading-snug">
+            CLIProxyAPI won’t start while its config holds the template keys. Here’s a fresh random key — this one-liner writes it in and restarts the bridge:
+          </p>
+          <div class="flex flex-col gap-0.5">
+            <span class="text-[10px] text-zinc-500">Your API key (used below too):</span>
+            <CopyRow cmd={props.apiKeyExample} />
+          </div>
+          {'cmd' in fix ? (
+            <CopyRow cmd={fix.cmd} />
+          ) : (
+            <p class="text-[11px] text-amber-200 leading-snug">{fix.manual}</p>
+          )}
+        </Step>
+
+        <Step n={3} title="Log in with your subscription">
           <CopyRow cmd="cliproxyapi --claude-login" />
           <p class="text-[10px] text-zinc-500">
             Opens a browser to authorize your Claude plan. Use <code>--codex-login</code> instead for a ChatGPT/Codex subscription.
           </p>
         </Step>
 
-        <Step n={3} title="Connect Partwright">
+        <Step n={4} title="Connect Partwright">
           <PrimaryButton
             label="Use this endpoint (localhost:8317)"
             variant="column"
             onClick={() => props.onUseEndpoint(CLI_BRIDGE_ENDPOINT)}
           />
           <p class="text-[10px] text-zinc-500">
-            Fills the <strong>Base URL</strong> below and tests it. Then click <strong>Fetch models</strong> and pick a <code>claude-…</code> model.
+            Fills the <strong>Base URL</strong> below and tests it. Then paste your key with <strong>Use this key</strong> in the API key field, click <strong>Fetch models</strong>, and pick a <code>claude-…</code> model.
           </p>
         </Step>
 
-        <div
-          class="rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-[11px] text-amber-200 leading-snug"
-          /* eslint-disable-next-line react/no-danger */
-          dangerouslySetInnerHTML={{ __html: '<strong>Secure it:</strong> the bridge accepts requests from any origin (wildcard CORS). Set an <code>api-key</code> in its <code>config.yaml</code> and paste it into <strong>API key</strong> below, so only requests bearing that key can spend your subscription. Keep it bound to <code>127.0.0.1</code> (the default) — don\'t expose it on your network.' }}
-        />
-
         <p class="text-[10px] text-zinc-500 leading-snug">
-          Using a subscription outside its official app is community-supported and not endorsed by Anthropic or OpenAI — confirm it’s allowed under your plan before relying on it.
+          Keep the bridge bound to <code>127.0.0.1</code> (the default) — don’t expose it on your network. Using a subscription outside its official app is community-supported and not endorsed by Anthropic or OpenAI; confirm it’s allowed under your plan.
         </p>
       </div>
     </Section>
