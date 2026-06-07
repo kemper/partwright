@@ -47,6 +47,7 @@ import type { AnthropicModelId, Provider } from '../../ai/types';
 
 import { settingsSignal, setSettings, resyncSettings } from './settingsStore';
 import { Divider, Section, Pill, PrimaryButton, SecondaryButton, TabBar, type TabSpec } from './primitives';
+import { CliBridgeSetup } from './cliBridgeSetup';
 
 export interface AiSettingsCallbacks {
   onChange: () => void;
@@ -596,11 +597,19 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
     cb.onChange();
   }
 
+  // Quick-setup card's "Use this endpoint" → fill the Base URL and test it.
+  function useEndpoint(u: string): void {
+    url.value = u;
+    void testConnection(); // persists the URL itself
+  }
+
   return (
     <>
+      <CliBridgeSetup onUseEndpoint={useEndpoint} />
+      <Divider />
       <Section label="About">
         {/* eslint-disable-next-line react/no-danger */}
-        <p class="text-[11px] text-zinc-300 leading-snug" dangerouslySetInnerHTML={{ __html: 'Point Partwright at any <strong>OpenAI-compatible</strong> chat endpoint — a self-hosted <code>llama.cpp</code> server, vLLM, LM Studio, or similar. Requests use the <code>/v1/chat/completions</code> shape with the full <code>ai.md</code> system prompt; turns are billed at $0 (you run the hardware). The optional API key is stored only in this browser.' }} />
+        <p class="text-[11px] text-zinc-300 leading-snug" dangerouslySetInnerHTML={{ __html: 'Point Partwright at any <strong>OpenAI-compatible</strong> chat endpoint — a local subscription bridge (see above), a self-hosted <code>llama.cpp</code> server, vLLM, LM Studio, or similar. Requests use the <code>/v1/chat/completions</code> shape with the full <code>ai.md</code> system prompt. The optional API key is stored only in this browser.' }} />
         {/* eslint-disable-next-line react/no-danger */}
         <div class="rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-[11px] text-amber-200 leading-snug" dangerouslySetInnerHTML={{ __html: '<strong>Connectivity:</strong> the endpoint must allow this site via <strong>CORS</strong>. When Partwright is served over HTTPS, the endpoint must be HTTPS too (browsers block <code>https→http</code>) — except <code>http://localhost</code>, which is exempt. For llama.cpp, run <code>llama-server</code> and pass <code>--api-key</code> only if you want auth.' }} />
       </Section>
