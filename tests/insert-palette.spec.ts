@@ -291,7 +291,9 @@ test.describe('Insert palette', () => {
     // Click the framed proxy at canvas-center to select it — constructs the
     // TransformControls gizmo (verifies the path doesn't throw headless).
     await page.locator('canvas').first().click();
-    await expect(page.getByText(/Selected/i)).toBeVisible({ timeout: 5000 });
+    // Match the build-mode bar exactly — main's image-paint UI also surfaces
+    // a "No image selected" string, so a bare /Selected/i would be ambiguous.
+    await expect(page.getByText(/Selected "/)).toBeVisible({ timeout: 5000 });
 
     // Exit cleanly.
     await page.getByRole('button', { name: 'Done', exact: true }).click();
