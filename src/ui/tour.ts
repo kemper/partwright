@@ -242,21 +242,26 @@ function cleanup(): void {
 function showStep(): void {
   if (!spotlight || !tooltip) return;
 
-  // Find next valid step (skip missing OR hidden targets). A target nested in a
-  // collapsed popover exists but reports a 0×0 rect — spotlighting it would
-  // highlight an empty corner — so open its popover first (openSelector) and
-  // treat a still-zero rect as "not visible", mirroring coachmark's guard.
+  // Find next valid step (skip missing targets). For a step whose target is
+  // nested in a collapsed popover, open the popover first (openSelector) so the
+  // spotlight doesn't land on a 0×0 element in an empty corner; if it's STILL
+  // zero-size after opening, the tool isn't available in this session, so skip.
+  // The rect check is scoped to openSelector steps on purpose: a top-level
+  // target like #editor-container can briefly report a 0×0 rect at tour start
+  // (before layout settles) yet is a valid first step, so plain steps keep the
+  // original existence-only check and are never skipped for size.
   while (currentStep < STEPS.length) {
     const step = STEPS[currentStep];
+    const target = document.querySelector(step.target) as HTMLElement | null;
+    if (!target) { currentStep++; continue; }
     if (step.openSelector) {
       const opener = document.querySelector(step.openSelector) as HTMLElement | null;
       // Only click if collapsed — clicking an open popover would toggle it shut.
       if (opener && opener.getAttribute('aria-expanded') !== 'true') opener.click();
+      const rect = target.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) { currentStep++; continue; }
     }
-    const target = document.querySelector(step.target) as HTMLElement | null;
-    const rect = target?.getBoundingClientRect();
-    if (target && rect && rect.width > 0 && rect.height > 0) break;
-    currentStep++;
+    break;
   }
 
   if (currentStep >= STEPS.length) {
