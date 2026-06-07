@@ -98,6 +98,11 @@ export function createModalShell(opts: ModalShellOptions): ModalShell {
   const closeBtn = document.createElement('button');
   closeBtn.className = 'px-2 py-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 text-sm';
   closeBtn.textContent = '✕';
+  // The bare ✕ glyph reads as "multiplication x" to a screen reader; give every
+  // modalShell close button a descriptive accessible name + tooltip. One fix
+  // covers every modal built on the shared shell.
+  closeBtn.setAttribute('aria-label', `Close ${opts.title}`);
+  closeBtn.title = `Close ${opts.title}`;
   header.appendChild(closeBtn);
   modal.appendChild(header);
 

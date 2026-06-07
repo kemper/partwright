@@ -3157,8 +3157,7 @@ async function main() {
 
     // All tolerances failed. Offer render-only fallback — most users importing
     // a Baby Yoda / Eiffel Tower scan just want to look at it, not boolean-op it.
-    const accepted = await showInlineConfirm(
-      editorUI,
+    const accepted = await confirmDialog(
       `${file.name} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
       `You can still import it as render-only: the mesh displays and exports normally, but boolean operations, paint, and cross-sections won't work.\n\n` +
       `For full editing, repair the mesh first in MeshLab or Blender, then re-import.\n\n` +
@@ -13665,90 +13664,6 @@ function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'load
       el.className += 'text-red-400';
       break;
   }
-}
-
-interface ConfirmOptions {
-  /** Optional bold title above the message. */
-  title?: string;
-  /** Label for the confirm button. Default 'Continue'. */
-  confirmLabel?: string;
-  /** Label for the cancel button. Default 'Cancel'. */
-  cancelLabel?: string;
-}
-
-/** Modal confirmation dialog with semi-transparent backdrop overlay.
- *  Message preserves newlines (single `\n` becomes a soft break, `\n\n` a
- *  paragraph break) so callers can lay out multi-line prompts cleanly.
- *  Returns a Promise that resolves true (confirm) or false (cancel / Escape / click overlay). */
-function showInlineConfirm(_container: HTMLElement, message: string, options: ConfirmOptions = {}): Promise<boolean> {
-  return new Promise((resolve) => {
-    // Remove any existing modal
-    document.querySelector('.confirm-modal-overlay')?.remove();
-
-    // Backdrop overlay
-    const overlay = document.createElement('div');
-    overlay.className = 'confirm-modal-overlay fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center';
-
-    // Modal box — wider than the default 'max-w-sm' so multi-line prompts
-    // don't reflow into long thin columns.
-    const modal = document.createElement('div');
-    modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-5 max-w-md mx-4 animate-modal-in';
-
-    if (options.title) {
-      const title = document.createElement('h2');
-      title.className = 'text-zinc-100 text-base font-semibold mb-2';
-      title.textContent = options.title;
-      modal.appendChild(title);
-    }
-
-    const msg = document.createElement('p');
-    // `whitespace-pre-line` preserves \n as line breaks while still collapsing
-    // other whitespace runs, so single-line callers behave unchanged.
-    msg.className = 'text-zinc-200 text-sm leading-relaxed mb-5 whitespace-pre-line';
-    msg.textContent = message;
-
-    const btnGroup = document.createElement('div');
-    btnGroup.className = 'flex items-center justify-end gap-2';
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'px-4 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors';
-    cancelBtn.textContent = options.cancelLabel ?? 'Cancel';
-
-    const continueBtn = document.createElement('button');
-    continueBtn.className = 'px-4 py-1.5 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors';
-    continueBtn.textContent = options.confirmLabel ?? 'Continue';
-
-    btnGroup.appendChild(cancelBtn);
-    btnGroup.appendChild(continueBtn);
-    modal.appendChild(msg);
-    modal.appendChild(btnGroup);
-    overlay.appendChild(modal);
-
-    let resolved = false;
-    function finish(result: boolean) {
-      if (resolved) return;
-      resolved = true;
-      overlay.remove();
-      document.removeEventListener('keydown', onKey);
-      resolve(result);
-    }
-
-    continueBtn.addEventListener('click', () => finish(true));
-    cancelBtn.addEventListener('click', () => finish(false));
-
-    // Click on overlay (outside modal) dismisses
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) finish(false);
-    });
-
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') finish(false);
-    }
-    document.addEventListener('keydown', onKey);
-
-    document.body.appendChild(overlay);
-    continueBtn.focus();
-  });
 }
 
 main().catch(console.error);

@@ -6,6 +6,7 @@
 import { signal, type Signal } from '@preact/signals';
 import { useEffect } from 'preact/hooks';
 import { mountPreactModal } from './preact/mount';
+import { BUTTON_DANGER } from './styleConstants';
 import {
   getStoreCounts,
   listLocalStorageEntries,
@@ -127,7 +128,7 @@ function UninstallFooter(props: {
       >Cancel</button>
       <button
         type="button"
-        class="px-3 py-1.5 rounded text-sm bg-red-600 hover:bg-red-500 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+        class={`${BUTTON_DANGER} disabled:opacity-50 disabled:cursor-not-allowed`}
         disabled={!anySelected || running.value}
         onClick={() => { void runWipe(); }}
       >{running.value ? 'Deleting…' : 'Delete selected data'}</button>
