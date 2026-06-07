@@ -70,6 +70,29 @@ test.describe('Catalog page (static)', () => {
     await expect(fidget).toContainText('Spiral Fidget Cone');
   });
 
+  test('every tile carries a print-tested status chip (default: Untested)', async ({ page }) => {
+    await gotoCatalog(page);
+
+    const tiles = page.locator('main a[data-catalog-tile]');
+    const tileCount = await tiles.count();
+    expect(tileCount).toBeGreaterThan(0);
+
+    // Each tile shows exactly one print-status chip — verified or untested.
+    for (const tile of await tiles.all()) {
+      const chips = tile.locator('span:has-text("Print-tested"), span:has-text("Untested")');
+      await expect(chips).toHaveCount(1);
+    }
+
+    // With nothing marked print-tested yet, every chip reads "Untested".
+    await expect(page.locator('main a[data-catalog-tile] span:has-text("Untested")')).toHaveCount(tileCount);
+
+    // The status is searchable: filtering on "untested" keeps the untested tiles.
+    const search = page.locator('[data-catalog-search]');
+    await search.fill('untested');
+    expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBeGreaterThan(0);
+    await search.fill('');
+  });
+
   test('search narrows tiles, updates section counts, and hides empty sections', async ({ page }) => {
     await gotoCatalog(page);
 
