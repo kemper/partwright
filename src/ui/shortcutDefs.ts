@@ -69,5 +69,9 @@ export function getShortcutDocs(): ShortcutDoc[] {
       keys: combo(SHIFT_LABEL, ALT_LABEL, 'F'),
       description: 'Reformat the code in the editor.',
     },
+    {
+      keys: `${combo(MOD_LABEL, 'F')} / ${combo(MOD_LABEL, ALT_LABEL, 'F')}`,
+      description: 'Open the code editor’s Find / Find-and-Replace panel (replace jumps straight to the replace field).',
+    },
   ];
 }
