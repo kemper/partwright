@@ -1,20 +1,6 @@
 {
   "entries": [
     {
-      "id": "creeper-head",
-      "name": "Creeper Head",
-      "file": "creeper_head.partwright.json",
-      "language": "manifold-js",
-      "description": "Blocky creeper head with the classic frown face — raised dark relief on a mossy-green cube."
-    },
-    {
-      "id": "question-block",
-      "name": "Super Mario ? Block",
-      "file": "question_block.partwright.json",
-      "language": "manifold-js",
-      "description": "Classic Super Mario question-mark block: a warm-yellow cube with brown corner rivets and a bold ? glyph."
-    },
-    {
       "id": "companion-cube",
       "name": "Portal Companion Cube",
       "file": "companion_cube.partwright.json",
@@ -22,18 +8,11 @@
       "description": "Portal Weighted Companion Cube — light-gray cube with pink hearts on each face and steel edge bars."
     },
     {
-      "id": "space-invader",
-      "name": "Space Invader",
-      "file": "space_invader.partwright.json",
-      "language": "manifold-js",
-      "description": "The classic 8-bit \"crab\" Space Invader sprite, extruded as a lime-green pixel-art slab."
-    },
-    {
       "id": "pacman-ghost",
       "name": "Pac-Man & Ghost",
       "file": "pacman_ghost.partwright.json",
       "language": "manifold-js",
-      "description": "Iconic arcade duo — yellow Pac-Man with a wedge mouth beside a red ghost with eyes."
+      "description": "The iconic arcade duo — a clean yellow wedge Pac-Man chasing a red ghost with a scalloped skirt and blue-pupiled eyes, with a trail of pellets between them."
     },
     {
       "id": "castle-tower",
@@ -68,14 +47,14 @@
       "name": "Royal Crown",
       "file": "royal_crown.partwright.json",
       "language": "manifold-js",
-      "description": "A king's gold crown with pointed peaks and red, blue, and green jewels set around the band."
+      "description": "A regal gold crown with finial-tipped points, a beaded band, bezel-set ruby/sapphire/emerald/amethyst jewels, and a deep-red velvet inner band."
     },
     {
       "id": "arcade-cabinet",
       "name": "Arcade Cabinet",
       "file": "arcade_cabinet.partwright.json",
       "language": "manifold-js",
-      "description": "Classic upright arcade cabinet with a marquee, screen, joystick, buttons, and coin slot."
+      "description": "A vibrant upright arcade cabinet — deep-blue body with a red side panel, a gold marquee, a pixel-art space invader glowing on the screen, a joystick, and colorful buttons."
     },
     {
       "id": "cassette-tape",
@@ -97,13 +76,6 @@
       "file": "boombox.partwright.json",
       "language": "manifold-js",
       "description": "80s boombox with twin speaker grilles, a cassette deck, control buttons, and a carry handle."
-    },
-    {
-      "id": "pixel-heart",
-      "name": "Pixel Heart",
-      "file": "pixel_heart.partwright.json",
-      "language": "manifold-js",
-      "description": "8-bit pixel heart built from unit cubes — bold red with a highlight shine."
     },
     {
       "id": "lowpoly-fox",
@@ -257,7 +229,7 @@
       "name": "SDF Twisted Vessel",
       "file": "sdf_twisted_vessel.partwright.json",
       "language": "manifold-js",
-      "description": "A spiralled body produced by the SDF `.twist()` domain warp on a non-radially-symmetric profile, joined to a base with smoothUnion."
+      "description": "A hollow twisted ceramic vase with a fluted, spiralled belly, a pinched neck, an open mouth, and a warm gold rim band over a deep-teal glaze."
     },
     {
       "id": "sdf-mixed-mechanical",
@@ -274,18 +246,11 @@
       "description": "A stylised flower showcasing the SDF combinators — ellipsoid petals fanned out with polarArray (no hand-written coordinates), a flattened pollen centre, and a taper-narrowed stem. Three painted regions."
     },
     {
-      "id": "rangefinder-camera",
-      "name": "Vintage Rangefinder Camera",
-      "file": "rangefinder_camera.partwright.json",
-      "language": "scad",
-      "description": "A classic 35mm rangefinder camera with a chrome top plate, leatherette body, a fixed lens with a dark recessed front element, twin viewfinder windows, a brass shutter release, and a wind-lever knob."
-    },
-    {
       "id": "smiley-cactus",
       "name": "Smiley Cactus",
       "file": "smiley_cactus.partwright.json",
       "language": "scad",
-      "description": "A cheerful potted saguaro with two upraised arms, a pink flower bud on its crown, and two little black bead eyes — sitting in a flared terracotta pot with rim and soil."
+      "description": "A cheerful potted saguaro with two upraised arms, a big grinning face, and a pink flower bud on its crown — sitting in a terracotta pot."
     },
     {
       "id": "studio-microphone",
@@ -348,7 +313,7 @@
       "name": "Robot Buddy",
       "file": "robot_buddy.partwright.json",
       "language": "replicad",
-      "description": "A friendly retro desktop robot with a domed head, antenna, chest panel, and two stubby arms — colorful BREP showcase with paint."
+      "description": "A friendly retro robot with a rounded head, two big cyan eyes, a bobble antenna, a chest panel, and stubby arms — a colorful filleted BREP showcase."
     },
     {
       "id": "bird-feeder",
@@ -356,20 +321,6 @@
       "file": "bird_feeder.partwright.json",
       "language": "replicad",
       "description": "A gazebo-style hanging bird feeder with conical wood roof, revolved seed reservoir, lipped dish, and circular perches — showcasing revolve + circularPattern + paint."
-    },
-    {
-      "id": "pendant-lamp",
-      "name": "Pendant Chandelier",
-      "file": "pendant_lamp.partwright.json",
-      "language": "replicad",
-      "description": "A 5-arm pendant chandelier with brass arms, glass bulbs, central canopy, and a decorative finial — showcasing BREP.circularPattern + paint."
-    },
-    {
-      "id": "wall-clock",
-      "name": "Wall Clock",
-      "file": "wall_clock.partwright.json",
-      "language": "replicad",
-      "description": "A classic round analog wall clock with chamfered bezel, painted hour markers, hour + minute hands, and a center spindle — showcasing circularPattern + paint."
     },
     {
       "id": "vintage-camera",
@@ -404,14 +355,14 @@
       "name": "SDF Aetherjelly",
       "file": "sdf_radial_creature.partwright.json",
       "language": "manifold-js",
-      "description": "A radial jellyfish-drifter built from ellipsoids, fanned into shape by polarArray (8 tentacles, 6 ocelli), bilaterally completed by mirrorPair, and tapered along its body axis. Three painted regions; the showcase for the SDF combinators."
+      "description": "An ethereal bioluminescent jellyfish — a cyan-to-violet gradient bell with a ruffled rim, seven flowing tentacles tipped with glowing pods, and a ring of luminous ocelli. An SDF combinator showcase."
     },
     {
       "id": "sdf-helix-lamp",
       "name": "SDF Helix Lamp Standard",
       "file": "sdf_helix_lamp_standard.partwright.json",
       "language": "manifold-js",
-      "description": "An architectural light post whose square-cross-section shaft spirals around an OFFSET vertical axis, paired with a perforated screen wall built by repeat() clipped to a slab and topped by a roundedCylinder lamp cap. Four painted regions; showcases the new offset-twist, repeat, and roundedCylinder primitives."
+      "description": "A warm helix lamp — a four-turn amber coil spiralling up from a dark base to a glowing bulb finial, built from a chain of SDF capsules along a helical path."
     },
     {
       "id": "sdf-spur-wheel",
@@ -510,6 +461,192 @@
       "file": "layer_cake.partwright.json",
       "language": "manifold-js",
       "description": "A self-coloring parametric layer cake: colors live in the model code via api.label(shape, name, { color }), so it renders painted with no paint step and the editor stays editable. Set the frosting color and tier count in the Parameters panel."
+    },
+    {
+      "id": "country-manor-estate",
+      "name": "Country Manor Estate",
+      "file": "country_manor_estate.partwright.json",
+      "language": "manifold-js",
+      "description": "A symmetric Palladian-style country manor with projecting end wings, a columned entrance portico, grand pediment and crest, hipped roofs ringed by balustrades, dormer windows, clustered chimneys with clay pots, and a central rooftop cupola — self-colored via labeled regions for multi-color prints."
+    },
+    {
+      "id": "parameterized-chain",
+      "name": "Parameterized Chain",
+      "file": "parameterized_chain.partwright.json",
+      "language": "manifold-js",
+      "description": "A print-in-place interlocking chain swept with Curves.sweep — a 5-link straight run and a 30-link Archimedean spiral laid flat on the bed. Set link count, scale, wire diameter, and clearance in the Parameters panel."
+    },
+    {
+      "id": "hot-dog",
+      "name": "Hot Dog",
+      "file": "hot_dog.partwright.json",
+      "language": "manifold-js",
+      "description": "A cartoon hot dog — a hull-formed sausage nestled in a hollowed bun with a wavy mustard squiggle draped on top. Fully parametric, with color knobs for bun, sausage, and mustard."
+    },
+    {
+      "id": "voxel-castle",
+      "name": "Voxel Castle",
+      "file": "voxel_castle.partwright.json",
+      "language": "voxel",
+      "description": "A grand royal castle built on a voxel grid — concentric curtain walls, corner turrets with blue conical roofs, a moat, gardens, and golden banners. Painted block-by-block, then baked to a watertight mesh."
+    },
+    {
+      "id": "voxel-robot",
+      "name": "Voxel Robot",
+      "file": "voxel_robot.partwright.json",
+      "language": "voxel",
+      "description": "A boxy retro voxel robot with glowing cyan eyes, a button-panel chest, blocky arms, and a bobble antenna."
+    },
+    {
+      "id": "voxel-dragon",
+      "name": "Voxel Dragon",
+      "file": "voxel_dragon.partwright.json",
+      "language": "voxel",
+      "description": "A cute seated voxel dragon with emerald scales, a cream belly, bone horns, a row of dorsal spikes, and a curling tail."
+    },
+    {
+      "id": "voxel-cat",
+      "name": "Voxel Cat",
+      "file": "voxel_cat.partwright.json",
+      "language": "voxel",
+      "description": "A charming voxel tabby sitting up — rounded head with pointy ears, green eyes, a pink nose, white paws, and a curling tail."
+    },
+    {
+      "id": "voxel-slime",
+      "name": "Voxel Slime",
+      "file": "voxel_slime.partwright.json",
+      "language": "voxel",
+      "description": "A classic RPG-style voxel slime — a glossy aqua blob with a sheen highlight and a big happy face."
+    },
+    {
+      "id": "voxel-knight",
+      "name": "Voxel Knight",
+      "file": "voxel_knight.partwright.json",
+      "language": "voxel",
+      "description": "A chibi voxel knight in steel plate with gold trim, a red plume, a cross-emblem shield, and a raised sword."
+    },
+    {
+      "id": "medieval-watchtower",
+      "name": "Medieval Watchtower",
+      "file": "medieval_watchtower.partwright.json",
+      "language": "manifold-js",
+      "description": "A detailed stone watchtower with buttresses, corbels, open battlements, an arched wooden door, and a conical roof — self-colored via labeled regions for multi-color prints."
+    },
+    {
+      "id": "retro-tv",
+      "name": "Retro TV",
+      "file": "retro_tv.partwright.json",
+      "language": "manifold-js",
+      "description": "A retro CRT television with a lofted tapered housing, a curved-glass screen, a swept carry handle, round control knobs, and rabbit-ear antennas."
+    },
+    {
+      "id": "japanese-pagoda",
+      "name": "Japanese Pagoda",
+      "file": "japanese_pagoda.partwright.json",
+      "language": "manifold-js",
+      "description": "A five-story vermilion-and-white temple pagoda whose dark tiled roofs sweep up into graceful upturned eaves, crowned by a gilt-bronze sōrin spire atop a stepped stone base."
+    },
+    {
+      "id": "steampunk-airship",
+      "name": "Steampunk Airship",
+      "file": "steampunk_airship.partwright.json",
+      "language": "manifold-js",
+      "description": "A crimson-silk dirigible with a brass-ribbed envelope, a wooden gondola lined with brass portholes, a verdigris-copper wheelhouse, cruciform tail fins, and an outrigger propeller."
+    },
+    {
+      "id": "mechanical-orrery",
+      "name": "Mechanical Orrery",
+      "file": "mechanical_orrery.partwright.json",
+      "language": "scad",
+      "description": "A brass tabletop orrery whose meshing involute gear train drives a gilded sun, with red, blue, and ringed teal planets swinging out on graceful arms at staggered orbits."
+    },
+    {
+      "id": "pocket-watch",
+      "name": "Pocket Watch Movement",
+      "file": "pocket_watch.partwright.json",
+      "language": "scad",
+      "description": "An open-face skeleton pocket watch laid bare — a stepped brass bezel with a fluted crown and suspension bow framing an exposed train of involute spur gears down to a blued balance, jeweled with red rubies at every pivot."
+    },
+    {
+      "id": "turbofan-engine",
+      "name": "Turbofan Jet Engine",
+      "file": "turbofan_engine.partwright.json",
+      "language": "replicad",
+      "description": "The front of a high-bypass airliner turbofan: a smoothly swept nacelle cowl with a chamfered intake lip, a dark spinner cone, and a full ring of fan blades — an exact-surface BREP showcase."
+    },
+    {
+      "id": "kitchen-faucet",
+      "name": "Kitchen Faucet",
+      "file": "kitchen_faucet.partwright.json",
+      "language": "replicad",
+      "description": "A sleek brushed-metal gooseneck mixer tap, its tall toroidal spout arching from a flared deck column down to a flush aerator, with a single blue lever handle at the bend — a smooth-surface BREP showcase."
+    },
+    {
+      "id": "voxel-pirate-ship",
+      "name": "Voxel Pirate Ship",
+      "file": "voxel_pirate_ship.partwright.json",
+      "language": "voxel",
+      "description": "A blocky pirate galleon — a curved wooden hull with a red gold-windowed stern castle, three masts of billowing cream sails, a crow's nest, iron cannons, a gilded figurehead, and a skull-and-crossbones flag."
+    },
+    {
+      "id": "voxel-locomotive",
+      "name": "Voxel Steam Locomotive",
+      "file": "voxel_locomotive.partwright.json",
+      "language": "voxel",
+      "description": "A cute blocky 4-4-0 steam engine — a green brass-banded boiler, a flared funnel trailing a white smoke puff, twin steam domes, a windowed wood cab, big red driving wheels linked by silver rods, and a cowcatcher."
+    },
+    {
+      "id": "spiral-fidget-cone",
+      "name": "Spiral Fidget Cone",
+      "file": "spiral_fidget_cone.partwright.json",
+      "language": "manifold-js",
+      "description": "Print-in-place bolt & nut — a 5-start helical screw captive inside a matching spiral-cage cone. Twist and it rides the threads; prints in one piece and unscrews apart.",
+      "group": "fidget-toys"
+    },
+    {
+      "id": "dna-helix",
+      "name": "DNA Double Helix",
+      "file": "dna_helix.partwright.json",
+      "language": "manifold-js",
+      "description": "A double-helix model of DNA — two antiparallel sugar-phosphate backbones (orange and teal beads) spiralling around a shared axis, joined by colored base-pair rungs in the four nucleotide colors. Self-colored via labeled regions; parametric turns, radius, pitch, and bead density."
+    },
+    {
+      "id": "fountain-pen",
+      "name": "Fountain Pen",
+      "file": "fountain_pen.partwright.json",
+      "language": "manifold-js",
+      "description": "A capped-and-posted fountain pen — gold nib, black grip, burgundy barrel with gold trim bands, a posted cap with finial, and a sprung pocket clip. A turned object composed from stacked tapered cylinders along one axis, self-colored via labeled regions. Color and length are parametric."
+    },
+    {
+      "id": "ringed-planet",
+      "name": "Ringed Planet",
+      "file": "ringed_planet.partwright.json",
+      "language": "manifold-js",
+      "description": "A banded gas giant encircled by a tilted, multi-band ring system. Latitude color bands are cut from the sphere with overlapping slabs; the concentric ring disk welds into the planet's equator so it prints as one self-colored piece. Parametric planet radius, ring span, band count, and axial tilt."
+    },
+    {
+      "id": "print-fit-knob",
+      "name": "Captive-Nut Tightening Knob",
+      "file": "print_fit_knob.partwright.json",
+      "language": "manifold-js",
+      "description": "A knurled hand knob with a captive M4 hex-nut pocket and a clearance bore — trap a nut and turn it onto any M4 bolt or rod. Useful for jigs, clamps, and adjustable feet. Built with api.printFit.",
+      "group": "print-fit"
+    },
+    {
+      "id": "print-fit-project-box",
+      "name": "Electronics Project Box",
+      "file": "print_fit_project_box.partwright.json",
+      "language": "manifold-js",
+      "description": "A parametric base tray with heat-set insert bosses, a matching screwed lid, and vent slots on the long walls to keep electronics cool. Drop brass inserts with a soldering iron; screw the lid flush. Built with api.printFit.",
+      "group": "print-fit"
+    },
+    {
+      "id": "print-fit-dovetail-system",
+      "name": "Dovetail Rail System",
+      "file": "print_fit_dovetail_system.partwright.json",
+      "language": "manifold-js",
+      "description": "A wall-mount plate with a full-length dovetail rail and a matching hook that slides on and locks — lift to remove. Print one plate, print as many hooks as you need. Both parts parameterizable. Built with api.printFit.",
+      "group": "print-fit"
     }
   ]
 }

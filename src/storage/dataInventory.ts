@@ -4,9 +4,9 @@
 
 import { openPartwrightDB } from './db';
 
-export type StoreName = 'sessions' | 'versions' | 'parts' | 'notes' | 'aiKeys' | 'aiChats' | 'aiAttachments';
+export type StoreName = 'sessions' | 'versions' | 'parts' | 'notes' | 'aiKeys' | 'aiChats' | 'aiAttachments' | 'importInbox' | 'exportInbox';
 
-export const ALL_STORES: StoreName[] = ['sessions', 'versions', 'parts', 'notes', 'aiKeys', 'aiChats', 'aiAttachments'];
+export const ALL_STORES: StoreName[] = ['sessions', 'versions', 'parts', 'notes', 'aiKeys', 'aiChats', 'aiAttachments', 'importInbox', 'exportInbox'];
 
 export const STORE_LABELS: Record<StoreName, string> = {
   sessions: 'Sessions',
@@ -16,6 +16,8 @@ export const STORE_LABELS: Record<StoreName, string> = {
   aiKeys: 'AI API keys',
   aiChats: 'AI chat messages',
   aiAttachments: 'Image attachments',
+  importInbox: 'Recent imports',
+  exportInbox: 'Recent exports',
 };
 
 function reqToPromise<T>(req: IDBRequest<T>): Promise<T> {
@@ -171,7 +173,9 @@ async function clearModelCaches(): Promise<void> {
  *  in-memory state is rebuilt from the now-empty stores. */
 export async function wipeData(sel: WipeSelection): Promise<void> {
   const stores: StoreName[] = [];
-  if (sel.modelingData) stores.push('sessions', 'versions', 'parts', 'notes');
+  // The Recent Imports / Exports lists cache imported & exported model files,
+  // so they ride along with the modeling-data category (and thus a full wipe).
+  if (sel.modelingData) stores.push('sessions', 'versions', 'parts', 'notes', 'importInbox', 'exportInbox');
   if (sel.chats) stores.push('aiChats');
   if (sel.apiKeys) stores.push('aiKeys');
   if (sel.attachments) stores.push('aiAttachments');

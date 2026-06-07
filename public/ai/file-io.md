@@ -15,6 +15,12 @@ const tmf = await partwright.export3MFData()
 // Inspect mimeType to tell which: "text/plain" -> use `text`, "application/zip" -> use `base64`.
 const obj = await partwright.exportOBJData()
 
+// MagicaVoxel .vox — voxel sessions only; keeps the editable voxel grid (cells
+// + palette), unlike the meshed GLB/3MF/OBJ/STL exports. Returns { error } off a
+// voxel session or past the format's 256-per-axis / 255-color limits. See /ai/voxel.md.
+const vox = await partwright.exportVOXData()
+// -> { filename: "model_2026-04-28.vox", mimeType: "application/octet-stream", base64: "...", sizeBytes }
+
 // Session JSON — returns the parsed object directly, no decoding needed
 const ses = await partwright.exportSessionData()
 // -> { filename: "...partwright.json", mimeType: "application/json", data: { partwright: "1.2", session: {...}, versions: [...] }, sizeBytes }

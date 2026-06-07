@@ -7,6 +7,7 @@ import {
   pruneParamValues,
   protectParamValues,
   normalizeHexColor,
+  createParamCapture,
   type ParamSpec,
 } from '../../src/geometry/params';
 
@@ -76,12 +77,21 @@ describe('resolveParamValues', () => {
     });
   });
 
-  it('applies valid overrides and clamps/rounds/truncates as needed', () => {
+  it('applies valid overrides, rounding ints and truncating text (numbers are not clamped)', () => {
     expect(resolveParamValues(schema, {
       width: 999, rows: 3.6, rounded: false, style: 'beveled', title: 'ABCDEFG', accent: '#ABCDEF',
     })).toEqual({
-      width: 120, rows: 4, rounded: false, style: 'beveled', title: 'ABCD', accent: '#abcdef',
+      // width keeps the typed value past its max — the field lets you exceed the
+      // slider's range; only ints round and text truncates.
+      width: 999, rows: 4, rounded: false, style: 'beveled', title: 'ABCD', accent: '#abcdef',
     });
+  });
+
+  it('honors a number/int override beyond the declared min or max', () => {
+    expect(resolveParamValues(schema, { width: 999 }).width).toBe(999);
+    expect(resolveParamValues(schema, { width: -50 }).width).toBe(-50);
+    // ints past max are still rounded but not clamped.
+    expect(resolveParamValues(schema, { rows: 12.6 }).rows).toBe(13);
   });
 
   it('falls back to the default for invalid overrides and ignores unknown keys', () => {
@@ -151,5 +161,49 @@ describe('normalizeHexColor', () => {
     expect(normalizeHexColor('#abc')).toBe('#aabbcc');
     expect(normalizeHexColor('red')).toBeNull();
     expect(normalizeHexColor(123)).toBeNull();
+  });
+});
+
+// The shared capture used by every JS-sandbox engine (manifold-js, voxel,
+// replicad) so they expose `api.params` identically. The per-engine wiring is
+// covered in the e2e tier (worker round-trip); this locks the pure logic.
+describe('createParamCapture', () => {
+  it('captures the declared schema and resolves override-or-default values', () => {
+    const capture = createParamCapture({ width: 80, bogus: 1 });
+    const resolved = capture.params({
+      width: { type: 'number', default: 20, min: 10, max: 100 },
+      height: { type: 'number', default: 30, min: 5, max: 80 },
+    });
+    // Override applied to width; height falls back to its default; unknown
+    // override keys are ignored.
+    expect(resolved.width).toBe(80);
+    expect(resolved.height).toBe(30);
+    expect(capture.collectSchema()?.map(s => s.key)).toEqual(['width', 'height']);
+  });
+
+  it('guards the returned values against typo reads', () => {
+    const capture = createParamCapture();
+    const p = capture.params({ width: { type: 'number', default: 20 } });
+    expect(p.width).toBe(20);
+    expect(() => (p as Record<string, unknown>).widht).toThrow(/no parameter "widht"/);
+  });
+
+  it('honors an out-of-range override beyond the declared limits', () => {
+    const capture = createParamCapture({ width: 999 });
+    const p = capture.params({ width: { type: 'number', default: 20, min: 10, max: 100 } });
+    expect(p.width).toBe(999);
+  });
+
+  it('merges schemas across multiple api.params calls (last def wins, order kept)', () => {
+    const capture = createParamCapture();
+    capture.params({ a: { type: 'int', default: 1 } });
+    capture.params({ b: { type: 'boolean', default: true }, a: { type: 'int', default: 5 } });
+    const schema = capture.collectSchema()!;
+    expect(schema.map(s => s.key)).toEqual(['a', 'b']);
+    expect(schema.find(s => s.key === 'a')?.default).toBe(5);
+  });
+
+  it('reports undefined schema when the model declares no params', () => {
+    expect(createParamCapture().collectSchema()).toBeUndefined();
   });
 });

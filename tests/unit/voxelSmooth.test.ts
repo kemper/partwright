@@ -1,0 +1,114 @@
+import { describe, it, expect } from 'vitest';
+import { VoxelGrid } from '../../src/geometry/voxel/grid';
+import { meshGrid } from '../../src/geometry/voxel/mesher';
+import type { MeshData } from '../../src/geometry/types';
+
+/** A solid voxel box from voxel (0,0,0) to (s-1,s-1,s-1), sitting on z=0. */
+function box(s = 5): VoxelGrid {
+  return new VoxelGrid().fillBox([0, 0, 0], [s - 1, s - 1, s - 1], '#888');
+}
+
+function zValues(m: MeshData): number[] {
+  const out: number[] = [];
+  for (let v = 0; v < m.numVert; v++) out.push(m.vertProperties[v * 3 + 2]);
+  return out;
+}
+
+function minZ(m: MeshData): number {
+  return Math.min(...zValues(m));
+}
+
+describe('voxel smooth — base pinning', () => {
+  it('plain smooth pulls the bottom off the build plate (it rocks)', () => {
+    // Baseline: without pinning, Taubin moves the bottom plane off z=0 (the
+    // anti-shrink μ pass even bulges it below), so the model no longer sits flat.
+    const m = meshGrid(box(5).smooth({ iterations: 3 }));
+    expect(Math.abs(minZ(m))).toBeGreaterThan(0.05);
+  });
+
+  it('flatBottom keeps the bottom plane flat at z=0 while still rounding above', () => {
+    const grid = box(5);
+    const blocky = meshGrid(grid.clone()); // default surfacing
+    const m = meshGrid(grid.smooth({ iterations: 3, flatBottom: true }));
+
+    // Same topology / vertex order (same occupancy → same gridToMeshData).
+    expect(m.numVert).toBe(blocky.numVert);
+
+    // No vertex drops below or rises off the z=0 plane: the floor stays flat.
+    expect(minZ(m)).toBeCloseTo(0, 5);
+
+    let pinnedZ = 0, movedXY = 0, movedAbove = 0;
+    for (let v = 0; v < m.numVert; v++) {
+      const bz = blocky.vertProperties[v * 3 + 2];
+      const z = m.vertProperties[v * 3 + 2];
+      if (bz === 0) {
+        // Bottom-plane vertices keep z exactly; x/y may relax inward.
+        expect(z).toBeCloseTo(0, 6);
+        pinnedZ++;
+        if (m.vertProperties[v * 3] !== blocky.vertProperties[v * 3]
+          || m.vertProperties[v * 3 + 1] !== blocky.vertProperties[v * 3 + 1]) movedXY++;
+      } else if (z !== bz) {
+        movedAbove++;
+      }
+    }
+    expect(pinnedZ).toBeGreaterThan(0);
+    expect(movedXY).toBeGreaterThan(0);   // sides still round (x/y free)
+    expect(movedAbove).toBeGreaterThan(0); // body above still smooths
+  });
+
+  it('baseLayers keeps the bottom N layers fully blocky (sharp pedestal)', () => {
+    const grid = box(6);
+    const blocky = meshGrid(grid.clone());
+    const m = meshGrid(grid.smooth({ iterations: 4, baseLayers: 2 }));
+
+    let pinned = 0, moved = 0;
+    for (let v = 0; v < m.numVert; v++) {
+      const bx = blocky.vertProperties[v * 3];
+      const by = blocky.vertProperties[v * 3 + 1];
+      const bz = blocky.vertProperties[v * 3 + 2];
+      const z = m.vertProperties[v * 3 + 2];
+      if (bz <= 2 + 1e-6) {
+        // Fully pinned: identical position on all axes.
+        expect(m.vertProperties[v * 3]).toBe(bx);
+        expect(m.vertProperties[v * 3 + 1]).toBe(by);
+        expect(z).toBe(bz);
+        pinned++;
+      } else if (z !== bz) {
+        moved++;
+      }
+    }
+    expect(pinned).toBeGreaterThan(0);
+    expect(moved).toBeGreaterThan(0);
+  });
+
+  it('lockBox keeps the voxels in the box blocky', () => {
+    const grid = box(6);
+    const blocky = meshGrid(grid.clone());
+    // Lock the bottom layer of voxels (z=0) → corners span z in [0,1].
+    const m = meshGrid(grid.smooth({ iterations: 4, lockBox: [[0, 0, 0], [5, 5, 0]] }));
+
+    let pinned = 0;
+    for (let v = 0; v < m.numVert; v++) {
+      const bz = blocky.vertProperties[v * 3 + 2];
+      if (bz <= 1 + 1e-6) {
+        expect(m.vertProperties[v * 3]).toBe(blocky.vertProperties[v * 3]);
+        expect(m.vertProperties[v * 3 + 1]).toBe(blocky.vertProperties[v * 3 + 1]);
+        expect(m.vertProperties[v * 3 + 2]).toBe(bz);
+        pinned++;
+      }
+    }
+    expect(pinned).toBeGreaterThan(0);
+  });
+
+  it('flatBottom composes with detail without dropping below the plane', () => {
+    const m = meshGrid(box(5).smooth({ iterations: 2, detail: 2, flatBottom: true }));
+    expect(minZ(m)).toBeCloseTo(0, 5);
+  });
+
+  it('rejects unknown smooth keys and bad lockBox shapes', () => {
+    expect(() => new VoxelGrid().smooth({ flatBotom: true } as never)).toThrow();
+    expect(() => new VoxelGrid().smooth({ lockBox: [[0, 0, 0]] } as never)).toThrow();
+    expect(() => new VoxelGrid().smooth({ lockBox: [[0, 0, 0], [1, 1, 1.5]] } as never)).toThrow();
+    expect(() => new VoxelGrid().smooth({ baseLayers: 0 } as never)).toThrow();
+  });
+});

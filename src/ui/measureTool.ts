@@ -1,7 +1,7 @@
 // Interactive measuring tool — drag between two points on model to measure distance
 import * as THREE from 'three';
 import { measureDistance } from '../geometry/rayCast';
-import { startMeasurement, updateMeasurementTarget, clearMeasurement, updateLabelPosition } from '../renderer/measureOverlay';
+import { startMeasurement, updateMeasurementTarget, clearMeasurement } from '../renderer/measureOverlay';
 
 export interface MeasureState {
   active: boolean;
@@ -79,12 +79,6 @@ export function getState(): MeasureState {
     point2: point2 ? [point2.x, point2.y, point2.z] : null,
     distance: currentDistance,
   };
-}
-
-export function refreshLabel(): void {
-  if (mode === 'displaying' && point1 && point2) {
-    updateLabelPosition(point1, point2);
-  }
 }
 
 function raycastModel(e: PointerEvent | MouseEvent): THREE.Vector3 | null {

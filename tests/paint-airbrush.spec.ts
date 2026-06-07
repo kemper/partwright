@@ -1,9 +1,9 @@
-// Geodesic airbrush: sprays a soft speckle whose edge fades out via a
-// stochastic per-triangle dither (NOT colour blending — every triangle is
-// painted fully or not, so the result stays one printable colour per triangle).
-// It's a coverage mode of the geodesic brush, so it follows the surface and
-// never bleeds through a thin/hollow wall. Driven through paintAirbrush (same
-// path as the UI spray).
+// Airbrush: sprays a soft speckle whose edge fades out via a stochastic
+// per-triangle dither (NOT colour blending — every triangle is painted fully or
+// not, so the result stays one printable colour per triangle). It honours the
+// active surface mode: slab by default (gated by depth, like the rest of the
+// brush) with geodesic available for curved/gap-separated surfaces. Driven
+// through paintAirbrush (same path as the UI spray).
 
 import { test, expect } from 'playwright/test';
 
@@ -17,7 +17,7 @@ async function openEditor(page: import('playwright/test').Page) {
   });
 }
 
-test.describe('geodesic airbrush', () => {
+test.describe('airbrush', () => {
   test('paintAirbrush sprays a region, subdivides for speckle, light by default', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(() => {
@@ -49,18 +49,28 @@ test.describe('geodesic airbrush', () => {
     expect(out.heavy).toBeGreaterThan(out.light);
   });
 
-  test('geodesic: the spray stays on the surface (no bleed through a thin wall)', async ({ page }) => {
+  test('spray stays on the surface: slab gated by depth, geodesic by connectivity', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
-      // Thin plate: top z=1, bottom z=-1. A radius-6 spray at the top centre
-      // must stay on the top (the bottom is a disconnected wall).
+      // Thin plate: top z=1, bottom z=-1 (2 units thick). A radius-6 spray at the
+      // top centre must stay on the top — the bottom is the back of the wall.
       await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
-      pw.paintAirbrush({ points: [[0, 0, 1]], radius: 6, strength: 1, softness: 0.5, seed: 1, color: [1, 0, 0] });
-      return pw.listRegions()[0].bbox;
+      const minZ = (opts: Record<string, unknown>) => {
+        pw.clearColors();
+        pw.paintAirbrush({ points: [[0, 0, 1]], radius: 6, strength: 1, softness: 0.5, seed: 1, color: [1, 0, 0], ...opts });
+        return pw.listRegions()[0].bbox.min[2];
+      };
+      return {
+        slabShallow: minZ({ surface: 'slab', depth: 0.5 }), // hugs the top face
+        slabDeep: minZ({ surface: 'slab', depth: 5 }),      // depth > plate → reaches back
+        geodesic: minZ({ surface: 'geodesic' }),            // follows the surface, no depth
+      };
     });
-    expect(out.min[2]).toBeGreaterThan(0); // nothing sprayed onto the back face
+    expect(out.slabShallow).toBeGreaterThan(0); // shallow slab spray stayed on the top
+    expect(out.geodesic).toBeGreaterThan(0);    // geodesic spray never bled through
+    expect(out.slabDeep).toBeLessThan(0);       // a deep slab is the gate that lets it through
   });
 
   test('the speckle is deterministic across save + reload', async ({ page }) => {
@@ -106,7 +116,7 @@ test.describe('geodesic airbrush', () => {
     expect(out.reloaded).toEqual(out.live); // both sprays reproduce exactly on reload
   });
 
-  test('the brush panel has a Spray toggle that reveals strength/softness and disables Slab', async ({ page }) => {
+  test('the brush panel has a Spray toggle that reveals strength/softness and keeps Slab available', async ({ page }) => {
     await openEditor(page);
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
@@ -116,13 +126,18 @@ test.describe('geodesic airbrush', () => {
     await expect(sprayToggle).toBeVisible();
     await expect(sprayToggle).toContainText('Off');
     await expect(page.locator('#brush-spray-strength')).toBeHidden();
+    // Slab is the default surface, so its depth slider shows before spraying too.
+    await expect(page.locator('#brush-depth-wrap')).toBeVisible();
 
     await sprayToggle.dispatchEvent('click');
     await expect(sprayToggle).toContainText('On');
     await expect(page.locator('#brush-spray-strength')).toBeVisible();
     await expect(page.locator('#brush-spray-softness')).toBeVisible();
-    // Spray is geodesic-only, so the Slab surface button is disabled while on.
-    await expect(page.locator('#paint-picker-panel button[title*="thin shell"]')).toBeDisabled();
+    // Spray now honours the surface mode, so Slab stays selectable while on and
+    // the depth slider remains visible (the spray's slab thickness is tunable).
+    const slabBtn = page.locator('#paint-picker-panel button[title*="thin shell"]');
+    await expect(slabBtn).toBeEnabled();
+    await expect(page.locator('#brush-depth-wrap')).toBeVisible();
   });
 
   test('a spray drag commits a speckled region and subdivides the mesh', async ({ page }) => {
@@ -146,11 +161,11 @@ test.describe('geodesic airbrush', () => {
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
-        canvas.dispatchEvent(new MouseEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0 }));
-      fire('mousemove', cx, cy);
-      fire('mousedown', cx, cy);
-      for (let dx = 6; dx <= 24; dx += 6) fire('mousemove', cx + dx, cy);
-      fire('mouseup', cx + 24, cy);
+        canvas.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      fire('pointermove', cx, cy);
+      fire('pointerdown', cx, cy);
+      for (let dx = 6; dx <= 24; dx += 6) fire('pointermove', cx + dx, cy);
+      fire('pointerup', cx + 24, cy);
       // The interactive brush commits through the async (worker-backed) paint
       // pipeline; wait for the subdivision job to settle.
       await pw.waitForPaint();

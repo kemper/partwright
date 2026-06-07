@@ -14,14 +14,14 @@ const STEPS: TourStep[] = [
     target: '#editor-container',
     title: 'Code Editor',
     description:
-      'Write code to create 3D geometry using primitives, booleans, and transforms. Supports JavaScript (manifold-3d API) and OpenSCAD (.scad). When an AI agent is driving, it writes and updates code here automatically.',
+      'Write code to create 3D geometry using primitives, booleans, and transforms. Partwright speaks four modeling languages, plus signed-distance fields (api.sdf) and customizer parameters (api.params) you can tune from a panel. When an AI agent is driving, it writes and updates code here automatically.',
     placement: 'right',
   },
   {
     target: '#lang-toggle',
-    title: 'Language Toggle',
+    title: 'Modeling Engine',
     description:
-      'Switch between JavaScript and OpenSCAD. Your draft in each language is preserved when you flip, and saved versions remember the engine they were authored in.',
+      'Pick the engine: JS (manifold-3d mesh), SCAD (OpenSCAD), BREP (replicad / OpenCASCADE — exact fillets, chamfers, and STEP export), or VOXEL (blocky colored cubes). Your draft in each language is preserved when you flip, and the “?” beside the toggle explains which engine fits your part.',
     placement: 'bottom',
   },
   {
@@ -46,10 +46,17 @@ const STEPS: TourStep[] = [
     placement: 'left',
   },
   {
+    target: '#measure-toggle',
+    title: 'Measure & Cross-Section',
+    description:
+      'Inspect a model without changing it: 📏 Measure the distance between two points, and ✂ Cross Section slices through it with a draggable plane. The same toolbar toggles the grid, bounding-box dimensions, and orbit lock.',
+    placement: 'left',
+  },
+  {
     target: '#paint-toggle',
     title: 'Paint Colors',
     description:
-      'Paint coplanar regions of the model in color for multi-color 3D prints (exported via 3MF or OBJ). Painting locks the version read-only until you unlock it; the AI can paint too when its Paint scope is on.',
+      'Paint coplanar regions for multi-color 3D prints (exported via 3MF or OBJ). Surface-following geodesic and airbrush brushes follow curvature, you can label and paint regions by name from code, and voxel models paint cube-by-cube. Painting locks the version read-only until you unlock it.',
     placement: 'left',
   },
   {
@@ -58,6 +65,13 @@ const STEPS: TourStep[] = [
     description:
       'Reduce a dense model’s triangle count to a target budget — great for shrinking imported STLs or heavy booleans. Set a target, click Apply to run it, then save the result as a new version.',
     placement: 'left',
+  },
+  {
+    target: '#parts-rail',
+    title: 'Multi-Part Sessions',
+    description:
+      'Hold several objects in one session — each part keeps its own code, versions, and preview. Select multiple parts to merge them into one or bulk-delete, and import external meshes as separate parts.',
+    placement: 'right',
   },
   {
     target: '#session-bar',
@@ -71,6 +85,13 @@ const STEPS: TourStep[] = [
     title: 'Reference Images',
     description:
       'Attach photos or renderings the model should match. Each image is tagged with an angle (front, right, etc.) and shown next to the matching elevation view for visual comparison.',
+    placement: 'bottom',
+  },
+  {
+    target: '[data-tab="Diff"]',
+    title: 'Compare Versions',
+    description:
+      'Open the Diff tab to compare any two versions side by side — both the code and the geometry stats — so you can see exactly what changed between iterations.',
     placement: 'bottom',
   },
   {
@@ -88,30 +109,38 @@ const STEPS: TourStep[] = [
     placement: 'bottom',
   },
   {
+    target: '#btn-quality',
+    title: 'Settings & Shortcuts',
+    description:
+      'Settings holds advanced knobs for AI, rendering, and timeouts. Curve quality lives in the ○ Quality button in the viewport. Press ⌘K / Ctrl+K anytime for the command palette (where you can also retake this tour), and ? for the keyboard shortcut cheat sheet.',
+    placement: 'right',
+  },
+  {
     target: '#btn-catalog',
     title: 'Catalog',
     description:
       'Browse a catalog of premade models. Open one as a starting point and tweak the code yourself — or hand it to the AI to remix.',
-    placement: 'bottom',
+    placement: 'right',
   },
   {
     target: '#import-wrapper',
     title: 'Import',
     description:
-      'Import an .stl mesh, a .js / .scad source file, or a full .partwright.json session. Imported meshes render right away and can be edited or combined with new geometry.',
+      'Import an .stl or .step mesh, a .js / .scad source file, a .vox model, or a full .partwright.json session. You can also turn an image into a printable relief, keychain, or tile — or into a colored voxel model — straight from the Import menu.',
     placement: 'bottom',
   },
   {
     target: '#export-wrapper',
     title: 'Export',
-    description: 'Download your model as GLB, STL, OBJ, or 3MF for 3D printing or other tools.',
+    description:
+      'Download your model as GLB, STL, OBJ, or 3MF for printing — plus STEP from BREP sessions for mechanical CAD. “Share link…” creates a read-only link anyone can preview and fork, with nothing uploaded.',
     placement: 'bottom',
   },
   {
     target: '#btn-ai',
     title: 'AI Chat',
     description:
-      'Chat with an AI to build and refine models for you. Use Anthropic, OpenAI, or Google Gemini with your own key — or run a model entirely in your browser with WebGPU, no key needed. Budget presets and the Thinking pill tune cost vs. quality, and the review button gets a second opinion from another provider.',
+      'Chat with an AI to build and refine models for you, in a docked, resizable panel. Use Anthropic, OpenAI, or Google Gemini with your own key — or run a model entirely in your browser with WebGPU, no key needed. Budget presets and the Thinking pill tune cost vs. quality, and the review button gets a second opinion from another provider.',
     placement: 'bottom',
   },
 ];
@@ -128,7 +157,7 @@ export function maybeStartTour(): void {
   if (localStorage.getItem(STORAGE_KEY)) return;
 
   const params = new URLSearchParams(window.location.search);
-  if (params.has('view') || params.has('session') || params.has('gallery') || params.has('versions') || params.has('images') || params.has('notes')) return;
+  if (params.has('view') || params.has('session') || params.has('gallery') || params.has('versions') || params.has('images') || params.has('diff') || params.has('notes') || params.has('data') || params.has('catalog')) return;
 
   setTimeout(() => startTour(), 800);
 }

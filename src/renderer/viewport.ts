@@ -3,13 +3,12 @@ import { Timer } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { MeshData } from '../geometry/types';
 import { createDefaultMaterial, createWireframeMaterial } from './materials';
-import { initPhantomGroup } from './phantomGeometry';
 import { initMeasureOverlay } from './measureOverlay';
-import { initOrientationGizmo, renderGizmo, updateGizmo, disposeGizmo, isGizmoAnimating } from './orientationGizmo';
-import { initDimensionLines, updateDimensionLines, disposeDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
-import { initAnnotationOverlay, setLiveResolution as setAnnotationResolution } from '../annotations/annotationOverlay';
-import { configureSessionPlane } from '../annotations/sessionPlane';
+import { initOrientationGizmo, renderGizmo, updateGizmo, isGizmoAnimating } from './orientationGizmo';
+import { initDimensionLines, updateDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
+import { runViewportInitHooks, runViewportResizeHooks } from './viewportRegistry';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
+import { getConfig } from '../config/appConfig';
 
 const VIEWPORT_BG = { dark: 0x1a1a2e, light: 0xededed } as const;
 const GRID_COLORS = { dark: { major: 0x444444, minor: 0x333333 }, light: { major: 0xb0b0b0, minor: 0xc8c8c8 } } as const;
@@ -30,6 +29,22 @@ let controls: OrbitControls;
 let meshGroup: THREE.Group;
 let animationId: number;
 
+// === WebGL context-loss recovery ===
+// The GPU can drop the WebGL context (driver reset, tab backgrounded too long,
+// OOM). Three.js auto-recompiles its programs on restore, so we must NOT
+// recreate the renderer — we only pause the render loop while lost and resume
+// it on restore. preventDefault() on the lost event is REQUIRED for the
+// browser to fire 'restored' at all.
+let contextLost = false;
+let onContextLost: (() => void) | null = null;
+let onContextRestored: (() => void) | null = null;
+
+/** Hook fired when the WebGL context is lost (recoverable) and again when it
+ *  is restored. Lets the host surface a toast without viewport importing the
+ *  toast module (mirrors setOnMeshUpdate). */
+export function setOnContextLost(fn: () => void): void { onContextLost = fn; }
+export function setOnContextRestored(fn: () => void): void { onContextRestored = fn; }
+
 // === On-demand rendering ===
 // The render loop only paints a frame when something actually changed, instead
 // of re-rendering an idle scene 60×/second. The `needsRender` flag (set by
@@ -39,20 +54,24 @@ let animationId: number;
 // difference between constant GPU churn and only working when the view moves.
 let needsRender = true;
 let lastPointerActivity = 0;
-const POINTER_GRACE_MS = 350;
+
+// Subscribers notified when the user finishes an orbit/pan/zoom gesture (the
+// OrbitControls 'end' event). Used to debounce-persist the working-view camera.
+// Programmatic camera moves (setCameraPose, frameModel) drive 'change', not
+// 'end', so they never trigger these.
+const orbitEndListeners: Array<() => void> = [];
+export function onOrbitEnd(cb: () => void): void { orbitEndListeners.push(cb); }
 
 // === Adaptive resolution ===
 // Full (capped) device pixel ratio when the camera is still; a reduced ratio
 // while actively orbiting/panning/zooming, where the lower fragment count keeps
 // interaction smooth on dense meshes and the softer image is invisible mid-
 // motion. Restored to full res the instant interaction ends.
-const MAX_PIXEL_RATIO = 2;
-const INTERACTION_RENDER_SCALE = 0.6;
 let interacting = false;
 let cssWidth = 0;
 let cssHeight = 0;
 function baseDpr(): number {
-  return Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+  return Math.min(window.devicePixelRatio || 1, getConfig().renderer.maxPixelRatio);
 }
 function applyRenderScale(scale: number): void {
   if (!renderer) return;
@@ -133,9 +152,27 @@ export function initViewport(container: HTMLElement): {
   renderer.setPixelRatio(baseDpr());
   renderer.localClippingEnabled = true;
 
+  // WebGL context-loss recovery. preventDefault() on 'lost' is what lets the
+  // browser restore the context; while lost we cancel the RAF loop so we don't
+  // spin calling render() on a dead context. On 'restored' three has already
+  // recompiled its GLSL, so we just resume the loop and force a repaint.
+  canvas.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    contextLost = true;
+    if (animationId !== undefined) cancelAnimationFrame(animationId);
+    onContextLost?.();
+  }, false);
+  canvas.addEventListener('webglcontextrestored', () => {
+    contextLost = false;
+    needsRender = true;
+    onContextRestored?.();
+    // Restart the render loop (it was cancelled on loss).
+    animate();
+  }, false);
+
   controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
-  controls.dampingFactor = 0.1;
+  controls.dampingFactor = getConfig().renderer.orbitDampingFactor;
   controls.target.set(0, 0, 0);
 
   // On-demand rendering hooks: 'change' fires on every camera move (including
@@ -144,13 +181,14 @@ export function initViewport(container: HTMLElement): {
   controls.addEventListener('change', () => { needsRender = true; });
   controls.addEventListener('start', () => {
     interacting = true;
-    applyRenderScale(INTERACTION_RENDER_SCALE);
+    applyRenderScale(getConfig().renderer.interactionRenderScale);
     needsRender = true;
   });
   controls.addEventListener('end', () => {
     interacting = false;
     applyRenderScale(1);
     needsRender = true;
+    orbitEndListeners.forEach(cb => cb());
   });
 
   // Any pointer activity anywhere in the viewport region may drive a scene
@@ -207,14 +245,14 @@ export function initViewport(container: HTMLElement): {
   }, { capture: true, passive: false });
 
   // Lighting
-  const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+  const ambient = new THREE.AmbientLight(0xffffff, getConfig().renderer.ambientLightIntensity);
   scene.add(ambient);
 
-  const dir1 = new THREE.DirectionalLight(0xffffff, 0.8);
+  const dir1 = new THREE.DirectionalLight(0xffffff, getConfig().renderer.primaryLightIntensity);
   dir1.position.set(10, -10, 15);
   scene.add(dir1);
 
-  const dir2 = new THREE.DirectionalLight(0xffffff, 0.3);
+  const dir2 = new THREE.DirectionalLight(0xffffff, getConfig().renderer.secondaryLightIntensity);
   dir2.position.set(-10, 10, -5);
   scene.add(dir2);
 
@@ -238,9 +276,6 @@ export function initViewport(container: HTMLElement): {
   meshGroup = new THREE.Group();
   scene.add(meshGroup);
 
-  // Phantom geometry group (for reference/fitment overlays)
-  initPhantomGroup(scene);
-
   // Measure overlay group
   initMeasureOverlay(scene, camera, renderer);
 
@@ -250,9 +285,10 @@ export function initViewport(container: HTMLElement): {
   // Bounding box dimension annotations
   initDimensionLines(scene);
 
-  // Freehand annotation overlay (drawn surface marks)
-  initAnnotationOverlay(scene);
-  configureSessionPlane(controls);
+  // Feature-layer subsystems (phantom geometry, annotation overlay, session
+  // plane) hook in here without the viewport importing them — see
+  // viewportRegistry.ts / viewportSubsystems.ts.
+  runViewportInitHooks({ scene, camera, renderer, controls, container, canvas });
 
   // ResizeObserver
   const observer = new ResizeObserver(entries => {
@@ -260,17 +296,17 @@ export function initViewport(container: HTMLElement): {
     if (width === 0 || height === 0) return;
     cssWidth = width;
     cssHeight = height;
-    applyRenderScale(interacting ? INTERACTION_RENDER_SCALE : 1);
+    applyRenderScale(interacting ? getConfig().renderer.interactionRenderScale : 1);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
-    setAnnotationResolution(width * window.devicePixelRatio, height * window.devicePixelRatio);
+    runViewportResizeHooks(width * window.devicePixelRatio, height * window.devicePixelRatio);
     needsRender = true;
   });
   observer.observe(container);
 
   // Initialize annotation resolution to current canvas size so the first
   // strokes drawn before any resize event fire still get correct widths.
-  setAnnotationResolution(
+  runViewportResizeHooks(
     canvas.width || container.clientWidth * window.devicePixelRatio,
     canvas.height || container.clientHeight * window.devicePixelRatio,
   );
@@ -278,6 +314,10 @@ export function initViewport(container: HTMLElement): {
   // Animate
   const timer = new Timer();
   function animate(timestamp?: number) {
+    // While the GL context is lost, stop the loop entirely — the 'restored'
+    // handler restarts it. (Guard in addition to the cancelAnimationFrame in
+    // the lost handler in case a queued frame fires before that runs.)
+    if (contextLost) return;
     animationId = requestAnimationFrame(animate);
     timer.update(timestamp);
     const delta = timer.getDelta();
@@ -287,7 +327,7 @@ export function initViewport(container: HTMLElement): {
     // sets needsRender) whenever the camera actually moves, so inertia keeps the
     // loop painting until it settles.
     controls.update();
-    const pointerActive = performance.now() - lastPointerActivity < POINTER_GRACE_MS;
+    const pointerActive = performance.now() - lastPointerActivity < getConfig().renderer.pointerGraceMs;
     if (needsRender || pointerActive || isGizmoAnimating()) {
       renderer.render(scene, camera);
       renderGizmo(renderer);
@@ -304,6 +344,19 @@ export function initViewport(container: HTMLElement): {
 let onMeshUpdate: ((mesh: MeshData) => void) | null = null;
 export function setOnMeshUpdate(fn: (mesh: MeshData) => void): void {
   onMeshUpdate = fn;
+}
+
+export function clearMesh(): void {
+  while (meshGroup.children.length > 0) {
+    const child = meshGroup.children[0];
+    meshGroup.remove(child);
+    if (child instanceof THREE.Mesh) {
+      child.geometry.dispose();
+      const mat = child.material;
+      if (Array.isArray(mat)) mat.forEach(m => m.dispose());
+      else if (mat) mat.dispose();
+    }
+  }
 }
 
 export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boolean }): void {
@@ -348,38 +401,8 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
   }
 
   // Auto-frame the camera (skip when only colors changed)
-  const box = new THREE.Box3().setFromObject(meshGroup);
-
   if (!options?.skipAutoFrame) {
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-
-    // Update model bounds for clip slider
-    modelBounds = { min: box.min.z, max: box.max.z };
-
-    // Position grid at the bottom of the model
-    grid.position.z = box.min.z;
-
-    // Update bounding box dimension annotations
-    updateDimensionLines(box);
-
-    controls.target.copy(center);
-    camera.position.set(
-      center.x + maxDim * 1.2,
-      center.y - maxDim * 1.2,
-      center.z + maxDim * 1.2,
-    );
-    // Adapt the clip planes to the model size. With a fixed far plane a large
-    // model (e.g. scaled to ~890mm) auto-frames the camera far enough away that
-    // the geometry falls beyond the frustum and disappears; a fixed near plane
-    // would z-fight on tiny models. Scale both with the model's largest dim.
-    if (maxDim > 0) {
-      camera.near = Math.max(0.05, maxDim * 0.005);
-      camera.far = Math.max(1000, maxDim * 50);
-      camera.updateProjectionMatrix();
-    }
-    controls.update();
+    frameModel();
 
     // Update clip plane position if clipping
     if (clippingEnabled) {
@@ -389,6 +412,59 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
 
   needsRender = true;
   onMeshUpdate?.(meshData);
+}
+
+/** Frame the camera to the default 3/4 view of the current model and refresh
+ *  everything derived from its bounds: clip-slider range, grid height, dimension
+ *  annotations, near/far planes, and the zoom-out (maxDistance) limit. Shared by
+ *  updateMesh's auto-frame and the viewport "Reset view" button. No-op when the
+ *  mesh group is empty. */
+function frameModel(): void {
+  const box = new THREE.Box3().setFromObject(meshGroup);
+  if (box.isEmpty()) return;
+
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+
+  // Update model bounds for clip slider
+  modelBounds = { min: box.min.z, max: box.max.z };
+
+  // Position grid at the bottom of the model
+  grid.position.z = box.min.z;
+
+  // Update bounding box dimension annotations
+  updateDimensionLines(box);
+
+  controls.target.copy(center);
+  camera.position.set(
+    center.x + maxDim * 1.2,
+    center.y - maxDim * 1.2,
+    center.z + maxDim * 1.2,
+  );
+  // Adapt the clip planes to the model size. With a fixed far plane a large
+  // model (e.g. scaled to ~890mm) auto-frames the camera far enough away that
+  // the geometry falls beyond the frustum and disappears; a fixed near plane
+  // would z-fight on tiny models. Scale both with the model's largest dim.
+  if (maxDim > 0) {
+    camera.near = Math.max(0.05, maxDim * 0.005);
+    camera.far = Math.max(1000, maxDim * 50);
+    camera.updateProjectionMatrix();
+    // Bound how far the user can dolly out so the model can't shrink to a
+    // speck (and drift toward the far plane). The default framing distance is
+    // ~maxDim*2.1, so a multiple well above that still leaves generous room.
+    controls.maxDistance = maxDim * getConfig().renderer.maxZoomOutFactor;
+  }
+  controls.update();
+}
+
+/** Re-frame the camera to the default view of the current model — the same
+ *  framing applied after a fresh run. Bound to the viewport "Reset view" button
+ *  and exposed on the partwright API. */
+export function resetView(): void {
+  frameModel();
+  if (clippingEnabled) updateClipPlaneVisual();
+  needsRender = true;
 }
 
 // === Clipping API ===
@@ -549,6 +625,45 @@ export function getScene(): THREE.Scene {
   return scene;
 }
 
+/** Run `fn` (typically a GLB export pass that serializes `getScene()`) with the
+ *  display mesh's geometry temporarily swapped to one carrying `coloredMesh`'s
+ *  fully-baked triangle colors, then restore the original geometry no matter how
+ *  `fn` settles.
+ *
+ *  GLB export reads the live scene, whose colors come from the viewport's
+ *  visibility-aware coloring (paint toggle off → no colors; a hidden region →
+ *  skipped). Exports must bake ALL regions regardless of those UI flags, matching
+ *  OBJ/3MF. Callers pass `applyTriColors(currentMeshData)` so the swapped geometry
+ *  is the unindexed, per-triangle-colored layout the exporter should serialize.
+ *  When the mesh has no color regions, `applyTriColors` returns it unchanged and
+ *  the swapped geometry is the same uncolored layout as the display — so the
+ *  no-paint case is unaffected. */
+export async function withExportColors<T>(coloredMesh: MeshData, fn: () => Promise<T>): Promise<T> {
+  // The solid + wireframe meshes share one geometry object (see updateMesh); the
+  // clip-cap holds a clone. Swap every meshGroup child that references the solid
+  // geometry to the colored one, then restore on the way out.
+  const solid = meshGroup.children.find(
+    (c): c is THREE.Mesh => c instanceof THREE.Mesh && c.name !== 'wireframe' && c.name !== 'clip-cap',
+  );
+  if (!solid) return fn();
+
+  const original = solid.geometry as THREE.BufferGeometry;
+  const exportGeometry = meshGLToBufferGeometry(coloredMesh);
+  const swapped: THREE.Mesh[] = [];
+  for (const child of meshGroup.children) {
+    if (child instanceof THREE.Mesh && child.geometry === original) {
+      child.geometry = exportGeometry;
+      swapped.push(child);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const child of swapped) child.geometry = original;
+    exportGeometry.dispose();
+  }
+}
+
 export function getCamera(): THREE.PerspectiveCamera {
   return camera;
 }
@@ -572,6 +687,29 @@ export function getCameraState(): { azimuth: number; elevation: number; distance
       Math.round(controls.target.z * 100) / 100,
     ],
   };
+}
+
+/** Snapshot the exact live camera pose (world-space position + orbit target).
+ *  Unlike getCameraState (rounded azimuth/elevation/distance for the API), this
+ *  keeps full precision so it can be restored losslessly — used to preserve the
+ *  user's interactive view across version switches within a session. */
+export function getCameraPose(): { position: [number, number, number]; target: [number, number, number] } {
+  return {
+    position: [camera.position.x, camera.position.y, camera.position.z],
+    target: [controls.target.x, controls.target.y, controls.target.z],
+  };
+}
+
+/** Restore a pose captured with getCameraPose. The companion to frameModel's
+ *  auto-frame: callers let updateMesh reframe (so clip range / grid / near-far
+ *  adapt to the new geometry's bounds) and then call this to put the camera
+ *  back where the user had it. */
+export function setCameraPose(pose: { position: [number, number, number]; target: [number, number, number] }): void {
+  camera.position.set(pose.position[0], pose.position[1], pose.position[2]);
+  controls.target.set(pose.target[0], pose.target[1], pose.target[2]);
+  controls.update();
+  if (clippingEnabled) updateClipPlaneVisual();
+  needsRender = true;
 }
 
 export function getCanvas(): HTMLCanvasElement {
@@ -697,10 +835,3 @@ export function onWireframeChange(cb: (visible: boolean) => void): void {
   wireframeChangeListener = cb;
 }
 
-export function dispose(): void {
-  cancelAnimationFrame(animationId);
-  disposeGizmo();
-  disposeDimensionLines();
-  controls.dispose();
-  renderer.dispose();
-}

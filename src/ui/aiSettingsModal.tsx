@@ -33,7 +33,7 @@ export async function showAiSettingsModal(
     { title: 'AI Settings', scrollable: true, maxWidth: 'lg' },
     close => ({
       body: <SettingsModalBody cb={cb} tab={tab} close={close} />,
-      footer: <SettingsModalFooter close={close} />,
+      footer: <SettingsModalFooter close={close} tab={tab} cb={cb} />,
     }),
     // Match the original modal's body spacing — sections need more
     // breathing room than the default gap-3 the shell hands us.

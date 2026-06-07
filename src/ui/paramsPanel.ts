@@ -8,6 +8,8 @@
 // touches the engine or storage directly.
 
 import type { ParamSpec, ParamValue, ParamValues } from '../geometry/params';
+import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 
 export interface ParamsPanelOptions {
   /** Fired when a single widget changes — main.ts updates the override, re-runs,
@@ -15,6 +17,11 @@ export interface ParamsPanelOptions {
   onChange: (key: string, value: ParamValue) => void;
   /** Fired when "Reset" is clicked — main.ts clears all overrides and re-runs. */
   onReset: () => void;
+  /** Fired whenever the panel's visibility changes — when the active model
+   *  declares (or drops) parameters, and when the user opens/closes the panel.
+   *  Lets an external toggle button (the viewport "Customize" pill) mirror the
+   *  panel's state and show a parameter count. */
+  onVisibilityChange?: (state: { hasParams: boolean; open: boolean; count: number }) => void;
 }
 
 export interface ParamsPanelController {
@@ -22,6 +29,16 @@ export interface ParamsPanelController {
   /** Re-render for a new schema (or update values in place if the schema is
    *  unchanged). Pass `undefined`/empty to hide the panel. */
   update(schema: ParamSpec[] | undefined, values: ParamValues): void;
+  /** Show the panel (no-op when the active model declares no parameters). */
+  open(): void;
+  /** Hide the panel without dropping the schema — reopen via {@link open}. */
+  close(): void;
+  /** Flip open ↔ closed (no-op when there are no parameters). */
+  toggle(): void;
+  /** Whether the panel is currently visible. */
+  isOpen(): boolean;
+  /** Whether the active model declares any parameters. */
+  hasParams(): boolean;
 }
 
 const OVERLAY_BTN = 'px-2 py-0.5 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
@@ -39,21 +56,20 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   // Bottom-left of the viewport — clear of the status pill (top-left), the
   // clip/tool bar (top-right) and the Z slider (right). pointer-events-auto so
   // widgets work; the panel itself is small so it doesn't block orbit much.
-  root.className = 'hidden absolute bottom-2 left-2 z-10 w-60 max-w-[calc(100%-1rem)] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
+  root.className = 'hidden absolute z-10 w-60 max-w-[calc(100%-1rem)] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
 
-  // Header: title + count, a Reset button, and a collapse caret.
+  // Header: a "Customize" title, a Reset button, and a close (×) button. Closing
+  // hides the whole panel; the viewport "Customize" toggle pill reopens it (see
+  // onVisibilityChange), so the close → reopen loop is always discoverable.
+  // The header also doubles as a drag handle (see below) — `cursor-move` hints
+  // that, and `touch-none` stops the browser claiming the gesture for scroll
+  // before pointer-capture kicks in.
   const header = document.createElement('div');
-  header.className = 'flex items-center gap-2 px-2.5 py-1.5 border-b border-zinc-700/70 select-none';
-
-  const caret = document.createElement('button');
-  caret.className = 'text-zinc-400 hover:text-zinc-200 text-xs leading-none w-3 shrink-0';
-  caret.textContent = '▾';
-  caret.title = 'Collapse parameters';
-  caret.setAttribute('aria-label', 'Collapse parameters');
+  header.className = 'flex items-center gap-2 px-2.5 py-2 border-b border-zinc-700/70 select-none cursor-move touch-none';
 
   const title = document.createElement('span');
   title.className = 'text-xs font-medium text-zinc-300 flex-1 truncate';
-  title.textContent = 'Parameters';
+  title.textContent = 'Customize';
 
   const resetBtn = document.createElement('button');
   resetBtn.className = OVERLAY_BTN;
@@ -61,9 +77,15 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   resetBtn.title = 'Reset all parameters to their defaults';
   resetBtn.addEventListener('click', () => opts.onReset());
 
-  header.appendChild(caret);
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'text-zinc-400 hover:text-zinc-200 text-base leading-none w-5 h-5 flex items-center justify-center shrink-0 rounded hover:bg-zinc-700/60 transition-colors';
+  closeBtn.textContent = '×';
+  closeBtn.title = 'Close parameters (reopen with the Customize button)';
+  closeBtn.setAttribute('aria-label', 'Close parameters');
+
   header.appendChild(title);
   header.appendChild(resetBtn);
+  header.appendChild(closeBtn);
   root.appendChild(header);
 
   // Scrollable body holding the widgets.
@@ -71,17 +93,48 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   body.className = 'flex flex-col gap-2.5 px-2.5 py-2 overflow-y-auto max-h-[min(60vh,22rem)]';
   root.appendChild(body);
 
-  let collapsed = false;
-  caret.addEventListener('click', () => {
-    collapsed = !collapsed;
-    body.classList.toggle('hidden', collapsed);
-    caret.textContent = collapsed ? '▸' : '▾';
-    caret.title = collapsed ? 'Expand parameters' : 'Collapse parameters';
-  });
-
   let currentSig = '';
+  // Number of parameters the active model declares; 0 means none (panel + toggle
+  // both hidden). `userClosed` records an explicit close so re-runs of the *same*
+  // model don't re-pop the panel; a schema change clears it so a different
+  // model's knobs surface on their own.
+  let paramCount = 0;
+  let userClosed = false;
   // Per-key updater so we can refresh widget values without a DOM rebuild.
   const valueSetters = new Map<string, (v: ParamValue) => void>();
+
+  function notify(): void {
+    opts.onVisibilityChange?.({ hasParams: paramCount > 0, open: isOpen(), count: paramCount });
+  }
+
+  // clampIntoView is wired up after attachViewportPanelDrag; applyVisibility
+  // calls it via a stable reference so the closure captures it correctly.
+  let clampIntoViewRef: (() => void) | null = null;
+  let escapeListenerActive = false;
+
+  function applyVisibility(): void {
+    const wasOpen = !root.classList.contains('hidden');
+    const willOpen = isOpen();
+    root.classList.toggle('hidden', !willOpen);
+    if (willOpen && !wasOpen) {
+      setInitialPanelPosition(root);
+      openViewportPanel(registryEntry);
+      if (!escapeListenerActive) {
+        document.addEventListener('keydown', onParamsEscape);
+        escapeListenerActive = true;
+      }
+      requestAnimationFrame(() => { clampIntoViewRef?.(); });
+    } else if (!willOpen && wasOpen) {
+      closeViewportPanel(registryEntry);
+      document.removeEventListener('keydown', onParamsEscape);
+      escapeListenerActive = false;
+    }
+    notify();
+  }
+
+  function isOpen(): boolean {
+    return paramCount > 0 && !userClosed;
+  }
 
   function rebuild(schema: ParamSpec[]): void {
     body.replaceChildren();
@@ -101,23 +154,55 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
 
   function update(schema: ParamSpec[] | undefined, values: ParamValues): void {
     if (!schema || schema.length === 0) {
-      root.classList.add('hidden');
       currentSig = '';
+      paramCount = 0;
+      userClosed = false;
       valueSetters.clear();
       body.replaceChildren();
+      applyVisibility();
       return;
     }
     const sig = schemaSignature(schema);
     if (sig !== currentSig) {
       currentSig = sig;
       rebuild(schema);
+      // A new or changed parameter set re-opens the panel so its knobs are seen.
+      userClosed = false;
     }
+    paramCount = schema.length;
     updateValues(values);
-    title.textContent = schema.length === 1 ? '1 parameter' : `${schema.length} parameters`;
-    root.classList.remove('hidden');
+    title.textContent = schema.length === 1 ? 'Customize (1)' : `Customize (${schema.length})`;
+    applyVisibility();
   }
 
-  return { element: root, update };
+  const registryEntry = { close(): void { userClosed = true; applyVisibility(); } };
+
+  function onParamsEscape(e: KeyboardEvent): void {
+    if (e.key !== 'Escape') return;
+    if (document.querySelector('[role="dialog"]')) return;
+    userClosed = true;
+    applyVisibility();
+  }
+
+  closeBtn.addEventListener('click', () => { userClosed = true; applyVisibility(); });
+
+  const { clampIntoView } = attachViewportPanelDrag(header, root);
+  clampIntoViewRef = clampIntoView;
+
+  return {
+    element: root,
+    update,
+    open() {
+      if (paramCount > 0) {
+        userClosed = false;
+        applyVisibility();
+      }
+    },
+    close() { userClosed = true; applyVisibility(); },
+    toggle() { if (paramCount > 0) { userClosed = !userClosed; applyVisibility(); } },
+    isOpen,
+    hasParams() { return paramCount > 0; },
+  };
 }
 
 /** Build one labeled widget row. Returns the row plus a setter that pushes a
@@ -138,33 +223,74 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
   let setValue: (v: ParamValue) => void;
 
   if (spec.type === 'number' || spec.type === 'int') {
-    // Numeric readout sits next to the label; a range slider drives it. We fire
-    // onChange on 'change' (pointer release) to avoid a re-run per slider tick,
-    // but update the readout live on 'input'.
-    const readout = document.createElement('span');
-    readout.className = 'text-[11px] font-mono tabular-nums text-zinc-200';
-    labelRow.appendChild(readout);
+    // Numeric editor sits next to the label: an *editable* number field paired
+    // with a range slider. The slider gives quick coarse control; the field
+    // lets you type an exact value (e.g. 47.5) — and, when the spec sets no
+    // `max`, type a value beyond the slider's synthesized range (params.ts only
+    // clamps to limits the author actually declared). We fire onChange on
+    // 'change' (slider pointer-release / field blur-or-Enter), not per slider
+    // tick, but keep the field in sync live on slider 'input'.
+    const isInt = spec.type === 'int';
+    const min = spec.min ?? 0;
+    const max = spec.max ?? (typeof spec.default === 'number' ? Math.max(spec.default * 2, spec.default + 10) : 100);
+    const step = spec.step ?? (isInt ? 1 : (max - min) / 100 || 1);
+
+    const numInput = document.createElement('input');
+    numInput.type = 'number';
+    // Narrow, mono, right-aligned — reads like the old readout but is editable.
+    numInput.className = 'w-16 text-[11px] font-mono tabular-nums text-right text-zinc-200 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 focus:border-blue-400 focus:outline-none';
+    // The field is intentionally *unconstrained* — no min/max attributes — so
+    // the user can type (and spinner-step) a value beyond the author's declared
+    // bounds. min/max only size the slider's convenient range; params.ts honors
+    // an out-of-range typed value rather than clamping it.
+    numInput.step = String(step);
+    labelRow.appendChild(numInput);
     row.appendChild(labelRow);
 
     const slider = document.createElement('input');
     slider.type = 'range';
     slider.className = 'w-full accent-blue-400 cursor-pointer';
-    const min = spec.min ?? 0;
-    const max = spec.max ?? (typeof spec.default === 'number' ? Math.max(spec.default * 2, spec.default + 10) : 100);
     slider.min = String(min);
     slider.max = String(max);
-    slider.step = String(spec.step ?? (spec.type === 'int' ? 1 : (max - min) / 100 || 1));
-    slider.addEventListener('input', () => { readout.textContent = slider.value; });
+    slider.step = String(step);
+
+    // Push a value into both controls. When it falls outside the declared
+    // [min, max] (a typed/persisted override that exceeds the slider's range),
+    // grow the slider's bounds to include it so the thumb tracks the true value
+    // instead of pinning at an edge; values inside the range restore it.
+    const reflect = (n: number) => {
+      slider.min = String(Math.min(min, n));
+      slider.max = String(Math.max(max, n));
+      slider.value = String(n);
+      numInput.value = String(n);
+    };
+
+    slider.addEventListener('input', () => { numInput.value = slider.value; });
     slider.addEventListener('change', () => {
-      const n = spec.type === 'int' ? Math.round(Number(slider.value)) : Number(slider.value);
+      const n = isInt ? Math.round(Number(slider.value)) : Number(slider.value);
+      reflect(n);
       onChange(spec.key, n);
     });
     row.appendChild(slider);
 
+    const commitField = () => {
+      const raw = Number(numInput.value);
+      if (numInput.value.trim() === '' || !Number.isFinite(raw)) {
+        // Empty / unparseable — revert the field to the slider's value, no run.
+        numInput.value = slider.value;
+        return;
+      }
+      const n = isInt ? Math.round(raw) : raw;
+      reflect(n);
+      onChange(spec.key, n);
+    };
+    numInput.addEventListener('change', commitField);
+    // Enter commits without leaving the field (change already fires on blur).
+    numInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); numInput.blur(); } });
+
     setValue = (v) => {
       const n = typeof v === 'number' ? v : Number(v);
-      slider.value = String(n);
-      readout.textContent = String(n);
+      reflect(n);
     };
   } else if (spec.type === 'boolean') {
     const wrap = document.createElement('div');

@@ -7,7 +7,7 @@
 // unit-tested directly in the vitest tier and imported into the geometry
 // Worker without pulling in browser globals.
 
-import { assertNumber, assertNumberTuple, assertObject, assertEnum, assertNoUnknownKeys, ValidationError } from '../../validation/apiValidation';
+import { assertNumber, assertNumberTuple, assertObject, assertEnum, assertBoolean, assertArray, assertNoUnknownKeys, ValidationError } from '../../validation/apiValidation';
 
 export type Vec3 = [number, number, number];
 /** A color the sandbox API accepts: `[r,g,b]` 0–255, `'#rgb'`/`'#rrggbb'`, or a
@@ -72,8 +72,42 @@ export interface GridBounds { min: Vec3; max: Vec3 }
 /** How a grid is turned into a mesh. `blocks` = hard cube faces (default);
  *  `smooth` = Taubin-rounded edges (optionally over a `detail`× supersampled
  *  grid for finer rounding). Carried on the grid so the mesher/engine can read
- *  it off the returned value. */
-export interface Surfacing { mode: 'blocks' | 'smooth'; iterations: number; detail: number }
+ *  it off the returned value.
+ *
+ *  The optional `flatBottom` / `baseLayers` / `lockBox` fields make smoothing
+ *  selective so a model can keep a flat or blocky base for printing — see
+ *  `VoxelGrid.smooth`. They are in grid (voxel) coordinates; the mesher scales
+ *  them to the supersampled mesh when `detail > 1`. */
+export interface Surfacing {
+  mode: 'blocks' | 'smooth';
+  iterations: number;
+  detail: number;
+  /** Pin the Z of the bottom-most plane so the build-plate face stays flat. */
+  flatBottom?: boolean;
+  /** Keep the bottom N voxel layers fully blocky (a solid, sharp pedestal). */
+  baseLayers?: number;
+  /** Keep the voxels in this inclusive box (voxel coords) blocky. */
+  lockBox?: { min: Vec3; max: Vec3 };
+}
+
+/** Validate + normalize a `lockBox` argument (`[[x0,y0,z0],[x1,y1,z1]]`, in any
+ *  corner order) into a sorted `{ min, max }` of integer voxel coordinates. */
+function normalizeLockBox(val: unknown): { min: Vec3; max: Vec3 } {
+  const arr = assertArray(val, 'smooth.lockBox');
+  if (arr.length !== 2) {
+    throw new ValidationError(`smooth.lockBox must be two corners [[x0,y0,z0],[x1,y1,z1]], got length=${arr.length}. See /ai.md#argument-validation`);
+  }
+  const a = assertNumberTuple(arr[0], 3, 'smooth.lockBox[0]');
+  const b = assertNumberTuple(arr[1], 3, 'smooth.lockBox[1]');
+  for (let i = 0; i < 3; i++) {
+    if (!Number.isInteger(a[i])) throw new ValidationError(`smooth.lockBox[0][${i}] must be an integer voxel coordinate, got ${a[i]}. See /ai.md#argument-validation`);
+    if (!Number.isInteger(b[i])) throw new ValidationError(`smooth.lockBox[1][${i}] must be an integer voxel coordinate, got ${b[i]}. See /ai.md#argument-validation`);
+  }
+  return {
+    min: [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2])],
+    max: [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])],
+  };
+}
 
 /** A mutable sparse voxel grid. Builder methods chain (`return this`). */
 export class VoxelGrid {
@@ -232,6 +266,35 @@ export class VoxelGrid {
     return this;
   }
 
+  /** Rotate the whole grid about the origin around one axis, by a multiple of
+   *  90° (the only angles that keep voxels on the integer lattice). Positive
+   *  degrees follow the right-hand rule (CCW looking down the +axis). Rotation
+   *  is about (0,0,0), so `translate` first if you want a different pivot.
+   *  Handy for reorienting a model built facing one way — e.g. spin a +Y-facing
+   *  figure to face the −Y front with `v.rotate('z', 180)`. Chainable.
+   *
+   *  Voxels rotated past the asymmetric grid edge (COORD_MIN..COORD_MAX) are
+   *  dropped, same as `translate`/`mirror`; models near the origin are safe. */
+  rotate(axis: 'x' | 'y' | 'z', degrees: number): this {
+    const ax = assertEnum(axis, ['x', 'y', 'z'] as const, 'rotate(axis)');
+    const deg = assertNumber(degrees, 'rotate(degrees)', { integer: true })!;
+    if (deg % 90 !== 0) throw new ValidationError(`rotate(degrees): voxel rotation must be a multiple of 90°, got ${deg}.`);
+    const t = ((deg % 360) + 360) % 360; // 0, 90, 180, 270
+    if (t === 0) return this;
+    const c = t === 180 ? -1 : 0;          // cos of 0/90/180/270 as exact ints
+    const s = t === 90 ? 1 : t === 270 ? -1 : 0; // sin of same
+    const rotated = new Map<number, number>();
+    this.forEach((x, y, z, col) => {
+      let nx = x, ny = y, nz = z;
+      if (ax === 'z') { nx = x * c - y * s; ny = x * s + y * c; }
+      else if (ax === 'x') { ny = y * c - z * s; nz = y * s + z * c; }
+      else { nx = x * c + z * s; nz = z * c - x * s; }
+      if (inRange(nx, ny, nz)) rotated.set(packKey(nx, ny, nz), col);
+    });
+    this.cells = rotated;
+    return this;
+  }
+
   /** Add a mirrored copy of every voxel across the given axis's 0-plane (cell
    *  `n` maps to cell `-1-n`, so the geometry mirrors exactly about 0). */
   mirror(axis: 'x' | 'y' | 'z'): this {
@@ -286,19 +349,34 @@ export class VoxelGrid {
   // ---- Surfacing (how the grid is meshed) -------------------------------
 
   /** Select rounded-edge surfacing. Accepts an iteration count or
-   *  `{ iterations, detail }`; more iterations = rounder, higher detail
-   *  (supersample factor) = finer rounding on coarse models. Chainable. */
-  smooth(opts: number | { iterations?: number; detail?: number } = {}): this {
+   *  `{ iterations, detail, flatBottom, baseLayers, lockBox }`; more iterations
+   *  = rounder, higher detail (supersample factor) = finer rounding on coarse
+   *  models. The base-pinning options keep part of the model from rounding so
+   *  it stays printable:
+   *    - `flatBottom` — pin the bottom plane's Z so the build-plate face stays
+   *      flat (edges/sides still round).
+   *    - `baseLayers` — keep the bottom N voxel layers fully blocky (a solid
+   *      pedestal under a smoothed body).
+   *    - `lockBox` — keep the voxels in `[[x0,y0,z0],[x1,y1,z1]]` (voxel coords)
+   *      blocky, for a custom base region.
+   *  Chainable. */
+  smooth(opts: number | { iterations?: number; detail?: number; flatBottom?: boolean; baseLayers?: number; lockBox?: [Vec3, Vec3] } = {}): this {
     let iterations = 2, detail = 1;
+    let flatBottom: boolean | undefined;
+    let baseLayers: number | undefined;
+    let lockBox: { min: Vec3; max: Vec3 } | undefined;
     if (typeof opts === 'number') {
       iterations = assertNumber(opts, 'smooth(iterations)', { integer: true, min: 1, max: 8 })!;
     } else {
       const o = assertObject(opts, 'smooth(opts)')!;
-      assertNoUnknownKeys(o, ['iterations', 'detail'], 'smooth(opts)');
+      assertNoUnknownKeys(o, ['iterations', 'detail', 'flatBottom', 'baseLayers', 'lockBox'], 'smooth(opts)');
       if (o.iterations !== undefined) iterations = assertNumber(o.iterations, 'smooth.iterations', { integer: true, min: 1, max: 8 })!;
       if (o.detail !== undefined) detail = assertNumber(o.detail, 'smooth.detail', { integer: true, min: 1, max: 4 })!;
+      if (o.flatBottom !== undefined) flatBottom = assertBoolean(o.flatBottom, 'smooth.flatBottom')!;
+      if (o.baseLayers !== undefined) baseLayers = assertNumber(o.baseLayers, 'smooth.baseLayers', { integer: true, min: 1, max: HALF })!;
+      if (o.lockBox !== undefined) lockBox = normalizeLockBox(o.lockBox);
     }
-    this._surfacing = { mode: 'smooth', iterations, detail };
+    this._surfacing = { mode: 'smooth', iterations, detail, flatBottom, baseLayers, lockBox };
     return this;
   }
 
@@ -335,6 +413,15 @@ export class VoxelGrid {
           for (let k = 0; k < f; k++)
             out.cells.set(packKey(bx + i, by + j, bz + k), c);
     });
+    return out;
+  }
+
+  /** A deep copy of this grid (cells + surfacing). Used by Voxel Studio's
+   *  undo/redo history, which snapshots the grid before each edit. */
+  clone(): VoxelGrid {
+    const out = new VoxelGrid();
+    out.cells = new Map(this.cells);
+    out._surfacing = { ...this._surfacing };
     return out;
   }
 

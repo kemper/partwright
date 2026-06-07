@@ -1,0 +1,60 @@
+name: Code quality
+
+# Advisory static-analysis pass for PRs into main, complementing pr-checks.yml
+# (build + unit + e2e). Two tiers:
+#
+#   - lint:consistency (ast-grep) is a GATE. `ast-grep scan` exits non-zero
+#     only on `error`-severity rules. Today's rules are all warning/hint, so
+#     this step is green now while still surfacing candidates in the log — and
+#     it auto-gates the moment a rule is promoted to `error` after cleanup.
+#   - circular-deps (madge) is a GATE. The graph is acyclic as of the
+#     dependency-untangling work; `npm run lint:deps` exits non-zero on any new
+#     cycle, so regressions fail the job. See docs/agent-tooling.md.
+#   - dead-code (knip) is ADVISORY for exports/types: it prints findings for
+#     reviewers but never fails the job on those, because the codebase has known
+#     pre-existing hits being worked down. See docs/agent-tooling.md.
+#   - catalog file sizes (lint:catalog) is a GATE. Catalog entries embed a
+#     base64 thumbnail and, with coordinate paint, per-triangle id lists that can
+#     balloon a file to multiple MB; the script fails on any entry over its hard
+#     limit so that regression class can't land. See public/catalog/README.md.
+#
+# This job runs on PRs only — it does not gate the main->staging promotion.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths-ignore:
+      - '**/*.md'
+      - '.github/release.yml'
+      - 'LICENSE'
+
+concurrency:
+  group: code-quality-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: UI consistency (ast-grep) — gates on error-severity rules
+        run: npm run lint:consistency
+
+      - name: Dead code (knip) — gates on deps/unlisted/unresolved; exports advisory
+        run: npm run lint:deadcode
+
+      - name: Circular deps (madge) — gates on any cycle
+        run: npm run lint:deps
+
+      - name: Catalog file sizes — gates on entries over the hard limit
+        run: npm run lint:catalog

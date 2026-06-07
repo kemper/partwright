@@ -110,10 +110,6 @@ async function doInit(): Promise<void> {
   occtModule = OC;
 }
 
-export function isBrepLoaded(): boolean {
-  return replicadModule !== null;
-}
-
 // ── Type-light shape wrapper ─────────────────────────────────────────────────
 //
 // We don't re-export replicad's types into Partwright's surface because the
@@ -1554,9 +1550,14 @@ function applyFaceFilter(finder: AnyShape, filter: FaceFilter, sourceShape: AnyS
       const cz = (bb.bounds[0][2] + bb.bounds[1][2]) * 0.5;
       if (filter.topZ ? cz > bestZ : cz < bestZ) bestZ = cz;
     }
-    const target = bestZ;
-    if (filter.topZ) f = f.inPlane('XY', target);
-    else f = f.inPlane('XY', target);
+    // `bestZ` already encodes the chosen extreme — the highest centroid Z for
+    // {topZ}, the lowest for {bottomZ} — so the XY-plane offset is what
+    // distinguishes the two cases: the top and bottom faces of a box/cylinder
+    // are both parallel to XY but sit at different Z. (The two branches here
+    // used to be identical, calling inPlane with the same `target` — harmless
+    // only because `bestZ` already differed, but a misleading dead branch that
+    // looked like {bottomZ} was never wired up. Resolve to the one offset.)
+    f = f.inPlane('XY', bestZ);
   }
   if (filter.minZ !== undefined || filter.maxZ !== undefined) {
     const huge = 1e9;

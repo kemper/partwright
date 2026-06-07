@@ -1,7 +1,8 @@
 // Static model catalog backed by a build-time snapshot of models.dev data.
 //
-// The snapshot at src/ai/generated/modelsCatalog.json is refreshed at build
-// start by `scripts/refreshModelsSnapshot.mjs`, filtered to providers we wire
+// The snapshot at src/ai/generated/modelsCatalog.json is refreshed by
+// `scripts/refreshModelsSnapshot.mjs` (run weekly by the refresh-models-catalog
+// workflow, which opens a PR into main), filtered to providers we wire
 // up (anthropic / openai / google) and to models whose `release_date` is
 // within the last year. That keeps the bundle small and the picker focused on
 // current models without us hand-maintaining the list.
@@ -78,8 +79,11 @@ type RawCatalog = Record<string, RawProvider>;
 
 const CATALOG = catalogJson as unknown as RawCatalog;
 
-/** models.dev publishes Gemini models under the 'google' provider id. */
-const CATALOG_PROVIDER_ID: Record<Exclude<Provider, 'local'>, string> = {
+/** models.dev publishes Gemini models under the 'google' provider id.
+ *  'local' (WebLLM) and 'custom' (a user-supplied OpenAI-compatible endpoint)
+ *  have no catalog entry, so they're excluded here and `rawProvider` returns
+ *  null for them — callers then fall back to their per-provider defaults. */
+const CATALOG_PROVIDER_ID: Record<Exclude<Provider, 'local' | 'custom'>, string> = {
   anthropic: 'anthropic',
   openai: 'openai',
   gemini: 'google',
@@ -152,7 +156,7 @@ export interface ModelOption {
 }
 
 function rawProvider(provider: Provider): RawProvider | null {
-  if (provider === 'local') return null;
+  if (provider === 'local' || provider === 'custom') return null;
   return CATALOG[CATALOG_PROVIDER_ID[provider]] ?? null;
 }
 

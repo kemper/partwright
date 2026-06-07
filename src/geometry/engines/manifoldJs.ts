@@ -2,12 +2,15 @@ import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
 import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
-import { normalizeParamSchema, resolveParamValues, mergeParamSchemas, protectParamValues, type ParamSpec } from '../params';
+import { createParamCapture } from '../params';
+import { preloadTextFonts } from '../textGlyphs';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
 import { createSdfNamespace, SdfNode } from '../sdf';
+import { createPrintFitNamespace } from '../printFit';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
+import { wasmFaultHint } from '../workerFaults';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
  *  The engine looks for it on the user-returned object to decide whether the
@@ -42,6 +45,8 @@ let manifoldModule: any = null;
 let curvesNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let meshOpsNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let printFitNamespace: any = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getManifoldModule(): any {
@@ -106,6 +111,13 @@ export const manifoldJsEngine: Engine = {
     manifoldModule.setup();
     curvesNamespace = createCurvesNamespace(manifoldModule);
     meshOpsNamespace = createMeshOpsNamespace(manifoldModule);
+    // Print-Fit shares the Curves text helper so its calibration coupon can
+    // emboss values; Curves is constructed just above, so the dep is ready.
+    printFitNamespace = createPrintFitNamespace(manifoldModule, { text: curvesNamespace.text });
+    // Kick off font pre-loading in the background so they're ready by the
+    // time the first api.text() call hits, even if the per-run regex didn't
+    // fire (e.g. destructured alias or api.Curves.text).
+    preloadTextFonts().catch(() => { /* will surface as a clear error at call time */ });
   },
 
   isReady() {
@@ -230,30 +242,25 @@ export const manifoldJsEngine: Engine = {
 
     // Customizer parameters. `api.params(schema)` declares the model's tweakable
     // knobs and returns their resolved values (the Customizer's overrides for
-    // this run, falling back to each declared default). We record every call's
-    // normalized schema so the caller can surface it to the Parameters panel; a
-    // malformed *schema* throws a clear `api.params: …` error (author bug),
-    // while bad *override values* degrade to defaults inside resolveParamValues.
-    const overrides = paramOverrides ?? {};
-    const capturedSchemas: ParamSpec[][] = [];
-    const params = (schema: unknown): Record<string, number | boolean | string> => {
-      const normalized = normalizeParamSchema(schema);
-      capturedSchemas.push(normalized);
-      // Guard the returned object so a typo'd read (p.widht) throws instead of
-      // silently injecting `undefined`/NaN into the geometry.
-      return protectParamValues(resolveParamValues(normalized, overrides));
-    };
-    const collectParamsSchema = (): ParamSpec[] | undefined =>
-      capturedSchemas.length > 0 ? mergeParamSchemas(capturedSchemas) : undefined;
+    // this run, falling back to each declared default). The shared capture
+    // records every call's normalized schema so we can surface it to the
+    // Parameters panel via `paramCapture.collectSchema()` below — the same
+    // helper the voxel and replicad JS engines use, so all three behave
+    // identically.
+    const paramCapture = createParamCapture(paramOverrides);
 
     const api = {
       Manifold,
       CrossSection,
-      params,
+      params: paramCapture.params,
       Curves: curvesNamespace,
       BREP,
       meshOps: meshOpsNamespace,
       sdf: sdfNamespace,
+      printFit: printFitNamespace,
+      // Text helpers — flat aliases so agents can write api.text(...) directly.
+      text: curvesNamespace.text,
+      textSection: curvesNamespace.textSection,
       // Flat aliases for the most-used meshOps verbs — agents reach for shorter
       // names like `api.intersects(a,b)` and `api.placeOn(part, table)` much more
       // often than they reach for the namespace, so we promote those to api.* too.
@@ -396,7 +403,8 @@ export const manifoldJsEngine: Engine = {
         error: null,
         labelMap,
         labelColors: labelColors.size > 0 ? labelColors : undefined,
-        paramsSchema: collectParamsSchema(),
+        paramsSchema: paramCapture.collectSchema(),
+        renderOnly,
       };
     } catch (e: unknown) {
       let msg = e instanceof Error ? e.message : String(e);
@@ -412,8 +420,11 @@ export const manifoldJsEngine: Engine = {
         hint = 'Manifold.cube([x, y, z], center?) — first arg must be an array of 3 numbers.';
       } else if (msg.includes('Missing field')) {
         hint = 'You may have passed an array where an object was expected, or vice versa. Check the API signature.';
-      } else if (msg.includes('unreachable') || msg.includes('RuntimeError')) {
-        hint = 'WASM runtime error — likely caused by degenerate geometry, a self-intersection, or an invalid boolean. Try simplifying the operation or checking input dimensions.';
+      } else if (wasmFaultHint(msg)) {
+        // Fatal WASM trap — memory exhaustion ("memory access out of bounds") or
+        // an abort. Give the memory-aware mitigation; the engine client recycles
+        // the Worker so the next run starts from a clean module.
+        hint = wasmFaultHint(msg);
       }
 
       if (hint) msg += `\nHint: ${hint}`;
@@ -422,7 +433,7 @@ export const manifoldJsEngine: Engine = {
         manifold: null,
         error: msg,
         diagnostics: isSyntaxError ? javaScriptSyntaxDiagnostics(jsCode, msg, e) : runtimeDiagnostic(msg, hint, 'JavaScript'),
-        paramsSchema: collectParamsSchema(),
+        paramsSchema: paramCapture.collectSchema(),
       };
     } finally {
       // Stop tracking, then free every intermediate the run created. The value

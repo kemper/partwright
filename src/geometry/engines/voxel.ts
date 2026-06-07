@@ -2,6 +2,7 @@ import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
 import { VoxelGrid, decodeGrid, normalizeColor } from '../voxel/grid';
 import { meshGrid, gridToMeshWithProvenance, type VoxelMesh } from '../voxel/mesher';
+import { createParamCapture, type ParamCapture } from '../params';
 
 // The `voxel` engine: user code builds a sparse VoxelGrid and returns it; we
 // mesh the exposed faces into welded `MeshData` (with per-voxel colors) that
@@ -18,11 +19,15 @@ interface VoxelsHandle {
   color(c: Parameters<typeof normalizeColor>[0]): number;
 }
 
-function createVoxelApi() {
+function createVoxelApi(params?: ParamCapture['params']) {
   const voxels = (() => new VoxelGrid()) as VoxelsHandle;
   voxels.decode = (data: string) => decodeGrid(data);
   voxels.color = (c) => normalizeColor(c);
-  return { voxels, VoxelGrid };
+  // `api.params({...})` is exposed identically across all JS-sandbox engines
+  // (manifold-js, voxel, replicad) so a Customizer-driven voxel model gets the
+  // same live slider/toggle panel. Omitted only on paths that don't capture a
+  // schema (none currently — both run paths pass it).
+  return { voxels, VoxelGrid, ...(params ? { params } : {}) };
 }
 
 function isVoxelGrid(v: unknown): v is VoxelGrid {
@@ -38,8 +43,9 @@ export const voxelEngine: Engine = {
 
   isReady() { return true; },
 
-  run(jsCode: string): MeshResult {
-    const api = createVoxelApi();
+  run(jsCode: string, paramOverrides?: Record<string, unknown>): MeshResult {
+    const capture = createParamCapture(paramOverrides);
+    const api = createVoxelApi(capture.params);
     let result: unknown;
     try {
       const fn = new Function('api', `"use strict";\n${jsCode}`);
@@ -47,6 +53,10 @@ export const voxelEngine: Engine = {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       const isSyntaxError = e instanceof SyntaxError;
+      // The schema rides on error returns too (matching manifold-js) so a
+      // model that declared params before throwing keeps its Customizer panel
+      // live for correction. `collectSchema()` returns whatever was captured
+      // before the throw — possibly undefined, which is the right answer.
       return {
         mesh: null,
         manifold: null,
@@ -54,6 +64,7 @@ export const voxelEngine: Engine = {
         diagnostics: isSyntaxError
           ? javaScriptSyntaxDiagnostics(jsCode, msg, e)
           : runtimeDiagnostic(msg, undefined, 'JavaScript'),
+        paramsSchema: capture.collectSchema(),
       };
     }
 
@@ -64,6 +75,7 @@ export const voxelEngine: Engine = {
         manifold: null,
         error,
         diagnostics: runtimeDiagnostic(error, 'Add a final `return` that returns the grid from api.voxels().', 'JavaScript'),
+        paramsSchema: capture.collectSchema(),
       };
     }
 
@@ -75,15 +87,16 @@ export const voxelEngine: Engine = {
         manifold: null,
         error,
         diagnostics: runtimeDiagnostic(error, 'Occupy at least one voxel before returning the grid.', 'JavaScript'),
+        paramsSchema: capture.collectSchema(),
       };
     }
 
     try {
       const mesh = meshGrid(grid);
-      return { mesh, manifold: null, error: null };
+      return { mesh, manifold: null, error: null, paramsSchema: capture.collectSchema(), voxelCount: grid.size };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { mesh: null, manifold: null, error: msg, diagnostics: runtimeDiagnostic(msg, undefined, 'JavaScript') };
+      return { mesh: null, manifold: null, error: msg, diagnostics: runtimeDiagnostic(msg, undefined, 'JavaScript'), paramsSchema: capture.collectSchema() };
     }
   },
 
@@ -114,8 +127,8 @@ export interface VoxelPaintRun extends VoxelMesh { grid: VoxelGrid }
  *  Returns null and a message on error. Smooth surfacing is honored for
  *  rendering only — paint operates on the un-supersampled, block-meshed grid
  *  so triangle indices map cleanly to user-authored voxels. */
-export function runVoxelForPaint(jsCode: string): { ok: true; data: VoxelPaintRun } | { ok: false; error: string } {
-  const api = createVoxelApi();
+export function runVoxelForPaint(jsCode: string, paramOverrides?: Record<string, unknown>): { ok: true; data: VoxelPaintRun } | { ok: false; error: string } {
+  const api = createVoxelApi(createParamCapture(paramOverrides).params);
   let result: unknown;
   try {
     const fn = new Function('api', `"use strict";\n${jsCode}`);
@@ -126,6 +139,6 @@ export function runVoxelForPaint(jsCode: string): { ok: true; data: VoxelPaintRu
   if (!isVoxelGrid(result)) return { ok: false, error: 'Voxel code must return a grid.' };
   const grid = result as VoxelGrid;
   if (grid.size === 0) return { ok: false, error: 'The voxel grid is empty.' };
-  const { mesh, triVoxel } = gridToMeshWithProvenance(grid);
-  return { ok: true, data: { grid, mesh, triVoxel } };
+  const { mesh, triVoxel, triNormal } = gridToMeshWithProvenance(grid);
+  return { ok: true, data: { grid, mesh, triVoxel, triNormal } };
 }

@@ -23,7 +23,7 @@ export function buildOBJ(meshData: MeshData, customName?: string): BuiltExport {
   const hasColors = triColors != null && hasAnyPainted(triColors, validTris);
 
   const baseName = getExportFilename('obj', customName).replace(/\.obj$/, '');
-  const lines: string[] = [`# ${title}`];
+  const lines: string[] = ['# Partwright — https://www.partwrightstudio.com', `# ${title}`];
 
   const numUniqueVerts = uniquePositions.length / 3;
   const fv = (origVert: number) => remap[origVert] + 1;
@@ -53,7 +53,7 @@ export function buildOBJ(meshData: MeshData, customName?: string): BuiltExport {
     }
 
     // Generate MTL file with Kd diffuse colors
-    const mtlLines: string[] = [`# ${title} — Materials`];
+    const mtlLines: string[] = ['# Partwright — https://www.partwrightstudio.com', `# ${title} — Materials`];
     for (const hex of colorGroups.keys()) {
       const r = parseInt(hex.slice(1, 3), 16) / 255;
       const g = parseInt(hex.slice(3, 5), 16) / 255;

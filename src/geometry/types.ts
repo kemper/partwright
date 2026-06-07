@@ -50,6 +50,10 @@ export interface MeshResult {
    *  no manual painting needed. Manual paint regions composite on top. Absent
    *  when no labelled color was declared this run. */
   labelColors?: Map<string, [number, number, number]>;
+  /** True when the user code returned an `api.renderMesh(...)` proxy — the
+   *  mesh isn't manifold (or wasn't validated as one) and the main thread
+   *  must skip its Manifold.ofMesh fallback to avoid a "Not manifold" throw. */
+  renderOnly?: boolean;
   /** Names that the user wrote `label("X")` for but didn't survive into
    *  `labelMap`. Typical causes (SCAD): the label sat inside a `{ ... }`
    *  block, so CGAL stripped provenance; a for-loop expanded one source
@@ -63,6 +67,17 @@ export interface MeshResult {
    *  and tells callers which knobs (and value ranges) the model exposes. Absent
    *  when the model declared no parameters. */
   paramsSchema?: ParamSpec[];
+  /** Size (bytes) of the manifold-3d WASM heap after this run — its grown
+   *  high-water mark (WASM memory never shrinks). Surfaced in the diagnostics so
+   *  users can see how close a run came to the ~4 GB ceiling, and on an OOM
+   *  whether it truly hit it or failed far below. Only set for manifold-js runs;
+   *  absent for the other engines (which own separate heaps). */
+  engineHeapBytes?: number;
+  /** Number of occupied voxels in the grid this run produced. Only set by the
+   *  voxel engine; absent for the mesh/CSG/BREP engines. Surfaced in the
+   *  geometry-data stats so agents can confirm a voxel model's size without
+   *  re-decoding the grid themselves. */
+  voxelCount?: number;
 }
 
 export interface CrossSectionResult {
