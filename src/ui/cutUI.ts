@@ -83,6 +83,7 @@ const registryEntry = { close(): void { if (isCutOpen()) closePanel(); } };
 
 let preserveColors = true;
 let showHandles = true;
+let realtimePreview = false;
 let cutResultMode: CutResultMode = 'separate';
 
 // XYZ position inputs — kept in module scope so the gizmo-change listener can update them
@@ -314,17 +315,18 @@ function buildPanel(): HTMLElement {
   }
   content.appendChild(modeRow);
 
-  // Sync shape/mode buttons on gizmo changes; auto-preview after 300 ms idle
+  // Sync shape/mode buttons on gizmo changes; optionally auto-preview after 300 ms idle
   onGizmoChange(() => {
     for (const [s, b] of shapeButtons) b.className = toggleBtnClass(s === getCutShape());
     updateModeButtons();
     syncPositionInputs();
-    // Debounced auto-preview: fires 300 ms after the last gizmo change
-    if (autoPreviewTimer !== null) clearTimeout(autoPreviewTimer);
-    autoPreviewTimer = setTimeout(() => {
-      autoPreviewTimer = null;
-      if (!applying && isCutOpen()) void applyCut();
-    }, 300);
+    if (realtimePreview) {
+      if (autoPreviewTimer !== null) clearTimeout(autoPreviewTimer);
+      autoPreviewTimer = setTimeout(() => {
+        autoPreviewTimer = null;
+        if (!applying && isCutOpen()) void applyCut();
+      }, 300);
+    }
   });
 
   // === Position (XYZ inputs) ===
@@ -481,6 +483,17 @@ function buildPanel(): HTMLElement {
   handlesLabel.appendChild(document.createTextNode('Show gizmo handles'));
   optionsRow.appendChild(handlesLabel);
 
+  const realtimeLabel = document.createElement('label');
+  realtimeLabel.className = 'flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer';
+  const realtimeCheck = document.createElement('input');
+  realtimeCheck.type = 'checkbox';
+  realtimeCheck.checked = realtimePreview;
+  realtimeCheck.className = 'w-3.5 h-3.5 rounded accent-blue-500';
+  realtimeCheck.addEventListener('change', () => { realtimePreview = realtimeCheck.checked; });
+  realtimeLabel.appendChild(realtimeCheck);
+  realtimeLabel.appendChild(document.createTextNode('Real-time preview'));
+  optionsRow.appendChild(realtimeLabel);
+
   content.appendChild(optionsRow);
 
   // === Status line ===
@@ -497,8 +510,8 @@ function buildPanel(): HTMLElement {
     'flex-1 px-2 py-1.5 rounded text-[11px]',
     'bg-blue-600/80 text-white hover:bg-blue-500/80 transition-colors font-medium',
   ].join(' ');
-  applyBtn.textContent = 'Apply Cut';
-  applyBtn.title = 'Apply the cut to the model (shown live — then Save to bake it)';
+  applyBtn.textContent = 'Preview Cut';
+  applyBtn.title = 'Preview the cut — shows both halves exploded in the viewport. Click Save to bake.';
   applyBtn.addEventListener('click', () => { void applyCut(); });
   footer.appendChild(applyBtn);
 
@@ -531,14 +544,14 @@ async function applyCut(): Promise<void> {
   const params = getParams();
   applying = true;
   setButtonsDisabled(true);
-  if (statusEl) statusEl.textContent = 'Applying cut…';
+  if (statusEl) statusEl.textContent = 'Previewing cut…';
   try {
     const result = await handlers.apply(params, preserveColors);
     if (result) {
       const partsNote = result.componentCount > 1
         ? ` → ${result.componentCount} parts`
         : '';
-      if (statusEl) statusEl.textContent = `Cut applied — ${result.triangleCount.toLocaleString()} triangles${partsNote}. Click Save to bake.`;
+      if (statusEl) statusEl.textContent = `Preview ready — ${result.triangleCount.toLocaleString()} triangles${partsNote}. Click Save to bake.`;
       if (saveBtn) {
         saveBtn.disabled = false;
         saveBtn.className = 'px-2 py-1.5 rounded text-[11px] bg-emerald-700/60 text-emerald-200 hover:bg-emerald-600/60 transition-colors';
@@ -562,9 +575,9 @@ async function doSave(): Promise<void> {
   try {
     const res = await handlers.save(cutResultMode);
     if (statusEl) statusEl.textContent = res.message;
-    if (res.ok && saveBtn) {
-      saveBtn.disabled = true;
-      saveBtn.className = 'px-2 py-1.5 rounded text-[11px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 transition-colors opacity-40';
+    if (res.ok) {
+      // Close the panel so it doesn't try to preview-cut the newly-created parts
+      closePanel();
     }
   } catch (e) {
     if (statusEl) statusEl.textContent = `Save failed: ${(e as Error).message}`;
