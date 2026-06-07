@@ -55,6 +55,13 @@ export function setOnContextRestored(fn: () => void): void { onContextRestored =
 let needsRender = true;
 let lastPointerActivity = 0;
 
+// Subscribers notified when the user finishes an orbit/pan/zoom gesture (the
+// OrbitControls 'end' event). Used to debounce-persist the working-view camera.
+// Programmatic camera moves (setCameraPose, frameModel) drive 'change', not
+// 'end', so they never trigger these.
+const orbitEndListeners: Array<() => void> = [];
+export function onOrbitEnd(cb: () => void): void { orbitEndListeners.push(cb); }
+
 // === Adaptive resolution ===
 // Full (capped) device pixel ratio when the camera is still; a reduced ratio
 // while actively orbiting/panning/zooming, where the lower fragment count keeps
@@ -181,6 +188,7 @@ export function initViewport(container: HTMLElement): {
     interacting = false;
     applyRenderScale(1);
     needsRender = true;
+    orbitEndListeners.forEach(cb => cb());
   });
 
   // Any pointer activity anywhere in the viewport region may drive a scene

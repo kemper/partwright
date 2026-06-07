@@ -141,8 +141,13 @@ import { effectiveVersionLanguage, asLanguage } from './languageFallback';
  *           `{ azimuth, elevation }` in degrees; when present, captured
  *           thumbnails render from this angle instead of the default iso view.
  *           Absent ⇒ the default iso 3/4 view. Older readers ignore the field.
+ *  - `1.13` — session-level interactive working-view camera (`session.workCamera`).
+ *           `{ position, target }` world-space vectors recording the angle/zoom
+ *           the user last orbited the live viewport to, restored on session open
+ *           so the view survives reload. Absent ⇒ auto-frame. Older readers
+ *           ignore the field.
  */
-export const SCHEMA_VERSION = '1.12';
+export const SCHEMA_VERSION = '1.13';
 
 const CURRENT_MAJOR = 1;
 
@@ -164,7 +169,7 @@ export interface ExportedSession {
   mainifold?: string;
   /** Images may be the array form or the legacy object map ({front, right, ...}).
    * Both also exist under `referenceImages` for pre-rename exports. */
-  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number } };
+  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number }; workCamera?: { position: [number, number, number]; target: [number, number, number] } };
   /**
    * The session's parts, ordered by `order`. Present from schema 1.7. Pre-1.7
    * files omit this; on import they collapse into a single default part.
@@ -681,6 +686,38 @@ export async function setSessionThumbCamera(camera: { azimuth: number; elevation
   await dbUpdateSession(id, { thumbCamera: next });
   if (currentState.session?.id === id) {
     currentState.session = { ...currentState.session, thumbCamera: next };
+  }
+}
+
+// === Per-session working-view camera ===
+
+/** Coerce an untrusted value into a valid working-view camera pose (world-space
+ *  position + orbit target, each a finite [x, y, z]), or null. */
+function asWorkCamera(v: unknown): { position: [number, number, number]; target: [number, number, number] } | null {
+  if (!v || typeof v !== 'object') return null;
+  const { position, target } = v as { position?: unknown; target?: unknown };
+  const vec = (a: unknown): [number, number, number] | null =>
+    Array.isArray(a) && a.length === 3 && a.every(n => typeof n === 'number' && Number.isFinite(n))
+      ? [a[0], a[1], a[2]]
+      : null;
+  const p = vec(position);
+  const t = vec(target);
+  return p && t ? { position: p, target: t } : null;
+}
+
+/** Persist (or clear, with `null`) the interactive working-view camera for the
+ *  current session, so the angle/zoom survives reload and reopening. Mirrors
+ *  `setSessionThumbCamera`: no-op when nothing is open or in a viewer tab (a
+ *  read-only viewer must not mutate the shared session row, and its viewport
+ *  angle isn't the owner's). */
+export async function setSessionWorkCamera(camera: { position: [number, number, number]; target: [number, number, number] } | null): Promise<void> {
+  if (!currentState.session) return;
+  if (isViewerTab()) return;
+  const next = camera ? asWorkCamera(camera) ?? undefined : undefined;
+  const id = currentState.session.id;
+  await dbUpdateSession(id, { workCamera: next });
+  if (currentState.session?.id === id) {
+    currentState.session = { ...currentState.session, workCamera: next };
   }
 }
 
@@ -1635,7 +1672,7 @@ export async function exportSession(
 
   return {
     partwright: SCHEMA_VERSION,
-    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}) },
+    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}) },
     parts: parts.map(p => ({ name: p.name, order: p.order })),
     versions: flat.map(({ v, partOrder }, i) => {
       const colorRegions = opts.includeColorRegions ? extractColorRegions(v.geometryData) : undefined;
@@ -1713,6 +1750,11 @@ export async function importSession(
   // are finite numbers so a malformed export can't poison captureThumbnail.
   const cam = asThumbCamera(data.session.thumbCamera);
   if (cam) await dbUpdateSession(session.id, { thumbCamera: cam });
+
+  // Restore the interactive working-view camera (schema 1.13+). Validated so a
+  // malformed export can't feed a bad pose to setCameraPose on open.
+  const workCam = asWorkCamera(data.session.workCamera);
+  if (workCam) await dbUpdateSession(session.id, { workCamera: workCam });
 
   // Determine the index of the latest exported version. Schema 1.2 stored
   // annotations at the top level; for back-compat we attach them to whichever

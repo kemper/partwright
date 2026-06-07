@@ -30,6 +30,13 @@ export interface Session {
    *  via `partwright.setThumbnailCamera({ azimuth, elevation })`; absent ⇒ the
    *  default iso view. Persisted so re-bakes and reloads reuse the angle. */
   thumbCamera?: { azimuth: number; elevation: number };
+  /** Persisted interactive working-view camera (world-space position + orbit
+   *  target). Unlike `thumbCamera` (which only steers thumbnail capture), this
+   *  records the angle/zoom the user last orbited the live viewport to, so it
+   *  survives reload / reopening the session instead of snapping back to the
+   *  default 3/4 framing. Written (debounced) when the user finishes an orbit;
+   *  restored on session open. Absent ⇒ auto-frame on open. */
+  workCamera?: { position: [number, number, number]; target: [number, number, number] };
 }
 
 /** A modeling target within a session. A session holds one or more parts; each
@@ -593,7 +600,7 @@ export function legacyImagesObjectToArray(obj: LegacyImagesObject): AttachedImag
   return result;
 }
 
-export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference' | 'thumbCamera'>>): Promise<void> {
+export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference' | 'thumbCamera' | 'workCamera'>>): Promise<void> {
   const store = await tx('sessions', 'readwrite');
   // Read-modify-write inside one transaction: queue the put from the get's
   // callback (awaiting between them risks auto-commit), then await oncomplete.

@@ -28,7 +28,7 @@ import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView, onOrbitEnd } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -218,6 +218,7 @@ import {
   reorderParts,
   getState,
   setSessionThumbCamera,
+  setSessionWorkCamera,
   getSessionUrl,
   getGalleryUrl,
   exportSession,
@@ -420,17 +421,22 @@ let currentMeshData: MeshData | null = null;
  *  render of a freshly-opened session (let the camera auto-frame the new model). */
 let lastFramedSessionId: string | null = null;
 type CameraPose = { position: [number, number, number]; target: [number, number, number] };
-/** Snapshot the live camera pose to restore after a re-render, but only when the
- *  active session's geometry is already on screen — i.e. the impending render is
- *  a version switch or re-run within the session, where the user's interactive
- *  angle/zoom should be kept instead of snapping back to the default 3/4 framing.
- *  Returns null for the first render of a freshly-opened session (let it
+/** Pose to apply after a render so the camera lands where the user expects
+ *  rather than at the default 3/4 framing. Two cases:
+ *   • Re-render within an already-framed session (version switch, re-run, AI
+ *     edit) → keep the live angle (snapshot it now).
+ *   • First framing of a session that has a persisted working-view camera →
+ *     restore that saved pose, so the angle survives reload / reopen.
+ *  Returns null for the first framing of a session with no saved view (let it
  *  auto-frame). Restore with `if (pose) setCameraPose(pose)` after the render. */
 function captureCameraToPreserve(): CameraPose | null {
   const sid = getState().session?.id ?? null;
-  return currentMeshData !== null && sid !== null && sid === lastFramedSessionId
-    ? getCameraPose()
-    : null;
+  if (sid === null) return null;
+  if (currentMeshData !== null && sid === lastFramedSessionId) {
+    return getCameraPose();
+  }
+  const saved = getState().session?.workCamera;
+  return saved ? { position: [...saved.position], target: [...saved.target] } : null;
 }
 /** WASM heap high-water (bytes) reported by the geometry Worker for the most
  *  recent manifold-js run. Surfaced in the geometry-data stats and engine-error
@@ -5433,6 +5439,25 @@ async function main() {
   // Init viewport
   initViewport(viewportPane);
 
+  // Persist the interactive working-view camera per session so the angle/zoom
+  // survives reload and reopening (restored on open via captureCameraToPreserve).
+  // Debounced on the orbit-end gesture; only when a model is shown for the active
+  // session. Programmatic camera moves don't fire 'end', so auto-frames and
+  // restores never write back.
+  let _workCameraSaveTimer: number | undefined;
+  onOrbitEnd(() => {
+    if (_workCameraSaveTimer !== undefined) clearTimeout(_workCameraSaveTimer);
+    // Snapshot inside the debounced callback, not here: 'end' fires at gesture
+    // release while OrbitControls damping is still gliding, so reading the pose
+    // now would persist a pre-settle angle. By the time the debounce elapses the
+    // camera has come to rest, so the saved view matches what the user sees.
+    _workCameraSaveTimer = window.setTimeout(() => {
+      _workCameraSaveTimer = undefined;
+      if (currentMeshData === null || !getState().session) return;
+      void setSessionWorkCamera(getCameraPose());
+    }, getConfig().ui.workCameraSaveDebounceMs);
+  });
+
   // Indeterminate progress bar shown over the viewport while WASM loads on
   // first editor open. Hidden by ensureEngineStarted's finally block.
   {
@@ -7445,11 +7470,14 @@ async function main() {
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Run code string and update all views. Returns geometry data object. */
-    async run(code?: string): Promise<Record<string, unknown>> {
+    async run(code?: string, opts?: { preserveCamera?: boolean }): Promise<Record<string, unknown>> {
       assertString(code, 'run(code)', { optional: true, allowEmpty: false });
       const src = code ?? getValue();
       if (code !== undefined) setValue(code);
-      const applied = await runCodeSync(src);
+      // The in-app AI passes preserveCamera so iterating on a model doesn't snap
+      // the user's orbit back to default every turn; bare console callers omit it
+      // and keep auto-framing (the same-session gate still frames a fresh run).
+      const applied = await runCodeSync(src, { preserveCamera: opts?.preserveCamera === true });
       if (!applied) {
         return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
       }
@@ -8566,7 +8594,7 @@ async function main() {
           await switchLanguage(lang);
         }
         setValue(version.code);
-        await runCodeSync(version.code);
+        await runCodeSync(version.code, { preserveCamera: true });
       }
       // Restore images from session
       const sessionImages = await getImagesFromSession();
@@ -8796,7 +8824,7 @@ async function main() {
      *  Optional assertions — if provided, validates after running. Saves only if assertions pass.
      *  The editor and viewport always update to reflect the new code (including on assertion failure),
      *  so the model can inspect the failing geometry. The version is NOT saved on failure. */
-    async runAndSave(code: string, label?: string, assertions?: GeometryAssertions) {
+    async runAndSave(code: string, label?: string, assertions?: GeometryAssertions, opts?: { preserveCamera?: boolean }) {
       const check = guard(() => {
         assertString(code, 'runAndSave(code)', { allowEmpty: false });
         assertString(label, 'runAndSave(label)', { optional: true });
@@ -8810,8 +8838,10 @@ async function main() {
       // Single execution — run the code, update editor + viewport, read geometry.
       // Assertions are checked against the live result rather than a separate
       // isolation run. This halves execution time for assertion-guarded saves.
+      // preserveCamera (set by the AI tool path) keeps the user's orbit across
+      // AI iterations; bare console callers omit it and auto-frame.
       setValue(code);
-      const applied = await runCodeSync(code);
+      const applied = await runCodeSync(code, { preserveCamera: opts?.preserveCamera === true });
       if (!applied) {
         return { passed: false, failures: ['Run was superseded by a concurrent execution — retry'], geometry: null, version: null, diff: null, galleryUrl: getGalleryUrl() };
       }
@@ -8930,7 +8960,7 @@ async function main() {
       const prevGeoData = getState().currentVersion?.geometryData as Record<string, unknown> | null;
       const parentColors = carryColors ? versionColorRegions(parent) : [];
       setValue(newCode);
-      const forkApplied = await runCodeSync(newCode);
+      const forkApplied = await runCodeSync(newCode, { preserveCamera: true });
       if (!forkApplied) {
         return { error: 'Run was superseded by a concurrent execution — retry' };
       }
@@ -9172,7 +9202,7 @@ async function main() {
       const version = await openSession(session.id);
       if (version) {
         setValue(version.code);
-        await runCodeSync(version.code);
+        await runCodeSync(version.code, { preserveCamera: true });
       }
       // Restore images from imported session
       const sessionImages = await getImagesFromSession();
