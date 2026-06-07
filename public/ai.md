@@ -100,9 +100,10 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Clearance hole sized to a real screw (M2–M8) | `api.printFit.screwHole({size:"M3", length, head})` → subtract -> `/ai/print-fit.md` | BOSL2 `screw_hole()` | (use manifold-js printFit) |
 | Heat-set insert boss | `api.printFit.insertBoss({size:"M3"})` → union -> `/ai/print-fit.md` | (write a tapered bore manually) | (use manifold-js printFit) |
 | Captive / clearance nut pocket | `api.printFit.nutPocket({size:"M3", captive:true})` → subtract -> `/ai/print-fit.md` | BOSL2 `nut_trap_side()` | (use manifold-js printFit) |
-| Snap-fit, dovetail, or alignment-pin joint | `api.printFit.snapFit/dovetail/pin/socket(...)` -> `/ai/print-fit.md` | (build manually) | (use manifold-js printFit) |
+| Snap-fit, dovetail, alignment-pin, or ball-and-socket joint | `api.printFit.snapFit/dovetail/pin/socket/ballJoint(...)` -> `/ai/print-fit.md` | (build manually) | (use manifold-js printFit) |
+| Flexi chain — slice an arm/tube into a print-in-place articulated body | `api.printFit.flexi(solid, {segments, axis})` -> `/ai/print-fit.md` | (build manually) | (use manifold-js printFit) |
 | Dial in printer fit tolerances | `api.printFit.clearanceCoupon({size:"M3"})` + `api.printFit.clearance(fit)` -> `/ai/print-fit.md` | (build manually) | (use manifold-js printFit) |
-| Print-in-place mechanism (screw, spinner, hinge, captive ball, slider) | Separate parts via `labeledUnion`, separated by a ~0.3–0.5 mm clearance gap; assert `componentCount` -> `/ai/mechanisms.md` | (model parts + clearance manually) | (model parts + clearance manually) |
+| Print-in-place mechanism (screw, spinner, hinge, captive ball, slider) | Separate parts via `labeledUnion`, separated by a ~0.3–0.5 mm clearance gap; assert `componentCount`; for articulated chains use `api.printFit.flexi` -> `/ai/mechanisms.md` | (model parts + clearance manually) | (model parts + clearance manually) |
 | Helical thread / auger / spiral flute | `cs.extrude(h, nDiv, 360*turns, scaleTop)` on a bumped/fluted profile -> `/ai/mechanisms.md` | `linear_extrude(twist=)`, or BOSL2 `threaded_rod()` | (use manifold-js) |
 | Smooth fillet / blend between two shapes (no edge-picking) | `a.smoothUnion(b, k)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Lattice / gyroid / periodic infill | `api.sdf.gyroid(cell, thickness)` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
