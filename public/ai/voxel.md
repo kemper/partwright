@@ -73,6 +73,7 @@ are **integers** in the range −1024…1023 on each axis. 1 voxel = 1 world uni
 | `v.cylinder([cx,cy,cz], radius, height, color, axis?)` | Fill a solid cylinder; base centered on the point, extends `height` along `axis` (`'x'`/`'y'`/`'z'`, default `'z'`). |
 | `v.line([x0,y0,z0], [x1,y1,z1], color)` | Draw a 1-voxel-thick line (3D Bresenham). |
 | `v.translate([dx,dy,dz])` | Shift every voxel by an integer offset. |
+| `v.rotate('x' \| 'y' \| 'z', degrees)` | Rotate the whole grid about the origin around that axis. `degrees` must be a multiple of 90 (the only angles that stay on the voxel lattice); positive = right-hand rule. About the origin, so `translate` first to pick a pivot. Use it to reorient a model — e.g. `v.rotate('z', 180)` spins a +Y-facing figure to face the −Y front. |
 | `v.mirror('x' \| 'y' \| 'z')` | Add a mirrored copy across that axis's 0-plane (great for symmetric models; the mirrored copy wins where it overlaps an existing voxel). |
 | `v.hollow(thickness?)` | Remove interior voxels, leaving a shell of the given wall thickness (default 1). |
 | `v.size` | Number of occupied voxels. |
