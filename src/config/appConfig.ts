@@ -16,6 +16,17 @@ export interface AppConfig {
     /** Max consecutive auto-resume nudges with no tool call before the loop
      *  falls through to a normal end_turn outcome. Resets on any tool call. */
     maxConsecutiveAutoResumes: number;
+    /** Max times a single provider API call is retried after a *transient*
+     *  failure (HTTP 429/5xx, network/stream drop) before the turn surfaces a
+     *  hard error. These retries don't consume the agent's per-turn iteration
+     *  budget — they keep an auto-continue run alive through server blips. */
+    maxTransientRetries: number;
+    /** Base backoff (ms) between transient provider-error retries. The actual
+     *  wait grows exponentially (base · 2^(attempt-1)) with jitter, capped at
+     *  transientRetryMaxMs. */
+    transientRetryBaseMs: number;
+    /** Ceiling (ms) on a single transient-error backoff wait. */
+    transientRetryMaxMs: number;
     /** Tool execution wall-clock time (ms) above which a console warning fires. */
     slowToolMs: number;
     /** In-memory ring buffer size for the AI diagnostics log. */
@@ -191,6 +202,9 @@ export interface AppConfig {
 export const APP_CONFIG_DEFAULTS: AppConfig = {
   ai: {
     maxConsecutiveAutoResumes: 8,
+    maxTransientRetries: 4,
+    transientRetryBaseMs: 1000,
+    transientRetryMaxMs: 16_000,
     slowToolMs: 250,
     diagnosticsRingSize: 50,
     maxAttachments: 20,
