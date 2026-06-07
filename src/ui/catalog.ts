@@ -11,6 +11,7 @@ import {
   CATEGORIES,
   categorizeOf,
   deriveCharacteristics as deriveTraits,
+  printTestedBadge,
   CATALOG_LANGUAGE_ORDER,
   type CategoryId,
   type CategoryDef,
@@ -292,11 +293,13 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
   const language = entryLanguage(loaded);
   tile.dataset.catalogTile = '';
   tile.dataset.language = language;
+  const print = printTestedBadge(loaded.manifest.printTested);
   tile.dataset.search = [
     loaded.manifest.name,
     loaded.manifest.description ?? '',
     loaded.manifest.id,
     languageBadge(language).label,
+    print.search,
   ].join(' ').toLowerCase();
 
   // Thumbnail
@@ -340,6 +343,14 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
   langBadge.className = `font-semibold border rounded px-1 ${badge.classes}`;
   langBadge.textContent = badge.label;
   meta.appendChild(langBadge);
+
+  // Print-tested chip — verified-printable vs. not-yet-tested. Always shown so
+  // every tile states its print status (default: "Untested").
+  const printChip = document.createElement('span');
+  printChip.className = `font-semibold border rounded px-1 ${print.classes}`;
+  printChip.textContent = print.label;
+  printChip.title = print.title;
+  meta.appendChild(printChip);
 
   // Parametric chip — the headline "special characteristic": this model exposes
   // tweakable knobs. Reinforces the Customizable section at a per-tile glance.
