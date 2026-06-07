@@ -58,27 +58,75 @@ Read the PNGs here, in your own disposable context, and hand back only text. So:
 
 - **One solid piece.** The print must be a single face-connected blob. Do **not**
   trust `manifold.decompose()` / `componentCount` for this — it counts interior
-  pockets and edge-only touches. Embed a 6-neighbour BFS `keepLargest()` helper
-  in the snippet that deletes every voxel not in the largest face-connected
-  component, and call it just before `return`. (Canonical helper is in the cat
-  snippets under `.plans/photos/`.)
+  pockets and edge-only touches, so it can read > 1 on a model that is in fact
+  fully connected. The one-piece *guarantee* comes from running the
+  `keepLargest()` weld below (a 6-neighbour BFS that deletes every voxel not in
+  the largest face-connected component) just before `return`.
 - **Flat bottom for printing.** After welding, fill any z-gap beneath the lowest
   voxel of each (x,y) column down to z=0 so the model sits flat with no floating
-  feet. (See the `minz` fill at the end of the `.plans/photos/cat-hires-*.js`.)
+  feet — the `flattenBottom()` helper below.
 - **No floating decals.** Paint markings (eyes, stripes, nose) by scanning the
   *existing* surface and recoloring the first occupied voxel along the view axis
-  (a `frontDecal(x,z,color)` helper), never by `v.set`-ing a color into empty
-  space — that creates disconnected specks the weld then deletes, losing the mark.
+  (the `frontDecal(x,z,color)` helper below), never by `v.set`-ing a color into
+  empty space — that creates disconnected specks the weld then deletes, losing
+  the mark.
+
+## Canonical helpers — paste these into every snippet
+
+These three are the gate machinery. Copy them verbatim into the snippet and call
+`keepLargest()` then `flattenBottom()` immediately before `return v`. They're
+reproduced here so this agent is self-contained — don't depend on any particular
+`.plans/` file existing.
+
+```js
+// Recolor the first occupied voxel along -Y at (x,z); never paints empty space.
+function frontDecal(x, z, c) {
+  for (let y = -26; y <= 12; y++) if (v.has(x, y, z)) { v.set(x, y, z, c); return true; }
+  return false;
+}
+// Keep only the largest 6-neighbour face-connected component (the actual print).
+function keepLargest() {
+  const cells = new Set(); v.forEach((x, y, z) => cells.add(x + ',' + y + ',' + z));
+  const seen = new Set(); let best = [];
+  for (const c of cells) {
+    if (seen.has(c)) continue;
+    const q = [c]; seen.add(c); const comp = [];
+    while (q.length) {
+      const cur = q.pop(); comp.push(cur);
+      const [x, y, z] = cur.split(',').map(Number);
+      for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+        const k = (x + dx) + ',' + (y + dy) + ',' + (z + dz);
+        if (cells.has(k) && !seen.has(k)) { seen.add(k); q.push(k); }
+      }
+    }
+    if (comp.length > best.length) best = comp;
+  }
+  const keep = new Set(best);
+  for (const c of cells) if (!keep.has(c)) { const [x, y, z] = c.split(',').map(Number); v.remove(x, y, z); }
+}
+// Drop each (x,y) column to z=0 so the model sits flat (no floating feet).
+// Substitute your model's base/fur color for BASE.
+function flattenBottom(BASE) {
+  const minz = new Map();
+  v.forEach((x, y, z) => { const k = x + ',' + y; if (!minz.has(k) || z < minz.get(k)) minz.set(k, z); });
+  for (const [k, z0] of minz) { const [x, y] = k.split(',').map(Number); for (let z = 0; z < z0; z++) v.set(x, y, z, BASE); }
+}
+```
 
 ## Output format (text only)
 
 ```
 FINAL: <path to .js>
 PREVIEW: <path to .png>
-STATS: manifold=<bool> components=<n> tris=<n> bbox=<[x,y,z]>
+STATS: manifold=<bool> components=<n, informational> tris=<n> bbox=<[x,y,z]>
 LIKENESS: <2–4 sentences — what reads well, what's approximated>
 TRADE-OFFS: <bullets — what's still off and the cheapest next tweak for each>
 ```
+
+`components` is the engine's `componentCount`, reported **for information only** —
+per the gates above it over-counts (interior pockets, edge touches), so a value
+> 1 is *not* a failure and must not be treated as one. The single-piece guarantee
+comes from `keepLargest()` having run, not from this number.
 
 Keep it tight and honest. A model that fuses into a blob or floats apart is a
 failure even if the stats look fine — say so rather than declaring success.

@@ -42,3 +42,14 @@ smoke-test the loop and output format end-to-end, and documented the gotcha in
 **Documentation:** new row + a "why this agent" blockquote in
 `docs/agent-tooling.md`; a retro entry in `retros/inbox/` recording the
 image-token cost lesson and the `SendUserFile`-without-Read trick.
+
+**Test outcome → hardened the definition.** The proxy run refined the cat to
+`.plans/photos/cat-hires-v2.js` and passed every gate (manifold=true, 1
+component after weld, 23.8k tris, flat bottom) with a clean text-only verdict —
+and the image stayed in the subagent: the main thread surfaced the preview via
+`SendUserFile` without ever Reading it. The run also surfaced two definition
+gaps, both applied: (1) STATS reported `componentCount` while the gates warn not
+to trust it — clarified it's informational only, so the agent never fails a model
+on a > 1 count; (2) the helper references pointed at workload-specific `.plans/`
+files — inlined a canonical `frontDecal` / `keepLargest` / `flattenBottom`
+snippet so the agent is self-contained from a cold start.
