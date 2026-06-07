@@ -37,8 +37,9 @@ export const TOOL_TOGGLE_ACTIVE =
 
 /** Build the standard drag-handle header: a title plus a × close button.
  *  The close button is excluded from drag initiation by attachViewportPanelDrag
- *  (it skips clicks landing on a <button>). */
-export function createToolPanelHeader(title: string, onClose: () => void): HTMLElement {
+ *  (it skips clicks landing on a <button>). `closeLabel` is the close button's
+ *  title/aria-label — pass a descriptive one (e.g. "Close paint menu"). */
+export function createToolPanelHeader(title: string, onClose: () => void, closeLabel = 'Close'): HTMLElement {
   const header = document.createElement('div');
   header.className = TOOL_PANEL_HEADER;
   const titleEl = document.createElement('div');
@@ -48,8 +49,8 @@ export function createToolPanelHeader(title: string, onClose: () => void): HTMLE
   const closeBtn = document.createElement('button');
   closeBtn.className = TOOL_PANEL_CLOSE;
   closeBtn.textContent = '×'; // × (multiplication sign) — one glyph everywhere
-  closeBtn.title = 'Close';
-  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.title = closeLabel;
+  closeBtn.setAttribute('aria-label', closeLabel);
   closeBtn.addEventListener('click', onClose);
   header.appendChild(closeBtn);
   return header;

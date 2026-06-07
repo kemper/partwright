@@ -229,7 +229,7 @@ function createPanel(): HTMLElement {
   p.className = 'hidden z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl absolute rounded-lg w-56 max-h-[calc(100%-3.5rem)] text-xs text-zinc-200';
 
   // Header: drag handle + title + × close (shared tool-panel chrome).
-  const header = createToolPanelHeader('🧊 Voxel Studio', () => { void doDeactivate(); });
+  const header = createToolPanelHeader('🧊 Voxel Studio', () => { void doDeactivate(); }, 'Close Voxel Studio');
   p.appendChild(header);
   attachViewportPanelDrag(header, p);
 

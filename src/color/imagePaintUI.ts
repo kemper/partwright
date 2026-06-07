@@ -426,7 +426,7 @@ function buildPanel(): HTMLElement {
   ].join(' ');
 
   // ── Header / drag handle (shared tool-panel chrome) ──
-  const header = createToolPanelHeader('🖼️ Image Paint', toggleImagePaint);
+  const header = createToolPanelHeader('🖼️ Image Paint', toggleImagePaint, 'Close image paint panel');
   el.appendChild(header);
   attachViewportPanelDrag(header, el);
 

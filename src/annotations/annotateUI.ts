@@ -233,7 +233,7 @@ function createPickerPanel(): HTMLElement {
   panel.style.minWidth = '220px';
 
   // Header: drag handle + title + × close button (shared tool-panel chrome).
-  const header = createToolPanelHeader('✏️ Annotate', () => { toggleAnnotateMode(); });
+  const header = createToolPanelHeader('✏️ Annotate', () => { toggleAnnotateMode(); }, 'Close annotate menu');
   panel.appendChild(header);
   attachViewportPanelDrag(header, panel);
 

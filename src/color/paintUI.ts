@@ -328,7 +328,7 @@ function createPickerPanel(): HTMLElement {
   panel.className = 'hidden z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl absolute rounded-lg w-60 max-h-[calc(100%-3.5rem)]';
 
   // === Header: drag handle + title + \u00D7 close button (shared tool-panel chrome) ===
-  const header = createToolPanelHeader('\uD83C\uDFA8 Paint', () => { togglePaintMode(); });
+  const header = createToolPanelHeader('\uD83C\uDFA8 Paint', () => { togglePaintMode(); }, 'Close paint menu');
   panel.appendChild(header);
   attachViewportPanelDrag(header, panel);
 

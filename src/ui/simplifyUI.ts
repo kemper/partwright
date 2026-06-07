@@ -730,7 +730,7 @@ function buildPanel(): HTMLElement {
   p.style.maxWidth = '280px';
 
   // Header: drag handle + title + × close button (shared tool-panel chrome).
-  const header = createToolPanelHeader('Quality', closePanel);
+  const header = createToolPanelHeader('Quality', closePanel, 'Close quality panel');
   panelHeader = header;
   p.appendChild(header);
 
