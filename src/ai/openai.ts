@@ -660,6 +660,14 @@ async function consumeChatStream(
     input: parseToolArgs(buf.argsText),
   }));
 
+  // If the stream produced tool calls, force a tool_use stop regardless of the
+  // reported finish_reason. OpenAI proper sends finish_reason:'tool_calls', but
+  // an OpenAI-compatible server (llama.cpp/vLLM/Ollama) may stream tool-call
+  // deltas without a clean finish_reason, leaving stopReason 'unknown' — which
+  // chatLoop treats as a non-tool turn and silently drops the calls. Mirrors
+  // the Responses and Gemini paths.
+  if (toolCalls.length > 0) stopReason = 'tool_use';
+
   return { text: collectedText, toolCalls, stopReason, usage };
 }
 

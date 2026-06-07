@@ -346,6 +346,20 @@ export function getConfig(): AppConfig {
   return loadAppConfig();
 }
 
+/** Seed the worker's config cache with the main thread's `ai` overrides.
+ *  Workers have no localStorage, so without this `getConfig().ai.*` reads inside
+ *  the agent Worker (every hosted-provider turn runs there) silently fall back
+ *  to defaults — ignoring the user's saved thinking budgets, max-output tokens,
+ *  transient-retry and auto-resume tuning. The main thread passes its `ai`
+ *  section through the run_turn message and the Worker applies it here before
+ *  the providers read config. No-op outside a Worker (the main thread already
+ *  has the real values). */
+export function applyWorkerAiConfig(ai: AppConfig['ai']): void {
+  if (!isWorkerContext()) return;
+  const base = loadAppConfig();
+  cachedConfig = { ...base, ai: { ...base.ai, ...ai } };
+}
+
 /** Subscribe to config changes (saved overrides or a reset). Returns an
  *  unsubscribe function. Fires with the new config after every persist. */
 export function onConfigChange(fn: (cfg: AppConfig) => void): () => void {

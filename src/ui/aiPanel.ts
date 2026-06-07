@@ -419,6 +419,9 @@ function showDrawer(focusInput = true): void {
 function hideDrawer(): void {
   if (!drawerEl) return;
   state.open = false;
+  // Stop dictation when the panel closes — otherwise the mic keeps recording
+  // into the now-hidden textarea with no visible stop affordance.
+  voiceController?.stop();
   drawerEl.classList.add('hidden');
   window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: false } }));
   window.dispatchEvent(new Event('resize'));
@@ -433,6 +436,9 @@ export function setAiPanelRouteActive(active: boolean): void {
   if (routeActive === active) return;
   routeActive = active;
   if (!drawerEl) return;
+  // Leaving the editor route hides the panel — stop any active dictation so the
+  // mic doesn't keep recording on an overlay page where the panel isn't shown.
+  if (!active) voiceController?.stop();
   const visible = state.open && routeActive;
   drawerEl.classList.toggle('hidden', !visible);
   if (visible) applyDockLayout();

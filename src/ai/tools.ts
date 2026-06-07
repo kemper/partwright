@@ -42,6 +42,18 @@ export interface ToolExecResult {
   image?: ImageSource;
 }
 
+/** The subdocs `readDoc` can fetch from /ai/<name>.md. Single source of truth
+ *  for both the readDoc tool's input-schema `enum` (what the model is allowed
+ *  to request) and the runtime `SUBDOC_NAMES` validator — keep them derived
+ *  from this so the schema can't silently omit a name the validator accepts
+ *  (which previously schema-blocked the model from 5 valid subdocs). */
+export const SUBDOC_NAMES_LIST = [
+  'curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety',
+  'print-fit', 'reference-images', 'file-io', 'annotations', 'printing',
+  'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
+  'visual-verification', 'spending', 'manifold-api',
+] as const;
+
 const ALL_TOOLS: ToolDefinition[] = [
   {
     name: 'getActiveLanguage',
@@ -434,7 +446,7 @@ const ALL_TOOLS: ToolDefinition[] = [
       properties: {
         name: {
           type: 'string',
-          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'printing', 'relief', 'textures', 'mechanisms'],
+          enum: [...SUBDOC_NAMES_LIST],
           description: 'Subdoc name without the .md extension.',
         },
       },
@@ -1670,7 +1682,7 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
-const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas', 'visual-verification', 'spending', 'manifold-api']);
+const SUBDOC_NAMES = new Set<string>(SUBDOC_NAMES_LIST);
 
 /** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
  *  local providers — both run inside the user's browser tab, so this is
