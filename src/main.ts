@@ -7320,9 +7320,11 @@ async function main() {
   }
 
   // Build a modifier result from an id + options (shared by apply and preview).
-  // All three modifiers receive the color-baked mesh when preserveColor is on:
-  // fuzzy/smooth carry triColors (with _painted) through subdivision so the
-  // result already has correct per-triangle paint — no post-hoc transfer needed.
+  // Every modifier receives the color-baked mesh when preserveColor is on:
+  // the texture/smooth paths carry triColors (with _painted) through subdivision
+  // so the result already has correct per-triangle paint — no post-hoc transfer.
+  // `quality` (mesh-detail) is threaded into each opts object so the surface
+  // panel's detail slider takes effect in both preview and apply.
   function buildSurfaceModifier(
     id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
@@ -7337,6 +7339,7 @@ async function main() {
         scale: (opts?.scale as number) ?? base.scale,
         octaves: (opts?.octaves as number) ?? base.octaves,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyFuzzyPatch(mesh, fuzzyOpts, sel);
       return applyFuzzy(mesh, fuzzyOpts);
@@ -7353,6 +7356,7 @@ async function main() {
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         variation: (opts?.variation as number) ?? base.variation,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
         // LSCM/harmonic require disk topology — only use them on a selected patch.
         // On a closed mesh they produce partial coverage; fall back to BFS.
         algorithm: (sel && sel.size > 0)
@@ -7373,6 +7377,7 @@ async function main() {
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         variation: (opts?.variation as number) ?? base.variation,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyCablePatch(mesh, cableOpts, sel);
       return applyCable(mesh, cableOpts);
@@ -7387,6 +7392,7 @@ async function main() {
         sharpness: (opts?.sharpness as number) ?? base.sharpness,
         rowOffset: (opts?.rowOffset as number) ?? base.rowOffset,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyWafflePatch(mesh, waffleOpts, sel);
       return applyWaffle(mesh, waffleOpts);
@@ -7401,6 +7407,7 @@ async function main() {
         octaves: (opts?.octaves as number) ?? base.octaves,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyFurPatch(mesh, furOpts, sel);
       return applyFur(mesh, furOpts);
@@ -7415,6 +7422,7 @@ async function main() {
         underDepth: (opts?.underDepth as number) ?? base.underDepth,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyWovenPatch(mesh, wovenOpts, sel);
       return applyWoven(mesh, wovenOpts);
@@ -7442,7 +7450,8 @@ async function main() {
      *  color-clearing modifier, or offer "preserve colors"). */
     modelHasColor(): boolean { return modelHasColor(); },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
-     *  Call clearSurfacePreview() / re-run to restore. id: 'fuzzy'|'knit'|'smooth'|'voxelize'. */
+     *  Call clearSurfacePreview() / re-run to restore.
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'smooth'|'voxelize'. */
     previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
       try {
         previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);

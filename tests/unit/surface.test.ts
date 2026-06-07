@@ -9,7 +9,11 @@ import {
   bboxOf,
 } from '../../src/surface/meshSubdivide';
 import { fuzzySkin } from '../../src/surface/fuzzySkin';
-import { knitTexture } from '../../src/surface/knitTexture';
+import { knitTextureUV } from '../../src/surface/knitTexture';
+import { cableKnit } from '../../src/surface/cableKnit';
+import { waffleStitch } from '../../src/surface/waffleStitch';
+import { furVelvet } from '../../src/surface/furVelvet';
+import { wovenFabric } from '../../src/surface/wovenFabric';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { applyFuzzy, applyKnit, applySmooth, applyVoxelize } from '../../src/surface/modifiers';
@@ -127,10 +131,10 @@ describe('fuzzySkin', () => {
   });
 });
 
-describe('knitTexture', () => {
+describe('knitTextureUV', () => {
   it('is deterministic for a given seed and perturbs the surface', () => {
-    const a = knitTexture(cube(10), { amplitude: 0.5, stitchWidth: 2, seed: 7 });
-    const b = knitTexture(cube(10), { amplitude: 0.5, stitchWidth: 2, seed: 7 });
+    const a = knitTextureUV(cube(10), { amplitude: 0.5, stitchWidth: 2, seed: 7 });
+    const b = knitTextureUV(cube(10), { amplitude: 0.5, stitchWidth: 2, seed: 7 });
     expect([...a.vertProperties]).toEqual([...b.vertProperties]);
     // Subdivided, so more triangles than the input cube.
     expect(a.numTri).toBeGreaterThan(12);
@@ -140,30 +144,65 @@ describe('knitTexture', () => {
   });
 
   it('a different seed produces different geometry', () => {
-    const a = knitTexture(cube(10), { amplitude: 0.5, stitchWidth: 2, seed: 1 });
-    const b = knitTexture(cube(10), { amplitude: 0.5, stitchWidth: 2, seed: 2 });
+    const a = knitTextureUV(cube(10), { amplitude: 0.5, stitchWidth: 2, seed: 1 });
+    const b = knitTextureUV(cube(10), { amplitude: 0.5, stitchWidth: 2, seed: 2 });
     expect([...a.vertProperties]).not.toEqual([...b.vertProperties]);
   });
 
   it('zero amplitude leaves the cube unchanged (no subdivision)', () => {
-    const out = knitTexture(cube(10), { amplitude: 0, stitchWidth: 2 });
+    const out = knitTextureUV(cube(10), { amplitude: 0, stitchWidth: 2 });
     expect(out.numVert).toBe(8);
   });
 
   it('grainAngleDeg rotates the pattern (produces different geometry from angle 0)', () => {
-    const a = knitTexture(cube(10), { amplitude: 0.5, stitchWidth: 2, grainAngleDeg: 0 });
-    const b = knitTexture(cube(10), { amplitude: 0.5, stitchWidth: 2, grainAngleDeg: 45 });
+    const a = knitTextureUV(cube(10), { amplitude: 0.5, stitchWidth: 2, grainAngleDeg: 0 });
+    const b = knitTextureUV(cube(10), { amplitude: 0.5, stitchWidth: 2, grainAngleDeg: 45 });
     expect([...a.vertProperties]).not.toEqual([...b.vertProperties]);
   });
 
   it('carries per-triangle colors through subdivision', () => {
     const c = cube(10);
     c.triColors = new Uint8Array(c.numTri * 3).fill(42);
-    const out = knitTexture(c, { amplitude: 0.5, stitchWidth: 2 });
+    const out = knitTextureUV(c, { amplitude: 0.5, stitchWidth: 2 });
     expect(out.triColors).toBeTruthy();
     expect(out.triColors!.length).toBe(out.numTri * 3);
     expect([...out.triColors!].every(v => v === 42)).toBe(true);
   });
+});
+
+// The four fabric textures added after fuzzySkin share its structure (densify →
+// displace along normals, deterministic per seed, color carried through
+// subdivision). One parameterized table guards the invariants for all of them.
+describe('fabric textures (cable / waffle / fur / woven)', () => {
+  const cases = [
+    { name: 'cableKnit', fn: cableKnit as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cableWidth: 2, seed: 3 } },
+    { name: 'waffleStitch', fn: waffleStitch as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellWidth: 2, seed: 3 } },
+    { name: 'furVelvet', fn: furVelvet as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, fiberSpacing: 2, seed: 3 } },
+    { name: 'wovenFabric', fn: wovenFabric as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, threadSpacing: 2, seed: 3 } },
+  ] as const;
+
+  for (const { name, fn, opts } of cases) {
+    it(`${name} is deterministic, finite, and subdivides`, () => {
+      const a = fn(cube(10), { ...opts });
+      const b = fn(cube(10), { ...opts });
+      expect([...a.vertProperties]).toEqual([...b.vertProperties]);
+      expect([...a.vertProperties].every(Number.isFinite)).toBe(true);
+      expect(a.numTri).toBeGreaterThan(12); // densified before displacement
+    });
+
+    it(`${name} zero amplitude is a no-op (no subdivision)`, () => {
+      const out = fn(cube(10), { ...opts, amplitude: 0 });
+      expect(out.numVert).toBe(8);
+    });
+
+    it(`${name} carries per-triangle colors through subdivision`, () => {
+      const c = cube(10);
+      c.triColors = new Uint8Array(c.numTri * 3).fill(42);
+      const out = fn(c, { ...opts });
+      expect(out.triColors!.length).toBe(out.numTri * 3);
+      expect([...out.triColors!].every(v => v === 42)).toBe(true);
+    });
+  }
 });
 
 describe('smoothSurface', () => {
@@ -243,7 +282,7 @@ describe('modifiers (codegen)', () => {
 
     it('maps each subdivided child to a triangle near its parent', () => {
       const c = cube(10);
-      const dense = subdivideToMaxEdge(c, 3); // re-tessellated, same shape
+      const dense = subdivideToMaxEdge(c, { maxEdge: 3 }); // re-tessellated, same shape
       const map = nearestTriangleMap(c, dense);
       expect(map.length).toBe(dense.numTri);
       // Every child must map to a real old triangle, and a child's nearest old
