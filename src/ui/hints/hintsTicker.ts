@@ -38,6 +38,7 @@ let paused = false;
 let configUnsub: (() => void) | null = null;
 let sessionUnsub: (() => void) | null = null;
 let resizeObs: ResizeObserver | null = null;
+let desktopMqCleanup: (() => void) | null = null;
 /** Last session id seen, so we only restore hints on a real session transition
  *  (new / opened / switched session) — not on intra-session changes like
  *  version navigation, which also fire 'session-changed'. */
@@ -159,6 +160,8 @@ function teardownStrip(): void {
   rotateTimer = 0;
   resizeObs?.disconnect();
   resizeObs = null;
+  desktopMqCleanup?.();
+  desktopMqCleanup = null;
   dismissCoachmark();
   if (host) host.replaceChildren();
   strip = null;
@@ -197,7 +200,12 @@ function renderStrip(): void {
 
   textEl = document.createElement('span');
   textEl.id = 'editor-hints-text';
-  textEl.className = 'min-w-0 truncate text-zinc-300';
+  // Wrap onto multiple lines when horizontal room is tight (e.g. the AI panel
+  // is open) instead of truncating to a single ellipsised line — the strip
+  // grows vertically and the toolbar row grows with it. A long hint still fits
+  // on one line when there's room; line-clamp-3 caps the growth at three lines
+  // so a very long hint on a very narrow strip can't balloon the toolbar.
+  textEl.className = 'min-w-0 text-zinc-300 break-words line-clamp-3';
 
   ctaEl = document.createElement('button');
   ctaEl.type = 'button';
@@ -217,19 +225,28 @@ function renderStrip(): void {
   host.appendChild(strip);
 
   // Degrade gracefully as the toolbar's middle shrinks (e.g. the AI panel opens
-  // or on a narrow screen): drop the "💡 Did you know?" badge first, then hide
-  // the whole strip when there's no room — so it never overflows into the
-  // adjacent toolbar buttons. The host stays flex-1, so it keeps right-aligning
-  // the AI/Import/Export cluster even when the strip is hidden.
+  // or on a narrow screen). On mobile the toolbar already wraps and is cramped,
+  // so the discovery strip isn't worth the space — hide it outright below the
+  // md (768px) breakpoint. On desktop, drop the "💡 Did you know?" badge first
+  // as room tightens, let the hint text wrap to multiple lines (see textEl
+  // above), and finally hide the whole strip when there's genuinely no room —
+  // so it never overflows into the adjacent toolbar buttons. The host stays
+  // flex-1, so it keeps right-aligning the AI/Import/Export cluster even when
+  // the strip is hidden.
+  const desktopMq = window.matchMedia('(min-width: 768px)');
   const applyWidth = () => {
     if (!strip) return;
     const w = host!.clientWidth;
-    strip.style.display = w >= 200 ? '' : 'none';
+    strip.style.display = desktopMq.matches && w >= 200 ? '' : 'none';
     badge.style.display = w >= 360 ? '' : 'none';
   };
   resizeObs?.disconnect();
   resizeObs = new ResizeObserver(applyWidth);
   resizeObs.observe(host);
+  // Re-evaluate on breakpoint crossings: resizing the window across 768px may
+  // not shift the host's own width enough to trip the ResizeObserver.
+  desktopMq.addEventListener('change', applyWidth);
+  desktopMqCleanup = () => desktopMq.removeEventListener('change', applyWidth);
   applyWidth();
 
   // Pause rotation while the user is reading (hover) or interacting (focus).
