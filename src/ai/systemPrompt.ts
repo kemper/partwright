@@ -287,7 +287,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
   if (toggles.planFirst) {
     const lang = currentLanguage();
     const model = activeModel(toggles) ?? '(none picked)';
-    return [
+    const plan = [
       '',
       '## Session toggle state',
       '',
@@ -303,7 +303,14 @@ export function toggleSuffix(toggles: ChatToggles): string {
       '',
       'If you need clarification before you can write a useful plan, ask your questions now.',
       'The user will approve the plan (triggering a new turn with full tools) or reply to refine it further.',
-    ].join('\n');
+    ];
+    // When 3D-printing optimization is also on, fold the design rules into the
+    // plan so the proposed approach is print-aware from the outset.
+    if (toggles.printOptimized) {
+      plan.push('');
+      plan.push(printableGuidance());
+    }
+    return plan.join('\n');
   }
 
   // Behavioural guidance for each capability that's currently OFF — tells the
@@ -359,6 +366,10 @@ export function toggleSuffix(toggles: ChatToggles): string {
     `- Session notes: ${onOff(toggles.scope.sessionNotes)}`,
     `- Auto-render (renderView / renderViews): ${onOff(toggles.vision.views)}`,
   ];
+  if (toggles.printOptimized) {
+    lines.push('');
+    lines.push(printableGuidance());
+  }
   if (toggles.autoResume) {
     lines.push('');
     lines.push('**Auto-continue is ON.** Keep working until the user\'s request is fully complete. Do NOT end your turn with a plain "all done" message and wait for the user — either call a tool to make progress, or, when the task is genuinely finished and verified, call the `finish` tool (the only clean way to end your turn). If you stop without calling `finish`, you will be automatically resumed to continue, so stopping early just wastes a round-trip. This is bounded by the iteration and spend caps above, so don\'t pad with busy-work — call `finish` as soon as the task is actually done.');
@@ -394,6 +405,33 @@ function qualityLine(): string {
     ? 'Custom'
     : QUALITY_OPTIONS.find(o => o.id === quality)?.label ?? 'Very High';
   return `Modeling quality: the user picked "${label}" (~${segs} segments per full circle), already applied before every run. OMIT the segments argument on cylinder/sphere/circle/revolve/extrude so curves inherit this preset — do NOT pass a smaller explicit count (e.g. 32) just to "make it smooth", as that shadows the user's choice and looks chunky to them. Pass an explicit count only for a deliberately faceted/low-poly look or a user-tunable parameter, or a HIGHER count when one specific feature needs extra resolution.`;
+}
+
+/** Guidance block injected when the 3D-printing-optimization toggle is ON.
+ *  Frames the model's geometry decisions around FDM (filament) printability so
+ *  the result comes off the build plate cleanly with minimal supports. Kept
+ *  terse and actionable — it rides on every turn while the toggle is on, so it
+ *  earns its tokens by being rules the model bakes into geometry, not prose to
+ *  recite back. Units in this app are nominal; the parenthetical "1 unit ≈ 1 mm"
+ *  anchors the size thresholds to typical FDM tolerances. */
+function printableGuidance(): string {
+  return [
+    '## Design for 3D printing (ON)',
+    '',
+    'The user intends to 3D-print this model on a typical FDM / filament printer. Design for printability from the very first version — it is far cheaper to build print-friendly than to fix it later. Bake these into the geometry (treat 1 unit ≈ 1 mm for the size thresholds):',
+    '',
+    '- **Flat base on the build plate.** Give the model a broad, flat bottom face so it sits stable on the plate with good adhesion. Orient the natural "down" of the object downward; avoid balancing it on a point, a sphere, or a thin edge.',
+    '- **Respect the ~45° overhang rule.** Surfaces that lean more than ~45° away from vertical need support material. Prefer chamfers over flat horizontal overhangs, taper walls in/out gradually, and angle features so they self-support. A 45° slope prints clean; a sudden 90° ledge does not.',
+    '- **No floating or disconnected islands.** Every part of the body must connect to the rest (or rest on the plate). Geometry floating in mid-air can\'t print without supports — unless print-in-place separation is the explicit goal, return one connected solid (check componentCount).',
+    '- **Keep unsupported bridges short.** Flat ceilings spanning open space sag; keep bridges under ~5 units or arch/taper the gap so it self-supports.',
+    '- **Mind the minimum feature size.** Walls thinner than ~1 unit (≈2 nozzle widths) and raised/recessed detail below ~0.4 unit (one nozzle width) won\'t print reliably. Keep text, pins, and thin ribs above that.',
+    '- **Watertight, single manifold.** Verify isManifold === true and the expected componentCount. Avoid fully sealed internal cavities (they trap unprintable air/material) unless intended.',
+    '- **Chamfer the bottom edge instead of filleting it.** A small 45° chamfer at the base aids adhesion and removal; a fillet at the very bottom curls into a thin, hard-to-print overhang.',
+    '- **Keep it stable, not top-heavy.** Favor a low center of mass and a footprint wide enough that the print won\'t tip mid-job.',
+    '- **Leave clearance for parts that fit or move.** ~0.2–0.4 units of gap between mating or moving parts so they aren\'t fused after printing.',
+    '',
+    'You don\'t need to recite these rules to the user — just design to them. If a request fundamentally fights printability (e.g. an inherently floating shape), build the printable interpretation and briefly note the trade-off you made.',
+  ].join('\n');
 }
 
 export function buildSystemPrompt(aiMd: string): string {
