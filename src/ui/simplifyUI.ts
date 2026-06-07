@@ -31,6 +31,7 @@ import { isWireframeVisible, setWireframeVisible } from '../renderer/viewport';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 import { viewportToolsMount } from './popoverMenu';
+import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './toolPanel';
 import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings, type QualitySettings } from '../geometry/qualitySettings';
 import { saveQualityForLang, initQualityLogic, notifyLanguageChange as notifyQualityLangChange } from './curvatureQualityPanel';
 import { showHeavyEnhanceConfirm } from './heavyMeshConfirmModal';
@@ -139,8 +140,8 @@ export interface SimplifyHandlers {
   save(): Promise<SimplifySaveResult>;
 }
 
-const BTN_INACTIVE = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-const BTN_ACTIVE = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/20 backdrop-blur text-blue-400 [@media(hover:hover)]:hover:bg-blue-500/30 transition-colors border border-blue-500/30';
+const BTN_INACTIVE = TOOL_TOGGLE_IDLE;
+const BTN_ACTIVE = TOOL_TOGGLE_ACTIVE;
 const MODE_INACTIVE = 'flex-1 px-2 py-1 rounded text-xs text-zinc-400 bg-zinc-700/50 [@media(hover:hover)]:hover:bg-zinc-600/50 transition-colors border border-zinc-600/40';
 const MODE_ACTIVE = 'flex-1 px-2 py-1 rounded text-xs text-blue-300 bg-blue-500/20 transition-colors border border-blue-500/40';
 
@@ -728,20 +729,9 @@ function buildPanel(): HTMLElement {
   p.style.minWidth = '240px';
   p.style.maxWidth = '280px';
 
-  // Header: drag handle + title + × close button.
-  const header = document.createElement('div');
-  header.className = 'flex items-center justify-between px-2.5 py-2 border-b border-zinc-700/70';
+  // Header: drag handle + title + × close button (shared tool-panel chrome).
+  const header = createToolPanelHeader('Quality', closePanel);
   panelHeader = header;
-  const titleEl = document.createElement('div');
-  titleEl.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
-  titleEl.textContent = 'Quality';
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'text-zinc-400 hover:text-zinc-200 transition-colors leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-700/60';
-  closeBtn.textContent = '×';
-  closeBtn.title = 'Close';
-  closeBtn.setAttribute('aria-label', 'Close quality panel');
-  closeBtn.addEventListener('click', closePanel);
-  header.append(titleEl, closeBtn);
   p.appendChild(header);
 
   // Padded content area beneath the header.

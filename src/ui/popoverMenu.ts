@@ -73,8 +73,14 @@ export function createPopoverGroup(opts: PopoverGroupOptions): PopoverGroup {
 
   const menu = document.createElement('div');
   menu.id = `${opts.id}-menu`;
+  // Horizontal button row (right-aligned, wraps on narrow screens). A clicked
+  // tool's own panel then docks beneath this row, so the row stays a compact
+  // launcher strip rather than a tall vertical list.
+  // `w-max` makes the row size to its full content (an abspos flex-wrap box
+  // otherwise collapses to its widest item, stacking the buttons); max-w caps it
+  // so it wraps instead of overflowing on narrow screens.
   menu.className =
-    'absolute right-0 top-full mt-1 hidden z-20 bg-zinc-800 border border-zinc-600 rounded shadow-lg p-1 flex flex-col gap-1 min-w-[9rem] max-w-[80vw] max-h-[70vh] overflow-y-auto';
+    'absolute right-0 top-full mt-1 hidden z-20 bg-zinc-800 border border-zinc-600 rounded shadow-lg p-1 flex flex-row flex-wrap items-center justify-end gap-1 w-max max-w-[90vw]';
   wrapper.appendChild(menu);
 
   const isOpen = () => !menu.classList.contains('hidden');

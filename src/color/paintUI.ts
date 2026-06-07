@@ -95,6 +95,7 @@ import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegist
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
 import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
 import { viewportToolsMount } from '../ui/popoverMenu';
+import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 
 let paintBtn: HTMLButtonElement | null = null;
 let pickerPanel: HTMLElement | null = null;
@@ -118,7 +119,7 @@ const shapeSmoothSyncs: (() => void)[] = [];
 export function initPaintUI(controlsContainer: HTMLElement): void {
   paintBtn = document.createElement('button');
   paintBtn.id = 'paint-toggle';
-  paintBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  paintBtn.className = TOOL_TOGGLE_IDLE;
   paintBtn.textContent = '\uD83C\uDFA8 Paint';
   paintBtn.title = 'Paint color regions on model faces';
 
@@ -135,7 +136,7 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
   // entering paint mode. Edits propagate to the paint swatches and relief.
   const paletteBtn = document.createElement('button');
   paletteBtn.id = 'palette-manager-toggle';
-  paletteBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  paletteBtn.className = TOOL_TOGGLE_IDLE;
   paletteBtn.textContent = '🧵 Palette';
   paletteBtn.title = 'Manage the filament palette (slots, colours, capacity)';
   paletteBtn.addEventListener('click', () => openPaletteManager());
@@ -197,11 +198,7 @@ function togglePaintMode(): void {
 
 function updateButtonState(active: boolean): void {
   if (!paintBtn) return;
-  if (active) {
-    paintBtn.className = 'px-2 py-1 rounded text-xs bg-blue-500/30 backdrop-blur text-blue-300 border border-blue-500/50 transition-colors';
-  } else {
-    paintBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  }
+  paintBtn.className = active ? TOOL_TOGGLE_ACTIVE : TOOL_TOGGLE_IDLE;
 }
 
 /** Build the palette section: the slot swatch grid, an over-budget badge, the
@@ -330,20 +327,8 @@ function createPickerPanel(): HTMLElement {
   // no matter how long the region list grows.
   panel.className = 'hidden z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl absolute rounded-lg w-60 max-h-[calc(100%-3.5rem)]';
 
-  // === Header: drag handle + title + \u00D7 close button ===
-  const header = document.createElement('div');
-  header.className = 'shrink-0 flex items-center justify-between gap-2 px-2.5 py-2 border-b border-zinc-700/70';
-  const headerTitle = document.createElement('div');
-  headerTitle.className = 'text-[11px] text-zinc-300 font-medium';
-  headerTitle.textContent = '\uD83C\uDFA8 Paint';
-  header.appendChild(headerTitle);
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'shrink-0 -mr-1 w-7 h-7 flex items-center justify-center rounded text-base leading-none text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 transition-colors';
-  closeBtn.title = 'Close paint menu';
-  closeBtn.setAttribute('aria-label', 'Close paint menu');
-  closeBtn.textContent = '\u00D7';
-  closeBtn.addEventListener('click', () => { togglePaintMode(); });
-  header.appendChild(closeBtn);
+  // === Header: drag handle + title + \u00D7 close button (shared tool-panel chrome) ===
+  const header = createToolPanelHeader('\uD83C\uDFA8 Paint', () => { togglePaintMode(); });
   panel.appendChild(header);
   attachViewportPanelDrag(header, panel);
 
