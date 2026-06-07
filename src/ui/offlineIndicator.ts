@@ -5,6 +5,10 @@
 // and modeling keeps running — while explaining that cloud AI is unavailable.
 // Hidden (and invisible to tests, which run with navigator.onLine === true)
 // whenever there's connectivity, so it's purely additive.
+//
+// Styling follows the app's persistent-status-pill convention (Tailwind class
+// strings + a toggled `hidden` class — see the viewport printability pill in
+// main.ts and the AI-panel notices in aiPanel.ts), not inline cssText.
 
 import { onConnectivityChange } from '../util/connectivity';
 
@@ -16,16 +20,14 @@ export function initOfflineIndicator(): void {
   pill.id = 'offline-indicator';
   pill.setAttribute('role', 'status');
   pill.setAttribute('aria-live', 'polite');
-  pill.style.cssText =
-    'position:fixed;bottom:12px;left:12px;z-index:9998;display:none;' +
-    'align-items:center;gap:6px;padding:6px 10px;border-radius:9999px;' +
-    'font-size:12px;font-weight:500;pointer-events:none;' +
-    'background:#451a03;color:#fbbf24;border:1px solid #92400e;' +
-    'box-shadow:0 4px 12px rgba(0,0,0,0.4);';
+  pill.className =
+    'fixed bottom-3 left-3 z-[9998] hidden items-center gap-1.5 px-2.5 py-1 ' +
+    'rounded-full text-xs font-medium pointer-events-none shadow-lg ' +
+    'bg-amber-950 text-amber-300 border border-amber-800/60';
   // Dot + label. Modeling and the local AI model keep working; only cloud
   // providers and downloads need the network.
   const dot = document.createElement('span');
-  dot.style.cssText = 'width:7px;height:7px;border-radius:9999px;background:#fbbf24;display:inline-block;';
+  dot.className = 'w-[7px] h-[7px] rounded-full bg-amber-400 inline-block';
   const label = document.createElement('span');
   label.textContent = 'Offline — your work is saved locally';
   pill.append(dot, label);
@@ -33,6 +35,9 @@ export function initOfflineIndicator(): void {
 
   onConnectivityChange((online) => {
     if (!pill) return;
-    pill.style.display = online ? 'none' : 'flex';
+    // `hidden` (display:none) when online; `flex` when offline — toggled the
+    // same way as the panel notices.
+    pill.classList.toggle('hidden', online);
+    pill.classList.toggle('flex', !online);
   });
 }
