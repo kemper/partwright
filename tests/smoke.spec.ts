@@ -180,9 +180,9 @@ test.describe('AI chat panel', () => {
     await expect(page.locator('input[type="password"]')).toBeVisible();
     await expect(page.locator('button:has-text("Connect Anthropic API")')).toBeVisible();
 
-    // Done closes the modal; no key was persisted. The AI control now lives in
+    // Close closes the modal; no key was persisted. The AI control now lives in
     // the rail and shows the disconnected state via its status dot (grey).
-    await page.locator('.bg-zinc-800.rounded-xl button:text-is("Done")').click();
+    await page.locator('.bg-zinc-800.rounded-xl button:text-is("Close")').click();
     await expect(page.locator('input[type="password"]')).toHaveCount(0);
     await expect(page.locator('#ai-status-dot')).toHaveClass(/bg-zinc-500/);
   });

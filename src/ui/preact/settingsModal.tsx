@@ -47,6 +47,7 @@ import type { AnthropicModelId, Provider } from '../../ai/types';
 
 import { settingsSignal, setSettings, resyncSettings } from './settingsStore';
 import { Divider, Section, Pill, PrimaryButton, SecondaryButton, TabBar, type TabSpec } from './primitives';
+import { CliBridgeSetup, generateApiKey } from './cliBridgeSetup';
 
 export interface AiSettingsCallbacks {
   onChange: () => void;
@@ -103,24 +104,51 @@ export function SettingsModalBody(props: {
   );
 }
 
-export function SettingsModalFooter(props: { close: () => void }) {
-  return <SecondaryButton label="Done" onClick={props.close} />;
+export function SettingsModalFooter(props: {
+  close: () => void;
+  tab: Signal<Provider>;
+  cb: AiSettingsCallbacks;
+}) {
+  const { close, tab, cb } = props;
+  const viewedTab = tab.value;
+  const settings = settingsSignal.value;
+  const isActive = settings.toggles.provider === viewedTab;
+  const ready = useProviderReady(viewedTab);
+  const label = providerLabel(viewedTab);
+
+  return (
+    <>
+      <SecondaryButton label="Close" onClick={close} />
+      {!isActive && (
+        <PrimaryButton
+          label={`Done & enable ${label}`}
+          disabled={!ready}
+          title={ready
+            ? `Make ${label} the active provider and close. Edits above don't switch the active provider on their own.`
+            : `Finish configuring ${label} above before enabling it.`}
+          onClick={() => {
+            setSettings(setProvider(loadSettings(), viewedTab));
+            cb.onChange();
+            close();
+          }}
+        />
+      )}
+    </>
+  );
 }
 
 // === Enable row ===
 
-function EnableRow(props: { viewedTab: Provider; cb: AiSettingsCallbacks }) {
-  const { viewedTab, cb } = props;
-  // null = "haven't checked yet" (e.g. just switched tabs and the
-  // async getKey hasn't resolved). The button stays disabled in that
-  // interim state so we never momentarily render an enabled Enable for
-  // a provider whose key status is unknown.
+/** Whether the viewed provider is configured enough to enable.
+ *  - local: always ready.
+ *  - custom: its endpoint URL is set (the API key is optional).
+ *  - cloud: a key is stored (probed async; `false` until it resolves, so we
+ *    never momentarily offer Enable for a provider whose key status is unknown).
+ *  Shared by EnableRow and the modal footer's "Close & enable" button so the
+ *  two affordances can't disagree. */
+function useProviderReady(viewedTab: Provider): boolean {
   const hasKey = useSignal<boolean | null>(null);
-
   useEffect(() => {
-    // local is always "ready"; custom's readiness is the base URL (a setting,
-    // read synchronously below) not a stored key — skip the getKey probe for
-    // both. Cloud providers gate Enable on a stored key.
     if (viewedTab === 'local') { hasKey.value = true; return; }
     if (viewedTab === 'custom') { hasKey.value = null; return; }
     let cancelled = false;
@@ -130,13 +158,18 @@ function EnableRow(props: { viewedTab: Provider; cb: AiSettingsCallbacks }) {
   }, [viewedTab, keyVersion.value]);
 
   const settings = settingsSignal.value;
-  const isActive = settings.toggles.provider === viewedTab;
-  const label = providerLabel(viewedTab);
-  // Custom is enableable once its endpoint URL is set (the API key is
-  // optional); every cloud provider needs a stored key.
-  const ready = viewedTab === 'custom'
+  return viewedTab === 'custom'
     ? settings.toggles.customBaseUrl.trim().length > 0
     : hasKey.value === true;
+}
+
+function EnableRow(props: { viewedTab: Provider; cb: AiSettingsCallbacks }) {
+  const { viewedTab, cb } = props;
+  const ready = useProviderReady(viewedTab);
+
+  const settings = settingsSignal.value;
+  const isActive = settings.toggles.provider === viewedTab;
+  const label = providerLabel(viewedTab);
 
   // For local, `hasKey` is forced true above, so the "Connect your … key"
   // branch never fires for local; that's why there's no local-specific
@@ -520,6 +553,10 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
   const url = useSignal(settings.toggles.customBaseUrl);
   const model = useSignal(settings.toggles.customModel);
   const keyVal = useSignal('');
+  // One example key per modal open — shown in the bridge setup's "set an API
+  // key" command and reusable via the "Use this key" button below, so the value
+  // the proxy is configured with matches the one Partwright sends.
+  const genKey = useSignal(generateApiKey());
   const hasKey = useSignal<boolean | null>(null);
   const models = useSignal<{ id: string; label: string }[]>([]);
   const status = useSignal('');
@@ -596,11 +633,19 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
     cb.onChange();
   }
 
+  // Quick-setup card's "Use this endpoint" → fill the Base URL and test it.
+  function useEndpoint(u: string): void {
+    url.value = u;
+    void testConnection(); // persists the URL itself
+  }
+
   return (
     <>
+      <CliBridgeSetup apiKeyExample={genKey.value} onUseEndpoint={useEndpoint} />
+      <Divider />
       <Section label="About">
         {/* eslint-disable-next-line react/no-danger */}
-        <p class="text-[11px] text-zinc-300 leading-snug" dangerouslySetInnerHTML={{ __html: 'Point Partwright at any <strong>OpenAI-compatible</strong> chat endpoint — a self-hosted <code>llama.cpp</code> server, vLLM, LM Studio, or similar. Requests use the <code>/v1/chat/completions</code> shape with the full <code>ai.md</code> system prompt; turns are billed at $0 (you run the hardware). The optional API key is stored only in this browser.' }} />
+        <p class="text-[11px] text-zinc-300 leading-snug" dangerouslySetInnerHTML={{ __html: 'Point Partwright at any <strong>OpenAI-compatible</strong> chat endpoint — a local subscription bridge (see above), a self-hosted <code>llama.cpp</code> server, vLLM, LM Studio, or similar. Requests use the <code>/v1/chat/completions</code> shape with the full <code>ai.md</code> system prompt. The optional API key is stored only in this browser.' }} />
         {/* eslint-disable-next-line react/no-danger */}
         <div class="rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-[11px] text-amber-200 leading-snug" dangerouslySetInnerHTML={{ __html: '<strong>Connectivity:</strong> the endpoint must allow this site via <strong>CORS</strong>. When Partwright is served over HTTPS, the endpoint must be HTTPS too (browsers block <code>https→http</code>) — except <code>http://localhost</code>, which is exempt. For llama.cpp, run <code>llama-server</code> and pass <code>--api-key</code> only if you want auth.' }} />
       </Section>
@@ -656,21 +701,27 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
             <button type="button" class="text-[11px] text-red-300 hover:text-red-200 underline" onClick={() => { void removeKey(); }}>Remove key</button>
           </div>
         ) : (
-          <div class="flex items-center gap-2">
-            <input
-              type="password"
-              placeholder="leave blank if the endpoint needs no auth"
-              class="flex-1 px-3 py-2 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-sm font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
-              spellcheck={false}
-              autocomplete="off"
-              value={keyVal.value}
-              onInput={e => { keyVal.value = (e.currentTarget as HTMLInputElement).value; }}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void saveKey(); } }}
-            />
-            <SecondaryButton label="Save key" size="sm" disabled={!keyVal.value.trim()} onClick={() => { void saveKey(); }} />
+          <div class="flex flex-col gap-1.5">
+            <div class="flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="leave blank if the endpoint needs no auth"
+                class="flex-1 px-3 py-2 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-sm font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+                spellcheck={false}
+                autocomplete="off"
+                value={keyVal.value}
+                onInput={e => { keyVal.value = (e.currentTarget as HTMLInputElement).value; }}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void saveKey(); } }}
+              />
+              <SecondaryButton label="Save key" size="sm" disabled={!keyVal.value.trim()} onClick={() => { void saveKey(); }} />
+            </div>
+            <div class="flex items-center gap-2">
+              <SecondaryButton label="Use the bridge key" size="sm" onClick={() => { keyVal.value = genKey.value; }} />
+              <span class="text-[10px] text-zinc-500">Fills the key from the bridge setup’s step 2 — only if you ran that command with it.</span>
+            </div>
           </div>
         )}
-        <span class="text-[10px] text-zinc-500">Sent as <code>Authorization: Bearer …</code>. Many home servers run with no key — leave this blank then.</span>
+        <span class="text-[10px] text-zinc-500">Sent as <code>Authorization: Bearer …</code>. The key is shown in plain text so you can match it against your bridge config. Other endpoints with no auth can leave this blank.</span>
       </Section>
       <Divider />
       <SystemPromptSection provider="custom" close={close} cb={cb} />
