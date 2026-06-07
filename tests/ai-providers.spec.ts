@@ -729,10 +729,10 @@ test.describe('Multi-provider AI', () => {
 
     // Enable is gated on the endpoint URL (the API key is optional), so it's
     // disabled until a URL is set, then flips on — no key required.
-    await expect(modal.locator('button:has-text("Enable Custom endpoint")')).toBeDisabled();
+    await expect(modal.getByRole('button', { name: 'Enable Custom endpoint', exact: true })).toBeDisabled();
     await urlInput.fill('http://localhost:8080/v1');
     await modal.locator('input[placeholder^="e.g. llama"]').fill('my-model');
-    await expect(modal.locator('button:has-text("Enable Custom endpoint")')).toBeEnabled();
+    await expect(modal.getByRole('button', { name: 'Enable Custom endpoint', exact: true })).toBeEnabled();
   });
 
   test('Enable is gated on a connected key, except local', async ({ page }) => {
@@ -746,11 +746,11 @@ test.describe('Multi-provider AI', () => {
 
     // OpenAI tab with no key → Enable is disabled.
     await page.locator('button:has-text("OpenAI (cloud)")').dispatchEvent('click');
-    await expect(page.locator('button:has-text("Enable OpenAI")')).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Enable OpenAI', exact: true })).toBeDisabled();
 
     // Local needs no key → Enable is always available.
     await page.locator('button:has-text("Local (WebGPU)")').dispatchEvent('click');
-    await expect(page.locator('button:has-text("Enable Local model")')).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Enable Local model', exact: true })).toBeEnabled();
 
     // Plant an OpenAI key, return to the OpenAI tab → Enable flips on.
     await page.evaluate(async () => {
@@ -775,7 +775,7 @@ test.describe('Multi-provider AI', () => {
       });
     });
     await page.locator('button:has-text("OpenAI (cloud)")').dispatchEvent('click');
-    await expect(page.locator('button:has-text("Enable OpenAI")')).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Enable OpenAI', exact: true })).toBeEnabled();
   });
 
   test('every hosted provider can load models from the key', async ({ page }) => {
@@ -907,7 +907,7 @@ test.describe('Multi-provider AI', () => {
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
     await page.locator('button:has-text("Anthropic (cloud)")').dispatchEvent('click');
-    await page.locator('button:has-text("Enable Anthropic Claude")').dispatchEvent('click');
+    await page.getByRole('button', { name: 'Enable Anthropic Claude', exact: true }).dispatchEvent('click');
     await page.waitForTimeout(200);
     // Close the modal via the shell ✕ and confirm the header restored the
     // previously-chosen Anthropic model (not reset to the preset default).
