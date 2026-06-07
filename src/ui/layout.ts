@@ -3,6 +3,7 @@ import { showAdvancedSettingsModal } from './advancedSettingsModal';
 import { showAboutModal } from './aboutModal';
 import { loadSettings, saveSettings } from '../ai/settings';
 import { createPopoverGroup } from './popoverMenu';
+import { MOD_LABEL, combo } from './shortcutDefs';
 
 export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
@@ -96,7 +97,9 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   findReplaceBtn.id = 'find-replace-btn';
   findReplaceBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
   findReplaceBtn.textContent = 'Find/Replace';
-  findReplaceBtn.title = 'Find/Replace (Ctrl+H)';
+  // Opens CodeMirror's search panel (find + replace), whose binding is Mod-F —
+  // not Ctrl+H, which nothing binds. Mod-Alt-F jumps to the replace field.
+  findReplaceBtn.title = `Find/Replace (${combo(MOD_LABEL, 'F')})`;
   editorHeader.appendChild(findReplaceBtn);
 
   const formatBtn = document.createElement('button');
