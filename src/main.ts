@@ -150,7 +150,7 @@ import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook } from './
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
-import { initCutUI, isCutOpen, forceDeactivate as closeCutMenu, type CutHandlers, type CutResultMode } from './ui/cutUI';
+import { initCutUI, isCutOpen, forceDeactivate as closeCutMenu, type CutHandlers, type CutResultMode, type CutPlacement } from './ui/cutUI';
 import { buildExplodedMesh, mergeMeshData } from './cut/cutWorker';
 import { onMeshChanged as onCutMeshChanged } from './cut/cutGizmo';
 import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './color/paintMode';
@@ -5838,6 +5838,10 @@ async function main() {
   let cutResultMeshes: MeshData[] | null = null;
   let cutKeptColorsList: Uint8Array[] | null = null;
   let cutComplementColorsList: Uint8Array[] | null = null;
+  // Stored during apply() for use by save() — cut normal and kept-side count
+  // so flat-on-plate can rotate each piece correctly.
+  let cutNormalForSave: [number, number, number] | null = null;
+  let cutKeptMeshes: MeshData[] | null = null;
 
   // Replace the live geometry with `mesh`: rebuild the queryable Manifold and
   // refresh the viewport, paint-adjacency map, stats, and clip bounds. Mirrors
@@ -6402,6 +6406,75 @@ async function main() {
   });
 
   // --- Cut panel ---
+
+  /** Solid per-triangle color array: every triangle gets the same (r,g,b). */
+  function solidTriColors(numTri: number, r: number, g: number, b: number): Uint8Array {
+    const buf = new Uint8Array(numTri * 3);
+    for (let i = 0; i < numTri; i++) { buf[i * 3] = r; buf[i * 3 + 1] = g; buf[i * 3 + 2] = b; }
+    return buf;
+  }
+
+  /**
+   * Rodrigues rotation: 3×3 row-major matrix rotating `from` unit vector onto `to` unit vector.
+   * Returns the identity if vectors are parallel or nearly anti-parallel.
+   */
+  function rotationFromTo(from: [number, number, number], to: [number, number, number]): number[] {
+    const [fx, fy, fz] = from;
+    const [tx, ty, tz] = to;
+    const c = fx * tx + fy * ty + fz * tz; // cos(angle)
+    if (Math.abs(c - 1) < 1e-9) return [1,0,0, 0,1,0, 0,0,1]; // already aligned
+    if (Math.abs(c + 1) < 1e-9) {
+      // 180° rotation — pick an orthogonal axis
+      const ax = Math.abs(fx) < 0.9 ? 1 : 0;
+      let kx = ax - fx * (ax * fx), ky = -fy * (ax * fx), kz = -fz * (ax * fx);
+      if (ax === 0) { kx = -fx * (fy); ky = 1 - fy * fy; kz = -fz * fy; }
+      const kl = Math.sqrt(kx*kx + ky*ky + kz*kz);
+      kx /= kl; ky /= kl; kz /= kl;
+      // 180° rotation around k: R = 2*k⊗k - I
+      return [
+        2*kx*kx-1, 2*kx*ky,   2*kx*kz,
+        2*ky*kx,   2*ky*ky-1, 2*ky*kz,
+        2*kz*kx,   2*kz*ky,   2*kz*kz-1,
+      ];
+    }
+    // k = from × to (rotation axis)
+    const kx = fy * tz - fz * ty;
+    const ky = fz * tx - fx * tz;
+    const kz = fx * ty - fy * tx;
+    // Rodrigues: R = I + [k×] + [k×]² / (1+c)
+    const t = 1 / (1 + c);
+    return [
+      1 - (ky*ky + kz*kz)*t,  kx*ky*t - kz,           kx*kz*t + ky,
+      kx*ky*t + kz,            1 - (kx*kx + kz*kz)*t,  ky*kz*t - kx,
+      kx*kz*t - ky,            ky*kz*t + kx,            1 - (kx*kx + ky*ky)*t,
+    ];
+  }
+
+  /** Apply a 3×3 row-major rotation matrix to all vertex positions in a mesh. */
+  function rotateMesh(m: MeshData, R: number[]): MeshData {
+    const vp = new Float32Array(m.vertProperties);
+    const stride = m.numProp;
+    for (let v = 0; v < m.numVert; v++) {
+      const base = v * stride;
+      const x = vp[base], y = vp[base + 1], z = vp[base + 2];
+      vp[base]     = R[0]*x + R[1]*y + R[2]*z;
+      vp[base + 1] = R[3]*x + R[4]*y + R[5]*z;
+      vp[base + 2] = R[6]*x + R[7]*y + R[8]*z;
+    }
+    return { ...m, vertProperties: vp };
+  }
+
+  /** Translate a mesh so its minimum Z vertex is at Z=0. */
+  function translateMeshToZ0(m: MeshData): MeshData {
+    const stride = m.numProp;
+    let minZ = Infinity;
+    for (let v = 0; v < m.numVert; v++) minZ = Math.min(minZ, m.vertProperties[v * stride + 2]);
+    if (!isFinite(minZ) || Math.abs(minZ) < 1e-6) return m;
+    const vp = new Float32Array(m.vertProperties);
+    for (let v = 0; v < m.numVert; v++) vp[v * stride + 2] -= minZ;
+    return { ...m, vertProperties: vp };
+  }
+
   // Boolean-cuts the live mesh off the main thread via the geometry Worker.
   // The baseline is snapshotted when the panel opens; apply swaps the live
   // mesh in place; save bakes the result as a new imported-style version.
@@ -6422,6 +6495,8 @@ async function main() {
       cutResultMeshes = null;
       cutKeptColorsList = null;
       cutComplementColorsList = null;
+      cutNormalForSave = null;
+      cutKeptMeshes = null;
       return { ok: true };
     },
 
@@ -6452,13 +6527,16 @@ async function main() {
         cutKeptColorsList = result.keptColorsList ?? null;
         cutComplementColorsList = result.complementColorsList ?? null;
         cutResultMeshes = result.meshes;
+        // Store per-side meshes and cut normal for flat-on-plate save.
+        cutNormalForSave = (() => {
+          const rawNx = params.mat4x3[6], rawNy = params.mat4x3[7], rawNz = params.mat4x3[8];
+          const nLen = Math.sqrt(rawNx * rawNx + rawNy * rawNy + rawNz * rawNz);
+          return nLen > 1e-9 ? [rawNx / nLen, rawNy / nLen, rawNz / nLen] as [number,number,number] : [0, 0, 1] as [number,number,number];
+        })();
+        cutKeptMeshes = result.keptMeshes;
         // Build an exploded-view preview: both sides pulled apart along the cut normal.
         // mat4x3 col 2 (indices 6-8) is the local Z axis = the cut plane normal.
-        const rawNx = params.mat4x3[6], rawNy = params.mat4x3[7], rawNz = params.mat4x3[8];
-        const nLen = Math.sqrt(rawNx * rawNx + rawNy * rawNy + rawNz * rawNz);
-        const cutNormal: [number, number, number] = nLen > 1e-9
-          ? [rawNx / nLen, rawNy / nLen, rawNz / nLen]
-          : [0, 0, 1];
+        const cutNormal = cutNormalForSave;
         // Offset distance = 8% of the base mesh's max bounding-box dimension.
         const bb = meshBounds(base);
         const offsetDist = Math.max(
@@ -6466,14 +6544,21 @@ async function main() {
           bb.max[1] - bb.min[1],
           bb.max[2] - bb.min[2],
         ) * 0.08;
+        // When no paint colors exist, tint the two halves blue/orange in the preview
+        // so the user can tell which side is which — like Bambu's color indicators.
+        const hasUserColors = !!(srcColors);
+        const previewKeptColors = hasUserColors ? result.keptColorsList
+          : result.keptMeshes.map(m => solidTriColors(m.numTri, 70, 130, 220));
+        const previewCompColors = hasUserColors ? result.complementColorsList
+          : result.complementMeshes.map(m => solidTriColors(m.numTri, 220, 110, 50));
         const exploded = result.complementMeshes.length > 0
           ? buildExplodedMesh(
               result.keptMeshes,
               result.complementMeshes,
               cutNormal,
               offsetDist,
-              result.keptColorsList,
-              result.complementColorsList,
+              previewKeptColors,
+              previewCompColors,
             )
           : null;
         const meshToShow: MeshData = exploded
@@ -6494,7 +6579,7 @@ async function main() {
       }
     },
 
-    async save(resultMode: CutResultMode) {
+    async save(resultMode: CutResultMode, placement: CutPlacement) {
       if (!getState().session) {
         return { ok: false, message: 'Open a session before saving.' };
       }
@@ -6527,6 +6612,15 @@ async function main() {
           });
         }
 
+        // Apply flat-on-plate transform: rotate so the cut face is on the build plate (Z=0).
+        // keptMeshes rotate cutNormal→[0,0,1]; complementMeshes rotate cutNormal→[0,0,-1].
+        function applyPlacement(mesh: MeshData, side: 'kept' | 'complement'): MeshData {
+          if (placement !== 'flat' || !cutNormalForSave) return mesh;
+          const target: [number, number, number] = side === 'kept' ? [0, 0, 1] : [0, 0, -1];
+          const R = rotationFromTo(cutNormalForSave, target);
+          return translateMeshToZ0(rotateMesh(mesh, R));
+        }
+
         let partsCount: number;
         if (resultMode === 'combined') {
           // Merge all components (kept + complement) into one part.
@@ -6544,14 +6638,19 @@ async function main() {
             for (const c of allColors) { buf.set(c, off); off += c.length; }
             combinedColors = buf;
           }
-          const partMesh = combinedColors ? { ...merged, triColors: combinedColors } : merged;
+          let partMesh = combinedColors ? { ...merged, triColors: combinedColors } : merged;
+          // For combined mode, just drop to Z=0 (can't rotate sides independently).
+          if (placement === 'flat') partMesh = translateMeshToZ0(partMesh);
           await savePart('Cut Result', partMesh);
           partsCount = 1;
         } else {
-          // Separate: one part per disconnected component.
+          // Separate: one part per disconnected component, with flat-on-plate per side.
+          // keptMeshes come first in cutResultMeshes (built as [...keptMeshes, ...complementMeshes]).
+          const keptCount = cutKeptMeshes?.length ?? 0;
           const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
           for (let i = 0; i < componentMeshes.length; i++) {
-            const componentMesh = componentMeshes[i];
+            const side: 'kept' | 'complement' = i < keptCount ? 'kept' : 'complement';
+            const componentMesh = applyPlacement(componentMeshes[i], side);
             // Attach per-component colors from the flat triColorsList if available.
             const colors = cutResultMeshes && (cutKeptColorsList || cutComplementColorsList)
               ? [...(cutKeptColorsList ?? []), ...(cutComplementColorsList ?? [])][i]
@@ -6570,6 +6669,8 @@ async function main() {
         cutResultMeshes = null;
         cutKeptColorsList = null;
         cutComplementColorsList = null;
+        cutNormalForSave = null;
+        cutKeptMeshes = null;
         const partsLabel = `${partsCount} part${partsCount > 1 ? 's' : ''}`;
         return {
           ok: true,
@@ -13062,6 +13163,8 @@ async function main() {
       cutResultMeshes = null;
       cutKeptColorsList = null;
       cutComplementColorsList = null;
+      cutNormalForSave = null;
+      cutKeptMeshes = null;
       simplifyBaselineColoredMesh = null;
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;

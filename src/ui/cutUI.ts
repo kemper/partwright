@@ -40,6 +40,9 @@ export type { CutGizmoParams };
 /** How the cut result is saved: one part per component, or all merged into one. */
 export type CutResultMode = 'separate' | 'combined';
 
+/** Orientation when saving: keep gizmo-space position, or rotate cut face flat to Z=0. */
+export type CutPlacement = 'keep' | 'flat';
+
 export interface CutApplyResult {
   triangleCount: number;
   componentCount: number;
@@ -63,7 +66,7 @@ export interface CutHandlers {
     preserveColors: boolean,
   ): Promise<CutApplyResult | null>;
   /** Bake the cut result as a new session version. */
-  save(resultMode: CutResultMode): Promise<CutSaveResult>;
+  save(resultMode: CutResultMode, placement: CutPlacement): Promise<CutSaveResult>;
 }
 
 // Button style constants
@@ -85,6 +88,7 @@ let preserveColors = true;
 let showHandles = true;
 let realtimePreview = false;
 let cutResultMode: CutResultMode = 'separate';
+let cutPlacement: CutPlacement = 'keep';
 
 // XYZ position inputs — kept in module scope so the gizmo-change listener can update them
 let posXInput: HTMLInputElement | null = null;
@@ -454,6 +458,26 @@ function buildPanel(): HTMLElement {
   }
   content.appendChild(modeToggleRow);
 
+  // === Placement: keep position or flat on build plate ===
+  appendSectionLabel(content, 'Placement');
+  const placementRow = document.createElement('div');
+  placementRow.className = 'grid grid-cols-2 gap-1 mt-1';
+  const placements: [CutPlacement, string, string][] = [
+    ['keep', '⟲ Keep position', 'Keep each piece at its current orientation'],
+    ['flat', '⊢ Flat on plate', 'Rotate each piece so the cut face is on the build plate'],
+  ];
+  const placementBtns = new Map<CutPlacement, HTMLButtonElement>();
+  for (const [mode, label, tooltip] of placements) {
+    const btn = buildToggleBtn(label, tooltip, mode === cutPlacement);
+    btn.addEventListener('click', () => {
+      cutPlacement = mode;
+      for (const [m, b] of placementBtns) b.className = toggleBtnClass(m === cutPlacement);
+    });
+    placementBtns.set(mode, btn);
+    placementRow.appendChild(btn);
+  }
+  content.appendChild(placementRow);
+
   // === Options (preserve colors + show handles) ===
   const optionsRow = document.createElement('div');
   optionsRow.className = 'flex flex-col gap-1.5';
@@ -573,7 +597,7 @@ async function doSave(): Promise<void> {
   setButtonsDisabled(true);
   if (statusEl) statusEl.textContent = 'Saving…';
   try {
-    const res = await handlers.save(cutResultMode);
+    const res = await handlers.save(cutResultMode, cutPlacement);
     if (statusEl) statusEl.textContent = res.message;
     if (res.ok) {
       // Close the panel so it doesn't try to preview-cut the newly-created parts
