@@ -98,12 +98,12 @@ export function composePng(positions, triVerts, triColors, bbox, size) {
 
 // Run a model file through the real engine via a throwaway in-process Vite SSR
 // server. Returns the PreviewResult from src/tools/previewModel.ts.
-export async function runPreview(file, { params = {} } = {}) {
+export async function runPreview(file, { params = {}, lang = 'manifold-js' } = {}) {
   const code = readFileSync(file, 'utf8');
   const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
   try {
     const mod = await server.ssrLoadModule('/src/tools/previewModel.ts');
-    return await mod.previewModel(code, { params });
+    return await mod.previewModel(code, { params, lang });
   } finally {
     await server.close();
   }

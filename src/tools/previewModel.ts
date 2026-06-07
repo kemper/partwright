@@ -3,7 +3,11 @@
 // block + render data an AI needs to self-correct. Loaded via vite SSR by
 // scripts/model-preview.mjs (`npm run model:preview`). The execution path is the
 // exact same `manifoldJsEngine` the app uses, so results are faithful.
-import { manifoldJsEngine } from '../geometry/engines/manifoldJs';
+import { manifoldJsEngine, getManifoldModule } from '../geometry/engines/manifoldJs';
+import { voxelEngine } from '../geometry/engines/voxel';
+import { openscadEngine, runScadAsync } from '../geometry/engines/openscad';
+import type { Language } from '../geometry/engines/types';
+import type { MeshResult } from '../geometry/engines/types';
 
 export interface PreviewComponent {
   index: number;
@@ -30,6 +34,10 @@ export interface PreviewStats {
   warnings: string[];         // actionable heuristics (fused parts, tri budget, …)
   paramsSchema: unknown;
   renderOnly: boolean;
+  /** Which engine produced this preview (so the caller can label output). */
+  engine: Language;
+  /** Occupied-voxel count — only set for the `voxel` engine. */
+  voxelCount?: number;
 }
 
 export interface PreviewRender {
@@ -61,21 +69,45 @@ function toBox(raw: { min: unknown; max: unknown }) {
   return { min: vec(raw.min), max: vec(raw.max) };
 }
 
+/** Engines runnable in the stateless (no-browser) preview tier:
+ *  - `manifold-js` — owns the WASM kernel (loaded once via init).
+ *  - `voxel` — plain JS that meshes a grid (no WASM).
+ *  - `scad` — OpenSCAD's Emscripten WASM, which loads cleanly under Node.
+ *  `replicad` is omitted: its OpenCASCADE WASM resolves its `.wasm` to a
+ *  server-style path that doesn't exist on Node's filesystem, so it runs
+ *  through the Phase-2 daemon (`partwright iterate --lang replicad`) instead. */
+const STATELESS_ENGINES: Language[] = ['manifold-js', 'voxel', 'scad'];
+
 export async function previewModel(
   code: string,
-  opts: { params?: Record<string, unknown>; maxComponents?: number } = {},
+  opts: { params?: Record<string, unknown>; maxComponents?: number; lang?: Language } = {},
 ): Promise<PreviewResult> {
+  const engine: Language = opts.lang ?? 'manifold-js';
+  // manifold-3d is always needed: the kernel for manifold-js runs, and the
+  // mesh→Manifold round-trip we use to compute stats for the voxel engine.
   await manifoldJsEngine.init();
-  const r = manifoldJsEngine.run(code, opts.params) as {
-    mesh: { vertProperties: Float32Array; triVerts: Uint32Array; numVert: number; numTri: number; numProp: number } | null;
+  if (!STATELESS_ENGINES.includes(engine)) {
+    return {
+      ok: false,
+      error: `Headless preview for the '${engine}' engine isn't supported in the stateless tier (it needs its own WASM). Use the daemon: \`partwright iterate --lang ${engine} <file>\`.`,
+      stats: null,
+      render: null,
+    };
+  }
+
+  let raw: MeshResult;
+  if (engine === 'voxel') {
+    raw = voxelEngine.run(code, opts.params);
+  } else if (engine === 'scad') {
+    if (!openscadEngine.isReady()) await openscadEngine.init();
+    raw = await runScadAsync(code, opts.params);
+  } else {
+    raw = manifoldJsEngine.run(code, opts.params);
+  }
+  const r = raw as MeshResult & {
+    mesh: { vertProperties: Float32Array; triVerts: Uint32Array; numVert: number; numTri: number; numProp: number; triColors?: Uint8Array } | null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     manifold: any;
-    error: string | null;
-    diagnostics?: unknown;
-    labelMap?: Map<string, Set<number>>;
-    labelColors?: Map<string, [number, number, number]>;
-    paramsSchema?: unknown;
-    renderOnly?: boolean;
   };
 
   if (r.error || !r.mesh) {
@@ -83,13 +115,27 @@ export async function previewModel(
   }
 
   const mesh = r.mesh;
-  const man = r.manifold;
   const renderOnly = r.renderOnly === true;
+  // The voxel engine returns mesh data with `manifold: null` (the grid mesher
+  // never builds a live Manifold). Reconstruct one via ofMesh so volume / genus
+  // / component stats come out the same as a manifold-js model — voxel meshes
+  // are welded + watertight, so this round-trips cleanly. Free it at the end.
+  let man = r.manifold;
+  let reconstructed = false;
+  if (!man && !renderOnly) {
+    try { man = getManifoldModule().Manifold.ofMesh(mesh); reconstructed = true; } catch { /* leave man null → render-only stats */ }
+  }
 
-  // --- per-triangle colors from model-declared labels ---
+  // --- per-triangle colors ---
+  // The voxel engine (and any painted mesh) carries authored per-triangle RGB
+  // directly on the mesh — one rgb triple per triangle, exactly the layout the
+  // rasterizer wants — so prefer it. Otherwise fall back to deriving colors
+  // from model-declared labels (the manifold-js path).
   const numTri = mesh.numTri;
   let triColors: Uint8Array | null = null;
-  if (r.labelMap && r.labelColors && r.labelColors.size > 0) {
+  if (mesh.triColors && mesh.triColors.length >= numTri * 3) {
+    triColors = new Uint8Array(mesh.triColors.subarray(0, numTri * 3));
+  } else if (r.labelMap && r.labelColors && r.labelColors.size > 0) {
     triColors = new Uint8Array(numTri * 3).fill(170); // neutral default
     for (const [name, ids] of r.labelMap) {
       const c = r.labelColors.get(name);
@@ -135,6 +181,7 @@ export async function previewModel(
       vertexCount: mesh.numVert, volume: 0, surfaceArea: 0, genus: 0,
       bbox: null, aspectRatio: 0, minEdgeLength: edge.min, meanEdgeLength: edge.mean,
       components: [], labels, warnings: [], paramsSchema: r.paramsSchema, renderOnly: true,
+      engine, voxelCount: r.voxelCount,
     };
     stats.warnings = buildWarnings(stats);
   } else {
@@ -177,8 +224,16 @@ export async function previewModel(
       warnings: [],
       paramsSchema: r.paramsSchema,
       renderOnly: false,
+      engine, voxelCount: r.voxelCount,
     };
     stats.warnings = buildWarnings(stats);
+  }
+
+  // Free the Manifold we built solely to compute stats (the live WASM object
+  // isn't returned). manifold-js models hand back their own Manifold, which
+  // the short-lived SSR process reclaims on exit, so only free ours.
+  if (reconstructed && man && typeof man.delete === 'function') {
+    try { man.delete(); } catch { /* exit cleans up */ }
   }
 
   return {
