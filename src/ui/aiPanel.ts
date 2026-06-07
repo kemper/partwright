@@ -2310,14 +2310,15 @@ function renderThinkingBox(text: string): HTMLElement {
  *  capabilities list, auto-continue note, and the 3D-printable design guidance
  *  when that pill is on). The model never echoes the system prompt into the
  *  chat, so this is the only place the user can read what the AI is actually
- *  being told. Collapsed by default; the body fills asynchronously because the
- *  cloud prompt awaits the (fetch-once-cached) ai.md. */
+ *  being told. Collapsed by default; the body is filled lazily on first expand
+ *  (and re-filled when toggles change while open). Keeping the body empty while
+ *  collapsed also keeps the bubble out of text-based `details` locators in the
+ *  e2e suite — the full prompt text overlaps a lot of tool-chip fixtures. */
 function renderSystemPromptBubble(): HTMLElement {
   const chip = document.createElement('details');
   chip.dataset.systemPromptBox = '1';
   chip.open = systemPromptBubbleOpen;
   chip.className = 'self-stretch text-[11px] rounded border border-amber-800/50 bg-amber-950/20 px-2 py-1';
-  chip.addEventListener('toggle', () => { systemPromptBubbleOpen = chip.open; });
   const summary = document.createElement('summary');
   summary.className = 'cursor-pointer text-amber-300/90 select-none';
   summary.textContent = '📄 System prompt';
@@ -2326,7 +2327,13 @@ function renderSystemPromptBubble(): HTMLElement {
   const pre = document.createElement('pre');
   pre.className = 'mt-1 text-[10px] text-zinc-400 overflow-x-auto whitespace-pre-wrap leading-snug max-h-72 overflow-y-auto';
   chip.appendChild(pre);
-  fillSystemPromptBody(pre);
+  chip.addEventListener('toggle', () => {
+    systemPromptBubbleOpen = chip.open;
+    if (chip.open) fillSystemPromptBody(pre);
+  });
+  // Setting `open` via property doesn't fire `toggle`, so restore the filled
+  // body ourselves when a re-render recreates an already-open bubble.
+  if (chip.open) fillSystemPromptBody(pre);
   return chip;
 }
 
@@ -2351,10 +2358,13 @@ function fillSystemPromptBody(pre: HTMLElement): void {
 }
 
 /** Re-fill the system-prompt preview in place (without rebuilding the whole
- *  transcript) so flipping a toggle pill updates it immediately. No-op when the
- *  bubble isn't currently mounted (empty session). */
+ *  transcript) so flipping a toggle pill updates it immediately. Only acts when
+ *  the bubble is expanded — collapsed bodies are left empty (filled on expand),
+ *  which is what keeps the bubble out of text-based e2e `details` locators. */
 function refreshSystemPromptBubble(): void {
-  const pre = transcriptEl?.querySelector<HTMLElement>('details[data-system-prompt-box] > pre');
+  const chip = transcriptEl?.querySelector<HTMLDetailsElement>('details[data-system-prompt-box]');
+  if (!chip || !chip.open) return;
+  const pre = chip.querySelector<HTMLElement>('pre');
   if (pre) fillSystemPromptBody(pre);
 }
 
