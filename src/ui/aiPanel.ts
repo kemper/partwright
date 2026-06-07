@@ -3,14 +3,14 @@
 // input row, the cost meter, and the compact button. State lives in the
 // ai/* modules; this file is mostly DOM wiring.
 
-import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
+import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
-import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
+import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
 import { generateId } from '../storage/db';
@@ -213,6 +213,15 @@ let mountTarget: HTMLElement | null = null;
 /** Set by the watchdog when it abort()s mid-stream so sendMessage knows
  *  this was a stall recovery (auto-resume), not a user-initiated stop. */
 let stalledByWatchdog = false;
+
+/** Whether the collapsible "System prompt" disclosure at the top of the
+ *  transcript is expanded. Persisted across transcript re-renders (which wipe
+ *  and rebuild the container) so flipping a toggle doesn't snap it shut. */
+let systemPromptBubbleOpen = false;
+/** Monotonic token guarding the async system-prompt fill — the bubble is
+ *  recreated on every re-render, so a stale in-flight assemble must not
+ *  overwrite a newer bubble's body. */
+let systemPromptFillSeq = 0;
 
 export interface AiPanelOptions {
   /** main.ts hands in a navigation helper so the panel can move the user
@@ -475,6 +484,9 @@ function recordSessionAiPreference(): void {
 function applyToggleChange(partial: Parameters<typeof setToggles>[1]): void {
   saveSettings(setToggles(loadSettings(), partial));
   recordSessionAiPreference();
+  // The toggle suffix (capabilities, 3D-printable guidance, …) is part of what
+  // the system-prompt preview shows; keep it live as pills flip.
+  refreshSystemPromptBubble();
 }
 
 /** Restore the session's remembered AI config into THIS tab's settings — called
@@ -1791,6 +1803,11 @@ function renderTranscript(): void {
   }
 
   transcriptEl.replaceChildren();
+  // Pin the collapsible system-prompt preview at the very top — above the first
+  // message and even the empty state — so the user can always read exactly what
+  // the model is being told this session (the base prompt + live toggle suffix,
+  // including the 3D-printable guidance when that pill is on).
+  transcriptEl.appendChild(renderSystemPromptBubble());
   const hasHistory = state.history.length > 0;
   const hasQueue = state.queuedBlocks.length > 0;
   if (!hasHistory && !hasQueue) {
@@ -2285,6 +2302,60 @@ function renderThinkingBox(text: string): HTMLElement {
   pre.textContent = text;
   chip.appendChild(pre);
   return chip;
+}
+
+/** Collapsible "System prompt" disclosure pinned at the top of the transcript.
+ *  Shows the exact prompt sent to the model on every turn — the base system
+ *  prompt for the active provider PLUS the live per-turn toggle suffix (the
+ *  capabilities list, auto-continue note, and the 3D-printable design guidance
+ *  when that pill is on). The model never echoes the system prompt into the
+ *  chat, so this is the only place the user can read what the AI is actually
+ *  being told. Collapsed by default; the body fills asynchronously because the
+ *  cloud prompt awaits the (fetch-once-cached) ai.md. */
+function renderSystemPromptBubble(): HTMLElement {
+  const chip = document.createElement('details');
+  chip.dataset.systemPromptBox = '1';
+  chip.open = systemPromptBubbleOpen;
+  chip.className = 'self-stretch text-[11px] rounded border border-amber-800/50 bg-amber-950/20 px-2 py-1';
+  chip.addEventListener('toggle', () => { systemPromptBubbleOpen = chip.open; });
+  const summary = document.createElement('summary');
+  summary.className = 'cursor-pointer text-amber-300/90 select-none';
+  summary.textContent = '📄 System prompt';
+  summary.title = 'The full system prompt sent to the model on every turn, including the live toggle guidance (capabilities, auto-continue, and the 3D-printable design rules when that pill is on). Expand to read exactly what the AI is told.';
+  chip.appendChild(summary);
+  const pre = document.createElement('pre');
+  pre.className = 'mt-1 text-[10px] text-zinc-400 overflow-x-auto whitespace-pre-wrap leading-snug max-h-72 overflow-y-auto';
+  chip.appendChild(pre);
+  fillSystemPromptBody(pre);
+  return chip;
+}
+
+/** Fill (or re-fill) a system-prompt bubble's body from the same assembly the
+ *  chat loop uses, so it's faithful rather than a reconstruction. Reads live
+ *  toggles each call. The seq guard stops a stale in-flight assemble (the
+ *  bubble is recreated on every transcript re-render) from clobbering a newer
+ *  body. */
+function fillSystemPromptBody(pre: HTMLElement): void {
+  pre.textContent = 'Assembling…';
+  const seq = ++systemPromptFillSeq;
+  const toggles = loadSettings().toggles;
+  void buildActiveSystemPrompt(toggles)
+    .then((base) => {
+      if (seq !== systemPromptFillSeq) return;
+      pre.textContent = `${base}\n\n${toggleSuffix(toggles)}`;
+    })
+    .catch(() => {
+      if (seq !== systemPromptFillSeq) return;
+      pre.textContent = 'Could not assemble the system prompt (the prompt doc failed to load). It is still sent to the model.';
+    });
+}
+
+/** Re-fill the system-prompt preview in place (without rebuilding the whole
+ *  transcript) so flipping a toggle pill updates it immediately. No-op when the
+ *  bubble isn't currently mounted (empty session). */
+function refreshSystemPromptBubble(): void {
+  const pre = transcriptEl?.querySelector<HTMLElement>('details[data-system-prompt-box] > pre');
+  if (pre) fillSystemPromptBody(pre);
 }
 
 /** Open box used while reasoning streams: a capped-height scrolling preview

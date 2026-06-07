@@ -61,3 +61,29 @@ pill renders green/ON by default next to Plan). Added e2e coverage in
 `smoke.spec.ts`: pill in the tooltip array, a default-ON + flip-off assertion,
 and a `page.evaluate` check that `toggleSuffix` contains the guidance when on and
 omits it when off.
+
+## Follow-up: system-prompt preview bubble
+
+The user couldn't tell the guidance was being used — the system prompt is never
+rendered in the chat transcript. Rather than just explain it, they asked for a
+collapsible "System prompt" bubble (like the thinking bubbles) pinned before the
+first message, expandable to read what's sent.
+
+- **Faithful, not reconstructed.** Extracted the provider/override/local-tier
+  dispatch that built `systemPrompt` inside `chatLoop.runTurn` into an exported
+  `buildActiveSystemPrompt(toggles)`; `runTurn` now calls it, and the panel calls
+  the *same* function so the bubble shows exactly what the model gets (base
+  prompt + `toggleSuffix`). Avoided a `systemPrompt.ts → local.ts` import cycle
+  by housing the helper in `chatLoop.ts` (which already imports `resolveLocalModel`
+  and the builders) — the panel already depends on `chatLoop`, so no new edge.
+- **Bubble UI** mirrors `renderThinkingBox` (`<details>/<summary>/<pre>`) in amber
+  to read as a distinct category. Pinned at the very top of `renderTranscript`
+  (above the empty state too, so a fresh chat can preview). Body fills async
+  because the cloud prompt awaits the fetch-once-cached `ai.md`; a `seq` guard
+  stops a stale fill from clobbering a newer bubble. Open state persists across
+  the transcript's `replaceChildren()` re-renders via a module flag.
+- **Live updates on pill flips.** Pills only re-render the toggle strip, not the
+  transcript, so `applyToggleChange` (the single choke point) now also calls
+  `refreshSystemPromptBubble()` to re-fill the body in place.
+- Added a golden-path smoke test: bubble visible, expands to the guidance, and
+  flipping the pill off drops the guidance from the live preview.

@@ -257,6 +257,21 @@ test.describe('AI chat panel', () => {
     await expect(pill).toHaveAttribute('aria-pressed', 'false');
   });
 
+  test('the system-prompt bubble shows the prompt and updates with the 3D-printable pill', async ({ page }) => {
+    await page.goto('/editor');
+    await openAiPanel(page);
+    const bubble = page.locator('#ai-transcript details[data-system-prompt-box]');
+    await expect(bubble).toBeVisible();
+    // Expand it; the body fills async from the same assembly the chat loop uses.
+    await bubble.locator('summary').click();
+    const body = bubble.locator('pre');
+    await expect(body).toContainText('Design for 3D printing', { timeout: 15000 });
+    // Flipping the pill OFF must drop the guidance from the live preview without
+    // a full page reload (applyToggleChange refreshes the bubble in place).
+    await page.locator('#ai-panel button', { hasText: /🖨 3D-printable/ }).dispatchEvent('click');
+    await expect(body).not.toContainText('Design for 3D printing', { timeout: 15000 });
+  });
+
   test('3D-printable toggle injects FDM design guidance into the system suffix', async ({ page }) => {
     await page.goto('/editor');
     const result = await page.evaluate(async () => {

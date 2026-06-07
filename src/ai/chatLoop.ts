@@ -180,6 +180,29 @@ export interface RunTurnCallbacks {
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
 }
 
+/** Resolve the base system prompt for the active provider + model, honoring
+ *  any per-provider override and the slim/medium local variants. This is the
+ *  "prompt" half sent to the model; the per-turn toggle suffix (toggleSuffix)
+ *  rides alongside it. Extracted from runTurn so the panel can reproduce
+ *  exactly what's sent (the "System prompt" disclosure in the transcript). */
+export async function buildActiveSystemPrompt(toggles: ChatToggles): Promise<string> {
+  const settings = loadSettings();
+  const override = settings.systemPromptOverrides?.[toggles.provider] ?? null;
+  if (override !== null) return override;
+  if (toggles.provider === 'local' && toggles.localModel) {
+    try {
+      const info = resolveLocalModel(toggles.localModel);
+      return info.promptTier === 'medium'
+        ? buildMediumLocalSystemPrompt()
+        : buildLocalSystemPrompt();
+    } catch {
+      return buildLocalSystemPrompt();
+    }
+  }
+  if (toggles.provider === 'local') return buildLocalSystemPrompt();
+  return buildSystemPrompt(await loadAiMd());
+}
+
 /** Run one user turn through the agent loop. Returns the final history. */
 export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks = {}): Promise<ChatMessage[]> {
   const { apiKey, toggles, sessionId, history, userBlocks, signal } = input;
@@ -192,25 +215,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   // conversation + the reply) and call readDoc to pull subdocs on demand.
   // Either path honors the per-provider user override if one is set in
   // AI settings.
-  const settings = loadSettings();
-  const override = settings.systemPromptOverrides?.[toggles.provider] ?? null;
-  let systemPrompt: string;
-  if (override !== null) {
-    systemPrompt = override;
-  } else if (toggles.provider === 'local' && toggles.localModel) {
-    try {
-      const info = resolveLocalModel(toggles.localModel);
-      systemPrompt = info.promptTier === 'medium'
-        ? buildMediumLocalSystemPrompt()
-        : buildLocalSystemPrompt();
-    } catch {
-      systemPrompt = buildLocalSystemPrompt();
-    }
-  } else if (toggles.provider === 'local') {
-    systemPrompt = buildLocalSystemPrompt();
-  } else {
-    systemPrompt = buildSystemPrompt(await loadAiMd());
-  }
+  const systemPrompt = await buildActiveSystemPrompt(toggles);
 
   const seqStart = nextSeq(history);
 
