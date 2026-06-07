@@ -1321,6 +1321,15 @@ function renderToggleStrip(): void {
       renderToggleStrip();
     },
   ));
+  primary.appendChild(togglePill(
+    '🖨 3D-printable',
+    toggles.printOptimized,
+    'Design for 3D printing: when ON, the AI is told to make print-friendly geometry from the start — a flat base on the build plate, the ~45° overhang rule (avoid supports), no floating islands, printable wall/feature sizes, and clearances for moving parts. Injects guidance only; it doesn\'t restrict any tool, so it works alongside the other toggles. ON by default; turn it OFF for purely on-screen models you won\'t print.',
+    () => {
+      applyToggleChange({ printOptimized: !toggles.printOptimized });
+      renderToggleStrip();
+    },
+  ));
 
   const retry = document.createElement('select');
   retry.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';

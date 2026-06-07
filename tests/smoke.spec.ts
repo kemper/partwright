@@ -234,7 +234,7 @@ test.describe('AI chat panel', () => {
   test('toggle pills carry tooltips explaining what they do', async ({ page }) => {
     await page.goto('/editor');
     await openAiPanel(page);
-    const pillNames = ['📸 Auto-render', '▶ Run', '💾 Save', '🎨 Paint'];
+    const pillNames = ['📸 Auto-render', '▶ Run', '💾 Save', '🎨 Paint', '🖨 3D-printable'];
     for (const name of pillNames) {
       const pill = page.locator('#ai-panel button', { hasText: name });
       await expect(pill).toBeVisible();
@@ -243,6 +243,35 @@ test.describe('AI chat panel', () => {
       expect(title!.length).toBeGreaterThan(20);
       expect(title!.toLowerCase()).toMatch(/on|off|click/);
     }
+  });
+
+  test('the 3D-printable pill is ON by default and flips off', async ({ page }) => {
+    await page.goto('/editor');
+    await openAiPanel(page);
+    const pill = page.locator('#ai-panel button', { hasText: /🖨 3D-printable/ });
+    await expect(pill).toBeVisible();
+    // Default-on: standard preset ships printOptimized: true, so a fresh
+    // session presents the pill pressed.
+    await expect(pill).toHaveAttribute('aria-pressed', 'true');
+    await pill.dispatchEvent('click');
+    await expect(pill).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  test('3D-printable toggle injects FDM design guidance into the system suffix', async ({ page }) => {
+    await page.goto('/editor');
+    const result = await page.evaluate(async () => {
+      const { loadSettings } = await import('/src/ai/settings.ts');
+      const { toggleSuffix } = await import('/src/ai/systemPrompt.ts');
+      const base = loadSettings().toggles;
+      const on = toggleSuffix({ ...base, printOptimized: true, planFirst: false });
+      const off = toggleSuffix({ ...base, printOptimized: false, planFirst: false });
+      return {
+        onHas: on.includes('Design for 3D printing') && on.includes('45°'),
+        offHas: off.includes('Design for 3D printing'),
+      };
+    });
+    expect(result.onHas).toBe(true);
+    expect(result.offHas).toBe(false);
   });
 
   test('the AI drawer (and app bundle) does not load on the landing route', async ({ page }) => {
