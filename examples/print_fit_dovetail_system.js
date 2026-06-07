@@ -1,4 +1,4 @@
-// Dovetail rail system — a horizontal wall-mount rail and a peg-style coat hook
+// Dovetail rail system — a horizontal wall-mount rail and a curved coat hook
 // that slides on and locks. Rail runs horizontally (X-axis).
 const { Manifold, CrossSection, printFit } = api;
 
@@ -6,7 +6,7 @@ const p = api.params({
   railLength:   { type: 'number', default: 120, min: 60,  max: 400, step: 10, unit: 'mm', label: 'Rail length' },
   screwSpacing: { type: 'number', default: 50,  min: 30,  max: 120, step: 5,  unit: 'mm', label: 'Screw spacing' },
   screwSize:    { type: 'select', default: 'M4', options: ['M3', 'M4', 'M5'],              label: 'Screw size' },
-  hookReach:    { type: 'number', default: 40,  min: 20,  max: 100, step: 5,  unit: 'mm', label: 'Peg length' },
+  hookHeight:   { type: 'number', default: 52,  min: 30,  max: 120, step: 5,  unit: 'mm', label: 'Hook height' },
 });
 
 // ── Rail plate ────────────────────────────────────────────────────────────────
@@ -56,45 +56,37 @@ let hook = Manifold.extrude(blockProfile, hookBlockH);
 const { socket } = printFit.dovetail({ length: hookBlockW + 20, width: railW, depth: 6, angle: 14, fit: 'normal' });
 hook = hook.subtract(socket.translate([-10, 0, hookBlockH / 2]));
 
-// ── Peg-style coat hook arm ───────────────────────────────────────────────────
-// Shape (side view / YZ plane): vertical stem rises above block top, quarter-circle
-// bends it forward (+Y), tapered arm extends horizontally, ball cap at tip.
-// This reads clearly from the FRONT view (XZ): stem column + arc cap + ball silhouette.
-// It reads clearly from the SIDE view (YZ): full peg-hook profile.
-const armR   = 8;
-const bendR  = 14;
-const stemH  = 14;           // vertical section above block top
-const armLen = p.hookReach;  // forward horizontal section
-const cy     = hookBlockT / 2;  // arm centred in block depth
-const cx     = hookBlockW / 2;
+// ── Coat hook arm ────────────────────────────────────────────────────────────
+// Shape (side view / YZ plane): short stub exits front face (+Y), tight quarter-circle
+// curves it upward (+Z), tapered arm rises vertically.
+// Arm is centred on both the width and height of the hook block.
+const armR    = 8;
+const bendR   = 10;
+const stubLen = 6;              // horizontal stub before bend
+const vertLen = p.hookHeight;   // vertical section above bend
+const cx      = hookBlockW / 2;
+const cy      = hookBlockT;     // front face
+const exitZ   = hookBlockH / 2; // centred on block height
 
-// Vertical stem above block
-const stem = Manifold.cylinder(stemH, armR, armR, 24)
-  .translate([cx, cy, hookBlockH]);
+// Horizontal stub exits front face in +Y
+const stub = Manifold.cylinder(stubLen, armR, armR, 24)
+  .rotate([-90, 0, 0])
+  .translate([cx, cy, exitZ]);
 
-// Quarter-torus: bends from +Z direction to +Y direction.
-// Default revolve arc (XY, CCW around Z): (bendR,0,0)→(0,bendR,0).
-//   Tangent at start (0°): +Y.  Tangent at end (90°): −X.
-// After rotate([90,0,0]) then rotate([0,0,-90]):
-//   Tangent at start becomes +Z (matches stem going up).
-//   Tangent at end becomes +Y (matches arm going forward).
-// Arc local start at (0,−bendR,0) → translate to stem top: add (cx, cy+bendR, hookBlockH+stemH).
+// Quarter-torus: rotate([0,90,0]) maps the XY revolve arc so that
+// start tangent stays +Y (matching stub) and end tangent becomes +Z (upward).
 const bendProfile = CrossSection.circle(armR, 24).translate([bendR, 0]);
 const bend = Manifold.revolve(bendProfile, 24, 90)
-  .rotate([90, 0, 0])
-  .rotate([0, 0, -90])
-  .translate([cx, cy + bendR, hookBlockH + stemH]);
+  .rotate([0, 90, 0])
+  .translate([cx, cy + stubLen, exitZ + bendR]);
 
-// Tapered horizontal arm in +Y
-const arm = Manifold.cylinder(armLen, armR, armR * 0.6, 24)
-  .rotate([-90, 0, 0])
-  .translate([cx, cy + bendR, hookBlockH + stemH + bendR]);
+// Tapered vertical arm in +Z
+const arcEndY = cy + stubLen + bendR;
+const arcEndZ = exitZ + bendR;
+const vert = Manifold.cylinder(vertLen, armR, armR * 0.55, 24)
+  .translate([cx, arcEndY, arcEndZ]);
 
-// Ball cap
-const ball = Manifold.sphere(armR * 1.3, 24)
-  .translate([cx, cy + bendR + armLen, hookBlockH + stemH + bendR]);
-
-hook = hook.add(stem).add(bend).add(arm).add(ball);
+hook = hook.add(stub).add(bend).add(vert);
 
 // ── Layout: plate left, hook right ───────────────────────────────────────────
 const plateColored = api.label(plate, 'plate', { color: '#b5764f' });
