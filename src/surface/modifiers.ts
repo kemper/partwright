@@ -468,6 +468,15 @@ export function applyScale(
   sy: number,
   sz: number,
 ): ModifierManifoldResult {
+  // A negative factor mirrors the mesh (inverting triangle winding → inside-out,
+  // non-manifold) and a zero factor collapses an axis to a degenerate sheet.
+  // Guard at this engine-agnostic boundary so the public scaleModel/previewScale
+  // API (which takes raw numbers from callers/AI) can't produce broken geometry.
+  for (const [name, f] of [['sx', sx], ['sy', sy], ['sz', sz]] as const) {
+    if (!Number.isFinite(f) || f <= 0) {
+      throw new Error(`scale: ${name} must be a positive, finite factor (got ${f}). Use a value > 0 — a negative or zero scale would mirror or collapse the mesh into non-manifold geometry.`);
+    }
+  }
   const baked = scaleMesh(mesh, sx, sy, sz);
   const uniform = sx === sy && sy === sz;
   const desc = uniform
