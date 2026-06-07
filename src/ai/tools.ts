@@ -428,13 +428,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'readDoc',
-    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, print-fit, reference-images, file-io, annotations, relief, textures, mechanisms, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, print-fit, reference-images, file-io, annotations, printing, relief, textures, mechanisms, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
     input_schema: {
       type: 'object',
       properties: {
         name: {
           type: 'string',
-          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'relief', 'textures', 'mechanisms'],
+          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'printing', 'relief', 'textures', 'mechanisms'],
           description: 'Subdoc name without the .md extension.',
         },
       },
@@ -947,6 +947,36 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this area. Use to avoid fan-bleed on cylinder topology.' },
       },
       required: ['rMin', 'rMax', 'zMin', 'zMax', 'color'],
+    },
+  },
+  {
+    name: 'checkPrintability',
+    description: 'Analyze the current model for 3D-printing problems and return a structured report: bed fit, overhangs that need support, thin walls (a sampled estimate), small features, tip-over stability (centre of mass vs base footprint), and watertightness. Every check carries a level — pass / warn / fail (fail = won\'t print as-is). Reads the build volume + nozzle from printer settings unless you override them. Call this before telling the user a model is print-ready, and again after geometry changes; then fix any fails — thicken walls, re-orient to remove overhangs, use the Resize tool to fit the bed, or use the Split tool when it is simply too big for the bed. The same check runs automatically on STL / OBJ / 3MF / GLB export and warns via a toast.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        bed: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional build-volume override [x, y, z] in mm.' },
+        nozzleWidth: { type: 'number', description: 'Optional nozzle-width override (mm). Drives the thin-wall / small-feature checks.' },
+        overhangAngleDeg: { type: 'number', description: 'Optional overhang threshold — downward surfaces shallower than this many degrees from horizontal are flagged. Default 45 (the classic 45° rule).' },
+      },
+    },
+  },
+  {
+    name: 'getPrinterSettings',
+    description: 'Read the target printer settings: build volume bed [x, y, z] (mm), nozzleWidth, overhangAngleDeg, clearance. These drive the checkPrintability tool and the pre-export printability warning.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'setPrinterSettings',
+    description: 'Update the target printer settings. Pass any subset of {bed:[x,y,z], nozzleWidth, overhangAngleDeg, clearance}. Use when the user names their printer or bed size (e.g. "I have an Ender 3" → bed [220, 220, 250]; "Bambu" → [256, 256, 256]).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        bed: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Build volume [x, y, z] in mm.' },
+        nozzleWidth: { type: 'number', description: 'Nozzle diameter (mm), e.g. 0.4.' },
+        overhangAngleDeg: { type: 'number', description: 'Overhang threshold in degrees from horizontal (default 45).' },
+        clearance: { type: 'number', description: 'Assembly clearance (mm) used for split connector holes.' },
+      },
     },
   },
   {
@@ -1483,6 +1513,9 @@ const ALWAYS_AVAILABLE = new Set([
   'assertPaint',
   'sliceAtZVisual',
   'paintInCylinder',
+  'checkPrintability',
+  'getPrinterSettings',
+  'setPrinterSettings',
   'importImageAsRelief',
   'importSvgAsRelief',
   'getReliefSwapGuide',
@@ -1637,7 +1670,7 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
-const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas', 'visual-verification', 'spending', 'manifold-api']);
+const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas', 'visual-verification', 'spending', 'manifold-api']);
 
 /** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
  *  local providers — both run inside the user's browser tab, so this is
@@ -1973,6 +2006,12 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.assertPaint(input);
     case 'paintInCylinder':
       return api.paintInCylinder(input);
+    case 'checkPrintability':
+      return api.checkPrintability(input);
+    case 'getPrinterSettings':
+      return api.getPrinterSettings();
+    case 'setPrinterSettings':
+      return api.setPrinterSettings(input);
     case 'importImageAsRelief':
       return api.importImageAsRelief(input);
     case 'importSvgAsRelief':

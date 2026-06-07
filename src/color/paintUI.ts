@@ -91,6 +91,7 @@ import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/t
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
 import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, getShapeType, getShapeVisible, setShapeVisible, onShapeVisibilityChange, type BoxMode, type ShapeType } from './boxDrag';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
+import { forceDeactivate as closePrintToolsMenu } from '../ui/printToolsUI';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
 import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
@@ -185,6 +186,7 @@ function togglePaintMode(): void {
     forceDeactivateAnnotateText();
     forceDeactivateAnnotateSelect();
     closeSimplifyMenu();
+    closePrintToolsMenu();
     deactivateMode('imagePaint');
     activate();
     updateButtonState(true);

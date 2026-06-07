@@ -141,6 +141,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |
 | `mechanisms` | Before modeling a print-in-place / multi-part assembly that **moves** — a screw, spinner, hinge, captive ball, or slider. Covers clearance gaps, `componentCount` verification, twist-extrude threads/spirals, matched-taper nesting, and cutaway checks. |
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
+| `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over) and `get/setPrinterSettings`. The same check also runs automatically on STL / OBJ / 3MF / GLB export. Read before declaring a model print-ready, then steer the user to the dedicated Resize and Split tools if it doesn't fit. |
 | `print-fit` | Before building parts that mate with hardware or each other — `api.printFit.*` screw holes, heat-set insert bosses, captive-nut pockets, alignment pins, dovetails, snap-fits, clearance presets, and a calibration coupon. |
 | `colors` | Before any paint operation — the picker decision tree, labelled construction, vision-driven painting, export behavior. |
 | `reference-images` | When the user attaches a photo or asks you to model from one — `setImages` shape, label conventions, the five-step photo-to-model loop. |

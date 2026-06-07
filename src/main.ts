@@ -153,6 +153,9 @@ import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook } from './
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
+import { initPrintToolsUI, isPrintToolsOpen, forceDeactivate as closePrintToolsMenu, type PrintToolsHandlers } from './ui/printToolsUI';
+import { analyzePrintability, type PrintabilityReport } from './geometry/printability';
+import { loadPrinterSettings, savePrinterSettings, type PrinterSettings } from './geometry/printerSettings';
 import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './color/paintMode';
 import { baseTriangleOf } from './color/baseRemap';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
@@ -3885,10 +3888,39 @@ async function main() {
     }
   };
 
+  // Run a quick printability check before each export so the user gets a
+  // heads-up about blockers (bed fit, watertight, …) and warnings (overhangs,
+  // thin walls). Non-blocking — the export still proceeds.
+  function warnIfNotPrintable(format: string): void {
+    if (!currentMeshData) return;
+    const settings = loadPrinterSettings();
+    let isManifold = false;
+    try {
+      const geo = JSON.parse(geometryDataEl.textContent || '{}');
+      isManifold = !!geo.isManifold;
+    } catch { /* default false */ }
+    const report: PrintabilityReport = analyzePrintability(currentMeshData, {
+      bed: settings.bed,
+      nozzleWidth: settings.nozzleWidth,
+      overhangAngleDeg: settings.overhangAngleDeg,
+      isManifold,
+    });
+    const fails = report.checks.filter(c => c.level === 'fail');
+    const warns = report.checks.filter(c => c.level === 'warn');
+    if (fails.length === 0 && warns.length === 0) return;
+    const parts = [
+      fails.length > 0 ? `${fails.length} blocker${fails.length === 1 ? '' : 's'}` : null,
+      warns.length > 0 ? `${warns.length} warning${warns.length === 1 ? '' : 's'}` : null,
+    ].filter(Boolean).join(', ');
+    const first = (fails[0] ?? warns[0]).text;
+    showToast(`${format} export: printability check found ${parts}. ${first}`, { variant: 'warn', source: 'export' });
+  }
+
   const actionExportGLB = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
+    warnIfNotPrintable('GLB');
     try {
       assertFiniteMesh(currentMeshData);
       notifyMultiPartExport();
@@ -3902,6 +3934,7 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
+    warnIfNotPrintable('STL');
     notifyMultiPartExport();
     try { showToast(`Exported ${exportSTL(currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
@@ -3910,6 +3943,7 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
+    warnIfNotPrintable('OBJ');
     notifyMultiPartExport();
     try { showToast(`Exported ${exportOBJ(coloredMeshForExport(currentMeshData))}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
@@ -3918,6 +3952,7 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
+    warnIfNotPrintable('3MF');
     notifyMultiPartExport();
     try { showToast(`Exported ${export3MF(coloredMeshForExport(currentMeshData))}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
@@ -5987,6 +6022,7 @@ async function main() {
         // Don’t let two overlay panels share the top-right slot.
         if (isPaintOpen()) closePaintMenu();
         if (isAnnotateOpen()) closeAnnotateMenu();
+        closePrintToolsMenu();
         closeMeasureIfActive();
       }
       if (!currentMeshData) {
@@ -9691,6 +9727,59 @@ async function main() {
       return result;
     },
 
+    // === Print tools: build volume, printability, scale, split ===
+
+    /** Read the current printer / build-volume settings. */
+    getPrinterSettings(): PrinterSettings {
+      return loadPrinterSettings();
+    },
+
+    /** Update printer / build-volume settings. Accepts any subset of
+     *  {bed:[x,y,z], nozzleWidth, overhangAngleDeg, clearance}. Returns the
+     *  merged settings. */
+    setPrinterSettings(settings: Partial<PrinterSettings>) {
+      const check = guard(() => {
+        const o = assertObject(settings, 'setPrinterSettings(settings)')!;
+        assertNoUnknownKeys(o, ['bed', 'nozzleWidth', 'overhangAngleDeg', 'clearance'], 'setPrinterSettings(settings)');
+        if (o.bed !== undefined) assertNumberTuple(o.bed, 3, 'setPrinterSettings(settings).bed');
+        assertNumber(o.nozzleWidth, 'setPrinterSettings(settings).nozzleWidth', { optional: true, min: 0.05 });
+        assertNumber(o.overhangAngleDeg, 'setPrinterSettings(settings).overhangAngleDeg', { optional: true, min: 1, max: 89 });
+        assertNumber(o.clearance, 'setPrinterSettings(settings).clearance', { optional: true, min: 0 });
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      return savePrinterSettings(settings);
+    },
+
+    /** Analyze the current model for printability: bed fit, overhangs, thin
+     *  walls (sampled estimate), small features, tip-over stability, and
+     *  watertightness. Returns a structured report with per-check pass/warn/fail
+     *  levels. Optional overrides for {bed, nozzleWidth, overhangAngleDeg};
+     *  defaults come from the printer settings. */
+    checkPrintability(opts?: { bed?: [number, number, number]; nozzleWidth?: number; overhangAngleDeg?: number }) {
+      const check = guard(() => {
+        if (opts !== undefined) {
+          const o = assertObject(opts, 'checkPrintability(opts)')!;
+          assertNoUnknownKeys(o, ['bed', 'nozzleWidth', 'overhangAngleDeg'], 'checkPrintability(opts)');
+          if (o.bed !== undefined) assertNumberTuple(o.bed, 3, 'checkPrintability(opts).bed');
+          assertNumber(o.nozzleWidth, 'checkPrintability(opts).nozzleWidth', { optional: true, min: 0.05 });
+          assertNumber(o.overhangAngleDeg, 'checkPrintability(opts).overhangAngleDeg', { optional: true, min: 1, max: 89 });
+        }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      const settings = loadPrinterSettings();
+      const stats = JSON.parse(geometryDataEl.textContent || '{}');
+      return analyzePrintability(currentMeshData, {
+        bed: opts?.bed ?? settings.bed,
+        nozzleWidth: opts?.nozzleWidth ?? settings.nozzleWidth,
+        overhangAngleDeg: opts?.overhangAngleDeg ?? settings.overhangAngleDeg,
+        isManifold: stats.isManifold === true,
+      });
+    },
+
+
     /** Create a session and populate it with multiple versions in one call */
     async createSessionWithVersions(name: string, versions: { code: string; label?: string }[]) {
       const check = guard(() => {
@@ -12351,6 +12440,25 @@ async function main() {
   // Placement UI (viewport ⤓ Place button + command-palette entries).
   initPlaceUI(partwrightAPI as unknown as Parameters<typeof initPlaceUI>[0]);
 
+  // Print tools overlay — informational only: build-volume settings and an
+  // on-demand printability check. Scaling and splitting live in their own
+  // dedicated tools.
+  const printToolsHandlers: PrintToolsHandlers = {
+    open(userInitiated) {
+      if (userInitiated) {
+        if (isPaintOpen()) closePaintMenu();
+        if (isAnnotateOpen()) closeAnnotateMenu();
+        if (isSimplifyOpen()) closeSimplifyMenu();
+        closeMeasureIfActive();
+      }
+      return { hasModel: !!currentMeshData };
+    },
+    getSettings: () => loadPrinterSettings(),
+    setSettings: (partial) => savePrinterSettings(partial),
+    check: () => partwrightAPI.checkPrintability(),
+  };
+  initPrintToolsUI(clipControls, printToolsHandlers);
+
   // Log API availability for AI agents
   console.info('Partwright: AI agents should use window.partwright -- start with partwright.help(). window.mainifold remains as a legacy alias. See /llms.txt');
 
@@ -13408,6 +13516,7 @@ async function main() {
         close();
       } else {
         closeSimplifyMenu();
+        closePrintToolsMenu();
         activateMeasure();
         setMeasureLock(true);
         measureBtn.className = activeClass;
@@ -13430,6 +13539,7 @@ async function main() {
       if (isAnnotateOpen()) { closeAnnotateMenu(); closed = true; }
       if (isPaintOpen()) { closePaintMenu(); closed = true; }
       if (isSimplifyOpen()) { closeSimplifyMenu(); closed = true; }
+      if (isPrintToolsOpen()) { closePrintToolsMenu(); closed = true; }
       if (closeMeasureIfActive()) closed = true;
       if (getClipState().enabled) { setClipping(false); syncClipUI(); closed = true; }
       if (closed) e.preventDefault();
