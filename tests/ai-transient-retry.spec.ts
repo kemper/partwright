@@ -36,8 +36,7 @@ test.describe('Transient provider-error retry', () => {
       const origFetch = window.fetch;
       // @ts-expect-error test stub
       window.fetch = async (input: unknown, init?: RequestInit) => {
-        const url = String(input);
-        if (!url.includes('generativelanguage.googleapis.com')) return origFetch(input as RequestInfo, init);
+        if (new URL(String(input), location.href).hostname !== 'generativelanguage.googleapis.com') return origFetch(input as RequestInfo, init);
         n++;
         // Calls 1 & 2: HTTP 500 (transient). Call 3: a clean text end_turn.
         if (n <= 2) return new Response('{"error":{"message":"backend overloaded"}}', { status: 500 });
@@ -79,8 +78,7 @@ test.describe('Transient provider-error retry', () => {
       const origFetch = window.fetch;
       // @ts-expect-error test stub
       window.fetch = async (input: unknown, init?: RequestInit) => {
-        const url = String(input);
-        if (!url.includes('generativelanguage.googleapis.com')) return origFetch(input as RequestInfo, init);
+        if (new URL(String(input), location.href).hostname !== 'generativelanguage.googleapis.com') return origFetch(input as RequestInfo, init);
         n++;
         return new Response('{"error":{"message":"still down"}}', { status: 503 }); // always transient
       };
@@ -119,8 +117,7 @@ test.describe('Transient provider-error retry', () => {
       const origFetch = window.fetch;
       // @ts-expect-error test stub
       window.fetch = async (input: unknown, init?: RequestInit) => {
-        const url = String(input);
-        if (!url.includes('generativelanguage.googleapis.com')) return origFetch(input as RequestInfo, init);
+        if (new URL(String(input), location.href).hostname !== 'generativelanguage.googleapis.com') return origFetch(input as RequestInfo, init);
         n++;
         return new Response('{"error":{"message":"invalid api key"}}', { status: 401 });
       };
