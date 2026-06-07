@@ -26,6 +26,49 @@ export interface CatalogManifestEntry {
   /** Optional curated group. When set, the entry is bucketed into this themed,
    *  language-independent section instead of its engine-derived category. */
   group?: CuratedGroupId;
+  /** Whether this model has been physically 3D-printed and verified printable.
+   *  Absent/false means "not print-tested yet" (the default for every entry) —
+   *  flip to `true` only once a real print exists. Drives the print-tested tile
+   *  badge so users can tell verified-printable models from unproven ones. */
+  printTested?: boolean;
+}
+
+/** Badge describing whether a catalog entry has been verified print-tested.
+ *  Pure (label + Tailwind classes + tooltip + searchable tokens) so both the
+ *  static pre-renderer and the in-app overlay render an identical chip. */
+export interface PrintTestedBadge {
+  /** True once the model has a verified physical print. */
+  tested: boolean;
+  /** Short chip label. */
+  label: string;
+  /** Tailwind text + border colour classes. */
+  classes: string;
+  /** Full-text tooltip. */
+  title: string;
+  /** Tokens folded into the tile's search haystack so the state is findable
+   *  (`verified` for tested, `untested` for not-yet-tested). */
+  search: string;
+}
+
+export function printTestedBadge(printTested: boolean | undefined): PrintTestedBadge {
+  return printTested
+    ? {
+        tested: true,
+        label: '✓ Print-tested',
+        classes: 'text-emerald-300 border-emerald-400/40',
+        title: 'Verified — this model has been physically 3D-printed successfully.',
+        search: 'print-tested verified',
+      }
+    : {
+        tested: false,
+        label: 'Untested',
+        classes: 'text-zinc-500 border-zinc-600/70',
+        title: 'Not print-tested yet — this model has not been verified with a physical print.',
+        // Just `untested` — avoid any token containing the `print-tested`
+        // substring, so searching "print-tested" surfaces only verified tiles
+        // (the filter matches substrings, see catalogFilter.ts).
+        search: 'untested',
+      };
 }
 
 /** The catalog is sectioned so each tile's reason for being here is obvious.

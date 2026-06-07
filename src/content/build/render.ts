@@ -13,6 +13,7 @@ import {
   CATEGORIES,
   categorizeOf,
   deriveCharacteristics,
+  printTestedBadge,
   CATALOG_LANGUAGE_ORDER,
   type CategoryId,
   type CatalogLanguage,
@@ -188,10 +189,12 @@ function catalogTileHtml(tile: BuiltTile): string {
   const paramChip = tile.hasParams
     ? '<span class="font-semibold border rounded px-1 text-violet-300 border-violet-400/30" title="Exposes adjustable parameters">🎛 Parametric</span>'
     : '';
+  const print = printTestedBadge(tile.entry.printTested);
+  const printChip = `<span class="font-semibold border rounded px-1 ${print.classes}" title="${escAttr(print.title)}">${esc(print.label)}</span>`;
   const versions = tile.versionCount > 0
     ? `<span>${tile.versionCount} version${tile.versionCount !== 1 ? 's' : ''}</span>`
     : '';
-  const haystack = [tile.entry.name, tile.entry.description ?? '', tile.entry.id, badge.label].join(' ').toLowerCase();
+  const haystack = [tile.entry.name, tile.entry.description ?? '', tile.entry.id, badge.label, print.search].join(' ').toLowerCase();
   return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-pw-thumb="${escAttr(tile.entry.file)}" data-catalog-tile data-language="${escAttr(tile.language)}" data-search="${escAttr(haystack)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
   <div class="relative w-full aspect-square bg-zinc-900 flex items-center justify-center overflow-hidden">
     <span class="text-3xl text-zinc-700">&#11041;</span>
@@ -202,6 +205,7 @@ function catalogTileHtml(tile: BuiltTile): string {
     ${desc}
     <div class="text-[10px] text-zinc-500 mt-1.5 flex items-center gap-2 flex-wrap">
       <span class="font-semibold border rounded px-1 ${badge.classes}">${esc(badge.label)}</span>
+      ${printChip}
       ${paramChip}
       ${versions}
     </div>

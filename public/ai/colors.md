@@ -501,9 +501,24 @@ partwright.paintInOrientedBox({
 });
 ```
 
-**Smoothing applies to the analytic shape tools.** `paintSlab` and `paintInOrientedBox` persist a *re-resolvable* descriptor (the slab plane / oriented box), so their boundary can be subdivided for a clean edge and reconstructed deterministically on reload — smoothing is on by default, exactly like `paintStroke`. The id-baking selectors (`paintInBox`, `paintNear`, `paintInCylinder`, `paintFaces`, `paintConnected`, …) lock onto the existing tessellation, so they cannot be smoothed; refine the mesh first (`.refine(n)` in the model code) if you need a finer edge from those.
+**Two kinds of region — durable descriptors vs. baked triangle ids.** This distinction matters more than any other when you paint several regions in a session:
 
-**Verifying paint before you commit it.** `paintPreview` accepts the same selectors as `paintInBox` / `paintNear` / `paintFaces`, *without* adding a region. Default: count-only (free sanity check). Pass `withImage: true` to also get a thumbnail with the candidate triangles tinted bright yellow on top of any existing paint.
+- **Re-resolvable analytic descriptors** — `paintSlab`, `paintInOrientedBox`, `paintInCylinder`, and `paintStroke` persist *what they meant* (the slab plane, oriented box, cylindrical shell, or brush path), not a fixed triangle list. On every reconcile they re-collect against the live mesh, so they **survive both subdivision and a model re-run**, and their boundary can be subdivided for a clean edge (smoothing is on by default for these). These are the robust choice.
+- **`paintByLabel`** is the most durable of all: it re-resolves by *name* from the label map each time, so it tracks the geometry through any re-tessellation as long as the label exists. If a feature is its own part, `api.label(part, "handle")` it in the model code and `paintByLabel("handle", color)` — no coordinates to guess.
+- **Id-baking selectors** — `paintInBox`, `paintNear`, `paintFaces`, `paintConnected` — lock onto the *current* tessellation and store raw triangle ids. They **cannot be smoothed** (refine the mesh first with `.refine(n)` if you need a finer edge), and their ids are valid only against the base mesh they were taken on. They are carried across in-session subdivision via a parent→children remap, but a **model re-run replaces the base mesh and the ids no longer point at the same surface** — that's the usual cause of a previously-good region reporting `triangleCount: 0` or landing on the wrong faces. After any code change, repaint id-baked regions or, better, re-express them as an analytic/`byLabel` descriptor.
+
+> **Ordering heuristic:** prefer the durable forms (analytic descriptors, `paintByLabel`) so order doesn't matter. If you must use id-baked selectors alongside smoothing paints, commit the mesh-changing ops first (or keep them in a single saved version), since a later subdivision/re-run is what disturbs raw ids.
+
+**Painting a feature that sticks out past a round body — select by radius, not a box plane.** A flat box face cutting across a curved junction (e.g. a handle meeting a cylindrical mug wall) leaves a ragged, stair-stepped boundary, because the box plane and the curved surface disagree. Select by *radial distance from the part's axis* instead — `paintInCylinder({ rMin, rMax, zMin, zMax })` (or a `normalCone` to grab only the outward-facing skin) — so the boundary follows the curve cleanly. Radius-based selection is the canonical tool for inner/outer walls of mugs, vases, and any revolved shape.
+
+**Verifying paint before you commit it.** `paintPreview` accepts the same selectors as `paintInBox` / `paintNear` / `paintFaces` *and* the analytic `cylinder` / `slab` forms, *without* adding a region. Default: count-only (free sanity check). Pass `withImage: true` to also get a thumbnail with the candidate triangles tinted bright yellow on top of any existing paint. The `cylinder` / `slab` previews show the **unsmoothed** selection (preview never subdivides) — use it to validate a radial shell or slab offset/thickness in one cheap call before committing the real smoothing paint:
+
+```js
+// Validate the inner wall of a mug before painting it:
+partwright.paintPreview({ cylinder: { rMin: 18, rMax: 22, zMin: 2, zMax: 88 } });
+// Validate a slab band:
+partwright.paintPreview({ slab: { axis: "z", offset: 0, thickness: 5 } });
+```
 
 ```js
 const dry = partwright.paintPreview({

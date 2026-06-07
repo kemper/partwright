@@ -7,9 +7,11 @@
 // the full catalog renders server-side; this just hides/shows on top).
 //
 // Keep the import graph empty: this must not pull in any app/engine code. The
-// one import below (wireCatalogFilter) is itself dependency-free, pure DOM.
+// imports below are dependency-free — wireCatalogFilter is pure DOM, and
+// initTooltips pulls in only the self-contained appConfig (no engine/WASM).
 
 import { wireCatalogFilter } from './catalogFilter';
+import { initTooltips } from '../ui/tooltip';
 
 interface CatalogThumbs {
   /** Map of catalog file name → latest-version thumbnail data URL. */
@@ -53,6 +55,11 @@ async function hydrateThumbnails(): Promise<void> {
 
 function init(): void {
   wireCatalogFilter(document);
+  // Replace the slow native `title` tooltips on the catalog's tags/badges with
+  // the same fast styled bubbles the editor uses (config-driven ~150ms delay).
+  // The static catalog page never boots main.ts, so without this the tags fall
+  // back to the browser's ~0.5–1.5s native tooltip delay.
+  initTooltips();
   void hydrateThumbnails();
 }
 

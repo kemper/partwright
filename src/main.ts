@@ -10122,7 +10122,7 @@ async function main() {
       if (maxTriangleArea !== undefined && triangles.size > 0) {
         triangles = new Set([...triangles].filter(t => triangleArea(t, currentMeshData!) <= maxTriangleArea));
       }
-      if (triangles.size === 0) return { error: 'No triangles found inside the slab' };
+      if (triangles.size === 0) return { error: 'No triangles found inside the slab. Dry-run paintPreview({ slab: { axis|normal, offset, thickness } }) to check the offset/thickness against the model bbox first.' };
 
       const regionName = name ?? `Region ${getRegions().length + 1}`;
       const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
@@ -10483,7 +10483,7 @@ async function main() {
         opts.maxTriangleArea,
       );
       if (triangles.size === 0) {
-        return { error: `paintInCylinder: no triangles in cylindrical shell (rMin=${opts.rMin}, rMax=${opts.rMax}, z=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or calling paintPreview with a box first to locate the geometry.` };
+        return { error: `paintInCylinder: no triangles in cylindrical shell (rMin=${opts.rMin}, rMax=${opts.rMax}, z=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or dry-running paintPreview({ cylinder: { rMin, rMax, zMin, zMax } }) to locate the geometry.` };
       }
 
       const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
@@ -10516,21 +10516,29 @@ async function main() {
 
     /** Render a preview of the current model with a candidate region tinted
      *  bright yellow, *without* committing the paint to the regions list.
-     *  Accepts the same selectors as `paintInBox` / `paintNear` plus an
-     *  optional explicit `triangleIds` set. Returns
-     *  `{ thumbnail, triangleCount, bbox, centroid }` so an agent can verify
-     *  the shape of the would-be region in one call instead of paint → render → undo.
+     *  Accepts the same selectors as `paintInBox` / `paintNear` /
+     *  `paintInCylinder` / `paintSlab` plus an optional explicit `triangleIds`
+     *  set. Returns `{ thumbnail, triangleCount, bbox, centroid }` so an agent
+     *  can verify the shape of the would-be region in one call instead of
+     *  paint → render → undo. The `cylinder` / `slab` forms preview the
+     *  *unsmoothed* selection (preview never subdivides), which is the cheap
+     *  way to validate a radial-shell or slab selection before committing the
+     *  real smoothing paint.
      *
      *  ```
      *  const preview = partwright.paintPreview({
      *    box: { min: [...], max: [...] },
      *    normalCone: { axis: [...], angleDeg: 25 },
      *  })
+     *  // Or a radial shell — the inner wall of a mug:
+     *  partwright.paintPreview({ cylinder: { rMin: 18, rMax: 22, zMin: 2, zMax: 88 } })
      *  // Display preview.thumbnail (data URL) to confirm before committing.
      *  ```
      *  `view` is forwarded to `renderView` (elevation/azimuth/ortho/size). */
     paintPreview(opts: {
       box?: { min: [number, number, number]; max: [number, number, number] };
+      cylinder?: { center?: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number };
+      slab?: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number };
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       point?: [number, number, number];
       radius?: number;
@@ -10574,8 +10582,40 @@ async function main() {
         const err = validateBoxAndCone(opts.box, opts.normalCone);
         if (err) return { error: err };
         triangles = collectTrianglesByFilter(mesh, opts.box, opts.normalCone, null, opts.coverageMode, opts.maxTriangleArea);
+      } else if (opts.cylinder !== undefined) {
+        const c = opts.cylinder;
+        if (typeof c !== 'object' || c === null) return { error: 'cylinder must be { rMin, rMax, zMin, zMax, center? }' };
+        if (typeof c.rMin !== 'number' || typeof c.rMax !== 'number') return { error: 'cylinder.rMin and cylinder.rMax must be numbers' };
+        if (typeof c.zMin !== 'number' || typeof c.zMax !== 'number') return { error: 'cylinder.zMin and cylinder.zMax must be numbers' };
+        if (c.rMin < 0 || c.rMax <= c.rMin) return { error: 'cylinder requires rMin >= 0 and rMax > rMin' };
+        if (c.zMax <= c.zMin) return { error: 'cylinder requires zMax > zMin' };
+        if (c.center !== undefined && (!Array.isArray(c.center) || c.center.length !== 2)) return { error: 'cylinder.center must be [x, y]' };
+        const coneErr = validateNormalCone(opts.normalCone);
+        if (coneErr) return { error: coneErr };
+        triangles = collectTrianglesByCylinder(mesh, c.center ?? [0, 0], c.rMin, c.rMax, c.zMin, c.zMax, opts.normalCone, opts.coverageMode, opts.maxTriangleArea);
+      } else if (opts.slab !== undefined) {
+        const s = opts.slab;
+        if (typeof s !== 'object' || s === null) return { error: 'slab must be { axis|normal, offset, thickness }' };
+        let slabNormal: [number, number, number];
+        if (s.axis !== undefined) {
+          if (s.axis !== 'x' && s.axis !== 'y' && s.axis !== 'z') return { error: "slab.axis must be 'x', 'y', or 'z'" };
+          slabNormal = s.axis === 'x' ? [1, 0, 0] : s.axis === 'y' ? [0, 1, 0] : [0, 0, 1];
+        } else if (Array.isArray(s.normal) && s.normal.length === 3) {
+          const [nx, ny, nz] = s.normal;
+          const len = Math.hypot(nx, ny, nz);
+          if (!Number.isFinite(len) || len === 0) return { error: 'slab.normal must be a non-zero 3-vector' };
+          slabNormal = [nx / len, ny / len, nz / len];
+        } else {
+          return { error: 'slab requires either axis (x|y|z) or normal [nx,ny,nz]' };
+        }
+        if (typeof s.offset !== 'number' || !Number.isFinite(s.offset)) return { error: 'slab.offset must be a finite number' };
+        if (typeof s.thickness !== 'number' || !Number.isFinite(s.thickness) || s.thickness <= 0) return { error: 'slab.thickness must be a positive finite number' };
+        triangles = findSlabTriangles(mesh, slabNormal, s.offset, s.thickness, opts.coverageMode);
+        if (opts.maxTriangleArea !== undefined && triangles.size > 0) {
+          triangles = new Set([...triangles].filter(t => triangleArea(t, mesh) <= opts.maxTriangleArea!));
+        }
       } else {
-        return { error: 'paintPreview requires one of: { triangleIds }, { point, radius }, or { box }' };
+        return { error: 'paintPreview requires one of: { triangleIds }, { point, radius }, { box }, { cylinder }, or { slab }' };
       }
 
       const stats = regionTriangleStats(triangles, mesh);
