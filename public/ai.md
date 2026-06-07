@@ -97,6 +97,11 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Cross-section image (any axis, for debugging cavities) | `partwright.renderSection({axis, offset?, size?})` | `partwright.renderSection(...)` — same window API | `partwright.renderSection(...)` — same window API |
 | Threaded rod / bolt / nut | (write a helix manually) | BOSL2 `threaded_rod()`, `screw()`, `nut()` | (coming; today use OpenSCAD/BOSL2) |
 | Spur / bevel / worm gear | (sample involute manually) | BOSL2 `spur_gear()`, `bevel_gear()`, `worm_gear()` | (coming; today use OpenSCAD/BOSL2) |
+| Clearance hole sized to a real screw (M2–M8) | `api.printFit.screwHole({size:"M3", length, head})` → subtract -> `/ai/print-fit.md` | BOSL2 `screw_hole()` | (use manifold-js printFit) |
+| Heat-set insert boss | `api.printFit.insertBoss({size:"M3"})` → union -> `/ai/print-fit.md` | (write a tapered bore manually) | (use manifold-js printFit) |
+| Captive / clearance nut pocket | `api.printFit.nutPocket({size:"M3", captive:true})` → subtract -> `/ai/print-fit.md` | BOSL2 `nut_trap_side()` | (use manifold-js printFit) |
+| Snap-fit, dovetail, or alignment-pin joint | `api.printFit.snapFit/dovetail/pin/socket(...)` -> `/ai/print-fit.md` | (build manually) | (use manifold-js printFit) |
+| Dial in printer fit tolerances | `api.printFit.clearanceCoupon({size:"M3"})` + `api.printFit.clearance(fit)` -> `/ai/print-fit.md` | (build manually) | (use manifold-js printFit) |
 | Print-in-place mechanism (screw, spinner, hinge, captive ball, slider) | Separate parts via `labeledUnion`, separated by a ~0.3–0.5 mm clearance gap; assert `componentCount` -> `/ai/mechanisms.md` | (model parts + clearance manually) | (model parts + clearance manually) |
 | Helical thread / auger / spiral flute | `cs.extrude(h, nDiv, 360*turns, scaleTop)` on a bumped/fluted profile -> `/ai/mechanisms.md` | `linear_extrude(twist=)`, or BOSL2 `threaded_rod()` | (use manifold-js) |
 | Smooth fillet / blend between two shapes (no edge-picking) | `a.smoothUnion(b, k)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
@@ -136,6 +141,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |
 | `mechanisms` | Before modeling a print-in-place / multi-part assembly that **moves** — a screw, spinner, hinge, captive ball, or slider. Covers clearance gaps, `componentCount` verification, twist-extrude threads/spirals, matched-taper nesting, and cutaway checks. |
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
+| `print-fit` | Before building parts that mate with hardware or each other — `api.printFit.*` screw holes, heat-set insert bosses, captive-nut pockets, alignment pins, dovetails, snap-fits, clearance presets, and a calibration coupon. |
 | `colors` | Before any paint operation — the picker decision tree, labelled construction, vision-driven painting, export behavior. |
 | `reference-images` | When the user attaches a photo or asks you to model from one — `setImages` shape, label conventions, the five-step photo-to-model loop. |
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |

@@ -485,6 +485,8 @@ Available tools you'll use most:
   replicad (BREP / OpenCASCADE — exact fillets / chamfers / STEP export),
   colors (paintRegion + paint helpers),
   print-safety (FDM rules before exporting STL/3MF),
+  print-fit (api.printFit.* screw holes / insert bosses / nut pockets / snap-fits / dovetails / pins / clearance presets),
+  mechanisms (print-in-place joints, hinges, sliders, captive balls, helical threads),
   reference-images (when the user attaches photos),
   file-io (programmatic export/import),
   annotations (when the user has drawn on the model).

@@ -177,9 +177,10 @@ self.onmessage = async (event: MessageEvent) => {
         if (sourceUsesBrep(code as string)) {
           await ensureBrepLoaded();
         }
-        // Pre-load Liberation Sans fonts if the code calls api.text / api.textSection.
+        // Pre-load Liberation Sans fonts if the code calls api.text / api.textSection,
+        // or uses api.printFit (clearanceCoupon engraves text labels internally).
         // Same lazy-load pattern as BREP — fonts are cached after the first run.
-        if (sourceUsesManifoldText(code as string)) {
+        if (sourceUsesManifoldText(code as string) || /\bapi\.printFit\b/.test(code as string) || /[{,]\s*printFit\s*[,}]/.test(code as string)) {
           await preloadTextFonts();
         }
         result = manifoldJsEngine.run(code as string, params ?? undefined);

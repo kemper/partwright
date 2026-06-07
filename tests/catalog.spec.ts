@@ -20,11 +20,11 @@ test.describe('Catalog page (static)', () => {
     expect(await page.evaluate(() => 'partwright' in window)).toBe(false);
 
     const sections = page.locator('main section[data-category]');
-    await expect(sections).toHaveCount(7);
+    await expect(sections).toHaveCount(8);
 
-    // The curated 'fidget-toys' group leads; engine-derived categories follow.
+    // Curated groups lead (fidget-toys, then print-fit); engine-derived categories follow.
     const ids = await sections.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.category));
-    expect(ids).toEqual(['fidget-toys', 'customizable', 'manifold', 'sdf', 'voxel', 'scad', 'brep']);
+    expect(ids).toEqual(['fidget-toys', 'print-fit', 'customizable', 'manifold', 'sdf', 'voxel', 'scad', 'brep']);
 
     const count = await sections.count();
     for (let i = 0; i < count; i++) {
@@ -46,12 +46,14 @@ test.describe('Catalog page (static)', () => {
 
     await expect(customizable.locator('span:has-text("Parametric")')).toHaveCount(tileCount);
     // Every customizable tile is parametric. Parametric badges may also appear in
-    // a curated group (e.g. the parametric fidget toys), but nowhere else — so the
+    // curated groups (fidget-toys, print-fit), but nowhere else — so the
     // page-wide badge total equals the customizable + curated-group badge counts.
     const fidget = page.locator('main section[data-category="fidget-toys"]');
     const fidgetBadges = await fidget.locator('span:has-text("Parametric")').count();
+    const printFit = page.locator('main section[data-category="print-fit"]');
+    const printFitBadges = await printFit.locator('span:has-text("Parametric")').count();
     const totalBadges = await page.locator('main span:has-text("Parametric")').count();
-    expect(totalBadges).toBe(tileCount + fidgetBadges);
+    expect(totalBadges).toBe(tileCount + fidgetBadges + printFitBadges);
 
     await expect(customizable).toContainText('Layer Cake');
   });
