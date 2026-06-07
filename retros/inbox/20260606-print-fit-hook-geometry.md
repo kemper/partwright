@@ -20,6 +20,12 @@
 - Setting `stemLen = hookReach` directly (rather than `hookReach - bendR`) makes the parameter semantics clearer (hookReach = arm projection from block face) and avoids the clearance failure that occurs when hookReach < 2*bendR.
 - The "tip inside block" failure was invisible in the stats (`isManifold: true`, `componentCount: 2`) — the boolean union silently absorbed the interpenetration. Only the PNG and user eyeballs caught it.
 
+## V3 Resolution (2026-06-07)
+
+Redesigned as a **Shaker peg hook**: stem rises above block top (+Z, visible from front), quarter-torus bends forward (+Y), tapered arm, ball cap. Key fix: design target defined in terms of all 4 model:preview views *before* writing any code. Verified `armR/hookBlockW` ratio (47%) and arm clearance `tipBaseY=24 > hookBlockT=20` with concrete numbers before coding. PNG confirmed correct from all 4 views on first attempt.
+
+Rotations used in V3: `.rotate([90,0,0]).rotate([0,0,-90])` (arc goes +Z→+Y). Different from what the retro's "Learned" section said for a downward arc — the correct formula depends on which direction the end tangent points. Catalog baked successfully, build/unit tests green.
+
 ## Longed For
 
 - A `model:preview` stat or warning for **self-intersection / interpenetrating sub-components before union**. If the tool reported "arm tip extends to Y=12, behind block face at Y=14" I'd have caught this immediately.
