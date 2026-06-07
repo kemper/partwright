@@ -3895,15 +3895,18 @@ async function main() {
     if (!currentMeshData) return;
     const settings = loadPrinterSettings();
     let isManifold = false;
+    let renderOnly = false;
     try {
       const geo = JSON.parse(geometryDataEl.textContent || '{}');
       isManifold = !!geo.isManifold;
+      renderOnly = geo.manifoldStatus === 'render-only (not manifold)';
     } catch { /* default false */ }
     const report: PrintabilityReport = analyzePrintability(currentMeshData, {
       bed: settings.bed,
       nozzleWidth: settings.nozzleWidth,
       overhangAngleDeg: settings.overhangAngleDeg,
       isManifold,
+      renderOnly,
     });
     const fails = report.checks.filter(c => c.level === 'fail');
     const warns = report.checks.filter(c => c.level === 'warn');
@@ -9776,6 +9779,7 @@ async function main() {
         nozzleWidth: opts?.nozzleWidth ?? settings.nozzleWidth,
         overhangAngleDeg: opts?.overhangAngleDeg ?? settings.overhangAngleDeg,
         isManifold: stats.isManifold === true,
+        renderOnly: stats.manifoldStatus === 'render-only (not manifold)',
       });
     },
 
