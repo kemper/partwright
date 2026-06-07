@@ -732,6 +732,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'companionDraftDebounceMs', v)}
         />
         <Field
+          label="Working-view camera save debounce"
+          unit="ms"
+          tooltip="After you finish orbiting or zooming the 3D viewport, the app waits this long before saving the camera angle to the session so it's restored on reload. Coalesces a burst of adjustments into one write. Lower it to capture the angle sooner; raise it to write less often."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.workCameraSaveDebounceMs}
+          value={c.ui.workCameraSaveDebounceMs}
+          min={0} max={5_000} integer
+          onChange={v => set('ui', 'workCameraSaveDebounceMs', v)}
+        />
+        <Field
           label="Surface preview debounce"
           unit="ms"
           tooltip="When adjusting parameters in the surface-modifier panel (texture, fuzzy, etc.), this debounce delays the preview render until you've stopped changing values for this long. Lower it for more responsive live preview; raise it if previewing is slow on your machine."

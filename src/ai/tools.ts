@@ -1811,9 +1811,11 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'setCode':
       return api.setCode(input.code as string);
     case 'runCode':
-      return api.run(input.code as string | undefined);
+      // preserveCamera: an AI re-render keeps the user's current orbit/zoom
+      // instead of snapping back to the default framing every turn.
+      return api.run(input.code as string | undefined, { preserveCamera: true });
     case 'runAndSave':
-      return api.runAndSave(input.code as string, input.label as string | undefined, input.assertions as Record<string, unknown> | undefined);
+      return api.runAndSave(input.code as string, input.label as string | undefined, input.assertions as Record<string, unknown> | undefined, { preserveCamera: true });
     case 'getParams':
       return api.getParams();
     case 'setParams':

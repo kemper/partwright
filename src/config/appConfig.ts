@@ -145,6 +145,10 @@ export interface AppConfig {
      *  draft is autosaved, so companion edits survive a reload without writing
      *  to IndexedDB on every keystroke. */
     companionDraftDebounceMs: number;
+    /** Debounce delay (ms) after the user finishes an orbit/zoom before the
+     *  interactive working-view camera is persisted to the session row, so a
+     *  burst of small adjustments coalesces into one IndexedDB write. */
+    workCameraSaveDebounceMs: number;
     /** Debounce delay (ms) for the surface-modifier live preview. */
     surfacePreviewDebounceMs: number;
     /** Debounce delay (ms) for the relief import 2D preview. */
@@ -247,6 +251,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     tooltipDelayMs: 150,
     codeEditorErrorIdleMs: 800,
     companionDraftDebounceMs: 600,
+    workCameraSaveDebounceMs: 500,
     surfacePreviewDebounceMs: 250,
     reliefPreviewDebounceMs: 120,
     reliefPreview3dDebounceMs: 250,
