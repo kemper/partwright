@@ -435,6 +435,36 @@ test.describe('voxel engine', () => {
     expect(result.isManifold).toBe(true);
   });
 
+  test('base-pinned smooth (flatBottom / baseLayers / lockBox) stays a valid manifold', async ({ page }) => {
+    // The pinning options keep part of the model from rounding so it prints
+    // flat. The real-WASM proof: each still feeds ofMesh as a single watertight
+    // component (topology is untouched — only some vertices are held in place).
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      const flat = await pw.run(`
+        const { voxels } = api;
+        return voxels().sphere([0,0,8], 8, '#e76ba8').smooth({ iterations: 4, flatBottom: true });
+      `);
+      const base = await pw.run(`
+        const { voxels } = api;
+        return voxels().sphere([0,0,10], 8, '#6cf').fillBox([-9,-9,0],[9,9,2], '#3a3a4a').smooth({ baseLayers: 3 });
+      `);
+      const locked = await pw.run(`
+        const { voxels } = api;
+        return voxels().fillBox([0,0,0],[7,7,9],'#88aaff').smooth({ iterations: 4, lockBox: [[0,0,0],[7,7,1]] });
+      `);
+      return { flat, base, locked };
+    });
+    for (const r of [result.flat, result.base, result.locked]) {
+      expect(r.error).toBeFalsy();
+      expect(r.isManifold).toBe(true);
+      expect(r.componentCount).toBe(1);
+      expect(r.volume).toBeGreaterThan(0);
+    }
+  });
+
   test('exportVOXData round-trips a voxel model back through the parser', async ({ page }) => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -7,7 +7,7 @@
 // unit-tested directly in the vitest tier and imported into the geometry
 // Worker without pulling in browser globals.
 
-import { assertNumber, assertNumberTuple, assertObject, assertEnum, assertNoUnknownKeys, ValidationError } from '../../validation/apiValidation';
+import { assertNumber, assertNumberTuple, assertObject, assertEnum, assertBoolean, assertArray, assertNoUnknownKeys, ValidationError } from '../../validation/apiValidation';
 
 export type Vec3 = [number, number, number];
 /** A color the sandbox API accepts: `[r,g,b]` 0–255, `'#rgb'`/`'#rrggbb'`, or a
@@ -72,8 +72,42 @@ export interface GridBounds { min: Vec3; max: Vec3 }
 /** How a grid is turned into a mesh. `blocks` = hard cube faces (default);
  *  `smooth` = Taubin-rounded edges (optionally over a `detail`× supersampled
  *  grid for finer rounding). Carried on the grid so the mesher/engine can read
- *  it off the returned value. */
-export interface Surfacing { mode: 'blocks' | 'smooth'; iterations: number; detail: number }
+ *  it off the returned value.
+ *
+ *  The optional `flatBottom` / `baseLayers` / `lockBox` fields make smoothing
+ *  selective so a model can keep a flat or blocky base for printing — see
+ *  `VoxelGrid.smooth`. They are in grid (voxel) coordinates; the mesher scales
+ *  them to the supersampled mesh when `detail > 1`. */
+export interface Surfacing {
+  mode: 'blocks' | 'smooth';
+  iterations: number;
+  detail: number;
+  /** Pin the Z of the bottom-most plane so the build-plate face stays flat. */
+  flatBottom?: boolean;
+  /** Keep the bottom N voxel layers fully blocky (a solid, sharp pedestal). */
+  baseLayers?: number;
+  /** Keep the voxels in this inclusive box (voxel coords) blocky. */
+  lockBox?: { min: Vec3; max: Vec3 };
+}
+
+/** Validate + normalize a `lockBox` argument (`[[x0,y0,z0],[x1,y1,z1]]`, in any
+ *  corner order) into a sorted `{ min, max }` of integer voxel coordinates. */
+function normalizeLockBox(val: unknown): { min: Vec3; max: Vec3 } {
+  const arr = assertArray(val, 'smooth.lockBox');
+  if (arr.length !== 2) {
+    throw new ValidationError(`smooth.lockBox must be two corners [[x0,y0,z0],[x1,y1,z1]], got length=${arr.length}. See /ai.md#argument-validation`);
+  }
+  const a = assertNumberTuple(arr[0], 3, 'smooth.lockBox[0]');
+  const b = assertNumberTuple(arr[1], 3, 'smooth.lockBox[1]');
+  for (let i = 0; i < 3; i++) {
+    if (!Number.isInteger(a[i])) throw new ValidationError(`smooth.lockBox[0][${i}] must be an integer voxel coordinate, got ${a[i]}. See /ai.md#argument-validation`);
+    if (!Number.isInteger(b[i])) throw new ValidationError(`smooth.lockBox[1][${i}] must be an integer voxel coordinate, got ${b[i]}. See /ai.md#argument-validation`);
+  }
+  return {
+    min: [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2])],
+    max: [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])],
+  };
+}
 
 /** A mutable sparse voxel grid. Builder methods chain (`return this`). */
 export class VoxelGrid {
@@ -286,19 +320,34 @@ export class VoxelGrid {
   // ---- Surfacing (how the grid is meshed) -------------------------------
 
   /** Select rounded-edge surfacing. Accepts an iteration count or
-   *  `{ iterations, detail }`; more iterations = rounder, higher detail
-   *  (supersample factor) = finer rounding on coarse models. Chainable. */
-  smooth(opts: number | { iterations?: number; detail?: number } = {}): this {
+   *  `{ iterations, detail, flatBottom, baseLayers, lockBox }`; more iterations
+   *  = rounder, higher detail (supersample factor) = finer rounding on coarse
+   *  models. The base-pinning options keep part of the model from rounding so
+   *  it stays printable:
+   *    - `flatBottom` — pin the bottom plane's Z so the build-plate face stays
+   *      flat (edges/sides still round).
+   *    - `baseLayers` — keep the bottom N voxel layers fully blocky (a solid
+   *      pedestal under a smoothed body).
+   *    - `lockBox` — keep the voxels in `[[x0,y0,z0],[x1,y1,z1]]` (voxel coords)
+   *      blocky, for a custom base region.
+   *  Chainable. */
+  smooth(opts: number | { iterations?: number; detail?: number; flatBottom?: boolean; baseLayers?: number; lockBox?: [Vec3, Vec3] } = {}): this {
     let iterations = 2, detail = 1;
+    let flatBottom: boolean | undefined;
+    let baseLayers: number | undefined;
+    let lockBox: { min: Vec3; max: Vec3 } | undefined;
     if (typeof opts === 'number') {
       iterations = assertNumber(opts, 'smooth(iterations)', { integer: true, min: 1, max: 8 })!;
     } else {
       const o = assertObject(opts, 'smooth(opts)')!;
-      assertNoUnknownKeys(o, ['iterations', 'detail'], 'smooth(opts)');
+      assertNoUnknownKeys(o, ['iterations', 'detail', 'flatBottom', 'baseLayers', 'lockBox'], 'smooth(opts)');
       if (o.iterations !== undefined) iterations = assertNumber(o.iterations, 'smooth.iterations', { integer: true, min: 1, max: 8 })!;
       if (o.detail !== undefined) detail = assertNumber(o.detail, 'smooth.detail', { integer: true, min: 1, max: 4 })!;
+      if (o.flatBottom !== undefined) flatBottom = assertBoolean(o.flatBottom, 'smooth.flatBottom')!;
+      if (o.baseLayers !== undefined) baseLayers = assertNumber(o.baseLayers, 'smooth.baseLayers', { integer: true, min: 1, max: HALF })!;
+      if (o.lockBox !== undefined) lockBox = normalizeLockBox(o.lockBox);
     }
-    this._surfacing = { mode: 'smooth', iterations, detail };
+    this._surfacing = { mode: 'smooth', iterations, detail, flatBottom, baseLayers, lockBox };
     return this;
   }
 

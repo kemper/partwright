@@ -16,8 +16,8 @@
 // Pure logic (no DOM/WASM): unit-tested in the vitest tier.
 
 import type { MeshData } from '../types';
-import { VoxelGrid, colorComponents } from './grid';
-import { taubinSmooth, scaleMeshPositions } from './smooth';
+import { VoxelGrid, colorComponents, type Surfacing } from './grid';
+import { taubinSmooth, scaleMeshPositions, type SmoothPins } from './smooth';
 
 /** Per-triangle voxel coordinate provenance. `triVoxel` is `numTri * 3`,
  *  flattened (x, y, z, x, y, z, …), giving the integer coord of the voxel
@@ -116,11 +116,33 @@ export function gridToMeshData(grid: VoxelGrid): MeshData {
 export function meshGrid(grid: VoxelGrid): MeshData {
   const surf = grid.surfacing();
   if (surf.mode !== 'smooth') return gridToMeshData(grid);
-  const dense = surf.detail > 1 ? grid.supersample(surf.detail) : grid;
+  const detail = surf.detail;
+  const dense = detail > 1 ? grid.supersample(detail) : grid;
   let mesh = gridToMeshData(dense);
-  mesh = taubinSmooth(mesh, surf.iterations);
-  if (surf.detail > 1) scaleMeshPositions(mesh, 1 / surf.detail);
+  mesh = taubinSmooth(mesh, surf.iterations, resolveSmoothPins(surf, detail));
+  if (detail > 1) scaleMeshPositions(mesh, 1 / detail);
   return mesh;
+}
+
+/** Translate grid-space base-pinning options into mesh-space `SmoothPins`.
+ *  `gridToMeshData` runs on the (possibly supersampled) grid, so voxel-coord
+ *  thresholds scale by `detail`; `flatBottom` is plane-relative and needs none.
+ *  A voxel at index i spans corner range [i, i+1], so a lockBox over voxels
+ *  [min..max] covers corners [min, max+1]. Returns undefined when nothing is
+ *  pinned (the smoother then takes its plain fast path). */
+function resolveSmoothPins(surf: Surfacing, detail: number): SmoothPins | undefined {
+  if (!surf.flatBottom && surf.baseLayers === undefined && !surf.lockBox) return undefined;
+  const pins: SmoothPins = {};
+  if (surf.flatBottom) pins.flatBottom = true;
+  if (surf.baseLayers !== undefined) pins.baseBandZ = surf.baseLayers * detail;
+  if (surf.lockBox) {
+    const { min, max } = surf.lockBox;
+    pins.lockBox = {
+      min: [min[0] * detail, min[1] * detail, min[2] * detail],
+      max: [(max[0] + 1) * detail, (max[1] + 1) * detail, (max[2] + 1) * detail],
+    };
+  }
+  return pins;
 }
 
 /** Block-mesh a grid AND record which voxel each triangle came from. Voxel

@@ -134,6 +134,36 @@ Smoothing only moves vertices — topology is unchanged — so per-voxel colors 
 preserved and the result stays a watertight manifold (exports/paint still work).
 Call `.blocky()` to switch back to hard faces (the default).
 
+### Keeping a flat / blocky base (printability)
+
+Plain `.smooth()` rounds the bottom too, so the model rocks on the build plate.
+Three options pin part of the model so it stays printable while the rest rounds:
+
+- **`flatBottom: true`** — pins the Z of the bottom-most plane. The build-plate
+  face stays perfectly flat; sides and edges still round. The cheap fix for
+  "it won't sit flat" — reach for this first.
+- **`baseLayers: N`** — keeps the bottom `N` voxel layers fully **blocky** (a
+  solid, sharp pedestal) while the body above smooths. Use when you want a
+  deliberate base/stand, or sharp first-layer walls for adhesion.
+- **`lockBox: [[x0,y0,z0],[x1,y1,z1]]`** — keeps the voxels in that inclusive
+  box (voxel coordinates, any corner order) blocky, for a custom base region
+  that isn't the whole bottom.
+
+```js
+// Smooth character on a perfectly flat bottom face:
+return voxels().sphere([0,0,6], 6, '#e7b').fillBox([-2,-2,0],[2,2,1],'#888')
+  .smooth({ iterations: 3, flatBottom: true });
+
+// Smooth body on a sharp 2-layer pedestal:
+return voxels().sphere([0,0,8], 6, '#6cf').fillBox([-7,-7,0],[7,7,2],'#444')
+  .smooth({ baseLayers: 2 });
+```
+
+All three combine with `iterations` / `detail`, and the pinned region acts as a
+fixed boundary the smoothed part still relaxes toward — so the seam between the
+blocky base and the rounded body stays clean. (`baseLayers` already covers the
+bottom plane, so it subsumes `flatBottom`.)
+
 **Smoothing wants features at least 2 voxels thick.** A `λ` pass pulls each
 vertex toward its neighbours, so smoothing a 1-voxel-thick wall or a
 `hollow(1)` shell can draw opposite faces together and self-intersect (the mesh
