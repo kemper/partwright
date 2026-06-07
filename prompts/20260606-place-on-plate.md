@@ -119,3 +119,32 @@ blockers); added the one defensive nit it raised — `bestFlatDownRotation` now
 skips non-finite triangles (`!(area2 >= 1e-12)`) so a NaN vertex can't poison the
 chosen rotation, even though `placementBox()` already rejects non-finite meshes
 before the real callers reach it.
+
+## Follow-up: merge latest main + intelligently handle recent features
+
+Human: update from latest main, respect recent work, merge successfully, and
+intelligently consider recent features.
+
+**Conformed to the new shared tool-panel standard.** While I was out, `main`
+landed `src/ui/toolPanel.ts` (PR #475) — a unified shell (grey `zinc-800/95`,
+`z-20`, shared header/close/toggle classes) that every viewport tool panel now
+uses, plus a `tool-panel-consistency.spec.ts` audit. My `placeModal.ts` was
+cloned from the *old* resize panel (`z-[60]`, `zinc-900`, sky accents), so it
+would have stuck out. Migrated it onto the shared `TOOL_PANEL_*` constants and
+switched sky→blue, matching how Resize/Surface were migrated (constants, not the
+full `createToolPanelShell` — same level of adoption as the siblings). The
+consistency audit + my own e2e both pass; the panel now docks in the new
+horizontal Tools row as one family.
+
+**Routed voxel models through native voxel transforms (recent feature: voxel
+`rotate()`/`translate()`).** Previously any non-manifold-js model *baked to a
+mesh*, which silently destroyed a voxel sculpt on a Place/Rotate click — bad now
+that voxels are first-class. Key realization: `VoxelGrid.translate([dx,dy,dz])`
+takes the same vector shape as `Manifold.translate` and self-rounds to the
+lattice, so my generic `.translate([…])` codegen works on a voxel grid *as-is*.
+So voxel **drop/center now stay parametric (stay voxel)**. Voxel rotation can't
+(the grid's `rotate('z',90)` is a different, 90°-only API), so rotate/lay-flat
+bake — but now with an explicit warning ("…rotate in code with v.rotate('z',
+90)") instead of silently converting the voxel to a mesh. Gated per-op via
+`stepsSupportParametric(steps)` (manifold-js: any; voxel: translate-only).
+New e2e covers both branches.

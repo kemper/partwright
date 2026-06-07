@@ -133,4 +133,38 @@ test.describe('Place on plate', () => {
     expect(result.after.z[0]).toBeCloseTo(0, 1);
     expect(result.after.z[1] - result.after.z[0]).toBeCloseTo(4, 0);
   });
+
+  test('voxel models drop parametrically (stay voxel) but rotate bakes with a warning', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('voxel-place');
+      await pw.run('const { Manifold } = api;\nreturn Manifold.cube([12, 12, 12]);');
+      await pw.voxelizeModel({ resolution: 16 }); // switch the session into the voxel engine
+      // Replace with an explicit voxel box floating off the floor (z 8..15).
+      await pw.run('const v = api.voxels();\nv.fillBox([0, 0, 8], [7, 7, 15], "#88aaff");\nreturn v;');
+      const langStart = pw.getActiveLanguage();
+      // Drop: translate-only → stays a parametric voxel program.
+      const drop = await pw.placeModel({ dropToFloor: true, mode: 'auto' });
+      const afterDrop = { lang: pw.getActiveLanguage(), code: pw.getCode(), z0: pw.getGeometryData().boundingBox?.z?.[0] };
+      // Rotate: voxel grid has no .rotate([x,y,z]) → bakes to a mesh, with a warning.
+      const rot = await pw.rotateModel({ z: 90, mode: 'auto' });
+      const afterRot = { lang: pw.getActiveLanguage() };
+      return { langStart, drop, afterDrop, rot, afterRot };
+    });
+
+    expect(result.langStart).toBe('voxel');
+    // Drop stayed a voxel program (not baked to a manifold-js mesh).
+    expect(result.drop.error).toBeUndefined();
+    expect(result.drop.mode).toBe('parametric');
+    expect(result.afterDrop.lang).toBe('voxel');
+    expect(result.afterDrop.code).toContain('api.voxels()'); // original voxel program preserved
+    expect(result.afterDrop.code).toContain('.translate(');
+    expect(result.afterDrop.code).not.toContain('Manifold.ofMesh');
+    expect(result.afterDrop.z0).toBeCloseTo(0, 0);
+    // Rotate baked to a mesh and said so.
+    expect(result.rot.error).toBeUndefined();
+    expect(Array.isArray(result.rot.warnings)).toBe(true);
+    expect(result.rot.warnings.join(' ')).toMatch(/voxel/i);
+    expect(result.afterRot.lang).toBe('manifold-js');
+  });
 });

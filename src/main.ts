@@ -7141,13 +7141,30 @@ async function main() {
     return { min, max };
   }
 
-  /** Parametric transforms (wrap the source in an IIFE + `.rotate`/`.translate`)
-   *  are only safe for manifold-js models with no manual paint: world-space
-   *  paint-region descriptors can't follow a parametric move, so those models
-   *  must bake (which carries per-triangle colors). Model-declared label colors
+  /** Whether the active model has *any* parametric transform path (so the panel
+   *  offers the write-back choice). manifold-js handles every transform; voxel
+   *  code is also JS and its grid has a self-rounding `.translate([…])`, so
+   *  translate-only ops stay parametric (rotation needs voxel's 90° `.rotate`,
+   *  handled per-op below). Manual paint blocks both: world-space paint-region
+   *  descriptors can't follow a parametric move. Model-declared label colors
    *  re-resolve from the re-run code, so they don't block parametric. */
   function canPlaceParametric(): boolean {
-    return getActiveLanguage() === 'manifold-js' && !hasColorRegions();
+    if (hasColorRegions()) return false;
+    const lang = getActiveLanguage();
+    return lang === 'manifold-js' || lang === 'voxel';
+  }
+
+  /** Whether *this specific* transform chain can be applied parametrically.
+   *  manifold-js: any chain. voxel: translate-only (its grid lacks the generic
+   *  `.rotate([x,y,z])` — voxel rotation is 90°-lattice via `v.rotate('z',90)`,
+   *  so rotate/lay-flat bake). Everything else (scad/replicad, or any manual
+   *  paint): bake. */
+  function stepsSupportParametric(steps: TransformStep[]): boolean {
+    if (hasColorRegions()) return false;
+    const lang = getActiveLanguage();
+    if (lang === 'manifold-js') return true;
+    if (lang === 'voxel') return steps.every(s => s.kind === 'translate');
+    return false;
   }
 
   /** Commit a transform chain as editable code: extend the source's wrapper with
@@ -7166,15 +7183,23 @@ async function main() {
   /** Apply a rigid transform chain to the current model and save a version,
    *  picking the write-back mode ('auto' → parametric when safe, else bake). */
   async function commitTransform(steps: TransformStep[], label: string, mode: 'parametric' | 'bake' | 'auto' | undefined, preserveColor: boolean | undefined): Promise<Record<string, unknown>> {
+    const canParam = stepsSupportParametric(steps);
     let resolved: 'parametric' | 'bake' = mode === undefined || mode === 'auto'
-      ? (canPlaceParametric() ? 'parametric' : 'bake')
+      ? (canParam ? 'parametric' : 'bake')
       : mode;
+    if (resolved === 'parametric' && !canParam) resolved = 'bake';
     const warnings: string[] = [];
-    if (resolved === 'parametric' && !canPlaceParametric()) {
-      resolved = 'bake';
-      warnings.push(getActiveLanguage() === 'manifold-js'
-        ? 'Model has manual paint — baked to a mesh so the paint is preserved.'
-        : 'Parametric transforms are only available for manifold-js models — baked to a mesh.');
+    // Warn whenever we *fall back* to baking (not when the user explicitly chose
+    // 'bake'): baking converts a voxel/SCAD/BREP model into a manifold-js mesh,
+    // a notable side effect the user didn't necessarily ask for.
+    if (resolved === 'bake' && mode !== 'bake' && !canParam) {
+      if (hasColorRegions()) {
+        warnings.push('Model has manual paint — baked to a mesh so the paint is preserved.');
+      } else if (getActiveLanguage() === 'voxel') {
+        warnings.push("Voxel rotation needs 90° steps — baked to a mesh. To keep it a voxel, rotate in code with v.rotate('z', 90).");
+      } else {
+        warnings.push("This model type can't transform parametrically — baked to a mesh.");
+      }
     }
     let result: Record<string, unknown>;
     if (resolved === 'parametric') {

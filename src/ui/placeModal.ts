@@ -13,6 +13,7 @@ import { registerCommands } from './commandPalette';
 import { showToast } from './toast';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
+import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
 
 type Mode = 'parametric' | 'bake' | 'auto';
 type PlaceOpts = {
@@ -85,18 +86,20 @@ export function openPlaceModal(api: PlaceApi): void {
   const syncColorRow = () => { if (colorRow) colorRow.style.display = mode === 'bake' ? '' : 'none'; };
 
   const container = getViewportContainer();
-  const panel = el('div', 'absolute z-[60] bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,320px)] select-none flex flex-col');
+  // Shared tool-panel chrome (grey shell, z-20, unified header/close) so this
+  // reads as one family with the other viewport tool panels.
+  const panel = el('div', `${TOOL_PANEL_CLASS} text-zinc-100 w-[min(94vw,320px)] max-h-[calc(100%-3.5rem)] select-none`);
 
-  // Header — drag handle + title + × button.
-  const header = el('div', 'flex items-center justify-between px-4 py-3 border-b border-zinc-700 shrink-0');
-  header.append(el('h2', 'text-sm font-semibold', 'Place / Rotate'));
-  const closeBtn = el('button', 'text-zinc-400 hover:text-zinc-100 text-lg leading-none cursor-pointer', '×');
+  // Header — drag handle + title + × button (shared tool-panel chrome).
+  const header = el('div', TOOL_PANEL_HEADER);
+  header.append(el('h2', TOOL_PANEL_TITLE, 'Place / Rotate'));
+  const closeBtn = el('button', TOOL_PANEL_CLOSE, '×');
   closeBtn.setAttribute('aria-label', 'Close placement panel');
   header.append(closeBtn);
   panel.append(header);
   const dragHandle = attachViewportPanelDrag(header, panel);
 
-  const body = el('div', 'p-4 flex flex-col gap-3 max-h-[70vh] overflow-y-auto');
+  const body = el('div', 'px-4 py-3 flex flex-col gap-3 overflow-y-auto flex-1 min-h-0');
   panel.append(body);
 
   body.append(el('p', 'text-[11px] text-zinc-400 leading-snug',
@@ -133,7 +136,7 @@ export function openPlaceModal(api: PlaceApi): void {
   });
   rotWrap.append(axisRow);
   const rotBtnRow = el('div', 'flex items-center gap-2');
-  const rotateBtn = el('button', 'flex-1 px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium', 'Apply rotation');
+  const rotateBtn = el('button', 'flex-1 px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium', 'Apply rotation');
   const rotResetBtn = el('button', 'px-2 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs', 'Reset');
   rotResetBtn.addEventListener('click', () => { axisInputs.x.value = '0'; axisInputs.y.value = '0'; axisInputs.z.value = '0'; });
   rotBtnRow.append(rotateBtn, rotResetBtn);
@@ -146,7 +149,7 @@ export function openPlaceModal(api: PlaceApi): void {
   if (canParametric) {
     const mkRadio = (value: 'parametric' | 'bake', label: string, hint: string): HTMLElement => {
       const row = el('label', 'flex items-start gap-2 text-xs text-zinc-300 cursor-pointer');
-      const radio = el('input', 'accent-sky-500 mt-0.5');
+      const radio = el('input', 'accent-blue-500 mt-0.5');
       radio.type = 'radio';
       radio.name = 'place-writeback';
       radio.value = value;
@@ -166,14 +169,14 @@ export function openPlaceModal(api: PlaceApi): void {
     modeWrap.append(el('p', 'text-[11px] text-zinc-500 leading-snug',
       hasColor
         ? 'This model has manual paint, so the result is baked to a mesh (keeps the paint).'
-        : 'Baked to a mesh (parametric placement is only available for manifold-js models).'));
+        : 'Baked to a mesh (editable-code transforms need a manifold-js or voxel model).'));
   }
   body.append(modeWrap);
 
   // ---- Preserve colors (bake path only) ----
   if (hasColor) {
     colorRow = el('label', 'flex items-center gap-2 text-xs text-zinc-300 cursor-pointer');
-    const colorCheck = el('input', 'accent-sky-500');
+    const colorCheck = el('input', 'accent-blue-500');
     colorCheck.type = 'checkbox';
     colorCheck.checked = preserveColor;
     colorCheck.addEventListener('change', () => { preserveColor = colorCheck.checked; });
