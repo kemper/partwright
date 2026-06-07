@@ -306,7 +306,10 @@ export function toggleSuffix(toggles: ChatToggles): string {
     ];
     // When 3D-printing optimization is also on, fold the design rules into the
     // plan so the proposed approach is print-aware from the outset.
-    if (toggles.printOptimized) plan.push(printableGuidance());
+    if (toggles.printOptimized) {
+      plan.push('');
+      plan.push(printableGuidance());
+    }
     return plan.join('\n');
   }
 
