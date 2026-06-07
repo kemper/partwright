@@ -46,6 +46,7 @@ import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { confirmDialog, promptDialog } from './ui/dialogs';
+import { updateAppHistory, currentURLPathAndSearch } from './ui/appHistory';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive } from './ui/aiPanel';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
@@ -1914,20 +1915,6 @@ function getTabFromURL(): TabName {
   if (params.has('gallery')) return 'gallery';
   return 'interactive';
 }
-
-function currentURLPathAndSearch(): string {
-  return `${window.location.pathname}${window.location.search}`;
-}
-
-function updateAppHistory(url: string, mode: 'push' | 'replace'): void {
-  if (url === currentURLPathAndSearch()) return;
-  if (mode === 'push') {
-    window.history.pushState(null, '', url);
-  } else {
-    window.history.replaceState(null, '', url);
-  }
-}
-
 
 // Hide landing/help and show the editor UI
 function showEditorUI(landingEl: HTMLElement | null, helpEl: HTMLElement | null, editorUI: HTMLElement) {
@@ -5484,13 +5471,21 @@ async function main() {
   let _workCameraSaveTimer: number | undefined;
   onOrbitEnd(() => {
     if (_workCameraSaveTimer !== undefined) clearTimeout(_workCameraSaveTimer);
+    // Capture which session this orbit belongs to. setSessionWorkCamera writes
+    // to whatever session is active *at fire time*, so if the user switches
+    // sessions within the debounce window the pending save would otherwise
+    // stamp the new session's row with the old session's pose. Discard the
+    // save if the active session changed before the timer elapses.
+    const orbitedSessionId = getState().session?.id ?? null;
     // Snapshot inside the debounced callback, not here: 'end' fires at gesture
     // release while OrbitControls damping is still gliding, so reading the pose
     // now would persist a pre-settle angle. By the time the debounce elapses the
     // camera has come to rest, so the saved view matches what the user sees.
     _workCameraSaveTimer = window.setTimeout(() => {
       _workCameraSaveTimer = undefined;
-      if (currentMeshData === null || !getState().session) return;
+      if (currentMeshData === null) return;
+      const cur = getState().session;
+      if (!cur || cur.id !== orbitedSessionId) return; // session changed — discard
       void setSessionWorkCamera(getCameraPose());
     }, getConfig().ui.workCameraSaveDebounceMs);
   });
