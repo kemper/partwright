@@ -24,6 +24,7 @@ import { diffGrids, type VoxelEditOps } from '../geometry/voxel/editCodegen';
 import { generateVoxelImportCode } from '../import/imageToVoxel';
 import { addPointerSuppressor, isPointerOverModel, getRenderer } from '../renderer/viewport';
 import { pickFace } from './facePicker';
+import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
 
 export type { BrushShape } from '../geometry/voxel/edits';
 
@@ -201,6 +202,15 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
   cbMeshUpdate = callbacks.onMeshUpdate;
   cbLockChange = callbacks.onLockChange ?? null;
   cbStateChange = callbacks.onStateChange ?? null;
+  // Exclusive with the mesh-paint and annotate tools: they each attach a
+  // capture-phase pointer handler to the same canvas, so only one may own it.
+  // UI visibility alone doesn't enforce this (the AI API can drive either tool
+  // regardless of the active language), so coordinate through modeExclusion.
+  deactivateMode('paint');
+  deactivateMode('imagePaint');
+  deactivateMode('pen', { keepSession: false });
+  deactivateMode('text', { keepSession: false });
+  deactivateMode('select', { keepSession: false });
   attachPointerHandler();
   cbLockChange?.(true);
   cbMeshUpdate(run.mesh);
@@ -228,6 +238,10 @@ export function deactivate(): void {
   strokeLastVoxel = null;
   notify?.();
 }
+
+// Take our turn in the exclusive-tool registry so activating a mesh-paint or
+// annotate tool tears the studio down (and vice-versa, via activate() above).
+registerExclusiveMode('voxelStudio', () => deactivate());
 
 /** Paint or erase the voxel that owns the given triangle — the legacy
  *  single-voxel primitive driven by the `eraser` flag. Kept for the

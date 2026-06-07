@@ -30,7 +30,10 @@ import {
   canRedoRegion,
   redoLastRegion,
 } from './regions';
-import { getCurrentMesh as getPaintMesh } from './paintMode';
+// Read the current mesh through the paintAccessors leaf (published by paintMode)
+// rather than importing paintMode directly — same one-way dependency the drag
+// tools (boxDrag/slabDrag) use, so this stays a leaf read, not a back-edge.
+import { getCurrentMesh as getPaintMesh } from './paintAccessors';
 import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { viewportToolsMount } from '../ui/popoverMenu';
@@ -176,6 +179,7 @@ function toggleImagePaint(): void {
   } else {
     // Close conflicting modes
     deactivateMode('paint');
+    deactivateMode('voxelStudio');
     closeSimplifyMenu();
     closeAnnotate();
     closeAnnotateText();

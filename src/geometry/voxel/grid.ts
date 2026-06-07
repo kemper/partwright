@@ -141,6 +141,7 @@ export class VoxelGrid {
 
   /** Color of the voxel at (x,y,z), or null if empty. */
   get(x: number, y: number, z: number): number | null {
+    if (x < COORD_MIN || x > COORD_MAX || y < COORD_MIN || y > COORD_MAX || z < COORD_MIN || z > COORD_MAX) return null;
     const v = this.cells.get(packKey(x | 0, y | 0, z | 0));
     return v === undefined ? null : v;
   }
@@ -266,12 +267,22 @@ export class VoxelGrid {
     return this;
   }
 
-  /** Rotate the whole grid about the origin around one axis, by a multiple of
-   *  90° (the only angles that keep voxels on the integer lattice). Positive
-   *  degrees follow the right-hand rule (CCW looking down the +axis). Rotation
-   *  is about (0,0,0), so `translate` first if you want a different pivot.
-   *  Handy for reorienting a model built facing one way — e.g. spin a +Y-facing
-   *  figure to face the −Y front with `v.rotate('z', 180)`. Chainable.
+  /** Rotate the whole grid about the world origin around one axis, by a
+   *  multiple of 90° (the only angles that keep voxels on the integer lattice).
+   *  Positive degrees follow the right-hand rule (CCW looking down the +axis).
+   *  Rotation is about (0,0,0), so `translate` first if you want a different
+   *  pivot. Handy for reorienting a model built facing one way — e.g. spin a
+   *  +Y-facing figure to face the −Y front with `v.rotate('z', 180)`. Chainable.
+   *
+   *  A voxel at integer coord `n` owns the cube `[n, n+1]`, so its CENTER is at
+   *  `n+0.5`. We rotate the centres about the origin and convert back to the
+   *  min-corner (`round(rotate(n+0.5) − 0.5)`); rotating the min-corner directly
+   *  would pivot about (−0.5,−0.5,−0.5) and shift the solid by a voxel per turn.
+   *  (This is why `mirror` uses `n → −1−n` rather than `n → −n`.)
+   *
+   *  NOTE: a stored `smooth({ lockBox })` region is in voxel coords and is NOT
+   *  remapped by rotate; set surfacing/`lockBox` AFTER any rotate/translate.
+   *  `flatBottom`/`baseLayers` are plane-relative and stay correct.
    *
    *  Voxels rotated past the asymmetric grid edge (COORD_MIN..COORD_MAX) are
    *  dropped, same as `translate`/`mirror`; models near the origin are safe. */
@@ -283,12 +294,15 @@ export class VoxelGrid {
     if (t === 0) return this;
     const c = t === 180 ? -1 : 0;          // cos of 0/90/180/270 as exact ints
     const s = t === 90 ? 1 : t === 270 ? -1 : 0; // sin of same
+    // Rotate cube centres about the origin, then map back to the min-corner.
+    // (p+0.5,q+0.5)·R − 0.5 is an exact integer for 90° steps; round defensively.
+    const r = (p: number, q: number, cc: number, ss: number) => Math.round((p + 0.5) * cc + (q + 0.5) * ss - 0.5);
     const rotated = new Map<number, number>();
     this.forEach((x, y, z, col) => {
       let nx = x, ny = y, nz = z;
-      if (ax === 'z') { nx = x * c - y * s; ny = x * s + y * c; }
-      else if (ax === 'x') { ny = y * c - z * s; nz = y * s + z * c; }
-      else { nx = x * c + z * s; nz = z * c - x * s; }
+      if (ax === 'z') { nx = r(x, y, c, -s); ny = r(x, y, s, c); }
+      else if (ax === 'x') { ny = r(y, z, c, -s); nz = r(y, z, s, c); }
+      else { nx = r(x, z, c, s); nz = r(x, z, -s, c); }
       if (inRange(nx, ny, nz)) rotated.set(packKey(nx, ny, nz), col);
     });
     this.cells = rotated;

@@ -15,8 +15,12 @@
 // that per-transition option, so we keep the exact existing calls — only the
 // import edge changes.
 
-/** Identifiers for the mutually-exclusive viewport tools. */
-export type ExclusiveMode = 'paint' | 'imagePaint' | 'pen' | 'text' | 'select';
+/** Identifiers for the mutually-exclusive viewport tools. `voxelStudio` is the
+ *  voxel-language click-to-edit canvas; like the mesh-paint tools it attaches a
+ *  capture-phase pointer handler, so it must take its turn through this registry
+ *  rather than relying on UI visibility (the AI API can drive either regardless
+ *  of the active language). */
+export type ExclusiveMode = 'paint' | 'imagePaint' | 'pen' | 'text' | 'select' | 'voxelStudio';
 
 /** Options forwarded verbatim to a mode's `forceDeactivate`. Only the annotate
  *  sub-modes honour `keepSession`; paint ignores it. */
