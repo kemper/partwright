@@ -42,6 +42,32 @@ node scripts/generate-catalog.cjs http://localhost:5173   # in another
 Re-run any time `examples/` or the entry list at the top of the script
 changes.
 
+## Auditing thumbnails for staleness
+
+A thumbnail (and the geometry stats baked alongside it) is **not**
+automatically re-rendered when an entry's code changes — so a redesigned
+model can keep showing its old tile until someone re-bakes it. To catch
+that drift across the whole catalog:
+
+```bash
+npm run dev                                  # in one terminal
+npm run audit:catalog -- http://localhost:5173   # in another
+```
+
+`scripts/catalog-audit.cjs` re-imports every entry, re-runs its stored
+code through the real app engine (covers all four: manifold-js / scad /
+replicad / voxel), and compares the freshly-computed geometry against the
+stats that were baked with the stored thumbnail. A material **volume** or
+**component-count** divergence means the thumbnail is stale (triangle-count
+wobble alone is just tessellation noise and is ignored). Set
+`ONLY=id1,id2` to audit a subset. Fresh PNGs for flagged entries land in
+`/tmp/catalog-audit/` for eyeballing.
+
+To fix a flagged entry, re-bake its thumbnail *and* stats from the current
+code with `node scripts/catalog-fix-thumbnails.cjs <id,id,...>` (it
+preserves color regions and entry metadata), or use the `rethumb` mode of
+`scripts/catalog-regen.cjs` for the thumbnail alone.
+
 ## Notes
 
 - Files are fetched at runtime by `src/ui/catalog.ts`. Keep them small;
