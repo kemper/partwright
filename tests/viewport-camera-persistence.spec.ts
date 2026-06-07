@@ -77,6 +77,35 @@ test.describe('viewport camera persistence', () => {
     expect(Math.abs(after.distance - before.distance)).toBeLessThan(2);
   });
 
+  test('preserves the camera angle when editing code (live re-run)', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    await page.evaluate(async (box) => {
+      await (window as unknown as { partwright: PW }).partwright.run(box);
+    }, BOX);
+    await page.waitForTimeout(800);
+
+    await orbitAndZoom(page);
+    const before = await camera(page);
+    expect(Math.abs(before.azimuth - 45) > 5 || Math.abs(before.elevation - 35) > 5).toBe(true);
+
+    // Edit the code for real — replace it via the editor so the debounced
+    // auto-run fires through the same runCode path a user hits while typing.
+    const showCode = page.getByText('Show code', { exact: false });
+    if (await showCode.count()) await showCode.first().click().catch(() => {});
+    const editor = page.locator('.cm-content').first();
+    await editor.click();
+    await page.keyboard.press('ControlOrMeta+a');
+    await page.keyboard.type('const { Manifold } = api; return Manifold.cube([6, 6, 6], true);');
+    await page.waitForTimeout(2000); // past the 300ms auto-run debounce + render
+
+    const after = await camera(page);
+    // The model shrank, but the camera angle/distance must be unchanged.
+    expect(Math.abs(after.azimuth - before.azimuth)).toBeLessThan(2);
+    expect(Math.abs(after.elevation - before.elevation)).toBeLessThan(2);
+    expect(Math.abs(after.distance - before.distance)).toBeLessThan(2);
+  });
+
   test('still auto-frames on the first render of a freshly-opened session', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('text=Ready', { timeout: 15000 });

@@ -12757,7 +12757,7 @@ async function main() {
     });
   }
 
-  function runCode(code?: string, opts: { surfaceErrors?: boolean } = {}) {
+  function runCode(code?: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean } = {}) {
     // Never execute the sharer's untrusted code in a read-only preview. Fork first.
     if (isSharedPreview()) return;
     const src = code ?? getValue();
@@ -12782,7 +12782,15 @@ async function main() {
       // cancel only this specific run (not an explicit run that superseded it).
       const myRafGen = _runGeneration + 1;
       _rafOwnedGeneration = myRafGen;
-      await runCodeSync(src, opts);
+      // runCode is the interactive entry point (editor auto-run, Run button,
+      // command palette, quality/param changes), so it preserves the user's
+      // current camera angle by default — re-rendering edited code shouldn't
+      // snap the view back to the default 3/4 framing. The same-session gate in
+      // captureCameraToPreserve still auto-frames the first render of a session
+      // (e.g. runCode(defaultCode) on a freshly-created session). Programmatic
+      // runs (partwright.run/runAndSave) call runCodeSync directly and keep
+      // auto-framing. A caller can opt out with preserveCamera: false.
+      await runCodeSync(src, { preserveCamera: true, ...opts });
       // If we still own the generation slot and the run is done, clear it.
       if (_rafOwnedGeneration === myRafGen) _rafOwnedGeneration = -1;
     });
