@@ -3,7 +3,7 @@
 // Promoted out of `toolbar.ts` (Import/Export dropdowns) so the viewport overlay
 // bar can reuse the same labelled-section / divider look, plus a self-contained
 // `createPopoverGroup` flyout used to collapse the bar's many buttons into a few
-// labelled groups (View / Inspect / Tools). One source of truth for menu chrome.
+// labelled groups (Inspect / Tools). One source of truth for menu chrome.
 
 /** Small uppercase section label inside a menu (e.g. "From file", "3D model"). */
 export function createMenuSectionHeader(text: string): HTMLElement {
@@ -49,12 +49,6 @@ export interface PopoverGroupOptions {
   label: string;
   /** Button tooltip / aria-label. */
   title: string;
-  /**
-   * Close the popover when an item button inside it is clicked. True for action
-   * menus (Inspect/Tools — picking a tool should reveal its panel); false for
-   * preference menus (View — users flip several toggles in a row).
-   */
-  closeOnSelect?: boolean;
 }
 
 /**
@@ -79,8 +73,14 @@ export function createPopoverGroup(opts: PopoverGroupOptions): PopoverGroup {
 
   const menu = document.createElement('div');
   menu.id = `${opts.id}-menu`;
+  // Horizontal button row (right-aligned, wraps on narrow screens). A clicked
+  // tool's own panel then docks beneath this row, so the row stays a compact
+  // launcher strip rather than a tall vertical list.
+  // `w-max` makes the row size to its full content (an abspos flex-wrap box
+  // otherwise collapses to its widest item, stacking the buttons); max-w caps it
+  // so it wraps instead of overflowing on narrow screens.
   menu.className =
-    'absolute right-0 top-full mt-1 hidden z-20 bg-zinc-800 border border-zinc-600 rounded shadow-lg p-1 flex flex-col gap-1 min-w-[9rem] max-w-[80vw] max-h-[70vh] overflow-y-auto';
+    'absolute right-0 top-full mt-1 hidden z-20 bg-zinc-800 border border-zinc-600 rounded shadow-lg p-1 flex flex-row flex-wrap items-center justify-end gap-1 w-max max-w-[90vw]';
   wrapper.appendChild(menu);
 
   const isOpen = () => !menu.classList.contains('hidden');
@@ -104,13 +104,10 @@ export function createPopoverGroup(opts: PopoverGroupOptions): PopoverGroup {
     isOpen() ? close() : open();
   });
 
-  if (opts.closeOnSelect) {
-    // Closing on item click reveals the tool's own panel. Skip clicks that aren't
-    // on an actionable button (e.g. a section header) so headers don't dismiss.
-    menu.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).closest('button')) close();
-    });
-  }
+  // The menu is sticky: clicking an item inside it (a toggle, a tool) runs that
+  // item's own handler but does NOT dismiss the menu, so users can flip several
+  // toggles or switch tools in a row without re-opening it. It closes only via
+  // the group button, opening a sibling popover, click-outside, or Escape.
 
   // Click-outside and Escape close the menu. Singleton bar — listeners persist
   // for the life of the page, matching the Import/Export dropdown pattern.

@@ -8,6 +8,7 @@ import * as voxelPaint from './voxelPaint';
 import type { VoxelTool, BrushShape } from './voxelPaint';
 import { viewportToolsMount } from '../ui/popoverMenu';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
+import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 
 const SWATCHES: string[] = [
@@ -92,7 +93,7 @@ export function initVoxelPaintUI(controlsContainer: HTMLElement, callbacks: Voxe
 
   paintBtn = document.createElement('button');
   paintBtn.id = 'voxel-paint-toggle';
-  paintBtn.className = 'hidden px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  paintBtn.className = `hidden ${TOOL_TOGGLE_IDLE}`;
   paintBtn.textContent = '🧊 Voxel Studio';
   paintBtn.title = 'Add, remove, brush, and recolor voxels — then bake to code.';
   paintBtn.addEventListener('click', toggle);
@@ -131,15 +132,17 @@ export function syncActiveState(): void {
   const exited = !nowActive && active;
   active = nowActive;
   if (!paintBtn || !panel) return;
+  // Reassigning className wipes the availability-driven `hidden` class, so
+  // preserve it across the swap to the shared idle/active toggle styling.
+  const wasHidden = paintBtn.classList.contains('hidden');
   if (active) {
-    paintBtn.classList.add('bg-emerald-700/60', 'text-emerald-100', 'border-emerald-500/50');
-    paintBtn.classList.remove('text-zinc-400');
+    paintBtn.className = TOOL_TOGGLE_ACTIVE;
     panel.classList.remove('hidden');
   } else {
-    paintBtn.classList.remove('bg-emerald-700/60', 'text-emerald-100', 'border-emerald-500/50');
-    paintBtn.classList.add('text-zinc-400');
+    paintBtn.className = TOOL_TOGGLE_IDLE;
     panel.classList.add('hidden');
   }
+  paintBtn.classList.toggle('hidden', wasHidden);
   if (entered) {
     setInitialPanelPosition(panel);          // place it below the toolbar
     openViewportPanel(registryEntry);        // close any other viewport panel
@@ -192,9 +195,9 @@ function refreshControls(): void {
 
 function setActive(btn: HTMLElement | null | undefined, on: boolean): void {
   if (!btn) return;
-  btn.classList.toggle('bg-emerald-600', on);
+  btn.classList.toggle('bg-blue-600', on);
   btn.classList.toggle('text-white', on);
-  btn.classList.toggle('border-emerald-400', on);
+  btn.classList.toggle('border-blue-400', on);
 }
 
 async function toggle(): Promise<void> {
@@ -225,20 +228,8 @@ function createPanel(): HTMLElement {
   // to the viewport, single rounded card.
   p.className = 'hidden z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl absolute rounded-lg w-56 max-h-[calc(100%-3.5rem)] text-xs text-zinc-200';
 
-  // Header: drag handle + title + × close (matches paintUI).
-  const header = document.createElement('div');
-  header.className = 'shrink-0 flex items-center justify-between gap-2 px-2.5 py-2 border-b border-zinc-700/70';
-  const headerTitle = document.createElement('div');
-  headerTitle.className = 'text-[11px] text-zinc-300 font-medium';
-  headerTitle.textContent = '🧊 Voxel Studio';
-  header.appendChild(headerTitle);
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'shrink-0 -mr-1 w-7 h-7 flex items-center justify-center rounded text-base leading-none text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 transition-colors';
-  closeBtn.title = 'Close Voxel Studio (discards edits)';
-  closeBtn.setAttribute('aria-label', 'Close Voxel Studio');
-  closeBtn.textContent = '×';
-  closeBtn.addEventListener('click', () => { void doDeactivate(); });
-  header.appendChild(closeBtn);
+  // Header: drag handle + title + × close (shared tool-panel chrome).
+  const header = createToolPanelHeader('🧊 Voxel Studio', () => { void doDeactivate(); }, 'Close Voxel Studio');
   p.appendChild(header);
   attachViewportPanelDrag(header, p);
 
@@ -340,7 +331,7 @@ function buildBrushSection(): HTMLElement {
   sizeSlider.max = '8';
   sizeSlider.step = '1';
   sizeSlider.value = '0';
-  sizeSlider.className = 'w-full accent-emerald-500';
+  sizeSlider.className = 'w-full accent-blue-500';
   sizeSlider.title = 'Brush radius in voxels (0 = a single voxel)';
   sizeSlider.addEventListener('input', () => { voxelPaint.setBrushRadius(Number(sizeSlider!.value)); refreshControls(); });
   sec.appendChild(sizeSlider);
@@ -381,7 +372,7 @@ function buildBrushSection(): HTMLElement {
   density.max = '100';
   density.step = '5';
   density.value = String(Math.round(voxelPaint.getSprayDensity() * 100));
-  density.className = 'flex-1 accent-emerald-500';
+  density.className = 'flex-1 accent-blue-500';
   density.addEventListener('input', () => voxelPaint.setSprayDensity(Number(density.value) / 100));
   sprayRow.appendChild(density);
   sec.appendChild(sprayRow);
@@ -443,7 +434,7 @@ function buildActions(): HTMLElement {
   // Primary: keep the procedural code, append the edits as readable ops.
   const updateBtn = document.createElement('button');
   updateBtn.type = 'button';
-  updateBtn.className = 'w-full px-2 py-1 rounded text-xs bg-emerald-700 hover:bg-emerald-600 text-white transition-colors';
+  updateBtn.className = 'w-full px-2 py-1 rounded text-xs bg-blue-700 hover:bg-blue-600 text-white transition-colors';
   updateBtn.textContent = 'Update code';
   updateBtn.title = 'Keep your code and append these edits as v.set/v.remove statements, then save a version';
   updateBtn.addEventListener('click', async () => { if (onUpdateCode) await onUpdateCode(); syncActiveState(); });
