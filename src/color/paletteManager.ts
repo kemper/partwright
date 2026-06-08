@@ -304,7 +304,7 @@ export function openPaletteManager(): void {
   constrainBox.className = 'accent-blue-500';
   constrainBox.addEventListener('change', () => setPaletteConstrained(constrainBox.checked));
   const constrainText = document.createElement('span');
-  constrainText.textContent = 'Constrain painting to the palette (hide the custom colour picker)';
+  constrainText.textContent = 'Constrain painting to the palette (snap colours to the nearest slot)';
   constrainRow.append(constrainBox, constrainText);
   shell.body.appendChild(constrainRow);
 
