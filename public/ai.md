@@ -356,6 +356,12 @@ partwright.listRegions() / listComponents() / listLabels()                // inv
 partwright.undoLastPaint() / redoLastPaint()                              // single-op undo
 partwright.removeRegion(id) / setRegionVisibility(id, visible)            // per-region edits
 partwright.hideRegion(id) / showRegion(id) / clearColors()
+partwright.replaceColor({from:[r,g,b], to:[r,g,b], tolerance?})           // bulk-recolor matching regions (0..1 colors) -> {replaced}
+// Filament palette — the print slots (AMS/MMU) regions map onto; see /ai/colors.md
+partwright.getPalette()                                                   // -> {id, name, capacity, constrained, slots:[{id,name,hex,td}]}
+partwright.listPalettes() / setActivePalette(id) / createPalette(name)
+partwright.addFilament({name, hex, td?}) / updateFilament(id, patch) / removeFilament(id)
+partwright.setPaletteCapacity(n) / setPaletteConstrained(on)
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
 partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024) // UI smooth-brush config (detail = radius ÷ divisor)

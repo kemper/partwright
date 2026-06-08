@@ -577,3 +577,46 @@ partwright.assertPaint({
 - `export3MF()` -- regions become `<basematerials>` entries with per-triangle `pid` attributes (compatible with PrusaSlicer / Bambu Studio multi-material slicing).
 - `exportSTL()` and `exportOBJ()` -- formats don't carry color, so colors are dropped.
 
+## Recoloring regions in bulk
+
+`replaceColor({from, to, tolerance?})` recolors **every** region whose color matches `from` (within `tolerance`, default 0.01) to `to`. Colors are `[r,g,b]` in 0..1 — the same range as `paintFaces`/`paintRegion`. Returns `{ replaced: count }`.
+
+```js
+// turn every red region blue
+partwright.replaceColor({ from: [1, 0, 0], to: [0, 0, 1] })  // -> { replaced: 3 }
+```
+
+This only changes region *colors*, not which triangles they cover — to repaint different triangles, use the paint selectors.
+
+## The filament palette — paint to real print slots
+
+A multi-color model prints by mapping its regions onto a printer's loaded **filament slots** (AMS / MMU). The palette is the shared set of those slots; painting with palette colors keeps a model printable on a known spool set. The palette is a cross-session user preference (localStorage), not part of the session.
+
+```js
+partwright.getPalette()
+// -> { id, name, capacity, constrained, slots: [{ id, name, hex, td }, ...] }
+//    capacity   = how many slots the printer can load at once (the AMS/MMU budget)
+//    constrained= true means paint snaps to the nearest slot color
+//    td         = a slot's transmission distance (drives the relief optical preview)
+
+// Paint a region with a palette slot's color (convert its hex to the 0..1 rgb paint takes):
+const slot = partwright.getPalette().slots[0];
+const [r, g, b] = [parseInt(slot.hex.slice(1,3),16)/255, parseInt(slot.hex.slice(3,5),16)/255, parseInt(slot.hex.slice(5,7),16)/255];
+partwright.paintByLabel({ label: 'body', color: [r, g, b] });
+```
+
+Manage the palette (all return `{ ok }`/`{ id }`/the slot, or `{ error }`):
+
+```js
+partwright.listPalettes()                       // -> [{ id, name, active }]
+partwright.createPalette('PLA basics')          // -> { id }  (then setActivePalette to switch)
+partwright.setActivePalette(id)
+partwright.addFilament({ name: 'Teal', hex: '#1fa89a', td: 1 })   // -> { id, name, hex, td }
+partwright.updateFilament(slotId, { hex: '#0e7d72' })
+partwright.removeFilament(slotId)
+partwright.setPaletteCapacity(4)                // AMS with 4 slots
+partwright.setPaletteConstrained(true)          // snap paint to the loaded slots
+```
+
+Aim for a region count within `capacity` for a single-pass multi-material print; beyond it the UI flags the model over-budget.
+

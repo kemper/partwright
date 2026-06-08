@@ -129,7 +129,12 @@ import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
 import { setReliefSettings, getReliefSettings, updateReliefSettings, isReliefSession, getPreviewModeFor } from './relief/reliefSettings';
 import { saveReliefSource, getReliefSource } from './relief/reliefSource';
-import { listFilaments, hexToRgb, getPaletteCapacity } from './relief/filaments';
+import {
+  listFilaments, hexToRgb, getPaletteCapacity, setPaletteCapacity,
+  isPaletteConstrained, setPaletteConstrained,
+  addFilament, updateFilament, removeFilament,
+  listPalettes, createPalette, setActivePalette, getActivePaletteId, getActivePaletteName,
+} from './color/palette';
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal } from './ui/reliefImportModal';
 import { mountReliefStudio, type ReliefStudioHandle } from './ui/reliefStudio';
@@ -180,7 +185,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
@@ -11293,6 +11298,123 @@ async function main() {
       return { cleared: true };
     },
 
+    /** Recolor every paint region whose color matches `from` (within
+     *  `tolerance`) to `to` — the programmatic Replace-color tool. Colors are
+     *  [r,g,b] in 0..1 (the range paintFaces/paintRegion use). `tolerance`
+     *  defaults to 0.01. Returns `{ replaced: count }`. */
+    replaceColor(opts: { from: [number, number, number]; to: [number, number, number]; tolerance?: number }) {
+      const check = guard(() => {
+        assertObject(opts, 'replaceColor(opts)');
+        const from = assertNumberTuple(opts?.from, 3, 'replaceColor(opts.from)');
+        from.forEach((n, i) => assertNumber(n, `replaceColor(opts.from[${i}])`, { min: 0, max: 1 }));
+        const to = assertNumberTuple(opts?.to, 3, 'replaceColor(opts.to)');
+        to.forEach((n, i) => assertNumber(n, `replaceColor(opts.to[${i}])`, { min: 0, max: 1 }));
+        if (opts?.tolerance !== undefined) assertNumber(opts.tolerance, 'replaceColor(opts.tolerance)', { min: 0 });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const count = replaceRegionColors(opts.from, opts.to, opts.tolerance ?? 0.01);
+      if (count > 0) scheduleColorRefresh();
+      return { replaced: count };
+    },
+
+    // --- Filament palette (the print-color slots paint regions map onto) ------
+
+    /** Read the active filament palette — the slots a multi-color model maps onto
+     *  a printer's AMS/MMU. Returns `{ id, name, capacity, constrained, slots:
+     *  [{id, name, hex, td}] }`. `td` is the slot's transmission distance (used
+     *  by the relief optical preview). Paint with palette hex values (via
+     *  hexToRgb) so a model's colors land on real, loadable filament slots. */
+    getPalette() {
+      return {
+        id: getActivePaletteId(),
+        name: getActivePaletteName(),
+        capacity: getPaletteCapacity(),
+        constrained: isPaletteConstrained(),
+        slots: listFilaments().map(f => ({ id: f.id, name: f.name, hex: f.hex, td: f.td })),
+      };
+    },
+
+    /** List all saved palettes (spool sets). Returns `[{id, name, active}]`. */
+    listPalettes() { return listPalettes(); },
+
+    /** Create a new (empty) palette and return its id. Does not switch to it —
+     *  call setActivePalette(id) to make it active. */
+    createPalette(name: string) {
+      const check = guard(() => assertString(name, 'createPalette(name)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      return { id: createPalette(name) };
+    },
+
+    /** Switch the active palette by id (from listPalettes()). */
+    setActivePalette(id: string) {
+      const check = guard(() => assertString(id, 'setActivePalette(id)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!listPalettes().some(p => p.id === id)) return { error: `No palette with id "${id}". Use listPalettes() to see valid ids.` };
+      setActivePalette(id);
+      return { ok: true };
+    },
+
+    /** Add a filament slot to the active palette. `hex` is "#rrggbb"; `td`
+     *  (transmission distance, default 1) tunes the relief preview. Returns the
+     *  new slot `{ id, name, hex, td }`. */
+    addFilament(opts: { name: string; hex: string; td?: number }) {
+      const check = guard(() => {
+        assertObject(opts, 'addFilament(opts)');
+        assertString(opts?.name, 'addFilament(opts.name)', { allowEmpty: false });
+        assertString(opts?.hex, 'addFilament(opts.hex)', { allowEmpty: false });
+        if (!/^#[0-9a-fA-F]{6}$/.test(opts.hex)) throw new ValidationError('addFilament(opts.hex) must be a "#rrggbb" hex color');
+        if (opts?.td !== undefined) assertNumber(opts.td, 'addFilament(opts.td)', { min: 0 });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const slot = addFilament({ name: opts.name, hex: opts.hex, td: opts.td ?? 1 });
+      return { id: slot.id, name: slot.name, hex: slot.hex, td: slot.td };
+    },
+
+    /** Update a filament slot's name/hex/td by id (from getPalette().slots). */
+    updateFilament(id: string, patch: { name?: string; hex?: string; td?: number }) {
+      const check = guard(() => {
+        assertString(id, 'updateFilament(id)', { allowEmpty: false });
+        assertObject(patch, 'updateFilament(patch)');
+        if (patch?.name !== undefined) assertString(patch.name, 'updateFilament(patch.name)', { allowEmpty: false });
+        if (patch?.hex !== undefined) {
+          assertString(patch.hex, 'updateFilament(patch.hex)', { allowEmpty: false });
+          if (!/^#[0-9a-fA-F]{6}$/.test(patch.hex)) throw new ValidationError('updateFilament(patch.hex) must be a "#rrggbb" hex color');
+        }
+        if (patch?.td !== undefined) assertNumber(patch.td, 'updateFilament(patch.td)', { min: 0 });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!listFilaments().some(f => f.id === id)) return { error: `No filament slot with id "${id}". Use getPalette().slots to see valid ids.` };
+      updateFilament(id, patch);
+      return { ok: true };
+    },
+
+    /** Remove a filament slot from the active palette by id. */
+    removeFilament(id: string) {
+      const check = guard(() => assertString(id, 'removeFilament(id)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!listFilaments().some(f => f.id === id)) return { error: `No filament slot with id "${id}". Use getPalette().slots to see valid ids.` };
+      removeFilament(id);
+      return { ok: true };
+    },
+
+    /** Set how many filament slots the printer can load at once (the AMS/MMU
+     *  budget). Regions beyond it are flagged over-budget in the UI. */
+    setPaletteCapacity(n: number) {
+      const check = guard(() => assertNumber(n, 'setPaletteCapacity(n)', { min: 1, integer: true }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      setPaletteCapacity(n);
+      return { ok: true, capacity: getPaletteCapacity() };
+    },
+
+    /** Toggle whether paint is constrained to the palette's slots (snap to the
+     *  nearest filament) versus free RGB. */
+    setPaletteConstrained(on: boolean) {
+      const check = guard(() => assertBoolean(on, 'setPaletteConstrained(on)'));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      setPaletteConstrained(on);
+      return { ok: true, constrained: isPaletteConstrained() };
+    },
+
     /** Remove a single color region by id. Reverses one paint operation
      *  without nuking the rest. Returns `{ removed: true, id }` on success
      *  or `{ error }` if no region matches. */
@@ -12609,6 +12731,16 @@ async function main() {
         'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai/colors.md' },
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
+        'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every region matching `from` (0..1 colors) -> {replaced}', docs: '/ai/colors.md' },
+        'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
+        'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
+        'createPalette':   { signature: 'createPalette(name) -- Create an empty palette -> {id} (call setActivePalette to switch)', docs: '/ai/colors.md' },
+        'setActivePalette':{ signature: 'setActivePalette(id) -- Switch active palette by id from listPalettes() -> {ok} or {error}', docs: '/ai/colors.md' },
+        'addFilament':     { signature: 'addFilament({name, hex:"#rrggbb", td?}) -- Add a slot to the active palette -> {id,name,hex,td}', docs: '/ai/colors.md' },
+        'updateFilament':  { signature: 'updateFilament(id, {name?, hex?, td?}) -- Edit a slot -> {ok} or {error}', docs: '/ai/colors.md' },
+        'removeFilament':  { signature: 'removeFilament(id) -- Remove a slot from the active palette -> {ok} or {error}', docs: '/ai/colors.md' },
+        'setPaletteCapacity': { signature: 'setPaletteCapacity(n) -- Set the AMS/MMU slot budget -> {ok, capacity}', docs: '/ai/colors.md' },
+        'setPaletteConstrained': { signature: 'setPaletteConstrained(on) -- Constrain paint to palette slots (snap) vs free RGB -> {ok, constrained}', docs: '/ai/colors.md' },
         'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai/colors.md' },
         'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai/colors.md' },
         'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai/colors.md' },
