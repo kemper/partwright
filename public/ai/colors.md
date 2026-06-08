@@ -577,3 +577,69 @@ partwright.assertPaint({
 - `export3MF()` -- regions become `<basematerials>` entries with per-triangle `pid` attributes (compatible with PrusaSlicer / Bambu Studio multi-material slicing).
 - `exportSTL()` and `exportOBJ()` -- formats don't carry color, so colors are dropped.
 
+## Recoloring regions in bulk
+
+`replaceColor({from, to, tolerance?})` recolors **every** region whose color matches `from` (within `tolerance`, default 0.01) to `to`. Colors are `[r,g,b]` in 0..1 — the same range as `paintFaces`/`paintRegion`. Returns `{ replaced: count }`.
+
+```js
+// turn every red region blue
+partwright.replaceColor({ from: [1, 0, 0], to: [0, 0, 1] })  // -> { replaced: 3 }
+```
+
+This only changes region *colors*, not which triangles they cover — to repaint different triangles, use the paint selectors.
+
+## Stamping an image onto the surface
+
+`paintImage({imageUrl, at, normal, size, ...})` projects an image onto the model as a color region — the programmatic Image-paint tool. Use it for logos, decals, faces, or photo decals on a surface.
+
+```js
+// stamp a logo on the +Z face of a 20mm cube, centred, 12mm across
+await partwright.paintImage({
+  imageUrl: logoDataUrl,     // a data: URL or a same-origin URL
+  at: [0, 0, 10],            // stamp centre, ON the surface (world coords)
+  normal: [0, 0, 1],         // the outward face direction there
+  size: 12,                  // stamp diameter in world units
+  rotationDeg: 0,            // spin around the normal (optional)
+  detail: 96,                // triangle rows across the stamp; higher = crisper. 0 = flat
+  removeBackground: true,    // drop the image's background (default true)
+})
+// -> { ok, name, triangles, avgColor } or { error }
+```
+
+- **Getting `at` / `normal`:** use `probeRay({origin, direction})` (returns the hit point + face normal), `measureAt([x,y])`, or a known face centre — `at` must lie on the surface and `normal` must face outward, or the footprint is empty and you get `{ error }`.
+- Only **forward-facing** triangles inside the stamp square are painted, so a stamp never bleeds onto the far side.
+- The stamp subdivides the footprint for crisp edges (smooth mode), so the model's triangle count rises locally — call `getGeometryData()` after if you care about the budget.
+- Call `saveVersion('stamped')` afterwards to persist it (paint isn't auto-saved).
+
+## The filament palette — paint to real print slots
+
+A multi-color model prints by mapping its regions onto a printer's loaded **filament slots** (AMS / MMU). The palette is the shared set of those slots; painting with palette colors keeps a model printable on a known spool set. The palette is a cross-session user preference (localStorage), not part of the session.
+
+```js
+partwright.getPalette()
+// -> { id, name, capacity, constrained, slots: [{ id, name, hex, td }, ...] }
+//    capacity   = how many slots the printer can load at once (the AMS/MMU budget)
+//    constrained= true means paint snaps to the nearest slot color
+//    td         = a slot's transmission distance (drives the relief optical preview)
+
+// Paint a region with a palette slot's color (convert its hex to the 0..1 rgb paint takes):
+const slot = partwright.getPalette().slots[0];
+const [r, g, b] = [parseInt(slot.hex.slice(1,3),16)/255, parseInt(slot.hex.slice(3,5),16)/255, parseInt(slot.hex.slice(5,7),16)/255];
+partwright.paintByLabel({ label: 'body', color: [r, g, b] });
+```
+
+Manage the palette (all return `{ ok }`/`{ id }`/the slot, or `{ error }`):
+
+```js
+partwright.listPalettes()                       // -> [{ id, name, active }]
+partwright.createPalette('PLA basics')          // -> { id }  (then setActivePalette to switch)
+partwright.setActivePalette(id)
+partwright.addFilament({ name: 'Teal', hex: '#1fa89a', td: 1 })   // -> { id, name, hex, td }
+partwright.updateFilament(slotId, { hex: '#0e7d72' })
+partwright.removeFilament(slotId)
+partwright.setPaletteCapacity(4)                // AMS with 4 slots
+partwright.setPaletteConstrained(true)          // snap paint to the loaded slots
+```
+
+Aim for a region count within `capacity` for a single-pass multi-material print; beyond it the UI flags the model over-budget.
+

@@ -542,7 +542,7 @@ export function clearModelColorRegions(): void {
  *  region re-resolves by matching colors, so it must read the surface color
  *  *underneath* itself — without this, its own freshly-stamped color would mask
  *  the source color it's meant to follow and the flood would collapse to the seed. */
-export function buildTriColors(numTri: number, respectPerRegionVisibility = false, excludeRegionId?: number): Uint8Array | null {
+export function buildTriColors(numTri: number, respectPerRegionVisibility = false, excludeRegionId?: number, baseColors?: Uint8Array | null): Uint8Array | null {
   if (regions.length === 0 && modelRegions.length === 0) return null;
 
   const buf = new Uint8Array(numTri * 3); // default 0,0,0 — ignored for un-colored tris
@@ -550,6 +550,20 @@ export function buildTriColors(numTri: number, respectPerRegionVisibility = fals
   // from order so a region can legitimately paint pure black (and so the
   // model-color base layer counts as painted even though it sits below paint).
   const painted = new Uint8Array(numTri);
+
+  // Seed from the mesh's own per-triangle colours (e.g. a voxel grid's colours
+  // or an imported coloured model's) so painting a few regions doesn't blank the
+  // rest of the model back to the default shade — the regions composite on top.
+  if (baseColors && baseColors.length >= numTri * 3) {
+    buf.set(baseColors.subarray(0, numTri * 3));
+    const basePainted = (baseColors as Uint8Array & { _painted?: Uint8Array })._painted;
+    for (let t = 0; t < numTri; t++) {
+      const seeded = basePainted
+        ? basePainted[t] === 1
+        : (buf[t * 3] !== 0 || buf[t * 3 + 1] !== 0 || buf[t * 3 + 2] !== 0);
+      if (seeded) painted[t] = 1;
+    }
+  }
 
   // Stamp one layer of regions onto buf, higher `order` winning WITHIN the
   // layer. Layers are applied in call order, so a later layer overwrites an
@@ -644,7 +658,7 @@ export function serialize(): SerializedColorRegion[] {
 /** Apply triColors to a MeshData, returning a new object (non-destructive).
  *  Use for EXPORTS — all regions are baked in regardless of UI visibility flags. */
 export function applyTriColors(mesh: MeshData): MeshData {
-  const triColors = buildTriColors(mesh.numTri, false);
+  const triColors = buildTriColors(mesh.numTri, false, undefined, mesh.triColors);
   if (!triColors) return mesh;
   return { ...mesh, triColors };
 }
@@ -654,7 +668,7 @@ export function applyTriColors(mesh: MeshData): MeshData {
  *  `visible` flag is false (eye-icon toggles in the region list). */
 export function applyTriColorsIfVisible(mesh: MeshData): MeshData {
   if (!visible) return mesh;
-  const triColors = buildTriColors(mesh.numTri, true);
+  const triColors = buildTriColors(mesh.numTri, true, undefined, mesh.triColors);
   if (!triColors) return mesh;
   return { ...mesh, triColors };
 }

@@ -129,7 +129,12 @@ import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
 import { setReliefSettings, getReliefSettings, updateReliefSettings, isReliefSession, getPreviewModeFor } from './relief/reliefSettings';
 import { saveReliefSource, getReliefSource } from './relief/reliefSource';
-import { listFilaments, hexToRgb, getPaletteCapacity } from './relief/filaments';
+import {
+  listFilaments, hexToRgb, getPaletteCapacity, setPaletteCapacity,
+  isPaletteConstrained, setPaletteConstrained,
+  addFilament, updateFilament, removeFilament,
+  listPalettes, createPalette, setActivePalette, getActivePaletteId, getActivePaletteName,
+} from './color/palette';
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal } from './ui/reliefImportModal';
 import { mountReliefStudio, type ReliefStudioHandle } from './ui/reliefStudio';
@@ -150,7 +155,7 @@ import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
-import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook } from './color/imagePaintUI';
+import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook, stampImageProgrammatic } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
@@ -180,7 +185,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
@@ -213,6 +218,8 @@ import {
   navigateVersion,
   loadVersion as loadVersionFromStore,
   peekVersion,
+  renameVersion as renameVersionInStore,
+  deleteVersion as deleteVersionFromStore,
   listCurrentVersions,
   listCurrentParts,
   getCurrentPart,
@@ -3184,16 +3191,19 @@ async function main() {
    *  If the mesh still won't form a manifold (common for sculpted/scanned models
    *  with self-intersections or open edges), prompts the user to import as
    *  render-only — visible and exportable, but no booleans/paint/slice. */
-  async function parseSTLFile(file: File): Promise<ParsedSTL | null> {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-
-    // Sanity-check that the file parses to *something* before doing the more
-    // expensive ofMesh trial.
+  /** Non-interactive STL parse: tries a ladder of weld tolerances and reports
+   *  whether the welded result forms a clean manifold. Shared by the interactive
+   *  file path (`parseSTLFile`, which adds the render-only confirm dialog) and
+   *  the programmatic `importMeshData` API (which auto-accepts render-only).
+   *  Returns null only when the bytes don't parse as STL at all. */
+  type ParsedSTLProbe =
+    | { mesh: ImportedMesh; isManifold: true }
+    | { mesh: ImportedMesh; isManifold: false; manifoldError: string | null; maxTried: number; triCount: number; vertCount: number };
+  function parseSTLBytes(bytes: Uint8Array, filename: string): ParsedSTLProbe | null {
+    // Sanity-check that the file parses to *something* before the more expensive
+    // ofMesh trials.
     const probe = parseSTL(bytes);
-    if (!probe || probe.numTri === 0) {
-      showToast(`Could not parse "${file.name}" as an STL file.`, { variant: 'warn', source: 'import' });
-      return null;
-    }
+    if (!probe || probe.numTri === 0) return null;
 
     // Scale-aware fallback tolerance: 5 ppm of the mesh's bounding-box diagonal
     // catches imports that ship in unusual units (μm or m) where 1e-3 absolute
@@ -3212,13 +3222,29 @@ async function main() {
       const mesh = parseSTL(bytes, { weldTolerance: tol });
       if (!mesh || mesh.numTri === 0) continue;
       const trial = tryConstructManifold(mesh);
-      if (trial.ok) {
-        return { mesh: toImportedMesh(file.name, mesh), isManifold: true };
-      }
+      if (trial.ok) return { mesh: toImportedMesh(filename, mesh), isManifold: true };
       manifoldError = trial.error;
       if (tol > maxTried) maxTried = tol;
       bestMesh = mesh;
     }
+    return {
+      mesh: toImportedMesh(filename, bestMesh),
+      isManifold: false,
+      manifoldError,
+      maxTried,
+      triCount: probe.numTri,
+      vertCount: probe.numVert,
+    };
+  }
+
+  async function parseSTLFile(file: File): Promise<ParsedSTL | null> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const parsed = parseSTLBytes(bytes, file.name);
+    if (!parsed) {
+      showToast(`Could not parse "${file.name}" as an STL file.`, { variant: 'warn', source: 'import' });
+      return null;
+    }
+    if (parsed.isManifold) return { mesh: parsed.mesh, isManifold: true };
 
     // All tolerances failed. Offer render-only fallback — most users importing
     // a Baby Yoda / Eiffel Tower scan just want to look at it, not boolean-op it.
@@ -3226,7 +3252,7 @@ async function main() {
       `${file.name} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
       `You can still import it as render-only: the mesh displays and exports normally, but boolean operations, paint, and cross-sections won't work.\n\n` +
       `For full editing, repair the mesh first in MeshLab or Blender, then re-import.\n\n` +
-      `${probe.numTri.toLocaleString()} triangles · ${probe.numVert.toLocaleString()} vertices · tried weld tolerances up to ${maxTried.toExponential(1)} · ${manifoldError}`,
+      `${parsed.triCount.toLocaleString()} triangles · ${parsed.vertCount.toLocaleString()} vertices · tried weld tolerances up to ${parsed.maxTried.toExponential(1)} · ${parsed.manifoldError}`,
       {
         title: 'Import as render-only?',
         confirmLabel: 'Import render-only',
@@ -3235,7 +3261,7 @@ async function main() {
     );
     if (!accepted) return null;
 
-    return { mesh: toImportedMesh(file.name, bestMesh), isManifold: false };
+    return { mesh: parsed.mesh, isManifold: false };
   }
 
   function toImportedMesh(filename: string, mesh: MeshData, format: ImportedMesh['format'] = 'stl'): ImportedMesh {
@@ -7179,7 +7205,28 @@ async function main() {
     return { regions, transferredTris };
   }
 
-  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean): Promise<Record<string, unknown>> {
+  /** A user-facing warning when committing a modifier converts a SCAD or BREP
+   *  session into a baked manifold-js/voxel mesh — the parametric source (and,
+   *  for BREP, STEP export) is discarded. Returns null when nothing of value is
+   *  lost (manifold-js → manifold-js, or the explicit manifold-js → voxelize). */
+  function engineBakeWarning(priorLang: Language, target: 'manifold-js' | 'voxel'): string | null {
+    if (priorLang === target) return null;
+    if (priorLang === 'replicad') {
+      return 'This BREP model was baked to a mesh — the parametric BREP source and STEP export are no longer available.';
+    }
+    if (priorLang === 'scad') {
+      return 'This OpenSCAD model was baked to a mesh — the parametric SCAD source is no longer editable.';
+    }
+    return null;
+  }
+
+  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean, opts?: { warnOnBake?: boolean }): Promise<Record<string, unknown>> {
+    // Capture the language *before* the commit switches it, so we can warn when a
+    // SCAD/BREP session is silently baked to a mesh. The transform path
+    // (commitTransform) emits its own, more specific warning and passes
+    // warnOnBake:false to avoid double-reporting.
+    const priorLang = getActiveLanguage();
+    const warnOnBake = opts?.warnOnBake !== false;
     // For manifold results the modifier already baked colors into its input and
     // carried them through subdivision — result.mesh.triColors has the correct
     // per-triangle paint (dense mesh, same shape as the engine output). We use
@@ -7230,12 +7277,15 @@ async function main() {
           );
         }
       }
+      const bakeWarning = warnOnBake ? engineBakeWarning(priorLang, 'manifold-js') : null;
+      if (bakeWarning) showToast(bakeWarning, { variant: 'warn', source: 'engine' });
+      const allWarnings = [...(bakeWarning ? [bakeWarning] : []), ...colorWarnings];
       return {
         ok: true,
         label: result.label,
         geometry: getGeometryDataObj(),
         colorsCarried: carried,
-        ...(colorWarnings.length > 0 ? { warnings: colorWarnings } : {}),
+        ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
       };
     }
     // Voxel result: a self-contained `voxels.decode(...)` program, no imports.
@@ -7248,7 +7298,14 @@ async function main() {
     if (!ok) return { error: `Failed to apply ${result.label}` };
     const thumbnail = await captureThumbnail();
     await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
-    return { ok: true, label: result.label, geometry: getGeometryDataObj() };
+    const voxelBakeWarning = warnOnBake ? engineBakeWarning(priorLang, 'voxel') : null;
+    if (voxelBakeWarning) showToast(voxelBakeWarning, { variant: 'warn', source: 'engine' });
+    return {
+      ok: true,
+      label: result.label,
+      geometry: getGeometryDataObj(),
+      ...(voxelBakeWarning ? { warnings: [voxelBakeWarning] } : {}),
+    };
   }
 
   // ---- Place / Rotate (drop-to-floor, center, free rotate, auto lay-flat) --
@@ -7330,7 +7387,7 @@ async function main() {
       result = await commitTransformParametric(steps, label);
     } else {
       const preserve = preserveColor ?? true;
-      result = await commitSurfaceModifier(applyTransform(meshForModifier(preserve), steps, label), preserve);
+      result = await commitSurfaceModifier(applyTransform(meshForModifier(preserve), steps, label), preserve, { warnOnBake: false });
     }
     return warnings.length && !result.error ? { ...result, warnings } : result;
   }
@@ -8121,6 +8178,45 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const result = await importCodePayload(code, language, sessionName);
       return { sessionId: result.sessionId };
+    },
+
+    /** Import an STL mesh (binary or ASCII) from base64-encoded bytes as a new
+     *  session — the programmatic equivalent of the Import → choose-file flow for
+     *  STL (which an agent can't reach: there's no file picker). The mesh is
+     *  welded across a tolerance ladder; when it forms a clean manifold it's
+     *  imported as an editable manifold-js model, otherwise it lands render-only
+     *  (display + export only — no booleans/paint/slicing), reflected by
+     *  `isManifold: false` in the return. `base64` may be a bare base64 string or
+     *  a `data:` URL. `filename` names the import; `opts.sessionName` overrides
+     *  the new session's name. Returns `{ sessionId, isManifold, triangleCount,
+     *  vertexCount }` or `{ error }`. */
+    async importMeshData(base64: string, filename: string, opts: { sessionName?: string } = {}) {
+      const check = guard(() => {
+        assertString(base64, 'importMeshData(base64)', { allowEmpty: false });
+        assertString(filename, 'importMeshData(filename)', { allowEmpty: false });
+        assertObject(opts, 'importMeshData(opts)', { optional: true });
+        assertString(opts?.sessionName, 'importMeshData(opts.sessionName)', { optional: true, allowEmpty: false });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      let bytes: Uint8Array;
+      try {
+        const raw = (base64.includes(',') ? base64.slice(base64.indexOf(',') + 1) : base64).replace(/\s/g, '');
+        const binary = atob(raw);
+        bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      } catch {
+        return { error: 'importMeshData(base64): not valid base64-encoded data.' };
+      }
+      const parsed = parseSTLBytes(bytes, filename);
+      if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
+      const sessionName = opts?.sessionName ?? filename.replace(/\.[^.]+$/, '');
+      const { sessionId } = await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+      return {
+        sessionId,
+        isManifold: parsed.isManifold,
+        triangleCount: parsed.mesh.numTri,
+        vertexCount: parsed.mesh.numVert,
+      };
     },
 
     /** Import an image (a `data:` URL or a same-origin URL) as a colored voxel
@@ -9069,6 +9165,80 @@ async function main() {
         timestamp: v.timestamp,
         status: (v.geometryData as Record<string, unknown> | null)?.status ?? null,
       }));
+    },
+
+    /** Rename a version's display label (its index is immutable). Pass { index }
+     *  or { id } from listVersions(), plus the new label. Returns the updated
+     *  { id, index, label }, or { error } if the version isn't in this session. */
+    async renameVersion(target: { index?: number; id?: string }, label: string) {
+      const parsed = parseVersionTarget(target, 'renameVersion');
+      if ('error' in parsed) return parsed;
+      const check = guard(() => assertString(label, 'renameVersion(label)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!getState().session) return { error: 'No active session. Call openSession(id) or createSession() first.' };
+      const version = await peekVersion(parsed.value);
+      if (!version) return { error: `No version found with ${parsed.kind} "${parsed.value}" in the active session. Use listVersions() to see valid ${parsed.kind}s.` };
+      const updated = await renameVersionInStore(version.id, label);
+      if (!updated) return { error: `Could not rename version "${parsed.value}".` };
+      return { ok: true, id: updated.id, index: updated.index, label: updated.label };
+    },
+
+    /** Delete a version from the active session. Pass { index } or { id }. Refuses
+     *  to remove the last remaining version. When the active version is deleted,
+     *  the nearest earlier version becomes active and is re-rendered. Returns
+     *  { ok, deleted, newCurrent } or { error }. */
+    async deleteVersion(target: { index?: number; id?: string }) {
+      const parsed = parseVersionTarget(target, 'deleteVersion');
+      if ('error' in parsed) return parsed;
+      if (!getState().session) return { error: 'No active session. Call openSession(id) or createSession() first.' };
+      const version = await peekVersion(parsed.value);
+      if (!version) return { error: `No version found with ${parsed.kind} "${parsed.value}" in the active session. Use listVersions() to see valid ${parsed.kind}s.` };
+      const result = await deleteVersionFromStore(version.id);
+      if (!result) return { error: 'Could not delete — a session must keep at least one version.' };
+      // If the active version changed, re-render the replacement so the viewport
+      // and editor reflect the new state (mirrors loadVersion's language/colour/
+      // annotation restore).
+      if (result.wasCurrent && result.newCurrent) {
+        const nv = result.newCurrent;
+        const versionLang = effectiveVersionLanguage(nv, getState().session);
+        if (versionLang !== getActiveLanguage()) await switchLanguage(versionLang);
+        setValue(nv.code);
+        currentParamValues = { ...(nv.paramValues ?? {}) };
+        await runCodeSync(nv.code, { preserveCamera: true });
+        await rehydrateColorRegions(nv.geometryData);
+        applyVersionAnnotations(nv);
+      }
+      return {
+        ok: true,
+        deleted: { id: result.deleted.id, index: result.deleted.index, label: result.deleted.label },
+        newCurrent: result.newCurrent ? { id: result.newCurrent.id, index: result.newCurrent.index, label: result.newCurrent.label } : null,
+      };
+    },
+
+    /** Compare two versions' code and geometry stats — the programmatic form of
+     *  the Diff tab. Pass two targets (each { index } or { id }) from
+     *  listVersions(). Returns each version's code + a per-field stat delta, or
+     *  { error } if either version isn't found. */
+    async diffVersions(a: { index?: number; id?: string }, b: { index?: number; id?: string }) {
+      const pa = parseVersionTarget(a, 'diffVersions');
+      if ('error' in pa) return pa;
+      const pb = parseVersionTarget(b, 'diffVersions');
+      if ('error' in pb) return pb;
+      if (!getState().session) return { error: 'No active session. Call openSession(id) or createSession() first.' };
+      const va = await peekVersion(pa.value);
+      if (!va) return { error: `No version found with ${pa.kind} "${pa.value}" in the active session.` };
+      const vb = await peekVersion(pb.value);
+      if (!vb) return { error: `No version found with ${pb.kind} "${pb.value}" in the active session.` };
+      const statDiff = computeStatDiff(
+        (va.geometryData ?? {}) as Record<string, unknown>,
+        (vb.geometryData ?? {}) as Record<string, unknown>,
+      );
+      return {
+        a: { id: va.id, index: va.index, label: va.label, code: va.code },
+        b: { id: vb.id, index: vb.index, label: vb.label, code: vb.code },
+        codeChanged: va.code !== vb.code,
+        statDiff,
+      };
     },
 
     /** Load a version into the editor. Pass { index } or { id } from listVersions().
@@ -11148,6 +11318,169 @@ async function main() {
       return { cleared: true };
     },
 
+    /** Recolor every paint region whose color matches `from` (within
+     *  `tolerance`) to `to` — the programmatic Replace-color tool. Colors are
+     *  [r,g,b] in 0..1 (the range paintFaces/paintRegion use). `tolerance`
+     *  defaults to 0.01. Returns `{ replaced: count }`. */
+    replaceColor(opts: { from: [number, number, number]; to: [number, number, number]; tolerance?: number }) {
+      const check = guard(() => {
+        assertObject(opts, 'replaceColor(opts)');
+        const from = assertNumberTuple(opts?.from, 3, 'replaceColor(opts.from)');
+        from.forEach((n, i) => assertNumber(n, `replaceColor(opts.from[${i}])`, { min: 0, max: 1 }));
+        const to = assertNumberTuple(opts?.to, 3, 'replaceColor(opts.to)');
+        to.forEach((n, i) => assertNumber(n, `replaceColor(opts.to[${i}])`, { min: 0, max: 1 }));
+        if (opts?.tolerance !== undefined) assertNumber(opts.tolerance, 'replaceColor(opts.tolerance)', { min: 0 });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const count = replaceRegionColors(opts.from, opts.to, opts.tolerance ?? 0.01);
+      if (count > 0) scheduleColorRefresh();
+      return { replaced: count };
+    },
+
+    /** Stamp an image onto the model surface as a color region — the
+     *  programmatic Image-paint tool. `imageUrl` is a `data:` URL or a
+     *  same-origin URL. `at` is the stamp centre on the surface (world coords)
+     *  and `normal` the outward face direction there — get them from probeRay /
+     *  measureAt / a face centroid. `size` is the stamp diameter in world units.
+     *  `detail` (default 96) is triangle rows across the stamp — higher = crisper
+     *  (0 = flat stamp on the existing tessellation). `removeBackground` (default
+     *  true) drops the image's background. Only forward-facing triangles inside
+     *  the footprint are painted. Returns `{ ok, name, triangles, avgColor }` or
+     *  `{ error }`. Call saveVersion() afterwards to persist. */
+    async paintImage(opts: { imageUrl: string; at: [number, number, number]; normal: [number, number, number]; size: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string }) {
+      const check = guard(() => {
+        assertObject(opts, 'paintImage(opts)');
+        assertString(opts?.imageUrl, 'paintImage(opts.imageUrl)', { allowEmpty: false });
+        assertNumberTuple(opts?.at, 3, 'paintImage(opts.at)').forEach((n, i) => assertNumber(n, `paintImage(opts.at[${i}])`, {}));
+        assertNumberTuple(opts?.normal, 3, 'paintImage(opts.normal)').forEach((n, i) => assertNumber(n, `paintImage(opts.normal[${i}])`, {}));
+        assertNumber(opts?.size, 'paintImage(opts.size)', { min: 0 });
+        if (opts.size <= 0) throw new ValidationError('paintImage(opts.size) must be greater than 0');
+        if (opts?.rotationDeg !== undefined) assertNumber(opts.rotationDeg, 'paintImage(opts.rotationDeg)', {});
+        if (opts?.detail !== undefined) assertNumber(opts.detail, 'paintImage(opts.detail)', { min: 0, integer: true });
+        if (opts?.removeBackground !== undefined) assertBoolean(opts.removeBackground, 'paintImage(opts.removeBackground)');
+        if (opts?.name !== undefined) assertString(opts.name, 'paintImage(opts.name)', { allowEmpty: false });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!currentMeshData) return { error: 'No model loaded — run code first.' };
+      let imageData: ImageData;
+      try {
+        imageData = await loadImageDataFromUrl(opts.imageUrl);
+      } catch (e) {
+        return { error: `paintImage: could not load image — ${e instanceof Error ? e.message : String(e)}` };
+      }
+      const region = stampImageProgrammatic(imageData, {
+        hitPoint: opts.at,
+        hitNormal: opts.normal,
+        size: opts.size,
+        rotationDeg: opts.rotationDeg,
+        detail: opts.detail,
+        removeBackground: opts.removeBackground,
+        name: opts.name,
+      });
+      if (!region) {
+        return { error: 'paintImage: nothing was painted — the stamp footprint was empty. Check that `at` lies on the surface and `normal` faces outward, and that `size` is large enough to cover triangles.' };
+      }
+      return { ok: true, name: region.name, triangles: region.triangles, avgColor: region.avgColor };
+    },
+
+    // --- Filament palette (the print-color slots paint regions map onto) ------
+
+    /** Read the active filament palette — the slots a multi-color model maps onto
+     *  a printer's AMS/MMU. Returns `{ id, name, capacity, constrained, slots:
+     *  [{id, name, hex, td}] }`. `td` is the slot's transmission distance (used
+     *  by the relief optical preview). Paint with palette hex values (via
+     *  hexToRgb) so a model's colors land on real, loadable filament slots. */
+    getPalette() {
+      return {
+        id: getActivePaletteId(),
+        name: getActivePaletteName(),
+        capacity: getPaletteCapacity(),
+        constrained: isPaletteConstrained(),
+        slots: listFilaments().map(f => ({ id: f.id, name: f.name, hex: f.hex, td: f.td })),
+      };
+    },
+
+    /** List all saved palettes (spool sets). Returns `[{id, name, active}]`. */
+    listPalettes() { return listPalettes(); },
+
+    /** Create a new (empty) palette and return its id. Does not switch to it —
+     *  call setActivePalette(id) to make it active. */
+    createPalette(name: string) {
+      const check = guard(() => assertString(name, 'createPalette(name)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      return { id: createPalette(name) };
+    },
+
+    /** Switch the active palette by id (from listPalettes()). */
+    setActivePalette(id: string) {
+      const check = guard(() => assertString(id, 'setActivePalette(id)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!listPalettes().some(p => p.id === id)) return { error: `No palette with id "${id}". Use listPalettes() to see valid ids.` };
+      setActivePalette(id);
+      return { ok: true };
+    },
+
+    /** Add a filament slot to the active palette. `hex` is "#rrggbb"; `td`
+     *  (transmission distance, default 1) tunes the relief preview. Returns the
+     *  new slot `{ id, name, hex, td }`. */
+    addFilament(opts: { name: string; hex: string; td?: number }) {
+      const check = guard(() => {
+        assertObject(opts, 'addFilament(opts)');
+        assertString(opts?.name, 'addFilament(opts.name)', { allowEmpty: false });
+        assertString(opts?.hex, 'addFilament(opts.hex)', { allowEmpty: false });
+        if (!/^#[0-9a-fA-F]{6}$/.test(opts.hex)) throw new ValidationError('addFilament(opts.hex) must be a "#rrggbb" hex color');
+        if (opts?.td !== undefined) assertNumber(opts.td, 'addFilament(opts.td)', { min: 0 });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const slot = addFilament({ name: opts.name, hex: opts.hex, td: opts.td ?? 1 });
+      return { id: slot.id, name: slot.name, hex: slot.hex, td: slot.td };
+    },
+
+    /** Update a filament slot's name/hex/td by id (from getPalette().slots). */
+    updateFilament(id: string, patch: { name?: string; hex?: string; td?: number }) {
+      const check = guard(() => {
+        assertString(id, 'updateFilament(id)', { allowEmpty: false });
+        assertObject(patch, 'updateFilament(patch)');
+        if (patch?.name !== undefined) assertString(patch.name, 'updateFilament(patch.name)', { allowEmpty: false });
+        if (patch?.hex !== undefined) {
+          assertString(patch.hex, 'updateFilament(patch.hex)', { allowEmpty: false });
+          if (!/^#[0-9a-fA-F]{6}$/.test(patch.hex)) throw new ValidationError('updateFilament(patch.hex) must be a "#rrggbb" hex color');
+        }
+        if (patch?.td !== undefined) assertNumber(patch.td, 'updateFilament(patch.td)', { min: 0 });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!listFilaments().some(f => f.id === id)) return { error: `No filament slot with id "${id}". Use getPalette().slots to see valid ids.` };
+      updateFilament(id, patch);
+      return { ok: true };
+    },
+
+    /** Remove a filament slot from the active palette by id. */
+    removeFilament(id: string) {
+      const check = guard(() => assertString(id, 'removeFilament(id)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!listFilaments().some(f => f.id === id)) return { error: `No filament slot with id "${id}". Use getPalette().slots to see valid ids.` };
+      removeFilament(id);
+      return { ok: true };
+    },
+
+    /** Set how many filament slots the printer can load at once (the AMS/MMU
+     *  budget). Regions beyond it are flagged over-budget in the UI. */
+    setPaletteCapacity(n: number) {
+      const check = guard(() => assertNumber(n, 'setPaletteCapacity(n)', { min: 1, integer: true }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      setPaletteCapacity(n);
+      return { ok: true, capacity: getPaletteCapacity() };
+    },
+
+    /** Toggle whether paint is constrained to the palette's slots (snap to the
+     *  nearest filament) versus free RGB. */
+    setPaletteConstrained(on: boolean) {
+      const check = guard(() => assertBoolean(on, 'setPaletteConstrained(on)'));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      setPaletteConstrained(on);
+      return { ok: true, constrained: isPaletteConstrained() };
+    },
+
     /** Remove a single color region by id. Reverses one paint operation
      *  without nuking the rest. Returns `{ removed: true, id }` on success
      *  or `{ error }` if no region matches. */
@@ -12375,6 +12708,9 @@ async function main() {
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
         'loadVersion':     { signature: 'await loadVersion({index} | {id}) -- Load version into editor -> {id, index, label, code, geometryData} or {error}', docs: '/ai.md#console-api--windowpartwright' },
+        'renameVersion':   { signature: 'await renameVersion({index} | {id}, label) -- Relabel a version -> {ok, id, index, label} or {error}', docs: '/ai.md#console-api--windowpartwright' },
+        'deleteVersion':   { signature: 'await deleteVersion({index} | {id}) -- Delete a version (refuses the last) -> {ok, deleted, newCurrent} or {error}', docs: '/ai.md#console-api--windowpartwright' },
+        'diffVersions':    { signature: 'await diffVersions({index} | {id}, {index} | {id}) -- Compare two versions -> {a, b, codeChanged, statDiff}', docs: '/ai.md#console-api--windowpartwright' },
         'forkVersion':     { signature: 'await forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) -- Load + modify + validate + save in one call; carries parent colors -> {..., codeDiff, colors}', docs: '/ai.md#forking-a-prior-version' },
         'copyColorsFromVersion': { signature: 'await copyColorsFromVersion({index} | {id}) -- Re-apply a prior version\'s color regions onto the current mesh -> {source, carried, dropped}', docs: '/ai.md#forking-a-prior-version' },
         'openSession':     { signature: 'await openSession(id) -- Open existing session', docs: '/ai.md#resuming-a-session' },
@@ -12439,6 +12775,7 @@ async function main() {
         // AI-friendly import — bypass the file picker
         'importSessionData': { signature: 'await importSessionData(jsonObjectOrString) -- Import .partwright.json payload -> {sessionId} or {error}', docs: '/ai/file-io.md' },
         'importCodeData':  { signature: 'await importCodeData(code, language, sessionName?) -- Import raw source as new session', docs: '/ai/file-io.md' },
+        'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?}) -- Import STL bytes (binary/ASCII) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}', docs: '/ai/file-io.md' },
         // Recent Exports inbox (also visible in toolbar Export dropdown)
         'listRecentExports': { signature: 'listRecentExports() -- Recent export metadata, newest first', docs: '/ai/file-io.md' },
         'getRecentExport': { signature: 'await getRecentExport(id) -- Look up bytes by id -> {filename, mimeType, text? | base64, ...}', docs: '/ai/file-io.md' },
@@ -12460,6 +12797,17 @@ async function main() {
         'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai/colors.md' },
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
+        'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every region matching `from` (0..1 colors) -> {replaced}', docs: '/ai/colors.md' },
+        'paintImage':      { signature: 'await paintImage({imageUrl, at:[x,y,z], normal:[nx,ny,nz], size, rotationDeg?, detail?, removeBackground?, name?}) -- Stamp an image onto the surface as a color region -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
+        'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
+        'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
+        'createPalette':   { signature: 'createPalette(name) -- Create an empty palette -> {id} (call setActivePalette to switch)', docs: '/ai/colors.md' },
+        'setActivePalette':{ signature: 'setActivePalette(id) -- Switch active palette by id from listPalettes() -> {ok} or {error}', docs: '/ai/colors.md' },
+        'addFilament':     { signature: 'addFilament({name, hex:"#rrggbb", td?}) -- Add a slot to the active palette -> {id,name,hex,td}', docs: '/ai/colors.md' },
+        'updateFilament':  { signature: 'updateFilament(id, {name?, hex?, td?}) -- Edit a slot -> {ok} or {error}', docs: '/ai/colors.md' },
+        'removeFilament':  { signature: 'removeFilament(id) -- Remove a slot from the active palette -> {ok} or {error}', docs: '/ai/colors.md' },
+        'setPaletteCapacity': { signature: 'setPaletteCapacity(n) -- Set the AMS/MMU slot budget -> {ok, capacity}', docs: '/ai/colors.md' },
+        'setPaletteConstrained': { signature: 'setPaletteConstrained(on) -- Constrain paint to palette slots (snap) vs free RGB -> {ok, constrained}', docs: '/ai/colors.md' },
         'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai/colors.md' },
         'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai/colors.md' },
         'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai/colors.md' },

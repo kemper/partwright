@@ -1,4 +1,4 @@
-# Surface Texture Operations
+# Surface Texture & Mesh Operations
 
 Post-hoc operations that add surface detail to a finished model by displacing
 vertices along their normals. Six textures are available:
@@ -11,6 +11,19 @@ vertices along their normals. Six textures are available:
 | `applyWaffleStitch` | Recessed grid cells with raised borders | Waffle-knit, waffle irons, honeycomb patterns |
 | `applyFurVelvet` | Directional anisotropic pile (velvet, fur, chenille) | Animal fur, velvet fabric, soft plush surfaces |
 | `applyWovenFabric` | Plain-weave over/under interlacing | Baskets, woven cloth, twill, burlap |
+
+Two further mesh operations live in the same panel and share the same
+apply→save→verify workflow:
+
+| Operation | What it does | Notes |
+|-----------|--------------|-------|
+| `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
+| `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
+
+> **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
+> BREP/replicad model this discards the parametric source (and, for BREP, STEP
+> export) — the returned `warnings` array says so. Prefer editing the source for
+> parametric models when the change can be expressed there.
 
 ---
 
