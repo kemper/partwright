@@ -2213,7 +2213,7 @@ async function main() {
   // this in guard() to surface it as { error }. The numeric bounds mirror the
   // clamp* ranges below.
   const RELIEF_COMMON_KEYS = ['widthMm', 'layerHeight', 'baseThickness', 'maxHeight', 'resolution', 'smoothing', 'removeBackground'] as const;
-  const RELIEF_QUANTIZED_KEYS = ['clusters', 'colorSpace', 'dither', 'output', 'shape', 'cornerRadiusMm', 'chamferMm', 'paintingMode', 'invertHeights', 'holes', 'holeEnabled', 'holeDiameterMm', 'holeOffsetMm', 'manualBackground', 'doubleSided', 'backMirror'] as const;
+  const RELIEF_QUANTIZED_KEYS = ['clusters', 'colorSpace', 'dither', 'fixedPalette', 'output', 'shape', 'cornerRadiusMm', 'chamferMm', 'paintingMode', 'invertHeights', 'holes', 'holeEnabled', 'holeDiameterMm', 'holeOffsetMm', 'manualBackground', 'doubleSided', 'backMirror'] as const;
   const RELIEF_PREPROCESS_KEYS = ['brightness', 'contrast', 'saturation', 'levelsLow', 'levelsHigh'] as const;
   const RELIEF_CROP_KEYS = ['left', 'top', 'right', 'bottom'] as const;
   function validateReliefOptionArgs(args: { options?: unknown; quantized?: unknown; preprocess?: unknown; crop?: unknown }, fn: string): void {
@@ -2242,6 +2242,15 @@ async function main() {
       assertBoolean(q.invertHeights, `${fn}(quantized).invertHeights`, { optional: true });
       assertBoolean(q.doubleSided, `${fn}(quantized).doubleSided`, { optional: true });
       assertBoolean(q.backMirror, `${fn}(quantized).backMirror`, { optional: true });
+      // "Constrain to filament palette": an array of [r,g,b] 0–255 triples each
+      // cell snaps to. The clamp re-sanitises, but reject the obviously-wrong
+      // shape here so a typo is loud rather than silently ignored.
+      if (q.fixedPalette !== undefined) {
+        const pal = q.fixedPalette;
+        const ok = Array.isArray(pal) && pal.every(c =>
+          Array.isArray(c) && c.length === 3 && c.every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 255));
+        if (!ok) throw new ValidationError(`${fn}(quantized).fixedPalette must be an array of [r,g,b] triples (0–255). See /ai.md#argument-validation`);
+      }
     }
     if (args.preprocess !== undefined) {
       const p = assertObject(args.preprocess, `${fn}(preprocess)`)!;

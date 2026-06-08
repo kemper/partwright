@@ -51,8 +51,8 @@ const MODES: ModeDef[] = [
   // first, tonal heightmaps (lithophanes) second. 'ai' is intentionally absent
   // — what used to live as a tab is now the Auto-tune button below the knobs,
   // since it never had its own knob set and read as a phantom mode.
-  { id: 'quantized', label: 'Colour' },
-  { id: 'luminance', label: 'Tonal (relief)' },
+  { id: 'quantized', label: 'Colour tile' },
+  { id: 'luminance', label: 'Relief / lithophane' },
 ];
 
 // Only one relief wizard at a time; createModalShell already enforces a single
@@ -68,10 +68,15 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   // re-enters the wizard with their tweaks intact. Merge (not replace) so any
   // new option fields added since that import still get their defaults.
   if (options.initialOptions) mergeOptions(opts, options.initialOptions);
-  // "Constrain to palette" is a live binding to the current filament palette, so
-  // re-resolve it from the palette on open rather than trusting a snapshot a
-  // recent-import re-click carried in (the palette may have changed since).
-  if (opts.quantized.fixedPalette && opts.quantized.fixedPalette.length > 0) {
+  // Colour tiles default to the filament palette as their colour source — you
+  // print a keychain with the filaments you have, so a fresh open starts on the
+  // palette and k-means is the opt-out. A recent-import re-click (initialOptions)
+  // is respected verbatim, so a tile the user switched to auto-extract reopens
+  // that way. Either way, re-resolve a present palette from the *current* slots
+  // rather than trusting a stale snapshot.
+  if (!options.initialOptions && opts.mode === 'quantized') {
+    opts.quantized.fixedPalette = listSlotRgb255();
+  } else if (opts.quantized.fixedPalette && opts.quantized.fixedPalette.length > 0) {
     opts.quantized.fixedPalette = listSlotRgb255();
   }
   let image: ImageData | null = null;
@@ -216,17 +221,17 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     { value: 'lab', label: 'Lab' },
   ]);
   checkboxControl(quantizedSection.grid, 'Dither', () => opts.quantized.dither, v => (opts.quantized.dither = v));
-  // "Constrain colours to filament palette" — snap every region to the nearest
-  // filament colour instead of free k-means clusters. Re-reads the live palette
-  // each time it's switched on; clears the snap when off. While on, the cluster
-  // count is set by the palette, so the Clusters slider is dimmed (ignored).
+  // Colour source: filament palette (default — snap every region to the nearest
+  // loaded filament) vs auto-extract (free k-means clusters). Re-reads the live
+  // palette each time it's switched on; clears the snap when off. While on the
+  // colour set is the palette, so the Clusters slider is dimmed (ignored).
   const constrainRow = checkboxControl(
     quantizedSection.grid,
-    'Constrain to filament palette',
+    'Use filament palette colours',
     () => !!(opts.quantized.fixedPalette && opts.quantized.fixedPalette.length > 0),
     v => { opts.quantized.fixedPalette = v ? listSlotRgb255() : undefined; syncConstrain(); },
   );
-  constrainRow.title = 'Map each colour region onto the nearest filament in your palette, so the print uses only your loaded colours.';
+  constrainRow.title = 'On (default): each colour region maps onto the nearest filament in your palette, so the tile prints in your loaded colours. Off: auto-extract colours with k-means clustering.';
   function syncConstrain(): void {
     const on = !!(opts.quantized.fixedPalette && opts.quantized.fixedPalette.length > 0);
     clustersRow.classList.toggle('opacity-40', on);

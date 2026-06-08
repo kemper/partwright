@@ -38,7 +38,7 @@ test('voxel import: constrain to palette swaps the reduction picker for filament
   await expect(page.getByRole('button', { name: 'All colors' })).toBeVisible();
 });
 
-test('relief import: constrain to palette toggles and dims the clusters slider', async ({ page }) => {
+test('relief import: colour tiles default to the filament palette, and it can be toggled off', async ({ page }) => {
   await page.goto('/editor');
   await page.waitForTimeout(4000);
   await page.evaluate(async () => {
@@ -54,11 +54,15 @@ test('relief import: constrain to palette toggles and dims the clusters slider',
   });
   await page.waitForTimeout(1200);
 
-  const constrain = page.getByText('Constrain to filament palette');
+  const constrain = page.getByText('Use filament palette colours');
   await expect(constrain).toBeVisible();
   const checkbox = constrain.locator('xpath=preceding-sibling::input[@type="checkbox"]');
-  await expect(checkbox).not.toBeChecked();
+  // A fresh colour-tile open defaults to the filament palette.
+  await expect(checkbox).toBeChecked();
 
+  // It's an opt-out: unchecking falls back to auto-extracted (k-means) colours.
+  await constrain.click();
+  await expect(checkbox).not.toBeChecked();
   await constrain.click();
   await expect(checkbox).toBeChecked();
 });
