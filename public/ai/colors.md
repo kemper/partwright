@@ -588,6 +588,29 @@ partwright.replaceColor({ from: [1, 0, 0], to: [0, 0, 1] })  // -> { replaced: 3
 
 This only changes region *colors*, not which triangles they cover — to repaint different triangles, use the paint selectors.
 
+## Stamping an image onto the surface
+
+`paintImage({imageUrl, at, normal, size, ...})` projects an image onto the model as a color region — the programmatic Image-paint tool. Use it for logos, decals, faces, or photo decals on a surface.
+
+```js
+// stamp a logo on the +Z face of a 20mm cube, centred, 12mm across
+await partwright.paintImage({
+  imageUrl: logoDataUrl,     // a data: URL or a same-origin URL
+  at: [0, 0, 10],            // stamp centre, ON the surface (world coords)
+  normal: [0, 0, 1],         // the outward face direction there
+  size: 12,                  // stamp diameter in world units
+  rotationDeg: 0,            // spin around the normal (optional)
+  detail: 96,                // triangle rows across the stamp; higher = crisper. 0 = flat
+  removeBackground: true,    // drop the image's background (default true)
+})
+// -> { ok, name, triangles, avgColor } or { error }
+```
+
+- **Getting `at` / `normal`:** use `probeRay({origin, direction})` (returns the hit point + face normal), `measureAt([x,y])`, or a known face centre — `at` must lie on the surface and `normal` must face outward, or the footprint is empty and you get `{ error }`.
+- Only **forward-facing** triangles inside the stamp square are painted, so a stamp never bleeds onto the far side.
+- The stamp subdivides the footprint for crisp edges (smooth mode), so the model's triangle count rises locally — call `getGeometryData()` after if you care about the budget.
+- Call `saveVersion('stamped')` afterwards to persist it (paint isn't auto-saved).
+
 ## The filament palette — paint to real print slots
 
 A multi-color model prints by mapping its regions onto a printer's loaded **filament slots** (AMS / MMU). The palette is the shared set of those slots; painting with palette colors keeps a model printable on a known spool set. The palette is a cross-session user preference (localStorage), not part of the session.

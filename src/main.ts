@@ -155,7 +155,7 @@ import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
-import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook } from './color/imagePaintUI';
+import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook, stampImageProgrammatic } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
@@ -11317,6 +11317,52 @@ async function main() {
       return { replaced: count };
     },
 
+    /** Stamp an image onto the model surface as a color region — the
+     *  programmatic Image-paint tool. `imageUrl` is a `data:` URL or a
+     *  same-origin URL. `at` is the stamp centre on the surface (world coords)
+     *  and `normal` the outward face direction there — get them from probeRay /
+     *  measureAt / a face centroid. `size` is the stamp diameter in world units.
+     *  `detail` (default 96) is triangle rows across the stamp — higher = crisper
+     *  (0 = flat stamp on the existing tessellation). `removeBackground` (default
+     *  true) drops the image's background. Only forward-facing triangles inside
+     *  the footprint are painted. Returns `{ ok, name, triangles, avgColor }` or
+     *  `{ error }`. Call saveVersion() afterwards to persist. */
+    async paintImage(opts: { imageUrl: string; at: [number, number, number]; normal: [number, number, number]; size: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string }) {
+      const check = guard(() => {
+        assertObject(opts, 'paintImage(opts)');
+        assertString(opts?.imageUrl, 'paintImage(opts.imageUrl)', { allowEmpty: false });
+        assertNumberTuple(opts?.at, 3, 'paintImage(opts.at)').forEach((n, i) => assertNumber(n, `paintImage(opts.at[${i}])`, {}));
+        assertNumberTuple(opts?.normal, 3, 'paintImage(opts.normal)').forEach((n, i) => assertNumber(n, `paintImage(opts.normal[${i}])`, {}));
+        assertNumber(opts?.size, 'paintImage(opts.size)', { min: 0 });
+        if (opts.size <= 0) throw new ValidationError('paintImage(opts.size) must be greater than 0');
+        if (opts?.rotationDeg !== undefined) assertNumber(opts.rotationDeg, 'paintImage(opts.rotationDeg)', {});
+        if (opts?.detail !== undefined) assertNumber(opts.detail, 'paintImage(opts.detail)', { min: 0, integer: true });
+        if (opts?.removeBackground !== undefined) assertBoolean(opts.removeBackground, 'paintImage(opts.removeBackground)');
+        if (opts?.name !== undefined) assertString(opts.name, 'paintImage(opts.name)', { allowEmpty: false });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!currentMeshData) return { error: 'No model loaded — run code first.' };
+      let imageData: ImageData;
+      try {
+        imageData = await loadImageDataFromUrl(opts.imageUrl);
+      } catch (e) {
+        return { error: `paintImage: could not load image — ${e instanceof Error ? e.message : String(e)}` };
+      }
+      const region = stampImageProgrammatic(imageData, {
+        hitPoint: opts.at,
+        hitNormal: opts.normal,
+        size: opts.size,
+        rotationDeg: opts.rotationDeg,
+        detail: opts.detail,
+        removeBackground: opts.removeBackground,
+        name: opts.name,
+      });
+      if (!region) {
+        return { error: 'paintImage: nothing was painted — the stamp footprint was empty. Check that `at` lies on the surface and `normal` faces outward, and that `size` is large enough to cover triangles.' };
+      }
+      return { ok: true, name: region.name, triangles: region.triangles, avgColor: region.avgColor };
+    },
+
     // --- Filament palette (the print-color slots paint regions map onto) ------
 
     /** Read the active filament palette — the slots a multi-color model maps onto
@@ -12732,6 +12778,7 @@ async function main() {
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
         'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every region matching `from` (0..1 colors) -> {replaced}', docs: '/ai/colors.md' },
+        'paintImage':      { signature: 'await paintImage({imageUrl, at:[x,y,z], normal:[nx,ny,nz], size, rotationDeg?, detail?, removeBackground?, name?}) -- Stamp an image onto the surface as a color region -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
         'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
         'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
         'createPalette':   { signature: 'createPalette(name) -- Create an empty palette -> {id} (call setActivePalette to switch)', docs: '/ai/colors.md' },
