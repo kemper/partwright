@@ -119,7 +119,7 @@ import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
 import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
-import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, rotateAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
+import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
@@ -7384,6 +7384,21 @@ async function main() {
     }
   }
 
+  /** Mirror (flip) the current model across its own center plane along the given
+   *  axis, so it stays in place rather than reflecting across the world origin. */
+  async function mirrorModel(opts?: { axis?: 'x' | 'y' | 'z'; mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }): Promise<Record<string, unknown>> {
+    try {
+      if (!currentMeshData) return { error: 'No model loaded' };
+      const box = placementBox();
+      if (!box) return { error: 'No bounding box available — run the model first' };
+      const axis = opts?.axis ?? 'x';
+      if (axis !== 'x' && axis !== 'y' && axis !== 'z') return { error: "mirrorModel: axis must be 'x', 'y', or 'z'" };
+      return await commitTransform(mirrorAboutCenterSteps(box, axis), mirrorLabel(axis), opts?.mode, opts?.preserveColor);
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   // Build a modifier result from an id + options (shared by apply and preview).
   // Every modifier receives the color-baked mesh when preserveColor is on:
   // the texture/smooth paths carry triColors (with _painted) through subdivision
@@ -7754,6 +7769,12 @@ async function main() {
      *  to the floor. Same write-back modes as placeModel. */
     async layFlatModel(opts?: { mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }) {
       return layFlatModel(opts);
+    },
+    /** Mirror (flip) the current model across its own center plane along the
+     *  given axis ('x'|'y'|'z'), and save a new version. The triangle winding is
+     *  flipped so the result stays watertight. Same write-back modes as placeModel. */
+    async mirrorModel(opts?: { axis?: 'x' | 'y' | 'z'; mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }) {
+      return mirrorModel(opts);
     },
     /** True when a transform can be applied as editable parametric code rather
      *  than baked to a mesh (manifold-js model with no manual paint). */
