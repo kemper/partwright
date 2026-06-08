@@ -129,6 +129,16 @@ return api.labeledUnion([
 Then call `renderViews()` and look at the cut faces. (Restore the un-cut
 `labeledUnion` for the saved version.)
 
+## Making a twist actually look twisted — depth and proportion rules
+
+These rules were re-derived independently by several agents; they're empirical:
+
+**Depth rule.** For a twist or spiral groove to *read* visually (not just as a faint scuff), the groove crest must **exceed** the body's clip radius and the valley must **undershoot** it by ≥ 0.3·R. If your twist uses a profile circle of radius R, the bump on the cross-section must extend at least R + 0.3·R from the axis; the valley must come within R − 0.3·R. Near-coincident profiles (bump just barely outside the cylinder) look like shallow rim notches that only bite at the equator and fade at the poles.
+
+**Flat-spiral-bloom aspect ratio.** A flat spiral that blooms outward as it rises (the "spinning top / star" family) needs all three: height ≈ 0.25–0.35 × base radius, a high twist (≥ 4 full turns), and `scaleTop > 1` (the cross-section expands upward). Without the height-to-radius ratio in that range, the profile looks like either a fat drum or a thin wafer; without `scaleTop > 1` it looks like a uniform column instead of a blooming form.
+
+**When componentCount is wrong after splitting:** do NOT bump the clearance arbitrarily and re-render the whole model. Instead, isolate the splitting primitive: test *one question* ("does this cutter alone split the body into 2 components?") in a 3-line diagnostic before re-attempting the full assembly. `decompose()` is the fastest way to see which pieces you have.
+
 ## Give the moving part an affordance
 
 Add an intentional grip — a knob, wings, a textured cap, finger scallops — so the

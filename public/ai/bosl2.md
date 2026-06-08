@@ -264,6 +264,8 @@ These bit AI agents producing real gallery models. They are not bugs in
 BOSL2 — they're places where the natural-looking call is wrong or
 underdocumented:
 
+- **A `for`-loop wrapping `label()` silently drops ALL labels.** OpenSCAD's fallback auto-names every object when a loop wraps `label()`, nuking every label with only an `INFO` line that the bake helper swallows. The failure is silent: `PAINT FAILED` is empty, the model bakes gray, and the only hint is an unexpected object count in the helper output. **Unroll every loop that contains a `label()` call.** A hand-rolled `for (v = values) { if (v == x) { label("x") { ... } } }` sequence is verbose but correct; `for`-inside-`label` is not.
+
 - **`grid_copies()` children may not fuse into a parent `union()`.**
   Empirically, putting `grid_copies(spacing=[...], n=[2,2]) lug();` inside
   a `union { shell(); ... }` produces a result where manifold-3d reports

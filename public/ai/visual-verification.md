@@ -82,7 +82,7 @@ Check these after every run — `getGeometryData()` returns them all:
 
 1. `status:"ok"` — no error
 2. `volume`, `boundingBox.dimensions` — plausible size
-3. `componentCount: 1` — no disconnected floating pieces (failed booleans often produce extras)
+3. `componentCount` — for a **single-body print**, expect `1`; extras = failed booleans or stray geometry. For **multi-part assemblies** (orrery, watch, mechanism), a count > 1 is *correct* — `isManifold: true` is the real gate. When the count is unexpectedly wrong, use `Manifold.decompose()` to inspect each component (volume, bbox) — don't tune parameters blindly without knowing which piece is stray.
 4. `isManifold: true` — watertight geometry
 5. `crossSections` quartiles (z25/z50/z75) — expected profile at each height
 6. `partwright.validate(code)` — quick syntax check without running

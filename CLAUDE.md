@@ -151,19 +151,25 @@ This takes a handful of tool calls and catches wiring mistakes, visual regressio
 
 ## Headless Model Preview — `model:preview` (for CLI agents authoring geometry)
 
-When you're iterating on a **model snippet** (catalog entries, `examples/`, mechanism prototypes) from the CLI, don't round-trip through the browser for every guess. `npm run model:preview -- <file.js>` runs the snippet against the **real `manifold-js` engine in Node** (via vite SSR — no dev server, no Playwright, ~2 s) and gives you everything needed to self-correct in one call:
+When you're iterating on a **model snippet** (catalog entries, `examples/`, mechanism prototypes) from the CLI, don't round-trip through the browser for every guess. `npm run model:preview -- <file.js>` runs the snippet against the real engine in Node (via vite SSR — no dev server, no Playwright, ~2 s) and gives you everything needed to self-correct in one call:
 
 ```bash
 npm run model:preview -- .plans/fidgets/spiral-cone.js          # writes <file>.preview.png + prints JSON
 npm run model:preview -- model.js --json                        # stats only, no PNG
 npm run model:preview -- model.js --png out.png -p turns=6      # override api.params, custom PNG path
+npm run model:preview -- voxel-model.js --lang voxel            # voxel engine (pure-JS, no WASM)
+npm run model:preview -- part.scad --lang scad                  # OpenSCAD WASM (~600 ms cold)
 ```
+
+**Multi-engine:** `--lang manifold-js` (default), `--lang voxel`, and `--lang scad` all run headlessly in Node. **`--lang replicad` is not supported in Phase 1** — OpenCASCADE won't init under Node SSR. Preview replicad snippets through the daemon (`partwright iterate --lang replicad <file>`) or in the browser. See `docs/headless-cli.md` for the full CLI surface including `partwright photo <image>` (image→voxel), Phase 2 daemon commands, and the `partwright iterate` loop that returns real WebGL renders.
 
 - **JSON stat block** (stdout): `isManifold`, `componentCount`, per-component `{volume, bbox, triangleCount}`, `volume`, `surfaceArea`, `genus`, `bbox`, `aspectRatio`, `minEdgeLength`/`meanEdgeLength`, model-declared `labels` (name + color), `paramsSchema`, and a `warnings[]` array (fused parts, tri-count over the ~200k catalog budget, sub-0.4 mm detail, …).
 - **4-view PNG** (front / right / top / iso), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail.
 - Implementation: `scripts/model-preview.mjs` (CLI + pure-JS rasterizer → `sharp`) + `src/tools/previewModel.ts` (the faithful engine call). No WebGL needed.
 
 **`componentCount` is the instrument for print-in-place mechanisms.** A model that returns separate moving parts (screw, spinner, hinge, captive ball, two-tone spiral) must report `componentCount === N`. If it fuses to `1`, the clearance gap is too small or parts collide. The reliable recipe for splitting one solid into interleaved colored parts: subtract a clearance-thick cutter (e.g. a full-diameter helical **slab** for a spiral), then `manifold.decompose()` and color each component. Verify topological/geometric claims with `model:preview`, not from memory.
+
+**Delegating image-heavy loops:** If you're iterating on model appearance across many passes (e.g. sculpting a figurine from a photo), delegate the render→look→adjust loop to the `model-sculpt` subagent rather than Reading preview PNGs yourself — each image Read stays in context and compounds across turns. The subagent returns text only (final path + verdict); use `SendUserFile` to ship the final PNG to the user **without** Reading it into the main context. See `docs/agent-tooling.md` for the model-sculpt agent and the cost-invariant pattern.
 
 > **CLI agents vs in-app/extension AI.** `model:preview` is for agents running in *this repo* (you). The in-app and chrome-extension AI cannot run a CLI — they verify with the in-browser `renderViews()` / `runAndSave(code, label, {maxComponents})` and read `public/ai/*.md` subdocs (e.g. `mechanisms`). Keep tool-specific instructions in `CLAUDE.md`/`docs/` (this audience) and in-browser instructions in `ai.md`/subdocs (that audience).
 

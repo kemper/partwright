@@ -62,7 +62,14 @@ api.sdf.gradedDiamond (cellSize, (x, y, z) => /* thickness here */)
 api.sdf.gradedLidinoid(cellSize, (x, y, z) => /* thickness here */)
 ```
 
-**Sizing `thickness`:** for a printable shell `thickness ≈ cellSize/6 to cellSize/3` is the sweet spot for gyroid, schwarzP, and diamond — thinner gets fragile/under-resolved, thicker fills in the pores. **Lidinoid is the outlier**: its double-frequency terms create smaller effective features at the same `cellSize`, so push its lower bound up — use `thickness ≈ cellSize/5 to cellSize/3` and drop `edgeLength` a touch (try ~`cellSize/10`) if the surface looks jaggy at the default.
+**Sizing `thickness` (field threshold, NOT a dimension):** `thickness` is compared against the TPMS field, which ranges ~[-1.5, 1.5]. It is **not** a wall width in world units or a fraction of `cellSize`. Operative ranges for gyroid, schwarzP, and diamond:
+- **Open, see-through lattice:** `thickness ≈ 0.4–0.7` (the sweet spot for printed infill and decorative lattices; `gyroid(5, 0.5)` and `gyroid(5, 0.8)` are canonical open-lattice examples)
+- **Dense/thick-walled shell:** `thickness ≈ 0.7–1.0`
+- **Near-solid / mostly filled:** `thickness ≥ 1.1` selects `{|F| < 1.1}` ≈ most of space → renders as a **solid blob**; `thickness ≥ 1.5` is fully solid
+
+The old "cellSize/6 to cellSize/3" figure is **dimensionally wrong** — do not use it. Pore size is controlled by `cellSize`; open-vs-closed is controlled by `thickness`. **Lidinoid is the outlier**: its double-frequency terms create smaller effective features, so its open-lattice range starts higher — use `thickness ≈ 0.6–0.9` and a slightly finer `edgeLength` (~`cellSize/10`).
+
+**`edgeLength` for TPMS:** tie it to `cellSize/14..16`, **not** to wall thickness. Thin walls still need the cell-scale grid to resolve; going finer than `cellSize/14` mostly adds triangles without improving shape. A 160–200k triangle budget is the practical ceiling for catalog entries (the browser re-runs them on load); a TPMS above that range should use a larger `cellSize` or coarser `edgeLength`.
 
 **Mixing two lattices:** use **sharp `union`** to butt two regions side-by-side (preserves their labels for paint). `intersect` two infinite TPMS gives their common surface (also infinite — still needs an outer bound).
 
