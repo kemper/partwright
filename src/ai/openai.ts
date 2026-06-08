@@ -598,7 +598,19 @@ async function consumeChatStream(
   signal?: AbortSignal,
 ): Promise<StreamResult> {
   let collectedText = '';
-  const toolBuffers: Record<number, ChatToolBuffer> = {};
+  // Keyed by a stable string per tool call, in emission order (`toolOrder`).
+  // OpenAI proper always sends a numeric `index` that disambiguates parallel
+  // calls and threads streamed argument fragments to the right call. Some
+  // OpenAI-compatible servers (llama.cpp/vLLM/Ollama shims — the Custom
+  // provider's whole audience) omit `index`; keying on `index ?? 0` then
+  // collapsed every distinct call into bucket 0, concatenating their argument
+  // fragments into one invalid-JSON blob so `parseToolArgs` returned `{}` and
+  // all calls after the first were silently dropped. Derive the key from
+  // `index` when present, else the call `id`, else treat a bare delta as a
+  // continuation of the current call.
+  const toolBuffers: Record<string, ChatToolBuffer> = {};
+  const toolOrder: string[] = [];
+  let lastToolKey: string | null = null;
   let stopReason = 'unknown';
   let usage: TurnUsage = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
 
@@ -632,11 +644,16 @@ async function consumeChatStream(
       }
       if (Array.isArray(delta.tool_calls)) {
         for (const tc of delta.tool_calls) {
-          const idx: number = tc.index ?? 0;
-          let buf = toolBuffers[idx];
+          let key: string;
+          if (tc.index != null) key = `i${tc.index}`;
+          else if (typeof tc.id === 'string' && tc.id.length > 0) key = `d${tc.id}`;
+          else key = lastToolKey ?? 'd0'; // bare continuation delta → current call
+          lastToolKey = key;
+          let buf = toolBuffers[key];
           if (!buf) {
-            buf = { id: tc.id ?? `call_${idx}`, name: '', argsText: '', startedNotified: false };
-            toolBuffers[idx] = buf;
+            buf = { id: tc.id ?? `call_${key}`, name: '', argsText: '', startedNotified: false };
+            toolBuffers[key] = buf;
+            toolOrder.push(key);
           }
           if (typeof tc.id === 'string' && tc.id.length > 0) buf.id = tc.id;
           if (tc.function?.name && !buf.name) buf.name = tc.function.name;
@@ -654,11 +671,10 @@ async function consumeChatStream(
     throw err;
   }
 
-  const toolCalls: PersistedToolCall[] = Object.values(toolBuffers).map(buf => ({
-    id: buf.id,
-    name: buf.name,
-    input: parseToolArgs(buf.argsText),
-  }));
+  const toolCalls: PersistedToolCall[] = toolOrder.map(key => {
+    const buf = toolBuffers[key];
+    return { id: buf.id, name: buf.name, input: parseToolArgs(buf.argsText) };
+  });
 
   // If the stream produced tool calls, force a tool_use stop regardless of the
   // reported finish_reason. OpenAI proper sends finish_reason:'tool_calls', but
