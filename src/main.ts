@@ -213,6 +213,8 @@ import {
   navigateVersion,
   loadVersion as loadVersionFromStore,
   peekVersion,
+  renameVersion as renameVersionInStore,
+  deleteVersion as deleteVersionFromStore,
   listCurrentVersions,
   listCurrentParts,
   getCurrentPart,
@@ -3164,16 +3166,19 @@ async function main() {
    *  If the mesh still won't form a manifold (common for sculpted/scanned models
    *  with self-intersections or open edges), prompts the user to import as
    *  render-only — visible and exportable, but no booleans/paint/slice. */
-  async function parseSTLFile(file: File): Promise<ParsedSTL | null> {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-
-    // Sanity-check that the file parses to *something* before doing the more
-    // expensive ofMesh trial.
+  /** Non-interactive STL parse: tries a ladder of weld tolerances and reports
+   *  whether the welded result forms a clean manifold. Shared by the interactive
+   *  file path (`parseSTLFile`, which adds the render-only confirm dialog) and
+   *  the programmatic `importMeshData` API (which auto-accepts render-only).
+   *  Returns null only when the bytes don't parse as STL at all. */
+  type ParsedSTLProbe =
+    | { mesh: ImportedMesh; isManifold: true }
+    | { mesh: ImportedMesh; isManifold: false; manifoldError: string | null; maxTried: number; triCount: number; vertCount: number };
+  function parseSTLBytes(bytes: Uint8Array, filename: string): ParsedSTLProbe | null {
+    // Sanity-check that the file parses to *something* before the more expensive
+    // ofMesh trials.
     const probe = parseSTL(bytes);
-    if (!probe || probe.numTri === 0) {
-      showToast(`Could not parse "${file.name}" as an STL file.`, { variant: 'warn', source: 'import' });
-      return null;
-    }
+    if (!probe || probe.numTri === 0) return null;
 
     // Scale-aware fallback tolerance: 5 ppm of the mesh's bounding-box diagonal
     // catches imports that ship in unusual units (μm or m) where 1e-3 absolute
@@ -3192,13 +3197,29 @@ async function main() {
       const mesh = parseSTL(bytes, { weldTolerance: tol });
       if (!mesh || mesh.numTri === 0) continue;
       const trial = tryConstructManifold(mesh);
-      if (trial.ok) {
-        return { mesh: toImportedMesh(file.name, mesh), isManifold: true };
-      }
+      if (trial.ok) return { mesh: toImportedMesh(filename, mesh), isManifold: true };
       manifoldError = trial.error;
       if (tol > maxTried) maxTried = tol;
       bestMesh = mesh;
     }
+    return {
+      mesh: toImportedMesh(filename, bestMesh),
+      isManifold: false,
+      manifoldError,
+      maxTried,
+      triCount: probe.numTri,
+      vertCount: probe.numVert,
+    };
+  }
+
+  async function parseSTLFile(file: File): Promise<ParsedSTL | null> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const parsed = parseSTLBytes(bytes, file.name);
+    if (!parsed) {
+      showToast(`Could not parse "${file.name}" as an STL file.`, { variant: 'warn', source: 'import' });
+      return null;
+    }
+    if (parsed.isManifold) return { mesh: parsed.mesh, isManifold: true };
 
     // All tolerances failed. Offer render-only fallback — most users importing
     // a Baby Yoda / Eiffel Tower scan just want to look at it, not boolean-op it.
@@ -3206,7 +3227,7 @@ async function main() {
       `${file.name} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
       `You can still import it as render-only: the mesh displays and exports normally, but boolean operations, paint, and cross-sections won't work.\n\n` +
       `For full editing, repair the mesh first in MeshLab or Blender, then re-import.\n\n` +
-      `${probe.numTri.toLocaleString()} triangles · ${probe.numVert.toLocaleString()} vertices · tried weld tolerances up to ${maxTried.toExponential(1)} · ${manifoldError}`,
+      `${parsed.triCount.toLocaleString()} triangles · ${parsed.vertCount.toLocaleString()} vertices · tried weld tolerances up to ${parsed.maxTried.toExponential(1)} · ${parsed.manifoldError}`,
       {
         title: 'Import as render-only?',
         confirmLabel: 'Import render-only',
@@ -3215,7 +3236,7 @@ async function main() {
     );
     if (!accepted) return null;
 
-    return { mesh: toImportedMesh(file.name, bestMesh), isManifold: false };
+    return { mesh: parsed.mesh, isManifold: false };
   }
 
   function toImportedMesh(filename: string, mesh: MeshData, format: ImportedMesh['format'] = 'stl'): ImportedMesh {
@@ -8134,6 +8155,45 @@ async function main() {
       return { sessionId: result.sessionId };
     },
 
+    /** Import an STL mesh (binary or ASCII) from base64-encoded bytes as a new
+     *  session — the programmatic equivalent of the Import → choose-file flow for
+     *  STL (which an agent can't reach: there's no file picker). The mesh is
+     *  welded across a tolerance ladder; when it forms a clean manifold it's
+     *  imported as an editable manifold-js model, otherwise it lands render-only
+     *  (display + export only — no booleans/paint/slicing), reflected by
+     *  `isManifold: false` in the return. `base64` may be a bare base64 string or
+     *  a `data:` URL. `filename` names the import; `opts.sessionName` overrides
+     *  the new session's name. Returns `{ sessionId, isManifold, triangleCount,
+     *  vertexCount }` or `{ error }`. */
+    async importMeshData(base64: string, filename: string, opts: { sessionName?: string } = {}) {
+      const check = guard(() => {
+        assertString(base64, 'importMeshData(base64)', { allowEmpty: false });
+        assertString(filename, 'importMeshData(filename)', { allowEmpty: false });
+        assertObject(opts, 'importMeshData(opts)', { optional: true });
+        assertString(opts?.sessionName, 'importMeshData(opts.sessionName)', { optional: true, allowEmpty: false });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      let bytes: Uint8Array;
+      try {
+        const raw = (base64.includes(',') ? base64.slice(base64.indexOf(',') + 1) : base64).replace(/\s/g, '');
+        const binary = atob(raw);
+        bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      } catch {
+        return { error: 'importMeshData(base64): not valid base64-encoded data.' };
+      }
+      const parsed = parseSTLBytes(bytes, filename);
+      if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
+      const sessionName = opts?.sessionName ?? filename.replace(/\.[^.]+$/, '');
+      const { sessionId } = await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+      return {
+        sessionId,
+        isManifold: parsed.isManifold,
+        triangleCount: parsed.mesh.numTri,
+        vertexCount: parsed.mesh.numVert,
+      };
+    },
+
     /** Import an image (a `data:` URL or a same-origin URL) as a colored voxel
      *  model in a new voxel session — the programmatic equivalent of the
      *  Import → image file flow. `mode: 'billboard'` (default) extrudes every
@@ -9080,6 +9140,80 @@ async function main() {
         timestamp: v.timestamp,
         status: (v.geometryData as Record<string, unknown> | null)?.status ?? null,
       }));
+    },
+
+    /** Rename a version's display label (its index is immutable). Pass { index }
+     *  or { id } from listVersions(), plus the new label. Returns the updated
+     *  { id, index, label }, or { error } if the version isn't in this session. */
+    async renameVersion(target: { index?: number; id?: string }, label: string) {
+      const parsed = parseVersionTarget(target, 'renameVersion');
+      if ('error' in parsed) return parsed;
+      const check = guard(() => assertString(label, 'renameVersion(label)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!getState().session) return { error: 'No active session. Call openSession(id) or createSession() first.' };
+      const version = await peekVersion(parsed.value);
+      if (!version) return { error: `No version found with ${parsed.kind} "${parsed.value}" in the active session. Use listVersions() to see valid ${parsed.kind}s.` };
+      const updated = await renameVersionInStore(version.id, label);
+      if (!updated) return { error: `Could not rename version "${parsed.value}".` };
+      return { ok: true, id: updated.id, index: updated.index, label: updated.label };
+    },
+
+    /** Delete a version from the active session. Pass { index } or { id }. Refuses
+     *  to remove the last remaining version. When the active version is deleted,
+     *  the nearest earlier version becomes active and is re-rendered. Returns
+     *  { ok, deleted, newCurrent } or { error }. */
+    async deleteVersion(target: { index?: number; id?: string }) {
+      const parsed = parseVersionTarget(target, 'deleteVersion');
+      if ('error' in parsed) return parsed;
+      if (!getState().session) return { error: 'No active session. Call openSession(id) or createSession() first.' };
+      const version = await peekVersion(parsed.value);
+      if (!version) return { error: `No version found with ${parsed.kind} "${parsed.value}" in the active session. Use listVersions() to see valid ${parsed.kind}s.` };
+      const result = await deleteVersionFromStore(version.id);
+      if (!result) return { error: 'Could not delete — a session must keep at least one version.' };
+      // If the active version changed, re-render the replacement so the viewport
+      // and editor reflect the new state (mirrors loadVersion's language/colour/
+      // annotation restore).
+      if (result.wasCurrent && result.newCurrent) {
+        const nv = result.newCurrent;
+        const versionLang = effectiveVersionLanguage(nv, getState().session);
+        if (versionLang !== getActiveLanguage()) await switchLanguage(versionLang);
+        setValue(nv.code);
+        currentParamValues = { ...(nv.paramValues ?? {}) };
+        await runCodeSync(nv.code, { preserveCamera: true });
+        await rehydrateColorRegions(nv.geometryData);
+        applyVersionAnnotations(nv);
+      }
+      return {
+        ok: true,
+        deleted: { id: result.deleted.id, index: result.deleted.index, label: result.deleted.label },
+        newCurrent: result.newCurrent ? { id: result.newCurrent.id, index: result.newCurrent.index, label: result.newCurrent.label } : null,
+      };
+    },
+
+    /** Compare two versions' code and geometry stats — the programmatic form of
+     *  the Diff tab. Pass two targets (each { index } or { id }) from
+     *  listVersions(). Returns each version's code + a per-field stat delta, or
+     *  { error } if either version isn't found. */
+    async diffVersions(a: { index?: number; id?: string }, b: { index?: number; id?: string }) {
+      const pa = parseVersionTarget(a, 'diffVersions');
+      if ('error' in pa) return pa;
+      const pb = parseVersionTarget(b, 'diffVersions');
+      if ('error' in pb) return pb;
+      if (!getState().session) return { error: 'No active session. Call openSession(id) or createSession() first.' };
+      const va = await peekVersion(pa.value);
+      if (!va) return { error: `No version found with ${pa.kind} "${pa.value}" in the active session.` };
+      const vb = await peekVersion(pb.value);
+      if (!vb) return { error: `No version found with ${pb.kind} "${pb.value}" in the active session.` };
+      const statDiff = computeStatDiff(
+        (va.geometryData ?? {}) as Record<string, unknown>,
+        (vb.geometryData ?? {}) as Record<string, unknown>,
+      );
+      return {
+        a: { id: va.id, index: va.index, label: va.label, code: va.code },
+        b: { id: vb.id, index: vb.index, label: vb.label, code: vb.code },
+        codeChanged: va.code !== vb.code,
+        statDiff,
+      };
     },
 
     /** Load a version into the editor. Pass { index } or { id } from listVersions().
@@ -12386,6 +12520,9 @@ async function main() {
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
         'loadVersion':     { signature: 'await loadVersion({index} | {id}) -- Load version into editor -> {id, index, label, code, geometryData} or {error}', docs: '/ai.md#console-api--windowpartwright' },
+        'renameVersion':   { signature: 'await renameVersion({index} | {id}, label) -- Relabel a version -> {ok, id, index, label} or {error}', docs: '/ai.md#console-api--windowpartwright' },
+        'deleteVersion':   { signature: 'await deleteVersion({index} | {id}) -- Delete a version (refuses the last) -> {ok, deleted, newCurrent} or {error}', docs: '/ai.md#console-api--windowpartwright' },
+        'diffVersions':    { signature: 'await diffVersions({index} | {id}, {index} | {id}) -- Compare two versions -> {a, b, codeChanged, statDiff}', docs: '/ai.md#console-api--windowpartwright' },
         'forkVersion':     { signature: 'await forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) -- Load + modify + validate + save in one call; carries parent colors -> {..., codeDiff, colors}', docs: '/ai.md#forking-a-prior-version' },
         'copyColorsFromVersion': { signature: 'await copyColorsFromVersion({index} | {id}) -- Re-apply a prior version\'s color regions onto the current mesh -> {source, carried, dropped}', docs: '/ai.md#forking-a-prior-version' },
         'openSession':     { signature: 'await openSession(id) -- Open existing session', docs: '/ai.md#resuming-a-session' },
@@ -12450,6 +12587,7 @@ async function main() {
         // AI-friendly import — bypass the file picker
         'importSessionData': { signature: 'await importSessionData(jsonObjectOrString) -- Import .partwright.json payload -> {sessionId} or {error}', docs: '/ai/file-io.md' },
         'importCodeData':  { signature: 'await importCodeData(code, language, sessionName?) -- Import raw source as new session', docs: '/ai/file-io.md' },
+        'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?}) -- Import STL bytes (binary/ASCII) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}', docs: '/ai/file-io.md' },
         // Recent Exports inbox (also visible in toolbar Export dropdown)
         'listRecentExports': { signature: 'listRecentExports() -- Recent export metadata, newest first', docs: '/ai/file-io.md' },
         'getRecentExport': { signature: 'await getRecentExport(id) -- Look up bytes by id -> {filename, mimeType, text? | base64, ...}', docs: '/ai/file-io.md' },
