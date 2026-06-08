@@ -63,6 +63,17 @@ Skip the PR only when the user explicitly scoped you away from it — a request 
 - **Headers:** `public/_headers` (COEP, COOP, CSP) — Cloudflare Pages serves these automatically
 - **Environment variable:** Set `SITE_URL` in Cloudflare Pages dashboard (Settings > Environment variables) to the production URL (`https://www.partwrightstudio.com`). This is used at build time by the `absoluteUrls` Vite plugin to make Open Graph image URLs and canonical links absolute. If `SITE_URL` is not set, the plugin falls back to `CF_PAGES_URL` (provided automatically by Cloudflare Pages for each deployment).
 
+### Cloudflare build-failure notifications — `scripts/cf-build.sh`
+
+A Cloudflare **build** failure (a `tsc`/`vite build` error in the Pages build) is invisible to the GitHub gate, and an agent **can't fetch Cloudflare's build logs through any API** — so unlike the gate (which carries a run ID for the agent to *pull*), the build container must *push* the captured log out at failure time. `scripts/cf-build.sh` is that wrapper: it runs `npm run build`, and on failure pushes the tail of the build log to two optional sinks, then re-propagates the non-zero exit so the deploy still fails.
+
+To enable it, set the Cloudflare Pages **build command** to `bash scripts/cf-build.sh` (instead of `npm run build`) and add either/both of these as **build environment variables** in the dashboard (never in the repo):
+
+- `GH_ISSUE_TOKEN` — fine-grained PAT for `kemper/mainifold` with **Issues: write**. Opens a `cloudflare-build-failure`-labeled issue with the log **embedded** (it's the only moment that log is reachable) and an `@claude` mention, joining the same agent loop as the gate-failure issues. Dedupes on commit SHA.
+- `CF_FAIL_WEBHOOK` — a Slack/Discord/any incoming-webhook URL for a real-time ping.
+
+Both sinks no-op when their variable is unset. The wrapper only catches failures **inside** the build command; install-phase / upload-phase failures need Cloudflare's native Notifications (webhook, Business+ plan) instead.
+
 ## Tests — two tiers
 
 The suite is split into a fast unit tier and the browser e2e tier. Run the
