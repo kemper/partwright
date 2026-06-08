@@ -12285,8 +12285,13 @@ async function main() {
     /** Configure the brush used by the paint/add/remove tools. `radius` is in
      *  voxels (0 = a single voxel, max 16); `shape` is 'sphere' | 'cube' |
      *  'diamond'; `spray` scatters a random subset; `sprayDensity` is 0.05..1.
+     *
+     *  The `add` tool uses a block instead of a round brush: `block` is the
+     *  [x,y,z] size in voxels (1..32 each) and `depth` (0..16) is how far the
+     *  block sinks into the clicked surface — 0 attaches it flush to the face
+     *  (so a thick block never pokes out the far side of a thin tile).
      *  Returns the resolved brush settings or `{ error }`. */
-    setVoxelBrush(opts: { radius?: number; shape?: import('./color/voxelPaint').BrushShape; spray?: boolean; sprayDensity?: number } = {}) {
+    setVoxelBrush(opts: { radius?: number; shape?: import('./color/voxelPaint').BrushShape; spray?: boolean; sprayDensity?: number; block?: [number, number, number]; depth?: number } = {}) {
       if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
       if (opts.radius !== undefined) {
         if (typeof opts.radius !== 'number' || opts.radius < 0) return { error: 'setVoxelBrush.radius must be a non-negative number' };
@@ -12302,8 +12307,23 @@ async function main() {
         if (typeof opts.sprayDensity !== 'number') return { error: 'setVoxelBrush.sprayDensity must be a number 0.05..1' };
         voxelPaint.setSprayDensity(opts.sprayDensity);
       }
+      if (opts.block !== undefined) {
+        const b = opts.block;
+        if (!Array.isArray(b) || b.length !== 3 || b.some((n) => typeof n !== 'number' || n < 1)) {
+          return { error: 'setVoxelBrush.block must be [x,y,z] with each ≥ 1' };
+        }
+        ([0, 1, 2] as const).forEach((axis) => voxelPaint.setBlockSize(axis, b[axis]));
+      }
+      if (opts.depth !== undefined) {
+        if (typeof opts.depth !== 'number' || opts.depth < 0) return { error: 'setVoxelBrush.depth must be a non-negative number' };
+        voxelPaint.setAddDepth(opts.depth);
+      }
       syncVoxelPaintUI();
-      return { radius: voxelPaint.getBrushRadius(), shape: voxelPaint.getBrushShape(), spray: voxelPaint.isSpray(), sprayDensity: voxelPaint.getSprayDensity() };
+      return {
+        radius: voxelPaint.getBrushRadius(), shape: voxelPaint.getBrushShape(),
+        spray: voxelPaint.isSpray(), sprayDensity: voxelPaint.getSprayDensity(),
+        block: voxelPaint.getBlockSize(), depth: voxelPaint.getAddDepth(),
+      };
     },
 
     /** Set the axis (0=x, 1=y, 2=z) the 'level' tool recolors. Returns `{ axis }`. */
