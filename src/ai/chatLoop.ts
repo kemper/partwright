@@ -17,7 +17,7 @@ import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCal
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, RETRY_SAFE_TOOLS } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
@@ -729,7 +729,12 @@ async function executeAllWithRetry(
     }
     let attempt = 0;
     let result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
-    while (result.isError && attempt < toggles.autoRetry && !signal?.aborted) {
+    // Only auto-retry idempotent tools. Re-running a mutation (save a version,
+    // paint a region, append a note, confirm an import) that partially
+    // succeeded before erroring would double-apply it; the retry budget is for
+    // transient read/render/run failures, not state changes.
+    const retryable = RETRY_SAFE_TOOLS.has(tc.name);
+    while (result.isError && retryable && attempt < toggles.autoRetry && !signal?.aborted) {
       attempt++;
       result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
     }

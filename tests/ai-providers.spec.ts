@@ -495,6 +495,40 @@ test.describe('Multi-provider AI', () => {
     expect(toolIdx).toBeLessThan(userIdx);
   });
 
+  test('OpenAI (Chat Completions) keeps tool calls distinct when an OpenAI-compatible server omits tool_calls[].index', async ({ page }) => {
+    // llama.cpp/vLLM/Ollama OpenAI-compat shims frequently stream tool calls
+    // without the numeric `index`. Keying buffers on `index ?? 0` collapsed
+    // every call into bucket 0, concatenating their argument fragments into
+    // invalid JSON so all calls after the first were silently dropped. With the
+    // id-based fallback both calls must survive with correctly-parsed args.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const result = await page.evaluate(async () => {
+      const openai = await import('/src/ai/openai.ts');
+      const origFetch = window.fetch;
+      // Two distinct tool calls, each delivered whole, with NO `index` field.
+      const body = [
+        'data: {"choices":[{"delta":{"tool_calls":[{"id":"call_A","function":{"name":"renderView","arguments":"{\\"view\\":\\"front\\"}"}}]},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"id":"call_B","function":{"name":"query","arguments":"{\\"q\\":\\"volume\\"}"}}]},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+        'data: [DONE]',
+        '',
+      ].join('\n\n');
+      // @ts-expect-error test stub
+      window.fetch = async () => new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const r = await openai.streamTurn({ apiKey: 'k', model: 'gpt-4o', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+        return { ids: r.toolCalls.map(c => c.id), names: r.toolCalls.map(c => c.name), inputs: r.toolCalls.map(c => c.input) };
+      } finally {
+        window.fetch = origFetch;
+      }
+    });
+    expect(result.ids).toEqual(['call_A', 'call_B']);
+    expect(result.names).toEqual(['renderView', 'query']);
+    expect(result.inputs).toEqual([{ view: 'front' }, { q: 'volume' }]);
+  });
+
   test('Anthropic sends the thinking param with budget when enabled, omits it when off', async ({ page }) => {
     // Off must reproduce the pre-feature request exactly (no `thinking`
     // field); a non-off level enables extended thinking with budget_tokens

@@ -1541,6 +1541,30 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
   'importSvgAsRelief',
 ]);
 
+/** Tools that are safe to auto-retry on error: pure reads/queries, idempotent
+ *  renders, and runs that don't commit (re-executing reproduces the same
+ *  transient state). The chat loop's `autoRetry` re-invokes a failed tool, so
+ *  it must NOT re-run non-idempotent mutations — `runAndSave`/`saveVersion`/
+ *  `forkVersion` (would duplicate a version), the `paint*` family (would
+ *  double-paint or stack a second region), `addSessionNote` (would append
+ *  twice), the relief imports (already confirmed once — a retry skips the
+ *  prompt), the surface modifiers (re-bake), `modifyAndTest` (a patch won't
+ *  re-match after it's applied), and the part/code mutators. Anything not in
+ *  this set runs exactly once even when the user opted into retries. */
+export const RETRY_SAFE_TOOLS = new Set([
+  // Pure reads / queries
+  'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary',
+  'getFeatureCentroids', 'getReferenceImages', 'getSessionContext', 'listVersions',
+  'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
+  'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
+  'listParts', 'getCurrentPart', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
+  'getPrinterSettings', 'getReliefSwapGuide',
+  // Idempotent renders (produce a snapshot; no persistent mutation)
+  'renderView', 'renderViews', 'runIsolated',
+  // Run-without-commit (re-running the same code reproduces the same state)
+  'runCode', 'runAndAssert', 'runAndExplain',
+]);
+
 const RUN_GATED = new Set(['runCode', 'setParams']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
