@@ -253,6 +253,7 @@ await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeByt
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
 await partwright.importCodeData(code, language, name?) // -> {sessionId}
+await partwright.importMeshData(base64, filename, {sessionName?}) // Import STL bytes (binary/ASCII; bare base64 or data: URL) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}. isManifold:false = render-only (no booleans/paint/slicing).
 partwright.listRecentExports()                         // Recent Exports inbox
 await partwright.getRecentExport(id)
 partwright.downloadRecentExport(id)
@@ -305,6 +306,9 @@ await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch c
 await partwright.saveVersion(label?)     // Save current state as version
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
+await partwright.renameVersion({index} | {id}, label) // Relabel a version (index is immutable) -> {ok, id, index, label} or {error}
+await partwright.deleteVersion({index} | {id})  // Delete a version (refuses the last one; re-renders the replacement if the active one was deleted) -> {ok, deleted, newCurrent} or {error}
+await partwright.diffVersions({index} | {id}, {index} | {id}) // Compare two versions -> {a, b, codeChanged, statDiff} (each side carries its code); the programmatic Diff tab
 await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
 await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
 await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); external/console agents hand this to the user — in-app users click the toolbar Share (↗) button instead

@@ -41,6 +41,15 @@ const r = await partwright.importSessionData(parsedJson)
 // Import raw source as a new session
 await partwright.importCodeData(code, 'manifold-js')           // optional sessionName arg
 await partwright.importCodeData(scadCode, 'scad', 'my-shape')
+
+// Import an STL mesh (binary or ASCII) from base64 bytes as a new session.
+// This is the only way an agent can import an STL — there's no file picker to
+// click. `base64` may be a bare base64 string or a `data:` URL; it round-trips
+// with exportSTLData().base64.
+const imp = await partwright.importMeshData(base64, 'part.stl', { sessionName: 'imported part' })
+// -> { sessionId, isManifold, triangleCount, vertexCount } or { error }
+// isManifold:false = welded render-only (displays + exports, but no booleans /
+// paint / cross-sections) — typical for sculpted or scanned models.
 ```
 
 ## Recent Exports inbox
