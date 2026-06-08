@@ -2305,6 +2305,16 @@ async function main() {
         diameterMm: num(q.holeDiameterMm ?? 6, 6),
       })];
     }
+    // Preserve the "constrain to filament palette" snap colours (0–255 triples).
+    // Must be threaded through here — the create path runs options through this
+    // clamp before generateRelief, so dropping it would make the committed model
+    // ignore the palette even though the live preview honoured it.
+    const byte = (v: number) => Math.max(0, Math.min(255, Math.round(num(v, 0))));
+    const fixedPalette = Array.isArray(q.fixedPalette)
+      ? q.fixedPalette
+          .filter(c => Array.isArray(c) && c.length === 3 && c.every(n => Number.isFinite(n)))
+          .map(c => [byte(c[0]), byte(c[1]), byte(c[2])] as [number, number, number])
+      : undefined;
     return {
       clusters: Math.max(2, Math.min(12, Math.floor(num(q.clusters, 5)))),
       colorSpace: q.colorSpace === 'rgb' ? 'rgb' : 'lab',
@@ -2319,6 +2329,7 @@ async function main() {
       manualBackground: q.manualBackground,
       doubleSided: !!q.doubleSided,
       backMirror: q.backMirror !== false,
+      ...(fixedPalette && fixedPalette.length > 0 ? { fixedPalette } : {}),
     };
   }
 
