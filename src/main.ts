@@ -7159,7 +7159,28 @@ async function main() {
     return { regions, transferredTris };
   }
 
-  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean): Promise<Record<string, unknown>> {
+  /** A user-facing warning when committing a modifier converts a SCAD or BREP
+   *  session into a baked manifold-js/voxel mesh — the parametric source (and,
+   *  for BREP, STEP export) is discarded. Returns null when nothing of value is
+   *  lost (manifold-js → manifold-js, or the explicit manifold-js → voxelize). */
+  function engineBakeWarning(priorLang: Language, target: 'manifold-js' | 'voxel'): string | null {
+    if (priorLang === target) return null;
+    if (priorLang === 'replicad') {
+      return 'This BREP model was baked to a mesh — the parametric BREP source and STEP export are no longer available.';
+    }
+    if (priorLang === 'scad') {
+      return 'This OpenSCAD model was baked to a mesh — the parametric SCAD source is no longer editable.';
+    }
+    return null;
+  }
+
+  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean, opts?: { warnOnBake?: boolean }): Promise<Record<string, unknown>> {
+    // Capture the language *before* the commit switches it, so we can warn when a
+    // SCAD/BREP session is silently baked to a mesh. The transform path
+    // (commitTransform) emits its own, more specific warning and passes
+    // warnOnBake:false to avoid double-reporting.
+    const priorLang = getActiveLanguage();
+    const warnOnBake = opts?.warnOnBake !== false;
     // For manifold results the modifier already baked colors into its input and
     // carried them through subdivision — result.mesh.triColors has the correct
     // per-triangle paint (dense mesh, same shape as the engine output). We use
@@ -7210,12 +7231,15 @@ async function main() {
           );
         }
       }
+      const bakeWarning = warnOnBake ? engineBakeWarning(priorLang, 'manifold-js') : null;
+      if (bakeWarning) showToast(bakeWarning, { variant: 'warn', source: 'engine' });
+      const allWarnings = [...(bakeWarning ? [bakeWarning] : []), ...colorWarnings];
       return {
         ok: true,
         label: result.label,
         geometry: getGeometryDataObj(),
         colorsCarried: carried,
-        ...(colorWarnings.length > 0 ? { warnings: colorWarnings } : {}),
+        ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
       };
     }
     // Voxel result: a self-contained `voxels.decode(...)` program, no imports.
@@ -7228,7 +7252,14 @@ async function main() {
     if (!ok) return { error: `Failed to apply ${result.label}` };
     const thumbnail = await captureThumbnail();
     await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
-    return { ok: true, label: result.label, geometry: getGeometryDataObj() };
+    const voxelBakeWarning = warnOnBake ? engineBakeWarning(priorLang, 'voxel') : null;
+    if (voxelBakeWarning) showToast(voxelBakeWarning, { variant: 'warn', source: 'engine' });
+    return {
+      ok: true,
+      label: result.label,
+      geometry: getGeometryDataObj(),
+      ...(voxelBakeWarning ? { warnings: [voxelBakeWarning] } : {}),
+    };
   }
 
   // ---- Place / Rotate (drop-to-floor, center, free rotate, auto lay-flat) --
@@ -7310,7 +7341,7 @@ async function main() {
       result = await commitTransformParametric(steps, label);
     } else {
       const preserve = preserveColor ?? true;
-      result = await commitSurfaceModifier(applyTransform(meshForModifier(preserve), steps, label), preserve);
+      result = await commitSurfaceModifier(applyTransform(meshForModifier(preserve), steps, label), preserve, { warnOnBake: false });
     }
     return warnings.length && !result.error ? { ...result, warnings } : result;
   }
