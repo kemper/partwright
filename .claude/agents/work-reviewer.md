@@ -40,6 +40,16 @@ file:line-cited list of findings the primary agent or a human will act on.
 - Functionality silently dropped in a merge — compare BOTH sides of any merge;
   never assume the new side is complete.
 
+**UI ↔ JS-API parity**
+- A new user-facing capability (toolbar/command-palette/modal action) should be
+  drivable by an AI agent too: flag when a UI affordance lands with no matching
+  `window.partwright` method in `partwrightAPI` (`src/main.ts`), no `help()`
+  table entry, or no `public/ai.md` / subdoc mention. The goal is "anything the
+  UI can do, the API can do." A missing in-app AI tool (`src/ai/tools.ts`) is a
+  should-fix only when the capability is one the chat AI ought to drive.
+- Cross-engine: a commit/bake path must handle (or warn about) all four engines
+  — flag any that silently assumes manifold-js without an `engineBakeWarning`.
+
 **Back-compat (hard requirement)**
 - Backwards-incompatible schema changes: old IndexedDB sessions and previously
   exported files (STL / 3MF / OBJ / GLB / session payloads) MUST still load.

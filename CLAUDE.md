@@ -346,6 +346,19 @@ The app runs in multiple browser windows/tabs at once, often each driving a **di
 
 See `docs/architecture-notes.md` for the concrete implementation patterns (per-tab prefs, `storage`-event scoping, global-state rules).
 
+### UI ↔ JS-API parity — the AI must be able to drive what the UI can
+
+A core product goal: **anything a user can do from the UI, an AI agent can do through `window.partwright`** (the console / external-agent surface) and, where it fits, the in-app AI tool layer. New UI affordances drift out of parity *silently* — the mid-2026 feature audit found whole capabilities (smooth/voxelize/scale/orient, image-stamp paint, STL import, version rename/delete) reachable only by clicking. When you add or change a user-facing capability, close the loop in the **same PR**:
+
+1. **Add the `window.partwright` method** in `partwrightAPI` (`src/main.ts`), validating arguments with the `guard()` / `assert*` helpers (`src/validation/apiValidation.ts`) so console/MCP callers get the same checks as the UI. Return `{ error }` on bad input from value-returning methods; don't throw.
+2. **Register it in the `help()` table** (`src/main.ts`) — that's the discoverability surface and it must not drift from the implementation.
+3. **Document it** in `public/ai.md` (the console-API list) and the relevant `public/ai/*.md` subdoc (`file-io`, `textures`, `printing`, …). External agents read these.
+4. **Consider an in-app AI tool** (`src/ai/tools.ts`): a schema + dispatch case + the correct gating set (`SAVE_GATED` / `PAINT_GATED` / …) when the chat AI should drive it. Skip it only when it can't be driven from chat (e.g. needs local file bytes) or is too destructive to expose unscoped — and say which in the PR.
+
+> A pure static lint can't tell that a new DOM button lacks an API method — there's no typed link between the two — so **this same-PR norm plus the `work-reviewer`'s parity check are the enforcement**, not a gate. (The robust structural fix would be a single capability registry both the command palette and the API derive from; that's a deliberate larger refactor, not done yet.) `npm run lint:consistency` (ast-grep) *does* catch the related UI-*consistency* drift — modals not on `modalShell`, buttons bypassing the `BUTTON_*` constants — so run it, and prefer promoting a clean rule to `error`.
+
+**Cross-engine parity is part of this.** A tool that bakes or commits a result must work for — or explicitly warn about — all four engines; don't add a commit path that silently assumes manifold-js. See the engine-bake note under [Modeling engines](#modeling-engines-four-of-them).
+
 ### Numeric Constants and App Config
 
 Never hardcode numeric tuning constants — timeouts, limits, thresholds, budgets, quality knobs — directly in source files. Instead:
