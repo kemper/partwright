@@ -127,8 +127,15 @@ self.onmessage = async (event: MessageEvent) => {
       // most-recently-started run, whose result the main thread keeps, sets the
       // override last and so always reads the correct value.
       if (typeof circularSegments === 'number') setCircularSegmentsOverride(circularSegments);
-      // Populate the per-run import registry so api.imports works in user code.
-      setActiveImports(imports ?? []);
+      // Snapshot this run's imports. `setActiveImports` writes a module-global
+      // registry, and the lazy-init / font / BREP-preload awaits below yield the
+      // event loop — so a second `execute` message arriving mid-init would
+      // overwrite the registry out from under this run, and the engine (which
+      // reads getActiveImports() synchronously at the top of its evaluation)
+      // would then tessellate with the wrong imports. Install the snapshot at
+      // the last synchronous moment before each engine reads it, after the
+      // awaits, instead of here — closing that interleaving window.
+      const runImports = imports ?? [];
 
       const effectiveLang: Language =
         lang === 'scad' ? 'scad' :
@@ -138,10 +145,12 @@ self.onmessage = async (event: MessageEvent) => {
       let result;
       if (effectiveLang === 'voxel') {
         // Pure-JS voxel meshing — no WASM, no lazy init, synchronous.
+        setActiveImports(runImports);
         result = voxelEngine.run(code as string, params ?? undefined);
       } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
+        setActiveImports(runImports);
         // Preview callback: post the rough mesh to the main thread so it can
         // update the viewport immediately while Phase 2 (full quality) runs.
         const onScadPreview = (previewResult: { mesh: import('./types').MeshData | null }) => {
@@ -160,6 +169,7 @@ self.onmessage = async (event: MessageEvent) => {
         // Full replicad-language session — lazy-init OCCT then evaluate as
         // BREP. Tessellation happens inside the engine before returning.
         if (!replicadEngine.isReady()) await replicadEngine.init();
+        setActiveImports(runImports);
         result = await runReplicadAsync(code as string, params ?? undefined);
       } else {
         if (!manifoldReady) {
@@ -183,6 +193,7 @@ self.onmessage = async (event: MessageEvent) => {
         if (sourceUsesManifoldText(code as string) || /\bapi\.printFit\b/.test(code as string) || /[{,]\s*printFit\s*[,}]/.test(code as string)) {
           await preloadTextFonts();
         }
+        setActiveImports(runImports);
         result = manifoldJsEngine.run(code as string, params ?? undefined);
       }
 

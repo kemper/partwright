@@ -140,6 +140,17 @@ describe('encodeGrid / decodeGrid', () => {
   it('rejects garbage input', () => {
     expect(() => decodeGrid('bm90LXZveGVscw==')).toThrow();
   });
+
+  it('rejects a bounding box too large to encode rather than silently corrupting it', () => {
+    // Full-extent corners span 2048³ ≈ 8.6e9 cells — past the 2^31 boundary
+    // where the old `idx >> 3` byte index went negative and dropped voxels,
+    // round-tripping the grid to empty. The guard now throws before the
+    // O(cellCount) loop instead of producing a corrupt encoding.
+    const v = new VoxelGrid();
+    v.set(COORD_MAX, COORD_MAX, COORD_MAX, '#fff');
+    v.set(-1024, -1024, -1024, '#000');
+    expect(() => encodeGrid(v)).toThrow(/too large/i);
+  });
 });
 
 // Build a directed-edge multiset for the mesh. For a closed, consistently-wound
