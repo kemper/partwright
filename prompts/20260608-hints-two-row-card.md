@@ -6,27 +6,36 @@ prefix: feat
 
 ## Human
 
-Make the "Did you know?" hints menu more compact: a two-row card where the
-"Did you know?" label, the link/CTA, and the previous/next/close buttons sit
-on the first row, and the actual hint text sits on the second row.
+1. Make the "Did you know?" hints menu more compact: a two-row card where the
+   "Did you know?" label, the link/CTA, and the previous/next/close buttons sit
+   on the first row, and the actual hint text sits on the second row.
+2. Follow-up: keep a single row by default when there's room, and only fall back
+   to the two-row layout when the box has to reduce its horizontal size.
 
 ## Assistant
 
-Restructured the hints ticker card (`src/ui/hints/hintsTicker.ts`) from a
-single horizontal flex row into a vertical `flex flex-col` card with two rows:
+Reworked the hints ticker card (`src/ui/hints/hintsTicker.ts`) so it adapts
+between two arrangements driven by available width *and* the current hint's
+length:
 
-- **Why two rows:** the old single row forced the hint text to compete with the
-  badge/CTA/controls for horizontal space, so when room got tight (e.g. AI panel
-  open) the text wrapped to up to three lines and the whole strip ballooned
-  wide. Stacking the header above the text keeps the header compact and lets the
-  text wrap beneath without pushing the controls around.
-- **Row 1 (header):** icon + "Did you know?" badge + CTA grouped on the left;
-  the ‹ › ✕ controls pushed to the right edge with `ml-auto` (kept their divider
-  so they still read as the hints' own controls).
-- **Row 2:** the rotating hint text (`#editor-hints-text`), unchanged classes
-  (`break-words line-clamp-3`) so the existing wrap/clamp behavior carries over.
+- **Single row (default, when it fits):** icon + "Did you know?" + hint text +
+  CTA + ‹ › ✕ controls all inline — the pre-feature layout, with the text on one
+  line (`whitespace-nowrap`).
+- **Two rows (fallback, when tight):** a compact header (icon + label + CTA,
+  controls pushed right with `ml-auto`) and the hint text on its own line below
+  (`break-words line-clamp-3`), so the text never competes with the header.
 
-Left the responsive `applyWidth` logic untouched — it still drops the badge as
-the host narrows and hides the whole card when there's genuinely no room. No
-behavior change to rotation, seen-tracking, CTA dispatch, or the session-dismiss
-flow, so the existing e2e spec (`tests/editor-hints.spec.ts`) passes as-is.
+How the switch is decided (`relayout()`): on resize, breakpoint change, and each
+text rotation it lays out single-row, measures the intrinsic single-line width
+off-flow (`position:absolute; width:max-content`, restored synchronously so it
+never paints), and falls back to two rows only when that width exceeds the host.
+Because the measurement runs inside the ResizeObserver callback / the rotation's
+synchronous task, the transient single-row state is never painted — no flicker.
+`setLayout()` reparents the shared elements between a flat strip and a
+`topRow + text` column, no-op when the mode is unchanged.
+
+Kept the existing visibility degradation (hide below the md breakpoint or when
+the host is under 200px; drop the badge under 360px). No change to rotation,
+seen-tracking, CTA dispatch, or session-dismiss. Added an e2e case
+(`tests/editor-hints.spec.ts`) that pins the toolbar middle wide vs tight and
+asserts the badge and hint text share a row (single) vs stack (two).
