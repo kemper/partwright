@@ -177,17 +177,24 @@ function renderStrip(): void {
   order = buildOrder();
   idx = 0;
 
-  // Centered, self-contained pill in the toolbar's middle: a subtle bordered
-  // box holding the icon, "Did you know?" label, the rotating hint, its CTA, and
-  // the ‹ › ✕ controls — all one section, distinct from the toolbar's button
-  // clusters. The host centers it (justify-center) and stays flex-1 so it also
-  // right-aligns the AI/Import/Export cluster.
+  // Centered, self-contained card in the toolbar's middle: a subtle bordered
+  // box stacked into two rows. The top row is the compact header — icon,
+  // "Did you know?" label, the rotating hint's CTA, and the ‹ › ✕ controls
+  // (right-aligned). The hint text gets its own row beneath, so it never
+  // competes horizontally with the header and can wrap freely. The host centers
+  // it (justify-center) and stays flex-1 so it also right-aligns the
+  // AI/Import/Export cluster.
   strip = document.createElement('div');
   strip.id = 'editor-hints';
   strip.setAttribute('role', 'note');
   strip.setAttribute('aria-label', 'Did you know');
   strip.className =
-    'min-w-0 max-w-full inline-flex items-center gap-2 pl-2.5 pr-1.5 py-1 rounded-md bg-zinc-800/60 border border-zinc-700/70 text-xs text-zinc-400';
+    'min-w-0 max-w-full flex flex-col gap-0.5 pl-2.5 pr-1.5 py-1 rounded-md bg-zinc-800/60 border border-zinc-700/70 text-xs text-zinc-400';
+
+  // Row 1 — the header: icon + label + CTA on the left, ‹ › ✕ controls pushed
+  // to the right edge with ml-auto.
+  const topRow = document.createElement('div');
+  topRow.className = 'flex items-center gap-2';
 
   const icon = document.createElement('span');
   icon.className = 'shrink-0 text-amber-300 flex items-center';
@@ -198,30 +205,33 @@ function renderStrip(): void {
   badge.className = 'shrink-0 text-zinc-500 select-none';
   badge.textContent = 'Did you know?';
 
-  textEl = document.createElement('span');
-  textEl.id = 'editor-hints-text';
-  // Wrap onto multiple lines when horizontal room is tight (e.g. the AI panel
-  // is open) instead of truncating to a single ellipsised line — the strip
-  // grows vertically and the toolbar row grows with it. A long hint still fits
-  // on one line when there's room; line-clamp-3 caps the growth at three lines
-  // so a very long hint on a very narrow strip can't balloon the toolbar.
-  textEl.className = 'min-w-0 text-zinc-300 break-words line-clamp-3';
-
   ctaEl = document.createElement('button');
   ctaEl.type = 'button';
   ctaEl.className = 'shrink-0 text-blue-400 hover:text-blue-300 hover:underline font-medium transition-colors';
 
-  // ‹ › step + ✕ dismiss, kept inside the section, set off by a thin divider so
-  // they read as the hints' own controls.
+  // ‹ › step + ✕ dismiss, kept inside the section and right-aligned (ml-auto),
+  // set off by a thin divider so they read as the hints' own controls.
   const controls = document.createElement('div');
-  controls.className = 'shrink-0 flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-zinc-700/70 text-zinc-500';
+  controls.className = 'shrink-0 flex items-center gap-0.5 ml-auto pl-1.5 border-l border-zinc-700/70 text-zinc-500';
 
   const prevBtn = makeIconBtn('‹', 'Previous hint', () => advance(-1));
   const nextBtn = makeIconBtn('›', 'Next hint', () => advance(1));
   const closeBtn = makeIconBtn('✕', 'Hide hints for this session', dismissForSession);
 
   controls.append(prevBtn, nextBtn, closeBtn);
-  strip.append(icon, badge, textEl, ctaEl, controls);
+  topRow.append(icon, badge, ctaEl, controls);
+
+  // Row 2 — the rotating hint text on its own line beneath the header.
+  textEl = document.createElement('span');
+  textEl.id = 'editor-hints-text';
+  // Wrap onto multiple lines when horizontal room is tight (e.g. the AI panel
+  // is open) instead of truncating to a single ellipsised line — the card grows
+  // vertically and the toolbar row grows with it. A long hint still fits on one
+  // line when there's room; line-clamp-3 caps the growth at three lines so a
+  // very long hint on a very narrow card can't balloon the toolbar.
+  textEl.className = 'min-w-0 text-zinc-300 break-words line-clamp-3';
+
+  strip.append(topRow, textEl);
   host.appendChild(strip);
 
   // Degrade gracefully as the toolbar's middle shrinks (e.g. the AI panel opens
