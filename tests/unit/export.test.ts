@@ -83,6 +83,26 @@ describe('export attribution + STL header safety', () => {
   });
 });
 
+// A single zero-area triangle (all three corners coincident). cleanMeshForExport
+// drops it, leaving no exportable geometry.
+function degenerateTri(): MeshData {
+  return {
+    numProp: 3,
+    numVert: 3,
+    numTri: 1,
+    vertProperties: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]),
+    triVerts: new Uint32Array([0, 1, 2]),
+  } as unknown as MeshData;
+}
+
+describe('empty / fully-degenerate mesh export guard', () => {
+  it('throws (rather than writing a broken file) for STL, OBJ, and 3MF', () => {
+    expect(() => buildSTL(degenerateTri())).toThrow(/no non-degenerate triangles/i);
+    expect(() => buildOBJ(degenerateTri())).toThrow(/no non-degenerate triangles/i);
+    expect(() => build3MF(degenerateTri())).toThrow(/no non-degenerate triangles/i);
+  });
+});
+
 describe('3MF slot-ordered colour materials', () => {
   it('emits m:colorgroup materials in filament-palette slot order, not encounter order', async () => {
     const text = asLatin1(await blobBytes(build3MF(paintedTwoTri()).blob));

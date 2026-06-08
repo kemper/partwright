@@ -7,7 +7,7 @@ import { pickFace, type FacePickResult } from './facePicker';
 import { projectBrushFootprint, invalidateProjection, disposeProjection } from './projectionPaint';
 import { disposeBaseRemap } from './baseRemap';
 import { buildAdjacency, findColorRegion, findCoplanarRegion, gateRegionByBend, getTriangleNormal, type AdjacencyGraph } from './adjacency';
-import { addRegion, getRegions, buildTriColors } from './regions';
+import { addRegion, getRegions, buildTriColors, isPainted } from './regions';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
@@ -901,13 +901,21 @@ function onPointerUp(event: PointerEvent): void {
   const result = pickFace(event);
   if (!result) return;
 
-  // Replace tool: set the source color from the clicked triangle
+  // Replace tool: set the source color from the clicked triangle. An unpainted
+  // triangle isn't in any region, so buildTriColors leaves it at the buffer's
+  // 0,0,0 default (and returns null entirely when there are no regions yet).
+  // Reading those raw bytes made the eyedropper pick pure black on any
+  // unpainted surface instead of the base color the viewport actually shows
+  // (0x4a9eff) — so fall back to that displayed base color when the triangle
+  // is unpainted. (The bucket color-flood seed below deliberately keeps the
+  // raw 0,0,0 for unpainted faces — it's the match key re-flooded on reconcile,
+  // and the buffer stores unpainted as 0,0,0, so the two must agree.)
   if (currentTool === 'replace') {
     const triColors = buildTriColors(currentMesh.numTri);
     const t = result.triangleIndex;
-    const color: [number, number, number] = triColors
+    const color: [number, number, number] = triColors && isPainted(triColors, t)
       ? [triColors[t * 3] / 255, triColors[t * 3 + 1] / 255, triColors[t * 3 + 2] / 255]
-      : [0, 0, 0];
+      : [0x4a / 255, 0x9e / 255, 0xff / 255];
     setReplaceSourceColor(color);
     return;
   }

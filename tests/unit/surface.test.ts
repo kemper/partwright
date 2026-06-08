@@ -16,7 +16,7 @@ import { furVelvet } from '../../src/surface/furVelvet';
 import { wovenFabric } from '../../src/surface/wovenFabric';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
-import { applyFuzzy, applyKnit, applySmooth, applyVoxelize } from '../../src/surface/modifiers';
+import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize } from '../../src/surface/modifiers';
 import { nearestTriangleMap } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
@@ -254,6 +254,18 @@ describe('modifiers (codegen)', () => {
     if (r.kind === 'manifold') {
       expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
       expect(r.mesh.numTri).toBeGreaterThan(12);
+    }
+  });
+
+  it('knit PATCH subdivides the coarse selection so the stitch texture is carried', () => {
+    // A two-triangle selection (one cube face) on a 12-triangle cube has far too
+    // few vertices to carry stitch geometry. The patch path must densify the
+    // masked region — like every sibling patch modifier — or the texture is
+    // invisible. Assert the baked mesh grew well beyond the original 12 tris.
+    const r = applyKnitPatch(cube(10), { amplitude: 0.4, stitchWidth: 2 }, new Set([0, 1]));
+    expect(r.kind).toBe('manifold');
+    if (r.kind === 'manifold') {
+      expect(r.mesh.numTri).toBeGreaterThan(100);
     }
   });
 

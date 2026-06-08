@@ -3,7 +3,7 @@ import { get3MFUnitString } from '../geometry/units';
 import { downloadBlob, getExportFilename, getExportTitle } from './download';
 import type { BuiltExport } from './gltf';
 import { buildZip } from './zip';
-import { assertFiniteMesh, cleanMeshForExport, triColorHex, hasAnyPainted } from './meshClean';
+import { assertFiniteMesh, assertExportableMesh, cleanMeshForExport, triColorHex, hasAnyPainted } from './meshClean';
 import { listFilaments } from '../color/palette';
 
 /** Build a 3MF export blob without triggering a download. */
@@ -12,6 +12,7 @@ export function build3MF(meshData: MeshData, customName?: string): BuiltExport {
   const { triVerts, triColors } = meshData;
 
   const { remap, uniquePositions, validTris } = cleanMeshForExport(meshData);
+  assertExportableMesh(validTris);
 
   // Build vertices XML (deduplicated, 6dp precision)
   const numUniqueVerts = uniquePositions.length / 3;
