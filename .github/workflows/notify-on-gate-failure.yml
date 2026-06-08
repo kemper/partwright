@@ -1,0 +1,99 @@
+name: Notify on staging-gate failure
+
+# When the "Gate main → staging" workflow fails, the push to main never reaches
+# staging — and the failure signal lives only in the Actions logs. This workflow
+# turns that silent red gate into a tracked, actionable GitHub issue so an AI
+# agent (or a human) can pick it up. The issue deliberately carries the failed
+# run ID rather than scraped log snippets: an agent fetches the full failed-job
+# logs (and the uploaded Playwright artifacts) on demand via the GitHub API,
+# which is more complete than any excerpt we could paste here.
+#
+# Triggered via `workflow_run` so it observes the gate from the outside — it sees
+# the conclusion the gate itself can't report after it has already failed.
+
+on:
+  workflow_run:
+    workflows: ["Gate main → staging"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  open-issue:
+    # Only act on a red gate. Success / cancelled / skipped are no-ops.
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or update gate-failure tracking issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const sha = run.head_sha;
+            const shortSha = sha.slice(0, 7);
+            const runUrl = run.html_url;
+            const commit = run.head_commit || {};
+            const commitMsg = (commit.message || '').split('\n')[0];
+            const author = (commit.author && commit.author.name) || run.actor?.login || 'unknown';
+
+            // Dedupe on the run ID so a re-run of the same failed gate doesn't
+            // spawn a second issue. The marker is an HTML comment in the body.
+            const marker = `<!-- gate-failure-run:${run.id} -->`;
+            const label = 'staging-gate-failure';
+
+            // Ensure the label exists (idempotent — ignore "already exists").
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label,
+                color: 'b60205',
+                description: 'main → staging gate failed; needs investigation',
+              });
+            } catch (e) {
+              if (e.status !== 422) throw e;
+            }
+
+            // Skip if we already filed an issue for this exact run.
+            const existing = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open in:body "${marker}"`,
+            });
+            if (existing.data.total_count > 0) {
+              core.info(`Issue already exists for run ${run.id}; skipping.`);
+              return;
+            }
+
+            const title = `staging-gate failed on ${shortSha}: ${commitMsg}`.slice(0, 240);
+            const body = [
+              marker,
+              `The **Gate main → staging** workflow failed, so \`staging\` was **not** advanced and is parked on the last known-good commit.`,
+              ``,
+              `| | |`,
+              `|---|---|`,
+              `| Commit | \`${shortSha}\` — ${commitMsg} |`,
+              `| Author | ${author} |`,
+              `| Failed run | [#${run.run_number}](${runUrl}) |`,
+              `| Run ID | \`${run.id}\` |`,
+              ``,
+              `### For the agent picking this up`,
+              ``,
+              `1. Fetch the **failed-job logs** for run \`${run.id}\` (e.g. \`get_job_logs\` with \`failed_only\`) to read the stack trace.`,
+              `2. If the failure is in an e2e shard, download the **\`playwright-artifacts-shard-*\`** artifact from the run for traces/screenshots.`,
+              `3. Reproduce locally (\`npm run build\` / \`npm run test:unit\` / \`npm run test:e2e\`), push a fix to a branch, and open a PR into \`main\`. The gate re-runs on the next push to main.`,
+              ``,
+              `Close this issue once the gate is green again.`,
+              ``,
+              `@claude please investigate this staging-gate failure and propose a fix.`,
+            ].join('\n');
+
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: [label],
+            });
+            core.info(`Opened issue #${issue.data.number} for run ${run.id}.`);
