@@ -92,3 +92,61 @@ test.describe('printFit builders produce valid manifolds', () => {
     expect(r.error).toMatch(/unknown fastener size/i);
   });
 });
+
+test.describe('printFit articulation (print-in-place)', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.goto('/editor');
+    await waitForEngine(page);
+  });
+
+  test('ballJoint captures two parts as free components', async ({ page }) => {
+    const r = await run(page, `
+      const { Manifold, printFit } = api;
+      const j = printFit.ballJoint({ diameter: 8, fit: 'normal' });
+      const lower = Manifold.cube([20, 20, 6], true).translate([0, 0, -9]).add(j.ball);
+      const upper = Manifold.cube([20, 20, 12], true).translate([0, 0, 6]).subtract(j.socket);
+      return lower.add(upper);
+    `);
+    if (r.status === 'error') throw new Error(`ballJoint failed:\n${r.error}`);
+    expect(r.isManifold).toBe(true);
+    expect(r.componentCount).toBe(2);
+  });
+
+  test('flexi slices a bar into N free links', async ({ page }) => {
+    const r = await run(page, `
+      const { Manifold, printFit } = api;
+      const bar = Manifold.cylinder(60, 6, 6, 64).rotate([0, 90, 0]); // along X
+      return printFit.flexi(bar, { segments: 6, axis: 'x', fit: 'normal' });
+    `);
+    if (r.status === 'error') throw new Error(`flexi failed:\n${r.error}`);
+    expect(r.isManifold).toBe(true);
+    expect(r.componentCount, 'flexi should decompose into one component per segment').toBe(6);
+  });
+
+  test('flexi works along the default Z axis too', async ({ page }) => {
+    const r = await run(page, `
+      const { Manifold, printFit } = api;
+      const tube = Manifold.cylinder(50, 5, 5, 48);
+      return printFit.flexi(tube, { segments: 4 });
+    `);
+    if (r.status === 'error') throw new Error(`flexi(Z) failed:\n${r.error}`);
+    expect(r.isManifold).toBe(true);
+    expect(r.componentCount).toBe(4);
+  });
+
+  test('flexi rejects a non-Manifold first argument', async ({ page }) => {
+    const r = await run(page, `return api.printFit.flexi({ not: 'a solid' }, { segments: 3 });`);
+    expect(r.status).toBe('error');
+    expect(r.error).toMatch(/must be a Manifold/i);
+  });
+
+  test('flexi rejects segments < 2', async ({ page }) => {
+    const r = await run(page, `
+      const bar = api.Manifold.cylinder(20, 4, 4, 32);
+      return api.printFit.flexi(bar, { segments: 1 });
+    `);
+    expect(r.status).toBe('error');
+    expect(r.error).toMatch(/segments/i);
+  });
+});

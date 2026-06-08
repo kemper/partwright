@@ -208,8 +208,18 @@ export function createPrintFitNamespace(module: any, deps: PrintFitDeps = {}) {
   function cone(z0: number, z1: number, rLow: number, rHigh: number, segments?: number): any {
     return Manifold.cylinder(z1 - z0, rLow, rHigh, segments ?? 0).translate([0, 0, z0]);
   }
+  /** Sphere of radius r centered at (0, 0, cz). */
+  function ball(cz: number, r: number, segments?: number): any {
+    return Manifold.sphere(r, segments ?? 0).translate([0, 0, cz]);
+  }
   function seg(o: Record<string, unknown>): number | undefined {
     return o.segments === undefined ? undefined : num(o.segments, 'segments', { min: 3 });
+  }
+  /** Duck-typed Manifold check — flexi takes a real solid as its first arg. */
+  function isManifold(v: unknown): boolean {
+    const m = v as any;
+    return !!m && typeof m.boundingBox === 'function' && typeof m.subtract === 'function'
+      && typeof m.decompose === 'function' && typeof m.intersect === 'function';
   }
 
   return {
@@ -509,6 +519,131 @@ export function createPrintFitNamespace(module: any, deps: PrintFitDeps = {}) {
         }
       });
       return coupon;
+    },
+
+    /**
+     * Captured ball-and-socket joint — the atom of print-in-place articulation.
+     * Returns { ball, socket }. Both share the pivot at the origin.
+     *   • `ball` (SOLID): a sphere of `diameter` at the origin on a stem that
+     *     descends −Z to root into the part below. UNION onto part A.
+     *   • `socket` (NEGATIVE): a spherical cavity (`diameter + 2·clearance(fit)`)
+     *     opening downward through a mouth NARROWER than the ball, so a printed-
+     *     in-place ball is captured but free to pivot. SUBTRACT from part B.
+     * Translate both to the same pivot location. Mate parts with a clearance
+     * gap — this is meant to be printed assembled, not snapped together.
+     *
+     * opts: { diameter, fit?, neck?, stem?, segments? }
+     *   neck: stem diameter (default diameter·0.5); stem: stem length (default
+     *   diameter·0.75).
+     */
+    ballJoint(o0: unknown): { ball: any; socket: any } {
+      const o = opts(o0, 'ballJoint');
+      const d = num(o.diameter, 'diameter', { min: 0.6 });
+      const r = d / 2;
+      const gap = clearance(o.fit ?? 'normal');
+      const neck = num(o.neck, 'neck', { def: d * 0.5, min: 0.4 });
+      const neckR = neck / 2;
+      const stem = num(o.stem, 'stem', { def: d * 0.75, min: 0.2 });
+      const s = seg(o);
+      // Mouth must stay narrower than the ball (capture) yet clear the neck so it
+      // can pivot. swing widens the channel for swing angle.
+      const swing = r * 0.15;
+      const mouthR = Math.min(neckR + gap + swing, r - gap - 0.2);
+      if (mouthR <= neckR) {
+        throw new ValidationError('printFit.ballJoint: diameter too small for the neck — increase diameter or reduce neck.');
+      }
+
+      const ballSolid = ball(0, r, s).add(cyl(-stem, 0, neckR, s));
+      const cavity = ball(0, r + gap, s);
+      const mouth = cyl(-(r + gap) - LIP, 0, mouthR, s);
+      return { ball: ballSolid, socket: cavity.add(mouth) };
+    },
+
+    /**
+     * Flexi — turn a solid into a print-in-place articulated chain. Slices
+     * `solid` into `segments` links along `axis` and embeds a captured ball-and-
+     * socket joint on the bounding-box centerline at each of the `segments-1`
+     * cuts, separated by a printed clearance gap. Returns one Manifold that
+     * decomposes into `segments` free components — it prints as a single object
+     * but flexes. Works best on tube/arm-like solids that run along one axis;
+     * curved-arm auto-skeletonisation is not done here — pick the axis the body
+     * runs along.
+     *
+     * opts: { segments, axis?, fit?, gap?, jointDiameter?, segments? (facets) }
+     *   axis: 'x' | 'y' | 'z' (default 'z'); gap: explicit clearance (overrides
+     *   fit); jointDiameter: ball diameter (default scales with cross-section).
+     */
+    flexi(solidArg: unknown, o0: unknown): any {
+      if (!isManifold(solidArg)) {
+        throw new ValidationError('printFit.flexi(solid, opts): first argument must be a Manifold.');
+      }
+      const o = opts(o0, 'flexi');
+      const segments = num(o.segments, 'segments', { min: 2 });
+      if (!Number.isInteger(segments)) {
+        throw new ValidationError(`printFit.flexi: segments must be an integer >= 2, got ${segments}.`);
+      }
+      const axis = o.axis ?? 'z';
+      if (axis !== 'x' && axis !== 'y' && axis !== 'z') {
+        throw new ValidationError(`printFit.flexi: axis must be "x" | "y" | "z", got ${describe(axis)}.`);
+      }
+      const gap = o.gap !== undefined ? num(o.gap, 'gap', { min: 0 }) : clearance(o.fit ?? 'normal');
+      const s = seg(o);
+
+      // Work in a canonical frame where the chain axis is +Z, then rotate back.
+      const fwd: [number, number, number] = axis === 'x' ? [0, -90, 0] : axis === 'y' ? [90, 0, 0] : [0, 0, 0];
+      const inv: [number, number, number] = axis === 'x' ? [0, 90, 0] : axis === 'y' ? [-90, 0, 0] : [0, 0, 0];
+      const solid = axis === 'z' ? (solidArg as any) : (solidArg as any).rotate(fwd);
+
+      const bb = solid.boundingBox();
+      const zmin = bb.min[2], zmax = bb.max[2];
+      const span = zmax - zmin;
+      if (span <= 0) throw new ValidationError('printFit.flexi: model has no extent along the chosen axis.');
+      const cx = (bb.min[0] + bb.max[0]) / 2;
+      const cy = (bb.min[1] + bb.max[1]) / 2;
+      const crossA = bb.max[0] - bb.min[0];
+      const crossB = bb.max[1] - bb.min[1];
+      const minCross = Math.min(crossA, crossB);
+      const segLen = span / segments;
+
+      const r = o.jointDiameter !== undefined
+        ? num(o.jointDiameter, 'jointDiameter', { min: 0.6 }) / 2
+        : Math.max(1.0, Math.min(minCross * 0.30, segLen * 0.4));
+      const neckR = r * 0.5;
+      const swing = r * 0.15;
+      const mouthR = Math.min(neckR + gap + swing, r - gap - 0.2);
+
+      const bigX = crossA + 10, bigY = crossB + 10;
+      const slab = (z0: number, z1: number): any =>
+        Manifold.cube([bigX, bigY, z1 - z0], false).translate([cx - bigX / 2, cy - bigY / 2, z0]);
+
+      let result: any = null;
+      for (let i = 0; i < segments; i++) {
+        const cutLow = zmin + i * segLen;       // shared plane with the link below
+        const cutHigh = zmin + (i + 1) * segLen; // shared plane with the link above
+        const bottom = i === 0 ? zmin - LIP : cutLow + gap / 2;
+        const top = i === segments - 1 ? zmax + LIP : cutHigh - gap / 2;
+        let link = solid.intersect(slab(bottom, top));
+
+        // Carry the ball up across the cut to the link above.
+        if (i < segments - 1) {
+          const cz = cutHigh;
+          const zc = cz + gap / 2 + r * 0.8;
+          const stemBottom = cz - gap / 2 - Math.min(segLen * 0.3, r);
+          link = link
+            .add(cyl(stemBottom, zc, neckR, s).translate([cx, cy, 0]))
+            .add(ball(zc, r, s).translate([cx, cy, 0]));
+        }
+        // Carve the socket that captures the ball from the link below.
+        if (i > 0) {
+          const cz = cutLow;
+          const zc = cz + gap / 2 + r * 0.8;
+          const cavity = ball(zc, r + gap, s).translate([cx, cy, 0]);
+          const mouth = cyl(cz + gap / 2 - LIP, zc, mouthR, s).translate([cx, cy, 0]);
+          link = link.subtract(cavity.add(mouth));
+        }
+        result = result === null ? link : result.add(link);
+      }
+      return axis === 'z' ? result : result.rotate(inv);
     },
   };
 }
