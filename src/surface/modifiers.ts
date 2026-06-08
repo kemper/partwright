@@ -155,13 +155,34 @@ function knitManifoldResult(opts: KnitTextureOptions, mesh: MeshData, label = 'k
   };
 }
 
+/** Densify the selected region before the knit patch is unwrapped and
+ *  displaced. The knit patch path has its own bespoke extractor (boundary-
+ *  falloff BFS), so unlike the other modifiers it can't go through runOnPatch —
+ *  and it was the ONE patch modifier that skipped subdivision entirely, leaving
+ *  a coarse selection (e.g. a couple of cube faces) with too few vertices to
+ *  carry stitch geometry, so the texture came out faint or invisible. Mirror
+ *  the sibling patches: subdivide the masked region to the same per-quality
+ *  density (gated on amplitude, like the whole-model knit path) and remap the
+ *  selection onto the denser mesh, then run the normal patch knit on that. */
+function densifyKnitPatch(mesh: MeshData, opts: KnitTextureOptions, selectedTris: Set<number>): { mesh: MeshData; tris: Set<number> } {
+  if (Math.max(0, opts.amplitude) <= 0) return { mesh, tris: selectedTris };
+  const diag = modelDiagonal(mesh) || 10;
+  const stitchW = Math.max(1e-4, opts.stitchWidth);
+  const stitchH = Math.max(1e-4, opts.stitchHeight ?? stitchW * 1.4);
+  const pre = patchSubdivTarget(diag, Math.min(stitchW, stitchH), opts.quality ?? 3);
+  const r = subdivideWithMask(mesh, pre, selectedTris);
+  return { mesh: r.mesh, tris: r.selectedTris };
+}
+
 export function applyKnitPatch(mesh: MeshData, opts: KnitTextureOptions, selectedTris: Set<number>): ModifierManifoldResult {
-  const baked = knitTextureUVPatch(mesh, opts, selectedTris);
+  const { mesh: dense, tris } = densifyKnitPatch(mesh, opts, selectedTris);
+  const baked = knitTextureUVPatch(dense, opts, tris);
   return knitManifoldResult(opts, baked, 'knit texture (patch)');
 }
 
 export async function applyKnitPatchAsync(mesh: MeshData, opts: KnitTextureOptions, selectedTris: Set<number>): Promise<ModifierManifoldResult> {
-  const baked = await knitTextureUVPatchAsync(mesh, opts, selectedTris);
+  const { mesh: dense, tris } = densifyKnitPatch(mesh, opts, selectedTris);
+  const baked = await knitTextureUVPatchAsync(dense, opts, tris);
   return knitManifoldResult(opts, baked, 'knit texture (patch)');
 }
 

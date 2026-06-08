@@ -23,6 +23,18 @@ export function assertFiniteMesh(meshData: MeshData): void {
 }
 
 /** Get the hex color string for a triangle (e.g. '#ff3333'), or DEFAULT_COLOR_HEX if unpainted. */
+/** Guard against exporting a mesh with no usable geometry. `cleanMeshForExport`
+ *  drops degenerate triangles, so a mesh that is empty (or whose every triangle
+ *  collapsed) yields `validTris.length === 0`. Without this, STL writes a
+ *  0-triangle file, OBJ writes vertices with no faces, and 3MF emits an
+ *  object with an empty `<triangles>` — all of which downstream slicers reject
+ *  or silently drop, with no error at export time. Throw a clear error instead. */
+export function assertExportableMesh(validTris: number[]): void {
+  if (validTris.length === 0) {
+    throw new Error('Cannot export: the model has no non-degenerate triangles (it is empty or fully collapsed).');
+  }
+}
+
 export function triColorHex(triColors: Uint8Array, t: number): string {
   if (!checkPainted(triColors, t)) return DEFAULT_COLOR_HEX;
   const r = triColors[t * 3].toString(16).padStart(2, '0');
