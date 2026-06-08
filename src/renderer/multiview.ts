@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { createWhiteMaterial, createBlackWireframeMaterial, createCreaseEdgeMaterial } from './materials';
 import type { MeshData } from '../geometry/types';
-import { buildStrokesGroup, disposeStrokesGroup } from '../annotations/annotationOverlay';
+import { buildOffscreenOverlay, disposeOffscreenOverlay } from './viewportRegistry';
 import { presetIndex } from '../storage/db';
 import { CREASE_ANGLE_DEG, resolveEdgeMode, type EdgeMode } from './edgeMode';
 import { getConfig } from '../config/appConfig';
@@ -203,7 +203,7 @@ export function renderCompositeCanvas(meshData: MeshData): HTMLCanvasElement {
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 1000);
   const renderer = getOffscreenRenderer(viewSize);
 
-  const annotations = buildStrokesGroup(new THREE.Vector2(viewSize, viewSize));
+  const annotations = buildOffscreenOverlay(viewSize);
   if (annotations) scene.add(annotations);
 
   const labelHeight = 28;
@@ -243,7 +243,7 @@ export function renderCompositeCanvas(meshData: MeshData): HTMLCanvasElement {
 
   if (annotations) {
     scene.remove(annotations);
-    disposeStrokesGroup(annotations);
+    disposeOffscreenOverlay(annotations);
   }
   disposeScene(scene);
   geometry.dispose();
@@ -401,7 +401,7 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   const camera = buildViewCamera(meshData, options);
   const renderer = getOffscreenRenderer(viewSize);
 
-  const annotations = buildStrokesGroup(new THREE.Vector2(viewSize, viewSize));
+  const annotations = buildOffscreenOverlay(viewSize);
   if (annotations) scene.add(annotations);
 
   renderer.render(scene, camera);
@@ -414,7 +414,7 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
 
   if (annotations) {
     scene.remove(annotations);
-    disposeStrokesGroup(annotations);
+    disposeOffscreenOverlay(annotations);
   }
   disposeScene(scene);
   geometry.dispose();

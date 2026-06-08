@@ -734,6 +734,24 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'toastDurationMs', v)}
         />
         <Field
+          label="Default palette capacity"
+          hint="How many filament slots the paint panel assumes your printer has."
+          tooltip="The default number of colour slots (e.g. 4 for one Bambu AMS). Drives the paint panel's over-budget warning when a model uses more colours than your printer can load. Never blocks painting or export — it's just a heads-up."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.defaultPaletteCapacity}
+          value={c.ui.defaultPaletteCapacity}
+          min={1} max={16} integer
+          onChange={v => set('ui', 'defaultPaletteCapacity', v)}
+        />
+        <Field
+          label="Palette history size"
+          hint="How many recent colours the palette keeps in its history."
+          tooltip="The size of the palette's recent-colour history ring. Raise it to keep more previously-used colours one click away; lower it to keep the history compact."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paletteHistoryMax}
+          value={c.ui.paletteHistoryMax}
+          min={8} max={256} integer
+          onChange={v => set('ui', 'paletteHistoryMax', v)}
+        />
+        <Field
           label="Tooltip delay"
           unit="ms"
           hint="Hover delay before a tooltip appears."

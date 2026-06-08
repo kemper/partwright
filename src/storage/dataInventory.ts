@@ -4,15 +4,17 @@
 
 import { openPartwrightDB } from './db';
 
-export type StoreName = 'sessions' | 'versions' | 'parts' | 'notes' | 'aiKeys' | 'aiChats' | 'aiAttachments' | 'importInbox' | 'exportInbox';
+export type StoreName = 'sessions' | 'versions' | 'parts' | 'notes' | 'drafts' | 'reliefSources' | 'aiKeys' | 'aiChats' | 'aiAttachments' | 'importInbox' | 'exportInbox';
 
-export const ALL_STORES: StoreName[] = ['sessions', 'versions', 'parts', 'notes', 'aiKeys', 'aiChats', 'aiAttachments', 'importInbox', 'exportInbox'];
+export const ALL_STORES: StoreName[] = ['sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'aiKeys', 'aiChats', 'aiAttachments', 'importInbox', 'exportInbox'];
 
 export const STORE_LABELS: Record<StoreName, string> = {
   sessions: 'Sessions',
   versions: 'Versions',
   parts: 'Parts',
   notes: 'Session notes',
+  drafts: 'Editor drafts',
+  reliefSources: 'Relief source images',
   aiKeys: 'AI API keys',
   aiChats: 'AI chat messages',
   aiAttachments: 'Image attachments',
@@ -175,7 +177,12 @@ export async function wipeData(sel: WipeSelection): Promise<void> {
   const stores: StoreName[] = [];
   // The Recent Imports / Exports lists cache imported & exported model files,
   // so they ride along with the modeling-data category (and thus a full wipe).
-  if (sel.modelingData) stores.push('sessions', 'versions', 'parts', 'notes', 'importInbox', 'exportInbox');
+  // `drafts` (per-part editor buffers) and `reliefSources` (original relief
+  // import images, potentially large blobs) are also modeling data — they were
+  // previously omitted here, and since the DB delete below targets the LEGACY
+  // 'mainifold' database (DB_NAME is now 'partwright'), they survived every wipe
+  // as orphaned rows. db.ts's deleteSession/clearAllData already sweep them.
+  if (sel.modelingData) stores.push('sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'importInbox', 'exportInbox');
   if (sel.chats) stores.push('aiChats');
   if (sel.apiKeys) stores.push('aiKeys');
   if (sel.attachments) stores.push('aiAttachments');
