@@ -61,12 +61,21 @@ test.describe('STL import', () => {
 
     // The fresh editor's only part is an expendable starter, so the import lands
     // directly as a new session named after the file — no import-target modal.
-    // Wait for the import to finish — the editor's code buffer should pick up
-    // the auto-generated wrapper. "Ready" alone isn't sufficient because the
-    // editor is already rendering the default cube before the import runs.
+    // Wait for the import to finish. "Ready" alone isn't sufficient because the
+    // editor is already rendering the default cube before the import runs, and
+    // the wrapper code appears (setValue) *before* the re-render that recomputes
+    // geometry completes (await runCodeSync). Reading geometry as soon as the
+    // code flips races that in-flight render and can catch a transient state
+    // with no `volume` — so wait for both the wrapper code AND a settled,
+    // numeric volume from getGeometryData before asserting.
     await page.waitForFunction(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      () => ((window as any).partwright?.getCode?.() ?? '').includes('Manifold.ofMesh(api.imports[0])'),
+      () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pw = (window as any).partwright;
+        if (!((pw?.getCode?.() ?? '') as string).includes('Manifold.ofMesh(api.imports[0])')) return false;
+        const geo = pw?.getGeometryData?.();
+        return typeof geo?.volume === 'number';
+      },
       undefined,
       { timeout: 15000 },
     );
