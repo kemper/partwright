@@ -659,6 +659,13 @@ let capturedPointerId: number | null = null;
 
 function onPointerDown(event: PointerEvent): void {
   if (!active || event.button !== 0) return;
+  // This listener is on the container in the CAPTURE phase, so it also sees
+  // pointerdowns on the floating Voxel Studio panel (and other overlays) that
+  // sit in front of the 3D view. Only start an edit when the press landed on
+  // the canvas itself — otherwise a tap on the panel raycasts a hit on the
+  // model behind it and paints, and setPointerCapture binds the pointer to the
+  // canvas so a drag across menu buttons keeps stamping. See paintMode.ts.
+  if (event.target !== getRenderer().domElement) return;
   // The non-editing `view` tool shows the rounded preview and just orbits — no
   // picking or editing (the rounded mesh isn't voxel-pickable anyway).
   if (tool === 'view') return;

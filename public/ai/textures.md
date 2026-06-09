@@ -29,6 +29,44 @@ apply→save→verify workflow:
 
 ---
 
+## Textures as code — `api.surface.*` (non-baking, in a manifold-js session)
+
+The tool calls above (`applyFuzzySkin`, …) **bake** the textured mesh into
+`api.imports[0]` and replace the editor code. As an alternative, in a
+**manifold-js** session you can declare the same textures **in the model code**
+so they stay parametric — edit a number, re-render, no lost source:
+
+```js
+const { Manifold } = api;
+const body = Manifold.sphere(10, 64);
+api.surface.knit({ stitchWidth: 1.2, amplitude: 0.6 });  // texture the returned mesh
+return body;
+```
+
+- Available ops: `api.surface.fuzzy`, `.knit`, `.cable`, `.waffle`, `.fur`,
+  `.woven`, `.voronoi`, `.smooth`. Each takes the **same options** as its
+  `apply*` tool (size-relative defaults fill in anything you omit). There's also
+  a generic `api.surface.apply('knit', { … })` form.
+- Calls are recorded, not applied during evaluation — they texture the **final
+  returned mesh** in the order called (a terminal skin; you can chain several).
+- Surface textures are **expensive**, so they're **memoized**: a render reuses
+  the cached textured result when the code, params and ops are unchanged.
+- **Explicit runs compute the texture automatically.** A `runCode` / `runAndSave`
+  / `run` call (and the editor's Run button + version loads) force the
+  (memoized) compute and return the **textured** mesh — so an AI/console caller
+  sees the real result with no extra step. The first compute shows a progress
+  modal; repeats are instant (cache hit).
+- **Only live-typing is gated.** While a human edits in the editor, keystroke
+  auto-runs show the **base (untextured) mesh** plus a **"⟳ Textures stale —
+  Re-apply"** pill (top-left) instead of recomputing on every keystroke. Press
+  the pill (or just hit Run) to apply. This keeps typing snappy; it does **not**
+  affect `run`/`runAndSave`, which always apply.
+- This is the in-code counterpart of the bake tools, mirroring `api.paint.*`
+  (see [colors](/ai/colors.md)). Use it when you want the texture to live with
+  the code; use the `apply*` tools when you want a one-shot baked result.
+
+---
+
 ## When to apply textures
 
 Apply after the geometry is finalised and before the final paint pass (or after
@@ -272,8 +310,12 @@ clean through, leaving a see-through strut network (the classic 3D-printed
 Voronoi lamp / planter).
 
 `output` chooses the form:
-- **`'mesh'` (default)** — bakes a smooth manifold-js mesh (Taubin-rounded), so
-  it stays a normal mesh model with **no engine change**. Best for most lamps.
+- **`'mesh'` (default)** — bakes a smooth manifold-js mesh by meshing a
+  **continuous signed-distance field** (the principle behind `Manifold.levelSet`),
+  so the curved walls follow the true surface with **no voxel stair-stepping**,
+  and **no engine change**. Best for most lamps. It's a heavier operation than the
+  other textures (allow a few seconds); a thin web can fuse into a few connected
+  islands, so it stays manifold but may report `componentCount > 1`.
 - **`'voxel'`** — switches the session to the `voxel` language (paintable,
   `.vox`-exportable, re-blockable), at the cost of a blockier look.
 
@@ -285,7 +327,7 @@ one step.
 | `cellSize` | ~10% of diagonal | Approx spacing between cells (world units). |
 | `wallThickness` | ~4% of diagonal | Shell thickness — how thick the struts are through the wall. |
 | `strutWidth` | 0.32 | Kept edge-network width as a fraction of cellSize [0.05–0.6]. Smaller = thinner struts, bigger windows. |
-| `resolution` | 140 | Voxels along the longest axis [16–200]. **Auto-raised** so struts resolve to ≥4 voxels — you rarely need to set it. |
+| `resolution` | 110 | Field/voxel resolution along the longest axis [16–256]. **Auto-raised** so struts resolve to ≥6 cells — you rarely set it. Higher sharpens the struts (the walls are already smooth from the continuous field). |
 | `jitter` | 1 | Cell irregularity [0–1]. 1 = irregular Voronoi; 0 = a regular grid of windows. |
 | `grainAngleDeg` | 0 | Rotate the cell pattern in the XY plane. |
 | `seed` | 1 | Deterministic seed — change to reshuffle the cell layout. |

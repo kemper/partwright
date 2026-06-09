@@ -29,6 +29,7 @@ import { formatSurfacingCall } from '../geometry/voxel/editCodegen';
 import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
+import { voronoiLampSdfMesh } from './voronoiLampSdf';
 
 export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize';
 
@@ -457,7 +458,7 @@ export function defaultVoronoiLampOptions(mesh: MeshData): Required<VoronoiLampM
     cellSize: d * 0.1,
     wallThickness: d * 0.04,
     strutWidth: 0.32,
-    resolution: 140,
+    resolution: 110,
     jitter: 1,
     grainAngleDeg: 0,
     seed: 1,
@@ -603,34 +604,26 @@ export function applyTransform(
 }
 
 export function applyVoronoiLamp(mesh: MeshData, opts: VoronoiLampModifierOptions): ModifierResult {
-  const { grid, min, voxelSize } = voronoiLattice(mesh, opts);
-
-  // Default: a smooth manifold-js mesh — mesh the unit-cell grid, map it back to
-  // the model's world scale, then densify + Taubin-smooth (the same rounding
-  // smoothModel uses for blocky parts) so it doesn't read as "voxelized".
+  // Default: a smooth manifold-js mesh built from a CONTINUOUS signed-distance
+  // field (the principle behind Manifold.levelSet, done pure-JS on the main
+  // thread). The wall follows the true distance to the *smooth* original surface
+  // sub-voxel, so there's no voxel "corduroy" — and resolution genuinely sharpens
+  // it. See voronoiLampSdf.ts.
   if ((opts.output ?? 'mesh') === 'mesh') {
-    const blocky = meshGrid(grid);
-    const pos = blocky.vertProperties;
-    for (let i = 0; i < blocky.numVert; i++) {
-      pos[i * 3]     = min[0] + pos[i * 3] * voxelSize;
-      pos[i * 3 + 1] = min[1] + pos[i * 3 + 1] * voxelSize;
-      pos[i * 3 + 2] = min[2] + pos[i * 3 + 2] * voxelSize;
-    }
-    // Modest Taubin pass: enough to round the voxel stair-steps, but not so much
-    // that it pinches thin struts apart (which would split the one-piece web).
-    const baked = smoothSurface(blocky, { iterations: 5, subdivide: true });
+    const baked = voronoiLampSdfMesh(mesh, opts);
     return {
       kind: 'manifold',
       label: 'voronoi lamp',
       mesh: baked,
       code: manifoldWrapper([
         `Voronoi lamp (perforated shell) from the current model on ${today()} — cell ~${opts.cellSize.toFixed(2)}, wall ${opts.wallThickness.toFixed(2)}.`,
-        `Smoothed mesh baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+        `Smooth (SDF) mesh baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
       ]),
     };
   }
 
   // Voxel output: switch the session to the voxel engine (paintable / .vox).
+  const { grid } = voronoiLattice(mesh, opts);
   // Encode occupancy + colors first, then flip to smooth so the preview mesh
   // matches the emitted `v.smooth()` at runtime (mirrors applyVoxelize).
   const encoded = encodeGrid(grid);

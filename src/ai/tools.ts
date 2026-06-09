@@ -199,6 +199,11 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'getModelColors',
+    description: 'Report the colors the current run declared in code via api.label(shape, name, {color}) (and api.labeledUnion entries with a color). These render and export automatically as a derived underlay — no paint step — and the editor stays editable; manual paint composites on top. Returns {count, colors: [{name, color, triangleCount}]}; an empty list means no colors were declared (or the labelled triangles vanished in a boolean — check listLabels().lostLabels). Sibling of listLabels (uncolored label features) and listRegions (manual paint regions).',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'paintByLabel',
     description: 'Paint a labelled feature by name. The label must have been registered in the current run via api.label(shape, name) / api.labeledUnion (manifold-js) or label("name") <expr>; at the top level of the source (SCAD). This is the bullseye for "describe how to make and paint a model" workflows: write the geometry with labels, then paint by name — no coordinate guessing, no bounding-box estimation, no fan-bleed. For manifold-js it survives boolean ops because manifold-3d propagates originalID through runOriginalID. For SCAD it only survives at the top level — labels inside a CGAL boolean ({ ... } of difference/intersection/etc.) are lost; fall back to paintComponent / paintInBox there. For multi-feature models, batch with paintByLabels in one round-trip instead of N sequential paintByLabel calls. IMPORTANT: api.label only tracks surfaces that exist in the original labeled shape. Boolean subtraction creates NEW triangles at the cut surface (e.g. the inner wall of a mug after subtracting the void) — those new triangles have NO label. Use probePixel + paintConnected for inner surfaces created by boolean ops.',
     input_schema: {
@@ -1549,7 +1554,7 @@ const ALL_TOOLS: ToolDefinition[] = [
 - cellSize: approximate spacing between cells, world units (~16% of diagonal)
 - wallThickness: shell thickness in world units (~3% of diagonal); the struts are this thick
 - strutWidth: kept edge-network width as a fraction of cellSize [0.05–0.6] (default 0.3; smaller = thinner struts / bigger windows)
-- resolution: voxels along the longest axis (default 140). **Auto-raised** so struts resolve to ≥4 voxels, so you rarely need to touch it
+- resolution: field/voxel resolution along the longest axis (default 140, up to 256). **Auto-raised** so struts resolve to ≥6 cells, so you rarely need to touch it; the default mesh output meshes a continuous SDF (smooth walls, no voxel stair-stepping), and higher resolution sharpens the struts
 - jitter: cell irregularity [0–1] (1 = irregular Voronoi, default; 0 = a regular grid of windows)
 - grainAngleDeg, seed: orient / reshuffle the cell layout
 - watertight: keep only the largest connected web → one printable manifold piece (default true — leave on)
@@ -1565,7 +1570,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         cellSize: { type: 'number', description: 'Approximate spacing between cells in world units. Default ~16% of diagonal.' },
         wallThickness: { type: 'number', description: 'Shell wall thickness in world units (strut thickness through the wall). Default ~3% of diagonal.' },
         strutWidth: { type: 'number', description: 'Kept edge-network width as a fraction of cellSize [0.05–0.6]. Default 0.3. Smaller = thinner struts, larger windows.', minimum: 0.05, maximum: 0.6 },
-        resolution: { type: 'integer', description: 'Voxels along the longest axis [16–200]. Higher = crisper holes, slower. Default 110.', minimum: 16, maximum: 200 },
+        resolution: { type: 'integer', description: 'Field/voxel resolution along the longest axis [16–256]. Higher = crisper struts, slower. Default 110.', minimum: 16, maximum: 256 },
         jitter: { type: 'number', description: 'Cell irregularity [0–1]. 1 = irregular Voronoi (default); 0 = a regular grid.', minimum: 0, maximum: 1 },
         grainAngleDeg: { type: 'number', description: 'Rotate the cell pattern in the XY plane, degrees. Default 0.' },
         seed: { type: 'integer', description: 'Deterministic seed — change to reshuffle the cell layout. Default 1.' },
@@ -1707,6 +1712,7 @@ const ALWAYS_AVAILABLE = new Set([
   'findFaces',
   'listComponents',
   'listLabels',
+  'getModelColors',
   // listRegions is a pure read, not a paint mutation, so it stays always-on
   // even when paintFaces is disabled — its consumers paintExplain/assertPaint
   // are always-available and need a region id to target.
@@ -1760,6 +1766,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary',
   'getFeatureCentroids', 'getReferenceImages', 'getSessionContext', 'listVersions',
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
+  'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
   'listParts', 'getCurrentPart', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'getPrinterSettings', 'getReliefSwapGuide',
@@ -2137,6 +2144,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintComponent(input);
     case 'listLabels':
       return api.listLabels();
+    case 'getModelColors':
+      return api.getModelColors();
     case 'paintByLabel':
       return api.paintByLabel(input);
     case 'paintByLabels':

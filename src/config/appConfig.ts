@@ -156,6 +156,13 @@ export interface AppConfig {
     tooltipDelayMs: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
     codeEditorErrorIdleMs: number;
+    /** Input-grace window (ms) for the code editor's bottom-scroll stabilizer.
+     *  When the editor is parked near the very bottom, a programmatic one-line
+     *  re-measure snap (real Chrome reconciling fractional line heights on a
+     *  focus change / layout reflow) is reverted so the code doesn't stutter —
+     *  unless a real scroll happened within this window (wheel, scrollbar drag,
+     *  touch, keyboard/typing), which is always honored. Set to 0 to disable. */
+    codeEditorScrollPinMs: number;
     /** Debounce delay (ms) after the last companion-file keystroke before the
      *  draft is autosaved, so companion edits survive a reload without writing
      *  to IndexedDB on every keystroke. */
@@ -269,6 +276,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     toastDurationMs: 2200,
     tooltipDelayMs: 150,
     codeEditorErrorIdleMs: 800,
+    codeEditorScrollPinMs: 250,
     companionDraftDebounceMs: 600,
     workCameraSaveDebounceMs: 500,
     surfacePreviewDebounceMs: 250,

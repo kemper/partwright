@@ -13,7 +13,9 @@ import { createThreadsNamespace } from '../threads';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import type { RegionDescriptor } from '../../color/regions';
+import { SURFACE_OP_FIELDS, isSurfaceOpId, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
 import { wasmFaultHint } from '../workerFaults';
+import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
  *  The engine looks for it on the user-returned object to decide whether the
@@ -101,6 +103,71 @@ function restoreMethods(saved: SavedMethod[]): void {
   }
 }
 
+// Argument guards for the dimension-taking primitive constructors. Several of
+// these take a *required* positive dimension with no default —
+// `Manifold.sphere(radius)`, `CrossSection.circle(radius)`,
+// `Manifold.cylinder(height, radiusLow)`. Calling them with a missing or NaN
+// argument (e.g. `Manifold.sphere()` while the user is still typing the radius,
+// which the editor's live auto-run executes the moment they pause) does NOT
+// throw in the WASM kernel: it coerces `undefined` to NaN and silently builds a
+// degenerate zero-size solid — all vertices at the origin — that the kernel
+// reports as a successful, non-empty result. That degenerate mesh then froze
+// the viewport (its zero-size bounding box drove OrbitControls into a
+// non-converging NaN damping loop). Validate the dimensions up front so the
+// caller gets an actionable error instead. The renderer also guards against
+// degenerate bounds as a backstop; this layer turns the common authoring
+// mistake into a clear message at its source.
+//
+// Installed before `wrapMethodsForTracking` and restored after it (reverse
+// order) so the validation and allocation-tracking wrappers compose cleanly.
+function installPrimitiveGuards(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  Manifold: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  CrossSection: any,
+  saved: SavedMethod[],
+): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const wrap = (target: any, name: string, validate: (args: unknown[]) => void): void => {
+    const orig = target?.[name];
+    if (typeof orig !== 'function') return;
+    try {
+      target[name] = function (this: unknown, ...args: unknown[]) {
+        validate(args);
+        return (orig as (...a: unknown[]) => unknown).apply(this, args);
+      };
+      saved.push([target, name, orig]);
+    } catch { /* non-writable Embind member — skip */ }
+  };
+
+  // A `size` arg shaped `number | [..dims]`, optional because cube()/square()
+  // default to a unit shape. Only validated when the caller passed something;
+  // every component must be a finite positive number.
+  const assertSize = (val: unknown, dims: number, paramName: string): void => {
+    if (val === undefined) return;
+    if (Array.isArray(val)) {
+      const t = assertNumberTuple(val, dims, paramName);
+      for (let i = 0; i < t.length; i++) {
+        if (t[i] < 1e-6) {
+          throw new ValidationError(`${paramName}[${i}] must be > 0, got ${t[i]}. See /ai.md#argument-validation`);
+        }
+      }
+    } else {
+      assertNumber(val, paramName, { min: 1e-6 });
+    }
+  };
+
+  wrap(Manifold, 'sphere', (a) => { assertNumber(a[0], 'Manifold.sphere(radius)', { min: 1e-6 }); });
+  wrap(Manifold, 'cylinder', (a) => {
+    assertNumber(a[0], 'Manifold.cylinder(height)', { min: 1e-6 });
+    assertNumber(a[1], 'Manifold.cylinder(radiusLow)', { min: 1e-6 });
+    if (a[2] !== undefined) assertNumber(a[2], 'Manifold.cylinder(radiusHigh)', { min: 0 });
+  });
+  wrap(Manifold, 'cube', (a) => { assertSize(a[0], 3, 'Manifold.cube(size)'); });
+  wrap(CrossSection, 'circle', (a) => { assertNumber(a[0], 'CrossSection.circle(radius)', { min: 1e-6 }); });
+  wrap(CrossSection, 'square', (a) => { assertSize(a[0], 2, 'CrossSection.square(size)'); });
+}
+
 function disposeAllExcept(allocated: Array<{ delete?: () => void }>, keep: unknown): void {
   for (const obj of allocated) {
     if (obj === keep) continue;
@@ -174,6 +241,16 @@ export const manifoldJsEngine: Engine = {
     // overlap, in declaration order. Cleared on every run.
     const paintOps: { name: string; color: [number, number, number]; descriptor: RegionDescriptor }[] = [];
     let paintSeq = 0;
+
+    // Surface textures declared in code via `api.surface.*` (fuzzy / knit / cable
+    // / waffle / fur / woven / voronoi / smooth). Like `api.paint.*`, these do
+    // NOT touch the mesh during evaluation — they record an ordered chain of
+    // ops that the MAIN thread applies to the final returned mesh after the run
+    // (reusing the existing modifier math, which is main-thread + WebGPU). The
+    // code is the source of truth, so the textured result is never baked into
+    // `api.imports[0]`; it's recomputed (and memoized) from these ops. Cleared
+    // on every run. See `src/surface/surfaceOps.ts`.
+    const surfaceOps: SurfaceOp[] = [];
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const label = (shape: any, name: unknown, options?: unknown): any => {
@@ -346,6 +423,53 @@ export const manifoldJsEngine: Engine = {
       },
     };
 
+    // === api.surface.* — surface textures declared in code (recorded, applied
+    // post-run on the main thread, memoized). Each call appends one op to the
+    // chain; the chain is applied to the final returned mesh. Unlike the Surface
+    // panel's destructive bake, the parametric op stays in the code — edit a
+    // param and press "Re-apply" to recompute. ===
+    const recordSurfaceOp = (id: SurfaceOpId, params: unknown): void => {
+      let opts: Record<string, unknown> = {};
+      if (params !== undefined && params !== null) {
+        if (typeof params !== 'object' || Array.isArray(params)) {
+          throw new Error(`api.surface.${id}(options): options must be a plain object, e.g. { amplitude: 0.5 }.`);
+        }
+        opts = params as Record<string, unknown>;
+      }
+      const allowed = SURFACE_OP_FIELDS[id];
+      const clean: Record<string, number | boolean | string> = {};
+      for (const [k, v] of Object.entries(opts)) {
+        if (!allowed.includes(k)) {
+          throw new Error(`api.surface.${id}: unknown option "${k}". Accepted: ${allowed.join(', ')}.`);
+        }
+        if (typeof v === 'number') {
+          if (!Number.isFinite(v)) throw new Error(`api.surface.${id}.${k}: must be a finite number.`);
+        } else if (typeof v !== 'boolean' && typeof v !== 'string') {
+          throw new Error(`api.surface.${id}.${k}: must be a number, boolean, or string.`);
+        }
+        clean[k] = v;
+      }
+      surfaceOps.push({ id, params: clean });
+    };
+    const makeSurfaceFn = (id: SurfaceOpId) => (params?: unknown): void => recordSurfaceOp(id, params);
+    const surface: Record<SurfaceOpId, (params?: unknown) => void> & { apply(id: unknown, params?: unknown): void } = {
+      fuzzy: makeSurfaceFn('fuzzy'),
+      knit: makeSurfaceFn('knit'),
+      cable: makeSurfaceFn('cable'),
+      waffle: makeSurfaceFn('waffle'),
+      fur: makeSurfaceFn('fur'),
+      woven: makeSurfaceFn('woven'),
+      voronoi: makeSurfaceFn('voronoi'),
+      smooth: makeSurfaceFn('smooth'),
+      /** Generic form: `api.surface.apply('knit', { … })` — handy for data-driven code. */
+      apply(id: unknown, params?: unknown): void {
+        if (!isSurfaceOpId(id)) {
+          throw new Error(`api.surface.apply(id): id must be one of ${Object.keys(SURFACE_OP_FIELDS).join(', ')}.`);
+        }
+        recordSurfaceOp(id, params);
+      },
+    };
+
     // Imported meshes (STL etc.) attached to the active version are exposed as
     // `api.imports[i]` — each entry is shaped to pass straight into
     // `Manifold.ofMesh()`. Metadata (filename/format) is kept off this object
@@ -428,6 +552,7 @@ export const manifoldJsEngine: Engine = {
       label,
       labeledUnion,
       paint,
+      surface,
       imports,
       renderMesh,
     };
@@ -480,6 +605,12 @@ export const manifoldJsEngine: Engine = {
         allocated.push(v as { delete?: () => void });
       }
     };
+    // Validate primitive dimensions before the tracking wrap so a degenerate
+    // `Manifold.sphere()` / `cylinder()` / `circle()` fails with a clear error
+    // instead of building a viewport-freezing zero-size solid. Restored after
+    // the tracking wrap in `finally` (reverse install order).
+    const savedGuards: SavedMethod[] = [];
+    installPrimitiveGuards(Manifold, CrossSection, savedGuards);
     wrapMethodsForTracking(Manifold, track, savedMethods);
     wrapMethodsForTracking(Manifold.prototype, track, savedMethods);
     wrapMethodsForTracking(CrossSection, track, savedMethods);
@@ -551,6 +682,7 @@ export const manifoldJsEngine: Engine = {
         labelMap,
         labelColors: labelColors.size > 0 ? labelColors : undefined,
         paintOps: paintOps.length > 0 ? paintOps : undefined,
+        surfaceOps: surfaceOps.length > 0 ? surfaceOps : undefined,
         paramsSchema: paramCapture.collectSchema(),
         renderOnly,
       };
@@ -589,6 +721,7 @@ export const manifoldJsEngine: Engine = {
       // caller (the worker frees it after extracting the mesh; the sync path in
       // main.ts deletes it after querying volume/bbox).
       restoreMethods(savedMethods);
+      restoreMethods(savedGuards);
       disposeAllExcept(allocated, result);
       // BREP shapes don't pass through Manifold.* / CrossSection.* method
       // wrapping (they're created by `BREP.box(...).fillet(...)` chains
