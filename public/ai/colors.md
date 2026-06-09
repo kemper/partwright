@@ -184,6 +184,8 @@ boolean (see `listLabels().lostLabels`). Prefer model-declared color when
 the color is intrinsic to the design; reach for `paintByLabel` when a
 human is tweaking colors interactively or overriding the code.
 
+> **manifold-js only.** The `{ color }` option on `api.label` is emitted by the manifold-js engine only. In a **replicad (BREP) session**, `BREP.label(shape, name)` takes no color argument and models always render gray by default — paint with `paintByLabel` after `runAndSave`.
+
 SCAD has the same `label()` pattern. Partwright pre-injects a
 passthrough `module label(name) { children(); }` into every SCAD
 compile so the wrapper is portable to vanilla OpenSCAD too (the helper
