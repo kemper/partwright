@@ -295,18 +295,19 @@ function buildWarnings(s: PreviewStats): string[] {
   // chase a phantom "extra part", and use pieces (not componentCount) to gate
   // the clearance check below.
   const isVoxel = s.engine === 'voxel';
-  const pieces = isVoxel && typeof s.voxelPieceCount === 'number' ? s.voxelPieceCount : s.componentCount;
   if (isVoxel && typeof s.voxelPieceCount === 'number' && s.componentCount > s.voxelPieceCount) {
     w.push(`componentCount=${s.componentCount} counts enclosed cavities / edge-only touches, but this is ${s.voxelPieceCount} face-connected printable piece${s.voxelPieceCount === 1 ? '' : 's'} (voxelPieceCount). Trust voxelPieceCount for "is this one piece?".`);
   }
-  // Clearance / unintended-fragmentation check: separate pieces whose bounding
-  // boxes overlap are interpenetrating-but-not-fused. For an unlabeled model
-  // meant to be ONE solid, that's a boolean that didn't take (insufficient
-  // overlap); for an intentional multi-part / print-in-place assembly it's a
-  // cue to sanity-check the clearance gap. Gated to the no-labels case so it
-  // doesn't double up with the FUSED-labels warning, and to ≥2 actual pieces so
-  // a voxel model with a hollow cavity (one piece) doesn't false-positive.
-  if (!s.renderOnly && !s.empty && pieces >= 2 && s.labels.length === 0 && componentsOverlap(s.components)) {
+  // Clearance / unintended-fragmentation check: separate components whose
+  // bounding boxes overlap are interpenetrating-but-not-fused. For an unlabeled
+  // model meant to be ONE solid, that's a boolean that didn't take (insufficient
+  // overlap); for an intentional multi-part / print-in-place assembly it's a cue
+  // to sanity-check the clearance gap. Skipped for voxel models: their
+  // decompose-based components over-report (an enclosed cavity nests inside the
+  // shell's bbox), so the overlap signal is meaningless — voxelPieceCount above
+  // is the right cue there. Gated to no-labels so it doesn't double up with the
+  // FUSED-labels warning.
+  if (!s.renderOnly && !s.empty && !isVoxel && s.componentCount >= 2 && s.labels.length === 0 && componentsOverlap(s.components)) {
     w.push(`componentCount=${s.componentCount} with overlapping component bounding boxes (top ${Math.min(s.componentCount, s.components.length)} by volume checked) — separate parts whose bounds overlap, so they may interpenetrate. If this should be ONE solid, a boolean didn't fuse (increase overlap ≥0.5 units); if it's an intentional multi-part / print-in-place assembly, verify the clearance gap. Inspect islands with model:preview --explain-components.`);
   }
   if (s.triangleCount > 200000) w.push(`High triangle count (${Math.round(s.triangleCount / 1000)}k) — exceeds the ~200k catalog budget; lower circular segments / nDivisions or feature density.`);

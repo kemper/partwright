@@ -59,3 +59,11 @@ discipline now point at `voxelPieceCount`.
 **Left as-is (per earlier decision):** the BREP `fillet(r)` preflight clamp —
 already mitigated, and a true clamp needs OCCT max-radius introspection
 replicad doesn't expose, for little gain.
+
+**Review follow-up (work-reviewer).** 0 blocking, 0 should-fix, 2 nits. Fixed
+nit 1: the clearance warning was gated on voxel pieces but its message
+interpolated the mesh `componentCount` — self-contradictory next to the new
+note. Cleaner fix: skip the clearance warning entirely for voxel models (mesh
+bbox-overlap is meaningless given cavity over-reporting; voxelPieceCount is the
+right voxel cue). Nit 2 (lastVoxelCount staleness after Voxel-Studio paint
+edits) is pre-existing and not worsened here — left as a conscious non-goal.
