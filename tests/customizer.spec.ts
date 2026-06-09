@@ -210,32 +210,43 @@ return v;`;
     await expect(page.locator('#customize-toggle')).toContainText('Customize (2)');
   });
 
-  test('Customize toolbar pill toggles the panel, and close → reopen always works', async ({ page }) => {
+  test('Customize button toggles the panel, and close → reopen always works', async ({ page }) => {
     const pill = page.locator('#customize-toggle');
     const panel = page.locator('#params-panel');
+    const toolsMenu = page.locator('#viewport-tools-menu');
 
-    // Plain model: no parameters → neither the pill nor the panel show.
+    // The Customize button lives inside the Tools dropdown alongside the other
+    // model-editing tools (not as a standalone toolbar pill).
+    await expect(toolsMenu.locator('#customize-toggle')).toHaveCount(1);
+
+    // Plain model: no parameters → neither the button nor the panel show.
     await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PLAIN_MODEL);
     await expect(pill).toBeHidden();
     await expect(panel).toBeHidden();
 
-    // Parametric model: pill appears (with the count) and the panel opens.
+    // Parametric model: the panel opens AND the Tools dropdown auto-opens with
+    // it, surfacing the Customize button (with its count) just above the panel.
     await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PARAM_MODEL);
+    await expect(toolsMenu).toBeVisible();
     await expect(pill).toBeVisible();
     await expect(pill).toContainText('Customize (4)');
     await expect(panel).toBeVisible();
 
-    // The panel's × closes it; the pill stays visible as the way back in.
+    // The panel's × closes it. As with every docked tool panel, that click lands
+    // outside the Tools popover and collapses the dropdown too — so the way back
+    // in is to reopen the Tools dropdown, where the Customize button still waits.
     await panel.locator('button[aria-label="Close parameters"]').click();
     await expect(panel).toBeHidden();
+    await page.locator('#viewport-tools-group-btn').click();
     await expect(pill).toBeVisible();
+    await expect(pill).toContainText('Customize (4)');
 
     // Re-running the SAME model (e.g. a code edit) must NOT re-pop a panel the
     // user deliberately closed.
     await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PARAM_MODEL);
     await expect(panel).toBeHidden();
 
-    // Clicking the pill reopens it — the discoverable reopen affordance.
+    // Clicking the Customize button reopens it — the discoverable reopen affordance.
     await pill.click();
     await expect(panel).toBeVisible();
 
@@ -334,5 +345,40 @@ return v;`;
     expect(after.x).toBeLessThan(before.x - 10);
     expect(after.y).toBeGreaterThanOrEqual(0);
     expect(after.x).toBeGreaterThanOrEqual(0);
+    // It is window-anchored (position: fixed), so it can roam the whole window.
+    await expect(panel).toHaveCSS('position', 'fixed');
+  });
+
+  test('a dragged panel stays put when a surrounding pane is collapsed', async ({ page }) => {
+    await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PARAM_MODEL);
+    const panel = page.locator('#params-panel');
+    await expect(panel).toBeVisible();
+
+    // Drag it well into the middle so a pane reflow would visibly shift an
+    // absolutely-positioned (pane-relative) panel.
+    const title = panel.locator('text=Customize').first();
+    const titleBox = await title.boundingBox();
+    if (!titleBox) throw new Error('no title box');
+    await page.mouse.move(titleBox.x + titleBox.width / 2, titleBox.y + titleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(titleBox.x - 120, titleBox.y + 140, { steps: 8 });
+    await page.mouse.up();
+
+    const before = await panel.boundingBox();
+    if (!before) throw new Error('no panel box');
+
+    // Collapse the code editor pane — the viewport pane grows, but a
+    // window-anchored panel must not budge. Fire the collapse directly (the
+    // dragged panel may overlap the header button) and let the layout settle.
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Hide code');
+      (btn as HTMLButtonElement | undefined)?.click();
+    });
+    await page.waitForTimeout(200);
+
+    const after = await panel.boundingBox();
+    if (!after) throw new Error('no panel box after collapse');
+    expect(Math.abs(after.x - before.x)).toBeLessThan(2);
+    expect(Math.abs(after.y - before.y)).toBeLessThan(2);
   });
 });

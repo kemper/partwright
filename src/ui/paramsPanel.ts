@@ -22,6 +22,11 @@ export interface ParamsPanelOptions {
    *  Lets an external toggle button (the viewport "Customize" pill) mirror the
    *  panel's state and show a parameter count. */
   onVisibilityChange?: (state: { hasParams: boolean; open: boolean; count: number }) => void;
+  /** Fired when a new/changed parameter schema auto-opens the panel (i.e. a
+   *  parameterizable model is opened for the first time). Lets the host also
+   *  reveal the Tools dropdown the Customize button lives in, so the tool list
+   *  sits just above the freshly-docked panel. Not fired on manual re-opens. */
+  onAutoReveal?: () => void;
 }
 
 export interface ParamsPanelController {
@@ -163,7 +168,8 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
       return;
     }
     const sig = schemaSignature(schema);
-    if (sig !== currentSig) {
+    const schemaChanged = sig !== currentSig;
+    if (schemaChanged) {
       currentSig = sig;
       rebuild(schema);
       // A new or changed parameter set re-opens the panel so its knobs are seen.
@@ -172,6 +178,9 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     paramCount = schema.length;
     updateValues(values);
     title.textContent = schema.length === 1 ? 'Customize (1)' : `Customize (${schema.length})`;
+    // Reveal the Tools dropdown *before* positioning the panel, so applyVisibility
+    // docks the panel beneath the now-open menu rather than the bare toolbar.
+    if (schemaChanged && isOpen()) opts.onAutoReveal?.();
     applyVisibility();
   }
 

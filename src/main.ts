@@ -27,6 +27,8 @@ import { formatEngineMemory } from './geometry/engineMemory';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
+import { viewportToolsMount, openPopoverGroupById } from './ui/popoverMenu';
+import { TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './ui/toolPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView, onOrbitEnd } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
@@ -5696,21 +5698,21 @@ async function main() {
   // re-runs (live preview); Reset clears all overrides back to model defaults.
   // Hidden until a run reports a parameter schema.
   //
-  // A "Customize" toggle pill in the viewport toolbar (created below) is the
-  // discoverable open/reopen affordance: it appears only when the active model
-  // declares parameters, shows the count, and mirrors the panel's open state —
-  // so closing the panel never strands the user without a way back in.
+  // A "Customize" toggle button lives in the viewport Tools dropdown (one of the
+  // model-editing tools) and is the discoverable open/reopen affordance: it
+  // appears in the menu only when the active model declares parameters, shows the
+  // count, and mirrors the panel's open state — so closing the panel never
+  // strands the user without a way back in. When a parameterizable model is first
+  // opened, the panel auto-reveals and pops the Tools dropdown open with it (see
+  // onAutoReveal), so the tool list sits just above the freshly-docked panel.
   const customizeBtn = document.createElement('button');
   customizeBtn.id = 'customize-toggle';
   customizeBtn.title = 'Tweak this model’s parameters';
-  customizeBtn.className = 'hidden'; // shown by syncCustomizeBtn once a run reports params
+  customizeBtn.className = `hidden ${TOOL_TOGGLE_IDLE}`; // shown by syncCustomizeBtn once a run reports params
   customizeBtn.addEventListener('click', () => paramsPanel?.toggle());
-  const CUSTOMIZE_BTN_BASE = 'md:px-2 md:py-1 px-3 py-2 rounded text-sm md:text-xs backdrop-blur transition-colors border';
-  const CUSTOMIZE_BTN_OPEN = `${CUSTOMIZE_BTN_BASE} bg-blue-500/30 text-blue-300 border-blue-500/50`;
-  const CUSTOMIZE_BTN_CLOSED = `${CUSTOMIZE_BTN_BASE} bg-zinc-800/80 text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 border-zinc-600/50`;
   const syncCustomizeBtn = (state: { hasParams: boolean; open: boolean; count: number }) => {
     customizeBtn.textContent = state.count > 0 ? `🎛 Customize (${state.count})` : '🎛 Customize';
-    customizeBtn.className = state.open ? CUSTOMIZE_BTN_OPEN : CUSTOMIZE_BTN_CLOSED;
+    customizeBtn.className = state.open ? TOOL_TOGGLE_ACTIVE : TOOL_TOGGLE_IDLE;
     // No declared parameters → no button at all (matches the panel being hidden).
     customizeBtn.classList.toggle('hidden', !state.hasParams);
   };
@@ -5725,14 +5727,16 @@ async function main() {
       runCode();
     },
     onVisibilityChange: syncCustomizeBtn,
+    // First open of a parameterizable model: surface the Tools dropdown the
+    // Customize button sits in, so the tool list shows just above the panel.
+    onAutoReveal: () => openPopoverGroupById('viewport-tools'),
   });
   viewportPane.appendChild(paramsPanel.element);
-  // Customize is a contextual primary: hidden until a model declares params,
-  // then surfaced top-level (just before the Inspect popover) as a strong "this
-  // model is tweakable" signal — not buried inside the Tools popover.
-  const customizeAnchor = clipControls.querySelector('#viewport-inspect-group');
-  if (customizeAnchor) clipControls.insertBefore(customizeBtn, customizeAnchor);
-  else clipControls.appendChild(customizeBtn);
+  // Customize joins the other model-editing tools inside the Tools popover, hidden
+  // until a model declares params. The Customize panel docks beneath the open
+  // Tools menu (see viewportPanelDrag's dockUnderBottom), so the two read as one
+  // unit when auto-revealed.
+  viewportToolsMount(clipControls).appendChild(customizeBtn);
 
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
@@ -6693,8 +6697,8 @@ async function main() {
   reliefViewportBtn.textContent = '✦ Relief';
   reliefViewportBtn.title = 'Edit colors for this relief';
   reliefViewportBtn.addEventListener('click', () => toggleReliefStudio());
-  // Relief edit is a contextual primary too (shown only in relief sessions), so
-  // it sits top-level alongside Customize rather than inside the Tools popover.
+  // Relief edit is a contextual primary (shown only in relief sessions), so it
+  // sits top-level on the bar rather than inside the Tools popover.
   const reliefAnchor = clipControls.querySelector('#viewport-inspect-group');
   if (reliefAnchor) clipControls.insertBefore(reliefViewportBtn, reliefAnchor);
   else clipControls.appendChild(reliefViewportBtn);
