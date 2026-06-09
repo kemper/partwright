@@ -263,23 +263,23 @@ describe('voxelizeMesh', () => {
 describe('voronoiLattice (perforated shell)', () => {
   it('produces a hollow, perforated shell — far fewer voxels than the solid', () => {
     const solid = voxelizeMesh(cube(20), { resolution: 64 });
-    const lamp = voronoiLattice(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 64 });
+    const lamp = voronoiLattice(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 64 }).grid;
     expect(lamp.size).toBeGreaterThan(0);
     // A thin perforated shell keeps only a fraction of the solid's voxels.
     expect(lamp.size).toBeLessThan(solid.size * 0.5);
   });
 
   it('is deterministic for a given seed and reshuffles for a different one', () => {
-    const a = encodeGrid(voronoiLattice(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 48, seed: 1 }));
-    const b = encodeGrid(voronoiLattice(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 48, seed: 1 }));
-    const c = encodeGrid(voronoiLattice(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 48, seed: 2 }));
+    const a = encodeGrid(voronoiLattice(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 48, seed: 1 }).grid);
+    const b = encodeGrid(voronoiLattice(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 48, seed: 1 }).grid);
+    const c = encodeGrid(voronoiLattice(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 48, seed: 2 }).grid);
     expect(a).toBe(b);
     expect(a).not.toBe(c);
   });
 
   it('handles an empty mesh', () => {
     const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
-    expect(voronoiLattice(empty, { cellSize: 2, wallThickness: 1 }).size).toBe(0);
+    expect(voronoiLattice(empty, { cellSize: 2, wallThickness: 1 }).grid.size).toBe(0);
   });
 });
 

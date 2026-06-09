@@ -20,7 +20,7 @@ apply→save→verify workflow:
 |-----------|--------------|-------|
 | `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
-| `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. Switches the session to the `voxel` engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
+| `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
 
 > **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
 > BREP/replicad model this discards the parametric source (and, for BREP, STEP
@@ -263,15 +263,19 @@ over jittered grid seeds, so it follows the surface like the other textures.
 
 ```
 applyVoronoiLamp({ cellSize?, wallThickness?, strutWidth?, resolution?,
-                   jitter?, grainAngleDeg?, seed?, smooth? })
+                   jitter?, grainAngleDeg?, seed?, output?, smooth? })
 ```
 
 The **cutaway** counterpart to `applyVoronoiShell`: turns a solid model into a
 true perforated Voronoi shell — a thin hollow wall with the cell interiors cut
 clean through, leaving a see-through strut network (the classic 3D-printed
-Voronoi lamp / planter). Because it opens real holes it runs on the **voxel
-engine**, so the result switches the session to the `voxel` language (paintable,
-`.vox`-exportable, re-blockable).
+Voronoi lamp / planter).
+
+`output` chooses the form:
+- **`'mesh'` (default)** — bakes a smooth manifold-js mesh (Taubin-rounded), so
+  it stays a normal mesh model with **no engine change**. Best for most lamps.
+- **`'voxel'`** — switches the session to the `voxel` language (paintable,
+  `.vox`-exportable, re-blockable), at the cost of a blockier look.
 
 Start from a **closed solid** (vase, sphere, vessel). It hollows + perforates in
 one step.
@@ -285,7 +289,8 @@ one step.
 | `jitter` | 1 | Cell irregularity [0–1]. 1 = irregular Voronoi; 0 = a regular grid of windows. |
 | `grainAngleDeg` | 0 | Rotate the cell pattern in the XY plane. |
 | `seed` | 1 | Deterministic seed — change to reshuffle the cell layout. |
-| `smooth` | true | Round the struts with a smoothing pass. |
+| `output` | `'mesh'` | `'mesh'` = smooth manifold-js mesh (no engine change); `'voxel'` = voxel engine (paintable / .vox). |
+| `smooth` | true | Voxel output only: round the struts with a smoothing pass. |
 
 **Look guidance:**
 - Voronoi lamp: `cellSize=d*0.18`, `wallThickness=d*0.03`, `strutWidth=0.25`, `resolution=140`

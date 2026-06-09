@@ -103,11 +103,20 @@ function cellEdgeDist3D(gx: number, gy: number, gz: number, jitter: number, seed
   return edge;
 }
 
+/** Result of {@link voronoiLattice}: the perforated grid plus the world
+ *  transform (grid cell (x,y,z) centre = min + (cell+0.5)·voxelSize), so callers
+ *  that want a world-scale mesh can map the unit-cell grid back. */
+export interface VoronoiLatticeResult {
+  grid: VoxelGrid;
+  min: [number, number, number];
+  voxelSize: number;
+}
+
 /** Build a perforated Voronoi shell from a solid mesh. Returns an empty grid for
  *  an empty mesh. */
-export function voronoiLattice(mesh: MeshData, opts: VoronoiLampOptions): VoxelGrid {
+export function voronoiLattice(mesh: MeshData, opts: VoronoiLampOptions): VoronoiLatticeResult {
   const grid = new VoxelGrid();
-  if (mesh.numTri === 0) return grid;
+  if (mesh.numTri === 0) return { grid, min: [0, 0, 0], voxelSize: 1 };
 
   const resolution = Math.max(16, Math.min(200, Math.round(opts.resolution ?? 110)));
   const solid = rasterizeSolid(mesh, resolution);
@@ -207,7 +216,7 @@ export function voronoiLattice(mesh: MeshData, opts: VoronoiLampOptions): VoxelG
     }
   }
 
-  return grid;
+  return { grid, min, voxelSize };
 }
 
 /** Remove 26-connected components smaller than `minFrac` of the largest, in

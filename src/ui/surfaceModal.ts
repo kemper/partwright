@@ -164,7 +164,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     { id: 'fur', label: 'Fur' },
     { id: 'woven', label: 'Woven' },
     { id: 'voronoi', label: 'Voronoi (relief)' },
-    { id: 'voronoiLamp', label: 'Voronoi lamp (voxel)' },
+    { id: 'voronoiLamp', label: 'Voronoi lamp' },
     { id: 'smooth', label: 'Smooth' },
     { id: 'voxelize', label: 'Voxelize' },
   ];
@@ -531,11 +531,14 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const jit = slider('Irregularity (jitter)', 0, 1, 1, 0.05, n => n.toFixed(2), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
-      const res = slider('Resolution (voxels)', 48, 200, 110, 1, n => String(n), schedulePreview);
-      const sm = checkbox('Smooth struts (rounded)', true, schedulePreview);
-      body.append(cs.wrap, wt.wrap, sw.wrap, jit.wrap, grain.wrap, seed.wrap, res.wrap, sm.wrap);
-      body.append(el('p', 'text-[11px] text-amber-400/90 mb-1', '⚠ Converts the model to the voxel engine (like Voxelize) — it cuts real see-through holes, which a smooth mesh can\'t. The result is paintable / .vox-exportable.'));
+      const res = slider('Resolution', 48, 200, 110, 1, n => String(n), schedulePreview);
+      const out = dropdown<'mesh' | 'voxel'>('Output', [
+        ['mesh', 'Smooth mesh (manifold-js)'],
+        ['voxel', 'Voxel (paintable / .vox)'],
+      ], 'mesh', schedulePreview);
+      body.append(cs.wrap, wt.wrap, sw.wrap, jit.wrap, grain.wrap, seed.wrap, res.wrap, out.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'A real see-through Voronoi shell (lamp / planter): hollows the model and cuts the cell interiors clean through, leaving a strut network. Higher resolution = crisper holes but slower; thinner struts need higher resolution.'));
+      body.append(el('p', 'text-[11px] text-amber-400/90', '"Voxel" output switches the model to the voxel engine (like Voxelize) — paintable and .vox-exportable. "Smooth mesh" stays on manifold-js (Taubin-rounded).'));
       currentOpts = () => ({
         cellSize: cs.get(),
         wallThickness: wt.get(),
@@ -544,7 +547,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         grainAngleDeg: grain.get(),
         seed: seed.get(),
         resolution: res.get(),
-        smooth: sm.get(),
+        output: out.get(),
       });
     } else if (active === 'smooth') {
       const iter = slider('Rounding strength', 1, 12, 4, 1, n => String(n), schedulePreview);

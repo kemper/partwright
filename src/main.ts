@@ -7611,6 +7611,7 @@ async function main() {
         jitter: (opts?.jitter as number) ?? base.jitter,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         seed: (opts?.seed as number) ?? base.seed,
+        output: (opts?.output as 'mesh' | 'voxel') ?? base.output,
         smooth: (opts?.smooth as boolean) ?? base.smooth,
       });
     }
@@ -7856,8 +7857,9 @@ async function main() {
     /** Turn the current model into a true perforated Voronoi shell (a "Voronoi
      *  lamp"): a thin hollow wall with the cell interiors cut clean through,
      *  leaving a see-through strut network. Unlike applyVoronoiShell (a relief
-     *  texture), this opens real holes, so the result switches to the voxel
-     *  engine. Saves a new version. Returns `{ ok, label, geometry, warnings? }`. */
+     *  texture), this opens real holes. `output:'mesh'` (default) bakes a smooth
+     *  manifold-js mesh; `output:'voxel'` switches to the voxel engine
+     *  (paintable / .vox). Saves a new version. Returns `{ ok, label, geometry, warnings? }`. */
     async applyVoronoiLamp(opts?: {
       cellSize?: number;
       wallThickness?: number;
@@ -7866,6 +7868,7 @@ async function main() {
       jitter?: number;
       grainAngleDeg?: number;
       seed?: number;
+      output?: 'mesh' | 'voxel';
       smooth?: boolean;
       preserveColor?: boolean;
     }) {

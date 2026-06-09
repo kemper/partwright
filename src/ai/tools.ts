@@ -1536,7 +1536,7 @@ const ALL_TOOLS: ToolDefinition[] = [
     name: 'applyVoronoiLamp',
     description: `Turn the current model into a **true perforated Voronoi shell** — a "Voronoi lamp" / planter: a thin hollow wall with the cell interiors cut clean through, leaving a see-through network of struts along the cell edges. Saves a new version.
 
-**This is the real cutaway, not a texture.** Unlike \`applyVoronoiShell\` (which only displaces the surface — a relief, no holes), this opens actual windows through the wall. Because it changes topology it is built on the voxel engine, so the result switches the session to the \`voxel\` language (paintable, \`.vox\`-exportable).
+**This is the real cutaway, not a texture.** Unlike \`applyVoronoiShell\` (which only displaces the surface — a relief, no holes), this opens actual windows through the wall. \`output:'mesh'\` (default) bakes a smooth manifold-js mesh (Taubin-rounded, no engine change). \`output:'voxel'\` switches the session to the \`voxel\` language (paintable, \`.vox\`-exportable, blockier).
 
 **When to use:** when the user wants a Voronoi lamp / lampshade, a perforated planter, or any see-through cell-lattice shell. Start from a closed solid (vase, sphere, vessel).
 
@@ -1547,7 +1547,8 @@ const ALL_TOOLS: ToolDefinition[] = [
 - resolution: voxels along the longest axis (default 110). Higher = crisper holes but slower; thin struts need higher resolution
 - jitter: cell irregularity [0–1] (1 = irregular Voronoi, default; 0 = a regular grid of windows)
 - grainAngleDeg, seed: orient / reshuffle the cell layout
-- smooth: round the struts (default true)
+- output: 'mesh' (default, smooth manifold-js mesh) or 'voxel' (paintable voxel session)
+- smooth: voxel output only — round the struts (default true)
 
 **Return:** { ok, label, geometry, warnings? }. Verify with renderViews — check the windows are open (componentCount may be >1 only if struts disconnect; usually 1).
 
@@ -1562,8 +1563,9 @@ const ALL_TOOLS: ToolDefinition[] = [
         jitter: { type: 'number', description: 'Cell irregularity [0–1]. 1 = irregular Voronoi (default); 0 = a regular grid.', minimum: 0, maximum: 1 },
         grainAngleDeg: { type: 'number', description: 'Rotate the cell pattern in the XY plane, degrees. Default 0.' },
         seed: { type: 'integer', description: 'Deterministic seed — change to reshuffle the cell layout. Default 1.' },
-        smooth: { type: 'boolean', description: 'Round the struts with a smoothing pass. Default true.' },
-        preserveColor: { type: 'boolean', description: 'Sample model paint onto the voxel struts. Default true.' },
+        output: { type: 'string', enum: ['mesh', 'voxel'], description: "'mesh' (default): smooth manifold-js mesh, no engine change. 'voxel': switch to the voxel engine (paintable / .vox)." },
+        smooth: { type: 'boolean', description: 'Voxel output only: round the struts with a smoothing pass. Default true.' },
+        preserveColor: { type: 'boolean', description: 'Sample model paint onto the struts. Default true.' },
       },
     },
   },

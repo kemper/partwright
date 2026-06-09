@@ -57,27 +57,41 @@ test.describe('Voronoi shell surface modifier', () => {
     expect(result.after.x[1]).toBeLessThanOrEqual(result.before.x[1] + 0.05);
   });
 
-  test('applyVoronoiLamp cuts a connected, see-through perforated shell', async ({ page }) => {
+  const CYL = 'const { Manifold } = api;\nreturn Manifold.cylinder(40, 15, 15, 64);';
+
+  test('applyVoronoiLamp (default mesh) bakes a smooth manifold-js perforated shell', async ({ page }) => {
     const result = await page.evaluate(async ([code]) => {
       const pw = (window as unknown as { partwright: any }).partwright;
-      await pw.createSession('voronoi-lamp');
+      await pw.createSession('voronoi-lamp-mesh');
       await pw.run(code);
-      const solid = pw.getGeometryData().triangleCount;
-      const r = await pw.applyVoronoiLamp({ cellSize: 9, wallThickness: 1.8, strutWidth: 0.3, resolution: 120 });
-      const stats = pw.getGeometryData();
-      return { r, stats, src: pw.getCode(), solid };
-    }, ['const { Manifold } = api;\nreturn Manifold.cylinder(40, 15, 15, 64);']);
+      const r = await pw.applyVoronoiLamp({ cellSize: 9, wallThickness: 2, strutWidth: 0.32, resolution: 120 });
+      return { r, stats: pw.getGeometryData(), src: pw.getCode() };
+    }, [CYL]);
 
     expect(result.r.error).toBeUndefined();
     expect(result.r.ok).toBe(true);
-    // Switched to the voxel engine with a decode program.
-    expect(result.src).toContain('voxels.decode(');
-    // Real holes were cut → a watertight shell that is essentially one connected
-    // web (floater prune keeps the component count low, not the hundreds the raw
-    // cut leaves behind).
+    // Default output stays on manifold-js (ofMesh wrapper, NOT a voxel decode).
+    expect(result.src).toContain('Manifold.ofMesh(api.imports[0])');
+    expect(result.src).not.toContain('voxels.decode(');
+    // Real holes cut → watertight shell, essentially one connected web (floater
+    // prune keeps the component count low, not the hundreds the raw cut leaves).
     expect(result.stats.isManifold).toBe(true);
     expect(result.stats.componentCount).toBeLessThanOrEqual(5);
-    expect(result.stats.triangleCount).toBeGreaterThan(100);
+    // Baked at the model's true scale (cylinder radius 15 → bbox ~±15).
+    expect(result.stats.boundingBox.x[1]).toBeLessThan(20);
+  });
+
+  test('applyVoronoiLamp output:voxel switches to the voxel engine', async ({ page }) => {
+    const result = await page.evaluate(async ([code]) => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('voronoi-lamp-voxel');
+      await pw.run(code);
+      const r = await pw.applyVoronoiLamp({ cellSize: 9, wallThickness: 2, strutWidth: 0.32, resolution: 120, output: 'voxel' });
+      return { r, src: pw.getCode() };
+    }, [CYL]);
+
+    expect(result.r.error).toBeUndefined();
+    expect(result.src).toContain('voxels.decode(');
   });
 
   test('Surface panel Voronoi tab applies on the whole model', async ({ page }) => {

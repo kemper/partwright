@@ -442,7 +442,11 @@ export function defaultVoronoiOptions(mesh: MeshData): Required<VoronoiShellOpti
 }
 
 export interface VoronoiLampModifierOptions extends VoronoiLampOptions {
-  /** Emit a `.smooth()` call so the struts render rounded. Default true. */
+  /** Output form. 'mesh' (default) bakes a smooth manifold-js mesh (no engine
+   *  change); 'voxel' switches the session to the voxel engine (paintable / .vox). */
+  output?: 'mesh' | 'voxel';
+  /** Voxel output only: emit a `.smooth()` call so the struts render rounded.
+   *  Default true. (Mesh output is always Taubin-smoothed.) */
   smooth?: boolean;
 }
 
@@ -456,6 +460,7 @@ export function defaultVoronoiLampOptions(mesh: MeshData): Required<VoronoiLampM
     jitter: 1,
     grainAngleDeg: 0,
     seed: 1,
+    output: 'mesh',
     smooth: true,
   };
 }
@@ -595,8 +600,33 @@ export function applyTransform(
   };
 }
 
-export function applyVoronoiLamp(mesh: MeshData, opts: VoronoiLampModifierOptions): ModifierVoxelResult {
-  const grid = voronoiLattice(mesh, opts);
+export function applyVoronoiLamp(mesh: MeshData, opts: VoronoiLampModifierOptions): ModifierResult {
+  const { grid, min, voxelSize } = voronoiLattice(mesh, opts);
+
+  // Default: a smooth manifold-js mesh — mesh the unit-cell grid, map it back to
+  // the model's world scale, then densify + Taubin-smooth (the same rounding
+  // smoothModel uses for blocky parts) so it doesn't read as "voxelized".
+  if ((opts.output ?? 'mesh') === 'mesh') {
+    const blocky = meshGrid(grid);
+    const pos = blocky.vertProperties;
+    for (let i = 0; i < blocky.numVert; i++) {
+      pos[i * 3]     = min[0] + pos[i * 3] * voxelSize;
+      pos[i * 3 + 1] = min[1] + pos[i * 3 + 1] * voxelSize;
+      pos[i * 3 + 2] = min[2] + pos[i * 3 + 2] * voxelSize;
+    }
+    const baked = smoothSurface(blocky, { iterations: 12, subdivide: true });
+    return {
+      kind: 'manifold',
+      label: 'voronoi lamp',
+      mesh: baked,
+      code: manifoldWrapper([
+        `Voronoi lamp (perforated shell) from the current model on ${today()} — cell ~${opts.cellSize.toFixed(2)}, wall ${opts.wallThickness.toFixed(2)}.`,
+        `Smoothed mesh baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+      ]),
+    };
+  }
+
+  // Voxel output: switch the session to the voxel engine (paintable / .vox).
   // Encode occupancy + colors first, then flip to smooth so the preview mesh
   // matches the emitted `v.smooth()` at runtime (mirrors applyVoxelize).
   const encoded = encodeGrid(grid);
@@ -612,7 +642,7 @@ return v;
 `;
   return {
     kind: 'voxel',
-    label: smooth ? 'voronoi lamp (smooth)' : 'voronoi lamp',
+    label: smooth ? 'voronoi lamp (smooth voxels)' : 'voronoi lamp (voxels)',
     code,
     previewMesh: meshGrid(grid),
   };
