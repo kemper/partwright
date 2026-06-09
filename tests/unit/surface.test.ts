@@ -18,6 +18,7 @@ import { voronoiShell } from '../../src/surface/voronoiShell';
 import { voronoiLattice } from '../../src/surface/voronoiLattice';
 import { surfaceNetsField } from '../../src/surface/surfaceNetsField';
 import { largestMeshComponent } from '../../src/surface/meshComponents';
+import { sdfModifierMesh } from '../../src/surface/sdfModifier';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
@@ -331,6 +332,22 @@ describe('largestMeshComponent (edge-connected)', () => {
     const mesh: MeshData = { vertProperties: vp, triVerts: tv, numVert: v + 3, numTri: big.numTri + 1, numProp: 3 };
     const kept = largestMeshComponent(mesh);
     expect(kept.numTri).toBe(big.numTri); // the lone point-joined triangle is dropped
+  });
+});
+
+describe('sdfModifierMesh (shared volumetric scaffolding)', () => {
+  it('meshes a feature SDF (a hollow shell) into a non-empty mesh', () => {
+    const wall = 2;
+    // combine = max(d, -(d+wall)) keeps material within `wall` of the surface.
+    const m = sdfModifierMesh(cube(20), { resolution: 48, bandWorld: wall }, ({ d }) => Math.max(d, -(d + wall)));
+    expect(m.numTri).toBeGreaterThan(12);
+    expect(m.numVert).toBeGreaterThan(8);
+  });
+
+  it('returns an empty mesh for an empty input', () => {
+    const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
+    const m = sdfModifierMesh(empty, { resolution: 32, bandWorld: 1 }, ({ d }) => d);
+    expect(m.numTri).toBe(0);
   });
 });
 
