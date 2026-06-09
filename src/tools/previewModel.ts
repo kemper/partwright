@@ -8,6 +8,7 @@ import { voxelEngine } from '../geometry/engines/voxel';
 import { openscadEngine, runScadAsync } from '../geometry/engines/openscad';
 import type { Language } from '../geometry/engines/types';
 import type { MeshResult } from '../geometry/engines/types';
+import { componentsOverlap } from './bboxOverlap';
 
 export interface PreviewComponent {
   index: number;
@@ -281,6 +282,15 @@ function buildWarnings(s: PreviewStats): string[] {
   }
   if (distinctLabelColors >= 2 && s.componentCount === 1) {
     w.push('Multiple colors but a single component — separate moving parts should report componentCount ≥ 2.');
+  }
+  // Clearance / unintended-fragmentation check: separate components whose
+  // bounding boxes overlap are interpenetrating-but-not-fused. For an unlabeled
+  // model that was meant to be ONE solid, that's a boolean that didn't take
+  // (insufficient overlap); for an intentional multi-part / print-in-place
+  // assembly it's a cue to sanity-check the clearance gap. Gated to the
+  // no-labels case so it doesn't double up with the FUSED-labels warning above.
+  if (!s.renderOnly && !s.empty && s.componentCount >= 2 && s.labels.length === 0 && componentsOverlap(s.components)) {
+    w.push(`componentCount=${s.componentCount} with overlapping component bounding boxes (top ${Math.min(s.componentCount, s.components.length)} by volume checked) — separate parts whose bounds overlap, so they may interpenetrate. If this should be ONE solid, a boolean didn't fuse (increase overlap ≥0.5 units); if it's an intentional multi-part / print-in-place assembly, verify the clearance gap. Inspect islands with model:preview --explain-components.`);
   }
   if (s.triangleCount > 200000) w.push(`High triangle count (${Math.round(s.triangleCount / 1000)}k) — exceeds the ~200k catalog budget; lower circular segments / nDivisions or feature density.`);
   if (s.aspectRatio > 12) w.push(`Extreme aspect ratio (${s.aspectRatio.toFixed(1)}:1) — tall/thin parts can be fragile or tip-droppy on FDM.`);
