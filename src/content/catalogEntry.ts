@@ -23,10 +23,14 @@ async function hydrateThumbnails(): Promise<void> {
   if (tiles.length === 0) return;
 
   // One request for all thumbnails (emitted at build time), with a graceful
-  // fallback to per-file fetches if it isn't present.
+  // fallback to per-file fetches if it isn't present. Use `no-cache` (revalidate
+  // with the server, cheap 304 when unchanged) rather than `force-cache`: a
+  // stale entry must never blank a tile after a thumbnail update — `force-cache`
+  // returns a cached copy without revalidating, so a visitor who loaded the page
+  // before a thumbnail existed would keep seeing the blank indefinitely.
   let thumbs: CatalogThumbs | null = null;
   try {
-    const res = await fetch('/catalog/thumbs.json', { cache: 'force-cache' });
+    const res = await fetch('/catalog/thumbs.json', { cache: 'no-cache' });
     if (res.ok) thumbs = await res.json() as CatalogThumbs;
   } catch { /* fall through to per-file */ }
 
@@ -38,7 +42,7 @@ async function hydrateThumbnails(): Promise<void> {
     let src = thumbs?.[file] ?? null;
     if (!src) {
       try {
-        const res = await fetch(`/catalog/${file}`, { cache: 'force-cache' });
+        const res = await fetch(`/catalog/${file}`, { cache: 'no-cache' });
         if (res.ok) {
           const payload = await res.json() as { versions?: { thumbnail?: string | null }[] };
           const versions = payload.versions ?? [];
