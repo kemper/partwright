@@ -165,6 +165,16 @@ npm run model:preview -- model.js --png out.png -p turns=6      # override api.p
 
 **`componentCount` is the instrument for print-in-place mechanisms.** A model that returns separate moving parts (screw, spinner, hinge, captive ball, two-tone spiral) must report `componentCount === N`. If it fuses to `1`, the clearance gap is too small or parts collide. The reliable recipe for splitting one solid into interleaved colored parts: subtract a clearance-thick cutter (e.g. a full-diameter helical **slab** for a spiral), then `manifold.decompose()` and color each component. Verify topological/geometric claims with `model:preview`, not from memory.
 
+When the count is wrong, **inspect the islands instead of tuning blindly**:
+
+```bash
+npm run model:preview -- model.js --explain-components   # per-island vol/tris/size/center (to stderr)
+npm run model:preview -- model.js --expect-components 3   # assert; exits non-zero on mismatch (CI gate)
+node bin/partwright.mjs compare a.js b.js c.js --png out.png   # tile each model's iso view into one contact sheet
+```
+
+`--explain-components` prints the per-island breakdown (already in the JSON's `stats.components`, capped at the top 16 by volume) to stderr so the stdout JSON stays parseable. `--expect-components N` compares against the uncapped `stats.componentCount` and exits 1 on mismatch — the escape hatch for "this mechanism MUST stay N parts." `compare` runs several variants and lays one iso view of each side-by-side, for A/B param sweeps or before/after checks.
+
 > **CLI agents vs in-app/extension AI.** `model:preview` is for agents running in *this repo* (you). The in-app and chrome-extension AI cannot run a CLI — they verify with the in-browser `renderViews()` / `runAndSave(code, label, {maxComponents})` and read `public/ai/*.md` subdocs (e.g. `mechanisms`). Keep tool-specific instructions in `CLAUDE.md`/`docs/` (this audience) and in-browser instructions in `ai.md`/subdocs (that audience).
 
 ## AI Agent Workflow & API Reference

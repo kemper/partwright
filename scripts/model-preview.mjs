@@ -12,16 +12,18 @@
 // scripts/cli/preview.mjs and is also exposed as `partwright preview`
 // (bin/partwright.mjs). See docs/headless-cli.md.
 import { resolve, dirname, basename, join } from 'node:path';
-import { runPreview, composePng } from './cli/preview.mjs';
+import { runPreview, composePng, explainComponents, checkExpectComponents } from './cli/preview.mjs';
 
 function parseArgs(argv) {
-  const a = { params: {}, size: 480, json: false, png: null, file: null, lang: 'manifold-js' };
+  const a = { params: {}, size: 480, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--json') a.json = true;
     else if (t === '--size') a.size = parseInt(argv[++i], 10);
     else if (t === '--png') a.png = argv[++i];
     else if (t === '--lang') a.lang = argv[++i];
+    else if (t === '--explain-components') a.explain = true;
+    else if (t === '--expect-components') a.expect = argv[++i];
     else if (t === '-p' || t === '--param') { const [k, ...v] = argv[++i].split('='); a.params[k] = coerce(v.join('=')); }
     else if (!a.file && !t.startsWith('-')) a.file = t;
   }
@@ -31,7 +33,7 @@ function coerce(s) { if (s === 'true') return true; if (s === 'false') return fa
 
 async function main() {
   const a = parseArgs(process.argv.slice(2));
-  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [-p k=v]'); process.exit(2); }
+  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--explain-components] [--expect-components N] [-p k=v]'); process.exit(2); }
   const file = resolve(a.file);
   const result = await runPreview(file, { params: a.params, lang: a.lang });
 
@@ -47,5 +49,9 @@ async function main() {
     await img.toFile(pngPath);
   }
   console.log(JSON.stringify({ ok: true, png: pngPath, stats: result.stats }, (_k, v) => (ArrayBuffer.isView(v) ? undefined : v), 2));
+
+  if (a.explain) console.error(explainComponents(result.stats));
+  const expectErr = checkExpectComponents(result.stats, a.expect);
+  if (expectErr) { console.error(expectErr); process.exit(1); }
 }
 main().catch((e) => { console.error('model:preview failed:', e?.stack || e?.message || e); process.exit(1); });
