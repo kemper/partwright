@@ -125,6 +125,8 @@ import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch,
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, rotateAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { surfaceCacheStatus, computeChain, fullChainKey, seedCache, type SurfaceOp } from './surface/surfaceOps';
+import { isSurfaceOpId } from './surface/surfaceOpSpec';
+import { appendSurfaceCall } from './surface/surfaceCodegen';
 import { getPersistedSurface, putPersistedSurface } from './storage/surfaceCacheStore';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
@@ -7194,6 +7196,26 @@ async function main() {
     return null;
   }
 
+  /** Apply a texture as parametric `api.surface.*` code (phase 4): append the
+   *  call to the model's source, re-run (force-applies the memoized texture), and
+   *  save a version. The non-baking counterpart of commitSurfaceModifier. */
+  async function commitSurfaceCode(id: string, opts: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!isSurfaceOpId(id)) {
+      return { error: `surfaceTexture: unknown texture "${id}". Use one of: fuzzy, knit, cable, waffle, fur, woven, voronoi, smooth.` };
+    }
+    if (getActiveLanguage() !== 'manifold-js') {
+      return { error: 'api.surface.* textures are manifold-js only. Use the bake tool (applyKnitTexture, applyFuzzySkin, …) for this engine, or switch the session to manifold-js.' };
+    }
+    if (!currentMeshData) return { error: 'No model loaded — run the model first.' };
+    const newCode = appendSurfaceCall(getValue(), id, opts);
+    setValue(newCode);
+    const ok = await runCodeSync(newCode);
+    if (!ok) return { error: `Failed to apply ${id} texture` };
+    const thumbnail = await captureThumbnail();
+    await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, `${id} texture (code)`, undefined, { force: true });
+    return { ok: true, label: `${id} texture (code)`, mode: 'code', geometry: getGeometryDataObj() };
+  }
+
   async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean, opts?: { warnOnBake?: boolean }): Promise<Record<string, unknown>> {
     // Capture the language *before* the commit switches it, so we can warn when a
     // SCAD/BREP session is silently baked to a mesh. The transform path
@@ -7851,6 +7873,16 @@ async function main() {
       try {
         const preserve = opts?.preserveColor ?? true;
         return await commitSurfaceModifier(buildSurfaceModifier('voxelize', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Apply a surface texture as parametric `api.surface.*` code (phase 4) —
+     *  the editable, non-baking counterpart of applyFuzzySkin / applyKnitTexture
+     *  / etc. Appends the call to the model's code and re-runs (force-applies),
+     *  saving a version. manifold-js + whole-model only. Returns `{ error }` on a
+     *  non-manifold-js engine or an unknown id. */
+    async surfaceTexture(id: string, opts?: Record<string, unknown>) {
+      try {
+        return await commitSurfaceCode(id, opts ?? {});
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Non-destructive viewport preview of a scale operation (no version saved). */
@@ -12920,6 +12952,8 @@ async function main() {
         'setBucketMode': { signature: "setBucketMode(mode) -- Set the bucket flood-fill mode: 'color' (magic-wand by RGB) or 'geometry' (coplanar by bend angle).", docs: '/ai/colors.md' },
         'getBrushSize':    { signature: 'getBrushSize() -- Read the UI brush radius (mesh units). 0 = single triangle.', docs: '/ai/colors.md' },
         'setBrushSize':    { signature: 'setBrushSize(radius) -- Set the UI brush radius (mesh units, >= 0). Affects only the interactive brush tool; programmatic painting uses paintNear / paintFaces.', docs: '/ai/colors.md' },
+        // Surface textures
+        'surfaceTexture':  { signature: "surfaceTexture(id, opts?) -- Apply a texture as parametric api.surface.* code (id: fuzzy|knit|cable|waffle|fur|woven|voronoi|smooth) instead of baking. Edits the model code + re-runs. manifold-js, whole-model. -> {ok, label, geometry} or {error}", docs: '/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session' },
         // Annotations
         'listAnnotations':    { signature: 'listAnnotations() -- List freehand strokes -> [{id, color, width, points}]', docs: '/ai/annotations.md' },
         'listTextAnnotations':{ signature: 'listTextAnnotations() -- List pinned text labels -> [{id, text, color, fontSizePx, anchor}]', docs: '/ai/annotations.md' },

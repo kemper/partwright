@@ -65,6 +65,17 @@ return body;
   (see [colors](/ai/colors.md)). Use it when you want the texture to live with
   the code; use the `apply*` tools when you want a one-shot baked result.
 
+**Driving it without writing the call yourself:** the `surfaceTexture(id, opts)`
+tool / `partwright.surfaceTexture(id, opts)` console method applies a texture *as
+code* — it appends the `api.surface.<id>(...)` call to the current model and
+re-runs, so you get the editable result in one step (`id` = `fuzzy` / `knit` /
+`cable` / `waffle` / `fur` / `woven` / `voronoi` / `smooth`; `opts` = the same
+options as the matching `apply*` tool). The Surface panel does the same: its
+**"Apply as editable code (api.surface.*)"** checkbox (on by default for these
+textures) emits the call instead of baking; unchecking it bakes a fixed mesh.
+manifold-js + whole-model only — pick the baking `apply*` tools for other engines
+or a region selection.
+
 ---
 
 ## When to apply textures

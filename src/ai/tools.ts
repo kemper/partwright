@@ -1618,6 +1618,42 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'surfaceTexture',
+    description: `Apply a surface texture as PARAMETRIC, EDITABLE code (api.surface.*) instead of baking it into a fixed mesh. This is the non-destructive counterpart of applyFuzzySkin / applyKnitTexture / applyCableKnit / etc.: it appends an api.surface.<id>(...) call to the model's code and re-runs, so the texture stays tunable (edit a param, re-run) and the model code remains the source of truth. Saves a new version.
+
+**When to use:** prefer this over the baking apply* tools when you want the textured model to stay editable — e.g. you may retune the stitch size later, or keep painting/booleaning the parametric base. Use the baking apply* tools only when you specifically want a flattened mesh.
+
+**Parameters:** id (required) = which texture; the remaining options are the SAME as the matching apply* tool (e.g. for 'knit': stitchWidth, amplitude, …) — see /ai/textures.md. Unset options use size-relative defaults. Only options valid for the chosen id are used.
+
+**Limits:** manifold-js sessions only (returns { error } otherwise), and whole-model only (no region selection yet). Returns { ok, label, mode:'code', geometry } or { error }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', enum: ['fuzzy', 'knit', 'cable', 'waffle', 'fur', 'woven', 'voronoi', 'smooth'], description: 'Which texture to apply as code.' },
+        amplitude: { type: 'number', description: 'Displacement depth (world units). Texture-specific default if omitted.' },
+        scale: { type: 'number', description: 'fuzzy: feature size.' },
+        octaves: { type: 'integer', description: 'fuzzy/fur: noise octaves (1–5).' },
+        stitchWidth: { type: 'number', description: 'knit: horizontal stitch repeat.' },
+        stitchHeight: { type: 'number', description: 'knit: vertical stitch repeat.' },
+        cableWidth: { type: 'number', description: 'cable: cable column width.' },
+        cablePitch: { type: 'number', description: 'cable: twist pitch.' },
+        cellWidth: { type: 'number', description: 'waffle: cell width.' },
+        cellHeight: { type: 'number', description: 'waffle: cell height.' },
+        cellSize: { type: 'number', description: 'voronoi: cell size.' },
+        wallWidth: { type: 'number', description: 'voronoi: ridge wall width fraction.' },
+        fiberSpacing: { type: 'number', description: 'fur: fiber spacing.' },
+        fiberLength: { type: 'number', description: 'fur: fiber length.' },
+        threadSpacing: { type: 'number', description: 'woven: thread spacing.' },
+        threadWidth: { type: 'number', description: 'woven: thread width fraction.' },
+        grainAngleDeg: { type: 'number', description: 'Rotate the texture grain in the XY plane (degrees).' },
+        iterations: { type: 'integer', description: 'smooth: number of Taubin passes.' },
+        seed: { type: 'integer', description: 'Pattern seed (different seeds → different patterns).' },
+        quality: { type: 'integer', description: 'Mesh detail 1 (draft) – 5 (ultra).', minimum: 1, maximum: 5 },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'scaleModel',
     description: `Resize the current model by per-axis multiplicative factors and save a new version. 1 = unchanged, 2 = double, 0.5 = half. For a uniform resize pass the same factor for sx, sy, and sz.
 
@@ -1777,7 +1813,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'smoothModel', 'voxelizeModel', 'surfaceTexture', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -2289,6 +2325,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.smoothModel(input);
     case 'voxelizeModel':
       return api.voxelizeModel(input);
+    case 'surfaceTexture': {
+      const { id, ...rest } = input;
+      return api.surfaceTexture(id as string, rest);
+    }
     case 'scaleModel':
       return api.scaleModel(input.sx as number, input.sy as number, input.sz as number, { preserveColor: input.preserveColor as boolean | undefined });
     case 'placeModel':

@@ -40,9 +40,19 @@ export interface SurfaceApi {
   clearSurfacePreview(): { ok: true };
   modelHasColor(): boolean;
   getGeometryData(): { boundingBox?: { min?: number[]; max?: number[] } | null } | Record<string, unknown>;
+  /** Apply a texture as parametric `api.surface.*` code (phase 4) instead of
+   *  baking it into a mesh. manifold-js only; whole-model only (per-region is a
+   *  later phase). Returns `{ error }` when it can't (non-manifold-js engine). */
+  surfaceTexture(id: string, opts?: Record<string, unknown>): Promise<ApplyResult>;
 }
 
 type Tab = ModId;
+
+/** Tabs that can be expressed as `api.surface.*` code (a subset of the modifier
+ *  list — voronoiLamp/voxelize change the engine, so they only bake). */
+const CODE_EMITTABLE: ReadonlySet<Tab> = new Set<Tab>([
+  'fuzzy', 'knit', 'cable', 'waffle', 'fur', 'woven', 'voronoi', 'smooth',
+]);
 
 const BTN_BASE =
   'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur border border-zinc-700 text-zinc-200 hover:bg-zinc-700';
@@ -210,6 +220,12 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   // Default to preserve; the toggle lets the user clear instead. The warning
   // only shows when the model is actually painted.
   let preserveColor = true;
+
+  // --- Output mode: parametric code (api.surface.*) vs destructive bake ---
+  // Default to code for the emittable textures so the result stays editable; the
+  // user can opt into baking. Forced to bake for non-emittable tabs or a region
+  // selection (per-region code is a later phase).
+  let applyAsCode = true;
 
   // --- Region selector state (persists across tab switches) ---
   let regionSelection: Set<number> | null = null;
@@ -414,6 +430,15 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     // keep reference so the checkbox closure can find `warn` (defined above via hoist).
   }
 
+  // Output-mode toggle: parametric api.surface.* code vs destructive bake.
+  // Shown only for code-emittable tabs; hidden (forced bake) otherwise.
+  const codeRow = el('div', 'mb-3');
+  const codeBox = checkbox('Apply as editable code (api.surface.*)', true, () => {
+    applyAsCode = codeBox.get();
+  });
+  const codeNote = el('p', 'text-[11px] text-zinc-500 mt-1', 'Keeps the texture parametric in your code — edit the params and re-run. Uncheck to bake into a fixed mesh.');
+  codeRow.append(codeBox.wrap, codeNote);
+
   // Shared detail slider — persists across texture-tab switches so the user's
   // chosen quality level is preserved when comparing different textures.
   // Not shown for smooth/voxelize (those have their own quality controls).
@@ -426,6 +451,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   function renderTab() {
     body.innerHTML = '';
     regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp') ? 'none' : '';
+    // The code-output toggle only applies to the api.surface.*-expressible tabs.
+    codeRow.style.display = CODE_EMITTABLE.has(active) ? '' : 'none';
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
       const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -653,6 +680,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   scrollBody.append(regionSection, tabRow, body);
   if (painted) scrollBody.append(colorRow);
+  scrollBody.append(codeRow);
   scrollBody.append(status);
 
   // Footer: Cancel | Preview | Apply.
@@ -692,7 +720,12 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     status.textContent = 'Working…';
     try {
       const opts = { ...currentOpts(), preserveColor };
-      const result = active === 'fuzzy' ? await api.applyFuzzySkin(opts)
+      // Parametric path: emit api.surface.* code instead of baking. Only for the
+      // code-expressible textures, manifold-js, and a whole-model apply (a region
+      // selection still bakes the patch — per-region code is a later phase).
+      const asCode = applyAsCode && CODE_EMITTABLE.has(active) && !activeSelection();
+      const result = asCode ? await api.surfaceTexture(active, opts)
+        : active === 'fuzzy' ? await api.applyFuzzySkin(opts)
         : active === 'knit' ? await api.applyKnitTexture(opts)
         : active === 'cable' ? await api.applyCableKnit(opts)
         : active === 'waffle' ? await api.applyWaffleStitch(opts)
