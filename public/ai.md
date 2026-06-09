@@ -107,6 +107,8 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Smooth fillet / blend between two shapes (no edge-picking) | `a.smoothUnion(b, k)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Lattice / gyroid / periodic infill | `api.sdf.gyroid(cell, thickness)` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Twisted / bent body (one expression) | `api.sdf.<shape>(...).twist(deg)` -> `/ai/sdf.md` | (`linear_extrude(twist=)` for the extrusion case only) | (mesh-only; not in BREP) |
+| Organic surface texture (rock / bark / coral / terrain) | `node.displace(amount, api.sdf.noise({...}))` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
+| Fractal plant / coral / branching structure | `api.sdf.lsystem({ axiom, rules, iterations })` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Constant-thickness shell of any shape | `node.shell(t)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Implicit surface / raw SDF function | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
 | Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) | (mesh-only; not in BREP) |
@@ -135,7 +137,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `readDoc` name | When to read it |
 |---|---|
 | `curves` | Before writing manifold-js code with `Curves.loft/sweep/bezier/arc/naca4/polyline/fillet/...` (smooth curves, organic shapes, airfoils, lofted surfaces). |
-| `sdf` | Before reaching for `api.sdf.*` — smooth blends (`smoothUnion`), domain warps (`twist`/`bend`), lattices (`gyroid`), constant-thickness shells. Anything the prompt frames as "smooth", "blended", "twisted", "lattice", or "gyroid" lives here. |
+| `sdf` | Before reaching for `api.sdf.*` — smooth blends (`smoothUnion`), domain warps (`twist`/`bend`), lattices (`gyroid`), constant-thickness shells, noise displacement (`displace`/`noise` for rock/bark/coral texture), and L-system growth (`lsystem` for fractal plants/corals). Anything the prompt frames as "smooth", "blended", "twisted", "lattice", "gyroid", "organic/bumpy texture", or "fractal/branching plant" lives here. |
 | `bosl2` | Before writing SCAD code that needs edge rounding (`cuboid(rounding=)`), threads (`screw`), gears (`spur_gear`), path-following (`path_sweep`), or attachables. |
 | `replicad` | Before using `api.BREP.*` inside a manifold-js session, or before switching to the replicad/BREP language. Covers exact fillets/chamfers, STEP export, and the manifold-js ↔ BREP boundary. |
 | `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |
@@ -148,7 +150,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
 | `annotations` | When the user has marked up the model with the Annotate tool (or you need to write annotations programmatically). |
 | `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
-| `textures` | Before adding fabric/knit surface detail with `applyFuzzySkin` / `applyKnitTexture` / `applyCableKnit` / `applyWaffleStitch` / `applyFurVelvet` / `applyWovenFabric` — normal-displaced textures (knit, cable, waffle, fur/velvet, woven, fuzzy skin), their parameters, and the paint-ordering rules. |
+| `textures` | Before adding fabric/knit surface detail with `applyFuzzySkin` / `applyKnitTexture` / `applyCableKnit` / `applyWaffleStitch` / `applyFurVelvet` / `applyWovenFabric` / `applyVoronoiShell` — normal-displaced textures (knit, cable, waffle, fur/velvet, woven, voronoi shell, fuzzy skin), their parameters, and the paint-ordering rules. Also covers `applyVoronoiLamp` — a true perforated Voronoi shell (see-through lamp/planter; smooth-mesh output by default, optional voxel). |
 | `iteration-workflow` | Before calling `runAndSave`, `forkVersion`, `modifyAndTest`, `createSessionWithVersions`, or managing session notes — the full versioning and iteration workflow. |
 | `gotchas` | When something looks wrong — boolean overlap requirements, disconnected components, `paintRegion` on smooth surfaces, `probeRay` normals, `rotate` direction, re-running invalidating painted colors. |
 | `visual-verification` | Before declaring a build done — all-faces check, edge overlay options, feature-specific checks, stat-based validation. |
@@ -342,6 +344,7 @@ partwright.paintInBox({box, normalCone?, color, name?})                   // AAB
 partwright.paintInOrientedBox({box: {center, size, quaternion?}, color, smooth?, resolution?, maxEdge?})  // rotated box selector (same as UI Box tool); SMOOTH edges by default
 partwright.paintFaces({triangleIds, color, name?})                        // explicit triangle ids
 partwright.paintSlab({axis|normal, offset, thickness, color, name?, smooth?, resolution?, maxEdge?})  // planar range; SMOOTH edges by default
+partwright.paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, normalCone?, color, name?, smooth?})  // cylindrical/annular shell (rMin=0 = solid); axis x|y|z (default z)
 partwright.paintByLabel({label, color, name?})                            // by api.label() name (manifold-js) or top-level `label("name")` (SCAD)
 partwright.paintByLabels([{label, color, name?}, ...])                    // batch sibling
 partwright.paintComponent({index, color, name?, topOnly?})                // by listComponents() index
@@ -489,6 +492,22 @@ return body.add(knob);   // renders blue body + red knob; GLB/3MF carry the colo
 The `color` is a hex string (`'#rrggbb'` / `'#rgb'`, the same form a `color` param produces) or an `[r,g,b]` array in 0..1. `api.labeledUnion([{ name, shape, color }, …])` takes the same per-entry `color`. Because the color travels with the labelled name, it **re-resolves every run** — so it survives Customizer parameter changes, and a `color` param wired in as `{ color: p.accent }` recolors the model live. For per-instance color (e.g. a parametric count), give each instance a distinct name: `api.label(petal, 'petal' + i, { color: … })`.
 
 Model-declared colors are a derived **underlay**: manual paint (the paint tools / `paintByLabel`) composites on top as an optional override. They are **not** written into the saved paint sidecar — they come from the code, so re-running re-derives them. Inspect the active set with `partwright.getModelColors()` → `{ count, colors: [{ name, color, triangleCount }] }`; an empty `triangleCount` for a name means that label's triangles were consumed by a later boolean (check `listLabels().lostLabels`). See **[/ai/colors.md](/ai/colors.md)**.
+
+#### Geometric paint in code — `api.paint.*`
+
+Beyond labels, you can declare **geometric** paint right in the model code with `api.paint.*` — the in-code counterparts of the `paintInBox` / `paintSlab` / `paintInCylinder` / `paintByLabel` tools. Each call **records** a region (it doesn't mutate the mesh); after the run, Partwright resolves it against the fresh tessellation and renders it as part of the same model-color underlay as `api.label({color})`. Because the colors live in the code, there's no separate paint pass and **no paint sidecar** — re-running re-derives them, and they survive parameter changes. Later calls win on overlap.
+
+```js
+const { Manifold } = api;
+const part = Manifold.cube([30, 30, 30], true).refine(16);   // refine so selectors have fine triangles
+api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });        // a flat band (axis or normal)
+api.paint.box({ min: [-15, -15, -15], max: [0, 0, 0], color: [0.23, 0.51, 0.96] }); // axis-aligned box
+api.paint.cylinder({ center: [0, 0], rMin: 0, rMax: 6, zMin: -15, zMax: 15, color: '#22c55e' }); // (annular) shell
+api.paint.label('body', '#888');   // recolor an existing api.label(...) region
+return part;
+```
+
+`color` accepts the same hex string or `[r,g,b]` (0..1) as `api.label`. These selectors resolve **by triangle**, so a coarse mesh paints whole facets — `refine(n)` (or higher segment counts) gives crisp edges, exactly like the paint tools. Arguments are validated strictly (unknown keys rejected, bad color/axis throw an actionable error). This is a manifold-js-only sandbox API; the standalone paint tools (`partwright.paint*`) remain for click/coordinate painting and run between code runs.
 
 ### Primitive origins and orientations
 

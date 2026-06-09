@@ -151,19 +151,39 @@ This takes a handful of tool calls and catches wiring mistakes, visual regressio
 
 ## Headless Model Preview — `model:preview` (for CLI agents authoring geometry)
 
-When you're iterating on a **model snippet** (catalog entries, `examples/`, mechanism prototypes) from the CLI, don't round-trip through the browser for every guess. `npm run model:preview -- <file.js>` runs the snippet against the **real `manifold-js` engine in Node** (via vite SSR — no dev server, no Playwright, ~2 s) and gives you everything needed to self-correct in one call:
+When you're iterating on a **model snippet** (catalog entries, `examples/`, mechanism prototypes) from the CLI, don't round-trip through the browser for every guess. `npm run model:preview -- <file.js>` runs the snippet against the **real `manifold-js`, `voxel`, or `scad` engine in Node** (via vite SSR — no dev server, no Playwright, ~2 s). **`replicad`/BREP is excluded**: OpenCASCADE won't init under Node SSR — verify BREP-language models in the browser. The tool gives you everything needed to self-correct in one call:
 
 ```bash
 npm run model:preview -- .plans/fidgets/spiral-cone.js          # writes <file>.preview.png + prints JSON
 npm run model:preview -- model.js --json                        # stats only, no PNG
 npm run model:preview -- model.js --png out.png -p turns=6      # override api.params, custom PNG path
+npm run model:preview -- model.js --view 130,35                 # ONE custom-angle tile (peek behind a feature)
+npm run model:preview -- model.js --views front,iso,back        # pick/reorder named views (front,back,right,left,top,bottom,iso)
 ```
 
-- **JSON stat block** (stdout): `isManifold`, `componentCount`, per-component `{volume, bbox, triangleCount}`, `volume`, `surfaceArea`, `genus`, `bbox`, `aspectRatio`, `minEdgeLength`/`meanEdgeLength`, model-declared `labels` (name + color), `paramsSchema`, and a `warnings[]` array (fused parts, tri-count over the ~200k catalog budget, sub-0.4 mm detail, …).
-- **4-view PNG** (front / right / top / iso), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail.
+- **JSON stat block** (stdout): `isManifold`, `componentCount`, per-component `{volume, bbox, triangleCount, center}`, `volume`, `surfaceArea`, `genus`, `bbox`, `aspectRatio`, `minEdgeLength`/`meanEdgeLength`, model-declared `labels` (name + color), `paramsSchema`, and a `warnings[]` array (fused parts, **interpenetrating components / clearance**, tri-count over the ~200k catalog budget, sub-0.4 mm detail, …).
+- **4-view PNG** (front / right / top / iso by default; override with `--view`/`--views`), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail. Use `--view az,el` to rotate to an occluded feature when the four default angles hide it.
 - Implementation: `scripts/model-preview.mjs` (CLI + pure-JS rasterizer → `sharp`) + `src/tools/previewModel.ts` (the faithful engine call). No WebGL needed.
 
 **`componentCount` is the instrument for print-in-place mechanisms.** A model that returns separate moving parts (screw, spinner, hinge, captive ball, two-tone spiral) must report `componentCount === N`. If it fuses to `1`, the clearance gap is too small or parts collide. The reliable recipe for splitting one solid into interleaved colored parts: subtract a clearance-thick cutter (e.g. a full-diameter helical **slab** for a spiral), then `manifold.decompose()` and color each component. Verify topological/geometric claims with `model:preview`, not from memory.
+
+**When `componentCount` is wrong: decompose and inspect, don't tune blindly.** Call `Manifold.decompose()` on the result, iterate the parts, and check which one floated or fused — a 10-line diagnostic snippet beats 3 rounds of parameter-tweaking on the whole assembly. Note that many legitimate catalog subjects (assemblies, orreries, watch movements) intentionally have `componentCount > 1`; `isManifold: true` is the correctness gate, not the count. Pass `{ maxComponents: N }` to `runAndSave` when the model is intentionally multi-part.
+
+> **Voxel models: trust `voxelPieceCount`, not `componentCount`, for "is this one printable piece?"** `componentCount` comes from the meshed solid and over-reports voxel grids — an enclosed cavity counts as a second component, and voxels touching only at an edge/corner split apart. The stats also carry `voxelPieceCount`, a face-connected (6-neighbour) BFS over the grid that matches what actually fuses on an FDM plate. A one-piece hollow voxel shell reports `componentCount: 2` but `voxelPieceCount: 1`.
+
+`model:preview` can do that island inspection for you:
+
+```bash
+npm run model:preview -- model.js --explain-components   # per-island vol/tris/size/center (to stderr)
+npm run model:preview -- model.js --expect-components 3   # assert; exits non-zero on mismatch (CI gate)
+node bin/partwright.mjs compare a.js b.js c.js --png out.png        # tile each model's iso view into one contact sheet
+node bin/partwright.mjs compare a.js b.js --view 130,35 --png o.png # …from a custom angle
+node bin/partwright.mjs fetch <image-url> --out ref.png            # pull a remote image to disk (then `photo` it)
+```
+
+`--explain-components` prints the per-island breakdown (already in the JSON's `stats.components`, capped at the top 16 by volume) to stderr so the stdout JSON stays parseable. `--expect-components N` compares against the uncapped `stats.componentCount` and exits 1 on mismatch — the escape hatch for "this mechanism MUST stay N parts." `compare` runs several variants and lays one view of each side-by-side (default iso, `--view az,el` to change it), for A/B param sweeps or before/after checks. `fetch` downloads a remote image to disk so the `photo` voxel-import flow can consume a URL (the env's network policy governs reachability).
+
+**Delegate multi-pass visual iteration to the `model-sculpt` subagent.** Each preview PNG you `Read` in the main context stays there and is re-billed every subsequent turn — image tokens compound. For 3+ render passes on the same model, delegate to `model-sculpt` (or `general-purpose` with its instructions): it owns the render→look→adjust loop in its own disposable context and returns only text. The main agent calls `SendUserFile` to ship the final PNG to the user **without** reading it.
 
 > **CLI agents vs in-app/extension AI.** `model:preview` is for agents running in *this repo* (you). The in-app and chrome-extension AI cannot run a CLI — they verify with the in-browser `renderViews()` / `runAndSave(code, label, {maxComponents})` and read `public/ai/*.md` subdocs (e.g. `mechanisms`). Keep tool-specific instructions in `CLAUDE.md`/`docs/` (this audience) and in-browser instructions in `ai.md`/subdocs (that audience).
 

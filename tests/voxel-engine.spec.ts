@@ -393,10 +393,10 @@ test.describe('voxel engine', () => {
     // The real-WASM proof: ofMesh accepts the smoothed mesh too.
     expect(result.smooth.isManifold).toBe(true);
     expect(result.smooth.componentCount).toBe(1);
-    // detail 1 only moves vertices, so the triangle count matches the block mesh.
+    // A box has flat faces, so the default (Surface Nets) reproduces the block
+    // mesh's triangle count exactly here — a convenient invariant to assert on.
     expect(result.smooth.triangleCount).toBe(result.block.triangleCount);
-    // Still a valid, positive-volume solid (Taubin's anti-shrink pass keeps the
-    // size roughly stable rather than collapsing it).
+    // Still a valid, positive-volume solid (the smoother rounds without collapsing).
     expect(result.smooth.volume).toBeGreaterThan(0);
   });
 

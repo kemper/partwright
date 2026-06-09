@@ -8,12 +8,17 @@ import { voxelEngine } from '../geometry/engines/voxel';
 import { openscadEngine, runScadAsync } from '../geometry/engines/openscad';
 import type { Language } from '../geometry/engines/types';
 import type { MeshResult } from '../geometry/engines/types';
+import { componentsOverlap } from './bboxOverlap';
 
 export interface PreviewComponent {
   index: number;
   triangleCount: number;
   volume: number;
   bbox: { min: number[]; max: number[]; size: number[] };
+  /** Bounding-box center of this island ((min+max)/2) — the cheap "where is
+   *  it" locator surfaced by `--explain-components`. Empty when the part had
+   *  no measurable bounding box. */
+  center: number[];
 }
 
 export interface PreviewStats {
@@ -38,6 +43,11 @@ export interface PreviewStats {
   engine: Language;
   /** Occupied-voxel count — only set for the `voxel` engine. */
   voxelCount?: number;
+  /** Face-connected printable-piece count (6-neighbour) — only set for the
+   *  `voxel` engine. Trust this over `componentCount` for "is this one piece?":
+   *  the mesh componentCount over-reports voxel models (enclosed cavities count
+   *  as a second component, edge/corner-only touches split). */
+  voxelPieceCount?: number;
 }
 
 export interface PreviewRender {
@@ -181,7 +191,7 @@ export async function previewModel(
       vertexCount: mesh.numVert, volume: 0, surfaceArea: 0, genus: 0,
       bbox: null, aspectRatio: 0, minEdgeLength: edge.min, meanEdgeLength: edge.mean,
       components: [], labels, warnings: [], paramsSchema: r.paramsSchema, renderOnly: true,
-      engine, voxelCount: r.voxelCount,
+      engine, voxelCount: r.voxelCount, voxelPieceCount: r.voxelPieceCount,
     };
     stats.warnings = buildWarnings(stats);
   } else {
@@ -199,7 +209,11 @@ export async function previewModel(
         .map((p: any, index: number) => ({ index, vol: safeNum(() => p.volume()), tri: safeNum(() => p.numTri()), box: safeBox(p) }))
         .sort((a, b) => b.vol - a.vol)
         .slice(0, 16);
-      for (const p of ranked) components.push({ index: p.index, triangleCount: p.tri, volume: p.vol, bbox: p.box ? bb(p.box) : { min: [], max: [], size: [] } });
+      for (const p of ranked) {
+        const box = p.box ? bb(p.box) : { min: [], max: [], size: [] };
+        const center = box.min.length === 3 ? box.min.map((m, i) => (m + box.max[i]) / 2) : [];
+        components.push({ index: p.index, triangleCount: p.tri, volume: p.vol, bbox: box, center });
+      }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       for (const p of parts) try { (p as any).delete(); } catch { /* exit cleans up */ }
     } catch { /* decompose unsupported */ }
@@ -224,7 +238,7 @@ export async function previewModel(
       warnings: [],
       paramsSchema: r.paramsSchema,
       renderOnly: false,
-      engine, voxelCount: r.voxelCount,
+      engine, voxelCount: r.voxelCount, voxelPieceCount: r.voxelPieceCount,
     };
     stats.warnings = buildWarnings(stats);
   }
@@ -273,6 +287,28 @@ function buildWarnings(s: PreviewStats): string[] {
   }
   if (distinctLabelColors >= 2 && s.componentCount === 1) {
     w.push('Multiple colors but a single component — separate moving parts should report componentCount ≥ 2.');
+  }
+  // For voxel models the mesh componentCount over-reports pieces (an enclosed
+  // cavity is a second component; edge/corner-only touches split), so the
+  // face-connected voxelPieceCount is the trustworthy "one printable piece?"
+  // number. Surface the distinction so the AI reads the right one and doesn't
+  // chase a phantom "extra part", and use pieces (not componentCount) to gate
+  // the clearance check below.
+  const isVoxel = s.engine === 'voxel';
+  if (isVoxel && typeof s.voxelPieceCount === 'number' && s.componentCount > s.voxelPieceCount) {
+    w.push(`componentCount=${s.componentCount} counts enclosed cavities / edge-only touches, but this is ${s.voxelPieceCount} face-connected printable piece${s.voxelPieceCount === 1 ? '' : 's'} (voxelPieceCount). Trust voxelPieceCount for "is this one piece?".`);
+  }
+  // Clearance / unintended-fragmentation check: separate components whose
+  // bounding boxes overlap are interpenetrating-but-not-fused. For an unlabeled
+  // model meant to be ONE solid, that's a boolean that didn't take (insufficient
+  // overlap); for an intentional multi-part / print-in-place assembly it's a cue
+  // to sanity-check the clearance gap. Skipped for voxel models: their
+  // decompose-based components over-report (an enclosed cavity nests inside the
+  // shell's bbox), so the overlap signal is meaningless — voxelPieceCount above
+  // is the right cue there. Gated to no-labels so it doesn't double up with the
+  // FUSED-labels warning.
+  if (!s.renderOnly && !s.empty && !isVoxel && s.componentCount >= 2 && s.labels.length === 0 && componentsOverlap(s.components)) {
+    w.push(`componentCount=${s.componentCount} with overlapping component bounding boxes (top ${Math.min(s.componentCount, s.components.length)} by volume checked) — separate parts whose bounds overlap, so they may interpenetrate. If this should be ONE solid, a boolean didn't fuse (increase overlap ≥0.5 units); if it's an intentional multi-part / print-in-place assembly, verify the clearance gap. Inspect islands with model:preview --explain-components.`);
   }
   if (s.triangleCount > 200000) w.push(`High triangle count (${Math.round(s.triangleCount / 1000)}k) — exceeds the ~200k catalog budget; lower circular segments / nDivisions or feature density.`);
   if (s.aspectRatio > 12) w.push(`Extreme aspect ratio (${s.aspectRatio.toFixed(1)}:1) — tall/thin parts can be fragile or tip-droppy on FDM.`);

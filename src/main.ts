@@ -114,11 +114,12 @@ import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
+import { greedyMeshGrid } from './geometry/voxel/mesher';
 import { appendVoxelEditsToCode, editOpCount } from './geometry/voxel/editCodegen';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, rotateAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
@@ -185,7 +186,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
@@ -199,7 +200,7 @@ import { openShareModal, renderSharedBanner, renderSharedOverlay } from './share
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
-import { cylinderRefineRegion, findCylinderTriangles } from './color/cylinderPaint';
+import { cylinderRefineRegion, findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
 import { computeFaceGroups } from './color/faceGroups';
 import {
   getSessionIdFromURL,
@@ -354,6 +355,11 @@ let lastEngineHeapBytes: number | undefined;
  *  and the Data panel show it) without re-decoding the grid. Undefined for the
  *  non-voxel engines or before the first run. */
 let lastVoxelCount: number | undefined;
+/** Face-connected printable-piece count for the last voxel run (6-neighbour
+ *  BFS). Surfaced as `voxelPieceCount` in the geometry-data stats so agents
+ *  trust it over the mesh `componentCount`, which over-reports voxel models
+ *  (enclosed cavities + edge/corner touches). Undefined for non-voxel engines. */
+let lastVoxelPieceCount: number | undefined;
 /** The pristine mesh produced by the authored code, before any smooth brush
  *  subdivision. `currentMeshData` equals this until a `brushStroke` region
  *  exists, at which point it becomes the refined (subdivided) mesh rebuilt by
@@ -441,7 +447,7 @@ type PartMeshCacheEntry = {
   meshData: MeshData;
   labelMap: Map<string, Set<number>> | null;
   lostLabels: string[] | null;
-  modelColorDecls: Array<{ name: string; color: [number, number, number]; triangles: Set<number> }>;
+  modelColorDecls: Array<{ name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor }>;
   paramsSchema: ParamSpec[] | undefined;
 };
 const PART_MESH_CACHE_SIZE = 8;
@@ -629,6 +635,11 @@ function withSessionContext(data: Record<string, unknown>): Record<string, unkno
   if (lastVoxelCount !== undefined) {
     data.voxelCount = lastVoxelCount;
   }
+  // Trustworthy "separate printable pieces?" count for voxel models — the mesh
+  // componentCount over-reports them (enclosed cavities, edge/corner touches).
+  if (lastVoxelPieceCount !== undefined) {
+    data.voxelPieceCount = lastVoxelPieceCount;
+  }
   return data;
 }
 
@@ -789,7 +800,7 @@ function collectRefineRegions(descriptors: RegionDescriptor[]): RefineRegion[] {
     } else if (d.kind === 'box' && descriptorRefines(d)) {
       regions.push(shapeRefineRegion(d.shape ?? 'box', { center: d.center, size: d.size, quaternion: d.quaternion }, d.maxEdge!));
     } else if (d.kind === 'cylinder' && descriptorRefines(d)) {
-      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!));
+      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!, d.axis ?? 'z'));
     }
   }
   return regions;
@@ -901,8 +912,8 @@ function resolveDescriptorTriangles(
       // Same triangle collector `paintInCylinder` uses for the live call —
       // re-resolves the shell against the (possibly subdivided) current mesh
       // so smoothing-driven refinement carries forward across re-runs.
-      const { center, rMin, rMax, zMin, zMax, normalCone, coverageMode, maxTriangleArea } = descriptor;
-      return { triangles: findCylinderTriangles(mesh, center, rMin, rMax, zMin, zMax, normalCone, coverageMode ?? 'centroid', maxTriangleArea) };
+      const { center, rMin, rMax, zMin, zMax, normalCone, coverageMode, maxTriangleArea, axis } = descriptor;
+      return { triangles: findCylinderTriangles(mesh, center, rMin, rMax, zMin, zMax, normalCone, coverageMode ?? 'centroid', maxTriangleArea, axis ?? 'z') };
     }
     case 'byLabel': {
       // Labels are runtime state — manifold-3d assigns fresh originalIDs on
@@ -1168,8 +1179,22 @@ function rebuildPaintedGeometry(): void {
     const { triangles, perTriColors } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
     setRegionTriangles(region.id, triangles, perTriColors);
   }
+  reresolveModelRegions(mesh, adjacency, parentToChildren);
   paintedColorRefresh();
   syncLockState();
+}
+
+/** Re-resolve the code-declared color underlay (`api.label({color})` /
+ *  `api.paint.*`) against a (possibly subdivided) mesh. The refine paths
+ *  subdivide the working mesh to follow smooth user strokes, which invalidates
+ *  the underlay's triangle indices unless we re-resolve them here from their
+ *  descriptors — geometric selectors against `mesh` directly, byLabel through
+ *  `parentToChildren` from the run's labelMap. No-op when no underlay exists. */
+function reresolveModelRegions(mesh: MeshData, adjacency: AdjacencyGraph | null, parentToChildren: Map<number, number[]> | null): void {
+  for (const region of getModelRegions()) {
+    const { triangles } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
+    setModelRegionTriangles(region.id, triangles);
+  }
 }
 
 /** Incrementally refine the CURRENT mesh by a single newly-added stroke, instead
@@ -1213,6 +1238,7 @@ function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brush
       setRegionTriangles(region.id, triangles, perTriColors);
     }
   }
+  reresolveModelRegions(mesh, adjacency, parentToChildren);
   paintedColorRefresh();
   syncLockState();
 }
@@ -1456,6 +1482,7 @@ async function appendStrokeRefineAsync(
         setRegionTriangles(region.id, triangles, perTriColors);
       }
     }
+    reresolveModelRegions(mesh, adjacency, parentToChildren);
     paintedColorRefresh();
     syncLockState();
   } finally {
@@ -1517,6 +1544,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
         setRegionTriangles(region.id, triangles, perTriColors);
       }
     }
+    reresolveModelRegions(mesh, adjacency, parentToChildren);
     paintedColorRefresh();
     syncLockState();
   } finally {
@@ -1672,7 +1700,7 @@ async function saveCurrentVersion(label?: string): Promise<
         meshData: meshToCache,
         labelMap: currentLabelMap,
         lostLabels: currentLostLabels,
-        modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles) })),
+        modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles), descriptor: r.descriptor })),
         paramsSchema: currentParamSchema ?? undefined,
       };
       partMeshCache.delete(version.id);
@@ -3900,7 +3928,7 @@ async function main() {
     if (!(await confirmExportOrProceed('STL'))) return;
     warnIfNotPrintable('STL');
     notifyMultiPartExport();
-    try { showToast(`Exported ${exportSTL(currentMeshData)}`, { variant: 'success' }); }
+    try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
   };
   const actionExportOBJ = async () => {
@@ -3909,7 +3937,7 @@ async function main() {
     if (!(await confirmExportOrProceed('OBJ'))) return;
     warnIfNotPrintable('OBJ');
     notifyMultiPartExport();
-    try { showToast(`Exported ${exportOBJ(coloredMeshForExport(currentMeshData))}`, { variant: 'success' }); }
+    try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
   };
   const actionExport3MF = async () => {
@@ -3918,7 +3946,7 @@ async function main() {
     if (!(await confirmExportOrProceed('3MF'))) return;
     warnIfNotPrintable('3MF');
     notifyMultiPartExport();
-    try { showToast(`Exported ${export3MF(coloredMeshForExport(currentMeshData))}`, { variant: 'success' }); }
+    try { showToast(`Exported ${export3MF(fileExportMesh(true)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
   };
   // The integer VoxelGrid behind a voxel session. The engine meshes in the
@@ -3931,6 +3959,26 @@ async function main() {
     if (painted) return painted;
     const r = runVoxelForPaint(getValue());
     return r.ok ? r.data.grid : null;
+  };
+  /** Mesh for a triangle-mesh file export (STL / OBJ / 3MF). Voxel sessions get
+   *  a greedy-meshed copy straight from the grid — coplanar same-color faces are
+   *  coalesced, cutting triangle count (and file size) several-fold. Greedy
+   *  meshing introduces T-junctions: harmless in a triangle-soup export, but
+   *  they break Manifold.ofMesh, so it stays OUT of the render / stats / slicing
+   *  path (those keep the per-face manifold mesh from `meshGrid`). `colored`
+   *  bakes paint/relief regions for non-voxel meshes; voxel grids already carry
+   *  their per-voxel colors. Returns null only when there's nothing to export. */
+  const fileExportMesh = (colored: boolean): MeshData | null => {
+    if (getActiveLanguage() === 'voxel') {
+      const grid = getCurrentVoxelGrid();
+      // Greedy meshing applies to BLOCKY surfacing only. A smoothed grid must
+      // export the rounded mesh the viewport (and GLB) show, not blocky cubes —
+      // and greedy wins nothing on a smoothed mesh anyway (no large coplanar
+      // same-color runs to coalesce), so fall through to currentMeshData.
+      if (grid && grid.surfacing().mode !== 'smooth') return greedyMeshGrid(grid);
+    }
+    if (!currentMeshData) return null;
+    return colored ? coloredMeshForExport(currentMeshData) : currentMeshData;
   };
   const actionExportVOX = () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
@@ -4438,7 +4486,7 @@ async function main() {
     // These tools moved behind the Tools/Inspect popovers after the view-menu
     // refactor, so the palette is their only keyboard/search entry point. Each
     // fires the existing overlay toggle by id (click() works even collapsed).
-    { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', keywords: 'fuzzy knit cable waffle fur woven smooth voxelize texture modifier displace', run: () => document.getElementById('surface-viewport-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', keywords: 'fuzzy knit cable waffle fur woven voronoi smooth voxelize texture modifier displace', run: () => document.getElementById('surface-viewport-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-resize', title: 'Resize / scale model', hint: 'Tools', keywords: 'scale resize size dimensions grow shrink mm', run: () => document.getElementById('resize-viewport-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-place', title: 'Place / orient on bed', hint: 'Tools', keywords: 'place orient rotate move position lay flat drop floor center bed', run: () => document.getElementById('place-viewport-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => document.getElementById('print-tools-toggle')?.click(), enabled: viewportToolEnabled },
@@ -4720,7 +4768,7 @@ async function main() {
           meshData: currentMeshData,
           labelMap: currentLabelMap,
           lostLabels: currentLostLabels,
-          modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles) })),
+          modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles), descriptor: r.descriptor })),
           paramsSchema: currentParamSchema ?? undefined,
         };
         partMeshCache.delete(version.id);
@@ -6876,6 +6924,7 @@ async function main() {
     const stats = computeGeometryStats(manifold, result.mesh!, elapsed, code);
     if (engineMemory !== undefined) stats.engineMemory = engineMemory;
     if (result.voxelCount !== undefined) stats.voxelCount = result.voxelCount;
+    if (result.voxelPieceCount !== undefined) stats.voxelPieceCount = result.voxelPieceCount;
     return {
       geometryData: stats,
       meshData: result.mesh,
@@ -6918,7 +6967,7 @@ async function main() {
    *  feature size relative to the model's bounding-box diagonal so the AI gets
    *  actionable feedback before spending time on a degenerate run. */
   function textureWarnings(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi',
     opts: Record<string, unknown>,
     mesh: MeshData,
   ): string[] {
@@ -7020,6 +7069,20 @@ async function main() {
         warnings.push(
           `threadSpacing (${ts.toFixed(4)}) is very small — weave will be invisible; ` +
           `try threadSpacing ≈ ${(diag * 0.04).toFixed(3)}`,
+        );
+      }
+    } else if (id === 'voronoi') {
+      const cs = (opts.cellSize as number | undefined) ?? 0;
+      if (cs > diag * 0.4) {
+        warnings.push(
+          `cellSize (${cs.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
+          `fewer than 3 cells visible; try cellSize ≈ ${(diag * 0.12).toFixed(3)}`,
+        );
+      }
+      if (cs > 0 && cs < diag / 300) {
+        warnings.push(
+          `cellSize (${cs.toFixed(4)}) is very small — the cell walls will be invisible; ` +
+          `try cellSize ≈ ${(diag * 0.12).toFixed(3)}`,
         );
       }
     }
@@ -7351,7 +7414,7 @@ async function main() {
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
   function buildSurfaceModifier(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
   ): ModifierResult {
@@ -7452,6 +7515,39 @@ async function main() {
       if (sel && sel.size > 0) return applyWovenPatch(mesh, wovenOpts, sel);
       return applyWoven(mesh, wovenOpts);
     }
+    if (id === 'voronoi') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultVoronoiOptions(mesh);
+      const voronoiOpts = {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        cellSize: (opts?.cellSize as number) ?? base.cellSize,
+        wallWidth: (opts?.wallWidth as number) ?? base.wallWidth,
+        raised: (opts?.raised as boolean) ?? base.raised,
+        jitter: (opts?.jitter as number) ?? base.jitter,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
+      };
+      if (sel && sel.size > 0) return applyVoronoiPatch(mesh, voronoiOpts, sel);
+      return applyVoronoi(mesh, voronoiOpts);
+    }
+    if (id === 'voronoiLamp') {
+      // Perforated shell → voxel output; whole-model only (no region patch).
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultVoronoiLampOptions(mesh);
+      return applyVoronoiLamp(mesh, {
+        cellSize: (opts?.cellSize as number) ?? base.cellSize,
+        wallThickness: (opts?.wallThickness as number) ?? base.wallThickness,
+        strutWidth: (opts?.strutWidth as number) ?? base.strutWidth,
+        resolution: (opts?.resolution as number) ?? base.resolution,
+        jitter: (opts?.jitter as number) ?? base.jitter,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        seed: (opts?.seed as number) ?? base.seed,
+        watertight: (opts?.watertight as boolean) ?? base.watertight,
+        output: (opts?.output as 'mesh' | 'voxel') ?? base.output,
+        smooth: (opts?.smooth as boolean) ?? base.smooth,
+      });
+    }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultSmoothOptions();
@@ -7476,8 +7572,8 @@ async function main() {
     modelHasColor(): boolean { return modelHasColor(); },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
-     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'smooth'|'voxelize'. */
-    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize'. */
+    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
       try {
         previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
         return { ok: true };
@@ -7661,6 +7757,60 @@ async function main() {
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
 
+    /** Apply a Voronoi-shell surface texture to the current model; saves a new version.
+     *  Produces an organic cell-wall relief — a network of raised ridges tracing
+     *  Voronoi cell boundaries (cracked-mud / dragonfly-wing / lampshade look).
+     *  Set raised=false to engrave the network as channels; jitter=0 for a regular grid.
+     *  `preserveColor` (default true) carries paint across subdivision.
+     *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async applyVoronoiShell(opts?: {
+      amplitude?: number;
+      cellSize?: number;
+      wallWidth?: number;
+      raised?: boolean;
+      jitter?: number;
+      grainAngleDeg?: number;
+      seed?: number;
+      quality?: number;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        const mesh = requireCurrentMeshForModifier();
+        const warns = textureWarnings('voronoi', opts ?? {}, mesh);
+        const result = await commitSurfaceModifier(buildSurfaceModifier('voronoi', opts, preserve), preserve);
+        if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
+          const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
+          return { ...result, warnings: [...warns, ...(existing ?? [])] };
+        }
+        return result;
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Turn the current model into a true perforated Voronoi shell (a "Voronoi
+     *  lamp"): a thin hollow wall with the cell interiors cut clean through,
+     *  leaving a see-through strut network. Unlike applyVoronoiShell (a relief
+     *  texture), this opens real holes. `output:'mesh'` (default) bakes a smooth
+     *  manifold-js mesh; `output:'voxel'` switches to the voxel engine
+     *  (paintable / .vox). Saves a new version. Returns `{ ok, label, geometry, warnings? }`. */
+    async applyVoronoiLamp(opts?: {
+      cellSize?: number;
+      wallThickness?: number;
+      strutWidth?: number;
+      resolution?: number;
+      jitter?: number;
+      grainAngleDeg?: number;
+      seed?: number;
+      watertight?: boolean;
+      output?: 'mesh' | 'voxel';
+      smooth?: boolean;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('voronoiLamp', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
     /** Smooth/round the current model (Taubin λ/μ); saves a new version. */
     async smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }) {
       try {
@@ -7828,21 +7978,21 @@ async function main() {
     exportSTL(filename?: string) {
       assertString(filename, 'exportSTL(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      exportSTL(currentMeshData, filename);
+      exportSTL(fileExportMesh(false)!, filename);
     },
 
     /** Export current model as OBJ download. Optional filename override. */
     exportOBJ(filename?: string) {
       assertString(filename, 'exportOBJ(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      exportOBJ(coloredMeshForExport(currentMeshData), filename);
+      exportOBJ(fileExportMesh(true)!, filename);
     },
 
     /** Export current model as 3MF download. Optional filename override. */
     export3MF(filename?: string) {
       assertString(filename, 'export3MF(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      export3MF(coloredMeshForExport(currentMeshData), filename);
+      export3MF(fileExportMesh(true)!, filename);
     },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
@@ -7912,7 +8062,7 @@ async function main() {
     async exportSTLData(filename?: string) {
       assertString(filename, 'exportSTLData(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      const built = buildSTL(currentMeshData, filename);
+      const built = buildSTL(fileExportMesh(false)!, filename);
       registerExportFromBuilt(built, 'STL');
       return {
         filename: built.filename,
@@ -7930,8 +8080,7 @@ async function main() {
     async exportOBJData(filename?: string) {
       assertString(filename, 'exportOBJData(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      const mesh = (hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData;
-      const built = buildOBJ(mesh, filename);
+      const built = buildOBJ(fileExportMesh(true)!, filename);
       registerExportFromBuilt(built, 'OBJ');
       const isText = built.mimeType === 'text/plain';
       return {
@@ -7948,8 +8097,7 @@ async function main() {
     async export3MFData(filename?: string) {
       assertString(filename, 'export3MFData(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      const mesh = (hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData;
-      const built = build3MF(mesh, filename);
+      const built = build3MF(fileExportMesh(true)!, filename);
       registerExportFromBuilt(built, '3MF');
       return {
         filename: built.filename,
@@ -10860,6 +11008,11 @@ async function main() {
       zMax: number;
       color: [number, number, number];
       name?: string;
+      /** World axis the shell runs along (default 'z'). Mirrors `paintSlab`'s
+       *  axis shorthand: 'x' measures radius in YZ with the band along X, 'y'
+       *  in ZX along Y, 'z' (default) in XY along Z. `center` is the [a,b] pair
+       *  in the radial plane and zMin/zMax are the band along the chosen axis. */
+      axis?: CylinderAxis;
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       topOnly?: boolean;
       coverageMode?: CoverageMode;
@@ -10884,6 +11037,7 @@ async function main() {
       if (typeof opts.zMin !== 'number' || typeof opts.zMax !== 'number') return { error: 'zMin and zMax must be numbers' };
       if (opts.rMin < 0 || opts.rMax <= opts.rMin) return { error: 'paintInCylinder requires rMin >= 0 and rMax > rMin' };
       if (opts.zMax <= opts.zMin) return { error: 'paintInCylinder requires zMax > zMin' };
+      if (opts.axis !== undefined && opts.axis !== 'x' && opts.axis !== 'y' && opts.axis !== 'z') return { error: "paintInCylinder axis must be 'x', 'y', or 'z'" };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] in 0..1' };
       const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
       const coneErr = validateNormalCone(cone);
@@ -10894,6 +11048,7 @@ async function main() {
       if (smoothErr) return { error: smoothErr };
 
       const center = opts.center ?? [0, 0];
+      const axis = opts.axis ?? 'z';
       const coverageMode = opts.coverageMode;
       const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
 
@@ -10910,9 +11065,10 @@ async function main() {
         cone,
         coverageMode,
         opts.maxTriangleArea,
+        axis,
       );
       if (triangles.size === 0) {
-        return { error: `paintInCylinder: no triangles in cylindrical shell (rMin=${opts.rMin}, rMax=${opts.rMax}, z=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or dry-running paintPreview({ cylinder: { rMin, rMax, zMin, zMax } }) to locate the geometry.` };
+        return { error: `paintInCylinder: no triangles in cylindrical shell (axis=${axis}, rMin=${opts.rMin}, rMax=${opts.rMax}, band=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or dry-running paintPreview({ cylinder: { rMin, rMax, zMin, zMax } }) to locate the geometry.` };
       }
 
       const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
@@ -10930,6 +11086,7 @@ async function main() {
           rMax: opts.rMax,
           zMin: opts.zMin,
           zMax: opts.zMax,
+          ...(axis !== 'z' ? { axis } : {}),
           ...(cone ? { normalCone: cone } : {}),
           ...(coverageMode ? { coverageMode } : {}),
           ...(opts.maxTriangleArea !== undefined ? { maxTriangleArea: opts.maxTriangleArea } : {}),
@@ -10940,7 +11097,7 @@ async function main() {
       ));
       scheduleColorRefresh();
       syncLockState();
-      return { id: region.id, name: region.name, triangles: region.triangles.size, smooth, maxEdge };
+      return { id: region.id, name: region.name, triangles: region.triangles.size, axis, smooth, maxEdge };
     },
 
     /** Render a preview of the current model with a candidate region tinted
@@ -10966,7 +11123,7 @@ async function main() {
      *  `view` is forwarded to `renderView` (elevation/azimuth/ortho/size). */
     paintPreview(opts: {
       box?: { min: [number, number, number]; max: [number, number, number] };
-      cylinder?: { center?: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number };
+      cylinder?: { center?: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number; axis?: CylinderAxis };
       slab?: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number };
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       /** Cylinder selector only — mirrors `paintInCylinder.topOnly`. Keeps just
@@ -11023,12 +11180,13 @@ async function main() {
         if (c.rMin < 0 || c.rMax <= c.rMin) return { error: 'cylinder requires rMin >= 0 and rMax > rMin' };
         if (c.zMax <= c.zMin) return { error: 'cylinder requires zMax > zMin' };
         if (c.center !== undefined && (!Array.isArray(c.center) || c.center.length !== 2)) return { error: 'cylinder.center must be [x, y]' };
+        if (c.axis !== undefined && c.axis !== 'x' && c.axis !== 'y' && c.axis !== 'z') return { error: "cylinder.axis must be 'x', 'y', or 'z'" };
         // Resolve topOnly into a cone the same way paintInCylinder does, so the
         // preview's selection matches a topOnly commit instead of over-reporting.
         const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
         const coneErr = validateNormalCone(cone);
         if (coneErr) return { error: coneErr };
-        triangles = collectTrianglesByCylinder(mesh, c.center ?? [0, 0], c.rMin, c.rMax, c.zMin, c.zMax, cone, opts.coverageMode, opts.maxTriangleArea);
+        triangles = collectTrianglesByCylinder(mesh, c.center ?? [0, 0], c.rMin, c.rMax, c.zMin, c.zMax, cone, opts.coverageMode, opts.maxTriangleArea, c.axis ?? 'z');
       } else if (opts.slab !== undefined) {
         const s = opts.slab;
         if (typeof s !== 'object' || s === null) return { error: 'slab must be { axis|normal, offset, thickness }' };
@@ -12692,6 +12850,7 @@ async function main() {
         'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, color, name?}) -- Paint triangles whose centroid is inside a rotated oriented box. Same selector as the UI Box tool.', docs: '/ai/colors.md' },
         'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai/colors.md' },
         'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?}) -- Paint planar slab range', docs: '/ai/colors.md' },
+        'paintInCylinder': { signature: 'paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, color, name?}) -- Paint a cylindrical/annular shell (rMin=0 = solid cylinder). axis (x|y|z, default z) picks the shell axis; band runs zMin..zMax along it.', docs: '/ai/colors.md' },
         'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai/colors.md' },
         'paintExplain':    { signature: 'paintExplain({region, withImage?, view?}) -- Diagnose a committed region -> {triangleCount, area, bbox, centroid, normalHistogram, [thumbnail]}.', docs: '/ai/colors.md' },
         'assertPaint':     { signature: 'assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) -- Verify a previously-painted region -> {passed, failures?}', docs: '/ai/colors.md' },
@@ -13305,52 +13464,12 @@ async function main() {
     cone: { axis: [number, number, number]; angleDeg: number } | undefined,
     coverage: CoverageMode = 'centroid',
     maxArea: number | undefined = undefined,
+    axis: CylinderAxis = 'z',
   ): Set<number> {
-    const adjacency = cone ? buildAdjacency(mesh) : null;
-    let coneAxis: [number, number, number] | null = null;
-    let coneCos = -1;
-    if (cone) {
-      const len = Math.hypot(cone.axis[0], cone.axis[1], cone.axis[2]);
-      coneAxis = [cone.axis[0] / len, cone.axis[1] / len, cone.axis[2] / len];
-      coneCos = Math.cos(cone.angleDeg * Math.PI / 180);
-    }
-    const rMin2 = rMin * rMin, rMax2 = rMax * rMax;
-    const [cx, cy] = center;
-    const result = new Set<number>();
-    const { triVerts, vertProperties, numProp, numTri } = mesh;
-
-    function radial2(x: number, y: number): number {
-      const dx = x - cx, dy = y - cy;
-      return dx * dx + dy * dy;
-    }
-    function inShell(x: number, y: number, z: number): boolean {
-      const r2 = radial2(x, y);
-      return r2 >= rMin2 && r2 <= rMax2 && z >= zMin && z <= zMax;
-    }
-
-    for (let t = 0; t < numTri; t++) {
-      const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
-      const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
-      const bx = vertProperties[v1 * numProp], by = vertProperties[v1 * numProp + 1], bz = vertProperties[v1 * numProp + 2];
-      const cx2 = vertProperties[v2 * numProp], cy2 = vertProperties[v2 * numProp + 1], cz2 = vertProperties[v2 * numProp + 2];
-
-      if (coverage === 'fully_inside') {
-        if (!inShell(ax, ay, az) || !inShell(bx, by, bz) || !inShell(cx2, cy2, cz2)) continue;
-      } else if (coverage === 'any_vertex_inside') {
-        if (!inShell(ax, ay, az) && !inShell(bx, by, bz) && !inShell(cx2, cy2, cz2)) continue;
-      } else {
-        const ccx = (ax + bx + cx2) / 3, ccy = (ay + by + cy2) / 3, ccz = (az + bz + cz2) / 3;
-        if (!inShell(ccx, ccy, ccz)) continue;
-      }
-
-      if (coneAxis && adjacency) {
-        const nx = adjacency.normals[t * 3], ny = adjacency.normals[t * 3 + 1], nz = adjacency.normals[t * 3 + 2];
-        if (coneAxis[0] * nx + coneAxis[1] * ny + coneAxis[2] * nz < coneCos) continue;
-      }
-      if (maxArea !== undefined && triangleArea(t, mesh) > maxArea) continue;
-      result.add(t);
-    }
-    return result;
+    // Delegate to the canonical shell collector (src/color/cylinderPaint.ts) so
+    // the live paint call, the preview, and the post-refine descriptor resolver
+    // all share one implementation — the projection/axis logic can't drift.
+    return findCylinderTriangles(mesh, center, rMin, rMax, zMin, zMax, cone, coverage, maxArea, axis);
   }
 
   /** Produce advisory warnings for geometry that was saved or queried.
@@ -13617,6 +13736,7 @@ async function main() {
     // Occupied-voxel count for voxel runs (undefined for other engines, which
     // resets the readout so a prior voxel session's count doesn't linger).
     lastVoxelCount = result.voxelCount;
+    lastVoxelPieceCount = result.voxelPieceCount;
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel
@@ -13720,11 +13840,29 @@ async function main() {
       // — passing [] when nothing was declared clears any prior run's layer.
       // This layer never locks the editor and is never serialized; the user's
       // manual paint composites on top of it. See src/color/regions.ts.
-      const modelColorDecls: { name: string; color: [number, number, number]; triangles: Set<number> }[] = [];
+      const modelColorDecls: { name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor }[] = [];
       if (result.labelColors && currentLabelMap) {
         for (const [name, color] of result.labelColors) {
           const triangles = currentLabelMap.get(name);
           if (triangles && triangles.size > 0) modelColorDecls.push({ name, color, triangles });
+        }
+      }
+      // Paint declared in code via api.paint.* (box / slab / cylinder / label).
+      // Resolve each descriptor against this run's mesh — exactly like a user
+      // paint region, but fed into the model underlay so it stays derived from
+      // code and is never serialized to the paint sidecar. byLabel reads the
+      // labelMap captured just above; the geometric selectors need only the mesh
+      // (adjacency built lazily for the rare descriptor kind that wants it).
+      if (result.paintOps && result.paintOps.length > 0) {
+        const mesh = result.mesh;
+        let paintAdjacency: AdjacencyGraph | null = null;
+        for (const op of result.paintOps) {
+          const d = op.descriptor as RegionDescriptor;
+          if (!paintAdjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) {
+            paintAdjacency = buildAdjacency(mesh);
+          }
+          const { triangles } = resolveDescriptorTriangles(d, mesh, paintAdjacency, null);
+          if (triangles.size > 0) modelColorDecls.push({ name: op.name, color: op.color, triangles, descriptor: d });
         }
       }
       setModelColorRegions(modelColorDecls);

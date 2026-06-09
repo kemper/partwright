@@ -18,6 +18,7 @@
 import type { MeshData } from '../types';
 import { VoxelGrid, colorComponents, type Surfacing } from './grid';
 import { taubinSmooth, scaleMeshPositions, type SmoothPins } from './smooth';
+import { surfaceNetsMesh } from './surfaceNets';
 
 /** Per-triangle voxel coordinate provenance. `triVoxel` is `numTri * 3`,
  *  flattened (x, y, z, x, y, z, …), giving the integer coord of the voxel
@@ -108,14 +109,180 @@ export function gridToMeshData(grid: VoxelGrid): MeshData {
   };
 }
 
+// Greedy meshing: per face-plane, merge coplanar same-color faces into maximal
+// rectangles before triangulating. A 32×8 flat same-color wall drops from ~512
+// triangles to 2 — the big lever for keeping voxelized / image-import models
+// under the catalog triangle budget. Output welds corners exactly like the
+// per-face mesher and uses the same outward winding (verified per-direction
+// against FACES for the single-voxel case), so it's a drop-in for `blocks`.
+//
+// The merged quads span multiple voxels, so this is NOT used for paint mode —
+// that path keeps `gridToMeshWithProvenance`'s 1 triangle ↔ 1 voxel mapping.
+interface GreedyDir {
+  pa: 0 | 1 | 2;   // face-normal (primary) axis
+  s: 1 | -1;       // outward direction along pa
+  ua: 0 | 1 | 2;   // in-plane U axis
+  va: 0 | 1 | 2;   // in-plane V axis
+  flip: boolean;   // winding: false = U-then-V (CCW), true = V-then-U
+}
+// Per-direction winding chosen so the quad normal points outward — matches the
+// FACES corner orders exactly for a single voxel.
+const GREEDY_DIRS: GreedyDir[] = [
+  { pa: 0, s: 1,  ua: 1, va: 2, flip: false }, // +X
+  { pa: 0, s: -1, ua: 1, va: 2, flip: true },  // -X
+  { pa: 1, s: 1,  ua: 0, va: 2, flip: true },  // +Y
+  { pa: 1, s: -1, ua: 0, va: 2, flip: false }, // -Y
+  { pa: 2, s: 1,  ua: 0, va: 1, flip: false }, // +Z
+  { pa: 2, s: -1, ua: 0, va: 1, flip: true },  // -Z
+];
+
+/** Greedy-meshed `MeshData`: coplanar same-color faces coalesced into the
+ *  fewest rectangles. Equivalent surface to {@link gridToMeshData}, far fewer
+ *  triangles on flat regions. */
+export function greedyMeshGrid(grid: VoxelGrid): MeshData {
+  const positions: number[] = [];
+  const tris: number[] = [];
+  const triColors: number[] = [];
+  const vertIndex = new Map<number, number>();
+  const VKEY = (vx: number, vy: number, vz: number) =>
+    ((vx + 2048) * 4096 + (vy + 2048)) * 4096 + (vz + 2048);
+  function vertex(vx: number, vy: number, vz: number): number {
+    const k = VKEY(vx, vy, vz);
+    let i = vertIndex.get(k);
+    if (i === undefined) { i = positions.length / 3; positions.push(vx, vy, vz); vertIndex.set(k, i); }
+    return i;
+  }
+  // Pack an in-plane (u,v) cell into a sortable key (u-major, v-minor); same
+  // ±2048 offset / 4096 stride as the corner weld, safe for the ±1024 range.
+  const UV = (u: number, v: number) => (u + 2048) * 4096 + (v + 2048);
+  const UV_U = (key: number) => Math.floor(key / 4096) - 2048;
+  const UV_V = (key: number) => (key % 4096) - 2048;
+
+  const coord: [number, number, number] = [0, 0, 0];
+  for (const dir of GREEDY_DIRS) {
+    // Group exposed faces by slice (the voxel's pa coordinate), each slice a
+    // map of in-plane cell → color.
+    const slices = new Map<number, Map<number, number>>();
+    grid.forEach((x, y, z, rgb) => {
+      coord[0] = x; coord[1] = y; coord[2] = z;
+      const nx = x + (dir.pa === 0 ? dir.s : 0);
+      const ny = y + (dir.pa === 1 ? dir.s : 0);
+      const nz = z + (dir.pa === 2 ? dir.s : 0);
+      if (grid.has(nx, ny, nz)) return; // face buried against a solid neighbor
+      const k = coord[dir.pa];
+      let m = slices.get(k);
+      if (!m) { m = new Map(); slices.set(k, m); }
+      m.set(UV(coord[dir.ua], coord[dir.va]), rgb);
+    });
+
+    for (const [k, cells] of slices) {
+      const used = new Set<number>();
+      const keys = [...cells.keys()].sort((a, b) => a - b); // u-major, v-minor
+      for (const key of keys) {
+        if (used.has(key)) continue;
+        const color = cells.get(key)!;
+        const u0 = UV_U(key), v0 = UV_V(key);
+        // Grow along V (inner) while same color and free.
+        let w = 1;
+        while (true) {
+          const nk = UV(u0, v0 + w);
+          if (cells.get(nk) === color && !used.has(nk)) w++; else break;
+        }
+        // Grow along U (outer) while the whole V-span matches.
+        let h = 1;
+        grow: while (true) {
+          for (let dv = 0; dv < w; dv++) {
+            const nk = UV(u0 + h, v0 + dv);
+            if (cells.get(nk) !== color || used.has(nk)) break grow;
+          }
+          h++;
+        }
+        for (let du = 0; du < h; du++)
+          for (let dv = 0; dv < w; dv++) used.add(UV(u0 + du, v0 + dv));
+        emitGreedyQuad(dir, k, u0, u0 + h - 1, v0, v0 + w - 1, color, vertex, tris, triColors);
+      }
+    }
+  }
+
+  const numTri = tris.length / 3;
+  const triColorArr = Uint8Array.from(triColors);
+  (triColorArr as Uint8Array & { _painted?: Uint8Array })._painted = new Uint8Array(numTri).fill(1);
+  return {
+    vertProperties: Float32Array.from(positions),
+    triVerts: Uint32Array.from(tris),
+    numVert: positions.length / 3,
+    numTri,
+    numProp: 3,
+    triColors: triColorArr,
+  };
+}
+
+/** Emit the two triangles of one merged rectangle. `uMin..uMax` / `vMin..vMax`
+ *  are inclusive voxel indices; the quad spans corners [uMin, uMax+1] × [vMin,
+ *  vMax+1] on the plane at `pa = sliceK (+1 for a +direction)`. */
+function emitGreedyQuad(
+  dir: GreedyDir, sliceK: number,
+  uMin: number, uMax: number, vMin: number, vMax: number,
+  color: number,
+  vertex: (x: number, y: number, z: number) => number,
+  tris: number[], triColors: number[],
+): void {
+  const plane = dir.s > 0 ? sliceK + 1 : sliceK;
+  const pt = (u: number, v: number): number => {
+    const p: [number, number, number] = [0, 0, 0];
+    p[dir.pa] = plane; p[dir.ua] = u; p[dir.va] = v;
+    return vertex(p[0], p[1], p[2]);
+  };
+  const u0 = uMin, u1 = uMax + 1, v0 = vMin, v1 = vMax + 1;
+  let i0: number, i1: number, i2: number, i3: number;
+  if (!dir.flip) {            // (u0,v0)→(u1,v0)→(u1,v1)→(u0,v1)
+    i0 = pt(u0, v0); i1 = pt(u1, v0); i2 = pt(u1, v1); i3 = pt(u0, v1);
+  } else {                    // (u0,v0)→(u0,v1)→(u1,v1)→(u1,v0)
+    i0 = pt(u0, v0); i1 = pt(u0, v1); i2 = pt(u1, v1); i3 = pt(u1, v0);
+  }
+  tris.push(i0, i1, i2, i0, i2, i3);
+  const [r, g, b] = colorComponents(color);
+  triColors.push(r, g, b, r, g, b);
+}
+
+/** Which smoothing algorithm a `smooth()` grid uses. Falls back to the legacy
+ *  `taubin` for Surfacing objects that predate the `algorithm` field; `smooth()`
+ *  itself stamps the current default (see grid.ts) onto every new call. */
+function smoothAlgorithm(surf: Surfacing): 'taubin' | 'surfaceNets' {
+  return surf.algorithm ?? 'taubin';
+}
+
 /** Mesh a grid according to its surfacing setting. `blocks` (default) returns
- *  the hard-faced mesh; `smooth` rounds the edges by Taubin-smoothing the
- *  block mesh (optionally over a supersampled grid, then scaled back to the
- *  original world size). Topology is unchanged by smoothing, so per-voxel
- *  colors and manifoldness carry through. This is what the engine calls. */
+ *  the welded per-face hard surface (manifold, the input to ofMesh). `smooth`
+ *  rounds the edges via the grid's chosen algorithm:
+ *    - `taubin` (legacy) — Taubin-smooths the block mesh, optionally over a
+ *      `detail`× supersampled grid then scaled back. Topology is unchanged, so
+ *      per-voxel colors and manifoldness carry through.
+ *    - `surfaceNets` — builds a smooth surface from occupancy at native
+ *      resolution (no supersampling), then runs `iterations` light Taubin
+ *      passes so base-pinning (flatBottom/baseLayers/lockBox) still applies.
+ *  This is what the engine calls. */
 export function meshGrid(grid: VoxelGrid): MeshData {
   const surf = grid.surfacing();
+  // Blocks mode meshes per-face (not greedy): the welded per-face surface is a
+  // 2-manifold that Manifold.ofMesh accepts, which voxel stats, slicing, and the
+  // printability pill all rely on. Greedy meshing (greedyMeshGrid) coalesces
+  // coplanar faces but introduces T-junctions that break ofMesh, so it's used
+  // only for triangle-soup file exports (STL/OBJ/3MF), never here.
   if (surf.mode !== 'smooth') return gridToMeshData(grid);
+
+  if (smoothAlgorithm(surf) === 'surfaceNets') {
+    let mesh = surfaceNetsMesh(grid);
+    // `detail` is meaningless for Surface Nets (it meshes occupancy directly).
+    // The Taubin passes here are a light cleanup AND the mechanism that applies
+    // the base pins. `flatBottom` is plane-relative so it pins the SN floor
+    // exactly; `baseLayers`/`lockBox` are coordinate-based and the SN surface
+    // sits ~half a voxel inward of the blocky extent, so those pin the intended
+    // region only to within ~0.5 voxel (fine for a "keep this base blocky" hint).
+    mesh = taubinSmooth(mesh, surf.iterations, resolveSmoothPins(surf, 1));
+    return mesh;
+  }
+
   const detail = surf.detail;
   const dense = detail > 1 ? grid.supersample(detail) : grid;
   let mesh = gridToMeshData(dense);
