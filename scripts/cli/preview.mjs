@@ -89,50 +89,90 @@ function fit(bbox, size) {
 
 const BG = [244, 244, 246];
 
-// Compose the 4-view grid PNG. Returns a sharp instance (caller writes/toBuffer).
-export function composePng(positions, triVerts, triColors, bbox, size) {
-  const { center, scale } = fit(bbox, size);
-  const views = [
-    { name: 'front', az: -90, el: 0 },
-    { name: 'right', az: 0, el: 0 },
-    { name: 'top', az: -90, el: 90 },
-    { name: 'iso', az: -50, el: 28 },
-  ];
-  const tiles = views.map((v) => renderTile(positions, triVerts, triColors, center, scale, size, basis(v.az, v.el), BG));
-  const g = 2, W = size * 2 + g, H = size * 2 + g;
-  const out = Buffer.alloc(W * H * 3, 220);
-  blit(out, W, tiles[0], size, 0, 0); blit(out, W, tiles[1], size, size + g, 0);
-  blit(out, W, tiles[2], size, 0, size + g); blit(out, W, tiles[3], size, size + g, size + g);
-  return sharp(out, { raw: { width: W, height: H, channels: 3 } }).png();
+// Named camera angles for `--views`. az/el are degrees in the rasterizer's own
+// frame (see `basis`); front/right/top/iso are the historical default grid.
+const NAMED_VIEWS = {
+  front: { az: -90, el: 0 },
+  back: { az: 90, el: 0 },
+  right: { az: 0, el: 0 },
+  left: { az: 180, el: 0 },
+  top: { az: -90, el: 90 },
+  bottom: { az: -90, el: -90 },
+  iso: { az: -50, el: 28 },
+};
+const DEFAULT_VIEWS = ['front', 'right', 'top', 'iso'].map((name) => ({ name, ...NAMED_VIEWS[name] }));
+
+/** Resolve the `--view` / `--views` CLI flags into an array of {name, az, el}.
+ *  Returns `{ views: null }` when neither is set (caller uses DEFAULT_VIEWS),
+ *  `{ views }` on success, or `{ error }` on a bad spec.
+ *  - `--view "az,el"`  → one custom-angle tile (e.g. peek behind a feature).
+ *  - `--views a,b,c`   → named angles, in order: front,back,right,left,top,bottom,iso. */
+export function resolveViews(view, views) {
+  if (view !== undefined && view !== null && view !== '') {
+    const parts = String(view).split(',').map((s) => Number(s.trim()));
+    if (parts.length !== 2 || parts.some((n) => !Number.isFinite(n))) {
+      return { error: `--view expects "az,el" (two numbers in degrees), got "${view}".` };
+    }
+    return { views: [{ name: `${parts[0]},${parts[1]}`, az: parts[0], el: parts[1] }] };
+  }
+  if (views !== undefined && views !== null && views !== '') {
+    const names = String(views).split(',').map((s) => s.trim()).filter(Boolean);
+    const out = [];
+    for (const nm of names) {
+      const v = NAMED_VIEWS[nm];
+      if (!v) return { error: `--views: unknown view "${nm}". Valid: ${Object.keys(NAMED_VIEWS).join(', ')}.` };
+      out.push({ name: nm, ...v });
+    }
+    if (!out.length) return { error: '--views needs at least one view name.' };
+    return { views: out };
+  }
+  return { views: null };
 }
 
-// Compose a contact sheet — one iso tile per model, laid out in a near-square
-// grid (left-to-right, top-to-bottom matching the input order). Each model is
-// fit to its own bbox so all are visible regardless of relative size. Models
-// that failed to run get a distinct pink tile so a broken variant stands out.
-// `results` is an array of `{ render }` (render may be null on failure).
-export function composeContactSheet(results, size, view = { az: -50, el: 28 }) {
-  const n = Math.max(1, results.length);
+// Lay a list of pre-rendered RGBA tiles into a near-square grid PNG (the same
+// layout for the 4-view default, an N-view custom set, and the contact sheet).
+function tileGrid(tiles, size) {
+  const n = Math.max(1, tiles.length);
   const cols = Math.ceil(Math.sqrt(n));
   const rows = Math.ceil(n / cols);
   const g = 2;
   const W = cols * size + (cols - 1) * g;
   const H = rows * size + (rows - 1) * g;
   const out = Buffer.alloc(W * H * 3, 220);
-  results.forEach((res, i) => {
-    const r = res && res.render;
-    let tile;
-    if (r && r.positions && r.triVerts && r.triVerts.length) {
-      const { center, scale } = fit(r.bbox, size);
-      tile = renderTile(r.positions, r.triVerts, r.triColors, center, scale, size, basis(view.az, view.el), BG);
-    } else {
-      tile = new Uint8ClampedArray(size * size * 4);
-      for (let p = 0; p < tile.length; p += 4) { tile[p] = 250; tile[p + 1] = 224; tile[p + 2] = 224; tile[p + 3] = 255; }
-    }
+  tiles.forEach((tile, i) => {
     const ox = (i % cols) * (size + g), oy = Math.floor(i / cols) * (size + g);
     blit(out, W, tile, size, ox, oy);
   });
   return sharp(out, { raw: { width: W, height: H, channels: 3 } }).png();
+}
+
+// Compose the multi-view grid PNG. Defaults to front/right/top/iso; pass a
+// custom `views` array (from resolveViews) to control the camera angles.
+// Returns a sharp instance (caller writes/toBuffer).
+export function composePng(positions, triVerts, triColors, bbox, size, views = DEFAULT_VIEWS) {
+  const { center, scale } = fit(bbox, size);
+  const tiles = views.map((v) => renderTile(positions, triVerts, triColors, center, scale, size, basis(v.az, v.el), BG));
+  return tileGrid(tiles, size);
+}
+
+// Compose a contact sheet — one tile per model, laid out in a near-square grid
+// (left-to-right, top-to-bottom matching the input order). Each model is fit to
+// its own bbox so all are visible regardless of relative size. Models that
+// failed to run get a distinct pink tile so a broken variant stands out.
+// `results` is an array of `{ render }` (render may be null on failure); `view`
+// is the shared camera angle (default iso, overridable via --view).
+export function composeContactSheet(results, size, view = { az: -50, el: 28 }) {
+  const tiles = results.map((res) => {
+    const r = res && res.render;
+    if (r && r.positions && r.triVerts && r.triVerts.length) {
+      const { center, scale } = fit(r.bbox, size);
+      return renderTile(r.positions, r.triVerts, r.triColors, center, scale, size, basis(view.az, view.el), BG);
+    }
+    const tile = new Uint8ClampedArray(size * size * 4);
+    for (let p = 0; p < tile.length; p += 4) { tile[p] = 250; tile[p + 1] = 224; tile[p + 2] = 224; tile[p + 3] = 255; }
+    return tile;
+  });
+  return tileGrid(tiles, size);
 }
 
 // Human-readable per-island breakdown for `--explain-components` (printed to
