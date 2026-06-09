@@ -1,13 +1,20 @@
 // Shared drag-handle logic for viewport overlay panels. Attaches pointer-event
 // drag tracking to a handle element and keeps the panel clamped inside the
-// visible area of its offset parent. Position resets on each open (not
-// persisted) — the panel always starts below the clip-controls toolbar.
+// visible browser window. Panels are positioned `fixed` (window-relative) rather
+// than absolute within the viewport pane: that lets the user drag them *anywhere*
+// in the window, and — crucially — keeps them put when surrounding panes open,
+// close, or resize (those reflow the pane but don't move a window-anchored box).
+// Position resets on each fresh open (not persisted) — the panel always starts
+// docked below the clip-controls toolbar.
 
 // px gap between a docked panel and the bar/menu above it (mirrors the toolbar's
 // own right-2 inset, reused as the vertical breathing room under the menu).
 const PANEL_EDGE_GAP = 8;
 
-/** The bottom edge (viewport-relative px) that a docked panel should sit under:
+// Keep a dragged panel at least this far from the window edges when re-clamping.
+const CLAMP_PAD = 8;
+
+/** The bottom edge (window-relative px) that a docked panel should sit under:
  *  normally the toolbar, but the open horizontal Tools menu when it's showing,
  *  so the panel drops *beneath* the menu row rather than under it. */
 function dockUnderBottom(controls: HTMLElement): number {
@@ -19,23 +26,21 @@ function dockUnderBottom(controls: HTMLElement): number {
 }
 
 /** Position the panel below the #clip-controls toolbar buttons (or below the
- *  open Tools menu), docked to the right edge.
- *  Prefers the panel's own offset parent as the coordinate reference so
- *  top/right values land in the correct space. Falls back to clip-controls'
- *  positioned ancestor for callers that position while the panel is hidden
- *  (display:none elements have offsetParent=null). */
+ *  open Tools menu), docked against the window's right edge.
+ *  Coordinates are window-relative (the panel is `position: fixed`). Docking to
+ *  the *window* edge (rather than the viewport pane's right edge) means that
+ *  when the AI panel is docked open, the tool panel sits *over* it by default —
+ *  manual tool use doesn't need the AI column visible, and the panel is still
+ *  draggable anywhere if the user wants it elsewhere. */
 export function setInitialPanelPosition(panel: HTMLElement): void {
+  panel.style.position = 'fixed';
   const controls = document.getElementById('clip-controls');
   if (controls) {
-    const host = (panel.offsetParent ?? controls.offsetParent ?? controls.parentElement) as HTMLElement | null;
-    if (host) {
-      const hr = host.getBoundingClientRect();
-      panel.style.top = `${Math.round(dockUnderBottom(controls) - hr.top + PANEL_EDGE_GAP / 2)}px`;
-      panel.style.right = `${PANEL_EDGE_GAP}px`;
-      panel.style.left = 'auto';
-      panel.style.bottom = 'auto';
-      return;
-    }
+    panel.style.top = `${Math.round(dockUnderBottom(controls) + PANEL_EDGE_GAP / 2)}px`;
+    panel.style.right = `${PANEL_EDGE_GAP}px`;
+    panel.style.left = 'auto';
+    panel.style.bottom = 'auto';
+    return;
   }
   // Fallback when clip-controls isn't in the DOM yet.
   panel.style.top = '48px';
@@ -64,6 +69,9 @@ export function attachViewportPanelDrag(
   panel: HTMLElement,
 ): PanelDragHandle {
   handle.classList.add('cursor-move', 'select-none', 'touch-none');
+  // Window-relative so the panel can be dragged anywhere and stays put when the
+  // surrounding panes reflow (see file header).
+  panel.style.position = 'fixed';
 
   let dragPointerId: number | null = null;
   let startX = 0, startY = 0, startLeft = 0, startTop = 0;
@@ -75,26 +83,18 @@ export function attachViewportPanelDrag(
     panel.style.bottom = 'auto';
   }
 
+  // Pull the panel back inside the window if it would sit (partly) off-screen —
+  // e.g. after the window itself is resized smaller. Clamps to the full window,
+  // not a parent pane, so the panel is free to live anywhere on screen.
   function clampIntoView(): void {
-    const parent = panel.offsetParent as HTMLElement | null;
-    if (!parent || panel.classList.contains('hidden')) return;
-    const pad = 8;
-    const pr = parent.getBoundingClientRect();
+    if (panel.classList.contains('hidden')) return;
     const rr = panel.getBoundingClientRect();
     if (rr.width === 0 || rr.height === 0) return;
-    const visTop = Math.max(pr.top, 0);
-    const visBottom = Math.min(pr.bottom, window.innerHeight);
-    const visLeft = Math.max(pr.left, 0);
-    const visRight = Math.min(pr.right, window.innerWidth);
-    const minLeft = (visLeft - pr.left) + pad;
-    const minTop = (visTop - pr.top) + pad;
-    const maxLeft = (visRight - pr.left) - rr.width - pad;
-    const maxTop = (visBottom - pr.top) - rr.height - pad;
-    const curLeft = rr.left - pr.left;
-    const curTop = rr.top - pr.top;
-    const left = Math.max(minLeft, Math.min(curLeft, maxLeft));
-    const top = Math.max(minTop, Math.min(curTop, maxTop));
-    if (Math.abs(left - curLeft) > 0.5 || Math.abs(top - curTop) > 0.5) {
+    const maxLeft = window.innerWidth - rr.width - CLAMP_PAD;
+    const maxTop = window.innerHeight - rr.height - CLAMP_PAD;
+    const left = Math.max(CLAMP_PAD, Math.min(rr.left, maxLeft));
+    const top = Math.max(CLAMP_PAD, Math.min(rr.top, maxTop));
+    if (Math.abs(left - rr.left) > 0.5 || Math.abs(top - rr.top) > 0.5) {
       applyPos(left, top);
     }
   }
@@ -102,12 +102,9 @@ export function attachViewportPanelDrag(
   handle.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if ((e.target as HTMLElement).closest('button')) return;
-    const parent = panel.offsetParent as HTMLElement | null;
-    if (!parent) return;
-    const pr = parent.getBoundingClientRect();
     const rr = panel.getBoundingClientRect();
-    startLeft = rr.left - pr.left;
-    startTop = rr.top - pr.top;
+    startLeft = rr.left;
+    startTop = rr.top;
     startX = e.clientX;
     startY = e.clientY;
     dragPointerId = e.pointerId;

@@ -40,6 +40,9 @@ const {
   opRound,
   opTwist,
   opTaper,
+  opDisplace,
+  buildLSystem,
+  assertNoiseOpts,
   opPolarArray,
   opRepeat,
   defaultEdgeLength,
@@ -917,5 +920,96 @@ describe('sdf polarRepeat (domain-warp ring)', () => {
   it('rejects { angle } with a targeted "use polarArray" hint', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => primSphere(1).polarRepeat(6, { angle: 180 } as any)).toThrow(/polarArray/);
+  });
+});
+
+describe('displace', () => {
+  it('adds -amount*field to the underlying distance', () => {
+    const s = primSphere(5);
+    const field = (x: number) => x; // simple, exact
+    const d = opDisplace(s, 2, field);
+    // At (3,0,0): sphere = 3-5 = -2; field = 3; result = -2 - 2*3 = -8.
+    expect(d.evaluate(3, 0, 0)).toBeCloseTo(-8, 10);
+  });
+
+  it('treats a non-finite field sample as 0 (no NaN poisoning)', () => {
+    const s = primSphere(5);
+    const d = opDisplace(s, 3, () => NaN);
+    expect(d.evaluate(5, 0, 0)).toBeCloseTo(0, 10); // surface unchanged
+  });
+
+  it('expands the bounds by amount in every direction', () => {
+    const d = opDisplace(primSphere(5), 4, () => 0);
+    expect(d.bounds().min).toEqual([-9, -9, -9]);
+    expect(d.bounds().max).toEqual([9, 9, 9]);
+  });
+
+  it('rejects a negative amount or a non-function field', () => {
+    expect(() => primSphere(1).displace(-1, () => 0)).toThrow();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => primSphere(1).displace(1, 5 as any)).toThrow();
+  });
+
+  it('propagates a label through the single-child displace wrapper', () => {
+    const node = primSphere(5).label('rock').displace(2, () => 0);
+    const parts = partitionByLabel(node);
+    expect(parts).toHaveLength(1);
+    expect(parts[0].labelName).toBe('rock');
+  });
+});
+
+describe('assertNoiseOpts', () => {
+  it('returns {} for undefined', () => {
+    expect(assertNoiseOpts(undefined)).toEqual({});
+  });
+  it('passes through valid options', () => {
+    expect(assertNoiseOpts({ seed: 3, frequency: 0.5, octaves: 4, ridged: true }))
+      .toEqual({ seed: 3, frequency: 0.5, octaves: 4, ridged: true });
+  });
+  it('rejects an unknown key', () => {
+    expect(() => assertNoiseOpts({ freq: 0.5 })).toThrow();
+  });
+  it('rejects out-of-range octaves and a non-boolean ridged', () => {
+    expect(() => assertNoiseOpts({ octaves: 0 })).toThrow();
+    expect(() => assertNoiseOpts({ octaves: 99 })).toThrow();
+    expect(() => assertNoiseOpts({ ridged: 'yes' })).toThrow();
+  });
+});
+
+describe('buildLSystem', () => {
+  it('builds an SdfNode from a simple straight stem', () => {
+    const node = buildLSystem({ axiom: 'FF', rules: {}, iterations: 0, length: 5, radius: 2 });
+    expect(node).toBeInstanceOf(SdfNode);
+    // Two stacked capsules from (0,0,0) to (0,0,10) → inside the axis is solid.
+    expect(node.evaluate(0, 0, 5)).toBeLessThan(0);
+    expect(node.evaluate(0, 0, 50)).toBeGreaterThan(0); // well above the stem
+  });
+
+  it('labels the branches and the foliage as separate regions', () => {
+    const node = buildLSystem({
+      axiom: 'FL',
+      rules: {},
+      iterations: 0,
+      length: 6,
+      radius: 1.5,
+      label: 'wood',
+      leaf: { symbols: ['L'], radius: 2, label: 'leaves' },
+    });
+    const parts = partitionByLabel(node);
+    const names = parts.map(p => p.labelName).sort();
+    expect(names).toEqual(['leaves', 'wood']);
+  });
+
+  it('rejects a grammar that draws nothing', () => {
+    expect(() => buildLSystem({ axiom: 'X', rules: {}, iterations: 0 })).toThrow(/no .*draw/i);
+  });
+
+  it('rejects unknown option keys and bad leaf symbols', () => {
+    expect(() => buildLSystem({ axiom: 'F', rules: {}, iterations: 0, bogus: 1 } as unknown))
+      .toThrow();
+    expect(() => buildLSystem({
+      axiom: 'F', rules: {}, iterations: 0,
+      leaf: { symbols: ['LL'], radius: 1 },
+    } as unknown)).toThrow();
   });
 });

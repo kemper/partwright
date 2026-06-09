@@ -87,6 +87,13 @@ class ErrorLogStore {
   /** Wire up global error handlers and console interception. Call once at startup. */
   install(): void {
     window.addEventListener('error', (e) => {
+      // "ResizeObserver loop completed with undelivered notifications" is a
+      // benign, unpreventable browser notice fired when an observer's callback
+      // doesn't settle in a single frame. It can come from any observer on the
+      // page (ours, CodeMirror, Three.js helpers), carries no stack, and is not
+      // an actual fault — keep it out of the log so it doesn't raise the
+      // unseen-error badge over real failures.
+      if (e.message && e.message.includes('ResizeObserver loop')) return;
       const where = e.filename ? `at ${e.filename}:${e.lineno}:${e.colno}` : undefined;
       this.capture({
         level: 'error',

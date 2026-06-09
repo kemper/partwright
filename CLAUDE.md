@@ -151,19 +151,39 @@ This takes a handful of tool calls and catches wiring mistakes, visual regressio
 
 ## Headless Model Preview — `model:preview` (for CLI agents authoring geometry)
 
-When you're iterating on a **model snippet** (catalog entries, `examples/`, mechanism prototypes) from the CLI, don't round-trip through the browser for every guess. `npm run model:preview -- <file.js>` runs the snippet against the **real `manifold-js` engine in Node** (via vite SSR — no dev server, no Playwright, ~2 s) and gives you everything needed to self-correct in one call:
+When you're iterating on a **model snippet** (catalog entries, `examples/`, mechanism prototypes) from the CLI, don't round-trip through the browser for every guess. `npm run model:preview -- <file.js>` runs the snippet against the **real `manifold-js`, `voxel`, or `scad` engine in Node** (via vite SSR — no dev server, no Playwright, ~2 s). **`replicad`/BREP is excluded**: OpenCASCADE won't init under Node SSR — verify BREP-language models in the browser. The tool gives you everything needed to self-correct in one call:
 
 ```bash
 npm run model:preview -- .plans/fidgets/spiral-cone.js          # writes <file>.preview.png + prints JSON
 npm run model:preview -- model.js --json                        # stats only, no PNG
 npm run model:preview -- model.js --png out.png -p turns=6      # override api.params, custom PNG path
+npm run model:preview -- model.js --view 130,35                 # ONE custom-angle tile (peek behind a feature)
+npm run model:preview -- model.js --views front,iso,back        # pick/reorder named views (front,back,right,left,top,bottom,iso)
 ```
 
-- **JSON stat block** (stdout): `isManifold`, `componentCount`, per-component `{volume, bbox, triangleCount}`, `volume`, `surfaceArea`, `genus`, `bbox`, `aspectRatio`, `minEdgeLength`/`meanEdgeLength`, model-declared `labels` (name + color), `paramsSchema`, and a `warnings[]` array (fused parts, tri-count over the ~200k catalog budget, sub-0.4 mm detail, …).
-- **4-view PNG** (front / right / top / iso), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail.
+- **JSON stat block** (stdout): `isManifold`, `componentCount`, per-component `{volume, bbox, triangleCount, center}`, `volume`, `surfaceArea`, `genus`, `bbox`, `aspectRatio`, `minEdgeLength`/`meanEdgeLength`, model-declared `labels` (name + color), `paramsSchema`, and a `warnings[]` array (fused parts, **interpenetrating components / clearance**, tri-count over the ~200k catalog budget, sub-0.4 mm detail, …).
+- **4-view PNG** (front / right / top / iso by default; override with `--view`/`--views`), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail. Use `--view az,el` to rotate to an occluded feature when the four default angles hide it.
 - Implementation: `scripts/model-preview.mjs` (CLI + pure-JS rasterizer → `sharp`) + `src/tools/previewModel.ts` (the faithful engine call). No WebGL needed.
 
 **`componentCount` is the instrument for print-in-place mechanisms.** A model that returns separate moving parts (screw, spinner, hinge, captive ball, two-tone spiral) must report `componentCount === N`. If it fuses to `1`, the clearance gap is too small or parts collide. The reliable recipe for splitting one solid into interleaved colored parts: subtract a clearance-thick cutter (e.g. a full-diameter helical **slab** for a spiral), then `manifold.decompose()` and color each component. Verify topological/geometric claims with `model:preview`, not from memory.
+
+**When `componentCount` is wrong: decompose and inspect, don't tune blindly.** Call `Manifold.decompose()` on the result, iterate the parts, and check which one floated or fused — a 10-line diagnostic snippet beats 3 rounds of parameter-tweaking on the whole assembly. Note that many legitimate catalog subjects (assemblies, orreries, watch movements) intentionally have `componentCount > 1`; `isManifold: true` is the correctness gate, not the count. Pass `{ maxComponents: N }` to `runAndSave` when the model is intentionally multi-part.
+
+> **Voxel models: trust `voxelPieceCount`, not `componentCount`, for "is this one printable piece?"** `componentCount` comes from the meshed solid and over-reports voxel grids — an enclosed cavity counts as a second component, and voxels touching only at an edge/corner split apart. The stats also carry `voxelPieceCount`, a face-connected (6-neighbour) BFS over the grid that matches what actually fuses on an FDM plate. A one-piece hollow voxel shell reports `componentCount: 2` but `voxelPieceCount: 1`.
+
+`model:preview` can do that island inspection for you:
+
+```bash
+npm run model:preview -- model.js --explain-components   # per-island vol/tris/size/center (to stderr)
+npm run model:preview -- model.js --expect-components 3   # assert; exits non-zero on mismatch (CI gate)
+node bin/partwright.mjs compare a.js b.js c.js --png out.png        # tile each model's iso view into one contact sheet
+node bin/partwright.mjs compare a.js b.js --view 130,35 --png o.png # …from a custom angle
+node bin/partwright.mjs fetch <image-url> --out ref.png            # pull a remote image to disk (then `photo` it)
+```
+
+`--explain-components` prints the per-island breakdown (already in the JSON's `stats.components`, capped at the top 16 by volume) to stderr so the stdout JSON stays parseable. `--expect-components N` compares against the uncapped `stats.componentCount` and exits 1 on mismatch — the escape hatch for "this mechanism MUST stay N parts." `compare` runs several variants and lays one view of each side-by-side (default iso, `--view az,el` to change it), for A/B param sweeps or before/after checks. `fetch` downloads a remote image to disk so the `photo` voxel-import flow can consume a URL (the env's network policy governs reachability).
+
+**Delegate multi-pass visual iteration to the `model-sculpt` subagent.** Each preview PNG you `Read` in the main context stays there and is re-billed every subsequent turn — image tokens compound. For 3+ render passes on the same model, delegate to `model-sculpt` (or `general-purpose` with its instructions): it owns the render→look→adjust loop in its own disposable context and returns only text. The main agent calls `SendUserFile` to ship the final PNG to the user **without** reading it.
 
 > **CLI agents vs in-app/extension AI.** `model:preview` is for agents running in *this repo* (you). The in-app and chrome-extension AI cannot run a CLI — they verify with the in-browser `renderViews()` / `runAndSave(code, label, {maxComponents})` and read `public/ai/*.md` subdocs (e.g. `mechanisms`). Keep tool-specific instructions in `CLAUDE.md`/`docs/` (this audience) and in-browser instructions in `ai.md`/subdocs (that audience).
 
@@ -233,6 +253,7 @@ Static site, no backend. Vanilla TypeScript + Vite.
 - `src/geometry/engines/manifoldJs.ts` — manifold-3d sandbox. Exposes `api = { Manifold, CrossSection, Curves, BREP, ... }` to user code. `BREP` is `null` until `ensureBrepLoaded()` runs in the Worker (triggered by `sourceUsesBrep(code)`).
 - `src/geometry/engines/openscad.ts` — OpenSCAD WASM via `openscad-wasm-prebuilt`, lazy-loaded on first SCAD session.
 - `src/geometry/engines/replicad.ts` — BREP/replicad engine for full BREP-language sessions. The returned BREP shape is retained in `lastShape` so `exportSTEP` can grab it. Imported STEP files appear in `api.imports[0]` as `BrepShape` (separate from `api.meshImports` for STL); the pending-imports list lives in `brepRuntime.ts` so it survives across runs.
+- `src/geometry/engines/voxel.ts` — voxel-grid engine (pure JS, no WASM). User code calls `api.voxels()` then `v.set`/`v.fillBox`/`v.sphere`/`v.line` and `return v`. Backs the `voxel` language, VOX export, the image→voxel import, and the `voxelize` surface modifier.
 - `src/geometry/brepRuntime.ts` — Lazy loader + chainable `BrepShape` wrapper. The single source of truth for "is OCCT loaded?" and `getBrepNamespace()` — used by both the manifold-js sandbox (Phase C — `api.BREP.*`) and the replicad engine (Phase A — full BREP session). Also houses `parseStepBlob` and the pending-BREP-imports side-channel used by the STEP import flow.
 - `src/renderer/viewport.ts` — Three.js interactive viewport
 - `src/renderer/multiview.ts` — Offscreen multi-angle render API (`renderViews`/`renderView`/`renderCompositeCanvas` for thumbnails)
@@ -251,15 +272,18 @@ Static site, no backend. Vanilla TypeScript + Vite.
 - `src/import/importedMesh.ts` — Active-imports register exposed to the sandbox as `api.imports`
 - `src/surface/modifiers.ts` — Surface modifier pipeline (`SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize'`): `applyFuzzy` (noise-displaced skin), the fabric-texture family `applyKnit` / `applyCable` / `applyWaffle` / `applyFur` / `applyWoven` (stockinette knit, cable knit, waffle stitch, fur/velvet, woven fabric — displaced along normals over a UV unwrap, with WebGPU compute where available), `applySmooth` (Taubin smoothing pass), `applyVoxelize` (mesh → voxel grid), `applyScale` (non-destructive resize). Each modifier also has an `apply*Patch` variant that textures only a selected triangle set. Each returns a `ModifierResult` — either `'manifold'` (baked mesh + wrapper code, mirroring the STL import path) or `'voxel'` (encoded grid + inline `voxels.decode(…)` code). Pure math lives in sibling modules: `fuzzySkin.ts`, `knitTexture.ts`, `knitTextureGPU.ts`, `cableKnit.ts`, `waffleStitch.ts`, `furVelvet.ts`, `wovenFabric.ts`, `smoothSurface.ts`, `voxelizeMesh.ts`, `meshSubdivide.ts`, `colorTransfer.ts`, `scaleMesh.ts`, plus the UV layers `uvParameterize.ts`, `uvUnwrap.ts`, and `placement.ts` (region placement). Unit tests: `tests/unit/surface.test.ts`.
 
-### Modeling engines (three of them)
+### Modeling engines (four of them)
 
-Partwright supports three language/engine pairs. The mesh-side pipeline below the engine boundary (painting, render, ray-cast, export, queries) is engine-agnostic — anything new that lives there works across all three.
+Partwright supports four language/engine pairs. The mesh-side pipeline below the engine boundary (painting, render, ray-cast, export, queries) is engine-agnostic — anything new that lives there works across all four.
 
 | Language | Engine | Kernel | Unique features |
 |---|---|---|---|
 | `manifold-js` (default) | manifold-3d | mesh | `warp`, `levelSet`, `smoothOut`, `Curves` helpers, fast booleans on weird shapes |
 | `scad` | OpenSCAD via `openscad-wasm-prebuilt` | CSG | BOSL2 (`threaded_rod`, `spur_gear`, `cuboid(rounding=)`, …) |
 | `replicad` | OpenCASCADE via `replicad-opencascadejs` | BREP | True selective edge fillets/chamfers, STEP export, exact surfaces |
+| `voxel` | in-house JS voxel grid (`src/geometry/engines/voxel.ts`) | voxel grid | Blocky colored cubes (Minecraft / pixel-art); `api.voxels()` + `v.set`/`v.fillBox`/`v.sphere`/`v.line`; VOX export; target of image→voxel import and `voxelizeModel` |
+
+> **Engine awareness for mesh-side tools.** Most tools work off the engine-agnostic tessellated mesh and need no special casing. But anything that *bakes a result back into a session* (surface modifiers, scale/place/rotate transforms, voxelize) converts a SCAD/BREP session into a `manifold-js` (or `voxel`) mesh, discarding the parametric source — and for BREP, STEP export. Those paths emit a user-facing warning via `engineBakeWarning` (see `commitSurfaceModifier` / `commitTransform` in `src/main.ts`); preserve that warning when adding new commit paths.
 
 **Two ways to reach BREP** — these are deliberately complementary, not competing:
 
@@ -341,6 +365,19 @@ The app runs in multiple browser windows/tabs at once, often each driving a **di
 > State must not bleed or cause side effects from one tab into another. The only times state should cross tabs are the **explicit** transitions: opening a session (incl. a previously-closed one) in a tab, or **taking control** of a session in another tab. Anything else changing in tab B must not silently alter tab A.
 
 See `docs/architecture-notes.md` for the concrete implementation patterns (per-tab prefs, `storage`-event scoping, global-state rules).
+
+### UI ↔ JS-API parity — the AI must be able to drive what the UI can
+
+A core product goal: **anything a user can do from the UI, an AI agent can do through `window.partwright`** (the console / external-agent surface) and, where it fits, the in-app AI tool layer. New UI affordances drift out of parity *silently* — the mid-2026 feature audit found whole capabilities (smooth/voxelize/scale/orient, image-stamp paint, STL import, version rename/delete) reachable only by clicking. When you add or change a user-facing capability, close the loop in the **same PR**:
+
+1. **Add the `window.partwright` method** in `partwrightAPI` (`src/main.ts`), validating arguments with the `guard()` / `assert*` helpers (`src/validation/apiValidation.ts`) so console/MCP callers get the same checks as the UI. Return `{ error }` on bad input from value-returning methods; don't throw.
+2. **Register it in the `help()` table** (`src/main.ts`) — that's the discoverability surface and it must not drift from the implementation.
+3. **Document it** in `public/ai.md` (the console-API list) and the relevant `public/ai/*.md` subdoc (`file-io`, `textures`, `printing`, …). External agents read these.
+4. **Consider an in-app AI tool** (`src/ai/tools.ts`): a schema + dispatch case + the correct gating set (`SAVE_GATED` / `PAINT_GATED` / …) when the chat AI should drive it. Skip it only when it can't be driven from chat (e.g. needs local file bytes) or is too destructive to expose unscoped — and say which in the PR.
+
+> A pure static lint can't tell that a new DOM button lacks an API method — there's no typed link between the two — so **this same-PR norm plus the `work-reviewer`'s parity check are the enforcement**, not a gate. (The robust structural fix would be a single capability registry both the command palette and the API derive from; that's a deliberate larger refactor, not done yet.) `npm run lint:consistency` (ast-grep) *does* catch the related UI-*consistency* drift — modals not on `modalShell`, buttons bypassing the `BUTTON_*` constants — so run it, and prefer promoting a clean rule to `error`.
+
+**Cross-engine parity is part of this.** A tool that bakes or commits a result must work for — or explicitly warn about — all four engines; don't add a commit path that silently assumes manifold-js. See the engine-bake note under [Modeling engines](#modeling-engines-four-of-them).
 
 ### Numeric Constants and App Config
 

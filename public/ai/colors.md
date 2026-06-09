@@ -184,7 +184,41 @@ boolean (see `listLabels().lostLabels`). Prefer model-declared color when
 the color is intrinsic to the design; reach for `paintByLabel` when a
 human is tweaking colors interactively or overriding the code.
 
-SCAD has the same `label()` pattern. Partwright pre-injects a
+**BREP supports the same `{ color }` arg.** `BREP.label(shape, name,
+{ color })` (both as `api.BREP.*` inside a manifold-js session and in a
+full `replicad`-language session) takes the identical hex-or-`[r,g,b]`
+color and feeds the same model-color underlay — so `getModelColors()`
+and export pick it up exactly like the manifold-js path. The color is
+keyed by name and rides through booleans, transforms, and (best-effort)
+fillet/chamfer.
+
+> **Coverage caveat for fused composites.** The *color* you attach is
+> exact, but which triangles a label *resolves to* after `fuseAll` is
+> best-effort — the spatial-signature resolver scrambles on many-feature
+> composites (see gotcha #9 in `replicad.md`). A **single label over the
+> whole shape resolves to ~100% coverage and colors cleanly**; for
+> per-feature multi-color on a fused composite, reach for the coordinate
+> paint selectors (`paintInCylinder` / `paintSlab` / `paintInBox` /
+> `paintNear`) instead, exactly as that gotcha recommends.
+
+### Geometric paint in code — `api.paint.*`
+
+`api.label({ color })` colors a *named subtree*. To color a **region of the surface** from code — without labelling a separate solid — use `api.paint.*`, the in-code counterparts of the `paintInBox` / `paintSlab` / `paintInCylinder` / `paintByLabel` tools. Each call records a region during the run; Partwright resolves it against the fresh mesh afterward and folds it into the same model-color underlay (never the paint sidecar — the code re-derives it). Later calls win on overlap.
+
+```js
+const part = api.Manifold.cube([30, 30, 30], true).refine(16);
+api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });          // flat band; axis ('x'|'y'|'z') or normal [x,y,z]
+api.paint.box({ min: [-15, -15, -15], max: [0, 0, 0], color: [0.23, 0.51, 0.96] });   // axis-aligned box
+api.paint.cylinder({ center: [0, 0], rMin: 0, rMax: 6, zMin: -15, zMax: 15, color: '#22c55e' }); // (annular) vertical shell
+api.paint.label('body', '#888');   // recolor an existing api.label(...) region by name
+return part;
+```
+
+Like the tools, these resolve **by triangle**, so paint a refined mesh (`refine(n)` / higher segments) for crisp edges. `color` is the same hex/`[r,g,b]` form as `api.label`. Arguments are validated strictly (unknown keys, bad color/axis throw). Use `api.paint.*` when the colors are intrinsic to the design and you want them to live with the code; reach for the standalone `paintByLabel` / `paint*` tools for interactive, coordinate, or click-driven painting between runs. (manifold-js sandbox only.)
+
+SCAD has the same `label()` pattern, but **without** the `{ color }`
+option — a SCAD `label()` is a passthrough wrapper for `paintByLabel`
+only, so color a SCAD model with an explicit `paintByLabel` call. Partwright pre-injects a
 passthrough `module label(name) { children(); }` into every SCAD
 compile so the wrapper is portable to vanilla OpenSCAD too (the helper
 does nothing geometrically — `paintByLabel` is the only thing that
@@ -511,6 +545,8 @@ partwright.paintInOrientedBox({
 
 **Painting a feature that sticks out past a round body — select by radius, not a box plane.** A flat box face cutting across a curved junction (e.g. a handle meeting a cylindrical mug wall) leaves a ragged, stair-stepped boundary, because the box plane and the curved surface disagree. Select by *radial distance from the part's axis* instead — `paintInCylinder({ rMin, rMax, zMin, zMax })` (or a `normalCone` to grab only the outward-facing skin) — so the boundary follows the curve cleanly. Radius-based selection is the canonical tool for inner/outer walls of mugs, vases, and any revolved shape.
 
+> **Non-Z cylinders — `axis`.** `paintInCylinder` runs along **Z** by default (radius in XY, the `zMin..zMax` band along Z). For a part whose round axis points along X or Y, pass `axis: 'x'` or `axis: 'y'` (mirrors `paintSlab`'s axis shorthand) instead of rotating the model: radius is then measured in the plane normal to that axis and the band runs along it. `center` is the `[a,b]` pair in the radial plane (for `axis:'x'` that's `[y,z]`, for `'y'` it's `[z,x]`). The same `axis` field works in `paintPreview({ cylinder: { …, axis } })`.
+
 **Verifying paint before you commit it.** `paintPreview` accepts the same selectors as `paintInBox` / `paintNear` / `paintFaces` *and* the analytic `cylinder` / `slab` forms, *without* adding a region. Default: count-only (free sanity check). Pass `withImage: true` to also get a thumbnail with the candidate triangles tinted bright yellow on top of any existing paint. The `cylinder` / `slab` previews show the **unsmoothed** selection (preview never subdivides) — use it to validate a radial shell or slab offset/thickness in one cheap call before committing the real smoothing paint:
 
 ```js
@@ -576,4 +612,70 @@ partwright.assertPaint({
 - `exportGLB()` -- vertex colors flow through automatically.
 - `export3MF()` -- regions become `<basematerials>` entries with per-triangle `pid` attributes (compatible with PrusaSlicer / Bambu Studio multi-material slicing).
 - `exportSTL()` and `exportOBJ()` -- formats don't carry color, so colors are dropped.
+
+## Recoloring regions in bulk
+
+`replaceColor({from, to, tolerance?})` recolors **every** region whose color matches `from` (within `tolerance`, default 0.01) to `to`. Colors are `[r,g,b]` in 0..1 — the same range as `paintFaces`/`paintRegion`. Returns `{ replaced: count }`.
+
+```js
+// turn every red region blue
+partwright.replaceColor({ from: [1, 0, 0], to: [0, 0, 1] })  // -> { replaced: 3 }
+```
+
+This only changes region *colors*, not which triangles they cover — to repaint different triangles, use the paint selectors.
+
+## Stamping an image onto the surface
+
+`paintImage({imageUrl, at, normal, size, ...})` projects an image onto the model as a color region — the programmatic Image-paint tool. Use it for logos, decals, faces, or photo decals on a surface.
+
+```js
+// stamp a logo on the +Z face of a 20mm cube, centred, 12mm across
+await partwright.paintImage({
+  imageUrl: logoDataUrl,     // a data: URL or a same-origin URL
+  at: [0, 0, 10],            // stamp centre, ON the surface (world coords)
+  normal: [0, 0, 1],         // the outward face direction there
+  size: 12,                  // stamp diameter in world units
+  rotationDeg: 0,            // spin around the normal (optional)
+  detail: 96,                // triangle rows across the stamp; higher = crisper. 0 = flat
+  removeBackground: true,    // drop the image's background (default true)
+})
+// -> { ok, name, triangles, avgColor } or { error }
+```
+
+- **Getting `at` / `normal`:** use `probeRay({origin, direction})` (returns the hit point + face normal), `measureAt([x,y])`, or a known face centre — `at` must lie on the surface and `normal` must face outward, or the footprint is empty and you get `{ error }`.
+- Only **forward-facing** triangles inside the stamp square are painted, so a stamp never bleeds onto the far side.
+- The stamp subdivides the footprint for crisp edges (smooth mode), so the model's triangle count rises locally — call `getGeometryData()` after if you care about the budget.
+- Call `saveVersion('stamped')` afterwards to persist it (paint isn't auto-saved).
+
+## The filament palette — paint to real print slots
+
+A multi-color model prints by mapping its regions onto a printer's loaded **filament slots** (AMS / MMU). The palette is the shared set of those slots; painting with palette colors keeps a model printable on a known spool set. The palette is a cross-session user preference (localStorage), not part of the session.
+
+```js
+partwright.getPalette()
+// -> { id, name, capacity, constrained, slots: [{ id, name, hex, td }, ...] }
+//    capacity   = how many slots the printer can load at once (the AMS/MMU budget)
+//    constrained= true means paint snaps to the nearest slot color
+//    td         = a slot's transmission distance (drives the relief optical preview)
+
+// Paint a region with a palette slot's color (convert its hex to the 0..1 rgb paint takes):
+const slot = partwright.getPalette().slots[0];
+const [r, g, b] = [parseInt(slot.hex.slice(1,3),16)/255, parseInt(slot.hex.slice(3,5),16)/255, parseInt(slot.hex.slice(5,7),16)/255];
+partwright.paintByLabel({ label: 'body', color: [r, g, b] });
+```
+
+Manage the palette (all return `{ ok }`/`{ id }`/the slot, or `{ error }`):
+
+```js
+partwright.listPalettes()                       // -> [{ id, name, active }]
+partwright.createPalette('PLA basics')          // -> { id }  (then setActivePalette to switch)
+partwright.setActivePalette(id)
+partwright.addFilament({ name: 'Teal', hex: '#1fa89a', td: 1 })   // -> { id, name, hex, td }
+partwright.updateFilament(slotId, { hex: '#0e7d72' })
+partwright.removeFilament(slotId)
+partwright.setPaletteCapacity(4)                // AMS with 4 slots
+partwright.setPaletteConstrained(true)          // snap paint to the loaded slots
+```
+
+Aim for a region count within `capacity` for a single-pass multi-material print; beyond it the UI flags the model over-budget.
 

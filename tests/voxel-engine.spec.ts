@@ -133,6 +133,9 @@ test.describe('voxel engine', () => {
 
     // Switch to a manifold-js buffer so the re-import has to switch the language
     // BACK — proving the re-click does the full voxel-import flow, not a no-op.
+    // The switch seeds a fresh (and now consistently recognized) manifold-js
+    // starter, so the part is an expendable starter again: the re-import lands
+    // directly as a new voxel session with no import-target modal to dismiss.
     await page.evaluate(() => (window as unknown as { partwright: { setActiveLanguage(l: string): Promise<void> } })
       .partwright.setActiveLanguage('manifold-js'));
     await expect.poll(async () => (await readState()).lang).toBe('manifold-js');
@@ -144,15 +147,9 @@ test.describe('voxel engine', () => {
     await expect(recent.getByText('VOX', { exact: true })).toBeVisible();
     await recent.click();
 
-    // Switching to manifold-js left the editor on a JS stub (non-starter), so the
-    // current part is no longer an expendable starter — the import-target modal
-    // appears. Pick a fresh part so the re-import lands as clean voxel code (not
-    // composed into the prior part).
-    await page.getByRole('dialog').locator('[data-target="new-part"]').click();
-
-    // The regression: it switches BACK to the voxel language and rebuilds the grid
-    // via voxels.decode(...). Before the fix it stayed on manifold-js with the raw
-    // binary .vox bytes read as text and dumped into the editor as garbage.
+    // The regression guard: it switches BACK to the voxel language and rebuilds
+    // the grid via voxels.decode(...). Before the fix it stayed on manifold-js
+    // with the raw binary .vox bytes read as text and dumped in as garbage.
     await expect.poll(async () => (await readState()).code, { timeout: 10_000 }).toContain('voxels.decode');
     expect((await readState()).lang).toBe('voxel');
   });
@@ -396,10 +393,10 @@ test.describe('voxel engine', () => {
     // The real-WASM proof: ofMesh accepts the smoothed mesh too.
     expect(result.smooth.isManifold).toBe(true);
     expect(result.smooth.componentCount).toBe(1);
-    // detail 1 only moves vertices, so the triangle count matches the block mesh.
+    // A box has flat faces, so the default (Surface Nets) reproduces the block
+    // mesh's triangle count exactly here — a convenient invariant to assert on.
     expect(result.smooth.triangleCount).toBe(result.block.triangleCount);
-    // Still a valid, positive-volume solid (Taubin's anti-shrink pass keeps the
-    // size roughly stable rather than collapsing it).
+    // Still a valid, positive-volume solid (the smoother rounds without collapsing).
     expect(result.smooth.volume).toBeGreaterThan(0);
   });
 

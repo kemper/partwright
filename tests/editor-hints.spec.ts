@@ -57,18 +57,51 @@ test.describe('editor hints ticker', () => {
     await expect(strip).toBeVisible({ timeout: 8000 });
   });
 
+  test('lays out on one row when there is room, two rows when tight', async ({ page }) => {
+    await page.goto('/editor');
+    const strip = page.locator('#editor-hints');
+    await expect(strip).toBeVisible({ timeout: 15_000 });
+
+    // Pin the toolbar middle to a chosen width and report whether the badge and
+    // the hint text share a row (single) or the text sits below it (two-row).
+    const rowsAtWidth = async (px: number): Promise<'single' | 'two'> => {
+      await page.evaluate((w) => {
+        const host = document.getElementById('editor-hints-host')!;
+        host.style.flex = `0 0 ${w}px`;
+        host.style.maxWidth = `${w}px`;
+      }, px);
+      await page.waitForTimeout(300);
+      const badge = await strip.locator('span', { hasText: 'Did you know?' }).first().boundingBox();
+      const text = await page.locator('#editor-hints-text').boundingBox();
+      if (!badge || !text) throw new Error('missing badge/text box');
+      // Same row ⟺ their vertical centers roughly coincide.
+      return Math.abs((badge.y + badge.height / 2) - (text.y + text.height / 2)) < 6 ? 'single' : 'two';
+    };
+
+    expect(await rowsAtWidth(900)).toBe('single');
+    expect(await rowsAtWidth(430)).toBe('two');
+  });
+
   test('a coach CTA pulses an arrow at the target control', async ({ page }) => {
     await page.goto('/editor');
     const strip = page.locator('#editor-hints');
     await expect(strip).toBeVisible({ timeout: 15_000 });
 
     // Step to the BREP-engine hint, whose CTA coaches the language toggle.
+    // The rotation order is shuffled (buildOrder), so the brep hint can sit
+    // anywhere in the cycle — step through the whole cycle, not a fixed count,
+    // and stop once a hint text repeats (a full loop with nothing left to see).
     const hintText = page.locator('#editor-hints-text');
     let found = false;
-    for (let i = 0; i < 12; i++) {
-      const t = (await hintText.textContent())?.toLowerCase() ?? '';
+    const seen = new Set<string>();
+    for (let i = 0; i < 40; i++) {
+      const t = (await hintText.textContent())?.trim().toLowerCase() ?? '';
       if (t.includes('brep')) { found = true; break; }
+      if (t && seen.has(t)) break;   // completed a full cycle without a match
+      if (t) seen.add(t);
       await strip.getByRole('button', { name: 'Next hint' }).click();
+      // Wait for the text to actually change before reading again.
+      await expect.poll(async () => (await hintText.textContent())?.trim().toLowerCase()).not.toBe(t);
     }
     expect(found).toBe(true);
 

@@ -44,7 +44,7 @@ Partwright supports four modeling engines. The table below covers the three soli
 | Kernel | manifold-3d mesh | OpenSCAD CSG | OpenCASCADE B-rep |
 | Best for | Algorithmic geometry, smooth curves, mesh-level ops (`warp`/`levelSet`/`smoothOut`), painting | Mechanical parts with BOSL2 (threads, gears, attachables), porting existing `.scad` files | True edge fillets/chamfers, exact surfaces, STEP export, mechanical-CAD interop |
 | Code style | `return Manifold.cube([10,10,10], true);` | `cube([10,10,10], center=true);` | `return BREP.box([10,10,10]).fillet(2);` |
-| Unique strengths | `Curves.loft/sweep/naca4`; `api.text()`; `levelSet`/`warp`/`smoothOut` (mesh-level) | BOSL2's `cuboid(rounding=)`, `skin()`, `path_sweep()`, `threaded_rod()`, `spur_gear()` | Exact `fillet()`/`chamfer()`, `.blobSTEP()` export, BREP shapes survive across runs |
+| Unique strengths | `Curves.loft/sweep/naca4`; `api.text()`; `api.gears`/`api.threads` (involute gears, ISO threads); `levelSet`/`warp`/`smoothOut` (mesh-level) | BOSL2's `cuboid(rounding=)`, `skin()`, `path_sweep()`, `threaded_rod()`, `spur_gear()` | Exact `fillet()`/`chamfer()`, `.blobSTEP()` export, BREP shapes survive across runs |
 | Limitations | Must learn the manifold-3d API | Slower per-run (~100-300ms WASM init); `text()` shares same Liberation Sans fonts as manifold-js | No `warp`/`levelSet`; no `Curves` helpers; 10 MB WASM lazy-load on first use |
 
 **Crucial:** You can ALSO use the BREP namespace **inside a manifold-js session** without switching languages — `api.BREP.box(...).fillet(r)`, then `api.BREP.toManifold(shape, api.Manifold)` to drop back into the Manifold world. This is the right move for "one feature needs an exact fillet" without committing to a BREP-only session. Switch to the **replicad** language only when you need STEP export of the *combined* shape, or when the part is dominated by BREP operations. See `/ai/replicad.md` for the full BREP API.
@@ -95,18 +95,20 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Per-piece bbox + volume (find leaked components) | `api.componentBounds(m)` or window `partwright.componentBounds()` | `partwright.componentBounds()` (window API, works for SCAD too) | `partwright.componentBounds()` (window API — works on tessellated mesh) |
 | Repair a non-manifold mesh after a failing boolean / STL import | `api.heal(m)` (or window `partwright.healCurrent()`) | `partwright.healCurrent()` (window API) | `partwright.healCurrent()` (works on tessellated mesh) |
 | Cross-section image (any axis, for debugging cavities) | `partwright.renderSection({axis, offset?, size?})` | `partwright.renderSection(...)` — same window API | `partwright.renderSection(...)` — same window API |
-| Threaded rod / bolt / nut | (write a helix manually) | BOSL2 `threaded_rod()`, `screw()`, `nut()` | (coming; today use OpenSCAD/BOSL2) |
-| Spur / bevel / worm gear | (sample involute manually) | BOSL2 `spur_gear()`, `bevel_gear()`, `worm_gear()` | (coming; today use OpenSCAD/BOSL2) |
+| Threaded rod / bolt / nut | `api.threads.rod/bolt/nut({size:"M8", length})` -> `/ai/threads.md` | BOSL2 `threaded_rod()`, `screw()`, `nut()` | (use manifold-js threads) |
+| Spur gear / meshing gear pair / rack | `api.gears.spur/pair/rack({module, teeth, thickness})` -> `/ai/gears.md` | BOSL2 `spur_gear()`, `bevel_gear()`, `worm_gear()` | (use manifold-js gears; bevel/worm not yet) |
 | Clearance hole sized to a real screw (M2–M8) | `api.printFit.screwHole({size:"M3", length, head})` → subtract -> `/ai/print-fit.md` | BOSL2 `screw_hole()` | (use manifold-js printFit) |
 | Heat-set insert boss | `api.printFit.insertBoss({size:"M3"})` → union -> `/ai/print-fit.md` | (write a tapered bore manually) | (use manifold-js printFit) |
 | Captive / clearance nut pocket | `api.printFit.nutPocket({size:"M3", captive:true})` → subtract -> `/ai/print-fit.md` | BOSL2 `nut_trap_side()` | (use manifold-js printFit) |
 | Snap-fit, dovetail, or alignment-pin joint | `api.printFit.snapFit/dovetail/pin/socket(...)` -> `/ai/print-fit.md` | (build manually) | (use manifold-js printFit) |
 | Dial in printer fit tolerances | `api.printFit.clearanceCoupon({size:"M3"})` + `api.printFit.clearance(fit)` -> `/ai/print-fit.md` | (build manually) | (use manifold-js printFit) |
 | Print-in-place mechanism (screw, spinner, hinge, captive ball, slider) | Separate parts via `labeledUnion`, separated by a ~0.3–0.5 mm clearance gap; assert `componentCount` -> `/ai/mechanisms.md` | (model parts + clearance manually) | (model parts + clearance manually) |
-| Helical thread / auger / spiral flute | `cs.extrude(h, nDiv, 360*turns, scaleTop)` on a bumped/fluted profile -> `/ai/mechanisms.md` | `linear_extrude(twist=)`, or BOSL2 `threaded_rod()` | (use manifold-js) |
+| Helical thread / auger / spiral flute | Real ISO threads: `api.threads.rod/bolt/nut(...)` -> `/ai/threads.md`. Custom augers/flutes: `cs.extrude(h, nDiv, 360*turns, scaleTop)` -> `/ai/mechanisms.md` | `linear_extrude(twist=)`, or BOSL2 `threaded_rod()` | (use manifold-js) |
 | Smooth fillet / blend between two shapes (no edge-picking) | `a.smoothUnion(b, k)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Lattice / gyroid / periodic infill | `api.sdf.gyroid(cell, thickness)` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Twisted / bent body (one expression) | `api.sdf.<shape>(...).twist(deg)` -> `/ai/sdf.md` | (`linear_extrude(twist=)` for the extrusion case only) | (mesh-only; not in BREP) |
+| Organic surface texture (rock / bark / coral / terrain) | `node.displace(amount, api.sdf.noise({...}))` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
+| Fractal plant / coral / branching structure | `api.sdf.lsystem({ axiom, rules, iterations })` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Constant-thickness shell of any shape | `node.shell(t)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Implicit surface / raw SDF function | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
 | Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) | (mesh-only; not in BREP) |
@@ -135,7 +137,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `readDoc` name | When to read it |
 |---|---|
 | `curves` | Before writing manifold-js code with `Curves.loft/sweep/bezier/arc/naca4/polyline/fillet/...` (smooth curves, organic shapes, airfoils, lofted surfaces). |
-| `sdf` | Before reaching for `api.sdf.*` — smooth blends (`smoothUnion`), domain warps (`twist`/`bend`), lattices (`gyroid`), constant-thickness shells. Anything the prompt frames as "smooth", "blended", "twisted", "lattice", or "gyroid" lives here. |
+| `sdf` | Before reaching for `api.sdf.*` — smooth blends (`smoothUnion`), domain warps (`twist`/`bend`), lattices (`gyroid`), constant-thickness shells, noise displacement (`displace`/`noise` for rock/bark/coral texture), and L-system growth (`lsystem` for fractal plants/corals). Anything the prompt frames as "smooth", "blended", "twisted", "lattice", "gyroid", "organic/bumpy texture", or "fractal/branching plant" lives here. |
 | `bosl2` | Before writing SCAD code that needs edge rounding (`cuboid(rounding=)`), threads (`screw`), gears (`spur_gear`), path-following (`path_sweep`), or attachables. |
 | `replicad` | Before using `api.BREP.*` inside a manifold-js session, or before switching to the replicad/BREP language. Covers exact fillets/chamfers, STEP export, and the manifold-js ↔ BREP boundary. |
 | `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |
@@ -143,12 +145,14 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
 | `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over) and `get/setPrinterSettings`. The same check also runs automatically on STL / OBJ / 3MF / GLB export. Read before declaring a model print-ready, then steer the user to the dedicated Resize and Split tools if it doesn't fit. |
 | `print-fit` | Before building parts that mate with hardware or each other — `api.printFit.*` screw holes, heat-set insert bosses, captive-nut pockets, alignment pins, dovetails, snap-fits, clearance presets, and a calibration coupon. |
+| `gears` | Before modeling an involute spur gear, a meshing gear pair, or a rack — `api.gears.spur/pair/rack(...)`, module/teeth/pressure-angle, centre distance, ratio, bores and hubs. |
+| `threads` | Before modeling a threaded rod, bolt, or nut — `api.threads.rod/bolt/nut(...)`, the metric coarse-pitch table, fit clearance, and handedness. |
 | `colors` | Before any paint operation — the picker decision tree, labelled construction, vision-driven painting, export behavior. |
 | `reference-images` | When the user attaches a photo or asks you to model from one — `setImages` shape, label conventions, the five-step photo-to-model loop. |
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
 | `annotations` | When the user has marked up the model with the Annotate tool (or you need to write annotations programmatically). |
 | `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
-| `textures` | Before adding fabric/knit surface detail with `applyFuzzySkin` / `applyKnitTexture` / `applyCableKnit` / `applyWaffleStitch` / `applyFurVelvet` / `applyWovenFabric` — normal-displaced textures (knit, cable, waffle, fur/velvet, woven, fuzzy skin), their parameters, and the paint-ordering rules. |
+| `textures` | Before adding fabric/knit surface detail with `applyFuzzySkin` / `applyKnitTexture` / `applyCableKnit` / `applyWaffleStitch` / `applyFurVelvet` / `applyWovenFabric` / `applyVoronoiShell` — normal-displaced textures (knit, cable, waffle, fur/velvet, woven, voronoi shell, fuzzy skin), their parameters, and the paint-ordering rules. Also covers `applyVoronoiLamp` — a true perforated Voronoi shell (see-through lamp/planter; smooth-mesh output by default, optional voxel). |
 | `iteration-workflow` | Before calling `runAndSave`, `forkVersion`, `modifyAndTest`, `createSessionWithVersions`, or managing session notes — the full versioning and iteration workflow. |
 | `gotchas` | When something looks wrong — boolean overlap requirements, disconnected components, `paintRegion` on smooth surfaces, `probeRay` normals, `rotate` direction, re-running invalidating painted colors. |
 | `visual-verification` | Before declaring a build done — all-faces check, edge overlay options, feature-specific checks, stat-based validation. |
@@ -253,6 +257,7 @@ await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeByt
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
 await partwright.importCodeData(code, language, name?) // -> {sessionId}
+await partwright.importMeshData(base64, filename, {sessionName?}) // Import STL bytes (binary/ASCII; bare base64 or data: URL) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}. isManifold:false = render-only (no booleans/paint/slicing).
 partwright.listRecentExports()                         // Recent Exports inbox
 await partwright.getRecentExport(id)
 partwright.downloadRecentExport(id)
@@ -305,6 +310,9 @@ await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch c
 await partwright.saveVersion(label?)     // Save current state as version
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
+await partwright.renameVersion({index} | {id}, label) // Relabel a version (index is immutable) -> {ok, id, index, label} or {error}
+await partwright.deleteVersion({index} | {id})  // Delete a version (refuses the last one; re-renders the replacement if the active one was deleted) -> {ok, deleted, newCurrent} or {error}
+await partwright.diffVersions({index} | {id}, {index} | {id}) // Compare two versions -> {a, b, codeChanged, statDiff} (each side carries its code); the programmatic Diff tab
 await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
 await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
 await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); external/console agents hand this to the user — in-app users click the toolbar Share (↗) button instead
@@ -338,6 +346,7 @@ partwright.paintInBox({box, normalCone?, color, name?})                   // AAB
 partwright.paintInOrientedBox({box: {center, size, quaternion?}, color, smooth?, resolution?, maxEdge?})  // rotated box selector (same as UI Box tool); SMOOTH edges by default
 partwright.paintFaces({triangleIds, color, name?})                        // explicit triangle ids
 partwright.paintSlab({axis|normal, offset, thickness, color, name?, smooth?, resolution?, maxEdge?})  // planar range; SMOOTH edges by default
+partwright.paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, normalCone?, color, name?, smooth?})  // cylindrical/annular shell (rMin=0 = solid); axis x|y|z (default z)
 partwright.paintByLabel({label, color, name?})                            // by api.label() name (manifold-js) or top-level `label("name")` (SCAD)
 partwright.paintByLabels([{label, color, name?}, ...])                    // batch sibling
 partwright.paintComponent({index, color, name?, topOnly?})                // by listComponents() index
@@ -352,6 +361,13 @@ partwright.listRegions() / listComponents() / listLabels()                // inv
 partwright.undoLastPaint() / redoLastPaint()                              // single-op undo
 partwright.removeRegion(id) / setRegionVisibility(id, visible)            // per-region edits
 partwright.hideRegion(id) / showRegion(id) / clearColors()
+partwright.replaceColor({from:[r,g,b], to:[r,g,b], tolerance?})           // bulk-recolor matching regions (0..1 colors) -> {replaced}
+await partwright.paintImage({imageUrl, at:[x,y,z], normal:[nx,ny,nz], size, rotationDeg?, detail?, removeBackground?, name?}) // stamp an image onto the surface as a region -> {ok, name, triangles, avgColor}; get at/normal from probeRay; see /ai/colors.md
+// Filament palette — the print slots (AMS/MMU) regions map onto; see /ai/colors.md
+partwright.getPalette()                                                   // -> {id, name, capacity, constrained, slots:[{id,name,hex,td}]}
+partwright.listPalettes() / setActivePalette(id) / createPalette(name)
+partwright.addFilament({name, hex, td?}) / updateFilament(id, patch) / removeFilament(id)
+partwright.setPaletteCapacity(n) / setPaletteConstrained(on)
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
 partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024) // UI smooth-brush config (detail = radius ÷ divisor)
@@ -421,6 +437,9 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `text(str, opts)` / `textSection(str, opts)` -- extruded or 2D text from Liberation Sans. See **[Text](#text--api-text--api-textsection)** below.
 - `params` -- declare tweakable **Customizer** knobs that surface as sliders/toggles in the viewport (see below).
 - `sdf` -- signed-distance-field builder for smooth blends, twists, gyroids, and shells. Tree-of-expressions style, lowered to a Manifold via `.build()`. See **[/ai/sdf.md](/ai/sdf.md)**.
+- `gears` -- involute spur gears, meshing gear pairs, and racks (`spur`/`pair`/`rack`), plus `centerDistance`/`ratio`/`dimensions` helpers. See **[/ai/gears.md](/ai/gears.md)**.
+- `threads` -- ISO-metric threaded rods, bolts, and nuts (`rod`/`bolt`/`nut`) with a coarse-pitch table and print-fit clearance. See **[/ai/threads.md](/ai/threads.md)**.
+- `printFit` -- practical print-fit joinery: screw holes, insert bosses, nut pockets, pins, dovetails, snap-fits, calibration coupon. See **[/ai/print-fit.md](/ai/print-fit.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
 Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
@@ -478,6 +497,34 @@ return body.add(knob);   // renders blue body + red knob; GLB/3MF carry the colo
 The `color` is a hex string (`'#rrggbb'` / `'#rgb'`, the same form a `color` param produces) or an `[r,g,b]` array in 0..1. `api.labeledUnion([{ name, shape, color }, …])` takes the same per-entry `color`. Because the color travels with the labelled name, it **re-resolves every run** — so it survives Customizer parameter changes, and a `color` param wired in as `{ color: p.accent }` recolors the model live. For per-instance color (e.g. a parametric count), give each instance a distinct name: `api.label(petal, 'petal' + i, { color: … })`.
 
 Model-declared colors are a derived **underlay**: manual paint (the paint tools / `paintByLabel`) composites on top as an optional override. They are **not** written into the saved paint sidecar — they come from the code, so re-running re-derives them. Inspect the active set with `partwright.getModelColors()` → `{ count, colors: [{ name, color, triangleCount }] }`; an empty `triangleCount` for a name means that label's triangles were consumed by a later boolean (check `listLabels().lostLabels`). See **[/ai/colors.md](/ai/colors.md)**.
+
+#### Geometric paint in code — `api.paint.*`
+
+Beyond labels, you can declare **geometric** paint right in the model code with `api.paint.*` — the in-code counterparts of the `paintInBox` / `paintSlab` / `paintInCylinder` / `paintByLabel` tools. Each call **records** a region (it doesn't mutate the mesh); after the run, Partwright resolves it against the fresh tessellation and renders it as part of the same model-color underlay as `api.label({color})`. Because the colors live in the code, there's no separate paint pass and **no paint sidecar** — re-running re-derives them, and they survive parameter changes. Later calls win on overlap.
+
+```js
+const { Manifold } = api;
+const part = Manifold.cube([30, 30, 30], true).refine(16);   // refine so selectors have fine triangles
+api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });        // a flat band (axis or normal)
+api.paint.box({ min: [-15, -15, -15], max: [0, 0, 0], color: [0.23, 0.51, 0.96] }); // axis-aligned box
+api.paint.cylinder({ center: [0, 0], rMin: 0, rMax: 6, zMin: -15, zMax: 15, color: '#22c55e' }); // (annular) shell
+api.paint.label('body', '#888');   // recolor an existing api.label(...) region
+return part;
+```
+
+`color` accepts the same hex string or `[r,g,b]` (0..1) as `api.label`. These selectors resolve **by triangle**, so a coarse mesh paints whole facets — `refine(n)` (or higher segment counts) gives crisp edges, exactly like the paint tools. Arguments are validated strictly (unknown keys rejected, bad color/axis throw an actionable error). This is a manifold-js-only sandbox API; the standalone paint tools (`partwright.paint*`) remain for click/coordinate painting and run between code runs.
+
+#### Surface textures in code — `api.surface.*`
+
+Just like paint, **surface textures** can live in the code instead of being baked: `api.surface.fuzzy / .knit / .cable / .waffle / .fur / .woven / .voronoi / .smooth` (or the generic `api.surface.apply('knit', {…})`). Each call records a texture op applied to the **final returned mesh**, in order — a parametric, non-baking counterpart of the `applyFuzzySkin` / `applyKnitTexture` / … tools (same options; size-relative defaults fill in omissions).
+
+```js
+const { Manifold } = api;
+api.surface.knit({ stitchWidth: 1.2, amplitude: 0.6 });
+return Manifold.sphere(10, 64);
+```
+
+Textures are expensive, so they're **memoized**: an unchanged model renders the cached result instantly. An **explicit run computes the texture automatically** — `partwright.run` / `runAndSave` (and the Run button / version loads) force the compute and return the **textured** mesh, so you don't need to do anything special; the result you render/inspect is already textured. Only the editor's **live-typing** auto-run is gated (it shows the base mesh + a "⟳ Re-apply" pill so keystrokes stay snappy) — that never affects `run`/`runAndSave`. manifold-js-only. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
 
 ### Primitive origins and orientations
 
