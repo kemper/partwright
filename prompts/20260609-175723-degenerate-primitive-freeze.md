@@ -57,3 +57,14 @@ Also updated the help-page prose to show argument'd primitives
 `tests/degenerate-geometry-guard.spec.ts` covering both guards + the recovery
 path. Verified in-browser: no-arg sphere returns a clean error, a `scale(0)`
 mesh keeps the camera finite, and a subsequent valid model re-frames normally.
+
+**CI follow-up.** The new `cube` guard surfaced a latent bug in
+`tests/version-nav-language.spec.ts`: its `JS_PARAMS` snippet read `api.size`
+(always undefined — `api.params(...)` returns the resolved values, which the
+model is meant to read via its return value) and so was silently building a
+degenerate `cube([undefined, undefined, undefined])`. The guard now rejects
+that, surfacing it as an error and failing the test. Fixed the snippet to the
+documented pattern (`const p = api.params(...); ... [p.size, …]`), which
+preserves the test's actual intent (verifying `navigateVersion` swaps the engine
+to each version's language) while passing valid dimensions. Confirmed no other
+test/example uses the `api.<param>` antipattern.
