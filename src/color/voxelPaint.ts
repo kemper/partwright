@@ -334,6 +334,11 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
   attachPointerHandler();
   cbLockChange?.(true);
   cbMeshUpdate(run.mesh);
+  // If the grid opens already smooth (e.g. a model whose source declares
+  // .smooth(), or one rounded in a prior session), show that rounded result
+  // immediately instead of the blocky provenance mesh — otherwise reopening the
+  // studio appears to "lose" the rounding even though the surfacing is intact.
+  showRoundingPreview();
   cbStateChange?.();
   return null;
 }

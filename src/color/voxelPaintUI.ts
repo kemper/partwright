@@ -81,6 +81,13 @@ let roundSlider: HTMLInputElement | null = null;
 let roundValueLabel: HTMLElement | null = null;
 let flatBottomBtn: HTMLButtonElement | null = null;
 let baseLayersInput: HTMLInputElement | null = null;
+let roundModeBtns: Partial<Record<'off' | 'surfaceNets' | 'taubin', HTMLButtonElement>> = {};
+let strengthRow: HTMLElement | null = null;
+let flatRow: HTMLElement | null = null;
+// The Rounding algorithm the panel currently drives. Surface Nets has no usable
+// amount knob (it's inherently smooth at any strength), so its slider is hidden;
+// Taubin relaxes the blocky mesh by `strength`, giving a true 0→max dial.
+let roundMode: 'off' | 'surfaceNets' | 'taubin' = 'off';
 let flatBottomState = false;
 
 export interface VoxelPaintUICallbacks {
@@ -217,15 +224,22 @@ function refreshControls(): void {
   const surf = voxelPaint.getSurfacing();
   const smooth = surf?.mode === 'smooth';
   flatBottomState = smooth && !!surf?.flatBottom;
-  if (roundSlider && document.activeElement !== roundSlider) {
-    roundSlider.value = String(smooth ? Math.round((surf?.strength ?? 1) * 100) : 0);
+  roundMode = !smooth ? 'off' : ((surf?.algorithm ?? 'surfaceNets') === 'taubin' ? 'taubin' : 'surfaceNets');
+  setActive(roundModeBtns.off, roundMode === 'off');
+  setActive(roundModeBtns.surfaceNets, roundMode === 'surfaceNets');
+  setActive(roundModeBtns.taubin, roundMode === 'taubin');
+  strengthRow?.classList.toggle('hidden', roundMode !== 'taubin');
+  flatRow?.classList.toggle('hidden', roundMode === 'off');
+  if (roundMode === 'taubin' && roundSlider && document.activeElement !== roundSlider) {
+    roundSlider.value = String(Math.round((surf?.strength ?? 1) * 100));
   }
-  const amt = Number(roundSlider?.value ?? '0');
-  if (roundValueLabel) roundValueLabel.textContent = amt <= 0 ? 'Off (blocky)' : `${amt}%`;
-  if (flatBottomBtn) { setActive(flatBottomBtn, flatBottomState); flatBottomBtn.disabled = amt <= 0; }
-  if (baseLayersInput) {
-    baseLayersInput.disabled = amt <= 0;
-    if (document.activeElement !== baseLayersInput) baseLayersInput.value = String(smooth ? (surf?.baseLayers ?? 0) : 0);
+  const amt = Number(roundSlider?.value ?? '50');
+  if (roundValueLabel) {
+    roundValueLabel.textContent = roundMode === 'off' ? 'Off (blocky)' : roundMode === 'surfaceNets' ? 'Surface Nets' : `Taubin ${amt}%`;
+  }
+  if (flatBottomBtn) setActive(flatBottomBtn, flatBottomState);
+  if (baseLayersInput && document.activeElement !== baseLayersInput) {
+    baseLayersInput.value = String(smooth ? (surf?.baseLayers ?? 0) : 0);
   }
 
   if (undoBtn) undoBtn.disabled = !voxelPaint.canUndo();
@@ -555,9 +569,10 @@ function buildLevelSection(): HTMLElement {
   return sec;
 }
 
-/** Rounding (surfacing) controls: an amount slider (0 = hard blocks, 1–100% =
- *  smooth) plus "keep flat" pins. The result previews live in the viewport as
- *  you drag; editing on the canvas snaps back to blocks. Applied to the grid's
+/** Rounding (surfacing) controls: an algorithm toggle (Off = hard blocks /
+ *  Surface Nets / Taubin) plus a strength slider (Taubin only — Surface Nets has
+ *  no usable amount knob) and "keep flat" pins. The result previews live in the
+ *  viewport; editing on the canvas snaps back to blocks. Applied to the grid's
  *  surfacing and baked into the saved model. */
 function buildRoundingSection(): HTMLElement {
   const sec = document.createElement('div');
@@ -574,23 +589,47 @@ function buildRoundingSection(): HTMLElement {
   head.appendChild(roundValueLabel);
   sec.appendChild(head);
 
+  // Algorithm toggle: Off / Surface Nets / Taubin.
+  const modeRow = document.createElement('div');
+  modeRow.className = 'grid grid-cols-3 gap-1';
+  const MODES: { mode: 'off' | 'surfaceNets' | 'taubin'; label: string; title: string }[] = [
+    { mode: 'off', label: 'Off', title: 'Hard blocks — no rounding' },
+    { mode: 'surfaceNets', label: 'Surface Nets', title: 'Re-mesh to a fully smooth surface (no amount — inherently smooth)' },
+    { mode: 'taubin', label: 'Taubin', title: 'Round the blocky mesh by an adjustable amount (0 → max)' },
+  ];
+  roundModeBtns = {};
+  for (const m of MODES) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'px-1 py-1 rounded text-[11px] border border-zinc-600/60 hover:bg-zinc-700/60 transition-colors';
+    btn.textContent = m.label;
+    btn.title = m.title;
+    btn.addEventListener('click', () => { roundMode = m.mode; applyRounding(); });
+    modeRow.appendChild(btn);
+    roundModeBtns[m.mode] = btn;
+  }
+  sec.appendChild(modeRow);
+
+  // Strength slider (Taubin only).
+  strengthRow = document.createElement('div');
   roundSlider = document.createElement('input');
   roundSlider.type = 'range';
-  roundSlider.min = '0'; roundSlider.max = '100'; roundSlider.step = '5'; roundSlider.value = '0';
+  roundSlider.min = '5'; roundSlider.max = '100'; roundSlider.step = '5'; roundSlider.value = '50';
   roundSlider.className = 'w-full accent-blue-500';
-  roundSlider.title = 'Rounding amount (0 = hard blocks, 100% = fully smooth)';
+  roundSlider.title = 'Rounding amount (Taubin): 5% = barely rounded, 100% = fully rounded';
   roundSlider.addEventListener('input', applyRounding);
-  sec.appendChild(roundSlider);
+  strengthRow.appendChild(roundSlider);
+  sec.appendChild(strengthRow);
 
-  const row = document.createElement('div');
-  row.className = 'flex items-center gap-2';
+  flatRow = document.createElement('div');
+  flatRow.className = 'flex items-center gap-2';
   flatBottomBtn = document.createElement('button');
   flatBottomBtn.type = 'button';
   flatBottomBtn.className = 'flex-1 px-1 py-1 rounded text-[11px] border border-zinc-600/60 hover:bg-zinc-700/60 transition-colors';
   flatBottomBtn.textContent = 'Flat bottom';
   flatBottomBtn.title = 'Keep the build-plate face flat while edges round';
   flatBottomBtn.addEventListener('click', () => { flatBottomState = !flatBottomState; applyRounding(); });
-  row.appendChild(flatBottomBtn);
+  flatRow.appendChild(flatBottomBtn);
 
   const baseWrap = document.createElement('label');
   baseWrap.className = 'flex items-center gap-1 text-[11px] text-zinc-400';
@@ -607,8 +646,8 @@ function buildRoundingSection(): HTMLElement {
   const baseUnit = document.createElement('span');
   baseUnit.textContent = 'layers';
   baseWrap.appendChild(baseUnit);
-  row.appendChild(baseWrap);
-  sec.appendChild(row);
+  flatRow.appendChild(baseWrap);
+  sec.appendChild(flatRow);
 
   const hint = document.createElement('p');
   hint.className = 'text-[10px] text-zinc-500 leading-tight';
@@ -619,16 +658,14 @@ function buildRoundingSection(): HTMLElement {
 
 /** Read the rounding controls and push the resulting surfacing to the grid. */
 function applyRounding(): void {
-  const amount = Number(roundSlider?.value ?? '0');
-  if (amount <= 0) {
-    voxelPaint.setRounding(null);
+  if (roundMode === 'off') { voxelPaint.setRounding(null); refreshControls(); return; }
+  const base = Math.max(0, Math.floor(Number(baseLayersInput?.value ?? '0')));
+  const common = { flatBottom: flatBottomState || undefined, baseLayers: base > 0 ? base : undefined };
+  if (roundMode === 'surfaceNets') {
+    voxelPaint.setRounding({ algorithm: 'surfaceNets', ...common });
   } else {
-    const base = Math.max(0, Math.floor(Number(baseLayersInput?.value ?? '0')));
-    voxelPaint.setRounding({
-      strength: amount / 100,
-      flatBottom: flatBottomState || undefined,
-      baseLayers: base > 0 ? base : undefined,
-    });
+    const amount = Number(roundSlider?.value ?? '50');
+    voxelPaint.setRounding({ algorithm: 'taubin', strength: Math.max(0.05, amount / 100), ...common });
   }
   refreshControls();
 }

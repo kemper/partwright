@@ -159,12 +159,11 @@ test.describe('voxel paint mode', () => {
       return mx;
     });
     expect(blockyMax).toBeGreaterThan(6.9); // blocky sphere extent (voxel corner at 7)
-    // Drag the rounding slider up — the displayed mesh re-meshes smooth (the
-    // surface pulls inward) without baking anything yet.
+    // Pick Surface Nets — the displayed mesh re-meshes rounded (the surface pulls
+    // inward, ~0.5 voxel) without baking anything yet.
     await page.evaluate(() => {
-      const slider = document.querySelector('#voxel-paint-panel input[title^="Rounding amount"]') as HTMLInputElement;
-      slider.value = '100';
-      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      const sn = [...document.querySelectorAll('#voxel-paint-panel button')].find((b) => b.textContent === 'Surface Nets') as HTMLButtonElement;
+      sn.click();
     });
     await expect.poll(maxX).toBeLessThan(blockyMax - 0.1);
     // Editing on the model snaps the preview back to the blocky provenance mesh.
