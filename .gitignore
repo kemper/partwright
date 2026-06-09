@@ -52,5 +52,10 @@ playwright/.cache/
 # test_ prefix.
 /public/catalog/test_*.partwright.json
 
+# Build-time content-hashed catalog thumbnails — emitted by the prerender
+# plugin's buildStart from each entry's stored data-URL thumbnail. Generated,
+# never hand-edited.
+/public/catalog/thumbs/
+
 # partwright CLI daemon state (pid/ports, logs, persistent Chromium profile)
 .partwright/
