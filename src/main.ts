@@ -121,7 +121,7 @@ import { appendVoxelEditsToCode, editOpCount } from './geometry/voxel/editCodege
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyWireframe, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultWireframeOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, rotateAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { surfaceCacheStatus, computeChain, type SurfaceOp } from './surface/surfaceOps';
@@ -7441,7 +7441,7 @@ async function main() {
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
   function buildSurfaceModifier(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'wireframe' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
   ): ModifierResult {
@@ -7575,6 +7575,17 @@ async function main() {
         smooth: (opts?.smooth as boolean) ?? base.smooth,
       });
     }
+    if (id === 'wireframe') {
+      // Edge cage → smooth mesh; whole-model only (no region patch).
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultWireframeOptions(mesh);
+      return applyWireframe(mesh, {
+        strutRadius: (opts?.strutRadius as number) ?? base.strutRadius,
+        angleThresholdDeg: (opts?.angleThresholdDeg as number) ?? base.angleThresholdDeg,
+        resolution: (opts?.resolution as number) ?? base.resolution,
+        watertight: (opts?.watertight as boolean) ?? base.watertight,
+      });
+    }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultSmoothOptions();
@@ -7599,8 +7610,8 @@ async function main() {
     modelHasColor(): boolean { return modelHasColor(); },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
-     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize'. */
-    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'wireframe'|'smooth'|'voxelize'. */
+    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'wireframe' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
       try {
         previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
         return { ok: true };
@@ -7836,6 +7847,26 @@ async function main() {
       try {
         const preserve = opts?.preserveColor ?? true;
         return await commitSurfaceModifier(buildSurfaceModifier('voronoiLamp', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Turn the current model into a see-through "wireframe" / edge cage: keep
+     *  only its sharp feature edges (boundary edges, plus interior edges whose
+     *  faces bend more than `angleThresholdDeg`, default 25°), rebuilt as smooth
+     *  round struts of radius `strutRadius`. Best on boxy / low-poly shapes; a
+     *  fully smooth surface has no sharp edges to cage (returns an error). Bakes
+     *  a smooth manifold-js mesh and saves a new version. Returns
+     *  `{ ok, label, geometry, warnings? }` or `{ error }`. */
+    async applyWireframe(opts?: {
+      strutRadius?: number;
+      angleThresholdDeg?: number;
+      resolution?: number;
+      watertight?: boolean;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('wireframe', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Smooth/round the current model (Taubin λ/μ); saves a new version. */

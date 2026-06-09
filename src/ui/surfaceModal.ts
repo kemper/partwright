@@ -22,7 +22,7 @@ import { getCurrentMesh, previewTriangles } from '../color/paintMode';
 import { buildTriColors } from '../color/regions';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
-type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize';
+type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'wireframe' | 'smooth' | 'voxelize';
 
 /** The subset of the console API the surface UI needs. */
 export interface SurfaceApi {
@@ -34,6 +34,7 @@ export interface SurfaceApi {
   applyWovenFabric(opts?: { amplitude?: number; threadSpacing?: number; threadWidth?: number; underDepth?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiShell(opts?: { amplitude?: number; cellSize?: number; wallWidth?: number; raised?: boolean; jitter?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiLamp(opts?: { cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; jitter?: number; grainAngleDeg?: number; seed?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyWireframe(opts?: { strutRadius?: number; angleThresholdDeg?: number; resolution?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   previewSurfaceModifier(id: ModId, opts?: Record<string, unknown>, preserveColor?: boolean): { ok: true } | { error: string };
@@ -199,10 +200,14 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     { id: 'woven', label: 'Woven' },
     { id: 'voronoi', label: 'Voronoi (relief)' },
     { id: 'voronoiLamp', label: 'Voronoi lamp' },
+    { id: 'wireframe', label: 'Wireframe' },
     { id: 'smooth', label: 'Smooth' },
     { id: 'voxelize', label: 'Voxelize' },
   ];
   let active: Tab = initialTab;
+  // Whole-model-only tabs: no region selector (a cage / voxel grid / lamp is built
+  // from the whole solid, not a face patch).
+  const REGIONLESS_TABS = new Set<Tab>(['voxelize', 'voronoiLamp', 'wireframe']);
 
   const status = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mb-2');
 
@@ -264,8 +269,12 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     return regionMode === 'region' ? regionSelection ?? undefined : undefined;
   }
 
-  /** Whether Apply/preview should be blocked (region mode, nothing picked yet). */
+  /** Whether Apply/preview should be blocked (region mode, nothing picked yet).
+   *  Whole-model-only tabs (voxelize / voronoi lamp / wireframe) hide the region
+   *  UI, so they're never region-blocked even though `regionMode` defaults to
+   *  'region'. */
   function regionBlocked(): boolean {
+    if (REGIONLESS_TABS.has(active)) return false;
     return regionMode === 'region' && !regionSelection;
   }
 
@@ -425,7 +434,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   function renderTab() {
     body.innerHTML = '';
-    regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp') ? 'none' : '';
+    regionSection.style.display = REGIONLESS_TABS.has(active) ? 'none' : '';
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
       const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -585,6 +594,20 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         watertight: wtight.get(),
         output: out.get(),
       });
+    } else if (active === 'wireframe') {
+      const sr = slider('Strut radius', span * 0.005, span * 0.08, span * 0.02, span * 0.001, n => n.toFixed(3), schedulePreview);
+      const angle = slider('Edge angle threshold (°)', 5, 80, 25, 1, n => String(n) + '°', schedulePreview);
+      const res = sliderWithEntry('Resolution', 48, 200, 96, 1, 256, schedulePreview);
+      const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
+      body.append(sr.wrap, angle.wrap, res.wrap, wtight.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Keeps only the model’s sharp feature edges, rebuilt as smooth round struts — a see-through edge cage. Best on boxy / low-poly shapes. Lower the edge-angle threshold to keep more edges; a fully smooth surface has no sharp edges to cage.'));
+      body.append(el('p', 'text-[11px] text-amber-400/90', 'Meshes a continuous distance field to the edges (a heavier op; allow a few seconds). Resolution auto-raises so thin struts stay rounded.'));
+      currentOpts = () => ({
+        strutRadius: sr.get(),
+        angleThresholdDeg: angle.get(),
+        resolution: res.get(),
+        watertight: wtight.get(),
+      });
     } else if (active === 'smooth') {
       const iter = slider('Rounding strength', 1, 12, 4, 1, n => String(n), schedulePreview);
       const sub = checkbox('Subdivide first (rounds sharp corners)', true, schedulePreview);
@@ -598,6 +621,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       body.append(el('p', 'text-[11px] text-zinc-500', 'Rasterizes the model into voxels. The result switches to the voxel engine, so you can paint, re-block, or .vox export it.'));
       currentOpts = () => ({ resolution: res.get(), smooth: sm.get() });
     }
+    // Switching between a region tab (possibly blocked) and a whole-model tab
+    // changes the Apply/Preview gating — refresh the buttons for the new tab.
+    updateApplyBtn();
     schedulePreview();
   }
 
@@ -700,6 +726,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         : active === 'woven' ? await api.applyWovenFabric(opts)
         : active === 'voronoi' ? await api.applyVoronoiShell(opts)
         : active === 'voronoiLamp' ? await api.applyVoronoiLamp(opts)
+        : active === 'wireframe' ? await api.applyWireframe(opts)
         : active === 'smooth' ? await api.smoothModel(opts)
         : await api.voxelizeModel(opts);
       const err = (result as { error?: string })?.error;
@@ -740,6 +767,7 @@ export function initSurfaceUI(api: SurfaceApi): void {
     { id: 'surface-woven', title: 'Surface: Woven fabric', hint: 'Modifier', keywords: 'woven weave fabric basket cloth interlace thread', run: () => openSurfaceModal(api, 'woven') },
     { id: 'surface-voronoi', title: 'Surface: Voronoi texture', hint: 'Modifier', keywords: 'voronoi cell relief organic cracked web ridges struts texture', run: () => openSurfaceModal(api, 'voronoi') },
     { id: 'surface-voronoi-lamp', title: 'Surface: Voronoi lamp (perforated shell)', hint: 'Modifier', keywords: 'voronoi lamp shell lattice perforated cutout holes see-through planter lampshade voxel', run: () => openSurfaceModal(api, 'voronoiLamp') },
+    { id: 'surface-wireframe', title: 'Surface: Wireframe / edge cage', hint: 'Modifier', keywords: 'wireframe edge cage struts skeleton see-through feature edges crease lattice frame', run: () => openSurfaceModal(api, 'wireframe') },
     { id: 'surface-smooth', title: 'Surface: Smooth / round edges', hint: 'Modifier', keywords: 'smooth round fillet taubin low-poly', run: () => openSurfaceModal(api, 'smooth') },
     { id: 'surface-voxelize', title: 'Surface: Voxelize model', hint: 'Modifier', keywords: 'voxel blocky minecraft pixel', run: () => openSurfaceModal(api, 'voxelize') },
   ]);

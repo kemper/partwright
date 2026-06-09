@@ -1582,6 +1582,34 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'applyWireframe',
+    description: `Turn the current model into a see-through **wireframe / edge cage** — keep only its sharp feature edges, rebuilt as smooth round struts. Saves a new version (bakes a manifold-js mesh, no engine change).
+
+**What counts as an edge:** boundary edges, plus interior edges whose two faces bend by more than \`angleThresholdDeg\` (default 25°). So a cube becomes its 12-strut frame; a chamfered or low-poly shape becomes its visible hard edges. **A fully smooth surface (sphere, organic blob) has no sharp edges and returns an error** — use it on boxy / faceted / low-poly models.
+
+**When to use:** the user wants a wireframe, edge cage, skeletal frame, or a see-through "just the edges" version of a boxy model.
+
+**Key parameters:**
+- strutRadius: radius of each round strut, world units (~2% of diagonal); strut diameter is twice this
+- angleThresholdDeg: dihedral angle above which an interior edge is kept [5–80], default 25. Lower → more edges kept (denser cage); higher → only the very sharpest
+- resolution: field resolution along the longest axis [16–256], default 96. **Auto-raised** so thin struts stay rounded; you rarely set it
+- watertight: keep only the largest connected strut web → one printable piece (default true; for a single connected solid the whole cage is one piece anyway)
+
+**Return:** { ok, label, geometry, warnings? } or { error } (e.g. when no sharp edges are found). Verify with renderViews — you should see the open cage of struts.
+
+**Workflow guidance:** if the cage comes out too sparse, lower angleThresholdDeg; too busy, raise it. Adjust strutRadius for thicker / thinner struts.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        strutRadius: { type: 'number', description: 'Radius of each round strut in world units (~2% of diagonal). Strut diameter is twice this.' },
+        angleThresholdDeg: { type: 'number', description: 'Keep an interior edge when its faces bend more than this many degrees [5–80]. Default 25. Lower = denser cage.', minimum: 5, maximum: 80 },
+        resolution: { type: 'integer', description: 'Field resolution along the longest axis [16–256]. Auto-raised for thin struts. Default 96.', minimum: 16, maximum: 256 },
+        watertight: { type: 'boolean', description: 'Keep only the largest connected strut web (one watertight piece). Default true.' },
+        preserveColor: { type: 'boolean', description: 'Sample model paint onto the struts. Default true.' },
+      },
+    },
+  },
+  {
     name: 'smoothModel',
     description: `Smooth/round the current model with a Taubin λ/μ pass — softens sharp edges and facets without the shrinkage a naive Laplacian causes. Saves a new version.
 
@@ -1777,7 +1805,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'applyWireframe', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -2285,6 +2313,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.applyVoronoiShell(input);
     case 'applyVoronoiLamp':
       return api.applyVoronoiLamp(input);
+    case 'applyWireframe':
+      return api.applyWireframe(input);
     case 'smoothModel':
       return api.smoothModel(input);
     case 'voxelizeModel':

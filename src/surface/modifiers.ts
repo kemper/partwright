@@ -29,8 +29,9 @@ import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 import { voronoiLampSdfMesh } from './voronoiLampSdf';
+import { wireframeMesh, type WireframeOptions } from './wireframeField';
 
-export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize';
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'wireframe' | 'smooth' | 'voxelize';
 
 export interface ModifierManifoldResult {
   kind: 'manifold';
@@ -123,6 +124,7 @@ export { type FurVelvetOptions };
 export { type WovenFabricOptions };
 export { type VoronoiShellOptions };
 export { type VoronoiLampOptions };
+export { type WireframeOptions };
 
 export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierManifoldResult {
   const baked = fuzzySkin(mesh, opts);
@@ -464,6 +466,39 @@ export function defaultVoronoiLampOptions(mesh: MeshData): Required<VoronoiLampM
     watertight: true,
     output: 'mesh',
     smooth: true,
+  };
+}
+
+/** Size-relative starting parameters for the wireframe / edge cage. Struts are
+ *  ~2% of the model diagonal; the 25° threshold keeps box-like sharp edges and
+ *  ignores tessellation facets on rounded areas. */
+export function defaultWireframeOptions(mesh: MeshData): Required<WireframeOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    strutRadius: d * 0.02,
+    angleThresholdDeg: 25,
+    resolution: 96,
+    watertight: true,
+    smoothIterations: 3,
+  };
+}
+
+/** Keep only the model's sharp feature edges, rebuilt as smooth round struts —
+ *  a see-through edge cage. Whole-model only (a cage of a partial selection isn't
+ *  meaningful). Throws a helpful error when nothing qualifies as a feature edge. */
+export function applyWireframe(mesh: MeshData, opts: WireframeOptions): ModifierManifoldResult {
+  const baked = wireframeMesh(mesh, opts);
+  if (baked.numTri === 0) {
+    throw new Error('Wireframe: no sharp feature edges found at this angle threshold. Lower the edge-angle threshold, or start from a more faceted / lower-poly model — a smooth surface has no sharp edges to cage.');
+  }
+  return {
+    kind: 'manifold',
+    label: 'wireframe',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Wireframe / edge cage from the current model on ${today()} — strut radius ${opts.strutRadius.toFixed(3)}, edge angle > ${opts.angleThresholdDeg ?? 25}°.`,
+      `Only the sharp feature edges are kept, as round struts (a see-through cage). Baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
   };
 }
 
