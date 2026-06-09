@@ -29,8 +29,9 @@ import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 import { voronoiLampSdfMesh } from './voronoiLampSdf';
+import { latticeInfillSdfMesh, type InfillPattern } from './latticeInfillSdf';
 
-export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize';
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'infill' | 'smooth' | 'voxelize';
 
 export interface ModifierManifoldResult {
   kind: 'manifold';
@@ -123,6 +124,7 @@ export { type FurVelvetOptions };
 export { type WovenFabricOptions };
 export { type VoronoiShellOptions };
 export { type VoronoiLampOptions };
+export { type InfillPattern };
 
 export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierManifoldResult {
   const baked = fuzzySkin(mesh, opts);
@@ -598,6 +600,50 @@ export function applyTransform(
     code: manifoldWrapper([
       `${label} on ${today()}.`,
       `The transformed mesh is baked onto api.imports[0].`,
+    ]),
+  };
+}
+
+export interface InfillModifierOptions {
+  /** Lattice pattern: 'gyroid' (default), 'schwarzP', or 'honeycomb'. */
+  pattern?: InfillPattern;
+  /** TPMS period / hex spacing in world units. */
+  cellSize: number;
+  /** Lattice wall thickness in world units. */
+  wallThickness: number;
+  /** Solid outer-shell thickness in world units. */
+  skinThickness: number;
+  /** Field resolution along the longest axis (auto-raised so the wall resolves). */
+  resolution?: number;
+}
+
+export function defaultInfillOptions(mesh: MeshData): Required<InfillModifierOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    pattern: 'gyroid',
+    cellSize: d * 0.12,
+    // ~2.5% of the diagonal keeps the auto-raised field resolution near the 120
+    // default on a typical solid (a much thinner wall forces a slow 200³+ field).
+    wallThickness: d * 0.025,
+    skinThickness: d * 0.03,
+    resolution: 120,
+  };
+}
+
+export function applyInfill(mesh: MeshData, opts: InfillModifierOptions): ModifierManifoldResult {
+  // Lattice infill: a thin solid skin with the interior filled by a TPMS /
+  // honeycomb lattice — the iso-0 surface of a continuous distance field (the
+  // principle behind Manifold.levelSet, done pure-JS on the main thread). See
+  // latticeInfillSdf.ts.
+  const baked = latticeInfillSdfMesh(mesh, opts);
+  const pattern = opts.pattern ?? 'gyroid';
+  return {
+    kind: 'manifold',
+    label: 'lattice infill',
+    mesh: baked,
+    code: manifoldWrapper([
+      `${pattern} lattice infill from the current model on ${today()} — cell ~${opts.cellSize.toFixed(2)}, wall ${opts.wallThickness.toFixed(2)}, skin ${opts.skinThickness.toFixed(2)}.`,
+      `Smooth (SDF) mesh baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
     ]),
   };
 }

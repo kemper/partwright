@@ -21,6 +21,7 @@ apply→save→verify workflow:
 | `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
 | `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
+| `applyInfill({ pattern, cellSize, wallThickness, skinThickness, resolution })` | Keeps a thin solid **skin** and fills the interior with a **lattice** (`gyroid` default, plus `schwarzP` / `honeycomb`) — lightweight prints / exposed-lattice designs. Bakes a smooth manifold-js mesh (no engine change). | The lightweighting counterpart of `applyVoronoiLamp`. See [`applyInfill`](#applyinfill) below. |
 
 > **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
 > BREP/replicad model this discards the parametric source (and, for BREP, STEP
@@ -343,6 +344,49 @@ one step.
 **Tips:** with `watertight` on (default) the result is manifold/printable. If
 windows don't open, lower `strutWidth` or raise `cellSize`. Resolution
 auto-raises for thin struts, so you rarely touch it. Verify with `renderViews`.
+
+---
+
+## applyInfill
+
+```
+applyInfill({ pattern?, cellSize?, wallThickness?, skinThickness?, resolution? })
+```
+
+Keeps a thin solid **skin** of the model and fills its interior with a
+**lattice** — for lightweight prints and exposed-lattice designs. It hollows the
+bulk and replaces it with a periodic wall network, unioned with the skin, by
+meshing a **continuous signed-distance field** (the principle behind
+`Manifold.levelSet`) — smooth walls, **no voxel stair-stepping**, no engine
+change. The lightweighting counterpart to `applyVoronoiLamp`.
+
+`pattern` chooses the lattice:
+- **`'gyroid'` (default)** — smooth triply-periodic minimal surface; isotropic,
+  self-supporting, the standard 3D-print lightweighting lattice.
+- **`'schwarzP'`** — another TPMS, blockier "pillow" cells.
+- **`'honeycomb'`** — vertical hex columns (anisotropic; strong along Z).
+
+Start from a **closed solid** (the skin needs an inside to hollow).
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `pattern` | `'gyroid'` | `'gyroid'` \| `'schwarzP'` \| `'honeycomb'`. |
+| `cellSize` | ~12% of diagonal | Lattice period / hex spacing (world units). Smaller = denser lattice. |
+| `wallThickness` | ~2% of diagonal | Lattice wall thickness (world units). Thicker = stronger / heavier. |
+| `skinThickness` | ~3% of diagonal | Solid outer-shell thickness (world units). |
+| `resolution` | 120 | Field resolution along the longest axis [16–256]. **Auto-raised** so the wall resolves to ≥5 cells — you rarely set it. |
+
+The closed outer skin fuses everything into **one printable manifold** — the
+sealed gyroid pockets are intentional voids, so `componentCount` reads high even
+though it's a single solid.
+
+**Look guidance** (defaults look good on a typical solid — mostly tune cellSize + wallThickness):
+- Light gyroid: `cellSize=d*0.12`, `wallThickness=d*0.015`, `skinThickness=d*0.025`
+- Strong gyroid: `cellSize=d*0.1`, `wallThickness=d*0.03`, `skinThickness=d*0.04`
+- Honeycomb (Z-strong): `pattern='honeycomb'`, `cellSize=d*0.14`, `wallThickness=d*0.02`
+
+**Tips:** it's a heavier op (continuous field; allow a few seconds). Verify with
+`renderViews` — the outer skin should be closed; slice or cut to see the lattice.
 
 ---
 
