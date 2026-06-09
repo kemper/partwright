@@ -37,6 +37,11 @@ export const COORD_MAX = HALF - 1;  //  1023
 // encode loop crawl) fail fast with an actionable message.
 const MAX_GRID_CELLS = 0x7fffffff; // 2^31 - 1
 
+/** Which smoothing algorithm a bare `.smooth()` (no `algorithm` arg) selects.
+ *  `taubin` is the original mesh-relaxation smoother; `surfaceNets` is the
+ *  newer native-resolution smoother. Flip this to change the product default. */
+const DEFAULT_SMOOTH_ALGORITHM: 'taubin' | 'surfaceNets' = 'surfaceNets';
+
 function assertCoord(v: number, name: string): number {
   const n = assertNumber(v, name, { integer: true, min: COORD_MIN, max: COORD_MAX })!;
   return n;
@@ -94,6 +99,12 @@ export interface GridBounds { min: Vec3; max: Vec3 }
  *  them to the supersampled mesh when `detail > 1`. */
 export interface Surfacing {
   mode: 'blocks' | 'smooth';
+  /** Smoothing algorithm for `smooth` mode. `taubin` (the original) relaxes the
+   *  block mesh — topology-preserving, honors `detail` supersampling. `surfaceNets`
+   *  builds a genuinely smooth surface from occupancy at native resolution
+   *  (ignores `detail`). Absent on Surfacing objects that predate this field
+   *  (treated as `taubin`). */
+  algorithm?: 'taubin' | 'surfaceNets';
   iterations: number;
   detail: number;
   /** Pin the Z of the bottom-most plane so the build-plate face stays flat. */
@@ -388,8 +399,9 @@ export class VoxelGrid {
    *    - `lockBox` — keep the voxels in `[[x0,y0,z0],[x1,y1,z1]]` (voxel coords)
    *      blocky, for a custom base region.
    *  Chainable. */
-  smooth(opts: number | { iterations?: number; detail?: number; flatBottom?: boolean; baseLayers?: number; lockBox?: [Vec3, Vec3] } = {}): this {
+  smooth(opts: number | { iterations?: number; detail?: number; algorithm?: 'taubin' | 'surfaceNets'; flatBottom?: boolean; baseLayers?: number; lockBox?: [Vec3, Vec3] } = {}): this {
     let iterations = 2, detail = 1;
+    let algorithm: 'taubin' | 'surfaceNets' = DEFAULT_SMOOTH_ALGORITHM;
     let flatBottom: boolean | undefined;
     let baseLayers: number | undefined;
     let lockBox: { min: Vec3; max: Vec3 } | undefined;
@@ -397,14 +409,15 @@ export class VoxelGrid {
       iterations = assertNumber(opts, 'smooth(iterations)', { integer: true, min: 1, max: 8 })!;
     } else {
       const o = assertObject(opts, 'smooth(opts)')!;
-      assertNoUnknownKeys(o, ['iterations', 'detail', 'flatBottom', 'baseLayers', 'lockBox'], 'smooth(opts)');
+      assertNoUnknownKeys(o, ['iterations', 'detail', 'algorithm', 'flatBottom', 'baseLayers', 'lockBox'], 'smooth(opts)');
       if (o.iterations !== undefined) iterations = assertNumber(o.iterations, 'smooth.iterations', { integer: true, min: 1, max: 8 })!;
       if (o.detail !== undefined) detail = assertNumber(o.detail, 'smooth.detail', { integer: true, min: 1, max: 4 })!;
+      if (o.algorithm !== undefined) algorithm = assertEnum(o.algorithm, ['taubin', 'surfaceNets'] as const, 'smooth.algorithm');
       if (o.flatBottom !== undefined) flatBottom = assertBoolean(o.flatBottom, 'smooth.flatBottom')!;
       if (o.baseLayers !== undefined) baseLayers = assertNumber(o.baseLayers, 'smooth.baseLayers', { integer: true, min: 1, max: HALF })!;
       if (o.lockBox !== undefined) lockBox = normalizeLockBox(o.lockBox);
     }
-    this._surfacing = { mode: 'smooth', iterations, detail, flatBottom, baseLayers, lockBox };
+    this._surfacing = { mode: 'smooth', algorithm, iterations, detail, flatBottom, baseLayers, lockBox };
     return this;
   }
 

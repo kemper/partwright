@@ -114,6 +114,7 @@ import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
+import { greedyMeshGrid } from './geometry/voxel/mesher';
 import { appendVoxelEditsToCode, editOpCount } from './geometry/voxel/editCodegen';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
@@ -4029,7 +4030,7 @@ async function main() {
     if (!(await confirmExportOrProceed('STL'))) return;
     warnIfNotPrintable('STL');
     notifyMultiPartExport();
-    try { showToast(`Exported ${exportSTL(currentMeshData)}`, { variant: 'success' }); }
+    try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
   };
   const actionExportOBJ = async () => {
@@ -4038,7 +4039,7 @@ async function main() {
     if (!(await confirmExportOrProceed('OBJ'))) return;
     warnIfNotPrintable('OBJ');
     notifyMultiPartExport();
-    try { showToast(`Exported ${exportOBJ(coloredMeshForExport(currentMeshData))}`, { variant: 'success' }); }
+    try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
   };
   const actionExport3MF = async () => {
@@ -4047,7 +4048,7 @@ async function main() {
     if (!(await confirmExportOrProceed('3MF'))) return;
     warnIfNotPrintable('3MF');
     notifyMultiPartExport();
-    try { showToast(`Exported ${export3MF(coloredMeshForExport(currentMeshData))}`, { variant: 'success' }); }
+    try { showToast(`Exported ${export3MF(fileExportMesh(true)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
   };
   // The integer VoxelGrid behind a voxel session. The engine meshes in the
@@ -4060,6 +4061,22 @@ async function main() {
     if (painted) return painted;
     const r = runVoxelForPaint(getValue());
     return r.ok ? r.data.grid : null;
+  };
+  /** Mesh for a triangle-mesh file export (STL / OBJ / 3MF). Voxel sessions get
+   *  a greedy-meshed copy straight from the grid — coplanar same-color faces are
+   *  coalesced, cutting triangle count (and file size) several-fold. Greedy
+   *  meshing introduces T-junctions: harmless in a triangle-soup export, but
+   *  they break Manifold.ofMesh, so it stays OUT of the render / stats / slicing
+   *  path (those keep the per-face manifold mesh from `meshGrid`). `colored`
+   *  bakes paint/relief regions for non-voxel meshes; voxel grids already carry
+   *  their per-voxel colors. Returns null only when there's nothing to export. */
+  const fileExportMesh = (colored: boolean): MeshData | null => {
+    if (getActiveLanguage() === 'voxel') {
+      const grid = getCurrentVoxelGrid();
+      if (grid) return greedyMeshGrid(grid);
+    }
+    if (!currentMeshData) return null;
+    return colored ? coloredMeshForExport(currentMeshData) : currentMeshData;
   };
   const actionExportVOX = () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
@@ -7945,21 +7962,21 @@ async function main() {
     exportSTL(filename?: string) {
       assertString(filename, 'exportSTL(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      exportSTL(currentMeshData, filename);
+      exportSTL(fileExportMesh(false)!, filename);
     },
 
     /** Export current model as OBJ download. Optional filename override. */
     exportOBJ(filename?: string) {
       assertString(filename, 'exportOBJ(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      exportOBJ(coloredMeshForExport(currentMeshData), filename);
+      exportOBJ(fileExportMesh(true)!, filename);
     },
 
     /** Export current model as 3MF download. Optional filename override. */
     export3MF(filename?: string) {
       assertString(filename, 'export3MF(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      export3MF(coloredMeshForExport(currentMeshData), filename);
+      export3MF(fileExportMesh(true)!, filename);
     },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
@@ -8029,7 +8046,7 @@ async function main() {
     async exportSTLData(filename?: string) {
       assertString(filename, 'exportSTLData(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      const built = buildSTL(currentMeshData, filename);
+      const built = buildSTL(fileExportMesh(false)!, filename);
       registerExportFromBuilt(built, 'STL');
       return {
         filename: built.filename,
@@ -8047,8 +8064,7 @@ async function main() {
     async exportOBJData(filename?: string) {
       assertString(filename, 'exportOBJData(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      const mesh = (hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData;
-      const built = buildOBJ(mesh, filename);
+      const built = buildOBJ(fileExportMesh(true)!, filename);
       registerExportFromBuilt(built, 'OBJ');
       const isText = built.mimeType === 'text/plain';
       return {
@@ -8065,8 +8081,7 @@ async function main() {
     async export3MFData(filename?: string) {
       assertString(filename, 'export3MFData(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      const mesh = (hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData;
-      const built = build3MF(mesh, filename);
+      const built = build3MF(fileExportMesh(true)!, filename);
       registerExportFromBuilt(built, '3MF');
       return {
         filename: built.filename,
