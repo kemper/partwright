@@ -39,11 +39,52 @@ export function voxelizeMesh(mesh: MeshData, opts: VoxelizeOptions = {}): VoxelG
   const grid = new VoxelGrid();
   if (mesh.numTri === 0) return grid;
 
+  const solid = rasterizeSolid(mesh, opts.resolution);
+  const { nx, ny, nz, surface, exterior, at } = solid;
+  const fillColor = opts.fillColor ?? (mesh.triColors ? 0xcccccc : DEFAULT_COLOR);
+
+  // --- Emit cells ---------------------------------------------------------------
+  for (let x = 0; x < nx; x++) {
+    for (let y = 0; y < ny; y++) {
+      for (let z = 0; z < nz; z++) {
+        const idx = at(x, y, z);
+        const surf = surface[idx];
+        if (surf) {
+          grid.set(x, y, z, surf - 1);
+        } else if (!exterior[idx]) {
+          grid.set(x, y, z, fillColor);
+        }
+      }
+    }
+  }
+
+  return grid;
+}
+
+/** Rasterized solid occupancy of a mesh on a voxel grid — the shared core of
+ *  {@link voxelizeMesh} and the Voronoi-lamp builder. Returns the surface
+ *  (colored) and exterior (flood-filled) masks plus the index helpers, so
+ *  callers can decide which cells to emit. A cell is *solid* iff
+ *  `surface[idx] || !exterior[idx]`. */
+export interface RasterizedSolid {
+  nx: number; ny: number; nz: number;
+  /** surface[idx] = packed color + 1 (0 means "not a surface voxel"). */
+  surface: Int32Array;
+  /** exterior[idx] = 1 when reachable from the border through empty space. */
+  exterior: Uint8Array;
+  at(x: number, y: number, z: number): number;
+  /** World-space minimum corner of the source bbox. */
+  min: [number, number, number];
+  /** World units per voxel: world center of cell (x,y,z) = min + (cell+0.5)·voxelSize. */
+  voxelSize: number;
+}
+
+export function rasterizeSolid(mesh: MeshData, resolutionOpt?: number): RasterizedSolid {
   const positions = extractPositions(mesh);
   const { min, size } = bboxOf(positions);
   const maxDim = Math.max(size[0], size[1], size[2], 1e-6);
 
-  const resolution = Math.max(4, Math.min(MAX_RESOLUTION, Math.round(opts.resolution ?? 32)));
+  const resolution = Math.max(4, Math.min(MAX_RESOLUTION, Math.round(resolutionOpt ?? 32)));
   const voxelSize = maxDim / resolution;
   const dims: [number, number, number] = [
     Math.max(1, Math.ceil(size[0] / voxelSize)),
@@ -90,8 +131,7 @@ export function voxelizeMesh(mesh: MeshData, opts: VoxelizeOptions = {}): VoxelG
     }
   }
 
-  // --- 2. Flood-fill outside, then fill the rest as interior --------------------
-  // visited: 1 = reached from the border through empty space (= exterior).
+  // --- 2. Flood-fill outside ----------------------------------------------------
   const exterior = new Uint8Array(nx * ny * nz);
   const stack: number[] = [];
   const pushIfEmpty = (x: number, y: number, z: number) => {
@@ -115,22 +155,5 @@ export function voxelizeMesh(mesh: MeshData, opts: VoxelizeOptions = {}): VoxelG
     pushIfEmpty(x, y, z + 1); pushIfEmpty(x, y, z - 1);
   }
 
-  const fillColor = opts.fillColor ?? (mesh.triColors ? 0xcccccc : DEFAULT_COLOR);
-
-  // --- 3. Emit cells ------------------------------------------------------------
-  for (let x = 0; x < nx; x++) {
-    for (let y = 0; y < ny; y++) {
-      for (let z = 0; z < nz; z++) {
-        const idx = at(x, y, z);
-        const surf = surface[idx];
-        if (surf) {
-          grid.set(x, y, z, surf - 1);
-        } else if (!exterior[idx]) {
-          grid.set(x, y, z, fillColor);
-        }
-      }
-    }
-  }
-
-  return grid;
+  return { nx, ny, nz, surface, exterior, at, min: [min[0], min[1], min[2]], voxelSize };
 }

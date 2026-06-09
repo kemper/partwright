@@ -119,7 +119,7 @@ import { appendVoxelEditsToCode, editOpCount } from './geometry/voxel/editCodege
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, rotateAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
@@ -4603,7 +4603,7 @@ async function main() {
     // These tools moved behind the Tools/Inspect popovers after the view-menu
     // refactor, so the palette is their only keyboard/search entry point. Each
     // fires the existing overlay toggle by id (click() works even collapsed).
-    { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', keywords: 'fuzzy knit cable waffle fur woven smooth voxelize texture modifier displace', run: () => document.getElementById('surface-viewport-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', keywords: 'fuzzy knit cable waffle fur woven voronoi smooth voxelize texture modifier displace', run: () => document.getElementById('surface-viewport-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-resize', title: 'Resize / scale model', hint: 'Tools', keywords: 'scale resize size dimensions grow shrink mm', run: () => document.getElementById('resize-viewport-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-place', title: 'Place / orient on bed', hint: 'Tools', keywords: 'place orient rotate move position lay flat drop floor center bed', run: () => document.getElementById('place-viewport-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => document.getElementById('print-tools-toggle')?.click(), enabled: viewportToolEnabled },
@@ -7084,7 +7084,7 @@ async function main() {
    *  feature size relative to the model's bounding-box diagonal so the AI gets
    *  actionable feedback before spending time on a degenerate run. */
   function textureWarnings(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi',
     opts: Record<string, unknown>,
     mesh: MeshData,
   ): string[] {
@@ -7186,6 +7186,20 @@ async function main() {
         warnings.push(
           `threadSpacing (${ts.toFixed(4)}) is very small — weave will be invisible; ` +
           `try threadSpacing ≈ ${(diag * 0.04).toFixed(3)}`,
+        );
+      }
+    } else if (id === 'voronoi') {
+      const cs = (opts.cellSize as number | undefined) ?? 0;
+      if (cs > diag * 0.4) {
+        warnings.push(
+          `cellSize (${cs.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
+          `fewer than 3 cells visible; try cellSize ≈ ${(diag * 0.12).toFixed(3)}`,
+        );
+      }
+      if (cs > 0 && cs < diag / 300) {
+        warnings.push(
+          `cellSize (${cs.toFixed(4)}) is very small — the cell walls will be invisible; ` +
+          `try cellSize ≈ ${(diag * 0.12).toFixed(3)}`,
         );
       }
     }
@@ -7517,7 +7531,7 @@ async function main() {
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
   function buildSurfaceModifier(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
   ): ModifierResult {
@@ -7618,6 +7632,39 @@ async function main() {
       if (sel && sel.size > 0) return applyWovenPatch(mesh, wovenOpts, sel);
       return applyWoven(mesh, wovenOpts);
     }
+    if (id === 'voronoi') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultVoronoiOptions(mesh);
+      const voronoiOpts = {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        cellSize: (opts?.cellSize as number) ?? base.cellSize,
+        wallWidth: (opts?.wallWidth as number) ?? base.wallWidth,
+        raised: (opts?.raised as boolean) ?? base.raised,
+        jitter: (opts?.jitter as number) ?? base.jitter,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
+      };
+      if (sel && sel.size > 0) return applyVoronoiPatch(mesh, voronoiOpts, sel);
+      return applyVoronoi(mesh, voronoiOpts);
+    }
+    if (id === 'voronoiLamp') {
+      // Perforated shell → voxel output; whole-model only (no region patch).
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultVoronoiLampOptions(mesh);
+      return applyVoronoiLamp(mesh, {
+        cellSize: (opts?.cellSize as number) ?? base.cellSize,
+        wallThickness: (opts?.wallThickness as number) ?? base.wallThickness,
+        strutWidth: (opts?.strutWidth as number) ?? base.strutWidth,
+        resolution: (opts?.resolution as number) ?? base.resolution,
+        jitter: (opts?.jitter as number) ?? base.jitter,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        seed: (opts?.seed as number) ?? base.seed,
+        watertight: (opts?.watertight as boolean) ?? base.watertight,
+        output: (opts?.output as 'mesh' | 'voxel') ?? base.output,
+        smooth: (opts?.smooth as boolean) ?? base.smooth,
+      });
+    }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultSmoothOptions();
@@ -7642,8 +7689,8 @@ async function main() {
     modelHasColor(): boolean { return modelHasColor(); },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
-     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'smooth'|'voxelize'. */
-    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize'. */
+    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
       try {
         previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
         return { ok: true };
@@ -7827,6 +7874,60 @@ async function main() {
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
 
+    /** Apply a Voronoi-shell surface texture to the current model; saves a new version.
+     *  Produces an organic cell-wall relief — a network of raised ridges tracing
+     *  Voronoi cell boundaries (cracked-mud / dragonfly-wing / lampshade look).
+     *  Set raised=false to engrave the network as channels; jitter=0 for a regular grid.
+     *  `preserveColor` (default true) carries paint across subdivision.
+     *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async applyVoronoiShell(opts?: {
+      amplitude?: number;
+      cellSize?: number;
+      wallWidth?: number;
+      raised?: boolean;
+      jitter?: number;
+      grainAngleDeg?: number;
+      seed?: number;
+      quality?: number;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        const mesh = requireCurrentMeshForModifier();
+        const warns = textureWarnings('voronoi', opts ?? {}, mesh);
+        const result = await commitSurfaceModifier(buildSurfaceModifier('voronoi', opts, preserve), preserve);
+        if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
+          const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
+          return { ...result, warnings: [...warns, ...(existing ?? [])] };
+        }
+        return result;
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Turn the current model into a true perforated Voronoi shell (a "Voronoi
+     *  lamp"): a thin hollow wall with the cell interiors cut clean through,
+     *  leaving a see-through strut network. Unlike applyVoronoiShell (a relief
+     *  texture), this opens real holes. `output:'mesh'` (default) bakes a smooth
+     *  manifold-js mesh; `output:'voxel'` switches to the voxel engine
+     *  (paintable / .vox). Saves a new version. Returns `{ ok, label, geometry, warnings? }`. */
+    async applyVoronoiLamp(opts?: {
+      cellSize?: number;
+      wallThickness?: number;
+      strutWidth?: number;
+      resolution?: number;
+      jitter?: number;
+      grainAngleDeg?: number;
+      seed?: number;
+      watertight?: boolean;
+      output?: 'mesh' | 'voxel';
+      smooth?: boolean;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('voronoiLamp', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
     /** Smooth/round the current model (Taubin λ/μ); saves a new version. */
     async smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }) {
       try {
