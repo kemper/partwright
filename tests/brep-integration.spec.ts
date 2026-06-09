@@ -301,6 +301,64 @@ test.describe('BREP integration', () => {
     expect(String(result.error)).toMatch(/color/i);
   });
 
+  test('BREP.label { color } — left input wins on a name collision through fuse', async ({ page }) => {
+    // Two shapes share the label name 'shell' but declare different colors.
+    // labeledBooleanOp merges `other` then `self`, so the left/accumulator
+    // input (red) wins — matching the left-to-right reduce model of fuseAll.
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('replicad');
+      const code = `
+        const { BREP } = api;
+        const a = BREP.label(BREP.box([20, 20, 6]),                     'shell', { color: [1, 0, 0] });
+        const b = BREP.label(BREP.box([20, 20, 6]).translate([0, 0, 4]), 'shell', { color: [0, 0, 1] });
+        return BREP.fuseAll([a, b]);
+      `;
+      const run = await pw.run(code);
+      const colors = pw.getModelColors();
+      return { run, colors };
+    });
+    expect(result.run.error).toBeFalsy();
+    const shell = (result.colors.colors as Array<{ name: string; color: number[] }>)
+      .find(c => c.name === 'shell');
+    expect(shell).toBeTruthy();
+    // Red (left input) wins, not blue.
+    expect(shell!.color[0]).toBeCloseTo(1, 5);
+    expect(shell!.color[2]).toBeCloseTo(0, 5);
+  });
+
+  test('BREP.label { color } — a queued color from a throwing run does not bleed into the next run', async ({ page }) => {
+    // Regression for the Phase C side-channel: run 1 queues a color via
+    // BREP.toManifold and then throws; run 2 legitimately labels 'body' with
+    // NO color. Without the unconditional finally-drain, run 1's queued color
+    // would bleed into run 2's labelColors (same name) and getModelColors()
+    // would wrongly report 'body' as red.
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('manifold-js');
+      // Run 1: queue a color, then throw on a later line.
+      const run1 = await pw.run(`
+        const { Manifold, BREP } = api;
+        BREP.toManifold(BREP.label(BREP.box([10, 10, 10]), 'body', { color: [1, 0, 0] }), Manifold);
+        throw new Error('boom after queueing the color');
+      `);
+      // Run 2: same label name, no color declared.
+      const run2 = await pw.run(`
+        const { Manifold } = api;
+        return api.label(Manifold.cube([10, 10, 10], true), 'body');
+      `);
+      const colors = pw.getModelColors();
+      return { run1, run2, colors };
+    });
+    expect(result.run1.error).toBeTruthy(); // run 1 threw as designed
+    expect(result.run2.error).toBeFalsy();
+    // 'body' must carry NO leaked color from run 1.
+    const body = (result.colors.colors as Array<{ name: string }>).find(c => c.name === 'body');
+    expect(body).toBeFalsy();
+  });
+
   test('friendly fillet error — too-large radius surfaces a hint', async ({ page }) => {
     // A fillet bigger than the smaller box dimension can't be solved by
     // OCCT. The raw error is an integer pointer; our wrapper turns it into

@@ -460,6 +460,14 @@ export const manifoldJsEngine: Engine = {
       // BREP.toManifold (uncommon — the manifold-js engine rejects non-
       // Manifold returns above — but defensive).
       disposeBrepAllocationsExcept(consumeBrepAllocations(), result);
+      // Drain the BREP→Manifold label/color side-channels unconditionally. On
+      // the success path above they're already consumed (so these return empty);
+      // on the error path a `BREP.toManifold(...)` that queued labels/colors
+      // before a later line threw would otherwise leave them queued and bleed
+      // into the NEXT run's labelMap/labelColors (names like "body" collide
+      // across unrelated models). Discard whatever's left here either way.
+      consumeBrepToManifoldLabels();
+      consumeBrepToManifoldLabelColors();
     }
   },
 

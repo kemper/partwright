@@ -1354,7 +1354,7 @@ export function createBrepNamespace(): BrepNamespace {
       const colors: LabelColorMap = new Map(shape._labelColors);
       if (options !== undefined && options !== null) {
         if (typeof options !== 'object' || Array.isArray(options)) {
-          throw new Error('BREP.label(shape, name, options): options must be an object like { color: "#rrggbb" }.');
+          throw new Error('BREP.label(shape, name, options): options must be an object like { color: "#rrggbb" }');
         }
         const { color, ...rest } = options as { color?: unknown };
         const unknownKeys = Object.keys(rest);
