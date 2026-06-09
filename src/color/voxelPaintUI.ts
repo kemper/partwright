@@ -77,6 +77,11 @@ let blockSizeLabel: HTMLElement | null = null;
 let depthSlider: HTMLInputElement | null = null;
 let depthInput: HTMLInputElement | null = null;
 let depthLabel: HTMLElement | null = null;
+let roundSlider: HTMLInputElement | null = null;
+let roundValueLabel: HTMLElement | null = null;
+let flatBottomBtn: HTMLButtonElement | null = null;
+let baseLayersInput: HTMLInputElement | null = null;
+let flatBottomState = false;
 
 export interface VoxelPaintUICallbacks {
   /** Called when the user clicks the toggle button to enter the studio. The
@@ -208,6 +213,21 @@ function refreshControls(): void {
     else depthLabel.textContent = isBox ? `+${d} layers` : `${d} deep`;
   }
 
+  // Rounding section reflects the grid's current surfacing.
+  const surf = voxelPaint.getSurfacing();
+  const smooth = surf?.mode === 'smooth';
+  flatBottomState = smooth && !!surf?.flatBottom;
+  if (roundSlider && document.activeElement !== roundSlider) {
+    roundSlider.value = String(smooth ? Math.round((surf?.strength ?? 1) * 100) : 0);
+  }
+  const amt = Number(roundSlider?.value ?? '0');
+  if (roundValueLabel) roundValueLabel.textContent = amt <= 0 ? 'Off (blocky)' : `${amt}%`;
+  if (flatBottomBtn) { setActive(flatBottomBtn, flatBottomState); flatBottomBtn.disabled = amt <= 0; }
+  if (baseLayersInput) {
+    baseLayersInput.disabled = amt <= 0;
+    if (document.activeElement !== baseLayersInput) baseLayersInput.value = String(smooth ? (surf?.baseLayers ?? 0) : 0);
+  }
+
   if (undoBtn) undoBtn.disabled = !voxelPaint.canUndo();
   if (redoBtn) redoBtn.disabled = !voxelPaint.canRedo();
   if (statusEl) {
@@ -272,6 +292,7 @@ function createPanel(): HTMLElement {
   content.appendChild(depthSection);
   levelSection = buildLevelSection();
   content.appendChild(levelSection);
+  content.appendChild(buildRoundingSection());
   content.appendChild(buildHistoryRow());
   content.appendChild(buildActions());
   p.appendChild(content);
@@ -532,6 +553,83 @@ function buildLevelSection(): HTMLElement {
   }
   sec.appendChild(row);
   return sec;
+}
+
+/** Rounding (surfacing) controls: an amount slider (0 = hard blocks, 1–100% =
+ *  smooth) plus "keep flat" pins. These don't change the blocky editing preview;
+ *  they're applied to the grid's surfacing and baked into the saved model. */
+function buildRoundingSection(): HTMLElement {
+  const sec = document.createElement('div');
+  sec.className = 'flex flex-col gap-1 pt-1 border-t border-zinc-700/60';
+
+  const head = document.createElement('div');
+  head.className = 'flex items-center justify-between';
+  const h = document.createElement('span');
+  h.className = 'text-[10px] uppercase tracking-wider text-zinc-500';
+  h.textContent = 'Rounding';
+  head.appendChild(h);
+  roundValueLabel = document.createElement('span');
+  roundValueLabel.className = 'text-[11px] text-zinc-400';
+  head.appendChild(roundValueLabel);
+  sec.appendChild(head);
+
+  roundSlider = document.createElement('input');
+  roundSlider.type = 'range';
+  roundSlider.min = '0'; roundSlider.max = '100'; roundSlider.step = '5'; roundSlider.value = '0';
+  roundSlider.className = 'w-full accent-blue-500';
+  roundSlider.title = 'Rounding amount (0 = hard blocks, 100% = fully smooth)';
+  roundSlider.addEventListener('input', applyRounding);
+  sec.appendChild(roundSlider);
+
+  const row = document.createElement('div');
+  row.className = 'flex items-center gap-2';
+  flatBottomBtn = document.createElement('button');
+  flatBottomBtn.type = 'button';
+  flatBottomBtn.className = 'flex-1 px-1 py-1 rounded text-[11px] border border-zinc-600/60 hover:bg-zinc-700/60 transition-colors';
+  flatBottomBtn.textContent = 'Flat bottom';
+  flatBottomBtn.title = 'Keep the build-plate face flat while edges round';
+  flatBottomBtn.addEventListener('click', () => { flatBottomState = !flatBottomState; applyRounding(); });
+  row.appendChild(flatBottomBtn);
+
+  const baseWrap = document.createElement('label');
+  baseWrap.className = 'flex items-center gap-1 text-[11px] text-zinc-400';
+  const baseSpan = document.createElement('span');
+  baseSpan.textContent = 'Flat base';
+  baseWrap.appendChild(baseSpan);
+  baseLayersInput = document.createElement('input');
+  baseLayersInput.type = 'number';
+  baseLayersInput.min = '0'; baseLayersInput.max = '64'; baseLayersInput.value = '0';
+  baseLayersInput.className = 'w-12 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  baseLayersInput.title = 'Keep the bottom N voxel layers fully blocky (0 = none)';
+  baseLayersInput.addEventListener('input', applyRounding);
+  baseWrap.appendChild(baseLayersInput);
+  const baseUnit = document.createElement('span');
+  baseUnit.textContent = 'layers';
+  baseWrap.appendChild(baseUnit);
+  row.appendChild(baseWrap);
+  sec.appendChild(row);
+
+  const hint = document.createElement('p');
+  hint.className = 'text-[10px] text-zinc-500 leading-tight';
+  hint.textContent = 'Editing preview stays blocky; rounding shows after you save.';
+  sec.appendChild(hint);
+  return sec;
+}
+
+/** Read the rounding controls and push the resulting surfacing to the grid. */
+function applyRounding(): void {
+  const amount = Number(roundSlider?.value ?? '0');
+  if (amount <= 0) {
+    voxelPaint.setRounding(null);
+  } else {
+    const base = Math.max(0, Math.floor(Number(baseLayersInput?.value ?? '0')));
+    voxelPaint.setRounding({
+      strength: amount / 100,
+      flatBottom: flatBottomState || undefined,
+      baseLayers: base > 0 ? base : undefined,
+    });
+  }
+  refreshControls();
 }
 
 function buildHistoryRow(): HTMLElement {

@@ -130,6 +130,10 @@ export interface Surfacing {
   algorithm?: 'taubin' | 'surfaceNets';
   iterations: number;
   detail: number;
+  /** Rounding amount, 0–1 (default 1). Scales how far each smoothing pass moves
+   *  vertices, so lower = gentler rounding. 0 leaves the mesh un-rounded (the
+   *  smoother is skipped); for a fully hard-faced model use `mode: 'blocks'`. */
+  strength?: number;
   /** Pin the Z of the bottom-most plane so the build-plate face stays flat. */
   flatBottom?: boolean;
   /** Keep the bottom N voxel layers fully blocky (a solid, sharp pedestal). */
@@ -569,8 +573,8 @@ export class VoxelGrid {
    *    - `lockBox` — keep the voxels in `[[x0,y0,z0],[x1,y1,z1]]` (voxel coords)
    *      blocky, for a custom base region.
    *  Chainable. */
-  smooth(opts: number | { iterations?: number; detail?: number; algorithm?: 'taubin' | 'surfaceNets'; flatBottom?: boolean; baseLayers?: number; lockBox?: [Vec3, Vec3] } = {}): this {
-    let iterations = 2, detail = 1;
+  smooth(opts: number | { iterations?: number; detail?: number; strength?: number; algorithm?: 'taubin' | 'surfaceNets'; flatBottom?: boolean; baseLayers?: number; lockBox?: [Vec3, Vec3] } = {}): this {
+    let iterations = 2, detail = 1, strength = 1;
     let algorithm: 'taubin' | 'surfaceNets' = DEFAULT_SMOOTH_ALGORITHM;
     let flatBottom: boolean | undefined;
     let baseLayers: number | undefined;
@@ -579,15 +583,16 @@ export class VoxelGrid {
       iterations = assertNumber(opts, 'smooth(iterations)', { integer: true, min: 1, max: 8 })!;
     } else {
       const o = assertObject(opts, 'smooth(opts)')!;
-      assertNoUnknownKeys(o, ['iterations', 'detail', 'algorithm', 'flatBottom', 'baseLayers', 'lockBox'], 'smooth(opts)');
+      assertNoUnknownKeys(o, ['iterations', 'detail', 'strength', 'algorithm', 'flatBottom', 'baseLayers', 'lockBox'], 'smooth(opts)');
       if (o.iterations !== undefined) iterations = assertNumber(o.iterations, 'smooth.iterations', { integer: true, min: 1, max: 8 })!;
       if (o.detail !== undefined) detail = assertNumber(o.detail, 'smooth.detail', { integer: true, min: 1, max: 4 })!;
+      if (o.strength !== undefined) strength = assertNumber(o.strength, 'smooth.strength', { min: 0, max: 1 })!;
       if (o.algorithm !== undefined) algorithm = assertEnum(o.algorithm, ['taubin', 'surfaceNets'] as const, 'smooth.algorithm');
       if (o.flatBottom !== undefined) flatBottom = assertBoolean(o.flatBottom, 'smooth.flatBottom')!;
       if (o.baseLayers !== undefined) baseLayers = assertNumber(o.baseLayers, 'smooth.baseLayers', { integer: true, min: 1, max: HALF })!;
       if (o.lockBox !== undefined) lockBox = normalizeLockBox(o.lockBox);
     }
-    this._surfacing = { mode: 'smooth', algorithm, iterations, detail, flatBottom, baseLayers, lockBox };
+    this._surfacing = { mode: 'smooth', algorithm, iterations, detail, strength, flatBottom, baseLayers, lockBox };
     return this;
   }
 

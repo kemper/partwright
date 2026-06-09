@@ -133,6 +133,11 @@ return voxels()
 - **`iterations`** (1–8, default 2) — more passes = rounder. For `taubin` these
   are the relaxation passes; for `surfaceNets` they're a light cleanup on top
   (and what makes the base pins below take effect).
+- **`strength`** (0–1, default 1) — the rounding *amount*. Scales how far each
+  smoothing pass moves vertices, so it dials roundness continuously without
+  changing the pass count: `1` is fully rounded, `0.3` is a gentle bevel, `0`
+  leaves the mesh un-rounded. (For perfectly hard cubes use `.blocky()` / no
+  smooth call.) Works for both algorithms.
 - **`detail`** (1–4, default 1) — **`taubin` only.** Supersamples the grid
   ×`detail` before smoothing for finer rounding on coarse shapes (at more
   triangles), then scales back to original size. Ignored by `surfaceNets`.
@@ -368,6 +373,20 @@ Two ways to commit when you're done:
 > rotatable shape gizmo, and named color regions) don't apply to voxels —
 > color lives per-cell in the grid and undo/redo replaces region history.
 
+#### Rounding controls
+
+The Studio's **Rounding** section sets the model's surfacing without leaving the
+editor: a **0–100% amount slider** (0 = hard blocks, higher = smoother — the
+`strength` knob above), a **Flat bottom** toggle (keep the build-plate face
+flat), and a **Flat base … layers** field (keep the bottom N layers blocky). The
+editing preview stays blocky so per-voxel picking still works; the rounding is
+applied to the rendered model when you commit. It rides both commit paths: a
+**Update code** commit appends `.smooth({ … })` / `.blocky()` to your code, and
+**Save as raw voxel data** bakes the surfacing into the emitted call. The Studio
+now also opens on an already-smoothed model (the controls prefill from its
+current setting). This is the UI equivalent of calling `.smooth({ strength, … })`
+in code.
+
 ### Editing an imported voxel
 
 Image-import (and `.vox`) sessions open as `voxels.decode("…")` code. That
@@ -420,9 +439,9 @@ await partwright.bakeVoxelsToCode({ label: 'castle' });  // replace with voxels.
 ```
 
 - `activateVoxelPaint()` re-runs the current code locally to capture the grid
-  + per-triangle voxel/normal provenance. Returns `{ error }` outside voxel
-  sessions, on a `.smooth()` grid (call `.blocky()` first), or if the code
-  doesn't return a grid.
+  + per-triangle voxel/normal provenance. Works on smooth-surfaced grids too
+  (editing happens on the blocky preview; the rounding is preserved). Returns
+  `{ error }` outside voxel sessions or if the code doesn't return a grid.
 - `setVoxelTool(tool)` — `'paint' | 'add' | 'remove' | 'bucket' | 'level' |
   'boxAdd' | 'boxRemove'`. Returns `{ tool }` or `{ error }`.
 - `setVoxelBrush({ radius?, shape?, spray?, sprayDensity?, block?, depth? })` —

@@ -17,7 +17,7 @@
 
 import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
-import { normalizeColor, type VoxelGrid } from '../geometry/voxel/grid';
+import { normalizeColor, type VoxelGrid, type Surfacing } from '../geometry/voxel/grid';
 import { gridToMeshWithProvenance } from '../geometry/voxel/mesher';
 import { runVoxelForPaint, type VoxelPaintRun } from '../geometry/engines/voxel';
 import { bucketRecolor, clearBox, fillBoxRecolor, addBlock, addBlockCells, extrudeBox, brushApply, levelRecolor, inBrush, type BrushShape } from '../geometry/voxel/edits';
@@ -174,6 +174,31 @@ export function pendingBoxCorner(): [number, number, number] | null {
  *  (e.g. `.vox` export) capture unbaked edits without re-running the code. */
 export function getGrid(): VoxelGrid | null { return run?.grid ?? null; }
 
+/** Options the Rounding panel can set (a subset of `VoxelGrid.smooth`'s opts;
+ *  `lockBox`/`detail` aren't exposed in the studio). */
+export type RoundingOpts = { strength?: number; iterations?: number; algorithm?: 'taubin' | 'surfaceNets'; flatBottom?: boolean; baseLayers?: number };
+
+/** Current surfacing of the edited grid, for the Rounding panel to prefill. */
+export function getSurfacing(): Surfacing | null { return run?.grid.surfacing() ?? null; }
+
+/** Set the grid's surfacing from the Rounding panel — `null` = hard blocks,
+ *  otherwise smooth with the given options. Does not change the (blocky) editing
+ *  preview; the rounding is baked into the rendered model on save. */
+export function setRounding(opts: RoundingOpts | null): void {
+  if (!run) return;
+  if (opts === null) run.grid.blocky();
+  else run.grid.smooth(opts);
+  cbStateChange?.();
+}
+
+/** Whether the user changed surfacing since activation — drives whether the
+ *  "Update code" commit appends an explicit `.smooth(...)`/`.blocky()` call (so
+ *  an untouched model keeps whatever its source already declared). */
+export function roundingChanged(): boolean {
+  if (!run || !baselineGrid) return false;
+  return JSON.stringify(run.grid.surfacing()) !== JSON.stringify(baselineGrid.surfacing());
+}
+
 /** The delta from the code's own output to the current edited grid — what the
  *  "Update code" action appends to the source. Empty when nothing changed. */
 export function getEditOps(): VoxelEditOps {
@@ -216,13 +241,11 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
   if (active) deactivate();
   const r = runVoxelForPaint(code, paramOverrides);
   if (!r.ok) return r.error;
-  // Smooth surfacing moves vertices off the voxel grid, so a clicked
-  // triangle's coords no longer map cleanly to a single source voxel. Refuse
-  // here with a clear, actionable message rather than silently dropping the
-  // user's `.smooth()` and showing them a blocky model.
-  if (r.data.grid.surfacing().mode === 'smooth') {
-    return 'Voxel Studio cannot edit a smooth-surfaced grid (per-voxel picking only works on hard cube faces). Call `.blocky()` before returning, edit, then re-apply `.smooth()` afterward.';
-  }
+  // A smooth grid is editable: per-voxel picking runs on the hard-faced
+  // provenance mesh (gridToMeshWithProvenance ignores surfacing), so the studio
+  // preview shows blocks while editing. The grid keeps its surfacing setting —
+  // the Rounding panel reads/updates it and it's re-applied to the rendered
+  // model on save (see getSurfacing / setRounding and commitVoxelEdits).
   // Soft cap: edits re-mesh on every click on the main thread, so very large
   // grids tank interactivity. The blocky-art / image-import range is far below
   // this; refuse at the door with a useful number.

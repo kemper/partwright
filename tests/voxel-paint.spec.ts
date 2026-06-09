@@ -113,15 +113,19 @@ test.describe('voxel paint mode', () => {
     expect(result.code).not.toContain('voxels.decode(');
   });
 
-  test('refuses smooth-surfaced grids with a clear message', async ({ page }) => {
+  test('opens on a smooth-surfaced grid (edits on the blocky preview)', async ({ page }) => {
+    // The studio now opens on smooth grids: per-voxel picking runs on the
+    // hard-faced provenance mesh while the grid keeps its surfacing for the
+    // Rounding panel to read and re-apply on save.
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       await pw.setActiveLanguage('voxel');
-      await pw.run(`return api.voxels().fillBox([0,0,0],[3,3,3],'#fff').smooth();`);
+      await pw.run(`return api.voxels().fillBox([0,0,0],[3,3,3],'#fff').smooth({ strength: 0.5 });`);
       return pw.activateVoxelPaint();
     });
-    expect(result.error).toMatch(/smooth-surfaced/);
+    expect(result.error).toBeFalsy();
+    expect(result.voxelCount).toBe(64); // 4×4×4 box
   });
 
   test('cross-session: loading a different version cancels active paint', async ({ page }) => {
