@@ -17,9 +17,15 @@ import { simpleHash } from '../geometry/statsComputation';
 import type { SurfaceOp, SurfaceOpId } from './surfaceOpSpec';
 import {
   applyFuzzy, applyKnitAsync, applyCable, applyWaffle, applyFur, applyWoven, applyVoronoi, applySmooth,
+  applyFuzzyPatch, applyKnitPatchAsync, applyCablePatch, applyWafflePatch, applyFurPatch, applyWovenPatch, applyVoronoiPatch, applySmoothPatch,
   defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions,
   defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultSmoothOptions,
 } from './modifiers';
+
+/** Resolves an op's `region` descriptor to the triangle set to texture, against
+ *  the mesh that op will run on. Supplied by the main thread (it owns the
+ *  descriptor resolver + label map). Returns an empty set for "no match". */
+export type RegionResolver = (descriptor: unknown, mesh: MeshData) => Set<number>;
 
 /** Memo cache: prefix key → textured mesh after that prefix of the chain.
  *  Bounded so a long editing session can't grow it without limit (insertion
@@ -43,23 +49,26 @@ function remember(key: string, mesh: MeshData): void {
  *  caller), so the same code+params+ops always maps to the same key — and any
  *  geometry-affecting change shifts it (→ a miss → the Re-apply pill). */
 function prefixKey(baseKey: string, ops: SurfaceOp[], upTo: number): string {
-  const chain = ops.slice(0, upTo + 1).map(o => ({ id: o.id, params: o.params }));
+  const chain = ops.slice(0, upTo + 1).map(o => ({ id: o.id, params: o.params, region: o.region ?? null }));
   return simpleHash(`${baseKey}|${JSON.stringify(chain)}`);
 }
 
 /** Apply one op to `mesh`, filling size-relative defaults from the actual mesh
- *  and reusing the modifier math. The async knit path uses the GPU when present. */
-async function applyOne(mesh: MeshData, op: SurfaceOp): Promise<MeshData> {
+ *  and reusing the modifier math. When `region` is a non-empty triangle set the
+ *  *patch* variant textures only those triangles. The async knit path uses the
+ *  GPU when present. */
+async function applyOne(mesh: MeshData, op: SurfaceOp, region: Set<number> | null): Promise<MeshData> {
   const p = op.params;
+  const r = region && region.size > 0 ? region : null;
   switch (op.id) {
-    case 'fuzzy':   return applyFuzzy(mesh, { ...defaultFuzzyOptions(mesh), ...p }).mesh;
-    case 'knit':    return (await applyKnitAsync(mesh, { ...defaultKnitOptions(mesh), ...p })).mesh;
-    case 'cable':   return applyCable(mesh, { ...defaultCableOptions(mesh), ...p }).mesh;
-    case 'waffle':  return applyWaffle(mesh, { ...defaultWaffleOptions(mesh), ...p }).mesh;
-    case 'fur':     return applyFur(mesh, { ...defaultFurOptions(mesh), ...p }).mesh;
-    case 'woven':   return applyWoven(mesh, { ...defaultWovenOptions(mesh), ...p }).mesh;
-    case 'voronoi': return applyVoronoi(mesh, { ...defaultVoronoiOptions(mesh), ...p }).mesh;
-    case 'smooth':  return applySmooth(mesh, { ...defaultSmoothOptions(), ...p }).mesh;
+    case 'fuzzy':   return r ? applyFuzzyPatch(mesh, { ...defaultFuzzyOptions(mesh), ...p }, r).mesh : applyFuzzy(mesh, { ...defaultFuzzyOptions(mesh), ...p }).mesh;
+    case 'knit':    return r ? (await applyKnitPatchAsync(mesh, { ...defaultKnitOptions(mesh), ...p }, r)).mesh : (await applyKnitAsync(mesh, { ...defaultKnitOptions(mesh), ...p })).mesh;
+    case 'cable':   return r ? applyCablePatch(mesh, { ...defaultCableOptions(mesh), ...p }, r).mesh : applyCable(mesh, { ...defaultCableOptions(mesh), ...p }).mesh;
+    case 'waffle':  return r ? applyWafflePatch(mesh, { ...defaultWaffleOptions(mesh), ...p }, r).mesh : applyWaffle(mesh, { ...defaultWaffleOptions(mesh), ...p }).mesh;
+    case 'fur':     return r ? applyFurPatch(mesh, { ...defaultFurOptions(mesh), ...p }, r).mesh : applyFur(mesh, { ...defaultFurOptions(mesh), ...p }).mesh;
+    case 'woven':   return r ? applyWovenPatch(mesh, { ...defaultWovenOptions(mesh), ...p }, r).mesh : applyWoven(mesh, { ...defaultWovenOptions(mesh), ...p }).mesh;
+    case 'voronoi': return r ? applyVoronoiPatch(mesh, { ...defaultVoronoiOptions(mesh), ...p }, r).mesh : applyVoronoi(mesh, { ...defaultVoronoiOptions(mesh), ...p }).mesh;
+    case 'smooth':  return r ? applySmoothPatch(mesh, { ...defaultSmoothOptions(), ...p }, r).mesh : applySmooth(mesh, { ...defaultSmoothOptions(), ...p }).mesh;
     default: {
       // Exhaustiveness guard — a new SurfaceOpId must add a case above.
       const _never: never = op.id;
@@ -91,6 +100,7 @@ export async function computeChain(
   baseKey: string,
   ops: SurfaceOp[],
   onProgress?: (fraction: number) => void,
+  resolveRegion?: RegionResolver,
 ): Promise<MeshData> {
   if (ops.length === 0) return base;
 
@@ -105,7 +115,11 @@ export async function computeChain(
 
   const remaining = ops.length - start;
   for (let i = start; i < ops.length; i++) {
-    mesh = await applyOne(mesh, ops[i]);
+    const op = ops[i];
+    // Region selectors resolve against the mesh this op runs on (so geometric
+    // selectors stay exact even after a prior op subdivided the mesh).
+    const region = op.region != null && resolveRegion ? resolveRegion(op.region, mesh) : null;
+    mesh = await applyOne(mesh, op, region);
     computeCalls++;
     remember(prefixKey(baseKey, ops, i), mesh);
     onProgress?.(remaining > 0 ? (i - start + 1) / remaining : 1);

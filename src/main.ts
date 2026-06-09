@@ -7206,6 +7206,9 @@ async function main() {
     if (getActiveLanguage() !== 'manifold-js') {
       return { error: 'api.surface.* textures are manifold-js only. Use the bake tool (applyKnitTexture, applyFuzzySkin, …) for this engine, or switch the session to manifold-js.' };
     }
+    if ('region' in opts) {
+      return { error: 'surfaceTexture applies whole-model. For a region texture, write api.surface.' + id + "({ region: 'label' | { box|slab|cylinder } }) directly in your model code (runAndSave) — see /ai/textures.md." };
+    }
     if (!currentMeshData) return { error: 'No model loaded — run the model first.' };
     const newCode = appendSurfaceCall(getValue(), id, opts);
     setValue(newCode);
@@ -13693,6 +13696,27 @@ async function main() {
    *     sticky Re-apply pill, keeping keystroke renders snappy.
    *  Returns true unless a forced compute failed (caller treats failure as a
    *  non-fatal "base shown" run). */
+  /** Build the region resolver passed to computeChain for `api.surface.*({ region })`
+   *  (phase 5). Resolves each op's region descriptor to a triangle set against
+   *  the mesh that op runs on, reusing the paint resolver. Geometric selectors
+   *  (box/slab/cylinder) are exact on any mesh; a `byLabel` region depends on the
+   *  run's label map (valid only on the un-textured base), so it's rejected when
+   *  it would run on an already-subdivided mesh — with an actionable message. */
+  function makeSurfaceRegionResolver(result: MeshResult, base: MeshData) {
+    // The run handler sets currentLabelMap later; set it now so byLabel regions
+    // resolve against THIS run's labels (idempotent with the later assignment).
+    if (result.surfaceOps?.some(o => o.region != null)) currentLabelMap = result.labelMap ?? null;
+    return (descriptor: unknown, mesh: MeshData): Set<number> => {
+      const d = descriptor as RegionDescriptor;
+      if (d.kind === 'byLabel' && mesh.numTri !== base.numTri) {
+        throw new Error(`api.surface region "${d.label}": a byLabel region must be the first surface op — label triangle ids are only valid on the un-textured mesh. Texture this region first, or use a geometric selector (box/slab/cylinder) to texture a region after another texture.`);
+      }
+      let adjacency: AdjacencyGraph | null = null;
+      if (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood') adjacency = buildAdjacency(mesh);
+      return resolveDescriptorTriangles(d, mesh, adjacency, null).triangles;
+    };
+  }
+
   async function applySurfaceTextures(result: MeshResult, src: string, force: boolean): Promise<void> {
     const ops = result.surfaceOps;
     if (!ops || ops.length === 0 || !result.mesh) {
@@ -13731,7 +13755,7 @@ async function main() {
         indeterminate: false,
       });
       try {
-        const textured = await computeChain(base, baseKey, ops, (f) => updateProgress(progressId, f));
+        const textured = await computeChain(base, baseKey, ops, (f) => updateProgress(progressId, f), makeSurfaceRegionResolver(result, base));
         result.mesh = textured;
         result.manifold = null;
         hideSurfaceReapplyPill();

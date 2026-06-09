@@ -65,6 +65,28 @@ return body;
   (see [colors](/ai/colors.md)). Use it when you want the texture to live with
   the code; use the `apply*` tools when you want a one-shot baked result.
 
+**Per-region textures (`region`):** pass a `region` selector to texture only part
+of the model — so different regions can carry different textures:
+
+```js
+const { Manifold } = api;
+const body = api.label(Manifold.sphere(12, 48), 'body');
+api.surface.knit({ stitchWidth: 1.4, region: 'body' });                  // by api.label name
+api.surface.fuzzy({ region: { box: { min: [-12,-12,0], max: [12,12,12] } } }); // upper half only
+return body;
+```
+
+`region` accepts exactly one selector, mirroring `api.paint.*`: a label name
+(string, or `{ label }`), `{ box: { min, max } }`, `{ slab: { axis|normal,
+offset, thickness } }`, or `{ cylinder: { center, rMin?, rMax, zMin, zMax } }`.
+It textures just the matching triangles (a "patch"), so the rest of the surface
+stays as-is. Chain several to give regions different textures. Geometric
+selectors (box/slab/cylinder) stay exact even when chained after another texture;
+a `byLabel` region must be the **first** surface op (label ids are only valid on
+the un-textured mesh — use a geometric selector for a region after another
+texture). This is code-authored (write it in `runAndSave`); the `surfaceTexture`
+tool/panel apply whole-model.
+
 **Driving it without writing the call yourself:** the `surfaceTexture(id, opts)`
 tool / `partwright.surfaceTexture(id, opts)` console method applies a texture *as
 code* — it appends the `api.surface.<id>(...)` call to the current model and
