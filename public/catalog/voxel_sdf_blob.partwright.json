@@ -1,0 +1,60 @@
+{
+  "partwright": "1.13",
+  "session": {
+    "name": "Voxel SDF Blob Mascot",
+    "created": 1781006433602,
+    "updated": 1781006433602,
+    "images": null,
+    "language": "voxel"
+  },
+  "parts": [
+    {
+      "name": "Part 1",
+      "order": 0
+    }
+  ],
+  "versions": [
+    {
+      "index": 1,
+      "code": "// Blob mascot — organic SDF smooth-blend showcase, voxel engine.\n// Face is on the -Y side (front). Z is up. ~45mm tall.\nconst { voxels, sdf } = api;\nconst v = voxels();\n\n// ---- Body: a fat lower egg smoothly blended into a slightly narrower head\n//      bump on top → a chunky teardrop. Built so the bottom dips below z=0,\n//      then sliced flat with a half-space.\nconst body = sdf.ellipsoid(15, 14, 13).translate(0, 0, 15);   // chunky lower body\nconst head = sdf.ellipsoid(12, 11, 9).translate(0, 0, 27);    // head bump on top\nlet blob = body.smoothUnion(head, 6);\n\n// ---- Feet: two stubby ellipsoids that protrude below the body front, blended\n//      in. They sit lower than the body center so their front+bottom voxels are\n//      \"deepest inside\" the foot region → they take the darker-green color.\nconst footL = sdf.ellipsoid(8, 9, 6).translate(-9, -3, 3).label('foot');\nconst footR = sdf.ellipsoid(8, 9, 6).translate(9, -3, 3).label('foot');\nblob = blob.smoothUnion(footL, 4).smoothUnion(footR, 4);\n\n// ---- Arms: little side nubs that stick out past the body (darker green).\nconst armL = sdf.ellipsoid(6, 5, 7).translate(-17, 0, 18).label('foot');\nconst armR = sdf.ellipsoid(6, 5, 7).translate(17, 0, 18).label('foot');\nblob = blob.smoothUnion(armL, 4).smoothUnion(armR, 4);\n\n// ---- Flatten the bottom: intersect with a half-space whose lower face is z=0.\nconst halfSpace = sdf.box([200, 200, 200]).translate(0, 0, 100);\nblob = blob.intersect(halfSpace);\n\n// Rasterize the green body. res 0.75 keeps it ~45mm tall and chunky.\nconst RES = 0.75;\nv.sdf(blob, {\n  res: RES,\n  color: '#7ed957',              // mint-green body\n  colors: { foot: '#4caf50' },   // darker-green feet + arms\n});\n\n// ---- FACE on the -Y side, painted as decals onto the front surface.\n// frontDecal walks +Y..-Y down to the first occupied voxel at (x,z) and recolors\n// it (and optionally a few layers in) so the feature wraps the curved front.\nfunction frontDecal(x, z, c, depth = 1) {\n  let painted = 0;\n  // find frontmost (most -Y) occupied voxel at this column\n  for (let y = -40; y <= 40; y++) {\n    if (v.has(x, y, z)) {\n      for (let d = 0; d < depth && v.has(x, y + d, z); d++) v.set(x, y + d, z, c);\n      return true;\n    }\n  }\n  return false;\n}\nfunction disc(cx, cz, r, c, depth = 1) {\n  for (let x = cx - r; x <= cx + r; x++)\n    for (let z = cz - r; z <= cz + r; z++)\n      if ((x - cx) ** 2 + (z - cz) ** 2 <= r * r) frontDecal(x, z, c, depth);\n}\n\n// Face geometry in VOXEL coords (world / RES). Head center ~ (0, ., 30) world\n// → z ≈ 40 in voxels. Eyes a bit below the head crown, mouth below the eyes.\nconst EYE_Z = 34, EYE_X = 8, MOUTH_Z = 27;\n\n// White eye whites\ndisc(-EYE_X, EYE_Z, 4, '#ffffff', 2);\ndisc(EYE_X, EYE_Z, 4, '#ffffff', 2);\n// Dark pupils, slightly lower-inner\ndisc(-EYE_X + 1, EYE_Z - 1, 2, '#222222', 2);\ndisc(EYE_X - 1, EYE_Z - 1, 2, '#222222', 2);\n\n// Pink cheeks, below + outside the eyes\ndisc(-EYE_X - 5, EYE_Z - 5, 2, '#ff9eb5', 1);\ndisc(EYE_X + 5, EYE_Z - 5, 2, '#ff9eb5', 1);\n\n// Smile: a shallow upward arc of dark voxels (z = MOUTH_Z + bend up at ends).\nfor (let x = -6; x <= 6; x++) {\n  const z = MOUTH_Z + Math.round((x * x) / 12); // parabola opening up → smile\n  frontDecal(x, z, '#222222', 2);\n  frontDecal(x, z - 1, '#222222', 2);\n}\n\n// ---- Recolor feet + arms darker green. The smoothUnion blends them into the\n// body, so the SDF \"deepest-inside\" rule keeps them body-colored; instead we\n// recolor every occupied voxel inside each ellipsoidal foot/arm zone (voxel\n// coords; bottom is z=0). This makes the darker-green feet/arms read clearly in\n// the silhouette without changing geometry.\nconst FOOT = '#4caf50';\nfunction recolorZone(cx, cy, cz, rx, ry, rz, c) {\n  for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++)\n    for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++)\n      for (let z = Math.floor(cz - rz); z <= Math.ceil(cz + rz); z++) {\n        const e = ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 + ((z - cz) / rz) ** 2;\n        if (e <= 1 && v.has(x, y, z)) v.set(x, y, z, c);\n      }\n}\n// Feet: two rounded darker-green foot pads at the bottom front, with a gap\n// between them so they read as two distinct feet (not a skirt).\nfunction footPad(cx, cz, rx, rz) {\n  for (let x = cx - rx; x <= cx + rx; x++)\n    for (let z = Math.max(0, cz - rz); z <= cz + rz; z++) {\n      const e = ((x - cx) / rx) ** 2 + ((z - cz) / rz) ** 2;\n      if (e <= 1.05) frontDecal(x, z, FOOT, 4);\n    }\n}\nfootPad(-11, 4, 8, 5);\nfootPad(11, 4, 8, 5);\n// Arms (world ±17,0,18 → voxels ±23,0,24): recolor the outer front of each nub.\nrecolorZone(-23, -4, 24, 8, 8, 10, FOOT);\nrecolorZone(23, -4, 24, 8, 8, 10, FOOT);\n\nreturn v;\n",
+      "label": "v1",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 10538,
+        "triangleCount": 21072,
+        "boundingBox": {
+          "x": [
+            -30,
+            31
+          ],
+          "y": [
+            -18,
+            19
+          ],
+          "z": [
+            0,
+            49
+          ],
+          "dimensions": [
+            61,
+            37,
+            49
+          ]
+        },
+        "centroid": [
+          0.5,
+          0.5,
+          24.5
+        ],
+        "volume": 45591,
+        "surfaceArea": 10536,
+        "genus": 0,
+        "isManifold": true,
+        "componentCount": 1,
+        "unit": "mm"
+      },
+      "timestamp": 1781006433602,
+      "language": "voxel"
+    }
+  ]
+}

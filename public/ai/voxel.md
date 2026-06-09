@@ -77,6 +77,7 @@ are **integers** in the range −1024…1023 on each axis. 1 voxel = 1 world uni
 | `v.mirror('x' \| 'y' \| 'z')` | Add a mirrored copy across that axis's 0-plane (great for symmetric models; the mirrored copy wins where it overlaps an existing voxel). |
 | `v.hollow(thickness?)` | Remove interior voxels, leaving a shell of the given wall thickness (default 1). |
 | `v.sdf(node, opts?)` | Rasterize an `api.sdf.*` expression into the grid — gyroids, TPMS lattices, smooth blends, twists → colored voxels. See [SDF → voxel](#sdf--voxel-vsdf). |
+| `v.keepLargest(count?)` | Keep only the largest face-connected component(s), deleting smaller islands (`count` default 1). The cheap printability fix for a fragmented grid — e.g. an SDF lattice that sheds stray specks. |
 | `v.size` | Number of occupied voxels. |
 | `v.bounds()` → `{min,max} \| null` | Inclusive extents, or null when empty. |
 | `v.forEach((x,y,z,color) => …)` | Iterate occupied voxels. |
@@ -239,11 +240,24 @@ return voxels().sdf(sdf.union(shell, core), {
 - **Sample budget.** `v.sdf` samples once per cell over the bounds; a tiny `res`
   over big bounds is capped (`import.voxelSdfMaxSamples`, default 8M) and throws,
   asking for a coarser `res` or tighter `bounds`, rather than freezing.
-- **Printability.** Open lattices can fragment into many disconnected
-  components (each a separate piece on the plate). Check `componentCount` — for
-  a single printable solid, keep walls thick enough to stay face-connected, or
-  wrap the lattice in a solid skin (subtract an inner shape from an outer one and
-  union the lattice inside).
+- **Printability — fragmentation.** Open lattices can fragment into many
+  disconnected components (each a separate piece on the plate). Check
+  `componentCount`. Fixes, cheapest first: call **`v.keepLargest()`** to drop
+  stray specks; thicken walls so the lattice stays face-connected; weld a solid
+  core/skin through it (e.g. `lattice.union(smallSolidCore)`, or subtract an
+  inner shape from an outer solid and union the lattice inside).
+- **Thin TPMS struts at `res: 1` can be non-manifold.** A lattice strut only one
+  voxel wide tends to touch its neighbour along an *edge* (diagonal), not a face
+  — a non-manifold edge. The fix is **resolution, not thickness**: a finer `res`
+  (e.g. 0.6–0.7) thickens the same world-space strut to ≥2 voxels so it
+  rasterizes face-connected. (`v.keepLargest()` can't repair this — diagonal
+  contacts aren't separate components, they're a bad join *within* one.)
+- **`colors`/`.label()` does NOT survive `smoothUnion`.** A label on a sub-shape
+  that's then `smoothUnion`'d is never the *deepest* region at the blended
+  surface, so its `colors` entry yields zero voxels (same reason the mesh path
+  hard-unions across labels — see `/ai/sdf.md`). For a smooth-blended organic,
+  either label the *outer* expression, or fill one base `color` and recolor
+  detail regions afterward with `v.fillBox`/`v.set`/`v.sphere`.
 
 ## MagicaVoxel `.vox` import
 

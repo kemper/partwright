@@ -493,6 +493,57 @@ export class VoxelGrid {
     return this;
   }
 
+  /** Keep only the largest face-connected component(s), deleting smaller
+   *  islands. The cheap printability fix for grids that mesh into many
+   *  disconnected pieces — most often an SDF lattice (`v.sdf` of a gyroid/TPMS
+   *  intersection) that sheds stray specks: this collapses `componentCount`
+   *  down to (at most) `count`. `count` (default 1) keeps the N biggest by
+   *  voxel volume; everything else is removed. Chainable. */
+  keepLargest(count = 1): this {
+    const n = assertNumber(count, 'keepLargest(count)', { integer: true, min: 1 })!;
+    if (this.cells.size === 0) return this;
+    // Label face-connected components with a BFS over occupied cells.
+    const comp = new Map<number, number>(); // cell key -> component id
+    const sizes: number[] = [];
+    const queue: number[] = [];
+    for (const startKey of this.cells.keys()) {
+      if (comp.has(startKey)) continue;
+      const id = sizes.length;
+      let size = 0;
+      comp.set(startKey, id);
+      queue.length = 0;
+      queue.push(startKey);
+      for (let head = 0; head < queue.length; head++) {
+        const key = queue[head];
+        size++;
+        const z = (key % DIM) - HALF;
+        const y = (Math.floor(key / DIM) % DIM) - HALF;
+        const x = Math.floor(key / (DIM * DIM)) - HALF;
+        const visit = (nx: number, ny: number, nz: number): void => {
+          if (!inRange(nx, ny, nz)) return;
+          const nk = packKey(nx, ny, nz);
+          if (this.cells.has(nk) && !comp.has(nk)) { comp.set(nk, id); queue.push(nk); }
+        };
+        visit(x + 1, y, z); visit(x - 1, y, z);
+        visit(x, y + 1, z); visit(x, y - 1, z);
+        visit(x, y, z + 1); visit(x, y, z - 1);
+      }
+      sizes.push(size);
+    }
+    if (sizes.length <= n) return this; // already ≤ count components
+    // Keep the `n` component ids with the most voxels.
+    const keep = new Set(
+      sizes.map((s, id) => [s, id] as const)
+        .sort((a, b) => b[0] - a[0])
+        .slice(0, n)
+        .map(([, id]) => id),
+    );
+    for (const [key, id] of comp) {
+      if (!keep.has(id)) this.cells.delete(key);
+    }
+    return this;
+  }
+
   // ---- Surfacing (how the grid is meshed) -------------------------------
 
   /** Select rounded-edge surfacing. Accepts an iteration count or

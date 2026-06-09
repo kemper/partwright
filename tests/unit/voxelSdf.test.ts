@@ -91,3 +91,49 @@ describe('VoxelGrid.sdf — SDF → voxel bridge', () => {
     expect(v.has(0, 0, 0)).toBe(true);   // the sphere was added
   });
 });
+
+describe('VoxelGrid.keepLargest', () => {
+  it('removes smaller face-connected islands, keeping the biggest', () => {
+    const v = new VoxelGrid();
+    v.fillBox([0, 0, 0], [4, 4, 4], '#fff');     // 125-voxel blob
+    v.fillBox([20, 0, 0], [21, 0, 0], '#f00');   // 2-voxel speck, disjoint
+    v.set(-10, -10, -10, '#0f0');                // 1-voxel speck
+    expect(v.size).toBe(128);
+    v.keepLargest();
+    expect(v.size).toBe(125);
+    expect(v.has(2, 2, 2)).toBe(true);
+    expect(v.has(20, 0, 0)).toBe(false);
+    expect(v.has(-10, -10, -10)).toBe(false);
+  });
+
+  it('keepLargest(n) keeps the n biggest components', () => {
+    const v = new VoxelGrid();
+    v.fillBox([0, 0, 0], [3, 3, 3], '#fff');     // 64
+    v.fillBox([20, 0, 0], [22, 0, 0], '#f00');   // 3
+    v.set(-10, -10, -10, '#0f0');                // 1
+    v.keepLargest(2);
+    expect(v.has(1, 1, 1)).toBe(true);
+    expect(v.has(21, 0, 0)).toBe(true);          // 2nd-largest kept
+    expect(v.has(-10, -10, -10)).toBe(false);    // smallest dropped
+  });
+
+  it('leaves a single connected component untouched and treats diagonal touch as separate', () => {
+    const solid = new VoxelGrid().fillBox([0, 0, 0], [3, 3, 3], '#fff');
+    const before = solid.size;
+    solid.keepLargest();
+    expect(solid.size).toBe(before);
+    // Two voxels touching only at a corner are NOT face-connected → 2 components.
+    const diag = new VoxelGrid().set(0, 0, 0, '#fff').set(1, 1, 1, '#fff');
+    diag.keepLargest();
+    expect(diag.size).toBe(1);
+  });
+
+  it('welds a fragmented SDF gyroid lattice into one printable component', () => {
+    const v = new VoxelGrid().sdf(sdf.gyroid(7, 0.4).intersect(sdf.sphere(12)), {
+      bounds: { min: [-12, -12, -12], max: [12, 12, 12] },
+    });
+    expect(v.size).toBeGreaterThan(0);
+    v.keepLargest();           // should not throw and should leave a non-empty grid
+    expect(v.size).toBeGreaterThan(0);
+  });
+});

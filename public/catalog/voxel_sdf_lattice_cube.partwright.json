@@ -1,0 +1,60 @@
+{
+  "partwright": "1.13",
+  "session": {
+    "name": "Voxel SDF Lattice Cube",
+    "created": 1781006436964,
+    "updated": 1781006436964,
+    "images": null,
+    "language": "voxel"
+  },
+  "parts": [
+    {
+      "name": "Part 1",
+      "order": 0
+    }
+  ],
+  "versions": [
+    {
+      "index": 1,
+      "code": "// TPMS lattice desk cube / paperweight.\n// Graphite frame: solid skin on TOP + BOTTOM (flat base to sit on the plate)\n// and solid corner posts/edges; the FOUR side faces are opened into windows\n// that reveal a glowing-cyan Schwarz-P TPMS lattice filling the interior.\n// One connected printable piece. The STAR is v.sdf — the whole frame, the\n// window cuts, and the lattice are one declarative SDF expression rasterized\n// into the voxel grid.\nconst { voxels, sdf } = api;\nconst v = voxels();\n\nconst FRAME = '#3a3f4b'; // graphite frame / skin\nconst CORE  = '#36d6e0'; // glowing-cyan lattice core\n\n// --- dimensions (world units ~ mm; res 1 -> 1 voxel = 1 unit) ---\nconst S      = 40;        // outer cube edge\nconst H      = S / 2;     // 20, model centered at origin -> spans -20..20\nconst corner = 5;         // rounded-corner radius\nconst wall   = 4;         // solid skin / frame thickness\nconst inner  = S - 2 * wall; // 32 cavity edge (cavity spans -16..16)\nconst winW   = 26;        // side-window width  (opening spans -13..13)\nconst winH   = 24;        // side-window height (opening spans -12..12)\nconst cell   = 11;        // Schwarz-P cell size (world units)\nconst thick  = 0.85;      // TPMS field thickness -> open but sturdy struts\nconst RES    = 0.65;      // world units per voxel (finer -> manifold lattice)\n\n// --- Frame: rounded outer cube, hollowed, with four side windows ---\nconst outer   = sdf.roundedBox([S, S, S], corner);\nconst cavity  = sdf.box([inner, inner, inner]);          // hollow interior\nconst winX    = sdf.box([S + 4, winW, winH]);            // opens +X / -X walls\nconst winY    = sdf.box([winW, S + 4, winH]);            // opens +Y / -Y walls\nconst frame   = outer.subtract(cavity)\n                     .subtract(winX).subtract(winY)\n                     .label('frame');\n\n// --- Lattice core: Schwarz-P clipped to the cavity, oversized by +1 world unit\n// per side (33 vs 32) so its struts plunge into the frame walls and FACE-bond\n// with the skin/posts. Sampling at RES 0.65 keeps the struts >=2 voxels thick,\n// so the lattice rasterizes as a clean (near-manifold) face-connected solid\n// instead of the diagonal-only specks a res-1 sampling produces. ---\n// roundedBox clip rounds OFF the 8 cube corners so no isolated lattice corner\n// blob can form there (the solid frame posts already fill those corners).\nconst latRegion = sdf.roundedBox([inner + 1, inner + 1, inner + 1], 6);\nconst core      = sdf.schwarzP(cell, thick).intersect(latRegion).label('core');\n\n// --- Rasterize the single SDF expression, two-tone by label ---\nv.sdf(sdf.union(frame, core), {\n  res: RES,\n  bounds: { min: [-H - 1, -H - 1, -H - 1], max: [H + 1, H + 1, H + 1] },\n  colors: { frame: FRAME, core: CORE },\n  color: FRAME,\n});\n\n// --- Sit flat on the plate: model was centered; shift its min Z to 0 ---\nconst b = v.bounds();\nv.translate([0, 0, -b.min[2]]);\n\n// --- Hygiene pass: bridge any diagonal-only contacts into solid face contacts.\n// Two voxels that share only an EDGE (differ by 1 in two axes, equal in the\n// third) form a non-manifold edge; fill one of the two cells that shares a face\n// with BOTH so the contact becomes a solid face contact. Repeat to a fixed\n// point because a freshly-filled bridge can expose new diagonals. (The rounded\n// lattice clip above already removed the corner blobs; this hardens the rest of\n// the strut/skin junctions so the print has no knife-edge contacts.) ---\nfunction bridgeDiagonals() {\n  const planes = [\n    [[1, 1, 0], [1, 0, 0]], [[1, -1, 0], [1, 0, 0]],\n    [[1, 0, 1], [1, 0, 0]], [[1, 0, -1], [1, 0, 0]],\n    [[0, 1, 1], [0, 1, 0]], [[0, 1, -1], [0, 1, 0]],\n  ];\n  for (let pass = 0; pass < 6; pass++) {\n    const adds = [];\n    v.forEach((x, y, z) => {\n      const c = v.get(x, y, z);\n      for (const [[dx, dy, dz], [ax, ay, az]] of planes) {\n        if (!v.has(x + dx, y + dy, z + dz)) continue;   // diagonal occupied?\n        const bx = dx - ax, by = dy - ay, bz = dz - az; // the other bridge cell\n        if (v.has(x + ax, y + ay, z + az) || v.has(x + bx, y + by, z + bz)) continue;\n        adds.push([x + ax, y + ay, z + az, c]);         // fill one bridge cell\n      }\n    });\n    if (!adds.length) break;\n    for (const [x, y, z, c] of adds) if (!v.has(x, y, z)) v.set(x, y, z, c);\n  }\n}\nbridgeDiagonals();\n\n// --- Weld to a single face-connected piece (drop any stray lattice specks) ---\nv.keepLargest();\n\nreturn v;\n",
+      "label": "v1",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 76656,
+        "triangleCount": 153912,
+        "boundingBox": {
+          "x": [
+            -30,
+            31
+          ],
+          "y": [
+            -30,
+            31
+          ],
+          "z": [
+            0,
+            61
+          ],
+          "dimensions": [
+            61,
+            61,
+            61
+          ]
+        },
+        "centroid": [
+          0.5,
+          0.5,
+          30.5
+        ],
+        "volume": 127776,
+        "surfaceArea": 76956,
+        "genus": 143,
+        "isManifold": true,
+        "componentCount": 1,
+        "unit": "mm"
+      },
+      "timestamp": 1781006436964,
+      "language": "voxel"
+    }
+  ]
+}

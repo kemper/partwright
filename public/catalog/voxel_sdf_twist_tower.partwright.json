@@ -1,0 +1,60 @@
+{
+  "partwright": "1.13",
+  "session": {
+    "name": "Voxel SDF Twist Tower",
+    "created": 1781006625752,
+    "updated": 1781006625752,
+    "images": null,
+    "language": "voxel"
+  },
+  "parts": [
+    {
+      "name": "Part 1",
+      "order": 0
+    }
+  ],
+  "versions": [
+    {
+      "index": 1,
+      "code": "// Twisted, perforated pen / utensil holder tower\n// v.sdf is the STAR: a hollow rounded-square tube has a CLEAN GRID of windows\n// punched clean through the wall (wall.subtract(hole.repeatN(...))), then the\n// whole wall is warped with .twist about Z, welded to a SOLID flat base slab\n// and a SOLID lavender top rim ring.\n// Two-tone via labels: violet body, lighter-lavender top rim.\nconst { voxels, sdf } = api;\nconst v = voxels();\n\nconst VIOLET = '#7c5cff';\nconst LAVENDER = '#c0b3ff';\n\n// --- dimensions (world units ~ mm) ---\nconst W = 40;        // footprint x/y\nconst H = 85;        // total height\nconst t = 5;         // wall thickness (thin enough holes punch fully through, >=2 voxel struts remain)\nconst r = 6;         // outer corner rounding\nconst twistDeg = 120; // total twist bottom -> top\nconst rate = twistDeg / H; // deg per unit along z\n\nconst baseH = 7;     // solid base slab\nconst rimH = 6;      // solid top rim ring\n\n// --- Hollow square tube (the wall annulus), open top & bottom ---\nconst outer = sdf.roundedBox([W, W, H], r);\nconst inner = sdf.box([W - 2 * t, W - 2 * t, H + 12]); // tall -> punches through top/bottom\nconst tube = outer.subtract(inner);\n\n// --- Punch a clean grid of square windows clean through the wall. ---\n// A single hole node, deep on X so it cuts fully through both the +X and -X\n// faces; tiled in a grid across Z (and Y so the rotation about Z carries it to\n// all four faces). Big openings (window ~9mm) with ~4mm solid struts between.\nconst win = 8;       // window size (square-ish) -> ~8mm, clearly see-through\nconst wallDepth = t + 6; // cut depth per face: through the t=5 wall, no further\nconst pitchZ = 18;   // vertical pitch -> ~10mm SOLID band between window rows\nconst pitchY = 11;   // lateral pitch (unused at cols=1)\nconst rows = 4;      // window rows up the tower\nconst cols = 1;      // one window centered on each face per row\nconst faceR = W / 2; // distance from center to a face\n\n// One face's grid of windows: a small rounded box, repeated as a cols×rows grid,\n// then pushed OUT to a face so it cuts only that wall (depth = wallDepth, so the\n// deep cuts never reach the opposite wall or the corner struts).\nfunction faceWindows(axis) {\n  // axis 'x' -> cut depth along X; windows spread along Y (cols) and Z (rows).\n  // axis 'y' -> cut depth along Y; windows spread along X (cols) and Z (rows).\n  const boxSize = axis === 'x' ? [wallDepth, win, win] : [win, wallDepth, win];\n  const step = axis === 'x' ? [0, pitchY, pitchZ] : [pitchY, 0, pitchZ];\n  const count = axis === 'x' ? [1, cols, rows] : [cols, 1, rows];\n  const grid = sdf.roundedBox(boxSize, 1.2).repeatN(step, count);\n  const plus = axis === 'x' ? grid.translate(faceR, 0, 0) : grid.translate(0, faceR, 0);\n  const minus = axis === 'x' ? grid.translate(-faceR, 0, 0) : grid.translate(0, -faceR, 0);\n  return sdf.union(plus, minus);\n}\nconst holes = sdf.union(faceWindows('x'), faceWindows('y'));\n\nconst wall = tube.subtract(holes).twist(rate, 'z').label('body');\n\n// --- Solid lavender rim ring at the TOP. Built/positioned at its real z then\n// twisted with the SAME rate -> its twist phase (rate*rimZ) matches the wall top,\n// so they weld cleanly. Kept as its own labeled node so it stays lavender. ---\nconst rimZ = H / 2 - rimH / 2;\nconst rimOuter = sdf.roundedBox([W, W, rimH], 2).translate(0, 0, rimZ);\nconst rimInner = sdf.box([W - 2 * t, W - 2 * t, rimH + 12]).translate(0, 0, rimZ);\nconst rim = rimOuter.subtract(rimInner).twist(rate, 'z').label('rim');\n\n// --- Solid flat base slab flush at the bottom (NOT twisted -> clean flat square\n// that sits flat on the bed and welds to the bottom of the twisted wall). ---\nconst baseZ = -H / 2 + baseH / 2;\nconst base = sdf.box([W, W, baseH]).round(3).translate(0, 0, baseZ).label('body');\n\nconst model = sdf.union(wall, rim, base);\n\nv.sdf(model, {\n  res: 1,\n  color: VIOLET,\n  colors: { body: VIOLET, rim: LAVENDER },\n  bounds: { min: [-W / 2 - 3, -W / 2 - 3, -H / 2 - 2], max: [W / 2 + 3, W / 2 + 3, H / 2 + 2] },\n});\n\n// --- One-piece weld: drop any stray specks the perforation left behind. ---\nv.keepLargest();\n\nreturn v;\n",
+      "label": "v1",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 26704,
+        "triangleCount": 53516,
+        "boundingBox": {
+          "x": [
+            -23,
+            24
+          ],
+          "y": [
+            -23,
+            24
+          ],
+          "z": [
+            -45,
+            43
+          ],
+          "dimensions": [
+            47,
+            47,
+            88
+          ]
+        },
+        "centroid": [
+          0.5,
+          0.5,
+          -1
+        ],
+        "volume": 51077,
+        "surfaceArea": 26758,
+        "genus": 4,
+        "isManifold": true,
+        "componentCount": 1,
+        "unit": "mm"
+      },
+      "timestamp": 1781006625752,
+      "language": "voxel"
+    }
+  ]
+}

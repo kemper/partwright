@@ -1,0 +1,60 @@
+{
+  "partwright": "1.13",
+  "session": {
+    "name": "Voxel SDF Gyroid Vase",
+    "created": 1781006428516,
+    "updated": 1781006428516,
+    "images": null,
+    "language": "voxel"
+  },
+  "parts": [
+    {
+      "name": "Part 1",
+      "order": 0
+    }
+  ],
+  "versions": [
+    {
+      "index": 1,
+      "code": "// Gyroid-lattice pen/brush holder vase\n// - SOLID flat base disk (z=0), SOLID rim ring at top\n// - OPEN gyroid lattice wall between, welded to base + rim\n// Two-tone: teal lattice body, gold trim (base + rim).\nconst { voxels, sdf } = api;\nconst v = voxels();\n\nconst BODY = '#1f9e8a'; // deep teal lattice\nconst TRIM = '#e6b54a'; // warm gold base + rim\n\n// --- dimensions (world units ~ mm) ---\nconst H        = 70;   // total height\nconst R_OUT    = 22;   // outer radius\nconst WALL     = 4;    // wall thickness (annulus)\nconst R_IN     = R_OUT - WALL;\nconst BASE_H   = 6;    // solid base disk height\nconst RIM_H    = 5;    // solid rim ring height\nconst CELL     = 19;   // gyroid cell size (bigger -> bolder holes)\nconst THICK    = 0.46; // gyroid wall (field units) -> open lattice w/ solid struts\n\n// build everything centered on origin in Z then we'll have z from 0..H\nconst zc = H / 2;\n\n// outer / inner cylinders for the annulus, full height\nconst outerCyl = sdf.cylinder(R_OUT, H).translate(0, 0, zc);\nconst innerCyl = sdf.cylinder(R_IN,  H + 4).translate(0, 0, zc);\nconst annulus  = outerCyl.subtract(innerCyl);\n\n// gyroid wall = infinite gyroid intersected with the annulus\nconst wall = sdf.gyroid(CELL, THICK).intersect(annulus).label('body');\n\n// solid base disk\nconst base = sdf.cylinder(R_OUT, BASE_H).translate(0, 0, BASE_H / 2).label('trim');\n\n// solid rim ring (annulus shell at top, hollow center so pens go in)\nconst rimOuter = sdf.cylinder(R_OUT, RIM_H).translate(0, 0, H - RIM_H / 2);\nconst rimInner = sdf.cylinder(R_IN,  RIM_H + 4).translate(0, 0, H - RIM_H / 2);\nconst rim = rimOuter.subtract(rimInner).label('trim');\n\nconst model = wall.union(base).union(rim);\n\nv.sdf(model, {\n  res: 1,\n  color: BODY,\n  colors: { body: BODY, trim: TRIM },\n  bounds: { min: [-R_OUT - 1, -R_OUT - 1, -1], max: [R_OUT + 1, R_OUT + 1, H + 1] },\n});\n\nreturn v;\n",
+      "label": "v1",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 25480,
+        "triangleCount": 51624,
+        "boundingBox": {
+          "x": [
+            -22,
+            23
+          ],
+          "y": [
+            -22,
+            23
+          ],
+          "z": [
+            0,
+            71
+          ],
+          "dimensions": [
+            45,
+            45,
+            71
+          ]
+        },
+        "centroid": [
+          0.5,
+          0.5,
+          35.5
+        ],
+        "volume": 22469,
+        "surfaceArea": 25810.24264068712,
+        "genus": 56,
+        "isManifold": true,
+        "componentCount": 1,
+        "unit": "mm"
+      },
+      "timestamp": 1781006428516,
+      "language": "voxel"
+    }
+  ]
+}

@@ -41,7 +41,10 @@ async function main() {
   }
 
   let pngPath = null;
-  if (!a.json && result.render) {
+  // Render the PNG unless --json was passed WITHOUT an explicit --png. (An
+  // explicit --png always wins, so `--json --png out.png` writes both — agents
+  // kept losing the image when they wanted stats and a picture together.)
+  if (result.render && (!a.json || a.png)) {
     pngPath = a.png ? resolve(a.png) : join(dirname(file), basename(file).replace(/\.[^.]+$/, '') + '.preview.png');
     const img = composePng(result.render.positions, result.render.triVerts, result.render.triColors, result.render.bbox, a.size);
     await img.toFile(pngPath);

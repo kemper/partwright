@@ -1,0 +1,60 @@
+{
+  "partwright": "1.13",
+  "session": {
+    "name": "Voxel SDF Coral",
+    "created": 1781006431141,
+    "updated": 1781006431141,
+    "images": null,
+    "language": "voxel"
+  },
+  "parts": [
+    {
+      "name": "Part 1",
+      "order": 0
+    }
+  ],
+  "versions": [
+    {
+      "index": 1,
+      "code": "// Brain-coral / sea-coral decorative piece on a rounded rock base.\n// Showcases v.sdf: a smoothUnion blob of ellipsoids made POROUS by\n// intersecting a DIAMOND TPMS, sitting on a solid base slab.\nconst { voxels, sdf } = api;\nconst v = voxels();\n\nconst RES = 0.85; // world units per voxel\n\n// --- Coral head: smoothUnion of several lobes forming a domed knobby mass ---\nconst lobeA = sdf.ellipsoid(15, 14, 12).translate([0, 0, 10]);\nconst lobeB = sdf.ellipsoid(10, 9, 13).translate([-9, -3, 16]);\nconst lobeC = sdf.ellipsoid(9, 11, 12).translate([10, 4, 15]);\nconst lobeD = sdf.ellipsoid(8, 8, 11).translate([2, 11, 17]);\nconst lobeE = sdf.ellipsoid(7, 8, 10).translate([-4, 9, 12]);\n\nlet head = lobeA\n  .smoothUnion(lobeB, 5)\n  .smoothUnion(lobeC, 5)\n  .smoothUnion(lobeD, 4)\n  .smoothUnion(lobeE, 4);\n\n// --- Porosity: intersect a DIAMOND TPMS into the head ---\n// Larger cell => bigger, clearly-visible holes. thickness ~0.95 keeps\n// walls >=1 voxel. The porous shell is the visible knobby coral surface.\nconst porous = head.intersect(sdf.diamond(13, 0.75));\n\n// --- Slim solid inner core + stem so the piece never fragments and bridges\n// base, but small enough that the porous holes still read on the surface. ---\nconst core = sdf.ellipsoid(6, 6, 7).translate([0, 0, 10]);\nconst stem = sdf.cylinder(5, 18).translate([0, 0, 2]); // reaches down into base\n\n// Coral solid = porous shell + solid inner core + stem.\nconst coral = porous.union(core).union(stem).label('coral');\n\n// --- Rock base: a solid rounded slab flush at the bottom ---\nconst base = sdf.roundedCylinder(22, 8, 3).translate([0, 0, -2]).label('base');\n\nconst model = sdf.union(coral, base);\n\nv.sdf(model, {\n  res: RES,\n  colors: { coral: '#ff7a6b', base: '#b9a37e' },\n  color: '#ff7a6b',\n});\n\n// --- Weld to a single connected piece, then flat bottom ---\n// v.keepLargest() drops any stray lattice specks so the coral prints as one\n// piece (the solid core + stem already keep it connected, but this is belt-and-\n// suspenders against parameter drift).\nfunction flattenBottom(BASE) {\n  const minz = new Map();\n  v.forEach((x, y, z) => { const k = x + ',' + y; if (!minz.has(k) || z < minz.get(k)) minz.set(k, z); });\n  for (const [k, z0] of minz) { const [x, y] = k.split(',').map(Number); for (let z = 0; z < z0; z++) v.set(x, y, z, BASE); }\n}\n\nv.keepLargest();\nflattenBottom('#b9a37e');\n\nreturn v;\n",
+      "label": "v1",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 25282,
+        "triangleCount": 51636,
+        "boundingBox": {
+          "x": [
+            -25,
+            26
+          ],
+          "y": [
+            -25,
+            26
+          ],
+          "z": [
+            -8,
+            35
+          ],
+          "dimensions": [
+            51,
+            51,
+            43
+          ]
+        },
+        "centroid": [
+          0.5,
+          0.5,
+          13.5
+        ],
+        "volume": 38530.333333333336,
+        "surfaceArea": 25814.292528739883,
+        "genus": 119,
+        "isManifold": true,
+        "componentCount": 1,
+        "unit": "mm"
+      },
+      "timestamp": 1781006431141,
+      "language": "voxel"
+    }
+  ]
+}
