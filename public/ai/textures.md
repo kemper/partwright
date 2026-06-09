@@ -49,13 +49,18 @@ return body;
   a generic `api.surface.apply('knit', { … })` form.
 - Calls are recorded, not applied during evaluation — they texture the **final
   returned mesh** in the order called (a terminal skin; you can chain several).
-- Surface textures are **expensive**, so they're **memoized and gated**: a
-  render reuses the cached textured result when the code, params and ops are
-  unchanged. When they change, the viewport shows the **base (untextured) mesh**
-  and a **"⟳ Textures stale — Re-apply"** pill in the top-left corner. Press it
-  (or call the tool again from the panel) to recompute on demand. This keeps
-  editing snappy — geometry re-renders instantly, the slow texture only runs
-  when you ask.
+- Surface textures are **expensive**, so they're **memoized**: a render reuses
+  the cached textured result when the code, params and ops are unchanged.
+- **Explicit runs compute the texture automatically.** A `runCode` / `runAndSave`
+  / `run` call (and the editor's Run button + version loads) force the
+  (memoized) compute and return the **textured** mesh — so an AI/console caller
+  sees the real result with no extra step. The first compute shows a progress
+  modal; repeats are instant (cache hit).
+- **Only live-typing is gated.** While a human edits in the editor, keystroke
+  auto-runs show the **base (untextured) mesh** plus a **"⟳ Textures stale —
+  Re-apply"** pill (top-left) instead of recomputing on every keystroke. Press
+  the pill (or just hit Run) to apply. This keeps typing snappy; it does **not**
+  affect `run`/`runAndSave`, which always apply.
 - This is the in-code counterpart of the bake tools, mirroring `api.paint.*`
   (see [colors](/ai/colors.md)). Use it when you want the texture to live with
   the code; use the `apply*` tools when you want a one-shot baked result.

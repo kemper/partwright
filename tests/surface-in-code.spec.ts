@@ -1,8 +1,11 @@
 // api.surface.* — surface textures declared in code. The op chain is recorded
-// during the run but applied (and memoized) on the MAIN thread. Because the
-// textures are expensive, a run with an uncached chain renders the BASE mesh and
-// raises a "Re-apply" pill; pressing it computes the texture on demand and the
-// next render serves the cached, textured mesh. See src/surface/surfaceOps.ts.
+// during the run but applied (and memoized) on the MAIN thread.
+//
+// Explicit/console runs (partwright.run / runAndSave, the Run button, version
+// loads) FORCE the memoized compute and return the textured mesh — so an
+// AI/console caller gets the real result with no extra step (it can't press the
+// in-UI pill). Only the editor's live-typing auto-run is gated behind the
+// "Re-apply" pill. See src/surface/surfaceOps.ts + applySurfaceTextures.
 
 import { test, expect, type Page } from 'playwright/test';
 
@@ -25,38 +28,34 @@ test.describe('api.surface.* (textures declared in code)', () => {
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
   });
 
-  test('sticky gating: base mesh + Re-apply pill, then textured on demand', async ({ page }) => {
+  test('a console run force-applies the texture and returns the textured mesh', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
 
-    const baseTris = await page.evaluate(async () => {
+    const out = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PW }).partwright;
       await pw.createSession('surface-in-code');
-      const code = [
+      // Base sphere triangle count, no texture.
+      const plain = await pw.run([
         'const { Manifold } = api;',
-        'api.surface.knit({ stitchWidth: 1.4, amplitude: 0.6 });',
         'return Manifold.sphere(10, 48);',
-      ].join('\n');
-      const r = await pw.run(code) as { triangleCount?: number };
-      return r.triangleCount ?? 0;
+      ].join('\n')) as { triangleCount?: number };
+      // Same geometry + a cable texture: the console run must compute it inline
+      // (not gate) so the returned stats reflect the textured, subdivided mesh.
+      const textured = await pw.run([
+        'const { Manifold } = api;',
+        'api.surface.cable({ cableWidth: 1.6, amplitude: 0.5 });',
+        'return Manifold.sphere(10, 48);',
+      ].join('\n')) as { triangleCount?: number };
+      return { plainTris: plain.triangleCount ?? 0, texturedTris: textured.triangleCount ?? 0 };
     });
-    expect(baseTris).toBeGreaterThan(0);
 
-    // First run leaves the texture uncached → the pill is shown over the base mesh.
-    const pill = page.getByRole('button', { name: /Re-apply/ });
-    await expect(pill).toBeVisible();
-    await page.screenshot({ path: 'test-results/surface-in-code-stale.png' });
+    expect(out.plainTris).toBeGreaterThan(0);
+    // The texture subdivides + displaces, so triangle count grows substantially.
+    expect(out.texturedTris).toBeGreaterThan(out.plainTris);
 
-    // Press it: compute the texture, then the re-run serves the cached textured
-    // mesh (more triangles — knit subdivides + displaces) and the pill clears.
-    await pill.click();
-    await expect(pill).toBeHidden({ timeout: 30_000 });
-
-    const texturedTris = await page.evaluate(() => {
-      const pw = (window as unknown as { partwright: PW }).partwright;
-      return pw.getGeometryData().triangleCount ?? 0;
-    });
-    expect(texturedTris).toBeGreaterThan(baseTris);
+    // No "Re-apply" pill on a console/explicit run — the texture was applied.
+    await expect(page.getByRole('button', { name: /Re-apply/ })).toBeHidden();
     await page.screenshot({ path: 'test-results/surface-in-code-textured.png' });
   });
 

@@ -13642,11 +13642,19 @@ async function main() {
     if (surfaceReapplyEl) surfaceReapplyEl.style.display = 'none';
   }
 
-  /** Resolve a run's `api.surface.*` chain against the memo cache. Mutates
-   *  `result` in place: on a hit, swaps in the textured mesh (and drops the
-   *  stale base Manifold so the downstream reconstructs from it); on a miss,
-   *  leaves the base mesh and raises the sticky Re-apply pill. */
-  function applySurfaceTextures(result: MeshResult, src: string): void {
+  /** Resolve a run's `api.surface.*` chain. Mutates `result` in place so the
+   *  downstream wiring sees the final mesh:
+   *   - cache hit → swap in the textured mesh (drop the stale base Manifold so
+   *     the run handler reconstructs from it).
+   *   - `force` (explicit/console runs — Run button, partwright.run/runAndSave,
+   *     version load) → compute the chain inline with the progress modal, so an
+   *     AI/console caller gets the real textured result instead of the gated
+   *     base (UI parity: agents can't press the pill).
+   *   - otherwise (live-typing auto-run) → leave the base mesh and raise the
+   *     sticky Re-apply pill, keeping keystroke renders snappy.
+   *  Returns true unless a forced compute failed (caller treats failure as a
+   *  non-fatal "base shown" run). */
+  async function applySurfaceTextures(result: MeshResult, src: string, force: boolean): Promise<void> {
     const ops = result.surfaceOps;
     if (!ops || ops.length === 0 || !result.mesh) {
       hideSurfaceReapplyPill();
@@ -13656,52 +13664,63 @@ async function main() {
     const baseKey = surfaceBaseKey(src);
     const status = surfaceCacheStatus(baseKey, ops);
     if (status.cached && status.mesh) {
-      result.mesh = status.mesh;
       // These displaced meshes round-trip through Manifold.ofMesh like the bake
       // path; clearing manifold makes the run handler rebuild from the textured
       // mesh (and fall back to render-only if it isn't watertight).
+      result.mesh = status.mesh;
       result.manifold = null;
       hideSurfaceReapplyPill();
-    } else {
-      pendingSurface = { base, ops, baseKey, src };
-      if (surfaceReapplyEl) {
-        surfaceReapplyEl.textContent = ops.length > 1
-          ? `⟳ ${ops.length} textures stale — Re-apply`
-          : '⟳ Texture stale — Re-apply';
-        surfaceReapplyEl.style.display = '';
+      return;
+    }
+    if (force) {
+      const progressId = startProgress({
+        title: ops.length > 1 ? `Applying ${ops.length} surface textures…` : 'Applying surface texture…',
+        indeterminate: false,
+      });
+      try {
+        const textured = await computeChain(base, baseKey, ops, (f) => updateProgress(progressId, f));
+        result.mesh = textured;
+        result.manifold = null;
+        hideSurfaceReapplyPill();
+      } catch (e) {
+        // Compute failed — keep the base mesh and raise the pill so the user can
+        // retry; surface the reason in the log.
+        const msg = e instanceof Error ? e.message : String(e);
+        showToast(`Surface texture failed: ${msg}`, { variant: 'warn', source: 'app' });
+        pendingSurface = { base, ops, baseKey, src };
+        if (surfaceReapplyEl) {
+          surfaceReapplyEl.textContent = '⟳ Texture failed — Re-apply';
+          surfaceReapplyEl.style.display = '';
+        }
+      } finally {
+        endProgress(progressId);
       }
+      return;
+    }
+    // Sticky miss (live-typing): keep the base mesh, remember what to compute.
+    pendingSurface = { base, ops, baseKey, src };
+    if (surfaceReapplyEl) {
+      surfaceReapplyEl.textContent = ops.length > 1
+        ? `⟳ ${ops.length} textures stale — Re-apply`
+        : '⟳ Texture stale — Re-apply';
+      surfaceReapplyEl.style.display = '';
     }
   }
 
-  /** Force-compute the pending surface chain (the Re-apply button), then re-run
-   *  the code so the resolution path picks up the now-cached textured mesh. */
-  async function reapplySurfaceTextures(): Promise<void> {
-    if (!pendingSurface || surfaceReapplyBusy) return;
+  /** The Re-apply pill (and the `partwright.applySurfaceTextures()` console
+   *  method): force-compute the pending chain by re-running the exact same
+   *  source — `runCodeSync` defaults to `surfaceErrors: true`, which force-
+   *  applies and clears the pill. Using the stored `src` (not `getValue()`)
+   *  keeps the base key identical so the compute is reused on the re-run. */
+  async function reapplySurfaceTextures(): Promise<boolean> {
+    if (!pendingSurface || surfaceReapplyBusy) return false;
     surfaceReapplyBusy = true;
-    const { base, ops, baseKey, src } = pendingSurface;
-    if (surfaceReapplyEl) surfaceReapplyEl.style.display = 'none';
-    const progressId = startProgress({
-      title: ops.length > 1 ? `Applying ${ops.length} surface textures…` : 'Applying surface texture…',
-      indeterminate: false,
-    });
+    const { src } = pendingSurface;
     try {
-      await computeChain(base, baseKey, ops, (f) => updateProgress(progressId, f));
-    } catch (e) {
-      endProgress(progressId);
+      return await runCodeSync(src, { preserveCamera: true });
+    } finally {
       surfaceReapplyBusy = false;
-      const msg = e instanceof Error ? e.message : String(e);
-      showToast(`Surface texture failed: ${msg}`, { variant: 'warn', source: 'app' });
-      // Re-raise the pill so the user can retry (if the run hasn't moved on).
-      if (surfaceReapplyEl && pendingSurface) surfaceReapplyEl.style.display = '';
-      return;
     }
-    endProgress(progressId);
-    surfaceReapplyBusy = false;
-    // Cache is warm — re-run the *exact same source* so the resolution path
-    // recomputes an identical base key and hits the cache (renders textured).
-    // Using the stored src (not getValue()) avoids any editor normalization
-    // shifting the key into a fresh miss.
-    void runCodeSync(src, { preserveCamera: true });
   }
 
   function runCode(code?: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean } = {}) {
@@ -13891,13 +13910,16 @@ async function main() {
       pendingEditorError = null;
       // === Surface textures declared in code (api.surface.*) ===
       // The Worker recorded an op chain but didn't touch the mesh. Apply it on
-      // this thread, but only from the memo cache — a slow texture must not run
-      // on every keystroke. On a cache hit, swap the textured mesh in so all the
-      // downstream wiring (currentManifold reconstruction, paint resolution,
-      // stats) sees the final geometry. On a miss, keep the base mesh and raise
-      // the "Re-apply" pill; the user computes it on demand. The base identity
-      // folds in code + customizer params so any geometry change re-stales it.
-      applySurfaceTextures(result, src);
+      // this thread. Explicit runs (`surfaceErrors` — Run button, console
+      // run/runAndSave, version load) force the (memoized) compute so the caller
+      // gets the real textured mesh; live-typing auto-runs only use a cache hit
+      // and otherwise raise the "Re-apply" pill, keeping keystrokes snappy. On a
+      // hit/force, the textured mesh is swapped in so all the downstream wiring
+      // (manifold reconstruction, paint resolution, stats) sees final geometry.
+      await applySurfaceTextures(result, src, surfaceErrors);
+      // A forced compute can take seconds; if a newer run started meanwhile,
+      // abandon this one rather than stamping a stale mesh over the new render.
+      if (myGen !== _runGeneration) return false;
       // Bump the paint generation so any in-flight subdivision worker — started
       // against the previous base mesh — discards its result instead of stamping
       // a refined mesh built from the OLD base over result.mesh.
