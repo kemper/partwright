@@ -121,7 +121,8 @@ import { appendVoxelEditsToCode, editOpCount } from './geometry/voxel/editCodege
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult, type EngraveProjection, type StampMask } from './surface/modifiers';
+import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampHost';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, rotateAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { surfaceCacheStatus, computeChain, type SurfaceOp } from './surface/surfaceOps';
@@ -7441,7 +7442,7 @@ async function main() {
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
   function buildSurfaceModifier(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
   ): ModifierResult {
@@ -7575,6 +7576,27 @@ async function main() {
         smooth: (opts?.smooth as boolean) ?? base.smooth,
       });
     }
+    if (id === 'engrave') {
+      // Whole-model carve (no region patch). The ink mask is pre-rasterized by
+      // the host (text via the app's font path, or a decoded image) and passed
+      // in opts.mask so this stays synchronous for live preview.
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultEngraveOptions(mesh);
+      const mask = opts?.mask as StampMask | undefined;
+      if (!mask || mask.width === 0 || mask.height === 0) {
+        throw new Error('engrave requires a rasterized stamp — provide text or an image first.');
+      }
+      return applyEngrave(mesh, {
+        mask,
+        projection: (opts?.projection as EngraveProjection) ?? base.projection,
+        through: (opts?.through as boolean) ?? base.through,
+        depth: (opts?.depth as number) ?? base.depth,
+        size: (opts?.size as number) ?? base.size,
+        resolution: (opts?.resolution as number) ?? base.resolution,
+        watertight: (opts?.watertight as boolean) ?? base.watertight,
+        source: opts?.source as string | undefined,
+      });
+    }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultSmoothOptions();
@@ -7599,8 +7621,8 @@ async function main() {
     modelHasColor(): boolean { return modelHasColor(); },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
-     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize'. */
-    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize'. */
+    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
       try {
         previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
         return { ok: true };
@@ -7836,6 +7858,79 @@ async function main() {
       try {
         const preserve = opts?.preserveColor ?? true;
         return await commitSurfaceModifier(buildSurfaceModifier('voronoiLamp', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Rasterize an engrave stamp (text via the app's font path, or a decoded
+     *  image) to a mask the surface preview / engraveModel can consume. Browser-
+     *  only (font fetch / image decode). Returns `{ mask, width, height }`. */
+    async buildEngraveStamp(spec?: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }) {
+      try {
+        if (spec?.text) {
+          const mask = await buildTextStampMask(spec.text, { font: spec.font });
+          return { mask, width: mask.width, height: mask.height };
+        }
+        if (spec?.imageUrl) {
+          const mask = await buildImageStampMask(spec.imageUrl, { invert: spec.invert });
+          return { mask, width: mask.width, height: mask.height };
+        }
+        return { error: 'buildEngraveStamp needs `text` or `imageUrl`.' };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Carve TEXT or an IMAGE into the current model as recessed channels
+     *  (engrave) or holes through the whole wall (cut-through). Unlike the relief
+     *  textures (which only displace the skin), this removes material. The stamp
+     *  is projected onto a chosen face (planar) or wrapped around Z (cylindrical).
+     *  Pass `text` (rasterized via the app's font path) or `imageUrl`; the modal
+     *  may pass a prebuilt `mask`. Saves a new version. Returns
+     *  `{ ok, label, geometry, warnings? }`. */
+    async engraveModel(opts?: {
+      text?: string;
+      imageUrl?: string;
+      mask?: StampMask;
+      invert?: boolean;
+      font?: 'regular' | 'bold' | 'italic' | 'bold-italic';
+      projection?: EngraveProjection;
+      mode?: 'planar' | 'cylindrical';
+      axis?: 'x' | 'y' | 'z';
+      side?: 'min' | 'max' | 'outer' | 'inner';
+      through?: boolean;
+      depth?: number;
+      size?: number;
+      resolution?: number;
+      watertight?: boolean;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        requireCurrentMeshForModifier();
+        let mask = opts?.mask;
+        let source: string | undefined;
+        if (!mask) {
+          if (opts?.text) {
+            if (!opts.text.trim()) return { error: 'engraveModel: `text` is empty.' };
+            mask = await buildTextStampMask(opts.text, { font: opts.font });
+            source = opts.text;
+          } else if (opts?.imageUrl) {
+            mask = await buildImageStampMask(opts.imageUrl, { invert: opts.invert });
+            source = 'image';
+          } else {
+            return { error: 'engraveModel needs `text` or `imageUrl` (or a prebuilt `mask`).' };
+          }
+        }
+        // Assemble the projection: a structured `projection` wins; otherwise
+        // build one from the flat mode/axis/side fields (the AI/console form).
+        let projection: EngraveProjection;
+        if (opts?.projection) {
+          projection = opts.projection;
+        } else if (opts?.mode === 'cylindrical') {
+          projection = { mode: 'cylindrical', side: opts?.side === 'inner' ? 'inner' : 'outer' };
+        } else {
+          projection = { mode: 'planar', axis: (opts?.axis as 'x' | 'y' | 'z') ?? 'z', side: opts?.side === 'min' ? 'min' : 'max' };
+        }
+        return await commitSurfaceModifier(
+          buildSurfaceModifier('engrave', { ...opts, mask, projection, source }, preserve),
+          preserve,
+        );
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Smooth/round the current model (Taubin λ/μ); saves a new version. */

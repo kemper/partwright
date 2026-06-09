@@ -29,8 +29,10 @@ import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 import { voronoiLampSdfMesh } from './voronoiLampSdf';
+import { engraveMesh, type EngraveSdfOptions } from './engraveSdf';
+import { type EngraveProjection } from './engraveStamp';
 
-export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize';
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
 
 export interface ModifierManifoldResult {
   kind: 'manifold';
@@ -123,6 +125,7 @@ export { type FurVelvetOptions };
 export { type WovenFabricOptions };
 export { type VoronoiShellOptions };
 export { type VoronoiLampOptions };
+export { type EngraveProjection, type StampMask } from './engraveStamp';
 
 export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierManifoldResult {
   const baked = fuzzySkin(mesh, opts);
@@ -641,6 +644,49 @@ return v;
     label: smooth ? 'voronoi lamp (smooth voxels)' : 'voronoi lamp (voxels)',
     code,
     previewMesh: meshGrid(grid),
+  };
+}
+
+export interface EngraveModifierOptions extends Omit<EngraveSdfOptions, 'mask'> {
+  /** The pre-rasterized ink mask (built by the host from text or an image). */
+  mask: EngraveSdfOptions['mask'];
+  /** Short human label for the version (e.g. the text or "image"). */
+  source?: string;
+}
+
+/** Size-relative starting parameters for engrave (a square-ish stamp on the top
+ *  face, recessed ~6% of the diagonal). The mask + projection are supplied by
+ *  the caller; this only fills the geometric knobs. */
+export function defaultEngraveOptions(mesh: MeshData): {
+  projection: EngraveProjection; through: boolean; depth: number; size: number; resolution: number; watertight: boolean;
+} {
+  const { size } = bboxOf(extractPositions(mesh));
+  const span = Math.max(size[0], size[1], 1e-6);
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    projection: { mode: 'planar', axis: 'z', side: 'max' },
+    through: false,
+    depth: d * 0.06,
+    size: span * 0.7,
+    resolution: 180,
+    watertight: true,
+  };
+}
+
+export function applyEngrave(mesh: MeshData, opts: EngraveModifierOptions): ModifierManifoldResult {
+  const baked = engraveMesh(mesh, opts);
+  const proj = opts.projection.mode === 'planar'
+    ? `${opts.projection.side === 'max' ? '+' : '-'}${opts.projection.axis.toUpperCase()} face`
+    : `${opts.projection.side} cylinder`;
+  const what = opts.source ? `"${opts.source}"` : 'stamp';
+  return {
+    kind: 'manifold',
+    label: opts.through ? 'engrave (cut through)' : 'engrave',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Engraved ${what} on ${today()} — ${opts.through ? 'cut clean through' : `recessed ${opts.depth.toFixed(2)} deep`} on the ${proj}.`,
+      `The carved mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
   };
 }
 

@@ -20,9 +20,10 @@ import { addPointerSuppressor } from '../renderer/viewport';
 import { buildAdjacency, findConnectedFromSeed } from '../color/adjacency';
 import { getCurrentMesh, previewTriangles } from '../color/paintMode';
 import { buildTriColors } from '../color/regions';
+import type { StampMask, EngraveProjection } from '../surface/modifiers';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
-type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize';
+type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
 
 /** The subset of the console API the surface UI needs. */
 export interface SurfaceApi {
@@ -34,6 +35,8 @@ export interface SurfaceApi {
   applyWovenFabric(opts?: { amplitude?: number; threadSpacing?: number; threadWidth?: number; underDepth?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiShell(opts?: { amplitude?: number; cellSize?: number; wallWidth?: number; raised?: boolean; jitter?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiLamp(opts?: { cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; jitter?: number; grainAngleDeg?: number; seed?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
+  buildEngraveStamp(spec?: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }): Promise<{ mask: StampMask; width: number; height: number } | { error: string }>;
+  engraveModel(opts?: { mask?: StampMask; source?: string; projection?: EngraveProjection; through?: boolean; depth?: number; size?: number; resolution?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   previewSurfaceModifier(id: ModId, opts?: Record<string, unknown>, preserveColor?: boolean): { ok: true } | { error: string };
@@ -199,10 +202,18 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     { id: 'woven', label: 'Woven' },
     { id: 'voronoi', label: 'Voronoi (relief)' },
     { id: 'voronoiLamp', label: 'Voronoi lamp' },
+    { id: 'engrave', label: 'Engrave' },
     { id: 'smooth', label: 'Smooth' },
     { id: 'voxelize', label: 'Voxelize' },
   ];
   let active: Tab = initialTab;
+
+  // --- Engrave stamp state — the rasterized ink mask the field math consumes.
+  // Built async from the text/image inputs (font fetch + raster), then reused
+  // for every preview/apply until those inputs change. ---
+  let engraveMask: StampMask | null = null;
+  let engraveSource = '';      // text string or 'image' — labels the version
+  let engraveBuilding = false; // a rebuild is in flight (suppresses preview)
 
   const status = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mb-2');
 
@@ -266,6 +277,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   /** Whether Apply/preview should be blocked (region mode, nothing picked yet). */
   function regionBlocked(): boolean {
+    // Region-less tabs (whole-model only — their region picker is hidden) are
+    // never blocked; only the region-capable tabs gate on having a selection.
+    if (active === 'voxelize' || active === 'voronoiLamp' || active === 'engrave') return false;
     return regionMode === 'region' && !regionSelection;
   }
 
@@ -425,7 +439,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   function renderTab() {
     body.innerHTML = '';
-    regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp') ? 'none' : '';
+    regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp' || active === 'engrave') ? 'none' : '';
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
       const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -585,6 +599,90 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         watertight: wtight.get(),
         output: out.get(),
       });
+    } else if (active === 'engrave') {
+      // Text input (debounced rebuild of the mask) + optional image upload.
+      const textWrap = el('label', 'block mb-3 text-xs text-zinc-300');
+      textWrap.append(el('div', 'mb-1', 'Text'));
+      const textInput = el('input', 'w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm text-zinc-100');
+      textInput.type = 'text';
+      textInput.placeholder = 'HELLO';
+      textInput.value = engraveSource && engraveSource !== 'image' ? engraveSource : '';
+      textWrap.append(textInput);
+
+      const font = dropdown<'bold' | 'regular' | 'italic' | 'bold-italic'>('Font', [
+        ['bold', 'Bold'], ['regular', 'Regular'], ['italic', 'Italic'], ['bold-italic', 'Bold italic'],
+      ], 'bold', () => { if (textInput.value.trim()) rebuildEngraveMask({ text: textInput.value, font: font.get() }); });
+
+      let textTimer: number | undefined;
+      textInput.addEventListener('input', () => {
+        if (textTimer !== undefined) clearTimeout(textTimer);
+        textTimer = window.setTimeout(() => {
+          if (textInput.value.trim()) rebuildEngraveMask({ text: textInput.value, font: font.get() });
+          else { engraveMask = null; clearPreviewIfDirty(); status.textContent = 'Type text (or upload an image) to engrave.'; }
+        }, 250);
+      });
+
+      // Image upload (UI-only path — needs local bytes; not available to the AI tool).
+      const imgWrap = el('label', 'block mb-3 text-xs text-zinc-300');
+      imgWrap.append(el('div', 'mb-1', '…or upload an image (dark = cut)'));
+      const imgInput = el('input', 'w-full text-[11px] text-zinc-400');
+      imgInput.type = 'file';
+      imgInput.accept = 'image/*';
+      let lastImageUrl = '';
+      const invert = checkbox('Invert image (light = cut)', false, () => { if (lastImageUrl) rebuildEngraveMask({ imageUrl: lastImageUrl, invert: invert.get() }); });
+      imgInput.addEventListener('change', () => {
+        const file = imgInput.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => { lastImageUrl = String(reader.result); textInput.value = ''; rebuildEngraveMask({ imageUrl: lastImageUrl, invert: invert.get() }); };
+        reader.readAsDataURL(file);
+      });
+      imgWrap.append(imgInput);
+
+      // Projection: planar face or wrap around Z. Both selectors are built and
+      // shown/hidden by mode (no renderTab on change, so the choice persists).
+      const mode = dropdown<'planar' | 'cylindrical'>('Projection', [
+        ['planar', 'Planar (onto a face)'],
+        ['cylindrical', 'Cylindrical (wrap around Z)'],
+      ], 'planar', () => { syncProjUI(); schedulePreview(); });
+      const planarFace = dropdown<'z+' | 'z-' | 'y-' | 'y+' | 'x+' | 'x-'>('Face', [
+        ['z+', 'Top (+Z)'], ['z-', 'Bottom (−Z)'],
+        ['y-', 'Front (−Y)'], ['y+', 'Back (+Y)'],
+        ['x+', 'Right (+X)'], ['x-', 'Left (−X)'],
+      ], 'z+', schedulePreview);
+      const cylSide = dropdown<'outer' | 'inner'>('Surface', [['outer', 'Outer'], ['inner', 'Inner']], 'outer', schedulePreview);
+      const syncProjUI = () => {
+        const cyl = mode.get() === 'cylindrical';
+        planarFace.wrap.style.display = cyl ? 'none' : '';
+        cylSide.wrap.style.display = cyl ? '' : 'none';
+      };
+
+      const through = checkbox('Cut clean through (stencil)', false, () => { depthWrap.style.display = through.get() ? 'none' : ''; schedulePreview(); });
+      const sizeS = slider('Text size (width)', span * 0.1, span * 1.0, span * 0.7, span * 0.01, n => n.toFixed(2), schedulePreview);
+      const depth = slider('Engrave depth', span * 0.005, span * 0.3, span * 0.06, span * 0.005, n => n.toFixed(3), schedulePreview);
+      const depthWrap = depth.wrap;
+      const res = sliderWithEntry('Resolution', 48, 220, 180, 1, 256, schedulePreview);
+      const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
+
+      body.append(textWrap, font.wrap, imgWrap, invert.wrap, mode.wrap, planarFace.wrap, cylSide.wrap, through.wrap, sizeS.wrap, depthWrap, res.wrap, wtight.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Carves text or an image into the model — recessed channels, or holes cut clean through (stencil). Planar projects onto a face; cylindrical wraps around the Z axis (rings, cups). Raise resolution if thin strokes look mushy.'));
+      syncProjUI();
+
+      const projOf = (): EngraveProjection => {
+        if (mode.get() === 'cylindrical') return { mode: 'cylindrical', side: cylSide.get() };
+        const f = planarFace.get();
+        return { mode: 'planar', axis: f[0] as 'x' | 'y' | 'z', side: f[1] === '+' ? 'max' : 'min' };
+      };
+      currentOpts = () => ({
+        mask: engraveMask,
+        source: engraveSource,
+        projection: projOf(),
+        through: through.get(),
+        depth: depth.get(),
+        size: sizeS.get(),
+        resolution: res.get(),
+        watertight: wtight.get(),
+      });
     } else if (active === 'smooth') {
       const iter = slider('Rounding strength', 1, 12, 4, 1, n => String(n), schedulePreview);
       const sub = checkbox('Subdivide first (rounds sharp corners)', true, schedulePreview);
@@ -598,6 +696,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       body.append(el('p', 'text-[11px] text-zinc-500', 'Rasterizes the model into voxels. The result switches to the voxel engine, so you can paint, re-block, or .vox export it.'));
       currentOpts = () => ({ resolution: res.get(), smooth: sm.get() });
     }
+    // Refresh Apply/Preview enabled state — switching to a region-less tab must
+    // clear the "pick a region first" block left by a region-capable tab.
+    updateApplyBtn();
     schedulePreview();
   }
 
@@ -623,8 +724,34 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       updateRegionStatus(); // ensures the blue-400 nudge text is shown
       return;
     }
+    // Engrave needs a rasterized stamp before any preview makes sense.
+    if (active === 'engrave' && !engraveMask) {
+      clearPreviewIfDirty();
+      status.textContent = engraveBuilding ? 'Rasterizing stamp…' : 'Type text (or upload an image) to engrave.';
+      return;
+    }
     status.textContent = 'Updating preview…';
     previewTimer = window.setTimeout(runPreview, getConfig().ui.surfacePreviewDebounceMs);
+  }
+
+  // Rebuild the engrave ink mask from the text/image inputs, then preview. Async
+  // (font fetch / image decode); reused for every preview/apply until inputs change.
+  async function rebuildEngraveMask(spec: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }) {
+    engraveBuilding = true;
+    engraveMask = null;
+    status.textContent = 'Rasterizing stamp…';
+    try {
+      const r = await api.buildEngraveStamp(spec);
+      if ('error' in r) { status.textContent = `Stamp error: ${r.error}`; return; }
+      engraveMask = r.mask;
+      engraveSource = spec.text ? spec.text : 'image';
+    } catch (e) {
+      status.textContent = `Stamp error: ${e instanceof Error ? e.message : String(e)}`;
+      return;
+    } finally {
+      engraveBuilding = false;
+    }
+    if (active === 'engrave') schedulePreview();
   }
   function clearPreviewIfDirty() {
     if (previewTimer !== undefined) { clearTimeout(previewTimer); previewTimer = undefined; }
@@ -683,6 +810,10 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   });
 
   applyBtn.addEventListener('click', async () => {
+    if (active === 'engrave' && !engraveMask) {
+      status.textContent = 'Type text (or upload an image) to engrave first.';
+      return;
+    }
     // The preview swapped the displayed mesh; clear it so the apply re-runs from
     // the real current model (commit re-renders the saved result anyway).
     clearPreviewIfDirty();
@@ -700,6 +831,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         : active === 'woven' ? await api.applyWovenFabric(opts)
         : active === 'voronoi' ? await api.applyVoronoiShell(opts)
         : active === 'voronoiLamp' ? await api.applyVoronoiLamp(opts)
+        : active === 'engrave' ? await api.engraveModel(opts)
         : active === 'smooth' ? await api.smoothModel(opts)
         : await api.voxelizeModel(opts);
       const err = (result as { error?: string })?.error;
@@ -740,6 +872,7 @@ export function initSurfaceUI(api: SurfaceApi): void {
     { id: 'surface-woven', title: 'Surface: Woven fabric', hint: 'Modifier', keywords: 'woven weave fabric basket cloth interlace thread', run: () => openSurfaceModal(api, 'woven') },
     { id: 'surface-voronoi', title: 'Surface: Voronoi texture', hint: 'Modifier', keywords: 'voronoi cell relief organic cracked web ridges struts texture', run: () => openSurfaceModal(api, 'voronoi') },
     { id: 'surface-voronoi-lamp', title: 'Surface: Voronoi lamp (perforated shell)', hint: 'Modifier', keywords: 'voronoi lamp shell lattice perforated cutout holes see-through planter lampshade voxel', run: () => openSurfaceModal(api, 'voronoiLamp') },
+    { id: 'surface-engrave', title: 'Surface: Engrave / cut-through text or image', hint: 'Modifier', keywords: 'engrave emboss carve cut through text image stencil label logo name plate recess channel', run: () => openSurfaceModal(api, 'engrave') },
     { id: 'surface-smooth', title: 'Surface: Smooth / round edges', hint: 'Modifier', keywords: 'smooth round fillet taubin low-poly', run: () => openSurfaceModal(api, 'smooth') },
     { id: 'surface-voxelize', title: 'Surface: Voxelize model', hint: 'Modifier', keywords: 'voxel blocky minecraft pixel', run: () => openSurfaceModal(api, 'voxelize') },
   ]);
