@@ -310,8 +310,12 @@ clean through, leaving a see-through strut network (the classic 3D-printed
 Voronoi lamp / planter).
 
 `output` chooses the form:
-- **`'mesh'` (default)** — bakes a smooth manifold-js mesh (Taubin-rounded), so
-  it stays a normal mesh model with **no engine change**. Best for most lamps.
+- **`'mesh'` (default)** — bakes a smooth manifold-js mesh by meshing a
+  **continuous signed-distance field** (the principle behind `Manifold.levelSet`),
+  so the curved walls follow the true surface with **no voxel stair-stepping**,
+  and **no engine change**. Best for most lamps. It's a heavier operation than the
+  other textures (allow a few seconds); a thin web can fuse into a few connected
+  islands, so it stays manifold but may report `componentCount > 1`.
 - **`'voxel'`** — switches the session to the `voxel` language (paintable,
   `.vox`-exportable, re-blockable), at the cost of a blockier look.
 
@@ -323,7 +327,7 @@ one step.
 | `cellSize` | ~10% of diagonal | Approx spacing between cells (world units). |
 | `wallThickness` | ~4% of diagonal | Shell thickness — how thick the struts are through the wall. |
 | `strutWidth` | 0.32 | Kept edge-network width as a fraction of cellSize [0.05–0.6]. Smaller = thinner struts, bigger windows. |
-| `resolution` | 140 | Voxels along the longest axis [16–200]. **Auto-raised** so struts resolve to ≥4 voxels — you rarely need to set it. |
+| `resolution` | 110 | Field/voxel resolution along the longest axis [16–256]. **Auto-raised** so struts resolve to ≥6 cells — you rarely set it. Higher sharpens the struts (the walls are already smooth from the continuous field). |
 | `jitter` | 1 | Cell irregularity [0–1]. 1 = irregular Voronoi; 0 = a regular grid of windows. |
 | `grainAngleDeg` | 0 | Rotate the cell pattern in the XY plane. |
 | `seed` | 1 | Deterministic seed — change to reshuffle the cell layout. |

@@ -37,7 +37,8 @@ export interface VoronoiLampOptions {
    *  network is. Larger = chunkier struts / smaller windows. Default 0.3. */
   strutWidth?: number;
   /** Voxels along the longest axis. Auto-raised so struts resolve to ≥ ~4 voxels
-   *  (thin struts otherwise alias into non-manifold specks). Default 140. */
+   *  (thin struts otherwise alias into non-manifold specks), and clamped to
+   *  MAX_RESOLUTION. Default 140. */
   resolution?: number;
   /** Cell irregularity [0, 1]. 1 = full irregular Voronoi (default); 0 = a grid. */
   jitter?: number;
@@ -55,6 +56,12 @@ export interface VoronoiLampOptions {
  *  alias into diagonal-only specks (non-manifold, ugly). The resolution is
  *  auto-raised to honour this given the chosen strut width. */
 const MIN_STRUT_VOXELS = 6;
+
+/** Hard ceiling on the voxel grid's longest axis. The slider stops at 200, but
+ *  its text box lets power users type higher; this caps that to keep the grid
+ *  (several `nx·ny·nz` typed arrays in `rasterizeSolid`) from exhausting memory —
+ *  256³ ≈ 17 M cells is already heavy. Matches the SDF mesh path's field cap. */
+const MAX_RESOLUTION = 256;
 
 const DEFAULT_FILL = 0x4a9eff; // app default unpainted blue (matches voxelizeMesh)
 
@@ -76,7 +83,7 @@ function hash3(ix: number, iy: number, iz: number, seed: number): [number, numbe
  *  pass 1 finds the nearest jittered seed, pass 2 takes the min distance to the
  *  bisector plane with every other seed. 0 on a boundary, growing into the cell
  *  — so it maps directly to a strut half-width and stays uniform on any surface. */
-function cellEdgeDist3D(gx: number, gy: number, gz: number, jitter: number, seed: number): number {
+export function cellEdgeDist3D(gx: number, gy: number, gz: number, jitter: number, seed: number): number {
   const cx = Math.floor(gx), cy = Math.floor(gy), cz = Math.floor(gz);
   // 27 jittered seed positions around the query cell.
   const sx = new Float64Array(27), sy = new Float64Array(27), sz = new Float64Array(27);
@@ -135,7 +142,7 @@ export function voronoiLattice(mesh: MeshData, opts: VoronoiLampOptions): Vorono
   const strutWorld = strutFracR * Math.max(1e-4, opts.cellSize);
   const maxDim = Math.max(...bboxOf(extractPositions(mesh)).size, 1e-6);
   const resFloor = Math.ceil((maxDim / strutWorld) * MIN_STRUT_VOXELS);
-  const resolution = Math.max(16, Math.min(200, Math.max(Math.round(opts.resolution ?? 140), resFloor)));
+  const resolution = Math.max(16, Math.min(MAX_RESOLUTION, Math.max(Math.round(opts.resolution ?? 140), resFloor)));
   const solid = rasterizeSolid(mesh, resolution);
   const { nx, ny, nz, surface, exterior, at, min, voxelSize } = solid;
 

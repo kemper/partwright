@@ -16,10 +16,12 @@ import { furVelvet } from '../../src/surface/furVelvet';
 import { wovenFabric } from '../../src/surface/wovenFabric';
 import { voronoiShell } from '../../src/surface/voronoiShell';
 import { voronoiLattice } from '../../src/surface/voronoiLattice';
+import { surfaceNetsField } from '../../src/surface/surfaceNetsField';
+import { largestMeshComponent } from '../../src/surface/meshComponents';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
-import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize } from '../../src/surface/modifiers';
+import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp } from '../../src/surface/modifiers';
 import { nearestTriangleMap } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
@@ -280,6 +282,67 @@ describe('voronoiLattice (perforated shell)', () => {
   it('handles an empty mesh', () => {
     const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
     expect(voronoiLattice(empty, { cellSize: 2, wallThickness: 1 }).grid.size).toBe(0);
+  });
+
+});
+
+describe('surfaceNetsField (continuous iso-surface)', () => {
+  it('meshes a sphere field into a closed, edge-manifold surface', () => {
+    const N = 40, R = 14, c = 20;
+    const field = new Float32Array(N * N * N);
+    const sidx = (i: number, j: number, k: number) => (k * N + j) * N + i;
+    for (let k = 0; k < N; k++) for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      field[sidx(i, j, k)] = Math.hypot(i - c, j - c, k - c) - R; // < 0 inside
+    }
+    const m = surfaceNetsField({ field, dims: [N, N, N], origin: [0, 0, 0], spacing: 1, iso: 0 });
+    expect(m.numTri).toBeGreaterThan(100);
+    // Every undirected edge must be shared by exactly two triangles (closed,
+    // 2-manifold) — no boundary edges, no non-manifold edges.
+    const edge = new Map<string, number>();
+    for (let t = 0; t < m.numTri; t++) {
+      const a = m.triVerts[t * 3], b = m.triVerts[t * 3 + 1], cc = m.triVerts[t * 3 + 2];
+      for (const [u, v] of [[a, b], [b, cc], [cc, a]] as [number, number][]) {
+        const key = u < v ? `${u}_${v}` : `${v}_${u}`;
+        edge.set(key, (edge.get(key) ?? 0) + 1);
+      }
+    }
+    let boundary = 0, nonManifold = 0;
+    for (const n of edge.values()) { if (n === 1) boundary++; else if (n > 2) nonManifold++; }
+    expect(boundary).toBe(0);
+    expect(nonManifold).toBe(0);
+    // The interpolated crossings put the radius-14 sphere near its true size, not
+    // snapped to the integer lattice (a binary mesher would over/undershoot).
+    const xs: number[] = [];
+    for (let v = 0; v < m.numVert; v++) xs.push(m.vertProperties[v * 3]);
+    expect(Math.max(...xs) - c).toBeGreaterThan(R - 0.6);
+    expect(Math.max(...xs) - c).toBeLessThan(R + 0.6);
+  });
+});
+
+describe('largestMeshComponent (edge-connected)', () => {
+  it('drops a piece joined to the main mesh at only a single vertex', () => {
+    // Two tetrahedra-ish triangle fans sharing exactly one vertex: edge
+    // connectivity must treat them as separate and keep the larger.
+    const big = cube(10);                 // 12 tris, 8 verts
+    // A lone degenerate-free extra triangle touching cube vertex 0 at one point.
+    const v = big.numVert;
+    const vp = Float32Array.from([...big.vertProperties, 0, 0, 0, -5, -1, 0, -5, 0, -1]);
+    const tv = Uint32Array.from([...big.triVerts, 0, v + 1, v + 2]); // shares only vertex 0
+    const mesh: MeshData = { vertProperties: vp, triVerts: tv, numVert: v + 3, numTri: big.numTri + 1, numProp: 3 };
+    const kept = largestMeshComponent(mesh);
+    expect(kept.numTri).toBe(big.numTri); // the lone point-joined triangle is dropped
+  });
+});
+
+describe('applyVoronoiLamp (mesh output)', () => {
+  it('emits a smooth (SDF) manifold mesh wrapper with struts', () => {
+    const r = applyVoronoiLamp(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 64 });
+    expect(r.kind).toBe('manifold');
+    if (r.kind === 'manifold') {
+      // SDF mesh path: ofMesh wrapper over a baked, smooth perforated shell.
+      expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
+      expect(r.mesh.numTri).toBeGreaterThan(12);
+    }
   });
 });
 
