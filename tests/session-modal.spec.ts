@@ -64,11 +64,13 @@ test.describe('Session modal', () => {
     await prompt.locator('input').fill('Fresh Session');
     await prompt.getByRole('button', { name: 'OK' }).click();
 
-    // Editor now holds the fresh manifold-js default starter, not the old
-    // session's code. The default seeds the CrossSection-based starter model.
+    // Editor now holds a fresh manifold-js starter, not the old session's code.
+    // The starters rotate across examples/starters/*.js; every one is a
+    // self-colored model that wraps its parts in `api.label(...)`, so that's the
+    // stable invariant to assert (the specific model varies by rotation).
     await expect
       .poll(() => page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode()))
-      .toContain('CrossSection');
+      .toContain('api.label');
     expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode())).not.toContain(
       MARKER,
     );
