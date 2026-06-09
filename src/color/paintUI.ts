@@ -261,6 +261,14 @@ function createPaletteSection(): HTMLElement {
   customRow.appendChild(customLabel);
   wrap.appendChild(customRow);
 
+  // Shown instead of the custom picker when the palette is constrained — makes
+  // the enforcement legible (painting snaps to the nearest slot; see
+  // enforcePaletteConstraint in paintMode).
+  const constrainNote = document.createElement('div');
+  constrainNote.className = 'hidden text-[10px] text-zinc-500 leading-snug';
+  constrainNote.textContent = 'Constrained to palette — painting snaps to the nearest slot.';
+  wrap.appendChild(constrainNote);
+
   function renderSwatches(): void {
     grid.replaceChildren();
     const slots = getActivePalette().slots;
@@ -292,7 +300,9 @@ function createPaletteSection(): HTMLElement {
   }
 
   function renderConstrain(): void {
-    customRow.classList.toggle('hidden', isPaletteConstrained());
+    const on = isPaletteConstrained();
+    customRow.classList.toggle('hidden', on);
+    constrainNote.classList.toggle('hidden', !on);
   }
 
   // Don't pre-select a slot: that would override the default paint colour with

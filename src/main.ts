@@ -2258,7 +2258,7 @@ async function main() {
   // this in guard() to surface it as { error }. The numeric bounds mirror the
   // clamp* ranges below.
   const RELIEF_COMMON_KEYS = ['widthMm', 'layerHeight', 'baseThickness', 'maxHeight', 'resolution', 'smoothing', 'removeBackground'] as const;
-  const RELIEF_QUANTIZED_KEYS = ['clusters', 'colorSpace', 'dither', 'output', 'shape', 'cornerRadiusMm', 'chamferMm', 'paintingMode', 'invertHeights', 'holes', 'holeEnabled', 'holeDiameterMm', 'holeOffsetMm', 'manualBackground', 'doubleSided', 'backMirror'] as const;
+  const RELIEF_QUANTIZED_KEYS = ['clusters', 'colorSpace', 'dither', 'fixedPalette', 'output', 'shape', 'cornerRadiusMm', 'chamferMm', 'paintingMode', 'invertHeights', 'holes', 'holeEnabled', 'holeDiameterMm', 'holeOffsetMm', 'manualBackground', 'doubleSided', 'backMirror'] as const;
   const RELIEF_PREPROCESS_KEYS = ['brightness', 'contrast', 'saturation', 'levelsLow', 'levelsHigh'] as const;
   const RELIEF_CROP_KEYS = ['left', 'top', 'right', 'bottom'] as const;
   function validateReliefOptionArgs(args: { options?: unknown; quantized?: unknown; preprocess?: unknown; crop?: unknown }, fn: string): void {
@@ -2287,6 +2287,15 @@ async function main() {
       assertBoolean(q.invertHeights, `${fn}(quantized).invertHeights`, { optional: true });
       assertBoolean(q.doubleSided, `${fn}(quantized).doubleSided`, { optional: true });
       assertBoolean(q.backMirror, `${fn}(quantized).backMirror`, { optional: true });
+      // "Constrain to filament palette": an array of [r,g,b] 0–255 triples each
+      // cell snaps to. The clamp re-sanitises, but reject the obviously-wrong
+      // shape here so a typo is loud rather than silently ignored.
+      if (q.fixedPalette !== undefined) {
+        const pal = q.fixedPalette;
+        const ok = Array.isArray(pal) && pal.every(c =>
+          Array.isArray(c) && c.length === 3 && c.every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 255));
+        if (!ok) throw new ValidationError(`${fn}(quantized).fixedPalette must be an array of [r,g,b] triples (0–255). See /ai.md#argument-validation`);
+      }
     }
     if (args.preprocess !== undefined) {
       const p = assertObject(args.preprocess, `${fn}(preprocess)`)!;
@@ -2350,6 +2359,16 @@ async function main() {
         diameterMm: num(q.holeDiameterMm ?? 6, 6),
       })];
     }
+    // Preserve the "constrain to filament palette" snap colours (0–255 triples).
+    // Must be threaded through here — the create path runs options through this
+    // clamp before generateRelief, so dropping it would make the committed model
+    // ignore the palette even though the live preview honoured it.
+    const byte = (v: number) => Math.max(0, Math.min(255, Math.round(num(v, 0))));
+    const fixedPalette = Array.isArray(q.fixedPalette)
+      ? q.fixedPalette
+          .filter(c => Array.isArray(c) && c.length === 3 && c.every(n => Number.isFinite(n)))
+          .map(c => [byte(c[0]), byte(c[1]), byte(c[2])] as [number, number, number])
+      : undefined;
     return {
       clusters: Math.max(2, Math.min(12, Math.floor(num(q.clusters, 5)))),
       colorSpace: q.colorSpace === 'rgb' ? 'rgb' : 'lab',
@@ -2364,6 +2383,7 @@ async function main() {
       manualBackground: q.manualBackground,
       doubleSided: !!q.doubleSided,
       backMirror: q.backMirror !== false,
+      ...(fixedPalette && fixedPalette.length > 0 ? { fixedPalette } : {}),
     };
   }
 
@@ -12381,8 +12401,8 @@ async function main() {
      *  'diamond'; `spray` scatters a random subset; `sprayDensity` is 0.05..1.
      *
      *  The `add` tool uses a block instead of a round brush: `block` is the
-     *  [x,y,z] size in voxels (1..32 each) and `depth` (0..16) is how far the
-     *  block sinks into the clicked surface — 0 attaches it flush to the face
+     *  [x,y,z] size in voxels (1..32 each) and `depth` (≥ 0; no upper limit) is
+     *  how far the block sinks into the clicked surface — 0 attaches it flush to the face
      *  (so a thick block never pokes out the far side of a thin tile).
      *  Returns the resolved brush settings or `{ error }`. */
     setVoxelBrush(opts: { radius?: number; shape?: import('./color/voxelPaint').BrushShape; spray?: boolean; sprayDensity?: number; block?: [number, number, number]; depth?: number } = {}) {
