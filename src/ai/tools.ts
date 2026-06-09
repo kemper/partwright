@@ -1582,6 +1582,40 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'applyPerforatedLattice',
+    description: `Cut a **regular perforated lattice** through the current model — the deterministic sibling of \`applyVoronoiLamp\`. Instead of random Voronoi cells, it cuts an even, repeating pattern of windows clean through a thin shell, leaving a strut web: a **\`square\`** grid, a **\`hex\`** honeycomb, or a **\`triangle\`** truss. Bakes a smooth manifold-js mesh (continuous SDF — curved walls, no voxel stair-stepping; no engine change). Saves a new version.
+
+**This is a real cutaway, not a texture.** It opens actual through-windows (like \`applyVoronoiLamp\`), unlike the relief textures which only displace the surface. The pattern is blended triplanar so windows open on every face of the model, not just along one axis.
+
+**When to use:** when the user wants a regular/geometric perforated shell — a lattice lampshade, a grid/honeycomb/truss screen or vent, a perforated planter, a mesh enclosure — and wants the holes uniform rather than the organic look of the Voronoi lamp. Start from a closed solid (vase, sphere, box, vessel).
+
+**Key parameters:**
+- pattern: 'square' (grid), 'hex' (honeycomb), or 'triangle' (truss). Default 'square'.
+- cellSize: window pitch in world units (~14% of diagonal). Smaller = more, smaller windows.
+- wallThickness: shell thickness in world units (~4% of diagonal); the struts are this thick.
+- strutWidth: strut width as a fraction of cellSize [0.05–0.8] (default 0.3; smaller = thinner struts / bigger windows).
+- resolution: field resolution along the longest axis (default 110, up to 256). **Auto-raised** so struts resolve to ≥6 cells, so you rarely touch it.
+- grainAngleDeg: rotate the pattern in the XY plane.
+- watertight: keep only the largest connected web → one printable manifold piece (default true — leave on).
+
+**Return:** { ok, label, geometry, warnings? }. Verify with renderViews — check the windows are open. With watertight on, the result should be manifold (isManifold true).
+
+**Workflow guidance:** the defaults look good on a typical solid; mostly tune pattern, cellSize (fewer/larger vs more/smaller windows), and strutWidth (thicker vs thinner struts). If windows don't open, lower strutWidth or raise cellSize. Keep watertight on for printing.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', enum: ['square', 'hex', 'triangle'], description: "Window pattern: 'square' grid, 'hex' honeycomb, or 'triangle' truss. Default 'square'." },
+        cellSize: { type: 'number', description: 'Window pitch (spacing between windows) in world units. Default ~14% of diagonal.' },
+        wallThickness: { type: 'number', description: 'Shell wall thickness in world units (strut thickness through the wall). Default ~4% of diagonal.' },
+        strutWidth: { type: 'number', description: 'Strut width as a fraction of cellSize [0.05–0.8]. Default 0.3. Smaller = thinner struts, larger windows.', minimum: 0.05, maximum: 0.8 },
+        resolution: { type: 'integer', description: 'Field resolution along the longest axis [16–256]. Higher = crisper struts, slower. Default 110 (auto-raised for thin struts).', minimum: 16, maximum: 256 },
+        grainAngleDeg: { type: 'number', description: 'Rotate the pattern in the XY plane, degrees. Default 0.' },
+        watertight: { type: 'boolean', description: 'Keep only the largest connected strut web — one watertight, manifold, printable piece (drops loose fragments). Default true — leave on unless you want the raw multi-part cut.' },
+        preserveColor: { type: 'boolean', description: 'Sample model paint onto the struts. Default true.' },
+      },
+    },
+  },
+  {
     name: 'smoothModel',
     description: `Smooth/round the current model with a Taubin λ/μ pass — softens sharp edges and facets without the shrinkage a naive Laplacian causes. Saves a new version.
 
@@ -1777,7 +1811,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'applyPerforatedLattice', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -2285,6 +2319,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.applyVoronoiShell(input);
     case 'applyVoronoiLamp':
       return api.applyVoronoiLamp(input);
+    case 'applyPerforatedLattice':
+      return api.applyPerforatedLattice(input);
     case 'smoothModel':
       return api.smoothModel(input);
     case 'voxelizeModel':

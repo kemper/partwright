@@ -22,7 +22,8 @@ import { sdfModifierMesh } from '../../src/surface/sdfModifier';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
-import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp } from '../../src/surface/modifiers';
+import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp, applyPerforate } from '../../src/surface/modifiers';
+import { latticeEdgeDist2D } from '../../src/surface/latticePattern';
 import { nearestTriangleMap } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
@@ -359,6 +360,58 @@ describe('applyVoronoiLamp (mesh output)', () => {
       // SDF mesh path: ofMesh wrapper over a baked, smooth perforated shell.
       expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
       expect(r.mesh.numTri).toBeGreaterThan(12);
+    }
+  });
+});
+
+describe('latticeEdgeDist2D (regular perforated patterns)', () => {
+  it('square grid: zero on a grid line, max at a cell centre', () => {
+    expect(latticeEdgeDist2D(2, 0.37, 'square')).toBeCloseTo(0, 6);   // on a vertical line
+    expect(latticeEdgeDist2D(0.42, 3, 'square')).toBeCloseTo(0, 6);   // on a horizontal line
+    expect(latticeEdgeDist2D(0.5, 0.5, 'square')).toBeCloseTo(0.5, 6); // cell centre
+  });
+
+  it('square grid is periodic with pitch 1', () => {
+    const a = latticeEdgeDist2D(0.23, 0.71, 'square');
+    const b = latticeEdgeDist2D(0.23 + 4, 0.71 - 3, 'square');
+    expect(b).toBeCloseTo(a, 6);
+  });
+
+  it('hex honeycomb: a lattice centre is the farthest point (apothem 0.5)', () => {
+    // (0,0) is a triangular-lattice centre → max distance to a hex edge = apothem.
+    expect(latticeEdgeDist2D(0, 0, 'hex')).toBeCloseTo(0.5, 4);
+    // Midpoint to the right-hand neighbour centre sits on a shared edge → ~0.
+    expect(latticeEdgeDist2D(0.5, 0, 'hex')).toBeLessThan(0.05);
+  });
+
+  it('triangle truss: zero on the base line family, bounded inside', () => {
+    expect(latticeEdgeDist2D(0.31, 0, 'triangle')).toBeCloseTo(0, 6); // v=0 is a line
+    const d = latticeEdgeDist2D(0.27, 0.19, 'triangle');
+    expect(d).toBeGreaterThan(0);
+    expect(d).toBeLessThanOrEqual(0.5);
+  });
+
+  it('all patterns are bounded in [0, 0.6] cell units', () => {
+    for (const pat of ['square', 'hex', 'triangle'] as const) {
+      for (let i = 0; i < 50; i++) {
+        const d = latticeEdgeDist2D(Math.sin(i * 1.3) * 5, Math.cos(i * 0.7) * 5, pat);
+        expect(d).toBeGreaterThanOrEqual(0);
+        expect(d).toBeLessThanOrEqual(0.6);
+      }
+    }
+  });
+});
+
+describe('applyPerforate (regular perforated lattice, mesh output)', () => {
+  it('emits a smooth (SDF) manifold mesh wrapper for each pattern', () => {
+    for (const pattern of ['square', 'hex', 'triangle'] as const) {
+      const r = applyPerforate(cube(20), { pattern, cellSize: 6, wallThickness: 1.5, resolution: 64 });
+      expect(r.kind).toBe('manifold');
+      if (r.kind === 'manifold') {
+        expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
+        expect(r.code).toContain(pattern);
+        expect(r.mesh.numTri).toBeGreaterThan(12);
+      }
     }
   });
 });

@@ -29,8 +29,9 @@ import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 import { voronoiLampSdfMesh } from './voronoiLampSdf';
+import { perforatedLatticeSdfMesh, type PerforatedLatticeOptions } from './perforatedLatticeSdf';
 
-export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize';
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'perforate' | 'smooth' | 'voxelize';
 
 export interface ModifierManifoldResult {
   kind: 'manifold';
@@ -123,6 +124,7 @@ export { type FurVelvetOptions };
 export { type WovenFabricOptions };
 export { type VoronoiShellOptions };
 export { type VoronoiLampOptions };
+export { type PerforatedLatticeOptions };
 
 export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierManifoldResult {
   const baked = fuzzySkin(mesh, opts);
@@ -467,6 +469,19 @@ export function defaultVoronoiLampOptions(mesh: MeshData): Required<VoronoiLampM
   };
 }
 
+export function defaultPerforateOptions(mesh: MeshData): Required<PerforatedLatticeOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    pattern: 'square',
+    cellSize: d * 0.14,
+    wallThickness: d * 0.04,
+    strutWidth: 0.3,
+    resolution: 110,
+    grainAngleDeg: 0,
+    watertight: true,
+  };
+}
+
 export function applyCable(mesh: MeshData, opts: CableKnitOptions): ModifierManifoldResult {
   const baked = cableKnit(mesh, opts);
   return {
@@ -641,6 +656,24 @@ return v;
     label: smooth ? 'voronoi lamp (smooth voxels)' : 'voronoi lamp (voxels)',
     code,
     previewMesh: meshGrid(grid),
+  };
+}
+
+export function applyPerforate(mesh: MeshData, opts: PerforatedLatticeOptions): ModifierManifoldResult {
+  // Regular-pattern sibling of the Voronoi lamp: a thin shell with square / hex /
+  // triangular windows cut clean through it. Built from a CONTINUOUS signed-
+  // distance field (smooth curved walls, no voxel stair-stepping) via the shared
+  // SDF scaffolding. See perforatedLatticeSdf.ts.
+  const baked = perforatedLatticeSdfMesh(mesh, opts);
+  const pattern = opts.pattern ?? 'square';
+  return {
+    kind: 'manifold',
+    label: 'perforated lattice',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Perforated lattice (${pattern}) from the current model on ${today()} — cell ~${opts.cellSize.toFixed(2)}, wall ${opts.wallThickness.toFixed(2)}.`,
+      `Smooth (SDF) mesh baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
   };
 }
 
