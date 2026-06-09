@@ -22,7 +22,7 @@ import { getCurrentMesh, previewTriangles } from '../color/paintMode';
 import { buildTriColors } from '../color/regions';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
-type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize';
+type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize';
 
 /** The subset of the console API the surface UI needs. */
 export interface SurfaceApi {
@@ -32,6 +32,8 @@ export interface SurfaceApi {
   applyWaffleStitch(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; sharpness?: number; rowOffset?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyFurVelvet(opts?: { amplitude?: number; fiberSpacing?: number; fiberLength?: number; octaves?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyWovenFabric(opts?: { amplitude?: number; threadSpacing?: number; threadWidth?: number; underDepth?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyVoronoiShell(opts?: { amplitude?: number; cellSize?: number; wallWidth?: number; raised?: boolean; jitter?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyVoronoiLamp(opts?: { cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; jitter?: number; grainAngleDeg?: number; seed?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   previewSurfaceModifier(id: ModId, opts?: Record<string, unknown>, preserveColor?: boolean): { ok: true } | { error: string };
@@ -161,6 +163,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     { id: 'waffle', label: 'Waffle' },
     { id: 'fur', label: 'Fur' },
     { id: 'woven', label: 'Woven' },
+    { id: 'voronoi', label: 'Voronoi (relief)' },
+    { id: 'voronoiLamp', label: 'Voronoi lamp' },
     { id: 'smooth', label: 'Smooth' },
     { id: 'voxelize', label: 'Voxelize' },
   ];
@@ -387,7 +391,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   function renderTab() {
     body.innerHTML = '';
-    regionSection.style.display = active === 'voxelize' ? 'none' : '';
+    regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp') ? 'none' : '';
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
       const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -498,6 +502,54 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         grainAngleDeg: grain.get(),
         quality: detail.get(),
         selectedTriangles: activeSelection(),
+      });
+    } else if (active === 'voronoi') {
+      const cs = slider('Cell size', span * 0.03, span * 0.4, span * 0.12, span * 0.005, n => n.toFixed(3), schedulePreview);
+      const ww = slider('Wall width (fraction)', 0.05, 0.6, 0.25, 0.01, n => n.toFixed(2), schedulePreview);
+      const amp = slider('Amplitude (wall height)', 0, span * 0.08, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
+      const jit = slider('Irregularity (jitter)', 0, 1, 1, 0.05, n => n.toFixed(2), schedulePreview);
+      const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
+      const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
+      const engrave = checkbox('Engrave channels (instead of raised walls)', false, schedulePreview);
+      body.append(cs.wrap, ww.wrap, amp.wrap, jit.wrap, grain.wrap, seed.wrap, engrave.wrap, detail.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Organic cell-wall relief tracing Voronoi boundaries (cracked-mud / lampshade look). Jitter 1 = irregular cells, 0 = regular grid. Smaller wall width = thinner struts.'));
+      currentOpts = () => ({
+        cellSize: cs.get(),
+        wallWidth: ww.get(),
+        amplitude: amp.get(),
+        jitter: jit.get(),
+        grainAngleDeg: grain.get(),
+        seed: seed.get(),
+        raised: !engrave.get(),
+        quality: detail.get(),
+        selectedTriangles: activeSelection(),
+      });
+    } else if (active === 'voronoiLamp') {
+      const cs = slider('Cell size', span * 0.05, span * 0.5, span * 0.16, span * 0.005, n => n.toFixed(3), schedulePreview);
+      const wt = slider('Wall thickness', span * 0.01, span * 0.12, span * 0.05, span * 0.002, n => n.toFixed(3), schedulePreview);
+      const sw = slider('Strut width (fraction)', 0.1, 0.6, 0.32, 0.01, n => n.toFixed(2), schedulePreview);
+      const jit = slider('Irregularity (jitter)', 0, 1, 1, 0.05, n => n.toFixed(2), schedulePreview);
+      const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
+      const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
+      const res = slider('Resolution', 48, 200, 140, 1, n => String(n), schedulePreview);
+      const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
+      const out = dropdown<'mesh' | 'voxel'>('Output', [
+        ['mesh', 'Smooth mesh (manifold-js)'],
+        ['voxel', 'Voxel (paintable / .vox)'],
+      ], 'mesh', schedulePreview);
+      body.append(cs.wrap, wt.wrap, sw.wrap, jit.wrap, grain.wrap, seed.wrap, res.wrap, wtight.wrap, out.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'A real see-through Voronoi shell (lamp / planter): hollows the model and cuts the cell interiors clean through, leaving a strut network. Resolution auto-raises so struts stay thick enough; "One connected piece" keeps just the main web (drops loose bits) for a clean, printable manifold.'));
+      body.append(el('p', 'text-[11px] text-amber-400/90', '"Voxel" output switches the model to the voxel engine (like Voxelize) — paintable and .vox-exportable. "Smooth mesh" stays on manifold-js (Taubin-rounded).'));
+      currentOpts = () => ({
+        cellSize: cs.get(),
+        wallThickness: wt.get(),
+        strutWidth: sw.get(),
+        jitter: jit.get(),
+        grainAngleDeg: grain.get(),
+        seed: seed.get(),
+        resolution: res.get(),
+        watertight: wtight.get(),
+        output: out.get(),
       });
     } else if (active === 'smooth') {
       const iter = slider('Rounding strength', 1, 12, 4, 1, n => String(n), schedulePreview);
@@ -612,6 +664,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         : active === 'waffle' ? await api.applyWaffleStitch(opts)
         : active === 'fur' ? await api.applyFurVelvet(opts)
         : active === 'woven' ? await api.applyWovenFabric(opts)
+        : active === 'voronoi' ? await api.applyVoronoiShell(opts)
+        : active === 'voronoiLamp' ? await api.applyVoronoiLamp(opts)
         : active === 'smooth' ? await api.smoothModel(opts)
         : await api.voxelizeModel(opts);
       const err = (result as { error?: string })?.error;
@@ -650,6 +704,8 @@ export function initSurfaceUI(api: SurfaceApi): void {
     { id: 'surface-waffle', title: 'Surface: Waffle stitch', hint: 'Modifier', keywords: 'waffle stitch grid honeycomb cell recessed border', run: () => openSurfaceModal(api, 'waffle') },
     { id: 'surface-fur', title: 'Surface: Fur / velvet', hint: 'Modifier', keywords: 'fur velvet pile fabric soft directional fiber', run: () => openSurfaceModal(api, 'fur') },
     { id: 'surface-woven', title: 'Surface: Woven fabric', hint: 'Modifier', keywords: 'woven weave fabric basket cloth interlace thread', run: () => openSurfaceModal(api, 'woven') },
+    { id: 'surface-voronoi', title: 'Surface: Voronoi texture', hint: 'Modifier', keywords: 'voronoi cell relief organic cracked web ridges struts texture', run: () => openSurfaceModal(api, 'voronoi') },
+    { id: 'surface-voronoi-lamp', title: 'Surface: Voronoi lamp (perforated shell)', hint: 'Modifier', keywords: 'voronoi lamp shell lattice perforated cutout holes see-through planter lampshade voxel', run: () => openSurfaceModal(api, 'voronoiLamp') },
     { id: 'surface-smooth', title: 'Surface: Smooth / round edges', hint: 'Modifier', keywords: 'smooth round fillet taubin low-poly', run: () => openSurfaceModal(api, 'smooth') },
     { id: 'surface-voxelize', title: 'Surface: Voxelize model', hint: 'Modifier', keywords: 'voxel blocky minecraft pixel', run: () => openSurfaceModal(api, 'voxelize') },
   ]);

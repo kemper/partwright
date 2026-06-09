@@ -14,8 +14,11 @@ import { cableKnit } from '../../src/surface/cableKnit';
 import { waffleStitch } from '../../src/surface/waffleStitch';
 import { furVelvet } from '../../src/surface/furVelvet';
 import { wovenFabric } from '../../src/surface/wovenFabric';
+import { voronoiShell } from '../../src/surface/voronoiShell';
+import { voronoiLattice } from '../../src/surface/voronoiLattice';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
+import { encodeGrid } from '../../src/geometry/voxel/grid';
 import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize } from '../../src/surface/modifiers';
 import { nearestTriangleMap } from '../../src/surface/colorTransfer';
 
@@ -173,12 +176,13 @@ describe('knitTextureUV', () => {
 // The four fabric textures added after fuzzySkin share its structure (densify →
 // displace along normals, deterministic per seed, color carried through
 // subdivision). One parameterized table guards the invariants for all of them.
-describe('fabric textures (cable / waffle / fur / woven)', () => {
+describe('fabric textures (cable / waffle / fur / woven / voronoi)', () => {
   const cases = [
     { name: 'cableKnit', fn: cableKnit as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cableWidth: 2, seed: 3 } },
     { name: 'waffleStitch', fn: waffleStitch as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellWidth: 2, seed: 3 } },
     { name: 'furVelvet', fn: furVelvet as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, fiberSpacing: 2, seed: 3 } },
     { name: 'wovenFabric', fn: wovenFabric as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, threadSpacing: 2, seed: 3 } },
+    { name: 'voronoiShell', fn: voronoiShell as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellSize: 3, seed: 3 } },
   ] as const;
 
   for (const { name, fn, opts } of cases) {
@@ -205,6 +209,30 @@ describe('fabric textures (cable / waffle / fur / woven)', () => {
   }
 });
 
+describe('voronoiShell', () => {
+  it('a different seed reshuffles the cell layout', () => {
+    const a = voronoiShell(cube(10), { amplitude: 0.5, cellSize: 3, seed: 1 });
+    const b = voronoiShell(cube(10), { amplitude: 0.5, cellSize: 3, seed: 2 });
+    expect([...a.vertProperties]).not.toEqual([...b.vertProperties]);
+  });
+
+  it('jitter=0 (regular grid) differs from jitter=1 (irregular)', () => {
+    const grid = voronoiShell(cube(10), { amplitude: 0.5, cellSize: 3, jitter: 0 });
+    const irregular = voronoiShell(cube(10), { amplitude: 0.5, cellSize: 3, jitter: 1 });
+    expect([...grid.vertProperties]).not.toEqual([...irregular.vertProperties]);
+  });
+
+  it('raised walls grow the cube; engraved channels stay within it', () => {
+    const base = bboxOf(extractPositions(cube(10)));
+    const raised = bboxOf(voronoiShell(cube(10), { amplitude: 0.6, cellSize: 3, raised: true }).vertProperties);
+    const engraved = bboxOf(voronoiShell(cube(10), { amplitude: 0.6, cellSize: 3, raised: false }).vertProperties);
+    // Raised walls displace outward, so the bbox expands past the original 10.
+    expect(raised.max[0]).toBeGreaterThan(base.max[0]);
+    // Engraving recesses walls inward, so it never pushes a face past the original.
+    expect(engraved.max[0]).toBeLessThanOrEqual(base.max[0] + 1e-4);
+  });
+});
+
 describe('smoothSurface', () => {
   it('rounds a cube without runaway shrinkage and keeps it closed', () => {
     const out = smoothSurface(cube(10), { iterations: 4 });
@@ -229,6 +257,29 @@ describe('voxelizeMesh', () => {
   it('clamps resolution into range and handles empty meshes', () => {
     const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
     expect(voxelizeMesh(empty, { resolution: 9999 }).size).toBe(0);
+  });
+});
+
+describe('voronoiLattice (perforated shell)', () => {
+  it('produces a hollow, perforated shell — far fewer voxels than the solid', () => {
+    const solid = voxelizeMesh(cube(20), { resolution: 64 });
+    const lamp = voronoiLattice(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 64 }).grid;
+    expect(lamp.size).toBeGreaterThan(0);
+    // A thin perforated shell keeps only a fraction of the solid's voxels.
+    expect(lamp.size).toBeLessThan(solid.size * 0.5);
+  });
+
+  it('is deterministic for a given seed and reshuffles for a different one', () => {
+    const a = encodeGrid(voronoiLattice(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 48, seed: 1 }).grid);
+    const b = encodeGrid(voronoiLattice(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 48, seed: 1 }).grid);
+    const c = encodeGrid(voronoiLattice(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 48, seed: 2 }).grid);
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
+  });
+
+  it('handles an empty mesh', () => {
+    const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
+    expect(voronoiLattice(empty, { cellSize: 2, wallThickness: 1 }).grid.size).toBe(0);
   });
 });
 

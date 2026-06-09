@@ -172,6 +172,43 @@ export class VoxelGrid {
   /** Number of occupied voxels. */
   get size(): number { return this.cells.size; }
 
+  /** Count of **face-connected** voxel pieces (6-neighbour BFS). This is the
+   *  trustworthy "how many separate printable pieces?" measure for voxel
+   *  models — unlike the mesh `componentCount` (from `Manifold.decompose()`),
+   *  which over-counts: an enclosed cavity shows up as a second component, and
+   *  voxels touching only at an edge/corner can split apart. FDM prints fuse
+   *  only across shared faces, so face-connectivity is what determines whether
+   *  the model comes off the bed in one piece. O(occupied voxels). */
+  faceComponentCount(): number {
+    if (this.cells.size === 0) return 0;
+    const visited = new Set<number>();
+    const NEIGHBORS: Vec3[] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+    let components = 0;
+    for (const startKey of this.cells.keys()) {
+      if (visited.has(startKey)) continue;
+      components++;
+      const stack = [startKey];
+      visited.add(startKey);
+      while (stack.length) {
+        const key = stack.pop()!;
+        // Inverse of packKey: decode the offset-packed (x,y,z).
+        const z = (key % DIM) - HALF;
+        const y = (Math.floor(key / DIM) % DIM) - HALF;
+        const x = Math.floor(key / (DIM * DIM)) - HALF;
+        for (const [dx, dy, dz] of NEIGHBORS) {
+          const nx = x + dx, ny = y + dy, nz = z + dz;
+          if (!inRange(nx, ny, nz)) continue;
+          const nKey = packKey(nx, ny, nz);
+          if (this.cells.has(nKey) && !visited.has(nKey)) {
+            visited.add(nKey);
+            stack.push(nKey);
+          }
+        }
+      }
+    }
+    return components;
+  }
+
   /** Set (occupy) a single voxel. */
   set(x: number, y: number, z: number, color: ColorInput): this {
     const cx = assertCoord(x, 'set(x)'), cy = assertCoord(y, 'set(y)'), cz = assertCoord(z, 'set(z)');

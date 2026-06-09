@@ -27,6 +27,8 @@ import { formatEngineMemory } from './geometry/engineMemory';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
+import { viewportToolsMount, openPopoverGroupById } from './ui/popoverMenu';
+import { TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './ui/toolPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView, onOrbitEnd } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
@@ -119,7 +121,7 @@ import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geom
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, rotateAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
@@ -186,7 +188,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
@@ -284,123 +286,16 @@ import {
   type GeometryAssertions,
 } from './geometry/statsComputation';
 import { getConfig, saveAppConfig } from './config/appConfig';
+import { nextStarter, isStarterCode } from './editor/starters';
+import { parseLabelColor } from './color/labelColor';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
 
-// Load examples as raw text — JS and SCAD
-const jsExampleModules = import.meta.glob('../examples/*.js', { query: '?raw', import: 'default' });
-const scadExampleModules = import.meta.glob('../examples/*.scad', { query: '?raw', import: 'default' });
-
-export interface ExampleEntry {
-  code: string;
-  language: Language;
-}
-
-// Starter snippets seeded into the editor when a language is first opened
-// (toolbar/AI language toggle, new session, new part). Each is a small,
-// instantly-rendering model chosen to show off what its engine is good at.
-// The manifold-js starter lives in examples/basic_shapes.js (it doubles as
-// the landing-page default — see `defaultCode`); the other three live here.
-
-// OpenSCAD: a capability sampler laid out in a row — boolean difference,
-// minkowski-rounded box, a parametric module + linear_extrude twist, and a
-// rotate_extrude vase. Pure OpenSCAD (no BOSL2), so there's no library
-// download and it renders instantly.
-const STARTER_SCAD = `// OpenSCAD capability sampler — a CSG boolean and a parametric twist extrude
-// on one tray (so it stays a single solid). Pure OpenSCAD (no libraries) and
-// kept deliberately small so it renders fast. Edit a block and re-run.
-$fn = 24;
-
-// Tray base — ties the two demos into one connected solid (top at z = 0).
-translate([0, 0, -2]) cube([40, 22, 4], center = true);
-
-// 1) Boolean difference: a cube with a bore (CSG is OpenSCAD's core trick).
-translate([-10, 0, 5.5]) difference() {
-  cube(12, center = true);
-  cylinder(h = 16, r = 3, center = true);
-}
-
-// 2) Twisted star column: a parametric module fed into linear_extrude.
-module star(outer = 7, inner = 3, points = 6) {
-  polygon([for (i = [0 : 2 * points - 1])
-    let (r = (i % 2 == 0) ? outer : inner, a = i * 180 / points)
-    [r * cos(a), r * sin(a)]]);
-}
-translate([10, 0, -0.5]) linear_extrude(height = 15, twist = 140, slices = 24)
-  star();`;
-
-// BREP / replicad — a capability sampler laid out in a row: a fully-rounded
-// box, a knob with a filleted top rim + chamfered base, a cone fused onto a
-// cylinder, and a bracket with rounded corners + bored holes. Shows the BREP
-// headline (true selective fillets/chamfers + exact booleans + STEP). Small
-// enough that the OCCT solver runs in well under a second even cold.
-const STARTER_REPLICAD = `// BREP / replicad capability sampler — exact surfaces with true fillets,
-// chamfers, and booleans (and STEP export), fused onto one tray so it stays a
-// single solid. Edit a block and re-run.
-const { BREP } = api;
-
-// 1) A rounded box — fillet with no filter rounds every edge at once.
-const rounded = BREP.box([18, 18, 10]).fillet(2.5);
-
-// 2) A knob: cylinder with a filleted top rim and a chamfered base.
-const knob = BREP.cylinder(8, 14)
-  .fillet(2, { maxZ: 13.999, parallelToPlane: 'XY' })
-  .chamfer(0.8, { minZ: 0.001, parallelToPlane: 'XY' });
-
-// 3) A finial: a cone fused onto a cylinder (boolean union of two solids).
-const finial = BREP.cone(7, 4, 7)
-  .fuse(BREP.cylinder(4, 8).translate([0, 0, 7]));
-
-// 4) A bracket: a box with rounded vertical corners and two bored holes.
-const bracket = BREP.box([20, 14, 8])
-  .fillet(3, { inDirection: [0, 0, 1] })
-  .cut(BREP.cylinder(2, 12).translate([-6, 0, -2]))
-  .cut(BREP.cylinder(2, 12).translate([ 6, 0, -2]));
-
-// A tray base fuses the four demos into one connected solid.
-const tray = BREP.box([86, 24, 3]).translate([4, 0, -2]);
-return tray
-  .fuse(rounded.translate([-30, 0, 0]))
-  .fuse(knob.translate([-6, 0, 0]))
-  .fuse(finial.translate([16, 0, 0]))
-  .fuse(bracket.translate([38, 0, 0]));`;
-
-// Voxel — a layered pine tree: a loop builds tapering canopy tiers in
-// alternating greens, with snowy caps, ornaments, and a gold star, so the
-// first paint shows the fillBox / set workflow on a fuller model.
-const STARTER_VOXEL = `// Voxel pine tree — colored cubes on an integer grid (1 voxel = 1 unit).
-// A loop builds tapering canopy tiers; ornaments and a star finish it.
-const { voxels } = api;
-const v = voxels();
-
-// Trunk
-v.fillBox([-1, -1, 0], [0, 0, 3], '#7a4a22');
-
-// Canopy: stacked square tiers, each smaller than the one below, in
-// alternating green shades for depth.
-const greens = ['#2e7d32', '#388e3c', '#43a047', '#4caf50', '#66bb6a'];
-let z = 4;
-for (let i = 0; i < 6; i++) {
-  const half = 6 - i;
-  v.fillBox([-half, -half, z], [half - 1, half - 1, z + 1], greens[i % greens.length]);
-  z += 2;
-}
-
-// Snowy caps (a few light voxels on tier edges).
-v.set(-5, 2, 5, '#eaf6ff');
-v.set(3, -4, 7, '#eaf6ff');
-v.set(-2, 3, 9, '#eaf6ff');
-
-// Ornaments dotted around the tree.
-v.set(5, 0, 4, '#e53935');
-v.set(-4, -4, 6, '#fdd835');
-v.set(3, 3, 8, '#1e88e5');
-v.set(-2, 1, 10, '#e53935');
-
-// Gold star on top.
-v.set(0, 0, z, '#ffd23b');
-
-// Tip: return v.smooth() for rounded edges (see /ai/voxel.md).
-return v;`;
+// Editor starters — one simple, labelled, self-coloured primitive per engine,
+// rotated so a fresh session/part/language opens on a different cube / sphere /
+// cylinder / cone / pyramid. Data + rotation + recognition live in the
+// dependency-light, unit-tested `editor/starters` module; the engines that
+// can't carry colour in code (scad, replicad) ship a `paint` descriptor that
+// `seedStarter` applies via paintByLabel after the run. See `seedStarter`.
 
 // Customizer state. `currentParamSchema` is the parameter schema the active
 // model declared via `api.params({...})` on its last run (null when it declared
@@ -462,6 +357,11 @@ let lastEngineHeapBytes: number | undefined;
  *  and the Data panel show it) without re-decoding the grid. Undefined for the
  *  non-voxel engines or before the first run. */
 let lastVoxelCount: number | undefined;
+/** Face-connected printable-piece count for the last voxel run (6-neighbour
+ *  BFS). Surfaced as `voxelPieceCount` in the geometry-data stats so agents
+ *  trust it over the mesh `componentCount`, which over-reports voxel models
+ *  (enclosed cavities + edge/corner touches). Undefined for non-voxel engines. */
+let lastVoxelPieceCount: number | undefined;
 /** The pristine mesh produced by the authored code, before any smooth brush
  *  subdivision. `currentMeshData` equals this until a `brushStroke` region
  *  exists, at which point it becomes the refined (subdivided) mesh rebuilt by
@@ -549,7 +449,7 @@ type PartMeshCacheEntry = {
   meshData: MeshData;
   labelMap: Map<string, Set<number>> | null;
   lostLabels: string[] | null;
-  modelColorDecls: Array<{ name: string; color: [number, number, number]; triangles: Set<number> }>;
+  modelColorDecls: Array<{ name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor }>;
   paramsSchema: ParamSpec[] | undefined;
 };
 const PART_MESH_CACHE_SIZE = 8;
@@ -736,6 +636,11 @@ function withSessionContext(data: Record<string, unknown>): Record<string, unkno
   // size readout for direct (non-mesh) modeling.
   if (lastVoxelCount !== undefined) {
     data.voxelCount = lastVoxelCount;
+  }
+  // Trustworthy "separate printable pieces?" count for voxel models — the mesh
+  // componentCount over-reports them (enclosed cavities, edge/corner touches).
+  if (lastVoxelPieceCount !== undefined) {
+    data.voxelPieceCount = lastVoxelPieceCount;
   }
   return data;
 }
@@ -1276,8 +1181,22 @@ function rebuildPaintedGeometry(): void {
     const { triangles, perTriColors } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
     setRegionTriangles(region.id, triangles, perTriColors);
   }
+  reresolveModelRegions(mesh, adjacency, parentToChildren);
   paintedColorRefresh();
   syncLockState();
+}
+
+/** Re-resolve the code-declared color underlay (`api.label({color})` /
+ *  `api.paint.*`) against a (possibly subdivided) mesh. The refine paths
+ *  subdivide the working mesh to follow smooth user strokes, which invalidates
+ *  the underlay's triangle indices unless we re-resolve them here from their
+ *  descriptors — geometric selectors against `mesh` directly, byLabel through
+ *  `parentToChildren` from the run's labelMap. No-op when no underlay exists. */
+function reresolveModelRegions(mesh: MeshData, adjacency: AdjacencyGraph | null, parentToChildren: Map<number, number[]> | null): void {
+  for (const region of getModelRegions()) {
+    const { triangles } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
+    setModelRegionTriangles(region.id, triangles);
+  }
 }
 
 /** Incrementally refine the CURRENT mesh by a single newly-added stroke, instead
@@ -1321,6 +1240,7 @@ function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brush
       setRegionTriangles(region.id, triangles, perTriColors);
     }
   }
+  reresolveModelRegions(mesh, adjacency, parentToChildren);
   paintedColorRefresh();
   syncLockState();
 }
@@ -1564,6 +1484,7 @@ async function appendStrokeRefineAsync(
         setRegionTriangles(region.id, triangles, perTriColors);
       }
     }
+    reresolveModelRegions(mesh, adjacency, parentToChildren);
     paintedColorRefresh();
     syncLockState();
   } finally {
@@ -1625,6 +1546,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
         setRegionTriangles(region.id, triangles, perTriColors);
       }
     }
+    reresolveModelRegions(mesh, adjacency, parentToChildren);
     paintedColorRefresh();
     syncLockState();
   } finally {
@@ -1780,7 +1702,7 @@ async function saveCurrentVersion(label?: string): Promise<
         meshData: meshToCache,
         labelMap: currentLabelMap,
         lostLabels: currentLostLabels,
-        modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles) })),
+        modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles), descriptor: r.descriptor })),
         paramsSchema: currentParamSchema ?? undefined,
       };
       partMeshCache.delete(version.id);
@@ -1992,18 +1914,6 @@ async function main() {
 
   let landingEl: HTMLElement | null = null;
   let helpEl: HTMLElement | null = null;
-
-  // Load examples (JS + SCAD) with language metadata
-  const examples: Record<string, ExampleEntry> = {};
-  for (const [path, loader] of Object.entries(jsExampleModules)) {
-    examples[path] = { code: await loader() as string, language: 'manifold-js' };
-  }
-  for (const [path, loader] of Object.entries(scadExampleModules)) {
-    examples[path] = { code: await loader() as string, language: 'scad' };
-  }
-
-  const defaultExampleKey = Object.keys(examples).find(k => k.includes('basic_shapes')) ?? Object.keys(examples)[0];
-  const defaultCode = examples[defaultExampleKey]?.code ?? '// Write your manifold code here\nconst { Manifold } = api;\nreturn Manifold.cube([5,5,5], true);';
 
   // Shared validator for parsed session JSON. Returns null if shape is wrong.
   // A chat- or notes-only export (a session used before any geometry was saved)
@@ -3309,18 +3219,8 @@ async function main() {
   // wrapper (`Manifold.ofMesh` / `Manifold.compose`) main already uses for STL
   // imports and simplify-bakes, so the result is an ordinary, editable version.
 
-  /** True when the editor still holds a fresh starter snippet (blank or the
-   *  current manifold-js default) — i.e. nothing worth preserving before an
-   *  import overwrites it. The trailing regex is kept only for back-compat with
-   *  legacy saved drafts that hold the old `Manifold.cube([10,10,10])` starter
-   *  (optionally prefixed with a `// New session`/`// New part` comment that
-   *  `resetEditorToStarter` no longer emits). */
-  function isStarterCode(code: string): boolean {
-    const t = code.trim();
-    if (!t) return true;
-    if (t === defaultCode.trim()) return true;
-    return /^(\/\/ (New session|New part)\n)?const \{ Manifold \} = api;\nreturn Manifold\.cube\(\[10, 10, 10\], true\);$/.test(t);
-  }
+  // `isStarterCode` (does the editor still hold an untouched rotating starter?)
+  // lives in editor/starters — it must recognize starters from every engine.
 
   /** The current part is "expendable" when it has no saved version and the
    *  editor still shows starter code — seeding a mesh into it discards nothing. */
@@ -4296,14 +4196,26 @@ async function main() {
   // Shared by the session bar's "+ New Session" button and the session modal's,
   // so both clear the previous session's code instead of leaving it behind.
   function resetEditorToStarter() {
+    void seedStarter(getActiveLanguage());
+  }
+
+  // Seed the editor with the next starter in `lang`'s rotation, run it, and —
+  // for engines that can't carry colour in code (scad, replicad) — paint its
+  // label a basic starting colour once the run registers it. Used by
+  // new-session/new-part resets, language switches, and the fresh-session entry
+  // points (landing, ideas, share/stale-URL fallbacks). Drops any prior paint
+  // first so the fresh starter (and its auto-paint) doesn't inherit a previous
+  // buffer's regions across a language switch. runCodeSync (no preserveCamera)
+  // auto-frames the fresh model, matching the old behaviour.
+  async function seedStarter(lang: Language): Promise<void> {
     dropPaintState();
-    const lang = getActiveLanguage();
-    const freshCode = lang === 'scad' ? STARTER_SCAD
-      : lang === 'replicad' ? STARTER_REPLICAD
-      : lang === 'voxel' ? STARTER_VOXEL
-      : defaultCode;
-    setValue(freshCode);
-    runCode(freshCode);
+    const starter = nextStarter(lang);
+    setValue(starter.code);
+    const ran = await runCodeSync(starter.code, { surfaceErrors: false });
+    if (ran && starter.paint) {
+      const color = parseLabelColor(starter.paint.colorHex);
+      if (color) partwrightAPI.paintByLabel({ label: starter.paint.label, color });
+    }
   }
 
   function startNewSessionInEditor() {
@@ -4576,7 +4488,7 @@ async function main() {
     // These tools moved behind the Tools/Inspect popovers after the view-menu
     // refactor, so the palette is their only keyboard/search entry point. Each
     // fires the existing overlay toggle by id (click() works even collapsed).
-    { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', keywords: 'fuzzy knit cable waffle fur woven smooth voxelize texture modifier displace', run: () => document.getElementById('surface-viewport-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', keywords: 'fuzzy knit cable waffle fur woven voronoi smooth voxelize texture modifier displace', run: () => document.getElementById('surface-viewport-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-resize', title: 'Resize / scale model', hint: 'Tools', keywords: 'scale resize size dimensions grow shrink mm', run: () => document.getElementById('resize-viewport-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-place', title: 'Place / orient on bed', hint: 'Tools', keywords: 'place orient rotate move position lay flat drop floor center bed', run: () => document.getElementById('place-viewport-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => document.getElementById('print-tools-toggle')?.click(), enabled: viewportToolEnabled },
@@ -4858,7 +4770,7 @@ async function main() {
           meshData: currentMeshData,
           labelMap: currentLabelMap,
           lostLabels: currentLostLabels,
-          modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles) })),
+          modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles), descriptor: r.descriptor })),
           paramsSchema: currentParamSchema ?? undefined,
         };
         partMeshCache.delete(version.id);
@@ -4898,7 +4810,7 @@ async function main() {
     await createSession();
     updateDocumentTitle({ page: 'editor' });
     setStatus(statusBar, 'ready', 'Ready');
-    runCode(defaultCode);
+    void seedStarter('manifold-js');
   }
 
   // Launch the guided tour from an entry point outside the editor (the landing
@@ -4911,7 +4823,7 @@ async function main() {
     await ensureEngineStarted();
     if (!getState().session) {
       await createSession();
-      runCode(defaultCode);
+      void seedStarter('manifold-js');
     }
     resetTour();
     startTour();
@@ -5122,7 +5034,7 @@ async function main() {
       // editor stuck on "Loading WASM…" — fall back to a default session.
       if (!getState().session) await createSession();
       setStatus(statusBar, 'ready', 'Ready');
-      runCode(defaultCode);
+      void seedStarter('manifold-js');
     }
   }
 
@@ -5145,7 +5057,7 @@ async function main() {
     if (!getState().session) {
       await createSession();
       setStatus(statusBar, 'ready', 'Ready');
-      runCode(defaultCode);
+      void seedStarter('manifold-js');
     }
     updateDocumentTitle({ page: 'editor' });
     prefillAiInput(idea.prompt ?? '');
@@ -5316,7 +5228,7 @@ async function main() {
       // Fall through to a normal, editable empty editor.
       if (!getState().session) await createSession();
       setStatus(statusBar, 'ready', 'Ready');
-      runCode(defaultCode);
+      void seedStarter('manifold-js');
       return;
     }
 
@@ -5460,7 +5372,7 @@ async function main() {
       await createSession();
     }
     setStatus(statusBar, 'ready', 'Ready');
-    runCode(defaultCode);
+    void seedStarter('manifold-js');
   }
 
   async function syncRouteFromURL() {
@@ -5669,21 +5581,21 @@ async function main() {
   // re-runs (live preview); Reset clears all overrides back to model defaults.
   // Hidden until a run reports a parameter schema.
   //
-  // A "Customize" toggle pill in the viewport toolbar (created below) is the
-  // discoverable open/reopen affordance: it appears only when the active model
-  // declares parameters, shows the count, and mirrors the panel's open state —
-  // so closing the panel never strands the user without a way back in.
+  // A "Customize" toggle button lives in the viewport Tools dropdown (one of the
+  // model-editing tools) and is the discoverable open/reopen affordance: it
+  // appears in the menu only when the active model declares parameters, shows the
+  // count, and mirrors the panel's open state — so closing the panel never
+  // strands the user without a way back in. When a parameterizable model is first
+  // opened, the panel auto-reveals and pops the Tools dropdown open with it (see
+  // onAutoReveal), so the tool list sits just above the freshly-docked panel.
   const customizeBtn = document.createElement('button');
   customizeBtn.id = 'customize-toggle';
   customizeBtn.title = 'Tweak this model’s parameters';
-  customizeBtn.className = 'hidden'; // shown by syncCustomizeBtn once a run reports params
+  customizeBtn.className = `hidden ${TOOL_TOGGLE_IDLE}`; // shown by syncCustomizeBtn once a run reports params
   customizeBtn.addEventListener('click', () => paramsPanel?.toggle());
-  const CUSTOMIZE_BTN_BASE = 'md:px-2 md:py-1 px-3 py-2 rounded text-sm md:text-xs backdrop-blur transition-colors border';
-  const CUSTOMIZE_BTN_OPEN = `${CUSTOMIZE_BTN_BASE} bg-blue-500/30 text-blue-300 border-blue-500/50`;
-  const CUSTOMIZE_BTN_CLOSED = `${CUSTOMIZE_BTN_BASE} bg-zinc-800/80 text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 border-zinc-600/50`;
   const syncCustomizeBtn = (state: { hasParams: boolean; open: boolean; count: number }) => {
     customizeBtn.textContent = state.count > 0 ? `🎛 Customize (${state.count})` : '🎛 Customize';
-    customizeBtn.className = state.open ? CUSTOMIZE_BTN_OPEN : CUSTOMIZE_BTN_CLOSED;
+    customizeBtn.className = state.open ? TOOL_TOGGLE_ACTIVE : TOOL_TOGGLE_IDLE;
     // No declared parameters → no button at all (matches the panel being hidden).
     customizeBtn.classList.toggle('hidden', !state.hasParams);
   };
@@ -5698,14 +5610,16 @@ async function main() {
       runCode();
     },
     onVisibilityChange: syncCustomizeBtn,
+    // First open of a parameterizable model: surface the Tools dropdown the
+    // Customize button sits in, so the tool list shows just above the panel.
+    onAutoReveal: () => openPopoverGroupById('viewport-tools'),
   });
   viewportPane.appendChild(paramsPanel.element);
-  // Customize is a contextual primary: hidden until a model declares params,
-  // then surfaced top-level (just before the Inspect popover) as a strong "this
-  // model is tweakable" signal — not buried inside the Tools popover.
-  const customizeAnchor = clipControls.querySelector('#viewport-inspect-group');
-  if (customizeAnchor) clipControls.insertBefore(customizeBtn, customizeAnchor);
-  else clipControls.appendChild(customizeBtn);
+  // Customize joins the other model-editing tools inside the Tools popover, hidden
+  // until a model declares params. The Customize panel docks beneath the open
+  // Tools menu (see viewportPanelDrag's dockUnderBottom), so the two read as one
+  // unit when auto-revealed.
+  viewportToolsMount(clipControls).appendChild(customizeBtn);
 
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
@@ -5763,7 +5677,7 @@ async function main() {
   // The same idle/blur ticks autosave the draft. A programmatic setValue
   // (version load / language switch) cancels the pending onIdle (see
   // codeEditor.setValue), so autosave never fires for code the user didn't type.
-  initEditor(editorContainer, defaultCode, (code: string) => {
+  initEditor(editorContainer, nextStarter('manifold-js').code, (code: string) => {
     if (isAutoRun()) runCode(code, { surfaceErrors: false });
   }, 'manifold-js', {
     onEdit: () => clearEditorErrorPanel(editorErrorPanel),
@@ -6673,8 +6587,8 @@ async function main() {
   reliefViewportBtn.textContent = '✦ Relief';
   reliefViewportBtn.title = 'Edit colors for this relief';
   reliefViewportBtn.addEventListener('click', () => toggleReliefStudio());
-  // Relief edit is a contextual primary too (shown only in relief sessions), so
-  // it sits top-level alongside Customize rather than inside the Tools popover.
+  // Relief edit is a contextual primary (shown only in relief sessions), so it
+  // sits top-level on the bar rather than inside the Tools popover.
   const reliefAnchor = clipControls.querySelector('#viewport-inspect-group');
   if (reliefAnchor) clipControls.insertBefore(reliefViewportBtn, reliefAnchor);
   else clipControls.appendChild(reliefViewportBtn);
@@ -6945,17 +6859,17 @@ async function main() {
       const draft = await readDraft(sid, lang, pid);
       if (draft) { nextCode = draft.code; nextCompanions = draft.companionFiles; }
     }
-    if (nextCode === null) {
-      nextCode = lang === 'scad' ? STARTER_SCAD
-        : lang === 'replicad' ? STARTER_REPLICAD
-        : lang === 'voxel' ? STARTER_VOXEL
-        : defaultCode;
-    }
     // Restore the target language's companion set: the SCAD draft's saved
     // companions, or empty for any non-SCAD buffer (which never has them).
     setCompanionFiles(lang === 'scad' ? (nextCompanions ?? {}) : {});
-    setValue(nextCode);
-    runCode(nextCode);
+    if (nextCode === null) {
+      // No saved buffer for this language — seed a fresh rotating starter (which
+      // also applies the scad/replicad starting colour after the run).
+      await seedStarter(lang);
+    } else {
+      setValue(nextCode);
+      runCode(nextCode);
+    }
   }
 
   /** Pre-existing call sites that just need the engine swapped (version
@@ -7021,6 +6935,7 @@ async function main() {
     const stats = computeGeometryStats(manifold, result.mesh!, elapsed, code);
     if (engineMemory !== undefined) stats.engineMemory = engineMemory;
     if (result.voxelCount !== undefined) stats.voxelCount = result.voxelCount;
+    if (result.voxelPieceCount !== undefined) stats.voxelPieceCount = result.voxelPieceCount;
     return {
       geometryData: stats,
       meshData: result.mesh,
@@ -7063,7 +6978,7 @@ async function main() {
    *  feature size relative to the model's bounding-box diagonal so the AI gets
    *  actionable feedback before spending time on a degenerate run. */
   function textureWarnings(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi',
     opts: Record<string, unknown>,
     mesh: MeshData,
   ): string[] {
@@ -7165,6 +7080,20 @@ async function main() {
         warnings.push(
           `threadSpacing (${ts.toFixed(4)}) is very small — weave will be invisible; ` +
           `try threadSpacing ≈ ${(diag * 0.04).toFixed(3)}`,
+        );
+      }
+    } else if (id === 'voronoi') {
+      const cs = (opts.cellSize as number | undefined) ?? 0;
+      if (cs > diag * 0.4) {
+        warnings.push(
+          `cellSize (${cs.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
+          `fewer than 3 cells visible; try cellSize ≈ ${(diag * 0.12).toFixed(3)}`,
+        );
+      }
+      if (cs > 0 && cs < diag / 300) {
+        warnings.push(
+          `cellSize (${cs.toFixed(4)}) is very small — the cell walls will be invisible; ` +
+          `try cellSize ≈ ${(diag * 0.12).toFixed(3)}`,
         );
       }
     }
@@ -7496,7 +7425,7 @@ async function main() {
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
   function buildSurfaceModifier(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
   ): ModifierResult {
@@ -7597,6 +7526,39 @@ async function main() {
       if (sel && sel.size > 0) return applyWovenPatch(mesh, wovenOpts, sel);
       return applyWoven(mesh, wovenOpts);
     }
+    if (id === 'voronoi') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultVoronoiOptions(mesh);
+      const voronoiOpts = {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        cellSize: (opts?.cellSize as number) ?? base.cellSize,
+        wallWidth: (opts?.wallWidth as number) ?? base.wallWidth,
+        raised: (opts?.raised as boolean) ?? base.raised,
+        jitter: (opts?.jitter as number) ?? base.jitter,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
+      };
+      if (sel && sel.size > 0) return applyVoronoiPatch(mesh, voronoiOpts, sel);
+      return applyVoronoi(mesh, voronoiOpts);
+    }
+    if (id === 'voronoiLamp') {
+      // Perforated shell → voxel output; whole-model only (no region patch).
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultVoronoiLampOptions(mesh);
+      return applyVoronoiLamp(mesh, {
+        cellSize: (opts?.cellSize as number) ?? base.cellSize,
+        wallThickness: (opts?.wallThickness as number) ?? base.wallThickness,
+        strutWidth: (opts?.strutWidth as number) ?? base.strutWidth,
+        resolution: (opts?.resolution as number) ?? base.resolution,
+        jitter: (opts?.jitter as number) ?? base.jitter,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        seed: (opts?.seed as number) ?? base.seed,
+        watertight: (opts?.watertight as boolean) ?? base.watertight,
+        output: (opts?.output as 'mesh' | 'voxel') ?? base.output,
+        smooth: (opts?.smooth as boolean) ?? base.smooth,
+      });
+    }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultSmoothOptions();
@@ -7621,8 +7583,8 @@ async function main() {
     modelHasColor(): boolean { return modelHasColor(); },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
-     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'smooth'|'voxelize'. */
-    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize'. */
+    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
       try {
         previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
         return { ok: true };
@@ -7806,6 +7768,60 @@ async function main() {
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
 
+    /** Apply a Voronoi-shell surface texture to the current model; saves a new version.
+     *  Produces an organic cell-wall relief — a network of raised ridges tracing
+     *  Voronoi cell boundaries (cracked-mud / dragonfly-wing / lampshade look).
+     *  Set raised=false to engrave the network as channels; jitter=0 for a regular grid.
+     *  `preserveColor` (default true) carries paint across subdivision.
+     *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async applyVoronoiShell(opts?: {
+      amplitude?: number;
+      cellSize?: number;
+      wallWidth?: number;
+      raised?: boolean;
+      jitter?: number;
+      grainAngleDeg?: number;
+      seed?: number;
+      quality?: number;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        const mesh = requireCurrentMeshForModifier();
+        const warns = textureWarnings('voronoi', opts ?? {}, mesh);
+        const result = await commitSurfaceModifier(buildSurfaceModifier('voronoi', opts, preserve), preserve);
+        if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
+          const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
+          return { ...result, warnings: [...warns, ...(existing ?? [])] };
+        }
+        return result;
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Turn the current model into a true perforated Voronoi shell (a "Voronoi
+     *  lamp"): a thin hollow wall with the cell interiors cut clean through,
+     *  leaving a see-through strut network. Unlike applyVoronoiShell (a relief
+     *  texture), this opens real holes. `output:'mesh'` (default) bakes a smooth
+     *  manifold-js mesh; `output:'voxel'` switches to the voxel engine
+     *  (paintable / .vox). Saves a new version. Returns `{ ok, label, geometry, warnings? }`. */
+    async applyVoronoiLamp(opts?: {
+      cellSize?: number;
+      wallThickness?: number;
+      strutWidth?: number;
+      resolution?: number;
+      jitter?: number;
+      grainAngleDeg?: number;
+      seed?: number;
+      watertight?: boolean;
+      output?: 'mesh' | 'voxel';
+      smooth?: boolean;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('voronoiLamp', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
     /** Smooth/round the current model (Taubin λ/μ); saves a new version. */
     async smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }) {
       try {
@@ -13630,7 +13646,7 @@ async function main() {
       // current camera angle by default — re-rendering edited code shouldn't
       // snap the view back to the default 3/4 framing. The same-session gate in
       // captureCameraToPreserve still auto-frames the first render of a session
-      // (e.g. runCode(defaultCode) on a freshly-created session). Programmatic
+      // (e.g. seedStarter() on a freshly-created session). Programmatic
       // runs (partwright.run/runAndSave) call runCodeSync directly and keep
       // auto-framing. A caller can opt out with preserveCamera: false.
       await runCodeSync(src, { preserveCamera: true, ...opts });
@@ -13731,6 +13747,7 @@ async function main() {
     // Occupied-voxel count for voxel runs (undefined for other engines, which
     // resets the readout so a prior voxel session's count doesn't linger).
     lastVoxelCount = result.voxelCount;
+    lastVoxelPieceCount = result.voxelPieceCount;
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel
@@ -13834,11 +13851,29 @@ async function main() {
       // — passing [] when nothing was declared clears any prior run's layer.
       // This layer never locks the editor and is never serialized; the user's
       // manual paint composites on top of it. See src/color/regions.ts.
-      const modelColorDecls: { name: string; color: [number, number, number]; triangles: Set<number> }[] = [];
+      const modelColorDecls: { name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor }[] = [];
       if (result.labelColors && currentLabelMap) {
         for (const [name, color] of result.labelColors) {
           const triangles = currentLabelMap.get(name);
           if (triangles && triangles.size > 0) modelColorDecls.push({ name, color, triangles });
+        }
+      }
+      // Paint declared in code via api.paint.* (box / slab / cylinder / label).
+      // Resolve each descriptor against this run's mesh — exactly like a user
+      // paint region, but fed into the model underlay so it stays derived from
+      // code and is never serialized to the paint sidecar. byLabel reads the
+      // labelMap captured just above; the geometric selectors need only the mesh
+      // (adjacency built lazily for the rare descriptor kind that wants it).
+      if (result.paintOps && result.paintOps.length > 0) {
+        const mesh = result.mesh;
+        let paintAdjacency: AdjacencyGraph | null = null;
+        for (const op of result.paintOps) {
+          const d = op.descriptor as RegionDescriptor;
+          if (!paintAdjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) {
+            paintAdjacency = buildAdjacency(mesh);
+          }
+          const { triangles } = resolveDescriptorTriangles(d, mesh, paintAdjacency, null);
+          if (triangles.size > 0) modelColorDecls.push({ name: op.name, color: op.color, triangles, descriptor: d });
         }
       }
       setModelColorRegions(modelColorDecls);

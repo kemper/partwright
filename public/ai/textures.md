@@ -1,7 +1,7 @@
 # Surface Texture & Mesh Operations
 
 Post-hoc operations that add surface detail to a finished model by displacing
-vertices along their normals. Six textures are available:
+vertices along their normals. Seven textures are available:
 
 | Texture | Look | Best for |
 |---------|------|----------|
@@ -11,6 +11,7 @@ vertices along their normals. Six textures are available:
 | `applyWaffleStitch` | Recessed grid cells with raised borders | Waffle-knit, waffle irons, honeycomb patterns |
 | `applyFurVelvet` | Directional anisotropic pile (velvet, fur, chenille) | Animal fur, velvet fabric, soft plush surfaces |
 | `applyWovenFabric` | Plain-weave over/under interlacing | Baskets, woven cloth, twill, burlap |
+| `applyVoronoiShell` | Organic cell-wall ridge network (Voronoi cells) | Lampshades, planters, vases, cracked-mud / dragonfly-wing shells |
 
 Two further mesh operations live in the same panel and share the same
 apply→save→verify workflow:
@@ -19,6 +20,7 @@ apply→save→verify workflow:
 |-----------|--------------|-------|
 | `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
+| `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
 
 > **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
 > BREP/replicad model this discards the parametric source (and, for BREP, STEP
@@ -215,6 +217,90 @@ slightly depressed.
 - Open weave / burlap: `threadWidth=0.35`, `threadSpacing=d*0.05`, `underDepth=0.5`
 - Tight fabric: `threadWidth=0.65`, `threadSpacing=d*0.03`, `underDepth=0.2`
 - Basket weave: `threadWidth=0.55`, `threadSpacing=d*0.06`, `underDepth=0.4`
+
+---
+
+## applyVoronoiShell
+
+```
+applyVoronoiShell({ amplitude?, cellSize?, wallWidth?, raised?, jitter?,
+                    grainAngleDeg?, seed?, quality?, preserveColor? })
+```
+
+Organic cell-wall relief: a network of raised ridges tracing the boundaries
+between Voronoi cells, with flat cell interiors (cracked-mud / dragonfly-wing /
+decorative-lampshade look). Computed as a cellular (Worley F2−F1) distance field
+over jittered grid seeds, so it follows the surface like the other textures.
+
+> **This is a relief, not a cutaway.** It raises or engraves cell walls along the
+> surface; it does **not** cut through-holes to leave an open strut lattice. For
+> an actually-perforated, see-through Voronoi shell (a "Voronoi lamp"), use
+> [`applyVoronoiLamp`](#applyvoronoilamp) instead.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `amplitude` | ~3% of diagonal | Wall height. |
+| `cellSize` | ~12% of diagonal | Approx spacing between cells (~8 cells across). |
+| `wallWidth` | 0.25 | Raised-wall band width as a fraction of cellSize [0.05–0.6]. Smaller = thinner struts. |
+| `raised` | true | true = raised wall network; false = engrave the network as recessed channels. |
+| `jitter` | 1 | Cell irregularity [0–1]. 1 = full irregular Voronoi; 0 = a regular square grid. |
+| `grainAngleDeg` | 0 | Rotate the cell pattern in the XY plane. |
+| `seed` | 1 | Deterministic seed — change it to reshuffle the cell layout. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = crisper walls, slower. |
+| `preserveColor` | true | Carry paint through subdivision. |
+
+**Look guidance:**
+- Lampshade shell: `cellSize=d*0.15`, `wallWidth=0.15`, `amplitude=d*0.04`
+- Cracked mud / dry earth: `cellSize=d*0.1`, `wallWidth=0.2`, `raised=false`
+- Regular grid (waffle-like): `jitter=0`, `cellSize=d*0.08`
+
+> Want **actual holes** (a see-through Voronoi lamp), not a raised pattern? Use
+> [`applyVoronoiLamp`](#applyvoronoilamp).
+
+---
+
+## applyVoronoiLamp
+
+```
+applyVoronoiLamp({ cellSize?, wallThickness?, strutWidth?, resolution?,
+                   jitter?, grainAngleDeg?, seed?, output?, smooth? })
+```
+
+The **cutaway** counterpart to `applyVoronoiShell`: turns a solid model into a
+true perforated Voronoi shell — a thin hollow wall with the cell interiors cut
+clean through, leaving a see-through strut network (the classic 3D-printed
+Voronoi lamp / planter).
+
+`output` chooses the form:
+- **`'mesh'` (default)** — bakes a smooth manifold-js mesh (Taubin-rounded), so
+  it stays a normal mesh model with **no engine change**. Best for most lamps.
+- **`'voxel'`** — switches the session to the `voxel` language (paintable,
+  `.vox`-exportable, re-blockable), at the cost of a blockier look.
+
+Start from a **closed solid** (vase, sphere, vessel). It hollows + perforates in
+one step.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `cellSize` | ~10% of diagonal | Approx spacing between cells (world units). |
+| `wallThickness` | ~4% of diagonal | Shell thickness — how thick the struts are through the wall. |
+| `strutWidth` | 0.32 | Kept edge-network width as a fraction of cellSize [0.05–0.6]. Smaller = thinner struts, bigger windows. |
+| `resolution` | 140 | Voxels along the longest axis [16–200]. **Auto-raised** so struts resolve to ≥4 voxels — you rarely need to set it. |
+| `jitter` | 1 | Cell irregularity [0–1]. 1 = irregular Voronoi; 0 = a regular grid of windows. |
+| `grainAngleDeg` | 0 | Rotate the cell pattern in the XY plane. |
+| `seed` | 1 | Deterministic seed — change to reshuffle the cell layout. |
+| `watertight` | true | Keep only the largest connected web → one watertight, manifold, printable piece (drops loose fragments). Leave on for printing. |
+| `output` | `'mesh'` | `'mesh'` = smooth manifold-js mesh (no engine change); `'voxel'` = voxel engine (paintable / .vox). |
+| `smooth` | true | Voxel output only: round the struts with a smoothing pass. |
+
+**Look guidance** (defaults already look good on a typical solid — mostly tune cellSize + strutWidth):
+- Voronoi lamp: `cellSize=d*0.1`, `wallThickness=d*0.04`, `strutWidth=0.3`
+- Chunky planter: `cellSize=d*0.16`, `wallThickness=d*0.06`, `strutWidth=0.4`
+- Fine lattice: `cellSize=d*0.07`, `strutWidth=0.22`
+
+**Tips:** with `watertight` on (default) the result is manifold/printable. If
+windows don't open, lower `strutWidth` or raise `cellSize`. Resolution
+auto-raises for thin struts, so you rarely touch it. Verify with `renderViews`.
 
 ---
 

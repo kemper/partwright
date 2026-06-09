@@ -111,7 +111,7 @@ export const voxelEngine: Engine = {
 
     try {
       const mesh = meshGrid(grid);
-      return { mesh, manifold: null, error: null, paramsSchema: capture.collectSchema(), voxelCount: grid.size };
+      return { mesh, manifold: null, error: null, paramsSchema: capture.collectSchema(), voxelCount: grid.size, voxelPieceCount: grid.faceComponentCount() };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return { mesh: null, manifold: null, error: msg, diagnostics: runtimeDiagnostic(msg, undefined, 'JavaScript'), paramsSchema: capture.collectSchema() };
