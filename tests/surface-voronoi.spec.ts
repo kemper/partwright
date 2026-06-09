@@ -92,8 +92,8 @@ test.describe('Voronoi shell surface modifier', () => {
     await page.locator('#surface-viewport-toggle').click();
     await expect(page.getByText('Surface modifiers')).toBeVisible();
 
-    // Switch to the Voronoi tab and apply to the whole model.
-    await page.getByRole('button', { name: 'Voronoi', exact: true }).click();
+    // Switch to the Voronoi (relief) tab and apply to the whole model.
+    await page.getByRole('button', { name: 'Voronoi (relief)', exact: true }).click();
     await page.getByRole('button', { name: 'Whole model', exact: true }).click();
     await page.getByRole('button', { name: 'Apply', exact: true }).click();
 

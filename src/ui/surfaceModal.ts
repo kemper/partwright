@@ -163,8 +163,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     { id: 'waffle', label: 'Waffle' },
     { id: 'fur', label: 'Fur' },
     { id: 'woven', label: 'Woven' },
-    { id: 'voronoi', label: 'Voronoi' },
-    { id: 'voronoiLamp', label: 'Voronoi lamp' },
+    { id: 'voronoi', label: 'Voronoi (relief)' },
+    { id: 'voronoiLamp', label: 'Voronoi lamp (voxel)' },
     { id: 'smooth', label: 'Smooth' },
     { id: 'voxelize', label: 'Voxelize' },
   ];
@@ -534,7 +534,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const res = slider('Resolution (voxels)', 48, 200, 110, 1, n => String(n), schedulePreview);
       const sm = checkbox('Smooth struts (rounded)', true, schedulePreview);
       body.append(cs.wrap, wt.wrap, sw.wrap, jit.wrap, grain.wrap, seed.wrap, res.wrap, sm.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'A real see-through Voronoi shell (lamp / planter): hollows the model and cuts the cell interiors clean through, leaving a strut network. Switches to the voxel engine. Higher resolution = crisper holes but slower; thinner struts need higher resolution.'));
+      body.append(el('p', 'text-[11px] text-amber-400/90 mb-1', '⚠ Converts the model to the voxel engine (like Voxelize) — it cuts real see-through holes, which a smooth mesh can\'t. The result is paintable / .vox-exportable.'));
+      body.append(el('p', 'text-[11px] text-zinc-500', 'A real see-through Voronoi shell (lamp / planter): hollows the model and cuts the cell interiors clean through, leaving a strut network. Higher resolution = crisper holes but slower; thinner struts need higher resolution.'));
       currentOpts = () => ({
         cellSize: cs.get(),
         wallThickness: wt.get(),
