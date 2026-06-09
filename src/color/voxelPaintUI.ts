@@ -556,8 +556,9 @@ function buildLevelSection(): HTMLElement {
 }
 
 /** Rounding (surfacing) controls: an amount slider (0 = hard blocks, 1–100% =
- *  smooth) plus "keep flat" pins. These don't change the blocky editing preview;
- *  they're applied to the grid's surfacing and baked into the saved model. */
+ *  smooth) plus "keep flat" pins. The result previews live in the viewport as
+ *  you drag; editing on the canvas snaps back to blocks. Applied to the grid's
+ *  surfacing and baked into the saved model. */
 function buildRoundingSection(): HTMLElement {
   const sec = document.createElement('div');
   sec.className = 'flex flex-col gap-1 pt-1 border-t border-zinc-700/60';
@@ -611,7 +612,7 @@ function buildRoundingSection(): HTMLElement {
 
   const hint = document.createElement('p');
   hint.className = 'text-[10px] text-zinc-500 leading-tight';
-  hint.textContent = 'Editing preview stays blocky; rounding shows after you save.';
+  hint.textContent = 'Rounding previews live; click the model to edit (snaps back to blocks).';
   sec.appendChild(hint);
   return sec;
 }

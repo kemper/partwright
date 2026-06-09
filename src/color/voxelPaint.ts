@@ -18,7 +18,7 @@
 import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
 import { normalizeColor, type VoxelGrid, type Surfacing, type Vec3 } from '../geometry/voxel/grid';
-import { gridToMeshWithProvenance } from '../geometry/voxel/mesher';
+import { gridToMeshWithProvenance, meshGrid } from '../geometry/voxel/mesher';
 import { runVoxelForPaint, type VoxelPaintRun } from '../geometry/engines/voxel';
 import { bucketRecolor, clearBox, fillBoxRecolor, addBlock, addBlockCells, extrudeBox, brushApply, levelRecolor, inBrush, type BrushShape } from '../geometry/voxel/edits';
 import { diffGrids, type VoxelEditOps } from '../geometry/voxel/editCodegen';
@@ -186,24 +186,63 @@ export function getSurfacing(): Surfacing | null { return run?.grid.surfacing() 
  *  `strength`/`flatBottom`/`baseLayers`, so we MERGE onto the grid's current
  *  surfacing to preserve source-declared fields the panel doesn't expose
  *  (`iterations`/`detail`/`algorithm`/`lockBox`) — otherwise touching the slider
- *  would reset them to defaults. Does not change the (blocky) editing preview;
- *  the rounding is baked into the rendered model on save. Not routed through
- *  `mutate()` on purpose: a surfacing tweak isn't an undo-able grid edit (the
- *  slider is its own revert affordance), and it's reflected live by
- *  refreshControls. */
+ *  would reset them to defaults. Live-previews the result in the viewport (see
+ *  {@link showRoundingPreview}); the preview reverts to the blocky, pickable
+ *  mesh the moment the user edits on the canvas. Not routed through `mutate()`
+ *  on purpose: a surfacing tweak isn't an undo-able grid edit (the slider is its
+ *  own revert affordance), and it's reflected live by refreshControls. */
 export function setRounding(opts: RoundingOpts | null): void {
   if (!run) return;
-  if (opts === null) { run.grid.blocky(); cbStateChange?.(); return; }
-  const cur = run.grid.surfacing();
-  const merged: RoundingOpts & { detail?: number; lockBox?: [Vec3, Vec3] } = {
-    algorithm: cur.algorithm,
-    iterations: cur.iterations,
-    detail: cur.detail,
-    ...opts, // strength / flatBottom / baseLayers from the panel
-  };
-  if (cur.lockBox) merged.lockBox = [cur.lockBox.min, cur.lockBox.max];
-  run.grid.smooth(merged);
+  if (opts === null) {
+    run.grid.blocky();
+  } else {
+    const cur = run.grid.surfacing();
+    const merged: RoundingOpts & { detail?: number; lockBox?: [Vec3, Vec3] } = {
+      algorithm: cur.algorithm,
+      iterations: cur.iterations,
+      detail: cur.detail,
+      ...opts, // strength / flatBottom / baseLayers from the panel
+    };
+    if (cur.lockBox) merged.lockBox = [cur.lockBox.min, cur.lockBox.max];
+    run.grid.smooth(merged);
+  }
+  showRoundingPreview();
   cbStateChange?.();
+}
+
+// ── Rounding live preview ────────────────────────────────────────────────────
+// The studio edits on the blocky provenance mesh (picking maps a clicked
+// triangle back to a voxel via run.triVoxel). To preview rounding without
+// breaking that, we *temporarily* show the smoothed mesh while the Rounding
+// panel is in use and swap back to the blocky mesh the instant the user edits.
+let roundingPreview = false; // true while the smoothed preview mesh is displayed
+let previewRaf = 0;          // pending rebuild handle (coalesces slider drags)
+
+/** Show the smoothed mesh for the current surfacing (or the blocky mesh when
+ *  surfacing is hard blocks), coalesced to one rebuild per frame so a slider
+ *  drag stays responsive. Re-meshing reads the live grid at flush time, so
+ *  coalescing never shows a stale preview. */
+function showRoundingPreview(): void {
+  if (!active || !cbMeshUpdate || previewRaf) return;
+  previewRaf = requestAnimationFrame(() => {
+    previewRaf = 0;
+    if (!active || !run || !cbMeshUpdate) return;
+    if (run.grid.surfacing().mode === 'smooth') {
+      cbMeshUpdate(meshGrid(run.grid));
+      roundingPreview = true;
+    } else if (roundingPreview) {
+      cbMeshUpdate(run.mesh);
+      roundingPreview = false;
+    }
+  });
+}
+
+/** Drop the rounded preview and restore the blocky provenance mesh so picking
+ *  and editing operate on voxel-accurate triangles again. Also cancels any
+ *  pending preview rebuild so it can't flash back over an edit. */
+function endRoundingPreview(): void {
+  if (previewRaf) { cancelAnimationFrame(previewRaf); previewRaf = 0; }
+  if (roundingPreview && run) { cbMeshUpdate?.(run.mesh); roundingPreview = false; }
 }
 
 /** Whether the user changed surfacing since activation — drives whether the
@@ -302,6 +341,8 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
 export function deactivate(): void {
   if (!active) return;
   active = false;
+  if (previewRaf) { cancelAnimationFrame(previewRaf); previewRaf = 0; }
+  roundingPreview = false;
   detachPointerHandler();
   cbLockChange?.(false);
   cbLockChange = null;
@@ -471,6 +512,9 @@ function remeshAndPush(): void {
   if (!run) return;
   const { mesh, triVoxel, triNormal } = gridToMeshWithProvenance(run.grid);
   run = { ...run, mesh, triVoxel, triNormal };
+  // Any edit/undo/redo pushes the blocky provenance mesh, so a rounded preview
+  // is no longer what's on screen — keep the flag in sync.
+  roundingPreview = false;
   cbMeshUpdate?.(mesh);
 }
 
@@ -600,6 +644,14 @@ let capturedPointerId: number | null = null;
 
 function onPointerDown(event: PointerEvent): void {
   if (!active || event.button !== 0) return;
+  // A rounded preview (showing or scheduled) means the canvas shows the smooth
+  // mesh, which isn't pickable per-voxel. A press inside the model is an edit:
+  // restore the blocky pickable mesh first, then pick against it. A press
+  // outside the model is an orbit and keeps the preview.
+  if (roundingPreview || previewRaf) {
+    if (!isPointerWithinModelBounds(event)) return;
+    endRoundingPreview();
+  }
   const hit = pickFace(event);
   if (!hit) return;
   clearPreview(); // the action commits; the preview rebuilds on the next move
@@ -619,6 +671,9 @@ function onPointerDown(event: PointerEvent): void {
 function onPointerMove(event: PointerEvent): void {
   if (!active || !run) return;
   lastHoverEvent = { clientX: event.clientX, clientY: event.clientY };
+  // While the rounded preview is up, the displayed mesh isn't voxel-pickable, so
+  // don't draw a (misplaced) brush footprint over it; just orbit/hover.
+  if (roundingPreview) { clearPreview(); return; }
   // One raycast feeds both the hover preview and the active stroke.
   const hit = isBrushTool(tool) ? pickFace(event) : null;
   renderPreviewFromHit(hit);

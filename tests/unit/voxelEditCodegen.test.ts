@@ -113,6 +113,53 @@ describe('appendVoxelEditsToCode', () => {
     expect(out.trimEnd().endsWith('return __voxStudio;')).toBe(true);
   });
 
+  it('re-applying a surfacing change reuses the prior block (no duplicate const)', () => {
+    // First pass: a rounding-only change wraps the code.
+    const code = `const v = api.voxels();\nv.fillBox([0,0,0],[5,5,5],'#6cf');\nreturn v;`;
+    const first = appendVoxelEditsToCode(code, { set: [], remove: [] }, '.smooth({ flatBottom: true })')!;
+    // Second pass: adjust rounding again on the already-generated code.
+    const second = appendVoxelEditsToCode(first, { set: [], remove: [] }, '.smooth({ strength: 0.45, flatBottom: true })')!;
+    // Exactly one declaration — the old "Identifier already declared" bug.
+    expect(second.match(/const __voxStudio\b/g)).toHaveLength(1);
+    expect(second).not.toContain('const __voxStudio = __voxStudio;');
+    // The new surfacing replaced the old one (not both).
+    expect(second).toContain('__voxStudio.smooth({ strength: 0.45, flatBottom: true });');
+    expect(second).not.toContain('__voxStudio.smooth({ flatBottom: true });');
+    // The user's original procedural code survives, and base is the real expr.
+    expect(second).toContain("v.fillBox([0,0,0],[5,5,5],'#6cf');");
+    expect(second).toContain('const __voxStudio = v;');
+    expect(second.trimEnd().endsWith('return __voxStudio;')).toBe(true);
+  });
+
+  it('preserves custom follow-up code and prior edit ops on re-apply', () => {
+    const first = `const v = api.voxels();\nreturn v;`;
+    const wrapped = appendVoxelEditsToCode(first, { set: [[1, 0, 0, 0xff0000]], remove: [] }, '.smooth({ strength: 0.5 })')!;
+    // User hand-adds a line using the studio var, then re-rounds.
+    const customized = wrapped.replace('return __voxStudio;', "__voxStudio.set(9, 9, 9, '#0f0');\nreturn __voxStudio;");
+    const out = appendVoxelEditsToCode(customized, { set: [], remove: [] }, '.smooth({ strength: 0.8 })')!;
+    expect(out.match(/const __voxStudio\b/g)).toHaveLength(1);
+    expect(out).toContain("__voxStudio.set(1, 0, 0, '#ff0000');"); // prior edit op kept
+    expect(out).toContain("__voxStudio.set(9, 9, 9, '#0f0');");     // custom line kept
+    expect(out).toContain('__voxStudio.smooth({ strength: 0.8 });'); // new surfacing
+    expect(out).not.toContain('strength: 0.5');                       // old surfacing dropped
+  });
+
+  it('self-heals already-duplicated declarations from older buggy output', () => {
+    const broken = [
+      'const __voxStudio = v;',
+      '__voxStudio.smooth({ flatBottom: true });',
+      '',
+      'const __voxStudio = __voxStudio;',
+      '__voxStudio.smooth({ strength: 0.45, flatBottom: true });',
+      'return __voxStudio;',
+    ].join('\n');
+    const out = appendVoxelEditsToCode(broken, { set: [], remove: [] }, '.smooth({ strength: 0.6 })')!;
+    expect(out.match(/const __voxStudio\b/g)).toHaveLength(1);
+    expect(out).toContain('const __voxStudio = v;');
+    expect(out).toContain('__voxStudio.smooth({ strength: 0.6 });');
+    expect(out.trimEnd().endsWith('return __voxStudio;')).toBe(true);
+  });
+
   it('round-trips: appended code reproduces the edited grid', () => {
     // Baseline procedural grid.
     const before = new VoxelGrid();

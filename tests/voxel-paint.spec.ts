@@ -128,6 +128,55 @@ test.describe('voxel paint mode', () => {
     expect(result.voxelCount).toBe(64); // 4×4×4 box
   });
 
+  test('Rounding slider previews live in the viewport, edits snap back to blocks', async ({ page }) => {
+    // The displayed solid mesh's extent is our window into what the studio shows
+    // without baking: Surface Nets pulls the surface inward (~0.5 voxel), so the
+    // max X of the rounded preview is smaller than the blocky mesh's. Reading the
+    // live meshGroup (same module singleton the app uses) avoids depending on any
+    // stat that only tracks committed runs.
+    const maxX = () => page.evaluate(async () => {
+      const { getMeshGroup } = await import('/src/renderer/viewport.ts');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const solid = getMeshGroup().children[0] as any;
+      const pos = solid?.geometry?.getAttribute('position');
+      if (!pos) return NaN;
+      let mx = -Infinity;
+      for (let i = 0; i < pos.count; i++) mx = Math.max(mx, pos.getX(i));
+      return mx;
+    });
+    const blockyMax = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().sphere([0,0,0],6,'#6cf');`);
+      pw.activateVoxelPaint();
+      await new Promise((r) => setTimeout(r, 200));
+      const { getMeshGroup } = await import('/src/renderer/viewport.ts');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pos = (getMeshGroup().children[0] as any).geometry.getAttribute('position');
+      let mx = -Infinity;
+      for (let i = 0; i < pos.count; i++) mx = Math.max(mx, pos.getX(i));
+      return mx;
+    });
+    expect(blockyMax).toBeGreaterThan(6.9); // blocky sphere extent (voxel corner at 7)
+    // Drag the rounding slider up — the displayed mesh re-meshes smooth (the
+    // surface pulls inward) without baking anything yet.
+    await page.evaluate(() => {
+      const slider = document.querySelector('#voxel-paint-panel input[title^="Rounding amount"]') as HTMLInputElement;
+      slider.value = '100';
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await expect.poll(maxX).toBeLessThan(blockyMax - 0.1);
+    // Editing on the model snaps the preview back to the blocky provenance mesh.
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      pw.setVoxelTool('paint');
+      pw.voxelStudioApply({ faceIndex: 0, color: [255, 0, 0] });
+    });
+    await expect.poll(maxX).toBe(blockyMax);
+  });
+
   test('Rounding panel preserves source-declared smooth options', async ({ page }) => {
     // Touching the rounding slider must merge onto the grid's surfacing, not
     // reset iterations/detail/algorithm to defaults.

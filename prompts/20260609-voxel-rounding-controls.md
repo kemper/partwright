@@ -70,3 +70,29 @@ lockBox; the panel only owns strength/flatBottom/baseLayers). Added an e2e test
 asserting a slider change keeps the source's `algorithm:'taubin', iterations:6,
 detail:2`. (The unrelated `editor-hints` ticker-layout e2e flake on the first CI
 run is pre-existing and untouched by this diff.)
+
+## User feedback round 2
+
+Two issues from hands-on use:
+
+**(1) Duplicate `__voxStudio` declaration on repeated rounding edits.** Adjusting
+the slider + "Update code" twice produced `const __voxStudio = __voxStudio;`
+("Identifier '__voxStudio' has already been declared"), because
+`appendVoxelEditsToCode` re-wrapped its own prior output. Made it re-entrant: when
+the input already ends `return __voxStudio;` with a `const __voxStudio = …`, it
+reuses that block — keeps the first declaration + prior edit ops + any custom
+lines the user added with the var, drops only the auto surfacing call and any
+duplicate declarations (so it also self-heals already-corrupted code), then
+appends the new edits/surfacing. Unit tests cover re-apply, custom-code
+preservation, and self-heal.
+
+**(2) Live rounding preview in the viewport.** Folded a preview into `setRounding`:
+when surfacing is smooth it pushes `meshGrid(grid)` (the rounded mesh) to the
+viewport, coalesced per-frame; hard blocks shows the blocky mesh. Picking needs
+the blocky provenance mesh, so `onPointerDown` reverts the preview the instant the
+user presses *inside* the model (an edit) — a press outside keeps the preview so
+they can orbit the rounded result. `remeshAndPush`/`deactivate` keep the flag in
+sync. E2E reads the live `meshGroup` (imported as `/src/renderer/viewport.ts` to
+hit the app's module singleton) and asserts the displayed extent shrinks when
+rounding is applied and returns to blocky after an edit — triangle count is a
+non-signal here since smoothing moves vertices without changing the count.
