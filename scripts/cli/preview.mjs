@@ -157,7 +157,9 @@ export function explainComponents(stats) {
 export function checkExpectComponents(stats, expected) {
   if (expected === null || expected === undefined || expected === '') return null;
   const n = Number(expected);
-  if (!Number.isFinite(n)) return null;
+  // The flag was given but the value isn't a number (typo / missing arg) — surface
+  // it rather than silently treating the assertion as a no-op.
+  if (!Number.isFinite(n)) return `--expect-components expects a number, got "${expected}".`;
   if (!stats || stats.componentCount !== n) {
     return `--expect-components ${n} failed: model has ${stats ? stats.componentCount : 'no'} component(s).`;
   }

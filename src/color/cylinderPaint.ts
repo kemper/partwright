@@ -88,9 +88,9 @@ export function findCylinderTriangles(
       if (coneAxis[0] * nx + coneAxis[1] * ny + coneAxis[2] * nz < coneCos) continue;
     }
     if (maxArea !== undefined) {
-      // Inline 2× triangle area via the cross product magnitude so we don't
-      // need a buildAdjacency() call when the cone branch didn't already
-      // build one. The factor of 2 is consistent on both sides of the test.
+      // Inline the true triangle area via the cross-product magnitude so we
+      // don't need a buildAdjacency() call when the cone branch didn't already
+      // build one. Matches `triangleArea`'s real-area semantics (0.5·|cross|).
       const ex1 = bx - ax, ey1 = by - ay, ez1 = bz - az;
       const ex2 = cx2 - ax, ey2 = cy2 - ay, ez2 = cz2 - az;
       const nx = ey1 * ez2 - ez1 * ey2;
