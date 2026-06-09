@@ -29,6 +29,22 @@ let debounceTimer: number | null = null;
 let idleTimer: number | null = null;
 let activeDiagnostics: Diagnostic[] = [];
 
+/** Teardown for the bottom-scroll stabilizer's listeners; replaced on re-install
+ *  so a re-init never stacks duplicate document-level listeners. */
+let disposeScrollStabilizer: (() => void) | null = null;
+/** Timestamp (performance.now) of the last *deliberate* programmatic editor
+ *  scroll — find-next, reveal-diagnostic. Lets the bottom-scroll stabilizer tell
+ *  an intended navigation from an unsolicited re-measure snap. */
+let scrollIntentAt = -Infinity;
+
+/** Mark that the editor is about to scroll itself on purpose (find / reveal /
+ *  caret nav), so the bottom-scroll stabilizer honors the resulting scroll
+ *  instead of reverting it as a measure snap. Call immediately before dispatching
+ *  the `EditorView.scrollIntoView` effect. */
+function markEditorScrollIntent(): void {
+  scrollIntentAt = performance.now();
+}
+
 let currentLanguage: EditorLanguage = 'manifold-js';
 // Per-tab (with a shared seed for fresh tabs) so toggling auto-format in one
 // window doesn't flip it in another open window.
@@ -232,10 +248,15 @@ export interface EditorHooks {
  *  it reverts to the last user-intended offset before the browser paints, so the
  *  snap is invisible. It stays out of the way of every genuine scroll — wheel,
  *  trackpad/momentum, scrollbar drag, touch, and keyboard/typing are all tracked
- *  as user intent and always honored — and a large jump (reveal-diagnostic,
- *  jump-to-match) is treated as real navigation. Thresholds are
- *  line-height-relative, not magic pixels. */
+ *  as user intent and always honored — as is a deliberate programmatic
+ *  navigation (find / reveal-diagnostic, which call `markEditorScrollIntent`)
+ *  and any large jump. Thresholds are line-height-relative, not magic pixels. */
 function installBottomScrollStabilizer(view: EditorView): void {
+  // Tear down a prior install first. `initEditor` runs once today, but
+  // `editorView` is reassignable (a future re-init / remount), and these
+  // document-level listeners would otherwise stack and orphan the old scroller.
+  disposeScrollStabilizer?.();
+
   const sc = view.scrollDOM;
   // The grace window (ms) during which recent user input means a scroll is the
   // user's own intent and must never be reverted.
@@ -251,22 +272,22 @@ function installBottomScrollStabilizer(view: EditorView): void {
   const userActive = (): boolean => {
     const now = performance.now();
     const grace = inputGraceMs();
-    return pointerDown || now - lastWheel < grace || now - lastKey < grace;
+    return pointerDown
+      || now - lastWheel < grace
+      || now - lastKey < grace
+      || now - scrollIntentAt < grace; // deliberate programmatic navigation
   };
 
   // Track user-driven scroll intent. Capture phase so we see input even when the
   // editor isn't focused (e.g. dragging the scrollbar).
-  sc.addEventListener('wheel', () => { lastWheel = performance.now(); }, { capture: true, passive: true });
-  sc.addEventListener('keydown', () => { lastKey = performance.now(); }, true);
-  // Pointer down/up is tracked on the document: a scrollbar drag holds the
-  // pointer down on the scroller without firing wheel/keydown.
+  const onWheel = (): void => { lastWheel = performance.now(); };
+  // Keydown is bound to the whole editor (`view.dom`), not just the scroller, so
+  // keystrokes in the search panel (find-next scrolls to the match) count as
+  // intent too — the panel lives outside `.cm-scroller`.
+  const onKey = (): void => { lastKey = performance.now(); };
   const onPointerDown = (): void => { pointerDown = true; };
   const onPointerUp = (): void => { pointerDown = false; };
-  document.addEventListener('pointerdown', onPointerDown, true);
-  document.addEventListener('pointerup', onPointerUp, true);
-  document.addEventListener('pointercancel', onPointerUp, true);
-
-  sc.addEventListener('scroll', () => {
+  const onScroll = (): void => {
     if (reverting) return;
     if (getConfig().ui.codeEditorScrollPinMs <= 0) { intendedTop = sc.scrollTop; return; } // disabled
     const lh = lineH();
@@ -285,7 +306,26 @@ function installBottomScrollStabilizer(view: EditorView): void {
     }
     // Otherwise this is the user's intent (or real navigation): adopt it.
     intendedTop = sc.scrollTop;
-  }, { passive: true });
+  };
+
+  sc.addEventListener('wheel', onWheel, { capture: true, passive: true });
+  view.dom.addEventListener('keydown', onKey, true);
+  // Pointer down/up is tracked on the document: a scrollbar drag holds the
+  // pointer down on the scroller without firing wheel/keydown.
+  document.addEventListener('pointerdown', onPointerDown, true);
+  document.addEventListener('pointerup', onPointerUp, true);
+  document.addEventListener('pointercancel', onPointerUp, true);
+  sc.addEventListener('scroll', onScroll, { passive: true });
+
+  disposeScrollStabilizer = (): void => {
+    sc.removeEventListener('wheel', onWheel, true);
+    view.dom.removeEventListener('keydown', onKey, true);
+    document.removeEventListener('pointerdown', onPointerDown, true);
+    document.removeEventListener('pointerup', onPointerUp, true);
+    document.removeEventListener('pointercancel', onPointerUp, true);
+    sc.removeEventListener('scroll', onScroll);
+    disposeScrollStabilizer = null;
+  };
 }
 
 export function initEditor(
@@ -457,6 +497,9 @@ export function clearEditorDiagnostics(): void {
 export function revealFirstDiagnostic(): void {
   if (!editorView || activeDiagnostics.length === 0) return;
   const first = activeDiagnostics[0];
+  // This is a deliberate jump — tell the bottom-scroll stabilizer not to revert
+  // it (e.g. a diagnostic on one of the last lines while parked at the bottom).
+  markEditorScrollIntent();
   editorView.dispatch({
     selection: { anchor: first.from, head: first.to },
     effects: EditorView.scrollIntoView(first.from, { y: 'center' }),
