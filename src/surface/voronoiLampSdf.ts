@@ -91,7 +91,12 @@ export function voronoiLampSdfMesh(mesh: MeshData, opts: VoronoiLampSdfOptions):
   // mixing a true magnitude with an occupancy sign snaps crossings back to the
   // voxel steps, which is exactly the corduroy we're removing). Occupancy is used
   // only for the coarse sign of far-field samples outside the distance band.
-  const bvh = buildBvh(mesh);
+  // Built fresh per call and disposed below: the build is negligible next to the
+  // field sweep, so a module-level cache would only risk a leak / stale geometry.
+  const bvhGeom = new THREE.BufferGeometry();
+  bvhGeom.setAttribute('position', new THREE.BufferAttribute(extractPositions(mesh), 3));
+  bvhGeom.setIndex(new THREE.BufferAttribute(Uint32Array.from(mesh.triVerts), 1));
+  const bvh = new MeshBVH(bvhGeom, { indirect: true });
   const faceNormals = computeFaceNormals(mesh);
   const queryPt = new THREE.Vector3();
   const hit = { point: new THREE.Vector3(), distance: 0, faceIndex: -1 };
@@ -156,6 +161,8 @@ export function voronoiLampSdfMesh(mesh: MeshData, opts: VoronoiLampSdfOptions):
       }
     }
   }
+
+  bvhGeom.dispose(); // BVH is only consulted in the field sweep above
 
   // Connectivity, the voxel path's way: keep only the largest FACE-connected
   // region of inside samples and discard the rest *before* meshing. A thin
@@ -279,24 +286,4 @@ function computeFaceNormals(mesh: MeshData): Float32Array {
     out[t * 3] = nx / len; out[t * 3 + 1] = ny / len; out[t * 3 + 2] = nz / len;
   }
   return out;
-}
-
-let cacheMesh: MeshData | null = null;
-let cacheBvh: MeshBVH | null = null;
-let cacheGeom: THREE.BufferGeometry | null = null;
-
-/** BVH over the source mesh for closest-point distance queries (cached, mirrors
- *  src/color/baseRemap.ts). `indirect: true` keeps the BVH from reordering the
- *  shared `triVerts` index in place. */
-function buildBvh(mesh: MeshData): MeshBVH {
-  if (cacheMesh === mesh && cacheBvh) return cacheBvh;
-  cacheGeom?.dispose();
-  const positions = extractPositions(mesh);
-  const geom = new THREE.BufferGeometry();
-  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geom.setIndex(new THREE.BufferAttribute(Uint32Array.from(mesh.triVerts), 1));
-  cacheMesh = mesh;
-  cacheGeom = geom;
-  cacheBvh = new MeshBVH(geom, { indirect: true });
-  return cacheBvh;
 }
