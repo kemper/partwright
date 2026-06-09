@@ -14,6 +14,7 @@ import {
   onEventsChange,
   type DiagnosticEvent,
 } from '../ai/diagnostics';
+import { showToast } from './toast';
 import { providerLabel } from '../ai/settings';
 import { mountPreactModal } from './preact/mount';
 import { confirmDialog } from './dialogs';
@@ -70,6 +71,10 @@ function DiagnosticsBody() {
               void navigator.clipboard.writeText(json).then(() => {
                 copyLabel.value = 'Copied!';
                 setTimeout(() => { copyLabel.value = 'Copy JSON'; }, 1500);
+              }).catch(() => {
+                // Clipboard can be unavailable (insecure context / blocked
+                // permission) — surface it instead of an unhandled rejection.
+                showToast("Couldn't copy to clipboard", { variant: 'warn' });
               });
             }}
           >{copyLabel.value}</button>

@@ -47,3 +47,35 @@ export function runViewportInitHooks(ctx: ViewportContext): void {
 export function runViewportResizeHooks(widthPx: number, heightPx: number): void {
   for (const hook of resizeHooks) hook(widthPx, heightPx);
 }
+
+// ── Offscreen overlay provider ───────────────────────────────────────────────
+// The multi-view thumbnail renderer (multiview.ts) lives in the renderer layer
+// but needs the annotation-overlay group to composite marks into its offscreen
+// snapshots. The renderer must not import the annotations feature layer, so the
+// annotation layer registers a builder here (via viewportSubsystems.ts) and
+// multiview pulls the group through this leaf — keeping the dependency
+// one-directional, the same inversion used for the init/resize hooks above.
+
+export interface OffscreenOverlayProvider {
+  /** Build the overlay group for a square offscreen view of `viewSizePx`
+   *  device pixels, or null when there's nothing to draw. */
+  build: (viewSizePx: number) => THREE.Group | null;
+  dispose: (group: THREE.Group) => void;
+}
+
+let offscreenOverlayProvider: OffscreenOverlayProvider | null = null;
+
+export function registerOffscreenOverlayProvider(provider: OffscreenOverlayProvider): void {
+  offscreenOverlayProvider = provider;
+}
+
+/** Build the annotation overlay group for an offscreen scene, or null when no
+ *  provider is registered (e.g. before subsystems wire up) or there's nothing
+ *  to draw. Callers must pass the result to {@link disposeOffscreenOverlay}. */
+export function buildOffscreenOverlay(viewSizePx: number): THREE.Group | null {
+  return offscreenOverlayProvider?.build(viewSizePx) ?? null;
+}
+
+export function disposeOffscreenOverlay(group: THREE.Group): void {
+  offscreenOverlayProvider?.dispose(group);
+}

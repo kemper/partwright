@@ -2,7 +2,7 @@ import type { MeshData } from '../geometry/types';
 import { downloadBlob, getExportFilename, getExportTitle } from './download';
 import type { BuiltExport } from './gltf';
 import { buildZip } from './zip';
-import { assertFiniteMesh, cleanMeshForExport, DEFAULT_COLOR_HEX, triColorHex, hasAnyPainted } from './meshClean';
+import { assertFiniteMesh, assertExportableMesh, cleanMeshForExport, DEFAULT_COLOR_HEX, triColorHex, hasAnyPainted } from './meshClean';
 
 /** Round a float to 6 decimal places (float32 has ~7 significant digits). */
 function f6(v: number): string {
@@ -20,6 +20,7 @@ export function buildOBJ(meshData: MeshData, customName?: string): BuiltExport {
   const title = getExportTitle();
 
   const { remap, uniquePositions, validTris } = cleanMeshForExport(meshData);
+  assertExportableMesh(validTris);
   const hasColors = triColors != null && hasAnyPainted(triColors, validTris);
 
   const baseName = getExportFilename('obj', customName).replace(/\.obj$/, '');

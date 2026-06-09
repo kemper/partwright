@@ -90,14 +90,18 @@ describe('VoxelGrid', () => {
     v.set(2, 5, 1, '#abc');            // a feature on +Y
     v.rotate('z', 180);
     expect(v.has(2, 5, 1)).toBe(false);
-    expect(v.get(-2, -5, 1)).toBe(0xaabbcc); // 180° about Z: (x,y) → (−x,−y)
+    // Rotation is about the world origin of the cube CENTRES, so 180° about Z
+    // maps cell (x,y) → (−x−1,−y−1) — not (−x,−y), which would shift by a voxel.
+    expect(v.get(-3, -6, 1)).toBe(0xaabbcc);
+    expect(v.has(-2, -5, 1)).toBe(false);
     expect(v.size).toBe(1);
   });
 
   it('rotate follows the right-hand rule for each axis (90°)', () => {
-    expect(new VoxelGrid().set(3, 0, 0, '#fff').rotate('z', 90).has(0, 3, 0)).toBe(true);  // +X → +Y
-    expect(new VoxelGrid().set(0, 3, 0, '#fff').rotate('x', 90).has(0, 0, 3)).toBe(true);  // +Y → +Z
-    expect(new VoxelGrid().set(0, 0, 3, '#fff').rotate('y', 90).has(3, 0, 0)).toBe(true);  // +Z → +X
+    // 90° rotates the cube centre about the origin; cell n → round(rot(n+0.5)−0.5).
+    expect(new VoxelGrid().set(3, 0, 0, '#fff').rotate('z', 90).has(-1, 3, 0)).toBe(true);  // +X → +Y
+    expect(new VoxelGrid().set(0, 3, 0, '#fff').rotate('x', 90).has(0, -1, 3)).toBe(true);  // +Y → +Z
+    expect(new VoxelGrid().set(0, 0, 3, '#fff').rotate('y', 90).has(3, 0, -1)).toBe(true);  // +Z → +X
   });
 
   it('rotate is exact and reversible (4×90° returns to start)', () => {
@@ -111,7 +115,7 @@ describe('VoxelGrid', () => {
 
   it('rotate rejects non-90° multiples and normalizes negatives', () => {
     expect(() => new VoxelGrid().rotate('z', 45)).toThrow();
-    expect(new VoxelGrid().set(3, 0, 0, '#fff').rotate('z', -90).has(0, -3, 0)).toBe(true); // −90° = 270°
+    expect(new VoxelGrid().set(3, 0, 0, '#fff').rotate('z', -90).has(0, -4, 0)).toBe(true); // −90° = 270°: (x,y)→(y,−x−1)
   });
 });
 
@@ -135,6 +139,17 @@ describe('encodeGrid / decodeGrid', () => {
 
   it('rejects garbage input', () => {
     expect(() => decodeGrid('bm90LXZveGVscw==')).toThrow();
+  });
+
+  it('rejects a bounding box too large to encode rather than silently corrupting it', () => {
+    // Full-extent corners span 2048³ ≈ 8.6e9 cells — past the 2^31 boundary
+    // where the old `idx >> 3` byte index went negative and dropped voxels,
+    // round-tripping the grid to empty. The guard now throws before the
+    // O(cellCount) loop instead of producing a corrupt encoding.
+    const v = new VoxelGrid();
+    v.set(COORD_MAX, COORD_MAX, COORD_MAX, '#fff');
+    v.set(-1024, -1024, -1024, '#000');
+    expect(() => encodeGrid(v)).toThrow(/too large/i);
   });
 });
 

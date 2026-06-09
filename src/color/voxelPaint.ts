@@ -15,15 +15,18 @@
 // code once on activate to get the grid + per-triangle voxel/normal
 // provenance, and all subsequent clicks are local — no Worker round-trip.
 
+import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
 import { normalizeColor, type VoxelGrid } from '../geometry/voxel/grid';
 import { gridToMeshWithProvenance } from '../geometry/voxel/mesher';
 import { runVoxelForPaint, type VoxelPaintRun } from '../geometry/engines/voxel';
-import { bucketRecolor, clearBox, fillBoxRecolor, addTarget, brushApply, levelRecolor, type BrushShape } from '../geometry/voxel/edits';
+import { bucketRecolor, clearBox, fillBoxRecolor, addBlock, addBlockCells, extrudeBox, brushApply, levelRecolor, inBrush, type BrushShape } from '../geometry/voxel/edits';
 import { diffGrids, type VoxelEditOps } from '../geometry/voxel/editCodegen';
 import { generateVoxelImportCode } from '../import/imageToVoxel';
-import { addPointerSuppressor, isPointerOverModel, getRenderer } from '../renderer/viewport';
-import { pickFace } from './facePicker';
+import { addPointerSuppressor, isPointerWithinModelBounds, getRenderer, getScene, requestRender } from '../renderer/viewport';
+import { pickFace, type FacePickResult } from './facePicker';
+import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
+import { isPaletteConstrained, nearestSlot, hexToRgb, onPaletteChange } from './palette';
 
 export type { BrushShape } from '../geometry/voxel/edits';
 
@@ -60,6 +63,10 @@ let boxCorner: [number, number, number] | null = null;
 // Brush settings (shared by the paint/add/remove tools).
 let brushRadius = 0;            // 0 = single voxel (preserves click-to-paint)
 let brushShape: BrushShape = 'sphere';
+// Add-block settings (the `add` tool only): a world-axis box laid against the
+// clicked face. [1,1,1] + depth 0 reduces to the legacy single-voxel add.
+let blockSize: [number, number, number] = [1, 1, 1];
+let addDepth = 0;              // layers the block sinks into the surface (0 = on top)
 let spray = false;             // scatter a random subset of the footprint
 let sprayDensity = 0.5;        // 0..1, fraction kept when spraying
 let levelAxis: 0 | 1 | 2 = 2;  // axis for the "level" tool (x/y/z)
@@ -79,7 +86,24 @@ export function isActive(): boolean { return active; }
 export function setColor(c: [number, number, number] | string | number): void {
   const rgb = normalizeColor(c, 'setColor(color)');
   color = [(rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff];
+  enforceVoxelConstraint();
 }
+
+/** When the palette is constrained, snap the active voxel colour (0–255 RGB)
+ *  onto the nearest filament slot — the voxel-studio counterpart of mesh
+ *  paint's enforcement, so the global "Constrain to palette" toggle holds here
+ *  too. No-op when unconstrained or the palette is empty. */
+function enforceVoxelConstraint(): void {
+  if (!isPaletteConstrained()) return;
+  const slot = nearestSlot([color[0] / 255, color[1] / 255, color[2] / 255]);
+  if (!slot) return;
+  const [r, g, b] = hexToRgb(slot.hex);
+  color = [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+// Re-snap the active colour whenever constrain is toggled or the palette is
+// edited, so a constrained voxel session can never keep an off-palette colour.
+onPaletteChange(enforceVoxelConstraint);
 export function isEraser(): boolean { return eraser; }
 export function setEraser(on: boolean): void { eraser = !!on; }
 
@@ -96,6 +120,7 @@ export function setTool(t: VoxelTool): void {
   if (strokeActive) endStroke();
   tool = t;
   boxCorner = null;
+  refreshPreview();
   cbStateChange?.();
 }
 
@@ -104,10 +129,28 @@ const MAX_BRUSH_RADIUS = 16;
 export function getBrushRadius(): number { return brushRadius; }
 export function setBrushRadius(r: number): void {
   brushRadius = Math.max(0, Math.min(MAX_BRUSH_RADIUS, Math.round(r) || 0));
+  refreshPreview();
   cbStateChange?.();
 }
 export function getBrushShape(): BrushShape { return brushShape; }
-export function setBrushShape(s: BrushShape): void { brushShape = s; cbStateChange?.(); }
+export function setBrushShape(s: BrushShape): void { brushShape = s; refreshPreview(); cbStateChange?.(); }
+
+// Add-block dimensions (X/Y/Z, in voxels) and how deep the block sinks into the
+// clicked surface. Used only by the `add` tool; the preview reflects them live.
+const MAX_BLOCK_SIZE = 32;
+export function getBlockSize(): [number, number, number] { return [...blockSize]; }
+export function setBlockSize(axis: 0 | 1 | 2, n: number): void {
+  blockSize[axis] = Math.max(1, Math.min(MAX_BLOCK_SIZE, Math.round(n) || 1));
+  refreshPreview();
+  cbStateChange?.();
+}
+export function getAddDepth(): number { return addDepth; }
+// No upper clamp: the slider tops out at 16, but a typed value can go deeper.
+export function setAddDepth(n: number): void {
+  addDepth = Math.max(0, Math.round(n) || 0);
+  refreshPreview();
+  cbStateChange?.();
+}
 export function isSpray(): boolean { return spray; }
 export function setSpray(on: boolean): void { spray = !!on; cbStateChange?.(); }
 export function getSprayDensity(): number { return sprayDensity; }
@@ -190,6 +233,7 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
   run = r.data;
   baselineGrid = r.data.grid.clone();
   active = true;
+  enforceVoxelConstraint(); // a constrained palette must not paint the held-over default colour
   tool = 'paint';
   boxCorner = null;
   undoStack = [];
@@ -201,6 +245,15 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
   cbMeshUpdate = callbacks.onMeshUpdate;
   cbLockChange = callbacks.onLockChange ?? null;
   cbStateChange = callbacks.onStateChange ?? null;
+  // Exclusive with the mesh-paint and annotate tools: they each attach a
+  // capture-phase pointer handler to the same canvas, so only one may own it.
+  // UI visibility alone doesn't enforce this (the AI API can drive either tool
+  // regardless of the active language), so coordinate through modeExclusion.
+  deactivateMode('paint');
+  deactivateMode('imagePaint');
+  deactivateMode('pen', { keepSession: false });
+  deactivateMode('text', { keepSession: false });
+  deactivateMode('select', { keepSession: false });
   attachPointerHandler();
   cbLockChange?.(true);
   cbMeshUpdate(run.mesh);
@@ -228,6 +281,10 @@ export function deactivate(): void {
   strokeLastVoxel = null;
   notify?.();
 }
+
+// Take our turn in the exclusive-tool registry so activating a mesh-paint or
+// annotate tool tears the studio down (and vice-versa, via activate() above).
+registerExclusiveMode('voxelStudio', () => deactivate());
 
 /** Paint or erase the voxel that owns the given triangle — the legacy
  *  single-voxel primitive driven by the `eraser` flag. Kept for the
@@ -265,7 +322,8 @@ export function applyAtTriangle(triangleIndex: number): boolean {
   if (idx < 0 || idx + 2 >= run.triVoxel.length) return false;
   if (tool === 'boxAdd' || tool === 'boxRemove') {
     const x = run.triVoxel[idx], y = run.triVoxel[idx + 1], z = run.triVoxel[idx + 2];
-    return applyBox(x, y, z);
+    const nx = run.triNormal[idx], ny = run.triNormal[idx + 1], nz = run.triNormal[idx + 2];
+    return applyBox(x, y, z, [nx, ny, nz]);
   }
   if (strokeActive) {
     const changed = runOp(triangleIndex);
@@ -290,11 +348,10 @@ function runOp(triangleIndex: number): boolean {
       return brushApply(run.grid, [x, y, z], brushRadius, brushShape, 'paint', color, density) > 0;
     case 'remove':
       return brushApply(run.grid, [x, y, z], brushRadius, brushShape, 'remove', color, density) > 0;
-    case 'add': {
-      const target = addTarget([x, y, z], [nx, ny, nz]);
-      if (!target) return false;
-      return brushApply(run.grid, target, brushRadius, brushShape, 'add', color, density) > 0;
-    }
+    case 'add':
+      // A block laid against the clicked face: per-axis size, anchored along
+      // the normal so it won't poke out the far side of a thin tile.
+      return addBlock(run.grid, [x, y, z], [nx, ny, nz], blockSize, addDepth, color) > 0;
     case 'bucket':
       return bucketRecolor(run.grid, [x, y, z], color) > 0;
     case 'level':
@@ -352,8 +409,11 @@ function mutate(fn: () => boolean): boolean {
 }
 
 /** Two-click box: the first click banks a corner (no mutation); the second
- *  fills (boxAdd) or clears (boxRemove) the inclusive box between them. */
-function applyBox(x: number, y: number, z: number): boolean {
+ *  fills (boxAdd) or clears (boxRemove) the inclusive box between them. The
+ *  `addDepth` setting extrudes the box along the second click's face normal —
+ *  a fill grows a slab outward, a subtract carves inward (see {@link extrudeBox}).
+ *  The completing click's `normal` sets the extrusion direction. */
+function applyBox(x: number, y: number, z: number, normal: [number, number, number]): boolean {
   if (!run) return false;
   if (!boxCorner) {
     boxCorner = [x, y, z];
@@ -362,9 +422,11 @@ function applyBox(x: number, y: number, z: number): boolean {
   }
   const a = boxCorner;
   boxCorner = null;
-  return mutate(() => tool === 'boxRemove'
-    ? clearBox(run!.grid, a, [x, y, z]) > 0
-    : fillBoxRecolor(run!.grid, a, [x, y, z], color) > 0);
+  const remove = tool === 'boxRemove';
+  const [c0, c1] = extrudeBox(a, [x, y, z], normal, addDepth, remove);
+  return mutate(() => remove
+    ? clearBox(run!.grid, c0, c1) > 0
+    : fillBoxRecolor(run!.grid, c0, c1, color) > 0);
 }
 
 function remeshAndPush(): void {
@@ -382,8 +444,115 @@ function triangleVoxel(triangleIndex: number): [number, number, number] | null {
   return [run.triVoxel[idx], run.triVoxel[idx + 1], run.triVoxel[idx + 2]];
 }
 
+/** The integer face-normal baked for a triangle (a unit axis vector), or null.
+ *  Preferred over the raycast normal for the add block since it's exact. */
+function triangleNormal(triangleIndex: number): [number, number, number] | null {
+  if (!run) return null;
+  const idx = triangleIndex * 3;
+  if (idx < 0 || idx + 2 >= run.triNormal.length) return null;
+  return [run.triNormal[idx], run.triNormal[idx + 1], run.triNormal[idx + 2]];
+}
+
 function sameVoxel(a: [number, number, number] | null, b: [number, number, number] | null): boolean {
   return !!a && !!b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+}
+
+// ── Brush hover preview ──────────────────────────────────────────────────────
+// A translucent overlay of the cells the active brush tool would touch at the
+// hovered voxel, so the user can judge brush size/shape before committing —
+// most useful for the delete tool, where it shows exactly which voxels will be
+// removed. Rendered as a single InstancedMesh of slightly-oversized unit cubes
+// added to the scene (a transient overlay, like the mesh-paint brush ring).
+const PREVIEW_TINT_REMOVE = 0xff4d4d; // red = "this gets deleted"
+const PREVIEW_CELL_SCALE = 1.06;      // a touch larger than a voxel → reads as a shell
+let previewMesh: THREE.InstancedMesh | null = null;
+let previewCapacity = 0;
+let lastHoverEvent: { clientX: number; clientY: number } | null = null;
+const previewMatrix = new THREE.Matrix4();
+
+function disposePreview(): void {
+  if (!previewMesh) return;
+  previewMesh.parent?.remove(previewMesh);
+  previewMesh.geometry.dispose();
+  (previewMesh.material as THREE.Material).dispose();
+  previewMesh = null;
+  previewCapacity = 0;
+}
+
+function clearPreview(): void {
+  if (previewMesh && previewMesh.count > 0) { previewMesh.count = 0; requestRender(); }
+}
+
+function ensurePreviewCapacity(n: number): void {
+  if (previewMesh && previewCapacity >= n) return;
+  disposePreview();
+  const cap = Math.max(8, n);
+  const geo = new THREE.BoxGeometry(PREVIEW_CELL_SCALE, PREVIEW_CELL_SCALE, PREVIEW_CELL_SCALE);
+  const mat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.45, depthWrite: false });
+  previewMesh = new THREE.InstancedMesh(geo, mat, cap);
+  previewMesh.frustumCulled = false;
+  previewMesh.renderOrder = 1000;
+  previewMesh.count = 0;
+  getScene().add(previewMesh);
+  previewCapacity = cap;
+}
+
+/** The occupied voxel cells the paint/remove brush would affect at `center` —
+ *  what gets recolored or deleted. (The `add` tool previews a block instead;
+ *  see {@link previewCells}.) */
+function brushFootprintCells(center: [number, number, number]): [number, number, number][] {
+  const cells: [number, number, number][] = [];
+  if (!run) return cells;
+  const ri = Math.max(0, Math.floor(brushRadius));
+  const [cx, cy, cz] = center;
+  for (let dx = -ri; dx <= ri; dx++)
+    for (let dy = -ri; dy <= ri; dy++)
+      for (let dz = -ri; dz <= ri; dz++) {
+        if (!inBrush(brushShape, dx, dy, dz, ri)) continue;
+        const x = cx + dx, y = cy + dy, z = cz + dz;
+        if (!run.grid.has(x, y, z)) continue; // paint/remove act on existing cells
+        cells.push([x, y, z]);
+      }
+  return cells;
+}
+
+/** Cells the active brush/block tool would touch at the hovered face — the
+ *  set the preview overlay draws. For `add` this is the anchored block (so the
+ *  user sees its size and how far it sinks in); for paint/remove it's the
+ *  occupied brush footprint. */
+function previewCells(hit: FacePickResult): [number, number, number][] {
+  if (!run) return [];
+  const v = triangleVoxel(hit.triangleIndex);
+  if (!v) return [];
+  if (tool === 'add') {
+    const n = triangleNormal(hit.triangleIndex);
+    return n ? addBlockCells(v, n, blockSize, addDepth) : [];
+  }
+  return brushFootprintCells(v);
+}
+
+function renderPreviewFromHit(hit: FacePickResult | null): void {
+  if (!active || !run || !isBrushTool(tool) || !hit) { clearPreview(); return; }
+  const cells = previewCells(hit);
+  if (cells.length === 0) { clearPreview(); return; }
+  ensurePreviewCapacity(cells.length);
+  if (!previewMesh) return;
+  (previewMesh.material as THREE.MeshBasicMaterial).color.setHex(tool === 'remove' ? PREVIEW_TINT_REMOVE : colorRgb());
+  for (let i = 0; i < cells.length; i++) {
+    const [x, y, z] = cells[i];
+    previewMatrix.makeTranslation(x + 0.5, y + 0.5, z + 0.5);
+    previewMesh.setMatrixAt(i, previewMatrix);
+  }
+  previewMesh.count = cells.length;
+  previewMesh.instanceMatrix.needsUpdate = true;
+  requestRender();
+}
+
+/** Re-evaluate the preview at the last hovered point — used when the brush
+ *  size/shape or the active tool changes while the cursor is stationary. */
+function refreshPreview(): void {
+  if (!active || !isBrushTool(tool) || !lastHoverEvent) { clearPreview(); return; }
+  renderPreviewFromHit(pickFace(lastHoverEvent as MouseEvent));
 }
 
 // Pointer Events (not mouse) so click-drag strokes work for mouse, touch, and
@@ -395,6 +564,7 @@ function onPointerDown(event: PointerEvent): void {
   if (!active || event.button !== 0) return;
   const hit = pickFace(event);
   if (!hit) return;
+  clearPreview(); // the action commits; the preview rebuilds on the next move
   // Brush tools paint a drag stroke (one undo step); other tools are single
   // clicks. Box tools manage their own two-click state.
   if (isBrushTool(tool)) {
@@ -409,8 +579,12 @@ function onPointerDown(event: PointerEvent): void {
 }
 
 function onPointerMove(event: PointerEvent): void {
-  if (!active || !strokeActive || (event.buttons & 1) === 0) return;
-  const hit = pickFace(event);
+  if (!active || !run) return;
+  lastHoverEvent = { clientX: event.clientX, clientY: event.clientY };
+  // One raycast feeds both the hover preview and the active stroke.
+  const hit = isBrushTool(tool) ? pickFace(event) : null;
+  renderPreviewFromHit(hit);
+  if (!strokeActive || (event.buttons & 1) === 0) return;
   if (!hit) return;
   const v = triangleVoxel(hit.triangleIndex);
   // Skip if the cursor is still over the same source voxel (avoids redundant
@@ -420,12 +594,19 @@ function onPointerMove(event: PointerEvent): void {
   applyAtTriangle(hit.triangleIndex);
 }
 
+function onPointerLeave(): void {
+  lastHoverEvent = null;
+  clearPreview();
+}
+
 function onPointerUp(): void {
   if (capturedPointerId !== null) {
     try { getRenderer().domElement.releasePointerCapture(capturedPointerId); } catch { /* already released */ }
     capturedPointerId = null;
   }
   if (strokeActive) endStroke();
+  // The stroke may have changed which cells are occupied — refresh the preview.
+  refreshPreview();
 }
 
 function attachPointerHandler(): void {
@@ -439,14 +620,19 @@ function attachPointerHandler(): void {
   const container = canvas.parentElement ?? canvas;
   container.addEventListener('pointerdown', onPointerDown, { capture: true });
   container.addEventListener('pointermove', onPointerMove, { capture: true });
+  container.addEventListener('pointerleave', onPointerLeave);
   window.addEventListener('pointerup', onPointerUp, { capture: true });
   canvas.style.cursor = 'crosshair';
   canvas.style.touchAction = 'none'; // claim the gesture so touch-drag paints
-  // Veto OrbitControls on primary-button hits over the model so editing
-  // doesn't orbit. Off-model clicks fall through so the camera still rotates.
+  // Veto OrbitControls on primary-button presses within the model's bounds so
+  // editing doesn't orbit. We test the bounding box rather than the surface
+  // (unlike mesh paint) because the delete tool carves holes straight through
+  // the mesh — a surface-only test would let a click that lands in a just-made
+  // hole fall through and rotate the camera mid-edit. Presses clearly outside
+  // the model still fall through so the camera can rotate.
   removeSuppressor = addPointerSuppressor((event) => {
     if (event.button !== 0) return false;
-    return isPointerOverModel(event);
+    return isPointerWithinModelBounds(event);
   });
 }
 
@@ -455,6 +641,7 @@ function detachPointerHandler(): void {
   const container = canvas.parentElement ?? canvas;
   container.removeEventListener('pointerdown', onPointerDown, { capture: true } as EventListenerOptions);
   container.removeEventListener('pointermove', onPointerMove, { capture: true } as EventListenerOptions);
+  container.removeEventListener('pointerleave', onPointerLeave);
   window.removeEventListener('pointerup', onPointerUp, { capture: true } as EventListenerOptions);
   canvas.style.cursor = '';
   canvas.style.touchAction = '';
@@ -462,5 +649,7 @@ function detachPointerHandler(): void {
     try { canvas.releasePointerCapture(capturedPointerId); } catch { /* already released */ }
     capturedPointerId = null;
   }
+  lastHoverEvent = null;
+  disposePreview();
   if (removeSuppressor) { removeSuppressor(); removeSuppressor = null; }
 }

@@ -219,40 +219,107 @@ export function rotateAboutCenterSteps(box: PlacementBox, euler: Vec3): Transfor
 
 // ---- auto lay-flat: find the flattest face --------------------------------
 
-/** Find the model's largest flat face and the Euler rotation (manifold order)
- *  that lays it on the bed (its outward normal → −Z). Returns null for a
- *  degenerate mesh or one with no usable area. The rotation is about the world
- *  origin; callers wrap it about the model center and then drop to the floor. */
+// Two coplanar triangles are merged into one face only when their normals agree
+// to within this dot product (~2.6°). Comparing every candidate to the region's
+// *seed* normal (not just its neighbour) bounds the total drift, so a curved
+// surface grows into thin near-flat bands rather than swallowing the whole mesh.
+const COPLANAR_DOT = 0.999;
+// Vertices closer than this fraction of the model diagonal are welded so that
+// adjacency survives meshes that duplicate vertices per-triangle (imported STL,
+// some bakes). Manifold's own meshes already share indices; welding is a no-op
+// for them but makes the clustering robust for the rest.
+const WELD_FRACTION = 1e-6;
+
+/** Find the model's largest *contiguous flat face* and the Euler rotation
+ *  (manifold order) that lays it on the bed (its outward normal → −Z). Returns
+ *  null for a degenerate mesh or one with no usable area. The rotation is about
+ *  the world origin; callers wrap it about the model center and then drop to the
+ *  floor.
+ *
+ *  Triangles are region-grown over shared edges into connected coplanar faces,
+ *  then the largest by total area wins — so a coin lands on its broad side, not
+ *  its rim, and a book on its cover. This deliberately does *not* sum faces that
+ *  merely share a normal direction at different heights (stair steps, embossed
+ *  text, scattered ledges): the part can only rest on the contact plane, so
+ *  pooling non-coplanar area would invent a face that isn't there. */
 export function bestFlatDownRotation(mesh: MeshData): Vec3 | null {
   const np = mesh.numProp;
   const pos = mesh.vertProperties;
   const tv = mesh.triVerts;
-  // Bucket triangles by quantized normal, summing area and an area-weighted
-  // normal so we recover a precise representative direction per flat face.
-  const buckets = new Map<string, { area: number; n: Vec3 }>();
+  const nTri = mesh.numTri;
+  if (nTri === 0) return null;
   const get = (i: number): Vec3 => [pos[i * np], pos[i * np + 1], pos[i * np + 2]];
-  for (let t = 0; t < mesh.numTri; t++) {
+
+  // Weld vertices by quantized position so edge-adjacency works even when the
+  // mesh stores a fresh vertex per triangle corner.
+  const box = meshBox(mesh);
+  const diag = Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]) || 1;
+  const cell = Math.max(1e-9, diag * WELD_FRACTION);
+  const canon = new Int32Array(mesh.numVert);
+  const weld = new Map<string, number>();
+  for (let i = 0; i < mesh.numVert; i++) {
+    const k = `${Math.round(pos[i * np] / cell)},${Math.round(pos[i * np + 1] / cell)},${Math.round(pos[i * np + 2] / cell)}`;
+    let id = weld.get(k);
+    if (id === undefined) { id = weld.size; weld.set(k, id); }
+    canon[i] = id;
+  }
+
+  // Per-triangle unit normal + area; degenerate/non-finite triangles are left
+  // null (a NaN vertex would otherwise poison the chosen rotation).
+  const triN: (Vec3 | null)[] = new Array(nTri);
+  const triA = new Float64Array(nTri);
+  for (let t = 0; t < nTri; t++) {
     const a = get(tv[t * 3]), b = get(tv[t * 3 + 1]), c = get(tv[t * 3 + 2]);
-    const e1: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    const e2: Vec3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    const cr = cross(e1, e2);
+    const cr = cross([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
     const area2 = len(cr);
-    // Skip degenerate and non-finite triangles (a NaN vertex would otherwise
-    // bucket under "NaN,NaN,NaN" and poison the chosen rotation).
-    if (!(area2 >= 1e-12)) continue;
-    const n: Vec3 = [cr[0] / area2, cr[1] / area2, cr[2] / area2];
-    const area = area2 / 2;
-    const key = `${Math.round(n[0] * 100)},${Math.round(n[1] * 100)},${Math.round(n[2] * 100)}`;
-    const cur = buckets.get(key);
-    if (cur) {
-      cur.area += area;
-      cur.n = [cur.n[0] + n[0] * area, cur.n[1] + n[1] * area, cur.n[2] + n[2] * area];
-    } else {
-      buckets.set(key, { area, n: [n[0] * area, n[1] * area, n[2] * area] });
+    if (!(area2 >= 1e-12)) { triN[t] = null; continue; }
+    triN[t] = [cr[0] / area2, cr[1] / area2, cr[2] / area2];
+    triA[t] = area2 / 2;
+  }
+
+  // Build triangle adjacency: triangles sharing a welded edge are neighbours.
+  const edgeTris = new Map<string, number[]>();
+  for (let t = 0; t < nTri; t++) {
+    if (!triN[t]) continue;
+    const v0 = canon[tv[t * 3]], v1 = canon[tv[t * 3 + 1]], v2 = canon[tv[t * 3 + 2]];
+    for (const [p, q] of [[v0, v1], [v1, v2], [v2, v0]] as [number, number][]) {
+      const key = p < q ? `${p}_${q}` : `${q}_${p}`;
+      const arr = edgeTris.get(key);
+      if (arr) arr.push(t); else edgeTris.set(key, [t]);
     }
   }
+  const adj: number[][] = Array.from({ length: nTri }, () => []);
+  for (const tris of edgeTris.values()) {
+    for (let i = 0; i < tris.length; i++)
+      for (let j = i + 1; j < tris.length; j++) { adj[tris[i]].push(tris[j]); adj[tris[j]].push(tris[i]); }
+  }
+
+  // Region-grow connected coplanar faces, seeding from the largest triangles so
+  // a broad flat face is captured whole before tiny facets are visited.
+  const order = [];
+  for (let t = 0; t < nTri; t++) if (triN[t]) order.push(t);
+  order.sort((a, b) => triA[b] - triA[a]);
+  const seen = new Uint8Array(nTri);
   let best: { area: number; n: Vec3 } | null = null;
-  for (const v of buckets.values()) if (!best || v.area > best.area) best = v;
+  for (const seed of order) {
+    if (seen[seed]) continue;
+    const sn = triN[seed]!;
+    seen[seed] = 1;
+    let area = 0;
+    const wn: Vec3 = [0, 0, 0];
+    const stack = [seed];
+    while (stack.length) {
+      const t = stack.pop()!;
+      const a = triA[t], n = triN[t]!;
+      area += a;
+      wn[0] += n[0] * a; wn[1] += n[1] * a; wn[2] += n[2] * a;
+      for (const u of adj[t]) {
+        if (seen[u] || !triN[u]) continue;
+        if (dot(triN[u]!, sn) > COPLANAR_DOT) { seen[u] = 1; stack.push(u); }
+      }
+    }
+    if (!best || area > best.area) best = { area, n: wn };
+  }
   if (!best) return null;
   const nl = len(best.n) || 1;
   const normal: Vec3 = [best.n[0] / nl, best.n[1] / nl, best.n[2] / nl];

@@ -21,6 +21,7 @@
     "lint:deadcode": "knip",
     "lint:deps": "madge --circular --extensions ts,tsx src",
     "lint:catalog": "node scripts/lint-catalog.mjs",
+    "audit:catalog": "node scripts/catalog-audit.cjs",
     "model:preview": "node scripts/model-preview.mjs",
     "cli": "node bin/partwright.mjs"
   },

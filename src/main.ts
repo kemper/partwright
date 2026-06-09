@@ -46,6 +46,7 @@ import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { confirmDialog, promptDialog } from './ui/dialogs';
+import { updateAppHistory, currentURLPathAndSearch } from './ui/appHistory';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive } from './ui/aiPanel';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
@@ -128,7 +129,12 @@ import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
 import { setReliefSettings, getReliefSettings, updateReliefSettings, isReliefSession, getPreviewModeFor } from './relief/reliefSettings';
 import { saveReliefSource, getReliefSource } from './relief/reliefSource';
-import { listFilaments, hexToRgb, getPaletteCapacity } from './relief/filaments';
+import {
+  listFilaments, hexToRgb, getPaletteCapacity, setPaletteCapacity,
+  isPaletteConstrained, setPaletteConstrained,
+  addFilament, updateFilament, removeFilament,
+  listPalettes, createPalette, setActivePalette, getActivePaletteId, getActivePaletteName,
+} from './color/palette';
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal } from './ui/reliefImportModal';
 import { mountReliefStudio, type ReliefStudioHandle } from './ui/reliefStudio';
@@ -149,7 +155,7 @@ import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
-import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook } from './color/imagePaintUI';
+import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook, stampImageProgrammatic } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import * as meshSculpt from './surface/meshSculpt';
@@ -181,7 +187,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
@@ -214,6 +220,8 @@ import {
   navigateVersion,
   loadVersion as loadVersionFromStore,
   peekVersion,
+  renameVersion as renameVersionInStore,
+  deleteVersion as deleteVersionFromStore,
   listCurrentVersions,
   listCurrentParts,
   getCurrentPart,
@@ -1917,20 +1925,6 @@ function getTabFromURL(): TabName {
   return 'interactive';
 }
 
-function currentURLPathAndSearch(): string {
-  return `${window.location.pathname}${window.location.search}`;
-}
-
-function updateAppHistory(url: string, mode: 'push' | 'replace'): void {
-  if (url === currentURLPathAndSearch()) return;
-  if (mode === 'push') {
-    window.history.pushState(null, '', url);
-  } else {
-    window.history.replaceState(null, '', url);
-  }
-}
-
-
 // Hide landing/help and show the editor UI
 function showEditorUI(landingEl: HTMLElement | null, helpEl: HTMLElement | null, editorUI: HTMLElement) {
   if (landingEl) landingEl.classList.add('hidden');
@@ -2227,6 +2221,73 @@ async function main() {
     }
   }
 
+  // Validate the optional sub-objects an AI/console caller may pass to
+  // importImageAsRelief / importSvgAsRelief. The clamp* helpers below tolerate
+  // bad numerics by falling back to defaults, but the rest of the
+  // window.partwright API rejects unknown keys and wrong types outright
+  // (CLAUDE.md: "unknown keys rejected") so a typo like `{ widthToDeep: 100 }`
+  // is loud rather than silently ignored. Throws ValidationError; callers wrap
+  // this in guard() to surface it as { error }. The numeric bounds mirror the
+  // clamp* ranges below.
+  const RELIEF_COMMON_KEYS = ['widthMm', 'layerHeight', 'baseThickness', 'maxHeight', 'resolution', 'smoothing', 'removeBackground'] as const;
+  const RELIEF_QUANTIZED_KEYS = ['clusters', 'colorSpace', 'dither', 'fixedPalette', 'output', 'shape', 'cornerRadiusMm', 'chamferMm', 'paintingMode', 'invertHeights', 'holes', 'holeEnabled', 'holeDiameterMm', 'holeOffsetMm', 'manualBackground', 'doubleSided', 'backMirror'] as const;
+  const RELIEF_PREPROCESS_KEYS = ['brightness', 'contrast', 'saturation', 'levelsLow', 'levelsHigh'] as const;
+  const RELIEF_CROP_KEYS = ['left', 'top', 'right', 'bottom'] as const;
+  function validateReliefOptionArgs(args: { options?: unknown; quantized?: unknown; preprocess?: unknown; crop?: unknown }, fn: string): void {
+    if (args.options !== undefined) {
+      const o = assertObject(args.options, `${fn}(options)`)!;
+      assertNoUnknownKeys(o, RELIEF_COMMON_KEYS, `${fn}(options)`);
+      assertNumber(o.widthMm, `${fn}(options).widthMm`, { optional: true, min: 1, max: 2000 });
+      assertNumber(o.layerHeight, `${fn}(options).layerHeight`, { optional: true, min: 0.02, max: 2 });
+      assertNumber(o.baseThickness, `${fn}(options).baseThickness`, { optional: true, min: 0, max: 50 });
+      assertNumber(o.maxHeight, `${fn}(options).maxHeight`, { optional: true, min: 0.1, max: 100 });
+      assertNumber(o.resolution, `${fn}(options).resolution`, { optional: true, min: 8, max: 512 });
+      assertNumber(o.smoothing, `${fn}(options).smoothing`, { optional: true, min: 0, max: 20 });
+      assertBoolean(o.removeBackground, `${fn}(options).removeBackground`, { optional: true });
+    }
+    if (args.quantized !== undefined) {
+      const q = assertObject(args.quantized, `${fn}(quantized)`)!;
+      assertNoUnknownKeys(q, RELIEF_QUANTIZED_KEYS, `${fn}(quantized)`);
+      assertNumber(q.clusters, `${fn}(quantized).clusters`, { optional: true, min: 2, max: 12, integer: true });
+      if (q.colorSpace !== undefined) assertEnum(q.colorSpace, ['rgb', 'lab'], `${fn}(quantized).colorSpace`);
+      assertBoolean(q.dither, `${fn}(quantized).dither`, { optional: true });
+      if (q.output !== undefined) assertEnum(q.output, ['relief', 'flat', 'silhouette'], `${fn}(quantized).output`);
+      if (q.shape !== undefined) assertEnum(q.shape, ['rect', 'rounded', 'circle'], `${fn}(quantized).shape`);
+      assertNumber(q.cornerRadiusMm, `${fn}(quantized).cornerRadiusMm`, { optional: true, min: 0, max: 50 });
+      assertNumber(q.chamferMm, `${fn}(quantized).chamferMm`, { optional: true, min: 0, max: 5 });
+      if (q.paintingMode !== undefined) assertEnum(q.paintingMode, ['multi-color', 'single-nozzle'], `${fn}(quantized).paintingMode`);
+      assertBoolean(q.invertHeights, `${fn}(quantized).invertHeights`, { optional: true });
+      assertBoolean(q.doubleSided, `${fn}(quantized).doubleSided`, { optional: true });
+      assertBoolean(q.backMirror, `${fn}(quantized).backMirror`, { optional: true });
+      // "Constrain to filament palette": an array of [r,g,b] 0–255 triples each
+      // cell snaps to. The clamp re-sanitises, but reject the obviously-wrong
+      // shape here so a typo is loud rather than silently ignored.
+      if (q.fixedPalette !== undefined) {
+        const pal = q.fixedPalette;
+        const ok = Array.isArray(pal) && pal.every(c =>
+          Array.isArray(c) && c.length === 3 && c.every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 255));
+        if (!ok) throw new ValidationError(`${fn}(quantized).fixedPalette must be an array of [r,g,b] triples (0–255). See /ai.md#argument-validation`);
+      }
+    }
+    if (args.preprocess !== undefined) {
+      const p = assertObject(args.preprocess, `${fn}(preprocess)`)!;
+      assertNoUnknownKeys(p, RELIEF_PREPROCESS_KEYS, `${fn}(preprocess)`);
+      assertNumber(p.brightness, `${fn}(preprocess).brightness`, { optional: true, min: -1, max: 1 });
+      assertNumber(p.contrast, `${fn}(preprocess).contrast`, { optional: true, min: -1, max: 1 });
+      assertNumber(p.saturation, `${fn}(preprocess).saturation`, { optional: true, min: -1, max: 1 });
+      assertNumber(p.levelsLow, `${fn}(preprocess).levelsLow`, { optional: true, min: 0, max: 254 });
+      assertNumber(p.levelsHigh, `${fn}(preprocess).levelsHigh`, { optional: true, min: 1, max: 255 });
+    }
+    if (args.crop !== undefined) {
+      const c = assertObject(args.crop, `${fn}(crop)`)!;
+      assertNoUnknownKeys(c, RELIEF_CROP_KEYS, `${fn}(crop)`);
+      assertNumber(c.left, `${fn}(crop).left`, { min: 0, max: 1 });
+      assertNumber(c.top, `${fn}(crop).top`, { min: 0, max: 1 });
+      assertNumber(c.right, `${fn}(crop).right`, { min: 0, max: 1 });
+      assertNumber(c.bottom, `${fn}(crop).bottom`, { min: 0, max: 1 });
+    }
+  }
+
   // Clamp the common knobs to sane physical/perf bounds. The wizard enforces
   // these via input attributes, but the programmatic (AI/console) path bypasses
   // the UI, so guard here against OOM (huge resolution) and degenerate values.
@@ -2270,6 +2331,16 @@ async function main() {
         diameterMm: num(q.holeDiameterMm ?? 6, 6),
       })];
     }
+    // Preserve the "constrain to filament palette" snap colours (0–255 triples).
+    // Must be threaded through here — the create path runs options through this
+    // clamp before generateRelief, so dropping it would make the committed model
+    // ignore the palette even though the live preview honoured it.
+    const byte = (v: number) => Math.max(0, Math.min(255, Math.round(num(v, 0))));
+    const fixedPalette = Array.isArray(q.fixedPalette)
+      ? q.fixedPalette
+          .filter(c => Array.isArray(c) && c.length === 3 && c.every(n => Number.isFinite(n)))
+          .map(c => [byte(c[0]), byte(c[1]), byte(c[2])] as [number, number, number])
+      : undefined;
     return {
       clusters: Math.max(2, Math.min(12, Math.floor(num(q.clusters, 5)))),
       colorSpace: q.colorSpace === 'rgb' ? 'rgb' : 'lab',
@@ -2284,6 +2355,7 @@ async function main() {
       manualBackground: q.manualBackground,
       doubleSided: !!q.doubleSided,
       backMirror: q.backMirror !== false,
+      ...(fixedPalette && fixedPalette.length > 0 ? { fixedPalette } : {}),
     };
   }
 
@@ -3129,16 +3201,19 @@ async function main() {
    *  If the mesh still won't form a manifold (common for sculpted/scanned models
    *  with self-intersections or open edges), prompts the user to import as
    *  render-only — visible and exportable, but no booleans/paint/slice. */
-  async function parseSTLFile(file: File): Promise<ParsedSTL | null> {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-
-    // Sanity-check that the file parses to *something* before doing the more
-    // expensive ofMesh trial.
+  /** Non-interactive STL parse: tries a ladder of weld tolerances and reports
+   *  whether the welded result forms a clean manifold. Shared by the interactive
+   *  file path (`parseSTLFile`, which adds the render-only confirm dialog) and
+   *  the programmatic `importMeshData` API (which auto-accepts render-only).
+   *  Returns null only when the bytes don't parse as STL at all. */
+  type ParsedSTLProbe =
+    | { mesh: ImportedMesh; isManifold: true }
+    | { mesh: ImportedMesh; isManifold: false; manifoldError: string | null; maxTried: number; triCount: number; vertCount: number };
+  function parseSTLBytes(bytes: Uint8Array, filename: string): ParsedSTLProbe | null {
+    // Sanity-check that the file parses to *something* before the more expensive
+    // ofMesh trials.
     const probe = parseSTL(bytes);
-    if (!probe || probe.numTri === 0) {
-      showToast(`Could not parse "${file.name}" as an STL file.`, { variant: 'warn', source: 'import' });
-      return null;
-    }
+    if (!probe || probe.numTri === 0) return null;
 
     // Scale-aware fallback tolerance: 5 ppm of the mesh's bounding-box diagonal
     // catches imports that ship in unusual units (μm or m) where 1e-3 absolute
@@ -3157,22 +3232,37 @@ async function main() {
       const mesh = parseSTL(bytes, { weldTolerance: tol });
       if (!mesh || mesh.numTri === 0) continue;
       const trial = tryConstructManifold(mesh);
-      if (trial.ok) {
-        return { mesh: toImportedMesh(file.name, mesh), isManifold: true };
-      }
+      if (trial.ok) return { mesh: toImportedMesh(filename, mesh), isManifold: true };
       manifoldError = trial.error;
       if (tol > maxTried) maxTried = tol;
       bestMesh = mesh;
     }
+    return {
+      mesh: toImportedMesh(filename, bestMesh),
+      isManifold: false,
+      manifoldError,
+      maxTried,
+      triCount: probe.numTri,
+      vertCount: probe.numVert,
+    };
+  }
+
+  async function parseSTLFile(file: File): Promise<ParsedSTL | null> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const parsed = parseSTLBytes(bytes, file.name);
+    if (!parsed) {
+      showToast(`Could not parse "${file.name}" as an STL file.`, { variant: 'warn', source: 'import' });
+      return null;
+    }
+    if (parsed.isManifold) return { mesh: parsed.mesh, isManifold: true };
 
     // All tolerances failed. Offer render-only fallback — most users importing
     // a Baby Yoda / Eiffel Tower scan just want to look at it, not boolean-op it.
-    const accepted = await showInlineConfirm(
-      editorUI,
+    const accepted = await confirmDialog(
       `${file.name} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
       `You can still import it as render-only: the mesh displays and exports normally, but boolean operations, paint, and cross-sections won't work.\n\n` +
       `For full editing, repair the mesh first in MeshLab or Blender, then re-import.\n\n` +
-      `${probe.numTri.toLocaleString()} triangles · ${probe.numVert.toLocaleString()} vertices · tried weld tolerances up to ${maxTried.toExponential(1)} · ${manifoldError}`,
+      `${parsed.triCount.toLocaleString()} triangles · ${parsed.vertCount.toLocaleString()} vertices · tried weld tolerances up to ${parsed.maxTried.toExponential(1)} · ${parsed.manifoldError}`,
       {
         title: 'Import as render-only?',
         confirmLabel: 'Import render-only',
@@ -3181,7 +3271,7 @@ async function main() {
     );
     if (!accepted) return null;
 
-    return { mesh: toImportedMesh(file.name, bestMesh), isManifold: false };
+    return { mesh: parsed.mesh, isManifold: false };
   }
 
   function toImportedMesh(filename: string, mesh: MeshData, format: ImportedMesh['format'] = 'stl'): ImportedMesh {
@@ -3905,15 +3995,18 @@ async function main() {
     if (!currentMeshData) return;
     const settings = loadPrinterSettings();
     let isManifold = false;
+    let renderOnly = false;
     try {
       const geo = JSON.parse(geometryDataEl.textContent || '{}');
       isManifold = !!geo.isManifold;
+      renderOnly = geo.manifoldStatus === 'render-only (not manifold)';
     } catch { /* default false */ }
     const report: PrintabilityReport = analyzePrintability(currentMeshData, {
       bed: settings.bed,
       nozzleWidth: settings.nozzleWidth,
       overhangAngleDeg: settings.overhangAngleDeg,
       isManifold,
+      renderOnly,
     });
     const fails = report.checks.filter(c => c.level === 'fail');
     const warns = report.checks.filter(c => c.level === 'warn');
@@ -4469,6 +4562,14 @@ async function main() {
     { id: 'tool-annotate', title: 'Annotate (draw / text)', hint: 'Tools', keywords: 'draw pen text label note markup sketch arrow', run: () => document.getElementById('annotate-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-quality', title: 'Quality: simplify / enhance', hint: 'Tools', keywords: 'simplify enhance decimate reduce triangles quality curvature smoothness', run: () => document.getElementById('simplify-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-customize', title: 'Customize parameters', hint: 'Tools', keywords: 'parameters params sliders tweak knobs', run: () => document.getElementById('customize-toggle')?.click(), enabled: () => isEditorActive() && !document.getElementById('customize-toggle')?.classList.contains('hidden') },
+    // These tools moved behind the Tools/Inspect popovers after the view-menu
+    // refactor, so the palette is their only keyboard/search entry point. Each
+    // fires the existing overlay toggle by id (click() works even collapsed).
+    { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', keywords: 'fuzzy knit cable waffle fur woven smooth voxelize texture modifier displace', run: () => document.getElementById('surface-viewport-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-resize', title: 'Resize / scale model', hint: 'Tools', keywords: 'scale resize size dimensions grow shrink mm', run: () => document.getElementById('resize-viewport-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-place', title: 'Place / orient on bed', hint: 'Tools', keywords: 'place orient rotate move position lay flat drop floor center bed', run: () => document.getElementById('place-viewport-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => document.getElementById('print-tools-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-voxel-paint', title: 'Voxel Studio (edit voxels)', hint: 'Tools', keywords: 'voxel studio paint edit cube blocky pixel sculpt', run: () => document.getElementById('voxel-paint-toggle')?.click(), enabled: () => isEditorActive() && getActiveLanguage() === 'voxel' },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
     { id: 'toggle-diagnostics', title: 'Toggle diagnostics', hint: 'View', keywords: 'errors warnings console workers webworkers threads memory wasm performance restarts crash timing health log', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
@@ -5053,7 +5154,12 @@ async function main() {
   async function handleIdeaPhotoToRelief(file: File): Promise<void> {
     await enterEditorForIdea();
     if (window.location.pathname !== '/editor') return;
-    openReliefImportFlow(file);
+    // The "smooth relief / lithophane" idea tile promises a non-blocky, tonal
+    // result, so open the wizard in 'luminance' mode rather than the global
+    // default ('quantized' — flat blocky colour clusters). Clone the defaults
+    // so we only override the mode.
+    const initialOptions: ReliefOptions = { ...structuredClone(DEFAULT_RELIEF_OPTIONS), mode: 'luminance' };
+    openReliefImportFlow(file, initialOptions);
     updateDocumentTitle({ page: 'editor' });
   }
 
@@ -5494,13 +5600,21 @@ async function main() {
   let _workCameraSaveTimer: number | undefined;
   onOrbitEnd(() => {
     if (_workCameraSaveTimer !== undefined) clearTimeout(_workCameraSaveTimer);
+    // Capture which session this orbit belongs to. setSessionWorkCamera writes
+    // to whatever session is active *at fire time*, so if the user switches
+    // sessions within the debounce window the pending save would otherwise
+    // stamp the new session's row with the old session's pose. Discard the
+    // save if the active session changed before the timer elapses.
+    const orbitedSessionId = getState().session?.id ?? null;
     // Snapshot inside the debounced callback, not here: 'end' fires at gesture
     // release while OrbitControls damping is still gliding, so reading the pose
     // now would persist a pre-settle angle. By the time the debounce elapses the
     // camera has come to rest, so the saved view matches what the user sees.
     _workCameraSaveTimer = window.setTimeout(() => {
       _workCameraSaveTimer = undefined;
-      if (currentMeshData === null || !getState().session) return;
+      if (currentMeshData === null) return;
+      const cur = getState().session;
+      if (!cur || cur.id !== orbitedSessionId) return; // session changed — discard
       void setSessionWorkCamera(getCameraPose());
     }, getConfig().ui.workCameraSaveDebounceMs);
   });
@@ -7155,7 +7269,28 @@ async function main() {
     return { regions, transferredTris };
   }
 
-  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean): Promise<Record<string, unknown>> {
+  /** A user-facing warning when committing a modifier converts a SCAD or BREP
+   *  session into a baked manifold-js/voxel mesh — the parametric source (and,
+   *  for BREP, STEP export) is discarded. Returns null when nothing of value is
+   *  lost (manifold-js → manifold-js, or the explicit manifold-js → voxelize). */
+  function engineBakeWarning(priorLang: Language, target: 'manifold-js' | 'voxel'): string | null {
+    if (priorLang === target) return null;
+    if (priorLang === 'replicad') {
+      return 'This BREP model was baked to a mesh — the parametric BREP source and STEP export are no longer available.';
+    }
+    if (priorLang === 'scad') {
+      return 'This OpenSCAD model was baked to a mesh — the parametric SCAD source is no longer editable.';
+    }
+    return null;
+  }
+
+  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean, opts?: { warnOnBake?: boolean }): Promise<Record<string, unknown>> {
+    // Capture the language *before* the commit switches it, so we can warn when a
+    // SCAD/BREP session is silently baked to a mesh. The transform path
+    // (commitTransform) emits its own, more specific warning and passes
+    // warnOnBake:false to avoid double-reporting.
+    const priorLang = getActiveLanguage();
+    const warnOnBake = opts?.warnOnBake !== false;
     // For manifold results the modifier already baked colors into its input and
     // carried them through subdivision — result.mesh.triColors has the correct
     // per-triangle paint (dense mesh, same shape as the engine output). We use
@@ -7206,12 +7341,15 @@ async function main() {
           );
         }
       }
+      const bakeWarning = warnOnBake ? engineBakeWarning(priorLang, 'manifold-js') : null;
+      if (bakeWarning) showToast(bakeWarning, { variant: 'warn', source: 'engine' });
+      const allWarnings = [...(bakeWarning ? [bakeWarning] : []), ...colorWarnings];
       return {
         ok: true,
         label: result.label,
         geometry: getGeometryDataObj(),
         colorsCarried: carried,
-        ...(colorWarnings.length > 0 ? { warnings: colorWarnings } : {}),
+        ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
       };
     }
     // Voxel result: a self-contained `voxels.decode(...)` program, no imports.
@@ -7224,7 +7362,14 @@ async function main() {
     if (!ok) return { error: `Failed to apply ${result.label}` };
     const thumbnail = await captureThumbnail();
     await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
-    return { ok: true, label: result.label, geometry: getGeometryDataObj() };
+    const voxelBakeWarning = warnOnBake ? engineBakeWarning(priorLang, 'voxel') : null;
+    if (voxelBakeWarning) showToast(voxelBakeWarning, { variant: 'warn', source: 'engine' });
+    return {
+      ok: true,
+      label: result.label,
+      geometry: getGeometryDataObj(),
+      ...(voxelBakeWarning ? { warnings: [voxelBakeWarning] } : {}),
+    };
   }
 
   // ---- Place / Rotate (drop-to-floor, center, free rotate, auto lay-flat) --
@@ -7306,7 +7451,7 @@ async function main() {
       result = await commitTransformParametric(steps, label);
     } else {
       const preserve = preserveColor ?? true;
-      result = await commitSurfaceModifier(applyTransform(meshForModifier(preserve), steps, label), preserve);
+      result = await commitSurfaceModifier(applyTransform(meshForModifier(preserve), steps, label), preserve, { warnOnBake: false });
     }
     return warnings.length && !result.error ? { ...result, warnings } : result;
   }
@@ -7381,9 +7526,11 @@ async function main() {
   }
 
   // Build a modifier result from an id + options (shared by apply and preview).
-  // All three modifiers receive the color-baked mesh when preserveColor is on:
-  // fuzzy/smooth carry triColors (with _painted) through subdivision so the
-  // result already has correct per-triangle paint — no post-hoc transfer needed.
+  // Every modifier receives the color-baked mesh when preserveColor is on:
+  // the texture/smooth paths carry triColors (with _painted) through subdivision
+  // so the result already has correct per-triangle paint — no post-hoc transfer.
+  // `quality` (mesh-detail) is threaded into each opts object so the surface
+  // panel's detail slider takes effect in both preview and apply.
   function buildSurfaceModifier(
     id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
@@ -7398,6 +7545,7 @@ async function main() {
         scale: (opts?.scale as number) ?? base.scale,
         octaves: (opts?.octaves as number) ?? base.octaves,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyFuzzyPatch(mesh, fuzzyOpts, sel);
       return applyFuzzy(mesh, fuzzyOpts);
@@ -7414,6 +7562,7 @@ async function main() {
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         variation: (opts?.variation as number) ?? base.variation,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
         // LSCM/harmonic require disk topology — only use them on a selected patch.
         // On a closed mesh they produce partial coverage; fall back to BFS.
         algorithm: (sel && sel.size > 0)
@@ -7434,6 +7583,7 @@ async function main() {
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         variation: (opts?.variation as number) ?? base.variation,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyCablePatch(mesh, cableOpts, sel);
       return applyCable(mesh, cableOpts);
@@ -7448,6 +7598,7 @@ async function main() {
         sharpness: (opts?.sharpness as number) ?? base.sharpness,
         rowOffset: (opts?.rowOffset as number) ?? base.rowOffset,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyWafflePatch(mesh, waffleOpts, sel);
       return applyWaffle(mesh, waffleOpts);
@@ -7462,6 +7613,7 @@ async function main() {
         octaves: (opts?.octaves as number) ?? base.octaves,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyFurPatch(mesh, furOpts, sel);
       return applyFur(mesh, furOpts);
@@ -7476,6 +7628,7 @@ async function main() {
         underDepth: (opts?.underDepth as number) ?? base.underDepth,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
       };
       if (sel && sel.size > 0) return applyWovenPatch(mesh, wovenOpts, sel);
       return applyWoven(mesh, wovenOpts);
@@ -7503,7 +7656,8 @@ async function main() {
      *  color-clearing modifier, or offer "preserve colors"). */
     modelHasColor(): boolean { return modelHasColor(); },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
-     *  Call clearSurfacePreview() / re-run to restore. id: 'fuzzy'|'knit'|'smooth'|'voxelize'. */
+     *  Call clearSurfacePreview() / re-run to restore.
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'smooth'|'voxelize'. */
     previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
       try {
         previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
@@ -8164,6 +8318,45 @@ async function main() {
       return { sessionId: result.sessionId };
     },
 
+    /** Import an STL mesh (binary or ASCII) from base64-encoded bytes as a new
+     *  session — the programmatic equivalent of the Import → choose-file flow for
+     *  STL (which an agent can't reach: there's no file picker). The mesh is
+     *  welded across a tolerance ladder; when it forms a clean manifold it's
+     *  imported as an editable manifold-js model, otherwise it lands render-only
+     *  (display + export only — no booleans/paint/slicing), reflected by
+     *  `isManifold: false` in the return. `base64` may be a bare base64 string or
+     *  a `data:` URL. `filename` names the import; `opts.sessionName` overrides
+     *  the new session's name. Returns `{ sessionId, isManifold, triangleCount,
+     *  vertexCount }` or `{ error }`. */
+    async importMeshData(base64: string, filename: string, opts: { sessionName?: string } = {}) {
+      const check = guard(() => {
+        assertString(base64, 'importMeshData(base64)', { allowEmpty: false });
+        assertString(filename, 'importMeshData(filename)', { allowEmpty: false });
+        assertObject(opts, 'importMeshData(opts)', { optional: true });
+        assertString(opts?.sessionName, 'importMeshData(opts.sessionName)', { optional: true, allowEmpty: false });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      let bytes: Uint8Array;
+      try {
+        const raw = (base64.includes(',') ? base64.slice(base64.indexOf(',') + 1) : base64).replace(/\s/g, '');
+        const binary = atob(raw);
+        bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      } catch {
+        return { error: 'importMeshData(base64): not valid base64-encoded data.' };
+      }
+      const parsed = parseSTLBytes(bytes, filename);
+      if (!parsed) return { error: `Could not parse "${filename}" as an STL file (binary or ASCII).` };
+      const sessionName = opts?.sessionName ?? filename.replace(/\.[^.]+$/, '');
+      const { sessionId } = await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+      return {
+        sessionId,
+        isManifold: parsed.isManifold,
+        triangleCount: parsed.mesh.numTri,
+        vertexCount: parsed.mesh.numVert,
+      };
+    },
+
     /** Import an image (a `data:` URL or a same-origin URL) as a colored voxel
      *  model in a new voxel session — the programmatic equivalent of the
      *  Import → image file flow. `mode: 'billboard'` (default) extrudes every
@@ -8793,6 +8986,13 @@ async function main() {
       if (!args || typeof args !== 'object') return { error: 'importImageAsRelief: expected an object { src, mode?, options?, quantized?, crop? }' };
       const src = (args as { src?: unknown }).src;
       if (typeof src !== 'string' || src.length === 0) return { error: 'importImageAsRelief: src must be a non-empty data: or http(s) URL string' };
+      const argCheck = guard(() => {
+        const mode = (args as { mode?: unknown }).mode;
+        if (mode !== undefined) assertEnum(mode, ['luminance', 'quantized', 'ai'], 'importImageAsRelief(mode)');
+        validateReliefOptionArgs(args, 'importImageAsRelief');
+        return true;
+      });
+      if (typeof argCheck === 'object' && argCheck !== null && 'error' in argCheck) return argCheck;
       try {
         const image = await dataUrlToImageData(src);
         const opts: ReliefOptions = structuredClone(DEFAULT_RELIEF_OPTIONS);
@@ -8817,6 +9017,11 @@ async function main() {
       if (!args || typeof args !== 'object') return { error: 'importSvgAsRelief: expected an object { svgText, options?, quantized? }' };
       const svgText = (args as { svgText?: unknown }).svgText;
       if (typeof svgText !== 'string' || svgText.length === 0) return { error: 'importSvgAsRelief: svgText must be a non-empty SVG string' };
+      const argCheck = guard(() => {
+        validateReliefOptionArgs(args, 'importSvgAsRelief');
+        return true;
+      });
+      if (typeof argCheck === 'object' && argCheck !== null && 'error' in argCheck) return argCheck;
       try {
         const opts: ReliefOptions = structuredClone(DEFAULT_RELIEF_OPTIONS);
         const o = (args as { options?: unknown }).options;
@@ -9098,6 +9303,80 @@ async function main() {
         timestamp: v.timestamp,
         status: (v.geometryData as Record<string, unknown> | null)?.status ?? null,
       }));
+    },
+
+    /** Rename a version's display label (its index is immutable). Pass { index }
+     *  or { id } from listVersions(), plus the new label. Returns the updated
+     *  { id, index, label }, or { error } if the version isn't in this session. */
+    async renameVersion(target: { index?: number; id?: string }, label: string) {
+      const parsed = parseVersionTarget(target, 'renameVersion');
+      if ('error' in parsed) return parsed;
+      const check = guard(() => assertString(label, 'renameVersion(label)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!getState().session) return { error: 'No active session. Call openSession(id) or createSession() first.' };
+      const version = await peekVersion(parsed.value);
+      if (!version) return { error: `No version found with ${parsed.kind} "${parsed.value}" in the active session. Use listVersions() to see valid ${parsed.kind}s.` };
+      const updated = await renameVersionInStore(version.id, label);
+      if (!updated) return { error: `Could not rename version "${parsed.value}".` };
+      return { ok: true, id: updated.id, index: updated.index, label: updated.label };
+    },
+
+    /** Delete a version from the active session. Pass { index } or { id }. Refuses
+     *  to remove the last remaining version. When the active version is deleted,
+     *  the nearest earlier version becomes active and is re-rendered. Returns
+     *  { ok, deleted, newCurrent } or { error }. */
+    async deleteVersion(target: { index?: number; id?: string }) {
+      const parsed = parseVersionTarget(target, 'deleteVersion');
+      if ('error' in parsed) return parsed;
+      if (!getState().session) return { error: 'No active session. Call openSession(id) or createSession() first.' };
+      const version = await peekVersion(parsed.value);
+      if (!version) return { error: `No version found with ${parsed.kind} "${parsed.value}" in the active session. Use listVersions() to see valid ${parsed.kind}s.` };
+      const result = await deleteVersionFromStore(version.id);
+      if (!result) return { error: 'Could not delete — a session must keep at least one version.' };
+      // If the active version changed, re-render the replacement so the viewport
+      // and editor reflect the new state (mirrors loadVersion's language/colour/
+      // annotation restore).
+      if (result.wasCurrent && result.newCurrent) {
+        const nv = result.newCurrent;
+        const versionLang = effectiveVersionLanguage(nv, getState().session);
+        if (versionLang !== getActiveLanguage()) await switchLanguage(versionLang);
+        setValue(nv.code);
+        currentParamValues = { ...(nv.paramValues ?? {}) };
+        await runCodeSync(nv.code, { preserveCamera: true });
+        await rehydrateColorRegions(nv.geometryData);
+        applyVersionAnnotations(nv);
+      }
+      return {
+        ok: true,
+        deleted: { id: result.deleted.id, index: result.deleted.index, label: result.deleted.label },
+        newCurrent: result.newCurrent ? { id: result.newCurrent.id, index: result.newCurrent.index, label: result.newCurrent.label } : null,
+      };
+    },
+
+    /** Compare two versions' code and geometry stats — the programmatic form of
+     *  the Diff tab. Pass two targets (each { index } or { id }) from
+     *  listVersions(). Returns each version's code + a per-field stat delta, or
+     *  { error } if either version isn't found. */
+    async diffVersions(a: { index?: number; id?: string }, b: { index?: number; id?: string }) {
+      const pa = parseVersionTarget(a, 'diffVersions');
+      if ('error' in pa) return pa;
+      const pb = parseVersionTarget(b, 'diffVersions');
+      if ('error' in pb) return pb;
+      if (!getState().session) return { error: 'No active session. Call openSession(id) or createSession() first.' };
+      const va = await peekVersion(pa.value);
+      if (!va) return { error: `No version found with ${pa.kind} "${pa.value}" in the active session.` };
+      const vb = await peekVersion(pb.value);
+      if (!vb) return { error: `No version found with ${pb.kind} "${pb.value}" in the active session.` };
+      const statDiff = computeStatDiff(
+        (va.geometryData ?? {}) as Record<string, unknown>,
+        (vb.geometryData ?? {}) as Record<string, unknown>,
+      );
+      return {
+        a: { id: va.id, index: va.index, label: va.label, code: va.code },
+        b: { id: vb.id, index: vb.index, label: vb.label, code: vb.code },
+        codeChanged: va.code !== vb.code,
+        statDiff,
+      };
     },
 
     /** Load a version into the editor. Pass { index } or { id } from listVersions().
@@ -9914,6 +10193,7 @@ async function main() {
         nozzleWidth: opts?.nozzleWidth ?? settings.nozzleWidth,
         overhangAngleDeg: opts?.overhangAngleDeg ?? settings.overhangAngleDeg,
         isManifold: stats.isManifold === true,
+        renderOnly: stats.manifoldStatus === 'render-only (not manifold)',
       });
     },
 
@@ -10944,6 +11224,10 @@ async function main() {
       cylinder?: { center?: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number };
       slab?: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number };
       normalCone?: { axis: [number, number, number]; angleDeg: number };
+      /** Cylinder selector only — mirrors `paintInCylinder.topOnly`. Keeps just
+       *  the outward-radial faces so the dry-run matches what a
+       *  `paintInCylinder({ topOnly: true })` commit would actually paint. */
+      topOnly?: boolean;
       point?: [number, number, number];
       radius?: number;
       triangleIds?: number[];
@@ -10994,9 +11278,12 @@ async function main() {
         if (c.rMin < 0 || c.rMax <= c.rMin) return { error: 'cylinder requires rMin >= 0 and rMax > rMin' };
         if (c.zMax <= c.zMin) return { error: 'cylinder requires zMax > zMin' };
         if (c.center !== undefined && (!Array.isArray(c.center) || c.center.length !== 2)) return { error: 'cylinder.center must be [x, y]' };
-        const coneErr = validateNormalCone(opts.normalCone);
+        // Resolve topOnly into a cone the same way paintInCylinder does, so the
+        // preview's selection matches a topOnly commit instead of over-reporting.
+        const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+        const coneErr = validateNormalCone(cone);
         if (coneErr) return { error: coneErr };
-        triangles = collectTrianglesByCylinder(mesh, c.center ?? [0, 0], c.rMin, c.rMax, c.zMin, c.zMax, opts.normalCone, opts.coverageMode, opts.maxTriangleArea);
+        triangles = collectTrianglesByCylinder(mesh, c.center ?? [0, 0], c.rMin, c.rMax, c.zMin, c.zMax, cone, opts.coverageMode, opts.maxTriangleArea);
       } else if (opts.slab !== undefined) {
         const s = opts.slab;
         if (typeof s !== 'object' || s === null) return { error: 'slab must be { axis|normal, offset, thickness }' };
@@ -11167,6 +11454,169 @@ async function main() {
       scheduleColorRefresh();
       syncLockState();
       return { cleared: true };
+    },
+
+    /** Recolor every paint region whose color matches `from` (within
+     *  `tolerance`) to `to` — the programmatic Replace-color tool. Colors are
+     *  [r,g,b] in 0..1 (the range paintFaces/paintRegion use). `tolerance`
+     *  defaults to 0.01. Returns `{ replaced: count }`. */
+    replaceColor(opts: { from: [number, number, number]; to: [number, number, number]; tolerance?: number }) {
+      const check = guard(() => {
+        assertObject(opts, 'replaceColor(opts)');
+        const from = assertNumberTuple(opts?.from, 3, 'replaceColor(opts.from)');
+        from.forEach((n, i) => assertNumber(n, `replaceColor(opts.from[${i}])`, { min: 0, max: 1 }));
+        const to = assertNumberTuple(opts?.to, 3, 'replaceColor(opts.to)');
+        to.forEach((n, i) => assertNumber(n, `replaceColor(opts.to[${i}])`, { min: 0, max: 1 }));
+        if (opts?.tolerance !== undefined) assertNumber(opts.tolerance, 'replaceColor(opts.tolerance)', { min: 0 });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const count = replaceRegionColors(opts.from, opts.to, opts.tolerance ?? 0.01);
+      if (count > 0) scheduleColorRefresh();
+      return { replaced: count };
+    },
+
+    /** Stamp an image onto the model surface as a color region — the
+     *  programmatic Image-paint tool. `imageUrl` is a `data:` URL or a
+     *  same-origin URL. `at` is the stamp centre on the surface (world coords)
+     *  and `normal` the outward face direction there — get them from probeRay /
+     *  measureAt / a face centroid. `size` is the stamp diameter in world units.
+     *  `detail` (default 96) is triangle rows across the stamp — higher = crisper
+     *  (0 = flat stamp on the existing tessellation). `removeBackground` (default
+     *  true) drops the image's background. Only forward-facing triangles inside
+     *  the footprint are painted. Returns `{ ok, name, triangles, avgColor }` or
+     *  `{ error }`. Call saveVersion() afterwards to persist. */
+    async paintImage(opts: { imageUrl: string; at: [number, number, number]; normal: [number, number, number]; size: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string }) {
+      const check = guard(() => {
+        assertObject(opts, 'paintImage(opts)');
+        assertString(opts?.imageUrl, 'paintImage(opts.imageUrl)', { allowEmpty: false });
+        assertNumberTuple(opts?.at, 3, 'paintImage(opts.at)').forEach((n, i) => assertNumber(n, `paintImage(opts.at[${i}])`, {}));
+        assertNumberTuple(opts?.normal, 3, 'paintImage(opts.normal)').forEach((n, i) => assertNumber(n, `paintImage(opts.normal[${i}])`, {}));
+        assertNumber(opts?.size, 'paintImage(opts.size)', { min: 0 });
+        if (opts.size <= 0) throw new ValidationError('paintImage(opts.size) must be greater than 0');
+        if (opts?.rotationDeg !== undefined) assertNumber(opts.rotationDeg, 'paintImage(opts.rotationDeg)', {});
+        if (opts?.detail !== undefined) assertNumber(opts.detail, 'paintImage(opts.detail)', { min: 0, integer: true });
+        if (opts?.removeBackground !== undefined) assertBoolean(opts.removeBackground, 'paintImage(opts.removeBackground)');
+        if (opts?.name !== undefined) assertString(opts.name, 'paintImage(opts.name)', { allowEmpty: false });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!currentMeshData) return { error: 'No model loaded — run code first.' };
+      let imageData: ImageData;
+      try {
+        imageData = await loadImageDataFromUrl(opts.imageUrl);
+      } catch (e) {
+        return { error: `paintImage: could not load image — ${e instanceof Error ? e.message : String(e)}` };
+      }
+      const region = stampImageProgrammatic(imageData, {
+        hitPoint: opts.at,
+        hitNormal: opts.normal,
+        size: opts.size,
+        rotationDeg: opts.rotationDeg,
+        detail: opts.detail,
+        removeBackground: opts.removeBackground,
+        name: opts.name,
+      });
+      if (!region) {
+        return { error: 'paintImage: nothing was painted — the stamp footprint was empty. Check that `at` lies on the surface and `normal` faces outward, and that `size` is large enough to cover triangles.' };
+      }
+      return { ok: true, name: region.name, triangles: region.triangles, avgColor: region.avgColor };
+    },
+
+    // --- Filament palette (the print-color slots paint regions map onto) ------
+
+    /** Read the active filament palette — the slots a multi-color model maps onto
+     *  a printer's AMS/MMU. Returns `{ id, name, capacity, constrained, slots:
+     *  [{id, name, hex, td}] }`. `td` is the slot's transmission distance (used
+     *  by the relief optical preview). Paint with palette hex values (via
+     *  hexToRgb) so a model's colors land on real, loadable filament slots. */
+    getPalette() {
+      return {
+        id: getActivePaletteId(),
+        name: getActivePaletteName(),
+        capacity: getPaletteCapacity(),
+        constrained: isPaletteConstrained(),
+        slots: listFilaments().map(f => ({ id: f.id, name: f.name, hex: f.hex, td: f.td })),
+      };
+    },
+
+    /** List all saved palettes (spool sets). Returns `[{id, name, active}]`. */
+    listPalettes() { return listPalettes(); },
+
+    /** Create a new (empty) palette and return its id. Does not switch to it —
+     *  call setActivePalette(id) to make it active. */
+    createPalette(name: string) {
+      const check = guard(() => assertString(name, 'createPalette(name)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      return { id: createPalette(name) };
+    },
+
+    /** Switch the active palette by id (from listPalettes()). */
+    setActivePalette(id: string) {
+      const check = guard(() => assertString(id, 'setActivePalette(id)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!listPalettes().some(p => p.id === id)) return { error: `No palette with id "${id}". Use listPalettes() to see valid ids.` };
+      setActivePalette(id);
+      return { ok: true };
+    },
+
+    /** Add a filament slot to the active palette. `hex` is "#rrggbb"; `td`
+     *  (transmission distance, default 1) tunes the relief preview. Returns the
+     *  new slot `{ id, name, hex, td }`. */
+    addFilament(opts: { name: string; hex: string; td?: number }) {
+      const check = guard(() => {
+        assertObject(opts, 'addFilament(opts)');
+        assertString(opts?.name, 'addFilament(opts.name)', { allowEmpty: false });
+        assertString(opts?.hex, 'addFilament(opts.hex)', { allowEmpty: false });
+        if (!/^#[0-9a-fA-F]{6}$/.test(opts.hex)) throw new ValidationError('addFilament(opts.hex) must be a "#rrggbb" hex color');
+        if (opts?.td !== undefined) assertNumber(opts.td, 'addFilament(opts.td)', { min: 0 });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const slot = addFilament({ name: opts.name, hex: opts.hex, td: opts.td ?? 1 });
+      return { id: slot.id, name: slot.name, hex: slot.hex, td: slot.td };
+    },
+
+    /** Update a filament slot's name/hex/td by id (from getPalette().slots). */
+    updateFilament(id: string, patch: { name?: string; hex?: string; td?: number }) {
+      const check = guard(() => {
+        assertString(id, 'updateFilament(id)', { allowEmpty: false });
+        assertObject(patch, 'updateFilament(patch)');
+        if (patch?.name !== undefined) assertString(patch.name, 'updateFilament(patch.name)', { allowEmpty: false });
+        if (patch?.hex !== undefined) {
+          assertString(patch.hex, 'updateFilament(patch.hex)', { allowEmpty: false });
+          if (!/^#[0-9a-fA-F]{6}$/.test(patch.hex)) throw new ValidationError('updateFilament(patch.hex) must be a "#rrggbb" hex color');
+        }
+        if (patch?.td !== undefined) assertNumber(patch.td, 'updateFilament(patch.td)', { min: 0 });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!listFilaments().some(f => f.id === id)) return { error: `No filament slot with id "${id}". Use getPalette().slots to see valid ids.` };
+      updateFilament(id, patch);
+      return { ok: true };
+    },
+
+    /** Remove a filament slot from the active palette by id. */
+    removeFilament(id: string) {
+      const check = guard(() => assertString(id, 'removeFilament(id)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!listFilaments().some(f => f.id === id)) return { error: `No filament slot with id "${id}". Use getPalette().slots to see valid ids.` };
+      removeFilament(id);
+      return { ok: true };
+    },
+
+    /** Set how many filament slots the printer can load at once (the AMS/MMU
+     *  budget). Regions beyond it are flagged over-budget in the UI. */
+    setPaletteCapacity(n: number) {
+      const check = guard(() => assertNumber(n, 'setPaletteCapacity(n)', { min: 1, integer: true }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      setPaletteCapacity(n);
+      return { ok: true, capacity: getPaletteCapacity() };
+    },
+
+    /** Toggle whether paint is constrained to the palette's slots (snap to the
+     *  nearest filament) versus free RGB. */
+    setPaletteConstrained(on: boolean) {
+      const check = guard(() => assertBoolean(on, 'setPaletteConstrained(on)'));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      setPaletteConstrained(on);
+      return { ok: true, constrained: isPaletteConstrained() };
     },
 
     /** Remove a single color region by id. Reverses one paint operation
@@ -12039,8 +12489,13 @@ async function main() {
     /** Configure the brush used by the paint/add/remove tools. `radius` is in
      *  voxels (0 = a single voxel, max 16); `shape` is 'sphere' | 'cube' |
      *  'diamond'; `spray` scatters a random subset; `sprayDensity` is 0.05..1.
+     *
+     *  The `add` tool uses a block instead of a round brush: `block` is the
+     *  [x,y,z] size in voxels (1..32 each) and `depth` (≥ 0; no upper limit) is
+     *  how far the block sinks into the clicked surface — 0 attaches it flush to the face
+     *  (so a thick block never pokes out the far side of a thin tile).
      *  Returns the resolved brush settings or `{ error }`. */
-    setVoxelBrush(opts: { radius?: number; shape?: import('./color/voxelPaint').BrushShape; spray?: boolean; sprayDensity?: number } = {}) {
+    setVoxelBrush(opts: { radius?: number; shape?: import('./color/voxelPaint').BrushShape; spray?: boolean; sprayDensity?: number; block?: [number, number, number]; depth?: number } = {}) {
       if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
       if (opts.radius !== undefined) {
         if (typeof opts.radius !== 'number' || opts.radius < 0) return { error: 'setVoxelBrush.radius must be a non-negative number' };
@@ -12056,8 +12511,23 @@ async function main() {
         if (typeof opts.sprayDensity !== 'number') return { error: 'setVoxelBrush.sprayDensity must be a number 0.05..1' };
         voxelPaint.setSprayDensity(opts.sprayDensity);
       }
+      if (opts.block !== undefined) {
+        const b = opts.block;
+        if (!Array.isArray(b) || b.length !== 3 || b.some((n) => typeof n !== 'number' || n < 1)) {
+          return { error: 'setVoxelBrush.block must be [x,y,z] with each ≥ 1' };
+        }
+        ([0, 1, 2] as const).forEach((axis) => voxelPaint.setBlockSize(axis, b[axis]));
+      }
+      if (opts.depth !== undefined) {
+        if (typeof opts.depth !== 'number' || opts.depth < 0) return { error: 'setVoxelBrush.depth must be a non-negative number' };
+        voxelPaint.setAddDepth(opts.depth);
+      }
       syncVoxelPaintUI();
-      return { radius: voxelPaint.getBrushRadius(), shape: voxelPaint.getBrushShape(), spray: voxelPaint.isSpray(), sprayDensity: voxelPaint.getSprayDensity() };
+      return {
+        radius: voxelPaint.getBrushRadius(), shape: voxelPaint.getBrushShape(),
+        spray: voxelPaint.isSpray(), sprayDensity: voxelPaint.getSprayDensity(),
+        block: voxelPaint.getBlockSize(), depth: voxelPaint.getAddDepth(),
+      };
     },
 
     /** Set the axis (0=x, 1=y, 2=z) the 'level' tool recolors. Returns `{ axis }`. */
@@ -12396,6 +12866,9 @@ async function main() {
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
         'loadVersion':     { signature: 'await loadVersion({index} | {id}) -- Load version into editor -> {id, index, label, code, geometryData} or {error}', docs: '/ai.md#console-api--windowpartwright' },
+        'renameVersion':   { signature: 'await renameVersion({index} | {id}, label) -- Relabel a version -> {ok, id, index, label} or {error}', docs: '/ai.md#console-api--windowpartwright' },
+        'deleteVersion':   { signature: 'await deleteVersion({index} | {id}) -- Delete a version (refuses the last) -> {ok, deleted, newCurrent} or {error}', docs: '/ai.md#console-api--windowpartwright' },
+        'diffVersions':    { signature: 'await diffVersions({index} | {id}, {index} | {id}) -- Compare two versions -> {a, b, codeChanged, statDiff}', docs: '/ai.md#console-api--windowpartwright' },
         'forkVersion':     { signature: 'await forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) -- Load + modify + validate + save in one call; carries parent colors -> {..., codeDiff, colors}', docs: '/ai.md#forking-a-prior-version' },
         'copyColorsFromVersion': { signature: 'await copyColorsFromVersion({index} | {id}) -- Re-apply a prior version\'s color regions onto the current mesh -> {source, carried, dropped}', docs: '/ai.md#forking-a-prior-version' },
         'openSession':     { signature: 'await openSession(id) -- Open existing session', docs: '/ai.md#resuming-a-session' },
@@ -12460,6 +12933,7 @@ async function main() {
         // AI-friendly import — bypass the file picker
         'importSessionData': { signature: 'await importSessionData(jsonObjectOrString) -- Import .partwright.json payload -> {sessionId} or {error}', docs: '/ai/file-io.md' },
         'importCodeData':  { signature: 'await importCodeData(code, language, sessionName?) -- Import raw source as new session', docs: '/ai/file-io.md' },
+        'importMeshData':  { signature: 'await importMeshData(base64, filename, {sessionName?}) -- Import STL bytes (binary/ASCII) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}', docs: '/ai/file-io.md' },
         // Recent Exports inbox (also visible in toolbar Export dropdown)
         'listRecentExports': { signature: 'listRecentExports() -- Recent export metadata, newest first', docs: '/ai/file-io.md' },
         'getRecentExport': { signature: 'await getRecentExport(id) -- Look up bytes by id -> {filename, mimeType, text? | base64, ...}', docs: '/ai/file-io.md' },
@@ -12481,6 +12955,17 @@ async function main() {
         'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai/colors.md' },
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
+        'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every region matching `from` (0..1 colors) -> {replaced}', docs: '/ai/colors.md' },
+        'paintImage':      { signature: 'await paintImage({imageUrl, at:[x,y,z], normal:[nx,ny,nz], size, rotationDeg?, detail?, removeBackground?, name?}) -- Stamp an image onto the surface as a color region -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
+        'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
+        'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
+        'createPalette':   { signature: 'createPalette(name) -- Create an empty palette -> {id} (call setActivePalette to switch)', docs: '/ai/colors.md' },
+        'setActivePalette':{ signature: 'setActivePalette(id) -- Switch active palette by id from listPalettes() -> {ok} or {error}', docs: '/ai/colors.md' },
+        'addFilament':     { signature: 'addFilament({name, hex:"#rrggbb", td?}) -- Add a slot to the active palette -> {id,name,hex,td}', docs: '/ai/colors.md' },
+        'updateFilament':  { signature: 'updateFilament(id, {name?, hex?, td?}) -- Edit a slot -> {ok} or {error}', docs: '/ai/colors.md' },
+        'removeFilament':  { signature: 'removeFilament(id) -- Remove a slot from the active palette -> {ok} or {error}', docs: '/ai/colors.md' },
+        'setPaletteCapacity': { signature: 'setPaletteCapacity(n) -- Set the AMS/MMU slot budget -> {ok, capacity}', docs: '/ai/colors.md' },
+        'setPaletteConstrained': { signature: 'setPaletteConstrained(on) -- Constrain paint to palette slots (snap) vs free RGB -> {ok, constrained}', docs: '/ai/colors.md' },
         'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai/colors.md' },
         'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai/colors.md' },
         'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai/colors.md' },
@@ -13803,90 +14288,6 @@ function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'load
       el.className += 'text-red-400';
       break;
   }
-}
-
-interface ConfirmOptions {
-  /** Optional bold title above the message. */
-  title?: string;
-  /** Label for the confirm button. Default 'Continue'. */
-  confirmLabel?: string;
-  /** Label for the cancel button. Default 'Cancel'. */
-  cancelLabel?: string;
-}
-
-/** Modal confirmation dialog with semi-transparent backdrop overlay.
- *  Message preserves newlines (single `\n` becomes a soft break, `\n\n` a
- *  paragraph break) so callers can lay out multi-line prompts cleanly.
- *  Returns a Promise that resolves true (confirm) or false (cancel / Escape / click overlay). */
-function showInlineConfirm(_container: HTMLElement, message: string, options: ConfirmOptions = {}): Promise<boolean> {
-  return new Promise((resolve) => {
-    // Remove any existing modal
-    document.querySelector('.confirm-modal-overlay')?.remove();
-
-    // Backdrop overlay
-    const overlay = document.createElement('div');
-    overlay.className = 'confirm-modal-overlay fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center';
-
-    // Modal box — wider than the default 'max-w-sm' so multi-line prompts
-    // don't reflow into long thin columns.
-    const modal = document.createElement('div');
-    modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-5 max-w-md mx-4 animate-modal-in';
-
-    if (options.title) {
-      const title = document.createElement('h2');
-      title.className = 'text-zinc-100 text-base font-semibold mb-2';
-      title.textContent = options.title;
-      modal.appendChild(title);
-    }
-
-    const msg = document.createElement('p');
-    // `whitespace-pre-line` preserves \n as line breaks while still collapsing
-    // other whitespace runs, so single-line callers behave unchanged.
-    msg.className = 'text-zinc-200 text-sm leading-relaxed mb-5 whitespace-pre-line';
-    msg.textContent = message;
-
-    const btnGroup = document.createElement('div');
-    btnGroup.className = 'flex items-center justify-end gap-2';
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'px-4 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors';
-    cancelBtn.textContent = options.cancelLabel ?? 'Cancel';
-
-    const continueBtn = document.createElement('button');
-    continueBtn.className = 'px-4 py-1.5 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors';
-    continueBtn.textContent = options.confirmLabel ?? 'Continue';
-
-    btnGroup.appendChild(cancelBtn);
-    btnGroup.appendChild(continueBtn);
-    modal.appendChild(msg);
-    modal.appendChild(btnGroup);
-    overlay.appendChild(modal);
-
-    let resolved = false;
-    function finish(result: boolean) {
-      if (resolved) return;
-      resolved = true;
-      overlay.remove();
-      document.removeEventListener('keydown', onKey);
-      resolve(result);
-    }
-
-    continueBtn.addEventListener('click', () => finish(true));
-    cancelBtn.addEventListener('click', () => finish(false));
-
-    // Click on overlay (outside modal) dismisses
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) finish(false);
-    });
-
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') finish(false);
-    }
-    document.addEventListener('keydown', onKey);
-
-    document.body.appendChild(overlay);
-    continueBtn.focus();
-  });
 }
 
 main().catch(console.error);

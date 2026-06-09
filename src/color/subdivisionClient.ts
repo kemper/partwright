@@ -101,6 +101,28 @@ function toRefinedResult(msg: RefineDone): RefinedResult {
   };
 }
 
+/** The `_painted` mask is a JS expando on the triColors `Uint8Array`, so it
+ *  doesn't survive structured-clone/transfer across the worker boundary: the
+ *  worker returns the correct colour BYTES but no mask. Reconstruct it on the
+ *  main thread from the (intact) input mesh's mask via `childToParent`, so the
+ *  worker path matches the synchronous one — e.g. a legitimately black base
+ *  triangle stays painted instead of being misread as the default material.
+ *  No-op when the input carries no mask (the renderer's nonzero-channel
+ *  fallback then governs both paths identically). */
+function reattachPaintedMask(result: RefinedResult, input: MeshData): RefinedResult {
+  const out = result.mesh.triColors as (Uint8Array & { _painted?: Uint8Array }) | undefined;
+  const srcPainted = (input.triColors as (Uint8Array & { _painted?: Uint8Array }) | undefined)?._painted;
+  if (!out || !srcPainted) return result;
+  const n = result.childToParent.length;
+  const painted = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const p = result.childToParent[i];
+    if (p >= 0) painted[i] = srcPainted[p];
+  }
+  out._painted = painted;
+  return result;
+}
+
 /** Dispatch one refine job to the worker. Rejects if a prior job is still
  *  running — callers are expected to coalesce / queue at the reconcile layer.
  *  Abort terminates the worker; the next call spins a fresh one up. */
@@ -115,7 +137,12 @@ export function refineInWorker(input: RefineJobInput): Promise<RefinedResult> {
   const id = nextJobId++;
 
   return new Promise<RefinedResult>((resolve, reject) => {
-    const job: PendingJob = { id, resolve, reject, signal: input.signal };
+    const job: PendingJob = {
+      id,
+      resolve: (result) => resolve(reattachPaintedMask(result, input.input)),
+      reject,
+      signal: input.signal,
+    };
     if (input.signal) {
       job.onAbort = () => {
         if (!inFlight || inFlight.id !== id) return;

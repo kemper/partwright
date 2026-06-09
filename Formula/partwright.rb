@@ -14,7 +14,7 @@ class Partwright < Formula
   desc "Headless CLI to drive the Partwright CAD engine + app for AI agents"
   homepage "https://www.partwrightstudio.com"
   # TODO(release): point at a tagged tarball and fill in the checksum.
-  url "https://github.com/kemper/mainifold/archive/refs/tags/v0.0.0.tar.gz"
+  url "https://github.com/kemper/partwright/archive/refs/tags/v0.0.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "LicenseRef-PolyForm-Noncommercial-1.0.0"
   version "0.0.0"

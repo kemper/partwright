@@ -145,6 +145,12 @@ export interface ChatToggles {
    *  typed). Lives in toggles (not the key record) so it serializes into
    *  the agent Worker alongside `customBaseUrl`. */
   customModel: string;
+  /** Model ids the custom endpoint advertised the last time the user hit
+   *  "Fetch models" in AI Settings. Cached here (per-tab, like the rest of
+   *  toggles) purely so the AI panel's model picker can offer a real
+   *  dropdown for the custom provider — mirroring how the cloud providers
+   *  expose a `<select>`. Empty until the user fetches. */
+  customModels: string[];
   /** Base URL of the custom OpenAI-compatible endpoint, including any
    *  version path (e.g. `http://localhost:8080/v1`). We append
    *  `/chat/completions` and `/models` to it. Empty string = not configured.

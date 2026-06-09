@@ -126,6 +126,12 @@ export function createVoiceController(opts: VoiceControllerOptions): VoiceContro
   // its own (Chrome stops after a pause even in continuous mode). While the
   // user still wants to dictate, we restart on `onend`.
   let wantListening = false;
+  // Auto-restarts since the last successful result. A persistent error (e.g.
+  // a flaky `network` code) makes onerror → onend → start() spin without ever
+  // producing speech; cap the consecutive empty restarts so the loop can't run
+  // away (and stop spamming onError). Reset on any real transcript.
+  const MAX_EMPTY_RESTARTS = 4;
+  let emptyRestarts = 0;
   // Final transcript accumulated across auto-restarts within one user session,
   // so chaining restarts doesn't drop earlier sentences.
   let committed = '';
@@ -143,6 +149,7 @@ export function createVoiceController(opts: VoiceControllerOptions): VoiceContro
       if (result.isFinal) committed += text + ' ';
       else interim += text;
     }
+    emptyRestarts = 0; // made progress — the restart loop is healthy
     emit(interim, false);
   };
 
@@ -156,15 +163,19 @@ export function createVoiceController(opts: VoiceControllerOptions): VoiceContro
   };
 
   rec.onend = () => {
-    if (wantListening) {
+    if (wantListening && emptyRestarts < MAX_EMPTY_RESTARTS) {
       // Engine ended the turn but the user still holds the mic open — restart.
       try {
         rec.start();
+        emptyRestarts++;
         return;
       } catch {
         // Fall through to the stopped state if restart throws (rare).
       }
     }
+    // Either the user stopped, or we hit the empty-restart cap (a persistent
+    // error was spinning the loop) — settle into the stopped state.
+    wantListening = false;
     listening = false;
     emit('', true);
     opts.onStateChange(false);
@@ -173,6 +184,7 @@ export function createVoiceController(opts: VoiceControllerOptions): VoiceContro
   function start(): void {
     if (listening) return;
     committed = '';
+    emptyRestarts = 0;
     wantListening = true;
     try {
       rec.start();

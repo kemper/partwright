@@ -1,4 +1,4 @@
-# Surface Texture Operations
+# Surface Texture & Mesh Operations
 
 Post-hoc operations that add surface detail to a finished model by displacing
 vertices along their normals. Six textures are available:
@@ -11,6 +11,19 @@ vertices along their normals. Six textures are available:
 | `applyWaffleStitch` | Recessed grid cells with raised borders | Waffle-knit, waffle irons, honeycomb patterns |
 | `applyFurVelvet` | Directional anisotropic pile (velvet, fur, chenille) | Animal fur, velvet fabric, soft plush surfaces |
 | `applyWovenFabric` | Plain-weave over/under interlacing | Baskets, woven cloth, twill, burlap |
+
+Two further mesh operations live in the same panel and share the same
+apply→save→verify workflow:
+
+| Operation | What it does | Notes |
+|-----------|--------------|-------|
+| `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
+| `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
+
+> **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
+> BREP/replicad model this discards the parametric source (and, for BREP, STEP
+> export) — the returned `warnings` array says so. Prefer editing the source for
+> parametric models when the change can be expressed there.
 
 ---
 
@@ -39,7 +52,7 @@ the texture (`loadVersion`) and re-applying.
 ## applyFuzzySkin
 
 ```
-applyFuzzySkin({ amplitude?, scale?, octaves?, seed?, preserveColor? })
+applyFuzzySkin({ amplitude?, scale?, octaves?, seed?, quality?, preserveColor? })
 ```
 
 Applies multi-octave value-noise (FBM) displacement along per-vertex normals.
@@ -50,6 +63,7 @@ Applies multi-octave value-noise (FBM) displacement along per-vertex normals.
 | `scale` | ~4% of diagonal | Characteristic feature size. Smaller = finer fuzz. |
 | `octaves` | 2 | Fractal layers 1–5. More = busier surface. |
 | `seed` | 1 | Different seeds → different patterns with identical params. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = smoother displacement, slower. |
 | `preserveColor` | true | Carry paint through subdivision. |
 
 **Size guidance (model diagonal `d`):**
@@ -63,7 +77,7 @@ Applies multi-octave value-noise (FBM) displacement along per-vertex normals.
 
 ```
 applyKnitTexture({ amplitude?, stitchWidth?, stitchHeight?, rowOffset?,
-                   roundness?, grainAngleDeg?, variation?, seed?, preserveColor? })
+                   roundness?, grainAngleDeg?, variation?, seed?, quality?, preserveColor? })
 ```
 
 Applies a brick-offset grid of smooth cosine bumps shaped by the V-profile of
@@ -79,6 +93,7 @@ stockinette stitch loops.
 | `grainAngleDeg` | 0 | Rotate grain in XY plane. 0 = stitches run up Z. 90 = horizontal. |
 | `variation` | 0.1 | Per-stitch amplitude jitter (0 = machine-uniform, 0.1 = handmade feel). |
 | `seed` | 1 | Deterministic seed for per-stitch variation. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = smoother displacement, slower. |
 | `preserveColor` | true | Carry paint through subdivision. |
 
 **Look guidance by `roundness`:**
@@ -92,7 +107,7 @@ stockinette stitch loops.
 
 ```
 applyCableKnit({ amplitude?, cableWidth?, cablePitch?, plyWidth?,
-                 grainAngleDeg?, variation?, seed?, preserveColor? })
+                 grainAngleDeg?, variation?, seed?, quality?, preserveColor? })
 ```
 
 Two Gaussian ply ridges cross sinusoidally within each cable column, creating
@@ -107,6 +122,7 @@ rope-like Aran/cable-knit relief.
 | `grainAngleDeg` | 0 | Rotate cable columns in the XY plane. 0 = cables run up Z. |
 | `variation` | 0.08 | Per-cable amplitude jitter. |
 | `seed` | 1 | Deterministic seed. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = smoother displacement, slower. |
 | `preserveColor` | true | Carry paint through subdivision. |
 
 **Size guidance:**
@@ -120,7 +136,7 @@ rope-like Aran/cable-knit relief.
 
 ```
 applyWaffleStitch({ amplitude?, cellWidth?, cellHeight?, sharpness?,
-                    rowOffset?, grainAngleDeg?, seed?, preserveColor? })
+                    rowOffset?, grainAngleDeg?, seed?, quality?, preserveColor? })
 ```
 
 Regular grid of recessed cells with raised border ridges. `rowOffset=0.5`
@@ -134,6 +150,7 @@ produces a honeycomb/brick variant.
 | `sharpness` | 3 | 1 = soft rounded, 3 = crisp waffle, 8+ = very thin border. |
 | `rowOffset` | 0 | 0 = straight grid; 0.5 = honeycomb offset; any value [0,1]. |
 | `grainAngleDeg` | 0 | Rotate the cell grid in the XY plane. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = smoother displacement, slower. |
 | `preserveColor` | true | Carry paint through subdivision. |
 
 **Look guidance:**
@@ -147,7 +164,7 @@ produces a honeycomb/brick variant.
 
 ```
 applyFurVelvet({ amplitude?, fiberSpacing?, fiberLength?, octaves?,
-                 grainAngleDeg?, seed?, preserveColor? })
+                 grainAngleDeg?, seed?, quality?, preserveColor? })
 ```
 
 Anisotropic FBM noise: fine sampling cross-grain (individual fiber width),
@@ -162,6 +179,7 @@ or short fur.
 | `octaves` | 2 | Fractal detail 1–4. More = finer sub-fiber variation. |
 | `grainAngleDeg` | 0 | Rotate grain direction in XY plane. 0 = fibers run up Z. |
 | `seed` | 1 | Deterministic noise seed. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = smoother displacement, slower. |
 | `preserveColor` | true | Carry paint through subdivision. |
 
 **Look guidance:**
@@ -175,7 +193,7 @@ or short fur.
 
 ```
 applyWovenFabric({ amplitude?, threadSpacing?, threadWidth?, underDepth?,
-                   grainAngleDeg?, seed?, preserveColor? })
+                   grainAngleDeg?, seed?, quality?, preserveColor? })
 ```
 
 Plain-weave interlacing: alternating warp and weft thread ridges cross at each
@@ -190,6 +208,7 @@ slightly depressed.
 | `underDepth` | 0.3 | Under-thread depression depth [0–1]. 0 = flat valleys; 1 = deep recess. |
 | `grainAngleDeg` | 0 | Rotate the weave in the XY plane. 0 = warp runs up Z. |
 | `seed` | 1 | Deterministic seed. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = smoother displacement, slower. |
 | `preserveColor` | true | Carry paint through subdivision. |
 
 **Look guidance:**

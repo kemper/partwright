@@ -17,6 +17,7 @@ import { getSessionLatestVersion, getSessionVersionCount } from '../storage/db';
 import { languageBadge } from './languageBadge';
 import { showToast } from './toast';
 import { confirmDialog, promptDialog } from './dialogs';
+import { updateAppHistory } from './appHistory';
 
 let modalEl: HTMLElement | null = null;
 let onLoadVersion: ((code: string) => void | Promise<void>) | null = null;
@@ -83,6 +84,9 @@ export async function showSessionList(): Promise<void> {
           return;
         }
         const session = await importSession(data, regenerateThumbnailFn ?? undefined, (msg) => showToast(msg, { variant: 'warn', source: 'import' }));
+        // Push the editor entry before the session-mutating open so the Back
+        // button returns to the prior session (updateURL only replaceState's).
+        updateAppHistory('/editor', 'push');
         const version = await openSession(session.id);
         if (version && onLoadVersion) onLoadVersion(version.code);
         closeModal();
@@ -111,6 +115,7 @@ export async function showSessionList(): Promise<void> {
   newBtn.addEventListener('click', async () => {
     const name = await promptDialog('Session name:', { title: 'New session', placeholder: 'Untitled' });
     if (name === null) return;
+    updateAppHistory('/editor', 'push'); // push before mutating so Back returns to the prior session
     await createSession(name || undefined);
     onNewSessionFn?.();
     closeModal();
@@ -168,6 +173,7 @@ async function createSessionRow(session: Session): Promise<HTMLElement> {
   row.className = 'flex items-center gap-3 px-5 py-3 hover:bg-zinc-700/50 cursor-pointer border-b border-zinc-700/50 transition-colors';
 
   row.addEventListener('click', async () => {
+    updateAppHistory('/editor', 'push'); // push before mutating so Back returns to the prior session
     const version = await openSession(session.id);
     if (version && onLoadVersion) {
       await onLoadVersion(version.code);

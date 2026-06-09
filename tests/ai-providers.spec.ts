@@ -495,6 +495,40 @@ test.describe('Multi-provider AI', () => {
     expect(toolIdx).toBeLessThan(userIdx);
   });
 
+  test('OpenAI (Chat Completions) keeps tool calls distinct when an OpenAI-compatible server omits tool_calls[].index', async ({ page }) => {
+    // llama.cpp/vLLM/Ollama OpenAI-compat shims frequently stream tool calls
+    // without the numeric `index`. Keying buffers on `index ?? 0` collapsed
+    // every call into bucket 0, concatenating their argument fragments into
+    // invalid JSON so all calls after the first were silently dropped. With the
+    // id-based fallback both calls must survive with correctly-parsed args.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const result = await page.evaluate(async () => {
+      const openai = await import('/src/ai/openai.ts');
+      const origFetch = window.fetch;
+      // Two distinct tool calls, each delivered whole, with NO `index` field.
+      const body = [
+        'data: {"choices":[{"delta":{"tool_calls":[{"id":"call_A","function":{"name":"renderView","arguments":"{\\"view\\":\\"front\\"}"}}]},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"id":"call_B","function":{"name":"query","arguments":"{\\"q\\":\\"volume\\"}"}}]},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+        'data: [DONE]',
+        '',
+      ].join('\n\n');
+      // @ts-expect-error test stub
+      window.fetch = async () => new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const r = await openai.streamTurn({ apiKey: 'k', model: 'gpt-4o', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+        return { ids: r.toolCalls.map(c => c.id), names: r.toolCalls.map(c => c.name), inputs: r.toolCalls.map(c => c.input) };
+      } finally {
+        window.fetch = origFetch;
+      }
+    });
+    expect(result.ids).toEqual(['call_A', 'call_B']);
+    expect(result.names).toEqual(['renderView', 'query']);
+    expect(result.inputs).toEqual([{ view: 'front' }, { q: 'volume' }]);
+  });
+
   test('Anthropic sends the thinking param with budget when enabled, omits it when off', async ({ page }) => {
     // Off must reproduce the pre-feature request exactly (no `thinking`
     // field); a non-off level enables extended thinking with budget_tokens
@@ -733,6 +767,62 @@ test.describe('Multi-provider AI', () => {
     await urlInput.fill('http://localhost:8080/v1');
     await modal.locator('input[placeholder^="e.g. llama"]').fill('my-model');
     await expect(modal.getByRole('button', { name: 'Enable Custom endpoint', exact: true })).toBeEnabled();
+  });
+
+  test('Custom tab: fetched models surface in the panel dropdown; Save & activate flushes the typed key', async ({ page }) => {
+    // Mock the OpenAI-compatible /models endpoint so "Fetch models" returns a list.
+    await page.route('**/v1/models', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ data: [{ id: 'llama-3.3-70b-instruct' }, { id: 'qwen2.5-coder-32b' }] }),
+    }));
+
+    await page.goto('/editor');
+    await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
+    await page.reload();
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
+
+    // Open settings via the panel's ⚙ button so the real onChange (which
+    // re-renders the model picker) is wired.
+    await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
+    const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Settings' });
+    await page.locator('button:has-text("Custom (OpenAI)")').dispatchEvent('click');
+
+    const urlInput = modal.locator('input[placeholder="http://localhost:8080/v1"]');
+    await urlInput.fill('http://localhost:9911/v1');
+    await urlInput.blur(); // commit the URL (its onChange fires on blur)
+
+    // Footer parity with the cloud tabs: Close + Save + Save & activate.
+    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Save & activate Custom endpoint' })).toBeEnabled();
+
+    // Fetch the endpoint's models → pills appear and a model is picked.
+    await modal.getByRole('button', { name: 'Fetch models' }).click();
+    await expect(modal.getByText('2 model(s) found.')).toBeVisible();
+    await modal.getByRole('button', { name: 'qwen2.5-coder-32b' }).click();
+
+    // Type an API key but DON'T click "Save key" — the original usability bug
+    // was that closing here silently dropped the typed key. Save & activate
+    // must flush it.
+    await modal.locator('input[placeholder="leave blank if the endpoint needs no auth"]').fill('pw-secret-token-123');
+    await page.getByRole('button', { name: 'Save & activate Custom endpoint' }).click();
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toHaveCount(0);
+
+    // The typed key was persisted to the aiKeys store despite never clicking "Save key".
+    const storedKey = await page.evaluate(async () => {
+      const db = await import('/src/ai/db.ts');
+      return (await db.getKey('custom'))?.apiKey ?? null;
+    });
+    expect(storedKey).toBe('pw-secret-token-123');
+
+    // The AI panel model picker is now a <select> populated with the fetched ids.
+    const sel = page.locator('#ai-panel select');
+    await expect(sel).toBeVisible();
+    await expect(sel).toHaveValue('qwen2.5-coder-32b');
+    const optionTexts = await sel.locator('option').allTextContents();
+    expect(optionTexts).toContain('llama-3.3-70b-instruct');
   });
 
   test('Enable is gated on a connected key, except local', async ({ page }) => {

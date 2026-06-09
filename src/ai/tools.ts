@@ -42,6 +42,18 @@ export interface ToolExecResult {
   image?: ImageSource;
 }
 
+/** The subdocs `readDoc` can fetch from /ai/<name>.md. Single source of truth
+ *  for both the readDoc tool's input-schema `enum` (what the model is allowed
+ *  to request) and the runtime `SUBDOC_NAMES` validator — keep them derived
+ *  from this so the schema can't silently omit a name the validator accepts
+ *  (which previously schema-blocked the model from 5 valid subdocs). */
+export const SUBDOC_NAMES_LIST = [
+  'curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety',
+  'print-fit', 'reference-images', 'file-io', 'annotations', 'printing',
+  'relief', 'textures', 'sculpt', 'mechanisms', 'iteration-workflow', 'gotchas',
+  'visual-verification', 'spending', 'manifold-api',
+] as const;
+
 const ALL_TOOLS: ToolDefinition[] = [
   {
     name: 'getActiveLanguage',
@@ -434,7 +446,7 @@ const ALL_TOOLS: ToolDefinition[] = [
       properties: {
         name: {
           type: 'string',
-          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'printing', 'relief', 'textures', 'sculpt', 'mechanisms'],
+          enum: [...SUBDOC_NAMES_LIST],
           description: 'Subdoc name without the .md extension.',
         },
       },
@@ -1527,6 +1539,100 @@ Only works on manifold-js models. Returns { ok, triangles } or { error }.`,
     },
   },
   {
+    name: 'smoothModel',
+    description: `Smooth/round the current model with a Taubin λ/μ pass — softens sharp edges and facets without the shrinkage a naive Laplacian causes. Saves a new version.
+
+**When to use:** to round a blocky/low-poly model or take the edge off hard corners, after the geometry is final. This is mesh smoothing, not a true fillet — for exact fillets/chamfers use the replicad (BREP) engine.
+
+**Parameters:** iterations = smoothing passes (more → rounder/softer; start ~5); subdivide = densify the mesh first for finer smoothing (default true); preserveColor = carry existing paint (default true).
+
+**Cross-engine note:** a SCAD or BREP/replicad model is baked to a manifold-js mesh by this operation — the parametric source (and STEP export for BREP) is then unavailable. Returns { ok, label, geometry, warnings? } — always check warnings.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        iterations: { type: 'integer', description: 'Number of Taubin smoothing passes. More = rounder/softer. Default ~5.', minimum: 1, maximum: 50 },
+        subdivide: { type: 'boolean', description: 'Subdivide the mesh before smoothing for finer results. Default true.' },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint regions onto the smoothed mesh. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'voxelizeModel',
+    description: `Convert the current model into the voxel engine — a grid of colored cubes (Minecraft / pixel-art look). Saves a new version and switches the session to the voxel language.
+
+**When to use:** for a deliberately blocky aesthetic, or to hand a model to the voxel-paint tools.
+
+**Parameters:** resolution = voxels along the longest axis (higher → finer and slower; start ~32); smooth = lightly round the voxel result (default false); preserveColor = sample existing paint into the voxels (default true).
+
+**Cross-engine note:** this replaces the session's code with a voxels.decode(...) program; the prior manifold-js / SCAD / BREP source is no longer editable. Returns { ok, label, geometry, warnings? }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        resolution: { type: 'integer', description: 'Voxels along the longest axis. Higher = finer and slower. Default ~32.', minimum: 4, maximum: 256 },
+        smooth: { type: 'boolean', description: 'Lightly round the voxelized result. Default false.' },
+        preserveColor: { type: 'boolean', description: 'Sample existing paint into the voxel colors. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'scaleModel',
+    description: `Resize the current model by per-axis multiplicative factors and save a new version. 1 = unchanged, 2 = double, 0.5 = half. For a uniform resize pass the same factor for sx, sy, and sz.
+
+**Cross-engine note:** a SCAD or BREP/replicad model is baked to a manifold-js mesh; a manifold-js model stays editable. Returns { ok, label, geometry, warnings? }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        sx: { type: 'number', description: 'X-axis scale factor (1 = no change).', exclusiveMinimum: 0 },
+        sy: { type: 'number', description: 'Y-axis scale factor (1 = no change).', exclusiveMinimum: 0 },
+        sz: { type: 'number', description: 'Z-axis scale factor (1 = no change).', exclusiveMinimum: 0 },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint onto the scaled mesh. Default true.' },
+      },
+      required: ['sx', 'sy', 'sz'],
+    },
+  },
+  {
+    name: 'placeModel',
+    description: `Reposition the current model on the print bed and save a new version. Combine any of dropToFloor (sit the model's bottom on Z=0), centerX, centerY, centerZ. Use this to fix a model that floats above or sinks below the bed, or to center it.
+
+**Write-back:** mode 'auto' (default) keeps the model parametric (an editable .translate) when safe, otherwise bakes to a mesh; 'parametric' forces editable code; 'bake' flattens to a mesh. A SCAD/BREP/painted model can only bake. Returns { ok, noop?, geometry, warnings? } — noop:true when already positioned.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        dropToFloor: { type: 'boolean', description: "Move the model so its lowest point sits on Z=0 (the bed)." },
+        centerX: { type: 'boolean', description: 'Center the model on the X axis.' },
+        centerY: { type: 'boolean', description: 'Center the model on the Y axis.' },
+        centerZ: { type: 'boolean', description: 'Center the model on the Z axis.' },
+        mode: { type: 'string', enum: ['auto', 'parametric', 'bake'], description: "Write-back mode. Default 'auto'." },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint when baking. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'rotateModel',
+    description: `Rotate the current model by Euler angles in degrees, about its own center, and save a new version. Same write-back modes as placeModel (auto / parametric / bake). Returns { ok, geometry, warnings? }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: 'Rotation about the X axis, in degrees.' },
+        y: { type: 'number', description: 'Rotation about the Y axis, in degrees.' },
+        z: { type: 'number', description: 'Rotation about the Z axis, in degrees.' },
+        mode: { type: 'string', enum: ['auto', 'parametric', 'bake'], description: "Write-back mode. Default 'auto'." },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint when baking. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'layFlatModel',
+    description: `Auto-orient the current model for printing: rotate its largest flat face down onto the bed and drop it to the floor. Saves a new version. Same write-back modes as placeModel. Returns { ok, geometry, warnings? }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['auto', 'parametric', 'bake'], description: "Write-back mode. Default 'auto'." },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint when baking. Default true.' },
+      },
+    },
+  },
+  {
     name: 'finish',
     description: 'Signal that the user\'s request is fully complete and you have nothing left to do. This ENDS your turn. Auto-continue is on: if you stop WITHOUT calling finish, you will be automatically resumed to keep working — so never end with a plain "all done" message; call finish instead. Call it once, only when the task is genuinely complete and verified. Optionally include a one-line summary of what you accomplished.',
     input_schema: {
@@ -1601,8 +1707,32 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
   'importSvgAsRelief',
 ]);
 
+/** Tools that are safe to auto-retry on error: pure reads/queries, idempotent
+ *  renders, and runs that don't commit (re-executing reproduces the same
+ *  transient state). The chat loop's `autoRetry` re-invokes a failed tool, so
+ *  it must NOT re-run non-idempotent mutations — `runAndSave`/`saveVersion`/
+ *  `forkVersion` (would duplicate a version), the `paint*` family (would
+ *  double-paint or stack a second region), `addSessionNote` (would append
+ *  twice), the relief imports (already confirmed once — a retry skips the
+ *  prompt), the surface modifiers (re-bake), `modifyAndTest` (a patch won't
+ *  re-match after it's applied), and the part/code mutators. Anything not in
+ *  this set runs exactly once even when the user opted into retries. */
+export const RETRY_SAFE_TOOLS = new Set([
+  // Pure reads / queries
+  'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary',
+  'getFeatureCentroids', 'getReferenceImages', 'getSessionContext', 'listVersions',
+  'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
+  'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
+  'listParts', 'getCurrentPart', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
+  'getPrinterSettings', 'getReliefSwapGuide',
+  // Idempotent renders (produce a snapshot; no persistent mutation)
+  'renderView', 'renderViews', 'runIsolated',
+  // Run-without-commit (re-running the same code reproduces the same state)
+  'runCode', 'runAndAssert', 'runAndExplain',
+]);
+
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric',
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel',
   'activateMeshSculpt', 'setSculptTool', 'setSculptBrush', 'sculptAt', 'subdivideSculptMesh', 'meshSculptUndo', 'meshSculptRedo', 'commitMeshSculpt', 'cancelMeshSculpt']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
@@ -1743,7 +1873,7 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
-const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'printing', 'relief', 'textures', 'sculpt', 'mechanisms', 'iteration-workflow', 'gotchas', 'visual-verification', 'spending', 'manifold-api']);
+const SUBDOC_NAMES = new Set<string>(SUBDOC_NAMES_LIST);
 
 /** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
  *  local providers — both run inside the user's browser tab, so this is
@@ -2123,6 +2253,18 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.applyFurVelvet(input);
     case 'applyWovenFabric':
       return api.applyWovenFabric(input);
+    case 'smoothModel':
+      return api.smoothModel(input);
+    case 'voxelizeModel':
+      return api.voxelizeModel(input);
+    case 'scaleModel':
+      return api.scaleModel(input.sx as number, input.sy as number, input.sz as number, { preserveColor: input.preserveColor as boolean | undefined });
+    case 'placeModel':
+      return api.placeModel(input);
+    case 'rotateModel':
+      return api.rotateModel(input);
+    case 'layFlatModel':
+      return api.layFlatModel(input);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

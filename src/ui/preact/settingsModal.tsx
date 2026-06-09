@@ -34,6 +34,7 @@ import {
   setOpenaiModel,
   setGeminiModel,
   setCustomModel,
+  setCustomModels,
   setCustomBaseUrl,
   providerLabel,
   AUTO_COMPACT_OPTIONS,
@@ -69,6 +70,16 @@ const TABS = [
  *  Cheaper than threading a refresh callback through 4 component layers. */
 const keyVersion = signal(0);
 function bumpKeyVersion(): void { keyVersion.value = keyVersion.value + 1; }
+
+/** The currently-mounted tab can register a flush for local, not-yet-persisted
+ *  edits — chiefly the Custom tab's typed-but-unsaved API key (whose own "Save
+ *  key" button is easy to miss). The footer's Save / Save & activate buttons,
+ *  and EnableRow's Enable, await this before acting so closing the modal no
+ *  longer silently drops a typed key. Only one tab is mounted at a time;
+ *  cleared on tab switch / unmount. */
+let pendingFlush: (() => Promise<void>) | null = null;
+function setPendingFlush(fn: (() => Promise<void>) | null): void { pendingFlush = fn; }
+async function runPendingFlush(): Promise<void> { if (pendingFlush) await pendingFlush(); }
 
 export function SettingsModalBody(props: {
   cb: AiSettingsCallbacks;
@@ -116,21 +127,32 @@ export function SettingsModalFooter(props: {
   const ready = useProviderReady(viewedTab);
   const label = providerLabel(viewedTab);
 
+  // Commit any pending edits (the Custom tab's typed-but-unsaved API key,
+  // base URL and model), optionally promote this provider to active, and
+  // close. Save persists without switching; Save & activate also switches.
+  async function commit(activate: boolean): Promise<void> {
+    await runPendingFlush();
+    if (activate) setSettings(setProvider(loadSettings(), viewedTab));
+    cb.onChange();
+    close();
+  }
+
   return (
     <>
       <SecondaryButton label="Close" onClick={close} />
+      <SecondaryButton
+        label="Save"
+        title="Save your changes and close. Doesn't switch the active provider."
+        onClick={() => { void commit(false); }}
+      />
       {!isActive && (
         <PrimaryButton
-          label={`Done & enable ${label}`}
+          label={`Save & activate ${label}`}
           disabled={!ready}
           title={ready
-            ? `Make ${label} the active provider and close. Edits above don't switch the active provider on their own.`
-            : `Finish configuring ${label} above before enabling it.`}
-          onClick={() => {
-            setSettings(setProvider(loadSettings(), viewedTab));
-            cb.onChange();
-            close();
-          }}
+            ? `Save your changes, make ${label} the active provider, and close.`
+            : `Finish configuring ${label} above before activating it.`}
+          onClick={() => { void commit(true); }}
         />
       )}
     </>
@@ -204,8 +226,11 @@ function EnableRow(props: { viewedTab: Provider; cb: AiSettingsCallbacks }) {
               ? 'Set the endpoint URL before enabling it.'
               : `Connect your ${label} key before enabling it.`}
           onClick={() => {
-            setSettings(setProvider(loadSettings(), viewedTab));
-            cb.onChange();
+            void (async () => {
+              await runPendingFlush();
+              setSettings(setProvider(loadSettings(), viewedTab));
+              cb.onChange();
+            })();
           }}
         />
       )}
@@ -558,7 +583,12 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
   // the proxy is configured with matches the one Partwright sends.
   const genKey = useSignal(generateApiKey());
   const hasKey = useSignal<boolean | null>(null);
-  const models = useSignal<{ id: string; label: string }[]>([]);
+  // Seed from the last fetched list (persisted) so reopening the modal shows
+  // the endpoint's models without a re-fetch — and so the AI panel dropdown
+  // and these pills stay in sync.
+  const models = useSignal<{ id: string; label: string }[]>(
+    settings.toggles.customModels.map(id => ({ id, label: id })),
+  );
   const status = useSignal('');
   const statusErr = useSignal(false);
   const busy = useSignal(false);
@@ -568,6 +598,20 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
     void getKey('custom').then(k => { if (!cancelled) hasKey.value = !!k; });
     return () => { cancelled = true; };
   }, [keyVersion.value]);
+
+  // Let the footer's Save / Save & activate (and EnableRow's Enable) commit
+  // the typed-but-unsaved API key + the latest URL/model before closing — the
+  // "Save key" button is easy to miss, which silently dropped the key before.
+  useEffect(() => {
+    setPendingFlush(async () => {
+      let s = setCustomBaseUrl(loadSettings(), url.value);
+      s = setCustomModel(s, model.value.trim());
+      setSettings(s);
+      if (keyVal.value.trim()) await saveKey();
+      cb.onChange();
+    });
+    return () => setPendingFlush(null);
+  }, []);
 
   // Effective key for test/fetch: the just-typed value wins, else the stored one.
   async function effectiveKey(): Promise<string> {
@@ -597,6 +641,10 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
     try {
       const list = await listCustomModels(url.value, await effectiveKey());
       models.value = list;
+      // Persist the ids so the AI panel's model picker can offer them as a
+      // dropdown, the way the cloud providers do.
+      setSettings(setCustomModels(loadSettings(), list.map(m => m.id)));
+      cb.onChange();
       statusErr.value = false;
       status.value = list.length ? `${list.length} model(s) found.` : 'Endpoint reported no models.';
       // Auto-select when the server serves exactly one and nothing's chosen.

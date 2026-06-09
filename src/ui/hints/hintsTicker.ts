@@ -39,6 +39,10 @@ let configUnsub: (() => void) | null = null;
 let sessionUnsub: (() => void) | null = null;
 let resizeObs: ResizeObserver | null = null;
 let desktopMqCleanup: (() => void) | null = null;
+/** Re-evaluate single-vs-two-row layout for the current width + hint text.
+ *  Set while a strip is mounted (closure over its elements), cleared on
+ *  teardown. Called on resize, breakpoint change, and each text rotation. */
+let relayoutFn: (() => void) | null = null;
 /** Last session id seen, so we only restore hints on a real session transition
  *  (new / opened / switched session) — not on intra-session changes like
  *  version navigation, which also fire 'session-changed'. */
@@ -136,6 +140,9 @@ function showCurrent(): void {
   ctaEl.textContent = hint.ctaLabel ?? DEFAULT_CTA_LABEL;
   ctaEl.onclick = () => runCta(hint.cta);
   markSeen(hint.id);
+  // A longer/shorter hint can change whether everything still fits on one line,
+  // so re-pick the single-vs-two-row layout for the new text.
+  relayoutFn?.();
 }
 
 function advance(delta: number): void {
@@ -167,6 +174,7 @@ function teardownStrip(): void {
   strip = null;
   textEl = null;
   ctaEl = null;
+  relayoutFn = null;
 }
 
 /** Render the strip into the host (idempotent — rebuilds in place). */
@@ -177,17 +185,24 @@ function renderStrip(): void {
   order = buildOrder();
   idx = 0;
 
-  // Centered, self-contained pill in the toolbar's middle: a subtle bordered
-  // box holding the icon, "Did you know?" label, the rotating hint, its CTA, and
-  // the ‹ › ✕ controls — all one section, distinct from the toolbar's button
-  // clusters. The host centers it (justify-center) and stays flex-1 so it also
+  // Centered, self-contained card in the toolbar's middle: a subtle bordered
+  // box. It adapts between two arrangements (see relayout below):
+  //   • single row (default, when there's room) — icon, "Did you know?", hint
+  //     text, CTA, and the ‹ › ✕ controls all inline, as before this feature;
+  //   • two rows (when horizontal space is tight) — a compact header (icon +
+  //     label + CTA, controls right-aligned) with the hint text on its own line
+  //     beneath, so the text never competes with the header for width.
+  // The host centers it (justify-center) and stays flex-1 so it also
   // right-aligns the AI/Import/Export cluster.
-  strip = document.createElement('div');
-  strip.id = 'editor-hints';
-  strip.setAttribute('role', 'note');
-  strip.setAttribute('aria-label', 'Did you know');
-  strip.className =
-    'min-w-0 max-w-full inline-flex items-center gap-2 pl-2.5 pr-1.5 py-1 rounded-md bg-zinc-800/60 border border-zinc-700/70 text-xs text-zinc-400';
+  const stripEl = document.createElement('div');
+  strip = stripEl;
+  stripEl.id = 'editor-hints';
+  stripEl.setAttribute('role', 'note');
+  stripEl.setAttribute('aria-label', 'Did you know');
+
+  // The header-row wrapper used only in the two-row arrangement.
+  const topRow = document.createElement('div');
+  topRow.className = 'flex items-center gap-2';
 
   const icon = document.createElement('span');
   icon.className = 'shrink-0 text-amber-300 flex items-center';
@@ -198,64 +213,111 @@ function renderStrip(): void {
   badge.className = 'shrink-0 text-zinc-500 select-none';
   badge.textContent = 'Did you know?';
 
-  textEl = document.createElement('span');
-  textEl.id = 'editor-hints-text';
-  // Wrap onto multiple lines when horizontal room is tight (e.g. the AI panel
-  // is open) instead of truncating to a single ellipsised line — the strip
-  // grows vertically and the toolbar row grows with it. A long hint still fits
-  // on one line when there's room; line-clamp-3 caps the growth at three lines
-  // so a very long hint on a very narrow strip can't balloon the toolbar.
-  textEl.className = 'min-w-0 text-zinc-300 break-words line-clamp-3';
-
-  ctaEl = document.createElement('button');
-  ctaEl.type = 'button';
-  ctaEl.className = 'shrink-0 text-blue-400 hover:text-blue-300 hover:underline font-medium transition-colors';
+  const ctaBtn = document.createElement('button');
+  ctaEl = ctaBtn;
+  ctaBtn.type = 'button';
+  ctaBtn.className = 'shrink-0 text-blue-400 hover:text-blue-300 hover:underline font-medium transition-colors';
 
   // ‹ › step + ✕ dismiss, kept inside the section, set off by a thin divider so
   // they read as the hints' own controls.
   const controls = document.createElement('div');
-  controls.className = 'shrink-0 flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-zinc-700/70 text-zinc-500';
 
   const prevBtn = makeIconBtn('‹', 'Previous hint', () => advance(-1));
   const nextBtn = makeIconBtn('›', 'Next hint', () => advance(1));
   const closeBtn = makeIconBtn('✕', 'Hide hints for this session', dismissForSession);
-
   controls.append(prevBtn, nextBtn, closeBtn);
-  strip.append(icon, badge, textEl, ctaEl, controls);
-  host.appendChild(strip);
+
+  const textSpan = document.createElement('span');
+  textEl = textSpan;
+  textSpan.id = 'editor-hints-text';
+
+  host.appendChild(stripEl);
+
+  // ── single-vs-two-row layout ──────────────────────────────────────────────
+  const STRIP_BASE =
+    'min-w-0 max-w-full pl-2.5 pr-1.5 py-1 rounded-md bg-zinc-800/60 border border-zinc-700/70 text-xs text-zinc-400';
+  let layoutMode: 'single' | 'two' | null = null;
+
+  /** Reparent + restyle into the requested arrangement (no-op if unchanged). */
+  const setLayout = (mode: 'single' | 'two'): void => {
+    if (layoutMode === mode) return;
+    layoutMode = mode;
+    if (mode === 'single') {
+      stripEl.className = `${STRIP_BASE} flex flex-row items-center gap-2`;
+      // One line, no wrap: if the text won't fit, relayout() switches to 'two'
+      // rather than letting it wrap inside the single row.
+      textSpan.className = 'min-w-0 text-zinc-300 whitespace-nowrap';
+      controls.className =
+        'shrink-0 flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-zinc-700/70 text-zinc-500';
+      stripEl.replaceChildren(icon, badge, textSpan, ctaBtn, controls);
+    } else {
+      stripEl.className = `${STRIP_BASE} flex flex-col gap-0.5`;
+      // On its own line the text may wrap; line-clamp-3 caps the growth so a
+      // very long hint on a narrow card can't balloon the toolbar.
+      textSpan.className = 'min-w-0 text-zinc-300 break-words line-clamp-3';
+      controls.className =
+        'shrink-0 flex items-center gap-0.5 ml-auto pl-1.5 border-l border-zinc-700/70 text-zinc-500';
+      topRow.replaceChildren(icon, badge, ctaBtn, controls);
+      stripEl.replaceChildren(topRow, textSpan);
+    }
+  };
+
+  /** Intrinsic width the single-row arrangement needs, measured off-flow so the
+   *  flex parent can't shrink it. Assumes single-row structure is applied. */
+  const measureSingleNeeded = (): number => {
+    const s = stripEl.style;
+    const saved = { position: s.position, width: s.width, maxWidth: s.maxWidth, visibility: s.visibility };
+    s.position = 'absolute';
+    s.visibility = 'hidden';
+    s.maxWidth = 'none';
+    s.width = 'max-content';
+    const needed = stripEl.offsetWidth;
+    s.position = saved.position;
+    s.width = saved.width;
+    s.maxWidth = saved.maxWidth;
+    s.visibility = saved.visibility;
+    return needed;
+  };
 
   // Degrade gracefully as the toolbar's middle shrinks (e.g. the AI panel opens
   // or on a narrow screen). On mobile the toolbar already wraps and is cramped,
-  // so the discovery strip isn't worth the space — hide it outright below the
-  // md (768px) breakpoint. On desktop, drop the "💡 Did you know?" badge first
-  // as room tightens, let the hint text wrap to multiple lines (see textEl
-  // above), and finally hide the whole strip when there's genuinely no room —
-  // so it never overflows into the adjacent toolbar buttons. The host stays
-  // flex-1, so it keeps right-aligning the AI/Import/Export cluster even when
-  // the strip is hidden.
+  // so the discovery card isn't worth the space — hide it outright below the md
+  // (768px) breakpoint. On desktop: drop the "Did you know?" badge as room
+  // tightens, prefer the single-row arrangement while it fits, fall back to two
+  // rows when it doesn't, and finally hide the whole card when there's genuinely
+  // no room — so it never overflows into the adjacent toolbar buttons. The host
+  // stays flex-1, so it keeps right-aligning the AI/Import/Export cluster even
+  // when the card is hidden.
   const desktopMq = window.matchMedia('(min-width: 768px)');
-  const applyWidth = () => {
+  const relayout = (): void => {
     if (!strip) return;
     const w = host!.clientWidth;
-    strip.style.display = desktopMq.matches && w >= 200 ? '' : 'none';
+    const visible = desktopMq.matches && w >= 200;
+    stripEl.style.display = visible ? '' : 'none';
+    if (!visible) return;
     badge.style.display = w >= 360 ? '' : 'none';
+    // Try single row first; measure its intrinsic width and fall back to two
+    // rows only when it would overflow the available width.
+    setLayout('single');
+    if (measureSingleNeeded() > w) setLayout('two');
   };
+  relayoutFn = relayout;
+
   resizeObs?.disconnect();
-  resizeObs = new ResizeObserver(applyWidth);
+  resizeObs = new ResizeObserver(relayout);
   resizeObs.observe(host);
   // Re-evaluate on breakpoint crossings: resizing the window across 768px may
   // not shift the host's own width enough to trip the ResizeObserver.
-  desktopMq.addEventListener('change', applyWidth);
-  desktopMqCleanup = () => desktopMq.removeEventListener('change', applyWidth);
-  applyWidth();
+  desktopMq.addEventListener('change', relayout);
+  desktopMqCleanup = () => desktopMq.removeEventListener('change', relayout);
 
   // Pause rotation while the user is reading (hover) or interacting (focus).
-  strip.addEventListener('pointerenter', () => { paused = true; });
-  strip.addEventListener('pointerleave', () => { paused = false; });
-  strip.addEventListener('focusin', () => { paused = true; });
-  strip.addEventListener('focusout', () => { paused = false; });
+  stripEl.addEventListener('pointerenter', () => { paused = true; });
+  stripEl.addEventListener('pointerleave', () => { paused = false; });
+  stripEl.addEventListener('focusin', () => { paused = true; });
+  stripEl.addEventListener('focusout', () => { paused = false; });
 
-  showCurrent();
+  showCurrent();   // sets the text, then triggers relayout() via relayoutFn
   scheduleRotate();
 }
 

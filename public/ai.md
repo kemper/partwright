@@ -149,6 +149,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
 | `annotations` | When the user has marked up the model with the Annotate tool (or you need to write annotations programmatically). |
 | `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
+| `textures` | Before adding fabric/knit surface detail with `applyFuzzySkin` / `applyKnitTexture` / `applyCableKnit` / `applyWaffleStitch` / `applyFurVelvet` / `applyWovenFabric` — normal-displaced textures (knit, cable, waffle, fur/velvet, woven, fuzzy skin), their parameters, and the paint-ordering rules. |
 | `sculpt` | Before interactively reshaping a manifold-js mesh like clay — local push / pull / smooth with a brush (`activateMeshSculpt`, `sculptAt`, `commitMeshSculpt`). Distinct from procedural surface textures and from voxel editing. |
 | `iteration-workflow` | Before calling `runAndSave`, `forkVersion`, `modifyAndTest`, `createSessionWithVersions`, or managing session notes — the full versioning and iteration workflow. |
 | `gotchas` | When something looks wrong — boolean overlap requirements, disconnected components, `paintRegion` on smooth surfaces, `probeRay` normals, `rotate` direction, re-running invalidating painted colors. |
@@ -254,6 +255,7 @@ await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeByt
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
 await partwright.importCodeData(code, language, name?) // -> {sessionId}
+await partwright.importMeshData(base64, filename, {sessionName?}) // Import STL bytes (binary/ASCII; bare base64 or data: URL) as a new session -> {sessionId, isManifold, triangleCount, vertexCount} or {error}. isManifold:false = render-only (no booleans/paint/slicing).
 partwright.listRecentExports()                         // Recent Exports inbox
 await partwright.getRecentExport(id)
 partwright.downloadRecentExport(id)
@@ -306,6 +308,9 @@ await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch c
 await partwright.saveVersion(label?)     // Save current state as version
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
+await partwright.renameVersion({index} | {id}, label) // Relabel a version (index is immutable) -> {ok, id, index, label} or {error}
+await partwright.deleteVersion({index} | {id})  // Delete a version (refuses the last one; re-renders the replacement if the active one was deleted) -> {ok, deleted, newCurrent} or {error}
+await partwright.diffVersions({index} | {id}, {index} | {id}) // Compare two versions -> {a, b, codeChanged, statDiff} (each side carries its code); the programmatic Diff tab
 await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
 await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
 await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); external/console agents hand this to the user — in-app users click the toolbar Share (↗) button instead
@@ -353,6 +358,13 @@ partwright.listRegions() / listComponents() / listLabels()                // inv
 partwright.undoLastPaint() / redoLastPaint()                              // single-op undo
 partwright.removeRegion(id) / setRegionVisibility(id, visible)            // per-region edits
 partwright.hideRegion(id) / showRegion(id) / clearColors()
+partwright.replaceColor({from:[r,g,b], to:[r,g,b], tolerance?})           // bulk-recolor matching regions (0..1 colors) -> {replaced}
+await partwright.paintImage({imageUrl, at:[x,y,z], normal:[nx,ny,nz], size, rotationDeg?, detail?, removeBackground?, name?}) // stamp an image onto the surface as a region -> {ok, name, triangles, avgColor}; get at/normal from probeRay; see /ai/colors.md
+// Filament palette — the print slots (AMS/MMU) regions map onto; see /ai/colors.md
+partwright.getPalette()                                                   // -> {id, name, capacity, constrained, slots:[{id,name,hex,td}]}
+partwright.listPalettes() / setActivePalette(id) / createPalette(name)
+partwright.addFilament({name, hex, td?}) / updateFilament(id, patch) / removeFilament(id)
+partwright.setPaletteCapacity(n) / setPaletteConstrained(on)
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
 partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024) // UI smooth-brush config (detail = radius ÷ divisor)

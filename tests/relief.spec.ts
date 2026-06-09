@@ -81,7 +81,8 @@ test.describe('Relief Studio', () => {
       const created = await pw.importImageAsRelief({
         src,
         mode: 'quantized',
-        options: { resolution: 32, quantized: { output: 'relief', clusters: 2 } },
+        options: { resolution: 32 },
+        quantized: { output: 'relief', clusters: 2 },
       }) as { sessionId?: string; error?: string };
       const geo = pw.getGeometryData() as {
         isManifold?: boolean;
@@ -242,6 +243,46 @@ test.describe('Relief Studio', () => {
     expect(res.count).toBeGreaterThanOrEqual(3);
     expect(res.minLum).toBeLessThan(0.2);   // a near-black cluster (eyes/mouth) survived
     expect(res.maxLum).toBeGreaterThan(0.8); // a near-white cluster (background) survived
+  });
+
+  // Regression: "constrain to filament palette" (fixedPalette) must reach the
+  // COMMITTED model, not just the preview. The create path runs options through
+  // clampReliefQuantized before generateRelief; that clamp used to drop
+  // fixedPalette, so the generated tile kept its k-means colours.
+  test('fixedPalette snaps the committed model to the given colours', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const res = await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 120; c.height = 120;
+      const x = c.getContext('2d')!;
+      // Three distinct source colours, none of which is a palette member.
+      x.fillStyle = '#d83a2a'; x.fillRect(0, 0, 40, 120);
+      x.fillStyle = '#2ad84a'; x.fillRect(40, 0, 40, 120);
+      x.fillStyle = '#2a4ad8'; x.fillRect(80, 0, 40, 120);
+      const src = c.toDataURL('image/png');
+
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      // Snap to a 2-colour palette: pure black + pure white.
+      const created = await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { resolution: 60 },
+        quantized: { fixedPalette: [[0, 0, 0], [255, 255, 255]] },
+      }) as { sessionId?: string; error?: string };
+      const regions = pw.listRegions() as Array<{ color: [number, number, number] }>;
+      // Every region colour must be one of the two palette members (0..1 RGB).
+      const onPalette = regions.every(r => {
+        const isBlack = r.color.every(v => v < 0.02);
+        const isWhite = r.color.every(v => v > 0.98);
+        return isBlack || isWhite;
+      });
+      return { created, count: regions.length, onPalette };
+    });
+
+    expect(res.created.error).toBeFalsy();
+    expect(res.count).toBeGreaterThan(0);
+    expect(res.onPalette).toBe(true);
   });
 
   // The new "flat tile" output is the default for color-quantized — colours

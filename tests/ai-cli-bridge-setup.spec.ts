@@ -27,13 +27,15 @@ test.describe('AI CLI bridge setup', () => {
     await expect(page.getByText('Set an API key (required)')).toBeVisible();
     await expect(page.getByText('Log in with your subscription')).toBeVisible();
 
-    // Footer shows Close, and a disabled "Done & enable" until the endpoint is set.
+    // Footer shows Close, Save, and a disabled "Save & activate" until the
+    // endpoint is set.
     await expect(page.getByRole('button', { name: 'Close' })).toBeVisible();
-    const enableBtn = page.getByRole('button', { name: 'Done & enable Custom endpoint' });
+    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
+    const enableBtn = page.getByRole('button', { name: 'Save & activate Custom endpoint' });
     await expect(enableBtn).toBeDisabled();
 
     // The Base URL starts empty; clicking "Use this endpoint" fills it and,
-    // in turn, enables the footer's "Done & enable".
+    // in turn, enables the footer's "Save & activate".
     const baseUrl = page.locator('input[placeholder="http://localhost:8080/v1"]');
     await expect(baseUrl).toHaveValue('');
     await page.getByRole('button', { name: /Use this endpoint/ }).click();

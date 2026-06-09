@@ -1,12 +1,23 @@
 import type { MeshData } from '../geometry/types';
 import { downloadBlob, getExportFilename, getExportTitle } from './download';
-import { assertFiniteMesh } from './meshClean';
+import { assertFiniteMesh, assertExportableMesh, cleanMeshForExport } from './meshClean';
 import type { BuiltExport } from './gltf';
 
 /** Build the binary STL blob for a mesh without triggering a download. */
 export function buildSTL(meshData: MeshData, customName?: string): BuiltExport {
   assertFiniteMesh(meshData);
-  const { vertProperties, triVerts, numTri, numProp } = meshData;
+  const { numProp } = meshData;
+
+  // Drop degenerate (zero-area) triangles before writing, consistent with the
+  // OBJ and 3MF exporters — a collapsed triangle yields a zero-length normal
+  // and trips slicer "non-manifold edge" warnings. cleanMeshForExport also
+  // merges duplicate vertices, but STL is unindexed so we only consume
+  // `validTris` (the non-degenerate triangle indices) and read the original
+  // vertex positions.
+  const { validTris } = cleanMeshForExport(meshData);
+  assertExportableMesh(validTris);
+  const { vertProperties, triVerts } = meshData;
+  const numTri = validTris.length;
 
   // Binary STL format
   const headerSize = 80;
@@ -41,9 +52,10 @@ export function buildSTL(meshData: MeshData, customName?: string): BuiltExport {
 
   let offset = 84;
   for (let t = 0; t < numTri; t++) {
-    const i0 = triVerts[t * 3];
-    const i1 = triVerts[t * 3 + 1];
-    const i2 = triVerts[t * 3 + 2];
+    const origT = validTris[t];
+    const i0 = triVerts[origT * 3];
+    const i1 = triVerts[origT * 3 + 1];
+    const i2 = triVerts[origT * 3 + 2];
 
     const v0x = vertProperties[i0 * numProp];
     const v0y = vertProperties[i0 * numProp + 1];

@@ -30,7 +30,10 @@ import {
   canRedoRegion,
   redoLastRegion,
 } from './regions';
-import { getCurrentMesh as getPaintMesh } from './paintMode';
+// Read the current mesh through the paintAccessors leaf (published by paintMode)
+// rather than importing paintMode directly — same one-way dependency the drag
+// tools (boxDrag/slabDrag) use, so this stays a leaf read, not a back-edge.
+import { getCurrentMesh as getPaintMesh } from './paintAccessors';
 import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { viewportToolsMount } from '../ui/popoverMenu';
@@ -176,6 +179,7 @@ function toggleImagePaint(): void {
   } else {
     // Close conflicting modes
     deactivateMode('paint');
+    deactivateMode('voxelStudio');
     closeSimplifyMenu();
     closeAnnotate();
     closeAnnotateText();
@@ -349,55 +353,86 @@ function updatePreviewLines(
 
 function executeStamp(hitPoint: [number, number, number], hitNormal: [number, number, number]): void {
   if (!pickedImageData) return;
-
-  const stampOpts: StampImageOptions = {
+  const maxEdge = stampDetail > 0 ? stampSize / stampDetail : 0;
+  runStamp({
+    imageData: pickedImageData,
     hitPoint,
     hitNormal,
     size: stampSize,
     rotationDeg: stampRotation,
-    preprocess: { ...opts.preprocess },
+    smooth: stampSmooth && maxEdge > 0,
+    maxEdge,
     removeBackground: opts.removeBackground,
-    manualBgColor: opts.manualBgColor ? [...opts.manualBgColor] as [number, number, number] : undefined,
+    manualBgColor: opts.manualBgColor,
+    preprocess: opts.preprocess,
+  });
+}
+
+interface StampRun {
+  imageData: ImageData;
+  hitPoint: [number, number, number];
+  hitNormal: [number, number, number];
+  size: number;
+  rotationDeg: number;
+  /** Subdivide the stamp footprint for crisp detail (uses the smooth callback). */
+  smooth: boolean;
+  /** Target triangle edge length when smoothing (stampSize / detail-rows). */
+  maxEdge: number;
+  removeBackground: boolean;
+  manualBgColor?: [number, number, number];
+  preprocess: PreprocessOptions;
+  name?: string;
+}
+
+/** Shared stamp core: compute the per-triangle colours (smooth-subdivided when
+ *  asked, else flat on the current mesh) and commit them as an `imagePaint`
+ *  region. Used by both the click-driven UI (executeStamp) and the programmatic
+ *  `stampImageProgrammatic` API. Returns the committed region summary, or null
+ *  when nothing was painted (empty footprint / no mesh). */
+function runStamp(r: StampRun): { name: string; triangles: number; avgColor: [number, number, number] } | null {
+  const stampOpts: StampImageOptions = {
+    hitPoint: r.hitPoint,
+    hitNormal: r.hitNormal,
+    size: r.size,
+    rotationDeg: r.rotationDeg,
+    preprocess: { ...r.preprocess },
+    removeBackground: r.removeBackground,
+    manualBgColor: r.manualBgColor ? [...r.manualBgColor] as [number, number, number] : undefined,
     bgTolerance: 36 * 36 * 3,
   };
 
   let result: ImagePaintResult;
-
-  // Convert the size-independent Detail level (triangle rows across the stamp)
-  // into an absolute target edge length for the subdivision. Stored on the
-  // descriptor so a reloaded session reproduces the same tessellation regardless
-  // of how the slider is later expressed.
-  const maxEdge = stampDetail > 0 ? stampSize / stampDetail : 0;
-
-  if (stampSmooth && maxEdge > 0 && smoothStampCb) {
+  const useSmooth = r.smooth && r.maxEdge > 0 && !!smoothStampCb;
+  if (useSmooth) {
     // Smooth mode: callback subdivides the stamp footprint to maxEdge (confined
     // to the stamp square), then stamps on the fine mesh — giving crisp detail.
-    const refined = smoothStampCb(pickedImageData, stampOpts, maxEdge);
-    if (!refined || refined.result.entries.length === 0) return;
+    const refined = smoothStampCb!(r.imageData, stampOpts, r.maxEdge);
+    if (!refined || refined.result.entries.length === 0) return null;
     result = refined.result;
   } else {
     const mesh = getPaintMesh();
-    if (!mesh) return;
-    result = stampImageOntoMesh(mesh, pickedImageData, stampOpts);
-    if (result.entries.length === 0) return;
+    if (!mesh) return null;
+    result = stampImageOntoMesh(mesh, r.imageData, stampOpts);
+    if (result.entries.length === 0) return null;
   }
 
   stampCounter++;
+  const name = r.name ?? `Stamp ${stampCounter}`;
   const triangles = new Set(result.perTriColors.keys());
   const commit = () => addRegion(
-    `Stamp ${stampCounter}`,
+    name,
     result.avgColor,
     'imagePaint',
     {
       kind: 'imagePaint',
-      entries: stampSmooth ? [] : result.entries,
+      entries: useSmooth ? [] : result.entries,
       avgColor: result.avgColor,
-      ...(stampSmooth ? {
-        smooth: true, maxEdge,
-        hitPoint, hitNormal, stampSize, rotationDeg: stampRotation,
-        imageDataUrl: compactImageDataUrl(pickedImageData!),
-        removeBackground: opts.removeBackground,
-        ...(opts.manualBgColor ? { manualBgColor: opts.manualBgColor } : {}),
+      ...(useSmooth ? {
+        smooth: true, maxEdge: r.maxEdge,
+        hitPoint: r.hitPoint, hitNormal: r.hitNormal, stampSize: r.size, rotationDeg: r.rotationDeg,
+        imageDataUrl: compactImageDataUrl(r.imageData),
+        removeBackground: r.removeBackground,
+        ...(r.manualBgColor ? { manualBgColor: r.manualBgColor } : {}),
         bgTolerance: 36 * 36 * 3,
       } : {}),
     },
@@ -410,6 +445,51 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
   // so adding the stamp can't trigger a mesh rebuild that drops it or existing paint.
   if (stampCommitHook) stampCommitHook(commit);
   else commit();
+  return { name, triangles: triangles.size, avgColor: result.avgColor };
+}
+
+export interface ProgrammaticStampParams {
+  /** Stamp centre on the surface (world coords). */
+  hitPoint: [number, number, number];
+  /** Outward face direction at the stamp centre. */
+  hitNormal: [number, number, number];
+  /** Stamp diameter in world units. */
+  size: number;
+  rotationDeg?: number;
+  /** Triangle rows across the stamp; >0 subdivides for crisp detail (default
+   *  96, matching the UI). 0 = flat stamp on the existing tessellation. */
+  detail?: number;
+  removeBackground?: boolean;
+  manualBgColor?: [number, number, number];
+  preprocess?: PreprocessOptions;
+  /** Region label; defaults to "Stamp N". */
+  name?: string;
+}
+
+/** Stamp `imageData` onto the current mesh programmatically — the engine behind
+ *  the Image-paint tool, exposed so `window.partwright.paintImage` can drive it
+ *  without a click. Mirrors the UI's executeStamp but takes explicit params
+ *  instead of panel state. Returns the committed region summary or null. */
+export function stampImageProgrammatic(
+  imageData: ImageData,
+  params: ProgrammaticStampParams,
+): { name: string; triangles: number; avgColor: [number, number, number] } | null {
+  const size = params.size;
+  const detail = params.detail ?? 96;
+  const maxEdge = detail > 0 ? size / detail : 0;
+  return runStamp({
+    imageData,
+    hitPoint: params.hitPoint,
+    hitNormal: params.hitNormal,
+    size,
+    rotationDeg: params.rotationDeg ?? 0,
+    smooth: maxEdge > 0,
+    maxEdge,
+    removeBackground: params.removeBackground ?? true,
+    manualBgColor: params.manualBgColor,
+    preprocess: params.preprocess ?? defaultPreprocess(),
+    name: params.name,
+  });
 }
 
 // ─── Panel construction ───────────────────────────────────────────────────────

@@ -25,7 +25,7 @@ const FALLBACK: BuildInfo = {
   commit: 'unknown',
   branch: 'unknown',
   buildTime: 'unknown',
-  repo: 'kemper/mainifold',
+  repo: 'kemper/partwright',
   dirty: false,
 };
 

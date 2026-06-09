@@ -390,6 +390,32 @@ export function rgbToHex([r, g, b]: [number, number, number]): string {
   return `#${c(r)}${c(g)}${c(b)}`;
 }
 
+/** The active palette's slot colours as 0–255 RGB triples, in slot order.
+ *  Shared by the image-import flows ("constrain colours to palette"), which snap
+ *  each pixel/cell to the nearest of these. */
+export function listSlotRgb255(): [number, number, number][] {
+  return load().map(f => {
+    const [r, g, b] = hexToRgb(f.hex);
+    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+  });
+}
+
+/** The active-palette slot nearest to an RGB (0–1) colour by Euclidean distance,
+ *  or null if the palette is empty. Used to snap interactive painting onto the
+ *  palette when constrain mode is on (see `setColor` enforcement in paintMode). */
+export function nearestSlot(rgb: readonly [number, number, number]): Filament | null {
+  const slots = load();
+  if (slots.length === 0) return null;
+  let best = slots[0];
+  let bestD = Infinity;
+  for (const s of slots) {
+    const [r, g, b] = hexToRgb(s.hex);
+    const d = (r - rgb[0]) ** 2 + (g - rgb[1]) ** 2 + (b - rgb[2]) ** 2;
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  return best;
+}
+
 /** @internal Reset the in-memory cache so tests can re-read storage. */
 export function __resetPaletteCacheForTests(): void {
   collectionsMem = null;

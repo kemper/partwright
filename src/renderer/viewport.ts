@@ -790,6 +790,28 @@ export function isPointerOverModel(event: { clientX: number; clientY: number }):
   return raycasterForHit.intersectObject(solid).length > 0;
 }
 
+const boundsForHit = new THREE.Box3();
+
+/** Like {@link isPointerOverModel}, but tests the model's axis-aligned bounding
+ *  box instead of its surface. The Voxel Studio uses this to veto OrbitControls
+ *  while editing: the delete tool carves holes straight through the mesh, so a
+ *  surface-only test lets a click that lands in a just-made hole fall through
+ *  and rotate the camera mid-edit. Testing the bounds keeps any click within the
+ *  model's footprint as edit-intent (never rotates), while a drag that starts
+ *  clearly outside the model still orbits. */
+export function isPointerWithinModelBounds(event: { clientX: number; clientY: number }): boolean {
+  if (!meshGroup || meshGroup.children.length === 0) return false;
+  const solid = meshGroup.children[0];
+  if (!(solid instanceof THREE.Mesh)) return false;
+  const rect = renderer.domElement.getBoundingClientRect();
+  ndcForHit.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  ndcForHit.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycasterForHit.setFromCamera(ndcForHit, camera);
+  boundsForHit.setFromObject(solid);
+  if (boundsForHit.isEmpty()) return false;
+  return raycasterForHit.ray.intersectsBox(boundsForHit);
+}
+
 function isVerticallyScrollable(el: HTMLElement): boolean {
   const style = getComputedStyle(el);
   const overflowY = style.overflowY;

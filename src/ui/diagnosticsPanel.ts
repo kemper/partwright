@@ -10,6 +10,7 @@
 // arrive.
 
 import { errorLog, type LogEntry, type ErrorLevel } from '../diagnostics/errorLog';
+import { showToast } from './toast';
 import {
   getWorkerHealth,
   getWorkerRuns,
@@ -419,6 +420,8 @@ function buildPanel(): HTMLElement {
     void navigator.clipboard.writeText(text).then(() => {
       copyBtn.textContent = 'Copied!';
       setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+    }).catch(() => {
+      showToast("Couldn't copy to clipboard", { variant: 'warn' });
     });
   });
   lSub.appendChild(copyBtn);
