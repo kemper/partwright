@@ -8,6 +8,8 @@ import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
 import { createSdfNamespace, SdfNode } from '../sdf';
 import { createPrintFitNamespace } from '../printFit';
+import { createGearsNamespace } from '../gears';
+import { createThreadsNamespace } from '../threads';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import type { RegionDescriptor } from '../../color/regions';
@@ -48,6 +50,10 @@ let curvesNamespace: any = null;
 let meshOpsNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let printFitNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let gearsNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let threadsNamespace: any = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getManifoldModule(): any {
@@ -115,6 +121,8 @@ export const manifoldJsEngine: Engine = {
     // Print-Fit shares the Curves text helper so its calibration coupon can
     // emboss values; Curves is constructed just above, so the dep is ready.
     printFitNamespace = createPrintFitNamespace(manifoldModule, { text: curvesNamespace.text });
+    gearsNamespace = createGearsNamespace(manifoldModule);
+    threadsNamespace = createThreadsNamespace(manifoldModule);
     // Kick off font pre-loading in the background so they're ready by the
     // time the first api.text() call hits, even if the per-run regex didn't
     // fire (e.g. destructured alias or api.Curves.text).
@@ -379,6 +387,8 @@ export const manifoldJsEngine: Engine = {
       meshOps: meshOpsNamespace,
       sdf: sdfNamespace,
       printFit: printFitNamespace,
+      gears: gearsNamespace,
+      threads: threadsNamespace,
       // Text helpers — flat aliases so agents can write api.text(...) directly.
       text: curvesNamespace.text,
       textSection: curvesNamespace.textSection,
