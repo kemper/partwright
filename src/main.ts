@@ -12355,7 +12355,7 @@ async function main() {
      *  `{ error }`. */
     setVoxelTool(tool: import('./color/voxelPaint').VoxelTool) {
       if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
-      const tools = ['paint', 'add', 'remove', 'bucket', 'level', 'boxAdd', 'boxRemove'];
+      const tools = ['view', 'paint', 'add', 'remove', 'bucket', 'level', 'boxAdd', 'boxRemove'];
       if (!tools.includes(tool as string)) return { error: `setVoxelTool: tool must be one of ${tools.join(', ')}` };
       voxelPaint.setTool(tool);
       syncVoxelPaintUI();

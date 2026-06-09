@@ -45,3 +45,15 @@ mesh (existing live-preview behavior).
 The two PRs diverge from here: the **warning route** (no default edit tool;
 editing shows blocks + a notice; rounding resumes between edits) and **rounded
 painting** (point-based picking so the brush works on the rounded surface).
+
+## This PR — the warning route
+
+Added a non-editing **`view`** tool (the new default on open): it orbits the
+model (the suppressor never vetoes orbit in `view`) and shows the rounded
+preview when the grid is smooth. `onPointerDown` no-ops in `view`. Selecting any
+edit tool calls `endRoundingPreview()` (synchronously restores the blocky
+pickable mesh) and reveals an amber "rounding is hidden while editing" banner;
+switching back to 👁 View calls `showRoundingPreview()` to round again. The API's
+`setVoxelTool` allowlist gained `'view'` for UI↔API parity; `voxel.md` documents
+the toggle + view-vs-edit behavior. E2E asserts: opens rounded in View (proves
+the reopen fix), edit tool → blocky extent + banner, back to View → rounded.

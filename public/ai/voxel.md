@@ -382,16 +382,21 @@ Two ways to commit when you're done:
 #### Rounding controls
 
 The Studio's **Rounding** section sets the model's surfacing without leaving the
-editor: a **0–100% amount slider** (0 = hard blocks, higher = smoother — the
-`strength` knob above), a **Flat bottom** toggle (keep the build-plate face
-flat), and a **Flat base … layers** field (keep the bottom N layers blocky). The
-editing preview stays blocky so per-voxel picking still works; the rounding is
-applied to the rendered model when you commit. It rides both commit paths: a
-**Update code** commit appends `.smooth({ … })` / `.blocky()` to your code, and
-**Save as raw voxel data** bakes the surfacing into the emitted call. The Studio
-now also opens on an already-smoothed model (the controls prefill from its
-current setting). This is the UI equivalent of calling `.smooth({ strength, … })`
-in code.
+editor: an algorithm toggle — **Off** (hard blocks) / **Surface Nets** (re-mesh
+to a fully smooth surface; no amount knob) / **Taubin** (round the blocky mesh by
+an adjustable amount) — plus a **0–100% strength slider** shown for Taubin only
+(Surface Nets is inherently smooth at any strength), a **Flat bottom** toggle
+(keep the build-plate face flat), and a **Flat base … layers** field (keep the
+bottom N layers blocky).
+
+The Studio opens in the non-editing **👁 View** tool, which orbits the model and
+shows the **rounded** result. Picking any edit tool switches the view to blocks
+(per-voxel picking needs the hard-faced mesh) and shows a "rounding is hidden
+while editing" notice; switch back to 👁 View to see the rounded result again.
+Rounding rides both commit paths: an **Update code** commit appends
+`.smooth({ … })` / `.blocky()` to your code, and **Save as raw voxel data** bakes
+the surfacing into the emitted call. This is the UI equivalent of calling
+`.smooth({ algorithm, strength, … })` in code.
 
 ### Editing an imported voxel
 
@@ -448,8 +453,9 @@ await partwright.bakeVoxelsToCode({ label: 'castle' });  // replace with voxels.
   + per-triangle voxel/normal provenance. Works on smooth-surfaced grids too
   (editing happens on the blocky preview; the rounding is preserved). Returns
   `{ error }` outside voxel sessions or if the code doesn't return a grid.
-- `setVoxelTool(tool)` — `'paint' | 'add' | 'remove' | 'bucket' | 'level' |
-  'boxAdd' | 'boxRemove'`. Returns `{ tool }` or `{ error }`.
+- `setVoxelTool(tool)` — `'view' | 'paint' | 'add' | 'remove' | 'bucket' |
+  'level' | 'boxAdd' | 'boxRemove'`. `'view'` is the non-editing default (orbit +
+  rounded preview); the rest edit (and render blocks). Returns `{ tool }` or `{ error }`.
 - `setVoxelBrush({ radius?, shape?, spray?, sprayDensity?, block?, depth? })` —
   brush/block settings. For paint/remove: `radius` in voxels (0 = single, max
   16); `shape` is `'sphere' | 'cube' | 'diamond'`; `spray` scatters a random

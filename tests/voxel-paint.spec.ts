@@ -128,6 +128,51 @@ test.describe('voxel paint mode', () => {
     expect(result.voxelCount).toBe(64); // 4×4×4 box
   });
 
+  test('warning route: opens in View showing rounded; edit tools render blocks + warn', async ({ page }) => {
+    const maxX = () => page.evaluate(async () => {
+      const { getMeshGroup } = await import('/src/renderer/viewport.ts');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const solid = getMeshGroup().children[0] as any;
+      const pos = solid?.geometry?.getAttribute('position');
+      if (!pos) return NaN;
+      let mx = -Infinity;
+      for (let i = 0; i < pos.count; i++) mx = Math.max(mx, pos.getX(i));
+      return mx;
+    });
+    const warnVisible = () => page.evaluate(() => {
+      const el = [...document.querySelectorAll('#voxel-paint-panel p')].find((p) => p.textContent?.includes('Rounding is hidden'));
+      return !!el && !el.classList.contains('hidden');
+    });
+    // Open on an already-smooth grid: View is the default tool, the rounded
+    // result shows, and there's no warning. A sphere is used because Surface
+    // Nets visibly pulls its extent inward (a box's flat faces wouldn't move).
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().sphere([0,0,0],6,'#6cf').smooth({ algorithm: 'surfaceNets' });`);
+      pw.activateVoxelPaint();
+    });
+    await page.waitForTimeout(300);
+    const roundedMax = await maxX();
+    expect(roundedMax).toBeLessThan(6.9); // surfaceNets pulls in from the blocky extent (7)
+    expect(await warnVisible()).toBe(false);
+    // Pick the paintbrush → blocky render + warning banner.
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('#voxel-paint-panel button')].find((b) => b.textContent === '🖌') as HTMLButtonElement;
+      btn.click();
+    });
+    await expect.poll(maxX).toBeGreaterThan(roundedMax + 0.1); // back to the blocky extent
+    expect(await warnVisible()).toBe(true);
+    // Back to View → rounded resumes, warning gone.
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('#voxel-paint-panel button')].find((b) => b.textContent === '👁') as HTMLButtonElement;
+      btn.click();
+    });
+    await expect.poll(maxX).toBeLessThan(roundedMax + 0.05);
+    expect(await warnVisible()).toBe(false);
+  });
+
   test('Rounding slider previews live in the viewport, edits snap back to blocks', async ({ page }) => {
     // The displayed solid mesh's extent is our window into what the studio shows
     // without baking: Surface Nets pulls the surface inward (~0.5 voxel), so the

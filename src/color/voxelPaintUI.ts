@@ -18,6 +18,7 @@ const SWATCHES: string[] = [
 
 // Tool buttons, in panel order. `label` is the glyph shown; `title` the tooltip.
 const TOOLS: { tool: VoxelTool; label: string; title: string }[] = [
+  { tool: 'view',      label: '👁', title: 'View — orbit the rounded result without editing (editing tools show blocks)' },
   { tool: 'paint',     label: '🖌', title: 'Brush — drag to recolor voxels (use Size for a wider brush)' },
   { tool: 'add',       label: '➕', title: 'Add — build a block onto the clicked face (set its X/Y/Z size and how deep it sinks in)' },
   { tool: 'remove',    label: '⌫',  title: 'Remove — drag to delete voxels' },
@@ -84,6 +85,7 @@ let baseLayersInput: HTMLInputElement | null = null;
 let roundModeBtns: Partial<Record<'off' | 'surfaceNets' | 'taubin', HTMLButtonElement>> = {};
 let strengthRow: HTMLElement | null = null;
 let flatRow: HTMLElement | null = null;
+let editWarningEl: HTMLElement | null = null;
 // The Rounding algorithm the panel currently drives. Surface Nets has no usable
 // amount knob (it's inherently smooth at any strength), so its slider is hidden;
 // Taubin relaxes the blocky mesh by `strength`, giving a true 0→max dial.
@@ -167,7 +169,7 @@ export function syncActiveState(): void {
     openViewportPanel(registryEntry);        // close any other viewport panel
     document.addEventListener('keydown', onStudioEscape);
     voxelPaint.setColor(currentColor);
-    voxelPaint.setTool('paint');
+    voxelPaint.setTool('view');
   } else if (exited) {
     document.removeEventListener('keydown', onStudioEscape);
     closeViewportPanel(registryEntry);
@@ -189,6 +191,11 @@ function refreshControls(): void {
   blockSection?.classList.toggle('hidden', tool !== 'add');
   depthSection?.classList.toggle('hidden', !(tool === 'add' || isBox));
   levelSection?.classList.toggle('hidden', tool !== 'level');
+
+  // The "rounding is hidden while editing" banner shows only when an edit tool
+  // is active AND the grid is actually rounded (so it'd otherwise be visible).
+  const surfSmooth = voxelPaint.getSurfacing()?.mode === 'smooth';
+  editWarningEl?.classList.toggle('hidden', !(voxelPaint.isEditTool(tool) && surfSmooth));
 
   for (const s of BRUSH_SHAPES) setActive(shapeBtns[s.shape], s.shape === voxelPaint.getBrushShape());
   for (const a of AXES) setActive(axisBtns[a.axis], a.axis === voxelPaint.getLevelAxis());
@@ -297,6 +304,10 @@ function createPanel(): HTMLElement {
   const content = document.createElement('div');
   content.className = 'flex-1 min-h-0 overflow-y-auto px-2.5 py-2.5 flex flex-col gap-2';
   content.appendChild(buildToolRow());
+  editWarningEl = document.createElement('p');
+  editWarningEl.className = 'hidden text-[10px] leading-tight rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 px-2 py-1';
+  editWarningEl.textContent = '⚠ Rounding is hidden while editing. Switch to 👁 View to see the rounded result.';
+  content.appendChild(editWarningEl);
   content.appendChild(buildColorRow());
   brushSection = buildBrushSection();
   content.appendChild(brushSection);
@@ -651,7 +662,7 @@ function buildRoundingSection(): HTMLElement {
 
   const hint = document.createElement('p');
   hint.className = 'text-[10px] text-zinc-500 leading-tight';
-  hint.textContent = 'Rounding previews live; click the model to edit (snaps back to blocks).';
+  hint.textContent = 'Shown in 👁 View; editing tools render blocks until you switch back.';
   sec.appendChild(hint);
   return sec;
 }
