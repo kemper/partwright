@@ -8,6 +8,8 @@
 // Worker without pulling in browser globals.
 
 import { assertNumber, assertNumberTuple, assertObject, assertEnum, assertBoolean, assertArray, assertNoUnknownKeys, ValidationError } from '../../validation/apiValidation';
+import { SdfNode, partitionByLabel } from '../sdf';
+import { getConfig } from '../../config/appConfig';
 
 export type Vec3 = [number, number, number];
 /** A color the sandbox API accepts: `[r,g,b]` 0–255, `'#rgb'`/`'#rrggbb'`, or a
@@ -82,6 +84,27 @@ export function colorComponents(rgb: number): Vec3 {
 }
 
 export interface GridBounds { min: Vec3; max: Vec3 }
+
+/** Options for {@link VoxelGrid.sdf} — rasterizing an SDF expression into the
+ *  grid. */
+export interface SdfFillOptions {
+  /** World units per voxel along each axis (default 1). The voxel at integer
+   *  coord `i` samples the field at world `i·res`, so a smaller `res` yields a
+   *  finer (and larger, in voxels) model. */
+  res?: number;
+  /** Fill color when no per-label `colors` map applies (default `#cccccc`). */
+  color?: ColorInput;
+  /** Map of SDF `.label(name)` → color. Cells are colored by the labelled
+   *  region they sit deepest inside (SDF union = min distance). Regions with no
+   *  entry — and unlabelled geometry — fall back to `color`. */
+  colors?: Record<string, ColorInput>;
+  /** Explicit world-space sampling bounds. Required for infinite SDFs (a bare
+   *  gyroid / `.repeat()`); otherwise the node's own bounds are used. */
+  bounds?: { min: Vec3; max: Vec3 };
+  /** Iso level: cells with `f ≤ level` are filled (default 0 = the surface). A
+   *  small positive value dilates the solid; negative erodes it. */
+  level?: number;
+}
 
 /** How a grid is turned into a mesh. `blocks` = hard cube faces (default);
  *  `smooth` = Taubin-rounded edges (optionally over a `detail`× supersampled
@@ -268,6 +291,102 @@ export class VoxelGrid {
     return this;
   }
 
+  /** Rasterize an SDF expression (`api.sdf.*`) into this grid. The voxel at
+   *  integer coord `(i,j,k)` samples the signed-distance field at world
+   *  `(i·res, j·res, k·res)` and is occupied when `f ≤ level` (inside the
+   *  surface). This bridges the declarative SDF system (gyroids, TPMS lattices,
+   *  smooth blends, twists) into the blocky voxel world — author with
+   *  primitives instead of hand-written loops, then keep the voxel pipeline
+   *  (VOX export, per-cell paint, blocky aesthetic). Additive: it unions into
+   *  whatever is already in the grid, so you can mix `v.sdf(...)` with
+   *  `v.fillBox(...)` etc. Chainable.
+   *
+   *  Color comes from the `colors` map (keyed by SDF `.label(name)`) or a
+   *  single `color`. See {@link SdfFillOptions}. */
+  sdf(node: SdfNode, opts: SdfFillOptions = {}): this {
+    if (!(node instanceof SdfNode)) {
+      throw new ValidationError('v.sdf(node): node must be an SDF expression from api.sdf (e.g. api.sdf.gyroid(8, 1.5)). See /ai/voxel.md#sdf');
+    }
+    const o = assertObject(opts, 'v.sdf(opts)') ?? {};
+    assertNoUnknownKeys(o, ['res', 'color', 'colors', 'bounds', 'level'], 'v.sdf(opts)');
+    const res = o.res === undefined ? 1 : assertNumber(o.res, 'v.sdf(res)', { min: 1e-3 })!;
+    const level = o.level === undefined ? 0 : assertNumber(o.level, 'v.sdf(level)')!;
+    const defaultColor = normalizeColor((o.color === undefined ? '#cccccc' : o.color) as ColorInput, 'v.sdf(color)');
+
+    // Sampling bounds (world units): explicit, else the node's own bounds.
+    let bMin: Vec3, bMax: Vec3;
+    if (o.bounds !== undefined) {
+      const bb = assertObject(o.bounds, 'v.sdf(bounds)')!;
+      assertNoUnknownKeys(bb, ['min', 'max'], 'v.sdf(bounds)');
+      bMin = assertNumberTuple(bb.min, 3, 'v.sdf(bounds.min)') as Vec3;
+      bMax = assertNumberTuple(bb.max, 3, 'v.sdf(bounds.max)') as Vec3;
+    } else {
+      const nb = node.bounds();
+      bMin = nb.min; bMax = nb.max;
+    }
+    // Infinite SDFs (bare gyroid / `.repeat()`) report non-finite bounds.
+    if (!Number.isFinite(bMin[0] + bMin[1] + bMin[2] + bMax[0] + bMax[1] + bMax[2])) {
+      throw new ValidationError('v.sdf(): this SDF is infinite (e.g. a bare gyroid or .repeat()). Intersect it with a finite shape, or pass an explicit { bounds: { min:[x,y,z], max:[x,y,z] } }. See /ai/voxel.md#sdf');
+    }
+
+    // World bounds → inclusive integer voxel-index ranges (coord i ↔ world i·res).
+    const ix0 = Math.floor(bMin[0] / res), ix1 = Math.ceil(bMax[0] / res);
+    const iy0 = Math.floor(bMin[1] / res), iy1 = Math.ceil(bMax[1] / res);
+    const iz0 = Math.floor(bMin[2] / res), iz1 = Math.ceil(bMax[2] / res);
+    const nx = ix1 - ix0 + 1, ny = iy1 - iy0 + 1, nz = iz1 - iz0 + 1;
+    if (nx <= 0 || ny <= 0 || nz <= 0) return this;
+    const samples = nx * ny * nz;
+    const maxSamples = getConfig().import.voxelSdfMaxSamples;
+    if (samples > maxSamples) {
+      throw new ValidationError(`v.sdf(): sampling ${nx}×${ny}×${nz} = ${samples.toLocaleString()} cells exceeds the ${maxSamples.toLocaleString()} budget. Increase \`res\` (coarser voxels) or pass tighter \`bounds\`. See /ai/voxel.md#sdf`);
+    }
+
+    // Per-label coloring: split the tree at label boundaries and color each
+    // cell by the region it sits deepest inside (min distance = SDF union).
+    const colorMap = o.colors === undefined ? null : assertObject(o.colors, 'v.sdf(colors)')!;
+    if (colorMap) {
+      const regions = partitionByLabel(node);
+      const regionColors = regions.map((r) => {
+        const name = r.labelName;
+        return (name !== undefined && Object.prototype.hasOwnProperty.call(colorMap, name))
+          ? normalizeColor(colorMap[name] as ColorInput, `v.sdf(colors.${name})`)
+          : defaultColor;
+      });
+      for (let i = ix0; i <= ix1; i++) {
+        if (i < COORD_MIN || i > COORD_MAX) continue;
+        const wx = i * res;
+        for (let j = iy0; j <= iy1; j++) {
+          if (j < COORD_MIN || j > COORD_MAX) continue;
+          const wy = j * res;
+          for (let k = iz0; k <= iz1; k++) {
+            if (k < COORD_MIN || k > COORD_MAX) continue;
+            const wz = k * res;
+            let best = Infinity, bestIdx = -1;
+            for (let ri = 0; ri < regions.length; ri++) {
+              const d = regions[ri].node.evaluate(wx, wy, wz);
+              if (d < best) { best = d; bestIdx = ri; }
+            }
+            if (bestIdx >= 0 && best <= level) this.cells.set(packKey(i, j, k), regionColors[bestIdx]);
+          }
+        }
+      }
+    } else {
+      for (let i = ix0; i <= ix1; i++) {
+        if (i < COORD_MIN || i > COORD_MAX) continue;
+        const wx = i * res;
+        for (let j = iy0; j <= iy1; j++) {
+          if (j < COORD_MIN || j > COORD_MAX) continue;
+          const wy = j * res;
+          for (let k = iz0; k <= iz1; k++) {
+            if (k < COORD_MIN || k > COORD_MAX) continue;
+            if (node.evaluate(wx, wy, k * res) <= level) this.cells.set(packKey(i, j, k), defaultColor);
+          }
+        }
+      }
+    }
+    return this;
+  }
+
   /** Translate every voxel by an integer offset (rounded). */
   translate(delta: Vec3): this {
     const d = assertNumberTuple(delta, 3, 'translate(delta)');
@@ -371,6 +490,57 @@ export class VoxelGrid {
       if (d === undefined || d > t) toRemove.push(packKey(x, y, z));
     });
     for (const k of toRemove) this.cells.delete(k);
+    return this;
+  }
+
+  /** Keep only the largest face-connected component(s), deleting smaller
+   *  islands. The cheap printability fix for grids that mesh into many
+   *  disconnected pieces — most often an SDF lattice (`v.sdf` of a gyroid/TPMS
+   *  intersection) that sheds stray specks: this collapses `componentCount`
+   *  down to (at most) `count`. `count` (default 1) keeps the N biggest by
+   *  voxel volume; everything else is removed. Chainable. */
+  keepLargest(count = 1): this {
+    const n = assertNumber(count, 'keepLargest(count)', { integer: true, min: 1 })!;
+    if (this.cells.size === 0) return this;
+    // Label face-connected components with a BFS over occupied cells.
+    const comp = new Map<number, number>(); // cell key -> component id
+    const sizes: number[] = [];
+    const queue: number[] = [];
+    for (const startKey of this.cells.keys()) {
+      if (comp.has(startKey)) continue;
+      const id = sizes.length;
+      let size = 0;
+      comp.set(startKey, id);
+      queue.length = 0;
+      queue.push(startKey);
+      for (let head = 0; head < queue.length; head++) {
+        const key = queue[head];
+        size++;
+        const z = (key % DIM) - HALF;
+        const y = (Math.floor(key / DIM) % DIM) - HALF;
+        const x = Math.floor(key / (DIM * DIM)) - HALF;
+        const visit = (nx: number, ny: number, nz: number): void => {
+          if (!inRange(nx, ny, nz)) return;
+          const nk = packKey(nx, ny, nz);
+          if (this.cells.has(nk) && !comp.has(nk)) { comp.set(nk, id); queue.push(nk); }
+        };
+        visit(x + 1, y, z); visit(x - 1, y, z);
+        visit(x, y + 1, z); visit(x, y - 1, z);
+        visit(x, y, z + 1); visit(x, y, z - 1);
+      }
+      sizes.push(size);
+    }
+    if (sizes.length <= n) return this; // already ≤ count components
+    // Keep the `n` component ids with the most voxels.
+    const keep = new Set(
+      sizes.map((s, id) => [s, id] as const)
+        .sort((a, b) => b[0] - a[0])
+        .slice(0, n)
+        .map(([, id]) => id),
+    );
+    for (const [key, id] of comp) {
+      if (!keep.has(id)) this.cells.delete(key);
+    }
     return this;
   }
 
