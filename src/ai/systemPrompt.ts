@@ -321,6 +321,8 @@ Available tools you'll use most:
   colors (paintRegion + paint helpers),
   print-safety (FDM rules before exporting STL/3MF),
   print-fit (api.printFit.* screw holes / insert bosses / nut pockets / snap-fits / dovetails / pins / clearance presets),
+  gears (api.gears.* involute spur gears / meshing pairs / racks),
+  threads (api.threads.* ISO-metric threaded rods / bolts / nuts),
   mechanisms (print-in-place joints, hinges, sliders, captive balls, helical threads),
   reference-images (when the user attaches photos),
   file-io (programmatic export/import),

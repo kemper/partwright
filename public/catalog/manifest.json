@@ -724,6 +724,27 @@
       "file": "voxel_sdf_twist_tower.partwright.json",
       "language": "voxel",
       "description": "A twisted pen & utensil holder — a hollow rounded-square wall punched with a grid of windows and twisted on its axis, then rasterized into voxels with v.sdf. Solid flat base, lavender rim, violet body."
+    },
+    {
+      "id": "gear-pair",
+      "name": "Parametric Gear Pair",
+      "file": "gear_pair.partwright.json",
+      "language": "manifold-js",
+      "description": "Meshing involute spur-gear pair with adjustable module, tooth counts (ratio), thickness, and shaft bore."
+    },
+    {
+      "id": "screw-top-jar",
+      "name": "Screw-Top Jar",
+      "file": "screw_top_jar.partwright.json",
+      "language": "manifold-js",
+      "description": "Watertight container with a matching threaded screw-on lid — real external + internal threads, fully parametric (diameter, height, pitch, fit)."
+    },
+    {
+      "id": "rack-and-pinion",
+      "name": "Rack & Pinion",
+      "file": "rack_and_pinion.partwright.json",
+      "language": "manifold-js",
+      "description": "Involute pinion meshing a straight rack to turn rotation into linear motion — adjustable module, teeth, and length."
     }
   ]
 }
