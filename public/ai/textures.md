@@ -1,7 +1,7 @@
 # Surface Texture & Mesh Operations
 
 Post-hoc operations that add surface detail to a finished model by displacing
-vertices along their normals. Six textures are available:
+vertices along their normals. Seven textures are available:
 
 | Texture | Look | Best for |
 |---------|------|----------|
@@ -11,6 +11,7 @@ vertices along their normals. Six textures are available:
 | `applyWaffleStitch` | Recessed grid cells with raised borders | Waffle-knit, waffle irons, honeycomb patterns |
 | `applyFurVelvet` | Directional anisotropic pile (velvet, fur, chenille) | Animal fur, velvet fabric, soft plush surfaces |
 | `applyWovenFabric` | Plain-weave over/under interlacing | Baskets, woven cloth, twill, burlap |
+| `applyVoronoiShell` | Organic cell-wall ridge network (Voronoi cells) | Lampshades, planters, vases, cracked-mud / dragonfly-wing shells |
 
 Two further mesh operations live in the same panel and share the same
 apply→save→verify workflow:
@@ -215,6 +216,41 @@ slightly depressed.
 - Open weave / burlap: `threadWidth=0.35`, `threadSpacing=d*0.05`, `underDepth=0.5`
 - Tight fabric: `threadWidth=0.65`, `threadSpacing=d*0.03`, `underDepth=0.2`
 - Basket weave: `threadWidth=0.55`, `threadSpacing=d*0.06`, `underDepth=0.4`
+
+---
+
+## applyVoronoiShell
+
+```
+applyVoronoiShell({ amplitude?, cellSize?, wallWidth?, raised?, jitter?,
+                    grainAngleDeg?, seed?, quality?, preserveColor? })
+```
+
+Organic cell-wall relief: a network of raised ridges tracing the boundaries
+between Voronoi cells, with flat cell interiors (cracked-mud / dragonfly-wing /
+decorative-lampshade look). Computed as a cellular (Worley F2−F1) distance field
+over jittered grid seeds, so it follows the surface like the other textures.
+
+> **This is a relief, not a cutaway.** It raises or engraves cell walls along the
+> surface; it does **not** cut through-holes to leave an open strut lattice. For
+> an actually-perforated Voronoi shell, model the openings with boolean cuts.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `amplitude` | ~3% of diagonal | Wall height. |
+| `cellSize` | ~12% of diagonal | Approx spacing between cells (~8 cells across). |
+| `wallWidth` | 0.25 | Raised-wall band width as a fraction of cellSize [0.05–0.6]. Smaller = thinner struts. |
+| `raised` | true | true = raised wall network; false = engrave the network as recessed channels. |
+| `jitter` | 1 | Cell irregularity [0–1]. 1 = full irregular Voronoi; 0 = a regular square grid. |
+| `grainAngleDeg` | 0 | Rotate the cell pattern in the XY plane. |
+| `seed` | 1 | Deterministic seed — change it to reshuffle the cell layout. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = crisper walls, slower. |
+| `preserveColor` | true | Carry paint through subdivision. |
+
+**Look guidance:**
+- Lampshade shell: `cellSize=d*0.15`, `wallWidth=0.15`, `amplitude=d*0.04`
+- Cracked mud / dry earth: `cellSize=d*0.1`, `wallWidth=0.2`, `raised=false`
+- Regular grid (waffle-like): `jitter=0`, `cellSize=d*0.08`
 
 ---
 

@@ -14,6 +14,7 @@ import { cableKnit } from '../../src/surface/cableKnit';
 import { waffleStitch } from '../../src/surface/waffleStitch';
 import { furVelvet } from '../../src/surface/furVelvet';
 import { wovenFabric } from '../../src/surface/wovenFabric';
+import { voronoiShell } from '../../src/surface/voronoiShell';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize } from '../../src/surface/modifiers';
@@ -173,12 +174,13 @@ describe('knitTextureUV', () => {
 // The four fabric textures added after fuzzySkin share its structure (densify →
 // displace along normals, deterministic per seed, color carried through
 // subdivision). One parameterized table guards the invariants for all of them.
-describe('fabric textures (cable / waffle / fur / woven)', () => {
+describe('fabric textures (cable / waffle / fur / woven / voronoi)', () => {
   const cases = [
     { name: 'cableKnit', fn: cableKnit as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cableWidth: 2, seed: 3 } },
     { name: 'waffleStitch', fn: waffleStitch as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellWidth: 2, seed: 3 } },
     { name: 'furVelvet', fn: furVelvet as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, fiberSpacing: 2, seed: 3 } },
     { name: 'wovenFabric', fn: wovenFabric as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, threadSpacing: 2, seed: 3 } },
+    { name: 'voronoiShell', fn: voronoiShell as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellSize: 3, seed: 3 } },
   ] as const;
 
   for (const { name, fn, opts } of cases) {
@@ -203,6 +205,30 @@ describe('fabric textures (cable / waffle / fur / woven)', () => {
       expect([...out.triColors!].every(v => v === 42)).toBe(true);
     });
   }
+});
+
+describe('voronoiShell', () => {
+  it('a different seed reshuffles the cell layout', () => {
+    const a = voronoiShell(cube(10), { amplitude: 0.5, cellSize: 3, seed: 1 });
+    const b = voronoiShell(cube(10), { amplitude: 0.5, cellSize: 3, seed: 2 });
+    expect([...a.vertProperties]).not.toEqual([...b.vertProperties]);
+  });
+
+  it('jitter=0 (regular grid) differs from jitter=1 (irregular)', () => {
+    const grid = voronoiShell(cube(10), { amplitude: 0.5, cellSize: 3, jitter: 0 });
+    const irregular = voronoiShell(cube(10), { amplitude: 0.5, cellSize: 3, jitter: 1 });
+    expect([...grid.vertProperties]).not.toEqual([...irregular.vertProperties]);
+  });
+
+  it('raised walls grow the cube; engraved channels stay within it', () => {
+    const base = bboxOf(extractPositions(cube(10)));
+    const raised = bboxOf(voronoiShell(cube(10), { amplitude: 0.6, cellSize: 3, raised: true }).vertProperties);
+    const engraved = bboxOf(voronoiShell(cube(10), { amplitude: 0.6, cellSize: 3, raised: false }).vertProperties);
+    // Raised walls displace outward, so the bbox expands past the original 10.
+    expect(raised.max[0]).toBeGreaterThan(base.max[0]);
+    // Engraving recesses walls inward, so it never pushes a face past the original.
+    expect(engraved.max[0]).toBeLessThanOrEqual(base.max[0] + 1e-4);
+  });
 });
 
 describe('smoothSurface', () => {

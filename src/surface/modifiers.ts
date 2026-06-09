@@ -19,6 +19,7 @@ import { cableKnit, type CableKnitOptions } from './cableKnit';
 import { waffleStitch, type WaffleStitchOptions } from './waffleStitch';
 import { furVelvet, type FurVelvetOptions } from './furVelvet';
 import { wovenFabric, type WovenFabricOptions } from './wovenFabric';
+import { voronoiShell, type VoronoiShellOptions } from './voronoiShell';
 import { smoothSurface, type SmoothOptions } from './smoothSurface';
 import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
 import { extractPositions, bboxOf, subdivideWithMask } from './meshSubdivide';
@@ -27,7 +28,7 @@ import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 
-export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize';
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'smooth' | 'voxelize';
 
 export interface ModifierManifoldResult {
   kind: 'manifold';
@@ -118,6 +119,7 @@ export { type CableKnitOptions };
 export { type WaffleStitchOptions };
 export { type FurVelvetOptions };
 export { type WovenFabricOptions };
+export { type VoronoiShellOptions };
 
 export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierManifoldResult {
   const baked = fuzzySkin(mesh, opts);
@@ -345,6 +347,15 @@ export function applyWovenPatch(mesh: MeshData, opts: WovenFabricOptions, select
   return { kind: 'manifold', label: 'woven fabric (patch)', mesh: patched, code: manifoldWrapper([`Woven fabric patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
 }
 
+export function applyVoronoiPatch(mesh: MeshData, opts: VoronoiShellOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const diag = modelDiagonal(mesh) || 10;
+  // The wall band is the thin feature — size the pre-subdivision to it.
+  const wall = Math.min(0.95, Math.max(0.02, opts.wallWidth ?? 0.25));
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.cellSize * wall), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => voronoiShell(sub, { ...opts, subdivide: false }), pre);
+  return { kind: 'manifold', label: 'voronoi shell (patch)', mesh: patched, code: manifoldWrapper([`Voronoi shell patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
 export function applySmoothPatch(mesh: MeshData, opts: SmoothOptions, selectedTris: Set<number>): ModifierManifoldResult {
   const diag = modelDiagonal(mesh) || 10;
   // Smooth has no feature size — use diagonal/20 as the target (coarse-mesh safety net only)
@@ -413,6 +424,21 @@ export function defaultWovenOptions(mesh: MeshData): Required<WovenFabricOptions
   };
 }
 
+export function defaultVoronoiOptions(mesh: MeshData): Required<VoronoiShellOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    amplitude: d * 0.03,
+    cellSize: d * 0.12,
+    wallWidth: 0.25,
+    raised: true,
+    jitter: 1,
+    grainAngleDeg: 0,
+    seed: 1,
+    quality: 3,
+    subdivide: true,
+  };
+}
+
 export function applyCable(mesh: MeshData, opts: CableKnitOptions): ModifierManifoldResult {
   const baked = cableKnit(mesh, opts);
   return {
@@ -460,6 +486,19 @@ export function applyWoven(mesh: MeshData, opts: WovenFabricOptions): ModifierMa
     mesh: baked,
     code: manifoldWrapper([
       `Woven fabric applied on ${today()} — thread spacing ${opts.threadSpacing.toFixed(3)}, width ${opts.threadWidth ?? 0.4}.`,
+      `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
+export function applyVoronoi(mesh: MeshData, opts: VoronoiShellOptions): ModifierManifoldResult {
+  const baked = voronoiShell(mesh, opts);
+  return {
+    kind: 'manifold',
+    label: 'voronoi shell',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Voronoi shell applied on ${today()} — cell ${opts.cellSize.toFixed(2)}, wall ${(opts.wallWidth ?? 0.25).toFixed(2)}, ${opts.raised === false ? 'engraved' : 'raised'}.`,
       `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
     ]),
   };
