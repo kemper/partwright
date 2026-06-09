@@ -26,18 +26,18 @@ function dockUnderBottom(controls: HTMLElement): number {
 }
 
 /** Position the panel below the #clip-controls toolbar buttons (or below the
- *  open Tools menu), with its right edge aligned to the toolbar's right edge.
- *  Coordinates are window-relative (the panel is `position: fixed`), so the dock
- *  lands correctly regardless of which pane the toolbar currently lives in. */
+ *  open Tools menu), docked against the window's right edge.
+ *  Coordinates are window-relative (the panel is `position: fixed`). Docking to
+ *  the *window* edge (rather than the viewport pane's right edge) means that
+ *  when the AI panel is docked open, the tool panel sits *over* it by default —
+ *  manual tool use doesn't need the AI column visible, and the panel is still
+ *  draggable anywhere if the user wants it elsewhere. */
 export function setInitialPanelPosition(panel: HTMLElement): void {
   panel.style.position = 'fixed';
   const controls = document.getElementById('clip-controls');
   if (controls) {
-    const cr = controls.getBoundingClientRect();
     panel.style.top = `${Math.round(dockUnderBottom(controls) + PANEL_EDGE_GAP / 2)}px`;
-    // `right` is the gap from the window's right edge to the toolbar's right edge,
-    // so the panel tucks under the toolbar even when a docked side panel insets it.
-    panel.style.right = `${Math.round(Math.max(PANEL_EDGE_GAP, window.innerWidth - cr.right))}px`;
+    panel.style.right = `${PANEL_EDGE_GAP}px`;
     panel.style.left = 'auto';
     panel.style.bottom = 'auto';
     return;

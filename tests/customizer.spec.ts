@@ -5,6 +5,7 @@
 // real browser (the sandbox + worker round-trip can't run in the unit tier).
 
 import { test, expect, type Page } from 'playwright/test';
+import { openAiPanel } from './helpers/aiPanel';
 
 const PARAM_MODEL = `const { Manifold } = api;
 const p = api.params({
@@ -380,5 +381,25 @@ return v;`;
     if (!after) throw new Error('no panel box after collapse');
     expect(Math.abs(after.x - before.x)).toBeLessThan(2);
     expect(Math.abs(after.y - before.y)).toBeLessThan(2);
+  });
+
+  test('with the AI panel open, the Customize panel docks over it (window right edge)', async ({ page }) => {
+    await openAiPanel(page);
+    const ai = page.locator('#ai-panel');
+    await expect(ai).toBeVisible();
+
+    await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PARAM_MODEL);
+    const panel = page.locator('#params-panel');
+    await expect(panel).toBeVisible();
+
+    const box = await panel.boundingBox();
+    const aiBox = await ai.boundingBox();
+    if (!box || !aiBox) throw new Error('missing box');
+    const vw = await page.evaluate(() => window.innerWidth);
+
+    // The panel hugs the window's right edge rather than tucking to the left of
+    // the AI column, so it overlays the AI panel by default.
+    expect(vw - (box.x + box.width)).toBeLessThan(24); // right edge ~PANEL_EDGE_GAP from window edge
+    expect(box.x + box.width).toBeGreaterThan(aiBox.x); // and extends over the AI column
   });
 });
