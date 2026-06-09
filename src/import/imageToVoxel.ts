@@ -6,6 +6,7 @@
 // ImageData); the DOM step that turns a `File` into pixels lives in main.ts.
 
 import { VoxelGrid, encodeGrid, COORD_MIN, COORD_MAX } from '../geometry/voxel/grid';
+import { formatSurfacingCall } from '../geometry/voxel/editCodegen';
 import { preprocessRgb, quantizeColors, detectBackgroundMask, bgMaskFromColor, rgbToLab, nearestPalette } from '../relief/imageToRelief';
 
 /** Minimal shape of the browser `ImageData` we consume (also satisfiable by a
@@ -561,10 +562,8 @@ export function generateVoxelImportCode(grid: VoxelGrid, filename: string, opts:
   // smooth-surfaced model that's baked (e.g. via the voxel paint flow) keeps
   // its rounded edges after the next run, instead of silently reverting to
   // hard blocks. The default (blocks) needs no call.
-  const surf = grid.surfacing();
-  const surfaceCall = surf.mode === 'smooth'
-    ? `\nv.smooth({ iterations: ${surf.iterations}, detail: ${surf.detail} });`
-    : '';
+  const call = formatSurfacingCall(grid.surfacing());
+  const surfaceCall = call ? `\nv${call};` : '';
   const header = `// Imported from ${filename} on ${date}\n`;
 
   if (opts.style === 'calls') {

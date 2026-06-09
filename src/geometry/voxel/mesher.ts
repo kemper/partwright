@@ -279,14 +279,14 @@ export function meshGrid(grid: VoxelGrid): MeshData {
     // exactly; `baseLayers`/`lockBox` are coordinate-based and the SN surface
     // sits ~half a voxel inward of the blocky extent, so those pin the intended
     // region only to within ~0.5 voxel (fine for a "keep this base blocky" hint).
-    mesh = taubinSmooth(mesh, surf.iterations, resolveSmoothPins(surf, 1));
+    mesh = taubinSmooth(mesh, surf.iterations, resolveSmoothPins(surf, 1), surf.strength ?? 1);
     return mesh;
   }
 
   const detail = surf.detail;
   const dense = detail > 1 ? grid.supersample(detail) : grid;
   let mesh = gridToMeshData(dense);
-  mesh = taubinSmooth(mesh, surf.iterations, resolveSmoothPins(surf, detail));
+  mesh = taubinSmooth(mesh, surf.iterations, resolveSmoothPins(surf, detail), surf.strength ?? 1);
   if (detail > 1) scaleMeshPositions(mesh, 1 / detail);
   return mesh;
 }

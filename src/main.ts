@@ -117,7 +117,7 @@ import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions
 import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import { greedyMeshGrid } from './geometry/voxel/mesher';
-import { appendVoxelEditsToCode, editOpCount } from './geometry/voxel/editCodegen';
+import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geometry/voxel/editCodegen';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
@@ -6563,8 +6563,15 @@ async function main() {
     let code: string | null;
     if (mode === 'update') {
       const ops = voxelPaint.getEditOps();
-      if (editOpCount(ops) === 0) return { error: 'No edits to apply — paint, add, or remove some voxels first.' };
-      code = appendVoxelEditsToCode(getValue(), ops);
+      const roundingChanged = voxelPaint.roundingChanged();
+      if (editOpCount(ops) === 0 && !roundingChanged) {
+        return { error: 'No edits to apply — paint/add/remove voxels or adjust Rounding first.' };
+      }
+      // Append an explicit surfacing call only when the user changed rounding;
+      // otherwise leave whatever the source already declared intact.
+      const surf = voxelPaint.getSurfacing();
+      const surfacingCall = roundingChanged && surf ? formatSurfacingCall(surf, true) : '';
+      code = appendVoxelEditsToCode(getValue(), ops, surfacingCall);
       // No trailing `return …;` to hook onto — fall back to a clean replace.
       if (code === null) code = voxelPaint.bakeToCode('painted');
     } else {
@@ -12371,7 +12378,7 @@ async function main() {
      *  `{ error }`. */
     setVoxelTool(tool: import('./color/voxelPaint').VoxelTool) {
       if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
-      const tools = ['paint', 'add', 'remove', 'bucket', 'level', 'boxAdd', 'boxRemove'];
+      const tools = ['view', 'paint', 'add', 'remove', 'bucket', 'level', 'boxAdd', 'boxRemove'];
       if (!tools.includes(tool as string)) return { error: `setVoxelTool: tool must be one of ${tools.join(', ')}` };
       voxelPaint.setTool(tool);
       syncVoxelPaintUI();
