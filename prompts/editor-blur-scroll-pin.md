@@ -16,6 +16,32 @@ panel.)
 
 ## Assistant
 
+## Follow-up (after user testing)
+
+The first fix (a blur-only pin) didn't fully solve it. The user reported the
+stutter **persists** and clarified it happens "any time focus changes away from
+the editor pane" *and* while clicking around tool menus — "not just on a blur" —
+and described it precisely: a line of clear space below the last line snaps shut
+so the pane bottom aligns with the last line of code (a one-line jump). That's
+CodeMirror reconciling its line-height model against real Chrome's fractional,
+device-pixel-rounded line boxes; the re-measure fires on **any** trigger (focus
+change, layout reflow from a menu/panel, its own measure loop), not only blur.
+
+**Replaced the blur hook with a persistent, input-aware bottom-scroll
+stabilizer** (`installBottomScrollStabilizer`, installed once on the editor
+view). It listens for scroll events and reverts an *unsolicited* small
+(≤ 3 line-heights) scroll change while the editor is parked near the bottom —
+the measure snap — before the browser paints. It stays out of the way of every
+genuine scroll by tracking user intent: a recent wheel/keydown (within the
+`codeEditorScrollPinMs` grace window) or a held pointer (scrollbar drag / touch
+pan) marks the scroll as the user's and it's always honored; a large jump
+(reveal-diagnostic / jump-to-match) is adopted as real navigation. "Near the
+bottom" is anchored to the user's intended offset, not the post-snap position,
+so a snap right at the threshold is still caught. Renamed the config knob to
+`ui.codeEditorScrollPinMs` (default 250 ms, 0 disables) and broadened the e2e
+suite to five cases (revert after blur, revert focused-idle, honor-after-keys,
+honor-large-nav, inert-mid-document).
+
 ## Key decisions
 
 **Diagnosed it as a CodeMirror focus-change re-measure that re-clamps

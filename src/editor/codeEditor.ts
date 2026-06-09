@@ -205,54 +205,78 @@ export interface EditorHooks {
   onBlur?: () => void;
 }
 
-/** Hold the editor's scroll offset steady for a short window after it loses
- *  focus while scrolled to the very bottom.
+/** Keep the code editor's scroll position from drifting when CodeMirror
+ *  re-measures while the editor is parked at (or near) the very bottom.
  *
- *  In real Chrome, blurring the editor while it's scrolled flush against the
- *  bottom nudges the visible code up by a line or two: CodeMirror runs a
- *  deferred focus-change pass that re-measures the height model, and at exact
- *  max-scroll the browser re-clamps `scrollTop`, shifting which lines are in
- *  view. It only manifests at the bottom (anywhere else the offset is preserved
- *  exactly) and only on a real display, which is why it reads as a "stutter"
- *  when you click away to drag a tool panel.
+ *  On a real display, CodeMirror's line-height model never perfectly matches
+ *  Chrome's fractional, device-pixel-rounded line boxes, so over a long
+ *  document the modelled content height drifts from the real DOM height by
+ *  ~a line. Whenever something makes CodeMirror re-measure — a focus change, a
+ *  layout reflow from opening a tool menu/panel, or its own measure loop — it
+ *  reconciles the two and the browser re-clamps `scrollTop` at max-scroll,
+ *  snapping the visible code by a line. It only shows at the bottom (anywhere
+ *  else the offset is preserved exactly) and only on a real display, so it reads
+ *  as a one-line "stutter" when you click around with the editor scrolled down.
  *
- *  This pins the offset for `codeEditorBlurScrollPinMs` and re-applies it if
- *  something moves it by less than a couple of lines, so the nudge never paints.
- *  It bails out immediately on any genuine scroll — a user wheel/touch/pointer
- *  gesture, or a large programmatic jump like reveal-diagnostic — so it can
- *  never block real navigation. Thresholds are line-height-relative, not magic
- *  pixels. */
-function pinScrollAfterBlur(view: EditorView): void {
-  const pinMs = getConfig().ui.codeEditorBlurScrollPinMs;
-  if (pinMs <= 0) return; // disabled
+ *  This installs a persistent stabilizer: when a *programmatic* scroll nudges
+ *  the editor by less than a couple of lines while it's resting near the bottom,
+ *  it reverts to the last user-intended offset before the browser paints, so the
+ *  snap is invisible. It stays out of the way of every genuine scroll — wheel,
+ *  trackpad/momentum, scrollbar drag, touch, and keyboard/typing are all tracked
+ *  as user intent and always honored — and a large jump (reveal-diagnostic,
+ *  jump-to-match) is treated as real navigation. Thresholds are
+ *  line-height-relative, not magic pixels. */
+function installBottomScrollStabilizer(view: EditorView): void {
   const sc = view.scrollDOM;
-  const lineH = view.defaultLineHeight || 18;
-  const top = sc.scrollTop;
-  // The bug is specific to resting at the very bottom; ignore every other
-  // scroll position so we never interfere with mid-document focus changes.
-  if (sc.scrollHeight - (top + sc.clientHeight) > lineH) return;
+  // The grace window (ms) during which recent user input means a scroll is the
+  // user's own intent and must never be reverted.
+  const inputGraceMs = (): number => getConfig().ui.codeEditorScrollPinMs;
 
-  let active = true;
-  const stop = (): void => {
-    if (!active) return;
-    active = false;
-    sc.removeEventListener('scroll', onScroll);
-    sc.removeEventListener('wheel', stop);
-    sc.removeEventListener('pointerdown', stop);
-    sc.removeEventListener('touchstart', stop);
+  let intendedTop = sc.scrollTop; // the offset we believe the user wants
+  let lastWheel = -Infinity;
+  let lastKey = -Infinity;
+  let pointerDown = false; // covers scrollbar drag + touch pan
+  let reverting = false;
+
+  const lineH = (): number => view.defaultLineHeight || 18;
+  const userActive = (): boolean => {
+    const now = performance.now();
+    const grace = inputGraceMs();
+    return pointerDown || now - lastWheel < grace || now - lastKey < grace;
   };
-  const onScroll = (): void => {
-    if (!active) return;
-    // A move larger than a few lines is real navigation (jump-to-match /
-    // reveal-diagnostic) — let it stand and stop pinning.
-    if (Math.abs(sc.scrollTop - top) > lineH * 4) { stop(); return; }
-    if (sc.scrollTop !== top) sc.scrollTop = top;
-  };
-  sc.addEventListener('scroll', onScroll);
-  sc.addEventListener('wheel', stop, { passive: true });
-  sc.addEventListener('pointerdown', stop);
-  sc.addEventListener('touchstart', stop, { passive: true });
-  window.setTimeout(stop, pinMs);
+
+  // Track user-driven scroll intent. Capture phase so we see input even when the
+  // editor isn't focused (e.g. dragging the scrollbar).
+  sc.addEventListener('wheel', () => { lastWheel = performance.now(); }, { capture: true, passive: true });
+  sc.addEventListener('keydown', () => { lastKey = performance.now(); }, true);
+  // Pointer down/up is tracked on the document: a scrollbar drag holds the
+  // pointer down on the scroller without firing wheel/keydown.
+  const onPointerDown = (): void => { pointerDown = true; };
+  const onPointerUp = (): void => { pointerDown = false; };
+  document.addEventListener('pointerdown', onPointerDown, true);
+  document.addEventListener('pointerup', onPointerUp, true);
+  document.addEventListener('pointercancel', onPointerUp, true);
+
+  sc.addEventListener('scroll', () => {
+    if (reverting) return;
+    if (getConfig().ui.codeEditorScrollPinMs <= 0) { intendedTop = sc.scrollTop; return; } // disabled
+    const lh = lineH();
+    const maxScroll = sc.scrollHeight - sc.clientHeight;
+    // Anchor "near the bottom" to where the user *wanted* to be (intendedTop),
+    // not the post-snap position — the snap moves us a line off the bottom, so
+    // testing the current offset would miss it right at the boundary.
+    const wasNearBottom = maxScroll - intendedTop <= lh * 2;
+    const delta = sc.scrollTop - intendedTop;
+    // Revert only an unsolicited, small, near-bottom nudge — the measure snap.
+    if (!userActive() && wasNearBottom && delta !== 0 && Math.abs(delta) <= lh * 3) {
+      reverting = true;
+      sc.scrollTop = intendedTop;
+      reverting = false;
+      return;
+    }
+    // Otherwise this is the user's intent (or real navigation): adopt it.
+    intendedTop = sc.scrollTop;
+  }, { passive: true });
 }
 
 export function initEditor(
@@ -288,7 +312,7 @@ export function initEditor(
         }
       }),
       EditorView.domEventHandlers({
-        blur: (_event, view) => { pinScrollAfterBlur(view); hooks.onBlur?.(); return false; },
+        blur: () => { hooks.onBlur?.(); return false; },
       }),
       EditorView.theme({
         '&': { height: '100%', fontSize: '13px' },
@@ -303,6 +327,8 @@ export function initEditor(
     state,
     parent: container,
   });
+
+  installBottomScrollStabilizer(editorView);
 
   onThemeChange((theme) => {
     if (!editorView) return;

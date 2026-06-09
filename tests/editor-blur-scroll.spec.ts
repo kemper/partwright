@@ -1,11 +1,13 @@
 import { test, expect } from 'playwright/test';
 
-// When the code editor is scrolled to the very bottom and loses focus (e.g. the
-// user clicks away to drag a tool panel), real Chrome can nudge the visible code
-// up by a line or two — a deferred focus-change re-measure re-clamps max-scroll.
-// `pinScrollAfterBlur` (src/editor/codeEditor.ts) holds the scroll offset steady
-// for a short window after blur so the code doesn't stutter, while still letting
-// any genuine scroll through. These tests pin down that behaviour.
+// When the code editor is parked near the very bottom, real Chrome snaps the
+// visible code by a line whenever CodeMirror re-measures (a focus change, a
+// layout reflow from opening a tool menu/panel, or its own measure loop). The
+// bottom-scroll stabilizer (`installBottomScrollStabilizer` in
+// src/editor/codeEditor.ts) reverts that unsolicited one-line snap while always
+// honoring genuine scrolling. These tests pin down that behaviour by simulating
+// the programmatic snap (which is what we can't get headless Chrome to produce
+// on its own) and by exercising the user-intent escape hatches.
 
 function longCode(): string {
   const lines: string[] = [];
@@ -31,7 +33,9 @@ async function setupScrolledToBottom(page: import('playwright/test').Page): Prom
   await page.keyboard.press('Control+End');
   await page.waitForTimeout(100);
   await page.evaluate(() => { const sc = document.querySelector('.cm-scroller') as HTMLElement; sc.scrollTop = sc.scrollHeight; });
-  await page.waitForTimeout(150);
+  // Wait past the stabilizer's input-grace window so a subsequent programmatic
+  // nudge counts as "unsolicited" (the setup's own scroll/keys don't bleed in).
+  await page.waitForTimeout(450);
 }
 
 const scrollTop = (page: import('playwright/test').Page): Promise<number> =>
@@ -40,46 +44,72 @@ const scrollTop = (page: import('playwright/test').Page): Promise<number> =>
 const blur = (page: import('playwright/test').Page): Promise<void> =>
   page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
 
-const nudgeScroll = (page: import('playwright/test').Page, by: number): Promise<void> =>
+// Simulate the engine/browser snap: a small programmatic scrollTop change with
+// no preceding user-input event (no wheel/key/pointer).
+const programmaticNudge = (page: import('playwright/test').Page, by: number): Promise<void> =>
   page.evaluate((d) => { (document.querySelector('.cm-scroller') as HTMLElement).scrollTop += d; }, by);
 
-const setScroll = (page: import('playwright/test').Page, to: number): Promise<void> =>
+const programmaticSet = (page: import('playwright/test').Page, to: number): Promise<void> =>
   page.evaluate((t) => { (document.querySelector('.cm-scroller') as HTMLElement).scrollTop = t; }, to);
 
-test.describe('editor blur scroll pin', () => {
-  test('reverts a small post-blur scroll nudge at the bottom', async ({ page }) => {
+test.describe('editor bottom-scroll stabilizer', () => {
+  test('reverts an unsolicited one-line snap at the bottom (after blur)', async ({ page }) => {
     await setupScrolledToBottom(page);
     const atBottom = await scrollTop(page);
 
     await blur(page);
     await page.waitForTimeout(20);
-    await nudgeScroll(page, -40); // simulate Chrome's 2-line nudge
-    await page.waitForTimeout(140);
+    await programmaticNudge(page, -40); // the measure snap
+    await page.waitForTimeout(120);
 
     expect(await scrollTop(page)).toBe(atBottom);
   });
 
-  test('does not block a large programmatic scroll after blur', async ({ page }) => {
+  test('reverts an unsolicited snap even while the editor stays focused', async ({ page }) => {
+    await setupScrolledToBottom(page);
+    const atBottom = await scrollTop(page);
+
+    // No blur, no user input — e.g. a re-measure from a background reflow/timer.
+    await programmaticNudge(page, -36);
+    await page.waitForTimeout(120);
+
+    expect(await scrollTop(page)).toBe(atBottom);
+  });
+
+  test('honors a scroll that follows a real keystroke (typing at the bottom)', async ({ page }) => {
+    await setupScrolledToBottom(page);
+    const atBottom = await scrollTop(page);
+
+    // A keystroke marks user intent; a scroll right after must be left alone
+    // (otherwise typing/paging at the bottom would fight the stabilizer).
+    await page.keyboard.press('ArrowUp');
+    await programmaticNudge(page, -36);
+    await page.waitForTimeout(120);
+
+    expect(await scrollTop(page)).toBeLessThan(atBottom); // the move stood
+  });
+
+  test('does not block a large programmatic scroll (real navigation)', async ({ page }) => {
     await setupScrolledToBottom(page);
 
     await blur(page);
     await page.waitForTimeout(20);
-    await setScroll(page, 200); // a real jump (e.g. reveal-diagnostic)
-    await page.waitForTimeout(160);
+    await programmaticSet(page, 200); // a jump, e.g. reveal-diagnostic
+    await page.waitForTimeout(140);
 
     expect(await scrollTop(page)).toBeLessThan(400);
   });
 
-  test('does not engage when the editor is not at the bottom', async ({ page }) => {
+  test('does not engage away from the bottom', async ({ page }) => {
     await setupScrolledToBottom(page);
-    await setScroll(page, 1000);
+    await programmaticSet(page, 1000);
     await page.waitForTimeout(100);
 
     await blur(page);
     await page.waitForTimeout(20);
-    await nudgeScroll(page, -40);
-    await page.waitForTimeout(140);
+    await programmaticNudge(page, -40);
+    await page.waitForTimeout(120);
 
-    expect(await scrollTop(page)).toBe(960); // nudge stands; guard inert away from bottom
+    expect(await scrollTop(page)).toBe(960); // nudge stands; stabilizer inert mid-document
   });
 });
