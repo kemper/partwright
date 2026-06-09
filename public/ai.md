@@ -509,6 +509,18 @@ return part;
 
 `color` accepts the same hex string or `[r,g,b]` (0..1) as `api.label`. These selectors resolve **by triangle**, so a coarse mesh paints whole facets — `refine(n)` (or higher segment counts) gives crisp edges, exactly like the paint tools. Arguments are validated strictly (unknown keys rejected, bad color/axis throw an actionable error). This is a manifold-js-only sandbox API; the standalone paint tools (`partwright.paint*`) remain for click/coordinate painting and run between code runs.
 
+#### Surface textures in code — `api.surface.*`
+
+Just like paint, **surface textures** can live in the code instead of being baked: `api.surface.fuzzy / .knit / .cable / .waffle / .fur / .woven / .voronoi / .smooth` (or the generic `api.surface.apply('knit', {…})`). Each call records a texture op applied to the **final returned mesh**, in order — a parametric, non-baking counterpart of the `applyFuzzySkin` / `applyKnitTexture` / … tools (same options; size-relative defaults fill in omissions).
+
+```js
+const { Manifold } = api;
+api.surface.knit({ stitchWidth: 1.2, amplitude: 0.6 });
+return Manifold.sphere(10, 64);
+```
+
+Textures are expensive, so they're **memoized and gated**: an unchanged model renders the cached textured result instantly; after a code/param/op change the viewport shows the **base mesh** plus a **"⟳ Textures stale — Re-apply"** pill — press it to recompute on demand (geometry stays snappy; the slow texture only runs when asked). manifold-js-only. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
+
 ### Primitive origins and orientations
 
 ```

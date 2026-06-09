@@ -122,6 +122,7 @@ import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionF
 import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, rotateAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
+import { surfaceCacheStatus, computeChain, type SurfaceOp } from './surface/surfaceOps';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
 import { initPlaceUI } from './ui/placeModal';
@@ -191,7 +192,7 @@ import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
-import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
+import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
 import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
@@ -457,6 +458,16 @@ const partMeshCache = new Map<string, PartMeshCacheEntry>();
 let geometryDataEl: HTMLElement;
 // Viewport overlay pill — shows printability issues after each successful run.
 let printabilityIndicatorEl: HTMLElement | null = null;
+// Viewport overlay pill — shown when a run's `api.surface.*` texture chain is
+// NOT in the memo cache (a "sticky" miss): we render the base mesh and let the
+// user press this to recompute the (potentially slow) texture on demand. See
+// the surfaceOps integration in runCodeSync.
+let surfaceReapplyEl: HTMLElement | null = null;
+// The base mesh + op-chain + base identity for the current run's pending
+// (uncomputed) surface textures. Set when a run leaves textures stale; consumed
+// by the Re-apply handler. Null when there's nothing pending.
+let pendingSurface: { base: MeshData; ops: SurfaceOp[]; baseKey: string; src: string } | null = null;
+let surfaceReapplyBusy = false;
 // The disconnected-components warning is surfaced as a transient toast (recorded
 // in the Diagnostic Log) rather than the persistent pill. Track the last one we
 // toasted so re-runs of an unchanged broken model don't re-spam the same toast;
@@ -4293,6 +4304,18 @@ async function main() {
   printabilityIndicatorEl.title = 'This model has structural issues that may prevent a clean 3D print. Open the ⚠ Diagnostic Log in the toolbar for details.';
   printabilityIndicatorEl.style.display = 'none';
   viewportPane.appendChild(printabilityIndicatorEl);
+
+  // Surface "Re-apply" pill — a persistent status indicator (not a transient
+  // toast) shown when the model declares `api.surface.*` textures whose result
+  // isn't cached for the current code/params. Until pressed, the viewport shows
+  // the untextured base mesh; pressing it computes the texture chain on demand.
+  surfaceReapplyEl = document.createElement('button');
+  surfaceReapplyEl.className = 'absolute top-2 left-2 z-20 text-xs text-sky-200 font-mono bg-zinc-900/85 px-2 py-0.5 rounded border border-sky-700/60 cursor-pointer hover:bg-zinc-800/90 transition-colors';
+  surfaceReapplyEl.textContent = '⟳ Textures stale — Re-apply';
+  surfaceReapplyEl.title = 'This model declares api.surface.* textures that haven’t been computed for the current code. The base shape is shown; click to apply the texture(s).';
+  surfaceReapplyEl.style.display = 'none';
+  surfaceReapplyEl.addEventListener('click', () => { void reapplySurfaceTextures(); });
+  viewportPane.appendChild(surfaceReapplyEl);
 
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
@@ -13605,6 +13628,82 @@ async function main() {
     });
   }
 
+  // === api.surface.* — code-declared surface textures (memoized, sticky) ===
+
+  /** Base identity for the surface memo cache: code + customizer params. Any
+   *  change here re-keys the chain (→ a cache miss → the Re-apply pill), since
+   *  either changes the base geometry the textures sit on. */
+  function surfaceBaseKey(src: string): string {
+    return simpleHash(`${src} ${JSON.stringify(currentParamValues ?? {})}`);
+  }
+
+  function hideSurfaceReapplyPill(): void {
+    pendingSurface = null;
+    if (surfaceReapplyEl) surfaceReapplyEl.style.display = 'none';
+  }
+
+  /** Resolve a run's `api.surface.*` chain against the memo cache. Mutates
+   *  `result` in place: on a hit, swaps in the textured mesh (and drops the
+   *  stale base Manifold so the downstream reconstructs from it); on a miss,
+   *  leaves the base mesh and raises the sticky Re-apply pill. */
+  function applySurfaceTextures(result: MeshResult, src: string): void {
+    const ops = result.surfaceOps;
+    if (!ops || ops.length === 0 || !result.mesh) {
+      hideSurfaceReapplyPill();
+      return;
+    }
+    const base = result.mesh;
+    const baseKey = surfaceBaseKey(src);
+    const status = surfaceCacheStatus(baseKey, ops);
+    if (status.cached && status.mesh) {
+      result.mesh = status.mesh;
+      // These displaced meshes round-trip through Manifold.ofMesh like the bake
+      // path; clearing manifold makes the run handler rebuild from the textured
+      // mesh (and fall back to render-only if it isn't watertight).
+      result.manifold = null;
+      hideSurfaceReapplyPill();
+    } else {
+      pendingSurface = { base, ops, baseKey, src };
+      if (surfaceReapplyEl) {
+        surfaceReapplyEl.textContent = ops.length > 1
+          ? `⟳ ${ops.length} textures stale — Re-apply`
+          : '⟳ Texture stale — Re-apply';
+        surfaceReapplyEl.style.display = '';
+      }
+    }
+  }
+
+  /** Force-compute the pending surface chain (the Re-apply button), then re-run
+   *  the code so the resolution path picks up the now-cached textured mesh. */
+  async function reapplySurfaceTextures(): Promise<void> {
+    if (!pendingSurface || surfaceReapplyBusy) return;
+    surfaceReapplyBusy = true;
+    const { base, ops, baseKey, src } = pendingSurface;
+    if (surfaceReapplyEl) surfaceReapplyEl.style.display = 'none';
+    const progressId = startProgress({
+      title: ops.length > 1 ? `Applying ${ops.length} surface textures…` : 'Applying surface texture…',
+      indeterminate: false,
+    });
+    try {
+      await computeChain(base, baseKey, ops, (f) => updateProgress(progressId, f));
+    } catch (e) {
+      endProgress(progressId);
+      surfaceReapplyBusy = false;
+      const msg = e instanceof Error ? e.message : String(e);
+      showToast(`Surface texture failed: ${msg}`, { variant: 'warn', source: 'app' });
+      // Re-raise the pill so the user can retry (if the run hasn't moved on).
+      if (surfaceReapplyEl && pendingSurface) surfaceReapplyEl.style.display = '';
+      return;
+    }
+    endProgress(progressId);
+    surfaceReapplyBusy = false;
+    // Cache is warm — re-run the *exact same source* so the resolution path
+    // recomputes an identical base key and hits the cache (renders textured).
+    // Using the stored src (not getValue()) avoids any editor normalization
+    // shifting the key into a fresh miss.
+    void runCodeSync(src, { preserveCamera: true });
+  }
+
   function runCode(code?: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean } = {}) {
     // Never execute the sharer's untrusted code in a read-only preview. Fork first.
     if (isSharedPreview()) return;
@@ -13749,6 +13848,7 @@ async function main() {
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
       if (printabilityIndicatorEl) printabilityIndicatorEl.style.display = 'none';
+      hideSurfaceReapplyPill();
       lastDisconnectedWarning = null;
       geometryDataEl.textContent = JSON.stringify({
         status: 'error',
@@ -13789,6 +13889,15 @@ async function main() {
       clearEditorDiagnostics();
       clearEditorErrorPanel(editorErrorPanel);
       pendingEditorError = null;
+      // === Surface textures declared in code (api.surface.*) ===
+      // The Worker recorded an op chain but didn't touch the mesh. Apply it on
+      // this thread, but only from the memo cache — a slow texture must not run
+      // on every keystroke. On a cache hit, swap the textured mesh in so all the
+      // downstream wiring (currentManifold reconstruction, paint resolution,
+      // stats) sees the final geometry. On a miss, keep the base mesh and raise
+      // the "Re-apply" pill; the user computes it on demand. The base identity
+      // folds in code + customizer params so any geometry change re-stales it.
+      applySurfaceTextures(result, src);
       // Bump the paint generation so any in-flight subdivision worker — started
       // against the previous base mesh — discards its result instead of stamping
       // a refined mesh built from the OLD base over result.mesh.

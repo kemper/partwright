@@ -29,6 +29,39 @@ apply→save→verify workflow:
 
 ---
 
+## Textures as code — `api.surface.*` (non-baking, in a manifold-js session)
+
+The tool calls above (`applyFuzzySkin`, …) **bake** the textured mesh into
+`api.imports[0]` and replace the editor code. As an alternative, in a
+**manifold-js** session you can declare the same textures **in the model code**
+so they stay parametric — edit a number, re-render, no lost source:
+
+```js
+const { Manifold } = api;
+const body = Manifold.sphere(10, 64);
+api.surface.knit({ stitchWidth: 1.2, amplitude: 0.6 });  // texture the returned mesh
+return body;
+```
+
+- Available ops: `api.surface.fuzzy`, `.knit`, `.cable`, `.waffle`, `.fur`,
+  `.woven`, `.voronoi`, `.smooth`. Each takes the **same options** as its
+  `apply*` tool (size-relative defaults fill in anything you omit). There's also
+  a generic `api.surface.apply('knit', { … })` form.
+- Calls are recorded, not applied during evaluation — they texture the **final
+  returned mesh** in the order called (a terminal skin; you can chain several).
+- Surface textures are **expensive**, so they're **memoized and gated**: a
+  render reuses the cached textured result when the code, params and ops are
+  unchanged. When they change, the viewport shows the **base (untextured) mesh**
+  and a **"⟳ Textures stale — Re-apply"** pill in the top-left corner. Press it
+  (or call the tool again from the panel) to recompute on demand. This keeps
+  editing snappy — geometry re-renders instantly, the slow texture only runs
+  when you ask.
+- This is the in-code counterpart of the bake tools, mirroring `api.paint.*`
+  (see [colors](/ai/colors.md)). Use it when you want the texture to live with
+  the code; use the `apply*` tools when you want a one-shot baked result.
+
+---
+
 ## When to apply textures
 
 Apply after the geometry is finalised and before the final paint pass (or after

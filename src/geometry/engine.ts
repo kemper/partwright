@@ -351,6 +351,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
         ? new Map(labelColorEntries)
         : undefined,
       paintOps: (msg.paintOps as MeshResult['paintOps']) ?? undefined,
+      surfaceOps: (msg.surfaceOps as MeshResult['surfaceOps']) ?? undefined,
       renderOnly: !!msg.renderOnly,
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
       paramsSchema: (msg.paramsSchema as MeshResult['paramsSchema']) ?? undefined,
