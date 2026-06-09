@@ -493,6 +493,22 @@ The `color` is a hex string (`'#rrggbb'` / `'#rgb'`, the same form a `color` par
 
 Model-declared colors are a derived **underlay**: manual paint (the paint tools / `paintByLabel`) composites on top as an optional override. They are **not** written into the saved paint sidecar — they come from the code, so re-running re-derives them. Inspect the active set with `partwright.getModelColors()` → `{ count, colors: [{ name, color, triangleCount }] }`; an empty `triangleCount` for a name means that label's triangles were consumed by a later boolean (check `listLabels().lostLabels`). See **[/ai/colors.md](/ai/colors.md)**.
 
+#### Geometric paint in code — `api.paint.*`
+
+Beyond labels, you can declare **geometric** paint right in the model code with `api.paint.*` — the in-code counterparts of the `paintInBox` / `paintSlab` / `paintInCylinder` / `paintByLabel` tools. Each call **records** a region (it doesn't mutate the mesh); after the run, Partwright resolves it against the fresh tessellation and renders it as part of the same model-color underlay as `api.label({color})`. Because the colors live in the code, there's no separate paint pass and **no paint sidecar** — re-running re-derives them, and they survive parameter changes. Later calls win on overlap.
+
+```js
+const { Manifold } = api;
+const part = Manifold.cube([30, 30, 30], true).refine(16);   // refine so selectors have fine triangles
+api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });        // a flat band (axis or normal)
+api.paint.box({ min: [-15, -15, -15], max: [0, 0, 0], color: [0.23, 0.51, 0.96] }); // axis-aligned box
+api.paint.cylinder({ center: [0, 0], rMin: 0, rMax: 6, zMin: -15, zMax: 15, color: '#22c55e' }); // (annular) shell
+api.paint.label('body', '#888');   // recolor an existing api.label(...) region
+return part;
+```
+
+`color` accepts the same hex string or `[r,g,b]` (0..1) as `api.label`. These selectors resolve **by triangle**, so a coarse mesh paints whole facets — `refine(n)` (or higher segment counts) gives crisp edges, exactly like the paint tools. Arguments are validated strictly (unknown keys rejected, bad color/axis throw an actionable error). This is a manifold-js-only sandbox API; the standalone paint tools (`partwright.paint*`) remain for click/coordinate painting and run between code runs.
+
 ### Primitive origins and orientations
 
 ```

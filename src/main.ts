@@ -186,7 +186,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
@@ -554,7 +554,7 @@ type PartMeshCacheEntry = {
   meshData: MeshData;
   labelMap: Map<string, Set<number>> | null;
   lostLabels: string[] | null;
-  modelColorDecls: Array<{ name: string; color: [number, number, number]; triangles: Set<number> }>;
+  modelColorDecls: Array<{ name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor }>;
   paramsSchema: ParamSpec[] | undefined;
 };
 const PART_MESH_CACHE_SIZE = 8;
@@ -1286,8 +1286,22 @@ function rebuildPaintedGeometry(): void {
     const { triangles, perTriColors } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
     setRegionTriangles(region.id, triangles, perTriColors);
   }
+  reresolveModelRegions(mesh, adjacency, parentToChildren);
   paintedColorRefresh();
   syncLockState();
+}
+
+/** Re-resolve the code-declared color underlay (`api.label({color})` /
+ *  `api.paint.*`) against a (possibly subdivided) mesh. The refine paths
+ *  subdivide the working mesh to follow smooth user strokes, which invalidates
+ *  the underlay's triangle indices unless we re-resolve them here from their
+ *  descriptors — geometric selectors against `mesh` directly, byLabel through
+ *  `parentToChildren` from the run's labelMap. No-op when no underlay exists. */
+function reresolveModelRegions(mesh: MeshData, adjacency: AdjacencyGraph | null, parentToChildren: Map<number, number[]> | null): void {
+  for (const region of getModelRegions()) {
+    const { triangles } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
+    setModelRegionTriangles(region.id, triangles);
+  }
 }
 
 /** Incrementally refine the CURRENT mesh by a single newly-added stroke, instead
@@ -1331,6 +1345,7 @@ function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brush
       setRegionTriangles(region.id, triangles, perTriColors);
     }
   }
+  reresolveModelRegions(mesh, adjacency, parentToChildren);
   paintedColorRefresh();
   syncLockState();
 }
@@ -1574,6 +1589,7 @@ async function appendStrokeRefineAsync(
         setRegionTriangles(region.id, triangles, perTriColors);
       }
     }
+    reresolveModelRegions(mesh, adjacency, parentToChildren);
     paintedColorRefresh();
     syncLockState();
   } finally {
@@ -1635,6 +1651,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
         setRegionTriangles(region.id, triangles, perTriColors);
       }
     }
+    reresolveModelRegions(mesh, adjacency, parentToChildren);
     paintedColorRefresh();
     syncLockState();
   } finally {
@@ -1790,7 +1807,7 @@ async function saveCurrentVersion(label?: string): Promise<
         meshData: meshToCache,
         labelMap: currentLabelMap,
         lostLabels: currentLostLabels,
-        modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles) })),
+        modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles), descriptor: r.descriptor })),
         paramsSchema: currentParamSchema ?? undefined,
       };
       partMeshCache.delete(version.id);
@@ -4868,7 +4885,7 @@ async function main() {
           meshData: currentMeshData,
           labelMap: currentLabelMap,
           lostLabels: currentLostLabels,
-          modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles) })),
+          modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles), descriptor: r.descriptor })),
           paramsSchema: currentParamSchema ?? undefined,
         };
         partMeshCache.delete(version.id);
@@ -13839,11 +13856,29 @@ async function main() {
       // — passing [] when nothing was declared clears any prior run's layer.
       // This layer never locks the editor and is never serialized; the user's
       // manual paint composites on top of it. See src/color/regions.ts.
-      const modelColorDecls: { name: string; color: [number, number, number]; triangles: Set<number> }[] = [];
+      const modelColorDecls: { name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor }[] = [];
       if (result.labelColors && currentLabelMap) {
         for (const [name, color] of result.labelColors) {
           const triangles = currentLabelMap.get(name);
           if (triangles && triangles.size > 0) modelColorDecls.push({ name, color, triangles });
+        }
+      }
+      // Paint declared in code via api.paint.* (box / slab / cylinder / label).
+      // Resolve each descriptor against this run's mesh — exactly like a user
+      // paint region, but fed into the model underlay so it stays derived from
+      // code and is never serialized to the paint sidecar. byLabel reads the
+      // labelMap captured just above; the geometric selectors need only the mesh
+      // (adjacency built lazily for the rare descriptor kind that wants it).
+      if (result.paintOps && result.paintOps.length > 0) {
+        const mesh = result.mesh;
+        let paintAdjacency: AdjacencyGraph | null = null;
+        for (const op of result.paintOps) {
+          const d = op.descriptor as RegionDescriptor;
+          if (!paintAdjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) {
+            paintAdjacency = buildAdjacency(mesh);
+          }
+          const { triangles } = resolveDescriptorTriangles(d, mesh, paintAdjacency, null);
+          if (triangles.size > 0) modelColorDecls.push({ name: op.name, color: op.color, triangles, descriptor: d });
         }
       }
       setModelColorRegions(modelColorDecls);
