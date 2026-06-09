@@ -95,6 +95,41 @@ function cellWall(gx: number, gz: number, jitter: number, wallWidth: number, see
   return 1 - smoothstep(0, wallWidth, edge);
 }
 
+/** Parameters for evaluating the Voronoi cell-wall field at a point. */
+interface VoronoiFieldParams {
+  /** Cell grid pitch in the point's own coordinate space. */
+  cellSize: number;
+  /** Wall band width as a fraction of cellSize. */
+  wallWidth: number;
+  /** Seed jitter [0,1]. */
+  jitter: number;
+  /** Deterministic seed. */
+  seed: number;
+  /** Pre-computed cos/sin of the grain rotation (XY plane). */
+  cosA: number;
+  sinA: number;
+}
+
+/** Triplanar-blended cell-wall intensity at a world point with a surface normal
+ *  — 1 on a cell boundary, 0 in the cell interior. */
+function voronoiWallAt(
+  px: number, py: number, pz: number,
+  nx: number, ny: number, nz: number,
+  p: VoronoiFieldParams,
+): number {
+  const { pairs, weights } = triplanarCoords(px, py, pz, nx, ny, nz);
+  let wall = 0;
+  for (let i = 0; i < 3; i++) {
+    const [s, t] = pairs[i];
+    const gx = (p.cosA * s + p.sinA * t) / p.cellSize;
+    const gz = (-p.sinA * s + p.cosA * t) / p.cellSize;
+    // Offset the seed per projection so the three planes carry independent
+    // cell patterns (avoids a mirrored pattern across the triplanar seams).
+    wall += weights[i] * cellWall(gx, gz, p.jitter, p.wallWidth, p.seed + i * 1013);
+  }
+  return wall;
+}
+
 export function voronoiShell(mesh: MeshData, opts: VoronoiShellOptions): MeshData {
   const amplitude = Math.max(0, opts.amplitude);
   const cellSize = Math.max(1e-4, opts.cellSize);
@@ -121,21 +156,13 @@ export function voronoiShell(mesh: MeshData, opts: VoronoiShellOptions): MeshDat
     : extractPositions(base);
   const normals = computeVertexNormals(positions, base.triVerts);
   const sign = raised ? 1 : -1;
+  const field: VoronoiFieldParams = { cellSize, wallWidth, jitter, seed, cosA, sinA };
 
   for (let v = 0; v < base.numVert; v++) {
     const px = positions[v * 3], py = positions[v * 3 + 1], pz = positions[v * 3 + 2];
     const nx = normals[v * 3], ny = normals[v * 3 + 1], nz = normals[v * 3 + 2];
 
-    const { pairs, weights } = triplanarCoords(px, py, pz, nx, ny, nz);
-    let wall = 0;
-    for (let i = 0; i < 3; i++) {
-      const [s, t] = pairs[i];
-      const gx = (cosA * s + sinA * t) / cellSize;
-      const gz = (-sinA * s + cosA * t) / cellSize;
-      // Offset the seed per projection so the three planes carry independent
-      // cell patterns (avoids a mirrored pattern across the triplanar seams).
-      wall += weights[i] * cellWall(gx, gz, jitter, wallWidth, seed + i * 1013);
-    }
+    const wall = voronoiWallAt(px, py, pz, nx, ny, nz, field);
     const d = sign * amplitude * wall;
 
     positions[v * 3]     = px + nx * d;

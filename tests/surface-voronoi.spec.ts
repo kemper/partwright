@@ -57,6 +57,29 @@ test.describe('Voronoi shell surface modifier', () => {
     expect(result.after.x[1]).toBeLessThanOrEqual(result.before.x[1] + 0.05);
   });
 
+  test('applyVoronoiLamp cuts a connected, see-through perforated shell', async ({ page }) => {
+    const result = await page.evaluate(async ([code]) => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('voronoi-lamp');
+      await pw.run(code);
+      const solid = pw.getGeometryData().triangleCount;
+      const r = await pw.applyVoronoiLamp({ cellSize: 9, wallThickness: 1.8, strutWidth: 0.3, resolution: 120 });
+      const stats = pw.getGeometryData();
+      return { r, stats, src: pw.getCode(), solid };
+    }, ['const { Manifold } = api;\nreturn Manifold.cylinder(40, 15, 15, 64);']);
+
+    expect(result.r.error).toBeUndefined();
+    expect(result.r.ok).toBe(true);
+    // Switched to the voxel engine with a decode program.
+    expect(result.src).toContain('voxels.decode(');
+    // Real holes were cut → a watertight shell that is essentially one connected
+    // web (floater prune keeps the component count low, not the hundreds the raw
+    // cut leaves behind).
+    expect(result.stats.isManifold).toBe(true);
+    expect(result.stats.componentCount).toBeLessThanOrEqual(5);
+    expect(result.stats.triangleCount).toBeGreaterThan(100);
+  });
+
   test('Surface panel Voronoi tab applies on the whole model', async ({ page }) => {
     await page.evaluate(async ([code]) => {
       const pw = (window as unknown as { partwright: any }).partwright;

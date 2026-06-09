@@ -20,6 +20,7 @@ apply→save→verify workflow:
 |-----------|--------------|-------|
 | `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
+| `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. Switches the session to the `voxel` engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
 
 > **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
 > BREP/replicad model this discards the parametric source (and, for BREP, STEP
@@ -233,7 +234,8 @@ over jittered grid seeds, so it follows the surface like the other textures.
 
 > **This is a relief, not a cutaway.** It raises or engraves cell walls along the
 > surface; it does **not** cut through-holes to leave an open strut lattice. For
-> an actually-perforated Voronoi shell, model the openings with boolean cuts.
+> an actually-perforated, see-through Voronoi shell (a "Voronoi lamp"), use
+> [`applyVoronoiLamp`](#applyvoronoilamp) instead.
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
@@ -251,6 +253,48 @@ over jittered grid seeds, so it follows the surface like the other textures.
 - Lampshade shell: `cellSize=d*0.15`, `wallWidth=0.15`, `amplitude=d*0.04`
 - Cracked mud / dry earth: `cellSize=d*0.1`, `wallWidth=0.2`, `raised=false`
 - Regular grid (waffle-like): `jitter=0`, `cellSize=d*0.08`
+
+> Want **actual holes** (a see-through Voronoi lamp), not a raised pattern? Use
+> [`applyVoronoiLamp`](#applyvoronoilamp).
+
+---
+
+## applyVoronoiLamp
+
+```
+applyVoronoiLamp({ cellSize?, wallThickness?, strutWidth?, resolution?,
+                   jitter?, grainAngleDeg?, seed?, smooth? })
+```
+
+The **cutaway** counterpart to `applyVoronoiShell`: turns a solid model into a
+true perforated Voronoi shell — a thin hollow wall with the cell interiors cut
+clean through, leaving a see-through strut network (the classic 3D-printed
+Voronoi lamp / planter). Because it opens real holes it runs on the **voxel
+engine**, so the result switches the session to the `voxel` language (paintable,
+`.vox`-exportable, re-blockable).
+
+Start from a **closed solid** (vase, sphere, vessel). It hollows + perforates in
+one step.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `cellSize` | ~16% of diagonal | Approx spacing between cells (world units). |
+| `wallThickness` | ~3% of diagonal | Shell thickness — how thick the struts are through the wall. |
+| `strutWidth` | 0.3 | Kept edge-network width as a fraction of cellSize [0.05–0.6]. Smaller = thinner struts, bigger windows. |
+| `resolution` | 110 | Voxels along the longest axis [16–200]. Higher = crisper holes, slower. Thin struts need higher resolution. |
+| `jitter` | 1 | Cell irregularity [0–1]. 1 = irregular Voronoi; 0 = a regular grid of windows. |
+| `grainAngleDeg` | 0 | Rotate the cell pattern in the XY plane. |
+| `seed` | 1 | Deterministic seed — change to reshuffle the cell layout. |
+| `smooth` | true | Round the struts with a smoothing pass. |
+
+**Look guidance:**
+- Voronoi lamp: `cellSize=d*0.18`, `wallThickness=d*0.03`, `strutWidth=0.25`, `resolution=140`
+- Chunky planter: `cellSize=d*0.22`, `wallThickness=d*0.05`, `strutWidth=0.4`
+- Fine lattice: `cellSize=d*0.1`, `strutWidth=0.2`, `resolution=180` (slow)
+
+**If windows don't open or struts look broken:** raise `resolution`; lower
+`strutWidth` for bigger holes; raise `wallThickness`/`strutWidth` if struts
+disconnect. Verify with `renderViews`.
 
 ---
 

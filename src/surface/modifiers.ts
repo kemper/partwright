@@ -20,6 +20,7 @@ import { waffleStitch, type WaffleStitchOptions } from './waffleStitch';
 import { furVelvet, type FurVelvetOptions } from './furVelvet';
 import { wovenFabric, type WovenFabricOptions } from './wovenFabric';
 import { voronoiShell, type VoronoiShellOptions } from './voronoiShell';
+import { voronoiLattice, type VoronoiLampOptions } from './voronoiLattice';
 import { smoothSurface, type SmoothOptions } from './smoothSurface';
 import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
 import { extractPositions, bboxOf, subdivideWithMask } from './meshSubdivide';
@@ -28,7 +29,7 @@ import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 
-export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'smooth' | 'voxelize';
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize';
 
 export interface ModifierManifoldResult {
   kind: 'manifold';
@@ -120,6 +121,7 @@ export { type WaffleStitchOptions };
 export { type FurVelvetOptions };
 export { type WovenFabricOptions };
 export { type VoronoiShellOptions };
+export { type VoronoiLampOptions };
 
 export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierManifoldResult {
   const baked = fuzzySkin(mesh, opts);
@@ -439,6 +441,25 @@ export function defaultVoronoiOptions(mesh: MeshData): Required<VoronoiShellOpti
   };
 }
 
+export interface VoronoiLampModifierOptions extends VoronoiLampOptions {
+  /** Emit a `.smooth()` call so the struts render rounded. Default true. */
+  smooth?: boolean;
+}
+
+export function defaultVoronoiLampOptions(mesh: MeshData): Required<VoronoiLampModifierOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    cellSize: d * 0.16,
+    wallThickness: d * 0.03,
+    strutWidth: 0.3,
+    resolution: 110,
+    jitter: 1,
+    grainAngleDeg: 0,
+    seed: 1,
+    smooth: true,
+  };
+}
+
 export function applyCable(mesh: MeshData, opts: CableKnitOptions): ModifierManifoldResult {
   const baked = cableKnit(mesh, opts);
   return {
@@ -571,6 +592,29 @@ export function applyTransform(
       `${label} on ${today()}.`,
       `The transformed mesh is baked onto api.imports[0].`,
     ]),
+  };
+}
+
+export function applyVoronoiLamp(mesh: MeshData, opts: VoronoiLampModifierOptions): ModifierVoxelResult {
+  const grid = voronoiLattice(mesh, opts);
+  // Encode occupancy + colors first, then flip to smooth so the preview mesh
+  // matches the emitted `v.smooth()` at runtime (mirrors applyVoxelize).
+  const encoded = encodeGrid(grid);
+  const smooth = opts.smooth !== false;
+  if (smooth) grid.smooth();
+  const smoothCall = smooth ? `\nv.smooth();` : '';
+  const code = `// Voronoi lamp (perforated shell) from the current model on ${today()}.
+// Cell ~${opts.cellSize.toFixed(2)}, wall ${opts.wallThickness.toFixed(2)}, ${(grid.size).toLocaleString()} voxels.
+// Edit below — toggle smoothing, paint the struts, or .vox export.
+const { voxels } = api;
+const v = voxels.decode(${JSON.stringify(encoded)});${smoothCall}
+return v;
+`;
+  return {
+    kind: 'voxel',
+    label: smooth ? 'voronoi lamp (smooth)' : 'voronoi lamp',
+    code,
+    previewMesh: meshGrid(grid),
   };
 }
 

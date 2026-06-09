@@ -1533,6 +1533,41 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'applyVoronoiLamp',
+    description: `Turn the current model into a **true perforated Voronoi shell** — a "Voronoi lamp" / planter: a thin hollow wall with the cell interiors cut clean through, leaving a see-through network of struts along the cell edges. Saves a new version.
+
+**This is the real cutaway, not a texture.** Unlike \`applyVoronoiShell\` (which only displaces the surface — a relief, no holes), this opens actual windows through the wall. Because it changes topology it is built on the voxel engine, so the result switches the session to the \`voxel\` language (paintable, \`.vox\`-exportable).
+
+**When to use:** when the user wants a Voronoi lamp / lampshade, a perforated planter, or any see-through cell-lattice shell. Start from a closed solid (vase, sphere, vessel).
+
+**Key parameters:**
+- cellSize: approximate spacing between cells, world units (~16% of diagonal)
+- wallThickness: shell thickness in world units (~3% of diagonal); the struts are this thick
+- strutWidth: kept edge-network width as a fraction of cellSize [0.05–0.6] (default 0.3; smaller = thinner struts / bigger windows)
+- resolution: voxels along the longest axis (default 110). Higher = crisper holes but slower; thin struts need higher resolution
+- jitter: cell irregularity [0–1] (1 = irregular Voronoi, default; 0 = a regular grid of windows)
+- grainAngleDeg, seed: orient / reshuffle the cell layout
+- smooth: round the struts (default true)
+
+**Return:** { ok, label, geometry, warnings? }. Verify with renderViews — check the windows are open (componentCount may be >1 only if struts disconnect; usually 1).
+
+**Workflow guidance:** if windows don't open or struts look chunky, raise resolution and/or lower strutWidth. If struts break apart, increase wallThickness or strutWidth.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        cellSize: { type: 'number', description: 'Approximate spacing between cells in world units. Default ~16% of diagonal.' },
+        wallThickness: { type: 'number', description: 'Shell wall thickness in world units (strut thickness through the wall). Default ~3% of diagonal.' },
+        strutWidth: { type: 'number', description: 'Kept edge-network width as a fraction of cellSize [0.05–0.6]. Default 0.3. Smaller = thinner struts, larger windows.', minimum: 0.05, maximum: 0.6 },
+        resolution: { type: 'integer', description: 'Voxels along the longest axis [16–200]. Higher = crisper holes, slower. Default 110.', minimum: 16, maximum: 200 },
+        jitter: { type: 'number', description: 'Cell irregularity [0–1]. 1 = irregular Voronoi (default); 0 = a regular grid.', minimum: 0, maximum: 1 },
+        grainAngleDeg: { type: 'number', description: 'Rotate the cell pattern in the XY plane, degrees. Default 0.' },
+        seed: { type: 'integer', description: 'Deterministic seed — change to reshuffle the cell layout. Default 1.' },
+        smooth: { type: 'boolean', description: 'Round the struts with a smoothing pass. Default true.' },
+        preserveColor: { type: 'boolean', description: 'Sample model paint onto the voxel struts. Default true.' },
+      },
+    },
+  },
+  {
     name: 'smoothModel',
     description: `Smooth/round the current model with a Taubin λ/μ pass — softens sharp edges and facets without the shrinkage a naive Laplacian causes. Saves a new version.
 
@@ -1726,7 +1761,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -2230,6 +2265,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.applyWovenFabric(input);
     case 'applyVoronoiShell':
       return api.applyVoronoiShell(input);
+    case 'applyVoronoiLamp':
+      return api.applyVoronoiLamp(input);
     case 'smoothModel':
       return api.smoothModel(input);
     case 'voxelizeModel':
