@@ -323,7 +323,8 @@ await partwright.bakeVoxelsToCode({ label: 'castle' });  // replace with voxels.
   16); `shape` is `'sphere' | 'cube' | 'diamond'`; `spray` scatters a random
   subset; `sprayDensity` 0.05..1. For the `add` tool: `block` is the `[x,y,z]`
   size in voxels (1..32 each) and the block is anchored to the clicked face so a
-  thick block never pokes out the far side of a thin tile. `depth` (0..16) sinks
+  thick block never pokes out the far side of a thin tile. `depth` (≥ 0; the
+  panel slider tops out at 16 but a typed value can go deeper) sinks
   the add block into the surface, and for the box tools extrudes the
   fill/subtract along the clicked face (a `boxAdd` grows a slab that many extra
   layers, a `boxRemove` carves that many deeper); `0` = flush to the face.
