@@ -14,7 +14,7 @@ describe('VoxelGrid.clone', () => {
     g.smooth({ algorithm: 'taubin', iterations: 3, detail: 2 });
     const c = g.clone();
     expect(c.size).toBe(g.size);
-    expect(c.surfacing()).toEqual({ mode: 'smooth', algorithm: 'taubin', iterations: 3, detail: 2, flatBottom: undefined, baseLayers: undefined, lockBox: undefined });
+    expect(c.surfacing()).toEqual({ mode: 'smooth', algorithm: 'taubin', iterations: 3, detail: 2, strength: 1, flatBottom: undefined, baseLayers: undefined, lockBox: undefined });
     // Mutating the clone must not touch the original.
     c.remove(0, 0, 0);
     c.set(9, 9, 9, '#fff');

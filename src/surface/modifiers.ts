@@ -25,6 +25,7 @@ import { smoothSurface, type SmoothOptions } from './smoothSurface';
 import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
 import { extractPositions, bboxOf, subdivideWithMask } from './meshSubdivide';
 import { encodeGrid } from '../geometry/voxel/grid';
+import { formatSurfacingCall } from '../geometry/voxel/editCodegen';
 import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
@@ -684,7 +685,8 @@ export function applyVoxelize(mesh: MeshData, opts: VoxelizeModifierOptions): Mo
   // mesh below matches what the emitted `v.smooth()` produces at runtime.
   const encoded = encodeGrid(grid);
   if (opts.smooth) grid.smooth();
-  const smoothCall = opts.smooth ? `\nv.smooth();` : '';
+  const call = formatSurfacingCall(grid.surfacing());
+  const smoothCall = call ? `\nv${call};` : '';
   const code = `// Voxelized from the current model on ${today()} (resolution ${opts.resolution ?? 32}).
 // Edit below — toggle "Smooth voxels" for rounded corners, or v.fillBox(...) to extend.
 const { voxels } = api;
