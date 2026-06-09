@@ -69,6 +69,12 @@ export interface ImageToVoxelOptions {
    *  `posterizeColors`. Omit / empty / null = keep per-pixel color (or
    *  posterize). Use {@link extractImagePalette} to seed it from the image. */
   palette?: [number, number, number][] | null;
+  /** Modal intent flag: the fixed `palette` above was sourced from the user's
+   *  filament palette ("constrain colours to palette") rather than extracted from
+   *  the image. The conversion itself only reads `palette`; this is persisted so a
+   *  recent-import re-click reopens the modal in constrain mode and re-resolves
+   *  the palette live from the current filament slots. */
+  constrainToPalette?: boolean;
   /** Drop a solid-color background so an opaque photo's subject voxelizes
    *  without its backdrop (the alpha cutoff only catches transparency). */
   removeBackground?: boolean;

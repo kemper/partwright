@@ -190,10 +190,16 @@ full `replicad`-language session) takes the identical hex-or-`[r,g,b]`
 color and feeds the same model-color underlay — so `getModelColors()`
 and export pick it up exactly like the manifold-js path. The color is
 keyed by name and rides through booleans, transforms, and (best-effort)
-fillet/chamfer. (Note: which triangles a label resolves to across a
-fused multi-feature BREP composite is best-effort — see the spatial-
-signature gotcha in `replicad.md` — so the *color* is exact but its
-*coverage* tracks however `paintByLabel` would bucket the same label.)
+fillet/chamfer.
+
+> **Coverage caveat for fused composites.** The *color* you attach is
+> exact, but which triangles a label *resolves to* after `fuseAll` is
+> best-effort — the spatial-signature resolver scrambles on many-feature
+> composites (see gotcha #9 in `replicad.md`). A **single label over the
+> whole shape resolves to ~100% coverage and colors cleanly**; for
+> per-feature multi-color on a fused composite, reach for the coordinate
+> paint selectors (`paintInCylinder` / `paintSlab` / `paintInBox` /
+> `paintNear`) instead, exactly as that gotcha recommends.
 
 SCAD has the same `label()` pattern, but **without** the `{ color }`
 option — a SCAD `label()` is a passthrough wrapper for `paintByLabel`
@@ -523,6 +529,8 @@ partwright.paintInOrientedBox({
 > **Ordering heuristic:** prefer the durable forms (analytic descriptors, `paintByLabel`) so order doesn't matter. If you must use id-baked selectors alongside smoothing paints, commit the mesh-changing ops first (or keep them in a single saved version), since a later subdivision/re-run is what disturbs raw ids.
 
 **Painting a feature that sticks out past a round body — select by radius, not a box plane.** A flat box face cutting across a curved junction (e.g. a handle meeting a cylindrical mug wall) leaves a ragged, stair-stepped boundary, because the box plane and the curved surface disagree. Select by *radial distance from the part's axis* instead — `paintInCylinder({ rMin, rMax, zMin, zMax })` (or a `normalCone` to grab only the outward-facing skin) — so the boundary follows the curve cleanly. Radius-based selection is the canonical tool for inner/outer walls of mugs, vases, and any revolved shape.
+
+> **Non-Z cylinders — `axis`.** `paintInCylinder` runs along **Z** by default (radius in XY, the `zMin..zMax` band along Z). For a part whose round axis points along X or Y, pass `axis: 'x'` or `axis: 'y'` (mirrors `paintSlab`'s axis shorthand) instead of rotating the model: radius is then measured in the plane normal to that axis and the band runs along it. `center` is the `[a,b]` pair in the radial plane (for `axis:'x'` that's `[y,z]`, for `'y'` it's `[z,x]`). The same `axis` field works in `paintPreview({ cylinder: { …, axis } })`.
 
 **Verifying paint before you commit it.** `paintPreview` accepts the same selectors as `paintInBox` / `paintNear` / `paintFaces` *and* the analytic `cylinder` / `slab` forms, *without* adding a region. Default: count-only (free sanity check). Pass `withImage: true` to also get a thumbnail with the candidate triangles tinted bright yellow on top of any existing paint. The `cylinder` / `slab` previews show the **unsmoothed** selection (preview never subdivides) — use it to validate a radial shell or slab offset/thickness in one cheap call before committing the real smoothing paint:
 

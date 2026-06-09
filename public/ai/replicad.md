@@ -218,6 +218,8 @@ const list = BREP.listEdges(shape, filter?);
 // face of a shape; the label survives boolean ops via OCCT's History, and
 // translate/rotate via positional face matching. Fillet/chamfer preserve
 // labels on unchanged faces but drop them on new rounded surfaces.
+// Note: BREP.label takes NO color argument (unlike manifold-js api.label).
+// Replicad models always render gray until you call paintByLabel after runAndSave.
 BREP.label(shape, 'name');                      // wrap a shape with a label
 
 // Self-coloring — pass an optional { color } (hex '#rrggbb' / '#rgb', or an

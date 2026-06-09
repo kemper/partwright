@@ -452,7 +452,12 @@ async function runLabelAwareAsync(
   // order. When the counts disagree (for-loop expansion, conditional
   // statements, runtime-computed names), fall back to auto-named regions
   // for unmatched objects rather than producing wrong labels.
-  const names = resolveLabelNames(objects.length, labelScan, stderr);
+  // When the scanner's top-level statement count diverges from the AMF object
+  // count, lazy-union expanded a for-loop / conditional at runtime and every
+  // object was auto-named — so any label() the user wrote can't reach
+  // paintByLabel. Capture it here to drive a warning diagnostic below.
+  const labelCountMismatch = labelScan.topLevelStatements.length !== objects.length;
+  const names = resolveLabelNames(objects.length, labelScan);
 
   const module = getManifoldModule();
   if (!module) {
@@ -530,6 +535,26 @@ async function runLabelAwareAsync(
         'Apply label() OUTSIDE the boolean to tag the whole result, or refactor the operands ' +
         'into separate top-level statements.',
     });
+  } else if (lostLabels && lostLabels.length > 0) {
+    // Labels were written in source but didn't reach paintByLabel, and it's not
+    // the nested-block case above. The usual cause is a for-loop / conditional
+    // expanding at runtime so the objects got auto-named (labelCountMismatch).
+    // Promote this from the old INFO-on-stderr line (swallowed on success) to a
+    // warning the editor panel and the AI both see.
+    diagnostics.push({
+      message:
+        `These label() names won't reach paintByLabel: ${lostLabels.join(', ')}. ` +
+        (labelCountMismatch
+          ? `The label scanner counted ${labelScan.topLevelStatements.length} top-level statement(s) but ` +
+            `OpenSCAD emitted ${objects.length} object(s) — a for-loop or conditional expanded at runtime, ` +
+            'so those objects were auto-named.'
+          : 'They were declared in source but no matching object came back from OpenSCAD.'),
+      severity: 'warning',
+      source: 'OpenSCAD',
+      hint:
+        'Apply label() to a single top-level statement that wraps the loop/conditional result, ' +
+        'or unroll the loop so each labelled object is its own top-level statement.',
+    });
   }
   return {
     mesh: canonical,
@@ -546,17 +571,14 @@ async function runLabelAwareAsync(
 function resolveLabelNames(
   amfCount: number,
   labelScan: ReturnType<typeof scanScadLabels>,
-  stderr: string[],
 ): (string | null)[] {
   const stmts = labelScan.topLevelStatements;
   if (stmts.length !== amfCount) {
     // The scanner's view of top-level statements diverges from what
     // lazy-union actually emitted — common when for-loops or conditionals
-    // expand at runtime. Log once for diagnostics, then auto-name.
-    stderr.push(
-      `INFO: label scanner counted ${stmts.length} top-level statement(s) but ` +
-      `OpenSCAD emitted ${amfCount} object(s); using auto names for unmatched objects.`,
-    );
+    // expand at runtime. Auto-name; the caller surfaces a warning-level
+    // diagnostic (promoted from the old swallowed INFO-on-stderr line) when
+    // labels were actually dropped as a result.
     return new Array<string | null>(amfCount).fill(null);
   }
   return stmts.map(s => s.labelName);

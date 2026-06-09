@@ -199,7 +199,7 @@ import { openShareModal, renderSharedBanner, renderSharedOverlay } from './share
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
-import { cylinderRefineRegion, findCylinderTriangles } from './color/cylinderPaint';
+import { cylinderRefineRegion, findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
 import { computeFaceGroups } from './color/faceGroups';
 import {
   getSessionIdFromURL,
@@ -896,7 +896,7 @@ function collectRefineRegions(descriptors: RegionDescriptor[]): RefineRegion[] {
     } else if (d.kind === 'box' && descriptorRefines(d)) {
       regions.push(shapeRefineRegion(d.shape ?? 'box', { center: d.center, size: d.size, quaternion: d.quaternion }, d.maxEdge!));
     } else if (d.kind === 'cylinder' && descriptorRefines(d)) {
-      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!));
+      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!, d.axis ?? 'z'));
     }
   }
   return regions;
@@ -1008,8 +1008,8 @@ function resolveDescriptorTriangles(
       // Same triangle collector `paintInCylinder` uses for the live call —
       // re-resolves the shell against the (possibly subdivided) current mesh
       // so smoothing-driven refinement carries forward across re-runs.
-      const { center, rMin, rMax, zMin, zMax, normalCone, coverageMode, maxTriangleArea } = descriptor;
-      return { triangles: findCylinderTriangles(mesh, center, rMin, rMax, zMin, zMax, normalCone, coverageMode ?? 'centroid', maxTriangleArea) };
+      const { center, rMin, rMax, zMin, zMax, normalCone, coverageMode, maxTriangleArea, axis } = descriptor;
+      return { triangles: findCylinderTriangles(mesh, center, rMin, rMax, zMin, zMax, normalCone, coverageMode ?? 'centroid', maxTriangleArea, axis ?? 'z') };
     }
     case 'byLabel': {
       // Labels are runtime state — manifold-3d assigns fresh originalIDs on
@@ -2220,7 +2220,7 @@ async function main() {
   // this in guard() to surface it as { error }. The numeric bounds mirror the
   // clamp* ranges below.
   const RELIEF_COMMON_KEYS = ['widthMm', 'layerHeight', 'baseThickness', 'maxHeight', 'resolution', 'smoothing', 'removeBackground'] as const;
-  const RELIEF_QUANTIZED_KEYS = ['clusters', 'colorSpace', 'dither', 'output', 'shape', 'cornerRadiusMm', 'chamferMm', 'paintingMode', 'invertHeights', 'holes', 'holeEnabled', 'holeDiameterMm', 'holeOffsetMm', 'manualBackground', 'doubleSided', 'backMirror'] as const;
+  const RELIEF_QUANTIZED_KEYS = ['clusters', 'colorSpace', 'dither', 'fixedPalette', 'output', 'shape', 'cornerRadiusMm', 'chamferMm', 'paintingMode', 'invertHeights', 'holes', 'holeEnabled', 'holeDiameterMm', 'holeOffsetMm', 'manualBackground', 'doubleSided', 'backMirror'] as const;
   const RELIEF_PREPROCESS_KEYS = ['brightness', 'contrast', 'saturation', 'levelsLow', 'levelsHigh'] as const;
   const RELIEF_CROP_KEYS = ['left', 'top', 'right', 'bottom'] as const;
   function validateReliefOptionArgs(args: { options?: unknown; quantized?: unknown; preprocess?: unknown; crop?: unknown }, fn: string): void {
@@ -2249,6 +2249,15 @@ async function main() {
       assertBoolean(q.invertHeights, `${fn}(quantized).invertHeights`, { optional: true });
       assertBoolean(q.doubleSided, `${fn}(quantized).doubleSided`, { optional: true });
       assertBoolean(q.backMirror, `${fn}(quantized).backMirror`, { optional: true });
+      // "Constrain to filament palette": an array of [r,g,b] 0–255 triples each
+      // cell snaps to. The clamp re-sanitises, but reject the obviously-wrong
+      // shape here so a typo is loud rather than silently ignored.
+      if (q.fixedPalette !== undefined) {
+        const pal = q.fixedPalette;
+        const ok = Array.isArray(pal) && pal.every(c =>
+          Array.isArray(c) && c.length === 3 && c.every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 255));
+        if (!ok) throw new ValidationError(`${fn}(quantized).fixedPalette must be an array of [r,g,b] triples (0–255). See /ai.md#argument-validation`);
+      }
     }
     if (args.preprocess !== undefined) {
       const p = assertObject(args.preprocess, `${fn}(preprocess)`)!;
@@ -2312,6 +2321,16 @@ async function main() {
         diameterMm: num(q.holeDiameterMm ?? 6, 6),
       })];
     }
+    // Preserve the "constrain to filament palette" snap colours (0–255 triples).
+    // Must be threaded through here — the create path runs options through this
+    // clamp before generateRelief, so dropping it would make the committed model
+    // ignore the palette even though the live preview honoured it.
+    const byte = (v: number) => Math.max(0, Math.min(255, Math.round(num(v, 0))));
+    const fixedPalette = Array.isArray(q.fixedPalette)
+      ? q.fixedPalette
+          .filter(c => Array.isArray(c) && c.length === 3 && c.every(n => Number.isFinite(n)))
+          .map(c => [byte(c[0]), byte(c[1]), byte(c[2])] as [number, number, number])
+      : undefined;
     return {
       clusters: Math.max(2, Math.min(12, Math.floor(num(q.clusters, 5)))),
       colorSpace: q.colorSpace === 'rgb' ? 'rgb' : 'lab',
@@ -2326,6 +2345,7 @@ async function main() {
       manualBackground: q.manualBackground,
       doubleSided: !!q.doubleSided,
       backMirror: q.backMirror !== false,
+      ...(fixedPalette && fixedPalette.length > 0 ? { fixedPalette } : {}),
     };
   }
 
@@ -10957,6 +10977,11 @@ async function main() {
       zMax: number;
       color: [number, number, number];
       name?: string;
+      /** World axis the shell runs along (default 'z'). Mirrors `paintSlab`'s
+       *  axis shorthand: 'x' measures radius in YZ with the band along X, 'y'
+       *  in ZX along Y, 'z' (default) in XY along Z. `center` is the [a,b] pair
+       *  in the radial plane and zMin/zMax are the band along the chosen axis. */
+      axis?: CylinderAxis;
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       topOnly?: boolean;
       coverageMode?: CoverageMode;
@@ -10981,6 +11006,7 @@ async function main() {
       if (typeof opts.zMin !== 'number' || typeof opts.zMax !== 'number') return { error: 'zMin and zMax must be numbers' };
       if (opts.rMin < 0 || opts.rMax <= opts.rMin) return { error: 'paintInCylinder requires rMin >= 0 and rMax > rMin' };
       if (opts.zMax <= opts.zMin) return { error: 'paintInCylinder requires zMax > zMin' };
+      if (opts.axis !== undefined && opts.axis !== 'x' && opts.axis !== 'y' && opts.axis !== 'z') return { error: "paintInCylinder axis must be 'x', 'y', or 'z'" };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] in 0..1' };
       const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
       const coneErr = validateNormalCone(cone);
@@ -10991,6 +11017,7 @@ async function main() {
       if (smoothErr) return { error: smoothErr };
 
       const center = opts.center ?? [0, 0];
+      const axis = opts.axis ?? 'z';
       const coverageMode = opts.coverageMode;
       const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
 
@@ -11007,9 +11034,10 @@ async function main() {
         cone,
         coverageMode,
         opts.maxTriangleArea,
+        axis,
       );
       if (triangles.size === 0) {
-        return { error: `paintInCylinder: no triangles in cylindrical shell (rMin=${opts.rMin}, rMax=${opts.rMax}, z=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or dry-running paintPreview({ cylinder: { rMin, rMax, zMin, zMax } }) to locate the geometry.` };
+        return { error: `paintInCylinder: no triangles in cylindrical shell (axis=${axis}, rMin=${opts.rMin}, rMax=${opts.rMax}, band=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or dry-running paintPreview({ cylinder: { rMin, rMax, zMin, zMax } }) to locate the geometry.` };
       }
 
       const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
@@ -11027,6 +11055,7 @@ async function main() {
           rMax: opts.rMax,
           zMin: opts.zMin,
           zMax: opts.zMax,
+          ...(axis !== 'z' ? { axis } : {}),
           ...(cone ? { normalCone: cone } : {}),
           ...(coverageMode ? { coverageMode } : {}),
           ...(opts.maxTriangleArea !== undefined ? { maxTriangleArea: opts.maxTriangleArea } : {}),
@@ -11037,7 +11066,7 @@ async function main() {
       ));
       scheduleColorRefresh();
       syncLockState();
-      return { id: region.id, name: region.name, triangles: region.triangles.size, smooth, maxEdge };
+      return { id: region.id, name: region.name, triangles: region.triangles.size, axis, smooth, maxEdge };
     },
 
     /** Render a preview of the current model with a candidate region tinted
@@ -11063,7 +11092,7 @@ async function main() {
      *  `view` is forwarded to `renderView` (elevation/azimuth/ortho/size). */
     paintPreview(opts: {
       box?: { min: [number, number, number]; max: [number, number, number] };
-      cylinder?: { center?: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number };
+      cylinder?: { center?: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number; axis?: CylinderAxis };
       slab?: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number };
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       /** Cylinder selector only — mirrors `paintInCylinder.topOnly`. Keeps just
@@ -11120,12 +11149,13 @@ async function main() {
         if (c.rMin < 0 || c.rMax <= c.rMin) return { error: 'cylinder requires rMin >= 0 and rMax > rMin' };
         if (c.zMax <= c.zMin) return { error: 'cylinder requires zMax > zMin' };
         if (c.center !== undefined && (!Array.isArray(c.center) || c.center.length !== 2)) return { error: 'cylinder.center must be [x, y]' };
+        if (c.axis !== undefined && c.axis !== 'x' && c.axis !== 'y' && c.axis !== 'z') return { error: "cylinder.axis must be 'x', 'y', or 'z'" };
         // Resolve topOnly into a cone the same way paintInCylinder does, so the
         // preview's selection matches a topOnly commit instead of over-reporting.
         const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
         const coneErr = validateNormalCone(cone);
         if (coneErr) return { error: coneErr };
-        triangles = collectTrianglesByCylinder(mesh, c.center ?? [0, 0], c.rMin, c.rMax, c.zMin, c.zMax, cone, opts.coverageMode, opts.maxTriangleArea);
+        triangles = collectTrianglesByCylinder(mesh, c.center ?? [0, 0], c.rMin, c.rMax, c.zMin, c.zMax, cone, opts.coverageMode, opts.maxTriangleArea, c.axis ?? 'z');
       } else if (opts.slab !== undefined) {
         const s = opts.slab;
         if (typeof s !== 'object' || s === null) return { error: 'slab must be { axis|normal, offset, thickness }' };
@@ -12333,8 +12363,8 @@ async function main() {
      *  'diamond'; `spray` scatters a random subset; `sprayDensity` is 0.05..1.
      *
      *  The `add` tool uses a block instead of a round brush: `block` is the
-     *  [x,y,z] size in voxels (1..32 each) and `depth` (0..16) is how far the
-     *  block sinks into the clicked surface — 0 attaches it flush to the face
+     *  [x,y,z] size in voxels (1..32 each) and `depth` (≥ 0; no upper limit) is
+     *  how far the block sinks into the clicked surface — 0 attaches it flush to the face
      *  (so a thick block never pokes out the far side of a thin tile).
      *  Returns the resolved brush settings or `{ error }`. */
     setVoxelBrush(opts: { radius?: number; shape?: import('./color/voxelPaint').BrushShape; spray?: boolean; sprayDensity?: number; block?: [number, number, number]; depth?: number } = {}) {
@@ -12789,6 +12819,7 @@ async function main() {
         'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, color, name?}) -- Paint triangles whose centroid is inside a rotated oriented box. Same selector as the UI Box tool.', docs: '/ai/colors.md' },
         'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai/colors.md' },
         'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?}) -- Paint planar slab range', docs: '/ai/colors.md' },
+        'paintInCylinder': { signature: 'paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, color, name?}) -- Paint a cylindrical/annular shell (rMin=0 = solid cylinder). axis (x|y|z, default z) picks the shell axis; band runs zMin..zMax along it.', docs: '/ai/colors.md' },
         'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai/colors.md' },
         'paintExplain':    { signature: 'paintExplain({region, withImage?, view?}) -- Diagnose a committed region -> {triangleCount, area, bbox, centroid, normalHistogram, [thumbnail]}.', docs: '/ai/colors.md' },
         'assertPaint':     { signature: 'assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) -- Verify a previously-painted region -> {passed, failures?}', docs: '/ai/colors.md' },
@@ -13402,52 +13433,12 @@ async function main() {
     cone: { axis: [number, number, number]; angleDeg: number } | undefined,
     coverage: CoverageMode = 'centroid',
     maxArea: number | undefined = undefined,
+    axis: CylinderAxis = 'z',
   ): Set<number> {
-    const adjacency = cone ? buildAdjacency(mesh) : null;
-    let coneAxis: [number, number, number] | null = null;
-    let coneCos = -1;
-    if (cone) {
-      const len = Math.hypot(cone.axis[0], cone.axis[1], cone.axis[2]);
-      coneAxis = [cone.axis[0] / len, cone.axis[1] / len, cone.axis[2] / len];
-      coneCos = Math.cos(cone.angleDeg * Math.PI / 180);
-    }
-    const rMin2 = rMin * rMin, rMax2 = rMax * rMax;
-    const [cx, cy] = center;
-    const result = new Set<number>();
-    const { triVerts, vertProperties, numProp, numTri } = mesh;
-
-    function radial2(x: number, y: number): number {
-      const dx = x - cx, dy = y - cy;
-      return dx * dx + dy * dy;
-    }
-    function inShell(x: number, y: number, z: number): boolean {
-      const r2 = radial2(x, y);
-      return r2 >= rMin2 && r2 <= rMax2 && z >= zMin && z <= zMax;
-    }
-
-    for (let t = 0; t < numTri; t++) {
-      const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
-      const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
-      const bx = vertProperties[v1 * numProp], by = vertProperties[v1 * numProp + 1], bz = vertProperties[v1 * numProp + 2];
-      const cx2 = vertProperties[v2 * numProp], cy2 = vertProperties[v2 * numProp + 1], cz2 = vertProperties[v2 * numProp + 2];
-
-      if (coverage === 'fully_inside') {
-        if (!inShell(ax, ay, az) || !inShell(bx, by, bz) || !inShell(cx2, cy2, cz2)) continue;
-      } else if (coverage === 'any_vertex_inside') {
-        if (!inShell(ax, ay, az) && !inShell(bx, by, bz) && !inShell(cx2, cy2, cz2)) continue;
-      } else {
-        const ccx = (ax + bx + cx2) / 3, ccy = (ay + by + cy2) / 3, ccz = (az + bz + cz2) / 3;
-        if (!inShell(ccx, ccy, ccz)) continue;
-      }
-
-      if (coneAxis && adjacency) {
-        const nx = adjacency.normals[t * 3], ny = adjacency.normals[t * 3 + 1], nz = adjacency.normals[t * 3 + 2];
-        if (coneAxis[0] * nx + coneAxis[1] * ny + coneAxis[2] * nz < coneCos) continue;
-      }
-      if (maxArea !== undefined && triangleArea(t, mesh) > maxArea) continue;
-      result.add(t);
-    }
-    return result;
+    // Delegate to the canonical shell collector (src/color/cylinderPaint.ts) so
+    // the live paint call, the preview, and the post-refine descriptor resolver
+    // all share one implementation — the projection/axis logic can't drift.
+    return findCylinderTriangles(mesh, center, rMin, rMax, zMin, zMax, cone, coverage, maxArea, axis);
   }
 
   /** Produce advisory warnings for geometry that was saved or queried.

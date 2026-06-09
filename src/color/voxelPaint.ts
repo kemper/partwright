@@ -26,6 +26,7 @@ import { generateVoxelImportCode } from '../import/imageToVoxel';
 import { addPointerSuppressor, isPointerWithinModelBounds, getRenderer, getScene, requestRender } from '../renderer/viewport';
 import { pickFace, type FacePickResult } from './facePicker';
 import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
+import { isPaletteConstrained, nearestSlot, hexToRgb, onPaletteChange } from './palette';
 
 export type { BrushShape } from '../geometry/voxel/edits';
 
@@ -85,7 +86,24 @@ export function isActive(): boolean { return active; }
 export function setColor(c: [number, number, number] | string | number): void {
   const rgb = normalizeColor(c, 'setColor(color)');
   color = [(rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff];
+  enforceVoxelConstraint();
 }
+
+/** When the palette is constrained, snap the active voxel colour (0–255 RGB)
+ *  onto the nearest filament slot — the voxel-studio counterpart of mesh
+ *  paint's enforcement, so the global "Constrain to palette" toggle holds here
+ *  too. No-op when unconstrained or the palette is empty. */
+function enforceVoxelConstraint(): void {
+  if (!isPaletteConstrained()) return;
+  const slot = nearestSlot([color[0] / 255, color[1] / 255, color[2] / 255]);
+  if (!slot) return;
+  const [r, g, b] = hexToRgb(slot.hex);
+  color = [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+// Re-snap the active colour whenever constrain is toggled or the palette is
+// edited, so a constrained voxel session can never keep an off-palette colour.
+onPaletteChange(enforceVoxelConstraint);
 export function isEraser(): boolean { return eraser; }
 export function setEraser(on: boolean): void { eraser = !!on; }
 
@@ -120,7 +138,6 @@ export function setBrushShape(s: BrushShape): void { brushShape = s; refreshPrev
 // Add-block dimensions (X/Y/Z, in voxels) and how deep the block sinks into the
 // clicked surface. Used only by the `add` tool; the preview reflects them live.
 const MAX_BLOCK_SIZE = 32;
-const MAX_ADD_DEPTH = 16;
 export function getBlockSize(): [number, number, number] { return [...blockSize]; }
 export function setBlockSize(axis: 0 | 1 | 2, n: number): void {
   blockSize[axis] = Math.max(1, Math.min(MAX_BLOCK_SIZE, Math.round(n) || 1));
@@ -128,8 +145,9 @@ export function setBlockSize(axis: 0 | 1 | 2, n: number): void {
   cbStateChange?.();
 }
 export function getAddDepth(): number { return addDepth; }
+// No upper clamp: the slider tops out at 16, but a typed value can go deeper.
 export function setAddDepth(n: number): void {
-  addDepth = Math.max(0, Math.min(MAX_ADD_DEPTH, Math.round(n) || 0));
+  addDepth = Math.max(0, Math.round(n) || 0);
   refreshPreview();
   cbStateChange?.();
 }
@@ -215,6 +233,7 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
   run = r.data;
   baselineGrid = r.data.grid.clone();
   active = true;
+  enforceVoxelConstraint(); // a constrained palette must not paint the held-over default colour
   tool = 'paint';
   boxCorner = null;
   undoStack = [];

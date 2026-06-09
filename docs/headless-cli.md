@@ -42,8 +42,12 @@ subsequent call.
 partwright preview <file.js> [--png out.png] [--json] [--size N] [-p k=v ...]
 partwright run     <file.js> [-p k=v ...]            # stats JSON only, no PNG
 
-partwright preview <file.js> [--lang manifold-js|voxel|scad] [--png out] [--json] [--size N] [-p k=v]
+partwright preview <file.js> [--lang manifold-js|voxel|scad] [--png out] [--json] [--size N]
+                   [--view az,el] [--views front,right,top,bottom,left,back,iso]
+                   [--explain-components] [--expect-components N] [-p k=v]
+partwright compare <a.js> <b.js> [more.js ...] [--png out] [--size N] [--view az,el] [-p k=v]  # one tile per model
 partwright photo <image> [--palette p.json] [--max N] [--mode billboard|heightmap] [--depth N] [--bg] [--crop x,y,w,h] [--out model.js] [--png out]
+partwright fetch <url> [--out file]                  # download a remote image to disk (for `photo`)
 
 partwright daemon start [--app-port N] [--control-port N]
 partwright daemon stop
@@ -88,6 +92,21 @@ here). It loads the file against the real engine via Vite SSR and prints the ric
 stat block (`isManifold`, `componentCount`, per-component volumes/bboxes, genus,
 edge stats, declared labels, `warnings[]`). Unless `--json` is passed it also
 writes a 4-view PNG (front/right/top/iso), software-rasterized — flat shading.
+Override the camera with `--view az,el` (a single custom-angle tile, to peek at
+a feature the four defaults occlude) or `--views a,b,c` (pick/reorder named
+angles: front,back,right,left,top,bottom,iso). `--explain-components` prints a
+per-island vol/tris/size/center breakdown to stderr; `--expect-components N`
+exits non-zero on a count mismatch (a CI gate for "this must stay N parts").
+
+**`compare`** runs several model files and tiles one view of each into a single
+contact-sheet PNG — for A/B parameter sweeps or before/after checks. Each model
+is fit to its own bbox; a failed variant gets a distinct pink tile. Default view
+is iso; `--view az,el` changes it for all tiles.
+
+**`fetch`** downloads a remote image (`http(s)` URL) to disk so the `photo`
+voxel-import flow can consume a URL — the literal "chat-attached image" isn't
+reachable from a Node CLI, so this is the URL-download equivalent. Reachability
+is governed by the environment's network policy.
 
 **Multi-engine (`--lang`).** `preview`/`run` dispatch across the engines that
 run without a browser: `manifold-js` (default), `voxel` (pure-JS grid mesher),

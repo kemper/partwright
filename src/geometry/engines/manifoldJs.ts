@@ -261,6 +261,12 @@ export const manifoldJsEngine: Engine = {
       // Text helpers — flat aliases so agents can write api.text(...) directly.
       text: curvesNamespace.text,
       textSection: curvesNamespace.textSection,
+      // 3D constructors — flat aliases so agents reach api.loft(...) /
+      // api.sweep(...) / api.sweepArc(...) directly (they consistently try the
+      // short name before the Curves namespace).
+      loft: curvesNamespace.loft,
+      sweep: curvesNamespace.sweep,
+      sweepArc: curvesNamespace.sweepArc,
       // Flat aliases for the most-used meshOps verbs — agents reach for shorter
       // names like `api.intersects(a,b)` and `api.placeOn(part, table)` much more
       // often than they reach for the namespace, so we promote those to api.* too.
