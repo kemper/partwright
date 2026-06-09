@@ -924,7 +924,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintInCylinder',
-    description: 'Paint triangles whose centroids fall within a cylindrical shell: rMin ≤ dist(centroid, axis) ≤ rMax AND zMin ≤ centroid.z ≤ zMax. The canonical tool for inner walls of hollow cylinders, mugs, vases, and any revolved shape where paintInBox catches too many faces. Set rMin > 0 to exclude the axis core; set rMax to the inner radius to select only the inner surface. Optional normalCone/topOnly for further filtering.',
+    description: 'Paint triangles whose centroids fall within a cylindrical shell: rMin ≤ dist(centroid, axis) ≤ rMax AND zMin ≤ height ≤ zMax. The canonical tool for inner walls of hollow cylinders, mugs, vases, and any revolved shape where paintInBox catches too many faces. Set rMin > 0 to exclude the axis core; set rMax to the inner radius to select only the inner surface. The shell runs along the chosen axis (default z); for an x- or y-aligned cylinder pass axis. Optional normalCone/topOnly for further filtering.',
     input_schema: {
       type: 'object',
       properties: {
@@ -933,12 +933,17 @@ const ALL_TOOLS: ToolDefinition[] = [
           items: { type: 'number' },
           minItems: 2,
           maxItems: 2,
-          description: 'Center of the cylinder axis in the XY plane [cx, cy]. Use [0, 0] for Z-centered models.',
+          description: 'Center of the cylinder axis in the radial plane [a, b]. For axis="z" this is [x, y]; for "x" it is [y, z]; for "y" it is [z, x]. Use [0, 0] for an axis-centered model.',
+        },
+        axis: {
+          type: 'string',
+          enum: ['x', 'y', 'z'],
+          description: 'World axis the shell runs along (default z). Radius is measured in the plane normal to it and the zMin..zMax band runs along it.',
         },
         rMin: { type: 'number', description: 'Minimum radial distance from axis (0 to include everything up to rMax).' },
         rMax: { type: 'number', description: 'Maximum radial distance from axis.' },
-        zMin: { type: 'number', description: 'Bottom of the cylindrical band.' },
-        zMax: { type: 'number', description: 'Top of the cylindrical band.' },
+        zMin: { type: 'number', description: 'Start of the band along the chosen axis.' },
+        zMax: { type: 'number', description: 'End of the band along the chosen axis.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional region name.' },
         normalCone: {

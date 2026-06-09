@@ -40,6 +40,10 @@ export type RegionDescriptor =
   // `maxEdge`, giving crisp painted edges that follow the analytic cylinder
   // rather than the coarse base tessellation.
   | { kind: 'cylinder'; center: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number;
+      // World axis the shell runs along — radius measured in the plane normal
+      // to it, the zMin..zMax band along it. Omitted = 'z' (the legacy XY-radius
+      // behaviour), so descriptors saved before axis support round-trip cleanly.
+      axis?: 'x' | 'y' | 'z';
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       // Coverage mode literal — kept as a string union (not an imported type)
       // so this descriptor stays serializable without pulling in main.ts.

@@ -70,30 +70,98 @@ function renderTile(positions, triVerts, triColors, center, scale, size, view, b
   return px;
 }
 
-// Compose the 4-view grid PNG. Returns a sharp instance (caller writes/toBuffer).
-export function composePng(positions, triVerts, triColors, bbox, size) {
+// Copy one RGBA `size`×`size` tile into the RGB `out` buffer of width `W` at
+// pixel offset (ox, oy). Shared by composePng (4-view grid) and
+// composeContactSheet (one tile per model).
+function blit(out, W, tile, size, ox, oy) {
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const s = (y * size + x) * 4, d = ((oy + y) * W + (ox + x)) * 3;
+    out[d] = tile[s]; out[d + 1] = tile[s + 1]; out[d + 2] = tile[s + 2];
+  }
+}
+
+// Center + uniform scale that fits a model's bbox into a `size`-px tile.
+function fit(bbox, size) {
   const center = bbox ? [(bbox.min[0] + bbox.max[0]) / 2, (bbox.min[1] + bbox.max[1]) / 2, (bbox.min[2] + bbox.max[2]) / 2] : [0, 0, 0];
   const diag = bbox ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2]) : 1;
-  const scale = (size * 0.42) / (diag / 2 || 1);
+  return { center, scale: (size * 0.42) / (diag / 2 || 1) };
+}
+
+const BG = [244, 244, 246];
+
+// Compose the 4-view grid PNG. Returns a sharp instance (caller writes/toBuffer).
+export function composePng(positions, triVerts, triColors, bbox, size) {
+  const { center, scale } = fit(bbox, size);
   const views = [
     { name: 'front', az: -90, el: 0 },
     { name: 'right', az: 0, el: 0 },
     { name: 'top', az: -90, el: 90 },
     { name: 'iso', az: -50, el: 28 },
   ];
-  const bg = [244, 244, 246];
-  const tiles = views.map((v) => renderTile(positions, triVerts, triColors, center, scale, size, basis(v.az, v.el), bg));
+  const tiles = views.map((v) => renderTile(positions, triVerts, triColors, center, scale, size, basis(v.az, v.el), BG));
   const g = 2, W = size * 2 + g, H = size * 2 + g;
   const out = Buffer.alloc(W * H * 3, 220);
-  const place = (px, ox, oy) => {
-    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-      const s = (y * size + x) * 4, d = ((oy + y) * W + (ox + x)) * 3;
-      out[d] = px[s]; out[d + 1] = px[s + 1]; out[d + 2] = px[s + 2];
-    }
-  };
-  place(tiles[0], 0, 0); place(tiles[1], size + g, 0);
-  place(tiles[2], 0, size + g); place(tiles[3], size + g, size + g);
+  blit(out, W, tiles[0], size, 0, 0); blit(out, W, tiles[1], size, size + g, 0);
+  blit(out, W, tiles[2], size, 0, size + g); blit(out, W, tiles[3], size, size + g, size + g);
   return sharp(out, { raw: { width: W, height: H, channels: 3 } }).png();
+}
+
+// Compose a contact sheet — one iso tile per model, laid out in a near-square
+// grid (left-to-right, top-to-bottom matching the input order). Each model is
+// fit to its own bbox so all are visible regardless of relative size. Models
+// that failed to run get a distinct pink tile so a broken variant stands out.
+// `results` is an array of `{ render }` (render may be null on failure).
+export function composeContactSheet(results, size, view = { az: -50, el: 28 }) {
+  const n = Math.max(1, results.length);
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  const g = 2;
+  const W = cols * size + (cols - 1) * g;
+  const H = rows * size + (rows - 1) * g;
+  const out = Buffer.alloc(W * H * 3, 220);
+  results.forEach((res, i) => {
+    const r = res && res.render;
+    let tile;
+    if (r && r.positions && r.triVerts && r.triVerts.length) {
+      const { center, scale } = fit(r.bbox, size);
+      tile = renderTile(r.positions, r.triVerts, r.triColors, center, scale, size, basis(view.az, view.el), BG);
+    } else {
+      tile = new Uint8ClampedArray(size * size * 4);
+      for (let p = 0; p < tile.length; p += 4) { tile[p] = 250; tile[p + 1] = 224; tile[p + 2] = 224; tile[p + 3] = 255; }
+    }
+    const ox = (i % cols) * (size + g), oy = Math.floor(i / cols) * (size + g);
+    blit(out, W, tile, size, ox, oy);
+  });
+  return sharp(out, { raw: { width: W, height: H, channels: 3 } }).png();
+}
+
+// Human-readable per-island breakdown for `--explain-components` (printed to
+// stderr so the stdout JSON contract stays clean). `stats.components` is capped
+// at the top 16 by volume; the header notes when more islands exist.
+export function explainComponents(stats) {
+  if (!stats || !Array.isArray(stats.components) || stats.components.length === 0) {
+    return `componentCount=${stats ? stats.componentCount : '?'} — no per-component data (render-only or single solid).`;
+  }
+  const capped = stats.components.length < stats.componentCount;
+  const f = (a) => (Array.isArray(a) ? a.map((n) => (+n).toFixed(2)).join(', ') : '');
+  const lines = [`componentCount=${stats.componentCount}${capped ? ` (showing top ${stats.components.length} by volume)` : ''}`];
+  for (const c of stats.components) {
+    lines.push(`  #${c.index}: vol=${(+c.volume).toFixed(2)} tris=${c.triangleCount} size=[${f(c.bbox && c.bbox.size)}] center=[${f(c.center)}]`);
+  }
+  return lines.join('\n');
+}
+
+// `--expect-components N` assertion. Returns null when the count matches (or N
+// isn't a finite number), otherwise an error string. Compares against the
+// uncapped `stats.componentCount`, NOT `components.length` (which tops out at 16).
+export function checkExpectComponents(stats, expected) {
+  if (expected === null || expected === undefined || expected === '') return null;
+  const n = Number(expected);
+  if (!Number.isFinite(n)) return null;
+  if (!stats || stats.componentCount !== n) {
+    return `--expect-components ${n} failed: model has ${stats ? stats.componentCount : 'no'} component(s).`;
+  }
+  return null;
 }
 
 // Run a model file through the real engine via a throwaway in-process Vite SSR
