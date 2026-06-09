@@ -526,18 +526,19 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       });
     } else if (active === 'voronoiLamp') {
       const cs = slider('Cell size', span * 0.05, span * 0.5, span * 0.16, span * 0.005, n => n.toFixed(3), schedulePreview);
-      const wt = slider('Wall thickness', span * 0.01, span * 0.1, span * 0.03, span * 0.002, n => n.toFixed(3), schedulePreview);
-      const sw = slider('Strut width (fraction)', 0.1, 0.6, 0.3, 0.01, n => n.toFixed(2), schedulePreview);
+      const wt = slider('Wall thickness', span * 0.01, span * 0.12, span * 0.05, span * 0.002, n => n.toFixed(3), schedulePreview);
+      const sw = slider('Strut width (fraction)', 0.1, 0.6, 0.32, 0.01, n => n.toFixed(2), schedulePreview);
       const jit = slider('Irregularity (jitter)', 0, 1, 1, 0.05, n => n.toFixed(2), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
-      const res = slider('Resolution', 48, 200, 110, 1, n => String(n), schedulePreview);
+      const res = slider('Resolution', 48, 200, 140, 1, n => String(n), schedulePreview);
+      const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
       const out = dropdown<'mesh' | 'voxel'>('Output', [
         ['mesh', 'Smooth mesh (manifold-js)'],
         ['voxel', 'Voxel (paintable / .vox)'],
       ], 'mesh', schedulePreview);
-      body.append(cs.wrap, wt.wrap, sw.wrap, jit.wrap, grain.wrap, seed.wrap, res.wrap, out.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'A real see-through Voronoi shell (lamp / planter): hollows the model and cuts the cell interiors clean through, leaving a strut network. Higher resolution = crisper holes but slower; thinner struts need higher resolution.'));
+      body.append(cs.wrap, wt.wrap, sw.wrap, jit.wrap, grain.wrap, seed.wrap, res.wrap, wtight.wrap, out.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'A real see-through Voronoi shell (lamp / planter): hollows the model and cuts the cell interiors clean through, leaving a strut network. Resolution auto-raises so struts stay thick enough; "One connected piece" keeps just the main web (drops loose bits) for a clean, printable manifold.'));
       body.append(el('p', 'text-[11px] text-amber-400/90', '"Voxel" output switches the model to the voxel engine (like Voxelize) — paintable and .vox-exportable. "Smooth mesh" stays on manifold-js (Taubin-rounded).'));
       currentOpts = () => ({
         cellSize: cs.get(),
@@ -547,6 +548,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         grainAngleDeg: grain.get(),
         seed: seed.get(),
         resolution: res.get(),
+        watertight: wtight.get(),
         output: out.get(),
       });
     } else if (active === 'smooth') {

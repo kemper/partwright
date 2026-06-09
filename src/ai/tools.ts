@@ -1544,15 +1544,16 @@ const ALL_TOOLS: ToolDefinition[] = [
 - cellSize: approximate spacing between cells, world units (~16% of diagonal)
 - wallThickness: shell thickness in world units (~3% of diagonal); the struts are this thick
 - strutWidth: kept edge-network width as a fraction of cellSize [0.05–0.6] (default 0.3; smaller = thinner struts / bigger windows)
-- resolution: voxels along the longest axis (default 110). Higher = crisper holes but slower; thin struts need higher resolution
+- resolution: voxels along the longest axis (default 140). **Auto-raised** so struts resolve to ≥4 voxels, so you rarely need to touch it
 - jitter: cell irregularity [0–1] (1 = irregular Voronoi, default; 0 = a regular grid of windows)
 - grainAngleDeg, seed: orient / reshuffle the cell layout
+- watertight: keep only the largest connected web → one printable manifold piece (default true — leave on)
 - output: 'mesh' (default, smooth manifold-js mesh) or 'voxel' (paintable voxel session)
 - smooth: voxel output only — round the struts (default true)
 
-**Return:** { ok, label, geometry, warnings? }. Verify with renderViews — check the windows are open (componentCount may be >1 only if struts disconnect; usually 1).
+**Return:** { ok, label, geometry, warnings? }. Verify with renderViews — check the windows are open. With watertight on, the result should be manifold (isManifold true).
 
-**Workflow guidance:** if windows don't open or struts look chunky, raise resolution and/or lower strutWidth. If struts break apart, increase wallThickness or strutWidth.`,
+**Workflow guidance:** the defaults are tuned to look good on a typical solid; mostly just adjust cellSize (fewer/larger vs more/smaller cells) and strutWidth (thicker vs thinner struts). If windows don't open, lower strutWidth or raise cellSize. Keep watertight on for printing.`,
     input_schema: {
       type: 'object',
       properties: {
@@ -1563,6 +1564,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         jitter: { type: 'number', description: 'Cell irregularity [0–1]. 1 = irregular Voronoi (default); 0 = a regular grid.', minimum: 0, maximum: 1 },
         grainAngleDeg: { type: 'number', description: 'Rotate the cell pattern in the XY plane, degrees. Default 0.' },
         seed: { type: 'integer', description: 'Deterministic seed — change to reshuffle the cell layout. Default 1.' },
+        watertight: { type: 'boolean', description: 'Keep only the largest connected strut web — one watertight, manifold, printable piece (drops loose fragments). Default true — leave on unless you want the raw multi-part cut.' },
         output: { type: 'string', enum: ['mesh', 'voxel'], description: "'mesh' (default): smooth manifold-js mesh, no engine change. 'voxel': switch to the voxel engine (paintable / .vox)." },
         smooth: { type: 'boolean', description: 'Voxel output only: round the struts with a smoothing pass. Default true.' },
         preserveColor: { type: 'boolean', description: 'Sample model paint onto the struts. Default true.' },

@@ -282,24 +282,25 @@ one step.
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
-| `cellSize` | ~16% of diagonal | Approx spacing between cells (world units). |
-| `wallThickness` | ~3% of diagonal | Shell thickness — how thick the struts are through the wall. |
-| `strutWidth` | 0.3 | Kept edge-network width as a fraction of cellSize [0.05–0.6]. Smaller = thinner struts, bigger windows. |
-| `resolution` | 110 | Voxels along the longest axis [16–200]. Higher = crisper holes, slower. Thin struts need higher resolution. |
+| `cellSize` | ~10% of diagonal | Approx spacing between cells (world units). |
+| `wallThickness` | ~4% of diagonal | Shell thickness — how thick the struts are through the wall. |
+| `strutWidth` | 0.32 | Kept edge-network width as a fraction of cellSize [0.05–0.6]. Smaller = thinner struts, bigger windows. |
+| `resolution` | 140 | Voxels along the longest axis [16–200]. **Auto-raised** so struts resolve to ≥4 voxels — you rarely need to set it. |
 | `jitter` | 1 | Cell irregularity [0–1]. 1 = irregular Voronoi; 0 = a regular grid of windows. |
 | `grainAngleDeg` | 0 | Rotate the cell pattern in the XY plane. |
 | `seed` | 1 | Deterministic seed — change to reshuffle the cell layout. |
+| `watertight` | true | Keep only the largest connected web → one watertight, manifold, printable piece (drops loose fragments). Leave on for printing. |
 | `output` | `'mesh'` | `'mesh'` = smooth manifold-js mesh (no engine change); `'voxel'` = voxel engine (paintable / .vox). |
 | `smooth` | true | Voxel output only: round the struts with a smoothing pass. |
 
-**Look guidance:**
-- Voronoi lamp: `cellSize=d*0.18`, `wallThickness=d*0.03`, `strutWidth=0.25`, `resolution=140`
-- Chunky planter: `cellSize=d*0.22`, `wallThickness=d*0.05`, `strutWidth=0.4`
-- Fine lattice: `cellSize=d*0.1`, `strutWidth=0.2`, `resolution=180` (slow)
+**Look guidance** (defaults already look good on a typical solid — mostly tune cellSize + strutWidth):
+- Voronoi lamp: `cellSize=d*0.1`, `wallThickness=d*0.04`, `strutWidth=0.3`
+- Chunky planter: `cellSize=d*0.16`, `wallThickness=d*0.06`, `strutWidth=0.4`
+- Fine lattice: `cellSize=d*0.07`, `strutWidth=0.22`
 
-**If windows don't open or struts look broken:** raise `resolution`; lower
-`strutWidth` for bigger holes; raise `wallThickness`/`strutWidth` if struts
-disconnect. Verify with `renderViews`.
+**Tips:** with `watertight` on (default) the result is manifold/printable. If
+windows don't open, lower `strutWidth` or raise `cellSize`. Resolution
+auto-raises for thin struts, so you rarely touch it. Verify with `renderViews`.
 
 ---
 

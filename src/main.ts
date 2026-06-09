@@ -7611,6 +7611,7 @@ async function main() {
         jitter: (opts?.jitter as number) ?? base.jitter,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         seed: (opts?.seed as number) ?? base.seed,
+        watertight: (opts?.watertight as boolean) ?? base.watertight,
         output: (opts?.output as 'mesh' | 'voxel') ?? base.output,
         smooth: (opts?.smooth as boolean) ?? base.smooth,
       });
@@ -7868,6 +7869,7 @@ async function main() {
       jitter?: number;
       grainAngleDeg?: number;
       seed?: number;
+      watertight?: boolean;
       output?: 'mesh' | 'voxel';
       smooth?: boolean;
       preserveColor?: boolean;

@@ -453,13 +453,14 @@ export interface VoronoiLampModifierOptions extends VoronoiLampOptions {
 export function defaultVoronoiLampOptions(mesh: MeshData): Required<VoronoiLampModifierOptions> {
   const d = modelDiagonal(mesh) || 10;
   return {
-    cellSize: d * 0.16,
-    wallThickness: d * 0.03,
-    strutWidth: 0.3,
-    resolution: 110,
+    cellSize: d * 0.1,
+    wallThickness: d * 0.04,
+    strutWidth: 0.32,
+    resolution: 140,
     jitter: 1,
     grainAngleDeg: 0,
     seed: 1,
+    watertight: true,
     output: 'mesh',
     smooth: true,
   };
@@ -614,7 +615,9 @@ export function applyVoronoiLamp(mesh: MeshData, opts: VoronoiLampModifierOption
       pos[i * 3 + 1] = min[1] + pos[i * 3 + 1] * voxelSize;
       pos[i * 3 + 2] = min[2] + pos[i * 3 + 2] * voxelSize;
     }
-    const baked = smoothSurface(blocky, { iterations: 12, subdivide: true });
+    // Modest Taubin pass: enough to round the voxel stair-steps, but not so much
+    // that it pinches thin struts apart (which would split the one-piece web).
+    const baked = smoothSurface(blocky, { iterations: 5, subdivide: true });
     return {
       kind: 'manifold',
       label: 'voronoi lamp',

@@ -73,10 +73,10 @@ test.describe('Voronoi shell surface modifier', () => {
     // Default output stays on manifold-js (ofMesh wrapper, NOT a voxel decode).
     expect(result.src).toContain('Manifold.ofMesh(api.imports[0])');
     expect(result.src).not.toContain('voxels.decode(');
-    // Real holes cut → watertight shell, essentially one connected web (floater
-    // prune keeps the component count low, not the hundreds the raw cut leaves).
+    // Real holes cut → a watertight, manifold, single connected piece (the
+    // "watertight" default keeps only the largest strut web → printable).
     expect(result.stats.isManifold).toBe(true);
-    expect(result.stats.componentCount).toBeLessThanOrEqual(5);
+    expect(result.stats.componentCount).toBe(1);
     // Baked at the model's true scale (cylinder radius 15 → bbox ~±15).
     expect(result.stats.boundingBox.x[1]).toBeLessThan(20);
   });

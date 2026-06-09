@@ -26,6 +26,7 @@
 import type { MeshData } from '../geometry/types';
 import { VoxelGrid } from '../geometry/voxel/grid';
 import { rasterizeSolid } from './voxelizeMesh';
+import { extractPositions, bboxOf } from './meshSubdivide';
 
 export interface VoronoiLampOptions {
   /** Approximate spacing between cells, in world units (same scale as the model). */
@@ -35,7 +36,8 @@ export interface VoronoiLampOptions {
   /** Strut width as a fraction of cellSize [0.05, 0.6] — how wide the kept edge
    *  network is. Larger = chunkier struts / smaller windows. Default 0.3. */
   strutWidth?: number;
-  /** Voxels along the longest axis. Higher = crisper holes, slower. Default 110. */
+  /** Voxels along the longest axis. Auto-raised so struts resolve to ≥ ~4 voxels
+   *  (thin struts otherwise alias into non-manifold specks). Default 140. */
   resolution?: number;
   /** Cell irregularity [0, 1]. 1 = full irregular Voronoi (default); 0 = a grid. */
   jitter?: number;
@@ -43,7 +45,16 @@ export interface VoronoiLampOptions {
   grainAngleDeg?: number;
   /** Deterministic seed. Default 1. */
   seed?: number;
+  /** Keep only the largest connected strut web — one watertight, manifold,
+   *  printable piece (drops cut-off caps and speckle). Default true. Turn off to
+   *  keep the raw cut (all fragments, possibly multi-part). */
+  watertight?: boolean;
 }
+
+/** Struts should resolve to at least this many voxels across, or thin struts
+ *  alias into diagonal-only specks (non-manifold, ugly). The resolution is
+ *  auto-raised to honour this given the chosen strut width. */
+const MIN_STRUT_VOXELS = 6;
 
 const DEFAULT_FILL = 0x4a9eff; // app default unpainted blue (matches voxelizeMesh)
 
@@ -118,7 +129,13 @@ export function voronoiLattice(mesh: MeshData, opts: VoronoiLampOptions): Vorono
   const grid = new VoxelGrid();
   if (mesh.numTri === 0) return { grid, min: [0, 0, 0], voxelSize: 1 };
 
-  const resolution = Math.max(16, Math.min(200, Math.round(opts.resolution ?? 110)));
+  // Auto-raise resolution so the strut resolves to ≥ MIN_STRUT_VOXELS across —
+  // the single biggest lever against thin, non-manifold, ugly results.
+  const strutFracR = Math.min(0.6, Math.max(0.05, opts.strutWidth ?? 0.3));
+  const strutWorld = strutFracR * Math.max(1e-4, opts.cellSize);
+  const maxDim = Math.max(...bboxOf(extractPositions(mesh)).size, 1e-6);
+  const resFloor = Math.ceil((maxDim / strutWorld) * MIN_STRUT_VOXELS);
+  const resolution = Math.max(16, Math.min(200, Math.max(Math.round(opts.resolution ?? 140), resFloor)));
   const solid = rasterizeSolid(mesh, resolution);
   const { nx, ny, nz, surface, exterior, at, min, voxelSize } = solid;
 
@@ -200,12 +217,13 @@ export function voronoiLattice(mesh: MeshData, opts: VoronoiLampOptions): Vorono
     }
   }
 
-  // Drop tiny disconnected fragments (loose bits → print hazards): keep only
-  // face-connected (6-neighbour) components at least `minFrac` of the largest.
-  // Face-connectivity matches what meshes into a single watertight solid —
-  // diagonally-touching voxels mesh as separate pieces — so a well-parameterised
-  // lamp collapses to one connected web and the cut's speckle is removed.
-  pruneSmallComponents(keptColor, nx, ny, nz, at, 0.02);
+  // Keep only the largest face-connected (6-neighbour) component (default): the
+  // strut web of a closed shell is one dominant connected piece, and the rest
+  // (cut-off caps, speckle) is debris that would print as loose parts. Face-
+  // connectivity is what meshes into a single watertight solid, so this yields a
+  // one-piece, manifold, printable lamp — the "watertight" guarantee. Turn it off
+  // to keep the raw cut (every fragment, possibly multi-part / non-manifold).
+  if (opts.watertight !== false) keepLargestComponent(keptColor, nx, ny, nz, at);
 
   for (let x = 0; x < nx; x++) {
     for (let y = 0; y < ny; y++) {
@@ -219,31 +237,28 @@ export function voronoiLattice(mesh: MeshData, opts: VoronoiLampOptions): Vorono
   return { grid, min, voxelSize };
 }
 
-/** Remove 26-connected components smaller than `minFrac` of the largest, in
- *  place (sets their cells to -1). Keeps fragments that are an absolute minimum
- *  size too, so very small lamps aren't wiped out. */
-function pruneSmallComponents(
+/** Keep only the largest 6-connected (face-adjacent) component; clear the rest.
+ *  Face-connectivity is what meshes into one watertight solid, so this leaves a
+ *  single connected, printable piece. */
+function keepLargestComponent(
   keptColor: Int32Array, nx: number, ny: number, nz: number,
   at: (x: number, y: number, z: number) => number,
-  minFrac: number,
 ): void {
   const label = new Int32Array(nx * ny * nz).fill(-1);
-  const sizes: number[] = [];
   const members: number[][] = [];
   const stack: number[] = [];
+  let bestId = -1, bestSize = 0;
   for (let x = 0; x < nx; x++) {
     for (let y = 0; y < ny; y++) {
       for (let z = 0; z < nz; z++) {
         const start = at(x, y, z);
         if (keptColor[start] < 0 || label[start] !== -1) continue;
-        const id = sizes.length;
-        let count = 0;
+        const id = members.length;
         const mem: number[] = [];
         label[start] = id; stack.push(x, y, z);
         while (stack.length) {
           const cz = stack.pop()!, cy = stack.pop()!, cx = stack.pop()!;
-          mem.push(at(cx, cy, cz)); count++;
-          // 6-connectivity (face neighbours only).
+          mem.push(at(cx, cy, cz));
           const tryN = (ax: number, ay: number, az: number) => {
             if (ax < 0 || ay < 0 || az < 0 || ax >= nx || ay >= ny || az >= nz) return;
             const ni = at(ax, ay, az);
@@ -254,15 +269,13 @@ function pruneSmallComponents(
           tryN(cx, cy + 1, cz); tryN(cx, cy - 1, cz);
           tryN(cx, cy, cz + 1); tryN(cx, cy, cz - 1);
         }
-        sizes.push(count); members.push(mem);
+        members.push(mem);
+        if (mem.length > bestSize) { bestSize = mem.length; bestId = id; }
       }
     }
   }
-  if (sizes.length === 0) return;
-  const largest = Math.max(...sizes);
-  const minSize = Math.max(8, Math.floor(largest * minFrac));
-  for (let id = 0; id < sizes.length; id++) {
-    if (sizes[id] >= minSize) continue;
+  for (let id = 0; id < members.length; id++) {
+    if (id === bestId) continue;
     for (const idx of members[id]) keptColor[idx] = -1;
   }
 }
