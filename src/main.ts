@@ -12333,8 +12333,8 @@ async function main() {
      *  'diamond'; `spray` scatters a random subset; `sprayDensity` is 0.05..1.
      *
      *  The `add` tool uses a block instead of a round brush: `block` is the
-     *  [x,y,z] size in voxels (1..32 each) and `depth` (0..16) is how far the
-     *  block sinks into the clicked surface — 0 attaches it flush to the face
+     *  [x,y,z] size in voxels (1..32 each) and `depth` (≥ 0; no upper limit) is
+     *  how far the block sinks into the clicked surface — 0 attaches it flush to the face
      *  (so a thick block never pokes out the far side of a thin tile).
      *  Returns the resolved brush settings or `{ error }`. */
     setVoxelBrush(opts: { radius?: number; shape?: import('./color/voxelPaint').BrushShape; spray?: boolean; sprayDensity?: number; block?: [number, number, number]; depth?: number } = {}) {

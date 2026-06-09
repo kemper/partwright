@@ -75,6 +75,7 @@ let sprayRow: HTMLElement | null = null;
 const blockSliders: Partial<Record<0 | 1 | 2, HTMLInputElement>> = {};
 let blockSizeLabel: HTMLElement | null = null;
 let depthSlider: HTMLInputElement | null = null;
+let depthInput: HTMLInputElement | null = null;
 let depthLabel: HTMLElement | null = null;
 
 export interface VoxelPaintUICallbacks {
@@ -199,7 +200,8 @@ function refreshControls(): void {
     if (s) s.value = String(size[axis]);
   }
   if (blockSizeLabel) blockSizeLabel.textContent = `${size[0]}×${size[1]}×${size[2]}`;
-  if (depthSlider) depthSlider.value = String(voxelPaint.getAddDepth());
+  if (depthSlider) depthSlider.value = String(Math.min(16, voxelPaint.getAddDepth()));
+  if (depthInput && document.activeElement !== depthInput) depthInput.value = String(voxelPaint.getAddDepth());
   if (depthLabel) {
     const d = voxelPaint.getAddDepth();
     if (d === 0) depthLabel.textContent = isBox ? 'flat' : 'on surface';
@@ -470,16 +472,40 @@ function buildDepthSection(): HTMLElement {
   head.appendChild(depthLabel);
   sec.appendChild(head);
 
+  const row = document.createElement('div');
+  row.className = 'flex items-center gap-2';
+
   depthSlider = document.createElement('input');
   depthSlider.type = 'range';
   depthSlider.min = '0';
   depthSlider.max = '16';
   depthSlider.step = '1';
   depthSlider.value = String(voxelPaint.getAddDepth());
-  depthSlider.className = 'w-full accent-blue-500';
+  depthSlider.className = 'flex-1 min-w-0 accent-blue-500';
   depthSlider.title = 'Add: layers the block sinks into the surface. Box: extra layers the fill grows / subtract carves (0 = flush to the clicked face).';
   depthSlider.addEventListener('input', () => { voxelPaint.setAddDepth(Number(depthSlider!.value)); refreshControls(); });
-  sec.appendChild(depthSlider);
+  row.appendChild(depthSlider);
+
+  // Typed value: the slider tops out at 16, but the input has no max so you can
+  // sink a block deeper than the slider reaches.
+  depthInput = document.createElement('input');
+  depthInput.type = 'number';
+  depthInput.min = '0';
+  depthInput.step = '1';
+  depthInput.value = String(voxelPaint.getAddDepth());
+  depthInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  depthInput.title = 'Depth in layers. Type a value past the slider’s 16 to go deeper.';
+  const applyDepthInput = (): void => {
+    const raw = parseInt(depthInput!.value, 10);
+    if (!Number.isFinite(raw) || raw < 0) { depthInput!.value = String(voxelPaint.getAddDepth()); return; }
+    voxelPaint.setAddDepth(raw);
+    refreshControls();
+  };
+  depthInput.addEventListener('change', applyDepthInput);
+  depthInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyDepthInput(); });
+  row.appendChild(depthInput);
+
+  sec.appendChild(row);
 
   return sec;
 }

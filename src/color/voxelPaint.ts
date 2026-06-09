@@ -120,7 +120,6 @@ export function setBrushShape(s: BrushShape): void { brushShape = s; refreshPrev
 // Add-block dimensions (X/Y/Z, in voxels) and how deep the block sinks into the
 // clicked surface. Used only by the `add` tool; the preview reflects them live.
 const MAX_BLOCK_SIZE = 32;
-const MAX_ADD_DEPTH = 16;
 export function getBlockSize(): [number, number, number] { return [...blockSize]; }
 export function setBlockSize(axis: 0 | 1 | 2, n: number): void {
   blockSize[axis] = Math.max(1, Math.min(MAX_BLOCK_SIZE, Math.round(n) || 1));
@@ -128,8 +127,9 @@ export function setBlockSize(axis: 0 | 1 | 2, n: number): void {
   cbStateChange?.();
 }
 export function getAddDepth(): number { return addDepth; }
+// No upper clamp: the slider tops out at 16, but a typed value can go deeper.
 export function setAddDepth(n: number): void {
-  addDepth = Math.max(0, Math.min(MAX_ADD_DEPTH, Math.round(n) || 0));
+  addDepth = Math.max(0, Math.round(n) || 0);
   refreshPreview();
   cbStateChange?.();
 }
