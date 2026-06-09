@@ -289,6 +289,42 @@ import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles
 const jsExampleModules = import.meta.glob('../examples/*.js', { query: '?raw', import: 'default' });
 const scadExampleModules = import.meta.glob('../examples/*.scad', { query: '?raw', import: 'default' });
 
+// Rotating manifold-js starters. Each file in examples/starters/ is a single,
+// self-colored model (every part wrapped in `api.label(shape, name, { color })`)
+// rather than several demos crammed onto one tray. A fresh manifold-js session
+// or part advances to the next one — eagerly globbed and sorted by path so the
+// order is stable across builds.
+const jsStarterModules = import.meta.glob('../examples/starters/*.js', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+});
+const STARTER_JS_CODES: string[] = Object.keys(jsStarterModules)
+  .sort()
+  .map((k) => jsStarterModules[k] as string);
+
+const STARTER_ROTATION_KEY = 'partwright:starter-rotation';
+
+/** The next manifold-js starter in the rotation, advancing a persisted index so
+ *  successive fresh sessions/parts open on different demo models instead of
+ *  always the same one. Falls back to a tiny inline stub if the starters folder
+ *  is somehow empty. Storage failures (private mode) degrade to no-rotation. */
+function nextManifoldStarter(): string {
+  if (STARTER_JS_CODES.length === 0) {
+    return '// Write your manifold code here\nconst { Manifold } = api;\nreturn Manifold.cube([5, 5, 5], true);';
+  }
+  let idx = 0;
+  try {
+    idx = parseInt(localStorage.getItem(STARTER_ROTATION_KEY) ?? '0', 10);
+  } catch { /* no storage — start at 0 */ }
+  if (!Number.isInteger(idx) || idx < 0) idx = 0;
+  const code = STARTER_JS_CODES[idx % STARTER_JS_CODES.length];
+  try {
+    localStorage.setItem(STARTER_ROTATION_KEY, String((idx + 1) % STARTER_JS_CODES.length));
+  } catch { /* ignore */ }
+  return code;
+}
+
 export interface ExampleEntry {
   code: string;
   language: Language;
@@ -297,8 +333,10 @@ export interface ExampleEntry {
 // Starter snippets seeded into the editor when a language is first opened
 // (toolbar/AI language toggle, new session, new part). Each is a small,
 // instantly-rendering model chosen to show off what its engine is good at.
-// The manifold-js starter lives in examples/basic_shapes.js (it doubles as
-// the landing-page default — see `defaultCode`); the other three live here.
+// The manifold-js starter ROTATES across examples/starters/*.js (see
+// `nextManifoldStarter` above); the other three engines use the inline
+// constants below. `defaultCode` (examples/basic_shapes.js) is kept only as the
+// empty-set fallback and for back-compat recognition of older starter drafts.
 
 // OpenSCAD: a capability sampler laid out in a row — boolean difference,
 // minkowski-rounded box, a parametric module + linear_extrude twist, and a
@@ -3298,6 +3336,7 @@ async function main() {
     const t = code.trim();
     if (!t) return true;
     if (t === defaultCode.trim()) return true;
+    if (STARTER_JS_CODES.some((c) => c.trim() === t)) return true;
     return /^(\/\/ (New session|New part)\n)?const \{ Manifold \} = api;\nreturn Manifold\.cube\(\[10, 10, 10\], true\);$/.test(t);
   }
 
@@ -4260,9 +4299,18 @@ async function main() {
     const freshCode = lang === 'scad' ? STARTER_SCAD
       : lang === 'replicad' ? STARTER_REPLICAD
       : lang === 'voxel' ? STARTER_VOXEL
-      : defaultCode;
+      : nextManifoldStarter();
     setValue(freshCode);
     runCode(freshCode);
+  }
+
+  // Seed the editor with the next manifold-js starter in the rotation and run
+  // it. Used by the fresh-session entry points (landing, ideas, share/stale-URL
+  // fallbacks) that previously ran a single fixed `defaultCode`.
+  function seedManifoldStarter() {
+    const code = nextManifoldStarter();
+    setValue(code);
+    runCode(code);
   }
 
   function startNewSessionInEditor() {
@@ -4857,7 +4905,7 @@ async function main() {
     await createSession();
     updateDocumentTitle({ page: 'editor' });
     setStatus(statusBar, 'ready', 'Ready');
-    runCode(defaultCode);
+    seedManifoldStarter();
   }
 
   // Launch the guided tour from an entry point outside the editor (the landing
@@ -4870,7 +4918,7 @@ async function main() {
     await ensureEngineStarted();
     if (!getState().session) {
       await createSession();
-      runCode(defaultCode);
+      seedManifoldStarter();
     }
     resetTour();
     startTour();
@@ -5081,7 +5129,7 @@ async function main() {
       // editor stuck on "Loading WASM…" — fall back to a default session.
       if (!getState().session) await createSession();
       setStatus(statusBar, 'ready', 'Ready');
-      runCode(defaultCode);
+      seedManifoldStarter();
     }
   }
 
@@ -5104,7 +5152,7 @@ async function main() {
     if (!getState().session) {
       await createSession();
       setStatus(statusBar, 'ready', 'Ready');
-      runCode(defaultCode);
+      seedManifoldStarter();
     }
     updateDocumentTitle({ page: 'editor' });
     prefillAiInput(idea.prompt ?? '');
@@ -5275,7 +5323,7 @@ async function main() {
       // Fall through to a normal, editable empty editor.
       if (!getState().session) await createSession();
       setStatus(statusBar, 'ready', 'Ready');
-      runCode(defaultCode);
+      seedManifoldStarter();
       return;
     }
 
@@ -5419,7 +5467,7 @@ async function main() {
       await createSession();
     }
     setStatus(statusBar, 'ready', 'Ready');
-    runCode(defaultCode);
+    seedManifoldStarter();
   }
 
   async function syncRouteFromURL() {
@@ -5722,7 +5770,7 @@ async function main() {
   // The same idle/blur ticks autosave the draft. A programmatic setValue
   // (version load / language switch) cancels the pending onIdle (see
   // codeEditor.setValue), so autosave never fires for code the user didn't type.
-  initEditor(editorContainer, defaultCode, (code: string) => {
+  initEditor(editorContainer, nextManifoldStarter(), (code: string) => {
     if (isAutoRun()) runCode(code, { surfaceErrors: false });
   }, 'manifold-js', {
     onEdit: () => clearEditorErrorPanel(editorErrorPanel),
@@ -6901,7 +6949,7 @@ async function main() {
       nextCode = lang === 'scad' ? STARTER_SCAD
         : lang === 'replicad' ? STARTER_REPLICAD
         : lang === 'voxel' ? STARTER_VOXEL
-        : defaultCode;
+        : nextManifoldStarter();
     }
     // Restore the target language's companion set: the SCAD draft's saved
     // companions, or empty for any non-SCAD buffer (which never has them).
@@ -13613,7 +13661,7 @@ async function main() {
       // current camera angle by default — re-rendering edited code shouldn't
       // snap the view back to the default 3/4 framing. The same-session gate in
       // captureCameraToPreserve still auto-frames the first render of a session
-      // (e.g. runCode(defaultCode) on a freshly-created session). Programmatic
+      // (e.g. seedManifoldStarter() on a freshly-created session). Programmatic
       // runs (partwright.run/runAndSave) call runCodeSync directly and keep
       // auto-framing. A caller can opt out with preserveCamera: false.
       await runCodeSync(src, { preserveCamera: true, ...opts });
