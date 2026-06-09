@@ -14,6 +14,7 @@ import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept,
 import { parseLabelColor } from '../../color/labelColor';
 import type { RegionDescriptor } from '../../color/regions';
 import { wasmFaultHint } from '../workerFaults';
+import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
  *  The engine looks for it on the user-returned object to decide whether the
@@ -99,6 +100,71 @@ function restoreMethods(saved: SavedMethod[]): void {
   for (const [target, name, fn] of saved) {
     try { target[name] = fn; } catch { /* ignore */ }
   }
+}
+
+// Argument guards for the dimension-taking primitive constructors. Several of
+// these take a *required* positive dimension with no default —
+// `Manifold.sphere(radius)`, `CrossSection.circle(radius)`,
+// `Manifold.cylinder(height, radiusLow)`. Calling them with a missing or NaN
+// argument (e.g. `Manifold.sphere()` while the user is still typing the radius,
+// which the editor's live auto-run executes the moment they pause) does NOT
+// throw in the WASM kernel: it coerces `undefined` to NaN and silently builds a
+// degenerate zero-size solid — all vertices at the origin — that the kernel
+// reports as a successful, non-empty result. That degenerate mesh then froze
+// the viewport (its zero-size bounding box drove OrbitControls into a
+// non-converging NaN damping loop). Validate the dimensions up front so the
+// caller gets an actionable error instead. The renderer also guards against
+// degenerate bounds as a backstop; this layer turns the common authoring
+// mistake into a clear message at its source.
+//
+// Installed before `wrapMethodsForTracking` and restored after it (reverse
+// order) so the validation and allocation-tracking wrappers compose cleanly.
+function installPrimitiveGuards(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  Manifold: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  CrossSection: any,
+  saved: SavedMethod[],
+): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const wrap = (target: any, name: string, validate: (args: unknown[]) => void): void => {
+    const orig = target?.[name];
+    if (typeof orig !== 'function') return;
+    try {
+      target[name] = function (this: unknown, ...args: unknown[]) {
+        validate(args);
+        return (orig as (...a: unknown[]) => unknown).apply(this, args);
+      };
+      saved.push([target, name, orig]);
+    } catch { /* non-writable Embind member — skip */ }
+  };
+
+  // A `size` arg shaped `number | [..dims]`, optional because cube()/square()
+  // default to a unit shape. Only validated when the caller passed something;
+  // every component must be a finite positive number.
+  const assertSize = (val: unknown, dims: number, paramName: string): void => {
+    if (val === undefined) return;
+    if (Array.isArray(val)) {
+      const t = assertNumberTuple(val, dims, paramName);
+      for (let i = 0; i < t.length; i++) {
+        if (t[i] < 1e-6) {
+          throw new ValidationError(`${paramName}[${i}] must be > 0, got ${t[i]}. See /ai.md#argument-validation`);
+        }
+      }
+    } else {
+      assertNumber(val, paramName, { min: 1e-6 });
+    }
+  };
+
+  wrap(Manifold, 'sphere', (a) => { assertNumber(a[0], 'Manifold.sphere(radius)', { min: 1e-6 }); });
+  wrap(Manifold, 'cylinder', (a) => {
+    assertNumber(a[0], 'Manifold.cylinder(height)', { min: 1e-6 });
+    assertNumber(a[1], 'Manifold.cylinder(radiusLow)', { min: 1e-6 });
+    if (a[2] !== undefined) assertNumber(a[2], 'Manifold.cylinder(radiusHigh)', { min: 0 });
+  });
+  wrap(Manifold, 'cube', (a) => { assertSize(a[0], 3, 'Manifold.cube(size)'); });
+  wrap(CrossSection, 'circle', (a) => { assertNumber(a[0], 'CrossSection.circle(radius)', { min: 1e-6 }); });
+  wrap(CrossSection, 'square', (a) => { assertSize(a[0], 2, 'CrossSection.square(size)'); });
 }
 
 function disposeAllExcept(allocated: Array<{ delete?: () => void }>, keep: unknown): void {
@@ -480,6 +546,12 @@ export const manifoldJsEngine: Engine = {
         allocated.push(v as { delete?: () => void });
       }
     };
+    // Validate primitive dimensions before the tracking wrap so a degenerate
+    // `Manifold.sphere()` / `cylinder()` / `circle()` fails with a clear error
+    // instead of building a viewport-freezing zero-size solid. Restored after
+    // the tracking wrap in `finally` (reverse install order).
+    const savedGuards: SavedMethod[] = [];
+    installPrimitiveGuards(Manifold, CrossSection, savedGuards);
     wrapMethodsForTracking(Manifold, track, savedMethods);
     wrapMethodsForTracking(Manifold.prototype, track, savedMethods);
     wrapMethodsForTracking(CrossSection, track, savedMethods);
@@ -589,6 +661,7 @@ export const manifoldJsEngine: Engine = {
       // caller (the worker frees it after extracting the mesh; the sync path in
       // main.ts deletes it after querying volume/bbox).
       restoreMethods(savedMethods);
+      restoreMethods(savedGuards);
       disposeAllExcept(allocated, result);
       // BREP shapes don't pass through Manifold.* / CrossSection.* method
       // wrapping (they're created by `BREP.box(...).fillet(...)` chains
