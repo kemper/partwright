@@ -80,6 +80,26 @@ test.describe('viewport toolbar groups', () => {
     await expect(page.locator('#measure-toggle')).toBeVisible();
   });
 
+  test('clicking the viewport canvas keeps the Tools menu and the open tool panel up', async ({ page }) => {
+    await openEditor(page);
+    await page.locator('#viewport-tools-group-btn').dispatchEvent('click');
+
+    // Open a tool so both the launcher row and its docked panel are showing.
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+
+    // A click on empty space in the 3D viewport canvas is a camera/orbit intent
+    // (clicking away from the model to rotate it), NOT a dismiss — so it must leave
+    // both the Tools menu and the active tool's panel open. Regression for the bug
+    // where an off-model viewport click collapsed the Tools row but stranded the
+    // tool panel. The tour is pre-dismissed in openEditor, so a real click lands.
+    const box = await page.locator('#viewport').boundingBox();
+    if (!box) throw new Error('viewport canvas has no bounding box');
+    await page.mouse.click(box.x + 24, box.y + 24); // top-left corner — empty space
+    await expect(page.locator('#paint-toggle')).toBeVisible();
+    await expect(page.locator('#paint-picker-panel')).toBeVisible();
+  });
+
   test('grouped viewport tools are reachable from the command palette', async ({ page }) => {
     await openEditor(page);
     // Open the palette and search for the Paint tool command — the palette is the

@@ -21,6 +21,7 @@ import {
   type ImageVoxelMode,
   type ImageVoxelColorMode,
 } from '../import/imageToVoxel';
+import { listSlotRgb255 } from '../color/palette';
 
 export interface ImageVoxelModalOptions {
   filename?: string;
@@ -91,6 +92,7 @@ function getDefaultOpts(): Opts {
     saturation: 0,
     posterizeColors: 0,
     palette: null,
+    constrainToPalette: false,
     removeBackground: false,
     codeStyle: 'decode',
   };
@@ -112,6 +114,7 @@ const DEFAULT_OPTS: Opts = {
   saturation: 0,
   posterizeColors: 0,
   palette: null,
+  constrainToPalette: false,
   removeBackground: false,
   codeStyle: 'decode',
 };
@@ -138,7 +141,11 @@ function seedOpts(init?: ImageToVoxelOptions): Opts {
     contrast: init.contrast ?? DEFAULT_OPTS.contrast,
     saturation: init.saturation ?? DEFAULT_OPTS.saturation,
     posterizeColors: init.posterizeColors ?? DEFAULT_OPTS.posterizeColors,
-    palette: init.palette ?? DEFAULT_OPTS.palette,
+    // Constrain-to-palette is a live binding to the filament palette: when a
+    // recent-import re-click carries the flag, re-resolve the colours from the
+    // current palette rather than trusting the stored snapshot.
+    palette: init.constrainToPalette ? listSlotRgb255() : (init.palette ?? DEFAULT_OPTS.palette),
+    constrainToPalette: init.constrainToPalette ?? DEFAULT_OPTS.constrainToPalette,
     removeBackground: init.removeBackground ?? DEFAULT_OPTS.removeBackground,
     codeStyle: init.codeStyle ?? DEFAULT_OPTS.codeStyle,
   };
@@ -290,6 +297,31 @@ function PaletteEditor(props: {
   );
 }
 
+/** Read-only swatch strip of the filament palette the voxels will snap to, shown
+ *  when "Constrain to filament palette" is on. */
+function FilamentStrip(props: { palette: [number, number, number][] | null }) {
+  const palette = props.palette ?? [];
+  if (palette.length === 0) {
+    return (
+      <div class="text-[10px] text-amber-400 leading-snug">
+        Your filament palette is empty — add colours in the palette manager (🧵) first.
+      </div>
+    );
+  }
+  return (
+    <div class="flex flex-col gap-1">
+      <div class="flex flex-wrap items-center gap-1">
+        {palette.map(c => (
+          <div class="w-6 h-6 rounded border border-zinc-700" style={`background-color:${toHex(c)}`} title={toHex(c)} />
+        ))}
+      </div>
+      <div class="text-[10px] text-zinc-500 leading-snug">
+        Every voxel snaps to the nearest of your {palette.length} filament colour{palette.length === 1 ? '' : 's'}.
+      </div>
+    </div>
+  );
+}
+
 function ImageVoxelBody(props: {
   imageSig: Signal<ImageDataLike | null>;
   filenameSig: Signal<string>;
@@ -330,6 +362,20 @@ function ImageVoxelBody(props: {
     });
     set('palette', colors.length ? colors : [[180, 180, 180]]);
     set('posterizeColors', Math.max(2, k));
+  };
+
+  // Toggle "constrain to filament palette": on → snap to the live filament
+  // colours (overriding any image-derived reduction); off → back to per-pixel
+  // original colour. Re-reads the palette each time it's switched on.
+  const toggleConstrain = (on: boolean) => {
+    if (on) {
+      set('constrainToPalette', true);
+      set('palette', listSlotRgb255());
+    } else {
+      set('constrainToPalette', false);
+      set('palette', null);
+      set('posterizeColors', 0);
+    }
   };
 
   // Swap the source image while keeping every tuned knob. Decoding replaces the
@@ -548,31 +594,43 @@ function ImageVoxelBody(props: {
             </div>
             {opts.colorMode === 'original' && (
               <div class="mt-1.5">
-                <div class="flex gap-1">
-                  <SegButton<ColorReduction> value="all" current={reductionOf(opts)} onPick={pickReduction}>
-                    All colors
-                  </SegButton>
-                  <SegButton<ColorReduction> value="posterize" current={reductionOf(opts)} onPick={pickReduction}>
-                    Posterize
-                  </SegButton>
-                  <SegButton<ColorReduction> value="palette" current={reductionOf(opts)} onPick={pickReduction}>
-                    Palette
-                  </SegButton>
-                </div>
-                {reductionOf(opts) === 'posterize' && (
-                  <label class="flex items-center gap-2 text-[11px] text-zinc-300 mt-1.5">
-                    Colors
-                    <input
-                      type="range"
-                      class="flex-1 accent-blue-500"
-                      min={2} max={12} step={1}
-                      value={opts.posterizeColors}
-                      onInput={e => set('posterizeColors', Number((e.target as HTMLInputElement).value))}
-                    />
-                    <span class="text-zinc-200 tabular-nums">{opts.posterizeColors}</span>
-                  </label>
+                <label class="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer mb-1.5"
+                  title="Snap every voxel to the nearest colour in your filament palette, so the model uses only your loaded filaments.">
+                  <input type="checkbox" class="accent-blue-500" checked={opts.constrainToPalette}
+                    onChange={e => toggleConstrain((e.target as HTMLInputElement).checked)} />
+                  Constrain to filament palette
+                </label>
+                {opts.constrainToPalette ? (
+                  <FilamentStrip palette={opts.palette} />
+                ) : (
+                  <>
+                    <div class="flex gap-1">
+                      <SegButton<ColorReduction> value="all" current={reductionOf(opts)} onPick={pickReduction}>
+                        All colors
+                      </SegButton>
+                      <SegButton<ColorReduction> value="posterize" current={reductionOf(opts)} onPick={pickReduction}>
+                        Posterize
+                      </SegButton>
+                      <SegButton<ColorReduction> value="palette" current={reductionOf(opts)} onPick={pickReduction}>
+                        Palette
+                      </SegButton>
+                    </div>
+                    {reductionOf(opts) === 'posterize' && (
+                      <label class="flex items-center gap-2 text-[11px] text-zinc-300 mt-1.5">
+                        Colors
+                        <input
+                          type="range"
+                          class="flex-1 accent-blue-500"
+                          min={2} max={12} step={1}
+                          value={opts.posterizeColors}
+                          onInput={e => set('posterizeColors', Number((e.target as HTMLInputElement).value))}
+                        />
+                        <span class="text-zinc-200 tabular-nums">{opts.posterizeColors}</span>
+                      </label>
+                    )}
+                    {reductionOf(opts) === 'palette' && <PaletteEditor image={image} opts={opts} set={set} />}
+                  </>
                 )}
-                {reductionOf(opts) === 'palette' && <PaletteEditor image={image} opts={opts} set={set} />}
               </div>
             )}
           </div>
@@ -653,6 +711,9 @@ function emitOptions(o: Opts): ImageToVoxelOptions {
   };
   // Only emit a fixed palette when one is actually in use (original mode).
   if (o.colorMode === 'original' && o.palette && o.palette.length > 0) out.palette = o.palette;
+  // Persist the constrain intent so a recent-import re-click reopens in
+  // constrain mode and re-resolves the palette live (see seedOpts).
+  if (o.colorMode === 'original' && o.constrainToPalette) out.constrainToPalette = true;
   return out;
 }
 

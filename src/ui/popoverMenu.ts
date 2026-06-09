@@ -112,7 +112,15 @@ export function createPopoverGroup(opts: PopoverGroupOptions): PopoverGroup {
   // Click-outside and Escape close the menu. Singleton bar — listeners persist
   // for the life of the page, matching the Import/Export dropdown pattern.
   document.addEventListener('click', (e) => {
-    if (isOpen() && !wrapper.contains(e.target as Node)) close();
+    if (!isOpen()) return;
+    const target = e.target as Node;
+    if (wrapper.contains(target)) return;
+    // Clicks on the 3D viewport canvas are camera/orbit/paint interactions, not a
+    // dismiss intent: the user may click empty space to rotate the model while a
+    // tool is active. Keep the menu (and the active tool's docked panel) open in
+    // that case — only genuine off-viewport UI clicks dismiss it.
+    if (target instanceof Element && target.closest('.viewport-canvas')) return;
+    close();
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && isOpen()) close();

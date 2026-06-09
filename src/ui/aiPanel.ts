@@ -1178,16 +1178,57 @@ function renderModelPicker(): void {
     return;
   }
 
-  // Custom OpenAI-compatible endpoint: a chip showing the configured model
-  // (or a prompt to configure), opening AI Settings on the Custom tab — the
-  // endpoint URL + model live there, like the local model lives in its modal.
+  // Custom OpenAI-compatible endpoint. Once the user has fetched the
+  // endpoint's model list (AI Settings → Custom → Fetch models), surface it
+  // as a real <select> here — the same affordance the cloud providers get —
+  // so switching models doesn't require reopening settings. Before any models
+  // are fetched, fall back to a chip that opens settings (the ⚙ header button
+  // always stays available to reconfigure the endpoint).
   if (settings.toggles.provider === 'custom') {
+    const fetched = settings.toggles.customModels;
+    const current = settings.toggles.customModel.trim();
+    if (fetched.length > 0) {
+      const sel = document.createElement('select');
+      sel.className = 'h-6 px-2 rounded text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-200 focus:outline-none';
+      sel.title = `Custom endpoint model (${settings.toggles.customBaseUrl || 'no URL set'}). Manage the endpoint + model list in ⚙ AI Settings → Custom.`;
+      if (!current) {
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'Select a model…';
+        placeholder.disabled = true;
+        sel.appendChild(placeholder);
+      }
+      let foundCurrent = false;
+      for (const id of fetched) {
+        const o = document.createElement('option');
+        o.value = id;
+        o.textContent = id;
+        sel.appendChild(o);
+        if (id === current) foundCurrent = true;
+      }
+      if (current && !foundCurrent) {
+        const o = document.createElement('option');
+        o.value = current;
+        o.textContent = `${current} (custom)`;
+        sel.appendChild(o);
+      }
+      sel.value = current;
+      sel.addEventListener('change', () => {
+        saveSettings(setCustomModel(loadSettings(), sel.value));
+        recordSessionAiPreference();
+        renderToggleStrip();
+        renderCostMeter();
+        panelStatusUpdate();
+      });
+      modelPickerEl.appendChild(sel);
+      return;
+    }
     const customChip = document.createElement('button');
     customChip.type = 'button';
     customChip.className = 'h-6 px-2 inline-flex items-center rounded text-[11px] bg-sky-900/30 border border-sky-700/50 text-sky-200 hover:bg-sky-900/50';
-    customChip.textContent = settings.toggles.customModel.trim() || 'Configure endpoint';
+    customChip.textContent = current || 'Configure endpoint';
     customChip.title = settings.toggles.customBaseUrl.trim()
-      ? `Custom endpoint: ${settings.toggles.customBaseUrl} · model: ${settings.toggles.customModel || '(none set)'}. Click to configure.`
+      ? `Custom endpoint: ${settings.toggles.customBaseUrl} · model: ${current || '(none set)'}. Click to configure.`
       : 'No custom endpoint configured yet. Click to set the base URL and model.';
     customChip.addEventListener('click', () => {
       void showAiSettingsModal({ onChange: afterAiSettingsChange }, { initialTab: 'custom' });

@@ -89,7 +89,7 @@ export interface LocalContextSettings {
 const DEFAULT_OPENAI_MODEL: OpenaiModelId = 'gpt-5-mini';
 const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
 
-const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customBaseUrl'> & { anthropicModel: AnthropicModelId }> = {
+const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customModels' | 'customBaseUrl'> & { anthropicModel: AnthropicModelId }> = {
   minimal: {
     vision: { views: false, resolution: 'low', angles: 'auto' },
     scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: false },
@@ -148,6 +148,7 @@ const DEFAULT_TOGGLES: ChatToggles = {
   openaiModel: DEFAULT_OPENAI_MODEL,
   geminiModel: DEFAULT_GEMINI_MODEL,
   customModel: '',
+  customModels: [],
   customBaseUrl: '',
 };
 
@@ -206,6 +207,7 @@ function cloneToggles(t: ChatToggles): ChatToggles {
     openaiModel: t.openaiModel,
     geminiModel: t.geminiModel,
     customModel: t.customModel,
+    customModels: [...t.customModels],
     customBaseUrl: t.customBaseUrl,
   };
 }
@@ -300,6 +302,7 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       openaiModel: settings.toggles.openaiModel,
       geminiModel: settings.toggles.geminiModel,
       customModel: settings.toggles.customModel,
+      customModels: settings.toggles.customModels,
       customBaseUrl: settings.toggles.customBaseUrl,
     },
   };
@@ -429,6 +432,16 @@ export function setCustomModel(settings: AiSettings, model: string): AiSettings 
   };
 }
 
+/** Cache the list of model ids the custom endpoint advertised (from "Fetch
+ *  models"). Purely a derived list used to populate the AI panel's model
+ *  dropdown, so it does NOT flip the preset like the user-facing setters do. */
+export function setCustomModels(settings: AiSettings, models: string[]): AiSettings {
+  return {
+    ...settings,
+    toggles: { ...settings.toggles, customModels: models },
+  };
+}
+
 /** Set the base URL of the custom OpenAI-compatible endpoint (trimmed). */
 export function setCustomBaseUrl(settings: AiSettings, baseUrl: string): AiSettings {
   return {
@@ -455,13 +468,20 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     openaiModel: partial.openaiModel ?? settings.toggles.openaiModel,
     geminiModel: partial.geminiModel ?? settings.toggles.geminiModel,
     customModel: partial.customModel ?? settings.toggles.customModel,
+    customModels: partial.customModels ?? settings.toggles.customModels,
     customBaseUrl: partial.customBaseUrl ?? settings.toggles.customBaseUrl,
   };
   return { ...settings, preset: 'custom', toggles: next };
 }
 
 type DeepPartial<T> = {
-  [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
+  // Arrays are replaced wholesale, never deep-partialled into a sparse
+  // array-like (which wouldn't be assignable back to the concrete field).
+  [K in keyof T]?: T[K] extends ReadonlyArray<unknown>
+    ? T[K]
+    : T[K] extends object
+      ? DeepPartial<T[K]>
+      : T[K];
 };
 
 /** Legacy shape — accepts the pre-provider single `model` field (v1 BYO-key
@@ -539,6 +559,9 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       openaiModel: tgls.openaiModel ?? DEFAULT_SETTINGS.toggles.openaiModel,
       geminiModel: tgls.geminiModel ?? DEFAULT_SETTINGS.toggles.geminiModel,
       customModel: tgls.customModel ?? DEFAULT_SETTINGS.toggles.customModel,
+      customModels: Array.isArray(tgls.customModels)
+        ? tgls.customModels.filter((x): x is string => typeof x === 'string')
+        : DEFAULT_SETTINGS.toggles.customModels,
       customBaseUrl: tgls.customBaseUrl ?? DEFAULT_SETTINGS.toggles.customBaseUrl,
     },
     systemPromptOverrides: {

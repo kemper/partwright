@@ -285,6 +285,8 @@ partwright.paintVoxelFace({ faceIndex: 12, erase: true });
 partwright.setVoxelTool('add');                                  // -> { tool }
 partwright.setVoxelBrush({ radius: 2, shape: 'sphere' });        // wider brush
 partwright.voxelStudioApply({ faceIndex: 0, color: [80,160,255] }); // sculpt a blob
+partwright.setVoxelBrush({ block: [5,5,1], depth: 0 });          // add a 5×5×1 plate flush to the clicked face
+partwright.voxelStudioApply({ faceIndex: 0, color: '#cc8844' });    // stamp the block
 partwright.setVoxelTool('bucket');
 partwright.voxelStudioApply({ faceIndex: 4, color: '#33cc55' });    // flood recolor
 partwright.setVoxelTool('level');
@@ -316,10 +318,17 @@ await partwright.bakeVoxelsToCode({ label: 'castle' });  // replace with voxels.
   doesn't return a grid.
 - `setVoxelTool(tool)` — `'paint' | 'add' | 'remove' | 'bucket' | 'level' |
   'boxAdd' | 'boxRemove'`. Returns `{ tool }` or `{ error }`.
-- `setVoxelBrush({ radius?, shape?, spray?, sprayDensity? })` — brush for the
-  paint/add/remove tools. `radius` in voxels (0 = single, max 16); `shape` is
-  `'sphere' | 'cube' | 'diamond'`; `spray` scatters a random subset;
-  `sprayDensity` 0.05..1. Returns the resolved settings.
+- `setVoxelBrush({ radius?, shape?, spray?, sprayDensity?, block?, depth? })` —
+  brush/block settings. For paint/remove: `radius` in voxels (0 = single, max
+  16); `shape` is `'sphere' | 'cube' | 'diamond'`; `spray` scatters a random
+  subset; `sprayDensity` 0.05..1. For the `add` tool: `block` is the `[x,y,z]`
+  size in voxels (1..32 each) and the block is anchored to the clicked face so a
+  thick block never pokes out the far side of a thin tile. `depth` (≥ 0; the
+  panel slider tops out at 16 but a typed value can go deeper) sinks
+  the add block into the surface, and for the box tools extrudes the
+  fill/subtract along the clicked face (a `boxAdd` grows a slab that many extra
+  layers, a `boxRemove` carves that many deeper); `0` = flush to the face.
+  Returns the resolved settings.
 - `setVoxelLevelAxis(axis)` — `0`/`1`/`2` (x/y/z) for the `level` tool.
 - `voxelStudioBeginStroke()` / `voxelStudioEndStroke()` — bracket a run of
   `voxelStudioApply` calls so they collapse into one undo step (the

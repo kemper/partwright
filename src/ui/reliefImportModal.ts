@@ -7,6 +7,7 @@
 import type { ReliefOptions, ReliefImportMode, TileOutputKind, TileShapeKind, HeightGrid, ReliefMesh, SeedRegion } from '../relief/types';
 import { DEFAULT_RELIEF_OPTIONS } from '../relief/types';
 import { sampleImageToGrid, detectBackgroundMask, bgMaskFromColor, generateRelief, generateReliefFromSvg } from '../relief/imageToRelief';
+import { listSlotRgb255 } from '../color/palette';
 import { registerImportSnapshot, type ImportMetadata } from '../import/importInbox';
 import { createThumbnailFromBlob } from '../import/imageThumbnail';
 import { createModalShell } from './modalShell';
@@ -50,8 +51,8 @@ const MODES: ModeDef[] = [
   // first, tonal heightmaps (lithophanes) second. 'ai' is intentionally absent
   // — what used to live as a tab is now the Auto-tune button below the knobs,
   // since it never had its own knob set and read as a phantom mode.
-  { id: 'quantized', label: 'Colour' },
-  { id: 'luminance', label: 'Tonal (relief)' },
+  { id: 'quantized', label: 'Colour tile' },
+  { id: 'luminance', label: 'Relief / lithophane' },
 ];
 
 // Only one relief wizard at a time; createModalShell already enforces a single
@@ -67,6 +68,17 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   // re-enters the wizard with their tweaks intact. Merge (not replace) so any
   // new option fields added since that import still get their defaults.
   if (options.initialOptions) mergeOptions(opts, options.initialOptions);
+  // Colour tiles default to the filament palette as their colour source — you
+  // print a keychain with the filaments you have, so a fresh open starts on the
+  // palette and k-means is the opt-out. A recent-import re-click (initialOptions)
+  // is respected verbatim, so a tile the user switched to auto-extract reopens
+  // that way. Either way, re-resolve a present palette from the *current* slots
+  // rather than trusting a stale snapshot.
+  if (!options.initialOptions && opts.mode === 'quantized') {
+    opts.quantized.fixedPalette = listSlotRgb255();
+  } else if (opts.quantized.fixedPalette && opts.quantized.fixedPalette.length > 0) {
+    opts.quantized.fixedPalette = listSlotRgb255();
+  }
   let image: ImageData | null = null;
   let svgText: string | null = null;
   // The currently-picked source File, captured so we can register it with the
@@ -203,12 +215,29 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   sliderControl(luminanceSection.grid, 'Levels', '', () => opts.luminance.levels, v => (opts.luminance.levels = v), { min: 2, max: 32, step: 1, int: true });
 
   // Quantized knobs — quantized mode only.
-  sliderControl(quantizedSection.grid, 'Clusters', '', () => opts.quantized.clusters, v => (opts.quantized.clusters = v), { min: 2, max: 12, step: 1, int: true });
+  const clustersRow = sliderControl(quantizedSection.grid, 'Clusters', '', () => opts.quantized.clusters, v => (opts.quantized.clusters = v), { min: 2, max: 12, step: 1, int: true });
   selectControl(quantizedSection.grid, 'Color space', () => opts.quantized.colorSpace, v => (opts.quantized.colorSpace = v), [
     { value: 'rgb', label: 'RGB' },
     { value: 'lab', label: 'Lab' },
   ]);
   checkboxControl(quantizedSection.grid, 'Dither', () => opts.quantized.dither, v => (opts.quantized.dither = v));
+  // Colour source: filament palette (default — snap every region to the nearest
+  // loaded filament) vs auto-extract (free k-means clusters). Re-reads the live
+  // palette each time it's switched on; clears the snap when off. While on the
+  // colour set is the palette, so the Clusters slider is dimmed (ignored).
+  const constrainRow = checkboxControl(
+    quantizedSection.grid,
+    'Use filament palette colours',
+    () => !!(opts.quantized.fixedPalette && opts.quantized.fixedPalette.length > 0),
+    v => { opts.quantized.fixedPalette = v ? listSlotRgb255() : undefined; syncConstrain(); },
+  );
+  constrainRow.title = 'On (default): each colour region maps onto the nearest filament in your palette, so the tile prints in your loaded colours. Off: auto-extract colours with k-means clustering.';
+  function syncConstrain(): void {
+    const on = !!(opts.quantized.fixedPalette && opts.quantized.fixedPalette.length > 0);
+    clustersRow.classList.toggle('opacity-40', on);
+    clustersRow.classList.toggle('pointer-events-none', on);
+  }
+  syncConstrain();
 
   // Tile knobs — visible for 'quantized' mode and for SVG imports. The Output
   // picker switches between a stepped relief, a flat colour tile (keychain
@@ -1207,7 +1236,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     get: () => number,
     set: (v: number) => void,
     range: { min: number; max: number; step: number; int?: boolean },
-  ): void {
+  ): HTMLElement {
     // Slider for dragged exploration, plus a typeable number input for exact
     // entry. Two-way bound and clamped to the slider's range.
     const { wrap, labelRow, valueEl } = fieldWrap(label, unit);
@@ -1260,6 +1289,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     });
     wrap.appendChild(input);
     parent.appendChild(wrap);
+    return wrap;
   }
 
   function checkboxControl(

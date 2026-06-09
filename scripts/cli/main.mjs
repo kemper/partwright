@@ -3,7 +3,7 @@
 // docs/headless-cli.md.
 import { resolve, dirname, basename, join } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { runPreview, composePng } from './preview.mjs';
+import { runPreview, composePng, composeContactSheet, explainComponents, checkExpectComponents } from './preview.mjs';
 import { runPhoto, meshToPng, loadPalette } from './photo.mjs';
 import { runDaemon } from './daemon.mjs';
 import { startDaemon, stopDaemon, statusDaemon, rpc, evalInPage, resetPage } from './client.mjs';
@@ -32,9 +32,9 @@ function writeDataUrl(dataUrl, outPath) {
 const json = (v) => JSON.stringify(v, (_k, val) => (ArrayBuffer.isView(val) ? undefined : val), 2);
 
 async function cmdPreview(argv, { pngDefault }) {
-  const a = parse(argv, ['json']);
+  const a = parse(argv, ['json', 'explain-components']);
   const file = a._[0];
-  if (!file) { console.error('usage: partwright preview <file.js> [--lang manifold-js|voxel] [--png out] [--json] [--size N] [-p k=v]'); process.exit(2); }
+  if (!file) { console.error('usage: partwright preview <file.js> [--lang manifold-js|voxel] [--png out] [--json] [--size N] [--explain-components] [--expect-components N] [-p k=v]'); process.exit(2); }
   const abs = resolve(file);
   const result = await runPreview(abs, { params: a.params, lang: a.lang || 'manifold-js' });
   if (!result.ok) { console.log(json({ ok: false, error: result.error, diagnostics: result.diagnostics })); process.exit(1); }
@@ -46,6 +46,31 @@ async function cmdPreview(argv, { pngDefault }) {
     await img.toFile(pngPath);
   }
   console.log(json({ ok: true, png: pngPath, stats: result.stats }));
+
+  if (a['explain-components']) console.error(explainComponents(result.stats));
+  const expectErr = checkExpectComponents(result.stats, a['expect-components']);
+  if (expectErr) { console.error(expectErr); process.exit(1); }
+}
+
+// Contact sheet — run N model files and tile one iso view of each into a single
+// PNG for side-by-side comparison (variant sweeps, before/after, A/B params).
+async function cmdCompare(argv) {
+  const a = parse(argv, ['json']);
+  const files = a._;
+  if (files.length < 2) { console.error('usage: partwright compare <a.js> <b.js> [more.js …] [--lang manifold-js|voxel|scad] [--png out] [--size N] [--json] [-p k=v]'); process.exit(2); }
+  const results = [];
+  for (const f of files) {
+    const r = await runPreview(resolve(f), { params: a.params, lang: a.lang || 'manifold-js' });
+    results.push({ file: f, ok: r.ok, error: r.error, stats: r.stats, render: r.render });
+  }
+  let pngPath = null;
+  if (!a.json) {
+    pngPath = a.png ? resolve(a.png) : resolve('compare.png');
+    await composeContactSheet(results, Number(a.size) || 360).toFile(pngPath);
+  }
+  // Drop the heavy render buffers from the JSON; the PNG carries the pixels.
+  const models = results.map((r, i) => ({ cell: i, file: r.file, ok: r.ok, error: r.error, stats: r.stats }));
+  console.log(json({ ok: true, png: pngPath, models }));
 }
 
 // Photo → palette-constrained voxel model. Stateless (no daemon): decode +
@@ -218,8 +243,11 @@ async function cmdMethods(argv) {
 const USAGE = `partwright — headless Partwright CLI for driving model creation + feedback
 
 Phase 1 (stateless, no browser — fast inner loop):
-  partwright preview <file.js> [--lang manifold-js|voxel] [--png out] [--json] [--size N] [-p k=v]
+  partwright preview <file.js> [--lang manifold-js|voxel] [--png out] [--json] [--size N]
+                               [--explain-components] [--expect-components N] [-p k=v]
   partwright run     <file.js> [--lang …] [-p k=v]       stats JSON only
+  partwright compare <a.js> <b.js> [more.js …] [--png out] [--size N] [-p k=v]
+                                                         tile each model's iso view into one contact-sheet PNG
   partwright photo   <image>   [--palette p.json] [--max N] [--mode billboard|heightmap]
                                [--depth N] [--bg] [--crop x,y,w,h] [--out model.js] [--png out]
                                photo → palette-snapped voxel model + preview
@@ -240,6 +268,7 @@ export async function main(argv) {
   switch (cmd) {
     case 'preview': return cmdPreview(rest, { pngDefault: true });
     case 'run': return cmdPreview(rest, { pngDefault: false });
+    case 'compare': return cmdCompare(rest);
     case 'photo': return cmdPhoto(rest);
     case 'iterate': return cmdIterate(rest);
     case 'daemon': return cmdDaemon(rest);

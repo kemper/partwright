@@ -20,12 +20,13 @@ import type { MeshData } from '../geometry/types';
 import { normalizeColor, type VoxelGrid } from '../geometry/voxel/grid';
 import { gridToMeshWithProvenance } from '../geometry/voxel/mesher';
 import { runVoxelForPaint, type VoxelPaintRun } from '../geometry/engines/voxel';
-import { bucketRecolor, clearBox, fillBoxRecolor, addTarget, brushApply, levelRecolor, inBrush, type BrushShape } from '../geometry/voxel/edits';
+import { bucketRecolor, clearBox, fillBoxRecolor, addBlock, addBlockCells, extrudeBox, brushApply, levelRecolor, inBrush, type BrushShape } from '../geometry/voxel/edits';
 import { diffGrids, type VoxelEditOps } from '../geometry/voxel/editCodegen';
 import { generateVoxelImportCode } from '../import/imageToVoxel';
 import { addPointerSuppressor, isPointerWithinModelBounds, getRenderer, getScene, requestRender } from '../renderer/viewport';
 import { pickFace, type FacePickResult } from './facePicker';
 import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
+import { isPaletteConstrained, nearestSlot, hexToRgb, onPaletteChange } from './palette';
 
 export type { BrushShape } from '../geometry/voxel/edits';
 
@@ -62,6 +63,10 @@ let boxCorner: [number, number, number] | null = null;
 // Brush settings (shared by the paint/add/remove tools).
 let brushRadius = 0;            // 0 = single voxel (preserves click-to-paint)
 let brushShape: BrushShape = 'sphere';
+// Add-block settings (the `add` tool only): a world-axis box laid against the
+// clicked face. [1,1,1] + depth 0 reduces to the legacy single-voxel add.
+let blockSize: [number, number, number] = [1, 1, 1];
+let addDepth = 0;              // layers the block sinks into the surface (0 = on top)
 let spray = false;             // scatter a random subset of the footprint
 let sprayDensity = 0.5;        // 0..1, fraction kept when spraying
 let levelAxis: 0 | 1 | 2 = 2;  // axis for the "level" tool (x/y/z)
@@ -81,7 +86,24 @@ export function isActive(): boolean { return active; }
 export function setColor(c: [number, number, number] | string | number): void {
   const rgb = normalizeColor(c, 'setColor(color)');
   color = [(rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff];
+  enforceVoxelConstraint();
 }
+
+/** When the palette is constrained, snap the active voxel colour (0–255 RGB)
+ *  onto the nearest filament slot — the voxel-studio counterpart of mesh
+ *  paint's enforcement, so the global "Constrain to palette" toggle holds here
+ *  too. No-op when unconstrained or the palette is empty. */
+function enforceVoxelConstraint(): void {
+  if (!isPaletteConstrained()) return;
+  const slot = nearestSlot([color[0] / 255, color[1] / 255, color[2] / 255]);
+  if (!slot) return;
+  const [r, g, b] = hexToRgb(slot.hex);
+  color = [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+// Re-snap the active colour whenever constrain is toggled or the palette is
+// edited, so a constrained voxel session can never keep an off-palette colour.
+onPaletteChange(enforceVoxelConstraint);
 export function isEraser(): boolean { return eraser; }
 export function setEraser(on: boolean): void { eraser = !!on; }
 
@@ -112,6 +134,23 @@ export function setBrushRadius(r: number): void {
 }
 export function getBrushShape(): BrushShape { return brushShape; }
 export function setBrushShape(s: BrushShape): void { brushShape = s; refreshPreview(); cbStateChange?.(); }
+
+// Add-block dimensions (X/Y/Z, in voxels) and how deep the block sinks into the
+// clicked surface. Used only by the `add` tool; the preview reflects them live.
+const MAX_BLOCK_SIZE = 32;
+export function getBlockSize(): [number, number, number] { return [...blockSize]; }
+export function setBlockSize(axis: 0 | 1 | 2, n: number): void {
+  blockSize[axis] = Math.max(1, Math.min(MAX_BLOCK_SIZE, Math.round(n) || 1));
+  refreshPreview();
+  cbStateChange?.();
+}
+export function getAddDepth(): number { return addDepth; }
+// No upper clamp: the slider tops out at 16, but a typed value can go deeper.
+export function setAddDepth(n: number): void {
+  addDepth = Math.max(0, Math.round(n) || 0);
+  refreshPreview();
+  cbStateChange?.();
+}
 export function isSpray(): boolean { return spray; }
 export function setSpray(on: boolean): void { spray = !!on; cbStateChange?.(); }
 export function getSprayDensity(): number { return sprayDensity; }
@@ -194,6 +233,7 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
   run = r.data;
   baselineGrid = r.data.grid.clone();
   active = true;
+  enforceVoxelConstraint(); // a constrained palette must not paint the held-over default colour
   tool = 'paint';
   boxCorner = null;
   undoStack = [];
@@ -282,7 +322,8 @@ export function applyAtTriangle(triangleIndex: number): boolean {
   if (idx < 0 || idx + 2 >= run.triVoxel.length) return false;
   if (tool === 'boxAdd' || tool === 'boxRemove') {
     const x = run.triVoxel[idx], y = run.triVoxel[idx + 1], z = run.triVoxel[idx + 2];
-    return applyBox(x, y, z);
+    const nx = run.triNormal[idx], ny = run.triNormal[idx + 1], nz = run.triNormal[idx + 2];
+    return applyBox(x, y, z, [nx, ny, nz]);
   }
   if (strokeActive) {
     const changed = runOp(triangleIndex);
@@ -307,11 +348,10 @@ function runOp(triangleIndex: number): boolean {
       return brushApply(run.grid, [x, y, z], brushRadius, brushShape, 'paint', color, density) > 0;
     case 'remove':
       return brushApply(run.grid, [x, y, z], brushRadius, brushShape, 'remove', color, density) > 0;
-    case 'add': {
-      const target = addTarget([x, y, z], [nx, ny, nz]);
-      if (!target) return false;
-      return brushApply(run.grid, target, brushRadius, brushShape, 'add', color, density) > 0;
-    }
+    case 'add':
+      // A block laid against the clicked face: per-axis size, anchored along
+      // the normal so it won't poke out the far side of a thin tile.
+      return addBlock(run.grid, [x, y, z], [nx, ny, nz], blockSize, addDepth, color) > 0;
     case 'bucket':
       return bucketRecolor(run.grid, [x, y, z], color) > 0;
     case 'level':
@@ -369,8 +409,11 @@ function mutate(fn: () => boolean): boolean {
 }
 
 /** Two-click box: the first click banks a corner (no mutation); the second
- *  fills (boxAdd) or clears (boxRemove) the inclusive box between them. */
-function applyBox(x: number, y: number, z: number): boolean {
+ *  fills (boxAdd) or clears (boxRemove) the inclusive box between them. The
+ *  `addDepth` setting extrudes the box along the second click's face normal —
+ *  a fill grows a slab outward, a subtract carves inward (see {@link extrudeBox}).
+ *  The completing click's `normal` sets the extrusion direction. */
+function applyBox(x: number, y: number, z: number, normal: [number, number, number]): boolean {
   if (!run) return false;
   if (!boxCorner) {
     boxCorner = [x, y, z];
@@ -379,9 +422,11 @@ function applyBox(x: number, y: number, z: number): boolean {
   }
   const a = boxCorner;
   boxCorner = null;
-  return mutate(() => tool === 'boxRemove'
-    ? clearBox(run!.grid, a, [x, y, z]) > 0
-    : fillBoxRecolor(run!.grid, a, [x, y, z], color) > 0);
+  const remove = tool === 'boxRemove';
+  const [c0, c1] = extrudeBox(a, [x, y, z], normal, addDepth, remove);
+  return mutate(() => remove
+    ? clearBox(run!.grid, c0, c1) > 0
+    : fillBoxRecolor(run!.grid, c0, c1, color) > 0);
 }
 
 function remeshAndPush(): void {
@@ -397,6 +442,15 @@ function triangleVoxel(triangleIndex: number): [number, number, number] | null {
   const idx = triangleIndex * 3;
   if (idx < 0 || idx + 2 >= run.triVoxel.length) return null;
   return [run.triVoxel[idx], run.triVoxel[idx + 1], run.triVoxel[idx + 2]];
+}
+
+/** The integer face-normal baked for a triangle (a unit axis vector), or null.
+ *  Preferred over the raycast normal for the add block since it's exact. */
+function triangleNormal(triangleIndex: number): [number, number, number] | null {
+  if (!run) return null;
+  const idx = triangleIndex * 3;
+  if (idx < 0 || idx + 2 >= run.triNormal.length) return null;
+  return [run.triNormal[idx], run.triNormal[idx + 1], run.triNormal[idx + 2]];
 }
 
 function sameVoxel(a: [number, number, number] | null, b: [number, number, number] | null): boolean {
@@ -443,9 +497,9 @@ function ensurePreviewCapacity(n: number): void {
   previewCapacity = cap;
 }
 
-/** The voxel cells the active brush tool would affect at `center`: occupied
- *  cells in the footprint for paint/remove (what gets recolored/deleted), empty
- *  cells for add (the new voxels). */
+/** The occupied voxel cells the paint/remove brush would affect at `center` —
+ *  what gets recolored or deleted. (The `add` tool previews a block instead;
+ *  see {@link previewCells}.) */
 function brushFootprintCells(center: [number, number, number]): [number, number, number][] {
   const cells: [number, number, number][] = [];
   if (!run) return cells;
@@ -456,25 +510,30 @@ function brushFootprintCells(center: [number, number, number]): [number, number,
       for (let dz = -ri; dz <= ri; dz++) {
         if (!inBrush(brushShape, dx, dy, dz, ri)) continue;
         const x = cx + dx, y = cy + dy, z = cz + dz;
-        const occupied = run.grid.has(x, y, z);
-        // add fills empty cells; paint/remove act on existing ones.
-        if (tool === 'add' ? occupied : !occupied) continue;
+        if (!run.grid.has(x, y, z)) continue; // paint/remove act on existing cells
         cells.push([x, y, z]);
       }
   return cells;
 }
 
-function previewCenter(hit: FacePickResult): [number, number, number] | null {
+/** Cells the active brush/block tool would touch at the hovered face — the
+ *  set the preview overlay draws. For `add` this is the anchored block (so the
+ *  user sees its size and how far it sinks in); for paint/remove it's the
+ *  occupied brush footprint. */
+function previewCells(hit: FacePickResult): [number, number, number][] {
+  if (!run) return [];
   const v = triangleVoxel(hit.triangleIndex);
-  if (!v) return null;
-  return tool === 'add' ? addTarget(v, hit.normal) : v;
+  if (!v) return [];
+  if (tool === 'add') {
+    const n = triangleNormal(hit.triangleIndex);
+    return n ? addBlockCells(v, n, blockSize, addDepth) : [];
+  }
+  return brushFootprintCells(v);
 }
 
 function renderPreviewFromHit(hit: FacePickResult | null): void {
   if (!active || !run || !isBrushTool(tool) || !hit) { clearPreview(); return; }
-  const center = previewCenter(hit);
-  if (!center) { clearPreview(); return; }
-  const cells = brushFootprintCells(center);
+  const cells = previewCells(hit);
   if (cells.length === 0) { clearPreview(); return; }
   ensurePreviewCapacity(cells.length);
   if (!previewMesh) return;

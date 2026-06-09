@@ -227,8 +227,8 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   const { apiKey, toggles, sessionId, history, userBlocks, signal } = input;
   const tools = buildToolList(toggles);
 
-  // The full ai.md is ~12.5K tokens — fine for hosted Claude with prompt
-  // caching. Most local models have 32K context so it technically fits
+  // The preamble + full ai.md is ~22K tokens — fine for hosted Claude with
+  // prompt caching. Most local models have 32K context so it technically fits
   // there too, but smaller models do better with the hand-tuned
   // slim/medium prompts (which leave more room for tool docs +
   // conversation + the reply) and call readDoc to pull subdocs on demand.

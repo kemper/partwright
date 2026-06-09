@@ -14,6 +14,10 @@ export interface PreviewComponent {
   triangleCount: number;
   volume: number;
   bbox: { min: number[]; max: number[]; size: number[] };
+  /** Bounding-box center of this island ((min+max)/2) — the cheap "where is
+   *  it" locator surfaced by `--explain-components`. Empty when the part had
+   *  no measurable bounding box. */
+  center: number[];
 }
 
 export interface PreviewStats {
@@ -199,7 +203,11 @@ export async function previewModel(
         .map((p: any, index: number) => ({ index, vol: safeNum(() => p.volume()), tri: safeNum(() => p.numTri()), box: safeBox(p) }))
         .sort((a, b) => b.vol - a.vol)
         .slice(0, 16);
-      for (const p of ranked) components.push({ index: p.index, triangleCount: p.tri, volume: p.vol, bbox: p.box ? bb(p.box) : { min: [], max: [], size: [] } });
+      for (const p of ranked) {
+        const box = p.box ? bb(p.box) : { min: [], max: [], size: [] };
+        const center = box.min.length === 3 ? box.min.map((m, i) => (m + box.max[i]) / 2) : [];
+        components.push({ index: p.index, triangleCount: p.tri, volume: p.vol, bbox: box, center });
+      }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       for (const p of parts) try { (p as any).delete(); } catch { /* exit cleans up */ }
     } catch { /* decompose unsupported */ }
