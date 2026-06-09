@@ -76,3 +76,18 @@ re-ran `updateApplyBtn()` on a tab switch — so opening the modal on `fuzzy`
 left Apply permanently disabled. Added a `wholeOnly()` helper that short-circuits
 `regionBlocked()`/`activeSelection()`, and an `updateApplyBtn()` call in
 `renderTab()`. This repairs the same latent bug for voxelize/voronoiLamp.
+
+## Follow-up (work-reviewer)
+
+The reviewer caught a blocking docs/impl mismatch: when I pivoted the field from
+the triplanar blend to the XY-constant-along-Z form, I updated the SDF module's
+header comment but left "blended triplanar so windows open on every face"
+language in the three user/agent-facing surfaces (`tools.ts` tool description,
+`textures.md`, the modal help text) — and the docs even invented a non-existent
+"triplanar thickens struts diagonally" artifact while hiding the real Z-slot
+limitation. Rewrote all three to accurately describe the 2D-pattern-projected-
+along-Z behaviour and its real limitation (axial slots on Z-parallel walls; reads
+cleanly on faces turning toward Z; use `applyVoronoiLamp` for orientation-free).
+Also aligned the `perforatedLatticeSdf` resolution JSDoc/fallback (140 → 110) to
+the effective default. Re-synced `origin/main` (clean merge with the voxel-
+rounding work).

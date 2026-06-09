@@ -42,7 +42,7 @@ export interface PerforatedLatticeOptions {
    *  network is. Larger = chunkier struts / smaller windows. Default 0.3. */
   strutWidth?: number;
   /** Field-grid resolution along the longest axis. Auto-raised so struts resolve
-   *  to ≥ ~6 cells (thin struts otherwise alias), clamped to MAX. Default 140. */
+   *  to ≥ ~6 cells (thin struts otherwise alias), clamped to MAX. Default 110. */
   resolution?: number;
   /** Rotate the pattern in the XY plane (degrees). Default 0. */
   grainAngleDeg?: number;
@@ -71,7 +71,7 @@ export function perforatedLatticeSdfMesh(mesh: MeshData, opts: PerforatedLattice
   const strutWorld = strutFrac * cell;
   const maxDim = Math.max(...bboxOf(extractPositions(mesh)).size, 1e-6);
   const resFloor = Math.ceil((maxDim / Math.max(strutWorld, 1e-4)) * MIN_STRUT_VOXELS);
-  const resolution = Math.min(MAX_FIELD_RESOLUTION, Math.max(Math.round(opts.resolution ?? 140), resFloor));
+  const resolution = Math.min(MAX_FIELD_RESOLUTION, Math.max(Math.round(opts.resolution ?? 110), resFloor));
 
   return sdfModifierMesh(mesh, { resolution, bandWorld: wall, watertight: opts.watertight }, ({ d, x, y, voxelSize }) => {
     // Shell band: inside the wall (between the surface and its inward offset).

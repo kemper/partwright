@@ -1585,7 +1585,7 @@ const ALL_TOOLS: ToolDefinition[] = [
     name: 'applyPerforatedLattice',
     description: `Cut a **regular perforated lattice** through the current model — the deterministic sibling of \`applyVoronoiLamp\`. Instead of random Voronoi cells, it cuts an even, repeating pattern of windows clean through a thin shell, leaving a strut web: a **\`square\`** grid, a **\`hex\`** honeycomb, or a **\`triangle\`** truss. Bakes a smooth manifold-js mesh (continuous SDF — curved walls, no voxel stair-stepping; no engine change). Saves a new version.
 
-**This is a real cutaway, not a texture.** It opens actual through-windows (like \`applyVoronoiLamp\`), unlike the relief textures which only displace the surface. The pattern is blended triplanar so windows open on every face of the model, not just along one axis.
+**This is a real cutaway, not a texture.** It opens actual through-windows (like \`applyVoronoiLamp\`), unlike the relief textures which only displace the surface. The 2D pattern is evaluated in the XY plane and held constant along Z, so it reads cleanly on faces that turn toward Z (a sphere's caps, a vase's curved shoulder) but degrades to axial slots on walls running parallel to Z (e.g. an upright cylinder's side). For an orientation-free see-through shell, use \`applyVoronoiLamp\`.
 
 **When to use:** when the user wants a regular/geometric perforated shell — a lattice lampshade, a grid/honeycomb/truss screen or vent, a perforated planter, a mesh enclosure — and wants the holes uniform rather than the organic look of the Voronoi lamp. Start from a closed solid (vase, sphere, box, vessel).
 

@@ -613,7 +613,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const res = sliderWithEntry('Resolution', 48, 200, 110, 1, 256, schedulePreview);
       const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
       body.append(pat.wrap, cs.wrap, sw.wrap, wt.wrap, grain.wrap, res.wrap, wtight.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'A see-through shell with REGULAR windows cut clean through (the deterministic sibling of the Voronoi lamp): square, hexagonal, or triangular-truss holes. The pattern is blended triplanar so windows open on every face. Smaller cell size = more, smaller windows; smaller strut width = thinner struts / bigger holes.'));
+      body.append(el('p', 'text-[11px] text-zinc-500', 'A see-through shell with REGULAR windows cut clean through (the deterministic sibling of the Voronoi lamp): square, hexagonal, or triangular-truss holes. The pattern is projected along Z, so it reads cleanly on faces turning toward Z (a sphere’s caps, a vase’s shoulder) and becomes axial slots on walls parallel to Z (an upright cylinder’s side). Smaller cell size = more, smaller windows; smaller strut width = thinner struts / bigger holes.'));
       body.append(el('p', 'text-[11px] text-amber-400/90', 'Meshes a continuous distance field — smooth curved walls, no voxel stair-stepping (a heavier op; allow a few seconds). Stays on manifold-js.'));
       currentOpts = () => ({
         pattern: pat.get(),

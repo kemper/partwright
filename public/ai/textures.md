@@ -366,9 +366,9 @@ window shape with `pattern`:
 It bakes a smooth manifold-js mesh by meshing a **continuous signed-distance
 field** (the principle behind `Manifold.levelSet`), so the curved walls follow
 the true surface with **no voxel stair-stepping** and **no engine change**. The
-2D pattern is blended **triplanar** (across the XY/XZ/YZ planes), so windows open
-on every face of the model rather than only along one axis. It's a heavier
-operation than the relief textures (allow a few seconds).
+2D pattern is evaluated in the **XY plane and held constant along Z**, so the
+cell-edge network extrudes into a connected, watertight cage on any shape. It's a
+heavier operation than the relief textures (allow a few seconds).
 
 Start from a **closed solid** (vase, sphere, box, vessel). It hollows +
 perforates in one step.
@@ -388,9 +388,12 @@ perforates in one step.
 - Honeycomb screen: `pattern='hex'`, `cellSize=d*0.12`, `strutWidth=0.28`
 - Truss vent: `pattern='triangle'`, `cellSize=d*0.16`, `strutWidth=0.34`
 
-**Limitation (v1):** the triplanar blend can thicken struts slightly where the
-surface faces diagonally to all three coordinate planes. Use `applyVoronoiLamp`
-for an organic, orientation-free look. Verify with `renderViews`.
+**Limitation (v1):** because the pattern is held constant along Z, a surface that
+runs **parallel to Z** — e.g. the side wall of an upright cylinder — sees the
+windows as axial slots rather than discrete cells. The pattern reads cleanly on
+faces that turn toward the Z axis (a sphere's caps, a vase's curved shoulder).
+Use `applyVoronoiLamp` for an organic, orientation-free look. Verify with
+`renderViews`.
 
 **Tips:** with `watertight` on (default) the result is manifold/printable. If
 windows don't open, lower `strutWidth` or raise `cellSize`.
