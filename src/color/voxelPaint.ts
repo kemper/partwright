@@ -39,6 +39,14 @@ export type VoxelTool = 'paint' | 'add' | 'remove' | 'bucket' | 'level' | 'boxAd
 /** Tools that paint a brush footprint and support click-drag strokes. */
 function isBrushTool(t: VoxelTool): boolean { return t === 'paint' || t === 'add' || t === 'remove'; }
 
+/** Tools that act on an EXISTING voxel located by a clicked point — they need no
+ *  face normal, so they can pick by nearest-occupied-voxel and thus work
+ *  directly on the rounded preview mesh. `add`/`box*` place NEW voxels against a
+ *  face and still require the blocky provenance mesh. */
+function isPointTool(t: VoxelTool): boolean {
+  return t === 'paint' || t === 'remove' || t === 'bucket' || t === 'level';
+}
+
 export interface VoxelPaintCallbacks {
   /** Called whenever the edited mesh changes (activation + each edit + undo). */
   onMeshUpdate: (mesh: MeshData) => void;
@@ -120,6 +128,10 @@ export function setTool(t: VoxelTool): void {
   if (strokeActive) endStroke();
   tool = t;
   boxCorner = null;
+  // Recolor (point) tools paint on the rounded surface; add/box need the blocky
+  // pickable mesh, so revert the preview for them.
+  if (isPointTool(t)) showRoundingPreview();
+  else endRoundingPreview();
   refreshPreview();
   cbStateChange?.();
 }
@@ -218,16 +230,17 @@ export function setRounding(opts: RoundingOpts | null): void {
 let roundingPreview = false; // true while the smoothed preview mesh is displayed
 let previewRaf = 0;          // pending rebuild handle (coalesces slider drags)
 
-/** Show the smoothed mesh for the current surfacing (or the blocky mesh when
- *  surfacing is hard blocks), coalesced to one rebuild per frame so a slider
- *  drag stays responsive. Re-meshing reads the live grid at flush time, so
- *  coalescing never shows a stale preview. */
+/** Show the smoothed mesh for the current surfacing, coalesced to one rebuild
+ *  per frame so a slider drag stays responsive. Only the point tools (recolor)
+ *  can edit the rounded mesh directly, so add/box keep the blocky mesh up.
+ *  Re-meshing reads the live grid at flush time, so coalescing never shows a
+ *  stale preview. */
 function showRoundingPreview(): void {
   if (!active || !cbMeshUpdate || previewRaf) return;
   previewRaf = requestAnimationFrame(() => {
     previewRaf = 0;
     if (!active || !run || !cbMeshUpdate) return;
-    if (run.grid.surfacing().mode === 'smooth') {
+    if (isPointTool(tool) && run.grid.surfacing().mode === 'smooth') {
       cbMeshUpdate(meshGrid(run.grid));
       roundingPreview = true;
     } else if (roundingPreview) {
@@ -426,6 +439,15 @@ function runOp(triangleIndex: number): boolean {
   if (idx < 0 || idx + 2 >= run.triVoxel.length) return false;
   const x = run.triVoxel[idx], y = run.triVoxel[idx + 1], z = run.triVoxel[idx + 2];
   const nx = run.triNormal[idx], ny = run.triNormal[idx + 1], nz = run.triNormal[idx + 2];
+  return runOpAt(x, y, z, nx, ny, nz);
+}
+
+/** Run the active (non-box) tool at a specific voxel + face normal. Split out of
+ *  {@link runOp} so the rounded-paint path can drive it from a point-picked
+ *  voxel (where there's no triangle provenance). The normal is only used by the
+ *  `add` tool, which isn't a point tool, so point callers may pass any axis. */
+function runOpAt(x: number, y: number, z: number, nx: number, ny: number, nz: number): boolean {
+  if (!run) return false;
   const density = spray ? sprayDensity : 1;
   switch (tool) {
     case 'paint':
@@ -442,6 +464,44 @@ function runOp(triangleIndex: number): boolean {
       return levelRecolor(run.grid, levelAxis, [x, y, z][levelAxis], color) > 0;
     default: return false;
   }
+}
+
+/** The occupied voxel nearest a world-space point on the (rounded) surface, or
+ *  null if none is close. Lets the recolor tools pick a voxel without triangle
+ *  provenance, so they work on the smoothed preview mesh. */
+function voxelAtPoint(p: [number, number, number]): [number, number, number] | null {
+  if (!run) return null;
+  const cx = Math.round(p[0] - 0.5), cy = Math.round(p[1] - 0.5), cz = Math.round(p[2] - 0.5);
+  let best: [number, number, number] | null = null;
+  let bestD = Infinity;
+  // The rounded surface sits within ~1 voxel of the occupied skin; search a 5³
+  // neighbourhood and take the occupied cell whose center is nearest the hit.
+  for (let dx = -2; dx <= 2; dx++)
+    for (let dy = -2; dy <= 2; dy++)
+      for (let dz = -2; dz <= 2; dz++) {
+        const x = cx + dx, y = cy + dy, z = cz + dz;
+        if (!run.grid.has(x, y, z)) continue;
+        const ex = x + 0.5 - p[0], ey = y + 0.5 - p[1], ez = z + 0.5 - p[2];
+        const d = ex * ex + ey * ey + ez * ez;
+        if (d < bestD) { bestD = d; best = [x, y, z]; }
+      }
+  return best;
+}
+
+/** Apply the active point tool at a clicked surface point (rounded-paint path).
+ *  Picks the nearest occupied voxel and edits it, re-meshing the rounded preview
+ *  so the recolor shows on the smooth surface. Returns true iff the grid
+ *  changed. */
+function applyAtPoint(point: [number, number, number]): boolean {
+  if (!active || !run) return false;
+  const v = voxelAtPoint(point);
+  if (!v) return false;
+  if (strokeActive) {
+    const changed = runOpAt(v[0], v[1], v[2], 0, 0, 1);
+    if (changed) { strokeChanged = true; remeshRoundedAndPush(); cbStateChange?.(); }
+    return changed;
+  }
+  return mutate(() => runOpAt(v[0], v[1], v[2], 0, 0, 1), remeshRoundedAndPush);
 }
 
 /** Undo the last edit. Returns true iff anything was undone. */
@@ -478,8 +538,10 @@ export function bakeToCode(filename = 'painted'): string | null {
 function colorRgb(): number { return (color[0] << 16) | (color[1] << 8) | color[2]; }
 
 /** Run a grid mutation with undo bookkeeping. `fn` mutates `run.grid` and
- *  returns whether anything changed; only then do we snapshot + re-mesh. */
-function mutate(fn: () => boolean): boolean {
+ *  returns whether anything changed; only then do we snapshot + re-mesh. The
+ *  rounded-paint path passes `remeshRoundedAndPush` so the smoothed preview
+ *  updates in place; everything else re-meshes to the blocky editing mesh. */
+function mutate(fn: () => boolean, remesh: () => void = remeshAndPush): boolean {
   if (!run) return false;
   const before = run.grid.clone();
   const changed = fn();
@@ -487,7 +549,7 @@ function mutate(fn: () => boolean): boolean {
   undoStack.push(before);
   if (undoStack.length > UNDO_CAP) undoStack.shift();
   redoStack = [];
-  remeshAndPush();
+  remesh();
   cbStateChange?.();
   return true;
 }
@@ -521,6 +583,17 @@ function remeshAndPush(): void {
   // is no longer what's on screen — keep the flag in sync.
   roundingPreview = false;
   cbMeshUpdate?.(mesh);
+}
+
+/** Re-mesh after a rounded-paint edit: refresh the blocky provenance (so the
+ *  picker + a later switch to add/box stay correct) but DISPLAY the smoothed
+ *  mesh so the recolor shows on the rounded surface. Keeps `roundingPreview`. */
+function remeshRoundedAndPush(): void {
+  if (!run) return;
+  const { mesh, triVoxel, triNormal } = gridToMeshWithProvenance(run.grid);
+  run = { ...run, mesh, triVoxel, triNormal };
+  cbMeshUpdate?.(meshGrid(run.grid));
+  roundingPreview = true;
 }
 
 /** The voxel a triangle maps back to (or null) — used to dedupe drag samples. */
@@ -649,13 +722,24 @@ let capturedPointerId: number | null = null;
 
 function onPointerDown(event: PointerEvent): void {
   if (!active || event.button !== 0) return;
-  // A rounded preview (showing or scheduled) means the canvas shows the smooth
-  // mesh, which isn't pickable per-voxel. A press inside the model is an edit:
-  // restore the blocky pickable mesh first, then pick against it. A press
-  // outside the model is an orbit and keeps the preview.
+  // Rounded-paint: the recolor tools edit directly on the smoothed preview by
+  // picking the nearest occupied voxel to the hit point — no blocky revert.
+  // A press outside the model is an orbit and keeps the preview.
   if (roundingPreview || previewRaf) {
     if (!isPointerWithinModelBounds(event)) return;
-    endRoundingPreview();
+    const hit = pickFace(event);
+    if (!hit) return;
+    clearPreview();
+    if (isBrushTool(tool)) { // paint/remove support drag strokes
+      const canvas = getRenderer().domElement;
+      try { canvas.setPointerCapture(event.pointerId); capturedPointerId = event.pointerId; } catch { /* not capturable */ }
+      beginStroke();
+      strokeLastVoxel = voxelAtPoint(hit.point);
+      applyAtPoint(hit.point);
+    } else {
+      applyAtPoint(hit.point); // bucket/level single click
+    }
+    return;
   }
   const hit = pickFace(event);
   if (!hit) return;
@@ -676,9 +760,19 @@ function onPointerDown(event: PointerEvent): void {
 function onPointerMove(event: PointerEvent): void {
   if (!active || !run) return;
   lastHoverEvent = { clientX: event.clientX, clientY: event.clientY };
-  // While the rounded preview is up, the displayed mesh isn't voxel-pickable, so
-  // don't draw a (misplaced) brush footprint over it; just orbit/hover.
-  if (roundingPreview) { clearPreview(); return; }
+  // Rounded-paint: continue a recolor stroke by point-picking on the smoothed
+  // mesh. (No footprint overlay — it'd float over the rounded surface.)
+  if (roundingPreview) {
+    clearPreview();
+    if (!strokeActive || (event.buttons & 1) === 0) return;
+    const hit = pickFace(event);
+    if (!hit) return;
+    const v = voxelAtPoint(hit.point);
+    if (sameVoxel(v, strokeLastVoxel)) return;
+    strokeLastVoxel = v;
+    applyAtPoint(hit.point);
+    return;
+  }
   // One raycast feeds both the hover preview and the active stroke.
   const hit = isBrushTool(tool) ? pickFace(event) : null;
   renderPreviewFromHit(hit);

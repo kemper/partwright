@@ -128,6 +128,45 @@ test.describe('voxel paint mode', () => {
     expect(result.voxelCount).toBe(64); // 4×4×4 box
   });
 
+  test('rounded paint: brush recolors directly on the rounded surface (no snap-back)', async ({ page }) => {
+    // The recolor tools pick the nearest occupied voxel to the hit point, so they
+    // work on the smoothed mesh. We read the displayed geometry: the extent stays
+    // rounded (no revert to blocks) and red vertices appear where we painted.
+    const stats = () => page.evaluate(async () => {
+      const { getMeshGroup } = await import('/src/renderer/viewport.ts');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const solid = getMeshGroup().children[0] as any;
+      const pos = solid?.geometry?.getAttribute('position');
+      const col = solid?.geometry?.getAttribute('color');
+      let mx = -Infinity;
+      for (let i = 0; i < pos.count; i++) mx = Math.max(mx, pos.getX(i));
+      let red = 0;
+      if (col) for (let i = 0; i < col.count; i++) if (col.getX(i) > 0.8 && col.getY(i) < 0.3 && col.getZ(i) < 0.3) red++;
+      return { maxX: mx, red };
+    });
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().sphere([0,0,0],6,'#6cf').smooth({ algorithm: 'surfaceNets' });`);
+      pw.activateVoxelPaint(); // default 'paint' tool is a point tool → rounded shown
+    });
+    await page.waitForTimeout(300);
+    const before = await stats();
+    expect(before.maxX).toBeLessThan(6.9); // opens rounded
+    expect(before.red).toBe(0);
+    // Synthesize a paint click at the canvas center (the sphere is centered).
+    await page.evaluate(() => {
+      const canvas = document.querySelector('canvas')!;
+      const r = canvas.getBoundingClientRect();
+      const o = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+      canvas.dispatchEvent(new PointerEvent('pointerdown', o));
+      window.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 }));
+    });
+    await expect.poll(async () => (await stats()).red).toBeGreaterThan(0); // recolored on the rounded surface
+    expect((await stats()).maxX).toBeLessThan(6.9); // still rounded — no snap-back to blocks
+  });
+
   test('Rounding slider previews live in the viewport, edits snap back to blocks', async ({ page }) => {
     // The displayed solid mesh's extent is our window into what the studio shows
     // without baking: Surface Nets pulls the surface inward (~0.5 voxel), so the

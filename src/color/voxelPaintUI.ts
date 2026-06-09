@@ -651,7 +651,7 @@ function buildRoundingSection(): HTMLElement {
 
   const hint = document.createElement('p');
   hint.className = 'text-[10px] text-zinc-500 leading-tight';
-  hint.textContent = 'Rounding previews live; click the model to edit (snaps back to blocks).';
+  hint.textContent = 'Paint/recolor work right on the rounded surface; Add & Box switch to blocks.';
   sec.appendChild(hint);
   return sec;
 }

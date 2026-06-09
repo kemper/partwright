@@ -45,3 +45,18 @@ mesh (existing live-preview behavior).
 The two PRs diverge from here: the **warning route** (no default edit tool;
 editing shows blocks + a notice; rounding resumes between edits) and **rounded
 painting** (point-based picking so the brush works on the rounded surface).
+
+## This PR — rounded painting
+
+Let the recolor tools (Brush/Remove/Bucket/Level — the `isPointTool` set) edit
+**directly on the rounded preview**: they locate a voxel by the nearest occupied
+cell to the raycast hit point (`voxelAtPoint`) instead of triangle provenance, so
+no blocky mesh is needed. `runOp` was split into `runOpAt(x,y,z, nx,ny,nz)` so a
+point-picked voxel can drive it; `applyAtPoint` + a `remeshRoundedAndPush`
+(refresh blocky provenance for later add/box, but DISPLAY the smoothed mesh)
+update the rounded surface in place. `onPointerDown`/`onPointerMove` take the
+point-pick path when the rounded preview is up; `mutate` gained an optional
+remesh arg. Add & Box still need flat faces, so `setTool`/`showRoundingPreview`
+keep them on the blocky mesh. E2E synthesizes a center click and asserts red
+vertices appear on a Surface-Nets sphere while the extent stays rounded (no
+snap-back). `voxel.md` documents painting on the rounded surface.
