@@ -177,7 +177,7 @@ const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
 const PARTS_MIGRATION_KEY = 'partwright-migrated-parts';
-const DB_VERSION = 8;
+const DB_VERSION = 9;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -276,6 +276,17 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('exportInbox')) {
         db.createObjectStore('exportInbox', { keyPath: 'id' });
+      }
+      // v9: content-addressed cache for computed `api.surface.*` textures. Keyed
+      // by hash(code + params + op-chain) — the same memo key the in-memory cache
+      // (src/surface/surfaceOps.ts) uses — so reopening a textured session seeds
+      // the cache and renders instantly instead of recomputing the (slow)
+      // texture. NOT part of a Version/export: the code stays the artifact; this
+      // is a derived local cache that recomputes on a fresh machine. The
+      // `savedAt` index drives LRU pruning (src/storage/surfaceCacheStore.ts).
+      if (!db.objectStoreNames.contains('surfaceCache')) {
+        const store = db.createObjectStore('surfaceCache', { keyPath: 'key' });
+        store.createIndex('savedAt', 'savedAt', { unique: false });
       }
     };
     req.onsuccess = () => {
@@ -1008,6 +1019,7 @@ export async function clearAllData(): Promise<void> {
   const stores = ['sessions', 'versions', 'notes', 'parts', 'aiChats'];
   if (db.objectStoreNames.contains('drafts')) stores.push('drafts');
   if (db.objectStoreNames.contains('reliefSources')) stores.push('reliefSources');
+  if (db.objectStoreNames.contains('surfaceCache')) stores.push('surfaceCache');
   const txn = db.transaction(stores, 'readwrite');
   txn.objectStore('sessions').clear();
   txn.objectStore('versions').clear();
@@ -1019,6 +1031,7 @@ export async function clearAllData(): Promise<void> {
   txn.objectStore('aiChats').clear();
   if (db.objectStoreNames.contains('drafts')) txn.objectStore('drafts').clear();
   if (db.objectStoreNames.contains('reliefSources')) txn.objectStore('reliefSources').clear();
+  if (db.objectStoreNames.contains('surfaceCache')) txn.objectStore('surfaceCache').clear();
   await txComplete(txn);
 }
 

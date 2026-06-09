@@ -124,7 +124,8 @@ import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionF
 import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, rotateAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
-import { surfaceCacheStatus, computeChain, type SurfaceOp } from './surface/surfaceOps';
+import { surfaceCacheStatus, computeChain, fullChainKey, seedCache, type SurfaceOp } from './surface/surfaceOps';
+import { getPersistedSurface, putPersistedSurface } from './storage/surfaceCacheStore';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
 import { initPlaceUI } from './ui/placeModal';
@@ -13677,6 +13678,20 @@ async function main() {
       return;
     }
     if (force) {
+      // Persisted (cross-session) cache: a reopened textured session seeds the
+      // in-memory cache from IndexedDB and renders instantly instead of
+      // recomputing. Keyed by the same memo key as the in-memory cache.
+      const persistKey = fullChainKey(baseKey, ops);
+      if (persistKey) {
+        const persisted = await getPersistedSurface(persistKey);
+        if (persisted) {
+          seedCache(persistKey, persisted);
+          result.mesh = persisted;
+          result.manifold = null;
+          hideSurfaceReapplyPill();
+          return;
+        }
+      }
       const progressId = startProgress({
         title: ops.length > 1 ? `Applying ${ops.length} surface textures…` : 'Applying surface texture…',
         indeterminate: false,
@@ -13686,6 +13701,8 @@ async function main() {
         result.mesh = textured;
         result.manifold = null;
         hideSurfaceReapplyPill();
+        // Persist for future sessions (best-effort, fire-and-forget).
+        if (persistKey) void putPersistedSurface(persistKey, textured);
       } catch (e) {
         // Compute failed — keep the base mesh and raise the pill so the user can
         // retry; surface the reason in the log.

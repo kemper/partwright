@@ -106,15 +106,40 @@ export async function computeChain(
   const remaining = ops.length - start;
   for (let i = start; i < ops.length; i++) {
     mesh = await applyOne(mesh, ops[i]);
+    computeCalls++;
     remember(prefixKey(baseKey, ops, i), mesh);
     onProgress?.(remaining > 0 ? (i - start + 1) / remaining : 1);
   }
   return mesh;
 }
 
+/** Cumulative count of ops actually computed (not served from cache). Tests use
+ *  the delta across runs to prove a cache hit avoided recompute. */
+let computeCalls = 0;
+export function __surfaceComputeCalls(): number {
+  return computeCalls;
+}
+
 /** Test/diagnostic hook — clears the memo cache. */
 export function __clearSurfaceCache(): void {
   cache.clear();
+}
+
+/** The memo key for the *full* op chain against a base identity. Persistence
+ *  (phase 3) stores this alongside the textured mesh so a reopened version can
+ *  seed the cache and hit instantly instead of recomputing. Returns null for an
+ *  empty chain (nothing to persist). */
+export function fullChainKey(baseKey: string, ops: SurfaceOp[]): string | null {
+  if (ops.length === 0) return null;
+  return prefixKey(baseKey, ops, ops.length - 1);
+}
+
+/** Insert a precomputed textured mesh under a known key (e.g. one persisted on a
+ *  saved version). The subsequent run recomputes the same key and hits this
+ *  entry, so reopening a textured session is instant. No-op on a falsy key. */
+export function seedCache(key: string | null | undefined, mesh: MeshData): void {
+  if (!key) return;
+  remember(key, mesh);
 }
 
 // Re-export the spec types so callers can import everything surface-op from here.
