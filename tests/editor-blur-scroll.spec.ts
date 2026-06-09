@@ -89,6 +89,23 @@ test.describe('editor bottom-scroll stabilizer', () => {
     expect(await scrollTop(page)).toBeLessThan(atBottom); // the move stood
   });
 
+  test('honors a small scroll after a keystroke anywhere in the editor (find-next path)', async ({ page }) => {
+    await setupScrolledToBottom(page);
+    const atBottom = await scrollTop(page);
+
+    // The find panel lives outside .cm-scroller, so its keystrokes are caught on
+    // view.dom (.cm-editor). Simulate that: a keydown on the editor root marks
+    // intent, so a small near-bottom scroll right after it is left alone.
+    await page.evaluate(() => {
+      const ed = document.querySelector('.cm-editor') as HTMLElement;
+      ed.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await programmaticNudge(page, -36);
+    await page.waitForTimeout(120);
+
+    expect(await scrollTop(page)).toBeLessThan(atBottom); // honored, not reverted
+  });
+
   test('does not block a large programmatic scroll (real navigation)', async ({ page }) => {
     await setupScrolledToBottom(page);
 

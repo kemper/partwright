@@ -152,3 +152,41 @@ describe('voxel smooth — algorithm selection (Surface Nets default)', () => {
     expect(m.numVert).toBe(0);
   });
 });
+
+describe('voxel smooth — rounding amount (strength)', () => {
+  function totalDelta(a: MeshData, b: MeshData): number {
+    let d = 0;
+    for (let i = 0; i < a.vertProperties.length; i++) d += Math.abs(a.vertProperties[i] - b.vertProperties[i]);
+    return d;
+  }
+
+  it('stores strength (default 1) and rejects out-of-range', () => {
+    expect(new VoxelGrid().smooth().surfacing().strength).toBe(1);
+    expect(new VoxelGrid().smooth({ strength: 0.3 }).surfacing().strength).toBe(0.3);
+    expect(() => new VoxelGrid().smooth({ strength: 1.5 } as never)).toThrow();
+    expect(() => new VoxelGrid().smooth({ strength: -0.1 } as never)).toThrow();
+  });
+
+  it('taubin strength 0 leaves the block mesh un-rounded; 1 rounds fully', () => {
+    const block = meshGrid(box(5)); // blocky
+    const s0 = meshGrid(box(5).smooth({ algorithm: 'taubin', strength: 0 }));
+    const s1 = meshGrid(box(5).smooth({ algorithm: 'taubin', strength: 1 }));
+    expect(totalDelta(s0, block)).toBeCloseTo(0, 4); // strength 0 = no movement
+    expect(totalDelta(s1, block)).toBeGreaterThan(1); // strength 1 = clearly rounded
+  });
+
+  it('higher strength rounds more (monotonic displacement from blocky)', () => {
+    const block = meshGrid(box(6));
+    const lo = meshGrid(box(6).smooth({ algorithm: 'taubin', strength: 0.25 }));
+    const hi = meshGrid(box(6).smooth({ algorithm: 'taubin', strength: 1 }));
+    expect(totalDelta(lo, block)).toBeGreaterThan(0);
+    expect(totalDelta(hi, block)).toBeGreaterThan(totalDelta(lo, block));
+  });
+
+  it('strength tunes Surface Nets post-relaxation (same topology, different positions)', () => {
+    const sn0 = meshGrid(box(6).smooth({ strength: 0 }));
+    const sn1 = meshGrid(box(6).smooth({ strength: 1 }));
+    expect(sn0.numVert).toBe(sn1.numVert); // same SN base topology
+    expect(totalDelta(sn0, sn1)).toBeGreaterThan(0); // relaxation amount differs
+  });
+});

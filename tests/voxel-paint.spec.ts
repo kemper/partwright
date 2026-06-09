@@ -113,15 +113,136 @@ test.describe('voxel paint mode', () => {
     expect(result.code).not.toContain('voxels.decode(');
   });
 
-  test('refuses smooth-surfaced grids with a clear message', async ({ page }) => {
+  test('opens on a smooth-surfaced grid (edits on the blocky preview)', async ({ page }) => {
+    // The studio now opens on smooth grids: per-voxel picking runs on the
+    // hard-faced provenance mesh while the grid keeps its surfacing for the
+    // Rounding panel to read and re-apply on save.
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       await pw.setActiveLanguage('voxel');
-      await pw.run(`return api.voxels().fillBox([0,0,0],[3,3,3],'#fff').smooth();`);
+      await pw.run(`return api.voxels().fillBox([0,0,0],[3,3,3],'#fff').smooth({ strength: 0.5 });`);
       return pw.activateVoxelPaint();
     });
-    expect(result.error).toMatch(/smooth-surfaced/);
+    expect(result.error).toBeFalsy();
+    expect(result.voxelCount).toBe(64); // 4×4×4 box
+  });
+
+  test('warning route: opens in View showing rounded; edit tools render blocks + warn', async ({ page }) => {
+    const maxX = () => page.evaluate(async () => {
+      const { getMeshGroup } = await import('/src/renderer/viewport.ts');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const solid = getMeshGroup().children[0] as any;
+      const pos = solid?.geometry?.getAttribute('position');
+      if (!pos) return NaN;
+      let mx = -Infinity;
+      for (let i = 0; i < pos.count; i++) mx = Math.max(mx, pos.getX(i));
+      return mx;
+    });
+    const warnVisible = () => page.evaluate(() => {
+      const el = [...document.querySelectorAll('#voxel-paint-panel p')].find((p) => p.textContent?.includes('Rounding is hidden'));
+      return !!el && !el.classList.contains('hidden');
+    });
+    // Open on an already-smooth grid: View is the default tool, the rounded
+    // result shows, and there's no warning. A sphere is used because Surface
+    // Nets visibly pulls its extent inward (a box's flat faces wouldn't move).
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().sphere([0,0,0],6,'#6cf').smooth({ algorithm: 'surfaceNets' });`);
+      pw.activateVoxelPaint();
+    });
+    await page.waitForTimeout(300);
+    const roundedMax = await maxX();
+    expect(roundedMax).toBeLessThan(6.9); // surfaceNets pulls in from the blocky extent (7)
+    expect(await warnVisible()).toBe(false);
+    // Pick the paintbrush → blocky render + warning banner.
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('#voxel-paint-panel button')].find((b) => b.textContent === '🖌') as HTMLButtonElement;
+      btn.click();
+    });
+    await expect.poll(maxX).toBeGreaterThan(roundedMax + 0.1); // back to the blocky extent
+    expect(await warnVisible()).toBe(true);
+    // Back to View → rounded resumes, warning gone.
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('#voxel-paint-panel button')].find((b) => b.textContent === '👁') as HTMLButtonElement;
+      btn.click();
+    });
+    await expect.poll(maxX).toBeLessThan(roundedMax + 0.05);
+    expect(await warnVisible()).toBe(false);
+  });
+
+  test('Rounding slider previews live in the viewport, edits snap back to blocks', async ({ page }) => {
+    // The displayed solid mesh's extent is our window into what the studio shows
+    // without baking: Surface Nets pulls the surface inward (~0.5 voxel), so the
+    // max X of the rounded preview is smaller than the blocky mesh's. Reading the
+    // live meshGroup (same module singleton the app uses) avoids depending on any
+    // stat that only tracks committed runs.
+    const maxX = () => page.evaluate(async () => {
+      const { getMeshGroup } = await import('/src/renderer/viewport.ts');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const solid = getMeshGroup().children[0] as any;
+      const pos = solid?.geometry?.getAttribute('position');
+      if (!pos) return NaN;
+      let mx = -Infinity;
+      for (let i = 0; i < pos.count; i++) mx = Math.max(mx, pos.getX(i));
+      return mx;
+    });
+    const blockyMax = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().sphere([0,0,0],6,'#6cf');`);
+      pw.activateVoxelPaint();
+      await new Promise((r) => setTimeout(r, 200));
+      const { getMeshGroup } = await import('/src/renderer/viewport.ts');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pos = (getMeshGroup().children[0] as any).geometry.getAttribute('position');
+      let mx = -Infinity;
+      for (let i = 0; i < pos.count; i++) mx = Math.max(mx, pos.getX(i));
+      return mx;
+    });
+    expect(blockyMax).toBeGreaterThan(6.9); // blocky sphere extent (voxel corner at 7)
+    // Pick Surface Nets — the displayed mesh re-meshes rounded (the surface pulls
+    // inward, ~0.5 voxel) without baking anything yet.
+    await page.evaluate(() => {
+      const sn = [...document.querySelectorAll('#voxel-paint-panel button')].find((b) => b.textContent === 'Surface Nets') as HTMLButtonElement;
+      sn.click();
+    });
+    await expect.poll(maxX).toBeLessThan(blockyMax - 0.1);
+    // Editing on the model snaps the preview back to the blocky provenance mesh.
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      pw.setVoxelTool('paint');
+      pw.voxelStudioApply({ faceIndex: 0, color: [255, 0, 0] });
+    });
+    await expect.poll(maxX).toBe(blockyMax);
+  });
+
+  test('Rounding panel preserves source-declared smooth options', async ({ page }) => {
+    // Touching the rounding slider must merge onto the grid's surfacing, not
+    // reset iterations/detail/algorithm to defaults.
+    const code = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().fillBox([0,0,0],[5,5,5],'#6cf').smooth({ algorithm: 'taubin', iterations: 6, detail: 2 });`);
+      pw.activateVoxelPaint();
+      await new Promise((r) => setTimeout(r, 300));
+      const slider = document.querySelector('#voxel-paint-panel input[title^="Rounding amount"]') as HTMLInputElement;
+      slider.value = '40';
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      const upd = [...document.querySelectorAll('#voxel-paint-panel button')].find((b) => b.textContent === 'Update code') as HTMLButtonElement;
+      upd.click();
+      await new Promise((r) => setTimeout(r, 1500));
+      return pw.getCode();
+    });
+    expect(code).toContain("algorithm: 'taubin'"); // preserved
+    expect(code).toContain('iterations: 6');         // preserved
+    expect(code).toContain('detail: 2');             // preserved
+    expect(code).toContain('strength: 0.4');         // the panel's change
   });
 
   test('cross-session: loading a different version cancels active paint', async ({ page }) => {
