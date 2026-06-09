@@ -199,6 +199,11 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'getModelColors',
+    description: 'Report the colors the current run declared in code via api.label(shape, name, {color}) (and api.labeledUnion entries with a color). These render and export automatically as a derived underlay — no paint step — and the editor stays editable; manual paint composites on top. Returns {count, colors: [{name, color, triangleCount}]}; an empty list means no colors were declared (or the labelled triangles vanished in a boolean — check listLabels().lostLabels). Sibling of listLabels (uncolored label features) and listRegions (manual paint regions).',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'paintByLabel',
     description: 'Paint a labelled feature by name. The label must have been registered in the current run via api.label(shape, name) / api.labeledUnion (manifold-js) or label("name") <expr>; at the top level of the source (SCAD). This is the bullseye for "describe how to make and paint a model" workflows: write the geometry with labels, then paint by name — no coordinate guessing, no bounding-box estimation, no fan-bleed. For manifold-js it survives boolean ops because manifold-3d propagates originalID through runOriginalID. For SCAD it only survives at the top level — labels inside a CGAL boolean ({ ... } of difference/intersection/etc.) are lost; fall back to paintComponent / paintInBox there. For multi-feature models, batch with paintByLabels in one round-trip instead of N sequential paintByLabel calls. IMPORTANT: api.label only tracks surfaces that exist in the original labeled shape. Boolean subtraction creates NEW triangles at the cut surface (e.g. the inner wall of a mug after subtracting the void) — those new triangles have NO label. Use probePixel + paintConnected for inner surfaces created by boolean ops.',
     input_schema: {
@@ -1707,6 +1712,7 @@ const ALWAYS_AVAILABLE = new Set([
   'findFaces',
   'listComponents',
   'listLabels',
+  'getModelColors',
   // listRegions is a pure read, not a paint mutation, so it stays always-on
   // even when paintFaces is disabled — its consumers paintExplain/assertPaint
   // are always-available and need a region id to target.
@@ -1760,6 +1766,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary',
   'getFeatureCentroids', 'getReferenceImages', 'getSessionContext', 'listVersions',
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
+  'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
   'listParts', 'getCurrentPart', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'getPrinterSettings', 'getReliefSwapGuide',
@@ -2137,6 +2144,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintComponent(input);
     case 'listLabels':
       return api.listLabels();
+    case 'getModelColors':
+      return api.getModelColors();
     case 'paintByLabel':
       return api.paintByLabel(input);
     case 'paintByLabels':
