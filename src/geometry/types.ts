@@ -88,6 +88,11 @@ export interface MeshResult {
    *  geometry-data stats so agents can confirm a voxel model's size without
    *  re-decoding the grid themselves. */
   voxelCount?: number;
+  /** Count of face-connected (6-neighbour) voxel pieces — the trustworthy
+   *  "separate printable pieces?" measure for voxel models, which the mesh
+   *  `componentCount` over-reports (enclosed cavities + edge/corner touches).
+   *  Only set by the voxel engine. */
+  voxelPieceCount?: number;
 }
 
 export interface CrossSectionResult {

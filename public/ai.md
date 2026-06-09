@@ -107,6 +107,8 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Smooth fillet / blend between two shapes (no edge-picking) | `a.smoothUnion(b, k)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Lattice / gyroid / periodic infill | `api.sdf.gyroid(cell, thickness)` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Twisted / bent body (one expression) | `api.sdf.<shape>(...).twist(deg)` -> `/ai/sdf.md` | (`linear_extrude(twist=)` for the extrusion case only) | (mesh-only; not in BREP) |
+| Organic surface texture (rock / bark / coral / terrain) | `node.displace(amount, api.sdf.noise({...}))` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
+| Fractal plant / coral / branching structure | `api.sdf.lsystem({ axiom, rules, iterations })` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Constant-thickness shell of any shape | `node.shell(t)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
 | Implicit surface / raw SDF function | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
 | Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) | (mesh-only; not in BREP) |
@@ -135,7 +137,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `readDoc` name | When to read it |
 |---|---|
 | `curves` | Before writing manifold-js code with `Curves.loft/sweep/bezier/arc/naca4/polyline/fillet/...` (smooth curves, organic shapes, airfoils, lofted surfaces). |
-| `sdf` | Before reaching for `api.sdf.*` — smooth blends (`smoothUnion`), domain warps (`twist`/`bend`), lattices (`gyroid`), constant-thickness shells. Anything the prompt frames as "smooth", "blended", "twisted", "lattice", or "gyroid" lives here. |
+| `sdf` | Before reaching for `api.sdf.*` — smooth blends (`smoothUnion`), domain warps (`twist`/`bend`), lattices (`gyroid`), constant-thickness shells, noise displacement (`displace`/`noise` for rock/bark/coral texture), and L-system growth (`lsystem` for fractal plants/corals). Anything the prompt frames as "smooth", "blended", "twisted", "lattice", "gyroid", "organic/bumpy texture", or "fractal/branching plant" lives here. |
 | `bosl2` | Before writing SCAD code that needs edge rounding (`cuboid(rounding=)`), threads (`screw`), gears (`spur_gear`), path-following (`path_sweep`), or attachables. |
 | `replicad` | Before using `api.BREP.*` inside a manifold-js session, or before switching to the replicad/BREP language. Covers exact fillets/chamfers, STEP export, and the manifold-js ↔ BREP boundary. |
 | `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |

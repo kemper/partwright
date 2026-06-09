@@ -76,6 +76,8 @@ are **integers** in the range −1024…1023 on each axis. 1 voxel = 1 world uni
 | `v.rotate('x' \| 'y' \| 'z', degrees)` | Rotate the whole grid about the origin around that axis. `degrees` must be a multiple of 90 (the only angles that stay on the voxel lattice); positive = right-hand rule. About the origin, so `translate` first to pick a pivot. Use it to reorient a model — e.g. `v.rotate('z', 180)` spins a +Y-facing figure to face the −Y front. |
 | `v.mirror('x' \| 'y' \| 'z')` | Add a mirrored copy across that axis's 0-plane (great for symmetric models; the mirrored copy wins where it overlaps an existing voxel). |
 | `v.hollow(thickness?)` | Remove interior voxels, leaving a shell of the given wall thickness (default 1). |
+| `v.sdf(node, opts?)` | Rasterize an `api.sdf.*` expression into the grid — gyroids, TPMS lattices, smooth blends, twists → colored voxels. See [SDF → voxel](#sdf--voxel-vsdf). |
+| `v.keepLargest(count?)` | Keep only the largest face-connected component(s), deleting smaller islands (`count` default 1). The cheap printability fix for a fragmented grid — e.g. an SDF lattice that sheds stray specks. |
 | `v.size` | Number of occupied voxels. |
 | `v.bounds()` → `{min,max} \| null` | Inclusive extents, or null when empty. |
 | `v.forEach((x,y,z,color) => …)` | Iterate occupied voxels. |
@@ -117,23 +119,37 @@ return voxels()
   .smooth();              // rounded edges
 ```
 
-`.smooth(opts)` accepts an iteration count or `{ iterations, detail }`:
+`.smooth(opts)` accepts an iteration count or `{ algorithm, iterations, detail }`:
 
-- **`iterations`** (1–8, default 2) — more passes = rounder. It's a Taubin
-  λ/μ smoothing of the mesh, so the model rounds without collapsing/shrinking.
-- **`detail`** (1–4, default 1) — supersamples the grid ×`detail` before
-  smoothing, giving finer rounding on large, coarse shapes (at more triangles).
-  The result is scaled back to the original world size. **Caution:** `detail > 1`
-  on small, dense features (face pixels, fine voxel detail) tends to *add*
-  stair-stepping rather than remove it — use plain `iterations` tuning there.
+- **`algorithm`** (`'surfaceNets'` | `'taubin'`, default `'surfaceNets'`) — which
+  smoother to use:
+  - **`surfaceNets`** (default) — builds a genuinely smooth surface from the
+    voxel occupancy at native resolution. Rounder than `taubin` at the same
+    triangle count, no supersampling needed, and no pole-spike artifacts. The
+    best general "round my voxels" choice.
+  - **`taubin`** — the original: relaxes the *block* mesh (λ/μ passes), so
+    topology is unchanged and `detail` supersampling applies. Reach for it when
+    you specifically want the block topology preserved or the `detail` knob.
+- **`iterations`** (1–8, default 2) — more passes = rounder. For `taubin` these
+  are the relaxation passes; for `surfaceNets` they're a light cleanup on top
+  (and what makes the base pins below take effect).
+- **`detail`** (1–4, default 1) — **`taubin` only.** Supersamples the grid
+  ×`detail` before smoothing for finer rounding on coarse shapes (at more
+  triangles), then scales back to original size. Ignored by `surfaceNets`.
+  **Caution:** `detail > 1` on small, dense features tends to *add* stair-stepping
+  rather than remove it — use plain `iterations` tuning there.
 
 ```js
-return voxels().fillBox([-4,-4,0],[4,4,8], '#6cf').smooth({ iterations: 4, detail: 2 });
+// Default (Surface Nets) — smooth at native resolution:
+return voxels().sphere([0,0,0], 8, '#e7b').smooth();
+// Taubin with supersampling, for block-topology rounding:
+return voxels().fillBox([-4,-4,0],[4,4,8], '#6cf').smooth({ algorithm: 'taubin', iterations: 4, detail: 2 });
 ```
 
-Smoothing only moves vertices — topology is unchanged — so per-voxel colors are
-preserved and the result stays a watertight manifold (exports/paint still work).
-Call `.blocky()` to switch back to hard faces (the default).
+Both algorithms keep per-voxel colors and produce a watertight manifold
+(exports/paint still work). `surfaceNets` centres the surface on voxel centres,
+so a model rounds slightly *inward* of its blocky extent. Call `.blocky()` to
+switch back to hard faces (the default surfacing).
 
 ### Keeping a flat / blocky base (printability)
 
@@ -175,6 +191,94 @@ feature (`hollow(2)`, ≥2-voxel walls) or use fewer `iterations` if you see it.
 > `Manifold.levelSet` or the `api.sdf` engine are better suited; `.smooth()` is
 > the lightweight "round my voxels" option that stays inside the voxel workflow.
 
+## SDF → voxel (`v.sdf`)
+
+The same declarative **SDF namespace** that manifold-js sessions use — `api.sdf`
+— is available in voxel sessions, and `v.sdf(node, opts?)` **rasterizes** it into
+the grid. Instead of hand-writing triple loops with the field math inline, you
+compose primitives and let the engine sample them:
+
+```js
+const { voxels, sdf } = api;
+const v = voxels();
+// A gyroid infill lattice clipped to a rounded cube — one expression.
+v.sdf(sdf.gyroid(10, 0.6).intersect(sdf.roundedBox([34, 34, 34], 5)), { res: 0.6, color: '#7ad0ff' });
+return v;
+```
+
+This is the bridge between the smooth/implicit world and the blocky one. Reach
+for it when you want a shape that's painful to place cube-by-cube — **gyroids /
+TPMS lattices** (`sdf.gyroid`, `sdf.schwarzP`, `sdf.diamond`, `sdf.lidinoid`),
+**smooth-blended organic forms** (`sdf.smoothUnion`), **twisted / bent /
+tapered** bodies — but you still want the voxel pipeline (VOX export, per-cell
+color, the blocky aesthetic). It's **additive**: it unions into whatever is
+already in the grid, so mix it freely with `v.fillBox` / `v.sphere` / `v.set`.
+
+### How sampling works
+
+The voxel at integer coord `(i, j, k)` tests the field at world
+`(i·res, j·res, k·res)` and is occupied when `f ≤ level` (inside the surface).
+So an SDF centered at the origin produces a voxel model centered at the origin,
+and the model's size in voxels is `worldSize / res`.
+
+### Options (`v.sdf(node, opts)`)
+
+| Option | Default | What it does |
+|--------|---------|--------------|
+| `res` | `1` | World units per voxel. Smaller = finer & larger (in voxels). `res: 0.5` doubles the voxel resolution. |
+| `color` | `'#cccccc'` | Fill color when no `colors` entry applies. |
+| `colors` | — | Map of SDF `.label(name)` → color. Each cell is colored by the labelled region it sits **deepest inside** (SDF union = min distance). Unlabelled / unmapped geometry falls back to `color`. |
+| `bounds` | node's own | Explicit world sampling box `{ min:[x,y,z], max:[x,y,z] }`. **Required for infinite SDFs** (a bare `sdf.gyroid(...)` or `.repeat()` — intersect with a finite shape or pass this). |
+| `level` | `0` | Iso level. `f ≤ level` is filled; a small positive value dilates the solid, negative erodes it. |
+
+Two-tone example (label the SDF subtrees, map them to colors):
+
+```js
+const { voxels, sdf } = api;
+const shell  = sdf.sphere(16).subtract(sdf.sphere(13)).label('shell');
+const core   = sdf.gyroid(7, 0.7).intersect(sdf.sphere(13)).label('core');
+return voxels().sdf(sdf.union(shell, core), {
+  res: 1,
+  colors: { shell: '#5bd0ff', core: '#ff6b9d' },
+});
+```
+
+### Notes & gotchas
+
+- **`api.sdf.build()` / `levelSet` is NOT available here** — there's no Manifold
+  engine in a voxel session. Use `v.sdf(node)` to rasterize instead (the error
+  message says so if you try `.build()`).
+- **TPMS `thickness` is in field units, not world units.** A gyroid's field only
+  ranges about ±1.5, so `thickness ≥ 1.5` fills almost solid; for an *open*
+  lattice use a thin wall like `0.4`–`0.8`. Verify with a render — don't guess.
+- **Sample budget.** `v.sdf` samples once per cell over the bounds; a tiny `res`
+  over big bounds is capped (`import.voxelSdfMaxSamples`, default 8M) and throws,
+  asking for a coarser `res` or tighter `bounds`, rather than freezing.
+- **Printability — fragmentation.** Open lattices can fragment into many
+  disconnected pieces (each a separate piece on the plate). Check
+  **`voxelPieceCount`** — the face-connected (6-neighbour) piece count, which is
+  the trustworthy "how many separate printable pieces?" number for voxel models.
+  Do **not** judge this by `componentCount`: that comes from the meshed solid and
+  over-reports voxel models (an enclosed cavity counts as a second component, and
+  voxels touching only at an edge/corner split), so a one-piece hollow shell
+  shows `componentCount: 2` but `voxelPieceCount: 1`. Fixes, cheapest first: call
+  **`v.keepLargest()`** to drop stray specks; thicken walls so the lattice stays
+  face-connected; weld a solid core/skin through it (e.g.
+  `lattice.union(smallSolidCore)`, or subtract an inner shape from an outer solid
+  and union the lattice inside).
+- **Thin TPMS struts at `res: 1` can be non-manifold.** A lattice strut only one
+  voxel wide tends to touch its neighbour along an *edge* (diagonal), not a face
+  — a non-manifold edge. The fix is **resolution, not thickness**: a finer `res`
+  (e.g. 0.6–0.7) thickens the same world-space strut to ≥2 voxels so it
+  rasterizes face-connected. (`v.keepLargest()` can't repair this — diagonal
+  contacts aren't separate components, they're a bad join *within* one.)
+- **`colors`/`.label()` does NOT survive `smoothUnion`.** A label on a sub-shape
+  that's then `smoothUnion`'d is never the *deepest* region at the blended
+  surface, so its `colors` entry yields zero voxels (same reason the mesh path
+  hard-unions across labels — see `/ai/sdf.md`). For a smooth-blended organic,
+  either label the *outer* expression, or fill one base `color` and recolor
+  detail regions afterward with `v.fillBox`/`v.set`/`v.sphere`.
+
 ## MagicaVoxel `.vox` import
 
 Drag a `.vox` file (from MagicaVoxel, Goxel, or any tool that exports the
@@ -196,6 +300,15 @@ are preserved, and the file opens in MagicaVoxel, Goxel, and other tools that
 read the format. The other 3D formats (GLB / 3MF / OBJ / STL) still work too —
 they export the *meshed* voxels with vertex colors — but `.vox` is the only one
 that keeps the editable voxel grid intact.
+
+> **Blocky STL / OBJ / 3MF use greedy meshing.** For a blocky (non-smoothed)
+> grid these mesh-file exports coalesce coplanar same-color faces into the fewest
+> rectangles, so a flat or large single-color region ships as a couple of
+> triangles instead of hundreds — several-fold smaller files, which matters for
+> print prep. The merge introduces T-junctions, which are harmless in a
+> triangle-soup export; the in-app render, stats, and slicing keep the per-face
+> manifold mesh, so nothing else is affected. A **smoothed** grid exports the
+> rounded mesh you see in the viewport instead (same as GLB), not blocky cubes.
 
 Programmatic / AI equivalent:
 

@@ -121,9 +121,14 @@ node.round(r)                    // grow by r everywhere, rounding sharp edges
 node.twist(degPerUnit, axis?, center?)  // twist around 'z' (default); center=[u,v] offsets the twist line
 node.bend(degPerUnit, axis?)     // bend perpendicular to 'x' (default)
 node.taper(rate, axis?)          // linearly scale the cross-section along 'z' (default)
+node.displace(amount, field)     // push the surface in/out by a scalar field (organic texture)
 ```
 
 Twist, bend, and taper warp space — the resulting field is a Lipschitz *approximation* of the true SDF, but marching tetrahedra still produces a clean watertight mesh.
+
+**`.displace(amount, field)`** is the *stochastic* warp — the rough-surface counterpart to the smooth twist/bend/taper. It moves the surface in and out by up to `amount` world units along a scalar `field(x,y,z)` (positive pushes OUTWARD). Pass `api.sdf.noise(...)` for organic texture (rock, bark, coral, terrain) or any custom `(x,y,z)=>number` returning roughly `[-1, 1]`. Two rules keep it printable:
+- **Mesh fine enough to resolve the field.** Set `edgeLength` smaller than the noise's smallest feature (~`1/frequency` / `2^octaves`); otherwise the bumps alias into hundreds of speckle components. If `componentCount` explodes, your `edgeLength` is too coarse for the noise frequency, or the amplitude is too high.
+- **Keep `amount` well under the noise wavelength (~`1/frequency`)**, or grooves/peaks pinch off floating islands. For deep, reliable texture, shape the field to one side — e.g. `(x,y,z) => -(n(x,y,z)*0.5 + 0.5)` carves **inward only**, which can never detach a piece, the dependable recipe for textured shells and grooved surfaces.
 
 **`.round(r)` grows the whole shape by `r`.** It's literally `f - r`, which offsets the iso-surface outward by `r` in every direction — so `cylinder(2, 10).round(0.5)` produces a shape with radius 2.5 AND height 11, not "the same cylinder with rounded edges". When you want the rounding WITHOUT the inflation, reach for `sdf.roundedBox` / `sdf.roundedCylinder`, which preserve the outer dimensions for you.
 
@@ -154,6 +159,19 @@ node.repeatN([nx, ny, nz], [px, py, pz], { stagger? })   // finite N-per-axis gr
 
   **Stagger** (`opts.stagger = { along, by, amount? }`) brick-shifts alternating rows: every other cell along `by` gets nudged by `amount * period` along `along`. The classic running-bond brick wall is `repeatN([8, 5, 0], [4, 2, 0], { stagger: { along: 'x', by: 'y' } })` — 5 rows of 8 bricks, every other row offset by half a brick (the default `amount: 0.5`). Honeycomb hex patterns are the same trick with a hex-prism cell. `along` and `by` must be different axes; `amount` is clamped to `[0, 1]`.
 
+## Generative fields & grammars
+
+Two helpers turn procedural recipes into meshable SDF — the algorithmic-design counterpart to placing primitives by hand.
+
+```js
+api.sdf.noise({ seed?, frequency?, octaves?, lacunarity?, gain?, ridged? })  // → (x,y,z)=>number field
+api.sdf.lsystem({ axiom, rules, iterations, angle?, length?, radius?,
+                  radiusScale?, lengthScale?, seed?, blend?, label?, leaf? })  // → SdfNode
+```
+
+- **`noise(opts?)`** returns a seeded fractional-Brownian-motion field in roughly `[-1, 1]` — hand it straight to `node.displace(amount, field)`. `frequency` sets feature size (cycles per unit), `octaves` layers detail, `ridged: true` gives sharp creases (eroded rock, brain coral) instead of smooth hills. Same seed → identical noise, so models are reproducible. The field is a plain function, so you can wrap it: `(x,y,z) => n(x, y, z*0.2)` stretches features vertically (bark grain); `(x,y,z) => -(n(x,y,z)*0.5+0.5)` carves inward only.
+- **`lsystem(opts)`** grows a Lindenmayer system into an SDF skeleton of welded capsules — fractal plants, corals, branching structures. `rules` rewrite the `axiom` string `iterations` times, then a 3D turtle walks it: `F` draws a segment, `+ -` yaw, `& ^` pitch, `\ /` roll, `[ ]` branch, `!` thin. `radiusScale`/`lengthScale` taper toward the tips; `blend` smooth-unions the joints (the SDF fillet, applied along the whole skeleton); `leaf: { symbols, radius, label }` drops foliage spheres as a second paint region. Stochastic productions are supported (`rules: { X: [{ p: 1, to: '...' }, ...] }`). **Cost scales as `segments × grid`** — keep `iterations` modest (≈3–5, a few hundred segments) and `edgeLength` ≥ ~0.6, or builds get slow.
+
 **Ordering: intersect FIRST, then warp.** Domain warps (`twist`, `bend`, `taper`, `repeat`, `polarRepeat`) don't shrink their input's bounds — only spatial booleans do. So `infinite.twist(...)` stays infinite (and `.build()` fails); `infinite.intersect(finiteBox).twist(...)` works because the intersect makes bounds finite before the twist tries to compute its sweep. Same applies to `repeat(...).twist(...)` — clip the lattice first, then warp. (`repeatN` is already finite, so this ordering rule doesn't apply to it.)
 
 ## Building (lowering to a Manifold)
@@ -168,6 +186,8 @@ return node.build({ edgeLength: 0.5, level: 0, tolerance: 0.05 });
 **`edgeLength` controls quality and speed.** Default is ~1/32 of the smallest bbox extent, clamped to `[0.1, 5]`. Halving `edgeLength` quadruples-or-more the triangle count and runtime — bump it down only when you can see facets you don't want.
 
 **`bounds`** is auto-inferred from the primitives in your tree. **Override it explicitly** when you use `gyroid` or `.repeat()` (which are unbounded), or when you intersect with something to cut a finite chunk from an infinite surface.
+
+> **In a `voxel` session, `api.sdf` is also available — but you rasterize it into the grid with `v.sdf(node, opts)` instead of `.build()`** (there's no Manifold engine to lower through). Same expression vocabulary (gyroids, TPMS, smooth blends, twists), blocky colored-voxel output. `.label()` regions map to voxel colors via the `colors` option. See `/ai/voxel.md#sdf--voxel-vsdf`.
 
 ## Painting SDFs — paint-by-label
 
