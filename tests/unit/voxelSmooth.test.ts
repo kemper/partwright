@@ -22,14 +22,14 @@ describe('voxel smooth — base pinning', () => {
   it('plain smooth pulls the bottom off the build plate (it rocks)', () => {
     // Baseline: without pinning, Taubin moves the bottom plane off z=0 (the
     // anti-shrink μ pass even bulges it below), so the model no longer sits flat.
-    const m = meshGrid(box(5).smooth({ iterations: 3 }));
+    const m = meshGrid(box(5).smooth({ algorithm: 'taubin', iterations: 3 }));
     expect(Math.abs(minZ(m))).toBeGreaterThan(0.05);
   });
 
   it('flatBottom keeps the bottom plane flat at z=0 while still rounding above', () => {
     const grid = box(5);
     const blocky = meshGrid(grid.clone()); // default surfacing
-    const m = meshGrid(grid.smooth({ iterations: 3, flatBottom: true }));
+    const m = meshGrid(grid.smooth({ algorithm: 'taubin', iterations: 3, flatBottom: true }));
 
     // Same topology / vertex order (same occupancy → same gridToMeshData).
     expect(m.numVert).toBe(blocky.numVert);
@@ -59,7 +59,7 @@ describe('voxel smooth — base pinning', () => {
   it('baseLayers keeps the bottom N layers fully blocky (sharp pedestal)', () => {
     const grid = box(6);
     const blocky = meshGrid(grid.clone());
-    const m = meshGrid(grid.smooth({ iterations: 4, baseLayers: 2 }));
+    const m = meshGrid(grid.smooth({ algorithm: 'taubin', iterations: 4, baseLayers: 2 }));
 
     let pinned = 0, moved = 0;
     for (let v = 0; v < m.numVert; v++) {
@@ -85,7 +85,7 @@ describe('voxel smooth — base pinning', () => {
     const grid = box(6);
     const blocky = meshGrid(grid.clone());
     // Lock the bottom layer of voxels (z=0) → corners span z in [0,1].
-    const m = meshGrid(grid.smooth({ iterations: 4, lockBox: [[0, 0, 0], [5, 5, 0]] }));
+    const m = meshGrid(grid.smooth({ algorithm: 'taubin', iterations: 4, lockBox: [[0, 0, 0], [5, 5, 0]] }));
 
     let pinned = 0;
     for (let v = 0; v < m.numVert; v++) {
@@ -101,14 +101,54 @@ describe('voxel smooth — base pinning', () => {
   });
 
   it('flatBottom composes with detail without dropping below the plane', () => {
-    const m = meshGrid(box(5).smooth({ iterations: 2, detail: 2, flatBottom: true }));
+    const m = meshGrid(box(5).smooth({ algorithm: 'taubin', iterations: 2, detail: 2, flatBottom: true }));
     expect(minZ(m)).toBeCloseTo(0, 5);
   });
 
-  it('rejects unknown smooth keys and bad lockBox shapes', () => {
+  it('rejects unknown smooth keys, bad lockBox shapes, and bad algorithm', () => {
     expect(() => new VoxelGrid().smooth({ flatBotom: true } as never)).toThrow();
     expect(() => new VoxelGrid().smooth({ lockBox: [[0, 0, 0]] } as never)).toThrow();
     expect(() => new VoxelGrid().smooth({ lockBox: [[0, 0, 0], [1, 1, 1.5]] } as never)).toThrow();
     expect(() => new VoxelGrid().smooth({ baseLayers: 0 } as never)).toThrow();
+    expect(() => new VoxelGrid().smooth({ algorithm: 'laplacian' } as never)).toThrow();
+  });
+});
+
+describe('voxel smooth — algorithm selection (Surface Nets default)', () => {
+  it('bare .smooth() selects Surface Nets', () => {
+    expect(box(4).smooth().surfacing().algorithm).toBe('surfaceNets');
+    expect(box(4).smooth({ algorithm: 'taubin' }).surfacing().algorithm).toBe('taubin');
+  });
+
+  it('Surface Nets produces a non-empty, finite mesh with per-triangle colors', () => {
+    const sn = meshGrid(box(6).smooth()); // default → surfaceNets
+    expect(sn.numTri).toBeGreaterThan(0);
+    expect(sn.numVert).toBeGreaterThan(0);
+    expect(Array.from(sn.vertProperties).every(Number.isFinite)).toBe(true);
+    // Per-triangle colors: 3 bytes per triangle.
+    expect(sn.triColors!.length).toBe(sn.numTri * 3);
+    // Rounded inward of the blocky [0..6] box, but still substantial extent.
+    const xs: number[] = [];
+    for (let v = 0; v < sn.numVert; v++) xs.push(sn.vertProperties[v * 3]);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(3);
+  });
+
+  it('Surface Nets honors flatBottom (bottom plane stays flat, does not rock)', () => {
+    const m = meshGrid(box(6).smooth({ algorithm: 'surfaceNets', flatBottom: true }));
+    // All vertices at or above the floor; the floor itself is a single flat plane.
+    const zMin = minZ(m);
+    let onFloor = 0;
+    for (let v = 0; v < m.numVert; v++) {
+      const z = m.vertProperties[v * 3 + 2];
+      expect(z).toBeGreaterThanOrEqual(zMin - 1e-4);
+      if (Math.abs(z - zMin) < 1e-4) onFloor++;
+    }
+    expect(onFloor).toBeGreaterThan(0);
+  });
+
+  it('Surface Nets on an empty grid yields an empty mesh', () => {
+    const m = meshGrid(new VoxelGrid().smooth());
+    expect(m.numTri).toBe(0);
+    expect(m.numVert).toBe(0);
   });
 });

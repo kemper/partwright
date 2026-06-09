@@ -7,7 +7,7 @@ import {
   decodeGrid,
   COORD_MAX,
 } from '../../src/geometry/voxel/grid';
-import { gridToMeshData, meshGrid } from '../../src/geometry/voxel/mesher';
+import { gridToMeshData, greedyMeshGrid, meshGrid } from '../../src/geometry/voxel/mesher';
 import { taubinSmooth } from '../../src/geometry/voxel/smooth';
 import {
   imageDataToVoxelGrid,
@@ -223,6 +223,59 @@ describe('gridToMeshData', () => {
   });
 });
 
+describe('greedyMeshGrid (export-only coalesced mesh)', () => {
+  it('meshes a single voxel identically to the per-face mesher', () => {
+    const v = new VoxelGrid().set(0, 0, 0, '#ff0000');
+    const m = greedyMeshGrid(v);
+    expect(m.numVert).toBe(8);
+    expect(m.numTri).toBe(12);
+    expect([m.triColors![0], m.triColors![1], m.triColors![2]]).toEqual([255, 0, 0]);
+    assertClosedManifold(m.triVerts); // a lone voxel has no T-junctions
+  });
+
+  it('collapses a solid block to one quad per face (12 tris vs 192)', () => {
+    const v = new VoxelGrid().fillBox([0, 0, 0], [3, 3, 3], '#3399ff');
+    const greedy = greedyMeshGrid(v);
+    const perFace = gridToMeshData(v);
+    expect(perFace.numTri).toBe(192);
+    expect(greedy.numTri).toBe(12);   // 6 faces, each one merged rectangle
+    expect(greedy.numVert).toBe(8);
+    assertClosedManifold(greedy.triVerts); // a uniform box stays manifold
+  });
+
+  it('coalesces a flat same-color slab far below the per-face count', () => {
+    const v = new VoxelGrid().fillBox([0, 0, 0], [9, 9, 0], '#6cf'); // 10×10×1 plate
+    const greedy = greedyMeshGrid(v);
+    const perFace = gridToMeshData(v);
+    expect(greedy.numTri).toBeLessThan(perFace.numTri);
+    // Top + bottom merge to 1 quad each; the 4 side strips merge per side.
+    expect(greedy.numTri).toBe(12);
+  });
+
+  it('does not merge across a color boundary', () => {
+    // Two-color split plate: the top face cannot be one quad.
+    const v = new VoxelGrid();
+    v.fillBox([0, 0, 0], [3, 0, 0], '#f00');
+    v.fillBox([4, 0, 0], [7, 0, 0], '#0f0');
+    const greedy = greedyMeshGrid(v);
+    // Colors preserved per triangle and the _painted mask set.
+    expect(greedy.triColors!.length).toBe(greedy.numTri * 3);
+    const painted = (greedy.triColors as Uint8Array & { _painted?: Uint8Array })._painted;
+    expect(painted!.length).toBe(greedy.numTri);
+    // Two distinct colors appear among the triangles.
+    const colors = new Set<string>();
+    for (let t = 0; t < greedy.numTri; t++) colors.add(`${greedy.triColors![t * 3]},${greedy.triColors![t * 3 + 1]},${greedy.triColors![t * 3 + 2]}`);
+    expect(colors.has('255,0,0')).toBe(true);
+    expect(colors.has('0,255,0')).toBe(true);
+  });
+
+  it('returns an empty mesh for an empty grid', () => {
+    const m = greedyMeshGrid(new VoxelGrid());
+    expect(m.numTri).toBe(0);
+    expect(m.numVert).toBe(0);
+  });
+});
+
 describe('imageDataToVoxelGrid', () => {
   // 2×2 image: red, green / transparent, blue.
   function mk2x2(): ImageDataLike {
@@ -378,9 +431,9 @@ describe('voxel surfacing (Taubin smoothing)', () => {
     expect(taubinSmooth(m, 0)).toBe(m);
   });
 
-  it('meshGrid applies smooth surfacing (detail 1 keeps topology, detail>1 densifies)', () => {
+  it('meshGrid applies taubin smooth surfacing (detail 1 keeps topology, detail>1 densifies)', () => {
     const v = new VoxelGrid();
-    v.fillBox([0, 0, 0], [3, 3, 3], '#3399ff').smooth();
+    v.fillBox([0, 0, 0], [3, 3, 3], '#3399ff').smooth({ algorithm: 'taubin' });
     const m = meshGrid(v);
     expect(m.numTri).toBe(192); // detail 1 → same topology as the block mesh
     const block = gridToMeshData(new VoxelGrid().fillBox([0, 0, 0], [3, 3, 3], '#3399ff'));
@@ -391,7 +444,7 @@ describe('voxel surfacing (Taubin smoothing)', () => {
     expect(moved).toBe(true);
 
     const v2 = new VoxelGrid();
-    v2.fillBox([0, 0, 0], [3, 3, 3], '#3399ff').smooth({ iterations: 2, detail: 2 });
+    v2.fillBox([0, 0, 0], [3, 3, 3], '#3399ff').smooth({ algorithm: 'taubin', iterations: 2, detail: 2 });
     const m2 = meshGrid(v2);
     expect(m2.numTri).toBeGreaterThan(192); // supersampled → denser mesh
     expect(Array.from(m2.vertProperties).every(Number.isFinite)).toBe(true);

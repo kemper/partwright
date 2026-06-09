@@ -119,23 +119,37 @@ return voxels()
   .smooth();              // rounded edges
 ```
 
-`.smooth(opts)` accepts an iteration count or `{ iterations, detail }`:
+`.smooth(opts)` accepts an iteration count or `{ algorithm, iterations, detail }`:
 
-- **`iterations`** (1–8, default 2) — more passes = rounder. It's a Taubin
-  λ/μ smoothing of the mesh, so the model rounds without collapsing/shrinking.
-- **`detail`** (1–4, default 1) — supersamples the grid ×`detail` before
-  smoothing, giving finer rounding on large, coarse shapes (at more triangles).
-  The result is scaled back to the original world size. **Caution:** `detail > 1`
-  on small, dense features (face pixels, fine voxel detail) tends to *add*
-  stair-stepping rather than remove it — use plain `iterations` tuning there.
+- **`algorithm`** (`'surfaceNets'` | `'taubin'`, default `'surfaceNets'`) — which
+  smoother to use:
+  - **`surfaceNets`** (default) — builds a genuinely smooth surface from the
+    voxel occupancy at native resolution. Rounder than `taubin` at the same
+    triangle count, no supersampling needed, and no pole-spike artifacts. The
+    best general "round my voxels" choice.
+  - **`taubin`** — the original: relaxes the *block* mesh (λ/μ passes), so
+    topology is unchanged and `detail` supersampling applies. Reach for it when
+    you specifically want the block topology preserved or the `detail` knob.
+- **`iterations`** (1–8, default 2) — more passes = rounder. For `taubin` these
+  are the relaxation passes; for `surfaceNets` they're a light cleanup on top
+  (and what makes the base pins below take effect).
+- **`detail`** (1–4, default 1) — **`taubin` only.** Supersamples the grid
+  ×`detail` before smoothing for finer rounding on coarse shapes (at more
+  triangles), then scales back to original size. Ignored by `surfaceNets`.
+  **Caution:** `detail > 1` on small, dense features tends to *add* stair-stepping
+  rather than remove it — use plain `iterations` tuning there.
 
 ```js
-return voxels().fillBox([-4,-4,0],[4,4,8], '#6cf').smooth({ iterations: 4, detail: 2 });
+// Default (Surface Nets) — smooth at native resolution:
+return voxels().sphere([0,0,0], 8, '#e7b').smooth();
+// Taubin with supersampling, for block-topology rounding:
+return voxels().fillBox([-4,-4,0],[4,4,8], '#6cf').smooth({ algorithm: 'taubin', iterations: 4, detail: 2 });
 ```
 
-Smoothing only moves vertices — topology is unchanged — so per-voxel colors are
-preserved and the result stays a watertight manifold (exports/paint still work).
-Call `.blocky()` to switch back to hard faces (the default).
+Both algorithms keep per-voxel colors and produce a watertight manifold
+(exports/paint still work). `surfaceNets` centres the surface on voxel centres,
+so a model rounds slightly *inward* of its blocky extent. Call `.blocky()` to
+switch back to hard faces (the default surfacing).
 
 ### Keeping a flat / blocky base (printability)
 
@@ -280,6 +294,15 @@ are preserved, and the file opens in MagicaVoxel, Goxel, and other tools that
 read the format. The other 3D formats (GLB / 3MF / OBJ / STL) still work too —
 they export the *meshed* voxels with vertex colors — but `.vox` is the only one
 that keeps the editable voxel grid intact.
+
+> **Blocky STL / OBJ / 3MF use greedy meshing.** For a blocky (non-smoothed)
+> grid these mesh-file exports coalesce coplanar same-color faces into the fewest
+> rectangles, so a flat or large single-color region ships as a couple of
+> triangles instead of hundreds — several-fold smaller files, which matters for
+> print prep. The merge introduces T-junctions, which are harmless in a
+> triangle-soup export; the in-app render, stats, and slicing keep the per-face
+> manifold mesh, so nothing else is affected. A **smoothed** grid exports the
+> rounded mesh you see in the viewport instead (same as GLB), not blocky cubes.
 
 Programmatic / AI equivalent:
 

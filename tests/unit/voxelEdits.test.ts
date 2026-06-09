@@ -11,10 +11,10 @@ describe('VoxelGrid.clone', () => {
   it('deep-copies cells + surfacing without aliasing', () => {
     const g = new VoxelGrid();
     g.fillBox([0, 0, 0], [2, 2, 2], '#abcdef');
-    g.smooth({ iterations: 3, detail: 2 });
+    g.smooth({ algorithm: 'taubin', iterations: 3, detail: 2 });
     const c = g.clone();
     expect(c.size).toBe(g.size);
-    expect(c.surfacing()).toEqual({ mode: 'smooth', iterations: 3, detail: 2 });
+    expect(c.surfacing()).toEqual({ mode: 'smooth', algorithm: 'taubin', iterations: 3, detail: 2, flatBottom: undefined, baseLayers: undefined, lockBox: undefined });
     // Mutating the clone must not touch the original.
     c.remove(0, 0, 0);
     c.set(9, 9, 9, '#fff');
