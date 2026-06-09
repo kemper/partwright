@@ -598,9 +598,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const sr = slider('Strut radius', span * 0.005, span * 0.08, span * 0.02, span * 0.001, n => n.toFixed(3), schedulePreview);
       const angle = slider('Edge angle threshold (°)', 5, 80, 25, 1, n => String(n) + '°', schedulePreview);
       const res = sliderWithEntry('Resolution', 48, 200, 96, 1, 256, schedulePreview);
-      const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
+      const wtight = checkbox('Keep only the largest piece (drops separate edge loops)', false, schedulePreview);
       body.append(sr.wrap, angle.wrap, res.wrap, wtight.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'Keeps only the model’s sharp feature edges, rebuilt as smooth round struts — a see-through edge cage. Best on boxy / low-poly shapes. Lower the edge-angle threshold to keep more edges; a fully smooth surface has no sharp edges to cage.'));
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Keeps only the model’s sharp feature edges, rebuilt as smooth round struts — a see-through edge cage. Best on boxy / low-poly shapes. Lower the edge-angle threshold to keep more edges; a fully smooth surface has no sharp edges to cage. On a round-bodied model (e.g. a striped cone) the sharp edges are stacked rings, so you’ll get separate loops — leave the box below unchecked to keep them all.'));
       body.append(el('p', 'text-[11px] text-amber-400/90', 'Meshes a continuous distance field to the edges (a heavier op; allow a few seconds). Resolution auto-raises so thin struts stay rounded.'));
       currentOpts = () => ({
         strutRadius: sr.get(),

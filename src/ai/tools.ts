@@ -1593,18 +1593,18 @@ const ALL_TOOLS: ToolDefinition[] = [
 - strutRadius: radius of each round strut, world units (~2% of diagonal); strut diameter is twice this
 - angleThresholdDeg: dihedral angle above which an interior edge is kept [5–80], default 25. Lower → more edges kept (denser cage); higher → only the very sharpest
 - resolution: field resolution along the longest axis [16–256], default 96. **Auto-raised** so thin struts stay rounded; you rarely set it
-- watertight: keep only the largest connected strut web → one printable piece (default true; for a single connected solid the whole cage is one piece anyway)
+- watertight: keep ONLY the largest connected strut web (default **false**). A cage's edges often form several disconnected loops — e.g. stacked rings on a smooth-bodied model (a striped cone / lighthouse) — so the default keeps them all. Set true only when you specifically want one connected piece and accept dropping the rest
 
 **Return:** { ok, label, geometry, warnings? } or { error } (e.g. when no sharp edges are found). Verify with renderViews — you should see the open cage of struts.
 
-**Workflow guidance:** if the cage comes out too sparse, lower angleThresholdDeg; too busy, raise it. Adjust strutRadius for thicker / thinner struts.`,
+**Workflow guidance:** if the cage comes out too sparse, lower angleThresholdDeg; too busy, raise it. Adjust strutRadius for thicker / thinner struts. Note that a **round/smooth body has no vertical edges**, so its cage is the set of sharp rings (base, platforms, lamp room), not a full outline — that's expected, not a failure.`,
     input_schema: {
       type: 'object',
       properties: {
         strutRadius: { type: 'number', description: 'Radius of each round strut in world units (~2% of diagonal). Strut diameter is twice this.' },
         angleThresholdDeg: { type: 'number', description: 'Keep an interior edge when its faces bend more than this many degrees [5–80]. Default 25. Lower = denser cage.', minimum: 5, maximum: 80 },
         resolution: { type: 'integer', description: 'Field resolution along the longest axis [16–256]. Auto-raised for thin struts. Default 96.', minimum: 16, maximum: 256 },
-        watertight: { type: 'boolean', description: 'Keep only the largest connected strut web (one watertight piece). Default true.' },
+        watertight: { type: 'boolean', description: "Keep ONLY the largest connected strut web. Default false — a cage's edges often form several disconnected loops (e.g. stacked rings on a smooth body), so the default keeps them all. Set true only for a single connected piece." },
         preserveColor: { type: 'boolean', description: 'Sample model paint onto the struts. Default true.' },
       },
     },

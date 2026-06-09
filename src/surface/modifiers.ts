@@ -478,7 +478,10 @@ export function defaultWireframeOptions(mesh: MeshData): Required<WireframeOptio
     strutRadius: d * 0.02,
     angleThresholdDeg: 25,
     resolution: 96,
-    watertight: true,
+    // Keep every feature-edge loop (rings on a smooth body are disconnected) —
+    // dropping all but the largest is what made cages of round-bodied models
+    // collapse to a single ring.
+    watertight: false,
     smoothIterations: 3,
   };
 }

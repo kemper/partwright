@@ -38,7 +38,10 @@ export interface WireframeOptions {
   /** Field resolution along the longest axis (clamped to [16, MAX]); auto-raised
    *  so each strut still spans enough cells to round. Default 96. */
   resolution?: number;
-  /** Keep only the largest physically-connected strut web (default true). */
+  /** Keep ONLY the largest connected strut web (default false). A cage's feature
+   *  edges commonly form several disconnected loops — e.g. stacked rings on a
+   *  smooth body — so the default keeps every loop; set true only when you need a
+   *  single printable piece and are happy to drop the rest. */
   watertight?: boolean;
   /** Light Taubin passes to relax the strut surface (default 3, no subdivide). */
   smoothIterations?: number;
@@ -201,7 +204,10 @@ export function wireframeMesh(mesh: MeshData, opts: WireframeOptions): MeshData 
   }
 
   let m = surfaceNetsField({ field, dims: [fnx, fny, fnz], origin, spacing: voxelSize, iso: 0 });
-  if (opts.watertight !== false) m = largestMeshComponent(m);
+  // Unlike the Voronoi lamp (one connected web), a cage's edges usually form
+  // several disconnected loops, so keep them all by default — only collapse to
+  // the largest piece when the caller explicitly asks (watertight === true).
+  if (opts.watertight === true) m = largestMeshComponent(m);
   m = smoothSurface(m, { iterations: opts.smoothIterations ?? 3, subdivide: false });
   return m;
 }

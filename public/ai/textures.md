@@ -375,13 +375,21 @@ use it on **boxy / faceted / low-poly** models.
 | `strutRadius` | ~2% of diagonal | Radius of each round strut (world units); the strut diameter is twice this. |
 | `angleThresholdDeg` | 25 | Keep an interior edge when its faces bend more than this [5–80]. Lower → more edges kept (denser cage); higher → only the sharpest. |
 | `resolution` | 96 | Field resolution along the longest axis [16–256]. **Auto-raised** so thin struts stay rounded — you rarely set it. |
-| `watertight` | true | Keep only the largest connected strut web → one watertight, manifold, printable piece. For a single connected solid the whole cage is already one piece. |
+| `watertight` | **false** | Keep ONLY the largest connected strut web. A cage's edges often form several **disconnected loops** (stacked rings on a smooth body), so the default keeps them all. Set true only when you want one connected piece and accept dropping the rest. |
 | `preserveColor` | true | Sample model paint onto the struts. |
 
 **Look guidance:**
 - Clean box frame: defaults on a cube / cuboid.
 - Denser cage on a chamfered or low-poly model: lower `angleThresholdDeg` (~12–18).
 - Chunky vs delicate: raise / lower `strutRadius`.
+
+**Round / smooth bodies cage as rings, not outlines.** A tapered cylinder, cone,
+or sphere has **no vertical sharp edges**, so its feature edges are the horizontal
+rings where the profile changes (base, gallery, lamp room) — you'll get several
+**separate floating loops**, which is correct. (If stripes are *painted* rather
+than modeled steps, they're not edges and won't appear.) Leave `watertight` off
+(the default) to keep every loop — turning it on collapses the whole cage to a
+single ring.
 
 **Tips:** if the cage is too sparse, lower `angleThresholdDeg`; too busy, raise
 it. It's a heavier op (continuous field meshing) — allow a few seconds. Verify

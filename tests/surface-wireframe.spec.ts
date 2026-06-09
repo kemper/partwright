@@ -48,6 +48,32 @@ test.describe('Wireframe / edge-cage surface modifier', () => {
     expect(result.stats.volume).toBeGreaterThan(0);
   });
 
+  test('keeps disconnected edge loops by default (round body → separate rings)', async ({ page }) => {
+    // A cylinder's only sharp edges are its top and bottom rim circles; the side
+    // is smooth. Those rims are two disconnected loops. The default (watertight
+    // false) must keep BOTH — the bug that prompted this was the largest-component
+    // filter collapsing such cages to a single ring.
+    const result = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      const CYL = 'const { Manifold } = api;\nreturn Manifold.cylinder(20, 8, 8, 64);';
+      await pw.createSession('wireframe-rings');
+      await pw.run(CYL);
+      const r = await pw.applyWireframe({});
+      const keptAll = pw.getGeometryData();
+      // Re-run from the same base with watertight on → only the largest ring.
+      await pw.run(CYL);
+      await pw.applyWireframe({ watertight: true });
+      const largestOnly = pw.getGeometryData();
+      return { r, keptAll, largestOnly };
+    });
+
+    expect(result.r.error).toBeUndefined();
+    // Both rim rings survive by default…
+    expect(result.keptAll.componentCount).toBeGreaterThanOrEqual(2);
+    // …and turning watertight on collapses to a single connected piece.
+    expect(result.largestOnly.componentCount).toBe(1);
+  });
+
   test('applyWireframe errors on a fully smooth model (no sharp edges to cage)', async ({ page }) => {
     const result = await page.evaluate(async ([code]) => {
       const pw = (window as unknown as { partwright: any }).partwright;
