@@ -133,8 +133,9 @@ export function createPopoverGroup(opts: PopoverGroupOptions): PopoverGroup {
 
 /**
  * Open a live popover group by the base `id` passed to {@link createPopoverGroup}
- * (e.g. `'viewport-tools'`). No-op when no such group exists or it is already
- * open. Used to programmatically surface the Tools dropdown (e.g. when a
+ * (e.g. `'viewport-tools'`). No-op when no such group exists; if the group is
+ * already open, re-opening it is idempotent (it just re-closes any siblings).
+ * Used to programmatically surface the Tools dropdown (e.g. when a
  * parameterizable model auto-reveals its Customize panel).
  */
 export function openPopoverGroupById(id: string): void {

@@ -61,7 +61,7 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   // Bottom-left of the viewport — clear of the status pill (top-left), the
   // clip/tool bar (top-right) and the Z slider (right). pointer-events-auto so
   // widgets work; the panel itself is small so it doesn't block orbit much.
-  root.className = 'hidden absolute z-10 w-60 max-w-[calc(100%-1rem)] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
+  root.className = 'hidden fixed z-10 w-60 max-w-[calc(100%-1rem)] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
 
   // Header: a "Customize" title, a Reset button, and a close (×) button. Closing
   // hides the whole panel; the viewport "Customize" toggle pill reopens it (see
