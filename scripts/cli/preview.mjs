@@ -10,6 +10,12 @@
 import { createServer } from 'vite';
 import { readFileSync } from 'node:fs';
 import sharp from 'sharp';
+import { DEFAULT_VIEWS, resolveViews } from './views.mjs';
+
+// Re-export so existing importers (main.mjs, model-preview.mjs) can keep
+// pulling resolveViews from preview.mjs; the implementation lives in views.mjs
+// (pure, unit-testable).
+export { resolveViews };
 
 // ---------- pure-JS rasterizer ----------
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -88,46 +94,6 @@ function fit(bbox, size) {
 }
 
 const BG = [244, 244, 246];
-
-// Named camera angles for `--views`. az/el are degrees in the rasterizer's own
-// frame (see `basis`); front/right/top/iso are the historical default grid.
-const NAMED_VIEWS = {
-  front: { az: -90, el: 0 },
-  back: { az: 90, el: 0 },
-  right: { az: 0, el: 0 },
-  left: { az: 180, el: 0 },
-  top: { az: -90, el: 90 },
-  bottom: { az: -90, el: -90 },
-  iso: { az: -50, el: 28 },
-};
-const DEFAULT_VIEWS = ['front', 'right', 'top', 'iso'].map((name) => ({ name, ...NAMED_VIEWS[name] }));
-
-/** Resolve the `--view` / `--views` CLI flags into an array of {name, az, el}.
- *  Returns `{ views: null }` when neither is set (caller uses DEFAULT_VIEWS),
- *  `{ views }` on success, or `{ error }` on a bad spec.
- *  - `--view "az,el"`  → one custom-angle tile (e.g. peek behind a feature).
- *  - `--views a,b,c`   → named angles, in order: front,back,right,left,top,bottom,iso. */
-export function resolveViews(view, views) {
-  if (view !== undefined && view !== null && view !== '') {
-    const parts = String(view).split(',').map((s) => Number(s.trim()));
-    if (parts.length !== 2 || parts.some((n) => !Number.isFinite(n))) {
-      return { error: `--view expects "az,el" (two numbers in degrees), got "${view}".` };
-    }
-    return { views: [{ name: `${parts[0]},${parts[1]}`, az: parts[0], el: parts[1] }] };
-  }
-  if (views !== undefined && views !== null && views !== '') {
-    const names = String(views).split(',').map((s) => s.trim()).filter(Boolean);
-    const out = [];
-    for (const nm of names) {
-      const v = NAMED_VIEWS[nm];
-      if (!v) return { error: `--views: unknown view "${nm}". Valid: ${Object.keys(NAMED_VIEWS).join(', ')}.` };
-      out.push({ name: nm, ...v });
-    }
-    if (!out.length) return { error: '--views needs at least one view name.' };
-    return { views: out };
-  }
-  return { views: null };
-}
 
 // Lay a list of pre-rendered RGBA tiles into a near-square grid PNG (the same
 // layout for the 4-view default, an N-view custom set, and the contact sheet).

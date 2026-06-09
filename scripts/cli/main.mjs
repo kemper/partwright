@@ -60,6 +60,7 @@ async function cmdCompare(argv) {
   const a = parse(argv, ['json']);
   const files = a._;
   if (files.length < 2) { console.error('usage: partwright compare <a.js> <b.js> [more.js …] [--lang manifold-js|voxel|scad] [--png out] [--size N] [--view az,el] [--json] [-p k=v]'); process.exit(2); }
+  if (a.views !== undefined) { console.error('compare renders one view per model — use --view az,el (not --views).'); process.exit(2); }
   const { views, error: viewErr } = resolveViews(a.view, undefined);
   if (viewErr) { console.error(viewErr); process.exit(2); }
   const results = [];
@@ -249,7 +250,15 @@ async function cmdFetch(argv) {
   let res;
   try { res = await fetch(url); } catch (e) { console.log(json({ ok: false, error: `fetch failed: ${e?.message || e}` })); process.exit(1); }
   if (!res.ok) { console.log(json({ ok: false, error: `HTTP ${res.status} ${res.statusText}` })); process.exit(1); }
+  // Guard against an oversized/hostile response OOMing the process. 50 MB is far
+  // larger than any reference image; reject up front on the advertised length.
+  const MAX_FETCH_BYTES = 50 * 1024 * 1024;
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_FETCH_BYTES) {
+    console.log(json({ ok: false, error: `response is ${declared} bytes, over the ${MAX_FETCH_BYTES}-byte fetch cap` })); process.exit(1);
+  }
   const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > MAX_FETCH_BYTES) { console.log(json({ ok: false, error: `downloaded ${buf.length} bytes, over the ${MAX_FETCH_BYTES}-byte fetch cap` })); process.exit(1); }
   writeFileSync(out, buf);
   console.log(json({ ok: true, out, bytes: buf.length, contentType: res.headers.get('content-type') || 'unknown' }));
 }

@@ -8,6 +8,7 @@ import { voxelEngine } from '../geometry/engines/voxel';
 import { openscadEngine, runScadAsync } from '../geometry/engines/openscad';
 import type { Language } from '../geometry/engines/types';
 import type { MeshResult } from '../geometry/engines/types';
+import { componentsOverlap } from './bboxOverlap';
 
 export interface PreviewComponent {
   index: number;
@@ -289,28 +290,13 @@ function buildWarnings(s: PreviewStats): string[] {
   // assembly it's a cue to sanity-check the clearance gap. Gated to the
   // no-labels case so it doesn't double up with the FUSED-labels warning above.
   if (!s.renderOnly && !s.empty && s.componentCount >= 2 && s.labels.length === 0 && componentsOverlap(s.components)) {
-    w.push(`componentCount=${s.componentCount} with overlapping component bounding boxes — separate parts that interpenetrate. If this should be ONE solid, a boolean didn't fuse (increase overlap ≥0.5 units); if it's an intentional multi-part / print-in-place assembly, verify the clearance gap. Inspect islands with model:preview --explain-components.`);
+    w.push(`componentCount=${s.componentCount} with overlapping component bounding boxes (top ${Math.min(s.componentCount, s.components.length)} by volume checked) — separate parts whose bounds overlap, so they may interpenetrate. If this should be ONE solid, a boolean didn't fuse (increase overlap ≥0.5 units); if it's an intentional multi-part / print-in-place assembly, verify the clearance gap. Inspect islands with model:preview --explain-components.`);
   }
   if (s.triangleCount > 200000) w.push(`High triangle count (${Math.round(s.triangleCount / 1000)}k) — exceeds the ~200k catalog budget; lower circular segments / nDivisions or feature density.`);
   if (s.aspectRatio > 12) w.push(`Extreme aspect ratio (${s.aspectRatio.toFixed(1)}:1) — tall/thin parts can be fragile or tip-droppy on FDM.`);
   if (s.minEdgeLength > 0 && s.minEdgeLength < 0.4) w.push(`Smallest edge ${s.minEdgeLength}mm (<0.4mm extrusion width) — sub-extrusion detail may vanish on the print.`);
   return w;
 }
-// True when any two of the (capped) decomposed components have overlapping
-// axis-aligned bounding boxes — a cheap interpenetration / clearance signal.
-function componentsOverlap(components: PreviewComponent[]): boolean {
-  const boxes = components.map((c) => c.bbox).filter((b) => b && b.min.length === 3 && b.max.length === 3);
-  for (let i = 0; i < boxes.length; i++) {
-    for (let j = i + 1; j < boxes.length; j++) {
-      const a = boxes[i], b = boxes[j];
-      if (a.min[0] <= b.max[0] && b.min[0] <= a.max[0] &&
-          a.min[1] <= b.max[1] && b.min[1] <= a.max[1] &&
-          a.min[2] <= b.max[2] && b.min[2] <= a.max[2]) return true;
-    }
-  }
-  return false;
-}
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function safeBox(p: any): { min: number[]; max: number[] } | null {
   try { return toBox(p.boundingBox()); } catch { return null; }
