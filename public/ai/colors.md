@@ -186,6 +186,21 @@ human is tweaking colors interactively or overriding the code.
 
 > **manifold-js only.** The `{ color }` option on `api.label` is emitted by the manifold-js engine only. In a **replicad (BREP) session**, `BREP.label(shape, name)` takes no color argument and models always render gray by default — paint with `paintByLabel` after `runAndSave`.
 
+### Geometric paint in code — `api.paint.*`
+
+`api.label({ color })` colors a *named subtree*. To color a **region of the surface** from code — without labelling a separate solid — use `api.paint.*`, the in-code counterparts of the `paintInBox` / `paintSlab` / `paintInCylinder` / `paintByLabel` tools. Each call records a region during the run; Partwright resolves it against the fresh mesh afterward and folds it into the same model-color underlay (never the paint sidecar — the code re-derives it). Later calls win on overlap.
+
+```js
+const part = api.Manifold.cube([30, 30, 30], true).refine(16);
+api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });          // flat band; axis ('x'|'y'|'z') or normal [x,y,z]
+api.paint.box({ min: [-15, -15, -15], max: [0, 0, 0], color: [0.23, 0.51, 0.96] });   // axis-aligned box
+api.paint.cylinder({ center: [0, 0], rMin: 0, rMax: 6, zMin: -15, zMax: 15, color: '#22c55e' }); // (annular) vertical shell
+api.paint.label('body', '#888');   // recolor an existing api.label(...) region by name
+return part;
+```
+
+Like the tools, these resolve **by triangle**, so paint a refined mesh (`refine(n)` / higher segments) for crisp edges. `color` is the same hex/`[r,g,b]` form as `api.label`. Arguments are validated strictly (unknown keys, bad color/axis throw). Use `api.paint.*` when the colors are intrinsic to the design and you want them to live with the code; reach for the standalone `paintByLabel` / `paint*` tools for interactive, coordinate, or click-driven painting between runs. (manifold-js sandbox only.)
+
 SCAD has the same `label()` pattern. Partwright pre-injects a
 passthrough `module label(name) { children(); }` into every SCAD
 compile so the wrapper is portable to vanilla OpenSCAD too (the helper

@@ -50,6 +50,16 @@ export interface MeshResult {
    *  no manual painting needed. Manual paint regions composite on top. Absent
    *  when no labelled color was declared this run. */
   labelColors?: Map<string, [number, number, number]>;
+  /** Paint operations declared in code via `api.paint.*` (box / slab / cylinder /
+   *  label). Each carries a region descriptor plus its resolved RGB (0..1). The
+   *  main thread resolves every descriptor's triangles against the freshly-run
+   *  mesh and renders them as part of the derived "model color" underlay — so
+   *  paint declared in code is durable WITH the code and never serialized to the
+   *  paint sidecar (the code is the source of truth). `descriptor` is a
+   *  `RegionDescriptor` but kept `unknown` here so this low-level geometry type
+   *  doesn't import the `color/` layer (that would close a module cycle); the
+   *  main thread casts it back. Absent when no `api.paint.*` ran this turn. */
+  paintOps?: { name: string; color: [number, number, number]; descriptor: unknown }[];
   /** True when the user code returned an `api.renderMesh(...)` proxy — the
    *  mesh isn't manifold (or wasn't validated as one) and the main thread
    *  must skip its Manifold.ofMesh fallback to avoid a "Not manifold" throw. */

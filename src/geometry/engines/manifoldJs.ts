@@ -10,6 +10,7 @@ import { createSdfNamespace, SdfNode } from '../sdf';
 import { createPrintFitNamespace } from '../printFit';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
+import type { RegionDescriptor } from '../../color/regions';
 import { wasmFaultHint } from '../workerFaults';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
@@ -156,6 +157,16 @@ export const manifoldJsEngine: Engine = {
     // is self-describing without a manual paint pass. Last write per name wins.
     const labelColors = new Map<string, [number, number, number]>();
 
+    // Paint operations declared in code via `api.paint.*` (box / slab / cylinder /
+    // label). Recorded here during evaluation — they intentionally do NOT touch
+    // the mesh; the main thread resolves each descriptor's triangles against the
+    // freshly-run mesh after tessellation (exactly like `api.label({color})`) and
+    // renders them as the model-color underlay. The code is the source of truth,
+    // so these are never written to the paint sidecar. Last-recorded wins on
+    // overlap, in declaration order. Cleared on every run.
+    const paintOps: { name: string; color: [number, number, number]; descriptor: RegionDescriptor }[] = [];
+    let paintSeq = 0;
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const label = (shape: any, name: unknown, options?: unknown): any => {
       if (!shape || typeof shape.asOriginal !== 'function' || typeof shape.add !== 'function') {
@@ -215,6 +226,116 @@ export const manifoldJsEngine: Engine = {
         acc = acc === null ? labelled : acc.add(labelled);
       }
       return acc;
+    };
+
+    // === api.paint.* — paint declared in code (recorded, resolved post-run) ===
+    //
+    // Each call records a RegionDescriptor + color; the main thread resolves it
+    // against the run's mesh and renders it as the model-color underlay. These
+    // are the in-code counterparts of the `paintInBox` / `paintSlab` /
+    // `paintInCylinder` / `paintByLabel` tools, so a model that returns geometry
+    // can also describe its own colors without a separate paint pass.
+    const paintColor = (color: unknown, where: string): [number, number, number] => {
+      const rgb = parseLabelColor(color);
+      if (!rgb) throw new Error(`${where}: color must be a hex string like "#3b82f6" or an [r,g,b] array of three numbers in 0..1.`);
+      return rgb;
+    };
+    const paintVec3 = (v: unknown, where: string): [number, number, number] => {
+      if (!Array.isArray(v) || v.length !== 3 || v.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
+        throw new Error(`${where}: expected an array of 3 finite numbers, e.g. [x, y, z].`);
+      }
+      return v as [number, number, number];
+    };
+    const paintNum = (v: unknown, where: string): number => {
+      if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`${where}: expected a finite number.`);
+      return v;
+    };
+    const paintObj = (opts: unknown, where: string): Record<string, unknown> => {
+      if (!opts || typeof opts !== 'object' || Array.isArray(opts)) {
+        throw new Error(`${where}: expects an options object.`);
+      }
+      return opts as Record<string, unknown>;
+    };
+    const paintRejectUnknown = (where: string, rest: Record<string, unknown>): void => {
+      const keys = Object.keys(rest);
+      if (keys.length > 0) throw new Error(`${where}: unknown key(s) ${keys.map(k => `"${k}"`).join(', ')}.`);
+    };
+    const AXIS_NORMAL: Record<string, [number, number, number]> = {
+      x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1],
+    };
+
+    const paint = {
+      /** Paint every triangle inside an axis-aligned box. `min`/`max` are world-space corners. */
+      box(opts: unknown): void {
+        const o = paintObj(opts, 'api.paint.box({ min, max, color })');
+        const { min, max, color, ...rest } = o;
+        paintRejectUnknown('api.paint.box', rest);
+        const lo = paintVec3(min, 'api.paint.box min');
+        const hi = paintVec3(max, 'api.paint.box max');
+        const rgb = paintColor(color, 'api.paint.box');
+        const center: [number, number, number] = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
+        const size: [number, number, number] = [Math.abs(hi[0] - lo[0]), Math.abs(hi[1] - lo[1]), Math.abs(hi[2] - lo[2])];
+        paintOps.push({ name: `paint·box ${++paintSeq}`, color: rgb, descriptor: { kind: 'box', center, size, quaternion: [0, 0, 0, 1], shape: 'box' } });
+      },
+      /** Paint a flat band (slab). Give `axis: 'x'|'y'|'z'` or an explicit `normal`,
+       *  plus `offset` (signed distance along the normal to the band centre) and `thickness`. */
+      slab(opts: unknown): void {
+        const o = paintObj(opts, "api.paint.slab({ axis, offset, thickness, color })");
+        const { axis, normal, offset, thickness, color, ...rest } = o;
+        paintRejectUnknown('api.paint.slab', rest);
+        let nrm: [number, number, number];
+        if (axis !== undefined) {
+          if (typeof axis !== 'string' || !(axis in AXIS_NORMAL)) throw new Error("api.paint.slab axis: expected 'x', 'y' or 'z' (or pass an explicit normal).");
+          nrm = AXIS_NORMAL[axis];
+        } else if (normal !== undefined) {
+          nrm = paintVec3(normal, 'api.paint.slab normal');
+        } else {
+          throw new Error("api.paint.slab: provide either axis ('x'|'y'|'z') or an explicit normal [x, y, z].");
+        }
+        const off = paintNum(offset, 'api.paint.slab offset');
+        const thk = paintNum(thickness, 'api.paint.slab thickness');
+        if (thk <= 0) throw new Error('api.paint.slab thickness: must be > 0.');
+        const rgb = paintColor(color, 'api.paint.slab');
+        paintOps.push({ name: `paint·slab ${++paintSeq}`, color: rgb, descriptor: { kind: 'slab', normal: nrm, offset: off, thickness: thk } });
+      },
+      /** Paint a (possibly annular) vertical cylinder shell. `center` is [x, y];
+       *  `rMin` (default 0) / `rMax` are radii; `zMin` / `zMax` bound the height. */
+      cylinder(opts: unknown): void {
+        const o = paintObj(opts, 'api.paint.cylinder({ center, rMin, rMax, zMin, zMax, color })');
+        const { center, rMin, rMax, zMin, zMax, color, ...rest } = o;
+        paintRejectUnknown('api.paint.cylinder', rest);
+        if (!Array.isArray(center) || center.length !== 2 || center.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
+          throw new Error('api.paint.cylinder center: expected [x, y] (two finite numbers).');
+        }
+        const c = center as [number, number];
+        const r0 = rMin === undefined ? 0 : paintNum(rMin, 'api.paint.cylinder rMin');
+        const r1 = paintNum(rMax, 'api.paint.cylinder rMax');
+        const z0 = paintNum(zMin, 'api.paint.cylinder zMin');
+        const z1 = paintNum(zMax, 'api.paint.cylinder zMax');
+        if (r0 < 0 || r1 <= r0) throw new Error('api.paint.cylinder: require 0 <= rMin < rMax.');
+        if (z1 <= z0) throw new Error('api.paint.cylinder: require zMin < zMax.');
+        const rgb = paintColor(color, 'api.paint.cylinder');
+        paintOps.push({ name: `paint·cyl ${++paintSeq}`, color: rgb, descriptor: { kind: 'cylinder', center: c, rMin: r0, rMax: r1, zMin: z0, zMax: z1 } });
+      },
+      /** Recolour triangles belonging to an existing `api.label(shape, name)` region.
+       *  Call as `api.paint.label('name', color)` or `api.paint.label({ label, color })`. */
+      label(nameOrOpts: unknown, color?: unknown): void {
+        let labelName: unknown;
+        let col: unknown;
+        if (typeof nameOrOpts === 'string') {
+          labelName = nameOrOpts;
+          col = color;
+        } else {
+          const o = paintObj(nameOrOpts, "api.paint.label('name', color)");
+          const { label: l, color: c, ...rest } = o;
+          paintRejectUnknown('api.paint.label', rest);
+          labelName = l;
+          col = c;
+        }
+        if (typeof labelName !== 'string' || labelName.length === 0) throw new Error('api.paint.label: label must be a non-empty string naming an api.label(...) region.');
+        const rgb = paintColor(col, 'api.paint.label');
+        paintOps.push({ name: `paint·label ${labelName}`, color: rgb, descriptor: { kind: 'byLabel', label: labelName } });
+      },
     };
 
     // Imported meshes (STL etc.) attached to the active version are exposed as
@@ -296,6 +417,7 @@ export const manifoldJsEngine: Engine = {
       setCircularSegments,
       label,
       labeledUnion,
+      paint,
       imports,
       renderMesh,
     };
@@ -409,6 +531,7 @@ export const manifoldJsEngine: Engine = {
         error: null,
         labelMap,
         labelColors: labelColors.size > 0 ? labelColors : undefined,
+        paintOps: paintOps.length > 0 ? paintOps : undefined,
         paramsSchema: paramCapture.collectSchema(),
         renderOnly,
       };
