@@ -7,6 +7,7 @@ import { preloadTextFonts } from '../textGlyphs';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
 import { createSdfNamespace, SdfNode } from '../sdf';
+import { createGeom2dNamespace } from '../geom2d';
 import { createPrintFitNamespace } from '../printFit';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
@@ -47,6 +48,8 @@ let curvesNamespace: any = null;
 let meshOpsNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let printFitNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let geom2dNamespace: any = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getManifoldModule(): any {
@@ -114,6 +117,9 @@ export const manifoldJsEngine: Engine = {
     // Print-Fit shares the Curves text helper so its calibration coupon can
     // emboss values; Curves is constructed just above, so the dep is ready.
     printFitNamespace = createPrintFitNamespace(manifoldModule, { text: curvesNamespace.text });
+    // SPIKE: thi.ng-backed 2D sketch namespace (api.geom). Only needs
+    // CrossSection, so it's a module-level singleton like Curves/meshOps.
+    geom2dNamespace = createGeom2dNamespace(manifoldModule);
     // Kick off font pre-loading in the background so they're ready by the
     // time the first api.text() call hits, even if the per-run regex didn't
     // fire (e.g. destructured alias or api.Curves.text).
@@ -257,6 +263,7 @@ export const manifoldJsEngine: Engine = {
       BREP,
       meshOps: meshOpsNamespace,
       sdf: sdfNamespace,
+      geom: geom2dNamespace,
       printFit: printFitNamespace,
       // Text helpers — flat aliases so agents can write api.text(...) directly.
       text: curvesNamespace.text,

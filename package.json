@@ -47,6 +47,8 @@
     "@mlc-ai/web-llm": "^0.2.83",
     "@preact/signals": "^2.9.1",
     "@tailwindcss/vite": "^4.2.1",
+    "@thi.ng/geom": "^8.3.34",
+    "@thi.ng/geom-subdiv-curve": "^3.0.102",
     "@types/js-beautify": "^1.14.3",
     "codemirror": "^6.0.2",
     "js-beautify": "^1.15.4",

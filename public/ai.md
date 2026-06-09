@@ -432,6 +432,7 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `text(str, opts)` / `textSection(str, opts)` -- extruded or 2D text from Liberation Sans. See **[Text](#text--api-text--api-textsection)** below.
 - `params` -- declare tweakable **Customizer** knobs that surface as sliders/toggles in the viewport (see below).
 - `sdf` -- signed-distance-field builder for smooth blends, twists, gyroids, and shells. Tree-of-expressions style, lowered to a Manifold via `.build()`. See **[/ai/sdf.md](/ai/sdf.md)**.
+- `geom` *(spike)* -- 2D sketch layer (thi.ng/geom): parametric profile primitives `geom.star(r, points, innerRatio)`, `geom.ngon(r, sides)`, `geom.ellipse(rx, ry, segments)`, `geom.roundedRect(w, h, r, segments)`, `geom.fromPoints(pts)`, and subdivision smoothing `geom.smooth(pts, {iterations, kernel:'chaikin'|'cubic', closed})`. Each returns a `CrossSection` centered on the origin, ready for `.extrude(h)` / `Manifold.revolve(cs, …)` / booleans. See `examples/geom_sketch.js`.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
 Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
