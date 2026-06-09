@@ -649,6 +649,48 @@
       "group": "print-fit"
     },
     {
+      "id": "sdf-asteroid",
+      "name": "SDF Asteroid",
+      "file": "sdf_asteroid.partwright.json",
+      "language": "manifold-js",
+      "description": "A craggy asteroid — a sphere pushed in and out by an fBm noise field via the new sdf.noise() + node.displace(). One watertight rock; smooth (non-ridged) noise keeps it a single piece."
+    },
+    {
+      "id": "sdf-bark-vase",
+      "name": "SDF Bark Vase",
+      "file": "sdf_bark_vase.partwright.json",
+      "language": "manifold-js",
+      "description": "A hollow vase textured with vertical bark grooves — ridged noise carved inward-only with node.displace() so the thin wall stays one piece. Shows shaping a noise field to one side to avoid floating islands."
+    },
+    {
+      "id": "sdf-brain-coral",
+      "name": "SDF Brain Coral",
+      "file": "sdf_brain_coral.partwright.json",
+      "language": "manifold-js",
+      "description": "A boulder scored with winding labyrinthine grooves — inward-only ridged-noise displacement gives the brain-coral pattern in one watertight solid."
+    },
+    {
+      "id": "sdf-lsystem-fern",
+      "name": "L-System Fern",
+      "file": "sdf_lsystem_fern.partwright.json",
+      "language": "manifold-js",
+      "description": "The textbook Lindenmayer plant grammar grown into printable 3D geometry via the new api.sdf.lsystem() — a flat fractal fern of welded capsules."
+    },
+    {
+      "id": "sdf-lsystem-coral",
+      "name": "L-System Coral",
+      "file": "sdf_lsystem_coral.partwright.json",
+      "language": "manifold-js",
+      "description": "A chunky branching coral grown from an L-system — four-way radial splits with smooth-blended (fleshy) joints via api.sdf.lsystem({ blend })."
+    },
+    {
+      "id": "sdf-lsystem-tree",
+      "name": "L-System Tree",
+      "file": "sdf_lsystem_tree.partwright.json",
+      "language": "manifold-js",
+      "description": "A stylized tree grown from an L-system: a trunk with a radial branch crown and a canopy of leaf spheres, in two painted regions (wood + leaves) from one call."
+    },
+    {
       "id": "voxel-sdf-gyroid-vase",
       "name": "Voxel SDF Gyroid Vase",
       "file": "voxel_sdf_gyroid_vase.partwright.json",
