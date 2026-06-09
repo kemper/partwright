@@ -205,6 +205,80 @@ export interface EditorHooks {
   onBlur?: () => void;
 }
 
+/** Keep the code editor's scroll position from drifting when CodeMirror
+ *  re-measures while the editor is parked at (or near) the very bottom.
+ *
+ *  On a real display, CodeMirror's line-height model never perfectly matches
+ *  Chrome's fractional, device-pixel-rounded line boxes, so over a long
+ *  document the modelled content height drifts from the real DOM height by
+ *  ~a line. Whenever something makes CodeMirror re-measure — a focus change, a
+ *  layout reflow from opening a tool menu/panel, or its own measure loop — it
+ *  reconciles the two and the browser re-clamps `scrollTop` at max-scroll,
+ *  snapping the visible code by a line. It only shows at the bottom (anywhere
+ *  else the offset is preserved exactly) and only on a real display, so it reads
+ *  as a one-line "stutter" when you click around with the editor scrolled down.
+ *
+ *  This installs a persistent stabilizer: when a *programmatic* scroll nudges
+ *  the editor by less than a couple of lines while it's resting near the bottom,
+ *  it reverts to the last user-intended offset before the browser paints, so the
+ *  snap is invisible. It stays out of the way of every genuine scroll — wheel,
+ *  trackpad/momentum, scrollbar drag, touch, and keyboard/typing are all tracked
+ *  as user intent and always honored — and a large jump (reveal-diagnostic,
+ *  jump-to-match) is treated as real navigation. Thresholds are
+ *  line-height-relative, not magic pixels. */
+function installBottomScrollStabilizer(view: EditorView): void {
+  const sc = view.scrollDOM;
+  // The grace window (ms) during which recent user input means a scroll is the
+  // user's own intent and must never be reverted.
+  const inputGraceMs = (): number => getConfig().ui.codeEditorScrollPinMs;
+
+  let intendedTop = sc.scrollTop; // the offset we believe the user wants
+  let lastWheel = -Infinity;
+  let lastKey = -Infinity;
+  let pointerDown = false; // covers scrollbar drag + touch pan
+  let reverting = false;
+
+  const lineH = (): number => view.defaultLineHeight || 18;
+  const userActive = (): boolean => {
+    const now = performance.now();
+    const grace = inputGraceMs();
+    return pointerDown || now - lastWheel < grace || now - lastKey < grace;
+  };
+
+  // Track user-driven scroll intent. Capture phase so we see input even when the
+  // editor isn't focused (e.g. dragging the scrollbar).
+  sc.addEventListener('wheel', () => { lastWheel = performance.now(); }, { capture: true, passive: true });
+  sc.addEventListener('keydown', () => { lastKey = performance.now(); }, true);
+  // Pointer down/up is tracked on the document: a scrollbar drag holds the
+  // pointer down on the scroller without firing wheel/keydown.
+  const onPointerDown = (): void => { pointerDown = true; };
+  const onPointerUp = (): void => { pointerDown = false; };
+  document.addEventListener('pointerdown', onPointerDown, true);
+  document.addEventListener('pointerup', onPointerUp, true);
+  document.addEventListener('pointercancel', onPointerUp, true);
+
+  sc.addEventListener('scroll', () => {
+    if (reverting) return;
+    if (getConfig().ui.codeEditorScrollPinMs <= 0) { intendedTop = sc.scrollTop; return; } // disabled
+    const lh = lineH();
+    const maxScroll = sc.scrollHeight - sc.clientHeight;
+    // Anchor "near the bottom" to where the user *wanted* to be (intendedTop),
+    // not the post-snap position — the snap moves us a line off the bottom, so
+    // testing the current offset would miss it right at the boundary.
+    const wasNearBottom = maxScroll - intendedTop <= lh * 2;
+    const delta = sc.scrollTop - intendedTop;
+    // Revert only an unsolicited, small, near-bottom nudge — the measure snap.
+    if (!userActive() && wasNearBottom && delta !== 0 && Math.abs(delta) <= lh * 3) {
+      reverting = true;
+      sc.scrollTop = intendedTop;
+      reverting = false;
+      return;
+    }
+    // Otherwise this is the user's intent (or real navigation): adopt it.
+    intendedTop = sc.scrollTop;
+  }, { passive: true });
+}
+
 export function initEditor(
   container: HTMLElement,
   initialCode: string,
@@ -253,6 +327,8 @@ export function initEditor(
     state,
     parent: container,
   });
+
+  installBottomScrollStabilizer(editorView);
 
   onThemeChange((theme) => {
     if (!editorView) return;
