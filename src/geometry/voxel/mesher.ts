@@ -275,7 +275,10 @@ export function meshGrid(grid: VoxelGrid): MeshData {
     let mesh = surfaceNetsMesh(grid);
     // `detail` is meaningless for Surface Nets (it meshes occupancy directly).
     // The Taubin passes here are a light cleanup AND the mechanism that applies
-    // the base pins, so flatBottom etc. keep working on the SN mesh.
+    // the base pins. `flatBottom` is plane-relative so it pins the SN floor
+    // exactly; `baseLayers`/`lockBox` are coordinate-based and the SN surface
+    // sits ~half a voxel inward of the blocky extent, so those pin the intended
+    // region only to within ~0.5 voxel (fine for a "keep this base blocky" hint).
     mesh = taubinSmooth(mesh, surf.iterations, resolveSmoothPins(surf, 1));
     return mesh;
   }

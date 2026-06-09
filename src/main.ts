@@ -4073,7 +4073,11 @@ async function main() {
   const fileExportMesh = (colored: boolean): MeshData | null => {
     if (getActiveLanguage() === 'voxel') {
       const grid = getCurrentVoxelGrid();
-      if (grid) return greedyMeshGrid(grid);
+      // Greedy meshing applies to BLOCKY surfacing only. A smoothed grid must
+      // export the rounded mesh the viewport (and GLB) show, not blocky cubes —
+      // and greedy wins nothing on a smoothed mesh anyway (no large coplanar
+      // same-color runs to coalesce), so fall through to currentMeshData.
+      if (grid && grid.surfacing().mode !== 'smooth') return greedyMeshGrid(grid);
     }
     if (!currentMeshData) return null;
     return colored ? coloredMeshForExport(currentMeshData) : currentMeshData;

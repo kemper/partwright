@@ -211,13 +211,14 @@ read the format. The other 3D formats (GLB / 3MF / OBJ / STL) still work too —
 they export the *meshed* voxels with vertex colors — but `.vox` is the only one
 that keeps the editable voxel grid intact.
 
-> **STL / OBJ / 3MF use greedy meshing.** These mesh-file exports coalesce
-> coplanar same-color faces into the fewest rectangles, so a flat or large
-> single-color region ships as a couple of triangles instead of hundreds —
-> several-fold smaller files, which matters for print prep. (GLB exports the
-> live render mesh, so it's per-face.) The merge introduces T-junctions, which
-> are harmless in a triangle-soup export; the in-app render, stats, and slicing
-> keep the per-face manifold mesh, so nothing else is affected.
+> **Blocky STL / OBJ / 3MF use greedy meshing.** For a blocky (non-smoothed)
+> grid these mesh-file exports coalesce coplanar same-color faces into the fewest
+> rectangles, so a flat or large single-color region ships as a couple of
+> triangles instead of hundreds — several-fold smaller files, which matters for
+> print prep. The merge introduces T-junctions, which are harmless in a
+> triangle-soup export; the in-app render, stats, and slicing keep the per-face
+> manifold mesh, so nothing else is affected. A **smoothed** grid exports the
+> rounded mesh you see in the viewport instead (same as GLB), not blocky cubes.
 
 Programmatic / AI equivalent:
 
