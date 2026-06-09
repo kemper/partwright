@@ -1,6 +1,7 @@
-import { EditorView } from '@codemirror/view';
-import { EditorState, Compartment, Transaction, type Extension } from '@codemirror/state';
+import { EditorView, keymap } from '@codemirror/view';
+import { EditorState, Compartment, Prec, Transaction, type Extension } from '@codemirror/state';
 import { openSearchPanel } from '@codemirror/search';
+import { acceptCompletion } from '@codemirror/autocomplete';
 import { javascript } from '@codemirror/lang-javascript';
 import { StreamLanguage } from '@codemirror/language';
 import { oneDark } from '@codemirror/theme-one-dark';
@@ -39,6 +40,14 @@ const themeCompartment = new Compartment();
 function themeExt(theme: Theme): Extension {
   return theme === 'dark' ? oneDark : [];
 }
+
+/** Tab accepts the active autocomplete option. `acceptCompletion` returns false
+ *  when no completion tooltip is open, so Tab falls through to its normal
+ *  indent/insert behavior otherwise. Prec.highest so it wins over the default
+ *  keymaps that basicSetup installs for Tab. */
+const acceptCompletionWithTab: Extension = Prec.highest(
+  keymap.of([{ key: 'Tab', run: acceptCompletion }]),
+);
 
 // Minimal OpenSCAD StreamLanguage — keyword/builtin/comment/string/number coloring.
 const SCAD_KEYWORDS = new Set([
@@ -290,6 +299,7 @@ export function initEditor(
     doc: initialCode,
     extensions: [
       basicSetup,
+      acceptCompletionWithTab,
       manifoldApiCompletion,
       languageCompartment.of(languageExt(initialLanguage)),
       lintGutter(),
