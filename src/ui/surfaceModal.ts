@@ -22,7 +22,7 @@ import { getCurrentMesh, previewTriangles } from '../color/paintMode';
 import { buildTriColors } from '../color/regions';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
-type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize';
+type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'hollow' | 'smooth' | 'voxelize';
 
 /** The subset of the console API the surface UI needs. */
 export interface SurfaceApi {
@@ -34,6 +34,7 @@ export interface SurfaceApi {
   applyWovenFabric(opts?: { amplitude?: number; threadSpacing?: number; threadWidth?: number; underDepth?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiShell(opts?: { amplitude?: number; cellSize?: number; wallWidth?: number; raised?: boolean; jitter?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiLamp(opts?: { cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; jitter?: number; grainAngleDeg?: number; seed?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyHollow(opts?: { wallThickness?: number; openTop?: boolean; rimHeight?: number; drainHoles?: number; drainRadius?: number; resolution?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   previewSurfaceModifier(id: ModId, opts?: Record<string, unknown>, preserveColor?: boolean): { ok: true } | { error: string };
@@ -43,6 +44,10 @@ export interface SurfaceApi {
 }
 
 type Tab = ModId;
+
+/** Tabs with no per-region targeting — they always apply to the whole model, so
+ *  their region section is hidden and Apply is never region-gated. */
+const WHOLE_ONLY = new Set<ModId>(['voxelize', 'voronoiLamp', 'hollow']);
 
 const BTN_BASE =
   'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur border border-zinc-700 text-zinc-200 hover:bg-zinc-700';
@@ -199,6 +204,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     { id: 'woven', label: 'Woven' },
     { id: 'voronoi', label: 'Voronoi (relief)' },
     { id: 'voronoiLamp', label: 'Voronoi lamp' },
+    { id: 'hollow', label: 'Hollow / vase' },
     { id: 'smooth', label: 'Smooth' },
     { id: 'voxelize', label: 'Voxelize' },
   ];
@@ -264,8 +270,11 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     return regionMode === 'region' ? regionSelection ?? undefined : undefined;
   }
 
-  /** Whether Apply/preview should be blocked (region mode, nothing picked yet). */
+  /** Whether Apply/preview should be blocked (region mode, nothing picked yet).
+   *  Whole-model-only tabs (their region section is hidden) are never blocked —
+   *  there's no selection to make, so they apply to the whole model. */
   function regionBlocked(): boolean {
+    if (WHOLE_ONLY.has(active)) return false;
     return regionMode === 'region' && !regionSelection;
   }
 
@@ -425,7 +434,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   function renderTab() {
     body.innerHTML = '';
-    regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp') ? 'none' : '';
+    regionSection.style.display = WHOLE_ONLY.has(active) ? 'none' : '';
+    updateApplyBtn(); // refresh Apply's gating for the new tab (whole-only = never blocked)
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
       const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -585,6 +595,28 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         watertight: wtight.get(),
         output: out.get(),
       });
+    } else if (active === 'hollow') {
+      const wt = slider('Wall thickness', span * 0.01, span * 0.12, span * 0.025, span * 0.002, n => n.toFixed(3), schedulePreview);
+      const open = checkbox('Open top (vase mode)', false, () => { syncRim(); schedulePreview(); });
+      const rim = slider('Rim depth (open top)', span * 0.01, span * 0.3, span * 0.05, span * 0.002, n => n.toFixed(3), schedulePreview);
+      const holes = slider('Drain holes', 0, 8, 0, 1, n => String(n), schedulePreview);
+      const hr = slider('Drain hole radius', span * 0.005, span * 0.1, span * 0.02, span * 0.002, n => n.toFixed(3), schedulePreview);
+      const res = sliderWithEntry('Resolution', 48, 200, 128, 1, 256, schedulePreview);
+      const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
+      // Rim depth only applies with an open top; grey it out otherwise.
+      const syncRim = () => { rim.wrap.style.opacity = open.get() ? '1' : '0.4'; };
+      body.append(wt.wrap, open.wrap, rim.wrap, holes.wrap, hr.wrap, res.wrap, wtight.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Hollows the model into a thin shell (3D-print "vase mode"), meshing a continuous distance field — smooth curved walls, no voxel stair-stepping (a heavier op; allow a few seconds). "Open top" lops the cap off at Rim depth below the top so the cavity is open. Drain holes bore vertical holes through the base (planters).'));
+      syncRim();
+      currentOpts = () => ({
+        wallThickness: wt.get(),
+        openTop: open.get(),
+        rimHeight: rim.get(),
+        drainHoles: holes.get(),
+        drainRadius: hr.get(),
+        resolution: res.get(),
+        watertight: wtight.get(),
+      });
     } else if (active === 'smooth') {
       const iter = slider('Rounding strength', 1, 12, 4, 1, n => String(n), schedulePreview);
       const sub = checkbox('Subdivide first (rounds sharp corners)', true, schedulePreview);
@@ -700,6 +732,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         : active === 'woven' ? await api.applyWovenFabric(opts)
         : active === 'voronoi' ? await api.applyVoronoiShell(opts)
         : active === 'voronoiLamp' ? await api.applyVoronoiLamp(opts)
+        : active === 'hollow' ? await api.applyHollow(opts)
         : active === 'smooth' ? await api.smoothModel(opts)
         : await api.voxelizeModel(opts);
       const err = (result as { error?: string })?.error;
@@ -740,6 +773,7 @@ export function initSurfaceUI(api: SurfaceApi): void {
     { id: 'surface-woven', title: 'Surface: Woven fabric', hint: 'Modifier', keywords: 'woven weave fabric basket cloth interlace thread', run: () => openSurfaceModal(api, 'woven') },
     { id: 'surface-voronoi', title: 'Surface: Voronoi texture', hint: 'Modifier', keywords: 'voronoi cell relief organic cracked web ridges struts texture', run: () => openSurfaceModal(api, 'voronoi') },
     { id: 'surface-voronoi-lamp', title: 'Surface: Voronoi lamp (perforated shell)', hint: 'Modifier', keywords: 'voronoi lamp shell lattice perforated cutout holes see-through planter lampshade voxel', run: () => openSurfaceModal(api, 'voronoiLamp') },
+    { id: 'surface-hollow', title: 'Surface: Hollow / vase mode', hint: 'Modifier', keywords: 'hollow vase shell thin wall spiritualize open top drain holes planter pot vessel cup', run: () => openSurfaceModal(api, 'hollow') },
     { id: 'surface-smooth', title: 'Surface: Smooth / round edges', hint: 'Modifier', keywords: 'smooth round fillet taubin low-poly', run: () => openSurfaceModal(api, 'smooth') },
     { id: 'surface-voxelize', title: 'Surface: Voxelize model', hint: 'Modifier', keywords: 'voxel blocky minecraft pixel', run: () => openSurfaceModal(api, 'voxelize') },
   ]);

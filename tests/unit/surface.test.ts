@@ -22,7 +22,8 @@ import { sdfModifierMesh } from '../../src/surface/sdfModifier';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
-import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp } from '../../src/surface/modifiers';
+import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp, applyHollow } from '../../src/surface/modifiers';
+import { hollowShellMesh } from '../../src/surface/hollowShell';
 import { nearestTriangleMap } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
@@ -359,6 +360,50 @@ describe('applyVoronoiLamp (mesh output)', () => {
       // SDF mesh path: ofMesh wrapper over a baked, smooth perforated shell.
       expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
       expect(r.mesh.numTri).toBeGreaterThan(12);
+    }
+  });
+});
+
+describe('hollowShellMesh (vase mode)', () => {
+  it('hollows a solid into a non-empty shell', () => {
+    const m = hollowShellMesh(cube(20), { wallThickness: 2, resolution: 64 });
+    expect(m.numTri).toBeGreaterThan(12);
+    expect(m.numVert).toBeGreaterThan(8);
+  });
+
+  it('returns an empty mesh for an empty input', () => {
+    const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
+    expect(hollowShellMesh(empty, { wallThickness: 1 }).numTri).toBe(0);
+  });
+
+  it('open top lops the cap off — the result is shorter than the closed shell', () => {
+    const rim = 4;
+    const closed = hollowShellMesh(cube(20), { wallThickness: 2, resolution: 64 });
+    const open = hollowShellMesh(cube(20), { wallThickness: 2, resolution: 64, openTop: true, rimHeight: rim });
+    const closedTop = bboxOf(extractPositions(closed)).max[2];
+    const openTop = bboxOf(extractPositions(open)).max[2];
+    // The closed shell reaches the original top (z=20); the open one is cut at
+    // ~ (20 - rim), so it must be meaningfully shorter.
+    expect(openTop).toBeLessThan(closedTop - rim * 0.5);
+  });
+});
+
+describe('applyHollow (mesh output)', () => {
+  it('emits a smooth (SDF) manifold mesh wrapper with a shell', () => {
+    const r = applyHollow(cube(20), { wallThickness: 2, resolution: 64 });
+    expect(r.kind).toBe('manifold');
+    if (r.kind === 'manifold') {
+      expect(r.label).toBe('hollow / vase');
+      expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
+      expect(r.mesh.numTri).toBeGreaterThan(12);
+    }
+  });
+
+  it('labels an open-top vase with drain holes in the header comment', () => {
+    const r = applyHollow(cube(20), { wallThickness: 2, resolution: 48, openTop: true, drainHoles: 3 });
+    if (r.kind === 'manifold') {
+      expect(r.code).toContain('open top');
+      expect(r.code).toContain('3 drain holes');
     }
   });
 });
