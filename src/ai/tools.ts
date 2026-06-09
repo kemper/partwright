@@ -1549,7 +1549,7 @@ const ALL_TOOLS: ToolDefinition[] = [
 - cellSize: approximate spacing between cells, world units (~16% of diagonal)
 - wallThickness: shell thickness in world units (~3% of diagonal); the struts are this thick
 - strutWidth: kept edge-network width as a fraction of cellSize [0.05–0.6] (default 0.3; smaller = thinner struts / bigger windows)
-- resolution: voxels along the longest axis (default 140). **Auto-raised** so struts resolve to ≥4 voxels, so you rarely need to touch it
+- resolution: field/voxel resolution along the longest axis (default 140, up to 256). **Auto-raised** so struts resolve to ≥6 cells, so you rarely need to touch it; the default mesh output meshes a continuous SDF (smooth walls, no voxel stair-stepping), and higher resolution sharpens the struts
 - jitter: cell irregularity [0–1] (1 = irregular Voronoi, default; 0 = a regular grid of windows)
 - grainAngleDeg, seed: orient / reshuffle the cell layout
 - watertight: keep only the largest connected web → one printable manifold piece (default true — leave on)
@@ -1565,7 +1565,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         cellSize: { type: 'number', description: 'Approximate spacing between cells in world units. Default ~16% of diagonal.' },
         wallThickness: { type: 'number', description: 'Shell wall thickness in world units (strut thickness through the wall). Default ~3% of diagonal.' },
         strutWidth: { type: 'number', description: 'Kept edge-network width as a fraction of cellSize [0.05–0.6]. Default 0.3. Smaller = thinner struts, larger windows.', minimum: 0.05, maximum: 0.6 },
-        resolution: { type: 'integer', description: 'Voxels along the longest axis [16–200]. Higher = crisper holes, slower. Default 110.', minimum: 16, maximum: 200 },
+        resolution: { type: 'integer', description: 'Field/voxel resolution along the longest axis [16–256]. Higher = crisper struts, slower. Default 110.', minimum: 16, maximum: 256 },
         jitter: { type: 'number', description: 'Cell irregularity [0–1]. 1 = irregular Voronoi (default); 0 = a regular grid.', minimum: 0, maximum: 1 },
         grainAngleDeg: { type: 'number', description: 'Rotate the cell pattern in the XY plane, degrees. Default 0.' },
         seed: { type: 'integer', description: 'Deterministic seed — change to reshuffle the cell layout. Default 1.' },

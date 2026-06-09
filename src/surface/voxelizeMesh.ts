@@ -79,12 +79,12 @@ export interface RasterizedSolid {
   voxelSize: number;
 }
 
-export function rasterizeSolid(mesh: MeshData, resolutionOpt?: number): RasterizedSolid {
+export function rasterizeSolid(mesh: MeshData, resolutionOpt?: number, maxResolution = MAX_RESOLUTION): RasterizedSolid {
   const positions = extractPositions(mesh);
   const { min, size } = bboxOf(positions);
   const maxDim = Math.max(size[0], size[1], size[2], 1e-6);
 
-  const resolution = Math.max(4, Math.min(MAX_RESOLUTION, Math.round(resolutionOpt ?? 32)));
+  const resolution = Math.max(4, Math.min(maxResolution, Math.round(resolutionOpt ?? 32)));
   const voxelSize = maxDim / resolution;
   const dims: [number, number, number] = [
     Math.max(1, Math.ceil(size[0] / voxelSize)),

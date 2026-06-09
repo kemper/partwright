@@ -93,6 +93,40 @@ function slider(label: string, min: number, max: number, value: number, step: nu
   return { wrap, get: () => input.valueAsNumber };
 }
 
+/** A range slider paired with a numeric text box. The text box accepts values
+ *  beyond the slider's max — up to `hardMax` — so power users can type a higher
+ *  resolution than the slider exposes (the thumb just pins at `sliderMax`).
+ *  `get()` returns the text box value, rounded and clamped to [min, hardMax]. */
+function sliderWithEntry(
+  label: string, min: number, sliderMax: number, value: number, step: number,
+  hardMax: number, onChange: () => void,
+) {
+  const wrap = el('label', 'block mb-3 text-xs text-zinc-300');
+  const head = el('div', 'flex justify-between mb-1 items-center gap-2');
+  head.append(el('span', '', label));
+  const num = el('input', 'w-16 bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5 text-right tabular-nums text-zinc-200');
+  num.type = 'number';
+  num.min = String(min); num.max = String(hardMax); num.step = String(step);
+  num.value = String(value);
+  head.append(num);
+  const range = el('input', 'w-full accent-blue-500');
+  range.type = 'range';
+  range.min = String(min); range.max = String(sliderMax); range.step = String(step);
+  range.value = String(Math.min(value, sliderMax));
+  const clamp = (n: number) => Math.max(min, Math.min(hardMax, Math.round(n)));
+  range.addEventListener('input', () => { num.value = String(range.valueAsNumber); onChange(); });
+  num.addEventListener('input', () => {
+    const raw = num.valueAsNumber;
+    if (Number.isNaN(raw)) return;            // mid-edit empty box — don't snap yet
+    range.value = String(Math.max(min, Math.min(sliderMax, raw)));
+    onChange();
+  });
+  // On commit (blur / Enter) normalize the box to the clamped integer.
+  num.addEventListener('change', () => { num.value = String(clamp(num.valueAsNumber || min)); onChange(); });
+  wrap.append(head, range);
+  return { wrap, get: () => clamp(num.valueAsNumber || min) };
+}
+
 function checkbox(label: string, checked: boolean, onChange: () => void) {
   const wrap = el('label', 'flex items-center gap-2 mb-3 text-xs text-zinc-300 cursor-pointer');
   const input = el('input', 'accent-blue-500');
@@ -531,15 +565,15 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const jit = slider('Irregularity (jitter)', 0, 1, 1, 0.05, n => n.toFixed(2), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
-      const res = slider('Resolution', 48, 200, 140, 1, n => String(n), schedulePreview);
+      const res = sliderWithEntry('Resolution', 48, 200, 110, 1, 256, schedulePreview);
       const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
       const out = dropdown<'mesh' | 'voxel'>('Output', [
         ['mesh', 'Smooth mesh (manifold-js)'],
         ['voxel', 'Voxel (paintable / .vox)'],
       ], 'mesh', schedulePreview);
       body.append(cs.wrap, wt.wrap, sw.wrap, jit.wrap, grain.wrap, seed.wrap, res.wrap, wtight.wrap, out.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'A real see-through Voronoi shell (lamp / planter): hollows the model and cuts the cell interiors clean through, leaving a strut network. Resolution auto-raises so struts stay thick enough; "One connected piece" keeps just the main web (drops loose bits) for a clean, printable manifold.'));
-      body.append(el('p', 'text-[11px] text-amber-400/90', '"Voxel" output switches the model to the voxel engine (like Voxelize) — paintable and .vox-exportable. "Smooth mesh" stays on manifold-js (Taubin-rounded).'));
+      body.append(el('p', 'text-[11px] text-zinc-500', 'A real see-through Voronoi shell (lamp / planter): hollows the model and cuts the cell interiors clean through, leaving a strut network. Resolution auto-raises so struts stay thick enough (type a higher value than the slider for extra-crisp struts); "One connected piece" keeps just the main web (drops loose bits).'));
+      body.append(el('p', 'text-[11px] text-amber-400/90', '"Smooth mesh" stays on manifold-js and meshes a continuous distance field — smooth curved walls, no voxel stair-stepping (a heavier op; allow a few seconds). "Voxel" output switches to the voxel engine — paintable and .vox-exportable, but blocky.'));
       currentOpts = () => ({
         cellSize: cs.get(),
         wallThickness: wt.get(),
