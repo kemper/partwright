@@ -219,6 +219,15 @@ const list = BREP.listEdges(shape, filter?);
 // translate/rotate via positional face matching. Fillet/chamfer preserve
 // labels on unchanged faces but drop them on new rounded surfaces.
 BREP.label(shape, 'name');                      // wrap a shape with a label
+
+// Self-coloring — pass an optional { color } (hex '#rrggbb' / '#rgb', or an
+// [r,g,b] array in 0..1), exactly like the manifold-js `api.label` 3rd arg.
+// The labeled faces render + export colored on the spot as a derived underlay
+// (paintByLabel still composites on top); read the active set with
+// partwright.getModelColors(). Color is keyed by name and carried through the
+// whole pipeline (booleans, transforms, fillet/chamfer).
+BREP.label(shape, 'body', { color: '#3b82f6' });   // blue body
+BREP.label(shape, 'knob', { color: [1, 0, 0] });   // red knob
 ```
 
 ### Worked examples for the new primitives

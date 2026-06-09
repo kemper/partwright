@@ -1,6 +1,6 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
-import { ensureBrepLoaded, getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, getPendingBrepImports, type BrepShape } from '../brepRuntime';
+import { ensureBrepLoaded, getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, extractLabelColors, getPendingBrepImports, type BrepShape } from '../brepRuntime';
 import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
 import { getActiveImports } from '../../import/importedMesh';
 import { createParamCapture } from '../params';
@@ -241,6 +241,11 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
     // (no boolean ops on the resulting Manifold) so ordering is preserved.
     const brepLabels = extractLabelMap(liveShape);
     const labelMap = brepLabels.size > 0 ? brepLabels : undefined;
+    // Model-declared colors from `BREP.label(s, name, { color })`. Resolved
+    // against `labelMap` on the main thread into the same derived "model color"
+    // underlay manifold-js `api.label` colors produce. Empty → undefined.
+    const brepColors = extractLabelColors(liveShape);
+    const labelColors = brepColors.size > 0 ? brepColors : undefined;
 
     if (manifold) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -258,6 +263,7 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
         manifold,
         error: null,
         labelMap,
+        labelColors,
         paramsSchema: paramCapture.collectSchema(),
       };
     }
@@ -273,6 +279,7 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
       manifold: null,
       error: null,
       labelMap,
+      labelColors,
       paramsSchema: paramCapture.collectSchema(),
     };
   } catch (e: unknown) {

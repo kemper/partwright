@@ -8,7 +8,7 @@ import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
 import { createSdfNamespace, SdfNode } from '../sdf';
 import { createPrintFitNamespace } from '../printFit';
-import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels } from '../brepRuntime';
+import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import { wasmFaultHint } from '../workerFaults';
 
@@ -383,6 +383,15 @@ export const manifoldJsEngine: Engine = {
       // same label name comes from both BREP and an `api.label` call, the
       // triangle sets union — friendliest answer.
       const labelMap = mergeLabelMaps(resolveLabelMap(mesh, labelRegistry), consumeBrepToManifoldLabels());
+      // Fold in any colors declared via `BREP.label(s, name, { color })` in this
+      // run (Phase C). An `api.label` color for the same name wins (it's the
+      // more direct manifold-side declaration), so only set names not already
+      // colored above.
+      for (const brepColors of consumeBrepToManifoldLabelColors()) {
+        for (const [name, rgb] of brepColors) {
+          if (!labelColors.has(name)) labelColors.set(name, rgb);
+        }
+      }
       // Render-only proxies (from `api.renderMesh`) carry the marker so we can
       // signal downstream "this isn't a real Manifold — skip volume/genus/slice".
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

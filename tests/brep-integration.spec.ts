@@ -221,6 +221,86 @@ test.describe('BREP integration', () => {
     }
   });
 
+  test('BREP.label { color } — self-coloring underlay (Phase A replicad)', async ({ page }) => {
+    // BREP.label now mirrors api.label's 3rd { color } arg. In a replicad-
+    // language session the engine emits the per-label colors as
+    // MeshResult.labelColors, which the main thread resolves into the model-
+    // color underlay surfaced by getModelColors(). We assert both names show
+    // up with their declared RGB and a non-empty triangle count.
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('replicad');
+      const code = `
+        const { BREP } = api;
+        const base = BREP.label(BREP.box([20, 20, 6]), 'base', { color: '#3b82f6' });
+        const knob = BREP.label(BREP.cylinder(5, 8).translate([0, 0, 6]), 'knob', { color: [1, 0, 0] });
+        return BREP.fuseAll([base, knob]);
+      `;
+      const run = await pw.run(code);
+      const colors = pw.getModelColors();
+      return { run, colors };
+    });
+
+    expect(result.run.error).toBeFalsy();
+    // getModelColors → { count, colors: [{ name, color, triangleCount }] }
+    const byName = new Map(
+      (result.colors.colors as Array<{ name: string; color: number[]; triangleCount: number }>)
+        .map(c => [c.name, c]),
+    );
+    expect(byName.has('base')).toBe(true);
+    expect(byName.has('knob')).toBe(true);
+    // '#3b82f6' → [0.231, 0.51, 0.965]; [1,0,0] passes through unchanged.
+    expect(byName.get('base')!.color[2]).toBeGreaterThan(0.9); // blue channel high
+    expect(byName.get('knob')!.color[0]).toBeCloseTo(1, 5);
+    expect(byName.get('knob')!.color[1]).toBeCloseTo(0, 5);
+    // Both labels resolved to real triangles in the fused mesh.
+    expect(byName.get('base')!.triangleCount).toBeGreaterThan(0);
+    expect(byName.get('knob')!.triangleCount).toBeGreaterThan(0);
+  });
+
+  test('BREP.label { color } — flows through toManifold (Phase C)', async ({ page }) => {
+    // The same { color } works inside a manifold-js session: BREP.toManifold
+    // queues the colors on a side-channel the manifold-js engine drains into
+    // its own labelColors, so getModelColors() reports them just like a native
+    // api.label color.
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('manifold-js');
+      const code = `
+        const { Manifold, BREP } = api;
+        const body = BREP.label(BREP.box([15, 15, 15]).fillet(2), 'body', { color: [0, 1, 0] });
+        return BREP.toManifold(body, Manifold);
+      `;
+      const run = await pw.run(code);
+      const colors = pw.getModelColors();
+      return { run, colors };
+    });
+
+    expect(result.run.error).toBeFalsy();
+    const body = (result.colors.colors as Array<{ name: string; color: number[]; triangleCount: number }>)
+      .find(c => c.name === 'body');
+    expect(body).toBeTruthy();
+    expect(body!.color[1]).toBeCloseTo(1, 5); // green channel
+    expect(body!.triangleCount).toBeGreaterThan(0);
+  });
+
+  test('BREP.label — rejects a bad color argument', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('replicad');
+      const code = `
+        const { BREP } = api;
+        return BREP.label(BREP.box([10, 10, 10]), 'oops', { color: 'not-a-color' });
+      `;
+      return await pw.run(code);
+    });
+    expect(result.error).toBeTruthy();
+    expect(String(result.error)).toMatch(/color/i);
+  });
+
   test('friendly fillet error — too-large radius surfaces a hint', async ({ page }) => {
     // A fillet bigger than the smaller box dimension can't be solved by
     // OCCT. The raw error is an integer pointer; our wrapper turns it into

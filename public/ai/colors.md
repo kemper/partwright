@@ -184,7 +184,20 @@ boolean (see `listLabels().lostLabels`). Prefer model-declared color when
 the color is intrinsic to the design; reach for `paintByLabel` when a
 human is tweaking colors interactively or overriding the code.
 
-SCAD has the same `label()` pattern. Partwright pre-injects a
+**BREP supports the same `{ color }` arg.** `BREP.label(shape, name,
+{ color })` (both as `api.BREP.*` inside a manifold-js session and in a
+full `replicad`-language session) takes the identical hex-or-`[r,g,b]`
+color and feeds the same model-color underlay — so `getModelColors()`
+and export pick it up exactly like the manifold-js path. The color is
+keyed by name and rides through booleans, transforms, and (best-effort)
+fillet/chamfer. (Note: which triangles a label resolves to across a
+fused multi-feature BREP composite is best-effort — see the spatial-
+signature gotcha in `replicad.md` — so the *color* is exact but its
+*coverage* tracks however `paintByLabel` would bucket the same label.)
+
+SCAD has the same `label()` pattern, but **without** the `{ color }`
+option — a SCAD `label()` is a passthrough wrapper for `paintByLabel`
+only, so color a SCAD model with an explicit `paintByLabel` call. Partwright pre-injects a
 passthrough `module label(name) { children(); }` into every SCAD
 compile so the wrapper is portable to vanilla OpenSCAD too (the helper
 does nothing geometrically — `paintByLabel` is the only thing that
