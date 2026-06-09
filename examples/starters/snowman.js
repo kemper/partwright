@@ -24,7 +24,7 @@ const nose = api.label(
 
 // Two coal eyes — small spheres half-sunk into the head.
 const eyeL = api.label(Manifold.sphere(0.9, 24).translate([-2.4, -5.6, 43]), 'eyeL', { color: COAL });
-const eyeR = api.label(Manifold.sphere(0.9, 24).translate([ 2.4, -5.6, 43]), 'eyeR', { color: COAL });
+const eyeR = api.label(Manifold.sphere(0.9, 24).translate([2.4, -5.6, 43]), 'eyeR', { color: COAL });
 
 // Three coal buttons down the belly, each sunk into the front surface.
 const buttons = [31, 27, 23].map((z, i) =>

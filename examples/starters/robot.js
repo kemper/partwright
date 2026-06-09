@@ -10,12 +10,17 @@ const { Manifold } = api;
 
 // Rounded head — convex hull of eight small corner spheres (manifold's quick
 // fillet-a-box trick). Half-extents hx/hy/hz, corner radius r.
-const r = 2.5, hx = 11, hy = 8, hz = 9;
+const r = 2.5,
+  hx = 11,
+  hy = 8,
+  hz = 9;
 const s = Manifold.sphere(r, 32);
 const corners = [];
-for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
-  corners.push(s.translate([sx * hx, sy * hy, sz * hz]));
-}
+for (const sx of [-1, 1])
+  for (const sy of [-1, 1])
+    for (const sz of [-1, 1]) {
+      corners.push(s.translate([sx * hx, sy * hy, sz * hz]));
+    }
 const head = api.label(Manifold.hull(corners).translate([0, 0, hz + r]), 'head', { color: '#b9c2cc' });
 
 // Two glowing eyes — cylinders standing proud of the face (−Y), their backs

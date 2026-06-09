@@ -22,8 +22,9 @@ const spots = [];
 const SPOTS = 7;
 for (let i = 0; i < SPOTS; i++) {
   const a = (i / SPOTS) * 2 * Math.PI;
-  const ring = 7.5;                      // how far out from the apex
-  const x = ring * Math.cos(a), y = ring * Math.sin(a);
+  const ring = 7.5; // how far out from the apex
+  const x = ring * Math.cos(a),
+    y = ring * Math.sin(a);
   const z = 14 + Math.sqrt(Math.max(0, 12 * 12 - ring * ring)) * 0.85 - 1.2;
   spots.push(api.label(
     Manifold.sphere(1.7, 32).scale([1, 1, 0.5]).translate([x, y, z]),
