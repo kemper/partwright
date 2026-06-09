@@ -205,6 +205,56 @@ export interface EditorHooks {
   onBlur?: () => void;
 }
 
+/** Hold the editor's scroll offset steady for a short window after it loses
+ *  focus while scrolled to the very bottom.
+ *
+ *  In real Chrome, blurring the editor while it's scrolled flush against the
+ *  bottom nudges the visible code up by a line or two: CodeMirror runs a
+ *  deferred focus-change pass that re-measures the height model, and at exact
+ *  max-scroll the browser re-clamps `scrollTop`, shifting which lines are in
+ *  view. It only manifests at the bottom (anywhere else the offset is preserved
+ *  exactly) and only on a real display, which is why it reads as a "stutter"
+ *  when you click away to drag a tool panel.
+ *
+ *  This pins the offset for `codeEditorBlurScrollPinMs` and re-applies it if
+ *  something moves it by less than a couple of lines, so the nudge never paints.
+ *  It bails out immediately on any genuine scroll — a user wheel/touch/pointer
+ *  gesture, or a large programmatic jump like reveal-diagnostic — so it can
+ *  never block real navigation. Thresholds are line-height-relative, not magic
+ *  pixels. */
+function pinScrollAfterBlur(view: EditorView): void {
+  const pinMs = getConfig().ui.codeEditorBlurScrollPinMs;
+  if (pinMs <= 0) return; // disabled
+  const sc = view.scrollDOM;
+  const lineH = view.defaultLineHeight || 18;
+  const top = sc.scrollTop;
+  // The bug is specific to resting at the very bottom; ignore every other
+  // scroll position so we never interfere with mid-document focus changes.
+  if (sc.scrollHeight - (top + sc.clientHeight) > lineH) return;
+
+  let active = true;
+  const stop = (): void => {
+    if (!active) return;
+    active = false;
+    sc.removeEventListener('scroll', onScroll);
+    sc.removeEventListener('wheel', stop);
+    sc.removeEventListener('pointerdown', stop);
+    sc.removeEventListener('touchstart', stop);
+  };
+  const onScroll = (): void => {
+    if (!active) return;
+    // A move larger than a few lines is real navigation (jump-to-match /
+    // reveal-diagnostic) — let it stand and stop pinning.
+    if (Math.abs(sc.scrollTop - top) > lineH * 4) { stop(); return; }
+    if (sc.scrollTop !== top) sc.scrollTop = top;
+  };
+  sc.addEventListener('scroll', onScroll);
+  sc.addEventListener('wheel', stop, { passive: true });
+  sc.addEventListener('pointerdown', stop);
+  sc.addEventListener('touchstart', stop, { passive: true });
+  window.setTimeout(stop, pinMs);
+}
+
 export function initEditor(
   container: HTMLElement,
   initialCode: string,
@@ -238,7 +288,7 @@ export function initEditor(
         }
       }),
       EditorView.domEventHandlers({
-        blur: () => { hooks.onBlur?.(); return false; },
+        blur: (_event, view) => { pinScrollAfterBlur(view); hooks.onBlur?.(); return false; },
       }),
       EditorView.theme({
         '&': { height: '100%', fontSize: '13px' },

@@ -156,6 +156,12 @@ export interface AppConfig {
     tooltipDelayMs: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
     codeEditorErrorIdleMs: number;
+    /** How long (ms) to pin the code editor's scroll offset after it loses focus
+     *  while scrolled to the very bottom. Real Chrome can nudge the scroll by a
+     *  line or two on blur (a deferred focus-change re-measure re-clamps the
+     *  max-scroll position); pinning for this window absorbs that without
+     *  blocking real scrolling (any user scroll disengages it immediately). */
+    codeEditorBlurScrollPinMs: number;
     /** Debounce delay (ms) after the last companion-file keystroke before the
      *  draft is autosaved, so companion edits survive a reload without writing
      *  to IndexedDB on every keystroke. */
@@ -269,6 +275,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     toastDurationMs: 2200,
     tooltipDelayMs: 150,
     codeEditorErrorIdleMs: 800,
+    codeEditorBlurScrollPinMs: 180,
     companionDraftDebounceMs: 600,
     workCameraSaveDebounceMs: 500,
     surfacePreviewDebounceMs: 250,

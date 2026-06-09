@@ -781,6 +781,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'codeEditorErrorIdleMs', v)}
         />
         <Field
+          label="Code editor blur scroll-pin window"
+          unit="ms"
+          tooltip="When the code editor is scrolled to the very bottom and you click away (e.g. to drag a tool panel), real Chrome can nudge the visible code up by a line or two. For this long after focus leaves the editor, its scroll position is held steady so the code doesn't stutter. Any real scroll (wheel/touch/drag) cancels the hold immediately. Set to 0 to disable."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.codeEditorBlurScrollPinMs}
+          value={c.ui.codeEditorBlurScrollPinMs}
+          min={0} max={1_000} integer
+          onChange={v => set('ui', 'codeEditorBlurScrollPinMs', v)}
+        />
+        <Field
           label="Companion draft autosave debounce"
           unit="ms"
           tooltip="After you stop typing in a SCAD companion file, the editor waits this long before autosaving the draft so the edit survives a reload. Coalesces keystrokes so IndexedDB isn't written on every key. Lower it to capture edits sooner; raise it to write less often."
