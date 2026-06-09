@@ -8,12 +8,17 @@ import { voxelEngine } from '../geometry/engines/voxel';
 import { openscadEngine, runScadAsync } from '../geometry/engines/openscad';
 import type { Language } from '../geometry/engines/types';
 import type { MeshResult } from '../geometry/engines/types';
+import { componentsOverlap } from './bboxOverlap';
 
 export interface PreviewComponent {
   index: number;
   triangleCount: number;
   volume: number;
   bbox: { min: number[]; max: number[]; size: number[] };
+  /** Bounding-box center of this island ((min+max)/2) — the cheap "where is
+   *  it" locator surfaced by `--explain-components`. Empty when the part had
+   *  no measurable bounding box. */
+  center: number[];
 }
 
 export interface PreviewStats {
@@ -199,7 +204,11 @@ export async function previewModel(
         .map((p: any, index: number) => ({ index, vol: safeNum(() => p.volume()), tri: safeNum(() => p.numTri()), box: safeBox(p) }))
         .sort((a, b) => b.vol - a.vol)
         .slice(0, 16);
-      for (const p of ranked) components.push({ index: p.index, triangleCount: p.tri, volume: p.vol, bbox: p.box ? bb(p.box) : { min: [], max: [], size: [] } });
+      for (const p of ranked) {
+        const box = p.box ? bb(p.box) : { min: [], max: [], size: [] };
+        const center = box.min.length === 3 ? box.min.map((m, i) => (m + box.max[i]) / 2) : [];
+        components.push({ index: p.index, triangleCount: p.tri, volume: p.vol, bbox: box, center });
+      }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       for (const p of parts) try { (p as any).delete(); } catch { /* exit cleans up */ }
     } catch { /* decompose unsupported */ }
@@ -273,6 +282,15 @@ function buildWarnings(s: PreviewStats): string[] {
   }
   if (distinctLabelColors >= 2 && s.componentCount === 1) {
     w.push('Multiple colors but a single component — separate moving parts should report componentCount ≥ 2.');
+  }
+  // Clearance / unintended-fragmentation check: separate components whose
+  // bounding boxes overlap are interpenetrating-but-not-fused. For an unlabeled
+  // model that was meant to be ONE solid, that's a boolean that didn't take
+  // (insufficient overlap); for an intentional multi-part / print-in-place
+  // assembly it's a cue to sanity-check the clearance gap. Gated to the
+  // no-labels case so it doesn't double up with the FUSED-labels warning above.
+  if (!s.renderOnly && !s.empty && s.componentCount >= 2 && s.labels.length === 0 && componentsOverlap(s.components)) {
+    w.push(`componentCount=${s.componentCount} with overlapping component bounding boxes (top ${Math.min(s.componentCount, s.components.length)} by volume checked) — separate parts whose bounds overlap, so they may interpenetrate. If this should be ONE solid, a boolean didn't fuse (increase overlap ≥0.5 units); if it's an intentional multi-part / print-in-place assembly, verify the clearance gap. Inspect islands with model:preview --explain-components.`);
   }
   if (s.triangleCount > 200000) w.push(`High triangle count (${Math.round(s.triangleCount / 1000)}k) — exceeds the ~200k catalog budget; lower circular segments / nDivisions or feature density.`);
   if (s.aspectRatio > 12) w.push(`Extreme aspect ratio (${s.aspectRatio.toFixed(1)}:1) — tall/thin parts can be fragile or tip-droppy on FDM.`);

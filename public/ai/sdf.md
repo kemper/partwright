@@ -47,7 +47,7 @@ api.sdf.capsule([x1,y1,z1], [x2,y2,z2], radius)   // hemisphere-capped rod
 
 ### TPMS lattices (all infinite — see "Bounds for unbounded shapes")
 
-Triply-periodic minimal surfaces. All take `(cellSize, thickness)` — `cellSize` is the period in world units, `thickness` is the wall width (0 = a bare zero-thickness surface). They're mathematically infinite, so you **must** intersect with a finite shape or pass explicit `bounds` to `.build()`.
+Triply-periodic minimal surfaces. All take `(cellSize, thickness)` — `cellSize` is the period in world units, `thickness` is a **field threshold** (not a wall width): the mesher keeps regions where `|F(p)| < thickness`, so 0 gives a bare zero-thickness surface and larger values fatten the walls until the lattice closes off entirely. They're mathematically infinite, so you **must** intersect with a finite shape or pass explicit `bounds` to `.build()`.
 
 ```js
 api.sdf.gyroid(cellSize, thickness)     // the famous one — smooth, isotropic
@@ -62,7 +62,14 @@ api.sdf.gradedDiamond (cellSize, (x, y, z) => /* thickness here */)
 api.sdf.gradedLidinoid(cellSize, (x, y, z) => /* thickness here */)
 ```
 
-**Sizing `thickness`:** for a printable shell `thickness ≈ cellSize/6 to cellSize/3` is the sweet spot for gyroid, schwarzP, and diamond — thinner gets fragile/under-resolved, thicker fills in the pores. **Lidinoid is the outlier**: its double-frequency terms create smaller effective features at the same `cellSize`, so push its lower bound up — use `thickness ≈ cellSize/5 to cellSize/3` and drop `edgeLength` a touch (try ~`cellSize/10`) if the surface looks jaggy at the default.
+**Sizing `thickness`:** `thickness` is a field threshold in the TPMS field's natural units (roughly 0–1.5 range) — **the ratio `cellSize/N` is meaningless here and will produce a solid blob for typical `cellSize` values.**
+
+For **gyroid, schwarzP, and diamond**:
+- Open, see-through lattice: `thickness ≈ 0.4–0.7`. Below ~0.3 the shell is too thin to print; above ~0.9 pores begin closing off; **`thickness ≥ 1.1` selects nearly all of space → a solid blob** that passes `isManifold: true` but looks like a plain sphere.
+- Safe starting point: `thickness = 0.5`, `cellSize = 8..15` for print-scale parts.
+- Tie `edgeLength` to `cellSize / 14..16` (not to the wall thickness) so thin walls resolve without a runaway mesh count.
+
+**Lidinoid is the outlier**: its double-frequency terms create smaller effective features, so use `thickness ≈ 0.3–0.5` and try `edgeLength ≈ cellSize / 10`.
 
 **Mixing two lattices:** use **sharp `union`** to butt two regions side-by-side (preserves their labels for paint). `intersect` two infinite TPMS gives their common surface (also infinite — still needs an outer bound).
 
@@ -179,6 +186,8 @@ return node.build({ edgeLength: 0.5, level: 0, tolerance: 0.05 });
 **`edgeLength` controls quality and speed.** Default is ~1/32 of the smallest bbox extent, clamped to `[0.1, 5]`. Halving `edgeLength` quadruples-or-more the triangle count and runtime — bump it down only when you can see facets you don't want.
 
 **`bounds`** is auto-inferred from the primitives in your tree. **Override it explicitly** when you use `gyroid` or `.repeat()` (which are unbounded), or when you intersect with something to cut a finite chunk from an infinite surface.
+
+> **In a `voxel` session, `api.sdf` is also available — but you rasterize it into the grid with `v.sdf(node, opts)` instead of `.build()`** (there's no Manifold engine to lower through). Same expression vocabulary (gyroids, TPMS, smooth blends, twists), blocky colored-voxel output. `.label()` regions map to voxel colors via the `colors` option. See `/ai/voxel.md#sdf--voxel-vsdf`.
 
 ## Painting SDFs — paint-by-label
 

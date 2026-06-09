@@ -136,6 +136,10 @@ export interface AppConfig {
     voxelDefaultMaxSize: number;
     /** Voxel count above which the import UI shows a performance warning. */
     voxelHeavyThreshold: number;
+    /** Max number of lattice cells `v.sdf()` may sample in one call before it
+     *  refuses (guards against a huge bounds × tiny `res` freezing the engine).
+     *  Past this the call throws and asks for a coarser `res` or tighter bounds. */
+    voxelSdfMaxSamples: number;
     /** Max image resolution (pixels per side) when importing for relief. */
     reliefMaxResolution: number;
     /** Timeout (ms) for fetching a remote file by URL in the import-from-URL flow. */
@@ -255,6 +259,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     stlWeldTolerance: 1e-5,
     voxelDefaultMaxSize: 64,
     voxelHeavyThreshold: 250_000,
+    voxelSdfMaxSamples: 8_000_000,
     reliefMaxResolution: 512,
     remoteFetchTimeoutMs: 15_000,
     filamentMatchThreshold: 0.18,

@@ -689,6 +689,41 @@
       "file": "sdf_lsystem_tree.partwright.json",
       "language": "manifold-js",
       "description": "A stylized tree grown from an L-system: a trunk with a radial branch crown and a canopy of leaf spheres, in two painted regions (wood + leaves) from one call."
+    },
+    {
+      "id": "voxel-sdf-gyroid-vase",
+      "name": "Voxel SDF Gyroid Vase",
+      "file": "voxel_sdf_gyroid_vase.partwright.json",
+      "language": "voxel",
+      "description": "A desktop pen & brush holder with an open gyroid-lattice wall welded between a solid base and rim — one SDF expression (gyroid intersected with a tube) rasterized into voxels with v.sdf. Two-tone teal body and gold trim."
+    },
+    {
+      "id": "voxel-sdf-coral",
+      "name": "Voxel SDF Coral",
+      "file": "voxel_sdf_coral.partwright.json",
+      "language": "voxel",
+      "description": "A porous brain-coral on a sandy rock base — a smooth-blended SDF blob (smoothUnion of ellipsoids) made knobby and holey by a diamond TPMS, then rasterized into voxels with v.sdf. The organic SDF-to-voxel showcase."
+    },
+    {
+      "id": "voxel-sdf-blob",
+      "name": "Voxel SDF Blob Mascot",
+      "file": "voxel_sdf_blob.partwright.json",
+      "language": "voxel",
+      "description": "A cute mint-green blob mascot built entirely from SDF smooth-blends (smoothUnion of ellipsoids, flat-bottomed by a half-space clip) and rasterized into voxels with v.sdf — organic character modeling in the blocky voxel world."
+    },
+    {
+      "id": "voxel-sdf-lattice-cube",
+      "name": "Voxel SDF Lattice Cube",
+      "file": "voxel_sdf_lattice_cube.partwright.json",
+      "language": "voxel",
+      "description": "A graphite desk paperweight whose four windows reveal a glowing-cyan Schwarz-P TPMS lattice core — frame, window cuts, and lattice are one SDF expression rasterized into voxels with v.sdf."
+    },
+    {
+      "id": "voxel-sdf-twist-tower",
+      "name": "Voxel SDF Twist Tower",
+      "file": "voxel_sdf_twist_tower.partwright.json",
+      "language": "voxel",
+      "description": "A twisted pen & utensil holder — a hollow rounded-square wall punched with a grid of windows and twisted on its axis, then rasterized into voxels with v.sdf. Solid flat base, lavender rim, violet body."
     }
   ]
 }
