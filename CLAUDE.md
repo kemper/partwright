@@ -169,6 +169,8 @@ npm run model:preview -- model.js --views front,iso,back        # pick/reorder n
 
 **When `componentCount` is wrong: decompose and inspect, don't tune blindly.** Call `Manifold.decompose()` on the result, iterate the parts, and check which one floated or fused — a 10-line diagnostic snippet beats 3 rounds of parameter-tweaking on the whole assembly. Note that many legitimate catalog subjects (assemblies, orreries, watch movements) intentionally have `componentCount > 1`; `isManifold: true` is the correctness gate, not the count. Pass `{ maxComponents: N }` to `runAndSave` when the model is intentionally multi-part.
 
+> **Voxel models: trust `voxelPieceCount`, not `componentCount`, for "is this one printable piece?"** `componentCount` comes from the meshed solid and over-reports voxel grids — an enclosed cavity counts as a second component, and voxels touching only at an edge/corner split apart. The stats also carry `voxelPieceCount`, a face-connected (6-neighbour) BFS over the grid that matches what actually fuses on an FDM plate. A one-piece hollow voxel shell reports `componentCount: 2` but `voxelPieceCount: 1`.
+
 `model:preview` can do that island inspection for you:
 
 ```bash

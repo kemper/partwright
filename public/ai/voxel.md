@@ -255,11 +255,17 @@ return voxels().sdf(sdf.union(shell, core), {
   over big bounds is capped (`import.voxelSdfMaxSamples`, default 8M) and throws,
   asking for a coarser `res` or tighter `bounds`, rather than freezing.
 - **Printability — fragmentation.** Open lattices can fragment into many
-  disconnected components (each a separate piece on the plate). Check
-  `componentCount`. Fixes, cheapest first: call **`v.keepLargest()`** to drop
-  stray specks; thicken walls so the lattice stays face-connected; weld a solid
-  core/skin through it (e.g. `lattice.union(smallSolidCore)`, or subtract an
-  inner shape from an outer solid and union the lattice inside).
+  disconnected pieces (each a separate piece on the plate). Check
+  **`voxelPieceCount`** — the face-connected (6-neighbour) piece count, which is
+  the trustworthy "how many separate printable pieces?" number for voxel models.
+  Do **not** judge this by `componentCount`: that comes from the meshed solid and
+  over-reports voxel models (an enclosed cavity counts as a second component, and
+  voxels touching only at an edge/corner split), so a one-piece hollow shell
+  shows `componentCount: 2` but `voxelPieceCount: 1`. Fixes, cheapest first: call
+  **`v.keepLargest()`** to drop stray specks; thicken walls so the lattice stays
+  face-connected; weld a solid core/skin through it (e.g.
+  `lattice.union(smallSolidCore)`, or subtract an inner shape from an outer solid
+  and union the lattice inside).
 - **Thin TPMS struts at `res: 1` can be non-manifold.** A lattice strut only one
   voxel wide tends to touch its neighbour along an *edge* (diagonal), not a face
   — a non-manifold edge. The fix is **resolution, not thickness**: a finer `res`

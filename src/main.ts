@@ -462,6 +462,11 @@ let lastEngineHeapBytes: number | undefined;
  *  and the Data panel show it) without re-decoding the grid. Undefined for the
  *  non-voxel engines or before the first run. */
 let lastVoxelCount: number | undefined;
+/** Face-connected printable-piece count for the last voxel run (6-neighbour
+ *  BFS). Surfaced as `voxelPieceCount` in the geometry-data stats so agents
+ *  trust it over the mesh `componentCount`, which over-reports voxel models
+ *  (enclosed cavities + edge/corner touches). Undefined for non-voxel engines. */
+let lastVoxelPieceCount: number | undefined;
 /** The pristine mesh produced by the authored code, before any smooth brush
  *  subdivision. `currentMeshData` equals this until a `brushStroke` region
  *  exists, at which point it becomes the refined (subdivided) mesh rebuilt by
@@ -736,6 +741,11 @@ function withSessionContext(data: Record<string, unknown>): Record<string, unkno
   // size readout for direct (non-mesh) modeling.
   if (lastVoxelCount !== undefined) {
     data.voxelCount = lastVoxelCount;
+  }
+  // Trustworthy "separate printable pieces?" count for voxel models — the mesh
+  // componentCount over-reports them (enclosed cavities, edge/corner touches).
+  if (lastVoxelPieceCount !== undefined) {
+    data.voxelPieceCount = lastVoxelPieceCount;
   }
   return data;
 }
@@ -7014,6 +7024,7 @@ async function main() {
     const stats = computeGeometryStats(manifold, result.mesh!, elapsed, code);
     if (engineMemory !== undefined) stats.engineMemory = engineMemory;
     if (result.voxelCount !== undefined) stats.voxelCount = result.voxelCount;
+    if (result.voxelPieceCount !== undefined) stats.voxelPieceCount = result.voxelPieceCount;
     return {
       geometryData: stats,
       meshData: result.mesh,
@@ -13724,6 +13735,7 @@ async function main() {
     // Occupied-voxel count for voxel runs (undefined for other engines, which
     // resets the readout so a prior voxel session's count doesn't linger).
     lastVoxelCount = result.voxelCount;
+    lastVoxelPieceCount = result.voxelPieceCount;
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel

@@ -355,6 +355,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       paramsSchema: (msg.paramsSchema as MeshResult['paramsSchema']) ?? undefined,
       engineHeapBytes: msg.engineHeapBytes as number | undefined,
       voxelCount: msg.voxelCount as number | undefined,
+      voxelPieceCount: msg.voxelPieceCount as number | undefined,
     };
     pending.resolve(result);
     // A WASM trap (OOM / abort) reported as a *result* leaves the Worker's
