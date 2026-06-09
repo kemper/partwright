@@ -184,9 +184,26 @@ boolean (see `listLabels().lostLabels`). Prefer model-declared color when
 the color is intrinsic to the design; reach for `paintByLabel` when a
 human is tweaking colors interactively or overriding the code.
 
-> **manifold-js only.** The `{ color }` option on `api.label` is emitted by the manifold-js engine only. In a **replicad (BREP) session**, `BREP.label(shape, name)` takes no color argument and models always render gray by default — paint with `paintByLabel` after `runAndSave`.
+**BREP supports the same `{ color }` arg.** `BREP.label(shape, name,
+{ color })` (both as `api.BREP.*` inside a manifold-js session and in a
+full `replicad`-language session) takes the identical hex-or-`[r,g,b]`
+color and feeds the same model-color underlay — so `getModelColors()`
+and export pick it up exactly like the manifold-js path. The color is
+keyed by name and rides through booleans, transforms, and (best-effort)
+fillet/chamfer.
 
-SCAD has the same `label()` pattern. Partwright pre-injects a
+> **Coverage caveat for fused composites.** The *color* you attach is
+> exact, but which triangles a label *resolves to* after `fuseAll` is
+> best-effort — the spatial-signature resolver scrambles on many-feature
+> composites (see gotcha #9 in `replicad.md`). A **single label over the
+> whole shape resolves to ~100% coverage and colors cleanly**; for
+> per-feature multi-color on a fused composite, reach for the coordinate
+> paint selectors (`paintInCylinder` / `paintSlab` / `paintInBox` /
+> `paintNear`) instead, exactly as that gotcha recommends.
+
+SCAD has the same `label()` pattern, but **without** the `{ color }`
+option — a SCAD `label()` is a passthrough wrapper for `paintByLabel`
+only, so color a SCAD model with an explicit `paintByLabel` call. Partwright pre-injects a
 passthrough `module label(name) { children(); }` into every SCAD
 compile so the wrapper is portable to vanilla OpenSCAD too (the helper
 does nothing geometrically — `paintByLabel` is the only thing that
