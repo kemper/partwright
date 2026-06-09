@@ -666,6 +666,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('import', 'voxelHeavyThreshold', v)}
         />
         <Field
+          label="Voxel SDF sample budget"
+          unit="cells"
+          hint="Max lattice cells v.sdf() may sample in one call before it refuses."
+          tooltip="When voxel code rasterizes an SDF expression with v.sdf(node), it samples the field once per voxel over the model's bounds. A tiny `res` over large bounds can explode into hundreds of millions of samples and freeze the engine. Past this budget the call throws and asks for a coarser `res` or tighter bounds. Raise it on a fast machine for very high-resolution SDF voxelization."
+          defaultValue={APP_CONFIG_DEFAULTS.import.voxelSdfMaxSamples}
+          value={c.import.voxelSdfMaxSamples}
+          min={100_000} max={64_000_000} integer
+          onChange={v => set('import', 'voxelSdfMaxSamples', v)}
+        />
+        <Field
           label="Relief max resolution"
           unit="px"
           hint="Maximum image resolution (pixels per side) for relief/keychain imports."

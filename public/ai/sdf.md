@@ -162,6 +162,8 @@ return node.build({ edgeLength: 0.5, level: 0, tolerance: 0.05 });
 
 **`bounds`** is auto-inferred from the primitives in your tree. **Override it explicitly** when you use `gyroid` or `.repeat()` (which are unbounded), or when you intersect with something to cut a finite chunk from an infinite surface.
 
+> **In a `voxel` session, `api.sdf` is also available — but you rasterize it into the grid with `v.sdf(node, opts)` instead of `.build()`** (there's no Manifold engine to lower through). Same expression vocabulary (gyroids, TPMS, smooth blends, twists), blocky colored-voxel output. `.label()` regions map to voxel colors via the `colors` option. See `/ai/voxel.md#sdf--voxel-vsdf`.
+
 ## Painting SDFs — paint-by-label
 
 `api.sdf` integrates with the existing `partwright.paintByLabel({label, color})` flow.
