@@ -427,6 +427,20 @@ function frameModel(): void {
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z);
 
+  // A zero-size box (all vertices coincident — e.g. a degenerate zero-radius
+  // sphere, a `scale(0)`, or an empty boolean result) or non-finite bounds
+  // (NaN vertices from a degenerate kernel result) is NOT "empty" per
+  // Box3.isEmpty(), so the guard above doesn't catch it. Framing it anyway
+  // places the camera exactly on the orbit target, from which OrbitControls
+  // derives a NaN spherical angle whose damping never converges — it fires a
+  // 'change' event every frame and pins the render loop at full rate forever
+  // (the "frozen tab" symptom). Leave the camera where it is instead; the next
+  // valid model re-frames normally.
+  if (!Number.isFinite(maxDim) || maxDim <= 0 ||
+      !Number.isFinite(center.x) || !Number.isFinite(center.y) || !Number.isFinite(center.z)) {
+    return;
+  }
+
   // Update model bounds for clip slider
   modelBounds = { min: box.min.z, max: box.max.z };
 
