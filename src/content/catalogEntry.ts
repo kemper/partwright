@@ -13,48 +13,55 @@
 import { wireCatalogFilter } from './catalogFilter';
 import { initTooltips } from '../ui/tooltip';
 
-interface CatalogThumbs {
-  /** Map of catalog file name → latest-version thumbnail data URL. */
-  [file: string]: string;
+/** Fetch one tile's thumbnail from its entry JSON and apply it. Each tile loads
+ *  at most once. `no-cache` revalidates (cheap 304 when unchanged) so an updated
+ *  thumbnail is never masked by a stale cached copy. */
+async function loadThumbnail(tile: HTMLElement): Promise<void> {
+  const file = tile.getAttribute('data-pw-thumb');
+  if (!file) return;
+  const img = tile.querySelector<HTMLImageElement>('img');
+  if (!img) return;
+  try {
+    const res = await fetch(`/catalog/${file}`, { cache: 'no-cache' });
+    if (!res.ok) return;
+    const payload = await res.json() as { versions?: { thumbnail?: string | null }[] };
+    const versions = payload.versions ?? [];
+    const src = versions.length > 0 ? (versions[versions.length - 1].thumbnail ?? null) : null;
+    if (src) {
+      img.src = src;
+      img.style.opacity = '1';
+    }
+  } catch { /* leave placeholder */ }
 }
 
 async function hydrateThumbnails(): Promise<void> {
   const tiles = Array.from(document.querySelectorAll<HTMLElement>('[data-pw-thumb]'));
   if (tiles.length === 0) return;
 
-  // One request for all thumbnails (emitted at build time), with a graceful
-  // fallback to per-file fetches if it isn't present. Use `no-cache` (revalidate
-  // with the server, cheap 304 when unchanged) rather than `force-cache`: a
-  // stale entry must never blank a tile after a thumbnail update — `force-cache`
-  // returns a cached copy without revalidating, so a visitor who loaded the page
-  // before a thumbnail existed would keep seeing the blank indefinitely.
-  let thumbs: CatalogThumbs | null = null;
-  try {
-    const res = await fetch('/catalog/thumbs.json', { cache: 'no-cache' });
-    if (res.ok) thumbs = await res.json() as CatalogThumbs;
-  } catch { /* fall through to per-file */ }
+  // Lazy, per-tile: a tile's thumbnail (a base64 data URL embedded in its entry
+  // JSON) is fetched only as the tile nears the viewport. There is intentionally
+  // no aggregate `thumbs.json` — bundling every thumbnail into one file doesn't
+  // scale: it grows unbounded with the catalog and blocks the whole page on a
+  // single multi-MB download even for tiles far below the fold. Loading on demand
+  // keeps the page fast no matter how large the catalog grows.
+  if (typeof IntersectionObserver === 'undefined') {
+    // Ancient browser with no IO: just load everything (old behavior).
+    await Promise.all(tiles.map(loadThumbnail));
+    return;
+  }
 
-  await Promise.all(tiles.map(async (tile) => {
-    const file = tile.getAttribute('data-pw-thumb');
-    if (!file) return;
-    const img = tile.querySelector<HTMLImageElement>('img');
-    if (!img) return;
-    let src = thumbs?.[file] ?? null;
-    if (!src) {
-      try {
-        const res = await fetch(`/catalog/${file}`, { cache: 'no-cache' });
-        if (res.ok) {
-          const payload = await res.json() as { versions?: { thumbnail?: string | null }[] };
-          const versions = payload.versions ?? [];
-          src = versions.length > 0 ? (versions[versions.length - 1].thumbnail ?? null) : null;
-        }
-      } catch { /* leave placeholder */ }
+  // Start fetching ~300px before a tile scrolls into view so the image is
+  // usually ready by the time it's on screen; unobserve after the first hit so
+  // each tile loads exactly once.
+  const observer = new IntersectionObserver((entries, obs) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const tile = entry.target as HTMLElement;
+      obs.unobserve(tile);
+      void loadThumbnail(tile);
     }
-    if (src) {
-      img.src = src;
-      img.style.opacity = '1';
-    }
-  }));
+  }, { rootMargin: '300px 0px' });
+  for (const tile of tiles) observer.observe(tile);
 }
 
 function init(): void {
