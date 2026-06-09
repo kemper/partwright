@@ -58,3 +58,15 @@ surfacing call (incl. surfacing-only, no edits). 911 unit pass. E2E: voxel-engin
 Browser: screenshotted the Rounding panel; drove the slider + flat-bottom +
 Update code and confirmed the emitted `.smooth({ strength: 0.6, flatBottom: true })`
 and a rounded, flat-bottomed rendered result.
+
+## Review fix
+
+work-reviewer caught a data-loss path: `setRounding` called `grid.smooth({ strength,
+flatBottom, baseLayers })`, which reset the *unspecified* fields
+(iterations/detail/algorithm/lockBox) to defaults — so touching the slider on a
+model authored with `.smooth({ iterations: 6, detail: 2, … })` dropped them. Fixed
+by MERGING onto the grid's current surfacing (preserve iterations/detail/algorithm/
+lockBox; the panel only owns strength/flatBottom/baseLayers). Added an e2e test
+asserting a slider change keeps the source's `algorithm:'taubin', iterations:6,
+detail:2`. (The unrelated `editor-hints` ticker-layout e2e flake on the first CI
+run is pre-existing and untouched by this diff.)

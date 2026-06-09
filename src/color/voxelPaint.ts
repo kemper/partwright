@@ -17,7 +17,7 @@
 
 import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
-import { normalizeColor, type VoxelGrid, type Surfacing } from '../geometry/voxel/grid';
+import { normalizeColor, type VoxelGrid, type Surfacing, type Vec3 } from '../geometry/voxel/grid';
 import { gridToMeshWithProvenance } from '../geometry/voxel/mesher';
 import { runVoxelForPaint, type VoxelPaintRun } from '../geometry/engines/voxel';
 import { bucketRecolor, clearBox, fillBoxRecolor, addBlock, addBlockCells, extrudeBox, brushApply, levelRecolor, inBrush, type BrushShape } from '../geometry/voxel/edits';
@@ -182,12 +182,27 @@ export type RoundingOpts = { strength?: number; iterations?: number; algorithm?:
 export function getSurfacing(): Surfacing | null { return run?.grid.surfacing() ?? null; }
 
 /** Set the grid's surfacing from the Rounding panel — `null` = hard blocks,
- *  otherwise smooth with the given options. Does not change the (blocky) editing
- *  preview; the rounding is baked into the rendered model on save. */
+ *  otherwise smooth with the given options. The panel only owns
+ *  `strength`/`flatBottom`/`baseLayers`, so we MERGE onto the grid's current
+ *  surfacing to preserve source-declared fields the panel doesn't expose
+ *  (`iterations`/`detail`/`algorithm`/`lockBox`) — otherwise touching the slider
+ *  would reset them to defaults. Does not change the (blocky) editing preview;
+ *  the rounding is baked into the rendered model on save. Not routed through
+ *  `mutate()` on purpose: a surfacing tweak isn't an undo-able grid edit (the
+ *  slider is its own revert affordance), and it's reflected live by
+ *  refreshControls. */
 export function setRounding(opts: RoundingOpts | null): void {
   if (!run) return;
-  if (opts === null) run.grid.blocky();
-  else run.grid.smooth(opts);
+  if (opts === null) { run.grid.blocky(); cbStateChange?.(); return; }
+  const cur = run.grid.surfacing();
+  const merged: RoundingOpts & { detail?: number; lockBox?: [Vec3, Vec3] } = {
+    algorithm: cur.algorithm,
+    iterations: cur.iterations,
+    detail: cur.detail,
+    ...opts, // strength / flatBottom / baseLayers from the panel
+  };
+  if (cur.lockBox) merged.lockBox = [cur.lockBox.min, cur.lockBox.max];
+  run.grid.smooth(merged);
   cbStateChange?.();
 }
 

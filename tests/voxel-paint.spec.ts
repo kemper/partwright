@@ -128,6 +128,30 @@ test.describe('voxel paint mode', () => {
     expect(result.voxelCount).toBe(64); // 4×4×4 box
   });
 
+  test('Rounding panel preserves source-declared smooth options', async ({ page }) => {
+    // Touching the rounding slider must merge onto the grid's surfacing, not
+    // reset iterations/detail/algorithm to defaults.
+    const code = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().fillBox([0,0,0],[5,5,5],'#6cf').smooth({ algorithm: 'taubin', iterations: 6, detail: 2 });`);
+      pw.activateVoxelPaint();
+      await new Promise((r) => setTimeout(r, 300));
+      const slider = document.querySelector('#voxel-paint-panel input[title^="Rounding amount"]') as HTMLInputElement;
+      slider.value = '40';
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      const upd = [...document.querySelectorAll('#voxel-paint-panel button')].find((b) => b.textContent === 'Update code') as HTMLButtonElement;
+      upd.click();
+      await new Promise((r) => setTimeout(r, 1500));
+      return pw.getCode();
+    });
+    expect(code).toContain("algorithm: 'taubin'"); // preserved
+    expect(code).toContain('iterations: 6');         // preserved
+    expect(code).toContain('detail: 2');             // preserved
+    expect(code).toContain('strength: 0.4');         // the panel's change
+  });
+
   test('cross-session: loading a different version cancels active paint', async ({ page }) => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
