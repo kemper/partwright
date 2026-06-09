@@ -349,6 +349,71 @@ export const manifoldJsEngine: Engine = {
       x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1],
     };
 
+    // Build a RegionDescriptor from an `api.surface.*({ region })` selector. The
+    // forms mirror the api.paint.* selectors so "texture this region" reads the
+    // same as "paint this region". The descriptor is resolved to triangles on
+    // the main thread (against the actual mesh), reusing the paint resolver.
+    const buildRegionDescriptor = (region: unknown): RegionDescriptor => {
+      if (typeof region === 'string') {
+        if (region.length === 0) throw new Error('api.surface region: a string region must be a non-empty api.label(...) name.');
+        return { kind: 'byLabel', label: region };
+      }
+      const o = paintObj(region, 'api.surface region');
+      const { label, box, slab, cylinder, ...rest } = o;
+      paintRejectUnknown('api.surface region', rest);
+      const provided = [label, box, slab, cylinder].filter(v => v !== undefined).length;
+      if (provided !== 1) {
+        throw new Error("api.surface region: provide exactly one of label, box, slab, or cylinder (e.g. region: 'body' or region: { box: { min, max } }).");
+      }
+      if (label !== undefined) {
+        if (typeof label !== 'string' || label.length === 0) throw new Error('api.surface region.label: must be a non-empty api.label(...) name.');
+        return { kind: 'byLabel', label };
+      }
+      if (box !== undefined) {
+        const b = paintObj(box, 'api.surface region.box({ min, max })');
+        const { min, max, ...brest } = b;
+        paintRejectUnknown('api.surface region.box', brest);
+        const lo = paintVec3(min, 'api.surface region.box min');
+        const hi = paintVec3(max, 'api.surface region.box max');
+        const center: [number, number, number] = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
+        const size: [number, number, number] = [Math.abs(hi[0] - lo[0]), Math.abs(hi[1] - lo[1]), Math.abs(hi[2] - lo[2])];
+        return { kind: 'box', center, size, quaternion: [0, 0, 0, 1], shape: 'box' };
+      }
+      if (slab !== undefined) {
+        const s = paintObj(slab, 'api.surface region.slab({ axis, offset, thickness })');
+        const { axis, normal, offset, thickness, ...srest } = s;
+        paintRejectUnknown('api.surface region.slab', srest);
+        let nrm: [number, number, number];
+        if (axis !== undefined) {
+          if (typeof axis !== 'string' || !(axis in AXIS_NORMAL)) throw new Error("api.surface region.slab axis: expected 'x', 'y' or 'z' (or pass an explicit normal).");
+          nrm = AXIS_NORMAL[axis];
+        } else if (normal !== undefined) {
+          nrm = paintVec3(normal, 'api.surface region.slab normal');
+        } else {
+          throw new Error("api.surface region.slab: provide either axis ('x'|'y'|'z') or an explicit normal [x, y, z].");
+        }
+        const off = paintNum(offset, 'api.surface region.slab offset');
+        const thk = paintNum(thickness, 'api.surface region.slab thickness');
+        if (thk <= 0) throw new Error('api.surface region.slab thickness: must be > 0.');
+        return { kind: 'slab', normal: nrm, offset: off, thickness: thk };
+      }
+      // cylinder
+      const c = paintObj(cylinder, 'api.surface region.cylinder({ center, rMin, rMax, zMin, zMax })');
+      const { center, rMin, rMax, zMin, zMax, ...crest } = c;
+      paintRejectUnknown('api.surface region.cylinder', crest);
+      if (!Array.isArray(center) || center.length !== 2 || center.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
+        throw new Error('api.surface region.cylinder center: expected [x, y] (two finite numbers).');
+      }
+      const cc = center as [number, number];
+      const r0 = rMin === undefined ? 0 : paintNum(rMin, 'api.surface region.cylinder rMin');
+      const r1 = paintNum(rMax, 'api.surface region.cylinder rMax');
+      const z0 = paintNum(zMin, 'api.surface region.cylinder zMin');
+      const z1 = paintNum(zMax, 'api.surface region.cylinder zMax');
+      if (r0 < 0 || r1 <= r0) throw new Error('api.surface region.cylinder: require 0 <= rMin < rMax.');
+      if (z1 <= z0) throw new Error('api.surface region.cylinder: require zMin < zMax.');
+      return { kind: 'cylinder', center: cc, rMin: r0, rMax: r1, zMin: z0, zMax: z1 };
+    };
+
     const paint = {
       /** Paint every triangle inside an axis-aligned box. `min`/`max` are world-space corners. */
       box(opts: unknown): void {
@@ -436,11 +501,14 @@ export const manifoldJsEngine: Engine = {
         }
         opts = params as Record<string, unknown>;
       }
+      // `region` is handled separately (it's an object selector, not a scalar
+      // option): texture only the matching triangles instead of the whole mesh.
+      const { region, ...scalarOpts } = opts;
       const allowed = SURFACE_OP_FIELDS[id];
       const clean: Record<string, number | boolean | string> = {};
-      for (const [k, v] of Object.entries(opts)) {
+      for (const [k, v] of Object.entries(scalarOpts)) {
         if (!allowed.includes(k)) {
-          throw new Error(`api.surface.${id}: unknown option "${k}". Accepted: ${allowed.join(', ')}.`);
+          throw new Error(`api.surface.${id}: unknown option "${k}". Accepted: ${allowed.join(', ')}${allowed.length ? ', ' : ''}region.`);
         }
         if (typeof v === 'number') {
           if (!Number.isFinite(v)) throw new Error(`api.surface.${id}.${k}: must be a finite number.`);
@@ -449,7 +517,9 @@ export const manifoldJsEngine: Engine = {
         }
         clean[k] = v;
       }
-      surfaceOps.push({ id, params: clean });
+      const op: SurfaceOp = { id, params: clean };
+      if (region !== undefined && region !== null) op.region = buildRegionDescriptor(region);
+      surfaceOps.push(op);
     };
     const makeSurfaceFn = (id: SurfaceOpId) => (params?: unknown): void => recordSurfaceOp(id, params);
     const surface: Record<SurfaceOpId, (params?: unknown) => void> & { apply(id: unknown, params?: unknown): void } = {

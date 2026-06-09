@@ -30,6 +30,12 @@ export type SurfaceOpId =
 export interface SurfaceOp {
   id: SurfaceOpId;
   params: Record<string, number | boolean | string>;
+  /** Optional region selector — when present, only the matching triangles are
+   *  textured (a "patch" apply) instead of the whole mesh. A `RegionDescriptor`
+   *  (built from the `region` option in `api.surface.*`), kept `unknown` here so
+   *  this leaf stays import-free; the main thread casts it back and resolves it
+   *  to triangles against the mesh. */
+  region?: unknown;
 }
 
 /** Accepted option keys per modifier — mirrors the `Required<…Options>` field
