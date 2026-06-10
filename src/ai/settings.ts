@@ -91,6 +91,14 @@ export interface LocalContextSettings {
 const DEFAULT_OPENAI_MODEL: OpenaiModelId = 'gpt-5-mini';
 const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
 
+/** Default Base URL for the Custom (OpenAI-compatible) provider. Points at
+ *  CLIProxyAPI's default localhost port (:8317) — the subscription bridge the
+ *  Custom tab's onboarding card walks the user through — so the endpoint is
+ *  pre-filled and the common case (driving Partwright from a Claude/Codex
+ *  plan via the bridge) needs no typing. The single source of truth for this
+ *  URL; `cliBridgeSetup.tsx` imports it for its "Use this endpoint" button. */
+export const DEFAULT_CUSTOM_BASE_URL = 'http://localhost:8317/v1';
+
 const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customModels' | 'customBaseUrl'> & { anthropicModel: AnthropicModelId }> = {
   minimal: {
     vision: { views: false, resolution: 'low', angles: 'auto' },
@@ -154,7 +162,7 @@ const DEFAULT_TOGGLES: ChatToggles = {
   geminiModel: DEFAULT_GEMINI_MODEL,
   customModel: '',
   customModels: [],
-  customBaseUrl: '',
+  customBaseUrl: DEFAULT_CUSTOM_BASE_URL,
 };
 
 const DEFAULT_SETTINGS: AiSettings = {
@@ -272,7 +280,10 @@ export async function aiConnectionMode(): Promise<'disconnected' | 'cloud' | 'lo
   // A configured custom endpoint counts as connected even with no key — the
   // base URL is the real "is it set up" signal (auth is optional). Treated as
   // 'cloud' since, like the hosted providers, it's a remote HTTP endpoint.
-  if (settings.toggles.customBaseUrl.trim().length > 0) return 'cloud';
+  // Scoped to the custom provider: the base URL now ships pre-filled with the
+  // bridge default (see DEFAULT_CUSTOM_BASE_URL), so a non-empty URL alone no
+  // longer implies the user picked this provider.
+  if (settings.toggles.provider === 'custom' && settings.toggles.customBaseUrl.trim().length > 0) return 'cloud';
   const [anthropic, openai, gemini, custom] = await Promise.all([
     getKey('anthropic'),
     getKey('openai'),
