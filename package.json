@@ -20,6 +20,7 @@
     "test:e2e": "playwright test",
     "generate:catalog": "playwright test --config=playwright.generators.config.ts",
     "refresh-models": "node scripts/refreshModelsSnapshot.mjs",
+    "ag": "ast-grep",
     "lint:consistency": "ast-grep scan",
     "lint:deadcode": "knip",
     "lint:deps": "madge --circular --extensions ts,tsx src",
