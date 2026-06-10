@@ -15,6 +15,14 @@ async function waitForEngine(page: Page) {
 // A cube floating well above the bed and off the XY origin.
 const FLOATING_CUBE = 'const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10]).translate([5, 5, 30]);';
 
+// A chiral (left/right-asymmetric) part: a tall base with an arm that juts out
+// toward +X, so mirroring across X visibly flips it. Two overlapping boxes union
+// into one watertight manifold.
+const CHIRAL = 'const { Manifold } = api;\n'
+  + 'const base = Manifold.cube([10, 12, 30]);\n'
+  + 'const arm = Manifold.cube([22, 8, 8]).translate([3, 2, 20]);\n'
+  + 'return Manifold.union([base, arm]);';
+
 test.describe('Place on plate', () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
@@ -132,6 +140,48 @@ test.describe('Place on plate', () => {
     // the slab's thin dimension (~4).
     expect(result.after.z[0]).toBeCloseTo(0, 1);
     expect(result.after.z[1] - result.after.z[0]).toBeCloseTo(4, 0);
+  });
+
+  test('mirror X flips the model in place and keeps editable code + watertight', async ({ page }) => {
+    const result = await page.evaluate(async ([code]) => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('mirror-x');
+      await pw.run(code);
+      const before = pw.getGeometryData().boundingBox;
+      const res = await pw.mirrorModel({ axis: 'x', mode: 'parametric' });
+      const data = pw.getGeometryData();
+      return { before, res, after: data.boundingBox, isManifold: data.isManifold, src: pw.getCode() };
+    }, [CHIRAL]);
+
+    expect(result.res.error).toBeUndefined();
+    expect(result.res.mode).toBe('parametric');
+    // Mirrored about its own center → the bounding box is unchanged (flips in place).
+    for (const axis of ['x', 'y', 'z'] as const) {
+      expect(result.after[axis][0]).toBeCloseTo(result.before[axis][0], 2);
+      expect(result.after[axis][1]).toBeCloseTo(result.before[axis][1], 2);
+    }
+    // Stayed editable code with a `.mirror()` in the chain, and still watertight
+    // (winding handled by the engine's own mirror).
+    expect(result.src).toContain('.mirror([1, 0, 0])');
+    expect(result.isManifold).toBe(true);
+  });
+
+  test('mirror bake stays watertight (triangle winding flipped)', async ({ page }) => {
+    const result = await page.evaluate(async ([code]) => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('mirror-bake');
+      await pw.run(code);
+      const res = await pw.mirrorModel({ axis: 'y', mode: 'bake' });
+      const data = pw.getGeometryData();
+      return { res, isManifold: data.isManifold, components: data.componentCount, src: pw.getCode() };
+    }, [CHIRAL]);
+
+    expect(result.res.error).toBeUndefined();
+    expect(result.src).toContain('Manifold.ofMesh(api.imports[0])');
+    // The reflection inverts orientation; applySteps flips winding so the baked
+    // mesh is still a single watertight solid rather than inside-out.
+    expect(result.isManifold).toBe(true);
+    expect(result.components).toBe(1);
   });
 
   test('voxel models drop parametrically (stay voxel) but rotate bakes with a warning', async ({ page }) => {
