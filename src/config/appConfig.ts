@@ -128,6 +128,12 @@ export interface AppConfig {
      *  prevents a runaway refine from freezing the main thread when the giant
      *  result is committed to the viewport. */
     enhanceMaxTriangles: number;
+    /** Triangle count above which a computed `api.surface.*` texture is NOT
+     *  persisted with the saved version (the version still saves; reopening it
+     *  just recomputes the texture on demand instead of restoring instantly).
+     *  Caps how much IndexedDB space one save can take — a textured mesh costs
+     *  roughly 18 bytes per triangle. */
+    surfaceTexturePersistMaxTriangles: number;
   };
   import: {
     /** Vertex-weld tolerance for STL imports (world units). */
@@ -261,6 +267,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     thumbnailTimeoutMs: 4000,
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
+    surfaceTexturePersistMaxTriangles: 1_000_000,
   },
   import: {
     stlWeldTolerance: 1e-5,

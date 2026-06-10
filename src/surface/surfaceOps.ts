@@ -112,6 +112,22 @@ export async function computeChain(
   return mesh;
 }
 
+/** The memo key for a fully-applied chain, or null for an empty chain. This is
+ *  the key persisted with a saved version (`Version.surfaceTexture`) so the
+ *  computed mesh can be re-seeded on load — see {@link seedSurfaceCache}. */
+export function surfaceChainKey(baseKey: string, ops: SurfaceOp[]): string | null {
+  if (ops.length === 0) return null;
+  return prefixKey(baseKey, ops, ops.length - 1);
+}
+
+/** Warm the memo cache with a previously computed result (a texture persisted
+ *  on a saved version). The next `surfaceCacheStatus` / `computeChain` for the
+ *  same base identity + chain hits instead of recomputing. A key that no longer
+ *  matches anything simply ages out of the LRU — seeding is always safe. */
+export function seedSurfaceCache(key: string, mesh: MeshData): void {
+  remember(key, mesh);
+}
+
 /** Test/diagnostic hook — clears the memo cache. */
 export function __clearSurfaceCache(): void {
   cache.clear();
