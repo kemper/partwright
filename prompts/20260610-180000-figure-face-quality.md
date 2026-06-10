@@ -49,6 +49,25 @@ Key decisions:
   subtracted by `assemble`, lips remains the old additive ridge. Default
   changed to 'smile' deliberately — catalog entries are being regenerated in
   the same change.
+- **Eye protrusion is a library guarantee, not an author knob.** The first
+  catalog bake failed to paint the eyes: the label registered but resolved to
+  zero triangles because the eye spheres (centred ON the surface anchor) were
+  fully swallowed by the cheek welds. Fixed in `buildEyes` — spheres are
+  pushed forward by half their radius so a dome always protrudes. Same root
+  cause found and fixed for two pre-existing buried labels the new
+  paintByLabel zero-triangle error message surfaced: the strongman's
+  mustache (pushed forward) and the wizard's orb (was a duplicate
+  fully-enclosed sphere "label workaround"; now the real orb is its own
+  top-level label and the rod reaches the orb centre for overlap).
+- **paintByLabel error split.** "no label X. Known labels: … X" was the
+  message for a registered-but-empty label — replaced with an explicit
+  zero-triangles explanation pointing at enclosure as the likely cause.
+- **Catalog regeneration:** all 5 figure entries re-baked via
+  `scripts/build-catalog-entry.cjs` under xvfb with their original palettes
+  plus `eyes` (and the wizard's now-paintable `orb`). The four non-kid
+  example upgrades were done by parallel model-sculpt agents against the
+  updated `figure.md`, then label coverage was verified headlessly with
+  `model:preview` paint-op probes before baking.
 - **Paintable eyes via pattern, not partitioner surgery.** Considered letting
   nested labels split out of an outer-labelled region, but a label nested
   under a smoothUnion can't be split without changing geometry, and eyes sit

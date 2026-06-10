@@ -24,14 +24,19 @@ const rig = F.rig({
 });
 
 // 2. HEAD + FACE
+// Eyes are lifted out to a top-level label (paintable independently of skin).
+// Mouth uses the carved 'smile' style — calm, subtle, befitting a focused pose.
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
-  eyes:  { radius: rig.r.head * 0.14 },
+  eyes:  false,
   nose:  { tipRadius: rig.r.head * 0.09 },
-  mouth: { smirk: 0.08, width: rig.r.head * 0.44 },
+  mouth: { style: 'smile', smirk: 0.05, width: rig.r.head * 0.38 },
   ears:  { size: rig.r.head * 0.26 },
   brows: {},
 });
+
+// 2b. EYES — hard-unioned at the top level with their own paint label.
+const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.14 }).label('eyes');
 
 // 3. SKIN — weld all body masses.
 const skin = F.weld(rig, [
@@ -97,5 +102,8 @@ const base = slab
   .smoothUnion(bridge,    postK * 0.8)
   .label('base');
 
-// 7. Hard-union all labeled regions and build
-return sdf.union(skin, top, pants, hair, base).build({ edgeLength: 0.5 });
+// 7. Hard-union all labeled regions and build.
+// detail: [F.faceDetail(rig)] meshes the head ~3x finer for smooth face features
+// while the body keeps the global 0.5 grid.
+return sdf.union(skin, eyes, top, pants, hair, base)
+  .build({ edgeLength: 0.5, detail: [F.faceDetail(rig)] });

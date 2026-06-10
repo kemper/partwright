@@ -503,7 +503,13 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'eyes(opts)');
   assertNoUnknownKeys(o, ['radius'], 'eyes(opts)');
   const rad = num(o.radius, rig.r.head * 0.16, 'eyes.radius', 0.01);
-  return sdf.sphere(rad).translate(rig.face.eyeL).union(sdf.sphere(rad).translate(rig.face.eyeR));
+  // Push the spheres outward by half their radius so a clear dome always
+  // protrudes past the cheek masses — eyes centred ON the anchor end up
+  // nearly (or fully, for small radii) swallowed by the welded face, which
+  // leaves a paintable 'eyes' label with zero visible triangles.
+  const push = scale3(rig.dir.headForward, rad * 0.5);
+  return sdf.sphere(rad).translate(add3(rig.face.eyeL, push))
+    .union(sdf.sphere(rad).translate(add3(rig.face.eyeR, push)));
 }
 
 function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {

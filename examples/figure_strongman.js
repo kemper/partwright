@@ -117,14 +117,21 @@ const armL = makeArm(j.shoulderL, elbowL, wristL, fistL);
 const armR = makeArm(j.shoulderR, elbowR, wristR, fistR);
 
 // 2. HEAD + FACE
+// eyes: false — eyes are lifted to the top-level hard-union with their own label
+// so they can be painted independently (paintable-eyes pattern).
+// Mouth: a gritted confident smile with a slight smirk — fits a strongman mid-flex.
+// style 'smile' carves a clean smile line; open:0.12 gives just a hint of effort.
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
-  eyes:  { radius: r.head * 0.14 },
+  eyes:  false,
   nose:  { tipRadius: r.head * 0.14, length: r.head * 0.22 },
-  mouth: { width: r.head * 0.44, smirk: 0.2 },
+  mouth: { style: 'smile', width: r.head * 0.46, smirk: 0.15 },
   ears:  { size: r.head * 0.28 },
   brows: {},
 });
+
+// Paintable eyes — hard-union at top level with their own label
+const eyes = F.face.eyes(rig, { radius: r.head * 0.17 }).label('eyes');
 
 // 3. EXTRA MUSCLE MASSES — puffed chest, big traps
 const chestPuff = sdf.ellipsoid(
@@ -169,10 +176,15 @@ const nosePos  = rig.face.nose;
 const mouthPos = rig.face.mouth;
 const hl       = rig.dir.headLeft;
 
+// Push the bar forward of the lip surface so the mustache visibly protrudes
+// (a capsule centred between the anchors sits buried under the nose/cheek
+// welds — its label then resolves to 0 paintable triangles).
+const hf = rig.dir.headForward;
+const mustachePush = r.head * 0.22;
 const mustacheCenter = [
-  (nosePos[0] + mouthPos[0]) * 0.5,
-  (nosePos[1] + mouthPos[1]) * 0.5,
-  nosePos[2] + (mouthPos[2] - nosePos[2]) * 0.45,
+  (nosePos[0] + mouthPos[0]) * 0.5 + hf[0] * mustachePush,
+  (nosePos[1] + mouthPos[1]) * 0.5 + hf[1] * mustachePush,
+  nosePos[2] + (mouthPos[2] - nosePos[2]) * 0.45 + hf[2] * mustachePush,
 ];
 const halfSpan = r.headX * 0.52;
 const mustacheA = [
@@ -190,6 +202,9 @@ const mustache = sdf.capsule(mustacheA, mustacheB, r.head * 0.09).label('mustach
 // 8. BASE
 const base = F.base(rig, { radius: rig.opts.height * 0.28 }).label('base');
 
-// 9. Hard-union all labelled regions and build
-return sdf.union(skin, trunks, hair, mustache, base)
-  .build({ edgeLength: 0.5 });
+// 9. Hard-union all labelled regions and build.
+// eyes are at the top level (not inside skin weld) so they carry their own paint label.
+// F.faceDetail(rig) refines the head mesh locally — smooth smile groove, round eye domes —
+// without raising the global edgeLength (which would balloon triangle count).
+return sdf.union(skin, eyes, trunks, hair, mustache, base)
+  .build({ edgeLength: 0.5, detail: [F.faceDetail(rig)] });

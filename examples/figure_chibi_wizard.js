@@ -24,11 +24,13 @@ const rig = F.rig({
 });
 
 // 2. HEAD + FACE
+// eyes: false — lifted to top-level labelled region so they can be painted separately.
+// mouth: 'smile' style with slight smirk — the carved groove sits above the beard top blob.
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
-  eyes: { radius: rig.r.head * 0.20 },
+  eyes: false,
   nose: { tipRadius: rig.r.head * 0.08 },
-  mouth: { smirk: 0.25, width: rig.r.head * 0.45 },
+  mouth: { style: 'smile', smirk: 0.25, width: rig.r.head * 0.42 },
   ears: { size: rig.r.head * 0.25 },
   brows: {},
 });
@@ -43,6 +45,9 @@ const skin = F.weld(rig, [
   F.feet(rig),
   face,
 ]).label('skin');
+
+// 3b. EYES — paintable separate region (hard-unioned at top level)
+const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.20 }).label('eyes');
 
 // 4. ROBE
 const robe = F.clothing.top(rig, {
@@ -133,29 +138,30 @@ const hatTipApproxZ = brimZ + hatH;  // approximate hat tip height
 const staffBottomZ = rig.opts.height * 0.04;
 const staffTopZ = hatTipApproxZ + headR * 1.0;  // extends notably above hat
 
-const staffRod = sdf.capsule(
-  [staffX, staffY, staffBottomZ],
-  [staffX, staffY, staffTopZ],
-  staffRodR
-);
-
-// ORB: large glowing sphere above the hat
+// ORB: large glowing sphere above the hat. The rod runs INTO the orb centre
+// so the two stay one component across the hard label seam.
 const orbR = headR * 0.82;
 const orbZ = staffTopZ + orbR * 0.95;
 const orbCenter = [staffX, staffY, orbZ];
 
-const orb = sdf.sphere(orbR).translate(orbCenter);
-const staffWithOrb = staffRod.smoothUnion(orb, orbR * 0.22);
+const staffRod = sdf.capsule(
+  [staffX, staffY, staffBottomZ],
+  [staffX, staffY, orbZ],          // reaches the orb centre — deep overlap
+  staffRodR
+);
 
 // Connect to left hand
 const handBridgeL = sdf.sphere(rig.r.hand * 0.85).translate(handL);
-const staff = staffWithOrb
+const staff = staffRod
   .smoothUnion(handBridgeL, rig.r.hand * 0.50)
   .label('staff');
 
-// Separate orb label
-const orbLabel = sdf.sphere(orbR * 0.88).translate(orbCenter).label('orb');
+// The orb is its own top-level label region (hard seam against the rod —
+// hidden inside the orb), so it paints separately from the wooden staff.
+const orb = sdf.sphere(orbR).translate(orbCenter).label('orb');
 
 // 10. Final union and build
-return sdf.union(skin, robe, hair, hat, beard, staff, orbLabel, base)
-  .build({ edgeLength: 0.52 });
+// eyes: lifted to top-level so they carry their own paint label.
+// detail: [F.faceDetail(rig)] refines the head mesh for smooth carved smile and round eye domes.
+return sdf.union(skin, eyes, robe, hair, hat, beard, staff, orb, base)
+  .build({ edgeLength: 0.52, detail: [F.faceDetail(rig)] });

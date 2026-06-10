@@ -12545,9 +12545,12 @@ async function main() {
         return { error: 'No labels registered in the current run. Either wrap features with api.label(shape, "name") in your code, then runAndSave, then call paintByLabel — or, if you cannot edit the code, paint by coordinates instead: paintInBox / paintComponent (after listComponents) / paintConnected (after probePixel on a render).' };
       }
       const ids = currentLabelMap.get(opts.label);
-      if (!ids || ids.size === 0) {
+      if (!ids) {
         const known = [...currentLabelMap.keys()].map(k => `"${k}"`).join(', ');
         return { error: `paintByLabel: no label "${opts.label}". Known labels: ${known}.` };
+      }
+      if (ids.size === 0) {
+        return { error: `paintByLabel: label "${opts.label}" is registered but resolved to 0 triangles — the labelled geometry has no visible surface (it may be fully enclosed by another region, e.g. eyes swallowed by the head). Make the labelled shape protrude, or paint by coordinates instead.` };
       }
       const mesh = currentMeshData;
       const regionName = opts.name ?? opts.label;
