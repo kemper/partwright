@@ -62,3 +62,6 @@ playwright/.cache/
 
 # partwright CLI daemon state (pid/ports, logs, persistent Chromium profile)
 .partwright/
+
+# Serena MCP project metadata/cache
+.serena/

@@ -116,7 +116,7 @@ See `docs/playwright-guide.md` for sandbox vs laptop Chromium binary detection a
 
 **Manually verify any UI-visible change in a real browser before pushing.**
 
-> **How to drive the browser in this environment: write and run a Playwright spec — there is no Playwright MCP.** The remote/web execution environment only configures the `typescript` MCP server (see `.mcp.json`); the `playwright_navigate` / `playwright_click` / `playwright_screenshot` tools do **not** exist here. Don't waste turns calling them. The real eyes-on check is a short `.spec.ts` that navigates, interacts, and writes a screenshot file you then view.
+> **How to drive the browser in this environment: write and run a Playwright spec — there is no Playwright MCP.** The remote/web execution environment only configures the `serena` MCP server (see `.mcp.json`); the `playwright_navigate` / `playwright_click` / `playwright_screenshot` tools do **not** exist here. Don't waste turns calling them. The real eyes-on check is a short `.spec.ts` that navigates, interacts, and writes a screenshot file you then view.
 
 The pattern:
 
@@ -405,7 +405,8 @@ Don't export functions unless they're imported elsewhere. When removing usage of
 This repo ships custom Claude Code subagents and a deterministic static-analysis layer they lean on — see `docs/agent-tooling.md` for the full reference. In short:
 
 - **`work-reviewer`** (`.claude/agents/work-reviewer.md`, Opus, read-only) reviews the branch diff vs `origin/main` for correctness, back-compat, security, and **UI consistency** against the shared component layer (`modalShell`, `styleConstants` `BUTTON_*`, `showToast`, `commandPalette` keyboard model). Launch it before marking a PR ready.
-- **`explore`** (`.claude/agents/explore.md`, Sonnet, read-only) overrides the built-in Haiku Explore agent for sharper codebase discovery, preferring the TypeScript LSP MCP (`mcp__typescript__*`, configured in `.mcp.json`) for reference/definition queries.
+- **`explore`** (`.claude/agents/explore.md`, Sonnet, read-only) overrides the built-in Haiku Explore agent for sharper codebase discovery, preferring the Serena LSP MCP (`mcp__serena__*`, configured in `.mcp.json`) for reference/definition queries.
+- **Search ladder** — match the search modality to the question (full guidance in `docs/agent-tooling.md`): `Grep` (ripgrep) for literals/strings → `npx ast-grep run -p '<pattern>' -l ts src` for code *shapes* (call-site sweeps, convention checks — `$X` matches one node, `$$$` any number; no comment/string false positives) → Serena (`find_symbol` / `find_referencing_symbols` / `get_symbols_overview`) for resolved references over the real type graph ("who actually uses this export"). Delegate broad multi-file discovery to the `explore` agent rather than running the fan-out in the main context.
 - **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), and **`lint:deps`** (madge) run in CI (`code-quality.yml`). `lint:consistency` gates on `error`-severity ast-grep rules (`no-native-dialogs` is `error`; the rest are `warning`/`hint` — promote one to `error` once the codebase is clean for it). `lint:deadcode` gates on knip's trustworthy categories (`dependencies`/`unlisted`/`unresolved`/`files`) but keeps `exports`/`types` advisory (knip can't see exports used only via the e2e suite's dynamic `import('/src/…')`, and the dead-export backlog needs per-symbol triage). `lint:deps` (madge circular deps) is a **gate**: the module graph is acyclic, so any new cycle fails CI. Scope each advisory hit to the diff — they over-report by design. See `docs/agent-tooling.md`.
 
 ### Module Layering — keep the dependency graph acyclic
