@@ -17,8 +17,10 @@ agents below can run on different model tiers.
 | `work-reviewer` | `.claude/agents/work-reviewer.md` | `opus` | read-only (`Read, Grep, Glob, Bash`) | Reviews the branch diff vs `origin/main` for correctness, back-compat, security, **and** UI consistency. Never edits. |
 | `explore` | `.claude/agents/explore.md` | `sonnet` | read-only + `mcp__typescript__*` | Codebase discovery / "where is X / who uses Y". Overrides the built-in Explore agent (which defaults to Haiku) with Sonnet + symbol-aware tools. |
 | `model-sculpt` | `.claude/agents/model-sculpt.md` | `sonnet` | `Read, Write, Edit, Bash` | Iterates a model snippet (photo→figurine, catalog toy, mechanical part) through the headless `model:preview` render→look→adjust loop until it matches a target *and* passes the printability gates. Engine-aware: **manifold-js / voxel / scad** (not replicad — see below). Returns **text only**. Driven by the `/sculpt` skill. |
+| `implementer` | `.claude/agents/implementer.md` | `sonnet` | `Read, Write, Edit, Bash, Grep, Glob` | Spec-driven implementation worker for parallelizable, well-bounded units (a new modifier/provider/export following an existing sibling). Runs build + unit + the targeted spec before reporting; asks the caller instead of guessing on ambiguity. Launch with `isolation: "worktree"` so parallel workers never share the checkout. |
+| `test-triage` | `.claude/agents/test-triage.md` | `sonnet` | `Read, Bash, Grep, Glob` | Runs vitest / Playwright (targeted, shard, or full) in its own context and returns only a digest: failing test → root-cause hypothesis → `file:line`. Diagnoses, never fixes. The log firewall for the e2e suite. |
 
-All three are checked in, so every session and teammate gets the same behavior.
+All five are checked in, so every session and teammate gets the same behavior.
 The `work-reviewer` runs the static-analysis scripts below as part of its review
 and reasons about the hits against the diff.
 
@@ -50,6 +52,31 @@ and reasons about the hits against the diff.
 > (`.claude/skills/sculpt.md`) is the launcher — it picks the engine, briefs
 > `model-sculpt`, and surfaces the preview via `SendUserFile` **without** the main
 > agent Reading it, keeping the cost invariant intact.
+
+> Why an `implementer` agent? Two reasons, both manager-model-independent.
+> (1) **Parallelism**: when work fans out into independent units (the surface
+> modifier family, the AI providers, the export formats), spec-and-delegate to
+> concurrent workers in isolated worktrees beats implementing serially — the
+> manager writes the specs, answers worker questions mid-task (`SendMessage`),
+> and integrates. (2) **Conventions travel with the agent**: the definition
+> bakes in the repo rules every worker must follow (UI↔API parity, appConfig
+> constants, layering, verify-before-reporting, ask-don't-guess), so specs
+> stay short. The `model: sonnet` frontmatter pins the worker tier regardless
+> of what model drives the main session — there is no per-model selectability
+> gate in Claude Code, and none is needed: the `description` states when
+> delegation pays, and any manager tier reads it. Note recent Opus-tier models
+> under-delegate by default, which is why the description carries explicit
+> "use this when…" triggering language. Keep entangled cores (`src/main.ts`,
+> `chatLoop.ts`, `engineWorker.ts`) and cross-worktree integration with the
+> manager.
+>
+> Why a `test-triage` agent? Same cost shape as `model-sculpt`, but for logs
+> instead of PNGs: a Playwright failure emits hundreds of lines that would
+> otherwise sit in the main context and be re-billed every turn. The agent
+> runs the suite, reads the noise in its own disposable context, and returns
+> a digest (failing test → hypothesis → `file:line`, flake-vs-real verdict).
+> It deliberately does not fix — the caller (or an `implementer`) applies
+> fixes, keeping diagnosis and change authorship separable.
 
 > Why override `explore`? The stock Explore agent runs on Haiku — fine for
 > locating a string, weaker for this codebase's cross-file reference questions
