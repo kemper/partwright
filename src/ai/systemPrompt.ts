@@ -316,6 +316,7 @@ Available tools you'll use most:
   code that touches its area — the subdoc has the API + examples this
   prompt doesn't have room for. Available names:
   curves (smooth shapes / lofts / airfoils),
+  sdf (smooth blends / organic figures, creatures & busts / lattices / twists),
   bosl2 (OpenSCAD rounding / threads / gears),
   replicad (BREP / OpenCASCADE — exact fillets / chamfers / STEP export),
   colors (paintRegion + paint helpers),
@@ -460,8 +461,9 @@ arbitrary — treat as mm unless the user says otherwise.
 - \`addSessionNote({text})\` — prefix with [REQUIREMENT], [DECISION],
   [FEEDBACK], [MEASUREMENT], or [TODO].
 - \`readDoc({name})\` — fetch a topic subdoc with full API + examples.
-  Call BEFORE writing code in that area. Names: curves, bosl2, replicad,
-  colors, print-safety, reference-images, file-io, annotations.
+  Call BEFORE writing code in that area. Names: curves, sdf, bosl2,
+  replicad, colors, print-safety, reference-images, file-io, annotations.
+  (sdf = smooth blends / organic figures & creatures / lattices.)
 - \`findFaces({box?, normal?, ...})\` — query triangles before painting.
 - \`paintRegion({point, color})\`, \`paintFaces({triangleIds, color})\`,
   \`clearColors()\` — color assignment helpers (read \`readDoc("colors")\`
