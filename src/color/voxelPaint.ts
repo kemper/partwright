@@ -17,8 +17,8 @@
 
 import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
-import { normalizeColor, type VoxelGrid } from '../geometry/voxel/grid';
-import { gridToMeshWithProvenance } from '../geometry/voxel/mesher';
+import { normalizeColor, type VoxelGrid, type Surfacing, type Vec3 } from '../geometry/voxel/grid';
+import { gridToMeshWithProvenance, meshGrid } from '../geometry/voxel/mesher';
 import { runVoxelForPaint, type VoxelPaintRun } from '../geometry/engines/voxel';
 import { bucketRecolor, clearBox, fillBoxRecolor, addBlock, addBlockCells, extrudeBox, brushApply, levelRecolor, inBrush, type BrushShape } from '../geometry/voxel/edits';
 import { diffGrids, type VoxelEditOps } from '../geometry/voxel/editCodegen';
@@ -30,11 +30,16 @@ import { isPaletteConstrained, nearestSlot, hexToRgb, onPaletteChange } from './
 
 export type { BrushShape } from '../geometry/voxel/edits';
 
-/** The edit tools the studio offers. `paint`/`add`/`remove` are brush tools
- *  (size + shape, drag to stroke); `bucket` flood-fills a same-color region;
- *  `level` recolors a whole axis layer; `boxAdd`/`boxRemove` are two-click
- *  region ops (click one corner, then the opposite corner). */
-export type VoxelTool = 'paint' | 'add' | 'remove' | 'bucket' | 'level' | 'boxAdd' | 'boxRemove';
+/** The edit tools the studio offers. `view` is the non-editing default: it
+ *  orbits the model and shows the rounded preview (editing tools can't pick
+ *  voxels on a rounded mesh, so editing renders blocks). `paint`/`add`/`remove`
+ *  are brush tools (size + shape, drag to stroke); `bucket` flood-fills a
+ *  same-color region; `level` recolors a whole axis layer; `boxAdd`/`boxRemove`
+ *  are two-click region ops (click one corner, then the opposite corner). */
+export type VoxelTool = 'view' | 'paint' | 'add' | 'remove' | 'bucket' | 'level' | 'boxAdd' | 'boxRemove';
+
+/** Whether a tool edits the grid (everything except the non-editing `view`). */
+export function isEditTool(t: VoxelTool): boolean { return t !== 'view'; }
 
 /** Tools that paint a brush footprint and support click-drag strokes. */
 function isBrushTool(t: VoxelTool): boolean { return t === 'paint' || t === 'add' || t === 'remove'; }
@@ -58,7 +63,7 @@ let run: VoxelPaintRun | null = null;
 let baselineGrid: VoxelGrid | null = null;
 let color: [number, number, number] = [255, 0, 0];
 let eraser = false;            // legacy single-voxel paint/erase modifier
-let tool: VoxelTool = 'paint';
+let tool: VoxelTool = 'view';
 let boxCorner: [number, number, number] | null = null;
 // Brush settings (shared by the paint/add/remove tools).
 let brushRadius = 0;            // 0 = single voxel (preserves click-to-paint)
@@ -120,6 +125,10 @@ export function setTool(t: VoxelTool): void {
   if (strokeActive) endStroke();
   tool = t;
   boxCorner = null;
+  // `view` shows the rounded preview; any edit tool needs the blocky pickable
+  // mesh, so revert immediately (synchronously) before the next pick.
+  if (t === 'view') showRoundingPreview();
+  else endRoundingPreview();
   refreshPreview();
   cbStateChange?.();
 }
@@ -174,6 +183,86 @@ export function pendingBoxCorner(): [number, number, number] | null {
  *  (e.g. `.vox` export) capture unbaked edits without re-running the code. */
 export function getGrid(): VoxelGrid | null { return run?.grid ?? null; }
 
+/** Options the Rounding panel can set (a subset of `VoxelGrid.smooth`'s opts;
+ *  `lockBox`/`detail` aren't exposed in the studio). */
+export type RoundingOpts = { strength?: number; iterations?: number; algorithm?: 'taubin' | 'surfaceNets'; flatBottom?: boolean; baseLayers?: number };
+
+/** Current surfacing of the edited grid, for the Rounding panel to prefill. */
+export function getSurfacing(): Surfacing | null { return run?.grid.surfacing() ?? null; }
+
+/** Set the grid's surfacing from the Rounding panel — `null` = hard blocks,
+ *  otherwise smooth with the given options. The panel only owns
+ *  `strength`/`flatBottom`/`baseLayers`, so we MERGE onto the grid's current
+ *  surfacing to preserve source-declared fields the panel doesn't expose
+ *  (`iterations`/`detail`/`algorithm`/`lockBox`) — otherwise touching the slider
+ *  would reset them to defaults. Live-previews the result in the viewport (see
+ *  {@link showRoundingPreview}); the preview reverts to the blocky, pickable
+ *  mesh the moment the user edits on the canvas. Not routed through `mutate()`
+ *  on purpose: a surfacing tweak isn't an undo-able grid edit (the slider is its
+ *  own revert affordance), and it's reflected live by refreshControls. */
+export function setRounding(opts: RoundingOpts | null): void {
+  if (!run) return;
+  if (opts === null) {
+    run.grid.blocky();
+  } else {
+    const cur = run.grid.surfacing();
+    const merged: RoundingOpts & { detail?: number; lockBox?: [Vec3, Vec3] } = {
+      algorithm: cur.algorithm,
+      iterations: cur.iterations,
+      detail: cur.detail,
+      ...opts, // strength / flatBottom / baseLayers from the panel
+    };
+    if (cur.lockBox) merged.lockBox = [cur.lockBox.min, cur.lockBox.max];
+    run.grid.smooth(merged);
+  }
+  showRoundingPreview();
+  cbStateChange?.();
+}
+
+// ── Rounding live preview ────────────────────────────────────────────────────
+// The studio edits on the blocky provenance mesh (picking maps a clicked
+// triangle back to a voxel via run.triVoxel). To preview rounding without
+// breaking that, we *temporarily* show the smoothed mesh while the Rounding
+// panel is in use and swap back to the blocky mesh the instant the user edits.
+let roundingPreview = false; // true while the smoothed preview mesh is displayed
+let previewRaf = 0;          // pending rebuild handle (coalesces slider drags)
+
+/** Show the rounded mesh for the current surfacing while in the non-editing
+ *  `view` tool (editing tools need the blocky pickable mesh, so they show
+ *  blocks). Coalesced to one rebuild per frame so a slider drag stays
+ *  responsive; re-meshing reads the live grid at flush time, so coalescing never
+ *  shows a stale preview. */
+function showRoundingPreview(): void {
+  if (!active || !cbMeshUpdate || previewRaf) return;
+  previewRaf = requestAnimationFrame(() => {
+    previewRaf = 0;
+    if (!active || !run || !cbMeshUpdate) return;
+    if (tool === 'view' && run.grid.surfacing().mode === 'smooth') {
+      cbMeshUpdate(meshGrid(run.grid));
+      roundingPreview = true;
+    } else if (roundingPreview) {
+      cbMeshUpdate(run.mesh);
+      roundingPreview = false;
+    }
+  });
+}
+
+/** Drop the rounded preview and restore the blocky provenance mesh so picking
+ *  and editing operate on voxel-accurate triangles again. Also cancels any
+ *  pending preview rebuild so it can't flash back over an edit. */
+function endRoundingPreview(): void {
+  if (previewRaf) { cancelAnimationFrame(previewRaf); previewRaf = 0; }
+  if (roundingPreview && run) { cbMeshUpdate?.(run.mesh); roundingPreview = false; }
+}
+
+/** Whether the user changed surfacing since activation — drives whether the
+ *  "Update code" commit appends an explicit `.smooth(...)`/`.blocky()` call (so
+ *  an untouched model keeps whatever its source already declared). */
+export function roundingChanged(): boolean {
+  if (!run || !baselineGrid) return false;
+  return JSON.stringify(run.grid.surfacing()) !== JSON.stringify(baselineGrid.surfacing());
+}
+
 /** The delta from the code's own output to the current edited grid — what the
  *  "Update code" action appends to the source. Empty when nothing changed. */
 export function getEditOps(): VoxelEditOps {
@@ -216,13 +305,11 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
   if (active) deactivate();
   const r = runVoxelForPaint(code, paramOverrides);
   if (!r.ok) return r.error;
-  // Smooth surfacing moves vertices off the voxel grid, so a clicked
-  // triangle's coords no longer map cleanly to a single source voxel. Refuse
-  // here with a clear, actionable message rather than silently dropping the
-  // user's `.smooth()` and showing them a blocky model.
-  if (r.data.grid.surfacing().mode === 'smooth') {
-    return 'Voxel Studio cannot edit a smooth-surfaced grid (per-voxel picking only works on hard cube faces). Call `.blocky()` before returning, edit, then re-apply `.smooth()` afterward.';
-  }
+  // A smooth grid is editable: per-voxel picking runs on the hard-faced
+  // provenance mesh (gridToMeshWithProvenance ignores surfacing), so the studio
+  // preview shows blocks while editing. The grid keeps its surfacing setting —
+  // the Rounding panel reads/updates it and it's re-applied to the rendered
+  // model on save (see getSurfacing / setRounding and commitVoxelEdits).
   // Soft cap: edits re-mesh on every click on the main thread, so very large
   // grids tank interactivity. The blocky-art / image-import range is far below
   // this; refuse at the door with a useful number.
@@ -234,7 +321,7 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
   baselineGrid = r.data.grid.clone();
   active = true;
   enforceVoxelConstraint(); // a constrained palette must not paint the held-over default colour
-  tool = 'paint';
+  tool = 'view'; // open in the non-editing view so the rounded result is shown first
   boxCorner = null;
   undoStack = [];
   redoStack = [];
@@ -257,6 +344,11 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
   attachPointerHandler();
   cbLockChange?.(true);
   cbMeshUpdate(run.mesh);
+  // If the grid opens already smooth (e.g. a model whose source declares
+  // .smooth(), or one rounded in a prior session), show that rounded result
+  // immediately instead of the blocky provenance mesh — otherwise reopening the
+  // studio appears to "lose" the rounding even though the surfacing is intact.
+  showRoundingPreview();
   cbStateChange?.();
   return null;
 }
@@ -264,6 +356,8 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
 export function deactivate(): void {
   if (!active) return;
   active = false;
+  if (previewRaf) { cancelAnimationFrame(previewRaf); previewRaf = 0; }
+  roundingPreview = false;
   detachPointerHandler();
   cbLockChange?.(false);
   cbLockChange = null;
@@ -433,6 +527,9 @@ function remeshAndPush(): void {
   if (!run) return;
   const { mesh, triVoxel, triNormal } = gridToMeshWithProvenance(run.grid);
   run = { ...run, mesh, triVoxel, triNormal };
+  // Any edit/undo/redo pushes the blocky provenance mesh, so a rounded preview
+  // is no longer what's on screen — keep the flag in sync.
+  roundingPreview = false;
   cbMeshUpdate?.(mesh);
 }
 
@@ -569,6 +666,9 @@ function onPointerDown(event: PointerEvent): void {
   // model behind it and paints, and setPointerCapture binds the pointer to the
   // canvas so a drag across menu buttons keeps stamping. See paintMode.ts.
   if (event.target !== getRenderer().domElement) return;
+  // The non-editing `view` tool shows the rounded preview and just orbits — no
+  // picking or editing (the rounded mesh isn't voxel-pickable anyway).
+  if (tool === 'view') return;
   const hit = pickFace(event);
   if (!hit) return;
   clearPreview(); // the action commits; the preview rebuilds on the next move
@@ -588,6 +688,9 @@ function onPointerDown(event: PointerEvent): void {
 function onPointerMove(event: PointerEvent): void {
   if (!active || !run) return;
   lastHoverEvent = { clientX: event.clientX, clientY: event.clientY };
+  // While the rounded preview is up, the displayed mesh isn't voxel-pickable, so
+  // don't draw a (misplaced) brush footprint over it; just orbit/hover.
+  if (roundingPreview) { clearPreview(); return; }
   // One raycast feeds both the hover preview and the active stroke.
   const hit = isBrushTool(tool) ? pickFace(event) : null;
   renderPreviewFromHit(hit);
@@ -639,6 +742,9 @@ function attachPointerHandler(): void {
   // the model still fall through so the camera can rotate.
   removeSuppressor = addPointerSuppressor((event) => {
     if (event.button !== 0) return false;
+    // In the non-editing view, never veto orbit — the user is inspecting the
+    // rounded model, not editing, so dragging anywhere should rotate the camera.
+    if (tool === 'view') return false;
     return isPointerWithinModelBounds(event);
   });
 }

@@ -128,7 +128,7 @@ test.describe('voxel studio', () => {
 
     // Now the panel's number input: typing 50 and committing keeps 50, while the
     // range slider pins its thumb at its own max of 16.
-    const input = page.locator('#voxel-paint-panel input[type="number"]').last();
+    const input = page.locator('#voxel-paint-panel input[title^="Depth in layers"]');
     await input.fill('50');
     await input.press('Enter');
     await expect(input).toHaveValue('50');
@@ -138,8 +138,7 @@ test.describe('voxel studio', () => {
     );
     expect(storedDepth).toBe(50);
     const sliderVal = await page
-      .locator('#voxel-paint-panel input[type="range"]')
-      .last()
+      .locator('#voxel-paint-panel input[title^="Add: layers the block sinks"]')
       .inputValue();
     expect(Number(sliderVal)).toBeLessThanOrEqual(16);
   });

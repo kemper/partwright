@@ -11,8 +11,8 @@
 // This is a thin back-compat wrapper: the implementation now lives in
 // scripts/cli/preview.mjs and is also exposed as `partwright preview`
 // (bin/partwright.mjs). See docs/headless-cli.md.
-import { resolve, dirname, basename, join } from 'node:path';
-import { runPreview, composePng, explainComponents, checkExpectComponents, resolveViews } from './cli/preview.mjs';
+import { resolve } from 'node:path';
+import { runPreview, composePng, explainComponents, checkExpectComponents, resolveViews, defaultPreviewPng } from './cli/preview.mjs';
 
 function parseArgs(argv) {
   const a = { params: {}, size: 480, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null };
@@ -51,7 +51,7 @@ async function main() {
   // explicit --png always wins, so `--json --png out.png` writes both — agents
   // kept losing the image when they wanted stats and a picture together.)
   if (result.render && (!a.json || a.png)) {
-    pngPath = a.png ? resolve(a.png) : join(dirname(file), basename(file).replace(/\.[^.]+$/, '') + '.preview.png');
+    pngPath = a.png ? resolve(a.png) : defaultPreviewPng(file);
     const img = composePng(result.render.positions, result.render.triVerts, result.render.triColors, result.render.bbox, a.size, views || undefined);
     await img.toFile(pngPath);
   }

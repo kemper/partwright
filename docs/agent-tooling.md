@@ -1,8 +1,8 @@
 # Agent tooling — custom subagents, static analysis, LSP
 
 This repo configures the Claude Code harness for higher-quality automated work:
-two custom subagents, a deterministic static-analysis layer they lean on, and a
-TypeScript language-server MCP for symbol-aware discovery.
+custom subagents, a deterministic static-analysis layer they lean on, and a
+Serena (language-server) MCP for symbol-aware discovery.
 
 ## Custom subagents (`.claude/agents/`)
 
@@ -15,10 +15,12 @@ agents below can run on different model tiers.
 | Agent | File | Model | Tools | Role |
 |---|---|---|---|---|
 | `work-reviewer` | `.claude/agents/work-reviewer.md` | `opus` | read-only (`Read, Grep, Glob, Bash`) | Reviews the branch diff vs `origin/main` for correctness, back-compat, security, **and** UI consistency. Never edits. |
-| `explore` | `.claude/agents/explore.md` | `sonnet` | read-only + `mcp__typescript__*` | Codebase discovery / "where is X / who uses Y". Overrides the built-in Explore agent (which defaults to Haiku) with Sonnet + symbol-aware tools. |
+| `explore` | `.claude/agents/explore.md` | `sonnet` | read-only + `mcp__serena__*` | Codebase discovery / "where is X / who uses Y". Overrides the built-in Explore agent (which defaults to Haiku) with Sonnet + symbol-aware tools. |
 | `model-sculpt` | `.claude/agents/model-sculpt.md` | `sonnet` | `Read, Write, Edit, Bash` | Iterates a model snippet (photo→figurine, catalog toy, mechanical part) through the headless `model:preview` render→look→adjust loop until it matches a target *and* passes the printability gates. Engine-aware: **manifold-js / voxel / scad** (not replicad — see below). Returns **text only**. Driven by the `/sculpt` skill. |
+| `implementer` | `.claude/agents/implementer.md` | `sonnet` | `Read, Write, Edit, Bash, Grep, Glob` | Spec-driven implementation worker for parallelizable, well-bounded units (a new modifier/provider/export following an existing sibling). Runs build + unit + the targeted spec before reporting; asks the caller instead of guessing on ambiguity. Launch with `isolation: "worktree"` so parallel workers never share the checkout. |
+| `test-triage` | `.claude/agents/test-triage.md` | `sonnet` | `Read, Bash, Grep, Glob` | Runs vitest / Playwright (targeted, shard, or full) in its own context and returns only a digest: failing test → root-cause hypothesis → `file:line`. Diagnoses, never fixes. The log firewall for the e2e suite. |
 
-All three are checked in, so every session and teammate gets the same behavior.
+All five are checked in, so every session and teammate gets the same behavior.
 The `work-reviewer` runs the static-analysis scripts below as part of its review
 and reasons about the hits against the diff.
 
@@ -51,10 +53,35 @@ and reasons about the hits against the diff.
 > `model-sculpt`, and surfaces the preview via `SendUserFile` **without** the main
 > agent Reading it, keeping the cost invariant intact.
 
+> Why an `implementer` agent? Two reasons, both manager-model-independent.
+> (1) **Parallelism**: when work fans out into independent units (the surface
+> modifier family, the AI providers, the export formats), spec-and-delegate to
+> concurrent workers in isolated worktrees beats implementing serially — the
+> manager writes the specs, answers worker questions mid-task (`SendMessage`),
+> and integrates. (2) **Conventions travel with the agent**: the definition
+> bakes in the repo rules every worker must follow (UI↔API parity, appConfig
+> constants, layering, verify-before-reporting, ask-don't-guess), so specs
+> stay short. The `model: sonnet` frontmatter pins the worker tier regardless
+> of what model drives the main session — there is no per-model selectability
+> gate in Claude Code, and none is needed: the `description` states when
+> delegation pays, and any manager tier reads it. Note recent Opus-tier models
+> under-delegate by default, which is why the description carries explicit
+> "use this when…" triggering language. Keep entangled cores (`src/main.ts`,
+> `chatLoop.ts`, `engineWorker.ts`) and cross-worktree integration with the
+> manager.
+>
+> Why a `test-triage` agent? Same cost shape as `model-sculpt`, but for logs
+> instead of PNGs: a Playwright failure emits hundreds of lines that would
+> otherwise sit in the main context and be re-billed every turn. The agent
+> runs the suite, reads the noise in its own disposable context, and returns
+> a digest (failing test → hypothesis → `file:line`, flake-vs-real verdict).
+> It deliberately does not fix — the caller (or an `implementer`) applies
+> fixes, keeping diagnosis and change authorship separable.
+
 > Why override `explore`? The stock Explore agent runs on Haiku — fine for
 > locating a string, weaker for this codebase's cross-file reference questions
 > ("every reader of the `?notes` param", "does this export have importers").
-> Sonnet + the TS LSP makes that discovery precise.
+> Sonnet + the LSP-backed Serena tools make that discovery precise.
 
 ## Static analysis (`npm run lint:*`)
 
@@ -99,22 +126,85 @@ e2e). `lint:consistency` (ast-grep) and `lint:deadcode` (knip) are **gates**;
 circular deps are worked down. This job does **not** gate the `main → staging`
 promotion.
 
-## TypeScript LSP MCP (`.mcp.json`)
+## The search ladder — pick the right modality, not just grep
 
-`.mcp.json` configures a `typescript` MCP server (`typescript-mcp`) that wraps
-tsserver, giving agents find-references / go-to-definition / hover-types /
-diagnostics over the real type graph instead of string search. The `explore`
-agent allowlists `mcp__typescript__*` and prefers it for reference questions.
+Code search for agents has three modalities, each answering a different
+question. Use the cheapest rung that answers yours; escalate when the answer
+needs more precision than the rung can give:
+
+1. **Lexical — "where does this text appear?"** The built-in `Grep` tool
+   (ripgrep) and `Glob`. Zero setup, always available. Right for literals,
+   comments, error strings, and quick locating. Weakness: false positives from
+   comments/strings, and a common name like `update` drowns in noise.
+2. **Structural — "where does this code shape appear?"** ast-grep, already a
+   devDependency (`@ast-grep/cli`, the binary behind `lint:consistency`). It
+   matches parsed AST nodes, so formatting and comment/string collisions don't
+   produce false hits:
+   `npm run ag -- run -p 'showToast($$$)' -l ts src` — find every call shape;
+   `npm run ag -- run -p 'new Worker($$$)' -l ts src` — regardless of spacing.
+   Pattern syntax: `$X` one node, `$$$` any number. Right for call-site
+   sweeps, convention checks, "find code shaped like this sibling".
+
+   > **Invoke it via `npm run ag --`, not `npx ast-grep`, and run `npm ci`
+   > first.** The pinned binary is `@ast-grep/cli`; the bare name `ast-grep` on
+   > npm is an unrelated **squatted impostor** (`ast-grep@0.1.0`). On a fresh
+   > remote container — which starts with **no `node_modules`** (see
+   > [CLAUDE.md](../CLAUDE.md), "Manual Verification") — `npx ast-grep …` fetches
+   > and runs that impostor instead of erroring, so you get silently wrong output.
+   > `npm run ag --` always binds to the pinned local binary; `npm ci` must have
+   > run for it (and Serena) to exist. If you must use `npx`, spell the package
+   > explicitly: `npx -p @ast-grep/cli ast-grep run …` (the bin name differs from
+   > the package, so plain `npx @ast-grep/cli …` errors).
+
+   > **Pattern gotcha: a bare-identifier pattern does not match method calls.**
+   > `runAndSave($$$)` matches only `runAndSave(...)` with an identifier callee —
+   > it silently misses `api.runAndSave(...)` and other member-expression calls
+   > (returning zero hits, which reads like "no call sites"). When the call may
+   > be a method, match the member form: `$OBJ.runAndSave($$$)` (or run both).
+   > Likewise, to constrain an argument to a string literal, write the literal
+   > into the pattern — `$OBJ.fn($A, "$B")` — and remember it won't match
+   > single-quote or template forms unless you run those variants too.
+3. **Symbol/graph — "who actually calls or uses this?"** The Serena MCP tools
+   (below): `find_symbol`, `find_referencing_symbols`, `get_symbols_overview`,
+   `find_declaration`, `find_implementations`. Resolved references over the
+   real type graph — no string-collision false positives at all, and compact
+   symbol-chunk output instead of file dumps. Right for "every importer of X",
+   rename-impact, "does this export have users" (cross-check with
+   `lint:deadcode`).
+
+The `explore` agent encodes this ladder; prefer delegating broad discovery to
+it so the main context gets conclusions, not search output. We deliberately do
+**not** run an embedding/vector code-search layer: the repo is single-language,
+well-mapped by `CLAUDE.md`, and the leading agent stacks get better results
+from the lexical/structural/graph trio than from semantic indexes at this
+scale. Revisit if the codebase grows past what these answer in a few calls.
+
+## Serena MCP — the symbol layer (`.mcp.json`)
+
+`.mcp.json` configures [Serena](https://github.com/oraios/serena) (pinned to a
+release tag), an MCP toolkit that wraps real language servers (tsserver for
+this repo) and exposes symbol-level retrieval: `find_symbol`,
+`find_referencing_symbols`, `get_symbols_overview`, `find_declaration`,
+`find_implementations` (plus symbol-anchored editing and per-file
+diagnostics). It runs entirely locally — no code leaves the machine. It replaced the earlier
+`typescript-mcp` server (TS-only, unstable upstream API). The `explore` agent
+allowlists `mcp__serena__*` and prefers it for reference questions;
+`.claude/settings.json` pre-allows the read-only retrieval tools so they don't
+prompt.
 
 Caveats:
 - **MCP servers load at session start.** Editing `.mcp.json` takes effect in a
   fresh session, not the current one.
-- **Managed/remote environments** gate MCP servers by their own config and
-  network policy; the server `npx`-installs `typescript-mcp` on first use, so
-  it needs registry access. If the server isn't loaded, `explore` says so and
-  falls back to ast-grep + grep.
-- `typescript-mcp` is marked under active development upstream — pin/replace it
-  if its API drifts.
+- **Serena is Python, launched via `uvx`** — the machine needs
+  [`uv`](https://docs.astral.sh/uv/) installed, and first run downloads Serena
+  from GitHub plus the TypeScript language server. In managed/remote
+  environments the setup script must install `uv` (and run `npm ci`), and the
+  network policy must allow `github.com`, `pypi.org`/`files.pythonhosted.org`,
+  `astral.sh`, and the npm registry. If the server isn't loaded, `explore`
+  says so and falls back to ast-grep + Grep — the ladder degrades gracefully.
+- **Pinned by tag** (`@vX.Y.Z` in `.mcp.json`). Bump deliberately; check the
+  tool-name surface hasn't drifted before bumping, since the permission
+  allowlist and agent docs name tools individually.
 
 ## Backlog surfaced by these tools (worth a follow-up)
 

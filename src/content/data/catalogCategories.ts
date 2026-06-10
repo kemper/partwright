@@ -85,7 +85,7 @@ export interface CategoryDef {
 
 export const CATEGORIES: CategoryDef[] = [
   { id: 'fidget-toys', title: 'Fidget Toys', blurb: 'Twisty, spinny, squishy desk toys — popular 3D-print fidgets you can print and tweak. Spans every engine.' },
-  { id: 'print-fit', title: 'Hardware-Ready Joinery', blurb: 'Enclosures, brackets, and joints sized to real hardware — M2–M8 screws, heat-set inserts, captive nuts, dovetails, and alignment pins built with the api.printFit helpers.' },
+  { id: 'print-fit', title: 'Hardware-Ready Joinery', blurb: 'Enclosures, brackets, and joints sized to real hardware — M2–M8 screws, heat-set inserts, captive nuts, dovetails, and alignment pins built with the api.fasteners and api.joints helpers.' },
   { id: 'customizable', title: 'Customizable', blurb: 'Tweak these live with sliders and toggles — open the 🎛 Customize panel in the editor, no code changes needed.' },
   { id: 'manifold', title: 'JavaScript Models', blurb: 'Built with the default manifold-3d mesh API — the everyday JS modeling path.' },
   { id: 'sdf', title: 'Implicit Surfaces (SDF)', blurb: 'Signed-distance-field models via the Sdf builder — gyroids, lattices, and organic blends.' },

@@ -32,6 +32,7 @@ export interface PlaceApi {
   placeModel(opts: PlaceOpts): Promise<PlaceResult>;
   rotateModel(opts: RotateOpts): Promise<PlaceResult>;
   layFlatModel(opts: { mode?: Mode; preserveColor?: boolean }): Promise<PlaceResult>;
+  mirrorModel(opts: { axis: 'x' | 'y' | 'z'; mode?: Mode; preserveColor?: boolean }): Promise<PlaceResult>;
   canPlaceParametric(): boolean;
   modelHasColor(): boolean;
   getGeometryData(): { boundingBox?: { x?: number[]; y?: number[]; z?: number[] } | null } | Record<string, unknown>;
@@ -103,7 +104,7 @@ export function openPlaceModal(api: PlaceApi): void {
   panel.append(body);
 
   body.append(el('p', 'text-[11px] text-zinc-400 leading-snug',
-    'Reposition or reorient the model: drop it to the floor, center it, rotate it, or auto lay-flat.'));
+    'Reposition or reorient the model: drop it to the floor, center it, rotate it, mirror it, or auto lay-flat.'));
 
   // ---- Place actions ----
   const ACTION = 'w-full text-left px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs flex items-center gap-2';
@@ -142,6 +143,21 @@ export function openPlaceModal(api: PlaceApi): void {
   rotBtnRow.append(rotateBtn, rotResetBtn);
   rotWrap.append(rotBtnRow);
   body.append(rotWrap);
+
+  // ---- Mirror section ----
+  const mirWrap = el('div', 'flex flex-col gap-2 pt-1 border-t border-zinc-800');
+  mirWrap.append(el('div', 'text-[11px] text-zinc-400 font-medium pt-2', 'Mirror (flip across center)'));
+  const mirRow = el('div', 'flex items-center gap-2');
+  const mirrorBtns: Record<'x' | 'y' | 'z', HTMLButtonElement> = {} as Record<'x' | 'y' | 'z', HTMLButtonElement>;
+  (['x', 'y', 'z'] as const).forEach(axis => {
+    const b = el('button', 'flex-1 px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs');
+    b.textContent = `Mirror ${axis.toUpperCase()}`;
+    b.title = `Flip the model across its ${axis.toUpperCase()} center plane`;
+    mirrorBtns[axis] = b;
+    mirRow.append(b);
+  });
+  mirWrap.append(mirRow);
+  body.append(mirWrap);
 
   // ---- Write-back mode ----
   const modeWrap = el('div', 'flex flex-col gap-1.5 pt-1 border-t border-zinc-800');
@@ -197,7 +213,7 @@ export function openPlaceModal(api: PlaceApi): void {
   footer.append(closeFooterBtn);
   panel.append(footer);
 
-  const buttons = [dropBtn, centerBtn, bothBtn, layFlatBtn, rotateBtn];
+  const buttons = [dropBtn, centerBtn, bothBtn, layFlatBtn, rotateBtn, mirrorBtns.x, mirrorBtns.y, mirrorBtns.z];
   async function runAction(call: () => Promise<PlaceResult>, verb: string): Promise<void> {
     buttons.forEach(b => (b.disabled = true));
     status.textContent = 'Working…';
@@ -231,6 +247,10 @@ export function openPlaceModal(api: PlaceApi): void {
     const z = parseFloat(axisInputs.z.value) || 0;
     void runAction(() => api.rotateModel({ x, y, z, mode, preserveColor }), `Rotated (${x}°, ${y}°, ${z}°)`);
   });
+  (['x', 'y', 'z'] as const).forEach(axis => {
+    mirrorBtns[axis].addEventListener('click', () =>
+      void runAction(() => api.mirrorModel({ axis, mode, preserveColor }), `Mirrored ${axis.toUpperCase()}`));
+  });
 
   const close = () => {
     dragHandle.destroy();
@@ -260,7 +280,7 @@ export function initPlaceUI(api: PlaceApi): void {
       id: 'place-model',
       title: 'Place / Rotate model',
       hint: 'Transform',
-      keywords: 'place rotate plate floor bed drop center align lay flat ground origin orient transform',
+      keywords: 'place rotate mirror flip plate floor bed drop center align lay flat ground origin orient transform',
       run: () => openPlaceModal(api),
     },
     {
@@ -283,6 +303,27 @@ export function initPlaceUI(api: PlaceApi): void {
       hint: 'Transform',
       keywords: 'lay flat auto orient rotate largest face down bed level',
       run: () => { void api.layFlatModel({ mode: 'auto' }); },
+    },
+    {
+      id: 'place-mirror-x',
+      title: 'Mirror model (X)',
+      hint: 'Transform',
+      keywords: 'mirror flip reflect x left right reverse handedness',
+      run: () => { void api.mirrorModel({ axis: 'x', mode: 'auto' }); },
+    },
+    {
+      id: 'place-mirror-y',
+      title: 'Mirror model (Y)',
+      hint: 'Transform',
+      keywords: 'mirror flip reflect y front back reverse handedness',
+      run: () => { void api.mirrorModel({ axis: 'y', mode: 'auto' }); },
+    },
+    {
+      id: 'place-mirror-z',
+      title: 'Mirror model (Z)',
+      hint: 'Transform',
+      keywords: 'mirror flip reflect z up down upside reverse handedness',
+      run: () => { void api.mirrorModel({ axis: 'z', mode: 'auto' }); },
     },
   ]);
 

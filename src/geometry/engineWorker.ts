@@ -188,9 +188,10 @@ self.onmessage = async (event: MessageEvent) => {
           await ensureBrepLoaded();
         }
         // Pre-load Liberation Sans fonts if the code calls api.text / api.textSection,
-        // or uses api.printFit (clearanceCoupon engraves text labels internally).
+        // or uses api.fasteners (clearanceCoupon engraves text labels internally) —
+        // including via its deprecated api.printFit alias, kept for old sessions.
         // Same lazy-load pattern as BREP — fonts are cached after the first run.
-        if (sourceUsesManifoldText(code as string) || /\bapi\.printFit\b/.test(code as string) || /[{,]\s*printFit\s*[,}]/.test(code as string)) {
+        if (sourceUsesManifoldText(code as string) || /\bapi\.(?:fasteners|printFit)\b/.test(code as string) || /[{,]\s*(?:fasteners|printFit)\s*[,}]/.test(code as string)) {
           await preloadTextFonts();
         }
         setActiveImports(runImports);
@@ -232,7 +233,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts },
           transfer,
         );
       } else {

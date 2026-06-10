@@ -10,7 +10,7 @@
 //
 // Pure logic (no DOM/engine) so it unit-tests in the vitest tier.
 
-import type { VoxelGrid } from './grid';
+import type { VoxelGrid, Surfacing } from './grid';
 
 /** The grid delta between the baseline (the code's own output) and the edited
  *  grid: cells to set (added or recolored) and cells to remove. */
@@ -52,14 +52,45 @@ export function formatEditOps(ops: VoxelEditOps, varName: string): string {
   return lines.join('\n');
 }
 
+/** The chained surfacing method for a grid's setting, as source you append to
+ *  the returned-grid expression — e.g. `.smooth({ strength: 0.5, baseLayers: 2 })`
+ *  or `.blocky()`. Only non-default options are emitted. For the default blocky
+ *  surfacing it returns `''` unless `explicitBlocky` is set (the Voxel Studio
+ *  "update code" path passes it so a `.blocky()` deterministically overrides any
+ *  `.smooth()` the original code applied). */
+export function formatSurfacingCall(surf: Surfacing, explicitBlocky = false): string {
+  if (surf.mode !== 'smooth') return explicitBlocky ? '.blocky()' : '';
+  const o: string[] = [];
+  if (surf.algorithm && surf.algorithm !== 'surfaceNets') o.push(`algorithm: '${surf.algorithm}'`);
+  if (surf.iterations !== 2) o.push(`iterations: ${surf.iterations}`);
+  if (surf.detail !== undefined && surf.detail !== 1) o.push(`detail: ${surf.detail}`);
+  if (surf.strength !== undefined && surf.strength !== 1) o.push(`strength: ${surf.strength}`);
+  if (surf.flatBottom) o.push('flatBottom: true');
+  if (surf.baseLayers !== undefined) o.push(`baseLayers: ${surf.baseLayers}`);
+  if (surf.lockBox) o.push(`lockBox: [[${surf.lockBox.min.join(', ')}], [${surf.lockBox.max.join(', ')}]]`);
+  return o.length ? `.smooth({ ${o.join(', ')} })` : '.smooth()';
+}
+
 /** Append the edit ops to the user's procedural code, just before its final
  *  `return`. Binds the returned grid to a local so the ops apply to whatever
  *  expression the code returns (a bare `v`, a `voxels().…` chain, etc.), then
- *  returns that local. Returns null if there's no trailing `return …;` to hook
- *  onto (the caller then falls back to a full replace). A no-op delta returns
- *  the code unchanged. */
-export function appendVoxelEditsToCode(code: string, ops: VoxelEditOps): string | null {
-  if (editOpCount(ops) === 0) return code;
+ *  returns that local. `surfacingCall` (from {@link formatSurfacingCall}) is
+ *  applied to that local after the edits, so Voxel Studio's rounding settings
+ *  land as code. Returns null if there's no trailing `return …;` to hook onto
+ *  (the caller then falls back to a full replace). A no-op (no edits and no
+ *  surfacing change) returns the code unchanged.
+ *
+ *  Re-entrant: when the input is itself a previous Voxel Studio output (it
+ *  declares `const __voxStudio = …` and ends `return __voxStudio;`), it reuses
+ *  that block instead of wrapping it again — otherwise a second pass emits a
+ *  duplicate `const __voxStudio = __voxStudio;` ("Identifier '__voxStudio' has
+ *  already been declared"). It keeps the first declaration plus any edit ops and
+ *  custom lines, drops only the auto-generated surfacing call (and any duplicate
+ *  declarations from older buggy output), and appends the new edits + surfacing.
+ */
+export function appendVoxelEditsToCode(code: string, ops: VoxelEditOps, surfacingCall = ''): string | null {
+  const hasEdits = editOpCount(ops) > 0;
+  if (!hasEdits && !surfacingCall) return code;
   const trimmed = code.replace(/\s+$/, '');
   // Greedy prefix forces the match onto the LAST `return …;` in the source.
   const m = /^([\s\S]*)\breturn\b([\s\S]*?);\s*$/.exec(trimmed);
@@ -67,5 +98,34 @@ export function appendVoxelEditsToCode(code: string, ops: VoxelEditOps): string 
   const prefix = m[1].replace(/\s+$/, '');
   const expr = m[2].trim();
   const VAR = '__voxStudio';
-  return `${prefix}\n\nconst ${VAR} = ${expr};\n// --- Voxel Studio edits ---\n${formatEditOps(ops, VAR)}\nreturn ${VAR};\n`;
+
+  // Re-applying onto a previous Voxel Studio output: reuse the existing block.
+  if (expr === VAR) {
+    const declRe = new RegExp(`^[ \\t]*const[ \\t]+${VAR}[ \\t]*=[ \\t]*([\\s\\S]*?);[ \\t]*$`, 'm');
+    const decl = declRe.exec(prefix);
+    if (decl && decl[1].trim() !== VAR) {
+      const head = prefix.slice(0, decl.index).replace(/\s+$/, '');
+      const base = decl[1].trim();
+      // Everything after the first declaration is the prior edit ops + any
+      // custom lines the user added. Drop duplicate declarations (from older
+      // buggy output) and the prior auto surfacing call; keep the rest.
+      const body = prefix.slice(decl.index + decl[0].length)
+        .replace(new RegExp(`^[ \\t]*const[ \\t]+${VAR}[ \\t]*=.*;[ \\t]*$\\n?`, 'gm'), '')
+        .replace(new RegExp(`^[ \\t]*${VAR}\\.(?:smooth|blocky)\\([^\\n]*\\);[ \\t]*$\\n?`, 'gm'), '')
+        .replace(/^\s*\n/, '')
+        .replace(/\s+$/, '');
+      const parts: string[] = [];
+      if (head) parts.push(head, '');
+      parts.push(`const ${VAR} = ${base};`);
+      if (body) parts.push(body);
+      if (hasEdits) parts.push(formatEditOps(ops, VAR));
+      if (surfacingCall) parts.push(`${VAR}${surfacingCall};`);
+      parts.push(`return ${VAR};`);
+      return parts.join('\n').replace(/\n{3,}/g, '\n\n') + '\n';
+    }
+  }
+
+  const editBlock = hasEdits ? `// --- Voxel Studio edits ---\n${formatEditOps(ops, VAR)}\n` : '';
+  const surfBlock = surfacingCall ? `${VAR}${surfacingCall};\n` : '';
+  return `${prefix}\n\nconst ${VAR} = ${expr};\n${editBlock}${surfBlock}return ${VAR};\n`;
 }

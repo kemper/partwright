@@ -2,7 +2,7 @@
 // a bolt or rod. Drop a hex nut into the pocket in the base; it's captured by
 // the pocket walls so turning the knob turns the bolt. No tools, no spinning nut.
 // Useful for jigs, clamps, adjustable feet, and printer mods. Fully parametric.
-const { Manifold, printFit, circularPattern } = api;
+const { Manifold, fasteners, circularPattern } = api;
 
 const p = api.params({
   diameter:  { type: 'number', default: 32, min: 20, max: 60, step: 2,   unit: 'mm', label: 'Knob diameter' },
@@ -28,14 +28,14 @@ body = body.intersect(
 
 // ---- Captive nut pocket in the base, opening downward ----
 // nutPocket mouth at z=0 descends -Z; rotate 180° so it opens through the base.
-const nut = printFit.nutPocket({ size: p.screwSize, captive: true, depth: 4 })
+const nut = fasteners.nutPocket({ size: p.screwSize, captive: true, depth: 4 })
   .rotate([180, 0, 0]);
 body = body.subtract(nut);
 
 // ---- Clearance bore all the way through for the bolt ----
 // Place the screwHole entrance at z=knobH (top) so it drills down through the knob.
 body = body.subtract(
-  printFit.screwHole({ size: p.screwSize, length: knobH, head: 'none', through: true })
+  fasteners.screwHole({ size: p.screwSize, length: knobH, head: 'none', through: true })
     .translate([0, 0, knobH]),
 );
 
