@@ -97,4 +97,60 @@ test.describe('api.paint.* (paint declared in code)', () => {
     expect(errors.unknownKey).toContain('wat');
     expect(errors.missingAxis.toLowerCase()).toContain('axis');
   });
+
+  test('replaceColor hints instead of silently no-oping on code-painted models', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: {
+        createSession: (n?: string) => Promise<unknown>;
+        run: (code: string) => Promise<unknown>;
+        replaceColor: (o: { from: number[]; to: number[] }) => { replaced: number; hint?: string };
+      } }).partwright;
+      await pw.createSession('paint-in-code-replace');
+      await pw.run([
+        'const { Manifold } = api;',
+        "api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });",
+        'return Manifold.cube([30, 30, 30], true).refine(8);',
+      ].join('\n'));
+      // The slab color exists, but only as a code-declared (model) region —
+      // replaceColor rewrites user paint regions only, so it must say so.
+      return pw.replaceColor({ from: [226 / 255, 59 / 255, 59 / 255], to: [0, 0, 1] });
+    });
+
+    expect(out.replaced).toBe(0);
+    expect(out.hint ?? '').toContain('api.paint');
+  });
+
+  test('voxel sessions reject api.paint/api.surface with a pointed manifold-js-only error', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: {
+        createSession: (n?: string) => Promise<unknown>;
+        setActiveLanguage: (l: string) => Promise<unknown>;
+        run: (code: string) => Promise<{ error?: string | null } | unknown>;
+      } }).partwright;
+      await pw.createSession('voxel-namespace-guard');
+      await pw.setActiveLanguage('voxel');
+      const paint = await pw.run([
+        'const v = api.voxels();',
+        'v.set(0, 0, 0, 0xff0000);',
+        "api.paint.box({ min: [0,0,0], max: [1,1,1], color: '#fff' });",
+        'return v;',
+      ].join('\n')) as { error?: string | null };
+      const surface = await pw.run([
+        'const v = api.voxels();',
+        'v.set(0, 0, 0, 0xff0000);',
+        'api.surface.knit({});',
+        'return v;',
+      ].join('\n')) as { error?: string | null };
+      return { paint: paint?.error ?? '', surface: surface?.error ?? '' };
+    });
+
+    expect(out.paint).toContain('manifold-js');
+    expect(out.surface).toContain('manifold-js');
+  });
 });

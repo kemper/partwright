@@ -149,6 +149,19 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
   // slider/toggle panel and accept the Customizer's tweaked overrides.
   const paramCapture = createParamCapture(paramOverrides);
 
+  // `api.paint.*` / `api.surface.*` are manifold-js-only sandbox APIs (they
+  // record ops against the run's triangle mesh, which a BREP session doesn't
+  // expose). Guard them with a pointed error instead of the opaque "Cannot
+  // read properties of undefined" a missing key would produce.
+  const manifoldOnlyNamespaceGuard = (ns: 'paint' | 'surface') => new Proxy({}, {
+    get() {
+      throw new Error(`api.${ns}.* is only available in manifold-js (JS) sessions, not BREP. ` +
+        (ns === 'paint'
+          ? 'Paint a BREP model with the standalone paint tools (partwright.paintByLabel / paintInBox / …) after the run. See /ai/colors.md'
+          : 'Texturing a BREP model requires baking it to a mesh first (the apply* texture tools do this — note this discards the BREP source and STEP export). See /ai/textures.md'));
+    },
+  });
+
   const api = {
     BREP,
     Manifold,
@@ -156,6 +169,8 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
     imports: brepImports,
     meshImports,
     params: paramCapture.params,
+    paint: manifoldOnlyNamespaceGuard('paint'),
+    surface: manifoldOnlyNamespaceGuard('surface'),
   };
 
   // Same per-run BREP allocation drain pattern as the manifold-js engine —
