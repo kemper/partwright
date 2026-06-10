@@ -47,7 +47,7 @@ const skin = F.weld(rig, [
 ]).label('skin');
 
 // 3b. EYES — paintable separate region (hard-unioned at top level)
-const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.20 }).label('eyes');
+const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.20 }); // iris style: labels eyes/iris/pupil itself
 
 // 4. ROBE
 const robe = F.clothing.top(rig, {

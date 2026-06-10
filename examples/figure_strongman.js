@@ -131,7 +131,7 @@ const face = F.face.assemble(head, rig, {
 });
 
 // Paintable eyes — hard-union at top level with their own label
-const eyes = F.face.eyes(rig, { radius: r.head * 0.17 }).label('eyes');
+const eyes = F.face.eyes(rig, { radius: r.head * 0.17 }); // iris style: labels eyes/iris/pupil itself
 
 // 3. EXTRA MUSCLE MASSES — puffed chest, big traps
 const chestPuff = sdf.ellipsoid(

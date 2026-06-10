@@ -36,7 +36,7 @@ const face = F.face.assemble(head, rig, {
 });
 
 // 2b. EYES — hard-unioned at the top level with their own paint label.
-const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.14 }).label('eyes');
+const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.14 }); // iris style: labels eyes/iris/pupil itself
 
 // 3. SKIN — weld all body masses.
 const skin = F.weld(rig, [

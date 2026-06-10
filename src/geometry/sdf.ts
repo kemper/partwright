@@ -497,20 +497,33 @@ function buildSdf(
     // SDF reaches the boundary, marching tetrahedra would emit egg-crate
     // closing faces. A margin of max(edgeLength, 1) is empirical — large
     // enough to fully contain typical primitives' falloff regions.
-    const meshBounds = expandedMeshBounds(region.node._bounds, bounds, edgeLength);
-    let m: ManifoldInstance;
-    if (tolerance !== undefined) {
-      m = Manifold.levelSet(negated, meshBounds, edgeLength, level, tolerance);
-    } else {
-      m = Manifold.levelSet(negated, meshBounds, edgeLength, level);
-    }
-    // Localized detail: refine + re-project this region's mesh near any
-    // detail sphere that can touch it. Only spheres asking for FINER
-    // resolution than the global grid do anything.
+    const coarseBounds = expandedMeshBounds(region.node._bounds, bounds, edgeLength);
+    // Localized detail. Two paths:
+    // - A SMALL region (an eye, an iris, a pupil, a teeth band) is marched
+    //   DIRECTLY at a fine edgeLength — its bounds are tiny so the fine grid
+    //   is nearly free, and features smaller than the coarse cell would
+    //   otherwise alias away ENTIRELY (an empty mesh, which no refine pass
+    //   can recover).
+    // - Everything else marches coarse, then gets the refine-and-project
+    //   pass near any sphere that touches it.
     const applicable = detail.filter(d =>
       d.edgeLength < edgeLength
-      && sphereIntersectsBox(d.center, d.radius, meshBounds.min, meshBounds.max));
-    if (applicable.length > 0) {
+      && sphereIntersectsBox(d.center, d.radius, coarseBounds.min, coarseBounds.max));
+    const fineEdge = directFineEdgeLength(region.node._bounds, bounds, applicable, edgeLength);
+    // The fine path shrinks the closing margin to a couple of FINE cells —
+    // the coarse margin's 1-unit floor would dominate a pupil-sized region's
+    // grid with empty cells.
+    const meshBounds = fineEdge !== undefined
+      ? bbExpand(bbIntersect(region.node._bounds, bounds), fineMargin(fineEdge))
+      : coarseBounds;
+    const marchEdge = fineEdge ?? edgeLength;
+    let m: ManifoldInstance;
+    if (tolerance !== undefined) {
+      m = Manifold.levelSet(negated, meshBounds, marchEdge, level, tolerance);
+    } else {
+      m = Manifold.levelSet(negated, meshBounds, marchEdge, level);
+    }
+    if (fineEdge === undefined && applicable.length > 0) {
       m = refineManifoldNearRegions(m, Manifold, evalFn, applicable, level);
     }
     if (region.labelName) {
@@ -528,6 +541,67 @@ function buildSdf(
   // here by design (see header comment); to preserve them, label the
   // outer expression instead of individual primitives.
   return Manifold.union(meshed);
+}
+
+/** Grid-cell budget for marching a small region directly at a detail
+ *  sphere's fine edgeLength. An eye-sized region is a few thousand cells.
+ *  Deliberately modest: a medium region (a hair cap, a hat) that only
+ *  PARTIALLY overlaps the sphere is better served by the coarse-then-refine
+ *  path — fine-marching it whole multiplies its triangle count for no
+ *  visible gain outside the sphere. */
+const DIRECT_FINE_CELL_BUDGET = 250_000;
+
+/** Floor for the auto-scaled fine march — below this the eval cost and
+ *  triangle density stop buying visible quality. */
+const DIRECT_FINE_MIN_EDGE = 0.02;
+
+/** Pick the edgeLength to march a region DIRECTLY at, when a detail sphere
+ *  touches it and the fine grid fits the cell budget. The budget — not
+ *  sphere containment — is the cost gate: a small region (an eye, an iris,
+ *  a pupil, a teeth band) is nearly free at the fine grid, while a sprawling
+ *  region (the welded body) blows the budget and takes the coarse-then-
+ *  refine path instead. The sphere's edgeLength is additionally scaled DOWN
+ *  for very small regions (a pupil is far smaller than a face) so a feature
+ *  a fraction of the sphere's target still resolves — `nodeBounds` (the
+ *  region's own tight bounds) provides the feature scale. Sub-cell features
+ *  would otherwise VANISH from the coarse march entirely (an empty mesh, not
+ *  a coarse one), which no refine pass can recover.
+ *  Returns undefined for the coarse-then-refine path. */
+/** Iso-closing margin for the fine march: a couple of fine cells, floored. */
+function fineMargin(edge: number): number {
+  return Math.max(edge * 2, 0.1);
+}
+
+function directFineEdgeLength(
+  nodeBounds: Box,
+  userBounds: Box,
+  applicable: DetailRegion[],
+  coarseEdge: number,
+): number | undefined {
+  const clipped = bbIntersect(nodeBounds, userBounds);
+  // Smallest positive extent of the region itself (pre-margin).
+  let minExt = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const e = clipped.max[i] - clipped.min[i];
+    if (e > 0 && e < minExt) minExt = e;
+  }
+  let best: number | undefined;
+  for (const d of applicable) {
+    // ≥8 cells across the region's thinnest extent, floored, never coarser
+    // than the sphere's own target.
+    const edge = Math.max(
+      Math.min(d.edgeLength, Number.isFinite(minExt) ? minExt / 8 : d.edgeLength),
+      DIRECT_FINE_MIN_EDGE,
+    );
+    const pad = 2 * fineMargin(edge);
+    const cells =
+      ((clipped.max[0] - clipped.min[0] + pad) / edge) *
+      ((clipped.max[1] - clipped.min[1] + pad) / edge) *
+      ((clipped.max[2] - clipped.min[2] + pad) / edge);
+    if (!Number.isFinite(cells) || cells > DIRECT_FINE_CELL_BUDGET) continue;
+    if (best === undefined || edge < best) best = edge;
+  }
+  return best !== undefined && best < coarseEdge ? best : undefined;
 }
 
 /** Run the refine-and-project pass over a freshly-marched Manifold and
@@ -552,7 +626,7 @@ function refineManifoldNearRegions(
     regions,
     { iso: -level, maxTriangles: REFINE_MAX_TRIANGLES },
   );
-  if (refined.rounds === 0) return m;
+  if (!refined.changed) return m;
   try {
     let out = Manifold.ofMesh({
       numProp: 3,

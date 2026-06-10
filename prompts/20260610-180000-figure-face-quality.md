@@ -13,7 +13,46 @@ non-SDF for the faces"). Asked for an investigation, then approved a plan:
 land high-quality faces (the top priority), better mouths, and paintable
 face features, then upgrade the catalog figures to use them.
 
-## Assistant
+## Human (round 2)
+
+Reviewed close-ups: still poor — solid-black-only eyes (wants white +
+iris/pupil, solid as an option), bare shelf-like brows, no lips/teeth, and
+visible distortion around carved mouths. Asked for faster headless iteration
+via local CLI examples to review.
+
+## Assistant (round 2)
+
+- **Mouth "shrapnel" root cause:** the refine pass projected only NEW
+  midpoints onto the SDF; the ORIGINAL marched vertices around sub-cell
+  features are aliased, and mixing exact midpoints with aliased originals is
+  the speckle. Fix: one-time re-projection of every in-sphere original
+  vertex before the first split.
+- **Sub-cell labelled regions vanish silently.** Separately-labelled small
+  regions (eyes, iris, pupil) marched at the coarse global grid produce an
+  EMPTY mesh — unrecoverable by refinement. Fix: march small regions
+  directly at a fine edge. Two follow-up traps found by headless paint
+  probes: (1) gating "small" by sphere CONTAINMENT failed borderline cases
+  (the iris's margin-padded corner missed the face sphere by 0.01) — the
+  cell BUDGET is the real cost gate, so containment was dropped; (2) the
+  coarse margin's 1-unit floor dominated a pupil-sized region's fine grid
+  (569k mostly-empty cells, blowing the budget) — the fine path now uses a
+  margin of two fine cells. Budget set to 250k cells so medium regions
+  (hair caps) stay on the cheaper refine path.
+- **Eye styles:** default `'iris'` builds white sclera + iris disc + pupil
+  dot as SELF-labelled regions ('eyes'/'iris'/'pupil'); `'solid'` keeps the
+  bead look. Self-labelling is back-compatible: an outer `.label()` wins and
+  flattens to one colour.
+- **Mouth accents** (`F.face.mouthAccents`): 'teeth' band + 'lips' capsule
+  ring for the open style (the first lip-ring attempt — an
+  ellipsoid-minus-tunnel shell — shattered into 78 components when marched;
+  capsule chains are unconditionally robust), labelled ridge for the lips
+  style. Brows became skull-hugging arcs (sagitta pull-back) instead of a
+  straight chord that left the middle proud.
+- **Face lab** (`examples/faces/`): four self-painting bust snippets that
+  render headlessly in ~5 s each with `stats.paintOps` proving label
+  coverage — the fast-iteration surface the user asked for.
+
+## Assistant (round 1)
 
 Diagnosis: the faces ARE SDF — they're under-sampled. `build()` meshes every
 region on one uniform levelSet grid, and at the documented figure default

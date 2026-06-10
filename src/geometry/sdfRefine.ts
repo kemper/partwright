@@ -39,6 +39,9 @@ export interface RefineResult {
   triVerts: Uint32Array;
   /** Subdivision passes actually executed (0 = mesh was already fine). */
   rounds: number;
+  /** True when the mesh was modified at all (splits OR the one-time
+   *  re-projection of aliased original vertices). */
+  changed: boolean;
 }
 
 const DEFAULT_MAX_ROUNDS = 6;
@@ -133,6 +136,7 @@ export function refineMeshNearRegions(
   let positions = positionsIn;
   let triVerts = triVertsIn;
   let rounds = 0;
+  let projectedOriginals = false;
 
   // The projection step must not move a vertex farther than roughly one
   // coarse cell — that's the worst-case chord error levelSet leaves behind.
@@ -161,6 +165,34 @@ export function refineMeshNearRegions(
       }
     }
     if (marked.size === 0) break;
+
+    // --- Re-project the ORIGINAL in-sphere vertices once. ----------------
+    // levelSet interpolates vertices along grid edges, so for features
+    // smaller than a cell (a carved mouth groove, a small eye) the original
+    // vertices are visibly aliased. Projecting only the new midpoints while
+    // leaving aliased originals in place produces speckled "shrapnel" around
+    // small features — so snap every vertex inside a detail sphere onto the
+    // exact iso-surface before the first split.
+    if (!projectedOriginals) {
+      projectedOriginals = true;
+      const proj = Float32Array.from(positions);
+      const nV = positions.length / 3;
+      for (let v = 0; v < nV; v++) {
+        const p: Vec3 = [positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]];
+        let target = Infinity;
+        for (const r of regions) {
+          const dx = p[0] - r.center[0], dy = p[1] - r.center[1], dz = p[2] - r.center[2];
+          if (dx * dx + dy * dy + dz * dz <= r.radius * r.radius && r.edgeLength < target) {
+            target = r.edgeLength;
+          }
+        }
+        if (!Number.isFinite(target)) continue;
+        const h = Math.max(target * 0.1, 1e-5);
+        projectToSurface(p, evalFn, iso, h, maxMove);
+        proj[v * 3] = p[0]; proj[v * 3 + 1] = p[1]; proj[v * 3 + 2] = p[2];
+      }
+      positions = proj;
+    }
 
     // --- Estimate growth; respect the cap. -------------------------------
     let extra = 0;
@@ -232,7 +264,7 @@ export function refineMeshNearRegions(
     rounds++;
   }
 
-  return { positions, triVerts, rounds };
+  return { positions, triVerts, rounds, changed: rounds > 0 || projectedOriginals };
 }
 
 /** Sphere ↔ AABB overlap — used to skip detail regions that can't touch a

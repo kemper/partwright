@@ -54,9 +54,9 @@ const skin = F.weld(rig, [
   face,
 ]).label('skin');
 
-// 4. EYES — hard-unioned at the TOP level with their own label, so they can
-// be painted white/black separately from the skin.
-const eyes = F.face.eyes(rig).label('eyes');
+// 4. EYES — hard-unioned at the TOP level. The default 'iris' style labels
+// itself ('eyes' white + 'iris' + 'pupil') — do NOT add .label() on top.
+const eyes = F.face.eyes(rig);
 
 // 5. CLOTHES + HAIR + BASE — derived from the same rig, so they always fit.
 const pants = F.clothing.pants(rig, { leg: 'cargo', rise: 'low' }).label('pants');
@@ -75,7 +75,9 @@ Then paint by label from a follow-up tool call:
 ```js
 partwright.paintByLabels([
   { label: 'skin',  color: [0.95, 0.78, 0.66] },
-  { label: 'eyes',  color: [0.98, 0.98, 0.98] },
+  { label: 'eyes',  color: [0.97, 0.96, 0.94] },   // white of the eye
+  { label: 'iris',  color: [0.29, 0.49, 0.66] },
+  { label: 'pupil', color: [0.11, 0.11, 0.11] },
   { label: 'pants', color: [0.15, 0.18, 0.35] },
   { label: 'hair',  color: [0.45, 0.26, 0.13] },
   { label: 'base',  color: [0.3, 0.3, 0.3] },
@@ -203,8 +205,8 @@ exposed if you want to place a feature yourself.
 | `style` | What you get | Add or carve |
 |---|---|---|
 | `'smile'` (default) | a curved smile **line** carved into the face — the classic cartoon mouth. `smirk` (−1..1) skews it. | carve |
-| `'open'` | an open mouth cavity (laughing / talking / singing). `open` (0..1) sets the gape; passing `open > 0` without a style selects this. | carve |
-| `'lips'` | the protruding lip ridge (the pre-2026-06 default). | add |
+| `'open'` | an open mouth cavity (laughing / talking / singing). `open` (0..1) sets the gape; passing `open > 0` without a style selects this. Pair it with `mouthAccents` for teeth + lips. | carve |
+| `'lips'` | a protruding lip ridge. | add |
 
 ```js
 mouth: { smirk: 0.4 }                       // happy carved smile (default style)
@@ -216,22 +218,45 @@ mouth: { style: 'lips', smirk: -0.3 }       // pouty sculpted lips
 styles that's the *cutter* — `smoothSubtract` it from the head yourself, or
 just let `assemble` handle the bookkeeping.
 
-### Paintable eyes — the `eyes: false` + top-level-label pattern
+### Teeth & painted lips — `F.face.mouthAccents(rig, mouthOpts)`
 
-Smooth-welded features can't carry their own paint label (labels turn smooth
-blends into hard seams — see `/ai/sdf.md`), but eyes are a **hard** union, so
-they can. Don't bury them inside the `'skin'` weld; lift them to the top-level
-union with their own label, as in the pattern up top:
+Pre-labelled solid parts that complement the mouth. Build them from the **same
+options object** you passed as `mouth:` so they always agree with the carve,
+and hard-union them at the figure's TOP level (next to the eyes):
 
 ```js
-const face = F.face.assemble(head, rig, { eyes: false, ... });  // no eyes here
-const eyes = F.face.eyes(rig).label('eyes');                    // own region
-return sdf.union(skin, eyes, hair, base).build({ ... });
+const mouthOpts = { style: 'open', open: 0.65, width: rig.r.head * 0.6 };
+const face = F.face.assemble(head, rig, { eyes: false, mouth: mouthOpts });
+const mouthParts = F.face.mouthAccents(rig, mouthOpts);  // 'teeth' + 'lips'
+return sdf.union(skin, eyes, mouthParts, hair, base).build({ ... });
 ```
 
-Then `paintByLabels` can make them white/black/any color independently of the
-skin. (Brows and `'lips'`-style mouths can use the same pattern if you want
-them painted; the carved mouth styles need no paint at all.)
+- `'open'` style: a **`'teeth'`** band hanging from the cavity ceiling and a
+  **`'lips'`** capsule ring around the opening (disable with `teeth: false` /
+  `lips: false`).
+- `'lips'` style: the ridge labelled `'lips'` — in this case pass
+  `mouth: false` to `assemble` (a smooth-welded copy would swallow the
+  labelled one).
+- `'smile'` has no accents — the carved line needs no paint.
+
+### Eyes — `style: 'iris'` (default) or `'solid'`
+
+```js
+F.face.eyes(rig)                              // white + 'iris' + 'pupil', SELF-labelled
+F.face.eyes(rig, { style: 'solid' }).label('eyes')   // one-colour bead eyes
+```
+
+The default **`'iris'`** style builds white eyeball domes with a coloured iris
+disc and black pupil dot, pre-labelled `'eyes'` / `'iris'` / `'pupil'` — do
+**not** wrap it in `.label()` (the outer label wins and flattens the eye to
+one colour). `'solid'` returns plain spheres for you to label.
+
+Either way, keep eyes OUT of the skin weld (`eyes: false` in `assemble`) and
+hard-union them at the top level — smooth-welded features can't carry paint
+labels, and an eye buried under the cheek welds resolves to a label with zero
+paintable triangles. The eyeballs are pushed forward half their radius so the
+domes always protrude. (Brows can use the same top-level pattern if you want
+them painted.)
 
 ## Face detail — `F.faceDetail(rig)` (use it on every figure with a face)
 

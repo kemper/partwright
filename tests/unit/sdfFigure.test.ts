@@ -6,10 +6,10 @@
 
 import { describe, it, expect } from 'vitest';
 import { __figureTestables__ } from '../../src/geometry/sdfFigure';
-import { __testables__ as sdfT } from '../../src/geometry/sdf';
+import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildMouthPart, faceDetail } = __figureTestables__;
+const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -212,7 +212,73 @@ describe('figure mouth — styles', () => {
   it('rejects bad style / out-of-range open / unknown keys', () => {
     expect(() => buildMouthPart(api, rig, { style: 'frown' })).toThrow(/style/);
     expect(() => buildMouthPart(api, rig, { open: 2 })).toThrow();
-    expect(() => buildMouthPart(api, rig, { teeth: true })).toThrow();
+    expect(() => buildMouthPart(api, rig, { fangs: true })).toThrow();
+  });
+});
+
+describe('figure eyes — styles and labels', () => {
+  const rig = buildRig({ height: 60, headsTall: 5 });
+  const labelsOf = (node: unknown): string[] =>
+    partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n).sort();
+
+  it("iris style (the default) pre-labels eyes / iris / pupil regions", () => {
+    expect(labelsOf(buildEyes(api, rig))).toEqual(['eyes', 'iris', 'pupil']);
+  });
+
+  it('solid style returns one unlabelled pair for the caller to label', () => {
+    expect(labelsOf(buildEyes(api, rig, { style: 'solid' }))).toEqual([]);
+  });
+
+  it('pupil protrudes beyond the iris, iris beyond the eyeball', () => {
+    const f = rig.dir.headForward;
+    const reach = (node: unknown): number => {
+      // farthest extent along the forward (−Y) axis
+      const b = (node as SdfNode).bounds();
+      return f[1] < 0 ? -b.min[1] : b.max[1];
+    };
+    const sclera = buildEyes(api, rig, { style: 'solid' });
+    const all = buildEyes(api, rig);
+    expect(reach(all)).toBeGreaterThan(reach(sclera) + 1e-6);
+  });
+
+  it('rejects unknown style and keys', () => {
+    expect(() => buildEyes(api, rig, { style: 'laser' })).toThrow(/style/);
+    expect(() => buildEyes(api, rig, { glow: true })).toThrow();
+  });
+});
+
+describe('figure mouthAccents — paintable teeth and lips', () => {
+  const rig = buildRig({ height: 60, headsTall: 5 });
+  const labelsOf = (node: unknown): string[] =>
+    partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n).sort();
+
+  it('open style yields teeth + lips regions by default', () => {
+    expect(labelsOf(buildMouthAccents(api, rig, { style: 'open', open: 0.6 })))
+      .toEqual(['lips', 'teeth']);
+  });
+
+  it('teeth/lips can be disabled individually', () => {
+    expect(labelsOf(buildMouthAccents(api, rig, { open: 0.6, teeth: false }))).toEqual(['lips']);
+    expect(labelsOf(buildMouthAccents(api, rig, { open: 0.6, lips: false }))).toEqual(['teeth']);
+  });
+
+  it("lips style yields the labelled ridge", () => {
+    expect(labelsOf(buildMouthAccents(api, rig, { style: 'lips' }))).toEqual(['lips']);
+  });
+
+  it("smile style and fully-disabled accents throw with guidance", () => {
+    expect(() => buildMouthAccents(api, rig, { style: 'smile' })).toThrow(/smile/);
+    expect(() => buildMouthAccents(api, rig, { open: 0.6, teeth: false, lips: false })).toThrow(/nothing/);
+  });
+
+  it('accents straddle the mouth anchor (they will fuse into the face)', () => {
+    const node = buildMouthAccents(api, rig, { open: 0.6 }) as SdfNode;
+    const m = rig.face.mouth;
+    const b = node.bounds();
+    expect(m[0]).toBeGreaterThan(b.min[0]);
+    expect(m[0]).toBeLessThan(b.max[0]);
+    expect(m[2]).toBeGreaterThan(b.min[2]);
+    expect(m[2]).toBeLessThan(b.max[2]);
   });
 });
 

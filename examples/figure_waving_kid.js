@@ -43,7 +43,7 @@ const face = F.face.assemble(head, rig, {
 });
 
 // Paintable eyes: hard-unioned at the top level with their own label.
-const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.17 }).label('eyes');
+const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.17 }); // iris style: labels eyes/iris/pupil itself
 
 // 3. SKIN — weld all body masses into one painted region.
 // Raise k slightly so limb joints blend more softly (less balloon-animal look).

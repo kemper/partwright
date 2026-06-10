@@ -501,15 +501,30 @@ function buildBase(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
 
 function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'eyes(opts)');
-  assertNoUnknownKeys(o, ['radius'], 'eyes(opts)');
+  assertNoUnknownKeys(o, ['radius', 'style'], 'eyes(opts)');
   const rad = num(o.radius, rig.r.head * 0.16, 'eyes.radius', 0.01);
-  // Push the spheres outward by half their radius so a clear dome always
+  const style = o.style === undefined ? 'iris'
+    : assertEnum(o.style, ['solid', 'iris'] as const, 'eyes.style');
+  const f = rig.dir.headForward;
+  // Push the eyeballs outward by half their radius so a clear dome always
   // protrudes past the cheek masses — eyes centred ON the anchor end up
   // nearly (or fully, for small radii) swallowed by the welded face, which
   // leaves a paintable 'eyes' label with zero visible triangles.
-  const push = scale3(rig.dir.headForward, rad * 0.5);
-  return sdf.sphere(rad).translate(add3(rig.face.eyeL, push))
-    .union(sdf.sphere(rad).translate(add3(rig.face.eyeR, push)));
+  const cL = add3(rig.face.eyeL, scale3(f, rad * 0.5));
+  const cR = add3(rig.face.eyeR, scale3(f, rad * 0.5));
+  const pair = (r: number, forwardOff: number): Node => {
+    const off = scale3(f, forwardOff);
+    return sdf.sphere(r).translate(add3(cL, off)).union(sdf.sphere(r).translate(add3(cR, off)));
+  };
+  if (style === 'solid') return pair(rad, 0);
+  // 'iris' (default): white eyeball + coloured iris disc + black pupil dot,
+  // each its own pre-labelled hard-union region so paintByLabels can colour
+  // them independently. Don't wrap the result in another .label() — the
+  // outer label would win and flatten the eye back to one colour.
+  const sclera = pair(rad, 0).label('eyes');
+  const iris = pair(rad * 0.5, rad * 0.78).label('iris');
+  const pupil = pair(rad * 0.3, rad * 1.12).label('pupil');
+  return sclera.union(iris).union(pupil);
 }
 
 function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
@@ -529,9 +544,29 @@ type MouthStyle = 'smile' | 'lips' | 'open';
  *  (smoothSubtract). assembleFace dispatches on this. */
 interface MouthPart { node: Node; mode: 'add' | 'carve' }
 
+const MOUTH_FIELDS = ['width', 'smirk', 'open', 'style', 'teeth', 'lips'];
+
+/** Replay the rig's head rotation order (turn → nod → tilt) on an
+ *  origin-built node, so axis-aligned mouth parts follow the head pose. */
+function orientToHeadPose(node: Node, rig: Rig): Node {
+  const p = rig.opts.pose.head;
+  return node.rotate([0, 0, p.turn]).rotate([p.nod, 0, 0]).rotate([0, p.tilt, 0]);
+}
+
+/** Shared geometry of the open-mouth cavity, used by both the carve and the
+ *  teeth / lip-ring accents so they always agree. */
+function mouthCavityFrame(rig: Rig, width: number, open: number): { halfW: number; cavH: number; center: Vec3 } {
+  const f = rig.dir.headForward, u = rig.dir.headUp;
+  const gape = open > 0 ? open : 0.55;
+  const halfW = width * 0.5;
+  const cavH = Math.max(width * 0.32 * gape, rig.r.head * 0.05);
+  const center = add3(add3(rig.face.mouth, scale3(f, -rig.r.head * 0.06)), scale3(u, -cavH * 0.25));
+  return { halfW, cavH, center };
+}
+
 function buildMouthPart(sdf: SdfApi, rig: Rig, opts?: unknown): MouthPart {
   const o = obj(opts, 'mouth(opts)');
-  assertNoUnknownKeys(o, ['width', 'smirk', 'open', 'style'], 'mouth(opts)');
+  assertNoUnknownKeys(o, MOUTH_FIELDS, 'mouth(opts)');
   const width = num(o.width, rig.r.head * 0.5, 'mouth.width', 0.01);
   const smirk = num(o.smirk, 0, 'mouth.smirk', -1, 1);
   const open = num(o.open, 0, 'mouth.open', 0, 1);
@@ -539,29 +574,27 @@ function buildMouthPart(sdf: SdfApi, rig: Rig, opts?: unknown): MouthPart {
   const style: MouthStyle = o.style !== undefined
     ? assertEnum(o.style, ['smile', 'lips', 'open'] as const, 'mouth.style')
     : open > 0 ? 'open' : 'smile';
-  const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
+  const u = rig.dir.headUp, right = rig.dir.headLeft;
   const m = rig.face.mouth;
   const halfW = width * 0.5;
 
   if (style === 'lips') {
-    // A thin protruding lip ridge; smirk tips one corner up.
-    const a = add3(add3(m, scale3(right, halfW)), scale3(u, smirk * width * 0.25));
-    const b = add3(add3(m, scale3(right, -halfW)), scale3(u, -smirk * width * 0.25));
-    return { node: sdf.capsule(a, b, rig.r.head * 0.06), mode: 'add' };
+    // A protruding lip ridge, pushed forward of the anchor so it clearly
+    // stands proud of the face (an on-surface capsule reads as nothing when
+    // it isn't smooth-welded). Smirk tips one corner up.
+    const lipR = rig.r.head * 0.085;
+    const fwd = scale3(rig.dir.headForward, lipR * 0.6);
+    const a = add3(add3(add3(m, fwd), scale3(right, halfW)), scale3(u, smirk * width * 0.25));
+    const b = add3(add3(add3(m, fwd), scale3(right, -halfW)), scale3(u, -smirk * width * 0.25));
+    return { node: sdf.capsule(a, b, lipR), mode: 'add' };
   }
 
   if (style === 'open') {
     // A carved mouth cavity — the cartoon "laughing / talking" mouth. The
     // ellipsoid straddles the surface and reaches inward so the opening reads
     // as a dark interior, not a shallow dent.
-    const gape = open > 0 ? open : 0.55;
-    const cavH = Math.max(width * 0.32 * gape, rig.r.head * 0.05);
-    const center = add3(add3(m, scale3(f, -rig.r.head * 0.06)), scale3(u, -cavH * 0.25));
-    const pose = rig.opts.pose.head;
-    // Orient to the head frame by replaying the rig's rotation order
-    // (turn → nod → tilt, each an exact single-axis rotation).
-    const cavity = sdf.ellipsoid(halfW, rig.r.head * 0.38, cavH)
-      .rotate([0, 0, pose.turn]).rotate([pose.nod, 0, 0]).rotate([0, pose.tilt, 0])
+    const { halfW: hw, cavH, center } = mouthCavityFrame(rig, width, open);
+    const cavity = orientToHeadPose(sdf.ellipsoid(hw, rig.r.head * 0.38, cavH), rig)
       .translate(center);
     return { node: cavity, mode: 'carve' };
   }
@@ -594,6 +627,78 @@ function buildMouth(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   return buildMouthPart(sdf, rig, opts).node;
 }
 
+/** Paintable mouth accents — PRE-LABELLED solid parts that hard-union at the
+ *  TOP level of the figure (next to the eyes), complementing the carve that
+ *  `face.assemble` applies. Pass the SAME options object you gave `mouth`.
+ *
+ *  - style 'open': a 'teeth' band hanging from the cavity ceiling (skip with
+ *    `teeth: false`) and a 'lips' ring around the opening (skip with
+ *    `lips: false`).
+ *  - style 'lips': the lip ridge labelled 'lips' — pass `mouth: false` to
+ *    `face.assemble` in this case so the ridge isn't ALSO smooth-welded
+ *    (a welded copy would swallow the labelled one).
+ *  - style 'smile' has no accents (the carved line needs no paint). */
+function buildMouthAccents(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'mouthAccents(opts)');
+  assertNoUnknownKeys(o, MOUTH_FIELDS, 'mouthAccents(opts)');
+  const width = num(o.width, rig.r.head * 0.5, 'mouthAccents.width', 0.01);
+  const open = num(o.open, 0, 'mouthAccents.open', 0, 1);
+  const style: MouthStyle = o.style !== undefined
+    ? assertEnum(o.style, ['smile', 'lips', 'open'] as const, 'mouthAccents.style')
+    : open > 0 ? 'open' : 'smile';
+  const f = rig.dir.headForward, u = rig.dir.headUp;
+  const R = rig.r.head;
+
+  if (style === 'lips') {
+    return buildMouthPart(sdf, rig, { ...o, style: 'lips' }).node.label('lips');
+  }
+  if (style !== 'open') {
+    throw new ValidationError(
+      "face.mouthAccents: only the 'open' and 'lips' mouth styles have paintable accents — "
+      + "the carved 'smile' line is shading, not a part. See /ai/figure.md#mouth-styles.",
+    );
+  }
+
+  const { halfW, cavH, center } = mouthCavityFrame(rig, width, open);
+  const parts: Node[] = [];
+  if (o.teeth !== false) {
+    // A white band hanging from the cavity ceiling: top edge buried in the
+    // head above the opening (fuses into one component), front face recessed
+    // just behind the face surface.
+    const td = R * 0.5;
+    const teeth = orientToHeadPose(
+      sdf.roundedBox([halfW * 1.5, td, cavH * 0.9], Math.min(cavH * 0.9, halfW) * 0.18), rig,
+    ).translate(add3(center, add3(scale3(u, cavH * 0.6), scale3(f, -R * 0.04 - td * 0.5))));
+    parts.push(teeth.label('teeth'));
+  }
+  if (o.lips !== false) {
+    // A lip ring: a chain of capsules around the opening ellipse. (A thin
+    // ellipsoid-minus-tunnel shell fragments into dozens of shards when
+    // marched — capsule chains are unconditionally robust.)
+    const right = rig.dir.headLeft;
+    const lipR = Math.min(R * 0.10, cavH * 0.55);
+    // Ring centre: the cavity opening projected onto the face, nudged
+    // forward so the ring stands proud of the surface.
+    const cc = add3(rig.face.mouth, add3(scale3(u, -cavH * 0.25), scale3(f, lipR * 0.35)));
+    const SEGS = 14;
+    const ringPt = (theta: number): Vec3 => add3(cc, add3(
+      scale3(right, halfW * 1.06 * Math.cos(theta)),
+      scale3(u, cavH * 1.12 * Math.sin(theta)),
+    ));
+    let ring: Node | undefined;
+    for (let i = 0; i < SEGS; i++) {
+      const t0 = (2 * Math.PI * i) / SEGS, t1 = (2 * Math.PI * (i + 1)) / SEGS;
+      const seg = sdf.capsule(ringPt(t0), ringPt(t1), lipR);
+      ring = ring === undefined ? seg : ring.union(seg);
+    }
+    parts.push(ring!.label('lips'));
+  }
+  if (parts.length === 0) {
+    throw new ValidationError('face.mouthAccents: both teeth and lips are disabled — nothing to build.');
+  }
+  return parts.length === 1 ? parts[0] : parts[0].union(parts[1]);
+}
+
 function buildEars(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'ears(opts)');
   assertNoUnknownKeys(o, ['size'], 'ears(opts)');
@@ -604,10 +709,36 @@ function buildEars(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
 }
 
 function buildBrows(sdf: SdfApi, rig: Rig): Node {
-  const right = rig.dir.headLeft;
-  const w = rig.r.head * 0.22;
-  const browR = (a: Vec3): Node => sdf.capsule(add3(a, scale3(right, w)), add3(a, scale3(right, -w)), rig.r.head * 0.06);
-  return browR(rig.face.browL).union(browR(rig.face.browR));
+  // Arched ridges that HUG the skull. A straight capsule chord between two
+  // points on a curved surface leaves its middle proud (the "shelf brow"
+  // look), so each brow is an arc whose points (a) curve up toward the
+  // middle and (b) pull BACK following the skull's lateral curvature, and
+  // the whole ridge is sunk by part of its radius.
+  const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
+  const w = rig.r.head * 0.24;          // half-span of one brow
+  const browRad = rig.r.head * 0.045;   // slimmer than the old 0.06 bar
+  const arch = rig.r.head * 0.06;       // mid-brow lift
+  const sink = browRad * 0.5;
+  const SEGS = 4;
+  const browArc = (anchor: Vec3): Node => {
+    const pt = (t: number): Vec3 => {
+      const s = w * t;
+      // Pull back by the circular sagitta at lateral offset s so the arc
+      // follows the skull instead of chording across it.
+      const drop = (s * s) / (2 * Math.max(rig.r.headX, 1e-3)) + sink;
+      return add3(anchor, add3(
+        add3(scale3(right, s), scale3(u, arch * (1 - t * t))),
+        scale3(f, -drop),
+      ));
+    };
+    let arc: Node | undefined;
+    for (let i = 0; i < SEGS; i++) {
+      const seg = sdf.capsule(pt(-1 + (2 * i) / SEGS), pt(-1 + (2 * (i + 1)) / SEGS), browRad);
+      arc = arc === undefined ? seg : arc.union(seg);
+    }
+    return arc!;
+  };
+  return browArc(rig.face.browL).union(browArc(rig.face.browR));
 }
 
 /** Weld nose/mouth/ears/brows onto a head with SHARP creases (small k), vs
@@ -777,6 +908,9 @@ export interface FigureNamespace {
     eyes(rig: Rig, opts?: object): Node;
     nose(rig: Rig, opts?: object): Node;
     mouth(rig: Rig, opts?: object): Node;
+    /** Pre-labelled paintable mouth parts (teeth band, lip ring / ridge)
+     *  to hard-union at the figure's top level. */
+    mouthAccents(rig: Rig, opts?: object): Node;
     ears(rig: Rig, opts?: object): Node;
     brows(rig: Rig, opts?: object): Node;
     assemble(head: Node, rig: Rig, opts?: object): Node;
@@ -832,6 +966,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
       eyes: (rig, opts) => buildEyes(sdf, assertRig(rig, 'face.eyes(rig)'), opts),
       nose: (rig, opts) => buildNose(sdf, assertRig(rig, 'face.nose(rig)'), opts),
       mouth: (rig, opts) => buildMouth(sdf, assertRig(rig, 'face.mouth(rig)'), opts),
+      mouthAccents: (rig, opts) => buildMouthAccents(sdf, assertRig(rig, 'face.mouthAccents(rig)'), opts),
       ears: (rig, opts) => buildEars(sdf, assertRig(rig, 'face.ears(rig)'), opts),
       brows: (rig) => buildBrows(sdf, assertRig(rig, 'face.brows(rig)')),
       assemble: (head, rig, opts) => assembleFace(sdf, head as Node, assertRig(rig, 'face.assemble(rig)'), opts),
@@ -844,4 +979,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildMouthPart, faceDetail };
+export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail };

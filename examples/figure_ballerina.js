@@ -50,7 +50,7 @@ const skin = F.weld(rig, [
 
 // 3b. EYES — hard-unioned at the top level with their own label so they can be
 // painted white/black separately from the skin.
-const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.14 }).label('eyes');
+const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.14 }); // iris style: labels eyes/iris/pupil itself
 
 // 4. LEOTARD — snug sleeveless top
 const leotard = F.clothing.top(rig, {
