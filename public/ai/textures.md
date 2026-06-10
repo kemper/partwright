@@ -60,7 +60,13 @@ return body;
   auto-runs show the **base (untextured) mesh** plus a **"⟳ Textures stale —
   Re-apply"** pill (top-left) instead of recomputing on every keystroke. Press
   the pill (or just hit Run) to apply. This keeps typing snappy; it does **not**
-  affect `run`/`runAndSave`, which always apply.
+  affect `run`/`runAndSave`, which always apply. Exporting while the pill is up
+  warns (UI: a confirm modal; console `export*Data`: a `warning` field) because
+  the file would carry the untextured base — run first, then export.
+- **Whole-model only.** `api.surface.*` always textures the entire returned
+  mesh — there is no `region`/`triangles` option (passing one throws "unknown
+  option"). To texture only a selected patch, use the bake path: the Surface
+  panel's region selector, or `applyKnitTexture({ selectedTriangles })`.
 - This is the in-code counterpart of the bake tools, mirroring `api.paint.*`
   (see [colors](/ai/colors.md)). Use it when you want the texture to live with
   the code; use the `apply*` tools when you want a one-shot baked result.

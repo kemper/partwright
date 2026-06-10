@@ -3856,7 +3856,25 @@ async function main() {
       format,
       colorOverBudget,
       colorDropped,
+      surfaceStale: pendingSurface !== null,
     };
+  }
+
+  /** Warning string when the model declares `api.surface.*` textures that
+   *  haven't been applied to the current code (the Re-apply pill is up) — an
+   *  export right now carries the untextured base mesh. Null when current.
+   *  The UI export actions surface this through the confirm modal instead;
+   *  this string is for the unguarded console export API (toast + `warning`
+   *  field), which must stay non-blocking for AI agents. */
+  const surfaceStaleExportWarning = (format: string): string | null =>
+    pendingSurface
+      ? `${format} export contains the untextured base mesh — this model's api.surface.* textures haven't been applied to the current code. Run the code (runs force-apply textures) and export again to include them.`
+      : null;
+
+  /** Toast (and log) the stale-texture warning for a console-API export. */
+  function warnIfSurfaceStale(format: string): void {
+    const msg = surfaceStaleExportWarning(format);
+    if (msg) showToast(msg, { variant: 'warn', source: 'export' });
   }
 
   /** Returns true if the export should proceed: no warning, or the user
@@ -4774,6 +4792,11 @@ async function main() {
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;
       refreshSimplifyIfOpen();
+      // Cached entries were produced by a forced run (api.surface.* textures
+      // applied), so a Re-apply pill raised by the previously shown version no
+      // longer describes the restored mesh. The cache-miss branch clears it via
+      // runCodeSync → applySurfaceTextures; this branch must do it explicitly.
+      hideSurfaceReapplyPill();
       setStatus(statusBar, 'ready', 'Ready');
     } else {
       // Cache miss: compile the code and, on success, populate the cache.
@@ -8026,6 +8049,7 @@ async function main() {
       assertString(filename, 'exportGLB(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
       assertFiniteMesh(currentMeshData);
+      warnIfSurfaceStale('GLB');
       await exportGLB(filename, coloredMeshForExport(currentMeshData));
     },
 
@@ -8033,6 +8057,7 @@ async function main() {
     exportSTL(filename?: string) {
       assertString(filename, 'exportSTL(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
+      warnIfSurfaceStale('STL');
       exportSTL(fileExportMesh(false)!, filename);
     },
 
@@ -8040,6 +8065,7 @@ async function main() {
     exportOBJ(filename?: string) {
       assertString(filename, 'exportOBJ(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
+      warnIfSurfaceStale('OBJ');
       exportOBJ(fileExportMesh(true)!, filename);
     },
 
@@ -8047,6 +8073,7 @@ async function main() {
     export3MF(filename?: string) {
       assertString(filename, 'export3MF(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
+      warnIfSurfaceStale('3MF');
       export3MF(fileExportMesh(true)!, filename);
     },
 
@@ -8103,6 +8130,7 @@ async function main() {
     async exportGLBData(filename?: string) {
       assertString(filename, 'exportGLBData(filename)', { optional: true });
       if (currentMeshData) assertFiniteMesh(currentMeshData);
+      const warning = surfaceStaleExportWarning('GLB');
       const built = await buildGLB(filename);
       registerExportFromBuilt(built, 'GLB');
       return {
@@ -8110,6 +8138,7 @@ async function main() {
         mimeType: built.mimeType,
         sizeBytes: built.blob.size,
         base64: await blobToBase64(built.blob),
+        ...(warning ? { warning } : {}),
       };
     },
 
@@ -8117,6 +8146,7 @@ async function main() {
     async exportSTLData(filename?: string) {
       assertString(filename, 'exportSTLData(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
+      const warning = surfaceStaleExportWarning('STL');
       const built = buildSTL(fileExportMesh(false)!, filename);
       registerExportFromBuilt(built, 'STL');
       return {
@@ -8124,6 +8154,7 @@ async function main() {
         mimeType: built.mimeType,
         sizeBytes: built.blob.size,
         base64: await blobToBase64(built.blob),
+        ...(warning ? { warning } : {}),
       };
     },
 
@@ -8135,6 +8166,7 @@ async function main() {
     async exportOBJData(filename?: string) {
       assertString(filename, 'exportOBJData(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
+      const warning = surfaceStaleExportWarning('OBJ');
       const built = buildOBJ(fileExportMesh(true)!, filename);
       registerExportFromBuilt(built, 'OBJ');
       const isText = built.mimeType === 'text/plain';
@@ -8145,6 +8177,7 @@ async function main() {
         ...(isText
           ? { text: await built.blob.text() }
           : { base64: await blobToBase64(built.blob) }),
+        ...(warning ? { warning } : {}),
       };
     },
 
@@ -8152,6 +8185,7 @@ async function main() {
     async export3MFData(filename?: string) {
       assertString(filename, 'export3MFData(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
+      const warning = surfaceStaleExportWarning('3MF');
       const built = build3MF(fileExportMesh(true)!, filename);
       registerExportFromBuilt(built, '3MF');
       return {
@@ -8159,6 +8193,7 @@ async function main() {
         mimeType: built.mimeType,
         sizeBytes: built.blob.size,
         base64: await blobToBase64(built.blob),
+        ...(warning ? { warning } : {}),
       };
     },
 
@@ -11417,7 +11452,12 @@ async function main() {
     /** Recolor every paint region whose color matches `from` (within
      *  `tolerance`) to `to` — the programmatic Replace-color tool. Colors are
      *  [r,g,b] in 0..1 (the range paintFaces/paintRegion use). `tolerance`
-     *  defaults to 0.01. Returns `{ replaced: count }`. */
+     *  defaults to 0.01. Returns `{ replaced: count }`. Only rewrites USER
+     *  paint regions — colors declared in code (`api.paint.*` /
+     *  `api.label({color})`) are derived from the source, so change those by
+     *  editing the color argument in the code and re-running; when nothing
+     *  matched but code-declared colors exist, the result carries a `hint`
+     *  saying so. */
     replaceColor(opts: { from: [number, number, number]; to: [number, number, number]; tolerance?: number }) {
       const check = guard(() => {
         assertObject(opts, 'replaceColor(opts)');
@@ -11430,6 +11470,12 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const count = replaceRegionColors(opts.from, opts.to, opts.tolerance ?? 0.01);
       if (count > 0) scheduleColorRefresh();
+      if (count === 0 && hasModelColorRegions()) {
+        return {
+          replaced: 0,
+          hint: 'No user paint regions matched. This model\'s colors are declared in code (api.paint.* / api.label({color})) — replaceColor only rewrites user paint regions. Edit the color argument in the code and re-run instead.',
+        };
+      }
       return { replaced: count };
     },
 
@@ -12311,13 +12357,14 @@ async function main() {
       return { count: labels.length, labels, ...(lost ? { lostLabels: lost } : {}) };
     },
 
-    /** Report the colors the current run declared in code via
-     *  `api.label(shape, name, { color })` (and `api.labeledUnion` entries with a
-     *  `color`). These render and export automatically as a derived underlay —
-     *  no paint step — and the editor stays editable. Manual paint composites on
-     *  top. Returns `{ count, colors: [{name, color, triangleCount}] }`; an empty
-     *  list means no colors were declared (or the labelled triangles vanished in
-     *  a boolean — check `listLabels().lostLabels`). */
+    /** Report the colors the current run declared in code — via
+     *  `api.label(shape, name, { color })` (and `api.labeledUnion` entries with
+     *  a `color`) or `api.paint.*` calls. These render and export automatically
+     *  as a derived underlay — no paint step — and the editor stays editable.
+     *  Manual paint composites on top. Returns
+     *  `{ count, colors: [{name, color, triangleCount}] }`; an empty list means
+     *  no colors were declared (or the labelled triangles vanished in a
+     *  boolean — check `listLabels().lostLabels`). */
     getModelColors() {
       const colors = getModelRegions().map(r => ({
         name: r.name,
@@ -12914,7 +12961,7 @@ async function main() {
         'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai/colors.md' },
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
-        'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every region matching `from` (0..1 colors) -> {replaced}', docs: '/ai/colors.md' },
+        'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
         'paintImage':      { signature: 'await paintImage({imageUrl, at:[x,y,z], normal:[nx,ny,nz], size, rotationDeg?, detail?, removeBackground?, name?}) -- Stamp an image onto the surface as a color region -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
         'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
         'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
@@ -12928,7 +12975,7 @@ async function main() {
         'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai/colors.md' },
         'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai/colors.md' },
         'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai/colors.md' },
-        'getModelColors':  { signature: 'getModelColors() -> {count, colors: [{name, color, triangleCount}]} -- Colors declared in code via api.label(shape, name, {color}). Render + export automatically; editor stays editable; manual paint overrides.', docs: '/ai/colors.md' },
+        'getModelColors':  { signature: 'getModelColors() -> {count, colors: [{name, color, triangleCount}]} -- Colors declared in code via api.label(shape, name, {color}) or api.paint.*. Render + export automatically; editor stays editable; manual paint overrides.', docs: '/ai/colors.md' },
         'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai/colors.md' },
         'paintByLabels':   { signature: 'paintByLabels([{label, color, name?}, ...]) -- Batch sibling. N features painted in one call -> {results, failed}. Use for any multi-feature paint job.', docs: '/ai/colors.md' },
         'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai/colors.md' },
@@ -12947,6 +12994,31 @@ async function main() {
         'setBucketMode': { signature: "setBucketMode(mode) -- Set the bucket flood-fill mode: 'color' (magic-wand by RGB) or 'geometry' (coplanar by bend angle).", docs: '/ai/colors.md' },
         'getBrushSize':    { signature: 'getBrushSize() -- Read the UI brush radius (mesh units). 0 = single triangle.', docs: '/ai/colors.md' },
         'setBrushSize':    { signature: 'setBrushSize(radius) -- Set the UI brush radius (mesh units, >= 0). Affects only the interactive brush tool; programmatic painting uses paintNear / paintFaces.', docs: '/ai/colors.md' },
+        // Surface textures & modifiers (bake path — saves a new version whose code
+        // wraps the displaced mesh; in a manifold-js session the in-code
+        // api.surface.* alternative keeps the texture parametric instead)
+        'modelHasColor':   { signature: 'modelHasColor() -- Whether the model carries any color (user paint or code-declared)', docs: '/ai/colors.md' },
+        'previewSurfaceModifier': { signature: "previewSurfaceModifier(id, opts?, preserveColor?) -- Non-destructive viewport preview of a modifier; id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize' -> {ok} or {error}", docs: '/ai/textures.md' },
+        'clearSurfacePreview': { signature: 'clearSurfacePreview() -- Discard a live surface preview and restore the current mesh', docs: '/ai/textures.md' },
+        'applyFuzzySkin':  { signature: 'await applyFuzzySkin({amplitude?, scale?, octaves?, seed?, quality?, preserveColor?}) -- BAKE fuzzy-skin noise; saves a new version. In-code alternative: api.surface.fuzzy', docs: '/ai/textures.md' },
+        'applyKnitTexture':{ signature: 'await applyKnitTexture({amplitude?, stitchWidth?, stitchHeight?, rowOffset?, roundness?, grainAngleDeg?, variation?, seed?, quality?, algorithm?, selectedTriangles?, preserveColor?}) -- BAKE knit stitches; saves a new version. In-code alternative: api.surface.knit', docs: '/ai/textures.md' },
+        'applyCableKnit':  { signature: 'await applyCableKnit({amplitude?, cableWidth?, cablePitch?, plyWidth?, grainAngleDeg?, variation?, seed?, quality?, preserveColor?}) -- BAKE cable-knit ropes; saves a new version. In-code alternative: api.surface.cable', docs: '/ai/textures.md' },
+        'applyWaffleStitch': { signature: 'await applyWaffleStitch({amplitude?, cellWidth?, cellHeight?, sharpness?, rowOffset?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE waffle grid; saves a new version. In-code alternative: api.surface.waffle', docs: '/ai/textures.md' },
+        'applyFurVelvet':  { signature: 'await applyFurVelvet({amplitude?, fiberSpacing?, fiberLength?, octaves?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE fur/velvet fibers; saves a new version. In-code alternative: api.surface.fur', docs: '/ai/textures.md' },
+        'applyWovenFabric':{ signature: 'await applyWovenFabric({amplitude?, threadSpacing?, threadWidth?, underDepth?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE woven threads; saves a new version. In-code alternative: api.surface.woven', docs: '/ai/textures.md' },
+        'applyVoronoiShell': { signature: 'await applyVoronoiShell({amplitude?, cellSize?, wallWidth?, raised?, jitter?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE Voronoi cell relief; saves a new version. In-code alternative: api.surface.voronoi', docs: '/ai/textures.md' },
+        'applyVoronoiLamp':{ signature: 'await applyVoronoiLamp({cellSize?, wallThickness?, strutWidth?, resolution?, jitter?, grainAngleDeg?, seed?, preserveColor?}) -- Convert the model into a perforated Voronoi lamp shell (bake only — no api.surface twin)', docs: '/ai/textures.md' },
+        'smoothModel':     { signature: 'await smoothModel({iterations?, subdivide?, preserveColor?}) -- BAKE a Taubin smoothing pass; saves a new version. In-code alternative: api.surface.smooth', docs: '/ai/textures.md' },
+        'voxelizeModel':   { signature: 'await voxelizeModel({resolution?, smooth?, preserveColor?}) -- Convert the mesh to a voxel-language session (engine change — bake only)', docs: '/ai/voxel.md' },
+        // Transform / placement (mode 'parametric' wraps the code; 'bake' rewrites the mesh; 'auto' picks)
+        'canPlaceParametric': { signature: 'canPlaceParametric() -- Whether transforms can be written into the code parametrically (manifold-js sessions)', docs: '/ai/printing.md' },
+        'previewScale':    { signature: 'previewScale(sx, sy, sz, {preserveColor?}?) -- Non-destructive viewport preview of a resize -> {ok} or {error}', docs: '/ai/printing.md' },
+        'clearScalePreview': { signature: 'clearScalePreview() -- Discard a live scale preview', docs: '/ai/printing.md' },
+        'scaleModel':      { signature: 'await scaleModel(sx, sy, sz, {preserveColor?}?) -- Resize the model; saves a new version', docs: '/ai/printing.md' },
+        'placeModel':      { signature: "await placeModel({dropToFloor?, centerX?, centerY?, centerZ?, mode?: 'parametric'|'bake'|'auto', preserveColor?}) -- Drop to the bed / center on axes; saves a new version", docs: '/ai/printing.md' },
+        'rotateModel':     { signature: "await rotateModel({x?, y?, z?, mode?: 'parametric'|'bake'|'auto', preserveColor?}) -- Rotate by Euler degrees about the model's center; saves a new version", docs: '/ai/printing.md' },
+        'layFlatModel':    { signature: "await layFlatModel({mode?: 'parametric'|'bake'|'auto', preserveColor?}) -- Auto-orient: largest flat face down onto the bed; saves a new version", docs: '/ai/printing.md' },
+        'mirrorModel':     { signature: "await mirrorModel({axis?: 'x'|'y'|'z', mode?: 'parametric'|'bake'|'auto', preserveColor?}) -- Mirror across the model's center plane; saves a new version", docs: '/ai/printing.md' },
         // Annotations
         'listAnnotations':    { signature: 'listAnnotations() -- List freehand strokes -> [{id, color, width, points}]', docs: '/ai/annotations.md' },
         'listTextAnnotations':{ signature: 'listTextAnnotations() -- List pinned text labels -> [{id, text, color, fontSizePx, anchor}]', docs: '/ai/annotations.md' },
@@ -13662,11 +13734,16 @@ async function main() {
 
   // === api.surface.* — code-declared surface textures (memoized, sticky) ===
 
-  /** Base identity for the surface memo cache: code + customizer params. Any
-   *  change here re-keys the chain (→ a cache miss → the Re-apply pill), since
-   *  either changes the base geometry the textures sit on. */
+  /** Base identity for the surface memo cache: code + customizer params + the
+   *  identity of any active imports. Any change here re-keys the chain (→ a
+   *  cache miss → the Re-apply pill), since each changes the base geometry the
+   *  textures sit on. Imports must be folded in explicitly: the generated
+   *  import wrapper carries only filename + date, so two different meshes
+   *  imported the same day can yield byte-identical source — without the
+   *  import ids the cache would serve the previous mesh's textured result. */
   function surfaceBaseKey(src: string): string {
-    return simpleHash(`${src} ${JSON.stringify(currentParamValues ?? {})}`);
+    const imports = getActiveImports().map(m => `${m.id}/${m.numVert}/${m.numTri}`).join(",");
+    return simpleHash(`${src} ${JSON.stringify(currentParamValues ?? {})} ${imports}`);
   }
 
   function hideSurfaceReapplyPill(): void {
@@ -13739,11 +13816,13 @@ async function main() {
     }
   }
 
-  /** The Re-apply pill (and the `partwright.applySurfaceTextures()` console
-   *  method): force-compute the pending chain by re-running the exact same
-   *  source — `runCodeSync` defaults to `surfaceErrors: true`, which force-
-   *  applies and clears the pill. Using the stored `src` (not `getValue()`)
-   *  keeps the base key identical so the compute is reused on the re-run. */
+  /** The Re-apply pill's click handler: force-compute the pending chain by
+   *  re-running the exact same source — `runCodeSync` defaults to
+   *  `surfaceErrors: true`, which force-applies and clears the pill. Using the
+   *  stored `src` (not `getValue()`) keeps the base key identical so the
+   *  compute is reused on the re-run. There's deliberately no console-API
+   *  twin: `partwright.run()` / `runAndSave()` already force-apply, so agents
+   *  never see the pill state. */
   async function reapplySurfaceTextures(): Promise<boolean> {
     if (!pendingSurface || surfaceReapplyBusy) return false;
     surfaceReapplyBusy = true;
