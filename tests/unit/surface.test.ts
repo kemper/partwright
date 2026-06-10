@@ -22,7 +22,8 @@ import { sdfModifierMesh } from '../../src/surface/sdfModifier';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
-import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp } from '../../src/surface/modifiers';
+import { extractFeatureEdges, wireframeMesh } from '../../src/surface/wireframeField';
+import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp, applyWireframe } from '../../src/surface/modifiers';
 import { nearestTriangleMap } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
@@ -360,6 +361,83 @@ describe('applyVoronoiLamp (mesh output)', () => {
       expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
       expect(r.mesh.numTri).toBeGreaterThan(12);
     }
+  });
+});
+
+describe('extractFeatureEdges', () => {
+  it('keeps all 12 edges of a cube at a 25° threshold (90° creases), and none of the coplanar face diagonals', () => {
+    const segs = extractFeatureEdges(cube(10), 25);
+    // 12 cube edges × 6 floats each; the 6 face-diagonal edges (coplanar tris) are dropped.
+    expect(segs.length).toBe(12 * 6);
+  });
+
+  it('drops the cube edges when the angle threshold exceeds their 90° crease', () => {
+    // A closed cube has no boundary edges, and at a 100° threshold its 90° edges
+    // no longer qualify → no feature edges at all.
+    const segs = extractFeatureEdges(cube(10), 100);
+    expect(segs.length).toBe(0);
+  });
+
+  it('every kept segment endpoint sits on a cube corner', () => {
+    const segs = extractFeatureEdges(cube(10), 25);
+    const isCorner = (v: number) => v === 0 || v === 10;
+    for (let i = 0; i < segs.length; i++) expect(isCorner(segs[i])).toBe(true);
+  });
+});
+
+describe('wireframeMesh', () => {
+  it('builds a non-empty hollow cage from a cube (more geometry than the 12-tri solid)', () => {
+    const m = wireframeMesh(cube(20), { strutRadius: 1, resolution: 64 });
+    expect(m.numTri).toBeGreaterThan(12);
+    expect(m.numVert).toBeGreaterThan(8);
+  });
+
+  it('the cage spans roughly the cube extent plus a strut radius on each side', () => {
+    const r = 1;
+    const m = wireframeMesh(cube(20), { strutRadius: r, resolution: 64 });
+    const { min, max } = bboxOf(m.vertProperties);
+    // Struts hug the edges, so the cage reaches out to ~±r beyond the [0,20] cube.
+    expect(min[0]).toBeLessThan(0);
+    expect(min[0]).toBeGreaterThan(-r - 2);
+    expect(max[0]).toBeGreaterThan(20);
+    expect(max[0]).toBeLessThan(20 + r + 2);
+  });
+
+  it('returns an empty mesh when no edges qualify (cube at a 100° threshold)', () => {
+    const m = wireframeMesh(cube(20), { strutRadius: 1, resolution: 48, angleThresholdDeg: 100 });
+    expect(m.numTri).toBe(0);
+  });
+
+  it('the cage is hollow — its volume is far below the solid cube it came from', () => {
+    // A solid 20³ cube fills 8000 units³; a thin edge cage of radius 1 fills only a
+    // small fraction of that. Estimate the meshed volume via the divergence theorem.
+    const m = wireframeMesh(cube(20), { strutRadius: 1, resolution: 80 });
+    let vol = 0;
+    for (let t = 0; t < m.numTri; t++) {
+      const a = m.triVerts[t * 3], b = m.triVerts[t * 3 + 1], c = m.triVerts[t * 3 + 2];
+      const ax = m.vertProperties[a * 3], ay = m.vertProperties[a * 3 + 1], az = m.vertProperties[a * 3 + 2];
+      const bx = m.vertProperties[b * 3], by = m.vertProperties[b * 3 + 1], bz = m.vertProperties[b * 3 + 2];
+      const cx = m.vertProperties[c * 3], cy = m.vertProperties[c * 3 + 1], cz = m.vertProperties[c * 3 + 2];
+      vol += (ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6;
+    }
+    expect(Math.abs(vol)).toBeLessThan(8000 * 0.5); // unmistakably hollow
+    expect(Math.abs(vol)).toBeGreaterThan(0);
+  });
+});
+
+describe('applyWireframe', () => {
+  it('emits a manifold ofMesh wrapper with a baked cage mesh', () => {
+    const r = applyWireframe(cube(20), { strutRadius: 1, resolution: 64 });
+    expect(r.kind).toBe('manifold');
+    if (r.kind === 'manifold') {
+      expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
+      expect(r.mesh.numTri).toBeGreaterThan(12);
+    }
+  });
+
+  it('throws a helpful error when the model has no sharp edges to cage', () => {
+    expect(() => applyWireframe(cube(20), { strutRadius: 1, resolution: 48, angleThresholdDeg: 100 }))
+      .toThrow(/no sharp feature edges/i);
   });
 });
 

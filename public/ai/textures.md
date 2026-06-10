@@ -21,6 +21,7 @@ apply→save→verify workflow:
 | `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
 | `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
+| `applyWireframe({ strutRadius, angleThresholdDeg, resolution, watertight, preserveColor })` | Keeps **only the model's sharp feature edges**, rebuilt as smooth round struts — a see-through **wireframe / edge cage**. Bakes a manifold-js mesh. | Best on boxy / low-poly shapes; a fully smooth surface has no sharp edges and returns an error. See [`applyWireframe`](#applywireframe) below. |
 
 > **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
 > BREP/replicad model this discards the parametric source (and, for BREP, STEP
@@ -349,6 +350,57 @@ one step.
 **Tips:** with `watertight` on (default) the result is manifold/printable. If
 windows don't open, lower `strutWidth` or raise `cellSize`. Resolution
 auto-raises for thin struts, so you rarely touch it. Verify with `renderViews`.
+
+---
+
+## applyWireframe
+
+```
+applyWireframe({ strutRadius?, angleThresholdDeg?, resolution?, watertight?,
+                 preserveColor? })
+```
+
+Turns a solid into a see-through **wireframe / edge cage**: it keeps only the
+model's **sharp feature edges** and rebuilds each as a smooth round strut, so the
+result is the model's visible "just the edges" skeleton. A cube becomes its
+12-strut frame; a chamfered or low-poly shape becomes its hard edges.
+
+Unlike the relief textures, this isn't surface displacement — it meshes a
+**continuous distance field to the model's edges** (iso-0 of
+`distanceToNearestEdge − strutRadius`), which gives cylindrical struts with
+rounded joins at the corners, then keeps the largest connected web and relaxes
+it. No engine change (bakes a manifold-js mesh).
+
+**An edge is "kept" when** it is a boundary / non-manifold edge, **or** its two
+adjacent faces bend by more than `angleThresholdDeg`. So a **fully smooth
+surface** (sphere, organic blob) has no sharp edges and returns an **error** —
+use it on **boxy / faceted / low-poly** models.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `strutRadius` | ~2% of diagonal | Radius of each round strut (world units); the strut diameter is twice this. |
+| `angleThresholdDeg` | 25 | Keep an interior edge when its faces bend more than this [5–80]. Lower → more edges kept (denser cage); higher → only the sharpest. |
+| `resolution` | 96 | Field resolution along the longest axis [16–256]. **Auto-raised** so thin struts stay rounded — you rarely set it. |
+| `watertight` | **false** | Keep ONLY the largest connected strut web. A cage's edges often form several **disconnected loops** (stacked rings on a smooth body), so the default keeps them all. Set true only when you want one connected piece and accept dropping the rest. |
+| `preserveColor` | true | Sample model paint onto the struts. |
+
+**Look guidance:**
+- Clean box frame: defaults on a cube / cuboid.
+- Denser cage on a chamfered or low-poly model: lower `angleThresholdDeg` (~12–18).
+- Chunky vs delicate: raise / lower `strutRadius`.
+
+**Round / smooth bodies cage as rings, not outlines.** A tapered cylinder, cone,
+or sphere has **no vertical sharp edges**, so its feature edges are the horizontal
+rings where the profile changes (base, gallery, lamp room) — you'll get several
+**separate floating loops**, which is correct. (If stripes are *painted* rather
+than modeled steps, they're not edges and won't appear.) Leave `watertight` off
+(the default) to keep every loop — turning it on collapses the whole cage to a
+single ring.
+
+**Tips:** if the cage is too sparse, lower `angleThresholdDeg`; too busy, raise
+it. It's a heavier op (continuous field meshing) — allow a few seconds. Verify
+with `renderViews` (an `edges:'none'` render reads cleanest). Returns
+`{ ok, label, geometry, warnings? }` or `{ error }` when no edges qualify.
 
 ---
 
