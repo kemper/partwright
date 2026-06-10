@@ -191,8 +191,8 @@ export const manifoldJsEngine: Engine = {
     // Print-Fit shares the Curves text helper so its calibration coupon can
     // emboss values; Curves is constructed just above, so the dep is ready.
     printFitNamespace = createPrintFitNamespace(manifoldModule, { text: curvesNamespace.text });
-    // SPIKE: thi.ng-backed 2D sketch namespace (api.geom). Only needs
-    // CrossSection, so it's a module-level singleton like Curves/meshOps.
+    // 2D sketch-primitive namespace (api.geom). Only needs CrossSection, so
+    // it's a module-level singleton like Curves/meshOps.
     geom2dNamespace = createGeom2dNamespace(manifoldModule);
     gearsNamespace = createGearsNamespace(manifoldModule);
     threadsNamespace = createThreadsNamespace(manifoldModule);
