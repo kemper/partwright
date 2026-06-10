@@ -51,3 +51,18 @@ heuristic warning.
 (module split + new builders + unit tests + headless model:preview iteration), then
 docs and catalog workers in parallel once the API was fixed; main agent kept git,
 registration oversight, final verification, and the PR.
+
+## Assistant
+
+## Key decisions — docs migration phase
+
+**Old subdoc URL kept alive**: `public/ai/print-fit.md` became a redirect stub
+rather than being deleted, and `'print-fit'` stays in the `fetchSubdoc` enum
+(deprecated, omitted from descriptions) — an older cached agent prompt fetching
+it gets the redirect in one round-trip instead of an error + retry. New prompts
+never learn the old name.
+
+**New subdocs follow the gears/threads template** (option tables + verification
+section) so the in-app AI's reading pattern stays uniform; hinge docs teach the
+`maxComponents: 2` gate explicitly since the bbox-overlap warning is a false
+positive for any interleaved print-in-place part.
