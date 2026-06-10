@@ -7,7 +7,9 @@ import { preloadTextFonts } from '../textGlyphs';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
 import { createSdfNamespace, SdfNode } from '../sdf';
-import { createPrintFitNamespace } from '../printFit';
+import { createGeom2dNamespace } from '../geom2d';
+import { createFastenersNamespace } from '../fasteners';
+import { createJointsNamespace } from '../joints';
 import { createGearsNamespace } from '../gears';
 import { createThreadsNamespace } from '../threads';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
@@ -51,7 +53,15 @@ let curvesNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let meshOpsNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let printFitNamespace: any = null;
+let fastenersNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let jointsNamespace: any = null;
+// Deprecated back-compat alias — old saved sessions call api.printFit.*; it
+// spreads both the fasteners and joints namespaces. Never remove.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let printFitAlias: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let geom2dNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let gearsNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -185,9 +195,16 @@ export const manifoldJsEngine: Engine = {
     manifoldModule.setup();
     curvesNamespace = createCurvesNamespace(manifoldModule);
     meshOpsNamespace = createMeshOpsNamespace(manifoldModule);
-    // Print-Fit shares the Curves text helper so its calibration coupon can
+    // Fasteners shares the Curves text helper so its calibration coupon can
     // emboss values; Curves is constructed just above, so the dep is ready.
-    printFitNamespace = createPrintFitNamespace(manifoldModule, { text: curvesNamespace.text });
+    fastenersNamespace = createFastenersNamespace(manifoldModule, { text: curvesNamespace.text });
+    jointsNamespace = createJointsNamespace(manifoldModule);
+    // Deprecated back-compat alias — old saved sessions call api.printFit.*
+    // (the namespace that was split into fasteners + joints). Never remove.
+    printFitAlias = Object.freeze({ ...fastenersNamespace, ...jointsNamespace });
+    // 2D sketch-primitive namespace (api.geom). Only needs CrossSection, so
+    // it's a module-level singleton like Curves/meshOps.
+    geom2dNamespace = createGeom2dNamespace(manifoldModule);
     gearsNamespace = createGearsNamespace(manifoldModule);
     threadsNamespace = createThreadsNamespace(manifoldModule);
     // Kick off font pre-loading in the background so they're ready by the
@@ -510,7 +527,11 @@ export const manifoldJsEngine: Engine = {
       BREP,
       meshOps: meshOpsNamespace,
       sdf: sdfNamespace,
-      printFit: printFitNamespace,
+      geom: geom2dNamespace,
+      fasteners: fastenersNamespace,
+      joints: jointsNamespace,
+      // Deprecated back-compat alias — old saved sessions call api.printFit.*. Never remove.
+      printFit: printFitAlias,
       gears: gearsNamespace,
       threads: threadsNamespace,
       // Text helpers — flat aliases so agents can write api.text(...) directly.

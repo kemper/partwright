@@ -25,7 +25,14 @@ type PW = {
 
 test.describe('api.surface.* (textures declared in code)', () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.addInitScript(() => {
+      localStorage.setItem('partwright-tour-completed', '1');
+      // Keep the code pane visible (the AI drawer auto-open collapses it),
+      // so the stale-export test can click into .cm-content.
+      try {
+        localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false }));
+      } catch { /* ignore */ }
+    });
   });
 
   test('a console run force-applies the texture and returns the textured mesh', async ({ page }) => {
@@ -57,6 +64,44 @@ test.describe('api.surface.* (textures declared in code)', () => {
     // No "Re-apply" pill on a console/explicit run — the texture was applied.
     await expect(page.getByRole('button', { name: /Re-apply/ })).toBeHidden();
     await page.screenshot({ path: 'test-results/surface-in-code-textured.png' });
+  });
+
+  test('exporting while textures are stale carries a warning', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    // Put api.surface code in the editor WITHOUT running it, then trigger the
+    // live-typing auto-run by typing. The un-cached chain renders the base mesh
+    // and raises the Re-apply pill — the one state where an export would carry
+    // the untextured mesh.
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW & { setCode: (c: string) => void } }).partwright;
+      await pw.createSession('surface-stale-export');
+      pw.setCode([
+        'const { Manifold } = api;',
+        'api.surface.fuzzy({ amplitude: 0.5 });',
+        'return Manifold.sphere(10, 32);',
+      ].join('\n'));
+    });
+    await page.click('.cm-content');
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type('\n// touch');
+    await expect(page.getByRole('button', { name: /Re-apply/ })).toBeVisible({ timeout: 15_000 });
+
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: { exportSTLData: () => Promise<{ warning?: string }> } }).partwright;
+      return await pw.exportSTLData();
+    });
+    expect(out.warning ?? '').toContain('untextured');
+
+    // An explicit run clears the pill — and with it, the warning.
+    const after = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW & { getCode: () => string; exportSTLData: () => Promise<{ warning?: string }> } }).partwright;
+      await pw.run(pw.getCode());
+      return await pw.exportSTLData();
+    });
+    expect(after.warning).toBeUndefined();
+    await expect(page.getByRole('button', { name: /Re-apply/ })).toBeHidden();
   });
 
   test('rejects unknown surface options with an actionable error', async ({ page }) => {

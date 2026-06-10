@@ -517,8 +517,12 @@ interface ToolDefinitionSchema {
 }
 
 /** Gemini's OpenAPI subset rejects schemas that Anthropic/OpenAI happily
- *  accept. Three failure modes show up against the Partwright tool list:
+ *  accept. Four failure modes show up against the Partwright tool list:
  *    - `additionalProperties` / `$schema` (Gemini doesn't understand)
+ *    - `exclusiveMinimum` / `exclusiveMaximum` (e.g. `scaleModel`'s sx/sy/sz
+ *      carry `exclusiveMinimum: 0`) — Gemini's OpenAPI subset only knows
+ *      `minimum`/`maximum`, so it 400s with `Unknown name "exclusiveMinimum"
+ *      … Cannot find field`. Drop them; the loose bound is non-critical.
  *    - object types with no `properties` key (e.g. `withinBox: {type:
  *      object, description: ...}`) — Gemini rejects the whole tool list
  *      with 400 INVALID_ARGUMENT
@@ -532,6 +536,7 @@ function sanitizeSchemaForGemini(schema: ToolDefinitionSchema): Record<string, u
   const result: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(schema)) {
     if (key === '$schema' || key === 'additionalProperties') continue;
+    if (key === 'exclusiveMinimum' || key === 'exclusiveMaximum') continue;
     if (key === 'properties' && val && typeof val === 'object') {
       const props: Record<string, unknown> = {};
       for (const [pk, pv] of Object.entries(val)) {

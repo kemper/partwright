@@ -1,17 +1,20 @@
-// Electronics project box — a parametric base tray with M3 heat-set insert
-// bosses in the four corners and a matching lid with countersunk screw holes.
-// Drop brass inserts into the bosses with a soldering iron, then screw the lid
-// down with flat-head screws that sit flush. Vent slots on the long walls keep
-// electronics cool. Adjust all dimensions in the Customizer.
-const { Manifold, printFit } = api;
+// Electronics project box — a parametric base tray with M3 lid-mount bosses in
+// the four corners and a matching lid with countersunk screw holes. Pick the
+// lid mounting style: heat-set insert bosses (drop brass inserts in with a
+// soldering iron) or plain bosses with thread-forming pilot bores (the screw
+// cuts its own thread straight into the plastic — no hardware beyond the
+// screw). Vent slots on the long walls keep electronics cool. Adjust all
+// dimensions in the Customizer.
+const { Manifold, fasteners } = api;
 
 const p = api.params({
-  width:     { type: 'number', default: 60, min: 40, max: 120, step: 2, unit: 'mm', label: 'Width' },
-  depth:     { type: 'number', default: 44, min: 30, max: 100, step: 2, unit: 'mm', label: 'Depth' },
-  height:    { type: 'number', default: 24, min: 15, max: 60,  step: 1, unit: 'mm', label: 'Height' },
-  wall:      { type: 'number', default: 2.4, min: 1.5, max: 4, step: 0.2, unit: 'mm', label: 'Wall thickness' },
-  screwSize: { type: 'select', default: 'M3', options: ['M2.5', 'M3', 'M4'], label: 'Screw size' },
-  ventCount: { type: 'int',    default: 4, min: 0, max: 10, label: 'Vents per long side' },
+  width:      { type: 'number', default: 60, min: 40, max: 120, step: 2, unit: 'mm', label: 'Width' },
+  depth:      { type: 'number', default: 44, min: 30, max: 100, step: 2, unit: 'mm', label: 'Depth' },
+  height:     { type: 'number', default: 24, min: 15, max: 60,  step: 1, unit: 'mm', label: 'Height' },
+  wall:       { type: 'number', default: 2.4, min: 1.5, max: 4, step: 0.2, unit: 'mm', label: 'Wall thickness' },
+  screwSize:  { type: 'select', default: 'M3', options: ['M2.5', 'M3', 'M4'], label: 'Screw size' },
+  mountStyle: { type: 'select', default: 'heat-set insert', options: ['heat-set insert', 'thread-forming'], label: 'Lid mounting' },
+  ventCount:  { type: 'int',    default: 4, min: 0, max: 10, label: 'Vents per long side' },
 });
 
 const { width: W, depth: D, height: H, wall, screwSize, ventCount } = p;
@@ -31,11 +34,22 @@ const cavity = Manifold.cube([W - 2 * wall, D - 2 * wall, H], false)
   .translate([wall, wall, wall]);
 base = base.subtract(cavity);
 
-// Insert bosses sunk 0.5 mm into the floor so the union fuses solidly.
+// Lid-mount bosses, sunk 0.5 mm into the floor so the union fuses solidly.
+const bossH = H - wall + 0.5; // boss top lands flush with the rim (z = H)
 for (const [x, y] of corners) {
-  const boss = printFit.insertBoss({ size: screwSize, height: H - wall + 0.5, wall: 2.2 })
-    .translate([x, y, wall - 0.5]);
-  base = base.add(boss);
+  let boss;
+  if (p.mountStyle === 'heat-set insert') {
+    // Heat-set: boss with a tapered insert bore opening at the top.
+    boss = fasteners.insertBoss({ size: screwSize, height: bossH, wall: 2.2 });
+  } else {
+    // Thread-forming: plain solid boss (~2x screw dia) with a tap/pilot bore —
+    // the screw cuts its own thread into the plastic.
+    const spec = fasteners.fastener(screwSize);
+    const pilotLen = Math.min(spec.nominal * 3, bossH - 2);
+    boss = Manifold.cylinder(bossH, spec.nominal, spec.nominal, 32)
+      .subtract(fasteners.tapHole({ size: screwSize, length: pilotLen }).translate([0, 0, bossH]));
+  }
+  base = base.add(boss.translate([x, y, wall - 0.5]));
 }
 
 // Vent slots on the two long (Y-axis) walls, centered vertically.
@@ -58,7 +72,7 @@ if (ventCount > 0) {
 // ---- Lid: flat cap with countersunk screw holes ----
 let lid = Manifold.cube([W, D, lidT], false);
 for (const [x, y] of corners) {
-  const hole = printFit.screwHole({ size: screwSize, length: lidT, head: 'countersunk', through: true })
+  const hole = fasteners.screwHole({ size: screwSize, length: lidT, head: 'countersunk', through: true })
     .translate([x, y, lidT]);
   lid = lid.subtract(hole);
 }

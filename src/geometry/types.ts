@@ -101,6 +101,21 @@ export interface MeshResult {
    *  `componentCount` over-reports (enclosed cavities + edge/corner touches).
    *  Only set by the voxel engine. */
   voxelPieceCount?: number;
+  /** The single world-units-per-voxel `res` shared by every `v.sdf()` call this
+   *  run, so stats can echo a res-aware world size (worldBBox = bbox × res).
+   *  Only set by the voxel engine, and only when at least one `v.sdf()` ran AND
+   *  all calls agreed on one res (mixed res values leave it absent — see
+   *  `voxelResMixed`). */
+  voxelRes?: number;
+  /** True when `v.sdf()` calls mixed different `res` values — the world scale
+   *  is ambiguous, so no worldBBox can be derived. Only set by the voxel engine. */
+  voxelResMixed?: boolean;
+  /** Voxel fill count per label requested via `v.sdf({ colors })`, including
+   *  ZERO-count entries (the silent-label trap: a smoothUnion-blended sub-body
+   *  is never the deepest region, so its label colors nothing — surfacing the 0
+   *  makes that visible). Only set by the voxel engine, when a labelled sdf
+   *  fill ran. */
+  sdfLabelCounts?: Record<string, number>;
 }
 
 export interface CrossSectionResult {

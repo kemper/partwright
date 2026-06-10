@@ -9,13 +9,13 @@
  * deterministic, parametric involute generator so a real, meshing gear is one
  * call from a manifold-js session.
  *
- * Conventions (match Curves / printFit):
+ * Conventions (match Curves / fasteners):
  *   • Z-up. A spur gear is built centred on the origin, lying in the XY plane,
  *     extruded along +Z from z=0 to z=thickness. The caller positions it with
  *     `.translate()` / `meshOps.placeOn()` / `meshOps.alignTo()`.
  *   • Builders return a Manifold ready to use (or, for `pair`, an object of
  *     Manifolds). They THROW `ValidationError` on bad input (like Curves /
- *     printFit), so the mistake surfaces as a clear run error.
+ *     fasteners), so the mistake surfaces as a clear run error.
  *
  * Terminology: `module` (mm of pitch diameter per tooth) is the metric tooth
  * size — pitch diameter = module · teeth. Two gears mesh iff they share a
@@ -33,7 +33,7 @@ const DEG = Math.PI / 180;
 const LIP = 0.1;
 
 // ---------------------------------------------------------------------------
-// Validation helpers (mirror printFit's local helpers)
+// Validation helpers (mirror fasteners' local helpers)
 // ---------------------------------------------------------------------------
 
 function describe(v: unknown): string {

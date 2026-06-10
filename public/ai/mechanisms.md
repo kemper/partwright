@@ -145,6 +145,8 @@ stray spike.
 | **Hinge / pivot** | A pin captured in a barrel (or two knuckles) with radial clearance; the pin can't pull out sideways. |
 | **Compliant flex** | One solid body whose thin members bend elastically (no gap needed — it's `componentCount === 1` *by design*; the motion is material flex, not a sliding joint). |
 
+Several of these now exist as ready-made parametric builders — a print-in-place barrel hinge, a snap-together ball joint, snap rims, snap-fits — in `api.joints.*`: `readDoc("joints")`.
+
 For each: build it, check `componentCount`, then cutaway-render to confirm the
 gap. Always save the final version with `runAndSave(code, label, {maxComponents:
 <expected>})` so the component count is asserted on every rerun.

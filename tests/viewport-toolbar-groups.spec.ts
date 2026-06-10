@@ -95,7 +95,12 @@ test.describe('viewport toolbar groups', () => {
     // tool panel. The tour is pre-dismissed in openEditor, so a real click lands.
     const box = await page.locator('#viewport').boundingBox();
     if (!box) throw new Error('viewport canvas has no bounding box');
-    await page.mouse.click(box.x + 24, box.y + 24); // top-left corner — empty space
+    // Bottom-left corner — empty 3D canvas, clear of the centered model AND of the
+    // overlay toolbar that hugs the viewport's TOP edge. (A top corner is unsafe:
+    // when the code pane is shown the viewport narrows and the toolbar's first row
+    // reaches down into it, so a top-corner "canvas" click can land on a toolbar
+    // chip instead.)
+    await page.mouse.click(box.x + 24, box.y + box.height - 24);
     await expect(page.locator('#paint-toggle')).toBeVisible();
     await expect(page.locator('#paint-picker-panel')).toBeVisible();
   });

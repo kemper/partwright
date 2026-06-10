@@ -23,6 +23,15 @@ import { applyLiteralPatch, applyPatches } from './patch';
 export interface ToolDefinition {
   name: string;
   description: string;
+  // `input_schema` is JSON Schema, but it's sent verbatim to every provider —
+  // and Gemini's API only accepts an OpenAPI *subset*. Keep schemas within that
+  // subset: type, description, properties, required, items, enum, minimum,
+  // maximum. Keywords Gemini rejects (it 400s the whole tool list with
+  // `Unknown name "X" … Cannot find field`) must be stripped by
+  // `sanitizeSchemaForGemini` in gemini.ts — it already drops `$schema`,
+  // `additionalProperties`, `exclusiveMinimum`, and `exclusiveMaximum`. If you
+  // reach for a keyword not in that safe list (e.g. `pattern`, `const`,
+  // `oneOf`), add it to the sanitizer's strip set in the same change.
   input_schema: {
     type: 'object';
     properties: Record<string, unknown>;
@@ -48,10 +57,13 @@ export interface ToolExecResult {
  *  from this so the schema can't silently omit a name the validator accepts
  *  (which previously schema-blocked the model from 5 valid subdocs). */
 export const SUBDOC_NAMES_LIST = [
-  'curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety',
-  'print-fit', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
+  'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'voxel', 'colors', 'print-safety',
+  'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api',
+  // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
+  // cached prompt requesting it gets the redirect stub instead of an error.
+  'print-fit',
 ] as const;
 
 const ALL_TOOLS: ToolDefinition[] = [
@@ -445,7 +457,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'readDoc',
-    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, print-fit, gears, threads, reference-images, file-io, annotations, printing, relief, textures, mechanisms, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, figure, voxel, colors, print-safety, fasteners, joints, gears, threads, reference-images, file-io, annotations, printing, relief, textures, mechanisms, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
     input_schema: {
       type: 'object',
       properties: {
