@@ -46,3 +46,6 @@ Key decisions and why:
 - Remote-env requirements (uv install, network-policy domains, `npm ci`)
   documented in docs/agent-tooling.md; the environment setup-script snippet
   was delivered in chat since that config lives outside the repo.
+
+- Post-PR: retro entry added (retros/inbox/20260610-162500); uv found preinstalled
+  in the remote image, so setup-script additions are pre-warm + policy only.
