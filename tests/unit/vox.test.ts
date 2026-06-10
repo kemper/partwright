@@ -159,3 +159,146 @@ describe('parseVox', () => {
     expect(pal.slice(186).some((v) => v !== 0x000000)).toBe(true);
   });
 });
+
+// ── Scene-graph (multi-object) import ──────────────────────────────────────
+// MagicaVoxel positions each object through nTRN/nGRP/nSHP nodes. These tests
+// hand-build files with that graph to prove all models assemble at their world
+// positions (with rotation), instead of collapsing to model 0.
+
+/** Little-endian byte writer for the extension-chunk encodings. */
+class W {
+  b: number[] = [];
+  i32(v: number): this { this.b.push(v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff); return this; }
+  str(s: string): this { this.i32(s.length); for (let i = 0; i < s.length; i++) this.b.push(s.charCodeAt(i) & 0xff); return this; }
+  dict(e: [string, string][]): this { this.i32(e.length); for (const [k, v] of e) this.str(k).str(v); return this; }
+  out(): Uint8Array { return new Uint8Array(this.b); }
+}
+
+function chunk(id: string, content: Uint8Array): Uint8Array {
+  const out = new Uint8Array(12 + content.length);
+  for (let i = 0; i < 4; i++) out[i] = id.charCodeAt(i);
+  new DataView(out.buffer).setUint32(4, content.length, true);
+  out.set(content, 12);
+  return out;
+}
+
+function sizeChunk(x: number, y: number, z: number): Uint8Array {
+  return chunk('SIZE', new W().i32(x).i32(y).i32(z).out());
+}
+function xyziChunk(voxels: XYZI[]): Uint8Array {
+  const w = new W().i32(voxels.length);
+  for (const v of voxels) w.b.push(v.x & 0xff, v.y & 0xff, v.z & 0xff, v.i & 0xff);
+  return chunk('XYZI', w.out());
+}
+function rgbaChunk(rgb: Record<number, number>): Uint8Array {
+  // rgb maps 1-based palette index → 0xRRGGBB; file slot k holds index k+1.
+  const w = new W();
+  for (let i = 0; i < 256; i++) {
+    const c = rgb[i + 1] ?? 0;
+    w.b.push((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff, 0xff);
+  }
+  return chunk('RGBA', w.out());
+}
+function trnChunk(nodeId: number, childId: number, t?: [number, number, number], rByte?: number): Uint8Array {
+  const frame: [string, string][] = [];
+  if (t) frame.push(['_t', `${t[0]} ${t[1]} ${t[2]}`]);
+  if (rByte !== undefined) frame.push(['_r', String(rByte)]);
+  return chunk('nTRN', new W().i32(nodeId).dict([]).i32(childId).i32(-1).i32(0).i32(1).dict(frame).out());
+}
+function grpChunk(nodeId: number, children: number[]): Uint8Array {
+  const w = new W().i32(nodeId).dict([]).i32(children.length);
+  for (const c of children) w.i32(c);
+  return chunk('nGRP', w.out());
+}
+function shpChunk(nodeId: number, modelId: number): Uint8Array {
+  return chunk('nSHP', new W().i32(nodeId).dict([]).i32(1).i32(modelId).dict([]).out());
+}
+
+/** Wrap children under "VOX " + MAIN. */
+function voxFile(children: Uint8Array[]): Uint8Array {
+  const childrenLen = children.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(8 + 12 + childrenLen);
+  out[0] = 0x56; out[1] = 0x4f; out[2] = 0x58; out[3] = 0x20; // "VOX "
+  const dv = new DataView(out.buffer);
+  dv.setUint32(4, 150, true);
+  out[8] = 0x4d; out[9] = 0x41; out[10] = 0x49; out[11] = 0x4e; // "MAIN"
+  dv.setUint32(12, 0, true);
+  dv.setUint32(16, childrenLen, true);
+  let p = 20;
+  for (const c of children) { out.set(c, p); p += c.length; }
+  return out;
+}
+
+describe('parseVox scene graph', () => {
+  it('assembles two models at their scene-graph positions', () => {
+    // model0 (red) at origin, model1 (green) translated +10 in x.
+    const bytes = voxFile([
+      sizeChunk(1, 1, 1), xyziChunk([{ x: 0, y: 0, z: 0, i: 1 }]),
+      sizeChunk(1, 1, 1), xyziChunk([{ x: 0, y: 0, z: 0, i: 2 }]),
+      trnChunk(0, 1), // root → group 1
+      grpChunk(1, [2, 4]), // group → two shape transforms
+      trnChunk(2, 3, [0, 0, 0]), shpChunk(3, 0), // model 0 at origin
+      trnChunk(4, 5, [10, 0, 0]), shpChunk(5, 1), // model 1 at +10 x
+      rgbaChunk({ 1: 0xff0000, 2: 0x00ff00 }),
+    ]);
+    const grid = parseVox(bytes);
+    expect(grid.size).toBe(2);
+    // Scene spans x∈[0,10] → centered offset 5; both sit on z=0.
+    expect(grid.get(-5, 0, 0)).toBe(0xff0000);
+    expect(grid.get(5, 0, 0)).toBe(0x00ff00);
+  });
+
+  it('drops all-but-model-0 when an explicit modelIndex bypasses the graph', () => {
+    const bytes = voxFile([
+      sizeChunk(1, 1, 1), xyziChunk([{ x: 0, y: 0, z: 0, i: 1 }]),
+      sizeChunk(1, 1, 1), xyziChunk([{ x: 0, y: 0, z: 0, i: 2 }]),
+      trnChunk(0, 1), grpChunk(1, [2, 4]),
+      trnChunk(2, 3, [0, 0, 0]), shpChunk(3, 0),
+      trnChunk(4, 5, [10, 0, 0]), shpChunk(5, 1),
+      rgbaChunk({ 1: 0xff0000, 2: 0x00ff00 }),
+    ]);
+    // modelIndex picks exactly one model and ignores the scene graph.
+    expect(parseVox(bytes, { modelIndex: 1 }).size).toBe(1);
+    expect([...vals(parseVox(bytes, { modelIndex: 1 }))]).toEqual([0x00ff00]);
+  });
+
+  it('applies a 90°-about-Z rotation from the _r byte', () => {
+    // A 3-long line along local x; _r byte 17 maps (x,y,z) → (-y, x, z), so the
+    // line ends up along y. Proves the rotation matrix is decoded and applied.
+    const line: XYZI[] = [
+      { x: 0, y: 0, z: 0, i: 1 }, { x: 1, y: 0, z: 0, i: 1 }, { x: 2, y: 0, z: 0, i: 1 },
+    ];
+    const bytes = voxFile([
+      sizeChunk(3, 1, 1), xyziChunk(line),
+      trnChunk(0, 1), grpChunk(1, [2]),
+      trnChunk(2, 3, [0, 0, 0], 17), shpChunk(3, 0),
+      rgbaChunk({ 1: 0xffffff }),
+    ]);
+    const grid = parseVox(bytes);
+    expect(grid.size).toBe(3);
+    const b = grid.bounds()!;
+    // Originally a line in x (Δx=2, Δy=0); after the rotation it's a line in y.
+    expect(b.max[0] - b.min[0]).toBe(0); // collapsed in x
+    expect(b.max[1] - b.min[1]).toBe(2); // extended in y
+  });
+
+  it('falls back to the legacy path when a scene node is malformed', () => {
+    // A truncated nTRN (claims a frame but the content ends) must not throw —
+    // the importer ignores the bad node and centers model 0.
+    const badTrn = chunk('nTRN', new W().i32(0).dict([]).i32(1).i32(-1).i32(0).i32(1).out()); // missing frame DICT
+    const bytes = voxFile([
+      sizeChunk(1, 1, 1), xyziChunk([{ x: 0, y: 0, z: 0, i: 1 }]),
+      badTrn,
+      rgbaChunk({ 1: 0xff0000 }),
+    ]);
+    const grid = parseVox(bytes);
+    expect(grid.size).toBe(1);
+    expect(grid.get(0, 0, 0)).toBe(0xff0000);
+  });
+});
+
+function vals(grid: ReturnType<typeof parseVox>): number[] {
+  const out: number[] = [];
+  grid.forEach((_x, _y, _z, c) => out.push(c));
+  return out;
+}
