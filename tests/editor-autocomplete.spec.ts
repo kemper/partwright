@@ -48,6 +48,23 @@ test.describe('editor autocomplete', () => {
       .toContain('Manifold.sphere(');
   });
 
+  test('Tab accepts the highlighted completion', async ({ page }) => {
+    await openEditor(page);
+    await replaceEditorWith(page, 'Manifold.cyli');
+    const tooltip = page.locator('.cm-tooltip-autocomplete');
+    await expect(tooltip).toBeVisible();
+    // Let the completion state settle so the highlighted option is acceptable.
+    await expect(tooltip.locator('[role="option"][aria-selected="true"]')).toBeVisible();
+    await page.waitForTimeout(400);
+    // Tab accepts the highlighted option (cylinder), inserting the call snippet.
+    await page.keyboard.press('Tab');
+    await expect
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .poll(() => page.evaluate(() => (window as any).partwright.getCode()))
+      .toContain('Manifold.cylinder(');
+    await expect(tooltip).not.toBeVisible();
+  });
+
   test('api. suggests injected sandbox members', async ({ page }) => {
     await openEditor(page);
     await replaceEditorWith(page, 'api.i');

@@ -136,6 +136,10 @@ export interface AppConfig {
     voxelDefaultMaxSize: number;
     /** Voxel count above which the import UI shows a performance warning. */
     voxelHeavyThreshold: number;
+    /** Max number of lattice cells `v.sdf()` may sample in one call before it
+     *  refuses (guards against a huge bounds × tiny `res` freezing the engine).
+     *  Past this the call throws and asks for a coarser `res` or tighter bounds. */
+    voxelSdfMaxSamples: number;
     /** Max image resolution (pixels per side) when importing for relief. */
     reliefMaxResolution: number;
     /** Timeout (ms) for fetching a remote file by URL in the import-from-URL flow. */
@@ -152,6 +156,13 @@ export interface AppConfig {
     tooltipDelayMs: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
     codeEditorErrorIdleMs: number;
+    /** Input-grace window (ms) for the code editor's bottom-scroll stabilizer.
+     *  When the editor is parked near the very bottom, a programmatic one-line
+     *  re-measure snap (real Chrome reconciling fractional line heights on a
+     *  focus change / layout reflow) is reverted so the code doesn't stutter —
+     *  unless a real scroll happened within this window (wheel, scrollbar drag,
+     *  touch, keyboard/typing), which is always honored. Set to 0 to disable. */
+    codeEditorScrollPinMs: number;
     /** Debounce delay (ms) after the last companion-file keystroke before the
      *  draft is autosaved, so companion edits survive a reload without writing
      *  to IndexedDB on every keystroke. */
@@ -255,6 +266,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     stlWeldTolerance: 1e-5,
     voxelDefaultMaxSize: 64,
     voxelHeavyThreshold: 250_000,
+    voxelSdfMaxSamples: 8_000_000,
     reliefMaxResolution: 512,
     remoteFetchTimeoutMs: 15_000,
     filamentMatchThreshold: 0.18,
@@ -264,6 +276,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     toastDurationMs: 2200,
     tooltipDelayMs: 150,
     codeEditorErrorIdleMs: 800,
+    codeEditorScrollPinMs: 250,
     companionDraftDebounceMs: 600,
     workCameraSaveDebounceMs: 500,
     surfacePreviewDebounceMs: 250,

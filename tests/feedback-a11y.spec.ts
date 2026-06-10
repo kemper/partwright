@@ -22,6 +22,13 @@ test.describe('feedback + a11y', () => {
     // intercept the export — this test asserts the success-toast live region.
     await page.locator('#export-units-select').selectOption('mm');
     await page.locator('#export-dropdown').getByText('STL', { exact: true }).click();
+    // The starter models are self-colored (api.label), so STL — which can't
+    // carry colour — raises the "colours will be dropped" confirm. Proceed past
+    // it; the success toast is what this test is about.
+    const confirm = page.locator('[role="dialog"]:has-text("Export STL?")');
+    if (await confirm.isVisible().catch(() => false)) {
+      await confirm.getByRole('button', { name: 'Export anyway' }).click();
+    }
     await expect(
       page.locator('div[role="status"]').filter({ hasText: /Exported .*\.stl/ }),
     ).toBeVisible();

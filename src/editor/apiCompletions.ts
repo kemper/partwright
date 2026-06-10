@@ -105,6 +105,8 @@ const SDF_STATIC: Completion[] = [
   fn('smoothIntersect', '(a, b, k)', 'Smoothly blended intersection.'),
   fn('subtract', '(a, b)', 'a minus b (sharp).'),
   fn('intersect', '(a, b)', 'Intersection of two SDF nodes.'),
+  fn('noise', '({seed?, frequency?, octaves?, lacunarity?, gain?, ridged?})', 'Seeded fBm noise field — pass the returned (x,y,z)=>number to node.displace() for organic texture (rock/bark/coral).'),
+  fn('lsystem', '({axiom, rules, iterations, angle?, length?, radius?, radiusScale?, blend?, label?, leaf?})', 'Grow a fractal plant/coral/branching structure into an SDF node of welded capsules. Optional foliage spheres via leaf.'),
   fn('build', '(node, opts?)', 'Lower an SDF tree to a Manifold via marching tetrahedra. opts = { edgeLength?, bounds?, level?, tolerance? }.'),
 ];
 
@@ -125,6 +127,7 @@ const SDF_INSTANCE: Completion[] = [
   fn('twist', '(degreesPerUnit, axis?, center?)', 'Twist around axis ("z" default); center=[u,v] offsets the twist line. Lipschitz approx; mesh stays clean.'),
   fn('bend', '(degreesPerUnit, axis?)', 'Bend — axis names the input coordinate that drives the rotation ("x" default).'),
   fn('taper', '(rate, axis?)', 'Linearly scale the cross-section perpendicular to axis ("z" default); scale = 1 + rate*coord.'),
+  fn('displace', '(amount, field)', 'Push the surface in/out by a scalar field (e.g. sdf.noise()) for organic texture. amount = max world-unit displacement; field returns ~[-1,1]. Mesh fine enough to resolve the bumps.'),
   fn('polarArray', '(count, {axis?, angle?, radius?})', 'Union of count copies rotated evenly around axis. radius pushes each copy outward first.'),
   fn('polarRepeat', '(count, {axis?, radius?})', 'Domain-warp ring: tile this node count times around axis. Cheaper than polarArray for large counts (child evaluated ONCE per sample).'),
   fn('repeat', '([px,py,pz])', 'Tile infinitely on a grid (0 = no repeat on that axis). INFINITE — intersect or pass bounds.'),
@@ -185,6 +188,9 @@ const API_MEMBERS: Completion[] = [
   val('Curves', 'namespace', 'Helpers for parametric curves / paths.', 'variable'),
   val('meshOps', 'namespace', 'Predicates (intersects, pointInside, bbox), alignment (alignTo, placeOn), patterns (linearPattern, circularPattern, mirrorCopy) and robust booleans (expectUnion, heal).', 'variable'),
   val('sdf', 'namespace', 'SDF (signed distance field) builder — smooth blends, gyroids, shells, twists. See /ai/sdf.md.', 'variable'),
+  val('gears', 'namespace', 'Involute spur gears, meshing pairs, and racks (spur/pair/rack). See /ai/gears.md.', 'variable'),
+  val('threads', 'namespace', 'ISO-metric threaded rods, bolts, and nuts (rod/bolt/nut). See /ai/threads.md.', 'variable'),
+  val('printFit', 'namespace', 'Print-fit joinery: screw holes, insert bosses, nut pockets, pins, dovetails, snap-fits. See /ai/print-fit.md.', 'variable'),
   val('imports', 'Mesh[]', 'Imported meshes (e.g. STL) — pass to Manifold.ofMesh(api.imports[i]).', 'variable'),
   fn('label', '(shape, name)', 'Tag a shape so painted regions can target it by name.'),
   fn('labeledUnion', '(parts)', 'Union [{name, shape}, …], tagging each part for later paint-by-label.'),

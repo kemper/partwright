@@ -22,6 +22,11 @@ export interface ParamsPanelOptions {
    *  Lets an external toggle button (the viewport "Customize" pill) mirror the
    *  panel's state and show a parameter count. */
   onVisibilityChange?: (state: { hasParams: boolean; open: boolean; count: number }) => void;
+  /** Fired when a new/changed parameter schema auto-opens the panel (i.e. a
+   *  parameterizable model is opened for the first time). Lets the host also
+   *  reveal the Tools dropdown the Customize button lives in, so the tool list
+   *  sits just above the freshly-docked panel. Not fired on manual re-opens. */
+  onAutoReveal?: () => void;
 }
 
 export interface ParamsPanelController {
@@ -56,7 +61,7 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   // Bottom-left of the viewport — clear of the status pill (top-left), the
   // clip/tool bar (top-right) and the Z slider (right). pointer-events-auto so
   // widgets work; the panel itself is small so it doesn't block orbit much.
-  root.className = 'hidden absolute z-10 w-60 max-w-[calc(100%-1rem)] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
+  root.className = 'hidden fixed z-10 w-60 max-w-[calc(100%-1rem)] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
 
   // Header: a "Customize" title, a Reset button, and a close (×) button. Closing
   // hides the whole panel; the viewport "Customize" toggle pill reopens it (see
@@ -163,7 +168,8 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
       return;
     }
     const sig = schemaSignature(schema);
-    if (sig !== currentSig) {
+    const schemaChanged = sig !== currentSig;
+    if (schemaChanged) {
       currentSig = sig;
       rebuild(schema);
       // A new or changed parameter set re-opens the panel so its knobs are seen.
@@ -172,6 +178,9 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     paramCount = schema.length;
     updateValues(values);
     title.textContent = schema.length === 1 ? 'Customize (1)' : `Customize (${schema.length})`;
+    // Reveal the Tools dropdown *before* positioning the panel, so applyVisibility
+    // docks the panel beneath the now-open menu rather than the bare toolbar.
+    if (schemaChanged && isOpen()) opts.onAutoReveal?.();
     applyVisibility();
   }
 

@@ -442,16 +442,38 @@ function sampleQuantized(rgb: Float32Array, w: number, h: number, opts: ReliefOp
   const count = w * h;
   const { maxHeight, layerHeight } = opts.common;
   const lab = opts.quantized.colorSpace === 'lab';
-  const k = Math.max(2, Math.floor(opts.quantized.clusters));
+  const fixed = opts.quantized.fixedPalette;
 
-  // Cluster in the chosen colour space (shared with image→voxel posterize).
-  const { assign, repRGB, k: kk } = quantizeColors(rgb, count, k, lab ? 'lab' : 'rgb');
+  // Build the colour palette + per-cell cluster assignment. With a fixed palette
+  // ("constrain colours to filament palette") we skip k-means and snap each cell
+  // to its nearest fixed colour; otherwise we cluster in the chosen colour space
+  // (shared with image→voxel posterize). Either way `palette` is the per-cluster
+  // sRGB and `assign[i]` the cluster index for cell i.
+  let palette: Array<[number, number, number]>;
+  let assign: Int32Array;
+  let kk: number;
+  if (fixed && fixed.length > 0) {
+    palette = fixed.map(c => [clamp255(c[0]), clamp255(c[1]), clamp255(c[2])] as [number, number, number]);
+    kk = palette.length;
+    const palFeat: Array<[number, number, number]> = palette.map(p => (lab ? rgbToLab(p[0], p[1], p[2]) : [p[0], p[1], p[2]]));
+    assign = new Int32Array(count);
+    for (let i = 0; i < count; i++) {
+      const o = i * 3;
+      const fl = lab ? rgbToLab(rgb[o], rgb[o + 1], rgb[o + 2]) : [rgb[o], rgb[o + 1], rgb[o + 2]] as [number, number, number];
+      assign[i] = nearestPalette(fl[0], fl[1], fl[2], palFeat);
+    }
+  } else {
+    const k = Math.max(2, Math.floor(opts.quantized.clusters));
+    const res = quantizeColors(rgb, count, k, lab ? 'lab' : 'rgb');
+    assign = res.assign;
+    kk = res.k;
+    palette = [];
+    for (let c = 0; c < kk; c++) palette.push([clamp255(res.repRGB[c * 3]), clamp255(res.repRGB[c * 3 + 1]), clamp255(res.repRGB[c * 3 + 2])]);
+  }
 
-  // Representative sRGB palette + per-cluster height. Clusters are ordered by
-  // luminance and given evenly spaced heights snapped to layer multiples, so
-  // each colour reads as one clean flat terrace (darkest sits lowest).
-  const palette: Array<[number, number, number]> = [];
-  for (let c = 0; c < kk; c++) palette.push([clamp255(repRGB[c * 3]), clamp255(repRGB[c * 3 + 1]), clamp255(repRGB[c * 3 + 2])]);
+  // Clusters are ordered by luminance and given evenly spaced heights snapped to
+  // layer multiples, so each colour reads as one clean flat terrace (darkest
+  // sits lowest).
   const order = palette.map((_, i) => i).sort((a, b) => luminance255(palette[a][0], palette[a][1], palette[a][2]) - luminance255(palette[b][0], palette[b][1], palette[b][2]));
   // `invertHeights` flips the cluster → height map so DARKER colours land
   // TALLER. Useful when an image's background is the lightest cluster: with

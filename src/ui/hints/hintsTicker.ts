@@ -38,6 +38,12 @@ let paused = false;
 let configUnsub: (() => void) | null = null;
 let sessionUnsub: (() => void) | null = null;
 let resizeObs: ResizeObserver | null = null;
+/** Pending rAF handle for the resize-driven relayout (0 = none). The observer
+ *  defers relayout to the next frame so its layout mutations (display toggles,
+ *  reparenting, offsetWidth reads) don't re-enter the observer in the same tick
+ *  — that re-entrancy is what raises "ResizeObserver loop completed with
+ *  undelivered notifications". */
+let resizeRaf = 0;
 let desktopMqCleanup: (() => void) | null = null;
 /** Re-evaluate single-vs-two-row layout for the current width + hint text.
  *  Set while a strip is mounted (closure over its elements), cleared on
@@ -167,6 +173,7 @@ function teardownStrip(): void {
   rotateTimer = 0;
   resizeObs?.disconnect();
   resizeObs = null;
+  if (resizeRaf) { cancelAnimationFrame(resizeRaf); resizeRaf = 0; }
   desktopMqCleanup?.();
   desktopMqCleanup = null;
   dismissCoachmark();
@@ -304,7 +311,16 @@ function renderStrip(): void {
   relayoutFn = relayout;
 
   resizeObs?.disconnect();
-  resizeObs = new ResizeObserver(relayout);
+  resizeObs = new ResizeObserver(() => {
+    // Coalesce to one relayout per frame and run it outside the observer's
+    // delivery tick, so the layout changes it makes don't trip the
+    // "undelivered notifications" loop.
+    if (resizeRaf) return;
+    resizeRaf = requestAnimationFrame(() => {
+      resizeRaf = 0;
+      relayout();
+    });
+  });
   resizeObs.observe(host);
   // Re-evaluate on breakpoint crossings: resizing the window across 768px may
   // not shift the host's own width enough to trip the ResizeObserver.

@@ -30,6 +30,8 @@ import {
   assertNoUnknownKeys,
   ValidationError,
 } from '../validation/apiValidation';
+import { makeNoise, type NoiseOptions, type ScalarField } from './noise';
+import { expandLSystem, turtle3d, type LSystemRule } from './lsystem';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ManifoldClass = any;
@@ -243,6 +245,21 @@ export class SdfNode {
     assertNumber(rate, 'taper(rate)');
     const a = assertEnum(axis, ['x', 'y', 'z'] as const, 'taper(axis)');
     return opTaper(this, rate as number, a);
+  }
+
+  /** Push the surface in and out by a scalar field — the stochastic
+   *  cousin of twist/bend/taper, for organic texture (rock, bark, coral,
+   *  terrain). `amount` is the maximum displacement in world units;
+   *  `field(x, y, z)` should return roughly [-1, 1] (e.g. `api.sdf.noise()`
+   *  or any custom function). Positive field values push the surface
+   *  OUTWARD. Like twist/bend, this perturbs the metric, so the result is
+   *  a Lipschitz approximation — marching tetrahedra still meshes it
+   *  watertight. Mesh at an `edgeLength` finer than the field's smallest
+   *  features or the bumps alias away. */
+  displace(amount: number, field: ScalarField): SdfNode {
+    assertNumber(amount, 'displace(amount)', { min: 0 });
+    assertFunction(field, 'displace(field)');
+    return opDisplace(this, amount as number, field);
   }
 
   // ---- Combinators ----------------------------------------------------
@@ -1217,6 +1234,27 @@ function opTaper(child: SdfNode, rate: number, axis: 'x' | 'y' | 'z'): SdfNode {
   return new SdfNode({ kind: 'taper', eval: evalFn, bounds: { min, max }, children: [child], partitionable: false });
 }
 
+function opDisplace(child: SdfNode, amount: number, field: ScalarField): SdfNode {
+  // Surface displacement: f(p) - amount * field(p). Subtracting a positive
+  // field value lowers the distance, so the iso-surface moves OUTWARD there
+  // — the intuitive "bump out where the field is high". Guard a user field
+  // returning non-finite so one bad sample can't poison the whole mesh.
+  return new SdfNode({
+    kind: 'displace',
+    eval: (x, y, z) => {
+      const d = child._eval(x, y, z);
+      const f = field(x, y, z);
+      const ff = typeof f === 'number' && Number.isFinite(f) ? f : 0;
+      return d - amount * ff;
+    },
+    // The surface can move out by up to `amount` anywhere — expand the
+    // child's bbox so marching tetrahedra has room to close the bumps.
+    bounds: bbExpand(child._bounds, amount),
+    children: [child],
+    partitionable: false,
+  });
+}
+
 export interface PolarArrayOptions {
   axis?: 'x' | 'y' | 'z';
   /** Total sweep in degrees. 360 (default) = full ring, no seam dup. */
@@ -1457,6 +1495,134 @@ function opPolarRepeat(child: SdfNode, count: number, axis: 'x' | 'y' | 'z', rad
   return new SdfNode({ kind: 'polarRepeat', eval: evalFn, bounds, children: [child], partitionable: false });
 }
 
+// --- Noise field --------------------------------------------------------
+
+const NOISE_FIELDS = ['seed', 'frequency', 'octaves', 'lacunarity', 'gain', 'ridged'] as const;
+
+/** Validate `api.sdf.noise(opts)` and return clean NoiseOptions. */
+function assertNoiseOpts(opts: unknown): NoiseOptions {
+  if (opts === undefined) return {};
+  const o = assertObject(opts, 'noise(opts)')!;
+  assertNoUnknownKeys(o, NOISE_FIELDS, 'noise(opts)');
+  const out: NoiseOptions = {};
+  if (o.seed !== undefined) out.seed = assertNumber(o.seed, 'noise(seed)') as number;
+  if (o.frequency !== undefined) out.frequency = assertNumber(o.frequency, 'noise(frequency)', { min: 1e-6 }) as number;
+  if (o.octaves !== undefined) out.octaves = assertNumber(o.octaves, 'noise(octaves)', { min: 1, max: 10, integer: true }) as number;
+  if (o.lacunarity !== undefined) out.lacunarity = assertNumber(o.lacunarity, 'noise(lacunarity)', { min: 1 }) as number;
+  if (o.gain !== undefined) out.gain = assertNumber(o.gain, 'noise(gain)', { min: 0, max: 1 }) as number;
+  if (o.ridged !== undefined) {
+    if (typeof o.ridged !== 'boolean') throw new ValidationError('noise(ridged): must be a boolean.');
+    out.ridged = o.ridged;
+  }
+  return out;
+}
+
+// --- L-system → SDF -----------------------------------------------------
+
+export interface LSystemLeafOptions {
+  /** Symbols in the expanded string that mark a leaf/flower position. */
+  symbols: string[];
+  /** Sphere radius placed at each leaf marker. */
+  radius: number;
+  /** Paint-region label for the leaf cluster (e.g. 'foliage'). */
+  label?: string;
+}
+
+export interface LSystemOptions {
+  axiom: string;
+  rules: Record<string, string | LSystemRule[]>;
+  iterations: number;
+  /** Degrees per turn command. Default 25. */
+  angle?: number;
+  /** Length of one `F` segment. Default 8. */
+  length?: number;
+  /** Starting branch radius. Default 1. */
+  radius?: number;
+  /** Radius multiplier per branch depth (< 1 thins toward tips). Default 0.8. */
+  radiusScale?: number;
+  /** Length multiplier per branch depth (< 1 shortens toward tips). Default 1. */
+  lengthScale?: number;
+  /** Seed for stochastic rules. Default 1. */
+  seed?: number;
+  /** Smooth-union fillet radius welding consecutive branch segments
+   *  (0 = hard union, crisper + cheaper). Default 0. */
+  blend?: number;
+  /** Paint-region label for the branches (e.g. 'wood'). */
+  label?: string;
+  /** Optional foliage: spheres dropped at leaf-marker symbols. */
+  leaf?: LSystemLeafOptions;
+}
+
+const LSYSTEM_FIELDS = [
+  'axiom', 'rules', 'iterations', 'angle', 'length', 'radius',
+  'radiusScale', 'lengthScale', 'seed', 'blend', 'label', 'leaf',
+] as const;
+const LSYSTEM_LEAF_FIELDS = ['symbols', 'radius', 'label'] as const;
+
+/** Validate L-system options, grow the grammar, walk the turtle, and lower
+ *  the resulting segments (and optional leaves) to an SDF node. Branches
+ *  union into one paint region; leaves, if any, into a second. */
+function buildLSystem(opts: unknown): SdfNode {
+  const o = assertObject(opts, 'lsystem(opts)')!;
+  assertNoUnknownKeys(o, LSYSTEM_FIELDS, 'lsystem(opts)');
+  const axiom = assertString(o.axiom, 'lsystem(axiom)')!;
+  const rules = assertObject(o.rules, 'lsystem(rules)')!;
+  const iterations = assertNumber(o.iterations, 'lsystem(iterations)', { min: 0, max: 12, integer: true }) as number;
+  const angle = o.angle === undefined ? 25 : assertNumber(o.angle, 'lsystem(angle)') as number;
+  const length = o.length === undefined ? 8 : assertNumber(o.length, 'lsystem(length)', { min: 1e-3 }) as number;
+  const radius = o.radius === undefined ? 1 : assertNumber(o.radius, 'lsystem(radius)', { min: 1e-3 }) as number;
+  const radiusScale = o.radiusScale === undefined ? 0.8 : assertNumber(o.radiusScale, 'lsystem(radiusScale)', { min: 0.01, max: 1 }) as number;
+  const lengthScale = o.lengthScale === undefined ? 1 : assertNumber(o.lengthScale, 'lsystem(lengthScale)', { min: 0.01, max: 2 }) as number;
+  const seed = o.seed === undefined ? 1 : assertNumber(o.seed, 'lsystem(seed)') as number;
+  const blend = o.blend === undefined ? 0 : assertNumber(o.blend, 'lsystem(blend)', { min: 0 }) as number;
+  const branchLabel = o.label === undefined ? undefined : assertString(o.label, 'lsystem(label)')!;
+
+  let leafOpts: LSystemLeafOptions | undefined;
+  let leafSymbols: string[] = [];
+  if (o.leaf !== undefined) {
+    const lf = assertObject(o.leaf, 'lsystem(leaf)')!;
+    assertNoUnknownKeys(lf, LSYSTEM_LEAF_FIELDS, 'lsystem(leaf)');
+    const symbols = lf.symbols;
+    if (!Array.isArray(symbols) || symbols.length === 0 || !symbols.every(s => typeof s === 'string' && s.length === 1)) {
+      throw new ValidationError('lsystem(leaf.symbols): must be a non-empty array of single-character strings.');
+    }
+    const leafRadius = assertNumber(lf.radius, 'lsystem(leaf.radius)', { min: 1e-3 }) as number;
+    const leafLabel = lf.label === undefined ? undefined : assertString(lf.label, 'lsystem(leaf.label)')!;
+    leafOpts = { symbols: symbols as string[], radius: leafRadius, label: leafLabel };
+    leafSymbols = symbols as string[];
+  }
+
+  const expanded = expandLSystem({ axiom, rules: rules as Record<string, string | LSystemRule[]>, iterations, seed });
+  const { segments, leaves } = turtle3d(expanded, {
+    angle, length, radius, radiusScale, lengthScale, leafSymbols,
+  });
+
+  if (segments.length === 0) {
+    throw new ValidationError('lsystem(): the grammar produced no `F` (draw) commands — check the axiom/rules.');
+  }
+
+  // Union the branch capsules (smooth-welded if blend > 0).
+  let branches: SdfNode | undefined;
+  for (const seg of segments) {
+    const cap = primCapsule(seg.a, seg.b, seg.radius);
+    branches = branches === undefined ? cap
+      : (blend > 0 ? opSmoothUnion(branches, cap, blend) : opUnion(branches, cap));
+  }
+  let result = branchLabel ? branches!.label(branchLabel) : branches!;
+
+  // Optional foliage: a sphere at each leaf marker, unioned into a second region.
+  if (leafOpts && leaves.length > 0) {
+    let foliage: SdfNode | undefined;
+    for (const lv of leaves) {
+      const s = primSphere(leafOpts.radius).translate(lv.p);
+      foliage = foliage === undefined ? s : opUnion(foliage, s);
+    }
+    const foliageNode = leafOpts.label ? foliage!.label(leafOpts.label) : foliage!;
+    result = opUnion(result, foliageNode);
+  }
+  return result;
+}
+
 // --- Public namespace factory ------------------------------------------
 
 export interface SdfNamespace {
@@ -1482,6 +1648,12 @@ export interface SdfNamespace {
   smoothIntersect(a: SdfNode, b: SdfNode, k: number): SdfNode;
   subtract(a: SdfNode, b: SdfNode): SdfNode;
   intersect(a: SdfNode, b: SdfNode): SdfNode;
+  /** A reusable, seeded fBm noise field — hand it to `node.displace(amount,
+   *  field)` for organic surface texture. Returns a plain (x,y,z)=>number. */
+  noise(opts?: NoiseOptions): ScalarField;
+  /** Grow an L-system (fractal plant / coral / branching structure) into an
+   *  SDF node of welded capsules, with optional foliage spheres. */
+  lsystem(opts: LSystemOptions): SdfNode;
   /** Build the SDF tree into a Manifold via Manifold.levelSet, with
    *  optional explicit bounds / edgeLength / level / tolerance. */
   build(node: SdfNode, opts?: SdfBuildOptions): ManifoldInstance;
@@ -1541,6 +1713,8 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     smoothIntersect: (a, b, k) => assertSdfNode(a, 'smoothIntersect(a)').smoothIntersect(assertSdfNode(b, 'smoothIntersect(b)'), k),
     subtract: (a, b) => opSubtract(assertSdfNode(a, 'subtract(a)'), assertSdfNode(b, 'subtract(b)')),
     intersect: (a, b) => opIntersect(assertSdfNode(a, 'intersect(a)'), assertSdfNode(b, 'intersect(b)')),
+    noise: (opts) => makeNoise(assertNoiseOpts(opts)),
+    lsystem: (opts) => bound(buildLSystem(opts)),
     build: (node, opts) => assertSdfNode(node, 'build(node)').build(opts ?? {}),
   };
 }
@@ -1580,6 +1754,9 @@ export const __testables__ = {
   opTwist,
   opBend,
   opTaper,
+  opDisplace,
+  buildLSystem,
+  assertNoiseOpts,
   opPolarArray,
   opRepeat,
   opRepeatN,

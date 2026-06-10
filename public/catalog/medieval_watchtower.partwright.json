@@ -81,7 +81,7 @@
     },
     {
       "index": 2,
-      "code": "// Detailed Medieval Watchtower with customizable parts\nconst { Manifold } = api;\n\n// 1. Tower Body & Base\nconst body = Manifold.cylinder(60, 15, 12.5);\n\n// 2. Buttresses\nconst baseBox = Manifold.cube([8, 6, 1], true).translate([13, 0, 0.5]);\nconst topBox = Manifold.cube([3, 1.5, 1], true).translate([11, 0, 20.5]);\nconst buttressTemplate = Manifold.hull([baseBox, topBox]);\nlet buttresses = buttressTemplate;\nfor (let i = 1; i < 4; i++) {\n  buttresses = buttresses.add(buttressTemplate.rotate([0, 0, i * 90]));\n}\n\n// 3. Corbels (stone supports under the battlements)\nconst corbelTemplate = Manifold.cube([1.5, 1.2, 4], true).translate([12.4, 0, 58]);\nlet corbels = corbelTemplate;\nfor (let i = 1; i < 8; i++) {\n  corbels = corbels.add(corbelTemplate.rotate([0, 0, i * 45]));\n}\n\n// 4. Battlements Rim & Parapet\nconst topRim = Manifold.cylinder(5, 12.5, 15.5).translate([0, 0, 60]);\nconst parapet = Manifold.cylinder(6, 15.5, 15.5).translate([0, 0, 65]);\nconst platformHollow = Manifold.cylinder(10, 13.5, 13.5).translate([0, 0, 65.5]);\n\nlet towerStone = body.add(buttresses).add(corbels).add(topRim).add(parapet).subtract(platformHollow);\n\n// 5. Merlon Cutters (slotted battlements)\nlet cutters = Manifold.cube([5, 40, 3], true).translate([0, 0, 69.5]);\nfor (let i = 1; i < 4; i++) {\n  cutters = cutters.add(Manifold.cube([5, 40, 3], true).translate([0, 0, 69.5]).rotate([0, 0, i * 45]));\n}\ntowerStone = towerStone.subtract(cutters);\n\n// 6. Doorway Cutter\nconst archBox = Manifold.cube([6, 10, 10], true).translate([0, 0, 5]);\nconst archTop = Manifold.cylinder(10, 3, 3).rotate([90, 0, 0]).translate([0, 5, 10]);\nconst doorwayCutter = archBox.add(archTop).translate([0, -13, 1]);\ntowerStone = towerStone.subtract(doorwayCutter);\n\n// Door Insert (Wooden Door)\nconst doorBox = Manifold.cube([5.8, 1, 9.8], true).translate([0, 0, 4.9]);\nconst doorTop = Manifold.cylinder(1, 2.9, 2.9).rotate([90, 0, 0]).translate([0, 0.5, 9.8]);\nconst doorInsert = doorBox.add(doorTop).translate([0, -12, 1]);\n\n// Iron Bands for Door\nconst band1 = Manifold.cube([5.4, 0.3, 0.6], true).translate([0, -11.4, 4]);\nconst band2 = Manifold.cube([5.4, 0.3, 0.6], true).translate([0, -11.4, 8]);\nconst doorBands = band1.add(band2);\n\n// 7. Arrow Slit Cutters (Windows)\nlet windowCutters = Manifold.cube([1.2, 10, 6], true).translate([0, 13, 35]);\nfor (let i = 1; i < 4; i++) {\n  windowCutters = windowCutters.add(Manifold.cube([1.2, 10, 6], true).translate([0, 13, 35]).rotate([0, 0, i * 90]));\n}\ntowerStone = towerStone.subtract(windowCutters);\n\n// 8. Central Turret & Roof (with overlaps)\nconst turret = Manifold.cylinder(13.5, 5.5, 5).translate([0, 0, 64]);\nconst roof = Manifold.cylinder(10, 6.2, 0).translate([0, 0, 76.5]);\n\n// 9. Flagpole & Flag\nconst flagpole = Manifold.cylinder(14, 0.4, 0.4).translate([0, 0, 85]);\nconst flag = Manifold.cube([0.2, 6, 4], true).translate([0, 2.8, 96]);\n\n// Union with Labels for rich coloring\nconst stoneLabeled = api.label(towerStone.add(turret), 'stone');\nconst doorLabeled = api.label(doorInsert, 'door');\nconst bandsLabeled = api.label(doorBands, 'iron');\nconst roofLabeled = api.label(roof, 'roof');\nconst poleLabeled = api.label(flagpole, 'pole');\nconst flagLabeled = api.label(flag, 'flag');\n\nconst finalTower = stoneLabeled\n  .add(doorLabeled)\n  .add(bandsLabeled)\n  .add(roofLabeled)\n  .add(poleLabeled)\n  .add(flagLabeled);\n\nreturn finalTower;\n",
+      "code": "// Colors below were migrated from saved paint into code via api.paint.*\n// (the model is now self-colouring; see /ai/colors.md). Edit colours here.\nconst __pwModel = (() => {\n// Detailed Medieval Watchtower with customizable parts\nconst { Manifold } = api;\n\n// 1. Tower Body & Base\nconst body = Manifold.cylinder(60, 15, 12.5);\n\n// 2. Buttresses\nconst baseBox = Manifold.cube([8, 6, 1], true).translate([13, 0, 0.5]);\nconst topBox = Manifold.cube([3, 1.5, 1], true).translate([11, 0, 20.5]);\nconst buttressTemplate = Manifold.hull([baseBox, topBox]);\nlet buttresses = buttressTemplate;\nfor (let i = 1; i < 4; i++) {\n  buttresses = buttresses.add(buttressTemplate.rotate([0, 0, i * 90]));\n}\n\n// 3. Corbels (stone supports under the battlements)\nconst corbelTemplate = Manifold.cube([1.5, 1.2, 4], true).translate([12.4, 0, 58]);\nlet corbels = corbelTemplate;\nfor (let i = 1; i < 8; i++) {\n  corbels = corbels.add(corbelTemplate.rotate([0, 0, i * 45]));\n}\n\n// 4. Battlements Rim & Parapet\nconst topRim = Manifold.cylinder(5, 12.5, 15.5).translate([0, 0, 60]);\nconst parapet = Manifold.cylinder(6, 15.5, 15.5).translate([0, 0, 65]);\nconst platformHollow = Manifold.cylinder(10, 13.5, 13.5).translate([0, 0, 65.5]);\n\nlet towerStone = body.add(buttresses).add(corbels).add(topRim).add(parapet).subtract(platformHollow);\n\n// 5. Merlon Cutters (slotted battlements)\nlet cutters = Manifold.cube([5, 40, 3], true).translate([0, 0, 69.5]);\nfor (let i = 1; i < 4; i++) {\n  cutters = cutters.add(Manifold.cube([5, 40, 3], true).translate([0, 0, 69.5]).rotate([0, 0, i * 45]));\n}\ntowerStone = towerStone.subtract(cutters);\n\n// 6. Doorway Cutter\nconst archBox = Manifold.cube([6, 10, 10], true).translate([0, 0, 5]);\nconst archTop = Manifold.cylinder(10, 3, 3).rotate([90, 0, 0]).translate([0, 5, 10]);\nconst doorwayCutter = archBox.add(archTop).translate([0, -13, 1]);\ntowerStone = towerStone.subtract(doorwayCutter);\n\n// Door Insert (Wooden Door)\nconst doorBox = Manifold.cube([5.8, 1, 9.8], true).translate([0, 0, 4.9]);\nconst doorTop = Manifold.cylinder(1, 2.9, 2.9).rotate([90, 0, 0]).translate([0, 0.5, 9.8]);\nconst doorInsert = doorBox.add(doorTop).translate([0, -12, 1]);\n\n// Iron Bands for Door\nconst band1 = Manifold.cube([5.4, 0.3, 0.6], true).translate([0, -11.4, 4]);\nconst band2 = Manifold.cube([5.4, 0.3, 0.6], true).translate([0, -11.4, 8]);\nconst doorBands = band1.add(band2);\n\n// 7. Arrow Slit Cutters (Windows)\nlet windowCutters = Manifold.cube([1.2, 10, 6], true).translate([0, 13, 35]);\nfor (let i = 1; i < 4; i++) {\n  windowCutters = windowCutters.add(Manifold.cube([1.2, 10, 6], true).translate([0, 13, 35]).rotate([0, 0, i * 90]));\n}\ntowerStone = towerStone.subtract(windowCutters);\n\n// 8. Central Turret & Roof (with overlaps)\nconst turret = Manifold.cylinder(13.5, 5.5, 5).translate([0, 0, 64]);\nconst roof = Manifold.cylinder(10, 6.2, 0).translate([0, 0, 76.5]);\n\n// 9. Flagpole & Flag\nconst flagpole = Manifold.cylinder(14, 0.4, 0.4).translate([0, 0, 85]);\nconst flag = Manifold.cube([0.2, 6, 4], true).translate([0, 2.8, 96]);\n\n// Union with Labels for rich coloring\nconst stoneLabeled = api.label(towerStone.add(turret), 'stone');\nconst doorLabeled = api.label(doorInsert, 'door');\nconst bandsLabeled = api.label(doorBands, 'iron');\nconst roofLabeled = api.label(roof, 'roof');\nconst poleLabeled = api.label(flagpole, 'pole');\nconst flagLabeled = api.label(flag, 'flag');\n\nconst finalTower = stoneLabeled\n  .add(doorLabeled)\n  .add(bandsLabeled)\n  .add(roofLabeled)\n  .add(poleLabeled)\n  .add(flagLabeled);\n\nreturn finalTower;\n})();\napi.paint.label(\"stone\", [0.6, 0.62, 0.65]);\napi.paint.label(\"door\", [0.55, 0.35, 0.22]);\napi.paint.label(\"iron\", [0.15, 0.15, 0.15]);\napi.paint.label(\"roof\", [0.72, 0.18, 0.15]);\napi.paint.label(\"pole\", [0.45, 0.35, 0.25]);\napi.paint.label(\"flag\", [0.12, 0.28, 0.65]);\nreturn __pwModel;\n",
       "label": "colored",
       "geometryData": {
         "status": "ok",
@@ -135,210 +135,16 @@
         },
         "unit": "unitless",
         "executionTimeMs": 131,
-        "codeHash": "738cdd0e",
+        "codeHash": "38012331",
         "sessionId": "8dehyeOtU17r",
         "sessionUrl": "http://localhost:5173/editor?session=8dehyeOtU17r",
         "galleryUrl": "http://localhost:5173/editor?session=8dehyeOtU17r&gallery",
         "engineMemory": "16 MB / 4096 MB (0%)",
-        "colorRegions": [
-          {
-            "id": 1,
-            "name": "Stone Tower Body",
-            "color": [
-              0.6,
-              0.62,
-              0.65
-            ],
-            "source": "paintbrush",
-            "descriptor": {
-              "kind": "byLabel",
-              "label": "stone"
-            },
-            "order": 1,
-            "visible": true
-          },
-          {
-            "id": 2,
-            "name": "Wooden Door",
-            "color": [
-              0.55,
-              0.35,
-              0.22
-            ],
-            "source": "paintbrush",
-            "descriptor": {
-              "kind": "byLabel",
-              "label": "door"
-            },
-            "order": 2,
-            "visible": true
-          },
-          {
-            "id": 3,
-            "name": "Iron Bands",
-            "color": [
-              0.15,
-              0.15,
-              0.15
-            ],
-            "source": "paintbrush",
-            "descriptor": {
-              "kind": "byLabel",
-              "label": "iron"
-            },
-            "order": 3,
-            "visible": true
-          },
-          {
-            "id": 4,
-            "name": "Tiled Roof",
-            "color": [
-              0.72,
-              0.18,
-              0.15
-            ],
-            "source": "paintbrush",
-            "descriptor": {
-              "kind": "byLabel",
-              "label": "roof"
-            },
-            "order": 4,
-            "visible": true
-          },
-          {
-            "id": 5,
-            "name": "Wooden Flagpole",
-            "color": [
-              0.45,
-              0.35,
-              0.25
-            ],
-            "source": "paintbrush",
-            "descriptor": {
-              "kind": "byLabel",
-              "label": "pole"
-            },
-            "order": 5,
-            "visible": true
-          },
-          {
-            "id": 6,
-            "name": "Heraldic Flag",
-            "color": [
-              0.12,
-              0.28,
-              0.65
-            ],
-            "source": "paintbrush",
-            "descriptor": {
-              "kind": "byLabel",
-              "label": "flag"
-            },
-            "order": 6,
-            "visible": true
-          }
-        ]
+        "colorRegions": []
       },
       "timestamp": 1780595858069,
       "language": "manifold-js",
-      "colorRegions": [
-        {
-          "id": 1,
-          "name": "Stone Tower Body",
-          "color": [
-            0.6,
-            0.62,
-            0.65
-          ],
-          "source": "paintbrush",
-          "descriptor": {
-            "kind": "byLabel",
-            "label": "stone"
-          },
-          "order": 1,
-          "visible": true
-        },
-        {
-          "id": 2,
-          "name": "Wooden Door",
-          "color": [
-            0.55,
-            0.35,
-            0.22
-          ],
-          "source": "paintbrush",
-          "descriptor": {
-            "kind": "byLabel",
-            "label": "door"
-          },
-          "order": 2,
-          "visible": true
-        },
-        {
-          "id": 3,
-          "name": "Iron Bands",
-          "color": [
-            0.15,
-            0.15,
-            0.15
-          ],
-          "source": "paintbrush",
-          "descriptor": {
-            "kind": "byLabel",
-            "label": "iron"
-          },
-          "order": 3,
-          "visible": true
-        },
-        {
-          "id": 4,
-          "name": "Tiled Roof",
-          "color": [
-            0.72,
-            0.18,
-            0.15
-          ],
-          "source": "paintbrush",
-          "descriptor": {
-            "kind": "byLabel",
-            "label": "roof"
-          },
-          "order": 4,
-          "visible": true
-        },
-        {
-          "id": 5,
-          "name": "Wooden Flagpole",
-          "color": [
-            0.45,
-            0.35,
-            0.25
-          ],
-          "source": "paintbrush",
-          "descriptor": {
-            "kind": "byLabel",
-            "label": "pole"
-          },
-          "order": 5,
-          "visible": true
-        },
-        {
-          "id": 6,
-          "name": "Heraldic Flag",
-          "color": [
-            0.12,
-            0.28,
-            0.65
-          ],
-          "source": "paintbrush",
-          "descriptor": {
-            "kind": "byLabel",
-            "label": "flag"
-          },
-          "order": 6,
-          "visible": true
-        }
-      ],
+      "colorRegions": [],
       "thumbnail": "data:image/png;base64,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"
     }
   ],

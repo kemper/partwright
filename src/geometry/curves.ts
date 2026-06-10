@@ -32,6 +32,7 @@ type CurvesAPI = {
   // 3D constructors
   loft: (profiles: any[], heights: number[], opts?: LoftOptions) => any;
   sweep: (profile: any, path: Vec3[], opts?: SweepOptions) => any;
+  sweepArc: (profile: any, opts: SweepArcOptions) => any;
   revolveAxis: (profile: any, axis: Vec3, opts?: RevolveOptions) => any;
 
   // Mesh smoothing wrappers
@@ -71,6 +72,23 @@ interface LoftOptions {
 
 interface SweepOptions {
   closed?: boolean;
+  refine?: number;
+}
+
+interface SweepArcOptions {
+  /** Arc radius (the spine the profile is swept along). Required. */
+  radius: number;
+  /** Sweep angle in degrees. Default 90. */
+  angle?: number;
+  /** Starting angle in degrees (where on the circle the sweep begins). Default 0. */
+  startAngle?: number;
+  /** Number of path segments along the arc. Default 32. */
+  segments?: number;
+  /** Plane the arc spine lies in. Default 'xz' (the pipe curves up in Z). */
+  plane?: 'xy' | 'xz' | 'yz';
+  /** Arc center in world space. Default [0,0,0]. */
+  center?: Vec3;
+  /** refine factor passed through to the underlying sweep. */
   refine?: number;
 }
 
@@ -574,6 +592,43 @@ function makeSweep(module: any) {
 }
 
 // ---------------------------------------------------------------------------
+// Sweep a 2D profile along a circular arc — the common "curved pipe / elbow /
+// torus section" case, without the caller hand-building a 3D path. Traces an
+// arc spine of `radius` in the chosen plane and delegates to `sweep`.
+// ---------------------------------------------------------------------------
+
+function makeSweepArc(sweep: (profile: any, path: Vec3[], opts?: SweepOptions) => any) {
+  return function sweepArc(profile: any, opts: SweepArcOptions): any {
+    need(opts && typeof opts === 'object', 'sweepArc requires an options object');
+    need(isFiniteNum(opts.radius) && opts.radius > 0, 'sweepArc.radius must be a positive number');
+    const angle = opts.angle ?? 90;
+    const startAngle = opts.startAngle ?? 0;
+    const segments = opts.segments ?? 32;
+    const plane = opts.plane ?? 'xz';
+    const center = opts.center ?? [0, 0, 0];
+    need(isFiniteNum(angle) && angle !== 0, 'sweepArc.angle must be a non-zero number');
+    need(isFiniteNum(startAngle), 'sweepArc.startAngle must be a number');
+    need(Number.isInteger(segments) && segments >= 2, 'sweepArc.segments must be an integer >= 2');
+    need(plane === 'xy' || plane === 'xz' || plane === 'yz', "sweepArc.plane must be 'xy', 'xz', or 'yz'");
+    need(isVec3(center), 'sweepArc.center must be a [x,y,z] point');
+
+    const path: Vec3[] = [];
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
+      const a = ((startAngle + angle * t) * Math.PI) / 180;
+      const c = Math.cos(a) * opts.radius, s = Math.sin(a) * opts.radius;
+      if (plane === 'xy') path.push([center[0] + c, center[1] + s, center[2]]);
+      else if (plane === 'yz') path.push([center[0], center[1] + c, center[2] + s]);
+      else path.push([center[0] + c, center[1], center[2] + s]);
+    }
+    // A full 360° sweep wraps onto itself — close the path so the seam fuses.
+    const closed = Math.abs(angle) >= 360 - 1e-6;
+    if (closed) path.pop(); // drop the duplicate end point that coincides with the start
+    return sweep(profile, path, { closed, refine: opts.refine });
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Revolve a profile around an arbitrary 3D axis (not just Y).
 // Internally: rotate so the axis aligns with Y, revolve, then rotate back.
 // ---------------------------------------------------------------------------
@@ -751,6 +806,7 @@ export function createCurvesNamespace(module: any): CurvesAPI {
   const { CrossSection } = module;
   const patterns = makePatterns(module);
   const textHelpers = makeTextHelpers(module);
+  const sweep = makeSweep(module);
   return {
     arc,
     bezier,
@@ -759,7 +815,8 @@ export function createCurvesNamespace(module: any): CurvesAPI {
     text: textHelpers.text,
     textSection: textHelpers.textSection,
     loft: makeLoft(module),
-    sweep: makeSweep(module),
+    sweep,
+    sweepArc: makeSweepArc(sweep),
     revolveAxis: makeRevolveAxis(module),
     fillet,
     chamfer,
