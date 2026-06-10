@@ -598,7 +598,9 @@ function directFineEdgeLength(
       ((clipped.max[0] - clipped.min[0] + pad) / edge) *
       ((clipped.max[1] - clipped.min[1] + pad) / edge) *
       ((clipped.max[2] - clipped.min[2] + pad) / edge);
-    if (!Number.isFinite(cells) || cells > DIRECT_FINE_CELL_BUDGET) continue;
+    // cells <= 0 means the clip box is inverted (region doesn't overlap the
+    // user bounds) — nothing to march there, leave it to the coarse path.
+    if (!Number.isFinite(cells) || cells <= 0 || cells > DIRECT_FINE_CELL_BUDGET) continue;
     if (best === undefined || edge < best) best = edge;
   }
   return best !== undefined && best < coarseEdge ? best : undefined;
