@@ -1,6 +1,6 @@
-// Unit tests for the pure-logic parts of printFit — the fastener table, the
-// clearance presets, and the profile math (hex / dovetail). The geometry
-// builders that need the manifold-3d WASM module are exercised in the e2e tier
+// Unit tests for the pure-logic parts of fasteners — the fastener table, the
+// clearance presets, and the hex profile math. The geometry builders that need
+// the manifold-3d WASM module are exercised in the e2e tier
 // (tests/print-fit.spec.ts), where the real kernel runs.
 
 import { describe, it, expect } from 'vitest';
@@ -11,11 +11,11 @@ import {
   clearance,
   clearanceHole,
   __testables__,
-} from '../../src/geometry/printFit';
+} from '../../src/geometry/fasteners';
 
-const { normalizeSize, hexPoints, dovetailProfile } = __testables__;
+const { normalizeSize, hexPoints } = __testables__;
 
-describe('printFit fastener table', () => {
+describe('fasteners fastener table', () => {
   it('covers the metric range M2..M8', () => {
     expect(Object.keys(FASTENERS)).toEqual(['M2', 'M2_5', 'M3', 'M4', 'M5', 'M6', 'M8']);
   });
@@ -26,6 +26,13 @@ describe('printFit fastener table', () => {
       expect(spec.clearance.normal).toBeLessThan(spec.clearance.loose);
       // A clearance hole is always larger than the nominal screw.
       expect(spec.clearance.close).toBeGreaterThanOrEqual(spec.nominal);
+    }
+  });
+
+  it('tap/pilot bore is smaller than the screw (threads must bite)', () => {
+    for (const spec of Object.values(FASTENERS)) {
+      expect(spec.tap).toBeGreaterThan(0);
+      expect(spec.tap).toBeLessThan(spec.nominal);
     }
   });
 
@@ -41,7 +48,7 @@ describe('printFit fastener table', () => {
   });
 });
 
-describe('printFit.fastener / normalizeSize', () => {
+describe('fasteners.fastener / normalizeSize', () => {
   it('accepts both "M2.5" and "M2_5"', () => {
     expect(fastener('M2.5')).toBe(FASTENERS.M2_5);
     expect(fastener('M2_5')).toBe(FASTENERS.M2_5);
@@ -57,7 +64,7 @@ describe('printFit.fastener / normalizeSize', () => {
   });
 });
 
-describe('printFit.clearance presets', () => {
+describe('fasteners.clearance presets', () => {
   it('orders press < snug < normal < loose < free', () => {
     const { press, snug, normal, loose, free } = CLEARANCE_PRESETS;
     expect(press).toBeLessThan(snug);
@@ -79,7 +86,7 @@ describe('printFit.clearance presets', () => {
   });
 });
 
-describe('printFit.clearanceHole', () => {
+describe('fasteners.clearanceHole', () => {
   it('reads the table by fit class', () => {
     expect(clearanceHole('M3', 'close')).toBe(3.2);
     expect(clearanceHole('M3', 'normal')).toBe(3.4);
@@ -92,7 +99,7 @@ describe('printFit.clearanceHole', () => {
   });
 });
 
-describe('printFit.hexPoints', () => {
+describe('fasteners.hexPoints', () => {
   it('returns six vertices', () => {
     expect(hexPoints(10)).toHaveLength(6);
   });
@@ -110,29 +117,5 @@ describe('printFit.hexPoints', () => {
     const pts = hexPoints(10);
     const R = Math.hypot(pts[0][0], pts[0][1]);
     expect(R).toBeCloseTo(10 / Math.sqrt(3), 6);
-  });
-});
-
-describe('printFit.dovetailProfile', () => {
-  it('is narrow at the mouth and wider into the material', () => {
-    const p = dovetailProfile(10, 5, 15);
-    const mouthWidth = Math.abs(p[1][0] - p[0][0]); // y=0 edge
-    const backWidth = Math.abs(p[2][0] - p[3][0]);  // y=depth edge
-    expect(mouthWidth).toBeCloseTo(10, 6);
-    expect(backWidth).toBeGreaterThan(mouthWidth); // dovetail retains
-  });
-
-  it('flare grows with angle', () => {
-    const shallow = dovetailProfile(10, 5, 5);
-    const steep = dovetailProfile(10, 5, 25);
-    const shallowBack = Math.abs(shallow[2][0] - shallow[3][0]);
-    const steepBack = Math.abs(steep[2][0] - steep[3][0]);
-    expect(steepBack).toBeGreaterThan(shallowBack);
-  });
-
-  it('depth reaches the requested value', () => {
-    const p = dovetailProfile(10, 7, 15);
-    expect(p[2][1]).toBeCloseTo(7, 6);
-    expect(p[3][1]).toBeCloseTo(7, 6);
   });
 });
