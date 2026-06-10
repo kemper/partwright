@@ -137,3 +137,62 @@ describe('VoxelGrid.keepLargest', () => {
     expect(v.size).toBeGreaterThan(0);
   });
 });
+
+describe('VoxelGrid.sdf — res tracking (worldBBox echo)', () => {
+  it('reports no res before any sdf call', () => {
+    const v = new VoxelGrid();
+    expect(v.sdfRes).toBeNull();
+    expect(v.sdfResMixed).toBe(false);
+  });
+
+  it('reports the single res shared by all sdf calls (default 1)', () => {
+    const v = new VoxelGrid().sdf(sdf.sphere(3));
+    expect(v.sdfRes).toBe(1);
+    v.sdf(sdf.box([2, 2, 2]));
+    expect(v.sdfRes).toBe(1);
+    expect(v.sdfResMixed).toBe(false);
+  });
+
+  it('reports an explicit res', () => {
+    const v = new VoxelGrid().sdf(sdf.sphere(10), { res: 2 });
+    expect(v.sdfRes).toBe(2);
+  });
+
+  it('flags mixed res values and reports no single res', () => {
+    const v = new VoxelGrid().sdf(sdf.sphere(10), { res: 2 }).sdf(sdf.box([4, 4, 4]), { res: 0.5 });
+    expect(v.sdfRes).toBeNull();
+    expect(v.sdfResMixed).toBe(true);
+  });
+});
+
+describe('VoxelGrid.sdf — per-label fill counts (silent-label trap)', () => {
+  it('reports no counts when no labelled fill ran', () => {
+    const v = new VoxelGrid().sdf(sdf.sphere(3), { color: '#fff' });
+    expect(v.sdfLabelCounts).toBeNull();
+  });
+
+  it('counts fills per label and seeds requested-but-unmatched labels at 0', () => {
+    // Two disjoint labelled boxes; "ghost" is requested in colors but labels
+    // nothing in the tree → must appear with count 0 (the trap, made visible).
+    const node = sdf.box([2, 2, 2]).label('left').union(
+      sdf.box([2, 2, 2]).translate([10, 0, 0]).label('right'),
+    );
+    const v = new VoxelGrid().sdf(node, {
+      colors: { left: '#f00', right: '#0f0', ghost: '#00f' },
+    });
+    const counts = v.sdfLabelCounts!;
+    expect(counts.left).toBeGreaterThan(0);
+    expect(counts.right).toBeGreaterThan(0);
+    expect(counts.ghost).toBe(0);
+    // Sanity: both boxes are 3³ inclusive lattices of the same size.
+    expect(counts.left).toBe(counts.right);
+  });
+
+  it('accumulates counts across multiple sdf calls', () => {
+    const v = new VoxelGrid()
+      .sdf(sdf.box([2, 2, 2]).label('a'), { colors: { a: '#f00' } });
+    const first = v.sdfLabelCounts!.a;
+    v.sdf(sdf.box([2, 2, 2]).translate([10, 0, 0]).label('a'), { colors: { a: '#f00' } });
+    expect(v.sdfLabelCounts!.a).toBe(first * 2);
+  });
+});

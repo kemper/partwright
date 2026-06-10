@@ -168,9 +168,35 @@ export class VoxelGrid {
   readonly __isVoxelGrid = true as const;
   private cells = new Map<number, number>();
   private _surfacing: Surfacing = { mode: 'blocks', iterations: 2, detail: 1 };
+  /** Distinct `res` values used by `sdf()` calls on this grid — lets stats
+   *  echo a res-aware world-size (`worldBBox = voxel bbox × res`). */
+  private sdfResValues = new Set<number>();
+  /** Per-label voxel fill counts from `sdf({ colors })` calls. Every key the
+   *  caller listed in `colors` appears — INCLUDING zero-fill ones, so a label
+   *  that silently matched nothing (e.g. a smoothUnion-blended sub-body that is
+   *  never the deepest region) is visible instead of just rendering wrong. */
+  private sdfLabelFill: Map<string, number> | null = null;
 
   /** Number of occupied voxels. */
   get size(): number { return this.cells.size; }
+
+  /** The single `res` shared by every `sdf()` call on this grid, or null when
+   *  no `sdf()` ran or calls mixed different res values (no unambiguous scale). */
+  get sdfRes(): number | null {
+    return this.sdfResValues.size === 1 ? [...this.sdfResValues][0] : null;
+  }
+
+  /** True when `sdf()` calls used more than one distinct `res` (world scale is
+   *  ambiguous, so stats skip the worldBBox echo). */
+  get sdfResMixed(): boolean { return this.sdfResValues.size > 1; }
+
+  /** Voxel fill count per label requested via `sdf({ colors })`, or null when
+   *  no labelled sdf fill ran. Zero-count entries are the signal: that label
+   *  colored nothing. */
+  get sdfLabelCounts(): Record<string, number> | null {
+    if (!this.sdfLabelFill) return null;
+    return Object.fromEntries(this.sdfLabelFill);
+  }
 
   /** Count of **face-connected** voxel pieces (6-neighbour BFS). This is the
    *  trustworthy "how many separate printable pieces?" measure for voxel
@@ -362,6 +388,7 @@ export class VoxelGrid {
     const o = assertObject(opts, 'v.sdf(opts)') ?? {};
     assertNoUnknownKeys(o, ['res', 'color', 'colors', 'bounds', 'level'], 'v.sdf(opts)');
     const res = o.res === undefined ? 1 : assertNumber(o.res, 'v.sdf(res)', { min: 1e-3 })!;
+    this.sdfResValues.add(res);
     const level = o.level === undefined ? 0 : assertNumber(o.level, 'v.sdf(level)')!;
     const defaultColor = normalizeColor((o.color === undefined ? '#cccccc' : o.color) as ColorInput, 'v.sdf(color)');
 
@@ -398,11 +425,20 @@ export class VoxelGrid {
     const colorMap = o.colors === undefined ? null : assertObject(o.colors, 'v.sdf(colors)')!;
     if (colorMap) {
       const regions = partitionByLabel(node);
+      // Track fill-per-label, seeding every requested key at 0 so a label that
+      // never wins a cell (the smoothUnion "deepest region" trap) reports
+      // loudly instead of silently coloring nothing.
+      const fill = this.sdfLabelFill ?? (this.sdfLabelFill = new Map());
+      for (const key of Object.keys(colorMap)) if (!fill.has(key)) fill.set(key, 0);
       const regionColors = regions.map((r) => {
         const name = r.labelName;
         return (name !== undefined && Object.prototype.hasOwnProperty.call(colorMap, name))
           ? normalizeColor(colorMap[name] as ColorInput, `v.sdf(colors.${name})`)
           : defaultColor;
+      });
+      const regionCountKeys = regions.map((r) => {
+        const name = r.labelName;
+        return name !== undefined && Object.prototype.hasOwnProperty.call(colorMap, name) ? name : null;
       });
       for (let i = ix0; i <= ix1; i++) {
         if (i < COORD_MIN || i > COORD_MAX) continue;
@@ -418,7 +454,11 @@ export class VoxelGrid {
               const d = regions[ri].node.evaluate(wx, wy, wz);
               if (d < best) { best = d; bestIdx = ri; }
             }
-            if (bestIdx >= 0 && best <= level) this.cells.set(packKey(i, j, k), regionColors[bestIdx]);
+            if (bestIdx >= 0 && best <= level) {
+              this.cells.set(packKey(i, j, k), regionColors[bestIdx]);
+              const lk = regionCountKeys[bestIdx];
+              if (lk !== null) fill.set(lk, fill.get(lk)! + 1);
+            }
           }
         }
       }

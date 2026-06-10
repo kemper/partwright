@@ -358,6 +358,9 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       engineHeapBytes: msg.engineHeapBytes as number | undefined,
       voxelCount: msg.voxelCount as number | undefined,
       voxelPieceCount: msg.voxelPieceCount as number | undefined,
+      voxelRes: msg.voxelRes as number | undefined,
+      voxelResMixed: msg.voxelResMixed as boolean | undefined,
+      sdfLabelCounts: msg.sdfLabelCounts as Record<string, number> | undefined,
     };
     pending.resolve(result);
     // A WASM trap (OOM / abort) reported as a *result* leaves the Worker's

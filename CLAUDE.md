@@ -5,6 +5,8 @@
 ```bash
 npm run dev          # Start dev server at http://localhost:5173
 npm run build        # Production build to dist/ (runs tsc first — also the type-check)
+npm run typecheck    # tsc --noEmit only — fast type check without the Vite production build
+npm run preflight    # typecheck + test:unit + lint:deps + lint:consistency in one command (the pre-push bundle)
 npm run test:unit    # Fast vitest unit tier (pure-logic, no browser) — ~1s
 npm run test:e2e     # Playwright browser suite (auto-starts dev server)
 npm test             # Both tiers: unit, then e2e
@@ -12,6 +14,7 @@ npm run lint:consistency  # ast-grep UI-convention scan (advisory)
 npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (advisory)
 npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 npm run model:preview -- <file.js>   # headless model stats + 4-view PNG (Node+WASM, ~2s) — see below
+npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle→screenshot, no spec needed — see Manual Verification
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -113,12 +116,13 @@ See `docs/playwright-guide.md` for sandbox vs laptop Chromium binary detection a
 
 **Manually verify any UI-visible change in a real browser before pushing.**
 
-> **How to drive the browser in this environment: write and run a Playwright spec — there is no Playwright MCP.** The remote/web execution environment only configures the `typescript` MCP server (see `.mcp.json`); the `playwright_navigate` / `playwright_click` / `playwright_screenshot` tools do **not** exist here. Don't waste turns calling them. The real eyes-on check is a short `.spec.ts` that navigates, interacts, and writes a screenshot file you then view.
+> **How to drive the browser in this environment: write and run a Playwright spec — there is no Playwright MCP.** The remote/web execution environment only configures the `serena` MCP server (see `.mcp.json`); the `playwright_navigate` / `playwright_click` / `playwright_screenshot` tools do **not** exist here. Don't waste turns calling them. The real eyes-on check is a short `.spec.ts` that navigates, interacts, and writes a screenshot file you then view.
 
 The pattern:
 
 1. **Install deps once per container:** a fresh remote container starts with no `node_modules` — run `npm ci` before your first `npx playwright test` (you'll get `Cannot find package 'playwright'` otherwise).
-2. **Write a spec that screenshots the feature.** It can be a throwaway probe (`tests/_scratch-*.spec.ts`, delete it after) or — better, for a new feature — the permanent golden-path spec you'd add anyway. Navigate, exercise the change, and capture the result:
+2. **For a look-only check, skip the spec: `npm run snap -- <route>`.** When all you need is "load this route and show me" (no clicks/typing), `npm run snap -- "/editor?session=x" --out test-results/x.png [--wait ms] [--width N --height N] [--full]` generates and runs the throwaway spec for you — it waits for the editor engine on `/editor` routes, screenshots, and cleans up after itself. Anything that needs interaction still wants a real spec (next step).
+3. **Write a spec that screenshots the feature.** It can be a throwaway probe (`tests/_scratch-*.spec.ts`, delete it after) or — better, for a new feature — the permanent golden-path spec you'd add anyway. Navigate, exercise the change, and capture the result:
 
    ```ts
    import { test } from 'playwright/test';
@@ -131,8 +135,8 @@ The pattern:
    });
    ```
 
-3. **Run it:** `npx playwright test _scratch-` (or the spec name). You do **not** need to start the dev server yourself — `playwright.config.ts`'s `webServer` block boots `npm run dev` automatically and reuses an already-running one, and the config auto-detects the sandbox Chromium under `/opt/pw-browsers/`.
-4. **View the screenshot and post it in the chat** — `Read` the PNG to see it inline, then `SendUserFile` to surface it to the user. This is the most valuable thing you can do: the user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case.
+4. **Run it:** `npx playwright test _scratch-` (or the spec name). You do **not** need to start the dev server yourself — `playwright.config.ts`'s `webServer` block boots `npm run dev` automatically and reuses an already-running one, and the config auto-detects the sandbox Chromium under `/opt/pw-browsers/`.
+5. **View the screenshot and post it in the chat** — `Read` the PNG to see it inline, then `SendUserFile` to surface it to the user. This is the most valuable thing you can do: the user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case.
 
 This takes a handful of tool calls and catches wiring mistakes, visual regressions, and WASM timing issues that TypeScript can't see. It's your own eyes-on check before CI runs the headless suite. If you used a throwaway `_scratch-*.spec.ts`, delete it (and its `test-results/*.png`) before pushing.
 
@@ -154,7 +158,7 @@ This takes a handful of tool calls and catches wiring mistakes, visual regressio
 When you're iterating on a **model snippet** (catalog entries, `examples/`, mechanism prototypes) from the CLI, don't round-trip through the browser for every guess. `npm run model:preview -- <file.js>` runs the snippet against the **real `manifold-js`, `voxel`, or `scad` engine in Node** (via vite SSR — no dev server, no Playwright, ~2 s). **`replicad`/BREP is excluded**: OpenCASCADE won't init under Node SSR — verify BREP-language models in the browser. The tool gives you everything needed to self-correct in one call:
 
 ```bash
-npm run model:preview -- .plans/fidgets/spiral-cone.js          # writes <file>.preview.png + prints JSON
+npm run model:preview -- .plans/fidgets/spiral-cone.js          # writes <file>.preview-<stamp>.png + prints JSON
 npm run model:preview -- model.js --json                        # stats only, no PNG
 npm run model:preview -- model.js --png out.png -p turns=6      # override api.params, custom PNG path
 npm run model:preview -- model.js --view 130,35                 # ONE custom-angle tile (peek behind a feature)
@@ -162,7 +166,9 @@ npm run model:preview -- model.js --views front,iso,back        # pick/reorder n
 ```
 
 - **JSON stat block** (stdout): `isManifold`, `componentCount`, per-component `{volume, bbox, triangleCount, center}`, `volume`, `surfaceArea`, `genus`, `bbox`, `aspectRatio`, `minEdgeLength`/`meanEdgeLength`, model-declared `labels` (name + color), `paramsSchema`, and a `warnings[]` array (fused parts, **interpenetrating components / clearance**, tri-count over the ~200k catalog budget, sub-0.4 mm detail, …).
-- **4-view PNG** (front / right / top / iso by default; override with `--view`/`--views`), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail. Use `--view az,el` to rotate to an occluded feature when the four default angles hide it.
+- **4-view PNG** (front / right / top / iso by default; override with `--view`/`--views`), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail. Use `--view az,el` to rotate to an occluded feature when the four default angles hide it. The default PNG path is **stamped unique per run** (old stamps for the same model are cleaned up) so the Read tool's per-path image cache can never serve a stale render — take the path from the JSON's `png` field.
+- **Paint-in-code is verified headlessly.** `api.paint.*` ops (box/slab/cylinder/label) resolve against the mesh with the same pure helpers the browser uses: the PNG shows the colours and `stats.paintOps` lists per-op `{name, kind, triangleCount}` — an op that resolves to **0 triangles warns** (region misses the surface / label doesn't exist). Brush-painted sidecar regions still need the browser.
+- **Voxel `v.sdf` extras:** `voxelRes` (world-units-per-voxel, when all `v.sdf` calls agree), `worldBBox` (bbox × res — the authored world size, no mental ×res), and `sdfLabelCounts` (fills per `colors` label, **including 0** — a zero-fill label warns, surfacing the smoothUnion deepest-region trap instead of silently coloring nothing).
 - Implementation: `scripts/model-preview.mjs` (CLI + pure-JS rasterizer → `sharp`) + `src/tools/previewModel.ts` (the faithful engine call). No WebGL needed.
 
 **`componentCount` is the instrument for print-in-place mechanisms.** A model that returns separate moving parts (screw, spinner, hinge, captive ball, two-tone spiral) must report `componentCount === N`. If it fuses to `1`, the clearance gap is too small or parts collide. The reliable recipe for splitting one solid into interleaved colored parts: subtract a clearance-thick cutter (e.g. a full-diameter helical **slab** for a spiral), then `manifold.decompose()` and color each component. Verify topological/geometric claims with `model:preview`, not from memory.
@@ -399,7 +405,8 @@ Don't export functions unless they're imported elsewhere. When removing usage of
 This repo ships custom Claude Code subagents and a deterministic static-analysis layer they lean on — see `docs/agent-tooling.md` for the full reference. In short:
 
 - **`work-reviewer`** (`.claude/agents/work-reviewer.md`, Opus, read-only) reviews the branch diff vs `origin/main` for correctness, back-compat, security, and **UI consistency** against the shared component layer (`modalShell`, `styleConstants` `BUTTON_*`, `showToast`, `commandPalette` keyboard model). Launch it before marking a PR ready.
-- **`explore`** (`.claude/agents/explore.md`, Sonnet, read-only) overrides the built-in Haiku Explore agent for sharper codebase discovery, preferring the TypeScript LSP MCP (`mcp__typescript__*`, configured in `.mcp.json`) for reference/definition queries.
+- **`explore`** (`.claude/agents/explore.md`, Sonnet, read-only) overrides the built-in Haiku Explore agent for sharper codebase discovery, preferring the Serena LSP MCP (`mcp__serena__*`, configured in `.mcp.json`) for reference/definition queries.
+- **Search ladder** — match the search modality to the question (full guidance in `docs/agent-tooling.md`): `Grep` (ripgrep) for literals/strings → `npx ast-grep run -p '<pattern>' -l ts src` for code *shapes* (call-site sweeps, convention checks — `$X` matches one node, `$$$` any number; no comment/string false positives) → Serena (`find_symbol` / `find_referencing_symbols` / `get_symbols_overview`) for resolved references over the real type graph ("who actually uses this export"). Delegate broad multi-file discovery to the `explore` agent rather than running the fan-out in the main context.
 - **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), and **`lint:deps`** (madge) run in CI (`code-quality.yml`). `lint:consistency` gates on `error`-severity ast-grep rules (`no-native-dialogs` is `error`; the rest are `warning`/`hint` — promote one to `error` once the codebase is clean for it). `lint:deadcode` gates on knip's trustworthy categories (`dependencies`/`unlisted`/`unresolved`/`files`) but keeps `exports`/`types` advisory (knip can't see exports used only via the e2e suite's dynamic `import('/src/…')`, and the dead-export backlog needs per-symbol triage). `lint:deps` (madge circular deps) is a **gate**: the module graph is acyclic, so any new cycle fails CI. Scope each advisory hit to the diff — they over-report by design. See `docs/agent-tooling.md`.
 
 ### Module Layering — keep the dependency graph acyclic

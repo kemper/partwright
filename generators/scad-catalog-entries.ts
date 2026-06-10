@@ -28,6 +28,9 @@ interface CatalogEntry {
   id: string;
   name: string;
   description: string;
+  /** Optional per-entry thumbnail-camera pin (degrees; default iso az 45 / el
+   *  35) — see generators/catalog-entries.ts. */
+  thumbCamera?: { azimuth: number; elevation: number };
 }
 
 const newEntries: CatalogEntry[] = [
@@ -100,15 +103,17 @@ test.describe.serial('generate SCAD catalog entries', () => {
       // the wait that followed wasn't long enough for activeLanguage to land
       // on 'scad', and runAndSave then executed under the manifold-js 60s
       // timeout ceiling against a BOSL2 compile that needs ~50s on its own.
-      const payload = await page.evaluate(async ({ code, name }) => {
+      const payload = await page.evaluate(async ({ code, name, thumbCamera }) => {
         const pw = (window as unknown as { partwright: {
           setActiveLanguage: (lang: 'manifold-js' | 'scad') => Promise<void>;
           createSession: (n: string) => Promise<unknown>;
           runAndSave: (c: string, label?: string, a?: unknown) => Promise<unknown>;
+          setThumbnailCamera: (c: { azimuth: number; elevation: number }) => Promise<unknown>;
           exportSessionData: (id?: string, opts?: { includeThumbnails?: boolean }) => Promise<{ data?: unknown; error?: string }>;
         } }).partwright;
         await pw.setActiveLanguage('scad');
         await pw.createSession(name);
+        if (thumbCamera) await pw.setThumbnailCamera(thumbCamera);
         // Don't enforce maxComponents — some SCAD models in this batch are
         // intentionally multi-part (hex bolt + nut + washer is 3 pieces laid
         // out side-by-side, the gear pair has 2 free gears on a plate, etc.).
@@ -124,7 +129,7 @@ test.describe.serial('generate SCAD catalog entries', () => {
         const exported = await pw.exportSessionData(undefined, { includeThumbnails: true });
         if (exported.error) throw new Error('exportSessionData: ' + exported.error);
         return exported.data;
-      }, { code: src, name: entry.name });
+      }, { code: src, name: entry.name, thumbCamera: entry.thumbCamera ?? null });
 
       const outPath = path.join(catalogDir, entry.catalogFile);
       fs.writeFileSync(outPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');

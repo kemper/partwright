@@ -13,15 +13,17 @@ const STORAGE_KEY = 'partwright-ai-settings-v1';
 export interface AiSettings {
   preset: Preset;
   toggles: ChatToggles;
-  /** Whether the chat drawer is shown. Defaults to open on a first visit so
-   *  the AI surface is discoverable; persists the user's choice thereafter, so
-   *  once they close it it stays closed on reload. */
+  /** Whether the chat drawer is shown. Defaults to closed on a first visit —
+   *  the panel only opens when the user reaches for it via the AI buttons.
+   *  Persists the user's choice thereafter, so once they open it it stays open
+   *  on reload (and once they close it it stays closed). */
   drawerOpen: boolean;
   /** Whether the code editor pane is collapsed. `null` means "no explicit
    *  preference yet" — layout.ts then defaults it to match `drawerOpen` so a
-   *  first-time visitor with the AI panel up doesn't see two competing surfaces
-   *  in the editor. Once the user clicks "Hide code" / "Show code" the choice
-   *  is persisted and respected on every subsequent load. */
+   *  visitor with the AI panel up doesn't see two competing surfaces in the
+   *  editor (and a visitor with it closed gets the code pane). Once the user
+   *  clicks "Hide code" / "Show code" the choice is persisted and respected on
+   *  every subsequent load. */
   editorCollapsed: boolean | null;
   /** Default for new sessions before the user has touched the toggle bar. */
   autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
@@ -89,6 +91,14 @@ export interface LocalContextSettings {
 const DEFAULT_OPENAI_MODEL: OpenaiModelId = 'gpt-5-mini';
 const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
 
+/** Default Base URL for the Custom (OpenAI-compatible) provider. Points at
+ *  CLIProxyAPI's default localhost port (:8317) — the subscription bridge the
+ *  Custom tab's onboarding card walks the user through — so the endpoint is
+ *  pre-filled and the common case (driving Partwright from a Claude/Codex
+ *  plan via the bridge) needs no typing. The single source of truth for this
+ *  URL; `cliBridgeSetup.tsx` imports it for its "Use this endpoint" button. */
+export const DEFAULT_CUSTOM_BASE_URL = 'http://localhost:8317/v1';
+
 const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customModels' | 'customBaseUrl'> & { anthropicModel: AnthropicModelId }> = {
   minimal: {
     vision: { views: false, resolution: 'low', angles: 'auto' },
@@ -152,13 +162,13 @@ const DEFAULT_TOGGLES: ChatToggles = {
   geminiModel: DEFAULT_GEMINI_MODEL,
   customModel: '',
   customModels: [],
-  customBaseUrl: '',
+  customBaseUrl: DEFAULT_CUSTOM_BASE_URL,
 };
 
 const DEFAULT_SETTINGS: AiSettings = {
   preset: 'standard',
   toggles: DEFAULT_TOGGLES,
-  drawerOpen: true,
+  drawerOpen: false,
   editorCollapsed: null,
   autoCompactMode: 'off',
   systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null, custom: null },
@@ -270,7 +280,10 @@ export async function aiConnectionMode(): Promise<'disconnected' | 'cloud' | 'lo
   // A configured custom endpoint counts as connected even with no key — the
   // base URL is the real "is it set up" signal (auth is optional). Treated as
   // 'cloud' since, like the hosted providers, it's a remote HTTP endpoint.
-  if (settings.toggles.customBaseUrl.trim().length > 0) return 'cloud';
+  // Scoped to the custom provider: the base URL now ships pre-filled with the
+  // bridge default (see DEFAULT_CUSTOM_BASE_URL), so a non-empty URL alone no
+  // longer implies the user picked this provider.
+  if (settings.toggles.provider === 'custom' && settings.toggles.customBaseUrl.trim().length > 0) return 'cloud';
   const [anthropic, openai, gemini, custom] = await Promise.all([
     getKey('anthropic'),
     getKey('openai'),

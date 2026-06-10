@@ -10,6 +10,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "typecheck": "tsc --noEmit",
+    "preflight": "npm run typecheck && npm run test:unit && npm run lint:deps && npm run lint:consistency",
+    "snap": "node scripts/snap.mjs",
     "deploy": "npm audit --audit-level=moderate && tsc && vite build",
     "preview": "vite preview",
     "test": "npm run test:unit && npm run test:e2e",

@@ -2314,25 +2314,31 @@ function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: 
   return bubble;
 }
 
-/** Small copy-to-clipboard button that swaps to a check on success. Kept
- *  always-visible-but-faint (not hover-only) so it stays tappable on touch
- *  devices that have no hover state. */
+/** Copy-to-clipboard button with an icon + "Copy" label that swaps to a check
+ *  on success. Always visible (not hover-only) with a subtle bordered chip so
+ *  it reads as a clear affordance and stays tappable on touch devices. */
 function makeCopyButton(getText: () => string): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.title = 'Copy to clipboard';
   btn.setAttribute('aria-label', 'Copy message to clipboard');
-  btn.className = 'shrink-0 mt-0.5 px-1.5 py-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700/60 opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity text-xs leading-none';
-  btn.textContent = '⧉';
+  btn.className = 'inline-flex items-center gap-1 px-2 py-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 border border-zinc-700/70 hover:border-zinc-600 text-[11px] leading-none transition-colors';
+  const icon = document.createElement('span');
+  icon.textContent = '⧉';
+  const label = document.createElement('span');
+  label.textContent = 'Copy';
+  btn.append(icon, label);
   btn.addEventListener('click', async (e) => {
     e.stopPropagation();
     try {
       await navigator.clipboard.writeText(getText());
-      btn.textContent = '✓';
-      btn.classList.add('text-emerald-400');
+      icon.textContent = '✓';
+      label.textContent = 'Copied';
+      btn.classList.add('text-emerald-400', 'border-emerald-500/50');
       window.setTimeout(() => {
-        btn.textContent = '⧉';
-        btn.classList.remove('text-emerald-400');
+        icon.textContent = '⧉';
+        label.textContent = 'Copy';
+        btn.classList.remove('text-emerald-400', 'border-emerald-500/50');
       }, 1200);
     } catch {
       showToast('Copy failed — clipboard unavailable', { variant: 'warn', source: 'ai' });
@@ -2341,18 +2347,21 @@ function makeCopyButton(getText: () => string): HTMLButtonElement {
   return btn;
 }
 
-/** Wrap a response bubble in a row carrying a copy button on its outer edge —
- *  left of right-aligned user bubbles, right of left-aligned assistant ones —
- *  so any message can be copied with one click. The bubble's own `max-w-[90%]`
- *  is moved onto the row so the cap still measures against the panel. */
+/** Wrap a response bubble in a column carrying a copy button directly below it,
+ *  aligned to the right edge of the bubble, so any message can be copied with
+ *  one click. The bubble's own `max-w-[90%]` is moved onto the column so the
+ *  cap still measures against the panel. */
 function withCopyButton(bubble: HTMLElement, align: 'user' | 'assistant', getText: () => string): HTMLElement {
   bubble.classList.remove('max-w-[90%]');
-  bubble.classList.add('max-w-full', 'min-w-0');
-  const row = document.createElement('div');
-  row.className = `group flex items-start gap-1 max-w-[90%] min-w-0 ${align === 'user' ? 'flex-row-reverse' : 'flex-row'}`;
-  row.appendChild(bubble);
-  row.appendChild(makeCopyButton(getText));
-  return row;
+  bubble.classList.add('max-w-full', 'min-w-0', align === 'user' ? 'self-end' : 'self-start');
+  const col = document.createElement('div');
+  col.className = 'group flex flex-col gap-1 max-w-[90%] min-w-0';
+  col.appendChild(bubble);
+  const actions = document.createElement('div');
+  actions.className = 'w-full flex justify-end';
+  actions.appendChild(makeCopyButton(getText));
+  col.appendChild(actions);
+  return col;
 }
 
 function renderImageBubble(source: ImageSource): HTMLElement {

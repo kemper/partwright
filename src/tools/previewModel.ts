@@ -9,6 +9,7 @@ import { openscadEngine, runScadAsync } from '../geometry/engines/openscad';
 import type { Language } from '../geometry/engines/types';
 import type { MeshResult } from '../geometry/engines/types';
 import { componentsOverlap } from './bboxOverlap';
+import { resolvePaintOps } from '../color/paintOpsResolve';
 
 export interface PreviewComponent {
   index: number;
@@ -48,6 +49,27 @@ export interface PreviewStats {
    *  the mesh componentCount over-reports voxel models (enclosed cavities count
    *  as a second component, edge/corner-only touches split). */
   voxelPieceCount?: number;
+  /** World-units-per-voxel `res` shared by every `v.sdf()` call — only set for
+   *  the `voxel` engine when at least one sdf fill ran and all calls agreed. */
+  voxelRes?: number;
+  /** True when `v.sdf()` calls mixed different `res` values, so no unambiguous
+   *  world scale (and no worldBBox) exists. Only set for the `voxel` engine. */
+  voxelResMixed?: boolean;
+  /** Res-aware size echo for voxel models: the mesh bbox (voxel units) scaled
+   *  by `voxelRes`, i.e. the model's extent in the SDF's world coordinates —
+   *  answers "is this really a 40 mm cube?" without a mental ×res. Only set
+   *  when `voxelRes` is known and the model has a bbox. */
+  worldBBox?: { min: number[]; max: number[]; size: number[] };
+  /** Voxel fill count per label requested via `v.sdf({ colors })`, INCLUDING
+   *  zero-count entries — a 0 means that label colored nothing (typically a
+   *  smoothUnion-blended sub-body that is never the deepest region). Only set
+   *  for the `voxel` engine when a labelled sdf fill ran. */
+  sdfLabelCounts?: Record<string, number>;
+  /** `api.paint.*` ops resolved headlessly against the run mesh (manifold-js
+   *  only): per-op triangle counts, in declaration order. A 0 means the region
+   *  doesn't intersect the surface (or names a missing label). The resolved
+   *  colours also tint the preview PNG. */
+  paintOps?: { name: string; kind: string; triangleCount: number }[];
 }
 
 export interface PreviewRender {
@@ -158,6 +180,25 @@ export async function previewModel(
     }
   }
 
+  // --- api.paint.* ops (paint declared in code) ---
+  // Resolve each recorded descriptor against the run mesh — the same pure
+  // helpers the browser underlay uses — and composite the colours over the
+  // label fill, in declaration order. This makes paint-in-code verifiable
+  // headlessly: the PNG shows it and the stats carry per-op triangle counts.
+  let paintOpStats: { name: string; kind: string; triangleCount: number }[] | undefined;
+  if (r.paintOps && r.paintOps.length > 0) {
+    const resolved = resolvePaintOps(r.paintOps, mesh, r.labelMap);
+    if (!triColors) triColors = new Uint8Array(numTri * 3).fill(170);
+    for (const op of resolved) {
+      const [cr, cg, cb] = op.color.map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255));
+      for (const id of op.triangles) {
+        if (id < 0 || id >= numTri) continue;
+        triColors[id * 3] = cr; triColors[id * 3 + 1] = cg; triColors[id * 3 + 2] = cb;
+      }
+    }
+    paintOpStats = resolved.map((op) => ({ name: op.name, kind: op.kind, triangleCount: op.triangles.size }));
+  }
+
   // --- positions: take first 3 props (xyz) per vertex regardless of numProp ---
   const np = mesh.numProp;
   let positions: Float32Array;
@@ -185,6 +226,14 @@ export async function previewModel(
       }))
     : [];
 
+  // Voxel-engine extras: res-aware scale + per-label sdf fill counts. Spread
+  // into both stat branches so render-only results carry them too.
+  const voxelExtras: Partial<PreviewStats> = engine === 'voxel' ? {
+    ...(typeof r.voxelRes === 'number' ? { voxelRes: r.voxelRes } : {}),
+    ...(r.voxelResMixed ? { voxelResMixed: true } : {}),
+    ...(r.sdfLabelCounts ? { sdfLabelCounts: r.sdfLabelCounts } : {}),
+  } : {};
+
   if (renderOnly || !man) {
     stats = {
       isManifold: false, empty: false, componentCount: 1, triangleCount: numTri,
@@ -192,6 +241,7 @@ export async function previewModel(
       bbox: null, aspectRatio: 0, minEdgeLength: edge.min, meanEdgeLength: edge.mean,
       components: [], labels, warnings: [], paramsSchema: r.paramsSchema, renderOnly: true,
       engine, voxelCount: r.voxelCount, voxelPieceCount: r.voxelPieceCount,
+      ...voxelExtras, ...(paintOpStats ? { paintOps: paintOpStats } : {}),
     };
     stats.warnings = buildWarnings(stats);
   } else {
@@ -239,7 +289,18 @@ export async function previewModel(
       paramsSchema: r.paramsSchema,
       renderOnly: false,
       engine, voxelCount: r.voxelCount, voxelPieceCount: r.voxelPieceCount,
+      ...voxelExtras, ...(paintOpStats ? { paintOps: paintOpStats } : {}),
     };
+    // Res-aware world-size echo: the voxel mesh lives in voxel units, so its
+    // bbox × res is the model's extent in the SDF's world coordinates.
+    if (typeof stats.voxelRes === 'number' && bbox) {
+      const res = stats.voxelRes;
+      stats.worldBBox = {
+        min: bbox.min.map((v: number) => v * res),
+        max: bbox.max.map((v: number) => v * res),
+        size: bbox.size.map((v: number) => v * res),
+      };
+    }
     stats.warnings = buildWarnings(stats);
   }
 
@@ -310,6 +371,20 @@ function buildWarnings(s: PreviewStats): string[] {
   if (!s.renderOnly && !s.empty && !isVoxel && s.componentCount >= 2 && s.labels.length === 0 && componentsOverlap(s.components)) {
     w.push(`componentCount=${s.componentCount} with overlapping component bounding boxes (top ${Math.min(s.componentCount, s.components.length)} by volume checked) — separate parts whose bounds overlap, so they may interpenetrate. If this should be ONE solid, a boolean didn't fuse (increase overlap ≥0.5 units); if it's an intentional multi-part / print-in-place assembly, verify the clearance gap. Inspect islands with model:preview --explain-components.`);
   }
+  // Silent-label traps, surfaced loudly: a v.sdf colors entry that filled zero
+  // voxels, or an api.paint op that resolved to zero triangles, renders as
+  // "nothing happened" with no error — the most-burned class in past retros.
+  if (s.sdfLabelCounts) {
+    for (const [name, count] of Object.entries(s.sdfLabelCounts)) {
+      if (count === 0) w.push(`v.sdf colors["${name}"] filled 0 voxels — that label never wins a cell (a smoothUnion-blended sub-body is never the deepest region at the surface). Label the OUTER expression, or recolor the detail after v.sdf. See /ai/voxel.md#sdf.`);
+    }
+  }
+  if (s.paintOps) {
+    for (const op of s.paintOps) {
+      if (op.triangleCount === 0) w.push(`api.paint op "${op.name}" (${op.kind}) resolved to 0 triangles — the region doesn't intersect the surface${op.kind === 'byLabel' ? ' (or the label doesn\'t exist in this run)' : ''}; check its placement against the model bbox.`);
+    }
+  }
+  if (s.voxelResMixed) w.push('v.sdf() calls mixed different `res` values — world scale is ambiguous, so no worldBBox is reported. Use one res per grid for a res-aware size echo.');
   if (s.triangleCount > 200000) w.push(`High triangle count (${Math.round(s.triangleCount / 1000)}k) — exceeds the ~200k catalog budget; lower circular segments / nDivisions or feature density.`);
   if (s.aspectRatio > 12) w.push(`Extreme aspect ratio (${s.aspectRatio.toFixed(1)}:1) — tall/thin parts can be fragile or tip-droppy on FDM.`);
   if (s.minEdgeLength > 0 && s.minEdgeLength < 0.4) w.push(`Smallest edge ${s.minEdgeLength}mm (<0.4mm extrusion width) — sub-extrusion detail may vanish on the print.`);
