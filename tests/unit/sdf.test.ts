@@ -1013,3 +1013,30 @@ describe('buildLSystem', () => {
     } as unknown)).toThrow();
   });
 });
+
+describe('sdf build options — detail regions', () => {
+  const { assertBuildOpts } = __testables__;
+
+  it('accepts a valid detail array', () => {
+    expect(() => assertBuildOpts({
+      edgeLength: 0.5,
+      detail: [{ center: [0, 0, 50], radius: 8, edgeLength: 0.15 }],
+    })).not.toThrow();
+  });
+
+  it('rejects a non-array, bad entries, and unknown entry keys', () => {
+    expect(() => assertBuildOpts({ detail: { center: [0, 0, 0], radius: 1, edgeLength: 0.1 } }))
+      .toThrow(/array/);
+    expect(() => assertBuildOpts({ detail: [{ center: [0, 0], radius: 1, edgeLength: 0.1 }] }))
+      .toThrow();
+    expect(() => assertBuildOpts({ detail: [{ center: [0, 0, 0], radius: -1, edgeLength: 0.1 }] }))
+      .toThrow();
+    expect(() => assertBuildOpts({ detail: [{ center: [0, 0, 0], radius: 1, edgeLength: 0.1, falloff: 2 }] }))
+      .toThrow(/falloff/);
+  });
+
+  it('caps the region count', () => {
+    const many = Array.from({ length: 17 }, () => ({ center: [0, 0, 0], radius: 1, edgeLength: 0.1 }));
+    expect(() => assertBuildOpts({ detail: many })).toThrow(/at most/);
+  });
+});

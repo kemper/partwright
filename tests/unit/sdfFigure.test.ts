@@ -6,8 +6,23 @@
 
 import { describe, it, expect } from 'vitest';
 import { __figureTestables__ } from '../../src/geometry/sdfFigure';
+import { __testables__ as sdfT } from '../../src/geometry/sdf';
+import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig } = __figureTestables__;
+const { buildRig, buildMouthPart, faceDetail } = __figureTestables__;
+
+/** Minimal engine-free SdfApi over the raw primitive factories — enough for
+ *  the part builders (only `.build()` needs the engine binding). */
+const api: SdfApi = {
+  sphere: sdfT.primSphere,
+  ellipsoid: sdfT.primEllipsoid,
+  box: sdfT.primBox,
+  roundedBox: sdfT.primRoundedBox,
+  cylinder: sdfT.primCylinder,
+  roundedCylinder: sdfT.primRoundedCylinder,
+  capsule: sdfT.primCapsule,
+  union: (...nodes) => nodes.reduce((a, b) => sdfT.opUnion(a, b)),
+} as unknown as SdfApi;
 
 const dist = (a: number[], b: number[]): number =>
   Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
@@ -153,6 +168,78 @@ describe('figure rig — one-component invariants', () => {
     expect(Math.abs(rig.joints.shoulderL[0])).toBeLessThan(rig.r.chestX + rig.r.upperArm * 1.15);
     // hip X within the pelvis mass + thigh radius.
     expect(Math.abs(rig.joints.hipL[0])).toBeLessThan(rig.r.pelvisX + rig.r.thigh);
+  });
+});
+
+describe('figure mouth — styles', () => {
+  const rig = buildRig({ height: 60, headsTall: 5 });
+
+  it('defaults to a carved smile line', () => {
+    const mouth = buildMouthPart(api, rig);
+    expect(mouth.mode).toBe('carve');
+    // The arc passes through (just below) the mouth anchor, so the anchor
+    // point lies INSIDE the cutter.
+    const m = rig.face.mouth;
+    expect(mouth.node.evaluate(m[0], m[1], m[2])).toBeLessThan(0);
+  });
+
+  it('spans roughly the requested width', () => {
+    const width = rig.r.head * 0.6;
+    const mouth = buildMouthPart(api, rig, { width });
+    const b = mouth.node.bounds();
+    expect(b.max[0] - b.min[0]).toBeGreaterThan(width * 0.9);
+  });
+
+  it('`open` implies the open-cavity style and carves', () => {
+    const mouth = buildMouthPart(api, rig, { open: 0.7 });
+    expect(mouth.mode).toBe('carve');
+    const m = rig.face.mouth;
+    // The cavity straddles the anchor.
+    expect(mouth.node.evaluate(m[0], m[1], m[2])).toBeLessThan(0);
+  });
+
+  it("style 'lips' keeps the protruding additive ridge", () => {
+    const mouth = buildMouthPart(api, rig, { style: 'lips', smirk: 0.4 });
+    expect(mouth.mode).toBe('add');
+  });
+
+  it('an open mouth gapes wider with larger `open`', () => {
+    const small = buildMouthPart(api, rig, { open: 0.2 }).node.bounds();
+    const big = buildMouthPart(api, rig, { open: 1 }).node.bounds();
+    expect(big.max[2] - big.min[2]).toBeGreaterThan(small.max[2] - small.min[2]);
+  });
+
+  it('rejects bad style / out-of-range open / unknown keys', () => {
+    expect(() => buildMouthPart(api, rig, { style: 'frown' })).toThrow(/style/);
+    expect(() => buildMouthPart(api, rig, { open: 2 })).toThrow();
+    expect(() => buildMouthPart(api, rig, { teeth: true })).toThrow();
+  });
+});
+
+describe('figure faceDetail — detail-region helper', () => {
+  const rig = buildRig({ height: 60, headsTall: 5 });
+
+  it('centres on the head and covers every face anchor', () => {
+    const d = faceDetail(rig);
+    expect(d.center).toEqual(rig.joints.headCenter);
+    for (const a of Object.values(rig.face)) {
+      const dist = Math.hypot(a[0] - d.center[0], a[1] - d.center[1], a[2] - d.center[2]);
+      expect(dist).toBeLessThan(d.radius);
+    }
+  });
+
+  it('scales the target edge with head size and stays fine', () => {
+    const chibi = faceDetail(buildRig({ height: 60, headsTall: 3 }));
+    const adult = faceDetail(buildRig({ height: 60, headsTall: 8 }));
+    expect(chibi.edgeLength).toBeGreaterThan(adult.edgeLength);
+    expect(adult.edgeLength).toBeLessThan(adult.radius * 0.1);
+  });
+
+  it('honours overrides and rejects unknown keys', () => {
+    const d = faceDetail(rig, { radius: 12, edgeLength: 0.1 });
+    expect(d.radius).toBe(12);
+    expect(d.edgeLength).toBe(0.1);
+    expect(() => faceDetail(rig, { density: 2 })).toThrow();
   });
 });
 

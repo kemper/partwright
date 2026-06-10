@@ -42,8 +42,9 @@ const rig = F.rig({
 });
 
 // 2. HEAD + FACE — face features read rig.face anchors (no coords).
+// Keep eyes OUT of the assemble (they get their own paint label in step 4).
 const head = F.head(rig);
-const face = F.face.assemble(head, rig, { mouth: { smirk: 0.4 } });
+const face = F.face.assemble(head, rig, { eyes: false, mouth: { smirk: 0.4 } });
 
 // 3. SKIN — weld the major masses with one soft k.
 const skin = F.weld(rig, [
@@ -53,13 +54,20 @@ const skin = F.weld(rig, [
   face,
 ]).label('skin');
 
-// 4. CLOTHES + HAIR + BASE — derived from the same rig, so they always fit.
+// 4. EYES — hard-unioned at the TOP level with their own label, so they can
+// be painted white/black separately from the skin.
+const eyes = F.face.eyes(rig).label('eyes');
+
+// 5. CLOTHES + HAIR + BASE — derived from the same rig, so they always fit.
 const pants = F.clothing.pants(rig, { leg: 'cargo', rise: 'low' }).label('pants');
 const hair  = F.hair(rig, { style: 'long' }).label('hair');
 const base  = F.base(rig).label('base');
 
-// 5. Hard-union the labelled regions and build.
-return sdf.union(skin, pants, hair, base).build({ edgeLength: 0.5 });
+// 6. Hard-union the labelled regions and build. `detail: [F.faceDetail(rig)]`
+// meshes the head finely (smooth carved smile, round eyes) while the body
+// keeps the cheap 0.5 grid — always include it when the figure has a face.
+return sdf.union(skin, eyes, pants, hair, base)
+  .build({ edgeLength: 0.5, detail: [F.faceDetail(rig)] });
 ```
 
 Then paint by label from a follow-up tool call:
@@ -67,6 +75,7 @@ Then paint by label from a follow-up tool call:
 ```js
 partwright.paintByLabels([
   { label: 'skin',  color: [0.95, 0.78, 0.66] },
+  { label: 'eyes',  color: [0.98, 0.98, 0.98] },
   { label: 'pants', color: [0.15, 0.18, 0.35] },
   { label: 'hair',  color: [0.45, 0.26, 0.13] },
   { label: 'base',  color: [0.3, 0.3, 0.3] },
@@ -176,22 +185,71 @@ second component.
 F.face.assemble(head, rig, {
   eyes:  true | { radius } | false,
   nose:  true | { tipRadius, length } | false,
-  mouth: true | { width, smirk, open } | false,   // smirk −1..1
+  mouth: true | { style, width, smirk, open } | false,
   ears:  true | { size } | false,
   brows: { } | false,        // off by default; pass {} to add
 })
 ```
 
-`assemble` welds features onto the head with **small** `k` so the nose bridge,
-lip line, and ear margins stay crisp (vs the soft body weld). Pass a feature key
-as `false` to skip it, `true` for defaults, or an options object to tune it. The
-individual builders (`F.face.eyes(rig)`, `.nose`, `.mouth`, `.ears`, `.brows`)
-are also exposed if you want to place a feature yourself.
+`assemble` welds features onto the head with **small** `k` so the nose bridge
+and ear margins stay crisp (vs the soft body weld), and **carves** the carved
+mouth styles with a matching small `k`. Pass a feature key as `false` to skip
+it, `true` for defaults, or an options object to tune it. The individual
+builders (`F.face.eyes(rig)`, `.nose`, `.mouth`, `.ears`, `.brows`) are also
+exposed if you want to place a feature yourself.
 
-> **Eyes are a separate `union` (hard seam), not a smooth weld** — so you can
-> paint them their own color. Put `face` (which includes the eyes) inside the
-> `'skin'` region, then over-paint the eyes with a second label if you want
-> them white: wrap `F.face.eyes(rig).label('eyes')` and union it separately.
+### Mouth styles
+
+| `style` | What you get | Add or carve |
+|---|---|---|
+| `'smile'` (default) | a curved smile **line** carved into the face — the classic cartoon mouth. `smirk` (−1..1) skews it. | carve |
+| `'open'` | an open mouth cavity (laughing / talking / singing). `open` (0..1) sets the gape; passing `open > 0` without a style selects this. | carve |
+| `'lips'` | the protruding lip ridge (the pre-2026-06 default). | add |
+
+```js
+mouth: { smirk: 0.4 }                       // happy carved smile (default style)
+mouth: { open: 0.7, width: rig.r.head*0.6 } // big laughing mouth
+mouth: { style: 'lips', smirk: -0.3 }       // pouty sculpted lips
+```
+
+`F.face.mouth(rig, opts)` returns the mouth **geometry node**: for the carved
+styles that's the *cutter* — `smoothSubtract` it from the head yourself, or
+just let `assemble` handle the bookkeeping.
+
+### Paintable eyes — the `eyes: false` + top-level-label pattern
+
+Smooth-welded features can't carry their own paint label (labels turn smooth
+blends into hard seams — see `/ai/sdf.md`), but eyes are a **hard** union, so
+they can. Don't bury them inside the `'skin'` weld; lift them to the top-level
+union with their own label, as in the pattern up top:
+
+```js
+const face = F.face.assemble(head, rig, { eyes: false, ... });  // no eyes here
+const eyes = F.face.eyes(rig).label('eyes');                    // own region
+return sdf.union(skin, eyes, hair, base).build({ ... });
+```
+
+Then `paintByLabels` can make them white/black/any color independently of the
+skin. (Brows and `'lips'`-style mouths can use the same pattern if you want
+them painted; the carved mouth styles need no paint at all.)
+
+## Face detail — `F.faceDetail(rig)` (use it on every figure with a face)
+
+Face features are far smaller than the body, so at the recommended figure grid
+(`edgeLength 0.4–0.6`) they mesh as angular slabs. `F.faceDetail(rig)` returns
+a `{ center, radius, edgeLength }` sphere covering the head, sized off
+`rig.r.head`, for `.build()`'s `detail` option (see
+`/ai/sdf.md#detail-regions`):
+
+```js
+return sdf.union(skin, eyes, hair, base)
+  .build({ edgeLength: 0.5, detail: [F.faceDetail(rig)] });
+```
+
+The head meshes ~3× finer (smooth smile groove, round eye domes) while the
+body keeps the cheap global grid — typically +30–60k triangles instead of the
+~10× a globally fine grid would cost. For a final extra-fine pass, halve it:
+`F.faceDetail(rig, { edgeLength: rig.r.head * 0.02 })`.
 
 ## Hair & clothing — derived from the rig, so they always fit
 
@@ -228,10 +286,12 @@ hard seams (see `/ai/sdf.md` paint-by-label).
    pose* against the reference before any face detail.
 2. **Match the pose with joint angles, not coordinates.** Arm out = `abduct 90`;
    flexing = `elbow 110–130`; sitting = `legs flex 90, knee 90`.
-3. **Add the face via `face.assemble`**, then hair and clothes — all off the same
-   rig.
-4. **Weld, label, union, build.** `edgeLength: 0.4–0.6` is a good figure default;
-   drop to 0.3 only for a final detailed face.
+3. **Add the face via `face.assemble`** (with `eyes: false` + a top-level
+   labelled `F.face.eyes(rig)`), then hair and clothes — all off the same rig.
+4. **Weld, label, union, build.** `edgeLength: 0.4–0.6` is a good figure
+   default — and always pass `detail: [F.faceDetail(rig)]` so the face meshes
+   finely. Don't drop the global edgeLength for face quality; that's what the
+   detail region is for.
 5. **Judge against the reference**, not just `isManifold`. Resemblance is the
    success criterion; `componentCount === 1` + manifold is necessary, not
    sufficient.

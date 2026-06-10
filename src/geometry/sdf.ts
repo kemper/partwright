@@ -33,6 +33,7 @@ import {
 import { makeNoise, type NoiseOptions, type ScalarField } from './noise';
 import { expandLSystem, turtle3d, type LSystemRule } from './lsystem';
 import { createFigureNamespace, type FigureNamespace, type SdfApi } from './sdfFigure';
+import { refineMeshNearRegions, sphereIntersectsBox, type DetailRegion } from './sdfRefine';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ManifoldClass = any;
@@ -400,9 +401,22 @@ export interface SdfBuildOptions {
   bounds?: Box;
   level?: number;
   tolerance?: number;
+  /** Localized refinement: after the uniform levelSet march, triangles inside
+   *  each sphere are subdivided to the sphere's (finer) edgeLength and the new
+   *  vertices are re-projected onto the SDF surface. The way to give a
+   *  figurine's face (or any small feature on a big model) fine detail without
+   *  paying for a fine grid everywhere. See /ai/sdf.md#detail-regions. */
+  detail?: DetailRegion[];
 }
 
-const BUILD_FIELDS = ['edgeLength', 'bounds', 'level', 'tolerance'] as const;
+const BUILD_FIELDS = ['edgeLength', 'bounds', 'level', 'tolerance', 'detail'] as const;
+const DETAIL_FIELDS = ['center', 'radius', 'edgeLength'] as const;
+/** Most detail spheres an AI would meaningfully place; guards quadratic
+ *  edge-marking cost from a runaway list. */
+const MAX_DETAIL_REGIONS = 16;
+/** Per-region triangle cap for the refine pass — same order as the ~200k
+ *  catalog budget, with headroom for multi-region models. */
+const REFINE_MAX_TRIANGLES = 400_000;
 
 function assertBuildOpts(opts: unknown): SdfBuildOptions {
   if (opts === undefined) return {};
@@ -417,6 +431,21 @@ function assertBuildOpts(opts: unknown): SdfBuildOptions {
   }
   if (o.level !== undefined) assertNumber(o.level, 'build.level');
   if (o.tolerance !== undefined) assertNumber(o.tolerance, 'build.tolerance', { min: 0 });
+  if (o.detail !== undefined) {
+    if (!Array.isArray(o.detail)) {
+      throw new ValidationError('build.detail: must be an array of { center, radius, edgeLength } spheres.');
+    }
+    if (o.detail.length > MAX_DETAIL_REGIONS) {
+      throw new ValidationError(`build.detail: at most ${MAX_DETAIL_REGIONS} detail regions.`);
+    }
+    for (let i = 0; i < o.detail.length; i++) {
+      const d = assertObject(o.detail[i], `build.detail[${i}]`)!;
+      assertNoUnknownKeys(d, DETAIL_FIELDS, `build.detail[${i}]`);
+      assertNumberTuple(d.center, 3, `build.detail[${i}].center`);
+      assertNumber(d.radius, `build.detail[${i}].radius`, { min: 1e-4 });
+      assertNumber(d.edgeLength, `build.detail[${i}].edgeLength`, { min: 1e-4 });
+    }
+  }
   return o as SdfBuildOptions;
 }
 
@@ -451,6 +480,7 @@ function buildSdf(
   const edgeLength = opts.edgeLength ?? defaultEdgeLength(bounds);
   const level = opts.level ?? 0;
   const tolerance = opts.tolerance;
+  const detail = opts.detail ?? [];
 
   // Partition the tree into labelled regions. If there are no labels,
   // returns a single anonymous region covering the whole root.
@@ -474,6 +504,15 @@ function buildSdf(
     } else {
       m = Manifold.levelSet(negated, meshBounds, edgeLength, level);
     }
+    // Localized detail: refine + re-project this region's mesh near any
+    // detail sphere that can touch it. Only spheres asking for FINER
+    // resolution than the global grid do anything.
+    const applicable = detail.filter(d =>
+      d.edgeLength < edgeLength
+      && sphereIntersectsBox(d.center, d.radius, meshBounds.min, meshBounds.max));
+    if (applicable.length > 0) {
+      m = refineManifoldNearRegions(m, Manifold, evalFn, applicable, level);
+    }
     if (region.labelName) {
       m = label(m, region.labelName);
     }
@@ -489,6 +528,51 @@ function buildSdf(
   // here by design (see header comment); to preserve them, label the
   // outer expression instead of individual primitives.
   return Manifold.union(meshed);
+}
+
+/** Run the refine-and-project pass over a freshly-marched Manifold and
+ *  rebuild it. levelSet extracts the surface where the NEGATED field equals
+ *  `level`, i.e. where the standard-sign eval equals -level — that's the iso
+ *  the projection targets. Falls back to the unrefined mesh (with a console
+ *  warning) if Manifold rejects the refined one — refinement is a quality
+ *  pass, never a correctness gate. */
+function refineManifoldNearRegions(
+  m: ManifoldInstance,
+  Manifold: ManifoldClass,
+  evalFn: EvalFn,
+  regions: DetailRegion[],
+  level: number,
+): ManifoldInstance {
+  const mesh = m.getMesh();
+  if (mesh.numProp !== 3) return m; // levelSet output is position-only; anything else is unexpected — skip.
+  const refined = refineMeshNearRegions(
+    mesh.vertProperties as Float32Array,
+    mesh.triVerts as Uint32Array,
+    (x, y, z) => evalFn(x, y, z),
+    regions,
+    { iso: -level, maxTriangles: REFINE_MAX_TRIANGLES },
+  );
+  if (refined.rounds === 0) return m;
+  try {
+    let out = Manifold.ofMesh({
+      numProp: 3,
+      vertProperties: refined.positions,
+      triVerts: refined.triVerts,
+    });
+    // Projection can land two midpoints almost on top of each other; a
+    // simplify pass at a tolerance far below the detail target collapses
+    // those near-degenerate slivers without eating any visible detail.
+    const minTarget = Math.min(...regions.map(r => r.edgeLength));
+    try {
+      const cleaned = out.simplify(minTarget * 0.02);
+      if (cleaned.numTri() >= 4) out = cleaned;
+    } catch { /* keep the unsimplified refined mesh */ }
+    return out;
+  } catch (err) {
+    // Worker context — no errorLog here; the coarse mesh is still correct.
+    console.warn('api.sdf.build({detail}): refined mesh rejected by Manifold, keeping the coarse mesh.', err);
+    return m;
+  }
 }
 
 function expandedMeshBounds(nodeBounds: Box, userBounds: Box, edgeLength: number): Box {
@@ -1776,4 +1860,5 @@ export const __testables__ = {
   partitionByLabel,
   defaultEdgeLength,
   expandedMeshBounds,
+  assertBuildOpts,
 };

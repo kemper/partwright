@@ -29,16 +29,21 @@ const rig = F.rig({
   },
 });
 
-// 2. HEAD + FACE — big features for a child
+// 2. HEAD + FACE — big features for a child. Eyes stay OUT of the skin weld
+// (step 7 unions them as their own labelled region so they paint separately).
 const head = F.head(rig);
 
 const face = F.face.assemble(head, rig, {
-  eyes: { radius: rig.r.head * 0.17 },  // big cute child eyes
+  eyes: false,
   nose: { tipRadius: rig.r.head * 0.10 },
-  mouth: { smirk: 0.40, width: rig.r.head * 0.52 },  // wide happy smile
+  // Carved smile line (the default style) — wide and happy with a smirk tilt.
+  mouth: { smirk: 0.40, width: rig.r.head * 0.52 },
   ears: { size: rig.r.head * 0.28 },
   brows: {},         // expressive brows
 });
+
+// Paintable eyes: hard-unioned at the top level with their own label.
+const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.17 }).label('eyes');
 
 // 3. SKIN — weld all body masses into one painted region.
 // Raise k slightly so limb joints blend more softly (less balloon-animal look).
@@ -74,6 +79,8 @@ const base = F.base(rig, {
   thickness: rig.opts.height * 0.04,
 }).label('base');
 
-// 7. Hard-union all labeled regions and build
-// edgeLength 0.55 → clean mesh, fewer sub-0.4mm slivers from face seams
-return sdf.union(skin, pants, shirt, hair, base).build({ edgeLength: 0.55 });
+// 7. Hard-union all labeled regions and build.
+// The face detail region refines the head mesh (smooth carved smile, round
+// eyes) without paying for a fine grid over the whole body.
+return sdf.union(skin, eyes, pants, shirt, hair, base)
+  .build({ edgeLength: 0.55, detail: [F.faceDetail(rig)] });
