@@ -7,17 +7,20 @@
 
 import { registerCommands } from './commandPalette';
 import { getConfig } from '../config/appConfig';
+import { getBuildVolume } from '../geometry/printerSettings';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 
+type BBox = { x?: number[]; y?: number[]; z?: number[]; min?: number[]; max?: number[] } | null;
+
 export interface ResizeApi {
   scaleModel(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }): Promise<ApplyResult>;
   previewScale(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }): { ok: true } | { error: string };
   clearScalePreview(): { ok: true };
-  getGeometryData(): { boundingBox?: { min?: number[]; max?: number[] } | null } | Record<string, unknown>;
+  getGeometryData(): { boundingBox?: BBox } | Record<string, unknown>;
   modelHasColor(): boolean;
 }
 
@@ -43,11 +46,21 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text = ''):
 
 function getBbox(api: ResizeApi): { size: [number, number, number]; min: [number, number, number]; max: [number, number, number] } | null {
   try {
-    const gd = api.getGeometryData() as { boundingBox?: { min?: number[]; max?: number[] } | null };
+    const gd = api.getGeometryData() as { boundingBox?: BBox };
     const bb = gd?.boundingBox;
-    if (bb?.min && bb?.max) {
-      const mn = bb.min as number[];
-      const mx = bb.max as number[];
+    if (!bb) return null;
+    // The geometry-data payload encodes the box as per-axis [min, max] pairs
+    // (x/y/z); accept the legacy {min, max} vector form as a fallback.
+    let mn: number[] | undefined;
+    let mx: number[] | undefined;
+    if (bb.x && bb.y && bb.z) {
+      mn = [bb.x[0], bb.y[0], bb.z[0]];
+      mx = [bb.x[1], bb.y[1], bb.z[1]];
+    } else if (bb.min && bb.max) {
+      mn = bb.min;
+      mx = bb.max;
+    }
+    if (mn && mx) {
       return {
         min: [mn[0], mn[1], mn[2]],
         max: [mx[0], mx[1], mx[2]],
@@ -63,7 +76,18 @@ function getViewportContainer(): HTMLElement {
   return (document.getElementById('clip-controls')?.offsetParent as HTMLElement | null) ?? document.body;
 }
 
-export function openResizeModal(api: ResizeApi): void {
+/** The uniform scale factor that makes a model of the given size touch — but not
+ *  exceed — the printer build volume on its most-constraining axis. Returns null
+ *  when the model has no measurable size. */
+function fitToBedFactor(size: [number, number, number], bed: [number, number, number]): number | null {
+  let f = Infinity;
+  for (let i = 0; i < 3; i++) {
+    if (size[i] > 1e-9) f = Math.min(f, bed[i] / size[i]);
+  }
+  return Number.isFinite(f) && f > 0 ? f : null;
+}
+
+export function openResizeModal(api: ResizeApi, opts?: { fitToBed?: boolean }): void {
   if (openModal) { openModal.remove(); openModal = null; currentResizeClose = null; }
 
   const bbox = getBbox(api);
@@ -104,6 +128,33 @@ export function openResizeModal(api: ResizeApi): void {
   panel.append(body);
 
   const status = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mt-1');
+
+  // ---- Fit to print bed ----
+  // Scales uniformly so the model fits within the configured build volume. The
+  // factor is staged into the percent controls and previewed; Apply commits it,
+  // so the user always sees the result before it's saved.
+  const bed = getBuildVolume();
+  const fitRow = el('div', 'mb-4');
+  const fitBtn = el('button', 'w-full text-left px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs flex items-center gap-2');
+  fitBtn.innerHTML = `<span aria-hidden="true">▣</span><span>Fit to print bed <span class="text-zinc-500">(${bed[0]}×${bed[1]}×${bed[2]})</span></span>`;
+  fitBtn.title = 'Scale uniformly so the model fits within the printer build volume';
+  fitRow.append(fitBtn);
+  body.append(fitRow);
+
+  function applyFit() {
+    const factor = fitToBedFactor(size as [number, number, number], bed);
+    if (factor === null) { status.textContent = 'Cannot fit: model has no measurable size.'; return; }
+    mode = 'percent';
+    uniform = true;
+    uniformCheck.checked = true;
+    pctX = pctY = pctZ = factor * 100;
+    rawX = size[0] * factor; rawY = size[1] * factor; rawZ = size[2] * factor;
+    syncModeBtns();
+    renderControls();
+    schedulePreview();
+    status.textContent = `Fit to bed: ${(factor * 100).toFixed(1)}% → ${(size[0] * factor).toFixed(1)} × ${(size[1] * factor).toFixed(1)} × ${(size[2] * factor).toFixed(1)}. Apply to save.`;
+  }
+  fitBtn.addEventListener('click', applyFit);
 
   // ---- Mode toggle (% / units) ----
   const modeRow = el('div', 'flex items-center gap-2 mb-4');
@@ -363,6 +414,10 @@ export function openResizeModal(api: ResizeApi): void {
   openViewportPanel(resizeRegistryEntry);
   document.addEventListener('keydown', onResizeEscape);
   openModal = panel as HTMLDivElement;
+
+  // Opened from the "fit to print bed" command: stage the fit immediately so the
+  // user lands on a previewed result, one Apply away from saving.
+  if (opts?.fitToBed) applyFit();
 }
 
 const BTN_BASE =
@@ -376,6 +431,13 @@ export function initResizeUI(api: ResizeApi): void {
       hint: 'Modifier',
       keywords: 'scale resize dimension size transform',
       run: () => openResizeModal(api),
+    },
+    {
+      id: 'resize-fit-bed',
+      title: 'Scale model to fit print bed',
+      hint: 'Modifier',
+      keywords: 'scale fit bed build volume printer shrink size resize plate',
+      run: () => openResizeModal(api, { fitToBed: true }),
     },
   ]);
 
