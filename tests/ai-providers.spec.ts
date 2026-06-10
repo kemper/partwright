@@ -163,6 +163,55 @@ test.describe('Multi-provider AI', () => {
     expect(textPart.thoughtSignature).toBe('SIG_TEXT');
   });
 
+  test('Gemini strips exclusiveMinimum/exclusiveMaximum from tool schemas', async ({ page }) => {
+    // Regression: Gemini's OpenAPI subset only knows minimum/maximum, so a tool
+    // param carrying `exclusiveMinimum` (e.g. scaleModel's sx/sy/sz) 400s with
+    // `Unknown name "exclusiveMinimum" … Cannot find field`. The sanitizer must
+    // drop those keywords (at any nesting depth) before the request goes out.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const sentBody = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (_input: unknown, init: { body?: string }) => {
+        captured = String(init?.body ?? '');
+        const body = 'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}\r\n\r\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        const tools = [{
+          name: 'scaleModel',
+          description: 'Resize.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              sx: { type: 'number', description: 'X factor.', exclusiveMinimum: 0 },
+              nested: {
+                type: 'array',
+                items: { type: 'number', exclusiveMaximum: 10 },
+              },
+            },
+            required: ['sx'],
+          },
+        }];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await gemini.streamTurn({ apiKey: 'k', model: 'gemini-2.5-flash', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: tools as any });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return captured;
+    });
+    expect(sentBody).not.toContain('exclusiveMinimum');
+    expect(sentBody).not.toContain('exclusiveMaximum');
+    // The surrounding schema must survive — the param itself is still present.
+    const parsed = JSON.parse(sentBody);
+    const decl = parsed.tools[0].functionDeclarations[0];
+    expect(decl.parameters.properties.sx.type).toBe('number');
+    expect(decl.parameters.properties.nested.items.type).toBe('number');
+  });
+
   test('Gemini backfills a functionCall thoughtSignature delivered in a separate chunk', async ({ page }) => {
     // Hardening for the documented 400 ("missing thought_signature after
     // multiple tool uses"): when the signature streams in a chunk separate from
