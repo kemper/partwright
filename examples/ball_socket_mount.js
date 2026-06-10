@@ -8,9 +8,9 @@ const { Manifold, joints, fasteners } = api;
 
 const p = api.params({
   ballD:        { type: 'number', default: 14,   min: 6,    max: 30,   step: 1,    unit: 'mm', label: 'Ball diameter' },
-  openingRatio: { type: 'number', default: 0.85, min: 0.7,  max: 0.95, step: 0.01,             label: 'Opening ratio' },
-  clearance:    { type: 'number', default: 0.15, min: 0,    max: 0.4,  step: 0.05, unit: 'mm', label: 'Articulation gap' },
-  stemD:        { type: 'number', default: 6,    min: 3,    max: 12,   step: 0.5,  unit: 'mm', label: 'Stem diameter' },
+  openingRatio: { type: 'number', default: 0.9,  min: 0.7,  max: 0.95, step: 0.01,             label: 'Opening ratio' },
+  clearance:    { type: 'number', default: 0.3,  min: 0,    max: 0.5,  step: 0.05, unit: 'mm', label: 'Articulation gap' },
+  stemD:        { type: 'number', default: 8,    min: 3,    max: 12,   step: 0.5,  unit: 'mm', label: 'Stem diameter' },
   stemL:        { type: 'number', default: 12,   min: 4,    max: 30,   step: 1,    unit: 'mm', label: 'Stem length' },
   screwSize:    { type: 'select', default: 'M3', options: ['M2.5', 'M3', 'M4'],                label: 'Mount screws' },
 });
