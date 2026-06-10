@@ -367,7 +367,15 @@ function buildRig(rawOpts: unknown): Rig {
 
 function buildTorso(sdf: SdfApi, rig: Rig): Node {
   const j = rig.joints, r = rig.r;
-  const chest = sdf.ellipsoid(r.chestX, r.chestY, (j.chest[2] - j.navel[2]) * 1.15 + r.chestY)
+  // Cap the chest mass at the shoulder line — the neck capsule provides the
+  // neck. An uncapped tall ellipsoid climbs past the chin on stocky / few-
+  // heads-tall rigs and buries the lower face inside the torso (the carved
+  // mouth then lands in solid chest and teeth/lips labels resolve to zero).
+  const chestSemiZ = Math.min(
+    (j.chest[2] - j.navel[2]) * 1.15 + r.chestY,
+    j.shoulderL[2] + r.neck * 0.8 - j.chest[2],
+  );
+  const chest = sdf.ellipsoid(r.chestX, r.chestY, chestSemiZ)
     .translate(j.chest);
   const belly = sdf.ellipsoid(r.chestX * 0.92, r.chestY * 0.94, (j.navel[2] - j.pelvis[2]) * 0.9 + r.chestY * 0.6)
     .translate([0, -r.chestY * 0.1, mix(j.navel[2], j.pelvis[2], 0.4)]);
@@ -506,12 +514,13 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const style = o.style === undefined ? 'iris'
     : assertEnum(o.style, ['solid', 'iris'] as const, 'eyes.style');
   const f = rig.dir.headForward;
-  // Push the eyeballs outward by half their radius so a clear dome always
-  // protrudes past the cheek masses — eyes centred ON the anchor end up
-  // nearly (or fully, for small radii) swallowed by the welded face, which
-  // leaves a paintable 'eyes' label with zero visible triangles.
-  const cL = add3(rig.face.eyeL, scale3(f, rad * 0.5));
-  const cR = add3(rig.face.eyeR, scale3(f, rad * 0.5));
+  // Push the eyeballs out by a fraction of their radius: enough that a dome
+  // reliably protrudes past the cheek welds (an eye centred ON the anchor
+  // can be fully swallowed, leaving a paintable label with zero triangles),
+  // but shallow enough that the eye reads as sitting IN the face rather
+  // than stuck onto it.
+  const cL = add3(rig.face.eyeL, scale3(f, rad * 0.28));
+  const cR = add3(rig.face.eyeR, scale3(f, rad * 0.28));
   const pair = (r: number, forwardOff: number): Node => {
     const off = scale3(f, forwardOff);
     return sdf.sphere(r).translate(add3(cL, off)).union(sdf.sphere(r).translate(add3(cR, off)));
@@ -520,10 +529,12 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // 'iris' (default): white eyeball + coloured iris disc + black pupil dot,
   // each its own pre-labelled hard-union region so paintByLabels can colour
   // them independently. Don't wrap the result in another .label() — the
-  // outer label would win and flatten the eye back to one colour.
+  // outer label would win and flatten the eye back to one colour. The stack
+  // is intentionally shallow: the iris barely caps the eyeball and the pupil
+  // pokes just past the iris — fine-region meshing resolves the thin rings.
   const sclera = pair(rad, 0).label('eyes');
-  const iris = pair(rad * 0.5, rad * 0.78).label('iris');
-  const pupil = pair(rad * 0.3, rad * 1.12).label('pupil');
+  const iris = pair(rad * 0.52, rad * 0.66).label('iris');
+  const pupil = pair(rad * 0.3, rad * 0.97).label('pupil');
   return sclera.union(iris).union(pupil);
 }
 
@@ -664,11 +675,19 @@ function buildMouthAccents(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   if (o.teeth !== false) {
     // A white band hanging from the cavity ceiling: top edge buried in the
     // head above the opening (fuses into one component), front face recessed
-    // just behind the face surface.
+    // just behind the face surface. The recess scales with the cavity so a
+    // slim gritted-teeth mouth (small `open`) still shows the band — a fixed
+    // recess deeper than the opening buries it entirely.
+    // Slightly NARROWER than the opening with a cavity-proportional recess:
+    // a band wider than the opening (or flush with the rim) grazes the
+    // carved skin and sheds zero-volume boolean slivers, while a recess
+    // deeper than the cavity buries the band entirely (body welds can
+    // inflate the face surface past any fixed offset).
     const td = R * 0.5;
+    const recess = cavH * 0.15;
     const teeth = orientToHeadPose(
-      sdf.roundedBox([halfW * 1.5, td, cavH * 0.9], Math.min(cavH * 0.9, halfW) * 0.18), rig,
-    ).translate(add3(center, add3(scale3(u, cavH * 0.6), scale3(f, -R * 0.04 - td * 0.5))));
+      sdf.roundedBox([halfW * 1.1, td, cavH * 1.15], Math.min(cavH, halfW) * 0.18), rig,
+    ).translate(add3(center, add3(scale3(u, cavH * 0.45), scale3(f, -recess - td * 0.5))));
     parts.push(teeth.label('teeth'));
   }
   if (o.lips !== false) {
@@ -677,13 +696,14 @@ function buildMouthAccents(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     // marched — capsule chains are unconditionally robust.)
     const right = rig.dir.headLeft;
     const lipR = Math.min(R * 0.10, cavH * 0.55);
-    // Ring centre: the cavity opening projected onto the face, nudged
-    // forward so the ring stands proud of the surface.
-    const cc = add3(rig.face.mouth, add3(scale3(u, -cavH * 0.25), scale3(f, lipR * 0.35)));
+    // Ring centre: the cavity opening projected onto the face. Centred ON
+    // the surface — half the capsule is buried, so the lips read as part of
+    // the face instead of a donut stuck onto it.
+    const cc = add3(rig.face.mouth, scale3(u, -cavH * 0.25));
     const SEGS = 14;
     const ringPt = (theta: number): Vec3 => add3(cc, add3(
-      scale3(right, halfW * 1.06 * Math.cos(theta)),
-      scale3(u, cavH * 1.12 * Math.sin(theta)),
+      scale3(right, halfW * 1.02 * Math.cos(theta)),
+      scale3(u, cavH * 1.08 * Math.sin(theta)),
     ));
     let ring: Node | undefined;
     for (let i = 0; i < SEGS; i++) {
@@ -766,20 +786,26 @@ function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
   return result;
 }
 
-/** The face's detail sphere for `build({ detail: [...] })` — covers the whole
- *  head (features, ears, chin, hairline) and asks for an edge length scaled to
- *  the head size, so face features mesh smoothly while the body keeps the
- *  cheap global grid. */
-function faceDetail(rig: Rig, opts?: unknown): { center: Vec3; radius: number; edgeLength: number } {
+/** The face's detail spheres for `build({ detail: F.faceDetail(rig) })` —
+ *  returns an ARRAY: a head sphere (features, ears, chin, hairline) at an
+ *  edge length scaled to the head, plus a much finer MOUTH sphere — the
+ *  carved smile groove / mouth opening is the smallest face feature and
+ *  reads pixelated at the head-wide target. The body keeps the cheap global
+ *  grid either way. */
+function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
   const o = obj(opts, 'faceDetail(opts)');
-  assertNoUnknownKeys(o, ['radius', 'edgeLength'], 'faceDetail(opts)');
+  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength'], 'faceDetail(opts)');
   const r = rig.r;
   const radius = num(o.radius, Math.max(r.headX, r.head, r.headZ) * 1.5, 'faceDetail.radius', 1e-3);
   // ~4.5% of the head radius ≈ one subdivision round below the recommended
   // 0.4–0.6 figure grid — smooth features at ~3-4× the head's coarse triangle
   // count. Halve it (e.g. r.head * 0.02) for a final extra-fine pass.
   const edgeLength = num(o.edgeLength, Math.max(r.head * 0.045, 0.05), 'faceDetail.edgeLength', 1e-4);
-  return { center: [...(rig.joints.headCenter as Vec3)] as Vec3, radius, edgeLength };
+  const mouthEdgeLength = num(o.mouthEdgeLength, Math.max(r.head * 0.02, 0.03), 'faceDetail.mouthEdgeLength', 1e-4);
+  return [
+    { center: [...(rig.joints.headCenter as Vec3)] as Vec3, radius, edgeLength },
+    { center: [...(rig.face.mouth as Vec3)] as Vec3, radius: r.head * 0.55, edgeLength: mouthEdgeLength },
+  ];
 }
 
 // --- Hair -----------------------------------------------------------------
@@ -831,9 +857,14 @@ function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     const shankS = sdf.capsule(K, ankleCuff, (r.shank + t) * flare);
     return thighS.smoothUnion(shankS, r.shank * 0.8);
   }
-  const seat = sdf.ellipsoid((r.pelvisX + t) * 1.02, (r.pelvisY + t), r.pelvisY * 1.2)
-    .translate([0, 0, mix(j.pelvis[2], waistZ, 0.5)]);
+  // Seat: tall enough to reach DOWN past the crotch line (a short seat leaves
+  // a bare wedge of groin between the leg sleeves), plus an explicit hip-to-
+  // hip gusset filling the inner-thigh wedge in any stance.
+  const seat = sdf.ellipsoid((r.pelvisX + t) * 1.05, (r.pelvisY + t) * 1.05, r.pelvisY * 1.8)
+    .translate([0, 0, mix(j.pelvis[2], waistZ, 0.4)]);
+  const gusset = sdf.capsule(j.hipL as Vec3, j.hipR as Vec3, (r.thigh + t) * 0.85);
   let pants = seat
+    .smoothUnion(gusset, r.thigh * 0.5)
     .smoothUnion(legSleeve(j.hipL as Vec3, j.kneeL as Vec3, j.ankleL as Vec3), r.thigh * 0.6)
     .smoothUnion(legSleeve(j.hipR as Vec3, j.kneeR as Vec3, j.ankleR as Vec3), r.thigh * 0.6);
   if (leg === 'cargo') {
@@ -850,10 +881,14 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const sleeve = o.sleeve === undefined ? 'short' : assertEnum(o.sleeve, ['none', 'short', 'long'] as const, 'top.sleeve');
   const j = rig.joints, r = rig.r;
   const t = num(o.thickness, r.chestY * 0.2, 'top(thickness)', 0.01);
-  const hemZ = num(o.hemZ, j.navel[2] - r.chestY * 0.3, 'top.hemZ');
-  // Torso shell from shoulders to hem.
-  const chest = sdf.ellipsoid(r.chestX + t, r.chestY + t, (j.chest[2] - hemZ) * 0.62 + r.chestY)
-    .translate([0, 0, mix(hemZ, j.chest[2] + r.chestY, 0.5)]);
+  // Default hem reaches BELOW the navel so it overlaps a mid-rise waistband —
+  // the old navel-height hem left a bare midriff strip above the pants.
+  const hemZ = num(o.hemZ, mix(j.pelvis[2], j.navel[2], 0.3), 'top.hemZ');
+  // Torso shell from shoulders to hem, centred on the body's actual chest
+  // line (the chest mass sits FORWARD of x/z axis at j.chest[1]; a garment
+  // centred at y=0 lets the chest bulge straight through its front).
+  const chest = sdf.ellipsoid(r.chestX + t, (r.chestY + t) * 1.05, (j.chest[2] - hemZ) * 0.62 + r.chestY)
+    .translate([0, j.chest[1], mix(hemZ, j.chest[2] + r.chestY, 0.5)]);
   let top = chest;
   if (sleeve !== 'none') {
     const reach = sleeve === 'long' ? 1.0 : 0.4;
@@ -902,8 +937,9 @@ export interface FigureNamespace {
   /** Snap an accessory node to a rig joint by its bbox anchor (no offset math).
    *  `joint` is a Vec3 like `rig.joints.crown`; `opts.anchor` ∈ center|bottom|top. */
   placeAt(node: Node, joint: Vec3, opts?: object): Node;
-  /** The face's detail-region sphere for `build({ detail: [...] })`. */
-  faceDetail(rig: Rig, opts?: object): { center: Vec3; radius: number; edgeLength: number };
+  /** The face's detail-region spheres (head + finer mouth) for
+   *  `build({ detail: F.faceDetail(rig) })`. */
+  faceDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
   face: {
     eyes(rig: Rig, opts?: object): Node;
     nose(rig: Rig, opts?: object): Node;

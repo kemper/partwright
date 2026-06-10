@@ -285,26 +285,30 @@ describe('figure mouthAccents — paintable teeth and lips', () => {
 describe('figure faceDetail — detail-region helper', () => {
   const rig = buildRig({ height: 60, headsTall: 5 });
 
-  it('centres on the head and covers every face anchor', () => {
-    const d = faceDetail(rig);
-    expect(d.center).toEqual(rig.joints.headCenter);
+  it('returns a head sphere covering every face anchor plus a finer mouth sphere', () => {
+    const [head, mouth] = faceDetail(rig);
+    expect(head.center).toEqual(rig.joints.headCenter);
     for (const a of Object.values(rig.face)) {
-      const dist = Math.hypot(a[0] - d.center[0], a[1] - d.center[1], a[2] - d.center[2]);
-      expect(dist).toBeLessThan(d.radius);
+      const dist = Math.hypot(a[0] - head.center[0], a[1] - head.center[1], a[2] - head.center[2]);
+      expect(dist).toBeLessThan(head.radius);
     }
+    expect(mouth.center).toEqual(rig.face.mouth);
+    expect(mouth.edgeLength).toBeLessThan(head.edgeLength);
+    expect(mouth.radius).toBeLessThan(head.radius);
   });
 
-  it('scales the target edge with head size and stays fine', () => {
-    const chibi = faceDetail(buildRig({ height: 60, headsTall: 3 }));
-    const adult = faceDetail(buildRig({ height: 60, headsTall: 8 }));
+  it('scales the target edges with head size and stays fine', () => {
+    const [chibi] = faceDetail(buildRig({ height: 60, headsTall: 3 }));
+    const [adult] = faceDetail(buildRig({ height: 60, headsTall: 8 }));
     expect(chibi.edgeLength).toBeGreaterThan(adult.edgeLength);
     expect(adult.edgeLength).toBeLessThan(adult.radius * 0.1);
   });
 
   it('honours overrides and rejects unknown keys', () => {
-    const d = faceDetail(rig, { radius: 12, edgeLength: 0.1 });
-    expect(d.radius).toBe(12);
-    expect(d.edgeLength).toBe(0.1);
+    const [head, mouth] = faceDetail(rig, { radius: 12, edgeLength: 0.1, mouthEdgeLength: 0.05 });
+    expect(head.radius).toBe(12);
+    expect(head.edgeLength).toBe(0.1);
+    expect(mouth.edgeLength).toBe(0.05);
     expect(() => faceDetail(rig, { density: 2 })).toThrow();
   });
 });

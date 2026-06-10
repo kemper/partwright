@@ -540,7 +540,32 @@ function buildSdf(
   // Hard-union the labelled pieces. Smooth blends across labels are lost
   // here by design (see header comment); to preserve them, label the
   // outer expression instead of individual primitives.
-  return Manifold.union(meshed);
+  let result = Manifold.union(meshed);
+  // Boolean unions of regions whose surfaces nearly coincide (a teeth band
+  // against a carved cavity rim, an accessory resting on a face) can shed
+  // zero-volume sliver components. Anything below a couple of march cells in
+  // volume is debris, not geometry — drop it so componentCount reflects the
+  // model, not boolean noise.
+  result = dropSubCellDebris(result, Manifold, edgeLength);
+  return result;
+}
+
+/** Remove decomposed parts whose |volume| is below ~2 coarse march cells.
+ *  Leaves the manifold untouched when there's nothing to drop (the common
+ *  case) or when anything in the cleanup path fails. */
+function dropSubCellDebris(m: ManifoldInstance, Manifold: ManifoldClass, edgeLength: number): ManifoldInstance {
+  const minVol = 2 * edgeLength * edgeLength * edgeLength;
+  try {
+    const parts: ManifoldInstance[] = m.decompose();
+    if (!Array.isArray(parts) || parts.length <= 1) return m;
+    const kept = parts.filter((p) => {
+      try { return Math.abs(p.volume() as number) >= minVol; } catch { return true; }
+    });
+    if (kept.length === parts.length || kept.length === 0) return m;
+    return kept.length === 1 ? kept[0] : Manifold.union(kept);
+  } catch {
+    return m;
+  }
 }
 
 /** Grid-cell budget for marching a small region directly at a detail

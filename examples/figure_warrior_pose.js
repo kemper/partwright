@@ -103,7 +103,7 @@ const base = slab
   .label('base');
 
 // 7. Hard-union all labeled regions and build.
-// detail: [F.faceDetail(rig)] meshes the head ~3x finer for smooth face features
+// detail: F.faceDetail(rig) meshes the head ~3x finer for smooth face features
 // while the body keeps the global 0.5 grid.
 return sdf.union(skin, eyes, top, pants, hair, base)
-  .build({ edgeLength: 0.5, detail: [F.faceDetail(rig)] });
+  .build({ edgeLength: 0.5, detail: F.faceDetail(rig) });

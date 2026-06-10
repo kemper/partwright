@@ -30,4 +30,4 @@ api.paint.label('teeth', '#fbfaf5');
 api.paint.label('lips', '#c4574e');
 
 return sdf.union(body, eyes, mouthParts)
-  .build({ edgeLength: 0.5, detail: [F.faceDetail(rig)] });
+  .build({ edgeLength: 0.5, detail: F.faceDetail(rig) });

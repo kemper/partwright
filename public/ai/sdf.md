@@ -250,7 +250,7 @@ return body.build({
 
 - Up to 16 spheres; each only refines (a sphere coarser than the global grid
   is a no-op). Refinement is capped at ~400k triangles per labelled region.
-- For figures, `api.sdf.figure.faceDetail(rig)` returns a ready-made sphere
+- For figures, `api.sdf.figure.faceDetail(rig)` returns ready-made spheres (head + a finer mouth sphere)
   covering the head — see `/ai/figure.md`.
 
 **`bounds`** is auto-inferred from the primitives in your tree. **Override it explicitly** when you use `gyroid` or `.repeat()` (which are unbounded), or when you intersect with something to cut a finite chunk from an infinite surface.

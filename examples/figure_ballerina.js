@@ -32,7 +32,7 @@ const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
   eyes: false,
   nose: { tipRadius: rig.r.head * 0.09 },
-  mouth: { style: 'smile', width: rig.r.head * 0.34, smirk: 0.18 },
+  mouth: false,  // the painted lips ridge below IS the mouth
   ears: false,
   brows: {},
 });
@@ -51,6 +51,8 @@ const skin = F.weld(rig, [
 // 3b. EYES — hard-unioned at the top level with their own label so they can be
 // painted white/black separately from the skin.
 const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.14 }); // iris style: labels eyes/iris/pupil itself
+// Delicate painted lips ('lips' label) — an additive ridge, so assemble gets mouth: false.
+const lips = F.face.mouthAccents(rig, { style: 'lips', width: rig.r.head * 0.3, smirk: 0.12 });
 
 // 4. LEOTARD — snug sleeveless top
 const leotard = F.clothing.top(rig, {
@@ -101,7 +103,7 @@ const base = F.base(rig, {
 }).label('base');
 
 // 8. Hard-union all labeled regions and build.
-// detail: [F.faceDetail(rig)] meshes the head finely (~3x finer grid)
+// detail: F.faceDetail(rig) meshes the head finely (~3x finer grid)
 // so the carved smile and eye domes are smooth rather than faceted.
-return sdf.union(skin, eyes, leotard, tutu, hair, base)
-  .build({ edgeLength: 0.52, detail: [F.faceDetail(rig)] });
+return sdf.union(skin, eyes, lips, leotard, tutu, hair, base)
+  .build({ edgeLength: 0.52, detail: F.faceDetail(rig) });

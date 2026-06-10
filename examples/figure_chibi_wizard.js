@@ -162,6 +162,6 @@ const orb = sdf.sphere(orbR).translate(orbCenter).label('orb');
 
 // 10. Final union and build
 // eyes: lifted to top-level so they carry their own paint label.
-// detail: [F.faceDetail(rig)] refines the head mesh for smooth carved smile and round eye domes.
+// detail: F.faceDetail(rig) refines the head mesh for smooth carved smile and round eye domes.
 return sdf.union(skin, eyes, robe, hair, hat, beard, staff, orb, base)
-  .build({ edgeLength: 0.52, detail: [F.faceDetail(rig)] });
+  .build({ edgeLength: 0.52, detail: F.faceDetail(rig) });

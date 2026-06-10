@@ -52,6 +52,42 @@ via local CLI examples to review.
   render headlessly in ~5 s each with `stats.paintOps` proving label
   coverage — the fast-iteration surface the user asked for.
 
+## Human (round 3)
+
+In-app close-ups: eyes stick out too far, mouths still pixelated, wants
+lips/teeth on catalog entries, busts not good enough — "look from more
+angles". Also: clothes cover poorly — "inappropriate half naked figures".
+
+## Assistant (round 3)
+
+- **Eyes**: sank the whole stack (push 0.5R→0.28R; iris 0.66R r0.52; pupil
+  0.97R r0.3) — reads as in-the-face, still protrudes enough to paint at
+  every rig scale.
+- **Mouth resolution**: `faceDetail` now returns an ARRAY — head sphere plus
+  a much finer mouth sphere (`r.head*0.02` edge) — the carve was the
+  smallest feature and stayed pixelated at the head-wide target.
+- **Clothes**: three real bugs in the builders. (1) `top` was centred at
+  y=0 while the chest mass sits forward at `j.chest[1]` — the body bulged
+  straight through the shirt front; (2) `top`'s default hem stopped at the
+  navel, leaving a bare midriff above mid-rise pants — now defaults below
+  the navel; (3) `pants` had no crotch coverage — seat deepened + an
+  explicit hip-to-hip gusset capsule.
+- **Torso cap**: the chest ellipsoid climbed past the chin on stocky /
+  few-heads rigs and buried the lower face INSIDE the torso (the strongman's
+  mouth carve landed in solid chest — discovered because his teeth label
+  resolved to 0 in the full figure but fine in a head-only bust). The chest
+  mass is now capped at the shoulder line; the neck capsule provides the
+  neck. This also gave every figure a visible neck/chin.
+- **Boolean debris**: near-coincident accent surfaces (teeth vs cavity rim,
+  mustache vs carve) shed zero-volume sliver components; `build()` now drops
+  decomposed parts under ~2 march cells of volume after the union — debris
+  below march resolution can't be intentional geometry.
+- **Catalog variety**: kid = open laughing mouth + teeth + lips; strongman =
+  gritted teeth (open 0.26, no lip ring under the mustache); ballerina =
+  painted rose lips ('lips' style, mouth:false in assemble); warrior/wizard
+  keep carved smiles. Multi-angle (front/¾/low) renders used for judging,
+  per the user's prompt.
+
 ## Assistant (round 1)
 
 Diagnosis: the faces ARE SDF — they're under-sampled. `build()` meshes every

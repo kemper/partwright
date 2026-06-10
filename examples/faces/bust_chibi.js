@@ -28,4 +28,4 @@ api.paint.label('iris', '#3a7d44');
 api.paint.label('pupil', '#181818');
 
 return sdf.union(body, eyes)
-  .build({ edgeLength: 0.5, detail: [F.faceDetail(rig)] });
+  .build({ edgeLength: 0.5, detail: F.faceDetail(rig) });

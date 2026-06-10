@@ -63,11 +63,11 @@ const pants = F.clothing.pants(rig, { leg: 'cargo', rise: 'low' }).label('pants'
 const hair  = F.hair(rig, { style: 'long' }).label('hair');
 const base  = F.base(rig).label('base');
 
-// 6. Hard-union the labelled regions and build. `detail: [F.faceDetail(rig)]`
+// 6. Hard-union the labelled regions and build. `detail: F.faceDetail(rig)`
 // meshes the head finely (smooth carved smile, round eyes) while the body
 // keeps the cheap 0.5 grid — always include it when the figure has a face.
 return sdf.union(skin, eyes, pants, hair, base)
-  .build({ edgeLength: 0.5, detail: [F.faceDetail(rig)] });
+  .build({ edgeLength: 0.5, detail: F.faceDetail(rig) });
 ```
 
 Then paint by label from a follow-up tool call:
@@ -268,7 +268,7 @@ a `{ center, radius, edgeLength }` sphere covering the head, sized off
 
 ```js
 return sdf.union(skin, eyes, hair, base)
-  .build({ edgeLength: 0.5, detail: [F.faceDetail(rig)] });
+  .build({ edgeLength: 0.5, detail: F.faceDetail(rig) });
 ```
 
 The head meshes ~3× finer (smooth smile groove, round eye domes) while the
@@ -314,7 +314,7 @@ hard seams (see `/ai/sdf.md` paint-by-label).
 3. **Add the face via `face.assemble`** (with `eyes: false` + a top-level
    labelled `F.face.eyes(rig)`), then hair and clothes — all off the same rig.
 4. **Weld, label, union, build.** `edgeLength: 0.4–0.6` is a good figure
-   default — and always pass `detail: [F.faceDetail(rig)]` so the face meshes
+   default — and always pass `detail: F.faceDetail(rig)` so the face meshes
    finely. Don't drop the global edgeLength for face quality; that's what the
    detail region is for.
 5. **Judge against the reference**, not just `isManifold`. Resemblance is the
