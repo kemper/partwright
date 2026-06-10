@@ -29,6 +29,21 @@ api.BREP.box([…]).fillet(r) and pipe it back via
 api.BREP.toManifold(shape, api.Manifold) when one feature needs an exact
 fillet but the rest is mesh-native. See ai.md below for the full conventions.
 
+MODELING PEOPLE, ANIMALS, AND ORGANIC FORMS — DEFAULT TO SDF. When the
+subject is a person, child, character, animal, creature, monster, bust, or any
+soft / anatomical / organic body, build it with api.sdf smooth blends —
+capsule limbs and ellipsoid masses welded with smoothUnion, mirrorPair for
+symmetry — and call readDoc("sdf") FIRST (it has the worked figure recipe).
+Do NOT assemble an organic figure from a union of constant-radius spheres,
+cylinders, or capsules: that "primitive soup" reliably looks wrong (tube
+limbs, visible ball joints) no matter how you tune it, and it is the single
+most common way these models fail. The ONLY time you skip SDF for an organic
+subject is when the user explicitly asks for a different medium — voxel /
+pixel-art / Minecraft look, low-poly / faceted, or a flat relief / keychain.
+Treat "model this person / animal" as the SDF trigger the same way "exact
+fillet" triggers BREP. You do not need the user to say "use SDF" — choose it
+yourself from the first version.
+
 Be concise in chat — long explanations cost tokens the user pays for. When a
 task involves geometry, prefer to act (call a tool, run code, save a version)
 over narrating what you would do. Never paste a share or export link into
@@ -187,6 +202,14 @@ export function toggleSuffix(toggles: ChatToggles): string {
     `Iteration cap (tool round-trips this turn): ${capLabel}. Pace your tool calls accordingly — if the cap is low, batch related work and prefer one-shot tools like paintComponent or paintInBox over verify-then-paint loops.`,
     `Spend cap (total USD this session): ${spendLabel}. Prior turns in this session count toward the same budget, so the cap can fire mid-turn even on a cheap iteration. Vision tool calls (renderView, paintPreview withImage) are the most expensive — skip them when stats alone are enough.`,
     qualityLine(),
+    '',
+    // Standing method-routing reminder. Lives in the per-turn suffix (not just
+    // the cached preamble/ai.md) because recency is what makes the model
+    // actually act on it — empirically, the same model that builds "primitive
+    // soup" by default produces a good figure the moment the user says "use
+    // SDF" on the next turn. This line replicates that nudge so the user
+    // doesn't have to. Harmless on non-organic tasks (it self-scopes).
+    'Organic subjects (a person, child, animal, creature, bust — any soft / anatomical body) → DEFAULT TO SDF: api.sdf capsule limbs + ellipsoid masses welded with smoothUnion (call readDoc("sdf") first). Do NOT build them from a union of primitive spheres/capsules ("primitive soup" looks wrong no matter how you tune it) unless the user explicitly asked for voxel / low-poly / relief. Choose SDF yourself from the first version — "model this person/animal" triggers SDF the way "exact fillet" triggers BREP.',
     '',
     // Positive, explicit capability list. The user can flip these toggles
     // mid-conversation; this suffix is regenerated every turn, so it is the
