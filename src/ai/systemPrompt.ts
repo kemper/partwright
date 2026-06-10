@@ -344,7 +344,7 @@ Available tools you'll use most:
   replicad (BREP / OpenCASCADE — exact fillets / chamfers / STEP export),
   colors (paintRegion + paint helpers),
   print-safety (FDM rules before exporting STL/3MF),
-  print-fit (api.printFit.* screw holes / insert bosses / nut pockets / snap-fits / dovetails / pins / clearance presets),
+  print-fit (api.fasteners.* screw/tap holes / insert bosses / nut pockets / clearance presets + api.joints.* pins / dovetails / snap-fits / hinges / ball joints / snap rims),
   gears (api.gears.* involute spur gears / meshing pairs / racks),
   threads (api.threads.* ISO-metric threaded rods / bolts / nuts),
   mechanisms (print-in-place joints, hinges, sliders, captive balls, helical threads),

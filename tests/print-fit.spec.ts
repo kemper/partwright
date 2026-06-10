@@ -1,5 +1,8 @@
-// Exercises every api.printFit.* builder on the real manifold-3d WASM kernel.
-// The unit tier (tests/unit/printFit.test.ts) covers the fastener table and
+// Exercises every api.printFit.* builder on the real manifold-3d WASM kernel —
+// deliberately via the deprecated printFit alias, so this spec doubles as the
+// back-compat regression for old saved sessions (the namespace was split into
+// api.fasteners + api.joints). The unit tier (tests/unit/fasteners.test.ts,
+// tests/unit/joints.test.ts) covers the fastener table and
 // profile math; this spec proves each builder actually produces a valid,
 // watertight, single-component manifold — catching degenerate booleans the
 // pure-logic tests can't see.

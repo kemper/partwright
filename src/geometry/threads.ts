@@ -11,7 +11,7 @@
  * Manifold. A metric coarse-pitch table means `threads.rod({ size: "M8" })`
  * just works.
  *
- * Conventions (match Curves / printFit / gears):
+ * Conventions (match Curves / fasteners / gears):
  *   • Z-up. A rod is built along +Z from z=0 to z=length; a bolt's head sits
  *     below z=0. The caller positions the result with `.translate()` etc.
  *   • Builders return a Manifold (or, for `bolt`, the assembled solid). They
