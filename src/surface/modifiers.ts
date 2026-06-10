@@ -30,8 +30,9 @@ import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 import { voronoiLampSdfMesh } from './voronoiLampSdf';
+import { hollowShellMesh, type HollowShellOptions } from './hollowShell';
 
-export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize';
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'hollow' | 'smooth' | 'voxelize';
 
 export interface ModifierManifoldResult {
   kind: 'manifold';
@@ -124,6 +125,7 @@ export { type FurVelvetOptions };
 export { type WovenFabricOptions };
 export { type VoronoiShellOptions };
 export { type VoronoiLampOptions };
+export { type HollowShellOptions };
 
 export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierManifoldResult {
   const baked = fuzzySkin(mesh, opts);
@@ -468,6 +470,20 @@ export function defaultVoronoiLampOptions(mesh: MeshData): Required<VoronoiLampM
   };
 }
 
+export function defaultHollowOptions(mesh: MeshData): Required<HollowShellOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  const wall = d * 0.03;
+  return {
+    wallThickness: wall,
+    openTop: false,
+    rimHeight: wall * 2,
+    drainHoles: 0,
+    drainRadius: d * 0.02,
+    resolution: 128,
+    watertight: true,
+  };
+}
+
 export function applyCable(mesh: MeshData, opts: CableKnitOptions): ModifierManifoldResult {
   const baked = cableKnit(mesh, opts);
   return {
@@ -642,6 +658,28 @@ return v;
     label: smooth ? 'voronoi lamp (smooth voxels)' : 'voronoi lamp (voxels)',
     code,
     previewMesh: meshGrid(grid),
+  };
+}
+
+export function applyHollow(mesh: MeshData, opts: HollowShellOptions): ModifierManifoldResult {
+  // Hollow / vase mode: mesh a CONTINUOUS signed-distance field (the principle
+  // behind Manifold.levelSet, done pure-JS on the main thread) so the thin wall
+  // follows the true surface sub-voxel — smooth curved walls, no voxel
+  // "corduroy". See hollowShell.ts.
+  const baked = hollowShellMesh(mesh, opts);
+  const bits = [
+    `wall ${opts.wallThickness.toFixed(2)}`,
+    opts.openTop ? `open top (rim ${(opts.rimHeight ?? opts.wallThickness * 2).toFixed(2)})` : 'closed',
+  ];
+  if ((opts.drainHoles ?? 0) > 0) bits.push(`${opts.drainHoles} drain hole${opts.drainHoles === 1 ? '' : 's'}`);
+  return {
+    kind: 'manifold',
+    label: 'hollow / vase',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Hollowed (vase mode) from the current model on ${today()} — ${bits.join(', ')}.`,
+      `Smooth (SDF) shell baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
   };
 }
 

@@ -121,7 +121,7 @@ import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geom
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyHollow, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultHollowOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { surfaceCacheStatus, computeChain, type SurfaceOp } from './surface/surfaceOps';
@@ -7486,7 +7486,7 @@ async function main() {
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
   function buildSurfaceModifier(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'hollow' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
   ): ModifierResult {
@@ -7618,6 +7618,20 @@ async function main() {
         watertight: (opts?.watertight as boolean) ?? base.watertight,
         output: (opts?.output as 'mesh' | 'voxel') ?? base.output,
         smooth: (opts?.smooth as boolean) ?? base.smooth,
+      });
+    }
+    if (id === 'hollow') {
+      // Vase mode → hollow shell; whole-model only (no region patch).
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultHollowOptions(mesh);
+      return applyHollow(mesh, {
+        wallThickness: (opts?.wallThickness as number) ?? base.wallThickness,
+        openTop: (opts?.openTop as boolean) ?? base.openTop,
+        rimHeight: (opts?.rimHeight as number) ?? base.rimHeight,
+        drainHoles: (opts?.drainHoles as number) ?? base.drainHoles,
+        drainRadius: (opts?.drainRadius as number) ?? base.drainRadius,
+        resolution: (opts?.resolution as number) ?? base.resolution,
+        watertight: (opts?.watertight as boolean) ?? base.watertight,
       });
     }
     if (id === 'smooth') {
@@ -7881,6 +7895,26 @@ async function main() {
       try {
         const preserve = opts?.preserveColor ?? true;
         return await commitSurfaceModifier(buildSurfaceModifier('voronoiLamp', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Hollow the current model into a thin shell — 3D-print "vase mode". Bakes a
+     *  smooth manifold-js mesh (a continuous SDF, no engine change). `openTop`
+     *  removes the cap (open-topped vase), `rimHeight` sets how far below the top
+     *  it opens; `drainHoles` bores N vertical holes through the base (planter).
+     *  Saves a new version. Returns `{ ok, label, geometry, warnings? }`. */
+    async applyHollow(opts?: {
+      wallThickness?: number;
+      openTop?: boolean;
+      rimHeight?: number;
+      drainHoles?: number;
+      drainRadius?: number;
+      resolution?: number;
+      watertight?: boolean;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('hollow', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Smooth/round the current model (Taubin λ/μ); saves a new version. */
@@ -12944,6 +12978,8 @@ async function main() {
         'getRecentExport': { signature: 'await getRecentExport(id) -- Look up bytes by id -> {filename, mimeType, text? | base64, ...}', docs: '/ai/file-io.md' },
         'downloadRecentExport': { signature: 'downloadRecentExport(id) -- Re-trigger browser download for an inbox entry', docs: '/ai/file-io.md' },
         'clearRecentExports': { signature: 'clearRecentExports() -- Empty the Recent Exports list', docs: '/ai/file-io.md' },
+        // Surface modifiers (full set documented in /ai/textures.md)
+        'applyHollow':     { signature: 'await applyHollow({wallThickness?, openTop?, rimHeight?, drainHoles?, drainRadius?, resolution?, preserveColor?}) -- Hollow the model into a thin shell (3D-print "vase mode"); openTop opens the cap, drainHoles bores holes through the base. Saves a version -> {ok, label, geometry, warnings?}', docs: '/ai/textures.md#applyhollow' },
         // Color regions
         'paintRegion':     { signature: 'paintRegion({point, normal, color, name?, tolerance?}) -- Paint coplanar face region (flood-fill, edge-bounded). Diagnostic error on failure.', docs: '/ai/colors.md' },
         'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai/colors.md' },

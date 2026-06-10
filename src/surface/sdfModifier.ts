@@ -63,6 +63,14 @@ export interface SdfModifierOptions {
   /** Keep only the largest physically-connected piece (default true). Turn off
    *  to keep every fragment of the raw cut. */
   watertight?: boolean;
+  /** After meshing, reduce the result to its single largest connected *surface*
+   *  component (default = `watertight`). A sealed hollow shell — whose inner and
+   *  outer walls are two disconnected closed surfaces — must set this `false`,
+   *  otherwise the inner wall is discarded and the shell collapses back to a
+   *  solid. Feature fields whose result is always one connected surface (a
+   *  perforated lamp, a strut web) leave it at the default. The field-level
+   *  fragment cull (`watertight`) still runs independently to drop stray bits. */
+  keepLargestMeshComponent?: boolean;
   /** Light Taubin passes to relax the mesh rims (default 3, no subdivide). */
   smoothIterations?: number;
 }
@@ -147,7 +155,7 @@ export function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, combin
   if (opts.watertight !== false) keepLargestFaceConnected(field, fnx, fny, fnz, 0);
 
   let m = surfaceNetsField({ field, dims: [fnx, fny, fnz], origin, spacing: voxelSize, iso: 0 });
-  if (opts.watertight !== false) m = largestMeshComponent(m);
+  if (opts.keepLargestMeshComponent ?? (opts.watertight !== false)) m = largestMeshComponent(m);
   // A few light Taubin passes relax residual lattice ripple on the rims without
   // subdividing (walls are already smooth from the continuous field).
   m = smoothSurface(m, { iterations: opts.smoothIterations ?? 3, subdivide: false });

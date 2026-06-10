@@ -21,6 +21,7 @@ apply→save→verify workflow:
 | `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
 | `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
+| `applyHollow({ wallThickness, openTop, rimHeight, drainHoles, drainRadius, resolution })` | Hollows the model into a thin shell — 3D-print **"vase mode"**. `openTop` removes the cap (open vase); `drainHoles` bores vertical holes through the base (planter). Smooth manifold-js mesh, no engine change. | See [`applyHollow`](#applyhollow) below. |
 
 > **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
 > BREP/replicad model this discards the parametric source (and, for BREP, STEP
@@ -349,6 +350,53 @@ one step.
 **Tips:** with `watertight` on (default) the result is manifold/printable. If
 windows don't open, lower `strutWidth` or raise `cellSize`. Resolution
 auto-raises for thin struts, so you rarely touch it. Verify with `renderViews`.
+
+---
+
+## applyHollow
+
+```
+applyHollow({ wallThickness?, openTop?, rimHeight?, drainHoles?, drainRadius?,
+              resolution?, watertight? })
+```
+
+Turns a solid model into a thin **hollow shell** — the 3D-printing "vase mode".
+It meshes a **continuous signed-distance field** (the principle behind
+`Manifold.levelSet`), so the wall follows the true surface with **no voxel
+stair-stepping**, and **no engine change** (the result is a baked manifold-js
+mesh). It's a heavier operation than the displacement textures — allow a few
+seconds.
+
+Start from a **closed solid** in a Z-up orientation (the cap is removed at the
+top when `openTop` is set).
+
+- **`openTop`** — `false` (default) leaves a sealed hollow shell; `true` lops the
+  top cap off above the rim so the cavity is open (an open-topped vase). The top
+  edge lands at `modelTopZ − rimHeight`.
+- **`drainHoles`** — bores N small vertical cylinders through the base (for
+  planters). They're bounded to a short band above the floor, so a *closed* top
+  is never accidentally pierced. A single hole sits at the centre; several are
+  arranged on a ring inside the cavity.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `wallThickness` | ~2.5% of diagonal | Shell wall thickness (world units). |
+| `openTop` | `false` | `true` = open-topped vase (cap removed); `false` = sealed shell. |
+| `rimHeight` | 2·`wallThickness` | Open-top only: how far below the top the rim is cut. Keep ≥ `wallThickness` so the cut clears the cap. |
+| `drainHoles` | 0 | Number of vertical drain holes bored through the base (planters). |
+| `drainRadius` | ~3% of base width | Radius of each drain hole (world units). |
+| `resolution` | 128 | Field resolution along the longest axis [16–256]. **Auto-raised** so the wall resolves to a few cells — you rarely set it. |
+| `watertight` | true | Keep only the largest connected piece → one printable shell. Leave on. |
+
+**Look guidance:**
+- Plain vase: `openTop:true`, `wallThickness=d*0.025`, `rimHeight=d*0.05`.
+- Planter: `openTop:true`, `drainHoles:5`, `drainRadius=d*0.02`.
+- Sealed lightweight shell (e.g. to save material): leave `openTop:false`.
+
+**Tips:** thicker walls print more robustly; very thin walls (< ~0.8 mm at print
+scale) can be fragile. With `watertight` on and `openTop:false`, the closed shell
+is manifold (`isManifold` true); an open top or drain holes intentionally open
+the solid. Verify with `renderViews`.
 
 ---
 

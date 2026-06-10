@@ -1594,6 +1594,38 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'applyHollow',
+    description: `Hollow the current model into a thin shell — the 3D-print "vase mode". Bakes a smooth manifold-js mesh (no engine change) by meshing a **continuous signed-distance field** (the principle behind \`Manifold.levelSet\`), so the wall follows the true surface with no voxel stair-stepping. Saves a new version.
+
+**When to use:** to turn a solid into a lightweight shell — a vase, cup, pot, planter, or any vessel — or just to save material/print time. Start from a **closed solid**; a Z-up orientation makes "open top" land where you expect (the cap is removed at the top).
+
+**Key parameters:**
+- wallThickness: shell wall thickness in world units (~2.5% of diagonal)
+- openTop: true removes the top cap so the cavity is open (an open-topped vase). Default false (a sealed hollow shell).
+- rimHeight: open-top only — how far below the model's top the rim is cut (world units). Should be ≥ wallThickness so the cut clears the cap. Default 2·wallThickness.
+- drainHoles: number of vertical drain holes bored through the base (0 = none; for planters). Default 0.
+- drainRadius: radius of each drain hole in world units. Default ~3% of the base width.
+- resolution: field resolution along the longest axis [16–256]. **Auto-raised** so the wall resolves to a few cells — you rarely set it. Higher sharpens detail.
+- watertight: keep only the largest connected piece → one printable manifold shell (default true — leave on).
+
+**Return:** { ok, label, geometry, warnings? }. Verify with renderViews; with watertight on the closed shell is manifold (isManifold true). An open top or drain holes intentionally open the solid.
+
+**Workflow guidance:** for a classic vase, set openTop:true and a rimHeight a couple of wall-thicknesses. For a planter add drainHoles (3–5) with openTop:true. Thicker walls print more robustly; thin walls (< ~0.8 mm at print scale) may be fragile. This is a heavier operation than the displacement textures — allow a few seconds.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        wallThickness: { type: 'number', description: 'Shell wall thickness in world units. Default ~2.5% of diagonal.' },
+        openTop: { type: 'boolean', description: 'Remove the top cap so the cavity is open (vase mode). Default false (sealed hollow shell).' },
+        rimHeight: { type: 'number', description: 'Open-top only: how far below the top the rim is cut (world units). Should be ≥ wallThickness. Default 2·wallThickness.' },
+        drainHoles: { type: 'integer', description: 'Number of vertical drain holes bored through the base (planters). Default 0.', minimum: 0, maximum: 16 },
+        drainRadius: { type: 'number', description: 'Radius of each drain hole in world units. Default ~3% of base width.' },
+        resolution: { type: 'integer', description: 'Field resolution along the longest axis [16–256]. Auto-raised for thin walls; higher = crisper, slower. Default 128.', minimum: 16, maximum: 256 },
+        watertight: { type: 'boolean', description: 'Keep only the largest connected piece — one watertight, printable shell. Default true.' },
+        preserveColor: { type: 'boolean', description: 'Sample model paint onto the shell. Default true.' },
+      },
+    },
+  },
+  {
     name: 'smoothModel',
     description: `Smooth/round the current model with a Taubin λ/μ pass — softens sharp edges and facets without the shrinkage a naive Laplacian causes. Saves a new version.
 
@@ -1789,7 +1821,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'applyHollow', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -2297,6 +2329,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.applyVoronoiShell(input);
     case 'applyVoronoiLamp':
       return api.applyVoronoiLamp(input);
+    case 'applyHollow':
+      return api.applyHollow(input);
     case 'smoothModel':
       return api.smoothModel(input);
     case 'voxelizeModel':
