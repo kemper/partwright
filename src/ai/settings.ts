@@ -100,9 +100,10 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     // Standard (the default) and Full enable it — thinking ships on by
     // default now; users can still dial it back with the Thinking pill.
     thinking: 'off',
-    // Auto-continue is enabled by default in standard/full, but stays off in
-    // the lean minimal preset — it's a cost-increasing autonomy feature, so it
-    // belongs in the same "off to minimize spend" bucket as vision/thinking.
+    // Auto-continue stays off in minimal and the default standard preset —
+    // it's a surprising autonomy feature (the agent presses past a clarifying
+    // question instead of waiting for an answer), so it's opt-in everywhere
+    // except the explicit max-autonomy full preset.
     autoResume: false,
     planFirst: false,
     printOptimized: true,
@@ -122,7 +123,9 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     maxIterations: 'high',
     maxSpend: 'medium',
     thinking: 'high',
-    autoResume: true,
+    // Off by default — a model that asks a clarifying question should wait for
+    // the answer, not auto-continue past it. Opt in via the pill or full preset.
+    autoResume: false,
     planFirst: false,
     printOptimized: true,
     anthropicModel: 'claude-sonnet-4-6',
