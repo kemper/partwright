@@ -80,9 +80,16 @@ preserves color regions and entry metadata), or use the `rethumb` mode of
   model's front face there. A face authored on flat +Y shows the *back* of the
   head in the tile. For voxel characters, see also `/ai/voxel.md` Gotchas.
   **Override:** pin a per-entry tile angle instead of baking orientation into the
-  geometry — set `THUMB_AZIMUTH` / `THUMB_ELEVATION` (degrees) when running
-  `scripts/single-catalog-entry.cjs`, or call
-  `partwright.setThumbnailCamera({ azimuth, elevation })` before saving.
+  geometry. Every bake path supports it:
+  - `scripts/single-catalog-entry.cjs` and `scripts/build-catalog-entry.cjs` —
+    set `THUMB_AZIMUTH` / `THUMB_ELEVATION` (degrees) in the environment.
+  - `generators/*.ts` entries — add `thumbCamera: { azimuth, elevation }` to the
+    entry/spec object.
+  - `partwright bake` fixtures — add `"thumbCamera": { "azimuth": N, "elevation": N }`
+    to the `.meta.json`.
+  - Or call `partwright.setThumbnailCamera({ azimuth, elevation })` before saving.
+  The pin is stored on the session and exported with the entry, so re-renders
+  keep the angle.
 - **File size: prefer `byLabel` paint for catalog entries.** Coordinate paint
   (`paintInBox` / `paintNear`) bakes per-triangle ID lists that can push a file
   to 10–20 MB; `paintByLabels` stores only the label name and stays under ~300 KB.

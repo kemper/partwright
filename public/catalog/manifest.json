@@ -629,7 +629,7 @@
       "name": "Captive-Nut Tightening Knob",
       "file": "print_fit_knob.partwright.json",
       "language": "manifold-js",
-      "description": "A knurled hand knob with a captive M4 hex-nut pocket and a clearance bore — trap a nut and turn it onto any M4 bolt or rod. Useful for jigs, clamps, and adjustable feet. Built with api.printFit.",
+      "description": "A knurled hand knob with a captive M4 hex-nut pocket and a clearance bore — trap a nut and turn it onto any M4 bolt or rod. Useful for jigs, clamps, and adjustable feet. Built with api.fasteners.",
       "group": "print-fit"
     },
     {
@@ -637,7 +637,7 @@
       "name": "Electronics Project Box",
       "file": "print_fit_project_box.partwright.json",
       "language": "manifold-js",
-      "description": "A parametric base tray with heat-set insert bosses, a matching screwed lid, and vent slots on the long walls to keep electronics cool. Drop brass inserts with a soldering iron; screw the lid flush. Built with api.printFit.",
+      "description": "A parametric base tray with lid-mount bosses, a matching countersunk-screwed lid, and vent slots to keep electronics cool. Pick the mounting style: heat-set insert bosses or thread-forming pilot bores the screws bite into directly. Built with api.fasteners.",
       "group": "print-fit"
     },
     {
@@ -645,7 +645,31 @@
       "name": "Dovetail Rail System",
       "file": "print_fit_dovetail_system.partwright.json",
       "language": "manifold-js",
-      "description": "A wall-mount plate with a full-length dovetail rail and a matching hook that slides on and locks — lift to remove. Print one plate, print as many hooks as you need. Both parts parameterizable. Built with api.printFit.",
+      "description": "A wall-mount plate with a full-length dovetail rail and a matching hook that slides on and locks — lift to remove. Print one plate, print as many hooks as you need. Both parts parameterizable. Built with api.joints and api.fasteners.",
+      "group": "print-fit"
+    },
+    {
+      "id": "print-in-place-hinge",
+      "name": "Print-in-Place Hinge",
+      "file": "print_in_place_hinge.partwright.json",
+      "language": "manifold-js",
+      "description": "A barrel hinge that prints lying open flat and works straight off the bed — one leaf carries an integral captive pin, the other's bored knuckles wrap it. Knuckle count, pin size, and clearance are parametric. Built with api.joints.hinge.",
+      "group": "print-fit"
+    },
+    {
+      "id": "ball-socket-mount",
+      "name": "Ball-and-Socket Mount",
+      "file": "ball_socket_mount.partwright.json",
+      "language": "manifold-js",
+      "description": "A snap-together articulating swivel mount — a ball on a stem snaps into a captive socket housing and swivels freely; both halves stand on screw-down plates. Ball size, opening ratio, and articulation gap are parametric. Built with api.joints.ballSocket.",
+      "group": "print-fit"
+    },
+    {
+      "id": "snap-lid-box",
+      "name": "Snap-Lid Box",
+      "file": "snap_lid_box.partwright.json",
+      "language": "manifold-js",
+      "description": "A round container whose press-on lid clicks shut — a bead ring on the lid skirt snaps into a groove inside the box mouth, both from one api.joints.snapRim call so they share the exact interface diameter.",
       "group": "print-fit"
     },
     {
@@ -745,6 +769,41 @@
       "file": "rack_and_pinion.partwright.json",
       "language": "manifold-js",
       "description": "Involute pinion meshing a straight rack to turn rotation into linear motion — adjustable module, teeth, and length."
+    },
+    {
+      "id": "waving-kid",
+      "name": "Waving Kid",
+      "file": "waving_kid.partwright.json",
+      "language": "manifold-js",
+      "description": "A cheerful stylized child waving hello — one arm raised high, chunky cargo pants, long hair, built with the SDF figure rig."
+    },
+    {
+      "id": "flexing-strongman",
+      "name": "Flexing Strongman",
+      "file": "flexing_strongman.partwright.json",
+      "language": "manifold-js",
+      "description": "A vintage-circus strongman hitting a double-biceps pose — stocky build, both fists raised, short trunks and a handlebar mustache."
+    },
+    {
+      "id": "chibi-wizard",
+      "name": "Chibi Wizard",
+      "file": "chibi_wizard.partwright.json",
+      "language": "manifold-js",
+      "description": "An adorable chibi wizard with an oversized pointed hat, a magic staff topped by a glowing orb, and a long beard — extreme cute proportions."
+    },
+    {
+      "id": "warrior-pose",
+      "name": "Warrior Pose",
+      "file": "warrior_pose.partwright.json",
+      "language": "manifold-js",
+      "description": "A figure in a yoga warrior lunge — front knee bent, back leg straight, arms outstretched in a T — showing off the figure rig's leg posing."
+    },
+    {
+      "id": "ballerina",
+      "name": "Ballerina",
+      "file": "ballerina.partwright.json",
+      "language": "manifold-js",
+      "description": "An elegant ballerina with arms raised overhead and a layered tutu, balanced on a base — a graceful figure-rig pose."
     }
   ]
 }

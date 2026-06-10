@@ -3,7 +3,7 @@
 // docs/headless-cli.md.
 import { resolve, dirname, basename, join } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { runPreview, composePng, composeContactSheet, explainComponents, checkExpectComponents, resolveViews } from './preview.mjs';
+import { runPreview, composePng, composeContactSheet, explainComponents, checkExpectComponents, resolveViews, defaultPreviewPng } from './preview.mjs';
 import { runPhoto, meshToPng, loadPalette } from './photo.mjs';
 import { runDaemon } from './daemon.mjs';
 import { startDaemon, stopDaemon, statusDaemon, rpc, evalInPage, resetPage } from './client.mjs';
@@ -43,7 +43,7 @@ async function cmdPreview(argv, { pngDefault }) {
 
   let pngPath = null;
   if (pngDefault && !a.json && result.render) {
-    pngPath = a.png ? resolve(a.png) : join(dirname(abs), basename(abs).replace(/\.[^.]+$/, '') + '.preview.png');
+    pngPath = a.png ? resolve(a.png) : defaultPreviewPng(abs);
     const img = composePng(result.render.positions, result.render.triVerts, result.render.triColors, result.render.bbox, Number(a.size) || 480, views || undefined);
     await img.toFile(pngPath);
   }
@@ -169,8 +169,9 @@ async function cmdBake(argv) {
   if (!metas.length) { console.error(`no *.meta.json fixtures in ${dir}`); process.exit(2); }
 
   const body = `
-    const { model, name, paints } = arg;
+    const { model, name, paints, thumbCamera } = arg;
     await pw.createSession(name);
+    if (thumbCamera && pw.setThumbnailCamera) await pw.setThumbnailCamera(thumbCamera);
     const run = await pw.runAndSave(model, 'shape');
     if (run && run.geometry && run.geometry.status === 'error') return { error: 'model error: ' + run.geometry.error };
     const paintResults = [];
@@ -194,7 +195,9 @@ async function cmdBake(argv) {
     const paints = (meta.paints || []).map((p) => ({ label: p.label, color: hexToRgb01(p.color), name: p.name ?? p.label }));
 
     await resetPage(); // fresh page per entry, mirroring tests/_catalogBake.spec.ts
-    const r = await evalInPage(body, { model, name: meta.name, paints });
+    // Optional per-entry tile-camera pin: `"thumbCamera": {"azimuth":225,"elevation":30}`
+    // in the .meta.json (degrees; default iso az 45 / el 35).
+    const r = await evalInPage(body, { model, name: meta.name, paints, thumbCamera: meta.thumbCamera ?? null });
     const out = r.result;
     if (!r.ok || out?.error || !out?.data) { console.log(`BAKE_FAIL ${meta.id}: ${r.error || out?.error || 'no data'}`); continue; }
 

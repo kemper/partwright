@@ -810,12 +810,20 @@ test.describe('Multi-provider AI', () => {
     await expect(modal.locator('button:has-text("Test connection")')).toBeVisible();
     await expect(modal.locator('button:has-text("Fetch models")')).toBeVisible();
 
-    // Enable is gated on the endpoint URL (the API key is optional), so it's
-    // disabled until a URL is set, then flips on — no key required.
-    await expect(modal.getByRole('button', { name: 'Enable Custom endpoint', exact: true })).toBeDisabled();
+    // Enable is gated on the endpoint URL (the API key is optional). The URL
+    // ships pre-filled with the bridge default, so Enable starts ready;
+    // clearing the URL gates it off, and refilling flips it back on — no key
+    // required.
+    const enableBtn = modal.getByRole('button', { name: 'Enable Custom endpoint', exact: true });
+    await expect(urlInput).toHaveValue('http://localhost:8317/v1');
+    await expect(enableBtn).toBeEnabled();
+    await urlInput.fill('');
+    await urlInput.blur();
+    await expect(enableBtn).toBeDisabled();
     await urlInput.fill('http://localhost:8080/v1');
+    await urlInput.blur();
     await modal.locator('input[placeholder^="e.g. llama"]').fill('my-model');
-    await expect(modal.getByRole('button', { name: 'Enable Custom endpoint', exact: true })).toBeEnabled();
+    await expect(enableBtn).toBeEnabled();
   });
 
   test('Custom tab: fetched models surface in the panel dropdown; Save & activate flushes the typed key', async ({ page }) => {
