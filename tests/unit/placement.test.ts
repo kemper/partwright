@@ -14,6 +14,8 @@ import {
   meshBox,
   bestFlatDownRotation,
   rotateAboutCenterSteps,
+  mirrorAboutCenterSteps,
+  mirrorLabel,
   type PlacementBox,
   type TransformStep,
   type Vec3,
@@ -263,6 +265,39 @@ describe('buildTransformCode', () => {
   });
 });
 
+describe('mirror', () => {
+  it('mirrorAboutCenterSteps flips in place: bbox unchanged, winding inverted', () => {
+    const box: PlacementBox = { min: [2, 0, 0], max: [12, 4, 6] }; // X center = 7
+    const out = applySteps(cube([2, 0, 0], [10, 4, 6]), mirrorAboutCenterSteps(box, 'x'));
+    const b = meshBox(out);
+    expect(b.min[0]).toBeCloseTo(2, 5);
+    expect(b.max[0]).toBeCloseTo(12, 5);
+    // A single reflection inverts orientation: triangle [0,2,1] → [0,1,2].
+    expect(Array.from(out.triVerts.slice(0, 3))).toEqual([0, 1, 2]);
+  });
+
+  it('reflects across the center plane: a vertex at x=min lands at x=max', () => {
+    const box: PlacementBox = { min: [0, 0, 0], max: [10, 10, 10] };
+    const out = applySteps(cube([0, 0, 0], [10, 10, 10]), mirrorAboutCenterSteps(box, 'x'));
+    expect(out.vertProperties[0]).toBeCloseTo(10, 5); // vertex 0 was at x=0
+  });
+
+  it('two mirrors cancel: orientation restored (even winding parity)', () => {
+    const out = applySteps(cube(), [{ kind: 'mirror', v: [1, 0, 0] }, { kind: 'mirror', v: [1, 0, 0] }]);
+    expect(Array.from(out.triVerts.slice(0, 3))).toEqual([0, 2, 1]); // back to original
+  });
+
+  it('buildTransformCode emits and re-parses a .mirror chain', () => {
+    const code = 'return api.Manifold.cube([10, 10, 10]);';
+    const out = buildTransformCode(code, [{ kind: 'mirror', v: [1, 0, 0] }], 'mirror X', '2026-06-08');
+    expect(out).toContain('})().mirror([1, 0, 0]);');
+    // A follow-up transform extends the same wrapper rather than nesting an IIFE.
+    const out2 = buildTransformCode(out, [{ kind: 'translate', v: [0, 0, 5] }], 'lift', '2026-06-08');
+    expect(out2.match(/return \(\(\) => \{/g)?.length).toBe(1);
+    expect(out2).toContain('.mirror([1, 0, 0]).translate([0, 0, 5]);');
+  });
+});
+
 describe('labels', () => {
   it('placementLabel describes combined ops, dropping centerZ when dropToFloor owns Z', () => {
     expect(placementLabel({ dropToFloor: true, centerX: true, centerY: true })).toBe('drop to floor + center XY');
@@ -271,5 +306,9 @@ describe('labels', () => {
   });
   it('rotationLabel formats degrees', () => {
     expect(rotationLabel([0, 90, 0])).toBe('rotate (0°, 90°, 0°)');
+  });
+  it('mirrorLabel formats the axis', () => {
+    expect(mirrorLabel('x')).toBe('mirror X');
+    expect(mirrorLabel('z')).toBe('mirror Z');
   });
 });

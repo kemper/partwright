@@ -105,10 +105,11 @@ export interface ChatToggles {
    *  the `finish` sentinel tool; a turn that ends WITHOUT calling finish is
    *  automatically resumed (a synthetic nudge is appended and the loop runs
    *  again) so the model keeps working — bounded by the iteration + spend caps,
-   *  whichever trips first. ON by default (standard/full presets; off in the
-   *  lean minimal preset); turning it OFF reproduces the normal
-   *  one-stop-per-end_turn behavior and is remembered across reloads.
-   *  Per-session, like the other toggles. */
+   *  whichever trips first. OFF by default — a turn that ends without calling
+   *  finish stops normally (one-stop-per-end_turn), so a clarifying question
+   *  waits for the user instead of being auto-resumed past. Only the explicit
+   *  max-autonomy full preset enables it; turning it ON elsewhere is remembered
+   *  across reloads. Per-session, like the other toggles. */
   autoResume: boolean;
   /** Plan-first mode. When ON, the first turn on each user message asks the
    *  model to produce a written plan (no tool calls) before executing anything.

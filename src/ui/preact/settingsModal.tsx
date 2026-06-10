@@ -36,6 +36,7 @@ import {
   setCustomModel,
   setCustomModels,
   setCustomBaseUrl,
+  DEFAULT_CUSTOM_BASE_URL,
   providerLabel,
   AUTO_COMPACT_OPTIONS,
   ANTHROPIC_MODEL_OPTIONS,
@@ -575,7 +576,11 @@ function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
   const { cb, close } = props;
   const settings = settingsSignal.value;
 
-  const url = useSignal(settings.toggles.customBaseUrl);
+  // Pre-fill with the bridge default for existing users whose stored URL is
+  // still empty (their settings predate the default); new users already get it
+  // from DEFAULT_TOGGLES. The pendingFlush below persists this on close so the
+  // endpoint is configured without the user typing it.
+  const url = useSignal(settings.toggles.customBaseUrl || DEFAULT_CUSTOM_BASE_URL);
   const model = useSignal(settings.toggles.customModel);
   const keyVal = useSignal('');
   // One example key per modal open — shown in the bridge setup's "set an API

@@ -130,6 +130,10 @@ export interface Surfacing {
   algorithm?: 'taubin' | 'surfaceNets';
   iterations: number;
   detail: number;
+  /** Rounding amount, 0–1 (default 1). Scales how far each smoothing pass moves
+   *  vertices, so lower = gentler rounding. 0 leaves the mesh un-rounded (the
+   *  smoother is skipped); for a fully hard-faced model use `mode: 'blocks'`. */
+  strength?: number;
   /** Pin the Z of the bottom-most plane so the build-plate face stays flat. */
   flatBottom?: boolean;
   /** Keep the bottom N voxel layers fully blocky (a solid, sharp pedestal). */
@@ -164,9 +168,35 @@ export class VoxelGrid {
   readonly __isVoxelGrid = true as const;
   private cells = new Map<number, number>();
   private _surfacing: Surfacing = { mode: 'blocks', iterations: 2, detail: 1 };
+  /** Distinct `res` values used by `sdf()` calls on this grid — lets stats
+   *  echo a res-aware world-size (`worldBBox = voxel bbox × res`). */
+  private sdfResValues = new Set<number>();
+  /** Per-label voxel fill counts from `sdf({ colors })` calls. Every key the
+   *  caller listed in `colors` appears — INCLUDING zero-fill ones, so a label
+   *  that silently matched nothing (e.g. a smoothUnion-blended sub-body that is
+   *  never the deepest region) is visible instead of just rendering wrong. */
+  private sdfLabelFill: Map<string, number> | null = null;
 
   /** Number of occupied voxels. */
   get size(): number { return this.cells.size; }
+
+  /** The single `res` shared by every `sdf()` call on this grid, or null when
+   *  no `sdf()` ran or calls mixed different res values (no unambiguous scale). */
+  get sdfRes(): number | null {
+    return this.sdfResValues.size === 1 ? [...this.sdfResValues][0] : null;
+  }
+
+  /** True when `sdf()` calls used more than one distinct `res` (world scale is
+   *  ambiguous, so stats skip the worldBBox echo). */
+  get sdfResMixed(): boolean { return this.sdfResValues.size > 1; }
+
+  /** Voxel fill count per label requested via `sdf({ colors })`, or null when
+   *  no labelled sdf fill ran. Zero-count entries are the signal: that label
+   *  colored nothing. */
+  get sdfLabelCounts(): Record<string, number> | null {
+    if (!this.sdfLabelFill) return null;
+    return Object.fromEntries(this.sdfLabelFill);
+  }
 
   /** Count of **face-connected** voxel pieces (6-neighbour BFS). This is the
    *  trustworthy "how many separate printable pieces?" measure for voxel
@@ -358,6 +388,7 @@ export class VoxelGrid {
     const o = assertObject(opts, 'v.sdf(opts)') ?? {};
     assertNoUnknownKeys(o, ['res', 'color', 'colors', 'bounds', 'level'], 'v.sdf(opts)');
     const res = o.res === undefined ? 1 : assertNumber(o.res, 'v.sdf(res)', { min: 1e-3 })!;
+    this.sdfResValues.add(res);
     const level = o.level === undefined ? 0 : assertNumber(o.level, 'v.sdf(level)')!;
     const defaultColor = normalizeColor((o.color === undefined ? '#cccccc' : o.color) as ColorInput, 'v.sdf(color)');
 
@@ -394,11 +425,20 @@ export class VoxelGrid {
     const colorMap = o.colors === undefined ? null : assertObject(o.colors, 'v.sdf(colors)')!;
     if (colorMap) {
       const regions = partitionByLabel(node);
+      // Track fill-per-label, seeding every requested key at 0 so a label that
+      // never wins a cell (the smoothUnion "deepest region" trap) reports
+      // loudly instead of silently coloring nothing.
+      const fill = this.sdfLabelFill ?? (this.sdfLabelFill = new Map());
+      for (const key of Object.keys(colorMap)) if (!fill.has(key)) fill.set(key, 0);
       const regionColors = regions.map((r) => {
         const name = r.labelName;
         return (name !== undefined && Object.prototype.hasOwnProperty.call(colorMap, name))
           ? normalizeColor(colorMap[name] as ColorInput, `v.sdf(colors.${name})`)
           : defaultColor;
+      });
+      const regionCountKeys = regions.map((r) => {
+        const name = r.labelName;
+        return name !== undefined && Object.prototype.hasOwnProperty.call(colorMap, name) ? name : null;
       });
       for (let i = ix0; i <= ix1; i++) {
         if (i < COORD_MIN || i > COORD_MAX) continue;
@@ -414,7 +454,11 @@ export class VoxelGrid {
               const d = regions[ri].node.evaluate(wx, wy, wz);
               if (d < best) { best = d; bestIdx = ri; }
             }
-            if (bestIdx >= 0 && best <= level) this.cells.set(packKey(i, j, k), regionColors[bestIdx]);
+            if (bestIdx >= 0 && best <= level) {
+              this.cells.set(packKey(i, j, k), regionColors[bestIdx]);
+              const lk = regionCountKeys[bestIdx];
+              if (lk !== null) fill.set(lk, fill.get(lk)! + 1);
+            }
           }
         }
       }
@@ -606,8 +650,8 @@ export class VoxelGrid {
    *    - `lockBox` — keep the voxels in `[[x0,y0,z0],[x1,y1,z1]]` (voxel coords)
    *      blocky, for a custom base region.
    *  Chainable. */
-  smooth(opts: number | { iterations?: number; detail?: number; algorithm?: 'taubin' | 'surfaceNets'; flatBottom?: boolean; baseLayers?: number; lockBox?: [Vec3, Vec3] } = {}): this {
-    let iterations = 2, detail = 1;
+  smooth(opts: number | { iterations?: number; detail?: number; strength?: number; algorithm?: 'taubin' | 'surfaceNets'; flatBottom?: boolean; baseLayers?: number; lockBox?: [Vec3, Vec3] } = {}): this {
+    let iterations = 2, detail = 1, strength = 1;
     let algorithm: 'taubin' | 'surfaceNets' = DEFAULT_SMOOTH_ALGORITHM;
     let flatBottom: boolean | undefined;
     let baseLayers: number | undefined;
@@ -616,15 +660,16 @@ export class VoxelGrid {
       iterations = assertNumber(opts, 'smooth(iterations)', { integer: true, min: 1, max: 8 })!;
     } else {
       const o = assertObject(opts, 'smooth(opts)')!;
-      assertNoUnknownKeys(o, ['iterations', 'detail', 'algorithm', 'flatBottom', 'baseLayers', 'lockBox'], 'smooth(opts)');
+      assertNoUnknownKeys(o, ['iterations', 'detail', 'strength', 'algorithm', 'flatBottom', 'baseLayers', 'lockBox'], 'smooth(opts)');
       if (o.iterations !== undefined) iterations = assertNumber(o.iterations, 'smooth.iterations', { integer: true, min: 1, max: 8 })!;
       if (o.detail !== undefined) detail = assertNumber(o.detail, 'smooth.detail', { integer: true, min: 1, max: 4 })!;
+      if (o.strength !== undefined) strength = assertNumber(o.strength, 'smooth.strength', { min: 0, max: 1 })!;
       if (o.algorithm !== undefined) algorithm = assertEnum(o.algorithm, ['taubin', 'surfaceNets'] as const, 'smooth.algorithm');
       if (o.flatBottom !== undefined) flatBottom = assertBoolean(o.flatBottom, 'smooth.flatBottom')!;
       if (o.baseLayers !== undefined) baseLayers = assertNumber(o.baseLayers, 'smooth.baseLayers', { integer: true, min: 1, max: HALF })!;
       if (o.lockBox !== undefined) lockBox = normalizeLockBox(o.lockBox);
     }
-    this._surfacing = { mode: 'smooth', algorithm, iterations, detail, flatBottom, baseLayers, lockBox };
+    this._surfacing = { mode: 'smooth', algorithm, iterations, detail, strength, flatBottom, baseLayers, lockBox };
     return this;
   }
 

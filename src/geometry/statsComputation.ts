@@ -14,16 +14,11 @@ import type { MeshData } from './types';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Manifold = any;
 
-/** Stable, short content hash. Used to stamp the geometry-data payload so
- *  callers can detect when an unchanged code re-render produced the same
- *  output. Not cryptographic — collisions are acceptable. */
-export function simpleHash(str: string): string {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
-  }
-  return (h >>> 0).toString(16).padStart(8, '0');
-}
+// simpleHash lives in its own dependency-free leaf (./simpleHash) so Node
+// scripts can import it without this module's transitive browser deps;
+// re-exported here for the existing browser-side importers.
+import { simpleHash } from './simpleHash';
+export { simpleHash };
 
 /** Bounding box scanned directly from a MeshData's vertex buffer. Used when no
  *  Manifold is available (e.g. render-only STL imports) so the rest of the

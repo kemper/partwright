@@ -94,8 +94,13 @@ test.describe('viewport camera persistence', () => {
 
     // Edit the code for real — replace it via the editor so the debounced
     // auto-run fires through the same runCode path a user hits while typing.
+    // The code pane is shown by default now, so the "▶ Show code" expander is in
+    // the DOM but hidden; only click it when it's actually visible (i.e. the pane
+    // is collapsed), otherwise the click waits on a hidden element until timeout.
     const showCode = page.getByText('Show code', { exact: false });
-    if (await showCode.count()) await showCode.first().click().catch(() => {});
+    if (await showCode.first().isVisible().catch(() => false)) {
+      await showCode.first().click().catch(() => {});
+    }
     const editor = page.locator('.cm-content').first();
     await editor.click();
     await page.keyboard.press('ControlOrMeta+a');

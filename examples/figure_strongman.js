@@ -1,0 +1,195 @@
+// Classic flexing strongman — double-biceps pose.
+//
+// A vintage-circus bodybuilder, arms raised to the sides with elbows
+// bent so fists come up by the head. Build 'stocky', 7 heads tall,
+// short shorts, short hair, thick mustache on a display base.
+//
+// Strategy: the FK elbow joint only flexes in-plane with the upper-arm and
+// body-front vector; for a horizontal arm that means the elbow only swings
+// in the lateral plane, not vertically. To get a true double-biceps silhouette
+// (horizontal upper arm → vertical forearm → fist beside the head), we skip
+// F.arms/F.hands and place the arm segments as raw sdf.capsule primitives
+// anchored to the rig's shoulder joints so they weld solidly into the body.
+//
+// Paint regions: skin, hair, mustache, trunks, base
+
+const { sdf } = api;
+const F = sdf.figure;
+
+// 1. RIG — stocky, 7 heads, neutral arms (so the torso/traps compute correctly;
+//    we do not call F.arms because we're placing arms manually below).
+const rig = F.rig({
+  height: 60,
+  headsTall: 7,
+  build: 'stocky',
+  pose: {
+    // Arms neutral so torso/shoulder geometry computes at the right position.
+    // We override the arm geometry below with manual capsules.
+    armL: { abduct: 0, flex: 0, elbow: 0 },
+    armR: { abduct: 0, flex: 0, elbow: 0 },
+    legL: { abduct: 14 },
+    legR: { abduct: 14 },
+    head: { nod: -5 },
+  },
+});
+
+const j = rig.joints;
+const r = rig.r;
+
+// --- Manual double-biceps arm geometry -----------------------------------
+//
+// Left arm (figure's left = +X side)
+// Right arm (figure's right = −X side)
+//
+// For a stocky 7-head figure at height=60:
+//   shoulderL = [7.9,  0, 48.5]
+//   shoulderR = [-7.9, 0, 48.5]
+//   headCenter = [0, 0, 55.7]
+//   chin = [0, 0, 51.4]
+//
+// Classic double-biceps: elbow directly OUT to the side (same Z as shoulder,
+// further out in X), forearm pointing UP, fist beside the head.
+// We offset slightly forward (−Y) so the pose reads from the front camera.
+
+const upperArmLen = 60 * 0.165;   // 9.9
+const foreArmLen  = 60 * 0.150;   // 9.0
+
+// Elbows: directly out to the side at shoulder height, slightly forward.
+// Classic double-biceps: elbow at same Z as shoulder, arm horizontal.
+// Extend the upper arm a bit beyond the standard length for extra visual space.
+const elbowLX = j.shoulderL[0] + upperArmLen * 1.05;  // ~18.7 — arm extended out
+const elbowZ  = j.shoulderL[2] + 0.5;                 // 49 — barely above shoulder
+const elbowY  = -1.5;                                  // slightly forward toward camera
+
+const elbowL = [elbowLX,  elbowY, elbowZ];
+const elbowR = [-elbowLX, elbowY, elbowZ];
+
+// Wrists: come UP from elbow. Classic double-biceps has the forearm pointing
+// mostly upward so fist lands at temple/ear height.
+// Target: fist at Z ≈ 53-54 (temple = chin (51.4) + 2-3 units), X ≈ 14-16.
+const wristZ  = elbowZ + foreArmLen * 0.50;    // ~53 — between chin and eyes
+const wristLX = elbowLX - foreArmLen * 0.30;   // ~15 — slightly inward
+const wristY  = elbowY + foreArmLen * 0.08;    // ~-0.8
+
+const wristL = [wristLX,  wristY, wristZ];
+const wristR = [-wristLX, wristY, wristZ];
+
+// Fists: slightly past wrist
+const fistZ  = wristZ + r.hand * 0.8;          // ~55.5 — at temple/ear
+const fistLX = wristLX - r.hand * 0.2;         // ~14.4 — beside head
+const fistY  = wristY;
+
+const fistL = [fistLX,  fistY, fistZ];
+const fistR = [-fistLX, fistY, fistZ];
+
+// Build the arms as thick tapered capsule chains — bodybuilder scale
+function makeArm(shoulderPos, elbow, wrist, fist) {
+  const k = r.foreArm * 0.85;
+  // Bodybuilder arms — notably thicker than average
+  const rU = r.upperArm * 1.25;   // thick upper arm
+  const rF = r.foreArm * 1.15;    // thick forearm
+  // Upper arm: full capsule shoulder→elbow
+  const upper = sdf.capsule(shoulderPos, elbow, rU);
+  // Bicep peak: forward-offset sphere at the midpoint of the upper arm
+  const upperMid = [
+    (shoulderPos[0] + elbow[0]) * 0.5,
+    (shoulderPos[1] + elbow[1]) * 0.5 - rU * 0.28, // forward of center
+    (shoulderPos[2] + elbow[2]) * 0.5 + rU * 0.18, // slightly above
+  ];
+  const bicepPeak = sdf.sphere(rU * 0.95).translate(upperMid);
+  // Deltoid: rounded cap at the shoulder joint
+  const deltoid = sdf.sphere(rU * 1.08).translate(shoulderPos);
+
+  // Forearm: elbow → wrist
+  const fore = sdf.capsule(elbow, wrist, rF);
+
+  // Fist
+  const fistSphere = sdf.sphere(r.hand * 1.05).translate(fist);
+
+  return upper
+    .smoothUnion(bicepPeak, k * 0.7)
+    .smoothUnion(deltoid, r.upperArm * 0.6)
+    .smoothUnion(fore, k)
+    .smoothUnion(fistSphere, r.foreArm * 0.9);
+}
+
+const armL = makeArm(j.shoulderL, elbowL, wristL, fistL);
+const armR = makeArm(j.shoulderR, elbowR, wristR, fistR);
+
+// 2. HEAD + FACE
+const head = F.head(rig);
+const face = F.face.assemble(head, rig, {
+  eyes:  { radius: r.head * 0.14 },
+  nose:  { tipRadius: r.head * 0.14, length: r.head * 0.22 },
+  mouth: { width: r.head * 0.44, smirk: 0.2 },
+  ears:  { size: r.head * 0.28 },
+  brows: {},
+});
+
+// 3. EXTRA MUSCLE MASSES — puffed chest, big traps
+const chestPuff = sdf.ellipsoid(
+  r.chestX * 1.2, r.chestY * 1.4, r.chestY * 2.4,
+).translate([0, -r.chestY * 0.35, j.chest[2] + r.chestY * 0.4]);
+
+const trapL = sdf.ellipsoid(
+  r.upperArm * 1.2, r.upperArm * 0.75, r.upperArm * 1.25,
+).translate([j.shoulderL[0] * 0.65, -r.chestY * 0.2, j.shoulderL[2] + r.upperArm * 0.3]);
+const trapR = sdf.ellipsoid(
+  r.upperArm * 1.2, r.upperArm * 0.75, r.upperArm * 1.25,
+).translate([j.shoulderR[0] * 0.65, -r.chestY * 0.2, j.shoulderR[2] + r.upperArm * 0.3]);
+
+// 4. WELDED SKIN — note: F.arms and F.hands are NOT included here; we use
+//    our manual arm geometry above instead.
+const skin = F.weld(rig, [
+  F.torso(rig),
+  F.neck(rig),
+  F.legs(rig),
+  F.feet(rig),
+  face,
+  chestPuff,
+  trapL,
+  trapR,
+  armL,
+  armR,
+], { k: r.foreArm * 0.7 }).label('skin');
+
+// 5. SHORT TRUNKS — high-cut bodybuilding shorts
+const trunkCuffZ = j.hipL[2] + r.thigh * 0.4;
+const trunks = F.clothing.pants(rig, {
+  rise: 'mid',
+  leg: 'slim',
+  cuffZ: trunkCuffZ,
+}).label('trunks');
+
+// 6. HAIR — short
+const hair = F.hair(rig, { style: 'short' }).label('hair');
+
+// 7. MUSTACHE — thick handlebar between nose and mouth
+const nosePos  = rig.face.nose;
+const mouthPos = rig.face.mouth;
+const hl       = rig.dir.headLeft;
+
+const mustacheCenter = [
+  (nosePos[0] + mouthPos[0]) * 0.5,
+  (nosePos[1] + mouthPos[1]) * 0.5,
+  nosePos[2] + (mouthPos[2] - nosePos[2]) * 0.45,
+];
+const halfSpan = r.headX * 0.52;
+const mustacheA = [
+  mustacheCenter[0] + hl[0] * halfSpan,
+  mustacheCenter[1] + hl[1] * halfSpan,
+  mustacheCenter[2] + hl[2] * halfSpan,
+];
+const mustacheB = [
+  mustacheCenter[0] - hl[0] * halfSpan,
+  mustacheCenter[1] - hl[1] * halfSpan,
+  mustacheCenter[2] - hl[2] * halfSpan,
+];
+const mustache = sdf.capsule(mustacheA, mustacheB, r.head * 0.09).label('mustache');
+
+// 8. BASE
+const base = F.base(rig, { radius: rig.opts.height * 0.28 }).label('base');
+
+// 9. Hard-union all labelled regions and build
+return sdf.union(skin, trunks, hair, mustache, base)
+  .build({ edgeLength: 0.5 });

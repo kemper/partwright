@@ -27,8 +27,16 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { globSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { createServer } from 'vite';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+// The canonical code/codeHash/colorRegions sync lives in ONE place
+// (src/storage/versionRewrite.ts) shared with the app — loaded via vite SSR
+// because it's TypeScript. Hand-rolling that sync is how this script's first
+// pass missed `codeHash` (every migrated entry loaded flagged stale).
+const viteServer = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
+const { rewriteVersionCode } = await viteServer.ssrLoadModule('/src/storage/versionRewrite.ts');
 const WRITE = process.argv.includes('--write');
 const onlyIdx = process.argv.indexOf('--only');
 const ONLY = onlyIdx >= 0 ? process.argv[onlyIdx + 1] : null;
@@ -116,17 +124,6 @@ function parses(code) {
   catch { return false; }
 }
 
-// Mirror of src/geometry/statsComputation.ts simpleHash — used by the app as a
-// staleness signal (`simpleHash(code) !== geo.codeHash`). We rewrite `code`, so
-// we must recompute the stored hash or every migrated entry loads flagged stale
-// (a spurious re-run). The cached geometry stats stay valid because the geometry
-// is unchanged — only the source text moved — so re-validating the hash is correct.
-function simpleHash(str) {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
-  return (h >>> 0).toString(16).padStart(8, '0');
-}
-
 const files = globSync('public/catalog/*.partwright.json', { cwd: root })
   .filter((f) => !ONLY || f.includes(ONLY))
   .sort();
@@ -174,11 +171,9 @@ for (const rel of files) {
       continue;
     }
 
-    v.code = newCode;
-    v.colorRegions = retained;
-    if (v.geometryData && Array.isArray(v.geometryData.colorRegions)) v.geometryData.colorRegions = retained;
-    // Keep the cached-stats staleness signal in sync with the rewritten code.
-    if (v.geometryData && typeof v.geometryData.codeHash === 'string') v.geometryData.codeHash = simpleHash(newCode);
+    // Canonical sync: code + codeHash restamp (only if the stats were fresh
+    // for the old code) + both colorRegions mirrors, in one call.
+    rewriteVersionCode(v, newCode, { colorRegions: retained });
 
     totalConverted += converted.length;
     totalRetained += retained.length;
@@ -211,3 +206,5 @@ for (const f of report) {
     console.log(`${f.file} v${v.index}: +${v.converted} code ${JSON.stringify(v.kinds || {})}  | kept ${v.retained} ${JSON.stringify(v.retainedKinds || {})} ${v.note || ''}`);
   }
 }
+
+await viteServer.close();

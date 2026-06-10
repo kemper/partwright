@@ -1407,7 +1407,7 @@ function renderToggleStrip(): void {
   primary.appendChild(togglePill(
     '♾ Auto-continue',
     toggles.autoResume,
-    'Auto-continue: the agent keeps working until it calls the finish tool to declare the task done — if a turn ends without calling finish, it is automatically resumed instead of stopping. Bounded by the ⟲ iteration cap and the $ spend cap (whichever trips first). Useful for models that tend to stop early (e.g. Gemini). ON by default; turn it OFF to stop at each end_turn as usual (your choice is remembered).',
+    'Auto-continue: the agent keeps working until it calls the finish tool to declare the task done — if a turn ends without calling finish, it is automatically resumed instead of stopping. Bounded by the ⟲ iteration cap and the $ spend cap (whichever trips first). Useful for models that tend to stop early (e.g. Gemini). OFF by default so the agent stops at each end_turn and waits when it asks a clarifying question; turn it ON to keep it working (your choice is remembered).',
     () => {
       applyToggleChange({ autoResume: !toggles.autoResume });
       renderToggleStrip();
@@ -1998,16 +1998,22 @@ function renderMessage(msg: ChatMessage): HTMLElement {
       const isEmpty = b.text.length === 0;
       if (isEmpty && msg.role !== 'assistant') continue;
       const bubble = renderTextBubble(msg.role, b.text, msg.compacted);
-      if (isEmpty && msg.role === 'assistant') bubble.dataset.liveBubble = msg.id;
-      if (b.text.trim().length > 0 || (isEmpty && msg.role === 'assistant')) {
+      if (isEmpty && msg.role === 'assistant') {
+        // Live streaming placeholder: kept bare (no copy wrapper) so
+        // onAssistantText can rewrite its textContent and the thinking-box
+        // insertion can target its parent wrap. It picks up a copy button on
+        // the persist re-render, once it actually has text worth copying.
+        bubble.dataset.liveBubble = msg.id;
         wrap.appendChild(bubble);
+      } else if (b.text.trim().length > 0) {
+        wrap.appendChild(withCopyButton(bubble, msg.role, () => bubble.textContent ?? ''));
       }
     } else if (b.type === 'image') {
       wrap.appendChild(renderImageBubble(b.source));
     } else if (b.type === 'thinking') {
       if (b.text.trim().length > 0) wrap.appendChild(renderThinkingBox(b.text));
     } else if (b.type === 'review') {
-      wrap.appendChild(renderReviewBubble(b.provider, b.model, b.text));
+      wrap.appendChild(withCopyButton(renderReviewBubble(b.provider, b.model, b.text), 'assistant', () => b.text));
     }
   }
 
@@ -2306,6 +2312,56 @@ function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: 
   }
   bubble.textContent = text;
   return bubble;
+}
+
+/** Copy-to-clipboard button with an icon + "Copy" label that swaps to a check
+ *  on success. Always visible (not hover-only) with a subtle bordered chip so
+ *  it reads as a clear affordance and stays tappable on touch devices. */
+function makeCopyButton(getText: () => string): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.title = 'Copy to clipboard';
+  btn.setAttribute('aria-label', 'Copy message to clipboard');
+  btn.className = 'inline-flex items-center gap-1 px-2 py-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 border border-zinc-700/70 hover:border-zinc-600 text-[11px] leading-none transition-colors';
+  const icon = document.createElement('span');
+  icon.textContent = '⧉';
+  const label = document.createElement('span');
+  label.textContent = 'Copy';
+  btn.append(icon, label);
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(getText());
+      icon.textContent = '✓';
+      label.textContent = 'Copied';
+      btn.classList.add('text-emerald-400', 'border-emerald-500/50');
+      window.setTimeout(() => {
+        icon.textContent = '⧉';
+        label.textContent = 'Copy';
+        btn.classList.remove('text-emerald-400', 'border-emerald-500/50');
+      }, 1200);
+    } catch {
+      showToast('Copy failed — clipboard unavailable', { variant: 'warn', source: 'ai' });
+    }
+  });
+  return btn;
+}
+
+/** Wrap a response bubble in a column carrying a copy button directly below it,
+ *  aligned to the right edge of the bubble, so any message can be copied with
+ *  one click. The bubble's own `max-w-[90%]` is moved onto the column so the
+ *  cap still measures against the panel. */
+function withCopyButton(bubble: HTMLElement, align: 'user' | 'assistant', getText: () => string): HTMLElement {
+  bubble.classList.remove('max-w-[90%]');
+  bubble.classList.add('max-w-full', 'min-w-0', align === 'user' ? 'self-end' : 'self-start');
+  const col = document.createElement('div');
+  col.className = 'group flex flex-col gap-1 max-w-[90%] min-w-0';
+  col.appendChild(bubble);
+  const actions = document.createElement('div');
+  actions.className = 'w-full flex justify-end';
+  actions.appendChild(makeCopyButton(getText));
+  col.appendChild(actions);
+  return col;
 }
 
 function renderImageBubble(source: ImageSource): HTMLElement {
