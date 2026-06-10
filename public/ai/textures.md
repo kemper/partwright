@@ -21,7 +21,7 @@ apply→save→verify workflow:
 | `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
 | `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
-| `engraveModel({ text, through, depth, size, mode, axis, side, resolution })` | **Carves text into the model** — recessed channels (`through:false`) or holes cut clean through the wall (`through:true`, a stencil). Projects onto a face (`mode:'planar'`) or wraps around Z (`mode:'cylindrical'`). | Unlike the relief textures (which only displace the skin), this **removes** material. Image stamps are UI-only (need local bytes); the tool handles text. See [`engraveModel`](#engravemodel) below. |
+| `engraveModel({ text, through, depth, size, axis, side, posU, posV, curveAxis, resolution })` | **Carves text into the model** — recessed channels (`through:false`) or holes cut clean through the wall (`through:true`, a stencil). Lands on a face; `curveAxis` wraps it around a round surface (cup, tower). | Unlike the relief textures (which only displace the skin), this **removes** material. Image stamps are UI-only (need local bytes); the tool handles text. See [`engraveModel`](#engravemodel) below. |
 
 > **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
 > BREP/replicad model this discards the parametric source (and, for BREP, STEP
@@ -351,7 +351,8 @@ auto-raises for thin struts, so you rarely touch it. Verify with `renderViews`.
 
 ```
 engraveModel({ text, font?, through?, depth?, size?, mode?, axis?, side?,
-               posU?, posV?, rotationDeg?, resolution?, watertight?, preserveColor? })
+               posU?, posV?, rotationDeg?, curveAxis?, curveAngleDeg?,
+               resolution?, watertight?, preserveColor? })
 ```
 
 **Carves text into the model** — recessed channels (engrave) or holes cut clean
@@ -379,21 +380,32 @@ than the relief textures — allow a few seconds.
 | `posU` | 0.5 | Planar only: stamp center *across* the face, as a fraction [0–1] of the bbox on the first in-plane axis. 0.5 = centered; 0.25/0.75 = quarter points (the snap buttons in the UI). |
 | `posV` | 0.5 | Planar only: stamp center *up* the face, fraction [0–1] on the second in-plane axis. |
 | `rotationDeg` | 0 | Rotate the stamp in the face plane (planar) or around Z (cylindrical), degrees. |
+| `curveAxis` | `'none'` | Bend the flat stamp around a surface (planar/free). `'v'` = wrap around the **vertical** axis → text curves left↔right (around a cylinder, tower, mug); `'u'` = wrap around the **horizontal** axis → text curves up↔down (over a dome). |
+| `curveAngleDeg` | 90 | Total arc the curved stamp subtends (with `curveAxis`). The whole word spans this angle; larger = tighter wrap. |
 | `resolution` | 180 | Field resolution along the longest axis [48–256]. Raise if thin strokes look mushy. |
 | `watertight` | true | Keep only the largest connected piece — one manifold result. |
 
-**Placement:** `posU`/`posV` move the stamp to a quarter/third of the face
-instead of dead-center; `rotationDeg` spins it. In the **Surface panel**, press
-**"place on model"** and a live footprint outline follows the cursor over the
-model — click to drop it there. Clicking a flat axis-aligned face snaps to that
-face (the position sliders + 0/25/50/75% snaps apply); clicking a **sloped or
-curved face** lies the stamp flat on it (a "free" projection, positioned by the
-click). The live preview keeps the model's colors. Heavy carves show a
-"Rendering…" progress bar you can cancel.
+**Placement:** in the **Surface panel**, type the text and press the small
+**Apply** button (typing no longer re-renders on every keystroke), then press
+**"place on model"** — a live footprint outline follows the cursor over the
+model; click to drop it on that face. Clicking a flat axis-aligned face snaps to
+that face (the position sliders + 0/25/50/75% snaps and `rotationDeg` apply);
+clicking a **sloped or curved face** lies the stamp flat on it (a "free"
+projection, positioned by the click). To wrap text around a round surface (a
+cup, a lighthouse), place it on the side then set **Curve** (`curveAxis` +
+`curveAngleDeg`). The live preview keeps the model's colors. Heavy carves drive
+the inline **"Rendering…"** status (with the toolbar Cancel link) just like a
+normal run, so you can cancel a slow carve.
 
-For a sloped/curved face from code, pass an explicit free projection:
-`engraveModel({ text:'A', projection:{ mode:'free', origin:[x,y,z], normal:[nx,ny,nz] }, … })`
+For a sloped/curved face from code, pass an explicit free projection (with an
+optional `curve`):
+`engraveModel({ text:'A', projection:{ mode:'free', origin:[x,y,z], normal:[nx,ny,nz], curve:{ axis:'v', angleDeg:120 } }, … })`
 — `origin` is the surface point and `normal` its outward direction.
+
+> **`cylindrical` is legacy.** The old `mode:'cylindrical'` (wrap around the
+> global Z axis) still works from code, but it guesses a single radius from the
+> bbox and misses tapered/eccentric shapes. Prefer **place-on-face + `curveAxis`**,
+> which anchors the wrap at the point you actually clicked.
 
 **Colors are preserved.** Engraving a painted model carries the existing paint
 onto the carved mesh (a spatial transfer), so a painted nameplate keeps its

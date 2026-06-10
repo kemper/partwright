@@ -152,6 +152,36 @@ describe('engraveCombine — planar placement (position + rotation)', () => {
   });
 });
 
+describe('engraveCombine — curvature (wrap)', () => {
+  const mask = solidMask();
+  const vox = 0.2;
+  const flatProj = { mode: 'planar' as const, axis: 'z' as const, side: 'max' as const };
+  const samples = [
+    { d: -0.1, x: 10, y: 10, z: 3.9, voxelSize: vox }, // center, just under the face
+    { d: -1, x: 10, y: 10, z: 1, voxelSize: vox },     // center, deep
+    { d: -0.1, x: 1, y: 1, z: 3.9, voxelSize: vox },   // off-stamp
+  ];
+
+  it('a vanishingly small wrap angle reduces to the flat field', () => {
+    const flat = engraveCombine(slab, { mask, projection: flatProj, through: false, depth: 1, size: 10 });
+    const tiny = engraveCombine(slab, { mask, projection: { ...flatProj, curve: { axis: 'v', angleDeg: 0.4 } }, through: false, depth: 1, size: 10 });
+    for (const s of samples) {
+      const a = flat(s), b = tiny(s);
+      expect(Math.sign(a)).toBe(Math.sign(b)); // same keep/remove decision
+      expect(b).toBeCloseTo(a, 2);             // and nearly identical value
+    }
+  });
+
+  it('still carves at the placement center under a strong wrap', () => {
+    // Curving about either axis leaves the stamp center on the surface, so the
+    // ink there is still removed (field > 0 just under the face).
+    for (const axis of ['v', 'u'] as const) {
+      const combine = engraveCombine(slab, { mask, projection: { ...flatProj, curve: { axis, angleDeg: 120 } }, through: false, depth: 1.5, size: 10 });
+      expect(combine({ d: -0.1, x: 10, y: 10, z: 3.6, voxelSize: vox })).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe('engravePlanarFootprint — outline corners', () => {
   const bbox = { min: [0, 0, 0] as [number, number, number], max: [20, 10, 4] as [number, number, number], size: [20, 10, 4] as [number, number, number] };
 
@@ -233,6 +263,16 @@ describe('engraveMesh', () => {
     // A 45°-ish normal → free projection; should still carve a non-empty mesh.
     const out = await engraveMesh(mesh, {
       mask: solidMask(8), projection: { mode: 'free', origin: [10, 0, 10], normal: [0.707, -0.707, 0] }, through: false, depth: 1.5, size: 6, resolution: 64,
+    });
+    expect(out.numTri).toBeGreaterThan(0);
+  });
+
+  it('carves a curved (wrapped) stamp without degenerating', async () => {
+    const mesh = box(20, 20, 4);
+    const out = await engraveMesh(mesh, {
+      mask: solidMask(8),
+      projection: { mode: 'planar', axis: 'z', side: 'max', curve: { axis: 'v', angleDeg: 120 } },
+      through: false, depth: 1.5, size: 12, resolution: 64,
     });
     expect(out.numTri).toBeGreaterThan(0);
   });

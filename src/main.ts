@@ -7675,12 +7675,16 @@ async function main() {
   }
 
   // The SDF carves (engrave, voronoi lamp) sweep a dense lattice and can take a
-  // few seconds. Run them under the shared progress modal with a Cancel that
-  // aborts the sweep, and supersede any in-flight carve when a newer one starts
-  // (rapid slider edits). Lighter modifiers run inline with no modal.
+  // few seconds. Drive the same inline "Rendering…" status indicator (timer +
+  // the toolbar Cancel link) that a normal model run uses, rather than a modal —
+  // the Cancel aborts the sweep (see surfaceCarveCancel, wired into
+  // cancelInlineBtn). Supersede any in-flight carve when a newer one starts
+  // (rapid slider edits). Lighter modifiers run inline with no indicator.
   let surfaceCarveAbort: AbortController | null = null;
+  // While a carve is running, the toolbar Cancel button aborts it instead of
+  // cancelling a worker run. Cleared when the carve settles.
+  let surfaceCarveCancel: (() => void) | null = null;
   const SDF_HEAVY = new Set(['engrave', 'voronoiLamp']);
-  const SURFACE_PROGRESS_TITLES: Record<string, string> = { engrave: 'Rendering engraving', voronoiLamp: 'Rendering Voronoi lamp' };
   async function buildSurfaceModifierProgress(
     id: Parameters<typeof buildSurfaceModifier>[0],
     opts: Record<string, unknown> | undefined,
@@ -7690,19 +7694,19 @@ async function main() {
     surfaceCarveAbort?.abort();              // supersede an in-flight carve
     const abort = new AbortController();
     surfaceCarveAbort = abort;
-    const progressId = startProgress({
-      title: SURFACE_PROGRESS_TITLES[id] ?? 'Rendering',
-      message: 'Carving the surface — this can take a few seconds.',
-      onCancel: () => abort.abort(),
-    });
+    surfaceCarveCancel = () => abort.abort();
+    startRunTimer(performance.now());        // shared inline "Rendering… Xs" + Cancel
     try {
-      return await buildSurfaceModifier(id, opts, preserveColor, {
-        signal: abort.signal,
-        onProgress: (f) => updateProgress(progressId, f),
-      });
+      return await buildSurfaceModifier(id, opts, preserveColor, { signal: abort.signal });
     } finally {
-      endProgress(progressId);
-      if (surfaceCarveAbort === abort) surfaceCarveAbort = null;
+      // Only the current carve owns the indicator — a superseded one must not
+      // hide the timer the newer carve just started.
+      if (surfaceCarveAbort === abort) {
+        stopRunTimer();
+        setStatus(statusBar, 'ready', 'Ready');
+        surfaceCarveAbort = null;
+        surfaceCarveCancel = null;
+      }
     }
   }
 
@@ -7992,6 +7996,8 @@ async function main() {
       posU?: number;
       posV?: number;
       rotationDeg?: number;
+      curveAxis?: 'none' | 'u' | 'v';
+      curveAngleDeg?: number;
       through?: boolean;
       depth?: number;
       size?: number;
@@ -8018,6 +8024,9 @@ async function main() {
         }
         // Assemble the projection: a structured `projection` wins; otherwise
         // build one from the flat mode/axis/side fields (the AI/console form).
+        const curve = opts?.curveAxis && opts.curveAxis !== 'none'
+          ? { axis: opts.curveAxis, angleDeg: opts.curveAngleDeg ?? 90 }
+          : undefined;
         let projection: EngraveProjection;
         if (opts?.projection) {
           projection = opts.projection;
@@ -8028,7 +8037,7 @@ async function main() {
             mode: 'planar',
             axis: (opts?.axis as 'x' | 'y' | 'z') ?? 'z',
             side: opts?.side === 'min' ? 'min' : 'max',
-            posU: opts?.posU, posV: opts?.posV, rotationDeg: opts?.rotationDeg,
+            posU: opts?.posU, posV: opts?.posV, rotationDeg: opts?.rotationDeg, curve,
           };
         }
         return await commitSurfaceModifier(
@@ -13974,7 +13983,12 @@ async function main() {
   // Start the elapsed-time display for a render. The cancel button and timer
   // are delayed 400 ms so fast runs (manifold-js is typically < 100 ms) never
   // flash them. stopRunTimer() always cancels the pending show before it fires.
-  cancelInlineBtn.addEventListener('click', () => { cancelCurrentExecution(); });
+  cancelInlineBtn.addEventListener('click', () => {
+    // A running surface carve owns the Cancel button (it aborts the SDF sweep);
+    // otherwise this cancels the current worker execution.
+    if (surfaceCarveCancel) { surfaceCarveCancel(); return; }
+    cancelCurrentExecution();
+  });
 
   function startRunTimer(t0: number): void {
     _runTimerStart = t0;

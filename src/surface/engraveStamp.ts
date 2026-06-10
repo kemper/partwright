@@ -159,6 +159,18 @@ export function maskFromRGBA(
   return { width, height, data };
 }
 
+/** Curvature applied to a planar/free stamp so it wraps around a surface (a
+ *  cylinder, a tower) instead of staying flat. The rotation axis is one of the
+ *  stamp's own in-plane axes, so it's expressed relative to the *text plane*:
+ *  - `axis: 'v'` rotates about the stamp's vertical axis → the text curves
+ *    left↔right (wraps around a vertical cylinder — a mug, a lighthouse).
+ *  - `axis: 'u'` rotates about the stamp's horizontal axis → the text curves
+ *    up↔down (wraps over the top of a dome / around a horizontal pipe).
+ *  `angleDeg` is the total arc the stamp subtends; 0 (or absent) = flat. The
+ *  wrap radius is derived from the stamp size and this angle, so the whole
+ *  word/image spans `angleDeg` of arc centered on the placement point. */
+export type EngraveCurve = { axis: 'u' | 'v'; angleDeg: number };
+
 /** Where the stamp lives on the model.
  *  - `planar`: projects onto one of the six axis-aligned faces. `posU`/`posV`
  *    are the stamp *center* as a fraction [0,1] of the bbox along the face's two
@@ -167,11 +179,13 @@ export function maskFromRGBA(
  *  - `free`: lies flat on an arbitrary surface point — `origin` + outward
  *    `normal` define the plane, so the stamp follows a sloped or curved face
  *    (a pyramid side, a sphere). Used when you click a non-axis-aligned face.
- *  - `cylindrical`: wraps the stamp around the Z axis.
- *  `rotationDeg` rotates the stamp in its plane (planar/free) or around Z. */
+ *  - `cylindrical`: wraps the stamp around the Z axis (legacy console form;
+ *    the UI now uses place-on-face + `curve` instead).
+ *  `rotationDeg` rotates the stamp in its plane (planar/free) or around Z.
+ *  `curve` (planar/free) optionally bends the flat stamp around a surface. */
 export type EngraveProjection =
-  | { mode: 'planar'; axis: 'x' | 'y' | 'z'; side: 'min' | 'max'; posU?: number; posV?: number; rotationDeg?: number }
-  | { mode: 'free'; origin: [number, number, number]; normal: [number, number, number]; rotationDeg?: number }
+  | { mode: 'planar'; axis: 'x' | 'y' | 'z'; side: 'min' | 'max'; posU?: number; posV?: number; rotationDeg?: number; curve?: EngraveCurve }
+  | { mode: 'free'; origin: [number, number, number]; normal: [number, number, number]; rotationDeg?: number; curve?: EngraveCurve }
   | { mode: 'cylindrical'; side: 'outer' | 'inner'; rotationDeg?: number };
 
 export interface EngraveFieldOptions {
@@ -233,56 +247,12 @@ export function engraveCombine(bbox: Bbox, opts: EngraveFieldOptions): SdfCombin
   const stampW = Math.max(1e-6, size);
   const stampH = stampW / Math.max(1e-6, aspect);
 
-  // project(p) → coverage m in [0,1] (0 = outside the stamp rectangle).
-  let project: (x: number, y: number, z: number) => number;
-  // depthInto(p) → distance from the chosen face into the model (≥0 inside),
-  // used only for the engrave (non-through) depth band.
-  let depthInto: (x: number, y: number, z: number) => number;
+  // evalStamp(p) → { m, depthInto }: the ink coverage m∈[0,1] at the world point
+  // (0 = outside the stamp rectangle) and its distance from the nominal surface
+  // into the solid (≥0 inside), used for the engrave (non-through) depth band.
+  let evalStamp: (x: number, y: number, z: number) => { m: number; depthInto: number };
 
-  if (projection.mode === 'planar') {
-    const [ui, vi] = PLANE_AXES[projection.axis];
-    const axisIdx = projection.axis === 'x' ? 0 : projection.axis === 'y' ? 1 : 2;
-    // Stamp center: a fraction of the bbox span along each in-plane axis
-    // (default 0.5 = centered). Clamp so a stray value can't push it off-model.
-    const clamp01 = (n: number) => (Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.5);
-    const posU = clamp01(projection.posU ?? 0.5);
-    const posV = clamp01(projection.posV ?? 0.5);
-    const centerU = bbox.min[ui] + posU * bbox.size[ui];
-    const centerV = bbox.min[vi] + posV * bbox.size[vi];
-    const rot = ((projection.rotationDeg ?? 0) * Math.PI) / 180;
-    const cosR = Math.cos(rot), sinR = Math.sin(rot);
-    const facePos = projection.side === 'max' ? bbox.max[axisIdx] : bbox.min[axisIdx];
-    const sign = projection.side === 'max' ? 1 : -1;
-    project = (x, y, z) => {
-      const p = [x, y, z];
-      // In-plane offset from the stamp center, then rotate into stamp space.
-      const du = p[ui] - centerU, dv = p[vi] - centerV;
-      const ru = cosR * du + sinR * dv;
-      const rv = -sinR * du + cosR * dv;
-      const u = ru / stampW + 0.5;
-      const v = 0.5 - rv / stampH;
-      return sampleMask(mask, u, v);
-    };
-    depthInto = (x, y, z) => {
-      const p = [x, y, z];
-      return sign * (facePos - p[axisIdx]);
-    };
-  } else if (projection.mode === 'free') {
-    // Free plane: the stamp lies flat on an arbitrary surface point. Project
-    // world points into the tangent frame at `origin`; depth runs along −normal.
-    const o = projection.origin;
-    const { u, v, n } = tangentFrame(projection.normal, projection.rotationDeg ?? 0);
-    project = (x, y, z) => {
-      const dx = x - o[0], dy = y - o[1], dz = z - o[2];
-      const du = dx * u[0] + dy * u[1] + dz * u[2];
-      const dv = dx * v[0] + dy * v[1] + dz * v[2];
-      return sampleMask(mask, du / stampW + 0.5, 0.5 - dv / stampH);
-    };
-    depthInto = (x, y, z) => {
-      const dx = x - o[0], dy = y - o[1], dz = z - o[2];
-      return -(dx * n[0] + dy * n[1] + dz * n[2]); // ≥0 below the surface (into the solid)
-    };
-  } else {
+  if (projection.mode === 'cylindrical') {
     // Cylindrical: wrap around Z. u = angle fraction, v = height fraction.
     // A representative radius to convert arc length ↔ world units.
     const rRef = Math.max(1e-6, Math.max(
@@ -293,33 +263,99 @@ export function engraveCombine(bbox: Bbox, opts: EngraveFieldOptions): SdfCombin
     // rotationDeg shifts which way the stamp faces around Z (0 = +X).
     const offset = ((projection.rotationDeg ?? 0) * Math.PI) / 180;
     const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a)); // → [-π, π]
-    project = (x, y, z) => {
+    evalStamp = (x, y, z) => {
       const theta = wrap(Math.atan2(y - cy, x - cx) - offset); // [-π, π], re-centered
       const arc = theta * rRef;                    // signed arc length at rRef
-      const u = arc / stampW + 0.5;
-      const v = 0.5 - (z - cz) / stampH;
       // Points on the far side wrap to u outside [0,1] → sampleMask returns 0,
       // so the stamp doesn't mirror onto the back of the cylinder.
-      return sampleMask(mask, u, v);
-    };
-    depthInto = (x, y) => {
+      const m = sampleMask(mask, arc / stampW + 0.5, 0.5 - (z - cz) / stampH);
       const r = Math.hypot(x - cx, y - cy);
-      return sign === 1 ? rRef - r : r - rRef;
+      return { m, depthInto: sign === 1 ? rRef - r : r - rRef };
     };
+  } else {
+    // Planar / free both reduce to a local stamp frame: `local(p)` returns
+    // (du, dv) — the in-plane offset from the stamp center, in stamp axes — and
+    // `nOut`, the signed distance *outward* from the nominal surface (>0 above
+    // it, <0 inside). A flat stamp samples (du, dv) directly; a curved stamp
+    // bends one of those axes around a cylinder whose surface passes through the
+    // placement point (so curve→0 reduces exactly to the flat case).
+    let local: (x: number, y: number, z: number) => [number, number, number];
+    if (projection.mode === 'planar') {
+      const [ui, vi] = PLANE_AXES[projection.axis];
+      const axisIdx = projection.axis === 'x' ? 0 : projection.axis === 'y' ? 1 : 2;
+      // Stamp center: a fraction of the bbox span along each in-plane axis
+      // (default 0.5 = centered). Clamp so a stray value can't push it off-model.
+      const clamp01 = (n: number) => (Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.5);
+      const centerU = bbox.min[ui] + clamp01(projection.posU ?? 0.5) * bbox.size[ui];
+      const centerV = bbox.min[vi] + clamp01(projection.posV ?? 0.5) * bbox.size[vi];
+      const rot = ((projection.rotationDeg ?? 0) * Math.PI) / 180;
+      const cosR = Math.cos(rot), sinR = Math.sin(rot);
+      const facePos = projection.side === 'max' ? bbox.max[axisIdx] : bbox.min[axisIdx];
+      const sign = projection.side === 'max' ? 1 : -1;
+      local = (x, y, z) => {
+        const p = [x, y, z];
+        const du = p[ui] - centerU, dv = p[vi] - centerV;
+        // Rotate the offset into stamp space; nOut is positive above the face.
+        return [cosR * du + sinR * dv, -sinR * du + cosR * dv, sign * (p[axisIdx] - facePos)];
+      };
+    } else {
+      // Free plane: the stamp lies flat on an arbitrary surface point. Project
+      // world points into the tangent frame at `origin`; nOut runs along +normal.
+      const o = projection.origin;
+      const { u, v, n } = tangentFrame(projection.normal, projection.rotationDeg ?? 0);
+      local = (x, y, z) => {
+        const dx = x - o[0], dy = y - o[1], dz = z - o[2];
+        return [
+          dx * u[0] + dy * u[1] + dz * u[2],
+          dx * v[0] + dy * v[1] + dz * v[2],
+          dx * n[0] + dy * n[1] + dz * n[2],
+        ];
+      };
+    }
+
+    const curve = projection.curve;
+    if (curve && Math.abs(curve.angleDeg) > 1e-3) {
+      const ang = (Math.abs(curve.angleDeg) * Math.PI) / 180;
+      if (curve.axis === 'v') {
+        // Bend about the stamp's vertical axis: the horizontal extent (du) wraps
+        // around a cylinder of radius R, so the full width subtends `angleDeg`.
+        const R = stampW / ang;
+        evalStamp = (x, y, z) => {
+          const [du, dv, nOut] = local(x, y, z);
+          const rr = nOut + R;
+          const arc = R * Math.atan2(du, rr);   // signed arc length along the bend
+          return { m: sampleMask(mask, arc / stampW + 0.5, 0.5 - dv / stampH), depthInto: R - Math.hypot(du, rr) };
+        };
+      } else {
+        // Bend about the horizontal axis: the vertical extent (dv) wraps instead.
+        const R = stampH / ang;
+        evalStamp = (x, y, z) => {
+          const [du, dv, nOut] = local(x, y, z);
+          const rr = nOut + R;
+          const arc = R * Math.atan2(dv, rr);
+          return { m: sampleMask(mask, du / stampW + 0.5, 0.5 - arc / stampH), depthInto: R - Math.hypot(dv, rr) };
+        };
+      }
+    } else {
+      evalStamp = (x, y, z) => {
+        const [du, dv, nOut] = local(x, y, z);
+        return { m: sampleMask(mask, du / stampW + 0.5, 0.5 - dv / stampH), depthInto: -nOut };
+      };
+    }
   }
 
   return (s: SdfSample): number => {
     const { d, x, y, z, voxelSize } = s;
     // Far outside the solid — nothing to carve; cheapest branch first.
     if (d > voxelSize) return d;
-    const m = project(x, y, z);
+    const { m, depthInto } = evalStamp(x, y, z);
     const scale = Math.max(voxelSize, (through ? bbox.size[0] : depth) * 0.25);
     const stampSdf = (0.5 - m) * scale; // < 0 where ink
     if (through) {
       return Math.max(d, -stampSdf);
     }
     // Engrave: intersect ink with the face-relative depth band, then subtract.
-    const band = depthInto(x, y, z) - depth; // < 0 within `depth` of the face
+    const band = depthInto - depth; // < 0 within `depth` of the face
     const removal = Math.max(stampSdf, band); // intersection (both < 0 to remove)
     return Math.max(d, -removal);
   };

@@ -94,16 +94,20 @@ function slider(label: string, min: number, max: number, value: number, step: nu
 
 /** A range slider paired with a numeric text box. The text box accepts values
  *  beyond the slider's max — up to `hardMax` — so power users can type a higher
- *  resolution than the slider exposes (the thumb just pins at `sliderMax`).
- *  `get()` returns the text box value, rounded and clamped to [min, hardMax]. */
+ *  value than the slider exposes (the thumb just pins at `sliderMax`).
+ *  `get()` returns the text box value, clamped to [min, hardMax]. By default the
+ *  value is rounded to a whole number (resolution); pass `round` to keep a
+ *  fractional value (text size / engrave depth) — e.g. snap to the step. */
 function sliderWithEntry(
   label: string, min: number, sliderMax: number, value: number, step: number,
   hardMax: number, onChange: () => void,
+  opts: { round?: (n: number) => number } = {},
 ) {
+  const round = opts.round ?? Math.round;
   const wrap = el('label', 'block mb-3 text-xs text-zinc-300');
   const head = el('div', 'flex justify-between mb-1 items-center gap-2');
   head.append(el('span', '', label));
-  const num = el('input', 'w-16 bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5 text-right tabular-nums text-zinc-200');
+  const num = el('input', 'w-20 bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5 text-right tabular-nums text-zinc-200');
   num.type = 'number';
   num.min = String(min); num.max = String(hardMax); num.step = String(step);
   num.value = String(value);
@@ -112,15 +116,15 @@ function sliderWithEntry(
   range.type = 'range';
   range.min = String(min); range.max = String(sliderMax); range.step = String(step);
   range.value = String(Math.min(value, sliderMax));
-  const clamp = (n: number) => Math.max(min, Math.min(hardMax, Math.round(n)));
-  range.addEventListener('input', () => { num.value = String(range.valueAsNumber); onChange(); });
+  const clamp = (n: number) => Math.max(min, Math.min(hardMax, round(n)));
+  range.addEventListener('input', () => { num.value = String(round(range.valueAsNumber)); onChange(); });
   num.addEventListener('input', () => {
     const raw = num.valueAsNumber;
     if (Number.isNaN(raw)) return;            // mid-edit empty box — don't snap yet
     range.value = String(Math.max(min, Math.min(sliderMax, raw)));
     onChange();
   });
-  // On commit (blur / Enter) normalize the box to the clamped integer.
+  // On commit (blur / Enter) normalize the box to the clamped value.
   num.addEventListener('change', () => { num.value = String(clamp(num.valueAsNumber || min)); onChange(); });
   wrap.append(head, range);
   return { wrap, get: () => clamp(num.valueAsNumber || min) };
@@ -287,6 +291,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     axis: 'z' as 'x' | 'y' | 'z', side: 'max' as 'min' | 'max', posU: 0.5, posV: 0.5,
     origin: [0, 0, 0] as Vec3, normal: [0, 0, 1] as Vec3,
     rot: 0, placed: false,
+    // Optional curvature: bend the flat stamp around its own vertical ('v') or
+    // horizontal ('u') axis so it wraps a cylinder/dome; 'none' = flat.
+    curveAxis: 'none' as 'none' | 'u' | 'v', curveAngle: 90,
   };
   /** Snapshot the mutable state as a typed, discriminated placement. */
   const currentPlacement = (): EngravePlacement => engravePlace.mode === 'free'
@@ -695,27 +702,35 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         output: out.get(),
       });
     } else if (active === 'engrave') {
-      // Text input (debounced rebuild of the mask) + optional image upload.
+      // Text input + a small "Apply" button (and Enter) to rasterize the stamp —
+      // typing no longer auto-renders on every keystroke (it was distracting).
       const textWrap = el('label', 'block mb-3 text-xs text-zinc-300');
       textWrap.append(el('div', 'mb-1', 'Text'));
-      const textInput = el('input', 'w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm text-zinc-100');
+      const textRow = el('div', 'flex gap-1');
+      const textInput = el('input', 'flex-1 min-w-0 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm text-zinc-100');
       textInput.type = 'text';
       textInput.placeholder = 'HELLO';
       textInput.value = engraveSource && engraveSource !== 'image' ? engraveSource : '';
-      textWrap.append(textInput);
+      const textApply = el('button', 'shrink-0 px-2.5 py-1 rounded text-xs bg-blue-600 hover:bg-blue-500 text-white', 'Apply');
+      textApply.type = 'button';
+      textApply.id = 'engrave-apply-text';
+      // Distinct accessible name so it doesn't collide with the footer "Apply".
+      textApply.setAttribute('aria-label', 'Apply text');
+      textApply.title = 'Apply the text (rasterize + preview)';
+      textRow.append(textInput, textApply);
+      textWrap.append(textRow);
 
       const font = dropdown<'bold' | 'regular' | 'italic' | 'bold-italic'>('Font', [
         ['bold', 'Bold'], ['regular', 'Regular'], ['italic', 'Italic'], ['bold-italic', 'Bold italic'],
       ], 'bold', () => { if (textInput.value.trim()) rebuildEngraveMask({ text: textInput.value, font: font.get() }); });
 
-      let textTimer: number | undefined;
-      textInput.addEventListener('input', () => {
-        if (textTimer !== undefined) clearTimeout(textTimer);
-        textTimer = window.setTimeout(() => {
-          if (textInput.value.trim()) rebuildEngraveMask({ text: textInput.value, font: font.get() });
-          else { engraveMask = null; clearPreviewIfDirty(); status.textContent = 'Type text (or upload an image) to engrave.'; }
-        }, 250);
-      });
+      // Apply the typed text on demand (button or Enter) — never on each keystroke.
+      const applyText = () => {
+        if (textInput.value.trim()) rebuildEngraveMask({ text: textInput.value, font: font.get() });
+        else { engraveMask = null; clearPreviewIfDirty(); status.textContent = 'Type text (or upload an image), then press Apply.'; }
+      };
+      textApply.addEventListener('click', applyText);
+      textInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); applyText(); } });
 
       // Image upload (UI-only path — needs local bytes; not available to the AI tool).
       const imgWrap = el('label', 'block mb-3 text-xs text-zinc-300');
@@ -734,15 +749,10 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       });
       imgWrap.append(imgInput);
 
-      // Projection: planar (onto a face, with click-to-place) or wrap around Z.
-      const mode = dropdown<'planar' | 'cylindrical'>('Projection', [
-        ['planar', 'Planar (onto a face)'],
-        ['cylindrical', 'Cylindrical (wrap around Z)'],
-      ], 'planar', () => { syncProjUI(); refreshEngraveOutline(); schedulePreview(); });
-
-      // Planar placement: drag the footprint outline over the model (or click to
-      // drop), then fine-tune with the position sliders (quarter-point snaps) and
-      // an in-plane rotation.
+      // Placement is always "click on the model": move the cursor over the model
+      // (a live outline follows), click to drop the stamp on that face. On a flat
+      // axis-aligned face the position sliders (quarter-point snaps) fine-tune it;
+      // on a sloped/curved face the stamp lies flat where you clicked.
       const placeWrap = el('div', 'mb-3 p-2 rounded bg-zinc-800/40 border border-zinc-700/60');
       const placeBtn = el('button', 'w-full px-2 py-1.5 rounded text-xs bg-blue-600/80 hover:bg-blue-500 text-white mb-1', '📌 Click to place on model');
       placeBtn.type = 'button';
@@ -758,37 +768,44 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       engravePosX = posX; engravePosY = posY; engraveFaceReadout = faceReadout; engravePlaceBtn = placeBtn;
       engravePosWraps = [posX.wrap, posY.wrap]; engravePlaceNote = placeNote;
 
-      const cylSide = dropdown<'outer' | 'inner'>('Surface', [['outer', 'Outer'], ['inner', 'Inner']], 'outer', schedulePreview);
-      // Rotation applies to both modes (in-plane for planar, angular facing for cylindrical).
+      // In-plane rotation of the stamp on its face.
       const angle = slider('Rotation (°)', -180, 180, engravePlace.rot, 5, n => `${n}°`, () => { engravePlace.rot = angle.get(); refreshEngraveOutline(); schedulePreview(); });
-      const syncProjUI = () => {
-        const cyl = mode.get() === 'cylindrical';
-        placeWrap.style.display = cyl ? 'none' : '';
-        cylSide.wrap.style.display = cyl ? '' : 'none';
-      };
+
+      // Curvature: wrap the placed stamp around a cylinder/dome. Axis is relative
+      // to the text plane (vertical → curves left↔right, like a mug/tower).
+      const curveAxis = dropdown<'none' | 'v' | 'u'>('Curve (wrap around a surface)', [
+        ['none', 'No curve (flat)'],
+        ['v', 'Wrap around vertical axis (left↔right)'],
+        ['u', 'Wrap around horizontal axis (up↔down)'],
+      ], engravePlace.curveAxis, () => { engravePlace.curveAxis = curveAxis.get(); syncCurveUI(); schedulePreview(); });
+      const curveAngle = slider('Wrap angle', 10, 300, engravePlace.curveAngle, 5, n => `${n}°`, () => { engravePlace.curveAngle = curveAngle.get(); schedulePreview(); });
+      const syncCurveUI = () => { curveAngle.wrap.style.display = curveAxis.get() === 'none' ? 'none' : ''; };
 
       const through = checkbox('Cut clean through (stencil)', false, () => { depthWrap.style.display = through.get() ? 'none' : ''; schedulePreview(); });
-      const sizeS = slider('Text size (width)', span * 0.1, span * 1.0, span * 0.7, span * 0.01, n => n.toFixed(2), () => { refreshEngraveOutline(); schedulePreview(); });
-      const depth = slider('Engrave depth', span * 0.005, span * 0.3, span * 0.06, span * 0.005, n => n.toFixed(3), schedulePreview);
+      const sizeS = sliderWithEntry('Text size (width)', span * 0.1, span * 1.5, span * 0.7, span * 0.01, span * 8,
+        () => { refreshEngraveOutline(); schedulePreview(); }, { round: n => Math.round(n * 1000) / 1000 });
+      const depth = sliderWithEntry('Engrave depth', span * 0.005, span * 0.3, span * 0.06, span * 0.005, span * 4,
+        schedulePreview, { round: n => Math.round(n * 1000) / 1000 });
       const depthWrap = depth.wrap;
       const res = sliderWithEntry('Resolution', 48, 220, 180, 1, 256, schedulePreview);
       const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
 
-      // Wire the live outline overlay to the current size + mode.
+      // Wire the live outline overlay to the current size.
       engraveSizeGet = () => sizeS.get();
-      engraveIsPlanar = () => mode.get() === 'planar';
+      engraveIsPlanar = () => true; // placement is always face-based now → outline always applies
 
-      body.append(textWrap, font.wrap, imgWrap, invert.wrap, mode.wrap, placeWrap, cylSide.wrap, angle.wrap, through.wrap, sizeS.wrap, depthWrap, res.wrap, wtight.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'Carves text or an image into the model — recessed channels, or holes cut clean through (stencil). Press "place on model" then move over the model — a blue outline follows the cursor; click to drop it there. Fine-tune with the position sliders (quarter-point snaps) and rotation. Cylindrical wraps around Z (rings, cups). Raise resolution if thin strokes look mushy.'));
-      syncProjUI();
+      body.append(textWrap, font.wrap, imgWrap, invert.wrap, placeWrap, angle.wrap, curveAxis.wrap, curveAngle.wrap, through.wrap, sizeS.wrap, depthWrap, res.wrap, wtight.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Carves text or an image into the model — recessed channels, or holes cut clean through (stencil). Type text and press Apply, then "place on model": move over the model (a blue outline follows the cursor) and click to drop it on that face. Fine-tune with the position sliders / rotation, and use Curve to wrap the text around a cylinder or dome. Raise resolution if thin strokes look mushy.'));
+      syncCurveUI();
       updateEngravePlacementUI();
       refreshEngraveOutline();
 
-      const projOf = (): EngraveProjection => {
-        if (mode.get() === 'cylindrical') return { mode: 'cylindrical', side: cylSide.get(), rotationDeg: angle.get() };
-        if (engravePlace.mode === 'free') return { mode: 'free', origin: engravePlace.origin, normal: engravePlace.normal, rotationDeg: angle.get() };
-        return { mode: 'planar', axis: engravePlace.axis, side: engravePlace.side, posU: posX.get(), posV: posY.get(), rotationDeg: angle.get() };
-      };
+      const curveOf = () => engravePlace.curveAxis === 'none'
+        ? undefined
+        : { axis: engravePlace.curveAxis as 'u' | 'v', angleDeg: curveAngle.get() };
+      const projOf = (): EngraveProjection => engravePlace.mode === 'free'
+        ? { mode: 'free', origin: engravePlace.origin, normal: engravePlace.normal, rotationDeg: angle.get(), curve: curveOf() }
+        : { mode: 'planar', axis: engravePlace.axis, side: engravePlace.side, posU: posX.get(), posV: posY.get(), rotationDeg: angle.get(), curve: curveOf() };
       currentOpts = () => ({
         mask: engraveMask,
         source: engraveSource,
@@ -845,7 +862,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     // Engrave needs a rasterized stamp before any preview makes sense.
     if (active === 'engrave' && !engraveMask) {
       clearPreviewIfDirty();
-      status.textContent = engraveBuilding ? 'Rasterizing stamp…' : 'Type text (or upload an image) to engrave.';
+      status.textContent = engraveBuilding ? 'Rasterizing stamp…' : 'Type text and press Apply (or upload an image) to engrave.';
       return;
     }
     status.textContent = 'Updating preview…';

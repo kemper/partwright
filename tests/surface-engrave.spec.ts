@@ -118,9 +118,11 @@ test.describe('Engrave / cut-through surface modifier', () => {
     await expect(page.getByRole('button', { name: '📌 Click to place on model' })).toBeVisible();
     await page.getByRole('button', { name: '75%', exact: true }).first().click();
 
-    // Type text → the mask rasterizes (async) → the preview kicks in. Wait for
-    // that before Apply, since Apply no-ops until a stamp exists.
+    // Type text, then press the small "Apply text" button (typing no longer
+    // auto-renders). The mask rasterizes (async) → the preview kicks in. Wait for
+    // that before footer Apply, since Apply no-ops until a stamp exists.
     await page.getByPlaceholder('HELLO').fill('HI');
+    await page.locator('#engrave-apply-text').click();
     await expect(page.getByText('Previewing — Apply to save a version.')).toBeVisible({ timeout: 15_000 });
     await page.getByRole('button', { name: 'Apply', exact: true }).click();
 
@@ -167,5 +169,23 @@ test.describe('Engrave / cut-through surface modifier', () => {
     expect(result.ok).toBe(true);
     expect(result.label).toBe('engrave');
     expect(result.src).toContain('Manifold.ofMesh(api.imports[0])');
+  });
+
+  test('engraveModel wraps the stamp around an axis via curveAxis', async ({ page }) => {
+    const result = await page.evaluate(async ([code]) => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('engrave-curve');
+      await pw.run(code);
+      // Curve the text around the vertical axis (wrap left↔right) on the top face.
+      const r = await pw.engraveModel({ text: 'HI', through: false, depth: 2, size: 40,
+        curveAxis: 'v', curveAngleDeg: 120, resolution: 120 });
+      return { ok: r.ok, error: r.error, label: r.label, after: pw.getGeometryData() };
+    }, [SLAB]);
+    expect(result.error).toBeUndefined();
+    expect(result.ok).toBe(true);
+    expect(result.label).toBe('engrave');
+    // A recess removes material but keeps one watertight solid.
+    expect(result.after.isManifold).toBe(true);
+    expect(result.after.componentCount).toBe(1);
   });
 });
