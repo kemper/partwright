@@ -30,7 +30,7 @@ const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
   eyes: false,
   nose: { tipRadius: rig.r.head * 0.08 },
-  mouth: { style: 'smile', smirk: 0.25, width: rig.r.head * 0.42 },
+  mouth: { style: 'smile', smirk: 0.1, width: rig.r.head * 0.3 },
   ears: { size: rig.r.head * 0.25 },
   brows: {},
 });

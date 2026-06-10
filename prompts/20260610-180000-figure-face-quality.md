@@ -151,3 +151,28 @@ Key decisions:
   top level. Made that the canonical documented pattern (figure.md "one
   pattern" + all examples) instead of the old "duplicate the eyes over the
   welded ones" workaround.
+
+## Human (round 4)
+
+Eyes still stick out — "just paint irises and pupils or have them protrude
+by only a tiny fraction". Clothes better but with defects (warrior
+screenshot). Wizard has "two little nub teeth in the corners of his mouth".
+
+## Assistant (round 4)
+
+- **Eyes as flat lenses.** The iris/pupil are now thin ellipsoid CAPS
+  (~0.06R/0.05R proud) instead of stacked spheres — they read as painted-on
+  circles. Key realisation: thin reliefs survive the union because booleans
+  are exact on the meshed surfaces; only each region's own march must
+  resolve its solid, and a lens is a chunky ellipsoid. A sphere-cap design
+  fails geometrically (a small sphere on a big one only pokes near its
+  axis). Tried sinking the eyeball further (0.28R→0.2R) but the white
+  vanished on small-eyed rigs — restored 0.28R; the bug-eye look was the
+  bead stack, not the eyeball.
+- **Clothing defects**: sleeves now FOLLOW the arm chain (a straight
+  shoulder→forearm capsule cut the corner at a bent elbow and skin poked
+  through); shoulder yokes bridge the chest shell and sleeve tops (armpit
+  wedge); default top/pants thickness raised — weld bulges (belly, knee)
+  exceeded the thin shells on slim builds and showed as bare patches.
+- **Wizard nubs**: the carved smile's upturned corners flanked the beard's
+  top blob and read as teeth — narrowed the smile to sit clear of the beard.

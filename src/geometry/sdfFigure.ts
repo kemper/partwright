@@ -526,15 +526,25 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     return sdf.sphere(r).translate(add3(cL, off)).union(sdf.sphere(r).translate(add3(cR, off)));
   };
   if (style === 'solid') return pair(rad, 0);
-  // 'iris' (default): white eyeball + coloured iris disc + black pupil dot,
+  // 'iris' (default): white eyeball + coloured iris LENS + black pupil LENS,
   // each its own pre-labelled hard-union region so paintByLabels can colour
   // them independently. Don't wrap the result in another .label() — the
-  // outer label would win and flatten the eye back to one colour. The stack
-  // is intentionally shallow: the iris barely caps the eyeball and the pupil
-  // pokes just past the iris — fine-region meshing resolves the thin rings.
+  // outer label would win and flatten the eye back to one colour.
+  //
+  // The lenses are flat ellipsoid caps proud of the eyeball by only a few
+  // hundredths of the eye radius — they read as painted-on circles rather
+  // than stacked beads. (Thin reliefs survive the union because booleans are
+  // exact on the meshed surfaces; only each region's own march needs to
+  // resolve its solid, and a lens is a chunky ellipsoid.)
+  const lensPair = (rxz: number, ry: number, frontAt: number): Node => {
+    const d = scale3(f, frontAt - ry); // lens centre so its front face sits at `frontAt`
+    const one = (c: Vec3): Node =>
+      orientToHeadPose(sdf.ellipsoid(rxz, ry, rxz), rig).translate(add3(c, d));
+    return one(cL).union(one(cR));
+  };
   const sclera = pair(rad, 0).label('eyes');
-  const iris = pair(rad * 0.52, rad * 0.66).label('iris');
-  const pupil = pair(rad * 0.3, rad * 0.97).label('pupil');
+  const iris = lensPair(rad * 0.52, rad * 0.2, rad * 1.08).label('iris');
+  const pupil = lensPair(rad * 0.3, rad * 0.14, rad * 1.15).label('pupil');
   return sclera.union(iris).union(pupil);
 }
 
@@ -843,7 +853,9 @@ function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const leg = o.leg === undefined ? 'slim' : assertEnum(o.leg, ['slim', 'cargo'] as const, 'pants.leg');
   const rise = o.rise === undefined ? 'mid' : assertEnum(o.rise, ['low', 'mid', 'high'] as const, 'pants.rise');
   const j = rig.joints, r = rig.r;
-  const t = num(o.thickness, r.thigh * 0.22, 'pants.thickness', 0.01);
+  // Generous default: the knee weld bulge exceeds a thin shell and pokes
+  // through as a bare-skin patch on bent legs.
+  const t = num(o.thickness, r.thigh * 0.3, 'pants.thickness', 0.01);
   const cuffZ = num(o.cuffZ, (j.ankleL as Vec3)[2] + r.shank * 1.5, 'pants.cuffZ');
   const flare = leg === 'cargo' ? 1.35 : 1.08;
   const waistZ = rise === 'high' ? j.navel[2] : rise === 'low' ? j.pelvis[2] : mix(j.pelvis[2], j.navel[2], 0.5);
@@ -880,7 +892,9 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   assertNoUnknownKeys(o, ['sleeve', 'hemZ', 'thickness'], 'top(opts)');
   const sleeve = o.sleeve === undefined ? 'short' : assertEnum(o.sleeve, ['none', 'short', 'long'] as const, 'top.sleeve');
   const j = rig.joints, r = rig.r;
-  const t = num(o.thickness, r.chestY * 0.2, 'top(thickness)', 0.01);
+  // Generous default: body weld bulges (belly/pelvis joins) exceed a thin
+  // shell on slim builds and poke through as bare-skin patches.
+  const t = num(o.thickness, r.chestY * 0.3, 'top(thickness)', 0.01);
   // Default hem reaches BELOW the navel so it overlaps a mid-rise waistband —
   // the old navel-height hem left a bare midriff strip above the pants.
   const hemZ = num(o.hemZ, mix(j.pelvis[2], j.navel[2], 0.3), 'top.hemZ');
@@ -891,14 +905,26 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     .translate([0, j.chest[1], mix(hemZ, j.chest[2] + r.chestY, 0.5)]);
   let top = chest;
   if (sleeve !== 'none') {
-    const reach = sleeve === 'long' ? 1.0 : 0.4;
+    // Sleeves FOLLOW the arm chain: a straight shoulder→forearm capsule cuts
+    // the corner on a bent elbow and the elbow pokes through the sleeve.
     function sl(S: Vec3, E: Vec3, W: Vec3): Node {
-      const end = lerp3(E, W, reach);
-      return sdf.capsule(S, end, (r.upperArm + t) * 1.05);
+      const rad = (r.upperArm + t) * 1.05;
+      if (sleeve === 'short') {
+        return sdf.capsule(S, lerp3(S, E, 0.85), rad);
+      }
+      // long: upper-arm segment + forearm segment, welded at the elbow.
+      return sdf.capsule(S, E, rad)
+        .smoothUnion(sdf.capsule(E, lerp3(E, W, 0.9), rad * 0.95), r.foreArm * 0.8);
     }
+    // Shoulder yokes: spheres over the shoulder joints bridging the chest
+    // shell and the sleeve tops. Without them a wedge of skin shows at the
+    // armpit/collar where the shell's side ends inboard of the shoulder.
+    const yoke = (S: Vec3): Node => sdf.sphere((r.upperArm + t) * 1.2).translate(S);
     top = top
       .smoothUnion(sl(j.shoulderL as Vec3, j.elbowL as Vec3, j.wristL as Vec3), r.upperArm * 0.7)
-      .smoothUnion(sl(j.shoulderR as Vec3, j.elbowR as Vec3, j.wristR as Vec3), r.upperArm * 0.7);
+      .smoothUnion(sl(j.shoulderR as Vec3, j.elbowR as Vec3, j.wristR as Vec3), r.upperArm * 0.7)
+      .smoothUnion(yoke(j.shoulderL as Vec3), r.upperArm * 0.8)
+      .smoothUnion(yoke(j.shoulderR as Vec3), r.upperArm * 0.8);
   }
   return top;
 }
