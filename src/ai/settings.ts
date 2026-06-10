@@ -13,15 +13,17 @@ const STORAGE_KEY = 'partwright-ai-settings-v1';
 export interface AiSettings {
   preset: Preset;
   toggles: ChatToggles;
-  /** Whether the chat drawer is shown. Defaults to open on a first visit so
-   *  the AI surface is discoverable; persists the user's choice thereafter, so
-   *  once they close it it stays closed on reload. */
+  /** Whether the chat drawer is shown. Defaults to closed on a first visit —
+   *  the panel only opens when the user reaches for it via the AI buttons.
+   *  Persists the user's choice thereafter, so once they open it it stays open
+   *  on reload (and once they close it it stays closed). */
   drawerOpen: boolean;
   /** Whether the code editor pane is collapsed. `null` means "no explicit
    *  preference yet" — layout.ts then defaults it to match `drawerOpen` so a
-   *  first-time visitor with the AI panel up doesn't see two competing surfaces
-   *  in the editor. Once the user clicks "Hide code" / "Show code" the choice
-   *  is persisted and respected on every subsequent load. */
+   *  visitor with the AI panel up doesn't see two competing surfaces in the
+   *  editor (and a visitor with it closed gets the code pane). Once the user
+   *  clicks "Hide code" / "Show code" the choice is persisted and respected on
+   *  every subsequent load. */
   editorCollapsed: boolean | null;
   /** Default for new sessions before the user has touched the toggle bar. */
   autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
@@ -158,7 +160,7 @@ const DEFAULT_TOGGLES: ChatToggles = {
 const DEFAULT_SETTINGS: AiSettings = {
   preset: 'standard',
   toggles: DEFAULT_TOGGLES,
-  drawerOpen: true,
+  drawerOpen: false,
   editorCollapsed: null,
   autoCompactMode: 'off',
   systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null, custom: null },
