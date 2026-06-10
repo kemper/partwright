@@ -94,3 +94,32 @@ export function nearestTriangleMap(oldMesh: MeshData, newMesh: MeshData): Int32A
   }
   return result;
 }
+
+/** Carry per-triangle paint (Uint8 RGB) from a colored source mesh onto a
+ *  re-tessellated `dest` mesh whose topology is brand-new — the case for the
+ *  volumetric SDF modifiers (perforated lattice, Voronoi lamp), whose
+ *  Surface-Nets output can't inherit the source's triangle colors directly the
+ *  way a displacement modifier (fuzzy/knit) does. Each dest triangle takes the
+ *  color of the nearest source triangle by centroid; since the SDF shell hugs
+ *  the original surface, that nearest triangle is the local surface color.
+ *  Returns a new mesh with `triColors` (carrying the source's `_painted` mask so
+ *  only genuinely-painted areas become regions); returns `dest` unchanged when
+ *  the source has no colors. */
+export function carryTriColors(src: MeshData, dest: MeshData): MeshData {
+  const sc = src.triColors as (Uint8Array & { _painted?: Uint8Array }) | undefined;
+  if (!sc || src.numTri === 0 || dest.numTri === 0) return dest;
+  const map = nearestTriangleMap(src, dest);
+  const triColors = new Uint8Array(dest.numTri * 3) as Uint8Array & { _painted?: Uint8Array };
+  const srcPainted = sc._painted;
+  const destPainted = srcPainted ? new Uint8Array(dest.numTri) : undefined;
+  for (let t = 0; t < dest.numTri; t++) {
+    const s = map[t];
+    if (s < 0) continue;
+    triColors[t * 3] = sc[s * 3];
+    triColors[t * 3 + 1] = sc[s * 3 + 1];
+    triColors[t * 3 + 2] = sc[s * 3 + 2];
+    if (destPainted && srcPainted) destPainted[t] = srcPainted[s];
+  }
+  if (destPainted) triColors._painted = destPainted;
+  return { ...dest, triColors };
+}

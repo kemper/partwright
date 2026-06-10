@@ -91,3 +91,28 @@ cleanly on faces turning toward Z; use `applyVoronoiLamp` for orientation-free).
 Also aligned the `perforatedLatticeSdf` resolution JSDoc/fallback (140 → 110) to
 the effective default. Re-synced `origin/main` (clean merge with the voxel-
 rounding work).
+
+## Follow-up 2 (user feedback: colors + render timer)
+
+User reported (a) paint wasn't preserved at all through the perforated lattice and
+(b) wanted a "Rendering…" message with a timer.
+
+**Colors.** Root cause: `commitSurfaceModifier` only rehydrates paint when
+`result.mesh.triColors` is set, but the SDF path returns brand-new Surface-Nets
+topology with no colors (the displacement modifiers like fuzzy/knit keep topology
+so their colors ride through — the SDF path can't). Added `carryTriColors(src,
+dest)` to `colorTransfer.ts`: nearest-centroid transfer of the painted input's
+per-triangle colors (plus the `_painted` mask) onto the new shell. Wired it into
+`applyPerforate` AND the Voronoi-lamp mesh path (same latent bug). Verified in the
+browser: a red-top/blue-bottom sphere keeps both colors on the struts;
+`colorsCarried` ~336k, two regions survive.
+
+**Render timer.** The SDF field sweep is synchronous and blocks the main thread,
+so a live JS counter can't tick during the sweep itself — but the commit's async
+phases (re-run, thumbnail, save) do yield. Added `runWithTimer` in the apply
+handler: a paint yield so "Rendering…" shows before the block, a 100 ms
+`setInterval` that advances during the async phases, and a "<label> rendered in
+N.Ns" success toast (the modal closes on apply, so the toast is where the final
+time lands). The preview path now appends "(rendered in N.Ns)" to its status.
+Verified: modal shows a live "Rendering… 8.7s", toast shows "perforated lattice
+rendered in 21.2s". Unit test added for `carryTriColors`.

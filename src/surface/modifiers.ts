@@ -24,6 +24,7 @@ import { voronoiLattice, type VoronoiLampOptions } from './voronoiLattice';
 import { smoothSurface, type SmoothOptions } from './smoothSurface';
 import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
 import { extractPositions, bboxOf, subdivideWithMask } from './meshSubdivide';
+import { carryTriColors } from './colorTransfer';
 import { encodeGrid } from '../geometry/voxel/grid';
 import { formatSurfacingCall } from '../geometry/voxel/editCodegen';
 import { scaleMesh } from './scaleMesh';
@@ -625,7 +626,8 @@ export function applyVoronoiLamp(mesh: MeshData, opts: VoronoiLampModifierOption
   // sub-voxel, so there's no voxel "corduroy" — and resolution genuinely sharpens
   // it. See voronoiLampSdf.ts.
   if ((opts.output ?? 'mesh') === 'mesh') {
-    const baked = voronoiLampSdfMesh(mesh, opts);
+    // Brand-new Surface-Nets topology — carry painted input colors by proximity.
+    const baked = carryTriColors(mesh, voronoiLampSdfMesh(mesh, opts));
     return {
       kind: 'manifold',
       label: 'voronoi lamp',
@@ -665,7 +667,10 @@ export function applyPerforate(mesh: MeshData, opts: PerforatedLatticeOptions): 
   // triangular windows cut clean through it. Built from a CONTINUOUS signed-
   // distance field (smooth curved walls, no voxel stair-stepping) via the shared
   // SDF scaffolding. See perforatedLatticeSdf.ts.
-  const baked = perforatedLatticeSdfMesh(mesh, opts);
+  // The SDF mesh is brand-new Surface-Nets topology, so carry the painted input's
+  // per-triangle colors onto it by nearest-surface proximity (commitSurfaceModifier
+  // then rehydrates them into color regions). No-op when the input is unpainted.
+  const baked = carryTriColors(mesh, perforatedLatticeSdfMesh(mesh, opts));
   const pattern = opts.pattern ?? 'square';
   return {
     kind: 'manifold',

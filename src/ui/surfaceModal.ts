@@ -20,6 +20,7 @@ import { addPointerSuppressor } from '../renderer/viewport';
 import { buildAdjacency, findConnectedFromSeed } from '../color/adjacency';
 import { getCurrentMesh, previewTriangles } from '../color/paintMode';
 import { buildTriColors } from '../color/regions';
+import { showToast } from './toast';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'perforate' | 'smooth' | 'voxelize';
@@ -644,12 +645,18 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   let previewTimer: number | undefined;
   let previewDirty = false; // a preview is currently shown (needs clearing on close)
   function runPreview() {
+    // The SDF modifiers (perforate / Voronoi lamp) take a few seconds and block
+    // the main thread, so report how long the render took once it lands. The
+    // "Updating preview…" message from schedulePreview has already painted during
+    // the debounce, so the user sees activity before the (frozen) compute.
+    const start = performance.now();
     const r = api.previewSurfaceModifier(active, currentOpts(), preserveColor);
     if ((r as { error?: string }).error) {
       status.textContent = `Preview error: ${(r as { error: string }).error}`;
     } else {
       previewDirty = true;
-      status.textContent = 'Previewing — Apply to save a version.';
+      const secs = ((performance.now() - start) / 1000).toFixed(1);
+      status.textContent = `Previewing (rendered in ${secs}s) — Apply to save a version.`;
       // updateMesh clears meshGroup children — re-draw the selection overlay on top
       reapplySelectionOverlay();
     }
@@ -721,27 +728,46 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     runPreview();
   });
 
+  /** Run the (slow, main-thread-blocking) apply while showing a live
+   *  "Rendering… N.Ns" counter. The SDF field sweep blocks the thread, so the
+   *  counter advances only while the commit's async phases yield — but the
+   *  elapsed time returned is exact. A paint yield first lets the initial message
+   *  appear before the block. */
+  async function runWithTimer<T>(run: () => Promise<T>): Promise<{ result: T; seconds: number }> {
+    const start = performance.now();
+    const tick = () => { status.textContent = `Rendering… ${((performance.now() - start) / 1000).toFixed(1)}s`; };
+    tick();
+    const timer = window.setInterval(tick, 100);
+    await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+    try {
+      const result = await run();
+      return { result, seconds: (performance.now() - start) / 1000 };
+    } finally {
+      clearInterval(timer);
+    }
+  }
+
   applyBtn.addEventListener('click', async () => {
     // The preview swapped the displayed mesh; clear it so the apply re-runs from
     // the real current model (commit re-renders the saved result anyway).
     clearPreviewIfDirty();
     applyBtn.disabled = true;
     const prev = applyBtn.textContent;
-    applyBtn.textContent = 'Applying…';
-    status.textContent = 'Working…';
+    applyBtn.textContent = 'Rendering…';
     try {
       const opts = { ...currentOpts(), preserveColor };
-      const result = active === 'fuzzy' ? await api.applyFuzzySkin(opts)
-        : active === 'knit' ? await api.applyKnitTexture(opts)
-        : active === 'cable' ? await api.applyCableKnit(opts)
-        : active === 'waffle' ? await api.applyWaffleStitch(opts)
-        : active === 'fur' ? await api.applyFurVelvet(opts)
-        : active === 'woven' ? await api.applyWovenFabric(opts)
-        : active === 'voronoi' ? await api.applyVoronoiShell(opts)
-        : active === 'voronoiLamp' ? await api.applyVoronoiLamp(opts)
-        : active === 'perforate' ? await api.applyPerforatedLattice(opts)
-        : active === 'smooth' ? await api.smoothModel(opts)
-        : await api.voxelizeModel(opts);
+      const { result, seconds } = await runWithTimer(() =>
+        active === 'fuzzy' ? api.applyFuzzySkin(opts)
+        : active === 'knit' ? api.applyKnitTexture(opts)
+        : active === 'cable' ? api.applyCableKnit(opts)
+        : active === 'waffle' ? api.applyWaffleStitch(opts)
+        : active === 'fur' ? api.applyFurVelvet(opts)
+        : active === 'woven' ? api.applyWovenFabric(opts)
+        : active === 'voronoi' ? api.applyVoronoiShell(opts)
+        : active === 'voronoiLamp' ? api.applyVoronoiLamp(opts)
+        : active === 'perforate' ? api.applyPerforatedLattice(opts)
+        : active === 'smooth' ? api.smoothModel(opts)
+        : api.voxelizeModel(opts));
       const err = (result as { error?: string })?.error;
       if (err) {
         status.textContent = `Error: ${err}`;
@@ -749,6 +775,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         applyBtn.textContent = prev;
         return;
       }
+      const label = (result as { label?: string })?.label ?? 'Surface modifier';
+      showToast(`${label} rendered in ${seconds.toFixed(1)}s`, { variant: 'success' });
       close();
     } catch (e) {
       status.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`;

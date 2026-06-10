@@ -24,7 +24,7 @@ import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
 import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp, applyPerforate } from '../../src/surface/modifiers';
 import { latticeEdgeDist2D } from '../../src/surface/latticePattern';
-import { nearestTriangleMap } from '../../src/surface/colorTransfer';
+import { nearestTriangleMap, carryTriColors } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
 function cube(s = 10): MeshData {
@@ -503,6 +503,39 @@ describe('modifiers (codegen)', () => {
       const moved: MeshData = { ...c, vertProperties: Float32Array.from(c.vertProperties, (v, i) => v + (i % 3 === 0 ? 0.05 : -0.03)) };
       const map = nearestTriangleMap(c, moved);
       for (let t = 0; t < c.numTri; t++) expect(map[t]).toBe(t);
+    });
+  });
+
+  describe('carryTriColors (paint onto re-tessellated SDF mesh)', () => {
+    it('copies the nearest source triangle color onto each dest triangle', () => {
+      const src = cube(10);
+      // Paint every source triangle solid green (0, 255, 0).
+      const sc = new Uint8Array(src.numTri * 3) as Uint8Array & { _painted?: Uint8Array };
+      for (let t = 0; t < src.numTri; t++) sc[t * 3 + 1] = 255;
+      sc._painted = new Uint8Array(src.numTri).fill(1);
+      src.triColors = sc;
+      // A re-tessellated, same-shape mesh (new topology, like a Surface-Nets shell).
+      const dest = subdivideToMaxEdge(cube(10), { maxEdge: 3 });
+      const out = carryTriColors(src, dest);
+      expect(out.triColors).toBeDefined();
+      expect(out.triColors!.length).toBe(dest.numTri * 3);
+      // Every dest triangle inherits green from its nearest source face.
+      for (let t = 0; t < dest.numTri; t++) {
+        expect(out.triColors![t * 3]).toBe(0);
+        expect(out.triColors![t * 3 + 1]).toBe(255);
+        expect(out.triColors![t * 3 + 2]).toBe(0);
+      }
+      // The _painted mask carries through so commit only makes regions for paint.
+      const painted = (out.triColors as Uint8Array & { _painted?: Uint8Array })._painted;
+      expect(painted).toBeDefined();
+      expect([...painted!].every(v => v === 1)).toBe(true);
+    });
+
+    it('returns the dest mesh unchanged when the source has no colors', () => {
+      const dest = cube(8);
+      const out = carryTriColors(cube(10), dest);
+      expect(out).toBe(dest);
+      expect(out.triColors).toBeUndefined();
     });
   });
 
