@@ -235,7 +235,7 @@ export const IDEAS: Idea[] = [
     emoji: '\u{1F529}',
     tags: ['print-fit', 'screw', 'insert', 'snap-fit', 'dovetail', 'hardware', 'enclosure'],
     prompt: 'Use the api.fasteners and api.joints helpers to build a two-part enclosure: a base with M3 heat-set insert bosses in the corners and a lid with matching counterbored screw holes, plus an alignment pin and socket so the halves register. Arrange the two parts side by side.',
-    learnMore: '/ai/print-fit.md',
+    learnMore: '/ai/fasteners.md',
   },
 ];
 

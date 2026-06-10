@@ -81,3 +81,17 @@ and labeled in two colors for a legible thumbnail. The snap-lid example derives
 bead and groove from a single snapRim call at the body bore so the interface
 diameter can't drift apart. The project box gained a `mountStyle` select
 (heat-set insert vs thread-forming) as the tapHole demo.
+
+## Assistant
+
+## Key decisions — review-fix phase
+
+The work-reviewer found no blockers; applied its four findings: (1) added
+real-WASM e2e cases for the four new builders (the alias spec only covered
+moved ones) including a hinge componentCount === 2 assertion and a composed
+snapRim lid/body pair; (2) clamped the ball-mount example's stem diameter
+below the socket opening so no Customizer slider combination can throw —
+clamp-over-error matches the hinge example's odd-knuckle coercion precedent —
+and rebuilt its catalog JSON; (3) repointed the two completion/idea doc links
+left at the print-fit redirect stub; (4) documented that snapRim's `segments`
+drives the revolve sweep, not the fixed 32-vert bead cross-section.

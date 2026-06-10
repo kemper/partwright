@@ -162,6 +162,7 @@ snap bumps instead of a full ring).
 | `beadD` | bead cross-section diameter | `1.2` |
 | `clearance` | radial growth of the groove over the bead (mm) | `0.15` |
 | `sweepDeg` | arc angle; 360 = full ring | `360` |
+| `segments` | resolution of the **revolve sweep** around Z (the bead's circular cross-section is fixed at 32 verts) | engine default |
 
 The key is using **one interface diameter** for both halves — the wall surface
 where lid skirt meets box mouth:

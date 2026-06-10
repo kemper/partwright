@@ -17,11 +17,16 @@ const p = api.params({
 
 const plateT = 3;
 
+// The stem must stay narrower than the socket mouth (openingRatio · ballD) or
+// the ball can't articulate — clamp rather than error so no slider combination
+// can fail a run (same spirit as the hinge's odd-knuckle coercion).
+const stemD = Math.min(p.stemD, p.openingRatio * p.ballD - 0.6);
+
 const { ball, socket } = joints.ballSocket({
   ballD: p.ballD,
   clearance: p.clearance,
   openingRatio: p.openingRatio,
-  stemD: p.stemD,
+  stemD,
   stemL: p.stemL,
   baseD: p.ballD * 1.4,
   baseT: plateT, // ball's own disc merges flush into its mounting plate

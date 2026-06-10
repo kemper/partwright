@@ -95,3 +95,53 @@ test.describe('printFit builders produce valid manifolds', () => {
     expect(r.error).toMatch(/unknown fastener size/i);
   });
 });
+
+// The four builders added with the namespace split have no old-alias history —
+// exercise them through their real homes (api.fasteners / api.joints). The
+// hinge is the one tool whose contract is exactly TWO components (print-in-
+// place leaves); everything else is single-piece per part.
+const newBuilderCases: Array<{ name: string; code: string; components: number }> = [
+  { name: 'fasteners.tapHole', code: `return api.fasteners.tapHole({ size: 'M3', length: 8 });`, components: 1 },
+  {
+    name: 'fasteners.tapHole subtracted from a boss',
+    code: `
+      const boss = api.Manifold.cylinder(10, 4);
+      return boss.subtract(api.fasteners.tapHole({ size: 'M3', length: 8 }).translate([0, 0, 10]));`,
+    components: 1,
+  },
+  { name: 'joints.hinge (defaults)', code: `return api.joints.hinge({});`, components: 2 },
+  { name: 'joints.hinge (7 knuckles, tight clearance)', code: `return api.joints.hinge({ knuckles: 7, clearance: 0.25 });`, components: 2 },
+  { name: 'joints.ballSocket ball', code: `return api.joints.ballSocket({}).ball;`, components: 1 },
+  { name: 'joints.ballSocket socket', code: `return api.joints.ballSocket({}).socket;`, components: 1 },
+  { name: 'joints.snapRim bead', code: `return api.joints.snapRim({ diameter: 40 }).bead;`, components: 1 },
+  {
+    name: 'joints.snapRim lid + body pair',
+    code: `
+      const iface = 40;
+      const rim = api.joints.snapRim({ diameter: iface });
+      const lid = api.Manifold.cylinder(8, iface / 2).add(rim.bead.translate([0, 0, 3]));
+      const body = api.Manifold.cylinder(20, iface / 2 + 3)
+        .subtract(api.Manifold.cylinder(18, iface / 2).translate([0, 0, 2]))
+        .subtract(rim.groove.translate([0, 0, 15]));
+      return lid.translate([iface + 10, 0, 0]).add(body);`,
+    components: 2,
+  },
+];
+
+test.describe('fasteners/joints new builders', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.goto('/editor');
+    await waitForEngine(page);
+  });
+
+  for (const c of newBuilderCases) {
+    test(`${c.name} is manifold with ${c.components} component(s)`, async ({ page }) => {
+      const r = await run(page, c.code);
+      if (r.status === 'error') throw new Error(`${c.name} failed:\n${r.error}`);
+      expect(r.isManifold, `${c.name} should be watertight`).toBe(true);
+      expect(r.componentCount, `${c.name} component count`).toBe(c.components);
+      expect(r.triangleCount ?? 0).toBeGreaterThan(0);
+    });
+  }
+});
