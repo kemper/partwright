@@ -31,12 +31,17 @@ export interface ExportWarningInfo {
   /** True when the chosen format can't carry colour (STL) but the model is
    *  painted, so the colours will be dropped. */
   colorDropped?: boolean;
+  /** True when the model declares `api.surface.*` textures that haven't been
+   *  applied to the current code (the Re-apply pill is up) — the export would
+   *  carry the untextured base mesh. */
+  surfaceStale?: boolean;
 }
 
 /** Whether any warning is worth interrupting the export for. */
 export function hasExportWarning(info: ExportWarningInfo): boolean {
   return info.unitless || !info.isManifold || info.componentCount > 1
-    || info.colorOverBudget != null || info.colorDropped === true;
+    || info.colorOverBudget != null || info.colorDropped === true
+    || info.surfaceStale === true;
 }
 
 /**
@@ -102,6 +107,16 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<boolean> {
       block.innerHTML =
         `<strong>${info.format} can't carry colour.</strong> Your painted colours will be dropped — the exported model is geometry only. ` +
         'Export <strong>3MF</strong> (or GLB) to keep colours.';
+      shell.body.appendChild(block);
+    }
+
+    if (info.surfaceStale) {
+      const block = document.createElement('div');
+      block.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
+      block.innerHTML =
+        '<strong>Surface textures not applied.</strong> This model declares <span class="font-mono">api.surface.*</span> textures ' +
+        'that haven\'t been computed for the current code — the export would contain the <strong>untextured base mesh</strong>. ' +
+        'Cancel and press <strong>Run</strong> (or the ⟳ Re-apply pill) first to texture it.';
       shell.body.appendChild(block);
     }
 

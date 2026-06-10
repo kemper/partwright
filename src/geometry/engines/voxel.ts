@@ -32,6 +32,18 @@ const SDF_BUILD_GUARD = new Proxy({}, {
   },
 });
 
+// `api.paint.*` / `api.surface.*` are manifold-js-only sandbox APIs (they
+// record ops against the run's triangle mesh). Without these guards a voxel
+// session calling them gets an opaque "Cannot read properties of undefined" —
+// throw a pointed message instead, same pattern as SDF_BUILD_GUARD above.
+const manifoldOnlyNamespaceGuard = (ns: 'paint' | 'surface') => new Proxy({}, {
+  get() {
+    throw new ValidationError(ns === 'paint'
+      ? 'api.paint.* is only available in manifold-js (JS) sessions. In a voxel session, color voxels directly: v.set(x, y, z, color) / v.fillBox(..., color). See /ai/voxel.md'
+      : 'api.surface.* is only available in manifold-js (JS) sessions — a voxel grid has no triangle skin to texture. Switch to a manifold-js session (or bake via voxelizeModel from one). See /ai/textures.md');
+  },
+});
+
 function createVoxelApi(params?: ParamCapture['params']) {
   const voxels = (() => new VoxelGrid()) as VoxelsHandle;
   voxels.decode = (data: string) => decodeGrid(data);
@@ -45,7 +57,12 @@ function createVoxelApi(params?: ParamCapture['params']) {
   // (manifold-js, voxel, replicad) so a Customizer-driven voxel model gets the
   // same live slider/toggle panel. Omitted only on paths that don't capture a
   // schema (none currently — both run paths pass it).
-  return { voxels, VoxelGrid, sdf, ...(params ? { params } : {}) };
+  return {
+    voxels, VoxelGrid, sdf,
+    paint: manifoldOnlyNamespaceGuard('paint'),
+    surface: manifoldOnlyNamespaceGuard('surface'),
+    ...(params ? { params } : {}),
+  };
 }
 
 function isVoxelGrid(v: unknown): v is VoxelGrid {
