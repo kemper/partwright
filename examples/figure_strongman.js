@@ -120,7 +120,7 @@ const armR = makeArm(j.shoulderR, elbowR, wristR, fistR);
 // eyes: false — eyes are lifted to the top-level hard-union with their own label
 // so they can be painted independently (paintable-eyes pattern).
 // Mouth: a gritted confident smile with a slight smirk — fits a strongman mid-flex.
-// style 'smile' carves a clean smile line; open:0.12 gives just a hint of effort.
+// style 'smile' carves a clean smile line into the face.
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
   eyes:  false,
