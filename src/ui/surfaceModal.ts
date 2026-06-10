@@ -22,7 +22,7 @@ import { getCurrentMesh, previewTriangles } from '../color/paintMode';
 import { buildTriColors } from '../color/regions';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
-type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize';
+type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'infill' | 'smooth' | 'voxelize';
 
 /** The subset of the console API the surface UI needs. */
 export interface SurfaceApi {
@@ -34,6 +34,7 @@ export interface SurfaceApi {
   applyWovenFabric(opts?: { amplitude?: number; threadSpacing?: number; threadWidth?: number; underDepth?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiShell(opts?: { amplitude?: number; cellSize?: number; wallWidth?: number; raised?: boolean; jitter?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiLamp(opts?: { cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; jitter?: number; grainAngleDeg?: number; seed?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyInfill(opts?: { pattern?: 'gyroid' | 'schwarzP' | 'honeycomb'; cellSize?: number; wallThickness?: number; skinThickness?: number; resolution?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   previewSurfaceModifier(id: ModId, opts?: Record<string, unknown>, preserveColor?: boolean): { ok: true } | { error: string };
@@ -199,6 +200,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     { id: 'woven', label: 'Woven' },
     { id: 'voronoi', label: 'Voronoi (relief)' },
     { id: 'voronoiLamp', label: 'Voronoi lamp' },
+    { id: 'infill', label: 'Lattice infill' },
     { id: 'smooth', label: 'Smooth' },
     { id: 'voxelize', label: 'Voxelize' },
   ];
@@ -264,9 +266,15 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     return regionMode === 'region' ? regionSelection ?? undefined : undefined;
   }
 
+  /** Tabs that operate on the whole model only — their region section is hidden,
+   *  so region-mode gating must not apply (else Apply stays disabled). */
+  function tabHasRegion(): boolean {
+    return !(active === 'voxelize' || active === 'voronoiLamp' || active === 'infill');
+  }
+
   /** Whether Apply/preview should be blocked (region mode, nothing picked yet). */
   function regionBlocked(): boolean {
-    return regionMode === 'region' && !regionSelection;
+    return tabHasRegion() && regionMode === 'region' && !regionSelection;
   }
 
   function updateApplyBtn() {
@@ -425,7 +433,11 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   function renderTab() {
     body.innerHTML = '';
-    regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp') ? 'none' : '';
+    regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp' || active === 'infill') ? 'none' : '';
+    // Refresh Apply/Preview enablement for the new tab — switching from a
+    // region-gated tab (with nothing picked) to a whole-model tab must re-enable
+    // them (and vice-versa); renderTab is the one place that runs on every switch.
+    updateApplyBtn();
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
       const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -585,6 +597,26 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         watertight: wtight.get(),
         output: out.get(),
       });
+    } else if (active === 'infill') {
+      const pat = dropdown<'gyroid' | 'schwarzP' | 'honeycomb'>('Pattern', [
+        ['gyroid', 'Gyroid (TPMS)'],
+        ['schwarzP', 'Schwarz-P (TPMS)'],
+        ['honeycomb', 'Honeycomb (hex columns)'],
+      ], 'gyroid', schedulePreview);
+      const cs = slider('Cell size', span * 0.04, span * 0.4, span * 0.16, span * 0.005, n => n.toFixed(3), schedulePreview);
+      // Default wall ~5% of the longest axis keeps the auto-raised field
+      // resolution moderate (a much thinner wall forces a slow high-res field).
+      const wt = slider('Wall thickness', span * 0.02, span * 0.1, span * 0.05, span * 0.002, n => n.toFixed(3), schedulePreview);
+      const sk = slider('Skin thickness', span * 0.01, span * 0.1, span * 0.05, span * 0.002, n => n.toFixed(3), schedulePreview);
+      body.append(pat.wrap, cs.wrap, wt.wrap, sk.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Keeps a thin solid skin and fills the interior with a lattice — lightweight prints and exposed-lattice designs. Gyroid/Schwarz-P are smooth TPMS lattices; honeycomb is hex columns. Smaller cell = denser lattice; thicker wall = stronger / heavier.'));
+      body.append(el('p', 'text-[11px] text-amber-400/90', 'Meshes a continuous distance field (smooth walls, no voxel stair-stepping) — a heavier op; allow a few seconds. Resolution auto-raises so the wall stays well resolved. Start from a closed solid.'));
+      currentOpts = () => ({
+        pattern: pat.get(),
+        cellSize: cs.get(),
+        wallThickness: wt.get(),
+        skinThickness: sk.get(),
+      });
     } else if (active === 'smooth') {
       const iter = slider('Rounding strength', 1, 12, 4, 1, n => String(n), schedulePreview);
       const sub = checkbox('Subdivide first (rounds sharp corners)', true, schedulePreview);
@@ -700,6 +732,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         : active === 'woven' ? await api.applyWovenFabric(opts)
         : active === 'voronoi' ? await api.applyVoronoiShell(opts)
         : active === 'voronoiLamp' ? await api.applyVoronoiLamp(opts)
+        : active === 'infill' ? await api.applyInfill(opts)
         : active === 'smooth' ? await api.smoothModel(opts)
         : await api.voxelizeModel(opts);
       const err = (result as { error?: string })?.error;
@@ -740,6 +773,7 @@ export function initSurfaceUI(api: SurfaceApi): void {
     { id: 'surface-woven', title: 'Surface: Woven fabric', hint: 'Modifier', keywords: 'woven weave fabric basket cloth interlace thread', run: () => openSurfaceModal(api, 'woven') },
     { id: 'surface-voronoi', title: 'Surface: Voronoi texture', hint: 'Modifier', keywords: 'voronoi cell relief organic cracked web ridges struts texture', run: () => openSurfaceModal(api, 'voronoi') },
     { id: 'surface-voronoi-lamp', title: 'Surface: Voronoi lamp (perforated shell)', hint: 'Modifier', keywords: 'voronoi lamp shell lattice perforated cutout holes see-through planter lampshade voxel', run: () => openSurfaceModal(api, 'voronoiLamp') },
+    { id: 'surface-infill', title: 'Surface: Lattice infill (gyroid / TPMS)', hint: 'Modifier', keywords: 'lattice infill gyroid tpms schwarz honeycomb hex lightweight skin shell exposed minimal surface', run: () => openSurfaceModal(api, 'infill') },
     { id: 'surface-smooth', title: 'Surface: Smooth / round edges', hint: 'Modifier', keywords: 'smooth round fillet taubin low-poly', run: () => openSurfaceModal(api, 'smooth') },
     { id: 'surface-voxelize', title: 'Surface: Voxelize model', hint: 'Modifier', keywords: 'voxel blocky minecraft pixel', run: () => openSurfaceModal(api, 'voxelize') },
   ]);

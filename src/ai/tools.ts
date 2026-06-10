@@ -1594,6 +1594,41 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'applyInfill',
+    description: `Hollow the current model to a thin solid **skin** and fill its interior with a **lattice** (TPMS / honeycomb) — for lightweight prints and exposed-lattice designs. Saves a new version.
+
+**What it does:** keeps a solid outer shell of \`skinThickness\` and replaces the bulk interior with a periodic wall network, unioned with the skin. Bakes a smooth manifold-js mesh by meshing a **continuous signed-distance field** (no voxel stair-stepping, no engine change).
+
+**Patterns:**
+- \`gyroid\` (default) — smooth triply-periodic minimal surface; isotropic, self-supporting, the go-to lightweighting lattice
+- \`schwarzP\` — another TPMS, blockier "pillow" cells
+- \`honeycomb\` — vertical hex columns (anisotropic; strong along Z)
+
+**When to use:** when the user wants a lightweight / gyroid / lattice-infilled part, an exposed-lattice aesthetic, or to cut print weight while keeping a closed skin. Start from a **closed solid**.
+
+**Key parameters:**
+- pattern: 'gyroid' | 'schwarzP' | 'honeycomb' (default gyroid)
+- cellSize: lattice period in world units (~12% of diagonal); smaller = denser lattice
+- wallThickness: lattice wall thickness in world units (~2.5% of diagonal); thicker = stronger/heavier
+- skinThickness: solid outer-shell thickness in world units (~3% of diagonal)
+- resolution: field resolution along the longest axis [16–256]. **Auto-raised** so the wall resolves to ≥5 cells — you rarely set it
+
+**Return:** { ok, label, geometry, warnings? }. The closed skin fuses everything into one printable manifold (sealed gyroid pockets are intentional voids, so componentCount is high). Verify with renderViews — the outer skin should be closed; slice/cut to see the lattice.
+
+**Workflow guidance:** mostly tune cellSize (lattice density) and wallThickness (strength/weight).`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', enum: ['gyroid', 'schwarzP', 'honeycomb'], description: "Lattice pattern. 'gyroid' (default), 'schwarzP', or 'honeycomb' (hex columns)." },
+        cellSize: { type: 'number', description: 'Lattice period / hex spacing in world units. Default ~12% of diagonal. Smaller = denser.' },
+        wallThickness: { type: 'number', description: 'Lattice wall thickness in world units. Default ~2.5% of diagonal. Thicker = stronger/heavier.' },
+        skinThickness: { type: 'number', description: 'Solid outer-shell thickness in world units. Default ~3% of diagonal.' },
+        resolution: { type: 'integer', description: 'Field resolution along the longest axis [16–256]. Auto-raised so the wall resolves. Default 120.', minimum: 16, maximum: 256 },
+        preserveColor: { type: 'boolean', description: 'Sample model paint onto the result. Default true.' },
+      },
+    },
+  },
+  {
     name: 'smoothModel',
     description: `Smooth/round the current model with a Taubin λ/μ pass — softens sharp edges and facets without the shrinkage a naive Laplacian causes. Saves a new version.
 
@@ -1789,7 +1824,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'applyInfill', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -2297,6 +2332,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.applyVoronoiShell(input);
     case 'applyVoronoiLamp':
       return api.applyVoronoiLamp(input);
+    case 'applyInfill':
+      return api.applyInfill(input);
     case 'smoothModel':
       return api.smoothModel(input);
     case 'voxelizeModel':

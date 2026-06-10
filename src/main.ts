@@ -121,7 +121,7 @@ import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geom
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyInfill, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultInfillOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult, type InfillPattern } from './surface/modifiers';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { surfaceCacheStatus, computeChain, type SurfaceOp } from './surface/surfaceOps';
@@ -7486,7 +7486,7 @@ async function main() {
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
   function buildSurfaceModifier(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'infill' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
   ): ModifierResult {
@@ -7620,6 +7620,18 @@ async function main() {
         smooth: (opts?.smooth as boolean) ?? base.smooth,
       });
     }
+    if (id === 'infill') {
+      // Lattice infill → smooth manifold-js mesh; whole-model only (no patch).
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultInfillOptions(mesh);
+      return applyInfill(mesh, {
+        pattern: (opts?.pattern as InfillPattern) ?? base.pattern,
+        cellSize: (opts?.cellSize as number) ?? base.cellSize,
+        wallThickness: (opts?.wallThickness as number) ?? base.wallThickness,
+        skinThickness: (opts?.skinThickness as number) ?? base.skinThickness,
+        resolution: (opts?.resolution as number) ?? base.resolution,
+      });
+    }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultSmoothOptions();
@@ -7644,8 +7656,8 @@ async function main() {
     modelHasColor(): boolean { return modelHasColor(); },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
-     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize'. */
-    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'infill'|'smooth'|'voxelize'. */
+    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'infill' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
       try {
         previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
         return { ok: true };
@@ -7881,6 +7893,26 @@ async function main() {
       try {
         const preserve = opts?.preserveColor ?? true;
         return await commitSurfaceModifier(buildSurfaceModifier('voronoiLamp', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Lattice infill: keep a thin solid skin of the current model and fill its
+     *  interior with a TPMS lattice (`gyroid` default, plus `schwarzP` /
+     *  `honeycomb`) — for lightweight prints and exposed-lattice designs. Bakes a
+     *  smooth manifold-js mesh (no engine change). `cellSize` = lattice period,
+     *  `wallThickness` = lattice wall thickness, `skinThickness` = outer-shell
+     *  thickness (all world units). Saves a new version. Returns
+     *  `{ ok, label, geometry, warnings? }`. */
+    async applyInfill(opts?: {
+      pattern?: InfillPattern;
+      cellSize?: number;
+      wallThickness?: number;
+      skinThickness?: number;
+      resolution?: number;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('infill', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Smooth/round the current model (Taubin λ/μ); saves a new version. */

@@ -22,7 +22,8 @@ import { sdfModifierMesh } from '../../src/surface/sdfModifier';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
-import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp } from '../../src/surface/modifiers';
+import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp, applyInfill } from '../../src/surface/modifiers';
+import { latticeWall } from '../../src/surface/latticeInfillSdf';
 import { nearestTriangleMap } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
@@ -360,6 +361,51 @@ describe('applyVoronoiLamp (mesh output)', () => {
       expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
       expect(r.mesh.numTri).toBeGreaterThan(12);
     }
+  });
+});
+
+describe('latticeWall (infill combine field)', () => {
+  const cell = 8, wall = 1; // half-thickness 0.5
+
+  it('TPMS walls read < 0 on the {g = 0} mid-surface and > 0 in a hole center', () => {
+    // Gyroid passes through the origin (g = 0) → on a wall (field = -half).
+    expect(latticeWall('gyroid', 0, 0, 0, cell, wall)).toBeCloseTo(-wall / 2, 6);
+    // Schwarz-P does NOT pass through the origin (cos·3 = 3, a hole center) but
+    // does through (cell/2, cell/6, cell/6): cos π + 2·cos(π/3) = -1 + 1 = 0.
+    expect(latticeWall('schwarzP', 0, 0, 0, cell, wall)).toBeGreaterThan(0);
+    expect(latticeWall('schwarzP', cell / 2, cell / 6, cell / 6, cell, wall)).toBeCloseTo(-wall / 2, 6);
+    // A gyroid hole center reads as empty (> 0) — (cell/4, 0, cell/4): g = 1·1 + 0 + 1·0... use a max instead.
+    expect(latticeWall('gyroid', cell / 4, 0, -cell / 4, cell, wall)).toBeGreaterThan(0);
+  });
+
+  it('honeycomb walls hug the hex edges: hole at a cell center, wall on an edge', () => {
+    // Hex center (0,0): nearest two centers are 0 and one cell away → edge dist
+    // ≈ cell/2, well outside a thin wall → a hole.
+    expect(latticeWall('honeycomb', 0, 0, 0, cell, wall)).toBeGreaterThan(0);
+    // Midpoint between two same-row centers is equidistant → on a cell edge.
+    expect(latticeWall('honeycomb', cell / 2, 0, 0, cell, wall)).toBeCloseTo(-wall / 2, 6);
+    // Extruded along Z: z has no effect on the honeycomb field.
+    expect(latticeWall('honeycomb', cell / 2, 0, 99, cell, wall))
+      .toBeCloseTo(latticeWall('honeycomb', cell / 2, 0, 0, cell, wall), 6);
+  });
+});
+
+describe('applyInfill (lattice infill, mesh output)', () => {
+  it('emits a smooth (SDF) manifold ofMesh wrapper with a lattice interior', () => {
+    const r = applyInfill(cube(20), { pattern: 'gyroid', cellSize: 6, wallThickness: 1.5, skinThickness: 1.5, resolution: 48 });
+    expect(r.kind).toBe('manifold');
+    if (r.kind === 'manifold') {
+      expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
+      expect(r.code).toContain('gyroid');
+      // A skin + interior lattice has far more geometry than the 12-tri cube.
+      expect(r.mesh.numTri).toBeGreaterThan(100);
+    }
+  });
+
+  it('honeycomb is a valid pattern too', () => {
+    const r = applyInfill(cube(20), { pattern: 'honeycomb', cellSize: 7, wallThickness: 1.5, skinThickness: 1.5, resolution: 40 });
+    expect(r.kind).toBe('manifold');
+    if (r.kind === 'manifold') expect(r.mesh.numTri).toBeGreaterThan(12);
   });
 });
 
