@@ -60,3 +60,27 @@ bypass, a 90°-about-Z `_r` rotation (line in x → line in y), and malformed-no
 fallback. Ran the full unit tier (1050 pass) + typecheck, and a throwaway
 Playwright spec that imports a hand-built two-cube scene through the real
 import→voxel-render path and screenshots both cubes at their offset positions.
+
+## Review follow-ups (work-reviewer pass)
+
+A read-only review (which brute-forced the rotation composition against 1M
+cases and confirmed no DoS vector in the bounds-checked reader) flagged two
+should-fix items; both applied:
+
+**Reject improper (mirroring) `_r` rotations.** 48 of 256 `_r` byte values
+decode to a determinant-−1 reflection. MagicaVoxel only ever writes proper
+rotations, so a reflection means a corrupt/crafted file — `decodeRotation` now
+computes the determinant (sign of the column permutation × product of the row
+signs) and falls back to identity on −1, consistent with the existing
+malformed-byte fallback, rather than silently mirroring geometry. New test
+covers `_r=20` keeping identity.
+
+**Documented the single-model z-normalization change.** MagicaVoxel writes a
+scene graph even for one model, so real single-model files now take the scene
+path, which grounds the model on z=0 and centers it horizontally (the same
+"land it in view" framing the legacy path used) instead of preserving the
+file's authored world origin. Intentional and consistent across import sources;
+an explicit `modelIndex` still gives the legacy per-model centering. Added a
+code comment so it isn't mistaken for a regression. The reviewer's nits
+(global cycle-guard over-prunes a true DAG, which MV never emits; duplicate
+node ids last-write-wins) were left as acceptable for malformed/non-MV input.

@@ -282,6 +282,23 @@ describe('parseVox scene graph', () => {
     expect(b.max[1] - b.min[1]).toBe(2); // extended in y
   });
 
+  it('ignores an improper (mirroring) _r rotation byte and keeps identity', () => {
+    // _r byte 20 decodes to a reflection (det = −1) — a mirror MagicaVoxel never
+    // writes. The importer must decline to mirror: red stays on the −x side.
+    const bytes = voxFile([
+      sizeChunk(3, 1, 1), xyziChunk([{ x: 0, y: 0, z: 0, i: 1 }, { x: 2, y: 0, z: 0, i: 2 }]),
+      trnChunk(0, 1), grpChunk(1, [2]),
+      trnChunk(2, 3, [0, 0, 0], 20), shpChunk(3, 0),
+      rgbaChunk({ 1: 0xff0000, 2: 0x00ff00 }),
+    ]);
+    const grid = parseVox(bytes);
+    expect(grid.size).toBe(2);
+    // Identity: local-centered red at x=−1, green at x=+1. A reflection would
+    // have swapped them; assert it did not.
+    expect(grid.get(-1, 0, 0)).toBe(0xff0000);
+    expect(grid.get(1, 0, 0)).toBe(0x00ff00);
+  });
+
   it('falls back to the legacy path when a scene node is malformed', () => {
     // A truncated nTRN (claims a frame but the content ends) must not throw —
     // the importer ignores the bad node and centers model 0.

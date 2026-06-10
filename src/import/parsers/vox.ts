@@ -87,7 +87,10 @@ const IDENTITY_ROT: Rot = { cols: [0, 1, 2], signs: [1, 1, 1] };
 /** Decode a MagicaVoxel `_r` rotation byte into a {@link Rot}. Bits 0–1 and 2–3
  *  give the non-zero column of rows 0 and 1; row 2's column is whichever index
  *  remains. Bits 4–6 are the per-row signs (1 = negative). Falls back to
- *  identity for a malformed byte (rows 0 and 1 sharing a column). */
+ *  identity for a malformed byte (rows 0 and 1 sharing a column) or for an
+ *  improper rotation (determinant −1, a mirror): MagicaVoxel only ever writes
+ *  proper rotations, so a reflection means a corrupt/crafted file — we decline
+ *  to silently mirror the geometry. */
 function decodeRotation(byte: number): Rot {
   const c0 = byte & 0b11;
   const c1 = (byte >> 2) & 0b11;
@@ -96,6 +99,11 @@ function decodeRotation(byte: number): Rot {
   const s0 = (byte >> 4) & 1 ? -1 : 1;
   const s1 = (byte >> 5) & 1 ? -1 : 1;
   const s2 = (byte >> 6) & 1 ? -1 : 1;
+  // Determinant of a signed permutation matrix = sign(permutation) × ∏signs.
+  // sign([c0,c1,c2]) is +1 for an even permutation of (0,1,2), −1 for odd.
+  const even = (c0 === 0 && c1 === 1) || (c0 === 1 && c1 === 2) || (c0 === 2 && c1 === 0);
+  const det = (even ? 1 : -1) * s0 * s1 * s2;
+  if (det !== 1) return IDENTITY_ROT;
   return { cols: [c0, c1, c2], signs: [s0, s1, s2] };
 }
 
@@ -319,6 +327,13 @@ export function parseVox(bytes: Uint8Array, options: VoxParseOptions = {}): Voxe
 
   // Multi-object path: when no explicit model index was requested, assemble the
   // whole scene through its graph so every positioned part lands correctly.
+  //
+  // Note MagicaVoxel writes a scene graph even for a *single* model, so real
+  // single-model files take this path too — `assemblePlaced` grounds the scene
+  // on z=0 and centers it horizontally, the same "land it in view" framing the
+  // legacy path applies (rather than preserving the file's authored world
+  // origin). That's intentional and consistent across import sources; pass an
+  // explicit `modelIndex` to get the legacy per-model centering instead.
   if (options.modelIndex === undefined) {
     const placed: { x: number; y: number; z: number; c: number }[] = [];
     const place = (modelId: number, xform: Xform): void => {
