@@ -1,0 +1,178 @@
+// Unit tests for src/geometry/sdfFigure.ts — the deterministic rig math
+// behind api.sdf.figure. Pure logic (no WASM): proportion scaling, pose
+// forward-kinematics, left/right symmetry, the joint-overlap invariant that
+// keeps a figure one component, and option validation. Meshing the parts is
+// exercised headlessly via model:preview / the e2e tier.
+
+import { describe, it, expect } from 'vitest';
+import { __figureTestables__ } from '../../src/geometry/sdfFigure';
+
+const { buildRig } = __figureTestables__;
+
+const dist = (a: number[], b: number[]): number =>
+  Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+describe('figure rig — proportions', () => {
+  it('places the crown at z = height and sole landmarks near 0', () => {
+    const rig = buildRig({ height: 80 });
+    expect(rig.joints.crown[2]).toBeCloseTo(80, 6);
+    // ankles sit just above the ground; feet bring it to z≈0.
+    expect(rig.joints.ankleL[2]).toBeLessThan(80 * 0.1);
+    expect(rig.joints.ankleL[2]).toBeGreaterThan(0);
+  });
+
+  it('lower headsTall yields a proportionally larger head', () => {
+    const chibi = buildRig({ height: 60, headsTall: 3 });
+    const adult = buildRig({ height: 60, headsTall: 8 });
+    expect(chibi.r.head).toBeGreaterThan(adult.r.head);
+  });
+
+  it('scales every landmark linearly with height', () => {
+    const a = buildRig({ height: 60 });
+    const b = buildRig({ height: 120 });
+    expect(b.joints.shoulderL[0]).toBeCloseTo(a.joints.shoulderL[0] * 2, 5);
+    expect(b.joints.hipL[2]).toBeCloseTo(a.joints.hipL[2] * 2, 5);
+  });
+
+  it('stocky build widens limbs vs slim', () => {
+    const slim = buildRig({ build: 'slim' });
+    const stocky = buildRig({ build: 'stocky' });
+    expect(stocky.r.upperArm).toBeGreaterThan(slim.r.upperArm);
+    expect(stocky.r.chestX).toBeGreaterThan(slim.r.chestX);
+  });
+
+  it('never inverts the hip above the shoulders, even for an extreme head', () => {
+    for (const headsTall of [2, 3, 5, 8, 12]) {
+      const rig = buildRig({ headsTall });
+      expect(rig.joints.hipL[2]).toBeLessThan(rig.joints.shoulderL[2]);
+      expect(rig.joints.kneeL[2]).toBeLessThan(rig.joints.hipL[2]);
+    }
+  });
+});
+
+describe('figure rig — symmetry', () => {
+  it('mirrors L/R joints across X for a symmetric pose', () => {
+    const rig = buildRig({});
+    for (const name of ['shoulder', 'elbow', 'wrist', 'hip', 'knee', 'ankle']) {
+      const L = rig.joints[`${name}L`];
+      const R = rig.joints[`${name}R`];
+      expect(L[0]).toBeCloseTo(-R[0], 5);  // opposite X
+      expect(L[1]).toBeCloseTo(R[1], 5);   // same Y
+      expect(L[2]).toBeCloseTo(R[2], 5);   // same Z
+    }
+  });
+
+  it('puts the figure-left eye on +X and the right eye on −X (facing −Y)', () => {
+    const rig = buildRig({});
+    expect(rig.face.eyeL[0]).toBeGreaterThan(0);
+    expect(rig.face.eyeR[0]).toBeLessThan(0);
+    expect(rig.face.eyeL[0]).toBeCloseTo(-rig.face.eyeR[0], 5);
+  });
+
+  it('places the nose in front (−Y) of the head center', () => {
+    const rig = buildRig({});
+    expect(rig.face.nose[1]).toBeLessThan(rig.joints.headCenter[1]);
+  });
+});
+
+describe('figure rig — pose forward kinematics', () => {
+  it('abduct 90 swings the upper arm straight out to the side', () => {
+    const rig = buildRig({ height: 60, pose: { armL: { abduct: 90 } } });
+    const S = rig.joints.shoulderL, E = rig.joints.elbowL;
+    // elbow moves out in +X at (near) the shoulder height.
+    expect(E[0]).toBeGreaterThan(S[0]);
+    expect(E[2]).toBeCloseTo(S[2], 4);
+  });
+
+  it('abduct 0 hangs the upper arm straight down', () => {
+    const rig = buildRig({ pose: { armL: { abduct: 0 } } });
+    const S = rig.joints.shoulderL, E = rig.joints.elbowL;
+    expect(E[2]).toBeLessThan(S[2]);
+    expect(E[0]).toBeCloseTo(S[0], 4);
+  });
+
+  it('elbow flexion moves the wrist (curls the forearm)', () => {
+    const straight = buildRig({ pose: { armL: { abduct: 90, elbow: 0 } } });
+    const curled = buildRig({ pose: { armL: { abduct: 90, elbow: 120 } } });
+    expect(dist(straight.joints.wristL, curled.joints.wristL)).toBeGreaterThan(1);
+  });
+
+  it('head turn rotates the face anchors off the centreline', () => {
+    const fwd = buildRig({ pose: { head: { turn: 0 } } });
+    const turned = buildRig({ pose: { head: { turn: 40 } } });
+    expect(dist(fwd.face.nose, turned.face.nose)).toBeGreaterThan(0.5);
+  });
+
+  it('twist rolls the forearm-curl plane so a raised arm can curl the fist up', () => {
+    // With the arm out to the side, elbow alone curls backward; twist lifts the
+    // fist UP (the double-biceps / ballet-fifth pose that needs the roll DOF).
+    const noTwist = buildRig({ pose: { armL: { abduct: 90, elbow: 95, twist: 0 } } });
+    const rolled = buildRig({ pose: { armL: { abduct: 90, elbow: 95, twist: 90 } } });
+    // twist must move the wrist, and lift it above the no-twist wrist.
+    expect(dist(noTwist.joints.wristL, rolled.joints.wristL)).toBeGreaterThan(2);
+    expect(rolled.joints.wristL[2]).toBeGreaterThan(noTwist.joints.wristL[2]);
+  });
+});
+
+describe('figure rig — symmetric pose shorthand', () => {
+  it('`arms` / `legs` seed both sides symmetrically', () => {
+    const rig = buildRig({ pose: { arms: { abduct: 90 }, legs: { abduct: 25 } } });
+    // both elbows swing out (abduct 90); symmetric in X.
+    expect(rig.joints.elbowL[0]).toBeGreaterThan(rig.joints.shoulderL[0]);
+    expect(rig.joints.elbowR[0]).toBeLessThan(rig.joints.shoulderR[0]);
+    expect(rig.joints.elbowL[0]).toBeCloseTo(-rig.joints.elbowR[0], 5);
+    expect(rig.joints.kneeL[0]).toBeCloseTo(-rig.joints.kneeR[0], 5);
+  });
+  it('per-side keys override the shorthand', () => {
+    const rig = buildRig({ pose: { arms: { abduct: 90 }, armL: { abduct: 0 } } });
+    // left arm hangs down (abduct 0), right stays out (abduct 90).
+    expect(rig.joints.elbowL[2]).toBeLessThan(rig.joints.shoulderL[2]);
+    expect(rig.joints.elbowR[0]).toBeLessThan(rig.joints.shoulderR[0]);
+  });
+});
+
+describe('figure rig — one-component invariants', () => {
+  // The welded figure stays a single component because (a) adjacent bones in a
+  // chain share their joint endpoint exactly, so the capsules always overlap at
+  // the joint, and (b) the chain roots (shoulder, hip) sit inside the torso
+  // masses they weld into. Both hold regardless of pose.
+  it('keeps every bone non-degenerate across a range of poses', () => {
+    for (const elbow of [0, 60, 120]) {
+      for (const abduct of [0, 45, 90, 140]) {
+        const rig = buildRig({ pose: { armL: { abduct, elbow }, legL: { abduct: 20, knee: 60 } } });
+        expect(dist(rig.joints.shoulderL, rig.joints.elbowL)).toBeGreaterThan(1);
+        expect(dist(rig.joints.elbowL, rig.joints.wristL)).toBeGreaterThan(1);
+        expect(dist(rig.joints.hipL, rig.joints.kneeL)).toBeGreaterThan(1);
+        expect(dist(rig.joints.kneeL, rig.joints.ankleL)).toBeGreaterThan(1);
+      }
+    }
+  });
+  it('roots the arm at the chest and the leg at the pelvis (limbs attach)', () => {
+    const rig = buildRig({});
+    // shoulder X within chest half-width + the deltoid cap that bridges it.
+    expect(Math.abs(rig.joints.shoulderL[0])).toBeLessThan(rig.r.chestX + rig.r.upperArm * 1.15);
+    // hip X within the pelvis mass + thigh radius.
+    expect(Math.abs(rig.joints.hipL[0])).toBeLessThan(rig.r.pelvisX + rig.r.thigh);
+  });
+});
+
+describe('figure rig — validation', () => {
+  it('rejects unknown top-level keys', () => {
+    expect(() => buildRig({ heigth: 60 })).toThrow();
+  });
+  it('rejects an unknown build preset', () => {
+    expect(() => buildRig({ build: 'huge' })).toThrow(/build/);
+  });
+  it('rejects out-of-range headsTall', () => {
+    expect(() => buildRig({ headsTall: 1 })).toThrow();
+    expect(() => buildRig({ headsTall: 20 })).toThrow();
+  });
+  it('rejects unknown pose joint keys', () => {
+    expect(() => buildRig({ pose: { armL: { bend: 90 } } })).toThrow();
+    expect(() => buildRig({ pose: { wings: {} } })).toThrow();
+  });
+  it('accepts an empty / omitted opts object', () => {
+    expect(() => buildRig(undefined)).not.toThrow();
+    expect(() => buildRig({})).not.toThrow();
+  });
+});

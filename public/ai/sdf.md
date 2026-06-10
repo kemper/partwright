@@ -105,6 +105,8 @@ api.sdf.smoothIntersect(a, b, k)
 
 ## Organic figures & creature bodies
 
+> **For a HUMANOID figure (person / character / hero / bust), prefer the higher-level `api.sdf.figure` builder — `readDoc("figure")`.** It gives you a deterministic posable rig (named joints, no coordinate guessing) plus part/face/hair/clothing builders that always weld to one component. The hand-built recipe below is the right tool for **animals, creatures, and other organic forms** that the humanoid rig doesn't cover, and for understanding what `figure` does under the hood.
+
 This is the method for **figurines, characters, people, animals, and busts** — any anatomical form. The pattern is always the same: build each body part as a **capsule** (limbs, neck, fingers, tail) or **ellipsoid** (head, torso, hips, muscle masses), then weld them with **`smoothUnion`** so the joins are continuous flesh, not visible balls. Use **`mirrorPair`** for left/right symmetry so you only model one side. Don't reach for a plain `union` of constant-radius spheres and capsules here — that's the "primitive soup" failure mode (every limb a tube, every joint a ball); it validates but never resembles the subject.
 
 ```js

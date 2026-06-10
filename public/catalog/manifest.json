@@ -745,6 +745,41 @@
       "file": "rack_and_pinion.partwright.json",
       "language": "manifold-js",
       "description": "Involute pinion meshing a straight rack to turn rotation into linear motion — adjustable module, teeth, and length."
+    },
+    {
+      "id": "waving-kid",
+      "name": "Waving Kid",
+      "file": "waving_kid.partwright.json",
+      "language": "manifold-js",
+      "description": "A cheerful stylized child waving hello — one arm raised high, chunky cargo pants, long hair, built with the SDF figure rig."
+    },
+    {
+      "id": "flexing-strongman",
+      "name": "Flexing Strongman",
+      "file": "flexing_strongman.partwright.json",
+      "language": "manifold-js",
+      "description": "A vintage-circus strongman hitting a double-biceps pose — stocky build, both fists raised, short trunks and a handlebar mustache."
+    },
+    {
+      "id": "chibi-wizard",
+      "name": "Chibi Wizard",
+      "file": "chibi_wizard.partwright.json",
+      "language": "manifold-js",
+      "description": "An adorable chibi wizard with an oversized pointed hat, a magic staff topped by a glowing orb, and a long beard — extreme cute proportions."
+    },
+    {
+      "id": "warrior-pose",
+      "name": "Warrior Pose",
+      "file": "warrior_pose.partwright.json",
+      "language": "manifold-js",
+      "description": "A figure in a yoga warrior lunge — front knee bent, back leg straight, arms outstretched in a T — showing off the figure rig's leg posing."
+    },
+    {
+      "id": "ballerina",
+      "name": "Ballerina",
+      "file": "ballerina.partwright.json",
+      "language": "manifold-js",
+      "description": "An elegant ballerina with arms raised overhead and a layered tutu, balanced on a base — a graceful figure-rig pose."
     }
   ]
 }
