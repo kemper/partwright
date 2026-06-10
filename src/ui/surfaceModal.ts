@@ -16,11 +16,13 @@ import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
 import { pickFace } from '../color/facePicker';
-import { addPointerSuppressor } from '../renderer/viewport';
+import { addPointerSuppressor, getCanvas } from '../renderer/viewport';
+import { showEngraveOutline, hideEngraveOutline, disposeEngraveOutline } from '../surface/engravePlacementOverlay';
 import { buildAdjacency, findConnectedFromSeed } from '../color/adjacency';
 import { getCurrentMesh, previewTriangles } from '../color/paintMode';
 import { buildTriColors } from '../color/regions';
 import type { StampMask, EngraveProjection } from '../surface/modifiers';
+import { engravePlanarFootprint } from '../surface/engraveStamp';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
@@ -63,15 +65,9 @@ function onSurfaceEscape(e: KeyboardEvent): void {
 
 /** Current model's largest bbox dimension, for size-relative slider ranges. */
 function modelSpan(api: SurfaceApi): number {
-  try {
-    const gd = api.getGeometryData() as { boundingBox?: { min?: number[]; max?: number[] } | null };
-    const bb = gd?.boundingBox;
-    if (bb && bb.min && bb.max) {
-      const s = Math.max(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]);
-      if (Number.isFinite(s) && s > 0) return s;
-    }
-  } catch { /* fall through to default */ }
-  return 10;
+  const s = modelBBox(api).size;
+  const m = Math.max(s[0], s[1], s[2]);
+  return Number.isFinite(m) && m > 0 ? m : 10;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text = ''): HTMLElementTagNameMap[K] {
@@ -157,14 +153,27 @@ function sliderWithSnaps(label: string, value: number, onChange: () => void) {
  *  PLANE_AXES so click-placement fractions line up with the field math). */
 const ENGRAVE_PLANE_AXES: Record<'x' | 'y' | 'z', [number, number]> = { z: [0, 1], y: [0, 2], x: [1, 2] };
 
-/** Current model bbox (min/max/size) for placement fractions; a safe default
- *  if geometry data is unavailable. */
+interface EngravePlacement { axis: 'x' | 'y' | 'z'; side: 'min' | 'max'; posU: number; posV: number; rot: number }
+
+/** Current model bbox (min/max/size) for placement fractions and slider ranges;
+ *  a safe default if geometry data is unavailable. Handles both bbox shapes the
+ *  geometry data has used: the stats form `{x:[lo,hi], y, z}` that
+ *  `getGeometryData()` actually returns, and the legacy `{min, max}` form. */
 function modelBBox(api: SurfaceApi): { min: number[]; max: number[]; size: number[] } {
   try {
-    const gd = api.getGeometryData() as { boundingBox?: { min?: number[]; max?: number[] } | null };
+    const gd = api.getGeometryData() as {
+      boundingBox?: { min?: number[]; max?: number[]; x?: number[]; y?: number[]; z?: number[] } | null;
+    };
     const bb = gd?.boundingBox;
-    if (bb?.min && bb?.max && bb.min.length >= 3 && bb.max.length >= 3) {
-      return { min: bb.min, max: bb.max, size: [bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]] };
+    let min: number[] | undefined, max: number[] | undefined;
+    if (bb?.x && bb?.y && bb?.z) {
+      min = [bb.x[0], bb.y[0], bb.z[0]];
+      max = [bb.x[1], bb.y[1], bb.z[1]];
+    } else if (bb?.min && bb?.max && bb.min.length >= 3 && bb.max.length >= 3) {
+      min = bb.min; max = bb.max;
+    }
+    if (min && max && min.every(Number.isFinite) && max.every(Number.isFinite)) {
+      return { min, max, size: [max[0] - min[0], max[1] - min[1], max[2] - min[2]] };
     }
   } catch { /* fall through */ }
   return { min: [-5, -5, -5], max: [5, 5, 5], size: [10, 10, 10] };
@@ -272,6 +281,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   let engravePosY: { set: (v: number) => void } | null = null;
   let engraveFaceReadout: HTMLElement | null = null;
   let engravePlaceBtn: HTMLButtonElement | null = null;
+  let engraveSizeGet: (() => number) | null = null; // current text-size slider value
+  let engraveIsPlanar: (() => boolean) | null = null; // projection mode == planar
+  let engravePointerMove: ((e: PointerEvent) => void) | null = null; // hover listener while placing
 
   const status = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mb-2');
 
@@ -499,8 +511,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     body.innerHTML = '';
     // Leaving any tab stops an in-progress engrave placement and drops stale
     // control refs (the DOM they point at is about to be discarded).
-    exitEngravePick();
     engravePosX = engravePosY = null; engraveFaceReadout = null; engravePlaceBtn = null;
+    engraveSizeGet = null; engraveIsPlanar = null;
+    exitEngravePick();
     regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp' || active === 'engrave') ? 'none' : '';
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
@@ -705,24 +718,25 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const mode = dropdown<'planar' | 'cylindrical'>('Projection', [
         ['planar', 'Planar (onto a face)'],
         ['cylindrical', 'Cylindrical (wrap around Z)'],
-      ], 'planar', () => { syncProjUI(); schedulePreview(); });
+      ], 'planar', () => { syncProjUI(); refreshEngraveOutline(); schedulePreview(); });
 
-      // Planar placement: click a face to place, then fine-tune with the position
-      // sliders (quarter-point snaps) and an in-plane rotation.
+      // Planar placement: drag the footprint outline over the model (or click to
+      // drop), then fine-tune with the position sliders (quarter-point snaps) and
+      // an in-plane rotation.
       const placeWrap = el('div', 'mb-3 p-2 rounded bg-zinc-800/40 border border-zinc-700/60');
       const placeBtn = el('button', 'w-full px-2 py-1.5 rounded text-xs bg-blue-600/80 hover:bg-blue-500 text-white mb-1', '📌 Click to place on model');
       placeBtn.type = 'button';
       placeBtn.addEventListener('click', enterEngravePick);
       const faceReadout = el('div', 'text-[11px] text-zinc-400 mb-2', `Face: ${engraveFaceLabel(engravePlace.axis, engravePlace.side)}${engravePlace.placed ? ' · placed by click' : ''}`);
-      const posX = sliderWithSnaps('Position across (U)', engravePlace.posU, () => { engravePlace.posU = posX.get(); schedulePreview(); });
-      const posY = sliderWithSnaps('Position up (V)', engravePlace.posV, () => { engravePlace.posV = posY.get(); schedulePreview(); });
+      const posX = sliderWithSnaps('Position across (U)', engravePlace.posU, () => { engravePlace.posU = posX.get(); refreshEngraveOutline(); schedulePreview(); });
+      const posY = sliderWithSnaps('Position up (V)', engravePlace.posV, () => { engravePlace.posV = posY.get(); refreshEngraveOutline(); schedulePreview(); });
       placeWrap.append(placeBtn, faceReadout, posX.wrap, posY.wrap);
-      // Expose the live controls so the click-to-place handler can update them.
+      // Expose the live controls so the drag-to-place handler can update them.
       engravePosX = posX; engravePosY = posY; engraveFaceReadout = faceReadout; engravePlaceBtn = placeBtn;
 
       const cylSide = dropdown<'outer' | 'inner'>('Surface', [['outer', 'Outer'], ['inner', 'Inner']], 'outer', schedulePreview);
       // Rotation applies to both modes (in-plane for planar, angular facing for cylindrical).
-      const angle = slider('Rotation (°)', -180, 180, engravePlace.rot, 5, n => `${n}°`, () => { engravePlace.rot = angle.get(); schedulePreview(); });
+      const angle = slider('Rotation (°)', -180, 180, engravePlace.rot, 5, n => `${n}°`, () => { engravePlace.rot = angle.get(); refreshEngraveOutline(); schedulePreview(); });
       const syncProjUI = () => {
         const cyl = mode.get() === 'cylindrical';
         placeWrap.style.display = cyl ? 'none' : '';
@@ -730,15 +744,20 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       };
 
       const through = checkbox('Cut clean through (stencil)', false, () => { depthWrap.style.display = through.get() ? 'none' : ''; schedulePreview(); });
-      const sizeS = slider('Text size (width)', span * 0.1, span * 1.0, span * 0.7, span * 0.01, n => n.toFixed(2), schedulePreview);
+      const sizeS = slider('Text size (width)', span * 0.1, span * 1.0, span * 0.7, span * 0.01, n => n.toFixed(2), () => { refreshEngraveOutline(); schedulePreview(); });
       const depth = slider('Engrave depth', span * 0.005, span * 0.3, span * 0.06, span * 0.005, n => n.toFixed(3), schedulePreview);
       const depthWrap = depth.wrap;
       const res = sliderWithEntry('Resolution', 48, 220, 180, 1, 256, schedulePreview);
       const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
 
+      // Wire the live outline overlay to the current size + mode.
+      engraveSizeGet = () => sizeS.get();
+      engraveIsPlanar = () => mode.get() === 'planar';
+
       body.append(textWrap, font.wrap, imgWrap, invert.wrap, mode.wrap, placeWrap, cylSide.wrap, angle.wrap, through.wrap, sizeS.wrap, depthWrap, res.wrap, wtight.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'Carves text or an image into the model — recessed channels, or holes cut clean through (stencil). Click "place on model" to drop it where you click; the position sliders snap to quarter points. Cylindrical wraps around Z (rings, cups). Raise resolution if thin strokes look mushy.'));
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Carves text or an image into the model — recessed channels, or holes cut clean through (stencil). Press "place on model" then move over the model — a blue outline follows the cursor; click to drop it there. Fine-tune with the position sliders (quarter-point snaps) and rotation. Cylindrical wraps around Z (rings, cups). Raise resolution if thin strokes look mushy.'));
       syncProjUI();
+      refreshEngraveOutline();
 
       const projOf = (): EngraveProjection => {
         if (mode.get() === 'cylindrical') return { mode: 'cylindrical', side: cylSide.get(), rotationDeg: angle.get() };
@@ -822,48 +841,85 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     } finally {
       engraveBuilding = false;
     }
-    if (active === 'engrave') schedulePreview();
+    if (active === 'engrave') { refreshEngraveOutline(); schedulePreview(); }
   }
 
-  // --- Click-to-place: pick a surface point to position the engraving ---
+  // --- Drag-to-place: a live footprint outline follows the cursor over the
+  // model (like the paint brush cursor); clicking drops the engraving there. ---
+
+  /** Map a surface hit → nearest axis-aligned face + in-plane position fractions. */
+  function placementFromHit(point: [number, number, number], normal: [number, number, number]): EngravePlacement {
+    const bb = modelBBox(api);
+    const an = normal.map(Math.abs);
+    const ax = an[0] >= an[1] && an[0] >= an[2] ? 0 : an[1] >= an[2] ? 1 : 2;
+    const axis = (['x', 'y', 'z'] as const)[ax];
+    const [ui, vi] = ENGRAVE_PLANE_AXES[axis];
+    const frac = (i: number) => (bb.size[i] > 1e-9 ? Math.min(1, Math.max(0, (point[i] - bb.min[i]) / bb.size[i])) : 0.5);
+    return { axis, side: normal[ax] >= 0 ? 'max' : 'min', posU: frac(ui), posV: frac(vi), rot: engravePlace.rot };
+  }
+
+  /** Draw the footprint outline for a placement (defaults to the committed one).
+   *  Hidden for cylindrical mode (no flat footprint) or when there's no stamp. */
+  function refreshEngraveOutline(place: EngravePlacement = engravePlace) {
+    if (active !== 'engrave' || !engraveMask || !engraveSizeGet || !(engraveIsPlanar?.() ?? false)) {
+      hideEngraveOutline();
+      return;
+    }
+    const bb = modelBBox(api);
+    const axisIdx = place.axis === 'x' ? 0 : place.axis === 'y' ? 1 : 2;
+    showEngraveOutline(engravePlanarFootprint(
+      { min: bb.min as [number, number, number], max: bb.max as [number, number, number], size: bb.size as [number, number, number] },
+      {
+        axis: place.axis, side: place.side, posU: place.posU, posV: place.posV, rotationDeg: place.rot,
+        size: engraveSizeGet(), aspect: engraveMask.width / Math.max(1, engraveMask.height),
+        lift: Math.max(bb.size[axisIdx] * 0.003, 0.05),
+      },
+    ));
+  }
+
+  /** Commit a placement to the sliders + state, then re-preview the engraving. */
+  function commitPlacement(place: EngravePlacement) {
+    engravePlace.axis = place.axis;
+    engravePlace.side = place.side;
+    engravePlace.posU = place.posU;
+    engravePlace.posV = place.posV;
+    engravePlace.placed = true;
+    engravePosX?.set(place.posU);
+    engravePosY?.set(place.posV);
+    if (engraveFaceReadout) engraveFaceReadout.textContent = `Face: ${engraveFaceLabel(place.axis, place.side)} · placed by click`;
+    refreshEngraveOutline();
+    schedulePreview();
+  }
+
   function exitEngravePick() {
-    if (!engravePickStop) return;
-    engravePickStop();
-    engravePickStop = null;
+    if (engravePointerMove) { getCanvas().removeEventListener('pointermove', engravePointerMove); engravePointerMove = null; }
+    if (engravePickStop) { engravePickStop(); engravePickStop = null; }
     document.body.style.cursor = '';
     if (engravePlaceBtn) engravePlaceBtn.textContent = '📌 Click to place on model';
+    refreshEngraveOutline(); // snap the outline back to the committed placement
   }
   function enterEngravePick() {
     if (engravePickStop) { exitEngravePick(); return; }
     document.body.style.cursor = 'crosshair';
-    status.textContent = 'Click the model to place the engraving…';
-    if (engravePlaceBtn) engravePlaceBtn.textContent = '◉ Picking… (click to stop)';
+    status.textContent = 'Move over the model — the outline follows; click to place.';
+    if (engravePlaceBtn) engravePlaceBtn.textContent = '◉ Placing… (click to stop)';
+    // Hover: project the cursor onto the surface and float the outline there.
+    engravePointerMove = (evt: PointerEvent) => {
+      if (!getCurrentMesh()) return;
+      const hit = pickFace(evt as unknown as MouseEvent);
+      if (!hit) return; // keep the last outline when off the model
+      refreshEngraveOutline(placementFromHit(hit.point, hit.normal));
+    };
+    getCanvas().addEventListener('pointermove', engravePointerMove);
+    // Click: suppress orbit and drop the engraving at the hit point.
     engravePickStop = addPointerSuppressor((evt: PointerEvent) => {
       if (evt.type !== 'pointerdown') return false;
       if (!getCurrentMesh()) return true;
       const hit = pickFace(evt as MouseEvent);
-      if (!hit) return true; // empty space — keep picking
-      placeEngraveFromHit(hit.point, hit.normal);
-      exitEngravePick();
+      if (!hit) return true; // empty space — keep placing
+      commitPlacement(placementFromHit(hit.point, hit.normal));
       return true;
     });
-  }
-  // Map a surface hit → nearest axis-aligned face + in-plane position fractions.
-  function placeEngraveFromHit(point: [number, number, number], normal: [number, number, number]) {
-    const bb = modelBBox(api);
-    const an = normal.map(Math.abs);
-    const ax = an[0] >= an[1] && an[0] >= an[2] ? 0 : an[1] >= an[2] ? 1 : 2;
-    engravePlace.axis = (['x', 'y', 'z'] as const)[ax];
-    engravePlace.side = normal[ax] >= 0 ? 'max' : 'min';
-    const [ui, vi] = ENGRAVE_PLANE_AXES[engravePlace.axis];
-    const frac = (i: number) => (bb.size[i] > 1e-9 ? Math.min(1, Math.max(0, (point[i] - bb.min[i]) / bb.size[i])) : 0.5);
-    engravePlace.posU = frac(ui);
-    engravePlace.posV = frac(vi);
-    engravePlace.placed = true;
-    engravePosX?.set(engravePlace.posU);
-    engravePosY?.set(engravePlace.posV);
-    if (engraveFaceReadout) engraveFaceReadout.textContent = `Face: ${engraveFaceLabel(engravePlace.axis, engravePlace.side)} · placed by click`;
-    schedulePreview();
   }
 
   function clearPreviewIfDirty() {
@@ -906,6 +962,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   const close = () => {
     exitSelectionMode();
     exitEngravePick();
+    disposeEngraveOutline();
     regionTeardown?.(); regionTeardown = null;
     clearPreviewIfDirty();
     dragHandle.destroy();

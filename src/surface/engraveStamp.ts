@@ -283,3 +283,32 @@ export function engraveCombine(bbox: Bbox, opts: EngraveFieldOptions): SdfCombin
     return Math.max(d, -removal);
   };
 }
+
+/** The four world-space corners of the stamp's rectangular footprint on its
+ *  planar face, in order (CCW). Mirrors {@link engraveCombine}'s planar center +
+ *  rotation math so a UI outline lands exactly where the carve will. `lift`
+ *  nudges the rect off the face (along its normal) to avoid z-fighting when it's
+ *  drawn as an overlay. Pure. */
+export function engravePlanarFootprint(
+  bbox: Bbox,
+  opts: { axis: 'x' | 'y' | 'z'; side: 'min' | 'max'; posU?: number; posV?: number; rotationDeg?: number; size: number; aspect: number; lift?: number },
+): [number, number, number][] {
+  const [ui, vi] = PLANE_AXES[opts.axis];
+  const axisIdx = opts.axis === 'x' ? 0 : opts.axis === 'y' ? 1 : 2;
+  const clamp01 = (n: number) => (Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.5);
+  const hw = Math.max(1e-6, opts.size) / 2;
+  const hh = hw / Math.max(1e-6, opts.aspect);
+  const centerU = bbox.min[ui] + clamp01(opts.posU ?? 0.5) * bbox.size[ui];
+  const centerV = bbox.min[vi] + clamp01(opts.posV ?? 0.5) * bbox.size[vi];
+  const facePos = (opts.side === 'max' ? bbox.max[axisIdx] : bbox.min[axisIdx])
+    + (opts.lift ?? 0) * (opts.side === 'max' ? 1 : -1);
+  const rot = ((opts.rotationDeg ?? 0) * Math.PI) / 180;
+  const c = Math.cos(rot), s = Math.sin(rot);
+  const local: [number, number][] = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+  return local.map(([su, sv]) => {
+    const du = c * su - s * sv, dv = s * su + c * sv;
+    const p: [number, number, number] = [0, 0, 0];
+    p[ui] = centerU + du; p[vi] = centerV + dv; p[axisIdx] = facePos;
+    return p;
+  });
+}

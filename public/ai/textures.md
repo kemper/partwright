@@ -383,10 +383,11 @@ than the relief textures — allow a few seconds.
 | `watertight` | true | Keep only the largest connected piece — one manifold result. |
 
 **Placement:** `posU`/`posV` move the stamp to a quarter/third of the face
-instead of dead-center; `rotationDeg` spins it. In the **Surface panel** you can
-also **click the model** to drop the stamp where you click (it picks the nearest
-face and sets posU/posV), then nudge with the position sliders (which snap to
-0/25/50/75/100%).
+instead of dead-center; `rotationDeg` spins it. In the **Surface panel**, press
+**"place on model"** and a live footprint outline follows the cursor over the
+model — click to drop it there (it picks the nearest face and sets posU/posV).
+Then nudge with the position sliders (which snap to 0/25/50/75%). The live
+preview keeps the model's colors, so you see exactly what Apply will produce.
 
 **Colors are preserved.** Engraving a painted model carries the existing paint
 onto the carved mesh (a spatial transfer), so a painted nameplate keeps its

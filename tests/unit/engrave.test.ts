@@ -6,6 +6,7 @@ import {
   maskFromRGBA,
   maskAspect,
   engraveCombine,
+  engravePlanarFootprint,
   type StampMask,
   type Bbox,
 } from '../../src/surface/engraveStamp';
@@ -148,6 +149,46 @@ describe('engraveCombine — planar placement (position + rotation)', () => {
     });
     // Clamped to posU=1, posV=0 → stamp center at (x=20, y=0); ink near that corner.
     expect(combine({ d: -1, x: 20, y: 0, z: 2, voxelSize: vox })).toBeGreaterThan(0);
+  });
+});
+
+describe('engravePlanarFootprint — outline corners', () => {
+  const bbox = { min: [0, 0, 0] as [number, number, number], max: [20, 10, 4] as [number, number, number], size: [20, 10, 4] as [number, number, number] };
+
+  it('centers a square footprint on the top face by default', () => {
+    const c = engravePlanarFootprint(bbox, { axis: 'z', side: 'max', size: 8, aspect: 1 });
+    // 4 corners, all on the top face (z = max = 4), centered at (10, 5).
+    expect(c).toHaveLength(4);
+    for (const p of c) expect(p[2]).toBeCloseTo(4);
+    // half-extent 4 → x ∈ [6,14], y ∈ [1,9].
+    const xs = c.map(p => p[0]), ys = c.map(p => p[1]);
+    expect(Math.min(...xs)).toBeCloseTo(6);
+    expect(Math.max(...xs)).toBeCloseTo(14);
+    expect(Math.min(...ys)).toBeCloseTo(1);
+    expect(Math.max(...ys)).toBeCloseTo(9);
+  });
+
+  it('posU/posV move the footprint to a bbox fraction', () => {
+    const c = engravePlanarFootprint(bbox, { axis: 'z', side: 'max', posU: 0.25, posV: 0.5, size: 4, aspect: 1 });
+    const cx = c.reduce((s, p) => s + p[0], 0) / 4;
+    expect(cx).toBeCloseTo(5); // 0.25 * 20
+  });
+
+  it('aspect controls height; lift pushes the rect off the face', () => {
+    const c = engravePlanarFootprint(bbox, { axis: 'z', side: 'max', size: 8, aspect: 2, lift: 0.5 });
+    const ys = c.map(p => p[1]);
+    // aspect 2 → height = 8/2 = 4 → y half-extent 2 → span 4.
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(4);
+    // lifted 0.5 above the max face.
+    for (const p of c) expect(p[2]).toBeCloseTo(4.5);
+  });
+
+  it('rotation 90° swaps the footprint width/height extents', () => {
+    const c = engravePlanarFootprint(bbox, { axis: 'z', side: 'max', size: 8, aspect: 2, rotationDeg: 90 });
+    const xs = c.map(p => p[0]), ys = c.map(p => p[1]);
+    // width 8, height 4 → after 90° the x-extent becomes 4 and y-extent 8.
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(4);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(8);
   });
 });
 

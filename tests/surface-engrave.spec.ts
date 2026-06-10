@@ -129,4 +129,29 @@ test.describe('Engrave / cut-through surface modifier', () => {
       { timeout: 30_000 },
     ).toContain('Manifold.ofMesh(api.imports[0])');
   });
+
+  test('Engrave place mode: clicking the model sets the placement face', async ({ page }) => {
+    await page.evaluate(async ([code]) => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('engrave-place');
+      await pw.run(code);
+    }, [SLAB]);
+
+    await page.locator('#viewport-tools-group-btn').click();
+    await page.locator('#surface-viewport-toggle').click();
+    await page.getByRole('button', { name: 'Engrave', exact: true }).click();
+    await page.getByPlaceholder('HELLO').fill('HI');
+    await expect(page.getByText('Previewing — Apply to save a version.')).toBeVisible({ timeout: 15_000 });
+
+    // Enter place mode → the outline follows the cursor; clicking the model drops it.
+    await page.getByRole('button', { name: '📌 Click to place on model' }).click();
+    const canvas = page.locator('canvas').first();
+    const box = (await canvas.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+
+    // The face readout reflects a click-placed face (top of the slab from the iso view).
+    await expect(page.locator('div', { hasText: /^Face: .* · placed by click$/ }).first())
+      .toBeVisible({ timeout: 10_000 });
+  });
 });

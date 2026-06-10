@@ -7129,10 +7129,41 @@ async function main() {
   // current model's mesh (clearSurfacePreview). Mirrors the relief preview path.
   // Colors are carried through subdivision in buildSurfaceModifier, so result.mesh
   // already has the correct per-triangle colors — no post-hoc transfer needed.
-  function previewSurfaceModifier(result: ModifierResult, _preserveColor: boolean): void {
+  /** Write per-triangle colors onto `target` by nearest-triangle transfer from a
+   *  colored `source` (a painted or model-declared mesh). Used to keep the
+   *  engrave/voronoi-lamp *preview* colored — those bake a fresh, color-less mesh,
+   *  so without this the live preview goes grey/default-blue and looks like the
+   *  carve wiped the model's colors. The `_painted` mask is carried so unmapped /
+   *  unpainted triangles render the default material instead of black — matching
+   *  what Apply produces (partial paint works too). */
+  function previewColorsFromSource(target: MeshData, source: MeshData): MeshData | null {
+    const src = source.triColors;
+    if (!src) return null;
+    const srcPainted = (src as Uint8Array & { _painted?: Uint8Array })._painted;
+    const nearest = nearestTriangleMap(source, target);
+    const out = new Uint8Array(target.numTri * 3);
+    const painted = new Uint8Array(target.numTri);
+    for (let t = 0; t < target.numTri; t++) {
+      const o = nearest[t];
+      if (o < 0 || (srcPainted && srcPainted[o] !== 1)) continue;
+      out[t * 3] = src[o * 3]; out[t * 3 + 1] = src[o * 3 + 1]; out[t * 3 + 2] = src[o * 3 + 2];
+      painted[t] = 1;
+    }
+    (out as Uint8Array & { _painted?: Uint8Array })._painted = painted;
+    return { ...target, triColors: out };
+  }
+
+  function previewSurfaceModifier(result: ModifierResult, preserveColor: boolean): void {
     const previewMesh = result.kind === 'manifold' ? result.mesh : result.previewMesh;
     if (previewMesh.numTri === 0) return;
-    updateMesh(previewMesh, { skipAutoFrame: true });
+    // Texture results already carry triColors (rendered colored). For a re-meshed
+    // result with none (engrave / voronoi lamp), transfer the model's colors so
+    // the preview matches what Apply will produce instead of flashing grey.
+    let mesh = previewMesh;
+    if (preserveColor && result.kind === 'manifold' && !previewMesh.triColors && result.colorSource) {
+      mesh = previewColorsFromSource(previewMesh, result.colorSource) ?? previewMesh;
+    }
+    updateMesh(mesh, { skipAutoFrame: true });
   }
 
   function clearSurfacePreview(): void {
