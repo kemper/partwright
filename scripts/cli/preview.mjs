@@ -8,7 +8,8 @@
 // are faithful; the rasterizer is a pure-JS stand-in for the WebGL viewport
 // (flat shading, model-declared label colors only — see docs/headless-cli.md).
 import { createServer } from 'vite';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, unlinkSync } from 'node:fs';
+import { dirname, basename, join } from 'node:path';
 import sharp from 'sharp';
 import { DEFAULT_VIEWS, resolveViews } from './views.mjs';
 
@@ -16,6 +17,25 @@ import { DEFAULT_VIEWS, resolveViews } from './views.mjs';
 // pulling resolveViews from preview.mjs; the implementation lives in views.mjs
 // (pure, unit-testable).
 export { resolveViews };
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Default preview-PNG path for a model file — UNIQUE per run (base36-ms
+// timestamp suffix), because the agent Read tool caches images by path: a
+// re-render written to the same `<file>.preview.png` gets served stale, and
+// past sessions nearly concluded their edits "did nothing" because of it.
+// Older default previews for the same model are removed first so the
+// directory holds at most one at rest. An explicit --png path is the caller's
+// own business and is used verbatim (no stamp, no cleanup).
+export function defaultPreviewPng(file) {
+  const dir = dirname(file);
+  const stem = basename(file).replace(/\.[^.]+$/, '');
+  const old = new RegExp(`^${escapeRe(stem)}\\.preview(-[a-z0-9]+)?\\.png$`);
+  try {
+    for (const f of readdirSync(dir)) if (old.test(f)) unlinkSync(join(dir, f));
+  } catch { /* best-effort cleanup — a leftover stale file is only clutter */ }
+  return join(dir, `${stem}.preview-${Date.now().toString(36)}.png`);
+}
 
 // ---------- pure-JS rasterizer ----------
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
