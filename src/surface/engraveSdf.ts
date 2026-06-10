@@ -12,7 +12,7 @@
 // the host from the app's text path or a decoded image).
 
 import type { MeshData } from '../geometry/types';
-import { sdfModifierMesh, MAX_FIELD_RESOLUTION } from './sdfModifier';
+import { sdfModifierMesh, MAX_FIELD_RESOLUTION, type SdfRunControl } from './sdfModifier';
 import { extractPositions, bboxOf } from './meshSubdivide';
 import { engraveCombine, type EngraveFieldOptions } from './engraveStamp';
 
@@ -25,8 +25,9 @@ export interface EngraveSdfOptions extends EngraveFieldOptions {
 }
 
 /** Build a smooth engraved/cut-through mesh from a solid model. Returns an empty
- *  mesh for an empty input or a degenerate (empty) mask. */
-export function engraveMesh(mesh: MeshData, opts: EngraveSdfOptions): MeshData {
+ *  mesh for an empty input or a degenerate (empty) mask. Async: the field sweep
+ *  yields so the UI can show progress and cancel (see {@link sdfModifierMesh}). */
+export async function engraveMesh(mesh: MeshData, opts: EngraveSdfOptions, ctl?: SdfRunControl): Promise<MeshData> {
   const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
   if (mesh.numTri === 0) return empty;
 
@@ -46,5 +47,6 @@ export function engraveMesh(mesh: MeshData, opts: EngraveSdfOptions): MeshData {
     mesh,
     { resolution, bandWorld: band, watertight: opts.watertight },
     engraveCombine(bbox, opts),
+    ctl,
   );
 }

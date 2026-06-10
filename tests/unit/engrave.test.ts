@@ -210,21 +210,30 @@ describe('engraveCombine — cylindrical projection', () => {
 });
 
 describe('engraveMesh', () => {
-  it('returns an empty mesh for an empty input', () => {
-    const out = engraveMesh({ vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 }, {
+  it('returns an empty mesh for an empty input', async () => {
+    const out = await engraveMesh({ vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 }, {
       mask: solidMask(), projection: { mode: 'planar', axis: 'z', side: 'max' }, through: false, depth: 1, size: 5,
     });
     expect(out.numTri).toBe(0);
   });
 
-  it('produces a non-empty carved mesh for an engrave and a cut-through', () => {
+  it('produces a non-empty carved mesh for an engrave and a cut-through', async () => {
     const mesh = box(20, 20, 4);
     // A small centered stamp so the carve sits inside the slab.
     const mask = solidMask(8);
-    const engraved = engraveMesh(mesh, { mask, projection: { mode: 'planar', axis: 'z', side: 'max' }, through: false, depth: 1.5, size: 8, resolution: 64 });
+    const engraved = await engraveMesh(mesh, { mask, projection: { mode: 'planar', axis: 'z', side: 'max' }, through: false, depth: 1.5, size: 8, resolution: 64 });
     expect(engraved.numTri).toBeGreaterThan(0);
     expect(engraved.numProp).toBe(3);
-    const through = engraveMesh(mesh, { mask, projection: { mode: 'planar', axis: 'z', side: 'max' }, through: true, depth: 1.5, size: 8, resolution: 64 });
+    const through = await engraveMesh(mesh, { mask, projection: { mode: 'planar', axis: 'z', side: 'max' }, through: true, depth: 1.5, size: 8, resolution: 64 });
     expect(through.numTri).toBeGreaterThan(0);
+  });
+
+  it('lies on a sloped face via the free projection', async () => {
+    const mesh = box(20, 20, 20);
+    // A 45°-ish normal → free projection; should still carve a non-empty mesh.
+    const out = await engraveMesh(mesh, {
+      mask: solidMask(8), projection: { mode: 'free', origin: [10, 0, 10], normal: [0.707, -0.707, 0] }, through: false, depth: 1.5, size: 6, resolution: 64,
+    });
+    expect(out.numTri).toBeGreaterThan(0);
   });
 });

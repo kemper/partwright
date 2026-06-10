@@ -154,4 +154,22 @@ test.describe('Engrave / cut-through surface modifier', () => {
     await expect(page.locator('div', { hasText: /^Face: .* · placed by click$/ }).first())
       .toBeVisible({ timeout: 10_000 });
   });
+
+  test('engraveModel follows a sloped face via the free projection', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('engrave-sloped');
+      // A 4-sided pyramid — every side face is slanted (no axis-aligned wall).
+      await pw.run('const { Manifold } = api;\nreturn Manifold.cylinder(40, 30, 0.2, 4).rotate([0,0,45]);');
+      // Lie the stamp flat on a slanted face (normal points out + up).
+      const r = await pw.engraveModel({ text: 'A', through: false, depth: 1.5, size: 12,
+        projection: { mode: 'free', origin: [12, 0, 20], normal: [0.6, 0, 0.8] }, resolution: 110 });
+      // The free carve bakes an ofMesh wrapper, just like the planar path.
+      return { ok: r.ok, error: r.error, label: r.label, src: pw.getCode() };
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.ok).toBe(true);
+    expect(result.label).toBe('engrave');
+    expect(result.src).toContain('Manifold.ofMesh(api.imports[0])');
+  });
 });

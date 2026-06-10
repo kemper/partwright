@@ -159,16 +159,19 @@ export function maskFromRGBA(
   return { width, height, data };
 }
 
-/** Where the stamp lives on the model. `planar` projects onto one of the six
- *  axis-aligned faces; `cylindrical` wraps the stamp around the Z axis.
- *
- *  Planar placement: `posU`/`posV` are the stamp *center* as a fraction [0,1] of
- *  the model's bounding box along the face's two in-plane axes (default 0.5 =
- *  centered; 0.25/0.75 = quarter points). `rotationDeg` rotates the stamp in the
- *  face plane about that center. These let the UI place the stamp by clicking a
- *  surface point (which sets posU/posV/side/axis) or by the position sliders. */
+/** Where the stamp lives on the model.
+ *  - `planar`: projects onto one of the six axis-aligned faces. `posU`/`posV`
+ *    are the stamp *center* as a fraction [0,1] of the bbox along the face's two
+ *    in-plane axes (0.5 = centered; 0.25/0.75 = quarter points). Good for flat
+ *    axis-aligned faces (cubes, slabs) where the position sliders make sense.
+ *  - `free`: lies flat on an arbitrary surface point — `origin` + outward
+ *    `normal` define the plane, so the stamp follows a sloped or curved face
+ *    (a pyramid side, a sphere). Used when you click a non-axis-aligned face.
+ *  - `cylindrical`: wraps the stamp around the Z axis.
+ *  `rotationDeg` rotates the stamp in its plane (planar/free) or around Z. */
 export type EngraveProjection =
   | { mode: 'planar'; axis: 'x' | 'y' | 'z'; side: 'min' | 'max'; posU?: number; posV?: number; rotationDeg?: number }
+  | { mode: 'free'; origin: [number, number, number]; normal: [number, number, number]; rotationDeg?: number }
   | { mode: 'cylindrical'; side: 'outer' | 'inner'; rotationDeg?: number };
 
 export interface EngraveFieldOptions {
@@ -195,6 +198,29 @@ const PLANE_AXES: Record<'x' | 'y' | 'z', [0 | 1 | 2, 0 | 1 | 2]> = {
   y: [0, 2], // front/back: u→x, v→z
   x: [1, 2], // left/right: u→y, v→z
 };
+
+type Vec3 = [number, number, number];
+const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
+/** Orthonormal in-plane axes (u, v) for a surface normal, with an in-plane
+ *  rotation applied; `n` is the unit outward normal. v completes a right-handed
+ *  frame. Shared by the free-projection field and its footprint outline so they
+ *  stay in lockstep. Pure. */
+export function tangentFrame(normal: Vec3, rotationDeg = 0): { u: Vec3; v: Vec3; n: Vec3 } {
+  const len = Math.hypot(normal[0], normal[1], normal[2]) || 1;
+  const n: Vec3 = [normal[0] / len, normal[1] / len, normal[2] / len];
+  // A reference axis not parallel to n, so the cross product is well-conditioned.
+  const ref: Vec3 = Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0];
+  const u0raw = cross(ref, n);
+  const ul = Math.hypot(u0raw[0], u0raw[1], u0raw[2]) || 1;
+  const u0: Vec3 = [u0raw[0] / ul, u0raw[1] / ul, u0raw[2] / ul];
+  const v0 = cross(n, u0); // unit (n ⟂ u0, both unit)
+  const rot = (rotationDeg * Math.PI) / 180;
+  const c = Math.cos(rot), s = Math.sin(rot);
+  const u: Vec3 = [u0[0] * c + v0[0] * s, u0[1] * c + v0[1] * s, u0[2] * c + v0[2] * s];
+  const v: Vec3 = [-u0[0] * s + v0[0] * c, -u0[1] * s + v0[1] * c, -u0[2] * s + v0[2] * c];
+  return { u, v, n };
+}
 
 /** Build the SDF `combine` that cuts the stamp into a solid with the given
  *  bbox. `< 0` = inside the result solid (sdfModifier convention). Pure. */
@@ -240,6 +266,21 @@ export function engraveCombine(bbox: Bbox, opts: EngraveFieldOptions): SdfCombin
     depthInto = (x, y, z) => {
       const p = [x, y, z];
       return sign * (facePos - p[axisIdx]);
+    };
+  } else if (projection.mode === 'free') {
+    // Free plane: the stamp lies flat on an arbitrary surface point. Project
+    // world points into the tangent frame at `origin`; depth runs along −normal.
+    const o = projection.origin;
+    const { u, v, n } = tangentFrame(projection.normal, projection.rotationDeg ?? 0);
+    project = (x, y, z) => {
+      const dx = x - o[0], dy = y - o[1], dz = z - o[2];
+      const du = dx * u[0] + dy * u[1] + dz * u[2];
+      const dv = dx * v[0] + dy * v[1] + dz * v[2];
+      return sampleMask(mask, du / stampW + 0.5, 0.5 - dv / stampH);
+    };
+    depthInto = (x, y, z) => {
+      const dx = x - o[0], dy = y - o[1], dz = z - o[2];
+      return -(dx * n[0] + dy * n[1] + dz * n[2]); // ≥0 below the surface (into the solid)
     };
   } else {
     // Cylindrical: wrap around Z. u = angle fraction, v = height fraction.
@@ -311,4 +352,25 @@ export function engravePlanarFootprint(
     p[ui] = centerU + du; p[vi] = centerV + dv; p[axisIdx] = facePos;
     return p;
   });
+}
+
+/** The four world-space corners of a free-projection stamp footprint — the
+ *  rectangle lying flat on the surface at `origin` with the given `normal`,
+ *  matching the free branch of {@link engraveCombine}. `lift` nudges it off the
+ *  surface (along the normal) so an overlay doesn't z-fight. Pure. */
+export function engraveFreeFootprint(
+  origin: [number, number, number],
+  normal: [number, number, number],
+  opts: { size: number; aspect: number; rotationDeg?: number; lift?: number },
+): [number, number, number][] {
+  const { u, v, n } = tangentFrame(normal, opts.rotationDeg ?? 0);
+  const hw = Math.max(1e-6, opts.size) / 2;
+  const hh = hw / Math.max(1e-6, opts.aspect);
+  const lift = opts.lift ?? 0;
+  const local: [number, number][] = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+  return local.map(([su, sv]) => [
+    origin[0] + u[0] * su + v[0] * sv + n[0] * lift,
+    origin[1] + u[1] * su + v[1] * sv + n[1] * lift,
+    origin[2] + u[2] * su + v[2] * sv + n[2] * lift,
+  ] as [number, number, number]);
 }

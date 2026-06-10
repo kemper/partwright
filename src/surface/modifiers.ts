@@ -32,6 +32,7 @@ import { meshGrid } from '../geometry/voxel/mesher';
 import { voronoiLampSdfMesh } from './voronoiLampSdf';
 import { engraveMesh, type EngraveSdfOptions } from './engraveSdf';
 import { type EngraveProjection } from './engraveStamp';
+import { type SdfRunControl } from './sdfModifier';
 
 export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
 
@@ -145,6 +146,7 @@ export { type WovenFabricOptions };
 export { type VoronoiShellOptions };
 export { type VoronoiLampOptions };
 export { type EngraveProjection, type StampMask } from './engraveStamp';
+export { type SdfRunControl, SdfAbortError } from './sdfModifier';
 
 export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierManifoldResult {
   const baked = fuzzySkin(mesh, opts);
@@ -624,14 +626,14 @@ export function applyTransform(
   };
 }
 
-export function applyVoronoiLamp(mesh: MeshData, opts: VoronoiLampModifierOptions): ModifierResult {
+export async function applyVoronoiLamp(mesh: MeshData, opts: VoronoiLampModifierOptions, ctl?: SdfRunControl): Promise<ModifierResult> {
   // Default: a smooth manifold-js mesh built from a CONTINUOUS signed-distance
   // field (the principle behind Manifold.levelSet, done pure-JS on the main
   // thread). The wall follows the true distance to the *smooth* original surface
   // sub-voxel, so there's no voxel "corduroy" — and resolution genuinely sharpens
   // it. See voronoiLampSdf.ts.
   if ((opts.output ?? 'mesh') === 'mesh') {
-    const baked = voronoiLampSdfMesh(mesh, opts);
+    const baked = await voronoiLampSdfMesh(mesh, opts, ctl);
     return {
       kind: 'manifold',
       label: 'voronoi lamp',
@@ -695,11 +697,13 @@ export function defaultEngraveOptions(mesh: MeshData): {
   };
 }
 
-export function applyEngrave(mesh: MeshData, opts: EngraveModifierOptions): ModifierManifoldResult {
-  const baked = engraveMesh(mesh, opts);
+export async function applyEngrave(mesh: MeshData, opts: EngraveModifierOptions, ctl?: SdfRunControl): Promise<ModifierManifoldResult> {
+  const baked = await engraveMesh(mesh, opts, ctl);
   const proj = opts.projection.mode === 'planar'
     ? `${opts.projection.side === 'max' ? '+' : '-'}${opts.projection.axis.toUpperCase()} face`
-    : `${opts.projection.side} cylinder`;
+    : opts.projection.mode === 'free'
+      ? 'a clicked face'
+      : `${opts.projection.side} cylinder`;
   const what = opts.source ? `"${opts.source}"` : 'stamp';
   return {
     kind: 'manifold',

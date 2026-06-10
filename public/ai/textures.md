@@ -385,9 +385,15 @@ than the relief textures — allow a few seconds.
 **Placement:** `posU`/`posV` move the stamp to a quarter/third of the face
 instead of dead-center; `rotationDeg` spins it. In the **Surface panel**, press
 **"place on model"** and a live footprint outline follows the cursor over the
-model — click to drop it there (it picks the nearest face and sets posU/posV).
-Then nudge with the position sliders (which snap to 0/25/50/75%). The live
-preview keeps the model's colors, so you see exactly what Apply will produce.
+model — click to drop it there. Clicking a flat axis-aligned face snaps to that
+face (the position sliders + 0/25/50/75% snaps apply); clicking a **sloped or
+curved face** lies the stamp flat on it (a "free" projection, positioned by the
+click). The live preview keeps the model's colors. Heavy carves show a
+"Rendering…" progress bar you can cancel.
+
+For a sloped/curved face from code, pass an explicit free projection:
+`engraveModel({ text:'A', projection:{ mode:'free', origin:[x,y,z], normal:[nx,ny,nz] }, … })`
+— `origin` is the surface point and `normal` its outward direction.
 
 **Colors are preserved.** Engraving a painted model carries the existing paint
 onto the carved mesh (a spatial transfer), so a painted nameplate keeps its

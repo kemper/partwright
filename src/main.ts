@@ -121,7 +121,7 @@ import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geom
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult, type EngraveProjection, type StampMask } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
 import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampHost';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
@@ -7500,11 +7500,12 @@ async function main() {
   // so the result already has correct per-triangle paint — no post-hoc transfer.
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
-  function buildSurfaceModifier(
+  async function buildSurfaceModifier(
     id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
-  ): ModifierResult {
+    ctl?: SdfRunControl,
+  ): Promise<ModifierResult> {
     const sel = opts?.selectedTriangles as Set<number> | undefined;
     if (id === 'fuzzy') {
       const mesh = meshForModifier(preserveColor);
@@ -7633,12 +7634,12 @@ async function main() {
         watertight: (opts?.watertight as boolean) ?? base.watertight,
         output: (opts?.output as 'mesh' | 'voxel') ?? base.output,
         smooth: (opts?.smooth as boolean) ?? base.smooth,
-      });
+      }, ctl);
     }
     if (id === 'engrave') {
       // Whole-model carve (no region patch). The ink mask is pre-rasterized by
       // the host (text via the app's font path, or a decoded image) and passed
-      // in opts.mask so this stays synchronous for live preview.
+      // in opts.mask. The SDF carve yields via `ctl` so the UI shows progress.
       const mesh = meshForModifier(preserveColor);
       const base = defaultEngraveOptions(mesh);
       const mask = opts?.mask as StampMask | undefined;
@@ -7654,7 +7655,7 @@ async function main() {
         resolution: (opts?.resolution as number) ?? base.resolution,
         watertight: (opts?.watertight as boolean) ?? base.watertight,
         source: opts?.source as string | undefined,
-      });
+      }, ctl);
     }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
@@ -7673,6 +7674,38 @@ async function main() {
     });
   }
 
+  // The SDF carves (engrave, voronoi lamp) sweep a dense lattice and can take a
+  // few seconds. Run them under the shared progress modal with a Cancel that
+  // aborts the sweep, and supersede any in-flight carve when a newer one starts
+  // (rapid slider edits). Lighter modifiers run inline with no modal.
+  let surfaceCarveAbort: AbortController | null = null;
+  const SDF_HEAVY = new Set(['engrave', 'voronoiLamp']);
+  const SURFACE_PROGRESS_TITLES: Record<string, string> = { engrave: 'Rendering engraving', voronoiLamp: 'Rendering Voronoi lamp' };
+  async function buildSurfaceModifierProgress(
+    id: Parameters<typeof buildSurfaceModifier>[0],
+    opts: Record<string, unknown> | undefined,
+    preserveColor: boolean,
+  ): Promise<ModifierResult> {
+    if (!SDF_HEAVY.has(id)) return buildSurfaceModifier(id, opts, preserveColor);
+    surfaceCarveAbort?.abort();              // supersede an in-flight carve
+    const abort = new AbortController();
+    surfaceCarveAbort = abort;
+    const progressId = startProgress({
+      title: SURFACE_PROGRESS_TITLES[id] ?? 'Rendering',
+      message: 'Carving the surface — this can take a few seconds.',
+      onCancel: () => abort.abort(),
+    });
+    try {
+      return await buildSurfaceModifier(id, opts, preserveColor, {
+        signal: abort.signal,
+        onProgress: (f) => updateProgress(progressId, f),
+      });
+    } finally {
+      endProgress(progressId);
+      if (surfaceCarveAbort === abort) surfaceCarveAbort = null;
+    }
+  }
+
   // === Expose window.partwright console API ===
   const partwrightAPI = {
     /** Whether the current model carries paint (so the UI can warn before a
@@ -7681,11 +7714,15 @@ async function main() {
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
      *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize'. */
-    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
+    async previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): Promise<{ ok: true } | { error: string }> {
       try {
-        previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
+        previewSurfaceModifier(await buildSurfaceModifierProgress(id, opts, preserveColor), preserveColor);
         return { ok: true };
-      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+      } catch (e) {
+        // A superseded / user-cancelled carve isn't an error — keep the prior preview.
+        if (e instanceof SdfAbortError || (e as { name?: string })?.name === 'AbortError') return { ok: true };
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
     },
     /** Discard a live surface preview and restore the current model's mesh. */
     clearSurfacePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
@@ -7697,7 +7734,7 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('fuzzy', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('fuzzy', opts, preserve), preserve);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('fuzzy', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -7774,7 +7811,7 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('cable', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('cable', opts, preserve), preserve);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('cable', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -7802,7 +7839,7 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('waffle', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('waffle', opts, preserve), preserve);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('waffle', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -7829,7 +7866,7 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('fur', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('fur', opts, preserve), preserve);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('fur', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -7856,7 +7893,7 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('woven', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('woven', opts, preserve), preserve);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('woven', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -7886,7 +7923,7 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('voronoi', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('voronoi', opts, preserve), preserve);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('voronoi', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -7916,7 +7953,7 @@ async function main() {
     }) {
       try {
         const preserve = opts?.preserveColor ?? true;
-        return await commitSurfaceModifier(buildSurfaceModifier('voronoiLamp', opts, preserve), preserve);
+        return await commitSurfaceModifier(await buildSurfaceModifierProgress('voronoiLamp', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Rasterize an engrave stamp (text via the app's font path, or a decoded
@@ -7995,7 +8032,7 @@ async function main() {
           };
         }
         return await commitSurfaceModifier(
-          buildSurfaceModifier('engrave', { ...opts, mask, projection, source }, preserve),
+          await buildSurfaceModifierProgress('engrave', { ...opts, mask, projection, source }, preserve),
           preserve,
         );
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
@@ -8004,14 +8041,14 @@ async function main() {
     async smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }) {
       try {
         const preserve = opts?.preserveColor ?? true;
-        return await commitSurfaceModifier(buildSurfaceModifier('smooth', opts, preserve), preserve);
+        return await commitSurfaceModifier(await buildSurfaceModifierProgress('smooth', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Voxelize the current model into the voxel engine; saves a new version. */
     async voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }) {
       try {
         const preserve = opts?.preserveColor ?? true;
-        return await commitSurfaceModifier(buildSurfaceModifier('voxelize', opts, preserve), preserve);
+        return await commitSurfaceModifier(await buildSurfaceModifierProgress('voxelize', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Non-destructive viewport preview of a scale operation (no version saved). */
