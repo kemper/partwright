@@ -140,10 +140,30 @@ needs more precision than the rung can give:
    devDependency (`@ast-grep/cli`, the binary behind `lint:consistency`). It
    matches parsed AST nodes, so formatting and comment/string collisions don't
    produce false hits:
-   `npx ast-grep run -p 'showToast($$$)' -l ts src` — find every call shape;
-   `npx ast-grep run -p 'new Worker($$$)' -l ts src` — regardless of spacing.
+   `npm run ag -- run -p 'showToast($$$)' -l ts src` — find every call shape;
+   `npm run ag -- run -p 'new Worker($$$)' -l ts src` — regardless of spacing.
    Pattern syntax: `$X` one node, `$$$` any number. Right for call-site
    sweeps, convention checks, "find code shaped like this sibling".
+
+   > **Invoke it via `npm run ag --`, not `npx ast-grep`, and run `npm ci`
+   > first.** The pinned binary is `@ast-grep/cli`; the bare name `ast-grep` on
+   > npm is an unrelated **squatted impostor** (`ast-grep@0.1.0`). On a fresh
+   > remote container — which starts with **no `node_modules`** (see
+   > [CLAUDE.md](../CLAUDE.md), "Manual Verification") — `npx ast-grep …` fetches
+   > and runs that impostor instead of erroring, so you get silently wrong output.
+   > `npm run ag --` always binds to the pinned local binary; `npm ci` must have
+   > run for it (and Serena) to exist. If you must use `npx`, spell the package
+   > explicitly: `npx -p @ast-grep/cli ast-grep run …` (the bin name differs from
+   > the package, so plain `npx @ast-grep/cli …` errors).
+
+   > **Pattern gotcha: a bare-identifier pattern does not match method calls.**
+   > `runAndSave($$$)` matches only `runAndSave(...)` with an identifier callee —
+   > it silently misses `api.runAndSave(...)` and other member-expression calls
+   > (returning zero hits, which reads like "no call sites"). When the call may
+   > be a method, match the member form: `$OBJ.runAndSave($$$)` (or run both).
+   > Likewise, to constrain an argument to a string literal, write the literal
+   > into the pattern — `$OBJ.fn($A, "$B")` — and remember it won't match
+   > single-quote or template forms unless you run those variants too.
 3. **Symbol/graph — "who actually calls or uses this?"** The Serena MCP tools
    (below): `find_symbol`, `find_referencing_symbols`, `get_symbols_overview`,
    `find_declaration`, `find_implementations`. Resolved references over the
