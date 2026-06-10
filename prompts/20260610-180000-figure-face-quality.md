@@ -176,3 +176,59 @@ screenshot). Wizard has "two little nub teeth in the corners of his mouth".
   exceeded the thin shells on slim builds and showed as bare patches.
 - **Wizard nubs**: the carved smile's upturned corners flanked the beard's
   top blob and read as teeth — narrowed the smile to sit clear of the beard.
+
+## Human (round 5)
+
+The wizard "nubs" are actually white hair/head bleeding through to the mouth.
+The warrior pose model is still very messed up: missing clothes, and the pants
+"deviated from the legs themselves — looks crazy". No screenshots this time —
+asked the agent to find and fix the quality issues autonomously, including any
+not-yet-reported ones, until the improvement is dramatic.
+
+## Assistant (round 5)
+
+Diagnosed everything headlessly (clip-box zooms, red-skin contrast renders,
+and a `skin.subtract(pants)` "exposure probe" whose component list pinpoints
+every spot a body pokes through a garment).
+
+- **The knee hinge bent the wrong way** — the real "crazy legs" bug. The
+  legChain comment promised "knee bends the shank backward (+Y)" but the
+  rotation sign swung it FORWARD: the warrior lunge's front shin ended up
+  horizontal, floating mid-air, ankle far in front of the figure. Sign
+  flipped; the lunge (and the ballerina arabesque, whose authored pose was
+  compensating) now reads anatomically.
+- **Pant legs were pinned to a world height, not the leg.** The cuff endpoint
+  `[ankle.x, ankle.y, cuffZ]` (cuffZ derived from the LEFT ankle for both
+  legs) pulled the whole pant shank off any posed leg. Cuffs now live ON the
+  knee→ankle bone (`cuffZ` projected per-leg); knee pads + hip-capsule pads +
+  body-weld-scale garment joins close the remaining flex-corner exposures.
+  The exposure probe over the waist-to-cuff band now meshes EMPTY.
+- **Transforms above labelled unions silently killed every label** (found
+  when lowering the lunge body onto its base). Rigid transforms (translate /
+  rotate / scale / mirror) now carry a `rewrap` factory and the partitioner
+  distributes them onto each labelled region.
+- **Hair is a separate labelled region, so it survives the skin's mouth
+  carve** — the wizard's "nub teeth" were pale hair VOLUME exposed inside the
+  carved smile's corners. `buildHair` now subtracts a head-pose-oriented face
+  window (above-the-brow hairline); every figure gained a framed face.
+- **Robe hems never worked**: buildTop's chest ELLIPSOID recedes toward its
+  tip, so a floor-length hem left bare legs poking out the front (the
+  wizard). A hem below the pelvis now adds a flared cone skirt. Also added a
+  clavicle bar (the chest shell's deep bare-sternum V read as a plunging
+  neckline) and `pants length:'briefs'` (seat+gusset+hip pads) so the
+  ballerina's leotard covers her pelvis under the tutu.
+- **Strongman genus exploded 3 → 44.** Bisection (no-teeth vs bald) blamed
+  the teeth band; close-up renders showed the real culprit: the gritted
+  mouth's carved slot was ~1 coarse march cell tall, aliasing into
+  half-sealed debris and micro-handles that refine-and-project can sharpen
+  but never topologically fix. `mouthCavityFrame`'s cavH floor raised to
+  0.1·R (≥ ~2 cells at documented figure edges) and the teeth band's
+  clearances became absolute (march-cell-relative) rather than proportional.
+  Also discovered `roundedBox` takes FULL sizes — the teeth band had been
+  half its intended width since round 2 (the "two front teeth" look).
+  Strongman genus is now 1, and the band fills the slot as a proper grit.
+- Warrior base reworked: in a true lunge both ankles ride high, so the body
+  is lowered into the slab and the higher front foot gets a stepping-stone
+  (the old ankle-encasing posts propped up the buggy floating shin).
+- All five entries re-baked: 1 component, manifold, genus ≤ 2, all labels
+  painting (ballerina gained `leotard` coverage; 9–11 labels each).

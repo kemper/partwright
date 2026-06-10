@@ -459,6 +459,59 @@ describe('sdf label partitioning (paint-by-label)', () => {
     expect(parts).toHaveLength(1);
     expect(parts[0].labelName).toBe('eye');
   });
+
+  it('transform ABOVE a labelled union distributes onto each region', () => {
+    // `union(a.label, b.label).translate(...)` — moving a whole labelled
+    // assembly must not fuse it into one anonymous region (every label
+    // would silently paint 0 triangles). Rigid transforms distribute.
+    const tree = opTranslate(
+      opUnion(primSphere(2).label('a'), primSphere(2).translate([6, 0, 0]).label('b')),
+      [0, 0, -10],
+    );
+    const parts = partitionByLabel(tree);
+    expect(parts).toHaveLength(2);
+    expect(parts.map(p => p.labelName).sort()).toEqual(['a', 'b']);
+    // The re-wrapped regions carry the transform: sphere 'a' (origin,
+    // r=2) must now contain [0,0,-10] and not the origin.
+    const a = parts.find(p => p.labelName === 'a')!.node;
+    expect(a.evaluate(0, 0, -10)).toBeLessThan(0);
+    expect(a.evaluate(0, 0, 0)).toBeGreaterThan(0);
+  });
+
+  it('chained transforms above labelled unions distribute through every layer', () => {
+    const tree = opScale(
+      opTranslate(
+        opUnion(primSphere(2).label('a'), primSphere(2).translate([6, 0, 0]).label('b')),
+        [0, 0, 10],
+      ),
+      2,
+    );
+    const parts = partitionByLabel(tree);
+    expect(parts).toHaveLength(2);
+    const a = parts.find(p => p.labelName === 'a')!.node;
+    // sphere a: translated to z=10 then scaled ×2 → centre [0,0,20], r=4.
+    expect(a.evaluate(0, 0, 20)).toBeLessThan(0);
+    expect(a.evaluate(0, 0, 25)).toBeGreaterThan(0);
+  });
+
+  it('rotate and mirror above labelled unions also distribute', () => {
+    const rot = opRotate(
+      opUnion(primSphere(1).translate([5, 0, 0]).label('a'), primSphere(1).label('b')),
+      [0, 0, 90],
+    );
+    const rParts = partitionByLabel(rot);
+    expect(rParts.map(p => p.labelName).sort()).toEqual(['a', 'b']);
+    const ra = rParts.find(p => p.labelName === 'a')!.node;
+    expect(ra.evaluate(0, 5, 0)).toBeLessThan(0); // rotated +X → +Y
+
+    const mir = opMirror(
+      opUnion(primSphere(1).translate([5, 0, 0]).label('a'), primSphere(1).label('b')),
+      'x',
+    );
+    const mParts = partitionByLabel(mir);
+    const ma = mParts.find(p => p.labelName === 'a')!.node;
+    expect(ma.evaluate(-5, 0, 0)).toBeLessThan(0);
+  });
 });
 
 describe('sdf node chaining (functional immutability)', () => {

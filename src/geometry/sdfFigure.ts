@@ -51,6 +51,7 @@ export interface Node {
   mirror(axis: 'x' | 'y' | 'z'): Node;
   shell(thickness: number): Node;
   round(r: number): Node;
+  taper(rate: number, axis?: 'x' | 'y' | 'z'): Node;
   label(name: string): Node;
   bounds(): { min: Vec3; max: Vec3 };
 }
@@ -302,11 +303,14 @@ function buildRig(rawOpts: unknown): Rig {
     dir = rotX(dir, -p.flex);
     dir = norm3(dir);
     const K = add3(Hj, scale3(dir, thighLen));
-    // Knee bends the shank backward (+Y) relative to the thigh.
+    // Knee bends the shank backward (+Y) relative to the thigh. The hinge
+    // (cross of thigh dir and forward) points along −X for a downward leg, so
+    // the BACKWARD bend needs the negative angle (positive swings forward —
+    // that sign error once gave lunges a horizontal shin floating mid-air).
     let hinge = cross3(dir, fwd);
     if (len3(hinge) < 1e-4) hinge = [side, 0, 0];
     hinge = norm3(hinge);
-    const shankDir = norm3(rotAxis(dir, hinge, +(p.knee ?? 0)));
+    const shankDir = norm3(rotAxis(dir, hinge, -(p.knee ?? 0)));
     const A = add3(K, scale3(shankDir, shankLen));
     return { Hj, K, A, dir, shankDir };
   }
@@ -580,7 +584,12 @@ function mouthCavityFrame(rig: Rig, width: number, open: number): { halfW: numbe
   const f = rig.dir.headForward, u = rig.dir.headUp;
   const gape = open > 0 ? open : 0.55;
   const halfW = width * 0.5;
-  const cavH = Math.max(width * 0.32 * gape, rig.r.head * 0.05);
+  // Floor of 0.1·R: at the documented figure build edge (0.4–0.6 for a
+  // 60-unit figure, R ≈ 4–6) that keeps the slot ≥ ~2 march cells tall. A
+  // thinner slot is a sub-cell feature of the (coarse-marched) skin region —
+  // it aliases into half-sealed debris and dozens of micro-handles that
+  // refine-and-project can sharpen but never topologically fix.
+  const cavH = Math.max(width * 0.32 * gape, rig.r.head * 0.1);
   const center = add3(add3(rig.face.mouth, scale3(f, -rig.r.head * 0.06)), scale3(u, -cavH * 0.25));
   return { halfW, cavH, center };
 }
@@ -694,9 +703,28 @@ function buildMouthAccents(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     // deeper than the cavity buries the band entirely (body welds can
     // inflate the face surface past any fixed offset).
     const td = R * 0.5;
-    const recess = cavH * 0.15;
+    // Every face of the band must clear (or decisively cross) the cavity
+    // surfaces by a couple of MARCH CELLS, not by a proportion of cavH — on
+    // a slim gritted mouth the proportional margins drop below one cell and
+    // the near-tangent surfaces shred into dozens of micro-handles (genus
+    // explosion). fineEdge mirrors faceDetail's mouth-region march edge.
+    const fineEdge = Math.max(R * 0.02, 0.03);
+    // Front face: recessed behind the carved rim by at least ~1.5 cells.
+    const recess = Math.max(cavH * 0.18, fineEdge * 1.5);
+    // roundedBox takes FULL sizes (not half-extents). Width spans most of
+    // the opening but stays NARROWER than it, so the flat front face lies
+    // inside the aperture and meets only air — a band wider than the slot
+    // grazes the curved rim at a shallow angle all around it (a ring of
+    // near-tangent boolean crossings → micro-handles).
+    const bandW = halfW * 1.7;
+    // Height: hang the band above the floor (dark gap under the teeth — the
+    // open-laugh look); when that gap would be sub-cell, close it instead:
+    // run the band through the floor into the jaw — a transversal weld, and
+    // the right look for gritted teeth.
+    const hangGap = cavH * 0.7; // bottom edge at 0.45·cavH − 0.75·cavH
+    const bandH = hangGap < fineEdge * 2.5 ? cavH * 2.9 + fineEdge * 3 : cavH * 1.5;
     const teeth = orientToHeadPose(
-      sdf.roundedBox([halfW * 1.1, td, cavH * 1.15], Math.min(cavH, halfW) * 0.18), rig,
+      sdf.roundedBox([bandW, td, bandH], Math.min(cavH, halfW) * 0.18), rig,
     ).translate(add3(center, add3(scale3(u, cavH * 0.45), scale3(f, -recess - td * 0.5))));
     parts.push(teeth.label('teeth'));
   }
@@ -842,32 +870,62 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     cap = cap.smoothUnion(bun, r.head * 0.3);
   }
   void right;
-  return cap;
+  // Face window: the cap overlaps the face INTERIOR, and since hair is its
+  // own labelled region it survives the skin's mouth/feature carves — a
+  // carved smile then exposes pale hair volume inside its corners ("nub
+  // teeth"). Carve the face zone out of the hair so only skin lives there.
+  // Top edge sits above the brows (a cartoon hairline), sides keep the
+  // temples framed.
+  const windowC = add3(c, add3(scale3(f, r.headZ * 0.9), scale3(u, -r.headZ * 0.2)));
+  const faceWindow = orientToHeadPose(
+    sdf.ellipsoid(r.headX * 0.72, r.headZ * 0.75, r.headZ * 0.85), rig,
+  ).translate(windowC);
+  return cap.subtract(faceWindow);
 }
 
 // --- Clothing (derived from body regions → always fits) -------------------
 
 function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'pants(opts)');
-  assertNoUnknownKeys(o, ['rise', 'leg', 'cuffZ', 'thickness'], 'pants(opts)');
+  assertNoUnknownKeys(o, ['rise', 'leg', 'cuffZ', 'thickness', 'length'], 'pants(opts)');
   const leg = o.leg === undefined ? 'slim' : assertEnum(o.leg, ['slim', 'cargo'] as const, 'pants.leg');
   const rise = o.rise === undefined ? 'mid' : assertEnum(o.rise, ['low', 'mid', 'high'] as const, 'pants.rise');
+  const length = o.length === undefined ? 'full' : assertEnum(o.length, ['full', 'briefs'] as const, 'pants.length');
   const j = rig.joints, r = rig.r;
   // Generous default: the knee weld bulge exceeds a thin shell and pokes
   // through as a bare-skin patch on bent legs.
   const t = num(o.thickness, r.thigh * 0.3, 'pants.thickness', 0.01);
-  const cuffZ = num(o.cuffZ, (j.ankleL as Vec3)[2] + r.shank * 1.5, 'pants.cuffZ');
+  const cuffZ = o.cuffZ === undefined ? undefined : num(o.cuffZ, 0, 'pants.cuffZ');
   const flare = leg === 'cargo' ? 1.35 : 1.08;
   const waistZ = rise === 'high' ? j.navel[2] : rise === 'low' ? j.pelvis[2] : mix(j.pelvis[2], j.navel[2], 0.5);
+
+  // The cuff must sit ON the knee→ankle bone — a fixed world-Z endpoint pulls
+  // the pant shank off a posed leg (a lunge's diagonal shank ends up wearing a
+  // capsule that points somewhere else entirely). `cuffZ` is interpreted as a
+  // target height projected onto each leg's own bone.
+  function cuffPoint(K: Vec3, A: Vec3): Vec3 {
+    if (cuffZ === undefined) {
+      // Default: cuff ends 1.5 shank-radii above the ankle, along the bone.
+      const len = len3([A[0] - K[0], A[1] - K[1], A[2] - K[2]]);
+      return lerp3(K, A, len > 1e-6 ? Math.max(0.3, 1 - (r.shank * 1.5) / len) : 1);
+    }
+    const segZ = K[2] - A[2];
+    if (Math.abs(segZ) < 1e-6) return lerp3(K, A, 0.85); // near-horizontal shank: height is meaningless
+    const frac = (K[2] - cuffZ) / segZ;
+    return lerp3(K, A, Math.min(1, Math.max(0.15, frac)));
+  }
 
   function legSleeve(Hj: Vec3, K: Vec3, A: Vec3): Node {
     // Trim the leg above the cuff: build inflated capsules from waist height
     // down to the cuff.
     const top: Vec3 = [Hj[0], Hj[1], waistZ];
-    const ankleCuff: Vec3 = [A[0], A[1], cuffZ];
     const thighS = sdf.capsule(top, K, (r.thigh + t) * flare);
-    const shankS = sdf.capsule(K, ankleCuff, (r.shank + t) * flare);
-    return thighS.smoothUnion(shankS, r.shank * 0.8);
+    const shankS = sdf.capsule(K, cuffPoint(K, A), (r.shank + t) * flare);
+    // Knee pad: the skin's knee weld (k = r.shank*1.3) bulges past both
+    // capsule radii on a bent knee — a sphere at the joint guarantees cover
+    // at any bend angle.
+    const knee = sdf.sphere((r.shank * 1.1 + t) * 1.18).translate(K);
+    return thighS.smoothUnion(shankS, r.shank * 1.4).smoothUnion(knee, r.shank * 0.9);
   }
   // Seat: tall enough to reach DOWN past the crotch line (a short seat leaves
   // a bare wedge of groin between the leg sleeves), plus an explicit hip-to-
@@ -875,10 +933,26 @@ function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const seat = sdf.ellipsoid((r.pelvisX + t) * 1.05, (r.pelvisY + t) * 1.05, r.pelvisY * 1.8)
     .translate([0, 0, mix(j.pelvis[2], waistZ, 0.4)]);
   const gusset = sdf.capsule(j.hipL as Vec3, j.hipR as Vec3, (r.thigh + t) * 0.85);
+  // Hip pads: a flexed hip's skin weld bulge (thigh⊔pelvis) escapes between
+  // the seat and the leaning thigh sleeve. The bulge zone runs from the hip
+  // joint down the upper thigh, so cover it with a capsule along the bone.
+  const hipPad = (Hj: Vec3, K: Vec3): Node =>
+    sdf.capsule(Hj, lerp3(Hj, K, length === 'briefs' ? 0.3 : 0.45), (r.thigh + t) * 1.22);
+  // briefs: seat + gusset + hip pads only — leotard bottoms, swimwear.
+  if (length === 'briefs') {
+    return seat
+      .smoothUnion(gusset, r.thigh * 0.8)
+      .smoothUnion(hipPad(j.hipL as Vec3, j.kneeL as Vec3), r.thigh * 0.8)
+      .smoothUnion(hipPad(j.hipR as Vec3, j.kneeR as Vec3), r.thigh * 0.8);
+  }
+  // Seat↔sleeve welds must be at least as soft as the body's hip weld — a
+  // flexed hip's skin bulge pokes through a tighter garment weld.
   let pants = seat
-    .smoothUnion(gusset, r.thigh * 0.5)
-    .smoothUnion(legSleeve(j.hipL as Vec3, j.kneeL as Vec3, j.ankleL as Vec3), r.thigh * 0.6)
-    .smoothUnion(legSleeve(j.hipR as Vec3, j.kneeR as Vec3, j.ankleR as Vec3), r.thigh * 0.6);
+    .smoothUnion(gusset, r.thigh * 0.8)
+    .smoothUnion(hipPad(j.hipL as Vec3, j.kneeL as Vec3), r.thigh * 0.8)
+    .smoothUnion(hipPad(j.hipR as Vec3, j.kneeR as Vec3), r.thigh * 0.8)
+    .smoothUnion(legSleeve(j.hipL as Vec3, j.kneeL as Vec3, j.ankleL as Vec3), r.thigh * 1.2)
+    .smoothUnion(legSleeve(j.hipR as Vec3, j.kneeR as Vec3, j.ankleR as Vec3), r.thigh * 1.2);
   if (leg === 'cargo') {
     const pkt = (side: number): Node => sdf.roundedBox([r.thigh * 0.9, r.thigh * 0.4, r.thigh * 1.4], r.thigh * 0.18)
       .translate([side * (r.thigh + t) * 1.15, -r.thigh * 0.2, mix(j.kneeL[2], j.hipL[2], 0.5)]);
@@ -904,6 +978,17 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const chest = sdf.ellipsoid(r.chestX + t, (r.chestY + t) * 1.05, (j.chest[2] - hemZ) * 0.62 + r.chestY)
     .translate([0, j.chest[1], mix(hemZ, j.chest[2] + r.chestY, 0.5)]);
   let top = chest;
+  // A hem below the pelvis means a robe/dress — the chest ELLIPSOID recedes
+  // toward its bottom tip, so legs poke out of its lower front. Add a flared
+  // cone skirt from the waist down to the hem.
+  if (hemZ < j.pelvis[2] - r.pelvisY * 0.6) {
+    const skirtH = j.navel[2] - hemZ;
+    const r0 = Math.max(r.pelvisX, r.chestX) + t;
+    const skirt = sdf.cylinder(r0, skirtH)
+      .taper(-0.8 / skirtH)
+      .translate([0, 0, hemZ + skirtH / 2]);
+    top = top.smoothUnion(skirt, r.chestY * 0.8);
+  }
   if (sleeve !== 'none') {
     // Sleeves FOLLOW the arm chain: a straight shoulder→forearm capsule cuts
     // the corner on a bent elbow and the elbow pokes through the sleeve.
@@ -926,7 +1011,16 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       .smoothUnion(yoke(j.shoulderL as Vec3), r.upperArm * 0.8)
       .smoothUnion(yoke(j.shoulderR as Vec3), r.upperArm * 0.8);
   }
-  return top;
+  // Clavicle bar: the chest ellipsoid's front-top slopes away below the
+  // collarbones, leaving a deep bare V at the sternum. A shoulder-to-shoulder
+  // capsule on the chest line closes the neckline into a crew collar.
+  const S_L = j.shoulderL as Vec3, S_R = j.shoulderR as Vec3;
+  const clav = sdf.capsule(
+    [S_L[0] * 0.92, j.chest[1], S_L[2]],
+    [S_R[0] * 0.92, j.chest[1], S_R[2]],
+    (r.neck + t) * 0.85,
+  );
+  return top.smoothUnion(clav, r.neck * 0.9);
 }
 
 // --- Body weld ------------------------------------------------------------
@@ -1041,4 +1135,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail };
+export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants };

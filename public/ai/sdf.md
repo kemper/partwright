@@ -290,6 +290,7 @@ return sdf.union(sdf.sphere(5).label('a'), sdf.sphere(5).translate(4, 0, 0).labe
 **Label propagation rules:**
 
 - Labels propagate up through **transforms** (`translate`, `rotate`, `scale`, `mirror`), **modifiers** (`shell`, `round`, `twist`, `bend`), and the **A side of both `subtract` and `smoothSubtract`** — so `sphere.label('shell').subtract(hole).translate(0, 0, 5)` and `sphere.label('shell').smoothSubtract(dimple, 0.5)` both paint under `'shell'`. The result of a subtract IS A's surface (with a chunk or a soft bite removed), so A's label is the natural owner.
+- Transforms also work **above a labelled union**: `sdf.union(a.label('a'), b.label('b')).translate(0, 0, -5)` keeps both labels — rigid transforms (`translate`, `rotate`, `scale`, `mirror`) distribute onto each labelled region at partition time. Use this to move/orient a whole labelled assembly in one call.
 - Labels do **NOT** propagate through `smoothUnion`, `smoothIntersect`, or sharp `intersect` — those mix two surfaces and "which label wins" is ambiguous. Wrap the outer expression in `.label()` to paint the whole blend as one region.
 - The B side of a subtract / smoothSubtract (the carving tool) has its labels ignored — the geometry is removed, so there's no surface to paint.
 

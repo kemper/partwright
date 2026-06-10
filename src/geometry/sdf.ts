@@ -127,6 +127,12 @@ interface NodeData {
    *  nested labels below it) is meshed as one chunk; nested labels are
    *  ignored because the outer label wins. */
   labelName?: string;
+  /** For single-child wrappers that DISTRIBUTE over union (rigid/similarity
+   *  domain transforms: translate, rotate, scale, mirror): rebuilds the same
+   *  wrapper around a new child. Lets the label partitioner push the
+   *  transform down onto each labelled region instead of silently fusing
+   *  them into one anonymous region. */
+  rewrap?: (child: SdfNode) => SdfNode;
   /** Engine binding for `.build()`. Threaded through chain methods and
    *  ops from the input node(s). Undefined for pure-logic unit-test
    *  factories — only callers of `.build()` need it. */
@@ -146,6 +152,7 @@ export class SdfNode {
   /** @internal */ readonly _bounds: Box;
   /** @internal */ readonly _children: readonly SdfNode[];
   /** @internal */ readonly _partitionable: boolean;
+  /** @internal */ readonly _rewrap: ((child: SdfNode) => SdfNode) | undefined;
   /** @internal */ readonly _ctx: BuildContext | undefined;
 
   constructor(data: NodeData) {
@@ -155,6 +162,7 @@ export class SdfNode {
     this._bounds = data.bounds;
     this._children = data.children;
     this._partitionable = data.partitionable;
+    this._rewrap = data.rewrap;
     this.labelName = data.labelName;
     // Inherit ctx from data, else from the first child that has one.
     // Lets `union(a, b)` keep the engine binding from either operand.
@@ -702,6 +710,16 @@ export function partitionByLabel(root: SdfNode): Partition[] {
   if (root.labelName !== undefined) {
     return [{ node: root, labelName: root.labelName }];
   }
+  // Rigid/similarity transforms distribute over union: partition the child
+  // and re-wrap each region in the same transform. Without this,
+  // `union(a.label('a'), b.label('b')).translate(...)` silently fuses into
+  // one anonymous region and every label paints 0 triangles.
+  if (root._rewrap && root._children.length === 1 && hasLabelledDescendant(root._children[0])) {
+    return partitionByLabel(root._children[0]).map((p) => ({
+      node: root._rewrap!(p.node),
+      labelName: p.labelName,
+    }));
+  }
   // If the root is a partitionable boolean (union/etc.) AND any
   // descendant carries a label, walk into the children.
   if (root._partitionable && hasLabelledDescendant(root)) {
@@ -1186,6 +1204,7 @@ function opTranslate(child: SdfNode, t: Vec3): SdfNode {
     },
     children: [child],
     partitionable: false,
+    rewrap: (c) => opTranslate(c, t),
   });
 }
 
@@ -1217,6 +1236,7 @@ function opRotate(child: SdfNode, r: Vec3): SdfNode {
     ]),
     children: [child],
     partitionable: false,
+    rewrap: (c) => opRotate(c, r),
   });
 }
 
@@ -1231,6 +1251,7 @@ function opScale(child: SdfNode, s: number): SdfNode {
     },
     children: [child],
     partitionable: false,
+    rewrap: (c) => opScale(c, s),
   });
 }
 
@@ -1250,6 +1271,7 @@ function opMirror(child: SdfNode, axis: 'x' | 'y' | 'z'): SdfNode {
     })(),
     children: [child],
     partitionable: false,
+    rewrap: (c) => opMirror(c, axis),
   });
 }
 

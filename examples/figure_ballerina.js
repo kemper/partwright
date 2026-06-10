@@ -54,11 +54,18 @@ const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.14 }); // iris style: lab
 // Delicate painted lips ('lips' label) — an additive ridge, so assemble gets mouth: false.
 const lips = F.face.mouthAccents(rig, { style: 'lips', width: rig.r.head * 0.3, smirk: 0.12 });
 
-// 4. LEOTARD — snug sleeveless top
-const leotard = F.clothing.top(rig, {
+// 4. LEOTARD — snug sleeveless top + briefs (one piece, one label), so the
+// pelvis under the tutu is dressed, not bare skin.
+const bodice = F.clothing.top(rig, {
   sleeve: 'none',
   thickness: rig.r.chestY * 0.16,
-}).label('leotard');
+});
+const briefs = F.clothing.pants(rig, {
+  rise: 'high',
+  length: 'briefs',
+  thickness: rig.r.thigh * 0.22,
+});
+const leotard = bodice.union(briefs).label('leotard');
 
 // 5. TUTU — wide disk skirt placed at the NAVEL/waist level.
 // rig.joints.navel Z ≈ 40.1, which is the natural waistline.

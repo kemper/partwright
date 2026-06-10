@@ -280,13 +280,22 @@ body keeps the cheap global grid — typically +30–60k triangles instead of th
 
 ```js
 F.hair(rig, { style })          // 'short' | 'long' | 'bun' | 'bald'
-F.clothing.pants(rig, { rise, leg, cuffZ, thickness })  // rise: low|mid|high, leg: slim|cargo
+F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
+//   rise: low|mid|high · leg: slim|cargo · length: 'full' (default) | 'briefs'
+//   'briefs' = seat + gusset + hip coverage only (leotard bottoms, swimwear,
+//   trunks) — union it into a top and label the pair as one garment.
 F.clothing.top(rig, { sleeve, hemZ, thickness })        // sleeve: none|short|long
+//   hemZ below the pelvis turns the top into a robe/dress: a flared skirt
+//   cone is added down to the hem so legs stay covered all round.
 ```
 
 Clothing is the body region **inflated and trimmed** — it reuses the rig's
-joints, so a garment can never drift off the limb it covers. Give each garment
-its own `.label()` so it paints separately from skin.
+joints and follows the **posed** bones (pant legs track each leg's own
+hip→knee→ankle chain; `cuffZ` is projected onto the bone, so a lunge's
+diagonal shank keeps its cuff at the ankle). Hair carves out a **face
+window** (an above-the-brow hairline), so it never bleeds through carved
+mouths or face features. Give each garment its own `.label()` so it paints
+separately from skin.
 
 > **The waist is `rig.joints.navel` (radius `rig.r.waist`), not the hips.** Hips
 > (`rig.joints.hipL/hipR`) are the *leg-insertion* points and sit lower; a

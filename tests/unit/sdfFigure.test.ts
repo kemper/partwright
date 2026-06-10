@@ -9,7 +9,7 @@ import { __figureTestables__ } from '../../src/geometry/sdfFigure';
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail } = __figureTestables__;
+const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -110,6 +110,24 @@ describe('figure rig — pose forward kinematics', () => {
     const straight = buildRig({ pose: { armL: { abduct: 90, elbow: 0 } } });
     const curled = buildRig({ pose: { armL: { abduct: 90, elbow: 120 } } });
     expect(dist(straight.joints.wristL, curled.joints.wristL)).toBeGreaterThan(1);
+  });
+
+  it('knee flexion bends the shank BACKWARD (+Y), like a real knee', () => {
+    // Regression: the hinge sign once swung the shank FORWARD, giving a
+    // lunge a horizontal shin floating in front of the figure.
+    const straight = buildRig({ pose: { legL: { abduct: 0, flex: 0, knee: 0 } } });
+    const bent = buildRig({ pose: { legL: { abduct: 0, flex: 0, knee: 60 } } });
+    expect(bent.joints.ankleL[1]).toBeGreaterThan(straight.joints.ankleL[1] + 1);
+    // and the ankle rises (the shank shortens vertically when bent).
+    expect(bent.joints.ankleL[2]).toBeGreaterThan(straight.joints.ankleL[2] + 1);
+  });
+
+  it('lunge: flex forward + matching knee bend puts the ankle under the knee', () => {
+    const rig = buildRig({ pose: { legL: { abduct: 0, flex: 45, knee: 45 } } });
+    const K = rig.joints.kneeL, A = rig.joints.ankleL;
+    // shank vertical: ankle directly below the knee.
+    expect(A[1]).toBeCloseTo(K[1], 4);
+    expect(A[2]).toBeLessThan(K[2]);
   });
 
   it('head turn rotates the face anchors off the centreline', () => {
@@ -244,6 +262,49 @@ describe('figure eyes — styles and labels', () => {
   it('rejects unknown style and keys', () => {
     expect(() => buildEyes(api, rig, { style: 'laser' })).toThrow(/style/);
     expect(() => buildEyes(api, rig, { glow: true })).toThrow();
+  });
+});
+
+describe('figure pants — posed-leg coverage', () => {
+  it('pant cuffs stay ON the bone for a posed (lunge) leg', () => {
+    // Regression: a fixed world-Z cuff endpoint pulled the pant shank off a
+    // diagonal lunge shank entirely. The garment interior must contain the
+    // shank-bone midpoint of BOTH legs.
+    const rig = buildRig({ pose: { legL: { flex: 45, knee: 45 }, legR: { flex: -30, knee: 5 } } });
+    const pants = buildPants(api, rig) as SdfNode;
+    for (const side of ['L', 'R'] as const) {
+      const K = rig.joints[`knee${side}`], A = rig.joints[`ankle${side}`];
+      const mid = [(K[0] + A[0]) / 2, (K[1] + A[1]) / 2, (K[2] + A[2]) / 2];
+      expect(pants.evaluate(mid[0], mid[1], mid[2])).toBeLessThan(0);
+    }
+  });
+
+  it('a deeply bent knee stays covered (knee pad)', () => {
+    const rig = buildRig({ pose: { legL: { flex: 45, knee: 70 } } });
+    const pants = buildPants(api, rig) as SdfNode;
+    const K = rig.joints.kneeL;
+    // A point one skin-bulge radius FORWARD of the knee joint (where the
+    // skin's weld bulge peaks) must still be inside the garment.
+    const probe = [K[0], K[1] - rig.r.shank * 1.2, K[2]];
+    expect(pants.evaluate(probe[0], probe[1], probe[2])).toBeLessThan(0);
+  });
+
+  it("length: 'briefs' skips the leg sleeves", () => {
+    const rig = buildRig({});
+    const briefs = buildPants(api, rig, { length: 'briefs' }) as SdfNode;
+    const full = buildPants(api, rig) as SdfNode;
+    const K = rig.joints.kneeL;
+    // knee is bare in briefs, covered by full pants.
+    expect(briefs.evaluate(K[0], K[1], K[2])).toBeGreaterThan(0);
+    expect(full.evaluate(K[0], K[1], K[2])).toBeLessThan(0);
+    // pelvis is covered by both.
+    const P = rig.joints.pelvis;
+    expect(briefs.evaluate(P[0], P[1], P[2] - rig.r.pelvisY * 0.3)).toBeLessThan(0);
+  });
+
+  it('rejects unknown length values', () => {
+    const rig = buildRig({});
+    expect(() => buildPants(api, rig, { length: 'capri' })).toThrow(/length/);
   });
 });
 
