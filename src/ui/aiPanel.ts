@@ -1998,16 +1998,22 @@ function renderMessage(msg: ChatMessage): HTMLElement {
       const isEmpty = b.text.length === 0;
       if (isEmpty && msg.role !== 'assistant') continue;
       const bubble = renderTextBubble(msg.role, b.text, msg.compacted);
-      if (isEmpty && msg.role === 'assistant') bubble.dataset.liveBubble = msg.id;
-      if (b.text.trim().length > 0 || (isEmpty && msg.role === 'assistant')) {
+      if (isEmpty && msg.role === 'assistant') {
+        // Live streaming placeholder: kept bare (no copy wrapper) so
+        // onAssistantText can rewrite its textContent and the thinking-box
+        // insertion can target its parent wrap. It picks up a copy button on
+        // the persist re-render, once it actually has text worth copying.
+        bubble.dataset.liveBubble = msg.id;
         wrap.appendChild(bubble);
+      } else if (b.text.trim().length > 0) {
+        wrap.appendChild(withCopyButton(bubble, msg.role, () => bubble.textContent ?? ''));
       }
     } else if (b.type === 'image') {
       wrap.appendChild(renderImageBubble(b.source));
     } else if (b.type === 'thinking') {
       if (b.text.trim().length > 0) wrap.appendChild(renderThinkingBox(b.text));
     } else if (b.type === 'review') {
-      wrap.appendChild(renderReviewBubble(b.provider, b.model, b.text));
+      wrap.appendChild(withCopyButton(renderReviewBubble(b.provider, b.model, b.text), 'assistant', () => b.text));
     }
   }
 
@@ -2306,6 +2312,47 @@ function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: 
   }
   bubble.textContent = text;
   return bubble;
+}
+
+/** Small copy-to-clipboard button that swaps to a check on success. Kept
+ *  always-visible-but-faint (not hover-only) so it stays tappable on touch
+ *  devices that have no hover state. */
+function makeCopyButton(getText: () => string): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.title = 'Copy to clipboard';
+  btn.setAttribute('aria-label', 'Copy message to clipboard');
+  btn.className = 'shrink-0 mt-0.5 px-1.5 py-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700/60 opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity text-xs leading-none';
+  btn.textContent = '⧉';
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(getText());
+      btn.textContent = '✓';
+      btn.classList.add('text-emerald-400');
+      window.setTimeout(() => {
+        btn.textContent = '⧉';
+        btn.classList.remove('text-emerald-400');
+      }, 1200);
+    } catch {
+      showToast('Copy failed — clipboard unavailable', { variant: 'warn', source: 'ai' });
+    }
+  });
+  return btn;
+}
+
+/** Wrap a response bubble in a row carrying a copy button on its outer edge —
+ *  left of right-aligned user bubbles, right of left-aligned assistant ones —
+ *  so any message can be copied with one click. The bubble's own `max-w-[90%]`
+ *  is moved onto the row so the cap still measures against the panel. */
+function withCopyButton(bubble: HTMLElement, align: 'user' | 'assistant', getText: () => string): HTMLElement {
+  bubble.classList.remove('max-w-[90%]');
+  bubble.classList.add('max-w-full', 'min-w-0');
+  const row = document.createElement('div');
+  row.className = `group flex items-start gap-1 max-w-[90%] min-w-0 ${align === 'user' ? 'flex-row-reverse' : 'flex-row'}`;
+  row.appendChild(bubble);
+  row.appendChild(makeCopyButton(getText));
+  return row;
 }
 
 function renderImageBubble(source: ImageSource): HTMLElement {

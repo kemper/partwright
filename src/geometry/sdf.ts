@@ -32,6 +32,7 @@ import {
 } from '../validation/apiValidation';
 import { makeNoise, type NoiseOptions, type ScalarField } from './noise';
 import { expandLSystem, turtle3d, type LSystemRule } from './lsystem';
+import { createFigureNamespace, type FigureNamespace, type SdfApi } from './sdfFigure';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ManifoldClass = any;
@@ -1654,6 +1655,10 @@ export interface SdfNamespace {
   /** Grow an L-system (fractal plant / coral / branching structure) into an
    *  SDF node of welded capsules, with optional foliage spheres. */
   lsystem(opts: LSystemOptions): SdfNode;
+  /** Stylized figurine builder — deterministic rig + posable parts (torso,
+   *  arms, legs, head, face, hair, clothing) that snap to named landmarks.
+   *  See /ai/figure.md. The default medium for people/characters/creatures. */
+  figure: FigureNamespace;
   /** Build the SDF tree into a Manifold via Manifold.levelSet, with
    *  optional explicit bounds / edgeLength / level / tolerance. */
   build(node: SdfNode, opts?: SdfBuildOptions): ManifoldInstance;
@@ -1685,7 +1690,7 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     return val;
   }
 
-  return {
+  const namespace: SdfNamespace = {
     sphere: (radius) => bound(primSphere(radius)),
     ellipsoid: (rx, ry, rz) => bound(primEllipsoid(rx, ry, rz)),
     box: (size) => bound(primBox(size)),
@@ -1716,7 +1721,14 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     noise: (opts) => makeNoise(assertNoiseOpts(opts)),
     lsystem: (opts) => bound(buildLSystem(opts)),
     build: (node, opts) => assertSdfNode(node, 'build(node)').build(opts ?? {}),
+    // Placeholder; replaced below once `namespace` exists (figure builds its
+    // parts from these bound namespace methods).
+    figure: undefined as unknown as FigureNamespace,
   };
+  // The figure layer composes parts from the public namespace, so every node
+  // it returns is already engine-bound. SdfNamespace is structurally a SdfApi.
+  namespace.figure = createFigureNamespace(namespace as unknown as SdfApi);
+  return namespace;
 }
 
 // --- Test hooks ---------------------------------------------------------
