@@ -1407,7 +1407,7 @@ function renderToggleStrip(): void {
   primary.appendChild(togglePill(
     '♾ Auto-continue',
     toggles.autoResume,
-    'Auto-continue: the agent keeps working until it calls the finish tool to declare the task done — if a turn ends without calling finish, it is automatically resumed instead of stopping. Bounded by the ⟲ iteration cap and the $ spend cap (whichever trips first). Useful for models that tend to stop early (e.g. Gemini). ON by default; turn it OFF to stop at each end_turn as usual (your choice is remembered).',
+    'Auto-continue: the agent keeps working until it calls the finish tool to declare the task done — if a turn ends without calling finish, it is automatically resumed instead of stopping. Bounded by the ⟲ iteration cap and the $ spend cap (whichever trips first). Useful for models that tend to stop early (e.g. Gemini). OFF by default so the agent stops at each end_turn and waits when it asks a clarifying question; turn it ON to keep it working (your choice is remembered).',
     () => {
       applyToggleChange({ autoResume: !toggles.autoResume });
       renderToggleStrip();

@@ -23,6 +23,15 @@ import { applyLiteralPatch, applyPatches } from './patch';
 export interface ToolDefinition {
   name: string;
   description: string;
+  // `input_schema` is JSON Schema, but it's sent verbatim to every provider —
+  // and Gemini's API only accepts an OpenAPI *subset*. Keep schemas within that
+  // subset: type, description, properties, required, items, enum, minimum,
+  // maximum. Keywords Gemini rejects (it 400s the whole tool list with
+  // `Unknown name "X" … Cannot find field`) must be stripped by
+  // `sanitizeSchemaForGemini` in gemini.ts — it already drops `$schema`,
+  // `additionalProperties`, `exclusiveMinimum`, and `exclusiveMaximum`. If you
+  // reach for a keyword not in that safe list (e.g. `pattern`, `const`,
+  // `oneOf`), add it to the sanitizer's strip set in the same change.
   input_schema: {
     type: 'object';
     properties: Record<string, unknown>;

@@ -23,7 +23,7 @@ In streaming, the signature can ride the `functionCall` part, the answer text pa
 
 ## Auto-continue (the ♾ pill)
 
-`ChatToggles.autoResume` (boolean, **on by default** in standard/full presets) keeps the agent working until the model calls the **`finish`** sentinel tool instead of stopping at every `end_turn`. The default lives in `DEFAULT_TOGGLES_BY_PRESET`; turning it off writes a `custom` preset that `mergeWithDefaults` preserves (explicit `false` is never overwritten).
+`ChatToggles.autoResume` (boolean, **off by default**; on only in the explicit max-autonomy full preset) keeps the agent working until the model calls the **`finish`** sentinel tool instead of stopping at every `end_turn`. It's off in standard (the app default) and minimal because auto-continuing surprises users — the agent presses past a clarifying question instead of waiting for an answer. The default lives in `DEFAULT_TOGGLES_BY_PRESET`; turning it on (or off) writes a `custom` preset that `mergeWithDefaults` preserves (an explicit choice is never overwritten).
 
 When **on**:
 - `buildToolList` adds `finish` (gated by `AUTORESUME_GATED` in `tools.ts`); `executeTool` short-circuits it to a sentinel ack. `toggleSuffix` tells the model to call `finish` only when truly done.

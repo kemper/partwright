@@ -117,13 +117,13 @@ import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions
 import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import { greedyMeshGrid } from './geometry/voxel/mesher';
-import { appendVoxelEditsToCode, editOpCount } from './geometry/voxel/editCodegen';
+import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geometry/voxel/editCodegen';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
 import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult, type EngraveProjection, type StampMask } from './surface/modifiers';
 import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampHost';
-import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, rotateAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
+import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { surfaceCacheStatus, computeChain, type SurfaceOp } from './surface/surfaceOps';
 import { initSurfaceUI } from './ui/surfaceModal';
@@ -6564,8 +6564,15 @@ async function main() {
     let code: string | null;
     if (mode === 'update') {
       const ops = voxelPaint.getEditOps();
-      if (editOpCount(ops) === 0) return { error: 'No edits to apply — paint, add, or remove some voxels first.' };
-      code = appendVoxelEditsToCode(getValue(), ops);
+      const roundingChanged = voxelPaint.roundingChanged();
+      if (editOpCount(ops) === 0 && !roundingChanged) {
+        return { error: 'No edits to apply — paint/add/remove voxels or adjust Rounding first.' };
+      }
+      // Append an explicit surfacing call only when the user changed rounding;
+      // otherwise leave whatever the source already declared intact.
+      const surf = voxelPaint.getSurfacing();
+      const surfacingCall = roundingChanged && surf ? formatSurfacingCall(surf, true) : '';
+      code = appendVoxelEditsToCode(getValue(), ops, surfacingCall);
       // No trailing `return …;` to hook onto — fall back to a clean replace.
       if (code === null) code = voxelPaint.bakeToCode('painted');
     } else {
@@ -7441,6 +7448,21 @@ async function main() {
     }
   }
 
+  /** Mirror (flip) the current model across its own center plane along the given
+   *  axis, so it stays in place rather than reflecting across the world origin. */
+  async function mirrorModel(opts?: { axis?: 'x' | 'y' | 'z'; mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }): Promise<Record<string, unknown>> {
+    try {
+      if (!currentMeshData) return { error: 'No model loaded' };
+      const box = placementBox();
+      if (!box) return { error: 'No bounding box available — run the model first' };
+      const axis = opts?.axis ?? 'x';
+      if (axis !== 'x' && axis !== 'y' && axis !== 'z') return { error: "mirrorModel: axis must be 'x', 'y', or 'z'" };
+      return await commitTransform(mirrorAboutCenterSteps(box, axis), mirrorLabel(axis), opts?.mode, opts?.preserveColor);
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   // Build a modifier result from an id + options (shared by apply and preview).
   // Every modifier receives the color-baked mesh when preserveColor is on:
   // the texture/smooth paths carry triColors (with _painted) through subdivision
@@ -8000,6 +8022,12 @@ async function main() {
      *  to the floor. Same write-back modes as placeModel. */
     async layFlatModel(opts?: { mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }) {
       return layFlatModel(opts);
+    },
+    /** Mirror (flip) the current model across its own center plane along the
+     *  given axis ('x'|'y'|'z'), and save a new version. The triangle winding is
+     *  flipped so the result stays watertight. Same write-back modes as placeModel. */
+    async mirrorModel(opts?: { axis?: 'x' | 'y' | 'z'; mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }) {
+      return mirrorModel(opts);
     },
     /** True when a transform can be applied as editable parametric code rather
      *  than baked to a mesh (manifold-js model with no manual paint). */
@@ -12480,7 +12508,7 @@ async function main() {
      *  `{ error }`. */
     setVoxelTool(tool: import('./color/voxelPaint').VoxelTool) {
       if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
-      const tools = ['paint', 'add', 'remove', 'bucket', 'level', 'boxAdd', 'boxRemove'];
+      const tools = ['view', 'paint', 'add', 'remove', 'bucket', 'level', 'boxAdd', 'boxRemove'];
       if (!tools.includes(tool as string)) return { error: `setVoxelTool: tool must be one of ${tools.join(', ')}` };
       voxelPaint.setTool(tool);
       syncVoxelPaintUI();

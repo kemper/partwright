@@ -2,6 +2,7 @@
 
 **When to reach for this:** the user wants something mesh CSG can't say cleanly. Concretely:
 
+- An **organic figure / creature / body** — a figurine, character, person, animal, or bust. This is the default medium for anything anatomical: capsule limbs blended into ellipsoid masses with `smoothUnion` give continuous, sculpted joins. A `union` of constant-radius spheres and capsules can't — its ceiling is tubes-and-balls. See [Organic figures & creature bodies](#organic-figures--creature-bodies) below.
 - A **smooth fillet** between two shapes that you'd otherwise have to engineer by hand (`smoothUnion`).
 - A **twisted, bent, or tapered** body where you'd otherwise need `.warp(fn)` heroics.
 - A **lattice / gyroid / periodic infill** for 3D printing — geometry that's mathematically defined and infinite by nature.
@@ -101,6 +102,48 @@ api.sdf.smoothIntersect(a, b, k)
 ```
 
 **Heuristic for `k`:** start at ~10% of the smallest dimension involved in the join. Too small → fillet looks like a sharp seam. Too big → the shapes lose their identity and merge into a blob.
+
+## Organic figures & creature bodies
+
+This is the method for **figurines, characters, people, animals, and busts** — any anatomical form. The pattern is always the same: build each body part as a **capsule** (limbs, neck, fingers, tail) or **ellipsoid** (head, torso, hips, muscle masses), then weld them with **`smoothUnion`** so the joins are continuous flesh, not visible balls. Use **`mirrorPair`** for left/right symmetry so you only model one side. Don't reach for a plain `union` of constant-radius spheres and capsules here — that's the "primitive soup" failure mode (every limb a tube, every joint a ball); it validates but never resembles the subject.
+
+```js
+const { sdf } = api;
+
+// Masses — ellipsoids give per-axis proportions a sphere can't.
+const torso = sdf.ellipsoid(6, 4, 9).translate(0, 0, 16);
+const hips  = sdf.ellipsoid(5, 4, 4).translate(0, 0, 8);
+const head  = sdf.sphere(5).translate(0, 0, 28);
+const neck  = sdf.capsule([0, 0, 22], [0, 0, 26], 2);
+
+// Limbs — capsules from joint to joint; mirrorPair makes the matching side.
+const arm = sdf.capsule([5, 0, 20], [10, 0, 6], 2).mirrorPair('x');
+const leg = sdf.capsule([2.5, 0, 8], [3, 0, -14], 3).mirrorPair('x');
+
+// Weld everything with smooth blends so joints read as continuous body.
+const k = 1.5;                                  // ~10% of limb diameter
+const body = torso
+  .smoothUnion(hips, k)
+  .smoothUnion(neck, k)
+  .smoothUnion(head, k)
+  .smoothUnion(arm, k)
+  .smoothUnion(leg, k);
+
+// A flat base keeps it printable (organic figures rarely have a flat foot).
+const foot = sdf.box([14, 10, 2]).translate(0, 0, -15);
+return body.smoothUnion(foot, 1).build({ edgeLength: 0.4 });
+```
+
+Workflow that lands a likeness instead of a blob:
+
+1. **Block the masses first.** Get head : torso : hip : limb proportions right against the reference *before* any detail — `renderView` front and side, fix the silhouette, then move on. Wrong proportions are the #1 reason a figure doesn't resemble its subject.
+2. **`smoothUnion` every join** with `k` ≈ 10% of the thinner part's diameter. Too small reads as a glued-on ball; too big melts the limb into the torso.
+3. **Symmetry via `mirrorPair`**, not two hand-placed copies — it's exact and halves the code.
+4. **Face the front (−Y).** A character's face must point toward −Y (see ai.md coordinate system), so the Front view and the export both show it facing forward.
+5. **Detail last, as small additions** — brow, nose, ears, eye sockets — each `smoothUnion`'d (or `smoothSubtract`'d for sockets) onto the blocked body. Surface texture (scales, fur, bark) is `.displace(amount, sdf.noise(...))`.
+6. **Judge against the reference, not just `isManifold`.** A figure's success criterion is *resemblance*. Compare your render to the photo/description before calling it done; manifold + prints is necessary, not sufficient.
+
+For a hard or unfamiliar subject, spend 3 lines on a proof-of-concept first — one `smoothUnion` of two ellipsoids, rendered — to confirm the method reaches the look before you build the whole figure.
 
 ## Transforms
 
