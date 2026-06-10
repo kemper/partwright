@@ -32,10 +32,12 @@ interface CatalogEntry {
   id: string;                   // manifest id (kebab-case)
   name: string;                 // user-facing name
   description: string;          // shows up under the tile
-  /** Optional per-entry thumbnail-camera pin (degrees; azimuth 0=+X 90=+Y,
-   *  elevation 0=side-on 90=top). Defaults to the standard iso tile (az 45,
-   *  el 35) when omitted — set this instead of baking orientation into the
-   *  geometry when a model's "hero face" doesn't sit on the default corner. */
+  /** Optional per-entry thumbnail-camera pin (degrees; azimuth 0=front/−Y,
+   *  90=right/+X, 180=back/+Y; elevation 0=horizon, 90=top — see
+   *  STANDARD_VIEWS in src/renderer/multiview.ts). Defaults to the standard
+   *  iso tile (az 45, el 35 — the +X/−Y corner) when omitted — set this
+   *  instead of baking orientation into the geometry when a model's "hero
+   *  face" doesn't sit on the default corner. */
   thumbCamera?: { azimuth: number; elevation: number };
 }
 

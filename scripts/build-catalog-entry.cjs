@@ -51,9 +51,10 @@ const PAINT_ITEMS = PALETTE
   : null;
 
 // Optional thumbnail-camera pin (mirrors single-catalog-entry.cjs): set
-// THUMB_AZIMUTH / THUMB_ELEVATION (degrees; azimuth 0=+X 90=+Y, elevation
-// 0=side-on 90=top) to bake the tile from a chosen angle instead of the
-// default iso (az 45 / el 35) — no need to bake orientation into geometry.
+// THUMB_AZIMUTH / THUMB_ELEVATION (degrees; azimuth 0=front/−Y, 90=right/+X,
+// 180=back/+Y; elevation 0=horizon, 90=top — see STANDARD_VIEWS in
+// src/renderer/multiview.ts) to bake the tile from a chosen angle instead of
+// the default iso (az 45 / el 35) — no need to bake orientation into geometry.
 const THUMB_AZ = process.env.THUMB_AZIMUTH !== undefined ? Number(process.env.THUMB_AZIMUTH) : undefined;
 const THUMB_EL = process.env.THUMB_ELEVATION !== undefined ? Number(process.env.THUMB_ELEVATION) : undefined;
 const THUMB_CAMERA = (Number.isFinite(THUMB_AZ) || Number.isFinite(THUMB_EL))
