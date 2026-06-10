@@ -57,6 +57,12 @@ recipient recomputes).
 the other triangle-budget knobs, exposed in Advanced Settings. Over the cap
 the version still saves — it just recomputes on reopen, today's behavior.
 
+**Review follow-up.** The work-reviewer pass came back clean with one
+defense-in-depth nit, applied as its own commit: the IndexedDB seed guard now
+validates `triVerts instanceof Uint32Array` alongside `vertProperties`,
+matching the import-side validator, so a partially corrupt persisted record
+can't reach `Manifold.ofMesh`.
+
 **Verification.** Unit: seed/chain-key round-trip, the "pinned at save time"
 resume-from-seed property, stale-key miss. E2e: IDB persistence + reload
 renders textured with no pill; export → import round-trip restores live typed
