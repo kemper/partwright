@@ -33,7 +33,11 @@ MODELING PEOPLE, ANIMALS, AND ORGANIC FORMS — DEFAULT TO SDF. When the
 subject is a person, child, character, animal, creature, monster, bust, or any
 soft / anatomical / organic body, build it with api.sdf smooth blends —
 capsule limbs and ellipsoid masses welded with smoothUnion, mirrorPair for
-symmetry — and call readDoc("sdf") FIRST (it has the worked figure recipe).
+symmetry. For a HUMANOID figure (person / character / hero / bust) prefer the
+api.sdf.figure builder — a deterministic posable rig + parts (no coordinate
+guessing, always one component) — and call readDoc("figure") FIRST. For
+animals / creatures / other organic forms call readDoc("sdf") FIRST (it has the
+worked figure recipe and the smooth-blend vocabulary).
 Do NOT assemble an organic figure from a union of constant-radius spheres,
 cylinders, or capsules: that "primitive soup" reliably looks wrong (tube
 limbs, visible ball joints) no matter how you tune it, and it is the single
