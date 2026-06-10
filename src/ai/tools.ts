@@ -57,7 +57,7 @@ export interface ToolExecResult {
  *  from this so the schema can't silently omit a name the validator accepts
  *  (which previously schema-blocked the model from 5 valid subdocs). */
 export const SUBDOC_NAMES_LIST = [
-  'curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety',
+  'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'voxel', 'colors', 'print-safety',
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api',
@@ -457,7 +457,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'readDoc',
-    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, fasteners, joints, gears, threads, reference-images, file-io, annotations, printing, relief, textures, mechanisms, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, figure, voxel, colors, print-safety, fasteners, joints, gears, threads, reference-images, file-io, annotations, printing, relief, textures, mechanisms, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
     input_schema: {
       type: 'object',
       properties: {
