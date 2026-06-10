@@ -32,6 +32,11 @@ interface CatalogEntry {
   id: string;                   // manifest id (kebab-case)
   name: string;                 // user-facing name
   description: string;          // shows up under the tile
+  /** Optional per-entry thumbnail-camera pin (degrees; azimuth 0=+X 90=+Y,
+   *  elevation 0=side-on 90=top). Defaults to the standard iso tile (az 45,
+   *  el 35) when omitted — set this instead of baking orientation into the
+   *  geometry when a model's "hero face" doesn't sit on the default corner. */
+  thumbCamera?: { azimuth: number; elevation: number };
 }
 
 const newEntries: CatalogEntry[] = [
@@ -94,13 +99,18 @@ test.describe.serial('generate catalog entries', () => {
 
       // Build a session, run the code, export as JSON (with thumbnails so
       // the catalog tiles render the rendered preview, not a placeholder).
-      const payload = await page.evaluate(async ({ code, name }) => {
+      const payload = await page.evaluate(async ({ code, name, thumbCamera }) => {
         const pw = (window as unknown as { partwright: {
           createSession: (n: string) => Promise<unknown>;
           runAndSave: (c: string, label?: string, a?: unknown) => Promise<unknown>;
+          setThumbnailCamera: (c: { azimuth: number; elevation: number }) => Promise<unknown>;
           exportSessionData: (id?: string, opts?: { includeThumbnails?: boolean }) => Promise<{ data?: unknown; error?: string }>;
         } }).partwright;
         await pw.createSession(name);
+        // Pin the tile camera BEFORE runAndSave so captureThumbnail() inside it
+        // renders from the entry's chosen angle (and the pin is exported with
+        // the session, so re-renders keep it).
+        if (thumbCamera) await pw.setThumbnailCamera(thumbCamera);
         const run = await pw.runAndSave(code, 'v1', { isManifold: true, maxComponents: 1 }) as { passed?: boolean; failures?: string[]; geometry?: { status?: string; error?: string } };
         if (run.failures && run.failures.length > 0) {
           throw new Error('runAndSave assertions failed: ' + run.failures.join('; '));
@@ -115,7 +125,7 @@ test.describe.serial('generate catalog entries', () => {
         const exported = await pw.exportSessionData(undefined, { includeThumbnails: true });
         if (exported.error) throw new Error('exportSessionData: ' + exported.error);
         return exported.data;
-      }, { code: src, name: entry.name });
+      }, { code: src, name: entry.name, thumbCamera: entry.thumbCamera ?? null });
 
       // Write to public/catalog/<name>.partwright.json — pretty-printed so
       // diffs are readable.

@@ -50,8 +50,19 @@ const PAINT_ITEMS = PALETTE
   ? Object.entries(PALETTE).map(([label, hex]) => ({ label, color: hexToRgb(hex) }))
   : null;
 
+// Optional thumbnail-camera pin (mirrors single-catalog-entry.cjs): set
+// THUMB_AZIMUTH / THUMB_ELEVATION (degrees; azimuth 0=+X 90=+Y, elevation
+// 0=side-on 90=top) to bake the tile from a chosen angle instead of the
+// default iso (az 45 / el 35) — no need to bake orientation into geometry.
+const THUMB_AZ = process.env.THUMB_AZIMUTH !== undefined ? Number(process.env.THUMB_AZIMUTH) : undefined;
+const THUMB_EL = process.env.THUMB_ELEVATION !== undefined ? Number(process.env.THUMB_ELEVATION) : undefined;
+const THUMB_CAMERA = (Number.isFinite(THUMB_AZ) || Number.isFinite(THUMB_EL))
+  ? { ...(Number.isFinite(THUMB_AZ) ? { azimuth: THUMB_AZ } : {}), ...(Number.isFinite(THUMB_EL) ? { elevation: THUMB_EL } : {}) }
+  : null;
+
 if (!SOURCE || !NAME || !OUT) {
   console.error('Required: --source <file> --name <name> --out <file> [--lang manifold-js|scad|replicad|voxel] [--palette JSON | --palette-file FILE]');
+  console.error('Optional env: THUMB_AZIMUTH / THUMB_ELEVATION (degrees) — pin the thumbnail camera.');
   process.exit(2);
 }
 
@@ -96,7 +107,7 @@ async function main() {
       continue;
     }
     try {
-      result = await page.evaluate(async ({ code, lang, name, paintItems }) => {
+      result = await page.evaluate(async ({ code, lang, name, paintItems, thumbCamera }) => {
         if (window.partwright.getActiveLanguage() !== lang) {
           await window.partwright.setActiveLanguage(lang);
         }
@@ -115,6 +126,9 @@ async function main() {
         }
         if (!warmed) return { error: 'engine warmup timeout', where: 'warmup' };
         await window.partwright.createSession(name);
+        if (thumbCamera && window.partwright.setThumbnailCamera) {
+          await window.partwright.setThumbnailCamera(thumbCamera);
+        }
         const r = await window.partwright.runAndSave(code, 'v0', {});
         if (r && r.error) return { error: r.error, where: 'runAndSave' };
         if (!r || !r.version) return { error: 'no version saved: ' + JSON.stringify(r).slice(0, 500), where: 'runAndSave' };
@@ -137,7 +151,7 @@ async function main() {
           status: geo.status, isManifold: geo.isManifold, componentCount: geo.componentCount,
           triangleCount: geo.triangleCount, genus: geo.genus, volume: geo.volume,
         } };
-      }, { code, lang: LANG, name: NAME, paintItems: PAINT_ITEMS });
+      }, { code, lang: LANG, name: NAME, paintItems: PAINT_ITEMS, thumbCamera: THUMB_CAMERA });
       break;
     } catch (e) {
       result = { error: String(e), where: 'eval' };

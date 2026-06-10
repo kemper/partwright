@@ -34,6 +34,9 @@ test-results/
 playwright-report/
 playwright/.cache/
 
+# scripts/snap.mjs temp specs (deleted after each run; ignored as a safety net)
+/tests/_snap-*.spec.ts
+
 # Interstitial planning files
 .plans/
 

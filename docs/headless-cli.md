@@ -98,6 +98,25 @@ angles: front,back,right,left,top,bottom,iso). `--explain-components` prints a
 per-island vol/tris/size/center breakdown to stderr; `--expect-components N`
 exits non-zero on a count mismatch (a CI gate for "this must stay N parts").
 
+The default PNG name is **stamped unique per run** (`<file>.preview-<stamp>.png`,
+older stamps for the same model are cleaned up) because the agent Read tool
+caches images by path — a re-render to the same name gets served stale. Take the
+path from the JSON's `png` field rather than guessing it; an explicit `--png`
+path is used verbatim.
+
+**Paint-in-code resolves headlessly.** `api.paint.*` ops (box/slab/cylinder/
+label) recorded by a manifold-js run are resolved against the mesh with the same
+pure helpers the browser underlay uses: the PNG shows the resolved colours and
+`stats.paintOps` carries per-op `{name, kind, triangleCount}` — a 0 count warns
+(the region missed the surface, or names a missing label). Brush-painted
+sidecar regions still need the browser.
+
+**Voxel stats extras.** `v.sdf()` runs report `voxelRes` (the world-units-per-
+voxel res, when all calls agree), `worldBBox` (mesh bbox × res — the model's
+size in the SDF's world coordinates), and `sdfLabelCounts` (voxel fills per
+`colors` label, **including 0-fill entries** — the smoothUnion silent-label
+trap, surfaced as a warning).
+
 **`compare`** runs several model files and tiles one view of each into a single
 contact-sheet PNG — for A/B parameter sweeps or before/after checks. Each model
 is fit to its own bbox; a failed variant gets a distinct pink tile. Default view
@@ -128,9 +147,10 @@ array of `"#rrggbb"` strings or `{name,hex}` objects; omit it for the app's
 default 6-slot palette. `--mode heightmap` makes brightness drive per-column
 depth (a bas-relief sculpt) instead of a flat `--depth` billboard.
 
-What Phase 1 **cannot** show: brush-painted vertex colors, annotations, edge
+What Phase 1 **cannot** show: brush-painted sidecar regions, annotations, edge
 overlays, surface modifiers, anything stateful (sessions/versions). Those live in
-the browser — reach for Phase 2.
+the browser — reach for Phase 2. (Paint declared *in code* via `api.paint.*` IS
+shown — see above.)
 
 ### Phase 2 commands
 
