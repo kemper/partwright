@@ -66,3 +66,18 @@ never learn the old name.
 section) so the in-app AI's reading pattern stays uniform; hinge docs teach the
 `maxComponents: 2` gate explicitly since the bbox-overlap warning is a false
 positive for any interleaved print-in-place part.
+
+## Assistant
+
+## Key decisions — catalog phase
+
+**Kept the `print-fit` catalog group id** — its display metadata was already
+renamed for the split, and changing the id would touch six manifest entries plus
+src for no user-visible gain.
+
+**Hinge example coerces even knuckle-slider values up to odd** instead of
+erroring, so the Customizer can't produce a run failure; leaves are decomposed
+and labeled in two colors for a legible thumbnail. The snap-lid example derives
+bead and groove from a single snapRim call at the body bore so the interface
+diameter can't drift apart. The project box gained a `mountStyle` select
+(heat-set insert vs thread-forming) as the tapHole demo.
