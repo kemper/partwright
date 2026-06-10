@@ -32,3 +32,17 @@ occurrences (e.g. array `items`) are covered.
 drives `gemini.streamTurn` with a tool carrying `exclusiveMinimum` (top-level)
 and `exclusiveMaximum` (in array `items`), captures the outgoing request body,
 and asserts neither keyword survives while the surrounding param schema does.
+
+## Human (follow-up)
+
+Can we update our agent instructions to prevent this in the future?
+
+## Assistant
+
+**Documented the constraint at the point of use and in CLAUDE.md.** Added a
+comment on the `ToolDefinition` interface in `src/ai/tools.ts` (where schemas
+are authored) spelling out the safe cross-provider keyword subset and the rule:
+if you reach for a keyword Gemini's OpenAPI subset rejects, add it to
+`sanitizeSchemaForGemini`'s strip set in the same change. Mirrored a short
+version onto the Gemini provider bullet in `CLAUDE.md` so the canonical agent
+instructions carry it too.
