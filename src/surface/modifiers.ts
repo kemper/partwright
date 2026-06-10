@@ -23,7 +23,7 @@ import { voronoiShell, type VoronoiShellOptions } from './voronoiShell';
 import { voronoiLattice, type VoronoiLampOptions } from './voronoiLattice';
 import { smoothSurface, type SmoothOptions } from './smoothSurface';
 import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
-import { extractPositions, bboxOf, subdivideWithMask } from './meshSubdivide';
+import { extractPositions, bboxOf, subdivideWithMask, subdivideToMaxEdge } from './meshSubdivide';
 import { encodeGrid } from '../geometry/voxel/grid';
 import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
@@ -42,6 +42,11 @@ export interface ModifierManifoldResult {
   code: string;
   /** Baked mesh to attach to the new version as an imported mesh. */
   mesh: MeshData;
+  /** Optional painted source mesh for color carry when the baked `mesh` itself
+   *  carries no per-triangle color — i.e. a fully re-meshed result (engrave,
+   *  voronoi lamp) where colors can only be transferred spatially from the
+   *  original. The commit falls back to a nearest-triangle transfer from this. */
+  colorSource?: MeshData;
 }
 
 export interface ModifierVoxelResult {
@@ -64,6 +69,19 @@ function today(): string {
 export function modelDiagonal(mesh: MeshData): number {
   const { size } = bboxOf(extractPositions(mesh));
   return Math.hypot(size[0], size[1], size[2]);
+}
+
+/** A dense color-source for a fully re-meshed result (engrave / voronoi lamp).
+ *  The color carry maps each new triangle to the *nearest old triangle centroid*,
+ *  which is unreliable when the source has a few huge faces (a plain cube): a new
+ *  top-face triangle near a corner can be closer to a side-face centroid. We
+ *  subdivide the painted input to small triangles first (carrying triColors and
+ *  the `_painted` mask) so the centroids are dense and the transfer is faithful.
+ *  Returns undefined when the input carries no paint. */
+function denseColorSource(mesh: MeshData): MeshData | undefined {
+  if (mesh.triColors == null) return undefined;
+  const maxEdge = (modelDiagonal(mesh) || 10) / 80;
+  return subdivideToMaxEdge(mesh, { maxEdge, maxRounds: 5 });
 }
 
 /** Size-relative starting parameters for fuzzy skin (subtle ~1% displacement). */
@@ -617,6 +635,9 @@ export function applyVoronoiLamp(mesh: MeshData, opts: VoronoiLampModifierOption
       kind: 'manifold',
       label: 'voronoi lamp',
       mesh: baked,
+      // Re-meshed shell carries no colors; transfer them spatially from a dense
+      // version of the painted input (coarse faces would map unreliably).
+      colorSource: denseColorSource(mesh),
       code: manifoldWrapper([
         `Voronoi lamp (perforated shell) from the current model on ${today()} — cell ~${opts.cellSize.toFixed(2)}, wall ${opts.wallThickness.toFixed(2)}.`,
         `Smooth (SDF) mesh baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
@@ -683,6 +704,10 @@ export function applyEngrave(mesh: MeshData, opts: EngraveModifierOptions): Modi
     kind: 'manifold',
     label: opts.through ? 'engrave (cut through)' : 'engrave',
     mesh: baked,
+    // The carved mesh is a fresh surface-nets surface with no per-triangle
+    // colors; carry the original paint by spatial transfer from a dense version
+    // of the painted input (coarse faces would map unreliably).
+    colorSource: denseColorSource(mesh),
     code: manifoldWrapper([
       `Engraved ${what} on ${today()} — ${opts.through ? 'cut clean through' : `recessed ${opts.depth.toFixed(2)} deep`} on the ${proj}.`,
       `The carved mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,

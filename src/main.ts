@@ -7206,8 +7206,14 @@ async function main() {
     // per-triangle paint (dense mesh, same shape as the engine output). We use
     // that as the color source rather than the pre-modifier coarse mesh, which
     // avoids the coarse→dense centroid-mapping errors that cause wrong colors.
-    const colorMesh = (preserveColor && result.kind === 'manifold' && result.mesh.triColors != null)
-      ? result.mesh : null;
+    // Prefer the baked mesh's own triColors (textures carry them exactly through
+    // subdivision). When the result is fully re-meshed (engrave, voronoi lamp) it
+    // has none, so fall back to a spatial transfer from the painted source mesh
+    // the modifier handed back — otherwise the carve would wipe all paint.
+    const colorMesh = (preserveColor && result.kind === 'manifold')
+      ? (result.mesh.triColors != null ? result.mesh
+        : (result.colorSource?.triColors != null ? result.colorSource : null))
+      : null;
     cancelVoxelPaintIfActive();
     dropPaintState();
     if (result.kind === 'manifold') {
@@ -7893,6 +7899,9 @@ async function main() {
       mode?: 'planar' | 'cylindrical';
       axis?: 'x' | 'y' | 'z';
       side?: 'min' | 'max' | 'outer' | 'inner';
+      posU?: number;
+      posV?: number;
+      rotationDeg?: number;
       through?: boolean;
       depth?: number;
       size?: number;
@@ -7923,9 +7932,14 @@ async function main() {
         if (opts?.projection) {
           projection = opts.projection;
         } else if (opts?.mode === 'cylindrical') {
-          projection = { mode: 'cylindrical', side: opts?.side === 'inner' ? 'inner' : 'outer' };
+          projection = { mode: 'cylindrical', side: opts?.side === 'inner' ? 'inner' : 'outer', rotationDeg: opts?.rotationDeg };
         } else {
-          projection = { mode: 'planar', axis: (opts?.axis as 'x' | 'y' | 'z') ?? 'z', side: opts?.side === 'min' ? 'min' : 'max' };
+          projection = {
+            mode: 'planar',
+            axis: (opts?.axis as 'x' | 'y' | 'z') ?? 'z',
+            side: opts?.side === 'min' ? 'min' : 'max',
+            posU: opts?.posU, posV: opts?.posV, rotationDeg: opts?.rotationDeg,
+          };
         }
         return await commitSurfaceModifier(
           buildSurfaceModifier('engrave', { ...opts, mask, projection, source }, preserve),

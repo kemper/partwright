@@ -351,7 +351,7 @@ auto-raises for thin struts, so you rarely touch it. Verify with `renderViews`.
 
 ```
 engraveModel({ text, font?, through?, depth?, size?, mode?, axis?, side?,
-               resolution?, watertight?, preserveColor? })
+               posU?, posV?, rotationDeg?, resolution?, watertight?, preserveColor? })
 ```
 
 **Carves text into the model** — recessed channels (engrave) or holes cut clean
@@ -376,8 +376,22 @@ than the relief textures — allow a few seconds.
 | `mode` | `'planar'` | `'planar'` = onto one flat face; `'cylindrical'` = wrap around the Z axis (rings, cups). |
 | `axis` | `'z'` | Planar only: which face axis (`'x' \| 'y' \| 'z'`). |
 | `side` | `'max'` | Planar: `'max'` (+axis face) or `'min'`. Cylindrical: `'outer'` (default) or `'inner'`. |
+| `posU` | 0.5 | Planar only: stamp center *across* the face, as a fraction [0–1] of the bbox on the first in-plane axis. 0.5 = centered; 0.25/0.75 = quarter points (the snap buttons in the UI). |
+| `posV` | 0.5 | Planar only: stamp center *up* the face, fraction [0–1] on the second in-plane axis. |
+| `rotationDeg` | 0 | Rotate the stamp in the face plane (planar) or around Z (cylindrical), degrees. |
 | `resolution` | 180 | Field resolution along the longest axis [48–256]. Raise if thin strokes look mushy. |
 | `watertight` | true | Keep only the largest connected piece — one manifold result. |
+
+**Placement:** `posU`/`posV` move the stamp to a quarter/third of the face
+instead of dead-center; `rotationDeg` spins it. In the **Surface panel** you can
+also **click the model** to drop the stamp where you click (it picks the nearest
+face and sets posU/posV), then nudge with the position sliders (which snap to
+0/25/50/75/100%).
+
+**Colors are preserved.** Engraving a painted model carries the existing paint
+onto the carved mesh (a spatial transfer), so a painted nameplate keeps its
+color and the channel walls take the nearest color. Pass `preserveColor:false`
+to clear instead.
 
 **Tips:** verify with `renderViews` — check the letters are legible and (for
 `through`) the holes are open (genus rises above 0; the result stays manifold).

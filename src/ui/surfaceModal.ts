@@ -130,6 +130,54 @@ function sliderWithEntry(
   return { wrap, get: () => clamp(num.valueAsNumber || min) };
 }
 
+/** A 0–100% position slider with quick-snap buttons at 0/25/50/75/100% — the
+ *  detents the engrave placement uses to drop text at the quarter points. */
+function sliderWithSnaps(label: string, value: number, onChange: () => void) {
+  const wrap = el('label', 'block mb-3 text-xs text-zinc-300');
+  const head = el('div', 'flex justify-between mb-1');
+  head.append(el('span', '', label));
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+  const readout = el('span', 'text-zinc-400 tabular-nums', pct(value));
+  head.append(readout);
+  const input = el('input', 'w-full accent-blue-500');
+  input.type = 'range'; input.min = '0'; input.max = '1'; input.step = '0.01'; input.value = String(value);
+  input.addEventListener('input', () => { readout.textContent = pct(input.valueAsNumber); onChange(); });
+  const snaps = el('div', 'flex gap-1 mt-1');
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+    const b = el('button', 'flex-1 px-1 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-300 hover:bg-zinc-700', pct(f));
+    b.type = 'button';
+    b.addEventListener('click', () => { input.value = String(f); readout.textContent = pct(f); onChange(); });
+    snaps.append(b);
+  }
+  wrap.append(head, input, snaps);
+  return { wrap, get: () => input.valueAsNumber, set: (v: number) => { input.value = String(v); readout.textContent = pct(v); } };
+}
+
+/** In-plane axis indices for a planar face normal axis (mirrors engraveStamp's
+ *  PLANE_AXES so click-placement fractions line up with the field math). */
+const ENGRAVE_PLANE_AXES: Record<'x' | 'y' | 'z', [number, number]> = { z: [0, 1], y: [0, 2], x: [1, 2] };
+
+/** Current model bbox (min/max/size) for placement fractions; a safe default
+ *  if geometry data is unavailable. */
+function modelBBox(api: SurfaceApi): { min: number[]; max: number[]; size: number[] } {
+  try {
+    const gd = api.getGeometryData() as { boundingBox?: { min?: number[]; max?: number[] } | null };
+    const bb = gd?.boundingBox;
+    if (bb?.min && bb?.max && bb.min.length >= 3 && bb.max.length >= 3) {
+      return { min: bb.min, max: bb.max, size: [bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]] };
+    }
+  } catch { /* fall through */ }
+  return { min: [-5, -5, -5], max: [5, 5, 5], size: [10, 10, 10] };
+}
+
+/** Human label for a planar face (axis + side). */
+function engraveFaceLabel(axis: 'x' | 'y' | 'z', side: 'min' | 'max'): string {
+  const map: Record<string, string> = {
+    'z+': 'Top (+Z)', 'z-': 'Bottom (−Z)', 'y-': 'Front (−Y)', 'y+': 'Back (+Y)', 'x+': 'Right (+X)', 'x-': 'Left (−X)',
+  };
+  return map[`${axis}${side === 'max' ? '+' : '-'}`] ?? `${axis}${side}`;
+}
+
 function checkbox(label: string, checked: boolean, onChange: () => void) {
   const wrap = el('label', 'flex items-center gap-2 mb-3 text-xs text-zinc-300 cursor-pointer');
   const input = el('input', 'accent-blue-500');
@@ -214,6 +262,16 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   let engraveMask: StampMask | null = null;
   let engraveSource = '';      // text string or 'image' — labels the version
   let engraveBuilding = false; // a rebuild is in flight (suppresses preview)
+  // Planar placement (persisted across tab re-renders): which face, the stamp
+  // center as a fraction of the bbox on the two in-plane axes, and in-plane
+  // rotation. Set by the position sliders or by clicking the model.
+  const engravePlace = { axis: 'z' as 'x' | 'y' | 'z', side: 'max' as 'min' | 'max', posU: 0.5, posV: 0.5, rot: 0, placed: false };
+  let engravePickStop: (() => void) | null = null; // active click-to-place suppressor
+  // Live control refs the click-to-place handler updates (set by renderTab).
+  let engravePosX: { set: (v: number) => void } | null = null;
+  let engravePosY: { set: (v: number) => void } | null = null;
+  let engraveFaceReadout: HTMLElement | null = null;
+  let engravePlaceBtn: HTMLButtonElement | null = null;
 
   const status = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mb-2');
 
@@ -439,6 +497,10 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   function renderTab() {
     body.innerHTML = '';
+    // Leaving any tab stops an in-progress engrave placement and drops stale
+    // control refs (the DOM they point at is about to be discarded).
+    exitEngravePick();
+    engravePosX = engravePosY = null; engraveFaceReadout = null; engravePlaceBtn = null;
     regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp' || active === 'engrave') ? 'none' : '';
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
@@ -639,21 +701,31 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       });
       imgWrap.append(imgInput);
 
-      // Projection: planar face or wrap around Z. Both selectors are built and
-      // shown/hidden by mode (no renderTab on change, so the choice persists).
+      // Projection: planar (onto a face, with click-to-place) or wrap around Z.
       const mode = dropdown<'planar' | 'cylindrical'>('Projection', [
         ['planar', 'Planar (onto a face)'],
         ['cylindrical', 'Cylindrical (wrap around Z)'],
       ], 'planar', () => { syncProjUI(); schedulePreview(); });
-      const planarFace = dropdown<'z+' | 'z-' | 'y-' | 'y+' | 'x+' | 'x-'>('Face', [
-        ['z+', 'Top (+Z)'], ['z-', 'Bottom (−Z)'],
-        ['y-', 'Front (−Y)'], ['y+', 'Back (+Y)'],
-        ['x+', 'Right (+X)'], ['x-', 'Left (−X)'],
-      ], 'z+', schedulePreview);
+
+      // Planar placement: click a face to place, then fine-tune with the position
+      // sliders (quarter-point snaps) and an in-plane rotation.
+      const placeWrap = el('div', 'mb-3 p-2 rounded bg-zinc-800/40 border border-zinc-700/60');
+      const placeBtn = el('button', 'w-full px-2 py-1.5 rounded text-xs bg-blue-600/80 hover:bg-blue-500 text-white mb-1', '📌 Click to place on model');
+      placeBtn.type = 'button';
+      placeBtn.addEventListener('click', enterEngravePick);
+      const faceReadout = el('div', 'text-[11px] text-zinc-400 mb-2', `Face: ${engraveFaceLabel(engravePlace.axis, engravePlace.side)}${engravePlace.placed ? ' · placed by click' : ''}`);
+      const posX = sliderWithSnaps('Position across (U)', engravePlace.posU, () => { engravePlace.posU = posX.get(); schedulePreview(); });
+      const posY = sliderWithSnaps('Position up (V)', engravePlace.posV, () => { engravePlace.posV = posY.get(); schedulePreview(); });
+      placeWrap.append(placeBtn, faceReadout, posX.wrap, posY.wrap);
+      // Expose the live controls so the click-to-place handler can update them.
+      engravePosX = posX; engravePosY = posY; engraveFaceReadout = faceReadout; engravePlaceBtn = placeBtn;
+
       const cylSide = dropdown<'outer' | 'inner'>('Surface', [['outer', 'Outer'], ['inner', 'Inner']], 'outer', schedulePreview);
+      // Rotation applies to both modes (in-plane for planar, angular facing for cylindrical).
+      const angle = slider('Rotation (°)', -180, 180, engravePlace.rot, 5, n => `${n}°`, () => { engravePlace.rot = angle.get(); schedulePreview(); });
       const syncProjUI = () => {
         const cyl = mode.get() === 'cylindrical';
-        planarFace.wrap.style.display = cyl ? 'none' : '';
+        placeWrap.style.display = cyl ? 'none' : '';
         cylSide.wrap.style.display = cyl ? '' : 'none';
       };
 
@@ -664,14 +736,13 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const res = sliderWithEntry('Resolution', 48, 220, 180, 1, 256, schedulePreview);
       const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
 
-      body.append(textWrap, font.wrap, imgWrap, invert.wrap, mode.wrap, planarFace.wrap, cylSide.wrap, through.wrap, sizeS.wrap, depthWrap, res.wrap, wtight.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'Carves text or an image into the model — recessed channels, or holes cut clean through (stencil). Planar projects onto a face; cylindrical wraps around the Z axis (rings, cups). Raise resolution if thin strokes look mushy.'));
+      body.append(textWrap, font.wrap, imgWrap, invert.wrap, mode.wrap, placeWrap, cylSide.wrap, angle.wrap, through.wrap, sizeS.wrap, depthWrap, res.wrap, wtight.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Carves text or an image into the model — recessed channels, or holes cut clean through (stencil). Click "place on model" to drop it where you click; the position sliders snap to quarter points. Cylindrical wraps around Z (rings, cups). Raise resolution if thin strokes look mushy.'));
       syncProjUI();
 
       const projOf = (): EngraveProjection => {
-        if (mode.get() === 'cylindrical') return { mode: 'cylindrical', side: cylSide.get() };
-        const f = planarFace.get();
-        return { mode: 'planar', axis: f[0] as 'x' | 'y' | 'z', side: f[1] === '+' ? 'max' : 'min' };
+        if (mode.get() === 'cylindrical') return { mode: 'cylindrical', side: cylSide.get(), rotationDeg: angle.get() };
+        return { mode: 'planar', axis: engravePlace.axis, side: engravePlace.side, posU: posX.get(), posV: posY.get(), rotationDeg: angle.get() };
       };
       currentOpts = () => ({
         mask: engraveMask,
@@ -753,6 +824,48 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     }
     if (active === 'engrave') schedulePreview();
   }
+
+  // --- Click-to-place: pick a surface point to position the engraving ---
+  function exitEngravePick() {
+    if (!engravePickStop) return;
+    engravePickStop();
+    engravePickStop = null;
+    document.body.style.cursor = '';
+    if (engravePlaceBtn) engravePlaceBtn.textContent = '📌 Click to place on model';
+  }
+  function enterEngravePick() {
+    if (engravePickStop) { exitEngravePick(); return; }
+    document.body.style.cursor = 'crosshair';
+    status.textContent = 'Click the model to place the engraving…';
+    if (engravePlaceBtn) engravePlaceBtn.textContent = '◉ Picking… (click to stop)';
+    engravePickStop = addPointerSuppressor((evt: PointerEvent) => {
+      if (evt.type !== 'pointerdown') return false;
+      if (!getCurrentMesh()) return true;
+      const hit = pickFace(evt as MouseEvent);
+      if (!hit) return true; // empty space — keep picking
+      placeEngraveFromHit(hit.point, hit.normal);
+      exitEngravePick();
+      return true;
+    });
+  }
+  // Map a surface hit → nearest axis-aligned face + in-plane position fractions.
+  function placeEngraveFromHit(point: [number, number, number], normal: [number, number, number]) {
+    const bb = modelBBox(api);
+    const an = normal.map(Math.abs);
+    const ax = an[0] >= an[1] && an[0] >= an[2] ? 0 : an[1] >= an[2] ? 1 : 2;
+    engravePlace.axis = (['x', 'y', 'z'] as const)[ax];
+    engravePlace.side = normal[ax] >= 0 ? 'max' : 'min';
+    const [ui, vi] = ENGRAVE_PLANE_AXES[engravePlace.axis];
+    const frac = (i: number) => (bb.size[i] > 1e-9 ? Math.min(1, Math.max(0, (point[i] - bb.min[i]) / bb.size[i])) : 0.5);
+    engravePlace.posU = frac(ui);
+    engravePlace.posV = frac(vi);
+    engravePlace.placed = true;
+    engravePosX?.set(engravePlace.posU);
+    engravePosY?.set(engravePlace.posV);
+    if (engraveFaceReadout) engraveFaceReadout.textContent = `Face: ${engraveFaceLabel(engravePlace.axis, engravePlace.side)} · placed by click`;
+    schedulePreview();
+  }
+
   function clearPreviewIfDirty() {
     if (previewTimer !== undefined) { clearTimeout(previewTimer); previewTimer = undefined; }
     if (previewDirty) {
@@ -792,6 +905,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   const close = () => {
     exitSelectionMode();
+    exitEngravePick();
     regionTeardown?.(); regionTeardown = null;
     clearPreviewIfDirty();
     dragHandle.destroy();

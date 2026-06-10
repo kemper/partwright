@@ -160,10 +160,16 @@ export function maskFromRGBA(
 }
 
 /** Where the stamp lives on the model. `planar` projects onto one of the six
- *  axis-aligned faces; `cylindrical` wraps the stamp around the Z axis. */
+ *  axis-aligned faces; `cylindrical` wraps the stamp around the Z axis.
+ *
+ *  Planar placement: `posU`/`posV` are the stamp *center* as a fraction [0,1] of
+ *  the model's bounding box along the face's two in-plane axes (default 0.5 =
+ *  centered; 0.25/0.75 = quarter points). `rotationDeg` rotates the stamp in the
+ *  face plane about that center. These let the UI place the stamp by clicking a
+ *  surface point (which sets posU/posV/side/axis) or by the position sliders. */
 export type EngraveProjection =
-  | { mode: 'planar'; axis: 'x' | 'y' | 'z'; side: 'min' | 'max' }
-  | { mode: 'cylindrical'; side: 'outer' | 'inner' };
+  | { mode: 'planar'; axis: 'x' | 'y' | 'z'; side: 'min' | 'max'; posU?: number; posV?: number; rotationDeg?: number }
+  | { mode: 'cylindrical'; side: 'outer' | 'inner'; rotationDeg?: number };
 
 export interface EngraveFieldOptions {
   mask: StampMask;
@@ -210,14 +216,25 @@ export function engraveCombine(bbox: Bbox, opts: EngraveFieldOptions): SdfCombin
   if (projection.mode === 'planar') {
     const [ui, vi] = PLANE_AXES[projection.axis];
     const axisIdx = projection.axis === 'x' ? 0 : projection.axis === 'y' ? 1 : 2;
-    const center = [cx, cy, cz];
-    const centerU = center[ui], centerV = center[vi];
+    // Stamp center: a fraction of the bbox span along each in-plane axis
+    // (default 0.5 = centered). Clamp so a stray value can't push it off-model.
+    const clamp01 = (n: number) => (Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.5);
+    const posU = clamp01(projection.posU ?? 0.5);
+    const posV = clamp01(projection.posV ?? 0.5);
+    const centerU = bbox.min[ui] + posU * bbox.size[ui];
+    const centerV = bbox.min[vi] + posV * bbox.size[vi];
+    const rot = ((projection.rotationDeg ?? 0) * Math.PI) / 180;
+    const cosR = Math.cos(rot), sinR = Math.sin(rot);
     const facePos = projection.side === 'max' ? bbox.max[axisIdx] : bbox.min[axisIdx];
     const sign = projection.side === 'max' ? 1 : -1;
     project = (x, y, z) => {
       const p = [x, y, z];
-      const u = (p[ui] - centerU) / stampW + 0.5;
-      const v = 0.5 - (p[vi] - centerV) / stampH;
+      // In-plane offset from the stamp center, then rotate into stamp space.
+      const du = p[ui] - centerU, dv = p[vi] - centerV;
+      const ru = cosR * du + sinR * dv;
+      const rv = -sinR * du + cosR * dv;
+      const u = ru / stampW + 0.5;
+      const v = 0.5 - rv / stampH;
       return sampleMask(mask, u, v);
     };
     depthInto = (x, y, z) => {
@@ -232,8 +249,11 @@ export function engraveCombine(bbox: Bbox, opts: EngraveFieldOptions): SdfCombin
       Math.abs(bbox.max[1] - cy), Math.abs(bbox.min[1] - cy),
     ));
     const sign = projection.side === 'outer' ? 1 : -1;
+    // rotationDeg shifts which way the stamp faces around Z (0 = +X).
+    const offset = ((projection.rotationDeg ?? 0) * Math.PI) / 180;
+    const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a)); // → [-π, π]
     project = (x, y, z) => {
-      const theta = Math.atan2(y - cy, x - cx);   // [-π, π]
+      const theta = wrap(Math.atan2(y - cy, x - cx) - offset); // [-π, π], re-centered
       const arc = theta * rRef;                    // signed arc length at rRef
       const u = arc / stampW + 0.5;
       const v = 0.5 - (z - cz) / stampH;
