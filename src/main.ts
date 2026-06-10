@@ -4841,7 +4841,8 @@ async function main() {
       const persistedTexture = version.surfaceTexture as PersistedSurfaceTexture | undefined;
       if (
         persistedTexture && typeof persistedTexture.key === 'string' &&
-        persistedTexture.mesh && persistedTexture.mesh.vertProperties instanceof Float32Array
+        persistedTexture.mesh && persistedTexture.mesh.vertProperties instanceof Float32Array &&
+        persistedTexture.mesh.triVerts instanceof Uint32Array
       ) {
         seedSurfaceCache(persistedTexture.key, persistedTexture.mesh as MeshData);
       }
