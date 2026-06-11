@@ -21,6 +21,7 @@ apply→save→verify workflow:
 | `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
 | `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
+| `applyPerforatedLattice({ pattern, cellSize, wallThickness, strutWidth, resolution, grainAngleDeg, watertight })` | Cuts a **regular perforated lattice** through the model — the deterministic sibling of the Voronoi lamp: `square` grid, `hex` honeycomb, or `triangle` truss windows cut clean through a thin shell. Smooth manifold-js mesh. | Use for geometric/uniform perforated shells (lattice lampshades, vents, screens). See [`applyPerforatedLattice`](#applyperforatedlattice) below. |
 | `engraveModel({ text, through, depth, size, axis, side, posU, posV, curveAxis, resolution })` | **Carves text into the model** — recessed channels (`through:false`) or holes cut clean through the wall (`through:true`, a stencil). Lands on a face; `curveAxis` wraps it around a round surface (cup, tower). | Unlike the relief textures (which only displace the skin), this **removes** material. Image stamps are UI-only (need local bytes); the tool handles text. See [`engraveModel`](#engravemodel) below. |
 
 > **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
@@ -355,6 +356,61 @@ one step.
 **Tips:** with `watertight` on (default) the result is manifold/printable. If
 windows don't open, lower `strutWidth` or raise `cellSize`. Resolution
 auto-raises for thin struts, so you rarely touch it. Verify with `renderViews`.
+
+---
+
+## applyPerforatedLattice
+
+```
+applyPerforatedLattice({ pattern?, cellSize?, wallThickness?, strutWidth?,
+                         resolution?, grainAngleDeg?, watertight? })
+```
+
+The **regular-pattern** sibling of `applyVoronoiLamp`: the same see-through shell
+(thin hollow wall with windows cut clean through, leaving a strut web), but with
+a deterministic, repeating pattern instead of random Voronoi cells. Choose the
+window shape with `pattern`:
+
+- **`'square'`** (default) — an even grid of square windows (a cubic strut lattice).
+- **`'hex'`** — a hexagonal honeycomb.
+- **`'triangle'`** — a triangular truss.
+
+It bakes a smooth manifold-js mesh by meshing a **continuous signed-distance
+field** (the principle behind `Manifold.levelSet`), so the curved walls follow
+the true surface with **no voxel stair-stepping** and **no engine change**. The
+2D pattern is evaluated in the **XY plane and held constant along Z**, so the
+cell-edge network extrudes into a connected, watertight cage on any shape. It's a
+heavier operation than the relief textures (allow a few seconds).
+
+Start from a **closed solid** (vase, sphere, box, vessel). It hollows +
+perforates in one step.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `pattern` | `'square'` | Window shape: `'square'`, `'hex'`, or `'triangle'`. |
+| `cellSize` | ~14% of diagonal | Window pitch (spacing between windows), world units. Smaller = more, smaller windows. |
+| `wallThickness` | ~4% of diagonal | Shell thickness — how thick the struts are through the wall. |
+| `strutWidth` | 0.3 | Strut width as a fraction of cellSize [0.05–0.8]. Smaller = thinner struts, bigger windows. |
+| `resolution` | 110 | Field resolution along the longest axis [16–256]. **Auto-raised** so struts resolve to ≥6 cells — you rarely set it. Higher sharpens the struts. |
+| `grainAngleDeg` | 0 | Rotate the pattern in the XY plane. |
+| `watertight` | true | Drop loose dust/specks while keeping every substantial piece — so the whole model survives even when a tapered/multi-feature shell severs into several pieces. Leave on for printing. |
+
+**Look guidance** (defaults already look good on a typical solid — mostly pick a pattern and tune cellSize + strutWidth):
+- Grid lampshade: `pattern='square'`, `cellSize=d*0.14`, `strutWidth=0.3`
+- Honeycomb screen: `pattern='hex'`, `cellSize=d*0.12`, `strutWidth=0.28`
+- Truss vent: `pattern='triangle'`, `cellSize=d*0.16`, `strutWidth=0.34`
+
+**Limitation (v1):** because the pattern is held constant along Z, a surface that
+runs **parallel to Z** — e.g. the side wall of an upright cylinder — sees the
+windows as axial slots rather than discrete cells, and on a **tapered** tower the
+slots break into segments so the shell can split into several connected pieces
+(all substantial pieces are kept — see `watertight`). The pattern reads cleanly on
+faces that turn toward the Z axis (a sphere's caps, a vase's curved shoulder).
+Use `applyVoronoiLamp` for an organic, orientation-free look. Verify with
+`renderViews`.
+
+**Tips:** with `watertight` on (default) the result is manifold/printable. If
+windows don't open, lower `strutWidth` or raise `cellSize`.
 
 ---
 

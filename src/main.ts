@@ -121,7 +121,7 @@ import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geom
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyPerforate, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultPerforateOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
 import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampHost';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
@@ -7568,7 +7568,7 @@ async function main() {
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
   async function buildSurfaceModifier(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'perforate' | 'engrave' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
     ctl?: SdfRunControl,
@@ -7724,6 +7724,20 @@ async function main() {
         source: opts?.source as string | undefined,
       }, ctl);
     }
+    if (id === 'perforate') {
+      // Regular-pattern perforated shell → smooth SDF mesh; whole-model only.
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultPerforateOptions(mesh);
+      return applyPerforate(mesh, {
+        pattern: (opts?.pattern as 'square' | 'hex' | 'triangle') ?? base.pattern,
+        cellSize: (opts?.cellSize as number) ?? base.cellSize,
+        wallThickness: (opts?.wallThickness as number) ?? base.wallThickness,
+        strutWidth: (opts?.strutWidth as number) ?? base.strutWidth,
+        resolution: (opts?.resolution as number) ?? base.resolution,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        watertight: (opts?.watertight as boolean) ?? base.watertight,
+      }, ctl);
+    }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultSmoothOptions();
@@ -7751,7 +7765,7 @@ async function main() {
   // While a carve is running, the toolbar Cancel button aborts it instead of
   // cancelling a worker run. Cleared when the carve settles.
   let surfaceCarveCancel: (() => void) | null = null;
-  const SDF_HEAVY = new Set(['engrave', 'voronoiLamp']);
+  const SDF_HEAVY = new Set(['engrave', 'voronoiLamp', 'perforate']);
   async function buildSurfaceModifierProgress(
     id: Parameters<typeof buildSurfaceModifier>[0],
     opts: Record<string, unknown> | undefined,
@@ -7784,8 +7798,8 @@ async function main() {
     modelHasColor(): boolean { return modelHasColor(); },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
-     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize'. */
-    async previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): Promise<{ ok: true } | { error: string }> {
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'perforate'|'engrave'|'smooth'|'voxelize'. */
+    async previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'perforate' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): Promise<{ ok: true } | { error: string }> {
       try {
         previewSurfaceModifier(await buildSurfaceModifierProgress(id, opts, preserveColor), preserveColor);
         return { ok: true };
@@ -8111,6 +8125,28 @@ async function main() {
           await buildSurfaceModifierProgress('engrave', { ...opts, mask, projection, source }, preserve),
           preserve,
         );
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Cut a REGULAR perforated lattice through the current model — the same
+     *  see-through shell as applyVoronoiLamp, but with a deterministic periodic
+     *  pattern instead of random Voronoi cells: a thin hollow wall with `square`,
+     *  `hex`, or `triangle` windows cut clean through it, leaving a strut web.
+     *  Bakes a smooth manifold-js mesh (continuous SDF — curved walls, no voxel
+     *  stair-stepping). Saves a new version. Returns `{ ok, label, geometry, warnings? }`. */
+    async applyPerforatedLattice(opts?: {
+      pattern?: 'square' | 'hex' | 'triangle';
+      cellSize?: number;
+      wallThickness?: number;
+      strutWidth?: number;
+      resolution?: number;
+      grainAngleDeg?: number;
+      watertight?: boolean;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(await buildSurfaceModifierProgress('perforate', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Smooth/round the current model (Taubin λ/μ); saves a new version. */
@@ -13177,6 +13213,8 @@ async function main() {
         'getRecentExport': { signature: 'await getRecentExport(id) -- Look up bytes by id -> {filename, mimeType, text? | base64, ...}', docs: '/ai/file-io.md' },
         'downloadRecentExport': { signature: 'downloadRecentExport(id) -- Re-trigger browser download for an inbox entry', docs: '/ai/file-io.md' },
         'clearRecentExports': { signature: 'clearRecentExports() -- Empty the Recent Exports list', docs: '/ai/file-io.md' },
+        // Surface modifiers
+        'applyPerforatedLattice': { signature: "applyPerforatedLattice({pattern?, cellSize?, wallThickness?, strutWidth?, resolution?, grainAngleDeg?, watertight?}) -- Cut a REGULAR perforated lattice (pattern: 'square'|'hex'|'triangle') through the model -> a see-through strut shell (smooth manifold-js mesh). The deterministic sibling of applyVoronoiLamp.", docs: '/ai/textures.md' },
         // Color regions
         'paintRegion':     { signature: 'paintRegion({point, normal, color, name?, tolerance?}) -- Paint coplanar face region (flood-fill, edge-bounded). Diagnostic error on failure.', docs: '/ai/colors.md' },
         'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai/colors.md' },

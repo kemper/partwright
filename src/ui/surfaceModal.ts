@@ -25,7 +25,7 @@ import type { StampMask, EngraveProjection } from '../surface/modifiers';
 import { engravePlanarFootprint, engraveFreeFootprint } from '../surface/engraveStamp';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
-type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
+type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'perforate' | 'engrave' | 'smooth' | 'voxelize';
 
 /** The subset of the console API the surface UI needs. */
 export interface SurfaceApi {
@@ -37,6 +37,7 @@ export interface SurfaceApi {
   applyWovenFabric(opts?: { amplitude?: number; threadSpacing?: number; threadWidth?: number; underDepth?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiShell(opts?: { amplitude?: number; cellSize?: number; wallWidth?: number; raised?: boolean; jitter?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiLamp(opts?: { cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; jitter?: number; grainAngleDeg?: number; seed?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyPerforatedLattice(opts?: { pattern?: 'square' | 'hex' | 'triangle'; cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; grainAngleDeg?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   buildEngraveStamp(spec?: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }): Promise<{ mask: StampMask; width: number; height: number } | { error: string }>;
   engraveModel(opts?: { mask?: StampMask; source?: string; projection?: EngraveProjection; through?: boolean; depth?: number; size?: number; resolution?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
@@ -269,6 +270,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     { id: 'woven', label: 'Woven' },
     { id: 'voronoi', label: 'Voronoi (relief)' },
     { id: 'voronoiLamp', label: 'Voronoi lamp' },
+    { id: 'perforate', label: 'Perforate' },
     { id: 'engrave', label: 'Engrave' },
     { id: 'smooth', label: 'Smooth' },
     { id: 'voxelize', label: 'Voxelize' },
@@ -366,16 +368,23 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     regionControls,
   );
 
+  /** Tabs that always run on the whole model (the region selector is hidden):
+   *  voxelize / voronoiLamp / perforate / engrave change topology, so a partial-
+   *  region cut makes no sense. They must never be region-blocked even though
+   *  regionMode defaults to 'region'. */
+  function wholeOnly(): boolean {
+    return active === 'voxelize' || active === 'voronoiLamp' || active === 'perforate' || active === 'engrave';
+  }
+
   /** Returns the effective selectedTriangles for currentOpts(). */
   function activeSelection(): Set<number> | undefined {
+    if (wholeOnly()) return undefined;
     return regionMode === 'region' ? regionSelection ?? undefined : undefined;
   }
 
   /** Whether Apply/preview should be blocked (region mode, nothing picked yet). */
   function regionBlocked(): boolean {
-    // Region-less tabs (whole-model only — their region picker is hidden) are
-    // never blocked; only the region-capable tabs gate on having a selection.
-    if (active === 'voxelize' || active === 'voronoiLamp' || active === 'engrave') return false;
+    if (wholeOnly()) return false;
     return regionMode === 'region' && !regionSelection;
   }
 
@@ -541,7 +550,10 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     engravePosWraps = []; engravePlaceNote = null;
     engraveSizeGet = null; engraveIsPlanar = null;
     exitEngravePick();
-    regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp' || active === 'engrave') ? 'none' : '';
+    regionSection.style.display = wholeOnly() ? 'none' : '';
+    // Switching tabs changes whether a region pick is required (whole-only tabs
+    // never block), so refresh the Apply/Preview enabled state for the new tab.
+    updateApplyBtn();
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
       const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -701,6 +713,30 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         watertight: wtight.get(),
         output: out.get(),
       });
+    } else if (active === 'perforate') {
+      const pat = dropdown<'square' | 'hex' | 'triangle'>('Pattern', [
+        ['square', 'Square grid'],
+        ['hex', 'Hexagonal'],
+        ['triangle', 'Triangular truss'],
+      ], 'square', schedulePreview);
+      const cs = slider('Cell size (window pitch)', span * 0.05, span * 0.5, span * 0.14, span * 0.005, n => n.toFixed(3), schedulePreview);
+      const sw = slider('Strut width (fraction)', 0.05, 0.8, 0.3, 0.01, n => n.toFixed(2), schedulePreview);
+      const wt = slider('Wall thickness', span * 0.01, span * 0.12, span * 0.04, span * 0.002, n => n.toFixed(3), schedulePreview);
+      const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
+      const res = sliderWithEntry('Resolution', 48, 200, 110, 1, 256, schedulePreview);
+      const wtight = checkbox('Drop loose specks (cleaner print)', true, schedulePreview);
+      body.append(pat.wrap, cs.wrap, sw.wrap, wt.wrap, grain.wrap, res.wrap, wtight.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'A see-through shell with REGULAR windows cut clean through (the deterministic sibling of the Voronoi lamp): square, hexagonal, or triangular-truss holes. The pattern is projected along Z, so it reads cleanly on faces turning toward Z (a sphere’s caps, a vase’s shoulder) and becomes axial slots on walls parallel to Z (an upright cylinder’s side). Smaller cell size = more, smaller windows; smaller strut width = thinner struts / bigger holes. On a tapered or multi-part model the shell can split into several pieces — all substantial pieces are kept (only dust is dropped), so the whole model survives.'));
+      body.append(el('p', 'text-[11px] text-amber-400/90', 'Meshes a continuous distance field — smooth curved walls, no voxel stair-stepping (a heavier op; allow a few seconds). Stays on manifold-js.'));
+      currentOpts = () => ({
+        pattern: pat.get(),
+        cellSize: cs.get(),
+        strutWidth: sw.get(),
+        wallThickness: wt.get(),
+        grainAngleDeg: grain.get(),
+        resolution: res.get(),
+        watertight: wtight.get(),
+      });
     } else if (active === 'engrave') {
       // Text input + a small "Apply" button (and Enter) to rasterize the stamp —
       // typing no longer auto-renders on every keystroke (it was distracting).
@@ -839,8 +875,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   let previewTimer: number | undefined;
   let previewDirty = false; // a preview is currently shown (needs clearing on close)
   async function runPreview() {
-    // SDF carves (engrave / voronoi lamp) are async + show the progress modal;
-    // the rest resolve immediately. Either way we await the result.
+    // SDF carves (engrave / voronoi lamp / perforate) are async + show the inline
+    // progress timer; the rest resolve immediately. Either way we await the result.
     const r = await api.previewSurfaceModifier(active, currentOpts(), preserveColor);
     if ((r as { error?: string }).error) {
       status.textContent = `Preview error: ${(r as { error: string }).error}`;
@@ -1062,8 +1098,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     clearPreviewIfDirty();
     applyBtn.disabled = true;
     const prev = applyBtn.textContent;
-    applyBtn.textContent = 'Applying…';
-    status.textContent = 'Working…';
+    applyBtn.textContent = 'Rendering…';
     try {
       const opts = { ...currentOpts(), preserveColor };
       const result = active === 'fuzzy' ? await api.applyFuzzySkin(opts)
@@ -1074,6 +1109,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         : active === 'woven' ? await api.applyWovenFabric(opts)
         : active === 'voronoi' ? await api.applyVoronoiShell(opts)
         : active === 'voronoiLamp' ? await api.applyVoronoiLamp(opts)
+        : active === 'perforate' ? await api.applyPerforatedLattice(opts)
         : active === 'engrave' ? await api.engraveModel(opts)
         : active === 'smooth' ? await api.smoothModel(opts)
         : await api.voxelizeModel(opts);
@@ -1115,6 +1151,7 @@ export function initSurfaceUI(api: SurfaceApi): void {
     { id: 'surface-woven', title: 'Surface: Woven fabric', hint: 'Modifier', keywords: 'woven weave fabric basket cloth interlace thread', run: () => openSurfaceModal(api, 'woven') },
     { id: 'surface-voronoi', title: 'Surface: Voronoi texture', hint: 'Modifier', keywords: 'voronoi cell relief organic cracked web ridges struts texture', run: () => openSurfaceModal(api, 'voronoi') },
     { id: 'surface-voronoi-lamp', title: 'Surface: Voronoi lamp (perforated shell)', hint: 'Modifier', keywords: 'voronoi lamp shell lattice perforated cutout holes see-through planter lampshade voxel', run: () => openSurfaceModal(api, 'voronoiLamp') },
+    { id: 'surface-perforate', title: 'Surface: Perforated lattice (square / hex / triangle)', hint: 'Modifier', keywords: 'perforate perforated lattice grid hex hexagonal triangle truss window holes cutout see-through shell mesh screen regular', run: () => openSurfaceModal(api, 'perforate') },
     { id: 'surface-engrave', title: 'Surface: Engrave / cut-through text or image', hint: 'Modifier', keywords: 'engrave emboss carve cut through text image stencil label logo name plate recess channel', run: () => openSurfaceModal(api, 'engrave') },
     { id: 'surface-smooth', title: 'Surface: Smooth / round edges', hint: 'Modifier', keywords: 'smooth round fillet taubin low-poly', run: () => openSurfaceModal(api, 'smooth') },
     { id: 'surface-voxelize', title: 'Surface: Voxelize model', hint: 'Modifier', keywords: 'voxel blocky minecraft pixel', run: () => openSurfaceModal(api, 'voxelize') },
