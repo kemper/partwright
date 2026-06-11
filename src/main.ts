@@ -124,7 +124,7 @@ import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionF
 import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
 import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampHost';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
-import { nearestTriangleMap } from './surface/colorTransfer';
+import { nearestTriangleMap, remapTriangleSets } from './surface/colorTransfer';
 import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, meshContentKey, cancelSurfaceCompute, surfaceComputeInFlight, SurfaceComputeCancelled, type SurfaceOp } from './surface/surfaceOps';
 import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, type SurfaceOpId, type PersistedSurfaceTexture } from './surface/surfaceOpSpec';
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
@@ -14275,6 +14275,18 @@ async function main() {
     }
     const base = result.mesh;
     const baseKey = meshContentKey(base);
+    // The textured mesh has a denser/displaced tessellation, so the run's
+    // labelMap (Set<baseTriIndex> per api.label name) no longer points at the
+    // right triangles. Remap each label's set onto the textured mesh by spatial
+    // proximity — the same nearest-centroid carry the bake path uses — so
+    // api.label / byLabel colors survive texturing. Geometric paint descriptors
+    // (box/slab/cylinder) and brush strokes re-resolve by shape downstream and
+    // need no remap.
+    const carryLabels = (textured: MeshData): void => {
+      if (result.labelMap && result.labelMap.size > 0) {
+        result.labelMap = remapTriangleSets(result.labelMap, base, textured);
+      }
+    };
     const status = surfaceCacheStatus(baseKey, ops);
     if (status.cached && status.mesh) {
       // These displaced meshes round-trip through Manifold.ofMesh like the bake
@@ -14282,6 +14294,7 @@ async function main() {
       // mesh (and fall back to render-only if it isn't watertight).
       result.mesh = status.mesh;
       result.manifold = null;
+      carryLabels(status.mesh);
       lastAppliedSurface = { key: surfaceChainKey(baseKey, ops)!, mesh: status.mesh };
       hideSurfaceReapplyPill();
       return;
@@ -14294,6 +14307,7 @@ async function main() {
       });
       result.mesh = textured;
       result.manifold = null;
+      carryLabels(textured);
       lastAppliedSurface = { key: surfaceChainKey(baseKey, ops)!, mesh: textured };
       hideSurfaceReapplyPill();
     } catch (e) {

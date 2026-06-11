@@ -24,7 +24,7 @@ import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
 import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp } from '../../src/surface/modifiers';
-import { nearestTriangleMap } from '../../src/surface/colorTransfer';
+import { nearestTriangleMap, remapTriangleSets } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
 function cube(s = 10): MeshData {
@@ -479,6 +479,47 @@ describe('modifiers (codegen)', () => {
       const moved: MeshData = { ...c, vertProperties: Float32Array.from(c.vertProperties, (v, i) => v + (i % 3 === 0 ? 0.05 : -0.03)) };
       const map = nearestTriangleMap(c, moved);
       for (let t = 0; t < c.numTri; t++) expect(map[t]).toBe(t);
+    });
+  });
+
+  describe('remapTriangleSets (carry labels through texturing)', () => {
+    it('expands a base-triangle label set onto every subdivided child', () => {
+      const c = cube(10);
+      const dense = subdivideToMaxEdge(c, { maxEdge: 3 });
+      // Label the first two base triangles; after subdivision the textured mesh
+      // should carry MORE triangles for that label (the children), never fewer.
+      const sets = new Map<string, Set<number>>([['grip', new Set([0, 1])]]);
+      const out = remapTriangleSets(sets, c, dense);
+      const grip = out.get('grip')!;
+      expect(grip.size).toBeGreaterThanOrEqual(2);
+      // Every remapped child's nearest base triangle is one of the labeled ones.
+      const map = nearestTriangleMap(c, dense);
+      for (const t of grip) expect([0, 1]).toContain(map[t]);
+    });
+
+    it('is identity-preserving on an unchanged mesh', () => {
+      const c = cube(10);
+      const sets = new Map<string, Set<number>>([['a', new Set([0, 3, 5])]]);
+      const out = remapTriangleSets(sets, c, c);
+      expect([...out.get('a')!].sort((x, y) => x - y)).toEqual([0, 3, 5]);
+    });
+
+    it('keeps overlapping labels distinct', () => {
+      const c = cube(10);
+      const sets = new Map<string, Set<number>>([
+        ['a', new Set([0, 1])],
+        ['b', new Set([1, 2])],
+      ]);
+      const out = remapTriangleSets(sets, c, c);
+      expect(out.get('a')).toEqual(new Set([0, 1]));
+      expect(out.get('b')).toEqual(new Set([1, 2]));
+    });
+
+    it('returns empty sets (not missing keys) when nothing maps', () => {
+      const c = cube(10);
+      const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
+      const out = remapTriangleSets(new Map([['x', new Set([0])]]), c, empty);
+      expect(out.get('x')).toEqual(new Set());
     });
   });
 

@@ -94,3 +94,39 @@ export function nearestTriangleMap(oldMesh: MeshData, newMesh: MeshData): Int32A
   }
   return result;
 }
+
+/** Remap named triangle sets defined on `oldMesh` onto `newMesh` after a surface
+ *  modifier changed the tessellation. Each old triangle's children in `newMesh`
+ *  are found by inverting {@link nearestTriangleMap}: a new triangle joins set
+ *  `name` when its nearest old triangle belonged to `name`. Used to carry
+ *  `api.label` / `byLabel` colors through the in-code texture chain (whose
+ *  output mesh is denser/displaced, so the old per-label indices no longer point
+ *  at the right triangles). Geometric paint descriptors re-resolve by shape and
+ *  don't need this; index-based label sets do. */
+export function remapTriangleSets(
+  sets: Map<string, Set<number>>,
+  oldMesh: MeshData,
+  newMesh: MeshData,
+): Map<string, Set<number>> {
+  const out = new Map<string, Set<number>>();
+  if (sets.size === 0) return out;
+  for (const name of sets.keys()) out.set(name, new Set<number>());
+
+  // Invert: old triangle index → the label names that own it (labels may overlap).
+  const ownerNames = new Map<number, string[]>();
+  for (const [name, tris] of sets) {
+    for (const t of tris) {
+      let arr = ownerNames.get(t);
+      if (!arr) { arr = []; ownerNames.set(t, arr); }
+      arr.push(name);
+    }
+  }
+
+  const map = nearestTriangleMap(oldMesh, newMesh);
+  for (let t = 0; t < newMesh.numTri; t++) {
+    const owners = ownerNames.get(map[t]);
+    if (!owners) continue;
+    for (const name of owners) out.get(name)!.add(t);
+  }
+  return out;
+}
