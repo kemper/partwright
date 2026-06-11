@@ -66,41 +66,93 @@ test.describe('api.surface.* (textures declared in code)', () => {
     await page.screenshot({ path: 'test-results/surface-in-code-textured.png' });
   });
 
-  test('exporting while textures are stale carries a warning', async ({ page }) => {
+  test('live-typing auto-applies textures; Cancel parks them behind the pill (and exports warn)', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
 
     // Put api.surface code in the editor WITHOUT running it, then trigger the
-    // live-typing auto-run by typing. The un-cached chain renders the base mesh
-    // and raises the Re-apply pill — the one state where an export would carry
-    // the untextured mesh.
+    // live-typing auto-run by typing. The chain now computes automatically (in
+    // the surface Worker); cancelling mid-compute is the one state where the
+    // base mesh stays on screen and the Re-apply pill appears.
     await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PW & { setCode: (c: string) => void } }).partwright;
-      await pw.createSession('surface-stale-export');
+      await pw.createSession('surface-cancel-park');
       pw.setCode([
         'const { Manifold } = api;',
-        'api.surface.fuzzy({ amplitude: 0.5 });',
-        'return Manifold.sphere(10, 32);',
+        'api.surface.knit({ stitchWidth: 1.0, amplitude: 0.6, quality: 4 });',
+        'return Manifold.sphere(10, 48);',
       ].join('\n'));
     });
     await page.click('.cm-content');
     await page.keyboard.press('Control+End');
     await page.keyboard.type('\n// touch');
-    await expect(page.getByRole('button', { name: /Re-apply/ })).toBeVisible({ timeout: 15_000 });
 
+    // Catch the compute in flight and cancel it (the Cancel button's path).
+    const cancelled = await page.evaluate(async () => {
+      const ops = await import('/src/surface/surfaceOps.ts');
+      const t0 = Date.now();
+      while (!ops.surfaceComputeInFlight() && Date.now() - t0 < 10_000) {
+        await new Promise(r => setTimeout(r, 5));
+      }
+      return ops.cancelSurfaceCompute();
+    });
+    expect(cancelled).toBe(true);
+    await expect(page.getByRole('button', { name: /Re-apply/ })).toBeVisible({ timeout: 10_000 });
+
+    // While parked, an export would carry the untextured base — it warns.
     const out = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { exportSTLData: () => Promise<{ warning?: string }> } }).partwright;
       return await pw.exportSTLData();
     });
     expect(out.warning ?? '').toContain('untextured');
 
-    // An explicit run clears the pill — and with it, the warning.
+    // The pill recomputes the parked chain; the warning clears with it.
+    await page.getByRole('button', { name: /Re-apply/ }).click();
+    await expect(page.getByRole('button', { name: /Re-apply/ })).toBeHidden({ timeout: 60_000 });
     const after = await page.evaluate(async () => {
-      const pw = (window as unknown as { partwright: PW & { getCode: () => string; exportSTLData: () => Promise<{ warning?: string }> } }).partwright;
-      await pw.run(pw.getCode());
+      const pw = (window as unknown as { partwright: { exportSTLData: () => Promise<{ warning?: string }> } }).partwright;
       return await pw.exportSTLData();
     });
     expect(after.warning).toBeUndefined();
+  });
+
+  test('whitespace/comment edits keep the textures (mesh-content memo key)', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const texturedTris = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('surface-noop-edit');
+      const r = await pw.run([
+        'const { Manifold } = api;',
+        'api.surface.fuzzy({ amplitude: 0.5 });',
+        'return Manifold.sphere(10, 32);',
+      ].join('\n')) as { triangleCount?: number };
+      return r.triangleCount ?? 0;
+    });
+    expect(texturedTris).toBeGreaterThan(0);
+
+    // A pure whitespace/comment edit re-runs the code but produces the same
+    // base mesh — the chain cache hits on the mesh-content key, so the model
+    // never drops to the untextured base and no pill appears.
+    await page.click('.cm-content');
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type('\n\n// a comment that changes nothing');
+    await page.waitForFunction((tris) => {
+      const el = document.getElementById('geometry-data');
+      if (!el?.textContent) return false;
+      try {
+        const gd = JSON.parse(el.textContent) as { triangleCount?: number; codeHash?: string };
+        return gd.triangleCount === tris;
+      } catch { return false; }
+    }, texturedTris, { timeout: 15_000 });
+    // Give the auto-run time to have done anything wrong, then assert it didn't.
+    await page.waitForTimeout(1000);
+    const finalTris = await page.evaluate(() => {
+      const el = document.getElementById('geometry-data');
+      return el?.textContent ? (JSON.parse(el.textContent) as { triangleCount?: number }).triangleCount : 0;
+    });
+    expect(finalTris).toBe(texturedTris);
     await expect(page.getByRole('button', { name: /Re-apply/ })).toBeHidden();
   });
 

@@ -70,8 +70,11 @@ return body;
   force a path. Returns the underlying result plus `path: 'code' | 'bake'`.
 - Calls are recorded, not applied during evaluation — they texture the **final
   returned mesh** in the order called (a terminal skin; you can chain several).
-- Surface textures are **expensive**, so they're **memoized**: a render reuses
-  the cached textured result when the code, params and ops are unchanged.
+- Surface textures are **expensive**, so they're **memoized on the BASE MESH
+  CONTENT**: a render reuses the cached textured result whenever the code
+  produces the same geometry — whitespace, comment, and refactor edits never
+  drop the textures. The compute itself runs in a dedicated Worker, so the UI
+  stays responsive while a chain applies.
 - **Saved versions keep the computed texture.** `runAndSave` / `saveVersion`
   persist the textured mesh with the version, so reopening the session (or
   loading the version later) renders textured immediately — no recompute, no
@@ -82,13 +85,16 @@ return body;
   (memoized) compute and return the **textured** mesh — so an AI/console caller
   sees the real result with no extra step. The first compute shows a progress
   modal; repeats are instant (cache hit).
-- **Only live-typing is gated.** While a human edits in the editor, keystroke
-  auto-runs show the **base (untextured) mesh** plus a **"⟳ Textures stale —
-  Re-apply"** pill (top-left) instead of recomputing on every keystroke. Press
-  the pill (or just hit Run) to apply. This keeps typing snappy; it does **not**
-  affect `run`/`runAndSave`, which always apply. Exporting while the pill is up
-  warns (UI: a confirm modal; console `export*Data`: a `warning` field) because
-  the file would carry the untextured base — run first, then export.
+- **Every run applies — live typing included.** A run whose chain isn't cached
+  shows an inline **"Applying texture… Xs"** status with a **Cancel** button
+  (the "Rendering… Xs" pattern) while the Worker computes; the UI stays
+  interactive throughout. Pressing **Cancel** keeps the base (untextured) mesh
+  and parks the chain behind a **"⟳ Texture stale — Re-apply"** pill (top-left);
+  press the pill — or call `ensureSurfaceTexturesApplied()` / re-run — to
+  compute it. Exporting while parked warns (UI: a confirm modal; console
+  `export*Data`: a `warning` field) because the file would carry the untextured
+  base. The Surface panel applies any parked chain automatically before its
+  previews, so previews always show modifiers on the textured model.
 - **Whole-model only.** `api.surface.*` always textures the entire returned
   mesh — there is no `region`/`triangles` option (passing one throws "unknown
   option"). To texture only a selected patch, use the bake path: the Surface

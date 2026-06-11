@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { MeshData } from '../../src/geometry/types';
 import { SURFACE_OP_FIELDS, SURFACE_OP_IDS, isSurfaceOpId } from '../../src/surface/surfaceOpSpec';
-import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, __clearSurfaceCache, type SurfaceOp } from '../../src/surface/surfaceOps';
+import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, meshContentKey, __clearSurfaceCache, type SurfaceOp } from '../../src/surface/surfaceOps';
 
 /** Axis-aligned cube from [0,s]^3 as an 8-vertex / 12-triangle MeshData. */
 function cube(s = 10): MeshData {
@@ -125,5 +125,33 @@ describe('surface texture persistence (seed + chain key)', () => {
 
   it('surfaceChainKey is null for an empty chain', () => {
     expect(surfaceChainKey('base', [])).toBeNull();
+  });
+});
+
+// The memo base identity is the BASE MESH CONTENT — not the source text — so
+// whitespace/comment/refactor edits that produce identical geometry keep every
+// cached texture, and any real geometry change re-keys the chain.
+describe('meshContentKey', () => {
+  it('is identical for byte-identical meshes (separately allocated)', () => {
+    expect(meshContentKey(cube(10))).toBe(meshContentKey(cube(10)));
+  });
+
+  it('changes when the geometry changes', () => {
+    expect(meshContentKey(cube(10))).not.toBe(meshContentKey(cube(11)));
+    const reindexed = cube(10);
+    reindexed.triVerts = new Uint32Array(reindexed.triVerts); // copy…
+    reindexed.triVerts[0] = 3; // …then flip one index
+    expect(meshContentKey(cube(10))).not.toBe(meshContentKey(reindexed));
+  });
+
+  it('keys the memo cache: an identical re-run hits without recompute', async () => {
+    __clearSurfaceCache();
+    const smooth: SurfaceOp = { id: 'smooth', params: { iterations: 1, subdivide: false } };
+    const out = await computeChain(cube(), meshContentKey(cube()), [smooth]);
+    // A "different run" of byte-identical geometry (e.g. after a whitespace
+    // edit re-ran the code) computes the same key and hits the cache.
+    const again = surfaceCacheStatus(meshContentKey(cube()), [smooth]);
+    expect(again.cached).toBe(true);
+    expect(again.mesh).toBe(out);
   });
 });

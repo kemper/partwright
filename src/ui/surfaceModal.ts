@@ -44,6 +44,9 @@ export interface SurfaceApi {
   /** Write the texture into the code as `api.surface.<id>({…})` instead of
    *  baking (manifold-js sessions, whole-model mode). Re-runs + saves a version. */
   applySurfaceTextureAsCode(id: string, opts?: Record<string, number | boolean | string>): Promise<ApplyResult>;
+  /** Apply any pending (cancelled/failed) in-code texture chain so previews
+   *  run on the textured mesh. No-op when nothing is pending. */
+  ensureSurfaceTexturesApplied(): Promise<{ ok: boolean }>;
   previewSurfaceModifier(id: ModId, opts?: Record<string, unknown>, preserveColor?: boolean): Promise<{ ok: true } | { error: string }>;
   clearSurfacePreview(): { ok: true };
   modelHasColor(): boolean;
@@ -867,6 +870,10 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   let previewTimer: number | undefined;
   let previewDirty = false; // a preview is currently shown (needs clearing on close)
   async function runPreview() {
+    // If the model's in-code textures are parked (the user cancelled a compute
+    // — the "Re-apply" pill state), apply them first so the preview shows the
+    // modifier ON TOP of the textured model, not on the untextured base.
+    try { await api.ensureSurfaceTexturesApplied(); } catch { /* preview on whatever is live */ }
     // SDF carves (engrave / voronoi lamp) are async + show the progress modal;
     // the rest resolve immediately. Either way we await the result.
     const r = await api.previewSurfaceModifier(active, currentOpts(), preserveColor);
