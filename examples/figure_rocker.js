@@ -95,11 +95,13 @@ const gR = rig.grip.R;   // strumming (right) grip frame
 const boutH     = r.head * 0.70;   // guitar body depth (shallow disc)
 const boutRound = r.head * 0.10;
 
-// Lower bout: X at the strumming cup, Y pulled slightly back from gR.point
-// so the arms connect the guitar to the torso (no large free-floating gap in
-// the rendered silhouette). The right arm bridges guitar to torso.
+// Lower bout: X at the strumming cup. Pull the body BACK so its front face sits
+// just behind the strumming hand's CENTRE (j.handR) — that keeps the palm and
+// fingers in FRONT of the surface (resting on it, not poking through) while the
+// back of the hand overlaps enough (~0.5 units) to fuse into one piece. Keying
+// off handR, not gR.point, is what guarantees the hand clears the front face.
 const lbX = gR.point[0];
-const lbY = gR.point[1] + r.head * 0.55;  // pull back ~half a head toward body
+const lbY = j.handR[1] + boutH * 0.5 + r.head * 0.10;
 const lbZ = gR.point[2] - r.head * 0.15;  // just below strumming cup height
 const lowerCenter = [lbX, lbY, lbZ];
 
