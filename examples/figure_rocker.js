@@ -77,47 +77,50 @@ const base = F.base(rig, { radius: rig.opts.height * 0.27 }).label('base');
 
 // 7. GUITAR — electric guitar slung on a strap across the body.
 //
-// Design: The guitar BODY overlaps the torso (belly/navel area) so the union
-// is face-connected — no thick bridge capsules needed. The neck rises diagonally
-// toward the upper-left. Hands are posed close enough to rest on guitar naturally.
+// Uses the new grip-frame API: rig.grip.L/.R give the exact cup where a held
+// cylinder rests in the curled fingers — offset toward the palm from the hand
+// centre. The neck end is aimed at gL.point (fretting cup), NOT j.handL (the
+// hand centre), so the neck seats in the finger curl instead of impaling the
+// palm. The body is positioned near gR.point (strumming cup) so the right hand
+// rests on the lower bout.
 //
-// Reference joints
-const navel = j.navel;
+const gL = rig.grip.L;   // fretting (left)  grip frame
+const gR = rig.grip.R;   // strumming (right) grip frame
 
-// ---- Guitar body position ----
-// Guitar is slung diagonally: lower-bout at navel-right, upper-bout at lower-chest-left.
-// The body is pushed well in front of the torso (−Y) so it faces the viewer, but
-// overlaps the torso skin by ~1 unit so the boolean union is solid (one piece).
+// ---- Guitar body — upright plate, face toward −Y ----
+// The body is UPRIGHT (flat face toward the viewer, Z is up). Do NOT tilt the
+// body into the neck axis direction — that is what caused the "crooked" look.
+// boutH is the front-to-back depth. A shallow disc (0.70*r.head) keeps genus
+// low (no topological tunnel from overlapping a curved torso surface).
+const boutH     = r.head * 0.70;   // guitar body depth (shallow disc)
+const boutRound = r.head * 0.10;
 
-// Guitar body front-to-back depth (axis along Y after rotation)
-const boutH = r.head * 0.85;        // guitar body depth (compact, readable)
-const boutRound = r.head * 0.11;
-
-// Lower bout: hip/navel height, shifted more to figure's right (−X), pushed well forward (−Y).
-// The guitar is slung low and to the right. The back of the guitar body (lbY + boutH/2)
-// remains inside the torso skin to guarantee one-piece union without bridge capsules.
-const lbX = navel[0] - r.head * 1.00;   // figure's right — shifted right to clear the right hip
-const lbY = navel[1] - r.head * 1.10;   // pushed forward — guitar protrudes clearly in front of belly
-const lbZ = navel[2] - r.head * 0.10;   // at navel height
+// Lower bout: X at the strumming cup, Y pulled slightly back from gR.point
+// so the arms connect the guitar to the torso (no large free-floating gap in
+// the rendered silhouette). The right arm bridges guitar to torso.
+const lbX = gR.point[0];
+const lbY = gR.point[1] + r.head * 0.55;  // pull back ~half a head toward body
+const lbZ = gR.point[2] - r.head * 0.15;  // just below strumming cup height
 const lowerCenter = [lbX, lbY, lbZ];
 
-// Upper bout: shifted up-and-left (diagonal tilt like a real slung guitar)
-const ubX = lbX + r.head * 1.30;        // figure's left (+X) — reaches toward center of torso
-const ubY = lbY + r.head * 0.05;        // nearly same depth
-const ubZ = lbZ + r.head * 1.40;        // up about 1.4 heads — chest height
+// Upper bout: same depth (UPRIGHT body), shifted up and toward torso centre.
+const ubX = lbX + r.head * 1.05;
+const ubY = lbY;                     // same depth — body stays upright
+const ubZ = lbZ + r.head * 1.45;    // up ≈ 1.45 heads → lower-chest height
 const upperCenter = [ubX, ubY, ubZ];
 
-// Guitar waist (hourglass narrowing between bouts)
-const wX = (lbX + ubX) * 0.50;
-const wY = (lbY + ubY) * 0.50;
-const wZ = (lbZ + ubZ) * 0.50;
+// Waist: a narrower section midway between the bouts — this is what turns the
+// body from a featureless paddle into a guitar figure-8 silhouette.
+const wX = (lbX + ubX) * 0.5;
+const wY = lbY;
+const wZ = (lbZ + ubZ) * 0.5;
 
-// Bout radii — slightly larger for readability at figurine scale
-const bLR = r.head * 0.92;   // lower bout radius (larger)
-const bUR = r.head * 0.74;   // upper bout radius (smaller)
-const waistR = r.head * 0.36; // waist narrowing
+// Bout radii — bigger bouts + a pinched waist read as a real guitar body.
+const bLR    = r.head * 1.12;   // lower bout radius (larger)
+const bUR    = r.head * 0.88;   // upper bout radius (smaller)
+const waistR = r.head * 0.50;   // pinched waist
 
-// roundedCylinder default axis = Z; rotate([90,0,0]) makes axis = Y, face = front/back.
+// roundedCylinder default axis = Z; rotate([90,0,0]) → axis = Y, face = ±Y.
 const lowerBout = sdf.roundedCylinder(bLR, boutH, boutRound)
   .rotate([90, 0, 0])
   .translate(lowerCenter);
@@ -126,52 +129,53 @@ const upperBout = sdf.roundedCylinder(bUR, boutH, boutRound)
   .rotate([90, 0, 0])
   .translate(upperCenter);
 
-const guitarWaist = sdf.roundedCylinder(waistR, boutH * 1.05, boutRound * 0.5)
+const guitarWaist = sdf.roundedCylinder(waistR, boutH * 1.02, boutRound * 0.5)
   .rotate([90, 0, 0])
   .translate([wX, wY, wZ]);
 
-// Smooth-union bouts through the waist — small k preserves the hourglass silhouette
+// Three-section smooth-union through the waist with a SMALL blend — preserves
+// the hourglass pinch (a large blend melts the waist into one oval = paddle)
+// while staying one shallow plate (no topological tunnel → genus ≤ 3).
 const guitarBody = lowerBout
-  .smoothUnion(guitarWaist, r.head * 0.18)
-  .smoothUnion(upperBout, r.head * 0.18);
+  .smoothUnion(guitarWaist, r.head * 0.20)
+  .smoothUnion(upperBout, r.head * 0.20);
 
 // ---- Guitar neck ----
-// Neck axis: from upper-left edge of upper bout, rising diagonally up-and-left
-// toward the figure's left shoulder area (where the fretting hand reaches).
-const neckStartX = upperCenter[0] + r.head * 0.30;  // left edge of upper bout
-const neckStartY = upperCenter[1];                    // same guitar plane (well forward)
-const neckStartZ = upperCenter[2] + bUR * 0.60;      // near top of upper bout
+// Start: near the top-left edge of the upper bout.
+const neckStartX = upperCenter[0] + r.head * 0.25;
+const neckStartY = upperCenter[1];
+const neckStartZ = upperCenter[2] + bUR * 0.55;
 
-// Neck end: drawn directly TO the fretting hand so the neck always reaches it
-// (in all three axes) regardless of the exact FK — the hand grips near the top
-// of the neck, the headstock extends just beyond. This rises steeply up-and-left
-// from the upper bout to the hand (≈ [6.5, −7.4, 58]), reading as a normal neck.
+// End: gL.point — the fretting grip CUP (inside the curled fingers).
+// This is the critical fix: neck ends at the grip cup, NOT j.handL (the hand
+// centre), so the neck seats in the finger curl rather than passing through
+// the middle of the palm.
 const neckStart = [neckStartX, neckStartY, neckStartZ];
-const neckEnd   = [j.handL[0], j.handL[1], j.handL[2]];
+const neckEnd   = [gL.point[0], gL.point[1], gL.point[2]];
 
-const neckR = r.hand * 0.30;
+const neckR = r.hand * 0.28;   // slim neck fits in the curl
 const neckCaps = sdf.capsule(neckStart, neckEnd, neckR);
 
-// Headstock: wider slab extending beyond the neck tip along the same diagonal
-const nDir = [neckEnd[0] - neckStart[0], neckEnd[1] - neckStart[1], neckEnd[2] - neckStart[2]];
+// Headstock: extends beyond gL.point along the neck axis.
+const nDir = [
+  neckEnd[0] - neckStart[0],
+  neckEnd[1] - neckStart[1],
+  neckEnd[2] - neckStart[2],
+];
 const nLen = Math.hypot(...nDir);
-const nN = nDir.map(v => v / nLen);
-const hsLen = r.head * 0.52;
+const nN   = nDir.map(v => v / nLen);
+const hsLen = r.head * 0.50;
 const hsEnd = [
   neckEnd[0] + nN[0] * hsLen,
   neckEnd[1] + nN[1] * hsLen,
   neckEnd[2] + nN[2] * hsLen,
 ];
-const headstock = sdf.capsule(neckEnd, hsEnd, r.hand * 0.44);
+const headstock = sdf.capsule(neckEnd, hsEnd, r.hand * 0.42);
 
 // ---- Assemble guitar ----
-// No bridge capsules needed:
-// • The neck (neckR=r.hand*0.30) is extended in X and Z to meet the fretting hand.
-// • Right hand is at the front face of the lower bout (within the bout's rounded
-//   edge) — the skin union already fuses them into one solid.
 const guitar = guitarBody
-  .smoothUnion(neckCaps, r.hand * 0.35)
-  .smoothUnion(headstock, r.hand * 0.38)
+  .smoothUnion(neckCaps, r.hand * 0.32)
+  .smoothUnion(headstock, r.hand * 0.36)
   .label('guitar');
 
 // 8. Union + build.
