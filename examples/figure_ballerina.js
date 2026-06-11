@@ -15,8 +15,10 @@ const rig = F.rig({
   headsTall: 8,
   build: 'slim',
   pose: {
-    // Arms raised, forearms arc gracefully inward overhead
-    arms: { abduct: 165, flex: 0, elbow: 78, twist: 90 },
+    // Arms raised, forearms arc gracefully inward overhead. abduct 157 keeps
+    // the sculpted fingertips MEETING over the head — at 165 the two hands
+    // overlap and the fingers interpenetrate in a tangle.
+    arms: { abduct: 157, flex: 0, elbow: 78, twist: 90 },
     // Standing left leg: ballet turnout
     legL: { abduct: 8 },
     // Arabesque right leg: swept back and up
@@ -111,7 +113,7 @@ const base = F.base(rig, {
 }).label('base');
 
 // 8. Hard-union all labeled regions and build.
-// detail: F.faceDetail(rig) meshes the head finely (~3x finer grid)
-// so the carved smile and eye domes are smooth rather than faceted.
+// detail: faceDetail meshes the head finely (~3x finer grid) so the carved
+// smile and eye domes are smooth; handDetail resolves the sculpted fingers.
 return sdf.union(skin, eyes, lips, leotard, tutu, hair, base)
-  .build({ edgeLength: 0.52, detail: F.faceDetail(rig) });
+  .build({ edgeLength: 0.52, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] });

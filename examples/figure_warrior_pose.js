@@ -99,7 +99,7 @@ const base = slab.union(stone).label('base');
 // while the body keeps the global 0.5 grid; its sphere centers move down with
 // the lowered body.
 const body = sdf.union(skin, eyes, top, pants, hair).translate([0, 0, -drop]);
-const detail = F.faceDetail(rig).map((d) => ({
+const detail = [...F.faceDetail(rig), ...F.handDetail(rig)].map((d) => ({
   ...d,
   center: [d.center[0], d.center[1], d.center[2] - drop],
 }));

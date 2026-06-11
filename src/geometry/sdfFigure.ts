@@ -295,7 +295,7 @@ function buildRig(rawOpts: unknown): Rig {
     const foreDir = norm3(rotAxis(dir, hinge, p.elbow ?? 0));
     const W = add3(E, scale3(foreDir, foreArmLen));
     const handC = add3(W, scale3(foreDir, r.hand * 0.9));
-    return { S, E, W, handC, dir, foreDir };
+    return { S, E, W, handC, dir, foreDir, hinge };
   }
   const aL = armChain(+1, pose.armL);
   const aR = armChain(-1, pose.armR);
@@ -366,6 +366,10 @@ function buildRig(rawOpts: unknown): Rig {
     r,
     dir: {
       upperArmL: aL.dir, foreArmL: aL.foreDir, upperArmR: aR.dir, foreArmR: aR.foreDir,
+      // The elbow-hinge axis (post-twist) — ⟂ to the forearm-curl plane. The
+      // hand frame derives from it: fingers splay along the hinge, the palm
+      // faces hinge × foreArm (the curl direction).
+      elbowHingeL: aL.hinge, elbowHingeR: aR.hinge,
       thighL: lL.dir, shankL: lL.shankDir, thighR: lR.dir, shankR: lR.shankDir,
       headForward: hf, headUp, headLeft,
     },
@@ -428,22 +432,111 @@ function buildArms(sdf: SdfApi, rig: Rig): Node {
 
 function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hands(opts)');
-  assertNoUnknownKeys(o, ['grip'], 'hands(opts)');
+  assertNoUnknownKeys(o, ['grip', 'fingers'], 'hands(opts)');
   const grip = o.grip === undefined ? 'relaxed'
     : assertEnum(o.grip, ['fist', 'open', 'relaxed'] as const, 'hands.grip');
+  // Sculpted three-finger + thumb hands (the art-toy convention — three fat
+  // fingers keep the inter-finger gaps printable where four go sub-cell at
+  // figure scale). Pass `fingers: false` for the legacy blob/paddle hands.
+  // Fingers are ADDITIVE capsules (no carving → no aliasing trap), but they
+  // are finer than the global figure grid — pair with
+  // `detail: F.handDetail(rig)` so the march resolves them.
+  const fingers = o.fingers !== false;
   const j = rig.joints, r = rig.r;
-  function hand(c: Vec3, dir: Vec3): Node {
-    if (grip === 'fist') return sdf.sphere(r.hand * 1.05).translate(c);
-    if (grip === 'open') {
-      // A flattened paddle aligned with the forearm.
-      const palm = sdf.ellipsoid(r.hand * 0.55, r.hand * 1.2, r.hand * 0.9).translate(c);
-      return palm;
+
+  function hand(c: Vec3, dir: Vec3, hinge: Vec3, side: number): Node {
+    // Hand frame: fingers extend along the forearm `dir`, splay across the
+    // elbow-hinge axis, palm faces the curl direction (hinge × dir).
+    const splay = hinge;
+    const palmN = norm3(cross3(splay, dir));
+    const inner = scale3(splay, side);     // toward the body for a neutral pose
+    const fr = r.hand * 0.24;              // finger radius
+    const at = (base: Vec3, ...offs: Vec3[]): Vec3 => offs.reduce(add3, base);
+
+    if (!fingers) {
+      if (grip === 'fist') return sdf.sphere(r.hand * 1.05).translate(c);
+      if (grip === 'open') {
+        return sdf.ellipsoid(r.hand * 0.55, r.hand * 1.2, r.hand * 0.9).translate(c);
+      }
+      const tip = add3(c, scale3(dir, r.hand * 1.1));
+      return tapered(sdf, c, tip, r.hand * 0.95, r.hand * 0.6, r.hand * 0.5);
     }
-    // relaxed: a soft tapered blob
-    const tip = add3(c, scale3(dir, r.hand * 1.1));
-    return tapered(sdf, c, tip, r.hand * 0.95, r.hand * 0.6, r.hand * 0.5);
+
+    if (grip === 'fist') {
+      // Ball fist + three chunky folded-finger ridges on the dir face + a
+      // thumb capsule folded across the palm side. The ridges are short
+      // capsules (not spheres) with a tight weld so the knuckle creases
+      // survive the union instead of melting into the ball.
+      const ball = sdf.ellipsoid(r.hand * 0.95, r.hand * 0.95, r.hand * 0.88).translate(c);
+      let out = ball;
+      for (const s of [-0.62, 0, 0.62]) {
+        const kc = at(c, scale3(dir, r.hand * 0.62), scale3(splay, s * r.hand * 0.85));
+        const ridge = sdf.capsule(
+          at(kc, scale3(palmN, -r.hand * 0.25)),
+          at(kc, scale3(palmN, r.hand * 0.45)),
+          r.hand * 0.3,
+        );
+        out = out.smoothUnion(ridge, r.hand * 0.16);
+      }
+      const thumb = sdf.capsule(
+        at(c, scale3(inner, r.hand * 0.8), scale3(palmN, r.hand * 0.35)),
+        at(c, scale3(palmN, r.hand * 0.95), scale3(dir, r.hand * 0.25)),
+        fr * 1.25,
+      );
+      return out.smoothUnion(thumb, r.hand * 0.18);
+    }
+
+    // Palm: a squashed knuckle-block oriented along the forearm — wider
+    // across the splay axis than front-to-back, so the hand reads flat.
+    const palm = sdf.capsule(
+      add3(c, scale3(dir, -r.hand * 0.55)),
+      add3(c, scale3(dir, r.hand * 0.1)),
+      r.hand * 0.72,
+    ).smoothUnion(
+      sdf.capsule(
+        at(c, scale3(dir, r.hand * 0.15), scale3(splay, -r.hand * 0.45)),
+        at(c, scale3(dir, r.hand * 0.15), scale3(splay, r.hand * 0.45)),
+        r.hand * 0.5,
+      ), r.hand * 0.5,
+    );
+
+    // Three fingers, middle longest, fanned slightly. `relaxed` curls them
+    // toward the palm; `open` keeps them straight.
+    const curl = grip === 'relaxed' ? 0.45 : 0;
+    const lens = [1.0, 1.18, 0.92];
+    let out = palm;
+    [-1, 0, 1].forEach((t, i) => {
+      const len = r.hand * lens[i];
+      const s = t * r.hand * 0.62;
+      const base = at(c, scale3(dir, r.hand * 0.38), scale3(splay, s * 0.85));
+      const reach = norm3(add3(scale3(dir, 1 - curl * 0.45), scale3(palmN, curl)));
+      const tip = at(base, scale3(reach, len), scale3(splay, s * 0.25));
+      out = out.smoothUnion(sdf.capsule(base, tip, fr), fr * 1.05);
+    });
+    // Thumb: from the inner palm edge, angled out and slightly palm-ward.
+    const thumbBase = at(c, scale3(dir, -r.hand * 0.25), scale3(inner, r.hand * 0.55));
+    const thumbDir = norm3(add3(add3(scale3(inner, 0.8), scale3(dir, 0.55)), scale3(palmN, 0.35)));
+    const thumb = sdf.capsule(thumbBase, at(thumbBase, scale3(thumbDir, r.hand * 0.85)), fr * 1.08);
+    return out.smoothUnion(thumb, fr * 1.1);
   }
-  return hand(j.handL as Vec3, rig.dir.foreArmL).union(hand(j.handR as Vec3, rig.dir.foreArmR));
+
+  return hand(j.handL as Vec3, rig.dir.foreArmL, rig.dir.elbowHingeL, +1)
+    .union(hand(j.handR as Vec3, rig.dir.foreArmR, rig.dir.elbowHingeR, -1));
+}
+
+/** Detail-region spheres for the hands, mirroring `faceDetail` — fingers are
+ *  finer than the recommended 0.4–0.6 figure grid, so sculpted hands need a
+ *  local fine march to resolve (an under-marched finger aliases away). */
+function handDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
+  const o = obj(opts, 'handDetail(opts)');
+  assertNoUnknownKeys(o, ['radius', 'edgeLength'], 'handDetail(opts)');
+  const r = rig.r;
+  const radius = num(o.radius, r.hand * 2.6, 'handDetail.radius', 1e-3);
+  const edgeLength = num(o.edgeLength, Math.max(r.hand * 0.085, 0.08), 'handDetail.edgeLength', 1e-4);
+  return [
+    { center: [...(rig.joints.handL as Vec3)] as Vec3, radius, edgeLength },
+    { center: [...(rig.joints.handR as Vec3)] as Vec3, radius, edgeLength },
+  ];
 }
 
 function buildLegs(sdf: SdfApi, rig: Rig): Node {
@@ -1069,6 +1162,9 @@ export interface FigureNamespace {
   /** The face's detail-region spheres (head + finer mouth) for
    *  `build({ detail: F.faceDetail(rig) })`. */
   faceDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
+  /** Detail spheres over both hands — required for sculpted fingers:
+   *  `build({ detail: [...F.faceDetail(rig), ...F.handDetail(rig)] })`. */
+  handDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
   face: {
     eyes(rig: Rig, opts?: object): Node;
     nose(rig: Rig, opts?: object): Node;
@@ -1127,6 +1223,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     weld: (rig, parts, opts) => weldBody(sdf, assertRig(rig, 'weld(rig)'), parts, opts),
     placeAt: (node, joint, opts) => placeAt(node as Node, joint, opts),
     faceDetail: (rig, opts) => faceDetail(assertRig(rig, 'faceDetail(rig)'), opts),
+    handDetail: (rig, opts) => handDetail(assertRig(rig, 'handDetail(rig)'), opts),
     face: {
       eyes: (rig, opts) => buildEyes(sdf, assertRig(rig, 'face.eyes(rig)'), opts),
       nose: (rig, opts) => buildNose(sdf, assertRig(rig, 'face.nose(rig)'), opts),
@@ -1144,4 +1241,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants };
+export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildHands, handDetail };

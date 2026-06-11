@@ -9,7 +9,7 @@ import { __figureTestables__ } from '../../src/geometry/sdfFigure';
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants } = __figureTestables__;
+const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildHands, handDetail } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -365,6 +365,60 @@ describe('figure mouthAccents — paintable teeth and lips', () => {
     expect(m[0]).toBeLessThan(b.max[0]);
     expect(m[2]).toBeGreaterThan(b.min[2]);
     expect(m[2]).toBeLessThan(b.max[2]);
+  });
+});
+
+describe('figure hands — sculpted fingers', () => {
+  const rig = buildRig({ height: 60, headsTall: 6 });
+
+  it('sculpted open fingers reach past the legacy paddle hand', () => {
+    // Straight fingers extend beyond the old flat paddle along the forearm.
+    const blob = (buildHands(api, rig, { grip: 'open', fingers: false }) as SdfNode).bounds();
+    const sculpted = (buildHands(api, rig, { grip: 'open' }) as SdfNode).bounds();
+    expect(sculpted.min[2]).toBeLessThan(blob.min[2] - 0.5); // hanging arms: fingers point down
+  });
+
+  it('every grip contains the hand-centre joint (welds to the arm)', () => {
+    for (const grip of ['fist', 'open', 'relaxed'] as const) {
+      const hands = buildHands(api, rig, { grip }) as SdfNode;
+      for (const side of ['L', 'R'] as const) {
+        const c = rig.joints[`hand${side}`];
+        expect(hands.evaluate(c[0], c[1], c[2])).toBeLessThan(0);
+      }
+    }
+  });
+
+  it('open fingers splay symmetrically L/R', () => {
+    const hands = buildHands(api, rig, { grip: 'open' }) as SdfNode;
+    const b = hands.bounds();
+    expect(b.max[0]).toBeCloseTo(-b.min[0], 1);
+  });
+
+  it('rejects unknown grips and keys', () => {
+    expect(() => buildHands(api, rig, { grip: 'claw' })).toThrow(/grip/);
+    expect(() => buildHands(api, rig, { claws: true })).toThrow();
+  });
+});
+
+describe('figure handDetail — detail-region helper', () => {
+  const rig = buildRig({ height: 60, headsTall: 6 });
+
+  it('returns one sphere per hand, centred on the hand joints, finer than the figure grid', () => {
+    const [L, R] = handDetail(rig);
+    expect(L.center).toEqual(rig.joints.handL);
+    expect(R.center).toEqual(rig.joints.handR);
+    expect(L.edgeLength).toBeLessThan(0.4);          // finer than the 0.4–0.6 figure grid
+    expect(L.radius).toBeGreaterThan(rig.r.hand * 2); // covers the fingers
+  });
+
+  it('follows posed hands and honours overrides', () => {
+    const posed = buildRig({ pose: { armL: { abduct: 150, elbow: 40 } } });
+    const [L] = handDetail(posed);
+    expect(L.center).toEqual(posed.joints.handL);
+    const [o] = handDetail(rig, { radius: 9, edgeLength: 0.11 });
+    expect(o.radius).toBe(9);
+    expect(o.edgeLength).toBe(0.11);
+    expect(() => handDetail(rig, { density: 1 })).toThrow();
   });
 });
 

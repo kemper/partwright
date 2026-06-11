@@ -152,12 +152,27 @@ accessories off `rig.r.*` and they track the build automatically.
 F.torso(rig)                  // chest + belly + pelvis masses, internally smooth
 F.neck(rig)
 F.arms(rig)                   // both arms: tapered limbs + deltoid caps
-F.hands(rig, { grip })        // grip: 'fist' | 'open' | 'relaxed'
+F.hands(rig, { grip })        // grip: 'fist' | 'open' | 'relaxed' — sculpted 3-finger+thumb
 F.legs(rig)
 F.feet(rig)
 F.head(rig)                   // skull + jaw + cheeks (no features yet)
 F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
 ```
+
+**Hands are sculpted by default — pair them with `detail: F.handDetail(rig)`.**
+Every grip builds a stylized three-finger + thumb hand (`open` splays straight
+fingers, `relaxed` curls them toward the palm, `fist` is a ball with knuckle
+ridges and a folded thumb). The fingers are finer than the recommended 0.4–0.6
+figure grid, so add the hand detail spheres to the build or they alias away:
+
+```js
+.build({ edgeLength: 0.5, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] })
+```
+
+Pass `fingers: false` for the legacy mitten/paddle hands (no detail region
+needed). The hand frame derives from the rig (fingers extend along the
+forearm, palm faces the elbow-curl direction), so posed arms keep correct
+hands automatically.
 
 **`F.base` auto-sizes to the pose.** It widens to cover the stance footprint and
 rises to meet the *lowest* foot, so a wide or lunging stance still lands one
