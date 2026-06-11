@@ -1,8 +1,10 @@
 // Cross-origin isolation detection. manifold-3d (and the OpenSCAD / OCCT
 // engines) need SharedArrayBuffer, which is only available when the page is
-// cross-origin isolated (COOP + COEP headers). The coi-serviceworker.js shim
-// installs those headers and reloads ONCE to gain isolation, so on a first
-// visit `crossOriginIsolated` can be transiently false before that reload.
+// cross-origin isolated (COOP + COEP headers). Those headers normally come from
+// the server (Vite in dev, Cloudflare public/_headers in prod); the offline
+// service worker (src/sw.ts) re-stamps them on cached documents and, as a
+// fallback for hosts that strip them, reloads ONCE to gain isolation — so on a
+// first visit `crossOriginIsolated` can be transiently false before that reload.
 //
 // These helpers are dependency-free so the decision logic can be unit-tested
 // without a browser. The actual reload-gating in main.ts uses a sessionStorage

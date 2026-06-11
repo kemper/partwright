@@ -34,6 +34,7 @@ import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoad
 import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
 import { errorLog } from '../diagnostics/errorLog';
+import { onConnectivityChange, isOnline } from '../util/connectivity';
 import { showToast } from './toast';
 import { createVoiceController, isVoiceInputSupported, type VoiceController } from './voiceInput';
 
@@ -201,6 +202,7 @@ let toggleStripEl: HTMLElement | null = null;
 let costMeterEl: HTMLElement | null = null;
 let panelStatusEl: HTMLElement | null = null;
 let prefNoticeEl: HTMLElement | null = null;
+let offlineNoticeEl: HTMLElement | null = null;
 /** False when another tab holds the single-writer lock for the current
  *  session — this tab is then a read-only viewer. */
 let writeOwner = true;
@@ -362,6 +364,7 @@ function afterAiSettingsChange(): void {
   renderModelPicker();
   renderPromptChip();
   panelStatusUpdate();
+  updateOfflineNotice();
 }
 
 /** Activity-rail AI button entry point. Toggles the docked panel like
@@ -748,6 +751,16 @@ function buildDrawer(): void {
   prefNoticeEl = document.createElement('div');
   prefNoticeEl.className = 'px-3 py-1.5 text-[11px] border-b border-amber-800/60 bg-amber-900/20 text-amber-200 hidden flex items-start gap-2';
   root.appendChild(prefNoticeEl);
+
+  // Offline notice — shown only when the network is down *and* a cloud provider
+  // is active. Cloud turns will fail offline, so we point the user at the local
+  // (WebLLM) model, which runs entirely in the browser with no network.
+  offlineNoticeEl = document.createElement('div');
+  offlineNoticeEl.id = 'offline-notice';
+  offlineNoticeEl.className = 'px-3 py-1.5 text-[11px] border-b border-amber-800/60 bg-amber-900/20 text-amber-200 hidden flex items-start gap-2';
+  root.appendChild(offlineNoticeEl);
+  // Re-render on connectivity changes (fires once immediately to set state).
+  onConnectivityChange(() => updateOfflineNotice());
 
   // Transcript
   transcriptEl = document.createElement('div');
@@ -1589,6 +1602,34 @@ function renderCostMeter(): void {
 }
 
 // === Status bar ===
+
+/** Show/hide the offline notice. Visible only when the browser is offline and
+ *  a cloud provider is active — local (WebLLM) needs no network, so we stay
+ *  quiet there. While online (the normal case, and the case in tests) the
+ *  notice is always hidden, so this is purely additive. */
+function updateOfflineNotice(): void {
+  if (!offlineNoticeEl) return;
+  const settings = loadSettings();
+  const cloud = settings.toggles.provider !== 'local';
+  if (isOnline() || !cloud) {
+    offlineNoticeEl.classList.add('hidden');
+    offlineNoticeEl.replaceChildren();
+    return;
+  }
+  offlineNoticeEl.replaceChildren();
+  offlineNoticeEl.appendChild(document.createTextNode(
+    `You're offline, so ${providerLabel(settings.toggles.provider)} can't respond. You can keep modeling, or `,
+  ));
+  const link = document.createElement('button');
+  link.className = 'underline text-amber-100 hover:text-white';
+  link.textContent = 'switch to a local model';
+  link.addEventListener('click', () => {
+    void showAiLocalModal({ onChange: () => { afterAiSettingsChange(); } });
+  });
+  offlineNoticeEl.appendChild(link);
+  offlineNoticeEl.appendChild(document.createTextNode(' that runs in your browser.'));
+  offlineNoticeEl.classList.remove('hidden');
+}
 
 function panelStatusUpdate(): void {
   if (!panelStatusEl) return;
