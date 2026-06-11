@@ -1,23 +1,25 @@
 /**
- * Print-Fit — practical 3D-printing joinery & hardware helpers exposed to the
- * manifold-js sandbox as `api.printFit`.
+ * Fasteners — practical 3D-printing hardware helpers exposed to the
+ * manifold-js sandbox as `api.fasteners`.
  *
  * The base manifold-3d library gives you primitives + booleans, but the *fits*
- * that make a printed part actually assemble — clearance holes sized to a real
- * screw, heat-set insert bosses, captive-nut pockets, alignment pins, sliding
- * dovetails, cantilever snaps — are fiddly dimensional recipes that AI agents
- * (and humans) routinely get wrong. This module ships them as deterministic,
- * parametric builders backed by a real metric fastener table.
+ * that make a printed part actually accept real hardware — clearance holes
+ * sized to a real screw, tap/pilot holes, heat-set insert bosses, captive-nut
+ * pockets — are fiddly dimensional recipes that AI agents (and humans)
+ * routinely get wrong. This module ships them as deterministic, parametric
+ * builders backed by a real metric fastener table. (Its sibling
+ * `src/geometry/joints.ts` covers part-to-part joinery: pins, dovetails,
+ * snap-fits, hinges; the deprecated `api.printFit` alias spreads both.)
  *
  * Conventions (match Curves / sdf):
  *   • Z-up. Each builder documents its local frame; the caller positions the
  *     result with `.translate()` / `meshOps.placeOn()` / `meshOps.alignTo()`.
- *   • "Negative" builders (screwHole, socket, nutPocket, dovetail.socket,
- *     snapFit.catch) return a Manifold meant to be SUBTRACTED. They poke
- *     ~`LIP` above their entrance face so the boolean cuts cleanly through the
- *     surface instead of leaving a zero-thickness skin.
- *   • "Solid" builders (insertBoss, pin, dovetail.tail, snapFit.clip) return a
- *     Manifold meant to be UNIONED onto your part.
+ *   • "Negative" builders (screwHole, tapHole, nutPocket) return a Manifold
+ *     meant to be SUBTRACTED. They poke ~`LIP` above their entrance face so
+ *     the boolean cuts cleanly through the surface instead of leaving a
+ *     zero-thickness skin.
+ *   • "Solid" builders (insertBoss, clearanceCoupon) return a Manifold meant
+ *     to be UNIONED onto your part (or stand alone).
  *   • Builders THROW `ValidationError` on bad input (like api.label / Curves),
  *     so the mistake surfaces as a clear run error the agent can self-correct.
  *
@@ -33,8 +35,9 @@ import { ValidationError } from '../validation/apiValidation';
 
 type Vec2 = [number, number];
 
-/** A tiny over-poke so subtractive tools break the surface cleanly. */
-const LIP = 0.1;
+/** A tiny over-poke so subtractive tools break the surface cleanly.
+ *  Shared with `joints.ts` (which imports it from here). */
+export const LIP = 0.1;
 
 // ---------------------------------------------------------------------------
 // Fastener reference table
@@ -74,11 +77,11 @@ export const FASTENERS: Readonly<Record<string, FastenerSpec>> = Object.freeze({
 /** Accept both "M2.5" and "M2_5" spellings for the size key. */
 function normalizeSize(size: unknown): string {
   if (typeof size !== 'string' || size.length === 0) {
-    throw new ValidationError(`printFit: size must be a string like "M3", got ${describe(size)}. Known: ${Object.keys(FASTENERS).join(', ')}.`);
+    throw new ValidationError(`fasteners: size must be a string like "M3", got ${describe(size)}. Known: ${Object.keys(FASTENERS).join(', ')}.`);
   }
   const key = size.trim().toUpperCase().replace('.', '_');
   if (!(key in FASTENERS)) {
-    throw new ValidationError(`printFit: unknown fastener size "${size}". Known: ${Object.keys(FASTENERS).join(', ')}.`);
+    throw new ValidationError(`fasteners: unknown fastener size "${size}". Known: ${Object.keys(FASTENERS).join(', ')}.`);
   }
   return key;
 }
@@ -95,7 +98,7 @@ export function fastener(size: unknown): FastenerSpec {
 export type Fit = 'press' | 'snug' | 'normal' | 'loose' | 'free';
 
 /** Radial clearance per fit class. Tuned for a typical 0.4mm-nozzle FDM
- *  printer; `printFit.clearance` lets callers read them and the builders apply
+ *  printer; `fasteners.clearance` lets callers read them and the builders apply
  *  them. A "press" fit is interference (0) — size for friction on your printer. */
 export const CLEARANCE_PRESETS: Readonly<Record<Fit, number>> = Object.freeze({
   press: 0.0,
@@ -108,7 +111,7 @@ export const CLEARANCE_PRESETS: Readonly<Record<Fit, number>> = Object.freeze({
 export function clearance(fit: unknown = 'normal'): number {
   if (typeof fit === 'number' && Number.isFinite(fit)) return fit; // allow an explicit gap
   if (typeof fit !== 'string' || !(fit in CLEARANCE_PRESETS)) {
-    throw new ValidationError(`printFit.clearance: fit must be one of ${Object.keys(CLEARANCE_PRESETS).join(' | ')} (or a number), got ${describe(fit)}.`);
+    throw new ValidationError(`fasteners.clearance: fit must be one of ${Object.keys(CLEARANCE_PRESETS).join(' | ')} (or a number), got ${describe(fit)}.`);
   }
   return CLEARANCE_PRESETS[fit as Fit];
 }
@@ -117,7 +120,7 @@ export function clearance(fit: unknown = 'normal'): number {
 export function clearanceHole(size: unknown, fit: 'close' | 'normal' | 'loose' = 'normal'): number {
   const spec = fastener(size);
   if (fit !== 'close' && fit !== 'normal' && fit !== 'loose') {
-    throw new ValidationError(`printFit.clearanceHole: fit must be "close" | "normal" | "loose", got ${describe(fit)}.`);
+    throw new ValidationError(`fasteners.clearanceHole: fit must be "close" | "normal" | "loose", got ${describe(fit)}.`);
   }
   return spec.clearance[fit];
 }
@@ -139,22 +142,6 @@ export function hexPoints(width: number): Vec2[] {
   return pts;
 }
 
-/** Dovetail cross-section: narrow at the mouth (y=0), flaring wider into the
- *  material (+y) by `angle`. `width` is the mouth width, `depth` the dovetail
- *  depth. Returns a closed CCW quad. */
-export function dovetailProfile(width: number, depth: number, angleDeg: number): Vec2[] {
-  const flare = depth * Math.tan((Math.PI / 180) * angleDeg);
-  const w = width / 2;
-  const W = w + flare;
-  // CCW from mouth-left.
-  return [
-    [-w, 0],
-    [w, 0],
-    [W, depth],
-    [-W, depth],
-  ];
-}
-
 function describe(v: unknown): string {
   if (v === null) return 'null';
   if (v === undefined) return 'undefined';
@@ -165,24 +152,24 @@ function describe(v: unknown): string {
 function num(val: unknown, name: string, opts: { min?: number; def?: number } = {}): number {
   if (val === undefined && opts.def !== undefined) return opts.def;
   if (typeof val !== 'number' || !Number.isFinite(val)) {
-    throw new ValidationError(`printFit: ${name} must be a finite number, got ${describe(val)}.`);
+    throw new ValidationError(`fasteners: ${name} must be a finite number, got ${describe(val)}.`);
   }
   if (opts.min !== undefined && val < opts.min) {
-    throw new ValidationError(`printFit: ${name} must be >= ${opts.min}, got ${val}.`);
+    throw new ValidationError(`fasteners: ${name} must be >= ${opts.min}, got ${val}.`);
   }
   return val;
 }
 
 function bool(val: unknown, def: boolean): boolean {
   if (val === undefined) return def;
-  if (typeof val !== 'boolean') throw new ValidationError(`printFit: expected a boolean, got ${describe(val)}.`);
+  if (typeof val !== 'boolean') throw new ValidationError(`fasteners: expected a boolean, got ${describe(val)}.`);
   return val;
 }
 
 function opts(val: unknown, name: string): Record<string, unknown> {
   if (val === undefined || val === null) return {};
   if (typeof val !== 'object' || Array.isArray(val)) {
-    throw new ValidationError(`printFit.${name}: options must be a plain object, got ${describe(val)}.`);
+    throw new ValidationError(`fasteners.${name}: options must be a plain object, got ${describe(val)}.`);
   }
   return val as Record<string, unknown>;
 }
@@ -191,13 +178,13 @@ function opts(val: unknown, name: string): Record<string, unknown> {
 // Namespace factory
 // ---------------------------------------------------------------------------
 
-export interface PrintFitDeps {
+export interface FastenersDeps {
   /** api.text — used by clearanceCoupon to emboss values. Optional; the coupon
    *  errors clearly if text isn't available (fonts not yet loaded). */
   text?: (str: string, opts?: any) => any;
 }
 
-export function createPrintFitNamespace(module: any, deps: PrintFitDeps = {}) {
+export function createFastenersNamespace(module: any, deps: FastenersDeps = {}) {
   const { Manifold, CrossSection } = module;
 
   /** Cylinder from z0→z1 (mm) at radius r. */
@@ -258,9 +245,29 @@ export function createPrintFitNamespace(module: any, deps: PrintFitDeps = {}) {
         const cdepth = hr - shankR;
         tool = tool.add(cone(-cdepth, LIP, shankR, hr, s).translate([0, 0, 0]));
       } else if (head !== 'none') {
-        throw new ValidationError(`printFit.screwHole: head must be "socket" | "countersunk" | "pan" | "none", got ${describe(head)}.`);
+        throw new ValidationError(`fasteners.screwHole: head must be "socket" | "countersunk" | "pan" | "none", got ${describe(head)}.`);
       }
       return tool;
+    },
+
+    /**
+     * Tap / pilot hole for a screw to cut its own thread, as a NEGATIVE tool to
+     * subtract. The bore is the table's thread-forming pilot diameter
+     * (`spec.tap`) — smaller than the screw, so the threads bite into the
+     * plastic. Same local frame as `screwHole`: axis = Z, entrance at z=0,
+     * descending to z=-length, poking `LIP` above z=0 so it cuts the top face
+     * cleanly. `through: true` also pokes out the bottom.
+     *
+     * opts: { size, length, through?, segments? }
+     */
+    tapHole(o0: unknown): any {
+      const o = opts(o0, 'tapHole');
+      const spec = fastener(o.size);
+      const length = num(o.length, 'length', { min: 0.2 });
+      const through = bool(o.through, false);
+      const s = seg(o);
+      const bottom = through ? -length - LIP : -length;
+      return cyl(bottom, LIP, spec.tap / 2, s);
     },
 
     /**
@@ -328,146 +335,6 @@ export function createPrintFitNamespace(module: any, deps: PrintFitDeps = {}) {
     },
 
     /**
-     * Alignment pin (solid) — a cylinder along +Z from z=0 to z=length, with a
-     * lead-in chamfer at the top. UNION onto part A. Mate with `socket` of the
-     * same nominal `diameter`. The pin stays nominal; the socket carries the
-     * clearance.
-     *
-     * opts: { diameter, length, chamfer?, segments? }
-     */
-    pin(o0: unknown): any {
-      const o = opts(o0, 'pin');
-      const d = num(o.diameter, 'diameter', { min: 0.2 });
-      const length = num(o.length, 'length', { min: 0.2 });
-      const r = d / 2;
-      const cham = num(o.chamfer, 'chamfer', { def: Math.min(0.6, r * 0.6), min: 0 });
-      const s = seg(o);
-      let pin = cyl(0, length, r, s);
-      if (cham > 0) {
-        // Chamfer the top: intersect the tip with a cone so the lead-in tapers.
-        const tip = cone(length - cham, length, r, Math.max(r - cham, 0.05), s);
-        const body = cyl(0, length - cham, r, s);
-        pin = body.add(tip);
-      }
-      return pin;
-    },
-
-    /**
-     * Socket (negative) for an alignment `pin` — a bored hole along +Z, mouth
-     * at z=0 descending to z=-depth, sized `diameter + 2·clearance(fit)` with a
-     * chamfered mouth for lead-in. SUBTRACT from part B.
-     *
-     * opts: { diameter, depth, fit?, chamfer?, segments? }
-     */
-    socket(o0: unknown): any {
-      const o = opts(o0, 'socket');
-      const d = num(o.diameter, 'diameter', { min: 0.2 });
-      const depth = num(o.depth, 'depth', { min: 0.2 });
-      const gap = clearance(o.fit ?? 'normal');
-      const r = d / 2 + gap;
-      const cham = num(o.chamfer, 'chamfer', { def: 0.6, min: 0 });
-      const s = seg(o);
-      let tool = cyl(-depth, LIP, r, s);
-      if (cham > 0) {
-        // Funnel mouth: a short cone wider at the surface.
-        tool = tool.add(cone(-cham, LIP, r, r + cham, s));
-      }
-      return tool;
-    },
-
-    /**
-     * Sliding dovetail. Returns { tail, socket }. The joint slides along +X.
-     * The dovetail cross-section is narrow at the mouth (y=0) and flares wider
-     * into the material (+y). `tail` is the male solid (UNION onto one part);
-     * `socket` is the female negative (SUBTRACT from the other), widened by the
-     * fit clearance so it slides.
-     *
-     * opts: { length, width, depth?, angle?, fit?, segments? }
-     */
-    dovetail(o0: unknown): { tail: any; socket: any } {
-      const o = opts(o0, 'dovetail');
-      const length = num(o.length, 'length', { min: 0.2 });
-      const width = num(o.width, 'width', { min: 0.5 });
-      const depth = num(o.depth, 'depth', { def: width * 0.6, min: 0.2 });
-      const angle = num(o.angle, 'angle', { def: 15, min: 1 });
-      const gap = clearance(o.fit ?? 'normal');
-
-      // Build the male profile in XY (mouth on y=0), extrude along +Z by length,
-      // then rotate so the slide axis becomes +X.
-      const make = (extraWidth: number, extraDepth: number) => {
-        const profile = dovetailProfile(width + 2 * extraWidth, depth + extraDepth, angle);
-        return Manifold.extrude(new CrossSection([profile]), length)
-          .rotate([0, 90, 0]); // Z(length) -> X
-      };
-      const tail = make(0, 0);
-      // Socket is the negative: widen on the flared faces by `gap`, deepen by LIP
-      // so it cuts through, and over-run the length so it slides clear.
-      const socket = make(gap, LIP).translate([-LIP, 0, 0]);
-      return { tail, socket };
-    },
-
-    /**
-     * Cantilever snap fit. Returns { clip, catch }. The clip is a flexible beam
-     * standing in +Z (rooted at z=0, tip at z=length) with a retention hook
-     * jutting +Y at the tip; its top face is a `leadAngle` ramp for insertion.
-     * UNION `clip` onto the moving part. The `catch` is a window negative
-     * (SUBTRACT from the mating wall) the hook clicks through.
-     * Local frame: beam back face on y=0, hook protrudes +Y.
-     *
-     * opts: { width, length, thickness?, hookDepth?, leadAngle?, fit?, rounded? }
-     *   rounded: round the retention edge of the hook for smoother snap-in/out.
-     */
-    snapFit(o0: unknown): { clip: any; catch: any } {
-      const o = opts(o0, 'snapFit');
-      const width = num(o.width, 'width', { min: 0.5 });
-      const length = num(o.length, 'length', { min: 1 });
-      const thickness = num(o.thickness, 'thickness', { def: Math.max(1.2, width * 0.2), min: 0.4 });
-      const hookDepth = num(o.hookDepth, 'hookDepth', { def: thickness * 0.8, min: 0.2 });
-      const leadAngle = num(o.leadAngle, 'leadAngle', { def: 45, min: 10 });
-      const gap = clearance(o.fit ?? 'normal');
-      const rounded = bool(o.rounded, false);
-
-      // Beam: a box width×thickness rising in Z. Back face on y=0.
-      const beam = Manifold.cube([width, thickness, length], false).translate([-width / 2, 0, 0]);
-
-      // Hook: a wedge at the tip that juts +Y by hookDepth. Build a triangular
-      // prism in the Y-Z plane: flat retention face (bottom), ramped top.
-      const ramp = hookDepth / Math.tan((Math.PI / 180) * leadAngle);
-      const hookH = Math.min(ramp + hookDepth, length * 0.6);
-      const hookBlock = Manifold.cube([width, hookDepth + thickness, hookH], false)
-        .translate([-width / 2, 0, length - hookH]);
-      // Slice the outer-top corner off to make the lead-in ramp.
-      const cutter = Manifold.cube([width + 2, hookDepth * 2 + 2, hookH * 2], false)
-        .translate([-width / 2 - 1, thickness, length])
-        .rotate([leadAngle, 0, 0])
-        .translate([0, 0, 0]);
-      const hook = hookBlock.subtract(cutter);
-      let clipResult = beam.add(hook);
-
-      if (rounded) {
-        // Chamfer the retention edge — the convex corner where the outer face
-        // (y = thickness+hookDepth) meets the retention face (z = length-hookH) —
-        // with a 45°-rotated cube cut. Produces a clean diagonal bevel that
-        // reduces snap-in/out force without adding separate geometry.
-        const r = Math.max(0.5, Math.min(hookDepth * 0.5, 1.5));
-        const c = r * Math.SQRT2;
-        const chamferCutter = Manifold.cube([width + 2, c, c], false)
-          .translate([-width / 2 - 1, -c / 2, -c / 2])
-          .rotate([45, 0, 0])
-          .translate([0, thickness + hookDepth, length - hookH]);
-        clipResult = clipResult.subtract(chamferCutter);
-      }
-
-      // Catch: a rectangular window the hook passes through, sized with
-      // clearance. Centered on the hook protrusion, as a negative slab in Y.
-      const winW = width + 2 * gap;
-      const winH = hookDepth + 2 * gap;
-      const catchTool = Manifold.cube([winW, thickness + 2 * LIP, winH], false)
-        .translate([-winW / 2, -LIP, length - hookH - gap]);
-      return { clip: clipResult, catch: catchTool };
-    },
-
-    /**
      * Clearance-calibration coupon — a base bar of graduated through-holes for a
      * chosen screw/pin, each embossed with its clearance value. Print it once to
      * find the fit your printer actually produces. Returns a single Manifold.
@@ -517,7 +384,6 @@ export function createPrintFitNamespace(module: any, deps: PrintFitDeps = {}) {
 export const __testables__ = {
   normalizeSize,
   hexPoints,
-  dovetailProfile,
   clearance,
   clearanceHole,
   fastener,

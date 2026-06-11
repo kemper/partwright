@@ -1,7 +1,7 @@
 # Surface Texture & Mesh Operations
 
 Post-hoc operations that add surface detail to a finished model by displacing
-vertices along their normals. Six textures are available:
+vertices along their normals. Seven textures are available:
 
 | Texture | Look | Best for |
 |---------|------|----------|
@@ -11,6 +11,7 @@ vertices along their normals. Six textures are available:
 | `applyWaffleStitch` | Recessed grid cells with raised borders | Waffle-knit, waffle irons, honeycomb patterns |
 | `applyFurVelvet` | Directional anisotropic pile (velvet, fur, chenille) | Animal fur, velvet fabric, soft plush surfaces |
 | `applyWovenFabric` | Plain-weave over/under interlacing | Baskets, woven cloth, twill, burlap |
+| `applyVoronoiShell` | Organic cell-wall ridge network (Voronoi cells) | Lampshades, planters, vases, cracked-mud / dragonfly-wing shells |
 
 Two further mesh operations live in the same panel and share the same
 apply→save→verify workflow:
@@ -19,11 +20,62 @@ apply→save→verify workflow:
 |-----------|--------------|-------|
 | `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
+| `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
+| `engraveModel({ text, through, depth, size, axis, side, posU, posV, curveAxis, resolution })` | **Carves text into the model** — recessed channels (`through:false`) or holes cut clean through the wall (`through:true`, a stencil). Lands on a face; `curveAxis` wraps it around a round surface (cup, tower). | Unlike the relief textures (which only displace the skin), this **removes** material. Image stamps are UI-only (need local bytes); the tool handles text. See [`engraveModel`](#engravemodel) below. |
 
 > **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
 > BREP/replicad model this discards the parametric source (and, for BREP, STEP
 > export) — the returned `warnings` array says so. Prefer editing the source for
 > parametric models when the change can be expressed there.
+
+---
+
+## Textures as code — `api.surface.*` (non-baking, in a manifold-js session)
+
+The tool calls above (`applyFuzzySkin`, …) **bake** the textured mesh into
+`api.imports[0]` and replace the editor code. As an alternative, in a
+**manifold-js** session you can declare the same textures **in the model code**
+so they stay parametric — edit a number, re-render, no lost source:
+
+```js
+const { Manifold } = api;
+const body = Manifold.sphere(10, 64);
+api.surface.knit({ stitchWidth: 1.2, amplitude: 0.6 });  // texture the returned mesh
+return body;
+```
+
+- Available ops: `api.surface.fuzzy`, `.knit`, `.cable`, `.waffle`, `.fur`,
+  `.woven`, `.voronoi`, `.smooth`. Each takes the **same options** as its
+  `apply*` tool (size-relative defaults fill in anything you omit). There's also
+  a generic `api.surface.apply('knit', { … })` form.
+- Calls are recorded, not applied during evaluation — they texture the **final
+  returned mesh** in the order called (a terminal skin; you can chain several).
+- Surface textures are **expensive**, so they're **memoized**: a render reuses
+  the cached textured result when the code, params and ops are unchanged.
+- **Saved versions keep the computed texture.** `runAndSave` / `saveVersion`
+  persist the textured mesh with the version, so reopening the session (or
+  loading the version later) renders textured immediately — no recompute, no
+  pill. Any change to the code, params, or imports invalidates it safely (the
+  chain just recomputes). Session JSON exports carry it too.
+- **Explicit runs compute the texture automatically.** A `runCode` / `runAndSave`
+  / `run` call (and the editor's Run button + version loads) force the
+  (memoized) compute and return the **textured** mesh — so an AI/console caller
+  sees the real result with no extra step. The first compute shows a progress
+  modal; repeats are instant (cache hit).
+- **Only live-typing is gated.** While a human edits in the editor, keystroke
+  auto-runs show the **base (untextured) mesh** plus a **"⟳ Textures stale —
+  Re-apply"** pill (top-left) instead of recomputing on every keystroke. Press
+  the pill (or just hit Run) to apply. This keeps typing snappy; it does **not**
+  affect `run`/`runAndSave`, which always apply. Exporting while the pill is up
+  warns (UI: a confirm modal; console `export*Data`: a `warning` field) because
+  the file would carry the untextured base — run first, then export.
+- **Whole-model only.** `api.surface.*` always textures the entire returned
+  mesh — there is no `region`/`triangles` option (passing one throws "unknown
+  option"). To texture only a selected patch, use the bake path: the Surface
+  panel's region selector, or `applyKnitTexture({ selectedTriangles })`.
+- This is the in-code counterpart of the bake tools, mirroring `api.paint.*`
+  (see [colors](/ai/colors.md)). Use it when you want the texture to live with
+  the code; use the `apply*` tools when you want a one-shot baked result.
 
 ---
 
@@ -215,6 +267,171 @@ slightly depressed.
 - Open weave / burlap: `threadWidth=0.35`, `threadSpacing=d*0.05`, `underDepth=0.5`
 - Tight fabric: `threadWidth=0.65`, `threadSpacing=d*0.03`, `underDepth=0.2`
 - Basket weave: `threadWidth=0.55`, `threadSpacing=d*0.06`, `underDepth=0.4`
+
+---
+
+## applyVoronoiShell
+
+```
+applyVoronoiShell({ amplitude?, cellSize?, wallWidth?, raised?, jitter?,
+                    grainAngleDeg?, seed?, quality?, preserveColor? })
+```
+
+Organic cell-wall relief: a network of raised ridges tracing the boundaries
+between Voronoi cells, with flat cell interiors (cracked-mud / dragonfly-wing /
+decorative-lampshade look). Computed as a cellular (Worley F2−F1) distance field
+over jittered grid seeds, so it follows the surface like the other textures.
+
+> **This is a relief, not a cutaway.** It raises or engraves cell walls along the
+> surface; it does **not** cut through-holes to leave an open strut lattice. For
+> an actually-perforated, see-through Voronoi shell (a "Voronoi lamp"), use
+> [`applyVoronoiLamp`](#applyvoronoilamp) instead.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `amplitude` | ~3% of diagonal | Wall height. |
+| `cellSize` | ~12% of diagonal | Approx spacing between cells (~8 cells across). |
+| `wallWidth` | 0.25 | Raised-wall band width as a fraction of cellSize [0.05–0.6]. Smaller = thinner struts. |
+| `raised` | true | true = raised wall network; false = engrave the network as recessed channels. |
+| `jitter` | 1 | Cell irregularity [0–1]. 1 = full irregular Voronoi; 0 = a regular square grid. |
+| `grainAngleDeg` | 0 | Rotate the cell pattern in the XY plane. |
+| `seed` | 1 | Deterministic seed — change it to reshuffle the cell layout. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = crisper walls, slower. |
+| `preserveColor` | true | Carry paint through subdivision. |
+
+**Look guidance:**
+- Lampshade shell: `cellSize=d*0.15`, `wallWidth=0.15`, `amplitude=d*0.04`
+- Cracked mud / dry earth: `cellSize=d*0.1`, `wallWidth=0.2`, `raised=false`
+- Regular grid (waffle-like): `jitter=0`, `cellSize=d*0.08`
+
+> Want **actual holes** (a see-through Voronoi lamp), not a raised pattern? Use
+> [`applyVoronoiLamp`](#applyvoronoilamp).
+
+---
+
+## applyVoronoiLamp
+
+```
+applyVoronoiLamp({ cellSize?, wallThickness?, strutWidth?, resolution?,
+                   jitter?, grainAngleDeg?, seed?, output?, smooth? })
+```
+
+The **cutaway** counterpart to `applyVoronoiShell`: turns a solid model into a
+true perforated Voronoi shell — a thin hollow wall with the cell interiors cut
+clean through, leaving a see-through strut network (the classic 3D-printed
+Voronoi lamp / planter).
+
+`output` chooses the form:
+- **`'mesh'` (default)** — bakes a smooth manifold-js mesh by meshing a
+  **continuous signed-distance field** (the principle behind `Manifold.levelSet`),
+  so the curved walls follow the true surface with **no voxel stair-stepping**,
+  and **no engine change**. Best for most lamps. It's a heavier operation than the
+  other textures (allow a few seconds); a thin web can fuse into a few connected
+  islands, so it stays manifold but may report `componentCount > 1`.
+- **`'voxel'`** — switches the session to the `voxel` language (paintable,
+  `.vox`-exportable, re-blockable), at the cost of a blockier look.
+
+Start from a **closed solid** (vase, sphere, vessel). It hollows + perforates in
+one step.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `cellSize` | ~10% of diagonal | Approx spacing between cells (world units). |
+| `wallThickness` | ~4% of diagonal | Shell thickness — how thick the struts are through the wall. |
+| `strutWidth` | 0.32 | Kept edge-network width as a fraction of cellSize [0.05–0.6]. Smaller = thinner struts, bigger windows. |
+| `resolution` | 110 | Field/voxel resolution along the longest axis [16–256]. **Auto-raised** so struts resolve to ≥6 cells — you rarely set it. Higher sharpens the struts (the walls are already smooth from the continuous field). |
+| `jitter` | 1 | Cell irregularity [0–1]. 1 = irregular Voronoi; 0 = a regular grid of windows. |
+| `grainAngleDeg` | 0 | Rotate the cell pattern in the XY plane. |
+| `seed` | 1 | Deterministic seed — change to reshuffle the cell layout. |
+| `watertight` | true | Keep only the largest connected web → one watertight, manifold, printable piece (drops loose fragments). Leave on for printing. |
+| `output` | `'mesh'` | `'mesh'` = smooth manifold-js mesh (no engine change); `'voxel'` = voxel engine (paintable / .vox). |
+| `smooth` | true | Voxel output only: round the struts with a smoothing pass. |
+
+**Look guidance** (defaults already look good on a typical solid — mostly tune cellSize + strutWidth):
+- Voronoi lamp: `cellSize=d*0.1`, `wallThickness=d*0.04`, `strutWidth=0.3`
+- Chunky planter: `cellSize=d*0.16`, `wallThickness=d*0.06`, `strutWidth=0.4`
+- Fine lattice: `cellSize=d*0.07`, `strutWidth=0.22`
+
+**Tips:** with `watertight` on (default) the result is manifold/printable. If
+windows don't open, lower `strutWidth` or raise `cellSize`. Resolution
+auto-raises for thin struts, so you rarely touch it. Verify with `renderViews`.
+
+---
+
+## engraveModel
+
+```
+engraveModel({ text, font?, through?, depth?, size?, mode?, axis?, side?,
+               posU?, posV?, rotationDeg?, curveAxis?, curveAngleDeg?,
+               resolution?, watertight?, preserveColor? })
+```
+
+**Carves text into the model** — recessed channels (engrave) or holes cut clean
+through the wall (cut-through / stencil). Unlike every texture above (which only
+*displaces* the surface skin), this **removes** material: the text is rasterized
+(the app's own font path, so it matches `api.text()`) and projected onto the
+model, then subtracted. Use it to label / brand a part (a name on a tag, a logo
+plate), cut a stencil, or perforate a sign. Start from a **slab, plate, ring, or
+cylinder**. Returns `{ ok, label, geometry, warnings? }`.
+
+It meshes a **continuous signed-distance field** like `applyVoronoiLamp`, so the
+channel walls follow the true surface with no voxel stair-stepping. A heavier op
+than the relief textures — allow a few seconds.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `text` | — | **Required.** The string to engrave/cut. |
+| `font` | `'bold'` | `'regular' \| 'bold' \| 'italic' \| 'bold-italic'`. Bold engraves more legibly. |
+| `through` | `false` | `false` = recess to `depth`; `true` = cut clean through the wall (stencil). |
+| `depth` | ~6% of diagonal | Engrave depth in world units (ignored when `through`). |
+| `size` | ~70% of the face | Stamp **width** in world units — how wide the text spans. |
+| `mode` | `'planar'` | `'planar'` = onto one flat face; `'cylindrical'` = wrap around the Z axis (rings, cups). |
+| `axis` | `'z'` | Planar only: which face axis (`'x' \| 'y' \| 'z'`). |
+| `side` | `'max'` | Planar: `'max'` (+axis face) or `'min'`. Cylindrical: `'outer'` (default) or `'inner'`. |
+| `posU` | 0.5 | Planar only: stamp center *across* the face, as a fraction [0–1] of the bbox on the first in-plane axis. 0.5 = centered; 0.25/0.75 = quarter points (the snap buttons in the UI). |
+| `posV` | 0.5 | Planar only: stamp center *up* the face, fraction [0–1] on the second in-plane axis. |
+| `rotationDeg` | 0 | Rotate the stamp in the face plane (planar) or around Z (cylindrical), degrees. |
+| `curveAxis` | `'none'` | Bend the flat stamp around a surface (planar/free). `'v'` = wrap around the **vertical** axis → text curves left↔right (around a cylinder, tower, mug); `'u'` = wrap around the **horizontal** axis → text curves up↔down (over a dome). |
+| `curveAngleDeg` | 90 | Total arc the curved stamp subtends (with `curveAxis`). The whole word spans this angle; larger = tighter wrap. |
+| `resolution` | 180 | Field resolution along the longest axis [48–256]. Raise if thin strokes look mushy. |
+| `watertight` | true | Keep only the largest connected piece — one manifold result. |
+
+**Placement:** in the **Surface panel**, type the text and press the small
+**Apply** button (typing no longer re-renders on every keystroke), then press
+**"place on model"** — a live footprint outline follows the cursor over the
+model; click to drop it on that face. Clicking a flat axis-aligned face snaps to
+that face (the position sliders + 0/25/50/75% snaps and `rotationDeg` apply);
+clicking a **sloped or curved face** lies the stamp flat on it (a "free"
+projection, positioned by the click). To wrap text around a round surface (a
+cup, a lighthouse), place it on the side then set **Curve** (`curveAxis` +
+`curveAngleDeg`). The live preview keeps the model's colors. Heavy carves drive
+the inline **"Rendering…"** status (with the toolbar Cancel link) just like a
+normal run, so you can cancel a slow carve.
+
+For a sloped/curved face from code, pass an explicit free projection (with an
+optional `curve`):
+`engraveModel({ text:'A', projection:{ mode:'free', origin:[x,y,z], normal:[nx,ny,nz], curve:{ axis:'v', angleDeg:120 } }, … })`
+— `origin` is the surface point and `normal` its outward direction.
+
+> **`cylindrical` is legacy.** The old `mode:'cylindrical'` (wrap around the
+> global Z axis) still works from code, but it guesses a single radius from the
+> bbox and misses tapered/eccentric shapes. Prefer **place-on-face + `curveAxis`**,
+> which anchors the wrap at the point you actually clicked.
+
+**Colors are preserved.** Engraving a painted model carries the existing paint
+onto the carved mesh (a spatial transfer), so a painted nameplate keeps its
+color and the channel walls take the nearest color. Pass `preserveColor:false`
+to clear instead.
+
+**Tips:** verify with `renderViews` — check the letters are legible and (for
+`through`) the holes are open (genus rises above 0; the result stays manifold).
+If letters look mushy, raise `resolution`. Counters (the holes in O, A, B, …) are
+handled automatically — an engrave keeps the island; a cut-through drops it,
+leaving a clean ring.
+
+> **Image stamps are UI-only.** Engraving an *image* (logo, silhouette) needs
+> local image bytes, so it's available only from the **Surface** panel's Engrave
+> tab (upload an image; dark pixels cut). This tool handles **text**.
 
 ---
 

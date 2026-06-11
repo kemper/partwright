@@ -21,7 +21,7 @@
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
-//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema, workerMs }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
 //   { type: 'exportSTEP_result',       callId, blob, error }
@@ -188,9 +188,10 @@ self.onmessage = async (event: MessageEvent) => {
           await ensureBrepLoaded();
         }
         // Pre-load Liberation Sans fonts if the code calls api.text / api.textSection,
-        // or uses api.printFit (clearanceCoupon engraves text labels internally).
+        // or uses api.fasteners (clearanceCoupon engraves text labels internally) —
+        // including via its deprecated api.printFit alias, kept for old sessions.
         // Same lazy-load pattern as BREP — fonts are cached after the first run.
-        if (sourceUsesManifoldText(code as string) || /\bapi\.printFit\b/.test(code as string) || /[{,]\s*printFit\s*[,}]/.test(code as string)) {
+        if (sourceUsesManifoldText(code as string) || /\bapi\.(?:fasteners|printFit)\b/.test(code as string) || /[{,]\s*(?:fasteners|printFit)\s*[,}]/.test(code as string)) {
           await preloadTextFonts();
         }
         setActiveImports(runImports);
@@ -206,6 +207,11 @@ self.onmessage = async (event: MessageEvent) => {
         ? Array.from(result.labelColors.entries())
         : null;
       const lostLabels = result.lostLabels ?? null;
+      // api.paint.* operations declared in code — already plain serialisable
+      // objects ({ name, color, descriptor }), so they cross as-is.
+      const paintOps = result.paintOps ?? null;
+      // api.surface.* ops — plain serialisable { id, params } objects, cross as-is.
+      const surfaceOps = result.surfaceOps ?? null;
       const paramsSchema = result.paramsSchema ?? null;
       // Heap high-water for manifold-js runs (other engines own separate heaps).
       const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
@@ -227,7 +233,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts },
           transfer,
         );
       } else {

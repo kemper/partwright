@@ -59,6 +59,14 @@ export interface AppConfig {
     charsPerToken: number;
     /** Estimated tokens per image block at standard resolution. */
     imageTokenEstimate: number;
+    /** How many of the most-recent render images (renderView / renderViews /
+     *  runIsolated tool snapshots) to keep in the history sent to the provider.
+     *  Older tool-result images are dropped from the request (their text stats
+     *  stay) so a long modeling session's image tokens don't compound every
+     *  turn — the same reason the CLI uses the model-sculpt subagent. The
+     *  on-screen transcript still shows every image; only the provider request
+     *  is trimmed. Set high to disable trimming. */
+    keepRecentToolImages: number;
     /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
      *  OpenSCAD validation and include-detection. (The render path has no
      *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
@@ -128,6 +136,12 @@ export interface AppConfig {
      *  prevents a runaway refine from freezing the main thread when the giant
      *  result is committed to the viewport. */
     enhanceMaxTriangles: number;
+    /** Triangle count above which a computed `api.surface.*` texture is NOT
+     *  persisted with the saved version (the version still saves; reopening it
+     *  just recomputes the texture on demand instead of restoring instantly).
+     *  Caps how much IndexedDB space one save can take — a textured mesh costs
+     *  roughly 18 bytes per triangle. */
+    surfaceTexturePersistMaxTriangles: number;
   };
   import: {
     /** Vertex-weld tolerance for STL imports (world units). */
@@ -136,6 +150,10 @@ export interface AppConfig {
     voxelDefaultMaxSize: number;
     /** Voxel count above which the import UI shows a performance warning. */
     voxelHeavyThreshold: number;
+    /** Max number of lattice cells `v.sdf()` may sample in one call before it
+     *  refuses (guards against a huge bounds × tiny `res` freezing the engine).
+     *  Past this the call throws and asks for a coarser `res` or tighter bounds. */
+    voxelSdfMaxSamples: number;
     /** Max image resolution (pixels per side) when importing for relief. */
     reliefMaxResolution: number;
     /** Timeout (ms) for fetching a remote file by URL in the import-from-URL flow. */
@@ -152,6 +170,13 @@ export interface AppConfig {
     tooltipDelayMs: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
     codeEditorErrorIdleMs: number;
+    /** Input-grace window (ms) for the code editor's bottom-scroll stabilizer.
+     *  When the editor is parked near the very bottom, a programmatic one-line
+     *  re-measure snap (real Chrome reconciling fractional line heights on a
+     *  focus change / layout reflow) is reverted so the code doesn't stutter —
+     *  unless a real scroll happened within this window (wheel, scrollbar drag,
+     *  touch, keyboard/typing), which is always honored. Set to 0 to disable. */
+    codeEditorScrollPinMs: number;
     /** Debounce delay (ms) after the last companion-file keystroke before the
      *  draft is autosaved, so companion edits survive a reload without writing
      *  to IndexedDB on every keystroke. */
@@ -197,6 +222,19 @@ export interface AppConfig {
      *  next one (ms). */
     hintRotationMs: number;
   };
+  geometry: {
+    /** Triangle count above which the live model warns it may be too heavy for
+     *  the catalog budget / slow to slice. Mirrors the headless model:preview
+     *  tri-budget warning so the in-app AI sees the same signal. */
+    triCountWarnBudget: number;
+    /** Shortest mesh edge (world units) below which a fine-detail warning fires
+     *  — features this small are dropped by FDM slicers (sub-extrusion-width).
+     *  Mirrors model:preview's sub-0.4 mm detail warning. */
+    minEdgeLengthWarn: number;
+    /** Bounding-box aspect ratio (longest dim ÷ shortest non-zero dim) above
+     *  which a sliver/thin-model warning fires. Mirrors model:preview. */
+    aspectRatioWarn: number;
+  };
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
@@ -221,6 +259,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxOutputTokensGemini: 32768,
     charsPerToken: 4,
     imageTokenEstimate: 1500,
+    keepRecentToolImages: 3,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,
@@ -250,11 +289,13 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     thumbnailTimeoutMs: 4000,
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
+    surfaceTexturePersistMaxTriangles: 1_000_000,
   },
   import: {
     stlWeldTolerance: 1e-5,
     voxelDefaultMaxSize: 64,
     voxelHeavyThreshold: 250_000,
+    voxelSdfMaxSamples: 8_000_000,
     reliefMaxResolution: 512,
     remoteFetchTimeoutMs: 15_000,
     filamentMatchThreshold: 0.18,
@@ -264,6 +305,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     toastDurationMs: 2200,
     tooltipDelayMs: 150,
     codeEditorErrorIdleMs: 800,
+    codeEditorScrollPinMs: 250,
     companionDraftDebounceMs: 600,
     workCameraSaveDebounceMs: 500,
     surfacePreviewDebounceMs: 250,
@@ -280,6 +322,11 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     workerPanelRefreshMs: 1000,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
+  },
+  geometry: {
+    triCountWarnBudget: 200_000,
+    minEdgeLengthWarn: 0.4,
+    aspectRatioWarn: 12,
   },
 };
 

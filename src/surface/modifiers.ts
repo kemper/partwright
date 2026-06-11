@@ -19,15 +19,22 @@ import { cableKnit, type CableKnitOptions } from './cableKnit';
 import { waffleStitch, type WaffleStitchOptions } from './waffleStitch';
 import { furVelvet, type FurVelvetOptions } from './furVelvet';
 import { wovenFabric, type WovenFabricOptions } from './wovenFabric';
+import { voronoiShell, type VoronoiShellOptions } from './voronoiShell';
+import { voronoiLattice, type VoronoiLampOptions } from './voronoiLattice';
 import { smoothSurface, type SmoothOptions } from './smoothSurface';
 import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
-import { extractPositions, bboxOf, subdivideWithMask } from './meshSubdivide';
+import { extractPositions, bboxOf, subdivideWithMask, subdivideToMaxEdge } from './meshSubdivide';
 import { encodeGrid } from '../geometry/voxel/grid';
+import { formatSurfacingCall } from '../geometry/voxel/editCodegen';
 import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
+import { voronoiLampSdfMesh } from './voronoiLampSdf';
+import { engraveMesh, type EngraveSdfOptions } from './engraveSdf';
+import { type EngraveProjection } from './engraveStamp';
+import { type SdfRunControl } from './sdfModifier';
 
-export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize';
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
 
 export interface ModifierManifoldResult {
   kind: 'manifold';
@@ -37,6 +44,11 @@ export interface ModifierManifoldResult {
   code: string;
   /** Baked mesh to attach to the new version as an imported mesh. */
   mesh: MeshData;
+  /** Optional painted source mesh for color carry when the baked `mesh` itself
+   *  carries no per-triangle color — i.e. a fully re-meshed result (engrave,
+   *  voronoi lamp) where colors can only be transferred spatially from the
+   *  original. The commit falls back to a nearest-triangle transfer from this. */
+  colorSource?: MeshData;
 }
 
 export interface ModifierVoxelResult {
@@ -59,6 +71,19 @@ function today(): string {
 export function modelDiagonal(mesh: MeshData): number {
   const { size } = bboxOf(extractPositions(mesh));
   return Math.hypot(size[0], size[1], size[2]);
+}
+
+/** A dense color-source for a fully re-meshed result (engrave / voronoi lamp).
+ *  The color carry maps each new triangle to the *nearest old triangle centroid*,
+ *  which is unreliable when the source has a few huge faces (a plain cube): a new
+ *  top-face triangle near a corner can be closer to a side-face centroid. We
+ *  subdivide the painted input to small triangles first (carrying triColors and
+ *  the `_painted` mask) so the centroids are dense and the transfer is faithful.
+ *  Returns undefined when the input carries no paint. */
+function denseColorSource(mesh: MeshData): MeshData | undefined {
+  if (mesh.triColors == null) return undefined;
+  const maxEdge = (modelDiagonal(mesh) || 10) / 80;
+  return subdivideToMaxEdge(mesh, { maxEdge, maxRounds: 5 });
 }
 
 /** Size-relative starting parameters for fuzzy skin (subtle ~1% displacement). */
@@ -118,6 +143,10 @@ export { type CableKnitOptions };
 export { type WaffleStitchOptions };
 export { type FurVelvetOptions };
 export { type WovenFabricOptions };
+export { type VoronoiShellOptions };
+export { type VoronoiLampOptions };
+export { type EngraveProjection, type StampMask } from './engraveStamp';
+export { type SdfRunControl, SdfAbortError } from './sdfModifier';
 
 /** Wrap a hand-sculpted mesh (from the interactive Mesh Sculpt session) as a
  *  baked manifold result — same commit shape as fuzzy skin / smooth, so it
@@ -361,6 +390,15 @@ export function applyWovenPatch(mesh: MeshData, opts: WovenFabricOptions, select
   return { kind: 'manifold', label: 'woven fabric (patch)', mesh: patched, code: manifoldWrapper([`Woven fabric patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
 }
 
+export function applyVoronoiPatch(mesh: MeshData, opts: VoronoiShellOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const diag = modelDiagonal(mesh) || 10;
+  // The wall band is the thin feature — size the pre-subdivision to it.
+  const wall = Math.min(0.95, Math.max(0.02, opts.wallWidth ?? 0.25));
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.cellSize * wall), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => voronoiShell(sub, { ...opts, subdivide: false }), pre);
+  return { kind: 'manifold', label: 'voronoi shell (patch)', mesh: patched, code: manifoldWrapper([`Voronoi shell patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
 export function applySmoothPatch(mesh: MeshData, opts: SmoothOptions, selectedTris: Set<number>): ModifierManifoldResult {
   const diag = modelDiagonal(mesh) || 10;
   // Smooth has no feature size — use diagonal/20 as the target (coarse-mesh safety net only)
@@ -429,6 +467,46 @@ export function defaultWovenOptions(mesh: MeshData): Required<WovenFabricOptions
   };
 }
 
+export function defaultVoronoiOptions(mesh: MeshData): Required<VoronoiShellOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    amplitude: d * 0.03,
+    cellSize: d * 0.12,
+    wallWidth: 0.25,
+    raised: true,
+    jitter: 1,
+    grainAngleDeg: 0,
+    seed: 1,
+    quality: 3,
+    subdivide: true,
+  };
+}
+
+export interface VoronoiLampModifierOptions extends VoronoiLampOptions {
+  /** Output form. 'mesh' (default) bakes a smooth manifold-js mesh (no engine
+   *  change); 'voxel' switches the session to the voxel engine (paintable / .vox). */
+  output?: 'mesh' | 'voxel';
+  /** Voxel output only: emit a `.smooth()` call so the struts render rounded.
+   *  Default true. (Mesh output is always Taubin-smoothed.) */
+  smooth?: boolean;
+}
+
+export function defaultVoronoiLampOptions(mesh: MeshData): Required<VoronoiLampModifierOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    cellSize: d * 0.1,
+    wallThickness: d * 0.04,
+    strutWidth: 0.32,
+    resolution: 110,
+    jitter: 1,
+    grainAngleDeg: 0,
+    seed: 1,
+    watertight: true,
+    output: 'mesh',
+    smooth: true,
+  };
+}
+
 export function applyCable(mesh: MeshData, opts: CableKnitOptions): ModifierManifoldResult {
   const baked = cableKnit(mesh, opts);
   return {
@@ -476,6 +554,19 @@ export function applyWoven(mesh: MeshData, opts: WovenFabricOptions): ModifierMa
     mesh: baked,
     code: manifoldWrapper([
       `Woven fabric applied on ${today()} — thread spacing ${opts.threadSpacing.toFixed(3)}, width ${opts.threadWidth ?? 0.4}.`,
+      `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
+export function applyVoronoi(mesh: MeshData, opts: VoronoiShellOptions): ModifierManifoldResult {
+  const baked = voronoiShell(mesh, opts);
+  return {
+    kind: 'manifold',
+    label: 'voronoi shell',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Voronoi shell applied on ${today()} — cell ${opts.cellSize.toFixed(2)}, wall ${(opts.wallWidth ?? 0.25).toFixed(2)}, ${opts.raised === false ? 'engraved' : 'raised'}.`,
       `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
     ]),
   };
@@ -551,6 +642,100 @@ export function applyTransform(
   };
 }
 
+export async function applyVoronoiLamp(mesh: MeshData, opts: VoronoiLampModifierOptions, ctl?: SdfRunControl): Promise<ModifierResult> {
+  // Default: a smooth manifold-js mesh built from a CONTINUOUS signed-distance
+  // field (the principle behind Manifold.levelSet, done pure-JS on the main
+  // thread). The wall follows the true distance to the *smooth* original surface
+  // sub-voxel, so there's no voxel "corduroy" — and resolution genuinely sharpens
+  // it. See voronoiLampSdf.ts.
+  if ((opts.output ?? 'mesh') === 'mesh') {
+    const baked = await voronoiLampSdfMesh(mesh, opts, ctl);
+    return {
+      kind: 'manifold',
+      label: 'voronoi lamp',
+      mesh: baked,
+      // Re-meshed shell carries no colors; transfer them spatially from a dense
+      // version of the painted input (coarse faces would map unreliably).
+      colorSource: denseColorSource(mesh),
+      code: manifoldWrapper([
+        `Voronoi lamp (perforated shell) from the current model on ${today()} — cell ~${opts.cellSize.toFixed(2)}, wall ${opts.wallThickness.toFixed(2)}.`,
+        `Smooth (SDF) mesh baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+      ]),
+    };
+  }
+
+  // Voxel output: switch the session to the voxel engine (paintable / .vox).
+  const { grid } = voronoiLattice(mesh, opts);
+  // Encode occupancy + colors first, then flip to smooth so the preview mesh
+  // matches the emitted `v.smooth()` at runtime (mirrors applyVoxelize).
+  const encoded = encodeGrid(grid);
+  const smooth = opts.smooth !== false;
+  if (smooth) grid.smooth();
+  const smoothCall = smooth ? `\nv.smooth();` : '';
+  const code = `// Voronoi lamp (perforated shell) from the current model on ${today()}.
+// Cell ~${opts.cellSize.toFixed(2)}, wall ${opts.wallThickness.toFixed(2)}, ${(grid.size).toLocaleString()} voxels.
+// Edit below — toggle smoothing, paint the struts, or .vox export.
+const { voxels } = api;
+const v = voxels.decode(${JSON.stringify(encoded)});${smoothCall}
+return v;
+`;
+  return {
+    kind: 'voxel',
+    label: smooth ? 'voronoi lamp (smooth voxels)' : 'voronoi lamp (voxels)',
+    code,
+    previewMesh: meshGrid(grid),
+  };
+}
+
+export interface EngraveModifierOptions extends Omit<EngraveSdfOptions, 'mask'> {
+  /** The pre-rasterized ink mask (built by the host from text or an image). */
+  mask: EngraveSdfOptions['mask'];
+  /** Short human label for the version (e.g. the text or "image"). */
+  source?: string;
+}
+
+/** Size-relative starting parameters for engrave (a square-ish stamp on the top
+ *  face, recessed ~6% of the diagonal). The mask + projection are supplied by
+ *  the caller; this only fills the geometric knobs. */
+export function defaultEngraveOptions(mesh: MeshData): {
+  projection: EngraveProjection; through: boolean; depth: number; size: number; resolution: number; watertight: boolean;
+} {
+  const { size } = bboxOf(extractPositions(mesh));
+  const span = Math.max(size[0], size[1], 1e-6);
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    projection: { mode: 'planar', axis: 'z', side: 'max' },
+    through: false,
+    depth: d * 0.06,
+    size: span * 0.7,
+    resolution: 180,
+    watertight: true,
+  };
+}
+
+export async function applyEngrave(mesh: MeshData, opts: EngraveModifierOptions, ctl?: SdfRunControl): Promise<ModifierManifoldResult> {
+  const baked = await engraveMesh(mesh, opts, ctl);
+  const proj = opts.projection.mode === 'planar'
+    ? `${opts.projection.side === 'max' ? '+' : '-'}${opts.projection.axis.toUpperCase()} face`
+    : opts.projection.mode === 'free'
+      ? 'a clicked face'
+      : `${opts.projection.side} cylinder`;
+  const what = opts.source ? `"${opts.source}"` : 'stamp';
+  return {
+    kind: 'manifold',
+    label: opts.through ? 'engrave (cut through)' : 'engrave',
+    mesh: baked,
+    // The carved mesh is a fresh surface-nets surface with no per-triangle
+    // colors; carry the original paint by spatial transfer from a dense version
+    // of the painted input (coarse faces would map unreliably).
+    colorSource: denseColorSource(mesh),
+    code: manifoldWrapper([
+      `Engraved ${what} on ${today()} — ${opts.through ? 'cut clean through' : `recessed ${opts.depth.toFixed(2)} deep`} on the ${proj}.`,
+      `The carved mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
 export function applyVoxelize(mesh: MeshData, opts: VoxelizeModifierOptions): ModifierVoxelResult {
   const grid = voxelizeMesh(mesh, opts);
   // encodeGrid serializes only occupancy + colors (not the surfacing flag), so
@@ -558,7 +743,8 @@ export function applyVoxelize(mesh: MeshData, opts: VoxelizeModifierOptions): Mo
   // mesh below matches what the emitted `v.smooth()` produces at runtime.
   const encoded = encodeGrid(grid);
   if (opts.smooth) grid.smooth();
-  const smoothCall = opts.smooth ? `\nv.smooth();` : '';
+  const call = formatSurfacingCall(grid.surfacing());
+  const smoothCall = call ? `\nv${call};` : '';
   const code = `// Voxelized from the current model on ${today()} (resolution ${opts.resolution ?? 32}).
 // Edit below — toggle "Smooth voxels" for rounded corners, or v.fillBox(...) to extend.
 const { voxels } = api;

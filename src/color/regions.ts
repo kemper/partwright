@@ -40,6 +40,10 @@ export type RegionDescriptor =
   // `maxEdge`, giving crisp painted edges that follow the analytic cylinder
   // rather than the coarse base tessellation.
   | { kind: 'cylinder'; center: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number;
+      // World axis the shell runs along — radius measured in the plane normal
+      // to it, the zMin..zMax band along it. Omitted = 'z' (the legacy XY-radius
+      // behaviour), so descriptors saved before axis support round-trip cleanly.
+      axis?: 'x' | 'y' | 'z';
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       // Coverage mode literal — kept as a string union (not an imported type)
       // so this descriptor stays serializable without pulling in main.ts.
@@ -497,19 +501,21 @@ export function clearRegionsBySource(source: ColorRegion['source']): void {
 }
 
 /** Replace the model-declared color underlay. Called once per run with the
- *  colors declared via `api.label(shape, name, { color })`, already resolved to
- *  triangle sets against that run's labelMap. Pass `[]` (or run code that
- *  declares no colors) to clear the layer. Does NOT notify — the run path drives
- *  a single re-render after setting these. */
+ *  colors declared in code, already resolved to triangle sets against that run's
+ *  mesh / labelMap. Two sources feed it: `api.label(shape, name, { color })`
+ *  (byLabel) and `api.paint.*` (box / slab / cylinder / label), each carrying its
+ *  own `descriptor` so paintExplain and re-renders see the true predicate. Pass
+ *  `[]` (or run code that declares no colors) to clear the layer. Does NOT
+ *  notify — the run path drives a single re-render after setting these. */
 export function setModelColorRegions(
-  decls: ReadonlyArray<{ name: string; color: [number, number, number]; triangles: Set<number> }>,
+  decls: ReadonlyArray<{ name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor }>,
 ): void {
   modelRegions = decls.map((d, i) => ({
     id: -(i + 1), // negative ids never collide with the positive user-region ids
     name: d.name,
     color: d.color,
     source: 'model' as const,
-    descriptor: { kind: 'byLabel' as const, label: d.name },
+    descriptor: d.descriptor ?? { kind: 'byLabel' as const, label: d.name },
     order: i + 1, // order within the model band; the user paint layer sits above
     visible: true,
     triangles: d.triangles,
@@ -518,6 +524,16 @@ export function setModelColorRegions(
 
 export function hasModelColorRegions(): boolean {
   return modelRegions.length > 0;
+}
+
+/** Replace a model-region's resolved triangle set in place (negative id). Used
+ *  by the refine path: when a smooth brush stroke subdivides the working mesh,
+ *  the code-declared underlay (`api.label({color})` / `api.paint.*`) must be
+ *  re-resolved against the refined tessellation too, or its triangle indices go
+ *  stale. Does not notify — the caller drives a single re-render. */
+export function setModelRegionTriangles(id: number, triangles: Set<number>): void {
+  const region = modelRegions.find(r => r.id === id);
+  if (region) region.triangles = triangles;
 }
 
 export function getModelRegions(): readonly ColorRegion[] {

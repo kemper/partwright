@@ -48,18 +48,19 @@ test.describe('AI chat panel', () => {
     // a COI service-worker reload / WASM boot on the default Interactive tab.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
 
-    // The drawer opens by default on a fresh visit.
-    await expect(page.locator('#ai-panel')).toBeVisible();
-    // Close via the ✕, then reopen via the rail button.
-    await page.click('#ai-panel button:has-text("✕")');
+    // The drawer starts closed on a fresh visit — it only opens when the user
+    // reaches for it via the rail button.
     await expect(page.locator('#ai-panel')).toBeHidden();
     await page.click('#btn-ai');
     await expect(page.locator('#ai-panel')).toBeVisible();
-    // Disconnected → reopening via the rail also surfaces the AI Settings modal
+    // Disconnected → opening via the rail also surfaces the AI Settings modal
     // (the connect flow). Dismiss it to leave a clean state.
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeHidden();
+    // Toggling the rail again closes it.
+    await page.click('#btn-ai');
+    await expect(page.locator('#ai-panel')).toBeHidden();
   });
 
   test('connected: reopening via the rail opens the panel with no settings modal', async ({ page }) => {
@@ -84,9 +85,7 @@ test.describe('AI chat panel', () => {
         open.onerror = () => reject(open.error);
       });
     });
-    // Panel is open by default; close it, then reopen via the rail.
-    await expect(page.locator('#ai-panel')).toBeVisible();
-    await page.click('#ai-panel button:has-text("✕")');
+    // Panel starts closed; open it via the rail.
     await expect(page.locator('#ai-panel')).toBeHidden();
     await page.click('#btn-ai');
     await expect(page.locator('#ai-panel')).toBeVisible();
@@ -94,9 +93,21 @@ test.describe('AI chat panel', () => {
   });
 
   test('code pane defaults hidden when the AI drawer is open, and respects an explicit Show code', async ({ page }) => {
-    // First visit: drawer opens by default, so the code pane should NOT
-    // compete with it for screen real estate. The "▶ Show code" expand
-    // button only shows when the editor group is collapsed.
+    // With the AI drawer open, the code pane should NOT compete with it for
+    // screen real estate, so it defaults collapsed (`editorCollapsed ??
+    // drawerOpen`). The drawer no longer opens on a fresh visit, so seed the
+    // remembered-open preference to exercise that path. The "▶ Show code"
+    // expand button only shows when the editor group is collapsed.
+    // Seed only on the very first load — addInitScript re-runs on every
+    // navigation, so guard it or the reload below would clobber the
+    // editorCollapsed=false that the "Show code" click persists.
+    await page.addInitScript(() => {
+      try {
+        if (!localStorage.getItem('partwright-ai-settings-v1')) {
+          localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ drawerOpen: true }));
+        }
+      } catch { /* ignore */ }
+    });
     await page.goto('/editor');
     await page.waitForSelector('#btn-ai');
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
@@ -117,18 +128,26 @@ test.describe('AI chat panel', () => {
     await expect(page.locator('.cm-content')).toBeVisible();
   });
 
-  test('drawer close state persists across reload', async ({ page }) => {
-    // The drawer opens by default, but the user's choice is remembered: once
-    // they close it, the stored drawerOpen=false keeps it closed on reload.
+  test('drawer open/close state persists across reload', async ({ page }) => {
+    // The drawer starts closed on a fresh visit, and the user's choice is
+    // remembered both ways: open it and the stored drawerOpen=true keeps it
+    // open on reload; close it and drawerOpen=false keeps it closed.
     await page.goto('/editor');
     await page.waitForSelector('#btn-ai');
     // Wait for full editor init (console API ready) so the click doesn't race
     // a COI service-worker reload / WASM boot on the default Interactive tab.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
-    await expect(page.locator('#ai-panel')).toBeVisible();
-    await page.click('#ai-panel button:has-text("✕")');
     await expect(page.locator('#ai-panel')).toBeHidden();
 
+    // Open it; the remembered-open preference survives a reload.
+    await openAiPanel(page);
+    await page.reload();
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await expect(page.locator('#ai-panel')).toBeVisible();
+
+    // Close it; the remembered-closed preference survives a reload.
+    await page.click('#ai-panel button:has-text("✕")');
+    await expect(page.locator('#ai-panel')).toBeHidden();
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
     await expect(page.locator('#ai-panel')).toBeHidden();

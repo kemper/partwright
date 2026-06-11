@@ -106,12 +106,17 @@ function relaxPass(src: Float32Array, dst: Float32Array, adj: number[][], factor
 }
 
 /** Taubin-smooth a mesh's vertex positions. `iterations` is the number of
- *  λ/μ pass pairs (more = rounder). Returns a NEW MeshData sharing the input's
- *  triangle and color arrays (topology is untouched). Assumes `numProp === 3`
- *  (voxel meshes are position-only), which all callers satisfy. */
-export function taubinSmooth(mesh: MeshData, iterations = 2, pins?: SmoothPins): MeshData {
+ *  λ/μ pass pairs (more = rounder). `strength` (0–1, default 1) scales the λ/μ
+ *  step sizes uniformly, so it tunes the *amount* of rounding without changing
+ *  the pass count — `strength === 0` is a no-op. The ratio |μ| > λ is preserved,
+ *  so the anti-shrink behavior holds at every strength. Returns a NEW MeshData
+ *  sharing the input's triangle and color arrays (topology is untouched).
+ *  Assumes `numProp === 3` (voxel meshes are position-only), which all callers
+ *  satisfy. */
+export function taubinSmooth(mesh: MeshData, iterations = 2, pins?: SmoothPins, strength = 1): MeshData {
   const n = Math.max(0, Math.floor(iterations));
-  if (n === 0 || mesh.numVert === 0) return mesh;
+  const s = Math.max(0, Math.min(1, strength));
+  if (n === 0 || s === 0 || mesh.numVert === 0) return mesh;
 
   const adj = buildAdjacency(mesh.triVerts, mesh.numVert);
   let pos = Float32Array.from(mesh.vertProperties);
@@ -119,9 +124,9 @@ export function taubinSmooth(mesh: MeshData, iterations = 2, pins?: SmoothPins):
   const mask = buildPinMask(pos, mesh.numVert, pins);
 
   for (let i = 0; i < n; i++) {
-    relaxPass(pos, scratch, adj, LAMBDA, mask);
+    relaxPass(pos, scratch, adj, LAMBDA * s, mask);
     [pos, scratch] = [scratch, pos];
-    relaxPass(pos, scratch, adj, MU, mask);
+    relaxPass(pos, scratch, adj, MU * s, mask);
     [pos, scratch] = [scratch, pos];
   }
 

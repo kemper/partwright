@@ -131,6 +131,16 @@ export interface Version {
    *  `include <models.scad>` inside the main code resolves at compile time.
    *  Only present for SCAD sessions that need companion files. */
   companionFiles?: Record<string, string>;
+  /** Computed `api.surface.*` texture result (full-chain memo key + textured
+   *  mesh) persisted at save time, so reopening the version renders textured
+   *  immediately instead of recomputing the chain — and so the texture's
+   *  appearance is pinned to what the user saw when they saved. Shape is
+   *  `PersistedSurfaceTexture` (`src/surface/surfaceOpSpec.ts`); kept as
+   *  `unknown` here to preserve db-layer isolation (typed arrays survive
+   *  IndexedDB's structured clone as-is). Absent on versions saved before this
+   *  field existed or without in-code textures — loaders must treat absence as
+   *  "recompute on demand". */
+  surfaceTexture?: unknown;
   /** The version this was derived from. Set when a mesh-capture operation
    *  (simplify, enhance, paint-bake, import) creates a child version from an
    *  existing parametric version. Absent for versions created from scratch.
@@ -783,6 +793,8 @@ export async function saveVersion(
   parentVersionId?: string | null,
   /** The operation that produced this version. */
   operation?: VersionOperation | null,
+  /** Computed `api.surface.*` texture (key + mesh) — see {@link Version.surfaceTexture}. */
+  surfaceTexture?: unknown,
 ): Promise<Version> {
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
@@ -823,6 +835,7 @@ export async function saveVersion(
         ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
         ...(parentVersionId ? { parentVersionId } : {}),
         ...(operation ? { operation } : {}),
+        ...(surfaceTexture ? { surfaceTexture } : {}),
       };
       const putReq = store.put(v);
       putReq.onsuccess = () => resolve(v);

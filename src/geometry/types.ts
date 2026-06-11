@@ -1,4 +1,5 @@
 import type { ParamSpec } from './params';
+import type { SurfaceOp } from '../surface/surfaceOpSpec';
 
 export interface MeshData {
   vertProperties: Float32Array;
@@ -50,6 +51,23 @@ export interface MeshResult {
    *  no manual painting needed. Manual paint regions composite on top. Absent
    *  when no labelled color was declared this run. */
   labelColors?: Map<string, [number, number, number]>;
+  /** Paint operations declared in code via `api.paint.*` (box / slab / cylinder /
+   *  label). Each carries a region descriptor plus its resolved RGB (0..1). The
+   *  main thread resolves every descriptor's triangles against the freshly-run
+   *  mesh and renders them as part of the derived "model color" underlay — so
+   *  paint declared in code is durable WITH the code and never serialized to the
+   *  paint sidecar (the code is the source of truth). `descriptor` is a
+   *  `RegionDescriptor` but kept `unknown` here so this low-level geometry type
+   *  doesn't import the `color/` layer (that would close a module cycle); the
+   *  main thread casts it back. Absent when no `api.paint.*` ran this turn. */
+  paintOps?: { name: string; color: [number, number, number]; descriptor: unknown }[];
+  /** Surface texture ops declared in code via `api.surface.*` (fuzzy / knit /
+   *  cable / waffle / fur / woven / voronoi / smooth). An ordered chain applied
+   *  by the MAIN thread to the final returned mesh after the run (reusing the
+   *  existing modifier math) and memoized, so the parametric texture lives WITH
+   *  the code instead of being baked into `api.imports[0]`. Plain serializable.
+   *  Absent when no `api.surface.*` ran this turn. */
+  surfaceOps?: SurfaceOp[];
   /** True when the user code returned an `api.renderMesh(...)` proxy — the
    *  mesh isn't manifold (or wasn't validated as one) and the main thread
    *  must skip its Manifold.ofMesh fallback to avoid a "Not manifold" throw. */
@@ -78,6 +96,26 @@ export interface MeshResult {
    *  geometry-data stats so agents can confirm a voxel model's size without
    *  re-decoding the grid themselves. */
   voxelCount?: number;
+  /** Count of face-connected (6-neighbour) voxel pieces — the trustworthy
+   *  "separate printable pieces?" measure for voxel models, which the mesh
+   *  `componentCount` over-reports (enclosed cavities + edge/corner touches).
+   *  Only set by the voxel engine. */
+  voxelPieceCount?: number;
+  /** The single world-units-per-voxel `res` shared by every `v.sdf()` call this
+   *  run, so stats can echo a res-aware world size (worldBBox = bbox × res).
+   *  Only set by the voxel engine, and only when at least one `v.sdf()` ran AND
+   *  all calls agreed on one res (mixed res values leave it absent — see
+   *  `voxelResMixed`). */
+  voxelRes?: number;
+  /** True when `v.sdf()` calls mixed different `res` values — the world scale
+   *  is ambiguous, so no worldBBox can be derived. Only set by the voxel engine. */
+  voxelResMixed?: boolean;
+  /** Voxel fill count per label requested via `v.sdf({ colors })`, including
+   *  ZERO-count entries (the silent-label trap: a smoothUnion-blended sub-body
+   *  is never the deepest region, so its label colors nothing — surfacing the 0
+   *  makes that visible). Only set by the voxel engine, when a labelled sdf
+   *  fill ran. */
+  sdfLabelCounts?: Record<string, number>;
 }
 
 export interface CrossSectionResult {

@@ -42,8 +42,12 @@ subsequent call.
 partwright preview <file.js> [--png out.png] [--json] [--size N] [-p k=v ...]
 partwright run     <file.js> [-p k=v ...]            # stats JSON only, no PNG
 
-partwright preview <file.js> [--lang manifold-js|voxel|scad] [--png out] [--json] [--size N] [-p k=v]
+partwright preview <file.js> [--lang manifold-js|voxel|scad] [--png out] [--json] [--size N]
+                   [--view az,el] [--views front,right,top,bottom,left,back,iso]
+                   [--explain-components] [--expect-components N] [-p k=v]
+partwright compare <a.js> <b.js> [more.js ...] [--png out] [--size N] [--view az,el] [-p k=v]  # one tile per model
 partwright photo <image> [--palette p.json] [--max N] [--mode billboard|heightmap] [--depth N] [--bg] [--crop x,y,w,h] [--out model.js] [--png out]
+partwright fetch <url> [--out file]                  # download a remote image to disk (for `photo`)
 
 partwright daemon start [--app-port N] [--control-port N]
 partwright daemon stop
@@ -88,6 +92,40 @@ here). It loads the file against the real engine via Vite SSR and prints the ric
 stat block (`isManifold`, `componentCount`, per-component volumes/bboxes, genus,
 edge stats, declared labels, `warnings[]`). Unless `--json` is passed it also
 writes a 4-view PNG (front/right/top/iso), software-rasterized — flat shading.
+Override the camera with `--view az,el` (a single custom-angle tile, to peek at
+a feature the four defaults occlude) or `--views a,b,c` (pick/reorder named
+angles: front,back,right,left,top,bottom,iso). `--explain-components` prints a
+per-island vol/tris/size/center breakdown to stderr; `--expect-components N`
+exits non-zero on a count mismatch (a CI gate for "this must stay N parts").
+
+The default PNG name is **stamped unique per run** (`<file>.preview-<stamp>.png`,
+older stamps for the same model are cleaned up) because the agent Read tool
+caches images by path — a re-render to the same name gets served stale. Take the
+path from the JSON's `png` field rather than guessing it; an explicit `--png`
+path is used verbatim.
+
+**Paint-in-code resolves headlessly.** `api.paint.*` ops (box/slab/cylinder/
+label) recorded by a manifold-js run are resolved against the mesh with the same
+pure helpers the browser underlay uses: the PNG shows the resolved colours and
+`stats.paintOps` carries per-op `{name, kind, triangleCount}` — a 0 count warns
+(the region missed the surface, or names a missing label). Brush-painted
+sidecar regions still need the browser.
+
+**Voxel stats extras.** `v.sdf()` runs report `voxelRes` (the world-units-per-
+voxel res, when all calls agree), `worldBBox` (mesh bbox × res — the model's
+size in the SDF's world coordinates), and `sdfLabelCounts` (voxel fills per
+`colors` label, **including 0-fill entries** — the smoothUnion silent-label
+trap, surfaced as a warning).
+
+**`compare`** runs several model files and tiles one view of each into a single
+contact-sheet PNG — for A/B parameter sweeps or before/after checks. Each model
+is fit to its own bbox; a failed variant gets a distinct pink tile. Default view
+is iso; `--view az,el` changes it for all tiles.
+
+**`fetch`** downloads a remote image (`http(s)` URL) to disk so the `photo`
+voxel-import flow can consume a URL — the literal "chat-attached image" isn't
+reachable from a Node CLI, so this is the URL-download equivalent. Reachability
+is governed by the environment's network policy.
 
 **Multi-engine (`--lang`).** `preview`/`run` dispatch across the engines that
 run without a browser: `manifold-js` (default), `voxel` (pure-JS grid mesher),
@@ -109,9 +147,10 @@ array of `"#rrggbb"` strings or `{name,hex}` objects; omit it for the app's
 default 6-slot palette. `--mode heightmap` makes brightness drive per-column
 depth (a bas-relief sculpt) instead of a flat `--depth` billboard.
 
-What Phase 1 **cannot** show: brush-painted vertex colors, annotations, edge
+What Phase 1 **cannot** show: brush-painted sidecar regions, annotations, edge
 overlays, surface modifiers, anything stateful (sessions/versions). Those live in
-the browser — reach for Phase 2.
+the browser — reach for Phase 2. (Paint declared *in code* via `api.paint.*` IS
+shown — see above.)
 
 ### Phase 2 commands
 

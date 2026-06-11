@@ -3,6 +3,8 @@ import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnos
 import { VoxelGrid, decodeGrid, normalizeColor } from '../voxel/grid';
 import { meshGrid, gridToMeshWithProvenance, type VoxelMesh } from '../voxel/mesher';
 import { createParamCapture, type ParamCapture } from '../params';
+import { createSdfNamespace } from '../sdf';
+import { ValidationError } from '../../validation/apiValidation';
 
 // The `voxel` engine: user code builds a sparse VoxelGrid and returns it; we
 // mesh the exposed faces into welded `MeshData` (with per-voxel colors) that
@@ -19,15 +21,48 @@ interface VoxelsHandle {
   color(c: Parameters<typeof normalizeColor>[0]): number;
 }
 
+// In a voxel session there is no Manifold engine, so an SDF node can't be
+// lowered to a mesh via levelSet — it's sampled into the grid with v.sdf()
+// instead. The SDF primitive/combinator methods never touch Manifold (only
+// `.build()` does), so we hand createSdfNamespace a guard that throws a
+// pointed message the moment anyone reaches for build()/levelSet.
+const SDF_BUILD_GUARD = new Proxy({}, {
+  get() {
+    throw new ValidationError("api.sdf.build() isn't available in a voxel session (no Manifold engine). Sample the SDF into the grid instead: `v.sdf(node, { res, color })`. See /ai/voxel.md#sdf");
+  },
+});
+
+// `api.paint.*` / `api.surface.*` are manifold-js-only sandbox APIs (they
+// record ops against the run's triangle mesh). Without these guards a voxel
+// session calling them gets an opaque "Cannot read properties of undefined" —
+// throw a pointed message instead, same pattern as SDF_BUILD_GUARD above.
+const manifoldOnlyNamespaceGuard = (ns: 'paint' | 'surface') => new Proxy({}, {
+  get() {
+    throw new ValidationError(ns === 'paint'
+      ? 'api.paint.* is only available in manifold-js (JS) sessions. In a voxel session, color voxels directly: v.set(x, y, z, color) / v.fillBox(..., color). See /ai/voxel.md'
+      : 'api.surface.* is only available in manifold-js (JS) sessions — a voxel grid has no triangle skin to texture. Switch to a manifold-js session (or bake via voxelizeModel from one). See /ai/textures.md');
+  },
+});
+
 function createVoxelApi(params?: ParamCapture['params']) {
   const voxels = (() => new VoxelGrid()) as VoxelsHandle;
   voxels.decode = (data: string) => decodeGrid(data);
   voxels.color = (c) => normalizeColor(c);
+  // `api.sdf` is the same declarative SDF namespace as manifold-js sessions —
+  // gyroids, TPMS lattices, smooth blends, twists — but here it feeds
+  // `v.sdf(node)` (rasterize into the grid) rather than `.build()` (mesh via
+  // levelSet). Authors reuse one API across both engines.
+  const sdf = createSdfNamespace(SDF_BUILD_GUARD, (shape) => shape);
   // `api.params({...})` is exposed identically across all JS-sandbox engines
   // (manifold-js, voxel, replicad) so a Customizer-driven voxel model gets the
   // same live slider/toggle panel. Omitted only on paths that don't capture a
   // schema (none currently — both run paths pass it).
-  return { voxels, VoxelGrid, ...(params ? { params } : {}) };
+  return {
+    voxels, VoxelGrid, sdf,
+    paint: manifoldOnlyNamespaceGuard('paint'),
+    surface: manifoldOnlyNamespaceGuard('surface'),
+    ...(params ? { params } : {}),
+  };
 }
 
 function isVoxelGrid(v: unknown): v is VoxelGrid {
@@ -93,7 +128,13 @@ export const voxelEngine: Engine = {
 
     try {
       const mesh = meshGrid(grid);
-      return { mesh, manifold: null, error: null, paramsSchema: capture.collectSchema(), voxelCount: grid.size };
+      return {
+        mesh, manifold: null, error: null, paramsSchema: capture.collectSchema(),
+        voxelCount: grid.size, voxelPieceCount: grid.faceComponentCount(),
+        ...(grid.sdfRes !== null ? { voxelRes: grid.sdfRes } : {}),
+        ...(grid.sdfResMixed ? { voxelResMixed: true } : {}),
+        ...(grid.sdfLabelCounts ? { sdfLabelCounts: grid.sdfLabelCounts } : {}),
+      };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return { mesh: null, manifold: null, error: msg, diagnostics: runtimeDiagnostic(msg, undefined, 'JavaScript'), paramsSchema: capture.collectSchema() };

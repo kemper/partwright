@@ -88,12 +88,20 @@ test.describe('editor hints ticker', () => {
     await expect(strip).toBeVisible({ timeout: 15_000 });
 
     // Step to the BREP-engine hint, whose CTA coaches the language toggle.
+    // The rotation order is shuffled (buildOrder), so the brep hint can sit
+    // anywhere in the cycle — step through the whole cycle, not a fixed count,
+    // and stop once a hint text repeats (a full loop with nothing left to see).
     const hintText = page.locator('#editor-hints-text');
     let found = false;
-    for (let i = 0; i < 12; i++) {
-      const t = (await hintText.textContent())?.toLowerCase() ?? '';
+    const seen = new Set<string>();
+    for (let i = 0; i < 40; i++) {
+      const t = (await hintText.textContent())?.trim().toLowerCase() ?? '';
       if (t.includes('brep')) { found = true; break; }
+      if (t && seen.has(t)) break;   // completed a full cycle without a match
+      if (t) seen.add(t);
       await strip.getByRole('button', { name: 'Next hint' }).click();
+      // Wait for the text to actually change before reading again.
+      await expect.poll(async () => (await hintText.textContent())?.trim().toLowerCase()).not.toBe(t);
     }
     expect(found).toBe(true);
 

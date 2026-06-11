@@ -3,12 +3,11 @@ import { waitFor } from './waitFor';
 
 /** Ensure the AI panel is open.
  *
- *  The panel now opens by default on a fresh visit, so the old "click #btn-ai
- *  to open it" no longer holds — a single click would *close* it. This helper
- *  is idempotent: it only clicks when the panel is hidden, and retries so it
- *  tolerates the brief window during editor init where `state.open` is already
- *  true but the drawer hasn't been un-hidden yet (a click then would race the
- *  init and toggle it shut).
+ *  The panel starts closed on a fresh visit, so it normally needs a click on
+ *  #btn-ai to open. This helper is idempotent: it only clicks when the panel
+ *  is hidden, and retries — so it also tolerates a session where the remembered
+ *  `drawerOpen` preference has it already open (a click then would toggle it
+ *  shut), and the brief window during editor init before the drawer is shown.
  *
  *  Opening the panel from the rail *while disconnected* also kicks off the
  *  connect flow, which auto-opens the AI Settings modal one tick later (after an

@@ -184,7 +184,43 @@ boolean (see `listLabels().lostLabels`). Prefer model-declared color when
 the color is intrinsic to the design; reach for `paintByLabel` when a
 human is tweaking colors interactively or overriding the code.
 
-SCAD has the same `label()` pattern. Partwright pre-injects a
+**BREP supports the same `{ color }` arg.** `BREP.label(shape, name,
+{ color })` (both as `api.BREP.*` inside a manifold-js session and in a
+full `replicad`-language session) takes the identical hex-or-`[r,g,b]`
+color and feeds the same model-color underlay — so `getModelColors()`
+and export pick it up exactly like the manifold-js path. The color is
+keyed by name and rides through booleans, transforms, and (best-effort)
+fillet/chamfer.
+
+> **Coverage caveat for fused composites.** The *color* you attach is
+> exact, but which triangles a label *resolves to* after `fuseAll` is
+> best-effort — the spatial-signature resolver scrambles on many-feature
+> composites (see gotcha #9 in `replicad.md`). A **single label over the
+> whole shape resolves to ~100% coverage and colors cleanly**; for
+> per-feature multi-color on a fused composite, reach for the coordinate
+> paint selectors (`paintInCylinder` / `paintSlab` / `paintInBox` /
+> `paintNear`) instead, exactly as that gotcha recommends.
+
+### Geometric paint in code — `api.paint.*`
+
+`api.label({ color })` colors a *named subtree*. To color a **region of the surface** from code — without labelling a separate solid — use `api.paint.*`, the in-code counterparts of the `paintInBox` / `paintSlab` / `paintInCylinder` / `paintByLabel` tools. Each call records a region during the run; Partwright resolves it against the fresh mesh afterward and folds it into the same model-color underlay (never the paint sidecar — the code re-derives it). Later calls win on overlap.
+
+```js
+const part = api.Manifold.cube([30, 30, 30], true).refine(16);
+api.paint.slab({ axis: 'z', offset: 10, thickness: 10, color: '#e23b3b' });          // flat band; axis ('x'|'y'|'z') or normal [x,y,z]
+api.paint.box({ min: [-15, -15, -15], max: [0, 0, 0], color: [0.23, 0.51, 0.96] });   // axis-aligned box
+api.paint.cylinder({ center: [0, 0], rMin: 0, rMax: 6, zMin: -15, zMax: 15, color: '#22c55e' }); // (annular) vertical shell
+api.paint.label('body', '#888');   // recolor an existing api.label(...) region by name
+return part;
+```
+
+Like the tools, these resolve **by triangle**, so paint a refined mesh (`refine(n)` / higher segments) for crisp edges. `color` is the same hex/`[r,g,b]` form as `api.label`. Arguments are validated strictly (unknown keys, bad color/axis throw). Use `api.paint.*` when the colors are intrinsic to the design and you want them to live with the code; reach for the standalone `paintByLabel` / `paint*` tools for interactive, coordinate, or click-driven painting between runs. (manifold-js sandbox only.)
+
+Because the code is the source of truth, these colors are **read-only at runtime**: `getModelColors()` lists them, but `getRegions()`/`listRegions()` stay empty, and `replaceColor` / palette operations / the paint panel's Clear button don't touch them — change a code-declared color by editing the `color` argument and re-running.
+
+SCAD has the same `label()` pattern, but **without** the `{ color }`
+option — a SCAD `label()` is a passthrough wrapper for `paintByLabel`
+only, so color a SCAD model with an explicit `paintByLabel` call. Partwright pre-injects a
 passthrough `module label(name) { children(); }` into every SCAD
 compile so the wrapper is portable to vanilla OpenSCAD too (the helper
 does nothing geometrically — `paintByLabel` is the only thing that
@@ -511,6 +547,8 @@ partwright.paintInOrientedBox({
 
 **Painting a feature that sticks out past a round body — select by radius, not a box plane.** A flat box face cutting across a curved junction (e.g. a handle meeting a cylindrical mug wall) leaves a ragged, stair-stepped boundary, because the box plane and the curved surface disagree. Select by *radial distance from the part's axis* instead — `paintInCylinder({ rMin, rMax, zMin, zMax })` (or a `normalCone` to grab only the outward-facing skin) — so the boundary follows the curve cleanly. Radius-based selection is the canonical tool for inner/outer walls of mugs, vases, and any revolved shape.
 
+> **Non-Z cylinders — `axis`.** `paintInCylinder` runs along **Z** by default (radius in XY, the `zMin..zMax` band along Z). For a part whose round axis points along X or Y, pass `axis: 'x'` or `axis: 'y'` (mirrors `paintSlab`'s axis shorthand) instead of rotating the model: radius is then measured in the plane normal to that axis and the band runs along it. `center` is the `[a,b]` pair in the radial plane (for `axis:'x'` that's `[y,z]`, for `'y'` it's `[z,x]`). The same `axis` field works in `paintPreview({ cylinder: { …, axis } })`.
+
 **Verifying paint before you commit it.** `paintPreview` accepts the same selectors as `paintInBox` / `paintNear` / `paintFaces` *and* the analytic `cylinder` / `slab` forms, *without* adding a region. Default: count-only (free sanity check). Pass `withImage: true` to also get a thumbnail with the candidate triangles tinted bright yellow on top of any existing paint. The `cylinder` / `slab` previews show the **unsmoothed** selection (preview never subdivides) — use it to validate a radial shell or slab offset/thickness in one cheap call before committing the real smoothing paint:
 
 ```js
@@ -587,6 +625,8 @@ partwright.replaceColor({ from: [1, 0, 0], to: [0, 0, 1] })  // -> { replaced: 3
 ```
 
 This only changes region *colors*, not which triangles they cover — to repaint different triangles, use the paint selectors.
+
+**It only rewrites user paint regions.** Colors declared *in code* (`api.paint.*` / `api.label({color})`) are re-derived from the source on every run, so `replaceColor` — like the palette slot/replace/merge operations — deliberately leaves them alone. To change one, edit the `color` argument in the code and re-run. When nothing matched but the model has code-declared colors, the result carries a `hint` saying exactly that.
 
 ## Stamping an image onto the surface
 
