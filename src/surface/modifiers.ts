@@ -807,26 +807,30 @@ function stampTriColors(
   const { vertProperties: vp, triVerts: tv, numProp, numTri } = baked;
   for (let t = 0; t < numTri; t++) {
     const va = tv[t * 3], vb = tv[t * 3 + 1], vc = tv[t * 3 + 2];
-    const a = va * numProp, bI = vb * numProp, c = vc * numProp;
-    const cx = (vp[a] + vp[bI] + vp[c]) / 3;
-    const cy = (vp[a + 1] + vp[bI + 1] + vp[c + 1]) / 3;
-    const cz = (vp[a + 2] + vp[bI + 2] + vp[c + 2]) / 3;
-    const { m, depthInto } = evalStamp(cx, cy, cz);
-    // The triangle's most-displaced vertex (max, not centroid — see above).
-    const triDisp = vdist ? Math.max(vdist[va], vdist[vb], vdist[vc]) : 0;
-    // Color the stamp itself, bounded laterally by ink (m). Emboss and engrave
-    // share one rule — a baked triangle is stamp geometry iff it's under ink AND
-    // displaced off the original surface (the raised relief, or the carved channel
-    // walls + floor). Distance-from-surface — not a projection-relative depth band
-    // — is what makes this robust on curved faces: the planar/cylindrical "face"
-    // the stamp projects onto drifts away from a sphere, so a depth test misses far
-    // channel walls (engrave under-color) and catches unraised skin inside the
-    // stamp rectangle (emboss bleed); the geometry change has neither failure.
-    // Through-cuts remove material (no far side under the cut, nothing
-    // "displaced"), so the hole walls stay on the depth-band test.
-    const stamped = opts.through
-      ? depthInto > eps && m > inkMin
-      : m > inkMin && triDisp > dispMin;
+    // Emboss / engrave: a baked triangle is stamp geometry iff it's displaced off
+    // the original surface — the raised relief, or the carved channel walls/floor.
+    // Displacement (per most-displaced vertex) is the WHOLE test: the carve/union
+    // only changes geometry where there's ink, so the displaced set already equals
+    // the letters laterally, and the untouched skin (incl. the far side) stays put.
+    // We deliberately DON'T re-gate on the projected ink coverage `m`: on a curved
+    // face the projection's (u,v) is only valid at the surface, so for raised
+    // relief (or a sunk channel) the projected point drifts off the letter and `m`
+    // collapses to ~0 — which was dropping whole walls of color on a sphere.
+    // Distance-from-surface has neither that failure nor the depth-band's drift.
+    // Through-cuts remove material (nothing "displaced", no far side under the
+    // cut), so the hole walls stay on the ink + depth-band test.
+    let stamped: boolean;
+    if (opts.through) {
+      const a = va * numProp, bI = vb * numProp, c = vc * numProp;
+      const { m, depthInto } = evalStamp(
+        (vp[a] + vp[bI] + vp[c]) / 3,
+        (vp[a + 1] + vp[bI + 1] + vp[c + 1]) / 3,
+        (vp[a + 2] + vp[bI + 2] + vp[c + 2]) / 3,
+      );
+      stamped = depthInto > eps && m > inkMin;
+    } else {
+      stamped = vdist ? Math.max(vdist[va], vdist[vb], vdist[vc]) > dispMin : false;
+    }
     if (!stamped) continue;
     triColors[t * 3] = r; triColors[t * 3 + 1] = g; triColors[t * 3 + 2] = b;
     painted[t] = 1;
