@@ -3897,7 +3897,7 @@ async function main() {
    *  field), which must stay non-blocking for AI agents. */
   const surfaceStaleExportWarning = (format: string): string | null =>
     pendingSurface
-      ? `${format} export contains the untextured base mesh — this model's api.surface.* textures haven't been applied to the current code. Run the code (runs force-apply textures) and export again to include them.`
+      ? `${format} export contains the untextured base mesh — this model's api.surface.* textures haven't been applied to the current code. Run the code (every run applies textures) and export again to include them.`
       : null;
 
   /** Toast (and log) the stale-texture warning for a console-API export. */
@@ -4821,7 +4821,7 @@ async function main() {
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;
       refreshSimplifyIfOpen();
-      // Cached entries were produced by a forced run (api.surface.* textures
+      // Cached entries come from completed runs (api.surface.* textures
       // applied), so a Re-apply pill raised by the previously shown version no
       // longer describes the restored mesh. The cache-miss branch clears it via
       // runCodeSync → applySurfaceTextures; this branch must do it explicitly.

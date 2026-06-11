@@ -56,7 +56,11 @@ export function meshContentKey(mesh: MeshData): string {
   };
   mix(new Uint8Array(mesh.vertProperties.buffer, mesh.vertProperties.byteOffset, mesh.vertProperties.byteLength));
   mix(new Uint8Array(mesh.triVerts.buffer, mesh.triVerts.byteOffset, mesh.triVerts.byteLength));
-  return `m${(h >>> 0).toString(36)}-${mesh.numVert}-${mesh.numTri}-${mesh.numProp}`;
+  // The modifier kernel carries the base mesh's triColors into its output, so
+  // a colored base must key differently from an uncolored (or differently
+  // colored) one — otherwise a cache hit could serve a mis-colored texture.
+  if (mesh.triColors) mix(new Uint8Array(mesh.triColors.buffer, mesh.triColors.byteOffset, mesh.triColors.byteLength));
+  return `m${(h >>> 0).toString(36)}-${mesh.numVert}-${mesh.numTri}-${mesh.numProp}${mesh.triColors ? 'c' : ''}`;
 }
 
 /** Stable key for the chain prefix `ops[0..upTo]` against a given base identity.
