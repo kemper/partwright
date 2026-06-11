@@ -1,5 +1,7 @@
-// Unit tests for the click-to-insert codegen. Pure module, runs in Node
-// (no browser) like tests/patch.spec.ts.
+// Tests for the click-to-insert codegen. The modules under test are pure logic
+// (no browser), but this is a Playwright spec that runs in the e2e tier —
+// Playwright's Node runner imports them directly and asserts on their string
+// output. (It does not live in the vitest unit tier despite being pure-logic.)
 
 import { test, expect } from 'playwright/test';
 import {
@@ -47,6 +49,7 @@ import {
   removeScadStatement,
 } from '../src/insert/controller';
 import { primitiveEntry, unionBoxes, pickPart, translateEntry, type RegistryEntry } from '../src/insert/spatial';
+import { STARTERS } from '../src/editor/starters';
 
 test.describe('fmt', () => {
   test('trims trailing zeros and normalizes -0', () => {
@@ -284,6 +287,44 @@ test.describe('controller — managed return (addManagedDeclaration)', () => {
       lang: 'manifold-js', addNames: ['ball1'], combine: true,
     });
     expect(out.code).toContain('return Manifold.union([(a.subtract(foo()).warp(fn)), ball1]);');
+  });
+
+  test('NEVER drops a hand-written single-expression return with no named const', () => {
+    // The bug variant the old structural heuristic missed: a lone chained
+    // constructor return (no intermediate const) is real user geometry, not a
+    // throwaway starter — inserting must union with it, never replace it.
+    const code = 'const { Manifold } = api;\nreturn Manifold.cube([30, 30, 5], true).translate([0, 0, 2.5]);';
+    const out = addManagedDeclaration(code, 'const box1 = Manifold.cube([4,4,4], true);', {
+      lang: 'manifold-js', addNames: ['box1'], combine: true,
+    });
+    expect(out.returnSet).toBe(true);
+    expect(out.code).toContain('return Manifold.union([(Manifold.cube([30, 30, 5], true).translate([0, 0, 2.5])), box1]);');
+  });
+
+  test('NEVER drops a hand-written single-expression BREP return', () => {
+    const code = 'const { BREP } = api;\nreturn BREP.box([30, 30, 5]).fillet(1).translate([0, 0, 2.5]);';
+    const out = addManagedDeclaration(code, 'const box1 = BREP.box([4,4,4]);', {
+      lang: 'replicad', addNames: ['box1'], combine: true,
+    });
+    expect(out.returnSet).toBe(true);
+    expect(out.code).toContain('return BREP.fuseAll([(BREP.box([30, 30, 5]).fillet(1).translate([0, 0, 2.5])), box1]);');
+  });
+
+  test('first insert drops the real seeded starter consistently across engines', () => {
+    // isStarterCode matches the actual seeded starters, so the throwaway default
+    // is replaced — and js + brep now behave identically (previously brep
+    // dropped its BREP.label starter while js kept its api.label one, because
+    // the old regex matched one prefix but not the other).
+    for (const lang of ['manifold-js', 'replicad'] as const) {
+      const starter = STARTERS[lang][0].code;
+      const decl = lang === 'replicad'
+        ? 'const box1 = BREP.box([4,4,4]);'
+        : 'const box1 = Manifold.cube([4,4,4], true);';
+      const out = addManagedDeclaration(starter, decl, { lang, addNames: ['box1'], combine: true });
+      // Dropped → single element → bare `return box1;` (no union/fuseAll wrapper).
+      expect(out.code).toContain('return box1;');
+      expect(out.code).not.toMatch(/Manifold\.union|BREP\.fuseAll/);
+    }
   });
 
   test('auto-combine off inserts the const but leaves the return alone', () => {

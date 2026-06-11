@@ -204,6 +204,14 @@ export function initInsertPalette(container: HTMLElement, callbacks: InsertPalet
  *  set, the spatial registry, the spec-by-name map. Also closes the panel so
  *  a stale chip strip doesn't paint over the new session's empty state. */
 function resetInsertPaletteState(): void {
+  // Tear down any in-flight build/select/pick session first: a session switch
+  // mid-drag would otherwise leak that session's canvas + key listeners and
+  // (for the build session) strand the real model hidden behind orphaned proxy
+  // meshes. Each cleanup restores visibility/listeners and nulls itself, so
+  // calling all three is safe whether or not one is active.
+  buildCleanup?.();
+  selectSessionCleanup?.();
+  pickCleanup?.();
   selection.clear();
   registry.clear();
   specByName.clear();
@@ -1411,6 +1419,10 @@ function startBuildSession(): void {
     if (!cb) return false;
     if (Math.abs(delta[0]) < 1e-5 && Math.abs(delta[1]) < 1e-5 && Math.abs(delta[2]) < 1e-5) return false;
     const lang = cb.getLanguage();
+    // `eff` is the delta we actually persist. For voxels it's snapped to the
+    // integer lattice (below) so the emitted code, the in-memory spec, and the
+    // registry bbox all stay on the same grid — no sub-voxel drift across drags.
+    let eff: Vec3 = delta;
     let newCode: string;
     if (lang === 'scad') {
       const part = scanParts(cb.getCode(), 'scad').find(p => p.name === name);
@@ -1420,9 +1432,12 @@ function startBuildSession(): void {
       }
       newCode = setPartTranslateDeltaScad(cb.getCode(), part.range, delta);
     } else if (lang === 'voxel') {
-      // Voxels bake position into their coordinate args (no translate to bump),
-      // so re-emit the whole fill statement at the moved position. Preserve the
-      // statement's current colour literal so a recolour isn't lost on drag.
+      // Voxels bake position into integer coordinate args (no translate to
+      // bump), so snap the drag to whole voxels and re-emit the fill statement
+      // at the moved position. Preserve the statement's colour literal so a
+      // recolour isn't lost on drag.
+      eff = [Math.round(delta[0]), Math.round(delta[1]), Math.round(delta[2])];
+      if (eff[0] === 0 && eff[1] === 0 && eff[2] === 0) return false;
       const spec = specByName.get(name);
       const part = scanParts(cb.getCode(), 'voxel').find(p => p.name === name);
       if (!spec || !part?.range) {
@@ -1430,7 +1445,7 @@ function startBuildSession(): void {
         return false;
       }
       const old = spec.position ?? [0, 0, 0];
-      const moved = { ...spec, position: [old[0] + delta[0], old[1] + delta[1], old[2] + delta[2]] as Vec3 } as PrimitiveSpec;
+      const moved = { ...spec, position: [old[0] + eff[0], old[1] + eff[1], old[2] + eff[2]] as Vec3 } as PrimitiveSpec;
       const colour = /'(#[0-9a-fA-F]{3,8})'/.exec(part.statement ?? '');
       const stmt = emitPrimitiveVoxel(moved, voxelGridVar(cb.getCode()), colour ? colour[1] : VOXEL_DEFAULT_COLOR);
       newCode = replaceVoxelStatement(cb.getCode(), part.range, stmt);
@@ -1442,10 +1457,10 @@ function startBuildSession(): void {
     const spec = specByName.get(name);
     if (spec) {
       const p = spec.position ?? [0, 0, 0];
-      spec.position = [p[0] + delta[0], p[1] + delta[1], p[2] + delta[2]];
+      spec.position = [p[0] + eff[0], p[1] + eff[1], p[2] + eff[2]];
     }
     const entry = registry.get(name);
-    if (entry) registry.set(name, translateEntry(entry, delta));
+    if (entry) registry.set(name, translateEntry(entry, eff));
     return true;
   };
 

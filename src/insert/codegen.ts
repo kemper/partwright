@@ -1,9 +1,10 @@
 // Code generation for the click-to-insert shape & operation palette.
 //
-// Pure, dependency-free string builders so they can be unit-tested in Node
-// (see tests/insert-codegen.spec.ts) the same way src/ai/patch.ts is. Nothing
-// here touches the DOM, the editor, or the engine — callers wire the output
-// into the editor via the insert controller.
+// Pure, dependency-free string builders. Nothing here touches the DOM, the
+// editor, or the engine — callers wire the output into the editor via the
+// insert controller. Exercised by tests/insert-codegen.spec.ts, a Playwright
+// spec that imports these directly and asserts on their output (it runs in the
+// e2e tier, not the vitest unit tier).
 //
 // Two target languages share one spec shape:
 //   - manifold-js: each primitive is a `const <name> = Manifold...;` so later

@@ -1,7 +1,7 @@
 // Pure spatial helpers for the "click in 3D view" operand mode: derive a
 // part's axis-aligned bounding box from its spec, and resolve a clicked
-// world-space point back to the best-matching part. Dependency-free and
-// unit-tested in tests/insert-codegen.spec.ts.
+// world-space point back to the best-matching part. Dependency-free; exercised
+// by tests/insert-codegen.spec.ts (a Playwright spec — the e2e tier, not vitest).
 
 import type { PrimitiveSpec, Vec3 } from './codegen';
 

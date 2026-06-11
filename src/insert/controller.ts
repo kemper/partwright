@@ -1,29 +1,19 @@
-// Whole-document code transforms for the insert palette. Pure and
-// dependency-free (unit-tested in tests/insert-codegen.spec.ts) — the palette
-// reads the editor, runs these, and writes the result back via setValue.
+// Whole-document code transforms for the insert palette. Pure logic, no
+// DOM/WASM — the palette reads the editor, runs these, and writes the result
+// back via setValue. Exercised by the Playwright spec
+// tests/insert-codegen.spec.ts (it imports these modules directly and asserts
+// on their string output; it runs in the e2e tier, not the vitest unit tier).
 //
 // manifold-js needs a single managed `return` so the program stays valid as
 // shapes/operations accumulate; OpenSCAD just appends statements (all
 // top-level geometry renders) and wraps statements for operations.
 
 import { fmt, scanPartsJs, type Vec3 } from './codegen';
+import { isStarterCode } from '../editor/starters';
 
 /** A bare identifier — the simplest return expression (a single managed part). */
 function isBareIdent(expr: string): boolean {
   return /^[A-Za-z_$][\w$]*$/.test(expr.trim());
-}
-
-/** A single library constructor call — the throwaway placeholder a fresh
- *  session returns (e.g. the default `Manifold.cube(...)`). Distinguished from
- *  a user's real geometry by also requiring the program to have no named
- *  parts (see addManagedDeclaration). */
-function isConstructorCall(expr: string): boolean {
-  const e = expr.trim();
-  return (
-    /^(api\.)?(Manifold|CrossSection|Curves|BREP)\b/.test(e) ||
-    /^labeledUnion\s*\(/.test(e) ||
-    /^api\.renderMesh\s*\(/.test(e)
-  );
 }
 
 /** Split a comma-separated expression list at top level, respecting nested
@@ -154,10 +144,11 @@ export interface ManagedDeclOptions {
  *
  *  The cardinal rule: **never silently drop existing geometry.** Whatever the
  *  current return is — a bare part, a managed union, or a hand-written
- *  expression — it becomes an element of the new union. The one exception is a
- *  throwaway placeholder return (a lone constructor call in a program with no
- *  named parts, i.e. a fresh session's default), which is replaced so the first
- *  insert doesn't double up with it. */
+ *  expression — it becomes an element of the new union. The one exception is an
+ *  untouched starter (a fresh session's seeded default, detected by
+ *  `isStarterCode`), which is replaced so the first insert doesn't double up
+ *  with it. A starter the user has edited is no longer a starter, so it's
+ *  preserved like any other hand-written return. */
 export function addManagedDeclaration(
   code: string,
   declLine: string,
@@ -201,8 +192,13 @@ export function addManagedDeclaration(
     list = splitTopLevelCommas(managed[1]).map(s => s.trim()).filter(Boolean);
   } else if (isBareIdent(expr)) {
     list = [expr];
-  } else if (isConstructorCall(expr) && scanPartsJs(withPre).length === 0) {
-    // Throwaway placeholder (default starter) — drop it.
+  } else if (isStarterCode(code)) {
+    // Throwaway placeholder — an untouched starter a fresh session seeds. Drop
+    // it so the first insert doesn't double up with it. Anything the user
+    // actually wrote (even a single-expression return such as
+    // `return Manifold.cube([30,30,5], true).translate([0,0,2.5]);`) is NOT a
+    // starter, so it falls through to the branch below and is preserved as a
+    // union element — never silently drop real geometry.
     list = [];
   } else {
     // Real hand-written return — preserve it as an element (never drop).
