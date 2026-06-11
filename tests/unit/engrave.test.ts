@@ -11,6 +11,7 @@ import {
   type Bbox,
 } from '../../src/surface/engraveStamp';
 import { engraveMesh } from '../../src/surface/engraveSdf';
+import { applyEngrave } from '../../src/surface/modifiers';
 
 /** Axis-aligned box [0,sx]×[0,sy]×[0,sz] as an 8-vertex / 12-triangle MeshData. */
 function box(sx: number, sy: number, sz: number): MeshData {
@@ -105,6 +106,33 @@ describe('engraveCombine — planar projection field', () => {
     expect(combine({ d: -1, x: 10, y: 10, z: 1, voxelSize: vox })).toBeGreaterThan(0);
     // Off-stamp interior → kept.
     expect(combine({ d: -1, x: 1, y: 1, z: 1, voxelSize: vox })).toBeLessThan(0);
+  });
+});
+
+describe('engraveCombine — emboss (raised)', () => {
+  const mask = solidMask();
+  const proj = { mode: 'planar' as const, axis: 'z' as const, side: 'max' as const };
+  const vox = 0.2;
+
+  it('adds material above the face under ink, bounded by the raised height', () => {
+    const combine = engraveCombine(slab, { mask, projection: proj, through: false, raised: true, depth: 1, size: 10 });
+    // Above the top face (z=4) under ink, within the height → added (field < 0).
+    expect(combine({ d: 0.5, x: 10, y: 10, z: 4.5, voxelSize: vox })).toBeLessThan(0);
+    // Above the raised height → still outside.
+    expect(combine({ d: 1.5, x: 10, y: 10, z: 5.5, voxelSize: vox })).toBeGreaterThan(0);
+    // Above the face but outside the stamp rectangle → untouched outside.
+    expect(combine({ d: 0.5, x: 1, y: 1, z: 4.5, voxelSize: vox })).toBeGreaterThan(0);
+    // The original solid stays solid — both under ink and off-stamp.
+    expect(combine({ d: -1, x: 10, y: 10, z: 1, voxelSize: vox })).toBeLessThan(0);
+    expect(combine({ d: -1, x: 1, y: 1, z: 1, voxelSize: vox })).toBeLessThan(0);
+  });
+
+  it('raised wins over through — nothing is carved out', () => {
+    const combine = engraveCombine(slab, { mask, projection: proj, through: true, raised: true, depth: 1, size: 10 });
+    // A through-cut would have removed this interior ink column; raised keeps it.
+    expect(combine({ d: -1, x: 10, y: 10, z: 1, voxelSize: vox })).toBeLessThan(0);
+    // …and still raises the relief above the face.
+    expect(combine({ d: 0.5, x: 10, y: 10, z: 4.5, voxelSize: vox })).toBeLessThan(0);
   });
 });
 
@@ -275,5 +303,55 @@ describe('engraveMesh', () => {
       through: false, depth: 1.5, size: 12, resolution: 64,
     });
     expect(out.numTri).toBeGreaterThan(0);
+  });
+
+  it('emboss raises the stamp above the face — the bbox grows by ~depth', async () => {
+    const mesh = box(20, 20, 4);
+    const out = await engraveMesh(mesh, {
+      mask: solidMask(8), projection: { mode: 'planar', axis: 'z', side: 'max' },
+      through: false, raised: true, depth: 1.5, size: 8, resolution: 64,
+    });
+    expect(out.numTri).toBeGreaterThan(0);
+    let maxZ = -Infinity;
+    for (let v = 0; v < out.numVert; v++) maxZ = Math.max(maxZ, out.vertProperties[v * 3 + 2]);
+    // The relief top sits ~depth above the original z=4 face (within a voxel).
+    expect(maxZ).toBeGreaterThan(4.8);
+    expect(maxZ).toBeLessThan(6.2);
+  });
+});
+
+describe('applyEngrave — stamp color', () => {
+  it('colors the embossed relief triangles and leaves the base unpainted', async () => {
+    const mesh = box(20, 20, 4);
+    const result = await applyEngrave(mesh, {
+      mask: solidMask(8), projection: { mode: 'planar', axis: 'z', side: 'max' },
+      through: false, raised: true, depth: 1.5, size: 8, resolution: 64,
+      color: [1, 0, 0],
+    });
+    expect(result.label).toBe('emboss');
+    const tc = result.mesh.triColors as (Uint8Array & { _painted?: Uint8Array }) | undefined;
+    expect(tc).toBeTruthy();
+    const painted = tc!._painted!;
+    let stamped = 0;
+    for (let t = 0; t < result.mesh.numTri; t++) {
+      if (painted[t] !== 1) continue;
+      stamped++;
+      expect(tc![t * 3]).toBe(255);
+      expect(tc![t * 3 + 1]).toBe(0);
+      expect(tc![t * 3 + 2]).toBe(0);
+    }
+    // The relief is painted, but the slab itself (no prior paint) is not.
+    expect(stamped).toBeGreaterThan(0);
+    expect(stamped).toBeLessThan(result.mesh.numTri);
+  });
+
+  it('without a color the baked mesh carries no triColors (spatial carry path)', async () => {
+    const mesh = box(20, 20, 4);
+    const result = await applyEngrave(mesh, {
+      mask: solidMask(8), projection: { mode: 'planar', axis: 'z', side: 'max' },
+      through: false, depth: 1.5, size: 8, resolution: 64,
+    });
+    expect(result.label).toBe('engrave');
+    expect(result.mesh.triColors).toBeUndefined();
   });
 });

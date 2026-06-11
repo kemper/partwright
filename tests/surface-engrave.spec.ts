@@ -91,6 +91,55 @@ test.describe('Engrave / cut-through surface modifier', () => {
     expect(result.regions).toBeGreaterThanOrEqual(1);
   });
 
+  test('engraveModel (emboss) raises the text — volume grows, stays one manifold piece', async ({ page }) => {
+    const result = await page.evaluate(async ([code]) => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('engrave-emboss');
+      await pw.run(code);
+      const before = pw.getGeometryData();
+      const r = await pw.engraveModel({ text: 'HI', raised: true, depth: 2, size: 40, resolution: 140 });
+      return { r, before, after: pw.getGeometryData() };
+    }, [SLAB]);
+
+    expect(result.r.error).toBeUndefined();
+    expect(result.r.ok).toBe(true);
+    expect(result.r.label).toBe('emboss');
+    // Emboss ADDS material: volume grows and the bbox top rises by ~depth,
+    // while the result fuses into one watertight solid.
+    expect(result.after.volume).toBeGreaterThan(result.before.volume);
+    expect(result.after.boundingBox.z[1]).toBeGreaterThan(result.before.boundingBox.z[1] + 1);
+    expect(result.after.isManifold).toBe(true);
+    expect(result.after.componentCount).toBe(1);
+  });
+
+  test('engraveModel colors the embossed letters — a color region persists', async ({ page }) => {
+    const result = await page.evaluate(async ([code]) => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('engrave-emboss-color');
+      await pw.run(code);
+      const r = await pw.engraveModel({ text: 'HI', raised: true, depth: 2, size: 40, resolution: 140, color: '#ff0000' });
+      return {
+        r: { ok: r.ok, error: r.error, colorsCarried: r.colorsCarried },
+        regions: pw.listRegions()?.length,
+      };
+    }, [SLAB]);
+    expect(result.r.error).toBeUndefined();
+    expect(result.r.ok).toBe(true);
+    // The stamp color lands as triangle paint and persists as a region.
+    expect(result.r.colorsCarried).toBeGreaterThan(0);
+    expect(result.regions).toBeGreaterThanOrEqual(1);
+  });
+
+  test('engraveModel rejects a malformed color', async ({ page }) => {
+    const r = await page.evaluate(async ([code]) => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('engrave-bad-color');
+      await pw.run(code);
+      return await pw.engraveModel({ text: 'HI', raised: true, color: 'not-a-color' });
+    }, [SLAB]);
+    expect(r.error).toContain('color');
+  });
+
   test('engraveModel rejects an empty request', async ({ page }) => {
     const r = await page.evaluate(async ([code]) => {
       const pw = (window as unknown as { partwright: any }).partwright;

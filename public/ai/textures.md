@@ -21,7 +21,7 @@ apply→save→verify workflow:
 | `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
 | `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
-| `engraveModel({ text, through, depth, size, axis, side, posU, posV, curveAxis, resolution })` | **Carves text into the model** — recessed channels (`through:false`) or holes cut clean through the wall (`through:true`, a stencil). Lands on a face; `curveAxis` wraps it around a round surface (cup, tower). | Unlike the relief textures (which only displace the skin), this **removes** material. Image stamps are UI-only (need local bytes); the tool handles text. See [`engraveModel`](#engravemodel) below. |
+| `engraveModel({ text, raised, through, depth, size, color, axis, side, posU, posV, curveAxis, resolution })` | **Stamps text onto the model** — recessed channels (engrave), holes cut clean through the wall (`through:true`, a stencil), or a **raised relief** (`raised:true`, emboss). `color` paints the letters. Lands on a face; `curveAxis` wraps it around a round surface (cup, tower). | Unlike the relief textures (which only displace the skin), this **removes or adds** material. Image stamps are UI-only (need local bytes); the tool handles text. See [`engraveModel`](#engravemodel) below. |
 
 > **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
 > BREP/replicad model this discards the parametric source (and, for BREP, STEP
@@ -367,17 +367,20 @@ auto-raises for thin struts, so you rarely touch it. Verify with `renderViews`.
 ## engraveModel
 
 ```
-engraveModel({ text, font?, through?, depth?, size?, mode?, axis?, side?,
-               posU?, posV?, rotationDeg?, curveAxis?, curveAngleDeg?,
-               resolution?, watertight?, preserveColor? })
+engraveModel({ text, font?, raised?, through?, depth?, size?, color?,
+               mode?, axis?, side?, posU?, posV?, rotationDeg?,
+               curveAxis?, curveAngleDeg?, resolution?, watertight?,
+               preserveColor? })
 ```
 
-**Carves text into the model** — recessed channels (engrave) or holes cut clean
-through the wall (cut-through / stencil). Unlike every texture above (which only
-*displaces* the surface skin), this **removes** material: the text is rasterized
+**Stamps text onto the model** — recessed channels (engrave), holes cut clean
+through the wall (cut-through / stencil), or a **raised relief**
+(`raised: true`, emboss). Unlike every texture above (which only *displaces*
+the surface skin), this **removes or adds** material: the text is rasterized
 (the app's own font path, so it matches `api.text()`) and projected onto the
-model, then subtracted. Use it to label / brand a part (a name on a tag, a logo
-plate), cut a stencil, or perforate a sign. Start from a **slab, plate, ring, or
+model, then subtracted from — or, embossing, unioned onto — the solid. Use it
+to label / brand a part (a name on a tag, a logo plate), cut a stencil,
+perforate a sign, or add raised lettering. Start from a **slab, plate, ring, or
 cylinder**. Returns `{ ok, label, geometry, warnings? }`.
 
 It meshes a **continuous signed-distance field** like `applyVoronoiLamp`, so the
@@ -388,9 +391,11 @@ than the relief textures — allow a few seconds.
 |-----------|---------|-------|
 | `text` | — | **Required.** The string to engrave/cut. |
 | `font` | `'bold'` | `'regular' \| 'bold' \| 'italic' \| 'bold-italic'`. Bold engraves more legibly. |
+| `raised` | `false` | `true` = **emboss**: raise the text `depth` above the face instead of carving it (`through` is then ignored). |
 | `through` | `false` | `false` = recess to `depth`; `true` = cut clean through the wall (stencil). |
-| `depth` | ~6% of diagonal | Engrave depth in world units (ignored when `through`). |
+| `depth` | ~6% of diagonal | Engrave depth — or emboss height when `raised` — in world units (ignored when `through`). |
 | `size` | ~70% of the face | Stamp **width** in world units — how wide the text spans. |
+| `color` | — | Paint the letters for a multicolor print: `'#rrggbb'` hex or `[r,g,b]` in 0–1. Colors the raised relief (emboss) or the channel/hole walls (engrave/through); existing paint is still carried. |
 | `mode` | `'planar'` | `'planar'` = onto one flat face; `'cylindrical'` = wrap around the Z axis (rings, cups). |
 | `axis` | `'z'` | Planar only: which face axis (`'x' \| 'y' \| 'z'`). |
 | `side` | `'max'` | Planar: `'max'` (+axis face) or `'min'`. Cylindrical: `'outer'` (default) or `'inner'`. |
@@ -427,7 +432,9 @@ optional `curve`):
 **Colors are preserved.** Engraving a painted model carries the existing paint
 onto the carved mesh (a spatial transfer), so a painted nameplate keeps its
 color and the channel walls take the nearest color. Pass `preserveColor:false`
-to clear instead.
+to clear instead. On top of the carry, `color` paints the stamp itself — e.g.
+`engraveModel({ text:'OPEN', raised:true, color:'#d4af37' })` gives gold raised
+letters on the existing model colors, ready for a multicolor print.
 
 **Tips:** verify with `renderViews` — check the letters are legible and (for
 `through`) the holes are open (genus rises above 0; the result stays manifold).

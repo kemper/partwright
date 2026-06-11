@@ -80,6 +80,12 @@ export interface SdfModifierOptions {
   /** Keep only the largest physically-connected piece (default true). Turn off
    *  to keep every fragment of the raw cut. */
   watertight?: boolean;
+  /** Extra world-space lattice padding beyond the model's bounds (on top of the
+   *  standard closing ring). Needed when `combine` ADDS material outside the
+   *  original surface (an embossed relief): without it the new solid is clipped
+   *  at the lattice edge. Capped at 32 voxels per side to bound the field
+   *  allocation (the Float32 field grows with the cube of the padded dims). */
+  padWorld?: number;
   /** Light Taubin passes to relax the mesh rims (default 3, no subdivide). */
   smoothIterations?: number;
 }
@@ -120,8 +126,10 @@ export async function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, 
   const hit = { point: new THREE.Vector3(), distance: 0, faceIndex: -1 };
 
   // Padded lattice: one extra ring of "outside" samples on every side so the
-  // outer surface closes even when the model touches its bounding box.
-  const pad = 2;
+  // outer surface closes even when the model touches its bounding box, plus
+  // whatever extra headroom the feature asked for (emboss height) — capped so a
+  // tall relief can't balloon the field allocation.
+  const pad = 2 + Math.min(32, Math.max(0, Math.ceil((opts.padWorld ?? 0) / voxelSize)));
   const fnx = nx + 2 * pad, fny = ny + 2 * pad, fnz = nz + 2 * pad;
   const origin: [number, number, number] = [min[0] - pad * voxelSize, min[1] - pad * voxelSize, min[2] - pad * voxelSize];
   const fidx = (i: number, j: number, k: number) => (k * fny + j) * fnx + i;

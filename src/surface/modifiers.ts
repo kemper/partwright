@@ -30,8 +30,9 @@ import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 import { voronoiLampSdfMesh } from './voronoiLampSdf';
-import { engraveMesh, type EngraveSdfOptions } from './engraveSdf';
-import { type EngraveProjection } from './engraveStamp';
+import { engraveMesh, engraveFieldResolution, type EngraveSdfOptions } from './engraveSdf';
+import { stampEvaluator, maskAspect, type EngraveProjection } from './engraveStamp';
+import { nearestTriangleMap } from './colorTransfer';
 import { type SdfRunControl } from './sdfModifier';
 
 export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
@@ -676,6 +677,10 @@ export interface EngraveModifierOptions extends Omit<EngraveSdfOptions, 'mask'> 
   mask: EngraveSdfOptions['mask'];
   /** Short human label for the version (e.g. the text or "image"). */
   source?: string;
+  /** Paint the stamped letters on the baked mesh, RGB in [0,1] (the paint API's
+   *  convention). Emboss colors the whole raised relief; engrave/cut-through
+   *  colors the channel/hole walls. Existing paint is still carried. */
+  color?: [number, number, number];
 }
 
 /** Size-relative starting parameters for engrave (a square-ish stamp on the top
@@ -697,6 +702,67 @@ export function defaultEngraveOptions(mesh: MeshData): {
   };
 }
 
+/** Per-triangle colors for a baked engrave/emboss result when a stamp `color`
+ *  is requested: start from a spatial transfer of the model's existing paint
+ *  (when any), then paint every triangle that belongs to the stamp itself —
+ *  the raised relief above the face (emboss) or the channel/hole walls below
+ *  it (engrave / cut-through). Classification reuses the carve's own
+ *  projection math ({@link stampEvaluator}) so the color lands exactly on the
+ *  letters; the `_painted` expando marks which triangles carry paint. */
+function stampTriColors(
+  input: MeshData,
+  baked: MeshData,
+  opts: EngraveModifierOptions,
+  denseSrc: MeshData | undefined,
+): Uint8Array {
+  const triColors = new Uint8Array(baked.numTri * 3);
+  const painted = new Uint8Array(baked.numTri);
+  if (denseSrc?.triColors) {
+    const src = denseSrc.triColors;
+    const srcPainted = (src as Uint8Array & { _painted?: Uint8Array })._painted;
+    const nearest = nearestTriangleMap(denseSrc, baked);
+    for (let t = 0; t < baked.numTri; t++) {
+      const o = nearest[t];
+      if (o < 0 || (srcPainted && srcPainted[o] !== 1)) continue;
+      triColors[t * 3] = src[o * 3];
+      triColors[t * 3 + 1] = src[o * 3 + 1];
+      triColors[t * 3 + 2] = src[o * 3 + 2];
+      painted[t] = 1;
+    }
+  }
+  const bbox = bboxOf(extractPositions(input));
+  const evalStamp = stampEvaluator(bbox, opts);
+  // Surface-nets places vertices within ~half a voxel of the true surface;
+  // classify with that tolerance off the face so seam triangles don't flicker.
+  const eps = (Math.max(...bbox.size) || 10) / engraveFieldResolution(opts.resolution) * 0.5;
+  // The same tolerance in normalized stamp coordinates, for the rect bound.
+  const stampW = Math.max(1e-6, opts.size);
+  const stampH = stampW / Math.max(1e-6, maskAspect(opts.mask));
+  const epsU = eps / stampW, epsV = eps / stampH;
+  const [r, g, b] = opts.color!.map(c => Math.round(Math.min(1, Math.max(0, c)) * 255));
+  const { vertProperties: vp, triVerts: tv, numProp, numTri } = baked;
+  for (let t = 0; t < numTri; t++) {
+    const a = tv[t * 3] * numProp, bI = tv[t * 3 + 1] * numProp, c = tv[t * 3 + 2] * numProp;
+    const cx = (vp[a] + vp[bI] + vp[c]) / 3;
+    const cy = (vp[a + 1] + vp[bI + 1] + vp[c + 1]) / 3;
+    const cz = (vp[a + 2] + vp[bI + 2] + vp[c + 2]) / 3;
+    const { m, depthInto, u, v } = evalStamp(cx, cy, cz);
+    // Emboss: anything above the face inside the stamp rectangle is relief —
+    // the rect (not ink coverage) bounds it laterally, so relief side-walls at
+    // an ink edge still color. Engrave/through: below the face, under ink,
+    // within the carve depth.
+    const inRect = u >= -epsU && u <= 1 + epsU && v >= -epsV && v <= 1 + epsV;
+    const stamped = opts.raised
+      ? depthInto < -eps && inRect
+      : depthInto > eps && m > 0.15 && (opts.through || depthInto < opts.depth + 2 * eps);
+    if (!stamped) continue;
+    triColors[t * 3] = r; triColors[t * 3 + 1] = g; triColors[t * 3 + 2] = b;
+    painted[t] = 1;
+  }
+  (triColors as Uint8Array & { _painted?: Uint8Array })._painted = painted;
+  return triColors;
+}
+
 export async function applyEngrave(mesh: MeshData, opts: EngraveModifierOptions, ctl?: SdfRunControl): Promise<ModifierManifoldResult> {
   const baked = await engraveMesh(mesh, opts, ctl);
   const proj = opts.projection.mode === 'planar'
@@ -705,17 +771,30 @@ export async function applyEngrave(mesh: MeshData, opts: EngraveModifierOptions,
       ? 'a clicked face'
       : `${opts.projection.side} cylinder`;
   const what = opts.source ? `"${opts.source}"` : 'stamp';
+  // The carved mesh is a fresh surface-nets surface with no per-triangle
+  // colors; carry the original paint by spatial transfer from a dense version
+  // of the painted input (coarse faces would map unreliably). With a stamp
+  // `color` the result bakes its own triColors (carried paint + colored
+  // letters), which the commit then prefers over the spatial fallback.
+  const denseSrc = denseColorSource(mesh);
+  let outMesh = baked;
+  let colorSource: MeshData | undefined = denseSrc;
+  if (opts.color && baked.numTri > 0) {
+    outMesh = { ...baked, triColors: stampTriColors(mesh, baked, opts, denseSrc) };
+    colorSource = undefined;
+  }
+  const verb = opts.raised ? 'Embossed' : 'Engraved';
+  const how = opts.raised
+    ? `raised ${opts.depth.toFixed(2)} high`
+    : opts.through ? 'cut clean through' : `recessed ${opts.depth.toFixed(2)} deep`;
   return {
     kind: 'manifold',
-    label: opts.through ? 'engrave (cut through)' : 'engrave',
-    mesh: baked,
-    // The carved mesh is a fresh surface-nets surface with no per-triangle
-    // colors; carry the original paint by spatial transfer from a dense version
-    // of the painted input (coarse faces would map unreliably).
-    colorSource: denseColorSource(mesh),
+    label: opts.raised ? 'emboss' : opts.through ? 'engrave (cut through)' : 'engrave',
+    mesh: outMesh,
+    colorSource,
     code: manifoldWrapper([
-      `Engraved ${what} on ${today()} — ${opts.through ? 'cut clean through' : `recessed ${opts.depth.toFixed(2)} deep`} on the ${proj}.`,
-      `The carved mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+      `${verb} ${what} on ${today()} — ${how} on the ${proj}.`,
+      `The ${opts.raised ? 'embossed' : 'carved'} mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
     ]),
   };
 }
