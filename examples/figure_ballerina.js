@@ -5,7 +5,9 @@ const { sdf } = api;
 const F = sdf.figure;
 
 // 1. RIG — elongated elegant proportions (8 heads = very tall/slim).
-// Arms raised in high fifth: abduct 165, elbow 78 creates graceful forearm curve.
+// Arms raised in high fifth: abduct 165, elbow 78, twist 90 — the twist rolls
+// the (forward) elbow-curl plane inward so the forearms arc toward each other
+// over the head, the rounded ballet-fifth "O".
 // Arabesque: right leg back (flex -38, knee 30) — knee bend keeps foot close
 // enough to the standing leg/base to remain connected.
 const rig = F.rig({
@@ -13,9 +15,8 @@ const rig = F.rig({
   headsTall: 8,
   build: 'slim',
   pose: {
-    // Arms raised, forearms arc gracefully overhead
-    armL: { abduct: 165, flex: 0, elbow: 78 },
-    armR: { abduct: 165, flex: 0, elbow: 78 },
+    // Arms raised, forearms arc gracefully inward overhead
+    arms: { abduct: 165, flex: 0, elbow: 78, twist: 90 },
     // Standing left leg: ballet turnout
     legL: { abduct: 8 },
     // Arabesque right leg: swept back and up

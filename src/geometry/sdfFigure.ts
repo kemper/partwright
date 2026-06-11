@@ -276,17 +276,23 @@ function buildRig(rawOpts: unknown): Rig {
     dir = rotX(dir, -p.flex);
     dir = norm3(dir);
     const E = add3(S, scale3(dir, upperArmLen));
-    // Elbow flexion curls the forearm in the plane of the upper arm. The hinge
-    // ⟂ to (upperArm, front) gives an anatomical FORWARD curl at twist 0.
+    // Elbow flexion curls the forearm in the plane of (upper arm, body front).
+    // hinge = dir × fwd points along −X for a hanging arm, so the POSITIVE
+    // angle gives the anatomical FORWARD (−Y) curl. (The negative angle curled
+    // the forearm backward — same hinge-sign bug family as the knee.)
     let hinge = cross3(dir, fwd);
-    if (len3(hinge) < 1e-4) hinge = [side, 0, 0];
+    // Degenerate (arm ∥ front, flex ±90): use the continuous limit of
+    // dir × fwd as flex → 90, which is [−1,0,0] for BOTH sides — the old
+    // [side,0,0] fallback flipped one arm's curl in exactly-forward poses.
+    if (len3(hinge) < 1e-4) hinge = [-1, 0, 0];
     hinge = norm3(hinge);
     // `twist` (shoulder/forearm roll) rolls that curl plane about the upper-arm
     // axis — the DOF that lets a RAISED arm curl the fist UP (double-biceps) or
-    // inward (ballet fifth) instead of only forward. Multiplying by `side`
-    // keeps a symmetric `arms:{twist}` lifting both fists the same way.
-    if (p.twist) hinge = norm3(rotAxis(hinge, dir, p.twist * side));
-    const foreDir = norm3(rotAxis(dir, hinge, -(p.elbow ?? 0)));
+    // inward (ballet fifth) instead of only forward. The roll sign pairs with
+    // the forward curl so `twist: 90` lifts a side-raised fist UP; multiplying
+    // by `side` keeps a symmetric `arms:{twist}` lifting both fists the same way.
+    if (p.twist) hinge = norm3(rotAxis(hinge, dir, -p.twist * side));
+    const foreDir = norm3(rotAxis(dir, hinge, p.elbow ?? 0));
     const W = add3(E, scale3(foreDir, foreArmLen));
     const handC = add3(W, scale3(foreDir, r.hand * 0.9));
     return { S, E, W, handC, dir, foreDir };
@@ -308,7 +314,10 @@ function buildRig(rawOpts: unknown): Rig {
     // the BACKWARD bend needs the negative angle (positive swings forward —
     // that sign error once gave lunges a horizontal shin floating mid-air).
     let hinge = cross3(dir, fwd);
-    if (len3(hinge) < 1e-4) hinge = [side, 0, 0];
+    // Degenerate (thigh ∥ front, flex ±90 — the documented sitting pose):
+    // the continuous limit of dir × fwd is [−1,0,0] for both sides; the old
+    // [side,0,0] fallback bent the left knee the wrong way when sitting.
+    if (len3(hinge) < 1e-4) hinge = [-1, 0, 0];
     hinge = norm3(hinge);
     const shankDir = norm3(rotAxis(dir, hinge, -(p.knee ?? 0)));
     const A = add3(K, scale3(shankDir, shankLen));

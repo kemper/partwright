@@ -112,6 +112,31 @@ describe('figure rig — pose forward kinematics', () => {
     expect(dist(straight.joints.wristL, curled.joints.wristL)).toBeGreaterThan(1);
   });
 
+  it('elbow flexion curls a hanging forearm FORWARD (−Y), like a real elbow', () => {
+    // Regression: the hinge sign once curled the forearm BACKWARD (+Y) — the
+    // same sign-bug family as the knee. A hanging arm with a bent elbow must
+    // bring the wrist forward of the body and raise it, on both sides.
+    for (const side of ['L', 'R'] as const) {
+      const straight = buildRig({ pose: { [`arm${side}`]: { abduct: 0, elbow: 0 } } });
+      const bent = buildRig({ pose: { [`arm${side}`]: { abduct: 0, elbow: 70 } } });
+      expect(bent.joints[`wrist${side}`][1]).toBeLessThan(straight.joints[`wrist${side}`][1] - 1);
+      expect(bent.joints[`wrist${side}`][2]).toBeGreaterThan(straight.joints[`wrist${side}`][2] + 1);
+    }
+  });
+
+  it('sitting pose (flex 90, knee 90) bends BOTH shanks down, symmetrically', () => {
+    // Regression: flex 90 makes the thigh exactly parallel to body-front — the
+    // degenerate-hinge fallback. The old [side,0,0] fallback bent the LEFT
+    // knee up instead of down in the documented sitting recipe.
+    const rig = buildRig({ pose: { legs: { abduct: 0, flex: 90, knee: 90 } } });
+    for (const side of ['L', 'R'] as const) {
+      const K = rig.joints[`knee${side}`], A = rig.joints[`ankle${side}`];
+      expect(A[2]).toBeLessThan(K[2] - 1);     // shin drops below the knee
+    }
+    expect(rig.joints.ankleL[0]).toBeCloseTo(-rig.joints.ankleR[0], 5);
+    expect(rig.joints.ankleL[2]).toBeCloseTo(rig.joints.ankleR[2], 5);
+  });
+
   it('knee flexion bends the shank BACKWARD (+Y), like a real knee', () => {
     // Regression: the hinge sign once swung the shank FORWARD, giving a
     // lunge a horizontal shin floating in front of the figure.
@@ -137,7 +162,7 @@ describe('figure rig — pose forward kinematics', () => {
   });
 
   it('twist rolls the forearm-curl plane so a raised arm can curl the fist up', () => {
-    // With the arm out to the side, elbow alone curls backward; twist lifts the
+    // With the arm out to the side, elbow alone curls forward; twist lifts the
     // fist UP (the double-biceps / ballet-fifth pose that needs the roll DOF).
     const noTwist = buildRig({ pose: { armL: { abduct: 90, elbow: 95, twist: 0 } } });
     const rolled = buildRig({ pose: { armL: { abduct: 90, elbow: 95, twist: 90 } } });

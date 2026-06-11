@@ -116,8 +116,8 @@ pose: { arms: { abduct: 90 }, armL: { abduct: 0 } }           // right arm out, 
 |---|---|
 | `arm*.abduct` | raise arm sideways: 0 = hangs down, 90 = straight out, 180 = up |
 | `arm*.flex` | swing arm forward −Y (+) / back +Y (−) at the shoulder |
-| `arm*.elbow` | bend the forearm (0–160) — a bicep curl in the forearm-roll plane |
-| `arm*.twist` | **roll the elbow-curl plane** about the upper-arm axis. 0 = curl forward. **For a raised arm, `twist ≈ 90` curls the fist UP** (double-biceps, ballet fifth, victory). Without it, a side-raised arm only curls backward — see recipe below. |
+| `arm*.elbow` | bend the forearm (0–160) — an anatomical curl: a hanging arm brings the fist forward and up |
+| `arm*.twist` | **roll the elbow-curl plane** about the upper-arm axis. 0 = curl forward (−Y). **For a raised arm, `twist ≈ 90` curls the fist UP** (double-biceps, ballet fifth, victory) — see recipe below. |
 | `leg*.abduct` | spread the leg sideways (stance width) |
 | `leg*.flex` | step the leg forward −Y (+) / back +Y (−) at the hip |
 | `leg*.knee` | bend the shank toward the back +Y (0–150) |
@@ -126,9 +126,9 @@ pose: { arms: { abduct: 90 }, armL: { abduct: 0 } }           // right arm out, 
 | `head.nod` | look down (+) / up (−) |
 
 > **Arms-overhead / fists-up poses need `twist`.** Elbow flexion alone curls the
-> forearm *forward*; once the arm is raised to the side that "forward" points
-> *backward*, so `elbow` by itself can't put the fist up by the head. Add
-> `twist ≈ 90`: e.g. double-biceps is `arms: { abduct: 95, elbow: 95, twist: 90 }`;
+> forearm *forward* (toward −Y); for a side-raised arm that plane is horizontal,
+> so `elbow` by itself can't put the fist up by the head. Add `twist ≈ 90`:
+> e.g. double-biceps is `arms: { abduct: 95, elbow: 95, twist: 90 }`;
 > a rounded ballet-fifth "O" overhead is roughly `arms: { abduct: 150, elbow: 70, twist: 90 }`.
 
 The rig exposes (read-only, for custom parts):

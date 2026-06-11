@@ -150,8 +150,11 @@ const staffRod = sdf.capsule(
   staffRodR
 );
 
-// Connect to left hand
-const handBridgeL = sdf.sphere(rig.r.hand * 0.85).translate(handL);
+// Connect to left hand: a capsule from the fist TO the rod axis at grip
+// height — a real welded grip. (A bridge sphere AT the hand never reached
+// the rod ~1.2 head-radii away; the staff used to stay connected only by
+// incidentally piercing the hat brim, which a pose tweak silently broke.)
+const handBridgeL = sdf.capsule(handL, [staffX, staffY, handL[2]], rig.r.hand * 0.55);
 const staff = staffRod
   .smoothUnion(handBridgeL, rig.r.hand * 0.50)
   .label('staff');
