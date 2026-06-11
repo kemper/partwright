@@ -174,9 +174,19 @@ The rig exposes (read-only, for custom parts):
   foot, neck, head, headX, headZ, chestX, chestY, pelvisX, pelvisY,` and
   **`waist`** (the garment-fitting radius at the natural waist — use this, not
   `pelvisX`, to size belts/skirts/tutus).
-- `rig.dir.{headForward, headUp, headLeft, upperArmL/R, foreArmL/R, thighL/R,
-  shankL/R, footL/R}` — unit directions for orienting parts (`footL/R` is the
-  foot heading, yawed by `leg*.twist` turnout).
+- `rig.dir.{headForward, headUp, headLeft, upperArmL/R, foreArmL/R, elbowHingeL/R,
+  thighL/R, shankL/R, footL/R}` — unit directions for orienting parts (`footL/R`
+  is the foot heading, yawed by `leg*.twist` turnout).
+- `rig.grip.{L,R}` — **a full grip frame per hand, for connecting HELD props**
+  (guitar neck, sword, staff, mug). Each has `{ point, palmNormal, gripAxis, reach }`:
+  - `point` — the grip **cup** where a held cylinder's axis rests. This is **NOT**
+    `joints.handL/R` (the hand *centre*): it's offset toward the palm, so a prop
+    aimed here sits *in* the closed fingers instead of passing *through* the hand.
+    Aim a held bar's contact line at `point`, not at `handL/R`.
+  - `gripAxis` — unit axis a gripped bar lies **along** (finger-splay, pinky→index).
+    A guitar neck / staff / sword grip runs parallel to this.
+  - `palmNormal` — unit normal the palm faces (fingers curl toward it).
+  - `reach` — unit forearm/finger direction.
 - `rig.face.{eyeL, eyeR, browL, browR, nose, mouth, earL, earR, chinTip}`.
 
 **`build` scales every width:** `slim` ×0.82, `average` ×1.0, `stocky` ×1.22 —
@@ -232,6 +242,26 @@ const staffPlaced = F.placeAt(staff, rig.joints.handR);                   // cen
 (default). **Weld accessories onto the figure** (small `smoothUnion`/`union`)
 so they stay one printable piece — a staff floating next to the hand is a
 second component.
+
+**Putting a prop INTO a hand — `F.holdAt(prop, rig.grip.L|R, opts?)`.** `placeAt`
+only positions; `holdAt` also **orients** a prop to the grip and seats it in the
+finger cup. Build the prop centred at the origin with its long axis along local
+`+Z`, and `holdAt` aligns that axis to `gripAxis` and drops the origin on the
+grip `point`:
+
+```js
+// A wand/baton/sword grip, held in the right hand pointing along the fingers:
+const wand = sdf.capsule([0,0,-8],[0,0,8], 0.4);
+const held = F.holdAt(wand, rig.grip.R);        // axis → gripAxis, origin → grip cup
+```
+
+`opts.along` (`'x'|'y'|'z'`, default `'z'`) says which local axis is the prop's
+length; `opts.flip: true` reverses it. **For a two-handed prop** (a guitar, a
+bow, a rifle) don't fight a single `holdAt` — build it from BOTH grip points:
+run the neck/barrel from one anchor to `rig.grip.L.point` (the fretting cup) and
+seat the body under `rig.grip.R.point`, so the prop's axis is derived from the
+hands and can't read crooked. Aiming at `point` (not `handL/R`) is what stops a
+neck passing through the fretting hand.
 
 ## Face — reads `rig.face` anchors
 
