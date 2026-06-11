@@ -5,16 +5,13 @@ files_changed:
   - src/config/appConfig.ts
   - src/ai/historyElision.ts
   - src/ai/chatLoop.ts
-  - src/ai/systemPrompt.ts
   - src/geometry/geometryHeuristics.ts
   - src/geometry/statsComputation.ts
   - src/main.ts
   - src/ui/advancedSettingsModal.tsx
   - public/ai.md
-  - public/ai/annotations.md
   - tests/unit/historyElision.test.ts
   - tests/unit/geometryHeuristics.test.ts
-  - tests/unit/annotationHint.test.ts
 ---
 
 ## Human
@@ -39,14 +36,13 @@ glance, rather than forcing more (expensive) vision.
 
 Four changes, each aligned with the cost model rather than fighting it:
 
-1. **Annotations as a push signal** (`systemPrompt.ts`, `main.ts`). A user drawing
-   on the model is the cheapest, highest-bandwidth feedback there is — but it was
-   pull-only (`readDoc("annotations")`). Now `toggleSuffix()` pushes a "User
-   annotations on the model" line every turn (zero cost when unmarked, self-
-   scoping like the existing SDF nudge), read off the console API the same way
-   `currentLanguage()` does. `getSessionContext()` also returns an `annotations`
-   summary for resuming/external agents. The string builder `formatAnnotationHint`
-   is pure + unit-tested.
+1. **(Dropped after review.)** Originally an annotation-push signal (per-turn
+   suffix + getSessionContext enrichment). The user pointed out that few people
+   use the Annotate tool, so the channel is low-traffic — and the high-traffic
+   version of the same "borrow the human's free judgment" insight already exists
+   (the user typing "the arm's too thin" into chat already reaches the agent).
+   Reverted the code; kept the docs honest. The two changes below help EVERY
+   session regardless of feature usage and are the real wins.
 
 2. **Numeric "free-vision" warnings** (`geometryHeuristics.ts` new leaf,
    `statsComputation.ts`, `main.ts`). The headless model:preview already emitted

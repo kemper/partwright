@@ -9741,30 +9741,10 @@ async function main() {
       if (!ctx) return { error: 'No active session' };
       const geo = JSON.parse(geometryDataEl.textContent || '{}');
       const warnings = geometryWarnings(geo);
-      // User-drawn annotations are direct feedback on the model; surface a
-      // compact summary so a resuming or external agent sees them without a
-      // separate listAnnotations() round-trip (the per-turn suffix pushes the
-      // same signal to the in-app chat agent).
-      const annoTexts = getAnnotationTexts();
-      const annoStrokes = getAnnotationStrokes();
-      const annotations = (annoTexts.length > 0 || annoStrokes.length > 0)
-        ? {
-            textNotes: annoTexts.map(t => ({
-              text: t.text,
-              anchor: [
-                Math.round(t.anchor.x * 1000) / 1000,
-                Math.round(t.anchor.y * 1000) / 1000,
-                Math.round(t.anchor.z * 1000) / 1000,
-              ] as [number, number, number],
-            })),
-            strokeCount: annoStrokes.length,
-          }
-        : null;
       return {
         ...ctx,
         currentCode: getValue(),
         ...(warnings.length > 0 ? { geometryWarnings: warnings } : {}),
-        ...(annotations ? { annotations } : {}),
       };
     },
 
