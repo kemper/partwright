@@ -266,7 +266,6 @@ function buildRig(rawOpts: unknown): Rig {
   // --- Arm FK ------------------------------------------------------------
   const upperArmLen = H * 0.165;
   const foreArmLen = H * 0.150;
-  const fwd: Vec3 = [0, -1, 0];          // body front (−Y)
 
   function armChain(side: number, p: JointPose) {
     const S: Vec3 = [side * shoulderHalfX, 0, shoulderZ];
@@ -276,16 +275,16 @@ function buildRig(rawOpts: unknown): Rig {
     dir = rotX(dir, -p.flex);
     dir = norm3(dir);
     const E = add3(S, scale3(dir, upperArmLen));
-    // Elbow flexion curls the forearm in the plane of (upper arm, body front).
-    // hinge = dir × fwd points along −X for a hanging arm, so the POSITIVE
-    // angle gives the anatomical FORWARD (−Y) curl. (The negative angle curled
-    // the forearm backward — same hinge-sign bug family as the knee.)
-    let hinge = cross3(dir, fwd);
-    // Degenerate (arm ∥ front, flex ±90): use the continuous limit of
-    // dir × fwd as flex → 90, which is [−1,0,0] for BOTH sides — the old
-    // [side,0,0] fallback flipped one arm's curl in exactly-forward poses.
-    if (len3(hinge) < 1e-4) hinge = [-1, 0, 0];
-    hinge = norm3(hinge);
+    // Elbow flexion curls the forearm about a hinge ⟂ to the upper-arm axis.
+    // The hinge is FRAME-DERIVED — the rest axis [−1,0,0] carried through the
+    // bone's own abduct/flex rotations — exactly like the knee. This equals the
+    // old `cross(dir, fwd)` form wherever abduct OR flex is ~0 (every neutral,
+    // side-raised, hanging, forward, or overhead pose), but stays a clean
+    // lateral hinge when BOTH are large. The cross form degenerated there: as
+    // flex → ±90 its magnitude collapsed and its direction swung through the
+    // pole, so a forward-reaching bent arm (karate punch, reading pose) curled
+    // in a pose-dependent wrong plane — the knee-sign instability, arm edition.
+    let hinge = norm3(rotX(rotY([-1, 0, 0], -side * p.abduct), -p.flex));
     // `twist` (shoulder/forearm roll) rolls that curl plane about the upper-arm
     // axis — the DOF that lets a RAISED arm curl the fist UP (double-biceps) or
     // inward (ballet fifth) instead of only forward. The roll sign pairs with
@@ -319,10 +318,19 @@ function buildRig(rawOpts: unknown): Rig {
     // flex is ~0 — every catalog pose — and stays lateral when both are not.)
     // The BACKWARD bend needs the negative angle (positive swings forward —
     // that sign error once gave lunges a horizontal shin floating mid-air).
-    const hinge = norm3(rotX(rotY([-1, 0, 0], -side * p.abduct), -p.flex));
+    let hinge = norm3(rotX(rotY([-1, 0, 0], -side * p.abduct), -p.flex));
+    // twist = hip turnout: roll the knee-bend plane about the thigh axis so a
+    // bent knee turns outward (plié, ballet positions), pairing `side` so a
+    // symmetric `legs:{twist}` turns BOTH legs out the same way. 0 = neutral.
+    if (p.twist) hinge = norm3(rotAxis(hinge, dir, -p.twist * side));
     const shankDir = norm3(rotAxis(dir, hinge, -(p.knee ?? 0)));
     const A = add3(K, scale3(shankDir, shankLen));
-    return { Hj, K, A, dir, shankDir };
+    // Foot heading: front (−Y) yawed about world-up by the turnout, OUTWARD
+    // (+X for the left foot, −X for the right). A straight, turned-out leg
+    // (knee 0 — ballet first/fifth) shows the turnout only here, since the
+    // shank stays vertical; buildFeet orients the foot along this.
+    const footFwd = norm3(rotZ([0, -1, 0], side * p.twist));
+    return { Hj, K, A, dir, shankDir, footFwd };
   }
   const lL = legChain(+1, pose.legL);
   const lR = legChain(-1, pose.legR);
@@ -372,6 +380,9 @@ function buildRig(rawOpts: unknown): Rig {
       // faces hinge × foreArm (the curl direction).
       elbowHingeL: aL.hinge, elbowHingeR: aR.hinge,
       thighL: lL.dir, shankL: lL.shankDir, thighR: lR.dir, shankR: lR.shankDir,
+      // Foot heading per side (front −Y yawed by hip turnout) — buildFeet
+      // orients toe/heel along it, so leg twist turns the feet out.
+      footL: lL.footFwd, footR: lR.footFwd,
       headForward: hf, headUp, headLeft,
     },
     face,
@@ -562,22 +573,28 @@ function footSoleZ(rig: Rig, ankle: Vec3): number {
 
 function buildFeet(sdf: SdfApi, rig: Rig): Node {
   const j = rig.joints, r = rig.r;
-  function foot(A: Vec3, side: number): Node {
+  function foot(A: Vec3, fwd: Vec3, side: number): Node {
     const footLen = r.foot * 2.4;
     const sz = footSoleZ(rig, A);
-    // Toe forward (−Y), heel back, ankle ~40% from the heel so the foot sits
-    // UNDER the body instead of jutting forward (which reads as leaning back).
-    const toe: Vec3 = [A[0] + side * r.foot * 0.12, A[1] - footLen * 0.62, sz];
-    const heel: Vec3 = [A[0], A[1] + footLen * 0.38, sz];
+    // Toe forward along the foot heading (default −Y, yawed by hip turnout),
+    // heel back, ankle ~40% from the heel so the foot sits UNDER the body
+    // instead of jutting forward (which reads as leaning back). The toe gets a
+    // small outward (`side`·lateral) splay across the heading.
+    const lat: Vec3 = [-fwd[1], fwd[0], 0];        // heading yawed +90° in XY
+    const onGround = (p: Vec3): Vec3 => [p[0], p[1], sz];
+    const toe = onGround(add3(A, add3(scale3(fwd, footLen * 0.62), scale3(lat, side * r.foot * 0.12))));
+    const heel = onGround(add3(A, scale3(fwd, -footLen * 0.38)));
+    const instepC = onGround(add3(A, scale3(fwd, footLen * 0.35)));
     const sole = sdf.capsule(heel, toe, r.foot * 0.62);
     const instep = sdf.ellipsoid(r.foot * 0.8, footLen * 0.5, r.foot * 0.8)
-      .translate([A[0], A[1] - footLen * 0.35, sz + r.foot * 0.15]);
+      .translate([instepC[0], instepC[1], sz + r.foot * 0.15]);
     // A short ankle column bridges the (possibly elevated) ankle to the sole so
     // the foot stays welded to the leg in any pose.
     const ankleCol = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.shank * 0.8);
     return sole.smoothUnion(instep, r.foot * 0.6).smoothUnion(ankleCol, r.foot * 0.6);
   }
-  return foot(j.ankleL as Vec3, +1).union(foot(j.ankleR as Vec3, -1));
+  return foot(j.ankleL as Vec3, rig.dir.footL as Vec3, +1)
+    .union(foot(j.ankleR as Vec3, rig.dir.footR as Vec3, -1));
 }
 
 function buildHead(sdf: SdfApi, rig: Rig): Node {

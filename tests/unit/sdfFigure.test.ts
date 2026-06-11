@@ -168,6 +168,45 @@ describe('figure rig — pose forward kinematics', () => {
     expect(dist(fwd.face.nose, turned.face.nose)).toBeGreaterThan(0.5);
   });
 
+  it('elbow hinge stays a stable lateral plane across flex 90 (no pole flip)', () => {
+    // Regression: the old cross(dir, fwd) elbow hinge collapsed in magnitude
+    // and SWUNG THROUGH the pole as a forward-reaching arm crossed horizontal
+    // (flex → 90) with small abduct — its X-component flipped sign 85→95, so a
+    // bent forward-punch curled in a pose-dependent wrong plane. The frame-
+    // derived hinge keeps a near-constant lateral axis: a forward-reaching bent
+    // arm curls the wrist UP (above the elbow) continuously, on both sides.
+    for (const side of ['L', 'R'] as const) {
+      let prevHingeX: number | undefined;
+      for (const flex of [85, 90, 95]) {
+        const rig = buildRig({ pose: { [`arm${side}`]: { abduct: 10, flex, elbow: 90 } } });
+        const h = rig.dir[`elbowHinge${side}`];
+        const W = rig.joints[`wrist${side}`], E = rig.joints[`elbow${side}`];
+        expect(W[2]).toBeGreaterThan(E[2] + 1);        // forearm curls UP, not sideways
+        if (prevHingeX !== undefined) {
+          expect(Math.sign(h[0])).toBe(Math.sign(prevHingeX)); // no sign flip across 90
+          expect(Math.abs(h[0] - prevHingeX)).toBeLessThan(0.1); // and barely moves
+        }
+        prevHingeX = h[0];
+      }
+    }
+  });
+
+  it('leg twist turns the foot out (and is no longer a silent no-op)', () => {
+    // Regression: leg twist was parsed + validated but never read by the leg
+    // chain. It now yaws the foot heading OUTWARD (toe toward +X on the left,
+    // −X on the right) and rolls a bent-knee turnout, symmetrically.
+    const neutral = buildRig({ pose: { legL: { abduct: 6 } } });
+    expect(neutral.dir.footL[0]).toBeCloseTo(0, 4);     // toe straight ahead at rest
+    const turned = buildRig({ pose: { legs: { abduct: 6, twist: 30 } } });
+    expect(turned.dir.footL[0]).toBeGreaterThan(0.3);   // left toe yaws to +X (out)
+    expect(turned.dir.footR[0]).toBeLessThan(-0.3);     // right toe yaws to −X (out)
+    expect(turned.dir.footL[0]).toBeCloseTo(-turned.dir.footR[0], 5); // symmetric
+    // A bent knee with turnout moves the shank/ankle vs no twist.
+    const bent0 = buildRig({ pose: { legL: { flex: 20, knee: 60, twist: 0 } } });
+    const bentT = buildRig({ pose: { legL: { flex: 20, knee: 60, twist: 40 } } });
+    expect(dist(bent0.joints.ankleL, bentT.joints.ankleL)).toBeGreaterThan(1);
+  });
+
   it('twist rolls the forearm-curl plane so a raised arm can curl the fist up', () => {
     // With the arm out to the side, elbow alone curls forward; twist lifts the
     // fist UP (the double-biceps / ballet-fifth pose that needs the roll DOF).
@@ -176,6 +215,57 @@ describe('figure rig — pose forward kinematics', () => {
     // twist must move the wrist, and lift it above the no-twist wrist.
     expect(dist(noTwist.joints.wristL, rolled.joints.wristL)).toBeGreaterThan(2);
     expect(rolled.joints.wristL[2]).toBeGreaterThan(noTwist.joints.wristL[2]);
+  });
+});
+
+describe('figure rig — documented pose recipes (public/ai/figure.md)', () => {
+  // The recipes figure.md hands to modeling agents, asserted verbatim as rig
+  // math. An FK change that breaks a documented recipe must fail HERE, in
+  // vitest, not in a sculpt agent's render loop. If one of these fails after
+  // an intentional FK change, update figure.md's recipe in the same commit.
+  // (Chair-sit `legs: {flex: 90, knee: 90}` is pinned by the sitting-pose
+  // test above; this block covers the remaining documented recipes.)
+
+  it('double-biceps `arms: {abduct: 95, elbow: 95, twist: 90}` puts both fists up by the head', () => {
+    const rig = buildRig({ height: 60, pose: { arms: { abduct: 95, elbow: 95, twist: 90 } } });
+    for (const side of ['L', 'R'] as const) {
+      const S = rig.joints[`shoulder${side}`], W = rig.joints[`wrist${side}`], H = rig.joints[`hand${side}`];
+      // fist raised well above the shoulder, up beside the head…
+      expect(W[2]).toBeGreaterThan(S[2] + rig.r.head);
+      expect(H[2]).toBeGreaterThan(rig.joints.headCenter[2]);
+      // …and OUT to the side (a flex pose, not hands clasped at the chest).
+      expect(Math.abs(W[0])).toBeGreaterThan(Math.abs(S[0]) * 1.5);
+    }
+    expect(rig.joints.handL[0]).toBeCloseTo(-rig.joints.handR[0], 5);
+    expect(rig.joints.handL[2]).toBeCloseTo(rig.joints.handR[2], 5);
+  });
+
+  it('ballet fifth `arms: {abduct: 150, elbow: 70, twist: 90}` rounds an "O" overhead', () => {
+    const rig = buildRig({ height: 60, pose: { arms: { abduct: 150, elbow: 70, twist: 90 } } });
+    for (const side of ['L', 'R'] as const) {
+      const E = rig.joints[`elbow${side}`], H = rig.joints[`hand${side}`];
+      // hands above the crown…
+      expect(H[2]).toBeGreaterThan(rig.joints.crown[2]);
+      // …curling inward toward the midline (the rounded "O") without crossing it.
+      expect(Math.abs(H[0])).toBeLessThan(Math.abs(E[0]) * 0.6);
+      expect(H[0] * E[0]).toBeGreaterThan(0); // same side of the midline
+    }
+    // the hands approach each other to close the "O" (gap under ~a head width).
+    expect(dist(rig.joints.handL, rig.joints.handR)).toBeLessThan(rig.r.head * 2.2);
+  });
+
+  it('matched flex+knee keeps the shin vertical at any lunge depth', () => {
+    // The generalized lunge rule behind figure.md's flex/knee guidance: a
+    // forward step with knee bend equal to hip flex lands the ankle directly
+    // under the knee. This is the configuration the old cross-product hinge
+    // distorted as flex grew — sweep it well past the 45° case.
+    for (const a of [20, 45, 70, 85]) {
+      const rig = buildRig({ pose: { legL: { abduct: 0, flex: a, knee: a } } });
+      const K = rig.joints.kneeL, A = rig.joints.ankleL;
+      expect(A[0]).toBeCloseTo(K[0], 4);
+      expect(A[1]).toBeCloseTo(K[1], 4);
+      expect(A[2]).toBeLessThan(K[2]);
+    }
   });
 });
 
