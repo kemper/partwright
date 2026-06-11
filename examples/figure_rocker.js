@@ -12,12 +12,12 @@ const rig = F.rig({
   headsTall: 7,
   build: 'slim',
   pose: {
-    // Left arm: raised and forward, elbow bent to fret up the neck.
-    // abduct 58 = arm up; flex 35 = forward; elbow 68 = forearm curls toward neck grip
-    armL: { abduct: 58, flex: 35, elbow: 68 },
+    // Left arm: raised high and forward, elbow bent so forearm goes upward toward the neck.
+    // abduct 62 = arm raised; flex 58 = forward component; twist +90 = hinge flipped so elbow sweeps upward; elbow 72 = forearm curls up toward neck
+    armL: { abduct: 62, flex: 58, elbow: 72, twist: 90 },
     // Right arm: strumming — slightly out and forward, elbow bent to bring hand down to body.
-    // abduct 22 = arm slightly out; flex 38 = forward; elbow 52 = forearm angles down
-    armR: { abduct: 22, flex: 38, elbow: 52 },
+    // abduct 20 = arm slightly out; flex 38 = forward; twist 60 = hinge rotated so forearm curves down; elbow 55 = forearm toward guitar body
+    armR: { abduct: 20, flex: 38, elbow: 55, twist: 60 },
     // Wide rock stance
     legL: { abduct: 26 },
     legR: { abduct: 26 },

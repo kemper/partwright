@@ -15,8 +15,8 @@ const rig = F.rig({
   build: 'average',
   pose: {
     legs:  { abduct: 8, flex: 90, knee: 90 },
-    armL:  { abduct: 16, flex: 28, elbow: 82 },
-    armR:  { abduct: 16, flex: 28, elbow: 82 },
+    armL:  { abduct: 14, flex: 38, elbow: 85 },
+    armR:  { abduct: 14, flex: 38, elbow: 85 },
     head:  { nod: 22 },       // looking down at the book
     spine: { lean: 4 },       // gentle reading hunch
   },

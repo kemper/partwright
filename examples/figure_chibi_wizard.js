@@ -13,9 +13,9 @@ const rig = F.rig({
   build: 'average',
   pose: {
     // Left arm: pointing slightly forward-down to grip staff
-    armL: { abduct: 10, flex: 8, elbow: 15 },
-    // Right arm raised — spell-casting
-    armR: { abduct: 80, flex: 35, elbow: 50 },
+    armL: { abduct: 10, flex: 18, elbow: 20 },
+    // Right arm raised — spell-casting (arm high and out, forward sweep, elbow raises forearm)
+    armR: { abduct: 85, flex: 30, elbow: 45 },
     legL: { abduct: 8 },
     legR: { abduct: 8 },
     head: { turn: 8, tilt: -3, nod: 2 },

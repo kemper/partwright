@@ -121,6 +121,7 @@ pose: { arms: { abduct: 90 }, armL: { abduct: 0 } }           // right arm out, 
 | `leg*.abduct` | spread the leg sideways (stance width) |
 | `leg*.flex` | step the leg forward −Y (+) / back +Y (−) at the hip |
 | `leg*.knee` | bend the shank toward the back +Y (0–150) |
+| `leg*.twist` | **hip turnout** — yaw the foot OUT (toe toward +X on the left, −X on the right) and roll a bent-knee plié outward. 0 = toes forward; `legs: { twist: 30 }` is a relaxed turnout, ~`45–60` a ballet first/fifth. |
 | `head.turn` | yaw (look figure-left +/right −) |
 | `head.tilt` | tip toward a shoulder |
 | `head.nod` | look down (+) / up (−) |
@@ -139,7 +140,8 @@ The rig exposes (read-only, for custom parts):
   **`waist`** (the garment-fitting radius at the natural waist — use this, not
   `pelvisX`, to size belts/skirts/tutus).
 - `rig.dir.{headForward, headUp, headLeft, upperArmL/R, foreArmL/R, thighL/R,
-  shankL/R}` — unit directions for orienting parts.
+  shankL/R, footL/R}` — unit directions for orienting parts (`footL/R` is the
+  foot heading, yawed by `leg*.twist` turnout).
 - `rig.face.{eyeL, eyeR, browL, browR, nose, mouth, earL, earR, chinTip}`.
 
 **`build` scales every width:** `slim` ×0.82, `average` ×1.0, `stocky` ×1.22 —
