@@ -839,6 +839,20 @@
       "file": "superhero.partwright.json",
       "language": "manifold-js",
       "description": "A stocky hero launching skyward with one fist punched up — sweeping cape, chest emblem, gloves and boots over a two-tone suit."
+    },
+    {
+      "id": "parametric-enclosure",
+      "name": "Project Box / Enclosure",
+      "file": "parametric_enclosure.partwright.json",
+      "language": "manifold-js",
+      "description": "A fully parametric two-part project box built with api.enclosure — choose a lip-nesting or screw-down lid, then tune size, wall, corner radius, fit, and screw size in the Customizer. The screw lid composes api.fasteners for its tapped corner bosses and countersunk holes."
+    },
+    {
+      "id": "knurled-control-knob",
+      "name": "Knurled Control Knob",
+      "file": "knurled_control_knob.partwright.json",
+      "language": "manifold-js",
+      "description": "A customizable control knob with a functional knurled grip built with api.knurl — switch between a diamond cross-hatch, straight splines, or finger ribs, and mount it on a plain shaft, a D-shaft, or a heat-set threaded insert. Pointer notch optional."
     }
   ]
 }

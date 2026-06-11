@@ -103,6 +103,9 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Captive / clearance nut pocket | `api.fasteners.nutPocket({size:"M3", captive:true})` → subtract -> `/ai/fasteners.md` | BOSL2 `nut_trap_side()` | (use manifold-js fasteners) |
 | Snap-fit, dovetail, or alignment-pin joint | `api.joints.snapFit/dovetail/pin/socket(...)` -> `/ai/joints.md` | (build manually) | (use manifold-js joints) |
 | Print-in-place hinge / ball joint / press-on lid rim | `api.joints.hinge/ballSocket/snapRim(...)` -> `/ai/joints.md` | (build manually) | (use manifold-js joints) |
+| Two-part project box / enclosure (lip or screw lid) | `api.enclosure.box({size:[x,y,z], type:'lip'\|'screw'})` → `{base, lid}` -> `/ai/enclosure.md` | (build manually) | (use manifold-js enclosure) |
+| Rounded shell / PCB standoff post | `api.enclosure.shell({size})` / `api.enclosure.standoff({size:"M3"})` -> `/ai/enclosure.md` | (build manually) | (use manifold-js enclosure) |
+| Knurled grip (diamond / straight / ribs) on a knob or handle | `api.knurl.diamond/straight/ribs({diameter, height})` -> `/ai/knurl.md` | BOSL2 `knurled_cylinder()` | (use manifold-js knurl) |
 | Dial in printer fit tolerances | `api.fasteners.clearanceCoupon({size:"M3"})` + `api.fasteners.clearance(fit)` -> `/ai/fasteners.md` | (build manually) | (use manifold-js fasteners) |
 | Print-in-place mechanism (screw, spinner, hinge, captive ball, slider) | Separate parts via `labeledUnion`, separated by a ~0.3–0.5 mm clearance gap; assert `componentCount` -> `/ai/mechanisms.md` | (model parts + clearance manually) | (model parts + clearance manually) |
 | Helical thread / auger / spiral flute | Real ISO threads: `api.threads.rod/bolt/nut(...)` -> `/ai/threads.md`. Custom augers/flutes: `cs.extrude(h, nDiv, 360*turns, scaleTop)` -> `/ai/mechanisms.md` | `linear_extrude(twist=)`, or BOSL2 `threaded_rod()` | (use manifold-js) |
@@ -151,6 +154,8 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `joints` | Before connecting printed parts to each other — `api.joints.*` alignment pins, sliding dovetails, snap-fits, print-in-place barrel hinges, articulating ball joints (friction / clamp / snap retention), and annular snap rims for press-on lids. |
 | `gears` | Before modeling an involute spur gear, a meshing gear pair, or a rack — `api.gears.spur/pair/rack(...)`, module/teeth/pressure-angle, centre distance, ratio, bores and hubs. |
 | `threads` | Before modeling a threaded rod, bolt, or nut — `api.threads.rod/bolt/nut(...)`, the metric coarse-pitch table, fit clearance, and handedness. |
+| `enclosure` | Before modeling a project box / case, a rounded shell, or PCB standoffs — `api.enclosure.box/shell/standoff(...)`, lip vs screw lids, mate clearance, and the `componentCount === 2` fit check. |
+| `knurl` | Before adding a functional grip to a knob, thumbscrew, or handle — `api.knurl.diamond/straight/ribs(...)` knurled cylinders (distinct from decorative surface textures). |
 | `colors` | Before any paint operation — the picker decision tree, labelled construction, vision-driven painting, export behavior. |
 | `reference-images` | When the user attaches a photo or asks you to model from one — `setImages` shape, label conventions, the five-step photo-to-model loop. |
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
@@ -453,6 +458,8 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `threads` -- ISO-metric threaded rods, bolts, and nuts (`rod`/`bolt`/`nut`) with a coarse-pitch table and print-fit clearance. See **[/ai/threads.md](/ai/threads.md)**.
 - `fasteners` -- hardware fits: screw holes, tap holes, insert bosses, nut pockets, the M2–M8 metric table, clearance presets, calibration coupon. See **[/ai/fasteners.md](/ai/fasteners.md)**.
 - `joints` -- part-to-part joinery: pins, dovetails, snap-fits, print-in-place hinges, ball joints, snap rims. See **[/ai/joints.md](/ai/joints.md)**. (`printFit` is a deprecated alias spreading both `fasteners` and `joints` — old sessions keep working; write new code against the split namespaces.)
+- `enclosure` -- two-part project boxes (`box` → `{base, lid}`, lip or screw lid), rounded `shell`s, and PCB `standoff` posts; composes `fasteners` for the screw variant. A correct box reports `componentCount === 2`. See **[/ai/enclosure.md](/ai/enclosure.md)**.
+- `knurl` -- functional grips: `diamond`/`straight`/`ribs` knurled cylinders for knobs, thumbscrews, and handles (distinct from decorative `surface` textures). See **[/ai/knurl.md](/ai/knurl.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
 Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.

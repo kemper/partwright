@@ -12,6 +12,8 @@ import { createFastenersNamespace } from '../fasteners';
 import { createJointsNamespace } from '../joints';
 import { createGearsNamespace } from '../gears';
 import { createThreadsNamespace } from '../threads';
+import { createEnclosureNamespace } from '../enclosure';
+import { createKnurlNamespace } from '../knurl';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import type { RegionDescriptor } from '../../color/regions';
@@ -66,6 +68,10 @@ let geom2dNamespace: any = null;
 let gearsNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let threadsNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let enclosureNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let knurlNamespace: any = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getManifoldModule(): any {
@@ -207,6 +213,10 @@ export const manifoldJsEngine: Engine = {
     geom2dNamespace = createGeom2dNamespace(manifoldModule);
     gearsNamespace = createGearsNamespace(manifoldModule);
     threadsNamespace = createThreadsNamespace(manifoldModule);
+    // Enclosure composes the fasteners library (screw-lid bosses/holes,
+    // standoff bores), so it's built after fastenersNamespace above.
+    enclosureNamespace = createEnclosureNamespace(manifoldModule, { fasteners: fastenersNamespace });
+    knurlNamespace = createKnurlNamespace(manifoldModule);
     // Kick off font pre-loading in the background so they're ready by the
     // time the first api.text() call hits, even if the per-run regex didn't
     // fire (e.g. destructured alias or api.Curves.text).
@@ -534,6 +544,8 @@ export const manifoldJsEngine: Engine = {
       printFit: printFitAlias,
       gears: gearsNamespace,
       threads: threadsNamespace,
+      enclosure: enclosureNamespace,
+      knurl: knurlNamespace,
       // Text helpers — flat aliases so agents can write api.text(...) directly.
       text: curvesNamespace.text,
       textSection: curvesNamespace.textSection,
