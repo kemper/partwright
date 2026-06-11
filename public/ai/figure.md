@@ -294,7 +294,11 @@ body keeps the cheap global grid — typically +30–60k triangles instead of th
 ## Hair & clothing — derived from the rig, so they always fit
 
 ```js
-F.hair(rig, { style })          // 'short' | 'long' | 'bun' | 'bald'
+F.hair(rig, { style, hairline })
+//   style: 'short' | 'long' | 'bun' | 'bald' | 'bangs' | 'ponytail'
+//   hairline: 'high' | 'mid' | 'low' — where the face window's top edge sits.
+//   'bangs' adds a straight fringe and defaults to 'low' (hair to the brows);
+//   'ponytail' adds a gathered tail swinging down the back of the skull.
 F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
 //   rise: low|mid|high · leg: slim|cargo · length: 'full' (default) | 'briefs'
 //   'briefs' = seat + gusset + hip coverage only (leotard bottoms, swimwear,

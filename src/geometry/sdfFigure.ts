@@ -952,10 +952,14 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
 
 function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hair(opts)');
-  assertNoUnknownKeys(o, ['style', 'thickness'], 'hair(opts)');
+  assertNoUnknownKeys(o, ['style', 'thickness', 'hairline'], 'hair(opts)');
   const style = o.style === undefined ? 'short'
-    : assertEnum(o.style, ['short', 'long', 'bun', 'bald'] as const, 'hair.style');
+    : assertEnum(o.style, ['short', 'long', 'bun', 'bald', 'bangs', 'ponytail'] as const, 'hair.style');
   if (style === 'bald') return sdf.sphere(1e-3).translate([0, 0, -1e6]); // empty-ish
+  // Hairline height = where the face window's top edge sits. 'low' brings the
+  // hair down to the brows (the bangs default), 'high' shows more forehead.
+  const hairline = o.hairline === undefined ? (style === 'bangs' ? 'low' : 'mid')
+    : assertEnum(o.hairline, ['high', 'mid', 'low'] as const, 'hair.hairline');
   const r = rig.r, c = rig.joints.headCenter as Vec3;
   const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
   const t = num(o.thickness, r.head * 0.12, 'hair.thickness', 0.01);
@@ -970,15 +974,35 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   } else if (style === 'bun') {
     const bun = sdf.sphere(r.head * 0.55).translate(add3(c, add3(scale3(f, -r.headZ * 0.7), scale3(u, r.head * 0.9))));
     cap = cap.smoothUnion(bun, r.head * 0.3);
+  } else if (style === 'bangs') {
+    // A straight fringe: a wide slab rooted in the cap, hanging over the
+    // forehead. The face window (lowered to the brows by the 'low' hairline
+    // default) trims its bottom edge into a clean straight-ish line.
+    const fringe = sdf.ellipsoid(r.headX * 0.85, r.headZ * 0.5, r.headZ * 0.42)
+      .translate(add3(c, add3(scale3(f, r.headZ * 0.55), scale3(u, r.headZ * 0.6))));
+    cap = cap.smoothUnion(fringe, r.head * 0.25);
+  } else if (style === 'ponytail') {
+    // Gathered anchor high on the back of the skull + a tapered tail swinging
+    // down. Segments chain anchor→mid→tip so the tail curves, and each
+    // segment shares its joint point — always one welded piece.
+    const anchor = add3(c, add3(scale3(f, -r.headZ * 0.7), scale3(u, r.headZ * 0.55)));
+    const mid = add3(anchor, add3(scale3(f, -r.head * 0.28), scale3(u, -r.head * 0.85)));
+    const tip = add3(mid, add3(scale3(f, r.head * 0.08), scale3(u, -r.head * 0.95)));
+    const tail = sdf.sphere(r.head * 0.4).translate(anchor)
+      .smoothUnion(sdf.capsule(anchor, mid, r.head * 0.3), r.head * 0.25)
+      .smoothUnion(sdf.capsule(mid, tip, r.head * 0.2), r.head * 0.22);
+    cap = cap.smoothUnion(tail, r.head * 0.25);
   }
   void right;
   // Face window: the cap overlaps the face INTERIOR, and since hair is its
   // own labelled region it survives the skin's mouth/feature carves — a
   // carved smile then exposes pale hair volume inside its corners ("nub
   // teeth"). Carve the face zone out of the hair so only skin lives there.
-  // Top edge sits above the brows (a cartoon hairline), sides keep the
-  // temples framed.
-  const windowC = add3(c, add3(scale3(f, r.headZ * 0.9), scale3(u, -r.headZ * 0.2)));
+  // The hairline option slides the window's top edge: 'mid' sits above the
+  // brows (the cartoon hairline), 'low' lands ON the brow line (bangs),
+  // 'high' opens the forehead. Sides keep the temples framed.
+  const drop = hairline === 'low' ? -r.headZ * 0.25 : hairline === 'high' ? r.headZ * 0.15 : 0;
+  const windowC = add3(c, add3(scale3(f, r.headZ * 0.9), scale3(u, -r.headZ * 0.2 + drop)));
   const faceWindow = orientToHeadPose(
     sdf.ellipsoid(r.headX * 0.72, r.headZ * 0.75, r.headZ * 0.85), rig,
   ).translate(windowC);
@@ -1241,4 +1265,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildHands, handDetail };
+export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildHands, handDetail, buildHair };
