@@ -287,6 +287,7 @@ import {
   checkAssertions,
   type GeometryAssertions,
 } from './geometry/statsComputation';
+import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
 import { nextStarter, isStarterCode } from './editor/starters';
 import { parseLabelColor } from './color/labelColor';
@@ -13735,6 +13736,22 @@ async function main() {
         'Re-add the label, or drop the region with removeRegion / clearColors and repaint by coordinates.',
       );
     }
+    // Cheap numeric heuristics (tri budget, aspect ratio, sub-extrusion detail,
+    // interpenetrating parts) — the signals the headless model:preview already
+    // emits but the in-app AI was previously blind to. Surfacing them here lets
+    // the agent catch these from stats without paying for a render.
+    const cc = typeof geo.componentCount === 'number' ? geo.componentCount : 1;
+    const enclosed = typeof geo.containedComponents === 'number' ? geo.containedComponents : 0;
+    warnings.push(...buildGeometryHeuristicWarnings(
+      {
+        triangleCount: typeof geo.triangleCount === 'number' ? geo.triangleCount : 0,
+        aspectRatio: typeof geo.aspectRatio === 'number' ? geo.aspectRatio : null,
+        minEdgeLength: typeof geo.minEdgeLength === 'number' ? geo.minEdgeLength : 0,
+        floatingComponentCount: cc - enclosed,
+        componentsInterpenetrate: geo.componentsInterpenetrate === true,
+      },
+      getConfig().geometry,
+    ));
     return warnings;
   }
 

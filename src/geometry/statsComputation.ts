@@ -6,6 +6,7 @@
 
 import { sliceMetrics, getBoundingBox } from './crossSection';
 import { getUnits } from './units';
+import { edgeStats, aspectRatioOf, componentsOverlap } from './geometryHeuristics';
 import type { MeshData } from './types';
 
 /** Manifold runtime type — the manifold-3d package does not export
@@ -70,6 +71,10 @@ export function computeGeometryStats(
 
   let componentCount = 1;
   let containedComponents = 0;
+  // True when two separate solids' bounding boxes overlap (a boolean that
+  // didn't fuse, or an assembly to clearance-check) — a cheap interpenetration
+  // signal the headless preview already surfaces; mirrored here for the in-app AI.
+  let componentsInterpenetrate = false;
   if (manifold) {
     try {
       const parts = manifold.decompose();
@@ -86,6 +91,10 @@ export function computeGeometryStats(
           const vol = (() => { try { return p.volume() as number; } catch { return 0; } })();
           return { vol, bb, m: p };
         });
+        // Cheap AABB-overlap pass over the decomposed parts (bboxes already in hand).
+        componentsInterpenetrate = componentsOverlap(
+          infos.filter((i) => i.bb).map((i) => ({ bbox: i.bb! })),
+        );
         for (let j = 0; j < infos.length; j++) {
           const smaller = infos[j];
           if (smaller.vol <= 0) { containedComponents++; continue; }
@@ -153,10 +162,21 @@ export function computeGeometryStats(
     }
   }
 
+  // Cheap mesh-quality signals (mirrors model:preview): shortest/mean edge for
+  // sub-extrusion detail, and bbox aspect ratio for sliver/fragility checks.
+  const edges = meshData.numTri > 0
+    ? edgeStats(meshData.vertProperties, meshData.numProp, meshData.triVerts, meshData.numTri)
+    : { min: 0, mean: 0 };
+  const aspectRatio = aspectRatioOf(dimensions);
+
   return {
     status: 'ok' as const,
     vertexCount: meshData.numVert,
     triangleCount: meshData.numTri,
+    minEdgeLength: edges.min,
+    meanEdgeLength: edges.mean,
+    ...(aspectRatio !== null ? { aspectRatio } : {}),
+    ...(componentsInterpenetrate ? { componentsInterpenetrate: true } : {}),
     boundingBox: bbox ? {
       x: [bbox.min[0], bbox.max[0]],
       y: [bbox.min[1], bbox.max[1]],

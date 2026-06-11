@@ -59,6 +59,14 @@ export interface AppConfig {
     charsPerToken: number;
     /** Estimated tokens per image block at standard resolution. */
     imageTokenEstimate: number;
+    /** How many of the most-recent render images (renderView / renderViews /
+     *  runIsolated tool snapshots) to keep in the history sent to the provider.
+     *  Older tool-result images are dropped from the request (their text stats
+     *  stay) so a long modeling session's image tokens don't compound every
+     *  turn — the same reason the CLI uses the model-sculpt subagent. The
+     *  on-screen transcript still shows every image; only the provider request
+     *  is trimmed. Set high to disable trimming. */
+    keepRecentToolImages: number;
     /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
      *  OpenSCAD validation and include-detection. (The render path has no
      *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
@@ -214,6 +222,19 @@ export interface AppConfig {
      *  next one (ms). */
     hintRotationMs: number;
   };
+  geometry: {
+    /** Triangle count above which the live model warns it may be too heavy for
+     *  the catalog budget / slow to slice. Mirrors the headless model:preview
+     *  tri-budget warning so the in-app AI sees the same signal. */
+    triCountWarnBudget: number;
+    /** Shortest mesh edge (world units) below which a fine-detail warning fires
+     *  — features this small are dropped by FDM slicers (sub-extrusion-width).
+     *  Mirrors model:preview's sub-0.4 mm detail warning. */
+    minEdgeLengthWarn: number;
+    /** Bounding-box aspect ratio (longest dim ÷ shortest non-zero dim) above
+     *  which a sliver/thin-model warning fires. Mirrors model:preview. */
+    aspectRatioWarn: number;
+  };
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
@@ -238,6 +259,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxOutputTokensGemini: 32768,
     charsPerToken: 4,
     imageTokenEstimate: 1500,
+    keepRecentToolImages: 3,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,
@@ -300,6 +322,11 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     workerPanelRefreshMs: 1000,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
+  },
+  geometry: {
+    triCountWarnBudget: 200_000,
+    minEdgeLengthWarn: 0.4,
+    aspectRatioWarn: 12,
   },
 };
 
