@@ -389,6 +389,88 @@ export function setPartTranslateDeltaScad(
 }
 
 // ---------------------------------------------------------------------------
+// Resize: insert a per-axis `.scale([sx, sy, sz])` into the chain. The chain
+// order matters — scale is applied at the origin and translate moves it, so
+// the scale must come *before* any existing translate (otherwise scaling would
+// also displace the position). For palette-inserted shapes whose primitive is
+// origin-centred this preserves the part's world position; for uncentred
+// primitives the anchor stays fixed and the part grows outward from it, which
+// matches Tinkercad's behaviour.
+// ---------------------------------------------------------------------------
+
+function multiplyScaleTriple(call: string, scale: Vec3): string {
+  // Take an existing `.scale([a,b,c])` / `scale([a,b,c])` and replace its
+  // triple with `[a*sx, b*sy, c*sz]`. Lets a second resize compound onto the
+  // first instead of stacking redundant `.scale` calls.
+  const re = new RegExp(TRIPLE);
+  return call.replace(re, (_full, a: string, b: string, c: string) =>
+    `[${fmt(parseFloat(a) * scale[0])}, ${fmt(parseFloat(b) * scale[1])}, ${fmt(parseFloat(c) * scale[2])}]`,
+  );
+}
+
+/** Apply a per-axis scale to a JS-engine part by inserting `.scale([sx,sy,sz])`
+ *  *before* its trailing `.translate([…])` (so scale-around-origin happens first
+ *  and translate-to-position is preserved). If the part already carries a
+ *  `.scale([…])`, the new factors are multiplied into the existing triple
+ *  rather than stacking a second call. Returns the code unchanged when no
+ *  matching `const <name> = …;` is found, or when the scale is the identity. */
+export function setPartScaleJs(code: string, name: string, scale: Vec3): string {
+  if (scale[0] === 1 && scale[1] === 1 && scale[2] === 1) return code;
+  const declRe = new RegExp(`(const\\s+${escapeRegExp(name)}\\s*=\\s*)([\\s\\S]*?)(;)`);
+  const m = declRe.exec(code);
+  if (!m) return code;
+  let rhs = m[2];
+  const scaleRe = new RegExp(`\\.scale\\(${TRIPLE}\\)`, 'g');
+  const existing = [...rhs.matchAll(scaleRe)];
+  if (existing.length > 0) {
+    const last = existing[existing.length - 1];
+    const updated = multiplyScaleTriple(last[0], scale);
+    rhs = rhs.slice(0, last.index!) + updated + rhs.slice(last.index! + last[0].length);
+  } else {
+    const scaleCall = `.scale([${fmt(scale[0])}, ${fmt(scale[1])}, ${fmt(scale[2])}])`;
+    const transRe = new RegExp(`\\.translate\\(${TRIPLE}\\)`, 'g');
+    const trans = [...rhs.matchAll(transRe)];
+    if (trans.length > 0) {
+      // Place scale before the first translate so position is preserved.
+      const first = trans[0];
+      rhs = rhs.slice(0, first.index!) + scaleCall + rhs.slice(first.index!);
+    } else {
+      rhs = `${rhs}${scaleCall}`;
+    }
+  }
+  return code.slice(0, m.index) + m[1] + rhs + m[3] + code.slice(m.index + m[0].length);
+}
+
+/** Apply a per-axis scale to an OpenSCAD part: wrap its construction in
+ *  `scale([sx,sy,sz])`, placed *after* any leading `translate([…])` so the
+ *  scale happens first (SCAD applies modifiers right-to-left, so the chain
+ *  `translate(t) scale(s) cube(...)` reads as scale-then-translate). Compounds
+ *  with an existing leading scale by multiplying its triple. */
+export function setPartScaleScad(
+  code: string,
+  statement: { from: number; to: number },
+  scale: Vec3,
+): string {
+  if (scale[0] === 1 && scale[1] === 1 && scale[2] === 1) return code;
+  const stmt = code.slice(statement.from, statement.to);
+  const leadingTransRe = new RegExp(`^translate\\(${TRIPLE}\\)\\s*`);
+  const transMatch = leadingTransRe.exec(stmt);
+  const afterTrans = transMatch ? stmt.slice(transMatch[0].length) : stmt;
+  const head = transMatch ? transMatch[0] : '';
+
+  const leadingScaleRe = new RegExp(`^scale\\(${TRIPLE}\\)\\s*`);
+  const scaleMatch = leadingScaleRe.exec(afterTrans);
+  let updated: string;
+  if (scaleMatch) {
+    const compound = multiplyScaleTriple(scaleMatch[0].replace(/\s*$/, ''), scale);
+    updated = `${head}${compound} ${afterTrans.slice(scaleMatch[0].length)}`;
+  } else {
+    updated = `${head}scale([${fmt(scale[0])}, ${fmt(scale[1])}, ${fmt(scale[2])}]) ${afterTrans}`;
+  }
+  return code.slice(0, statement.from) + updated + code.slice(statement.to);
+}
+
+// ---------------------------------------------------------------------------
 // Mirror / Duplicate / Delete (selection-driven quick actions)
 // ---------------------------------------------------------------------------
 

@@ -12,7 +12,6 @@
 // module is the DOM/orchestration layer.
 
 import * as THREE from 'three';
-import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import {
@@ -24,7 +23,7 @@ import {
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 import { openViewportPanel, closeViewportPanel, type ViewportPanel } from './viewportPanelRegistry';
 import { viewportToolsMount } from './popoverMenu';
-import { getScene, getMeshGroup, setGizmoLock } from '../renderer/viewport';
+import { getScene, getMeshGroup } from '../renderer/viewport';
 import {
   emitPrimitive,
   emitPrimitiveVoxel,
@@ -59,6 +58,8 @@ import {
   voxelGridVar,
   setPartTranslateDeltaJs,
   setPartTranslateDeltaScad,
+  setPartScaleJs,
+  setPartScaleScad,
   mirrorPartJs,
   mirrorPartScad,
   duplicatePartJs,
@@ -67,6 +68,16 @@ import {
   removeScadStatement,
 } from '../insert/controller';
 import { primitiveEntry, unionBoxes, pickPart, translateEntry, type RegistryEntry } from '../insert/spatial';
+import {
+  initArrangeMode,
+  enterArrangeMode,
+  exitArrangeMode,
+  isArrangeActive,
+  refreshArrangeOverlay,
+  alignDeltas,
+  type AlignAxis,
+  type AlignMode,
+} from '../insert/arrangeMode';
 import type { MeshData } from '../geometry/types';
 
 export interface InsertPaletteCallbacks {
@@ -128,6 +139,16 @@ let enclosureSectionEl: HTMLElement | null = null;
 let autoCombineRowEl: HTMLElement | null = null;
 let mirrorBtnEl: HTMLButtonElement | null = null;
 let combineHintEl: HTMLElement | null = null;
+
+// Arrange-mode UI refs. The toggle button reflects the persistent on/off state
+// of arrange mode; the size + align sections appear when 1+ / 2+ parts are
+// selected and the user is in arrange mode (or simply has a selection — the
+// resize/align actions work whether or not arrange mode is active, since they
+// operate on the same selection Set).
+let arrangeToggleBtn: HTMLButtonElement | null = null;
+let sizeSectionEl: HTMLElement | null = null;
+let alignSectionEl: HTMLElement | null = null;
+let sizeInputs: [HTMLInputElement, HTMLInputElement, HTMLInputElement] | null = null;
 
 const RESULT_BASE: Record<BooleanOpKind, string> = {
   union: 'merged',
@@ -192,6 +213,22 @@ export function initInsertPalette(container: HTMLElement, callbacks: InsertPalet
   // once actually opened.
   panelHost = container.parentElement ?? container;
 
+  // Arrange-mode wiring. The module is a singleton like Paint — initialise
+  // once with our deps; entering/exiting toggles the canvas listener + overlay.
+  initArrangeMode({
+    getCanvas: () => callbacks.getCanvas(),
+    getCamera: () => callbacks.getCamera(),
+    getMeshGroup,
+    getCb: () => cb,
+    registry,
+    specByName,
+    selection,
+    onSelectionChanged: rerenderSelectionUI,
+    scanParts,
+    writebackMoveDelta: writePartTranslateDelta,
+    shiftRegistryEntry: bumpRegistryFor,
+  });
+
   // Sessions don't share registry/spec state. Without a reset, a part named
   // `box` from session A would persist into session B and either contaminate
   // 3D-pick (stale bbox) or trip `pruneSelection` only if the name *also*
@@ -204,12 +241,11 @@ export function initInsertPalette(container: HTMLElement, callbacks: InsertPalet
  *  set, the spatial registry, the spec-by-name map. Also closes the panel so
  *  a stale chip strip doesn't paint over the new session's empty state. */
 function resetInsertPaletteState(): void {
-  // Tear down any in-flight build/select/pick session first: a session switch
-  // mid-drag would otherwise leak that session's canvas + key listeners and
-  // (for the build session) strand the real model hidden behind orphaned proxy
-  // meshes. Each cleanup restores visibility/listeners and nulls itself, so
-  // calling all three is safe whether or not one is active.
-  buildCleanup?.();
+  // Tear down any in-flight select/pick session and exit arrange mode first:
+  // a session switch mid-interaction would otherwise leak the canvas + key
+  // listeners owned by those flows. Each cleanup nulls itself, so calling them
+  // is safe whether or not one is active.
+  exitArrangeMode();
   selectSessionCleanup?.();
   pickCleanup?.();
   selection.clear();
@@ -217,6 +253,7 @@ function resetInsertPaletteState(): void {
   specByName.clear();
   if (isInsertPaletteOpen()) closeInsertPalette();
   rerenderSelectionUI();
+  updateArrangeToggleState();
 }
 
 function isInsertPaletteOpen(): boolean {
@@ -229,6 +266,21 @@ function setToolBtnState(active: boolean): void {
   // string rather than tokenizing & swapping. Avoids regex drift if either
   // shared constant gains a class with internal whitespace later.
   toolBtn.className = active ? TOOL_TOGGLE_ACTIVE : TOOL_TOGGLE_IDLE;
+}
+
+// Arrange toggle styling — paints a prominent blue button at the top of the
+// palette (it's the headline action). Active state inverts to a brighter,
+// outlined treatment so the user knows pointer events are now arrange events.
+const ARRANGE_TOGGLE_IDLE =
+  'w-full px-2 py-2 rounded text-xs font-medium text-zinc-100 bg-blue-600/80 hover:bg-blue-600 border border-blue-500/60 transition-colors mb-1';
+const ARRANGE_TOGGLE_ACTIVE =
+  'w-full px-2 py-2 rounded text-xs font-medium text-zinc-900 bg-amber-300 hover:bg-amber-200 border border-amber-400 transition-colors mb-1';
+
+function updateArrangeToggleState(): void {
+  if (!arrangeToggleBtn) return;
+  const on = isArrangeActive();
+  arrangeToggleBtn.className = on ? ARRANGE_TOGGLE_ACTIVE : ARRANGE_TOGGLE_IDLE;
+  arrangeToggleBtn.textContent = on ? '✥ Arrange — ON · click again to exit' : '✥ Arrange';
 }
 
 function openInsertPalette(): void {
@@ -288,6 +340,11 @@ function updateCombineHint(): void {
 
 function closeInsertPalette(): void {
   if (!panel || !isInsertPaletteOpen()) return;
+  // Closing the palette also exits arrange mode — otherwise the canvas pointer
+  // listener would keep stealing clicks from orbit-camera with no visible toggle
+  // for the user to flip back off.
+  if (isArrangeActive()) exitArrangeMode();
+  updateArrangeToggleState();
   panel.classList.add('hidden');
   setToolBtnState(false);
   closeViewportPanel(insertRegistryEntry);
@@ -353,19 +410,26 @@ function buildPanel(): HTMLElement {
   p.className = 'flex-1 min-h-0 overflow-y-auto px-3 py-2.5 flex flex-col gap-1.5 text-sm text-zinc-200';
   shell.appendChild(p);
 
-  // --- Move / arrange toggle (drag mode) ---
-  // A prominent switch into the Tinkercad-style drag session: click a shape and
-  // drag to slide it around the viewport instead of orbiting, so parts can be
-  // positioned before combining.
-  const moveBtn = document.createElement('button');
-  moveBtn.id = 'insert-move-mode';
-  moveBtn.className =
-    'w-full px-2 py-2 rounded text-xs font-medium text-zinc-100 bg-blue-600/80 hover:bg-blue-600 border border-blue-500/60 transition-colors mb-1';
-  moveBtn.textContent = '✥ Move / arrange shapes';
-  moveBtn.title =
-    'Drag mode: click a shape and drag to slide it around the viewport (instead of orbiting the camera), so you can position parts before combining them.';
-  moveBtn.addEventListener('click', startBuildSession);
-  p.appendChild(moveBtn);
+  // --- Arrange toggle (Tinkercad-style direct manipulation) ---
+  // A persistent toggle (NOT a modal session): when on, clicking a shape in the
+  // real viewport selects it, shift-click extends, drag moves it in realtime
+  // with a translucent ghost preview, and release commits → engine re-runs so
+  // the boolean updates for real. The merged model stays visible the whole
+  // time. The same selection drives the Size, Align, Operations, and Edit
+  // selection rows below — so Group/Subtract/Intersect/Duplicate/Mirror/Delete
+  // act on whatever you grab in 3D.
+  arrangeToggleBtn = document.createElement('button');
+  arrangeToggleBtn.id = 'insert-arrange-toggle';
+  arrangeToggleBtn.className = ARRANGE_TOGGLE_IDLE;
+  arrangeToggleBtn.textContent = '✥ Arrange';
+  arrangeToggleBtn.title =
+    'Arrange: click shapes in the viewport to select • shift-click to multi-select • drag a selected shape to move it • adjust Size / Align below • Esc to exit.';
+  arrangeToggleBtn.addEventListener('click', () => {
+    if (isArrangeActive()) exitArrangeMode();
+    else enterArrangeMode();
+    updateArrangeToggleState();
+  });
+  p.appendChild(arrangeToggleBtn);
 
   // --- Shapes ---
   shapeSectionEl = document.createElement('div');
@@ -440,6 +504,81 @@ function buildPanel(): HTMLElement {
   selBtnRow.appendChild(clearBtn);
   p.appendChild(selBtnRow);
 
+  // --- Size (per-axis scale factor; 1+ selected) ---
+  sizeSectionEl = document.createElement('div');
+  sizeSectionEl.appendChild(sectionLabel('Size'));
+  const sizeRow = document.createElement('div');
+  sizeRow.className = 'flex items-center gap-1.5 mb-1';
+  const labels: Array<['X' | 'Y' | 'Z', string]> = [['X', 'X scale factor'], ['Y', 'Y scale factor'], ['Z', 'Z scale factor']];
+  const builtInputs: HTMLInputElement[] = [];
+  for (const [axis, hint] of labels) {
+    const wrap = document.createElement('div');
+    wrap.className = 'flex items-center gap-1 flex-1';
+    const lab = document.createElement('span');
+    lab.className = 'text-[10px] text-zinc-400 w-3';
+    lab.textContent = axis;
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.step = '0.1';
+    inp.min = '0.01';
+    inp.value = '1';
+    inp.title = hint;
+    inp.className = 'flex-1 min-w-0 bg-zinc-900 border border-zinc-600 rounded px-1.5 py-1 text-[11px] text-zinc-100 text-right';
+    inp.dataset.axis = axis;
+    wrap.append(lab, inp);
+    sizeRow.appendChild(wrap);
+    builtInputs.push(inp);
+  }
+  sizeInputs = [builtInputs[0], builtInputs[1], builtInputs[2]];
+  sizeSectionEl.appendChild(sizeRow);
+  const sizeBtnRow = document.createElement('div');
+  sizeBtnRow.className = 'flex gap-1.5 mb-1';
+  const applySizeBtn = paletteButton('✓ Apply size', 'Scale the selected parts by these factors', () => {
+    const sx = Math.max(0.001, parseFloat(sizeInputs![0].value) || 1);
+    const sy = Math.max(0.001, parseFloat(sizeInputs![1].value) || 1);
+    const sz = Math.max(0.001, parseFloat(sizeInputs![2].value) || 1);
+    applyResize([sx, sy, sz]);
+    // Reset back to 1 so the next Apply is relative to the current size,
+    // not stacked onto the previous factor (matches user mental model).
+    sizeInputs![0].value = '1';
+    sizeInputs![1].value = '1';
+    sizeInputs![2].value = '1';
+  });
+  const resetSizeBtn = paletteButton('⟲ 1×', 'Reset the factors to 1', () => {
+    sizeInputs![0].value = '1';
+    sizeInputs![1].value = '1';
+    sizeInputs![2].value = '1';
+  });
+  sizeBtnRow.append(applySizeBtn, resetSizeBtn);
+  sizeSectionEl.appendChild(sizeBtnRow);
+  p.appendChild(sizeSectionEl);
+
+  // --- Align (2+ selected) ---
+  alignSectionEl = document.createElement('div');
+  alignSectionEl.appendChild(sectionLabel('Align'));
+  const alignGrid = document.createElement('div');
+  alignGrid.className = 'grid grid-cols-3 gap-1 mb-1';
+  // Three rows (X, Y, Z) × three modes (min / center / max).
+  // Symbols: ┤ ┼ ├ for the visual surface cue.
+  const axisRows: Array<[AlignAxis, string]> = [['x', 'X'], ['y', 'Y'], ['z', 'Z']];
+  const modes: Array<[AlignMode, string, string]> = [
+    ['min', '⊣', 'min surface (left / front / bottom)'],
+    ['center', '⊢⊣', 'center'],
+    ['max', '⊢', 'max surface (right / back / top)'],
+  ];
+  for (const [axis, axisLabel] of axisRows) {
+    for (const [mode, glyph, hint] of modes) {
+      const btn = paletteButton(
+        `${axisLabel} ${glyph}`,
+        `Align selected parts on ${axisLabel} — ${hint}`,
+        () => applyAlign(axis, mode),
+      );
+      alignGrid.appendChild(btn);
+    }
+  }
+  alignSectionEl.appendChild(alignGrid);
+  p.appendChild(alignSectionEl);
+
   // --- Boolean operations ---
   opsSectionEl = document.createElement('div');
   opsSectionEl.appendChild(sectionLabel('Operations'));
@@ -476,6 +615,204 @@ function buildPanel(): HTMLElement {
   setTimeout(() => { rerenderSelectionUI(); refreshForLanguage(); }, 0);
 
   return shell;
+}
+
+// ---------------------------------------------------------------------------
+// Move / Resize / Align — shared writeback used by Arrange-mode drag and the
+// Size/Align buttons. Extracted to module scope so Arrange's pointer handlers
+// can call writebackMoveDelta without re-creating the closure (and so a single
+// implementation covers every per-engine quirk: scad statement re-emit, voxel
+// integer snap, js/brep `.translate([…])` append).
+// ---------------------------------------------------------------------------
+
+/** Persist a position delta for a named part: rewrite the code's translate,
+ *  bump the in-memory spec, and shift the registry bbox. Returns true on
+ *  commit. Voxel deltas are snapped to whole voxels so spec/code/registry
+ *  stay on the integer lattice and don't drift across repeated drags. */
+function writePartTranslateDelta(name: string, delta: Vec3): boolean {
+  if (!cb) return false;
+  if (Math.abs(delta[0]) < 1e-5 && Math.abs(delta[1]) < 1e-5 && Math.abs(delta[2]) < 1e-5) return false;
+  const lang = cb.getLanguage();
+  let eff: Vec3 = delta;
+  let newCode: string;
+  if (lang === 'scad') {
+    const part = scanParts(cb.getCode(), 'scad').find(p => p.name === name);
+    if (!part?.range) {
+      cb.showToast('Could not locate that part in the SCAD code.', { variant: 'warn' });
+      return false;
+    }
+    newCode = setPartTranslateDeltaScad(cb.getCode(), part.range, delta);
+  } else if (lang === 'voxel') {
+    eff = [Math.round(delta[0]), Math.round(delta[1]), Math.round(delta[2])];
+    if (eff[0] === 0 && eff[1] === 0 && eff[2] === 0) return false;
+    const spec = specByName.get(name);
+    const part = scanParts(cb.getCode(), 'voxel').find(p => p.name === name);
+    if (!spec || !part?.range) {
+      cb.showToast('Could not locate that voxel shape in the code.', { variant: 'warn' });
+      return false;
+    }
+    const old = spec.position ?? [0, 0, 0];
+    const moved = { ...spec, position: [old[0] + eff[0], old[1] + eff[1], old[2] + eff[2]] as Vec3 } as PrimitiveSpec;
+    const colour = /'(#[0-9a-fA-F]{3,8})'/.exec(part.statement ?? '');
+    const stmt = emitPrimitiveVoxel(moved, voxelGridVar(cb.getCode()), colour ? colour[1] : VOXEL_DEFAULT_COLOR);
+    newCode = replaceVoxelStatement(cb.getCode(), part.range, stmt);
+  } else {
+    newCode = setPartTranslateDeltaJs(cb.getCode(), name, delta);
+  }
+  cb.setCode(newCode);
+  const spec = specByName.get(name);
+  if (spec) {
+    const p = spec.position ?? [0, 0, 0];
+    spec.position = [p[0] + eff[0], p[1] + eff[1], p[2] + eff[2]];
+  }
+  const entry = registry.get(name);
+  if (entry) registry.set(name, translateEntry(entry, eff));
+  return true;
+}
+
+/** Shift the registry bbox for a single part by `delta`. Exposed to arrangeMode
+ *  so the bounding-box overlay can preview a moved position without waiting for
+ *  the engine re-run. Idempotent: no-op when the part isn't in the registry. */
+function bumpRegistryFor(name: string, delta: Vec3): void {
+  const entry = registry.get(name);
+  if (!entry) return;
+  registry.set(name, translateEntry(entry, delta));
+}
+
+/** Scale a palette-inserted part in place: insert (or compound) a `.scale([…])`
+ *  into the part's chain via the per-engine codegen, then update the in-memory
+ *  spec so further drags/rebuilds see the new dimensions. Skips parts without
+ *  a known spec (hand-written, no palette provenance) with a toast — resize
+ *  needs the spec to track the new size and to rebuild the registry bbox.
+ *
+ *  Voxel falls back to spec rewrite + re-emit (voxel statements bake their
+ *  dimensions into integer args — there's no chain to wrap), with the geometric
+ *  mean of any anisotropic factors for rotationally-symmetric primitives so a
+ *  sphere/torus stays watertight at integer lattice resolution. */
+function applyResize(scale: Vec3): void {
+  if (!cb) return;
+  if (scale[0] === 1 && scale[1] === 1 && scale[2] === 1) return;
+  if (scale[0] <= 0 || scale[1] <= 0 || scale[2] <= 0) {
+    cb.showToast('Scale factors must be positive.', { variant: 'warn' });
+    return;
+  }
+  const lang = cb.getLanguage();
+  const names = [...selection];
+  if (names.length === 0) return;
+  const skipped: string[] = [];
+  let appliedAny = false;
+  for (const name of names) {
+    if (lang === 'voxel') {
+      const spec = specByName.get(name);
+      const part = scanParts(cb.getCode(), 'voxel').find(p => p.name === name);
+      if (!spec || !part?.range) { skipped.push(name); continue; }
+      const scaled = scaleSpecForVoxel(spec, scale);
+      const colour = /'(#[0-9a-fA-F]{3,8})'/.exec(part.statement ?? '');
+      const stmt = emitPrimitiveVoxel(scaled, voxelGridVar(cb.getCode()), colour ? colour[1] : VOXEL_DEFAULT_COLOR);
+      cb.setCode(replaceVoxelStatement(cb.getCode(), part.range, stmt));
+      specByName.set(name, scaled);
+      registry.set(name, primitiveEntry(scaled));
+      appliedAny = true;
+    } else if (lang === 'scad') {
+      const part = scanParts(cb.getCode(), 'scad').find(p => p.name === name);
+      if (!part?.range) { skipped.push(name); continue; }
+      cb.setCode(setPartScaleScad(cb.getCode(), part.range, scale));
+      bumpRegistryAfterScale(name, scale);
+      appliedAny = true;
+    } else {
+      // manifold-js + replicad
+      const code = cb.getCode();
+      const updated = setPartScaleJs(code, name, scale);
+      if (updated === code) { skipped.push(name); continue; }
+      cb.setCode(updated);
+      bumpRegistryAfterScale(name, scale);
+      appliedAny = true;
+    }
+  }
+  if (skipped.length > 0) {
+    cb.showToast(
+      skipped.length === names.length
+        ? 'Resize could not locate the selected parts in the code.'
+        : `Resized ${names.length - skipped.length}; skipped ${skipped.length} (no matching declaration).`,
+      { variant: skipped.length === names.length ? 'warn' : 'neutral' },
+    );
+  }
+  if (appliedAny) {
+    cb.run();
+    refreshArrangeOverlay();
+  }
+}
+
+/** For voxel-engine resize, rewrite the spec's dimensions directly — voxel
+ *  statements bake their bbox into integer coordinate args, so there's no
+ *  `.scale` chain to splice. Rotationally-symmetric primitives can't be split
+ *  anisotropically at the grid level, so they take the geometric mean of the
+ *  in-plane factors. */
+function scaleSpecForVoxel(spec: PrimitiveSpec, s: Vec3): PrimitiveSpec {
+  const gm = (...idx: number[]): number => Math.pow(idx.reduce((a, i) => a * s[i], 1), 1 / idx.length);
+  switch (spec.kind) {
+    case 'cube':
+      return { ...spec, size: [spec.size[0] * s[0], spec.size[1] * s[1], spec.size[2] * s[2]] };
+    case 'sphere':
+      return { ...spec, radius: spec.radius * gm(0, 1, 2) };
+    case 'cylinder':
+      return { ...spec, radius: spec.radius * gm(0, 1), height: spec.height * s[2] };
+    case 'torus':
+      return { ...spec, majorRadius: spec.majorRadius * gm(0, 1), tubeRadius: spec.tubeRadius * gm(0, 1, 2) };
+    default:
+      return spec;
+  }
+}
+
+/** After a `.scale([sx,sy,sz])` is applied, the part's bbox grows around its
+ *  origin. For palette-inserted parts whose spec keeps a known centroid this is
+ *  the cleanest update: scale the bbox extents around `entry.center` (the
+ *  shape's anchor before any explicit translate). Hand-written parts with no
+ *  spec still get a registry update so the overlay tracks them at the new size. */
+function bumpRegistryAfterScale(name: string, scale: Vec3): void {
+  const entry = registry.get(name);
+  if (!entry) return;
+  const c = entry.center;
+  const min: Vec3 = [
+    c[0] + (entry.box.min[0] - c[0]) * scale[0],
+    c[1] + (entry.box.min[1] - c[1]) * scale[1],
+    c[2] + (entry.box.min[2] - c[2]) * scale[2],
+  ];
+  const max: Vec3 = [
+    c[0] + (entry.box.max[0] - c[0]) * scale[0],
+    c[1] + (entry.box.max[1] - c[1]) * scale[1],
+    c[2] + (entry.box.max[2] - c[2]) * scale[2],
+  ];
+  registry.set(name, { box: { min, max }, center: c });
+  const spec = specByName.get(name);
+  if (spec) {
+    // Track the scale in the spec's ambient dimensions where applicable so a
+    // follow-up drag emits coordinates consistent with the new size. For
+    // shapes without a single dimensions slot we leave the spec unchanged —
+    // the bbox above is what arrange-mode actually queries.
+    if (spec.kind === 'cube' || spec.kind === 'wedge') {
+      spec.size = [spec.size[0] * scale[0], spec.size[1] * scale[1], spec.size[2] * scale[2]];
+    }
+  }
+}
+
+/** Align 2+ selected parts to a common surface (min / center / max) along an
+ *  axis. The reference point is the union of all selected bboxes, matching
+ *  Tinkercad's "align to selection". For each part we emit the translate delta
+ *  through the per-engine path (so e.g. SCAD wraps with a leading `translate`
+ *  if there isn't one already). */
+function applyAlign(axis: AlignAxis, mode: AlignMode): void {
+  if (!cb || selection.size < 2) return;
+  const deltas = alignDeltas(selection, registry, axis, mode);
+  if (deltas.size === 0) return;
+  let anyApplied = false;
+  for (const [name, delta] of deltas) {
+    if (writePartTranslateDelta(name, delta)) anyApplied = true;
+  }
+  if (anyApplied) {
+    cb.run();
+    refreshArrangeOverlay();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -529,6 +866,11 @@ function rerenderSelectionUI(): void {
       btn.classList.toggle('cursor-not-allowed', !enabled);
     }
   }
+  // Size: 1+ selected; Align: 2+ selected. Hidden otherwise so the panel stays
+  // dense for the common "nothing selected yet" state.
+  sizeSectionEl?.classList.toggle('hidden', selection.size === 0);
+  alignSectionEl?.classList.toggle('hidden', selection.size < 2);
+  refreshArrangeOverlay();
 }
 
 // ---------------------------------------------------------------------------
@@ -1230,438 +1572,6 @@ function partRangeFor(name: string): { from: number; to: number } | undefined {
   return scanParts(cb.getCode(), 'scad').find(p => p.name === name)?.range;
 }
 
-
-// ---------------------------------------------------------------------------
-// Build mode (Tinkercad-style: inserted shapes shown separately, drag to move)
-// ---------------------------------------------------------------------------
-
-let buildCleanup: (() => void) | null = null;
-
-function buildProxyGeometry(spec: PrimitiveSpec): THREE.BufferGeometry {
-  switch (spec.kind) {
-    case 'cube':
-      return new THREE.BoxGeometry(spec.size[0], spec.size[1], spec.size[2]);
-    case 'sphere':
-      return new THREE.SphereGeometry(spec.radius, 32, 20);
-    case 'cylinder': {
-      const g = new THREE.CylinderGeometry(spec.radius, spec.radius, spec.height, 40);
-      g.rotateX(Math.PI / 2); // three cylinders are Y-up; our world is Z-up
-      return g;
-    }
-    case 'cone': {
-      const g = new THREE.CylinderGeometry(Math.max(spec.radiusTop, 1e-4), spec.radiusBottom, spec.height, 40);
-      g.rotateX(Math.PI / 2);
-      return g;
-    }
-    case 'torus': {
-      // Three TorusGeometry lies in XY by default but with Z as the axis of
-      // rotational symmetry — that's already our convention.
-      const seg = Math.max(4, Math.floor(spec.segments));
-      return new THREE.TorusGeometry(spec.majorRadius, spec.tubeRadius, 16, seg);
-    }
-    case 'tube': {
-      // Solid-outer approximation is fine for the proxy (the hole isn't
-      // visually critical when dragging).
-      const g = new THREE.CylinderGeometry(spec.outerRadius, spec.outerRadius, spec.height, 40);
-      g.rotateX(Math.PI / 2);
-      return g;
-    }
-    case 'wedge': {
-      const [x, y, z] = spec.size;
-      const shape = new THREE.Shape();
-      shape.moveTo(0, 0);
-      shape.lineTo(x, 0);
-      shape.lineTo(0, y);
-      shape.lineTo(0, 0);
-      const g = new THREE.ExtrudeGeometry(shape, { depth: z, bevelEnabled: false });
-      if (spec.center) g.translate(-x / 2, -y / 2, -z / 2);
-      return g;
-    }
-    case 'pyramid': {
-      // 4-sided cone = square pyramid (Three rotates the base by π/4 by default,
-      // which is fine — proxy just needs to be visually plausible).
-      const g = new THREE.ConeGeometry(spec.baseSize / Math.SQRT2, spec.height, 4);
-      g.rotateX(Math.PI / 2);
-      return g;
-    }
-    case 'polygon': {
-      const g = new THREE.CylinderGeometry(spec.radius, spec.radius, spec.height, Math.max(3, spec.sides));
-      g.rotateX(Math.PI / 2);
-      return g;
-    }
-    case 'hemisphere': {
-      // Three's SphereGeometry takes (r, ws, hs, phiStart, phiLength, thetaStart, thetaLength).
-      // Default sphere has its polar axis along Y. We want the dome along +Z, so rotate it.
-      const g = new THREE.SphereGeometry(spec.radius, 32, 20, 0, Math.PI * 2, 0, Math.PI / 2);
-      g.rotateX(Math.PI / 2); // Y-up dome → Z-up dome
-      return g;
-    }
-    case 'tetrahedron': {
-      // TetrahedronGeometry's `r` is the circumradius. Our tetrahedron has
-      // vertices at the 4 alternating corners of [-s, s]^3, so circumradius = s√3.
-      return new THREE.TetrahedronGeometry((spec.size / 2) * Math.sqrt(3));
-    }
-    case 'star': {
-      const n = Math.max(3, Math.floor(spec.points));
-      const shape = new THREE.Shape();
-      for (let i = 0; i < n * 2; i++) {
-        const a = (i / (n * 2)) * Math.PI * 2;
-        const r = i % 2 === 0 ? spec.outerRadius : spec.innerRadius;
-        const x = r * Math.cos(a);
-        const y = r * Math.sin(a);
-        if (i === 0) shape.moveTo(x, y);
-        else shape.lineTo(x, y);
-      }
-      shape.closePath();
-      const g = new THREE.ExtrudeGeometry(shape, { depth: spec.height, bevelEnabled: false });
-      if (spec.center) g.translate(0, 0, -spec.height / 2);
-      return g;
-    }
-  }
-}
-
-function hashHue(name: string): number {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  return h % 360;
-}
-
-/** Enter "build" mode: hide the merged result and show each inserted primitive
- *  as its own draggable proxy. Selecting + dragging a shape rewrites that part's
- *  `translate([…])` in the code. Stage-1 Tinkercad prototype — works on shapes
- *  created via the palette this session (in-memory specs). */
-function startBuildSession(): void {
-  if (!cb) return;
-  if (buildCleanup) { buildCleanup(); }
-  const canvas = cb.getCanvas();
-  const camera = cb.getCamera();
-  if (!canvas || !camera) {
-    cb.showToast('No viewport available.', { variant: 'warn' });
-    return;
-  }
-
-  // Scene objects = palette-created primitives still present in the code.
-  const present = new Set(scanParts(cb.getCode(), cb.getLanguage()).map(p => p.name));
-  const objects = [...specByName.entries()].filter(([n]) => present.has(n));
-  if (objects.length === 0) {
-    cb.showToast('Insert shapes with the palette first — Build arranges the shapes you created this session.', {
-      variant: 'warn',
-    });
-    return;
-  }
-
-  // Single-open exclusion across viewport tools is handled by the registry;
-  // simply close the palette so its panel doesn't shadow the build session.
-  closeInsertPalette();
-
-  const scene = getScene();
-  const meshGroup = getMeshGroup();
-  const prevVisible = meshGroup.visible;
-  meshGroup.visible = false; // hide the merged result; show separate shapes instead
-
-  const buildGroup = new THREE.Group();
-  scene.add(buildGroup);
-  const proxyByName = new Map<string, THREE.Mesh>();
-  for (const [name, spec] of objects) {
-    const geo = buildProxyGeometry(spec);
-    const mat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(`hsl(${hashHue(name)}, 60%, 60%)`),
-      transparent: true,
-      opacity: 0.85,
-      roughness: 0.65,
-      metalness: 0,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    const c = primitiveEntry(spec).center;
-    mesh.position.set(c[0], c[1], c[2]);
-    mesh.name = name;
-    buildGroup.add(mesh);
-    proxyByName.set(name, mesh);
-  }
-
-  let selectedName: string | null = null;
-  let selectedMesh: THREE.Mesh | null = null;
-  let baseline: THREE.Vector3 | null = null;
-  let gizmo: TransformControls | null = null;
-  let helper: THREE.Object3D | null = null;
-
-  const bar = document.createElement('div');
-  bar.className =
-    'fixed left-1/2 -translate-x-1/2 bottom-6 z-50 flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-800/95 border border-zinc-600 shadow-xl text-xs text-zinc-100';
-  const msg = document.createElement('span');
-  msg.textContent = 'Build mode — drag a shape to slide it, or click to grab its arrows.';
-  bar.appendChild(msg);
-  const doneBtn = document.createElement('button');
-  doneBtn.className = BUTTON_PRIMARY + ' !py-1';
-  doneBtn.textContent = 'Done';
-  bar.appendChild(doneBtn);
-  document.body.appendChild(bar);
-
-  const setEmissive = (mesh: THREE.Mesh | null, on: boolean): void => {
-    if (mesh) (mesh.material as THREE.MeshStandardMaterial).emissive.setHex(on ? 0x2a3f66 : 0x000000);
-  };
-
-  const clearSelection = (): void => {
-    if (gizmo) { gizmo.detach(); gizmo.dispose(); gizmo = null; }
-    if (helper) { helper.parent?.remove(helper); helper = null; }
-    setEmissive(selectedMesh, false);
-    selectedMesh = null;
-    selectedName = null;
-    baseline = null;
-    setGizmoLock(false);
-  };
-
-  /** Persist a position delta for a named part: rewrite the code's translate,
-   *  bump the in-memory spec, and shift the registry bbox. Shared by the
-   *  gizmo's drop handler and the freehand body-drag below. No-op for sub-
-   *  epsilon deltas so a stray click doesn't churn the editor. */
-  const writeMoveDelta = (name: string, delta: Vec3): boolean => {
-    if (!cb) return false;
-    if (Math.abs(delta[0]) < 1e-5 && Math.abs(delta[1]) < 1e-5 && Math.abs(delta[2]) < 1e-5) return false;
-    const lang = cb.getLanguage();
-    // `eff` is the delta we actually persist. For voxels it's snapped to the
-    // integer lattice (below) so the emitted code, the in-memory spec, and the
-    // registry bbox all stay on the same grid — no sub-voxel drift across drags.
-    let eff: Vec3 = delta;
-    let newCode: string;
-    if (lang === 'scad') {
-      const part = scanParts(cb.getCode(), 'scad').find(p => p.name === name);
-      if (!part?.range) {
-        cb.showToast('Could not locate that part in the SCAD code.', { variant: 'warn' });
-        return false;
-      }
-      newCode = setPartTranslateDeltaScad(cb.getCode(), part.range, delta);
-    } else if (lang === 'voxel') {
-      // Voxels bake position into integer coordinate args (no translate to
-      // bump), so snap the drag to whole voxels and re-emit the fill statement
-      // at the moved position. Preserve the statement's colour literal so a
-      // recolour isn't lost on drag.
-      eff = [Math.round(delta[0]), Math.round(delta[1]), Math.round(delta[2])];
-      if (eff[0] === 0 && eff[1] === 0 && eff[2] === 0) return false;
-      const spec = specByName.get(name);
-      const part = scanParts(cb.getCode(), 'voxel').find(p => p.name === name);
-      if (!spec || !part?.range) {
-        cb.showToast('Could not locate that voxel shape in the code.', { variant: 'warn' });
-        return false;
-      }
-      const old = spec.position ?? [0, 0, 0];
-      const moved = { ...spec, position: [old[0] + eff[0], old[1] + eff[1], old[2] + eff[2]] as Vec3 } as PrimitiveSpec;
-      const colour = /'(#[0-9a-fA-F]{3,8})'/.exec(part.statement ?? '');
-      const stmt = emitPrimitiveVoxel(moved, voxelGridVar(cb.getCode()), colour ? colour[1] : VOXEL_DEFAULT_COLOR);
-      newCode = replaceVoxelStatement(cb.getCode(), part.range, stmt);
-    } else {
-      // manifold-js + replicad share the `.translate([…])` writeback.
-      newCode = setPartTranslateDeltaJs(cb.getCode(), name, delta);
-    }
-    cb.setCode(newCode);
-    const spec = specByName.get(name);
-    if (spec) {
-      const p = spec.position ?? [0, 0, 0];
-      spec.position = [p[0] + eff[0], p[1] + eff[1], p[2] + eff[2]];
-    }
-    const entry = registry.get(name);
-    if (entry) registry.set(name, translateEntry(entry, eff));
-    return true;
-  };
-
-  const commitMove = (): void => {
-    if (!selectedMesh || !baseline || !selectedName) return;
-    const delta: Vec3 = [
-      selectedMesh.position.x - baseline.x,
-      selectedMesh.position.y - baseline.y,
-      selectedMesh.position.z - baseline.z,
-    ];
-    if (writeMoveDelta(selectedName, delta)) {
-      baseline = selectedMesh.position.clone();
-    }
-  };
-
-  /** Cast the pointer ray from the camera onto the horizontal plane Z=z and
-   *  return the world-space hit. Used by the body-drag to slide a proxy
-   *  freehand along its current Z while keeping the cursor under the spot
-   *  where the user grabbed it. */
-  const projectToPlaneZ = (clientX: number, clientY: number, z: number): THREE.Vector3 | null => {
-    const rect = canvas.getBoundingClientRect();
-    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
-    const ray = new THREE.Raycaster();
-    ray.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
-    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -z);
-    const hit = new THREE.Vector3();
-    return ray.ray.intersectPlane(plane, hit) ? hit : null;
-  };
-
-  const selectPart = (name: string): void => {
-    clearSelection();
-    const mesh = proxyByName.get(name);
-    if (!mesh) return;
-    selectedName = name;
-    selectedMesh = mesh;
-    baseline = mesh.position.clone();
-    setEmissive(mesh, true);
-
-    gizmo = new TransformControls(camera, canvas);
-    gizmo.setMode('translate');
-    gizmo.setSize(0.9);
-    gizmo.attach(mesh);
-    helper = gizmo.getHelper();
-    scene.add(helper);
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    gizmo.addEventListener('dragging-changed', (e: any) => {
-      setGizmoLock(e.value === true || gizmo!.axis !== null);
-      if (e.value === false) commitMove();
-    });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    gizmo.addEventListener('axis-changed', (e: any) => {
-      setGizmoLock(e.value !== null || gizmo!.dragging);
-    });
-
-    msg.textContent = `Selected "${name}" — drag the body or the arrows to move. Click another shape to switch.`;
-  };
-
-  const raycastProxy = (clientX: number, clientY: number): string | null => {
-    const rect = canvas.getBoundingClientRect();
-    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
-    const ray = new THREE.Raycaster();
-    ray.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
-    const hits = ray.intersectObjects(buildGroup.children, false);
-    return hits.length > 0 ? hits[0].object.name || null : null;
-  };
-
-  // Freehand body-drag: pointerdown on a proxy starts a drag that, once the
-  // pointer moves past a small threshold, slides the proxy across the Z=
-  // currentZ plane so the grabbed point stays under the cursor (Tinkercad-
-  // style "drag the body, not the arrows"). A pointerdown that doesn't move
-  // far enough is treated as a click → select.
-  let downX = 0;
-  let downY = 0;
-  let bodyDrag: {
-    name: string;
-    mesh: THREE.Mesh;
-    baseline: THREE.Vector3;
-    offset: THREE.Vector2; // (worldHit - mesh.position) at pointerdown
-    planeZ: number;
-    active: boolean;
-  } | null = null;
-
-  const onDown = (e: PointerEvent): void => {
-    downX = e.clientX; downY = e.clientY;
-    // Let the gizmo handle its own axis/plane drag if one is already in
-    // flight. We don't check `gizmo.axis` (hover state) because raycastProxy
-    // below filters to proxy hits only — a pointerdown on a gizmo arrow
-    // misses the proxy, so body-drag never engages and the gizmo takes the
-    // event natively.
-    if (gizmo?.dragging) return;
-    const name = raycastProxy(e.clientX, e.clientY);
-    if (!name) return;
-    const mesh = proxyByName.get(name);
-    if (!mesh) return;
-    const worldPt = projectToPlaneZ(e.clientX, e.clientY, mesh.position.z);
-    if (!worldPt) return;
-    bodyDrag = {
-      name,
-      mesh,
-      baseline: mesh.position.clone(),
-      offset: new THREE.Vector2(worldPt.x - mesh.position.x, worldPt.y - mesh.position.y),
-      planeZ: mesh.position.z,
-      active: false,
-    };
-    canvas.setPointerCapture(e.pointerId);
-  };
-
-  const onMove = (e: PointerEvent): void => {
-    if (!bodyDrag) return;
-    if (!bodyDrag.active) {
-      // Wait for the pointer to move past the threshold before treating it
-      // as a drag — otherwise a steady-handed click becomes a phantom move.
-      if (Math.abs(e.clientX - downX) <= 4 && Math.abs(e.clientY - downY) <= 4) return;
-      bodyDrag.active = true;
-      setGizmoLock(true); // suppress orbit-camera so the drag isn't a fight
-      // Make the dragged part the selection (gizmo follows it). selectPart
-      // resets `baseline` to the mesh's current position, but we want our
-      // pre-drag baseline so the eventual write-back captures the full delta.
-      if (selectedName !== bodyDrag.name) {
-        selectPart(bodyDrag.name);
-        baseline = bodyDrag.baseline.clone();
-      }
-    }
-    const worldPt = projectToPlaneZ(e.clientX, e.clientY, bodyDrag.planeZ);
-    if (!worldPt) return;
-    bodyDrag.mesh.position.set(
-      worldPt.x - bodyDrag.offset.x,
-      worldPt.y - bodyDrag.offset.y,
-      bodyDrag.planeZ,
-    );
-  };
-
-  const onUp = (e: PointerEvent): void => {
-    // The gizmo's `axis` field is just hover state — `pointermove` parks it
-    // on 'X' when the cursor sweeps over an arrow during a body-drag, but the
-    // actual drag is ours and must commit. Only defer to the gizmo when an
-    // actual gizmo drag is in flight (its own pointer capture is active).
-    if (gizmo?.dragging) return;
-    if (bodyDrag) {
-      if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-      if (bodyDrag.active) {
-        // Commit the freehand move.
-        const delta: Vec3 = [
-          bodyDrag.mesh.position.x - bodyDrag.baseline.x,
-          bodyDrag.mesh.position.y - bodyDrag.baseline.y,
-          bodyDrag.mesh.position.z - bodyDrag.baseline.z,
-        ];
-        if (writeMoveDelta(bodyDrag.name, delta)) {
-          // Keep the gizmo in sync with the dropped position so the next
-          // gizmo drag computes the correct delta.
-          if (selectedMesh === bodyDrag.mesh) baseline = bodyDrag.mesh.position.clone();
-        }
-        setGizmoLock(false);
-      } else {
-        // No real movement — treat as a click → select.
-        selectPart(bodyDrag.name);
-      }
-      bodyDrag = null;
-      return;
-    }
-    // Pointer never went over a proxy at pointerdown: bare click on empty
-    // space below the threshold doesn't do anything (orbit-camera already
-    // handled drags above).
-    if (Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4) return;
-    const name = raycastProxy(e.clientX, e.clientY);
-    if (name) selectPart(name);
-  };
-
-  canvas.addEventListener('pointerdown', onDown);
-  canvas.addEventListener('pointermove', onMove);
-  canvas.addEventListener('pointerup', onUp);
-
-  const endSession = (): void => {
-    clearSelection();
-    for (const mesh of proxyByName.values()) {
-      mesh.geometry.dispose();
-      (mesh.material as THREE.Material).dispose();
-    }
-    buildGroup.parent?.remove(buildGroup);
-    meshGroup.visible = prevVisible;
-    canvas.removeEventListener('pointerdown', onDown);
-    canvas.removeEventListener('pointermove', onMove);
-    canvas.removeEventListener('pointerup', onUp);
-    document.removeEventListener('keydown', onKey);
-    bar.remove();
-    bodyDrag = null;
-    buildCleanup = null;
-    cb?.run(); // refresh the merged result now that we're back
-    // Reopen the palette so Move/arrange reads as a round-trip toggle.
-    openInsertPalette();
-  };
-
-  const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') endSession(); };
-  document.addEventListener('keydown', onKey);
-
-  doneBtn.addEventListener('click', endSession);
-  buildCleanup = endSession;
-}
 
 // ---------------------------------------------------------------------------
 // Multi-select 3D-pick session (Stage B: Tinkercad-style click-to-select)

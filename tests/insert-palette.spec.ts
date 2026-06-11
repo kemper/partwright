@@ -232,26 +232,38 @@ test.describe('Insert palette', () => {
     expect(await getCode(page)).not.toContain('union');
   });
 
-  test('Build mode freehand body-drag rewrites the part translate', async ({ page }) => {
+  test('Arrange mode: drag on the real model writes a .translate(...) on commit', async ({ page }) => {
     await gotoEditor(page);
-    // Pin a clean starter so the inserted cube is the only/primary part.
+    // Pin a clean starter so the inserted cube is the only / primary part.
     await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
       .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
     await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
     await page.locator('#btn-insert').dispatchEvent('click');
 
-    // Insert a centered cube so the proxy renders at the canvas center.
+    // Insert a centered cube — the real merged model now has a `box` part the
+    // arrange-mode raycast will hit at canvas center.
     await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
     await expect.poll(() => getCode(page)).toContain('const box');
 
-    // Enter Build mode.
-    await page.locator('#insert-move-mode').click();
-    await expect(page.getByText(/Build mode/i)).toBeVisible();
+    // Move the palette panel out of the way so the real-model drag at canvas
+    // center isn't intercepted by the panel's DOM hit-test. In production the
+    // user drags the panel header to a free corner; here we set position
+    // directly. The canvas event listener captures the drag once we're free of
+    // the panel.
+    await page.evaluate(() => {
+      const p = document.querySelector('#insert-palette-panel') as HTMLElement | null;
+      if (p) { p.style.left = '8px'; p.style.top = '8px'; p.style.right = 'auto'; p.style.bottom = 'auto'; }
+    });
 
-    // Drag the proxy body (not the gizmo arrows) — start at canvas center,
-    // move a couple of hundred pixels away. Pointermove past the 4px threshold
-    // engages the freehand drag; pointerup commits the translate.
+    // Toggle Arrange on. The merged model stays visible (no modal proxy swap);
+    // canvas pointer events become select/drag instead of orbit.
+    await page.locator('#insert-arrange-toggle').click();
+    await expect(page.locator('#insert-arrange-toggle')).toContainText('ON');
+
+    // Drag from canvas center sideways. The pointer-down hits the real cube,
+    // pointer-move past the 4px threshold begins the ghost preview, pointer-up
+    // commits the delta through writePartTranslateDelta → engine re-runs.
     const box = await page.locator('canvas').first().boundingBox();
     if (!box) throw new Error('canvas missing');
     const startX = box.x + box.width / 2;
@@ -264,8 +276,9 @@ test.describe('Insert palette', () => {
     // The cube declaration should now carry a non-zero .translate(...).
     await expect.poll(() => getCode(page)).toMatch(/Manifold\.cube\([^)]+\)\.translate\(\[/);
 
-    // Exit cleanly.
-    await page.getByRole('button', { name: 'Done', exact: true }).click();
+    // Toggle Arrange off cleanly.
+    await page.locator('#insert-arrange-toggle').click();
+    await expect(page.locator('#insert-arrange-toggle')).not.toContainText('ON');
   });
 
   test('selection strip renders when picking parts via Select mode', async ({ page }) => {
@@ -300,33 +313,44 @@ test.describe('Insert palette', () => {
     await expect(deleteBtn).toBeEnabled();
   });
 
-  test('build mode: shapes render separately, select + gizmo session runs', async ({ page }) => {
+  test('Arrange mode: click on the real model selects + reveals Size/Align sections', async ({ page }) => {
     await gotoEditor(page);
-    // Pin a deterministic starter so the catalog sampler's existing parts
-    // don't compete with the palette-inserted cube for proxy raycast.
+    // Pin a deterministic starter so the catalog sampler's existing parts don't
+    // compete with the palette-inserted cube for the arrange-mode raycast.
     await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
       .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
     await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
 
     await page.locator('#btn-insert').dispatchEvent('click');
 
-    // Insert a centered cube so the build scene has a pickable part at the origin.
+    // Insert a centered cube so the merged model has a pickable part at the origin.
     await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toContain('const box');
 
-    // Enter build mode (closes the palette, hides the merged mesh, shows proxies).
-    await page.locator('#insert-move-mode').click();
-    await expect(page.getByText(/Build mode/i)).toBeVisible();
+    // Toggle Arrange on (replaces the old modal Build mode).
+    await page.locator('#insert-arrange-toggle').click();
+    await expect(page.locator('#insert-arrange-toggle')).toContainText('ON');
 
-    // Click the framed proxy at canvas-center to select it — constructs the
-    // TransformControls gizmo (verifies the path doesn't throw headless).
-    await page.locator('canvas').first().click();
-    // Match the build-mode bar exactly — main's image-paint UI also surfaces
-    // a "No image selected" string, so a bare /Selected/i would be ambiguous.
-    await expect(page.getByText(/Selected "/)).toBeVisible({ timeout: 5000 });
+    // Click the cube on the real, merged model — the canvas raycast resolves
+    // to the `box` part via the spatial registry. Dispatch directly on the
+    // canvas so the always-open palette panel doesn't shadow the hit-test in
+    // headless layout.
+    const cBox = await page.locator('canvas').first().boundingBox();
+    if (!cBox) throw new Error('canvas missing');
+    const cx = cBox.x + cBox.width / 2;
+    const cy = cBox.y + cBox.height / 2;
+    await page.locator('canvas').first().dispatchEvent('pointerdown', { clientX: cx, clientY: cy, button: 0, pointerId: 1, bubbles: true });
+    await page.locator('canvas').first().dispatchEvent('pointerup', { clientX: cx, clientY: cy, button: 0, pointerId: 1, bubbles: true });
 
-    // Exit cleanly.
-    await page.getByRole('button', { name: 'Done', exact: true }).click();
-    await expect(page.getByText(/Build mode/i)).toBeHidden();
+    // The Size section shows once 1+ parts are selected. The chip strip carries `box`.
+    await expect(page.locator('#insert-selection-strip').getByText('box', { exact: false })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator(palette).getByRole('button', { name: /Apply size/i })).toBeVisible();
+    // The Align section is hidden until a second part is selected.
+    await expect(page.locator(palette).getByRole('button', { name: /Align selected parts on X — min surface/ })).toBeHidden();
+
+    // Toggle Arrange off cleanly.
+    await page.locator('#insert-arrange-toggle').click();
+    await expect(page.locator('#insert-arrange-toggle')).not.toContainText('ON');
   });
 });

@@ -40,6 +40,8 @@ import {
   replaceScadRanges,
   setPartTranslateDeltaJs,
   setPartTranslateDeltaScad,
+  setPartScaleJs,
+  setPartScaleScad,
   mirrorPartJs,
   mirrorPartScad,
   duplicatePartJs,
@@ -50,6 +52,7 @@ import {
 } from '../src/insert/controller';
 import { primitiveEntry, unionBoxes, pickPart, translateEntry, type RegistryEntry } from '../src/insert/spatial';
 import { STARTERS } from '../src/editor/starters';
+import { alignDeltas } from '../src/insert/arrangeMath';
 
 test.describe('fmt', () => {
   test('trims trailing zeros and normalizes -0', () => {
@@ -954,3 +957,104 @@ test.describe('voxel scaffold (controller)', () => {
     expect(out).not.toContain('v.sphere([0,0,0]');
   });
 });
+
+test.describe('Arrange — per-axis scale codegen (setPartScale*)', () => {
+  test('JS: appends .scale before an existing .translate so position is preserved', () => {
+    const code = 'const { Manifold } = api;\nconst box = Manifold.cube([10, 10, 10], true).translate([5, 0, 0]);\nreturn box;';
+    const out = setPartScaleJs(code, 'box', [2, 1, 1]);
+    // .scale comes BEFORE .translate — scale around origin, then translate.
+    expect(out).toMatch(/Manifold\.cube\(\[10, 10, 10\], true\)\.scale\(\[2, 1, 1\]\)\.translate\(\[5, 0, 0\]\)/);
+  });
+
+  test('JS: with no existing translate appends .scale at the end', () => {
+    const code = 'const { Manifold } = api;\nconst box = Manifold.cube([10, 10, 10], true);\nreturn box;';
+    const out = setPartScaleJs(code, 'box', [3, 1, 1]);
+    expect(out).toContain('Manifold.cube([10, 10, 10], true).scale([3, 1, 1])');
+  });
+
+  test('JS: a second resize compounds onto the existing scale triple (no stacked .scale calls)', () => {
+    const code = 'const { Manifold } = api;\nconst box = Manifold.cube([10, 10, 10], true).scale([2, 1, 1]);\nreturn box;';
+    const out = setPartScaleJs(code, 'box', [2, 3, 1]);
+    // Compounds 2*2 / 1*3 / 1*1 = [4, 3, 1], no second .scale literal.
+    expect(out).toContain('.scale([4, 3, 1])');
+    expect(out.match(/\.scale\(/g)!.length).toBe(1);
+  });
+
+  test('JS: identity scale is a no-op', () => {
+    const code = 'const { Manifold } = api;\nconst box = Manifold.cube([10, 10, 10], true);\nreturn box;';
+    expect(setPartScaleJs(code, 'box', [1, 1, 1])).toBe(code);
+  });
+
+  test('JS: unknown part name returns code unchanged', () => {
+    const code = 'const { Manifold } = api;\nconst box = Manifold.cube([10, 10, 10], true);\nreturn box;';
+    expect(setPartScaleJs(code, 'missing', [2, 1, 1])).toBe(code);
+  });
+
+  test('SCAD: wraps the construction in scale() AFTER any leading translate', () => {
+    const code = "translate([5, 0, 0]) cube([10, 10, 10], center = true); // part: box\n";
+    const part = scanPartsScad(code)[0];
+    const out = setPartScaleScad(code, part.range!, [2, 1, 1]);
+    // Leading translate stays first; scale slips between it and the cube.
+    expect(out).toContain('translate([5, 0, 0]) scale([2, 1, 1]) cube([10, 10, 10]');
+  });
+
+  test('SCAD: with no leading translate prepends scale()', () => {
+    const code = 'cube([10, 10, 10], center = true); // part: box\n';
+    const part = scanPartsScad(code)[0];
+    const out = setPartScaleScad(code, part.range!, [3, 1, 1]);
+    expect(out).toMatch(/^scale\(\[3, 1, 1\]\) cube\(/m);
+  });
+
+  test('SCAD: a second resize compounds into the existing scale call', () => {
+    const code = 'scale([2, 1, 1]) cube([10, 10, 10], center = true); // part: box\n';
+    const part = scanPartsScad(code)[0];
+    const out = setPartScaleScad(code, part.range!, [2, 3, 1]);
+    expect(out).toMatch(/scale\(\[4, 3, 1\]\) cube/);
+    expect(out.match(/scale\(/g)!.length).toBe(1);
+  });
+});
+
+test.describe('Arrange — alignDeltas', () => {
+  function entry(min: [number, number, number], max: [number, number, number]): RegistryEntry {
+    return { box: { min, max }, center: [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2] };
+  }
+  test('aligns to the min X surface (leftmost edge wins)', () => {
+    const reg = new Map<string, RegistryEntry>([
+      ['a', entry([-5, -5, 0], [5, 5, 10])],   // X range [-5, 5]
+      ['b', entry([10, -5, 0], [20, 5, 10])],  // X range [10, 20]
+    ]);
+    const deltas = alignDeltas(['a', 'b'], reg, 'x', 'min');
+    // b needs to move so its min.x reaches -5 → delta = -5 - 10 = -15.
+    expect(deltas.get('a')).toBeUndefined(); // no-op for the reference part
+    expect(deltas.get('b')).toEqual([-15, 0, 0]);
+  });
+
+  test('aligns to the max Z surface (top)', () => {
+    const reg = new Map<string, RegistryEntry>([
+      ['a', entry([-5, -5, 0], [5, 5, 10])],   // Z max = 10
+      ['b', entry([-5, -5, 4], [5, 5, 6])],    // Z max = 6
+    ]);
+    const deltas = alignDeltas(['a', 'b'], reg, 'z', 'max');
+    expect(deltas.get('b')).toEqual([0, 0, 4]); // bump up by 4 so its top hits 10
+  });
+
+  test('aligns to the center along Y', () => {
+    const reg = new Map<string, RegistryEntry>([
+      ['a', entry([-5, 0, 0], [5, 10, 10])],   // Y center = 5
+      ['b', entry([-5, 20, 0], [5, 30, 10])],  // Y center = 25
+    ]);
+    const deltas = alignDeltas(['a', 'b'], reg, 'y', 'center');
+    // Combined Y span: 0..30 → center = 15. a shifts +10, b shifts -10.
+    expect(deltas.get('a')).toEqual([0, 10, 0]);
+    expect(deltas.get('b')).toEqual([0, -10, 0]);
+  });
+
+  test('skips parts not in the registry', () => {
+    const reg = new Map<string, RegistryEntry>([
+      ['a', entry([-5, -5, 0], [5, 5, 10])],
+    ]);
+    const deltas = alignDeltas(['a', 'ghost'], reg, 'x', 'min');
+    expect(deltas.size).toBe(0); // only one valid entry → nothing to align against
+  });
+});
+
