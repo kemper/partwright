@@ -62,13 +62,20 @@ if (PALETTE_FROM) {
 //   --require-labels a,b,c   fail if any listed label is missing — or, when a
 //                            palette is given, resolves to 0 painted triangles
 //                            (a buried/aliased-away feature)
-const MAX_GENUS = arg('max-genus') !== undefined ? Number(arg('max-genus')) : undefined;
+const hasFlag = (name) => process.argv.includes(`--${name}`);
+// hasFlag (not arg()) so a dangling `--max-genus` with no value errors instead
+// of silently disabling the gate.
+const MAX_GENUS = hasFlag('max-genus') ? Number(arg('max-genus')) : undefined;
 if (MAX_GENUS !== undefined && !Number.isFinite(MAX_GENUS)) {
   console.error('--max-genus must be a number');
   process.exit(2);
 }
 const REQUIRE_LABELS = (arg('require-labels') || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
+if (hasFlag('require-labels') && !REQUIRE_LABELS.length) {
+  console.error('--require-labels needs a comma-separated label list');
+  process.exit(2);
+}
 
 // hex '#rrggbb' -> [r,g,b] in 0..1 (paintByLabels color format)
 function hexToRgb(hex) {
@@ -206,7 +213,10 @@ async function main() {
   if (MAX_GENUS !== undefined) {
     const genus = result.stats && result.stats.genus;
     if (!Number.isFinite(genus)) {
-      gateFailures.push(`--max-genus ${MAX_GENUS}: genus unavailable in geometry stats`);
+      // genus is only computed for manifold mesh entries — voxel and
+      // render-only bakes report null. Fail closed (it's a quality gate),
+      // but say why so the caller drops the flag rather than chasing a bug.
+      gateFailures.push(`--max-genus ${MAX_GENUS}: genus not computed for this bake (only manifold mesh entries have one — drop the flag for voxel/render-only models)`);
     } else if (genus > MAX_GENUS) {
       gateFailures.push(`--max-genus ${MAX_GENUS}: baked genus is ${genus}`);
     }

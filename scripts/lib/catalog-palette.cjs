@@ -14,7 +14,10 @@ function rgbToHex(c) {
 function paletteFromEntry(entry) {
   const versions = (entry && entry.versions) || [];
   for (let i = versions.length - 1; i >= 0; i--) {
-    const byLabel = (versions[i].colorRegions || [])
+    // pre-1.1 export schemas stored regions under geometryData, not the version.
+    const regions = versions[i].colorRegions
+      || (versions[i].geometryData && versions[i].geometryData.colorRegions);
+    const byLabel = (regions || [])
       .filter((r) => r.descriptor && r.descriptor.kind === 'byLabel' && Array.isArray(r.color));
     if (byLabel.length) {
       const palette = {};

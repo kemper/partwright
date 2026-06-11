@@ -55,6 +55,12 @@ the two arm recipes plus a generalized lunge sweep (`flex N + knee N` keeps
 the shin vertical for N up to 85° — exactly the configuration the old
 cross-product knee hinge distorted as flex grew).
 
+**Review fixes (work-reviewer pass, 0 blocking)**: clearer `--max-genus`
+failure message when genus is null (voxel/render-only bakes — still fails
+closed, but names the cause); dangling `--max-genus`/`--require-labels`
+flags with no value now exit 2 instead of silently disabling the gate;
+`paletteFromEntry` falls back to pre-1.1 `geometryData.colorRegions`.
+
 **Verification**: end-to-end bake of the karate figure against a live dev
 server using `--palette-from-existing` + `--max-genus 3` +
 `--require-labels skin,eyes,iris,pupil,headband,belt` → all 11 labels
