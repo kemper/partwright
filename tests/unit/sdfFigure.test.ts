@@ -125,16 +125,23 @@ describe('figure rig — pose forward kinematics', () => {
   });
 
   it('sitting pose (flex 90, knee 90) bends BOTH shanks down, symmetrically', () => {
-    // Regression: flex 90 makes the thigh exactly parallel to body-front — the
-    // degenerate-hinge fallback. The old [side,0,0] fallback bent the LEFT
-    // knee up instead of down in the documented sitting recipe.
-    const rig = buildRig({ pose: { legs: { abduct: 0, flex: 90, knee: 90 } } });
-    for (const side of ['L', 'R'] as const) {
-      const K = rig.joints[`knee${side}`], A = rig.joints[`ankle${side}`];
-      expect(A[2]).toBeLessThan(K[2] - 1);     // shin drops below the knee
+    // Regression ×2: flex 90 makes the thigh (nearly) parallel to body-front.
+    // The old cross(dir, fwd) knee hinge degenerated there — exactly parallel
+    // bent the left knee UP ([side,0,0] fallback), and any nonzero abduct
+    // swung the shins SIDEWAYS frog-style (the tiny abduct component
+    // dominated the cross product). The frame-derived hinge must drop the
+    // shins straight down in a chair sit, with or without stance width.
+    for (const abduct of [0, 8]) {
+      const rig = buildRig({ pose: { legs: { abduct, flex: 90, knee: 90 } } });
+      for (const side of ['L', 'R'] as const) {
+        const K = rig.joints[`knee${side}`], A = rig.joints[`ankle${side}`];
+        expect(A[2]).toBeLessThan(K[2] - 1);     // shin drops below the knee
+        // and stays under it, not swung out sideways (frog-sit regression).
+        expect(Math.abs(A[0] - K[0])).toBeLessThan(2);
+      }
+      expect(rig.joints.ankleL[0]).toBeCloseTo(-rig.joints.ankleR[0], 5);
+      expect(rig.joints.ankleL[2]).toBeCloseTo(rig.joints.ankleR[2], 5);
     }
-    expect(rig.joints.ankleL[0]).toBeCloseTo(-rig.joints.ankleR[0], 5);
-    expect(rig.joints.ankleL[2]).toBeCloseTo(rig.joints.ankleR[2], 5);
   });
 
   it('knee flexion bends the shank BACKWARD (+Y), like a real knee', () => {

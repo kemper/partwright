@@ -309,16 +309,17 @@ function buildRig(rawOpts: unknown): Rig {
     dir = rotX(dir, -p.flex);
     dir = norm3(dir);
     const K = add3(Hj, scale3(dir, thighLen));
-    // Knee bends the shank backward (+Y) relative to the thigh. The hinge
-    // (cross of thigh dir and forward) points along −X for a downward leg, so
-    // the BACKWARD bend needs the negative angle (positive swings forward —
+    // Knee bends the shank backward (+Y) relative to the thigh, about the
+    // thigh's LATERAL axis: the rest hinge [−1,0,0] carried through the same
+    // abduct/flex rotations as the bone. (It was cross(dir, fwd) before,
+    // which degenerates toward a VERTICAL axis as flex → 90 with any nonzero
+    // abduct — the documented chair-sit pose then swung the shins sideways,
+    // frog-style, because the tiny abduct component dominated the cross
+    // product. The frame-derived hinge equals the old one wherever abduct or
+    // flex is ~0 — every catalog pose — and stays lateral when both are not.)
+    // The BACKWARD bend needs the negative angle (positive swings forward —
     // that sign error once gave lunges a horizontal shin floating mid-air).
-    let hinge = cross3(dir, fwd);
-    // Degenerate (thigh ∥ front, flex ±90 — the documented sitting pose):
-    // the continuous limit of dir × fwd is [−1,0,0] for both sides; the old
-    // [side,0,0] fallback bent the left knee the wrong way when sitting.
-    if (len3(hinge) < 1e-4) hinge = [-1, 0, 0];
-    hinge = norm3(hinge);
+    const hinge = norm3(rotX(rotY([-1, 0, 0], -side * p.abduct), -p.flex));
     const shankDir = norm3(rotAxis(dir, hinge, -(p.knee ?? 0)));
     const A = add3(K, scale3(shankDir, shankLen));
     return { Hj, K, A, dir, shankDir };
