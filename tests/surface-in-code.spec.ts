@@ -297,7 +297,7 @@ test.describe('api.surface.* (textures declared in code)', () => {
         'const { Manifold } = api;',
         "const box = api.label(Manifold.cube([16, 16, 16], true).translate([-6, 0, 0]), 'grip', { color: [0.2, 0.6, 1] });",
         'const ball = Manifold.sphere(9, 48).translate([7, 0, 0]);',
-        "api.surface.knurl({ label: 'grip', pitch: 2.4, amplitude: 0.7 });",
+        "api.surface.knurl({ label: 'grip', cellWidth: 2.4, amplitude: 0.7 });",
         'return box.add(ball);',
       ].join('\n')) as { triangleCount?: number };
       return { plainTris: plain.triangleCount ?? 0, scopedTris: scoped.triangleCount ?? 0, labels: pw.listLabels().labels };

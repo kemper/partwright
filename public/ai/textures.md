@@ -21,6 +21,7 @@ vertices along their normals.
 | `applyWaffleStitch` | Recessed grid cells with raised borders | Waffle-knit, waffle irons, honeycomb patterns |
 | `applyFurVelvet` | Directional anisotropic pile (velvet, fur, chenille) | Animal fur, velvet fabric, soft plush surfaces |
 | `applyWovenFabric` | Plain-weave over/under interlacing | Baskets, woven cloth, twill, burlap |
+| `applyKnurlTexture` | Functional grip relief — diamond / straight / ribs | Knobs, thumbscrews, tool handles, grips |
 | `applyVoronoiShell` | Organic cell-wall ridge network (Voronoi cells) | Lampshades, planters, vases, cracked-mud / dragonfly-wing shells |
 | `applyKnurlTexture` | Machinist grip: diamond cross-hatch pyramids or straight splines | Knobs, handles, tool grips, bottle caps (the `api.knurl` cylinders' texture counterpart) |
 
@@ -104,7 +105,7 @@ return body;
     ```js
     const grip = api.label(Manifold.cube([16,16,16], true).translate([-6,0,0]), 'grip');
     const body = Manifold.sphere(9, 48).translate([7,0,0]);
-    api.surface.knurl({ label: 'grip', pitch: 2.4 });  // only the cube knurls
+    api.surface.knurl({ label: 'grip', cellWidth: 2.4 });  // only the cube knurls
     return grip.add(body);
     ```
   - `region: { point: [x,y,z], radius }` — texture every triangle whose surface
@@ -311,6 +312,39 @@ slightly depressed.
 - Open weave / burlap: `threadWidth=0.35`, `threadSpacing=d*0.05`, `underDepth=0.5`
 - Tight fabric: `threadWidth=0.65`, `threadSpacing=d*0.03`, `underDepth=0.2`
 - Basket weave: `threadWidth=0.55`, `threadSpacing=d*0.06`, `underDepth=0.4`
+
+---
+
+## applyKnurlTexture
+
+```
+applyKnurlTexture({ amplitude?, cellWidth?, cellHeight?, style?, sharpness?,
+                    grainAngleDeg?, seed?, quality?, preserveColor? })
+```
+
+Functional grip relief, displaced along surface normals. This textures **any
+existing mesh** — distinct from the `api.knurl.*` shape generator (which builds
+a whole knurled cylinder). Use it to add grip to a knob, bottle, pen barrel, or
+handle you already modeled. Region-selectable (texture only painted triangles).
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `style` | `'diamond'` | `'diamond'` (cross-hatch), `'straight'` (axial splines), `'ribs'` (horizontal rings). |
+| `amplitude` | ~2% of diagonal | Peak ridge height. |
+| `cellWidth` | ~5% of diagonal | Ridge spacing along the column axis. |
+| `cellHeight` | = cellWidth | Ridge spacing along the row (Z) axis. For square diamonds keep equal to cellWidth. |
+| `sharpness` | 2 | Ridge crispness. 1 = soft rounded, 2–4 = crisp, 6+ = sharp peaks. |
+| `grainAngleDeg` | 0 | Rotate the grid in the XY plane. |
+| `seed` | 1 | Deterministic seed (reserved). |
+| `quality` | 3 | Mesh detail 1 (draft) to 5 (ultra). Higher = smoother, slower. |
+| `preserveColor` | true | Carry paint through subdivision. |
+
+**Look guidance:**
+- Thumbscrew grip: `style='diamond'`, `cellWidth=d*0.04`, `sharpness=2`
+- Knob splines: `style='straight'`, `cellWidth=d*0.05`
+- Finger ridges: `style='ribs'`, `cellHeight=d*0.06`
+
+In-code form: `api.surface.knurl({ style:'diamond', cellWidth: 2, amplitude: 0.6 })`.
 
 ---
 

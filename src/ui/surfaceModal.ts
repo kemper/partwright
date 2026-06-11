@@ -23,6 +23,7 @@ import { getCurrentMesh, previewTriangles } from '../color/paintMode';
 import { buildTriColors } from '../color/regions';
 import type { StampMask, EngraveProjection } from '../surface/modifiers';
 import { engravePlanarFootprint, engraveFreeFootprint } from '../surface/engraveStamp';
+import { listFilaments } from '../color/palette';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
@@ -35,7 +36,7 @@ export interface SurfaceApi {
   applyWaffleStitch(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; sharpness?: number; rowOffset?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyFurVelvet(opts?: { amplitude?: number; fiberSpacing?: number; fiberLength?: number; octaves?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyWovenFabric(opts?: { amplitude?: number; threadSpacing?: number; threadWidth?: number; underDepth?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
-  applyKnurlTexture(opts?: { amplitude?: number; pitch?: number; aspect?: number; pattern?: 'diamond' | 'straight'; grainAngleDeg?: number; seed?: number; quality?: number; selectedTriangles?: Set<number>; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyKnurlTexture(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; style?: 'diamond' | 'straight' | 'ribs'; sharpness?: number; grainAngleDeg?: number; seed?: number; quality?: number; selectedTriangles?: Set<number>; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiShell(opts?: { amplitude?: number; cellSize?: number; wallWidth?: number; raised?: boolean; jitter?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiLamp(opts?: { cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; jitter?: number; grainAngleDeg?: number; seed?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   buildEngraveStamp(spec?: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }): Promise<{ mask: StampMask; width: number; height: number } | { error: string }>;
@@ -237,6 +238,63 @@ function dropdown<T extends string>(
   sel.addEventListener('change', onChange);
   wrap.append(sel);
   return { wrap, get: () => sel.value as T };
+}
+
+/** Normalize any hex form to the `#rrggbb` a native colour input requires. */
+function toColorInputHex(hex: string): string {
+  let h = hex.trim().replace(/^#/, '');
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  return /^[0-9a-fA-F]{6}$/.test(h) ? `#${h.toLowerCase()}` : '#d4af37';
+}
+
+/** A colour control that mirrors the paint tools: the shared filament palette as
+ *  a swatch grid (click to pick a slot) plus a native picker for an off-palette
+ *  colour. Returns the current hex via `get()`. `onChange` fires on every pick.
+ *  Snapshots the palette at creation — the panel is short-lived, so it doesn't
+ *  subscribe to live palette edits the way the persistent paint drawer does. */
+function colorField(initial: string, onChange: () => void) {
+  const wrap = el('div', 'mb-3');
+  let value = toColorInputHex(initial);
+
+  const grid = el('div', 'grid grid-cols-6 gap-1.5 mb-2');
+  const swatches: { btn: HTMLButtonElement; hex: string }[] = [];
+  const syncRings = () => {
+    for (const s of swatches) {
+      const on = toColorInputHex(s.hex) === value;
+      s.btn.classList.toggle('border-white/80', on);
+      s.btn.classList.toggle('ring-1', on);
+      s.btn.classList.toggle('ring-white/30', on);
+      s.btn.classList.toggle('border-transparent', !on);
+    }
+  };
+
+  for (const f of listFilaments()) {
+    const btn = el('button', 'w-6 h-6 rounded border-2 border-transparent hover:border-white/50 transition-colors');
+    btn.type = 'button';
+    btn.style.backgroundColor = f.hex;
+    btn.title = `${f.name} (${f.hex})`;
+    btn.addEventListener('click', () => {
+      value = toColorInputHex(f.hex);
+      picker.value = value;
+      syncRings();
+      onChange();
+    });
+    swatches.push({ btn, hex: f.hex });
+    grid.append(btn);
+  }
+
+  // Off-palette custom colour. 'change' (not 'input') — re-running the SDF carve
+  // on every drag tick of the native picker would queue a carve per hover.
+  const customRow = el('label', 'flex items-center gap-1.5 cursor-pointer');
+  const picker = el('input', 'w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent');
+  picker.type = 'color';
+  picker.value = value;
+  picker.addEventListener('change', () => { value = picker.value; syncRings(); onChange(); });
+  customRow.append(picker, el('span', 'text-[10px] text-zinc-500', 'Custom colour'));
+
+  wrap.append(grid, customRow);
+  syncRings();
+  return { wrap, get: () => value };
 }
 
 /** Find the viewport container used by the other overlay panels. */
@@ -818,18 +876,24 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         selectedTriangles: activeSelection(),
       });
     } else if (active === 'knurl') {
-      const pitch = slider('Pitch (groove spacing)', span * 0.01, span * 0.2, span * 0.05, span * 0.002, n => n.toFixed(3), schedulePreview);
-      const amp = slider('Depth (ridge height)', 0, span * 0.06, span * 0.02, span * 0.001, n => n.toFixed(3), schedulePreview);
-      const aspect = slider('Diamond aspect (height ÷ width)', 0.4, 3, 1, 0.1, n => n.toFixed(1), schedulePreview);
+      const style = dropdown<'diamond' | 'straight' | 'ribs'>('Pattern', [
+        ['diamond', 'Diamond (cross-hatch)'],
+        ['straight', 'Straight (axial splines)'],
+        ['ribs', 'Ribs (horizontal rings)'],
+      ], 'diamond', schedulePreview);
+      const cw = slider('Cell width (ridge spacing)', span * 0.008, span * 0.25, span * 0.05, span * 0.004, n => n.toFixed(3), schedulePreview);
+      const ch = slider('Cell height', span * 0.008, span * 0.25, span * 0.05, span * 0.004, n => n.toFixed(3), schedulePreview);
+      const amp = slider('Amplitude (ridge height)', 0, span * 0.06, span * 0.02, span * 0.001, n => n.toFixed(3), schedulePreview);
+      const sharp = slider('Sharpness', 1, 8, 2, 0.5, n => n.toFixed(1), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
-      const straight = checkbox('Straight splines (instead of diamonds)', false, schedulePreview);
-      body.append(pitch.wrap, amp.wrap, aspect.wrap, grain.wrap, straight.wrap, detail.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'The machinist\u2019s grip pattern: two opposite-handed groove sets leave raised diamond pyramids (cross-hatch knurl). Straight splines give the axial-line variant. The parametric api.knurl cylinders share this vocabulary.'));
+      body.append(style.wrap, cw.wrap, ch.wrap, amp.wrap, sharp.wrap, grain.wrap, detail.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Functional grip relief. Diamond = thumbscrew cross-hatch; straight = axial splines; ribs = horizontal finger rings. Sharpness 1=soft rounded, 2=crisp, 6+=sharp peaks.'));
       currentOpts = () => ({
-        pitch: pitch.get(),
+        style: style.get(),
+        cellWidth: cw.get(),
+        cellHeight: ch.get(),
         amplitude: amp.get(),
-        aspect: aspect.get(),
-        pattern: straight.get() ? 'straight' : 'diamond',
+        sharpness: sharp.get(),
         grainAngleDeg: grain.get(),
         quality: detail.get(),
         selectedTriangles: activeSelection(),
@@ -975,15 +1039,12 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         schedulePreview, { round: n => Math.round(n * 1000) / 1000 });
       const depthWrap = depth.wrap;
       // Optional letter color — colors the raised relief (emboss) or the
-      // channel walls (engrave/through) for multicolor prints.
-      const colorChk = checkbox('Color the letters', false, () => { colorPick.style.display = colorChk.get() ? '' : 'none'; schedulePreview(); });
-      const colorPick = el('input', 'w-full h-7 mb-3 bg-zinc-800 border border-zinc-700 rounded cursor-pointer');
-      colorPick.type = 'color';
-      colorPick.value = '#d4af37';
-      colorPick.style.display = 'none';
-      // 'change' (not 'input') — re-running the SDF sweep on every drag tick of
-      // the native picker would queue a carve per swatch hover.
-      colorPick.addEventListener('change', schedulePreview);
+      // channel walls (engrave/through) for multicolor prints. The picker is the
+      // shared filament palette (same swatches as the paint tools) + a custom
+      // off-palette colour, so engrave colours stay consistent with painting.
+      const colorChk = checkbox('Color the letters', false, () => { colorCtl.wrap.style.display = colorChk.get() ? '' : 'none'; schedulePreview(); });
+      const colorCtl = colorField('#d4af37', schedulePreview);
+      colorCtl.wrap.style.display = 'none';
       const syncEngraveModeUI = () => { depthWrap.style.display = modeSel.get() === 'through' ? 'none' : ''; };
       const res = sliderWithEntry('Resolution', 48, 220, 180, 1, 256, schedulePreview);
       const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
@@ -992,7 +1053,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       engraveSizeGet = () => sizeS.get();
       engraveIsPlanar = () => true; // placement is always face-based now → outline always applies
 
-      body.append(textWrap, font.wrap, imgWrap, invert.wrap, placeWrap, angle.wrap, curveAxis.wrap, curveAngle.wrap, modeSel.wrap, sizeS.wrap, depthWrap, colorChk.wrap, colorPick, res.wrap, wtight.wrap);
+      body.append(textWrap, font.wrap, imgWrap, invert.wrap, placeWrap, angle.wrap, curveAxis.wrap, curveAngle.wrap, modeSel.wrap, sizeS.wrap, depthWrap, colorChk.wrap, colorCtl.wrap, res.wrap, wtight.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Stamps text or an image onto the model — engraved channels, a raised emboss, or holes cut clean through (stencil). Type text and press Apply, then "place on model": move over the model (a blue outline follows the cursor) and click to drop it on that face. Fine-tune with the position sliders / rotation, and use Curve to wrap the text around a cylinder or dome. "Color the letters" paints the stamp for multicolor prints. Raise resolution if thin strokes look mushy.'));
       syncCurveUI();
       syncEngraveModeUI();
@@ -1013,7 +1074,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         raised: modeSel.get() === 'emboss',
         depth: depth.get(),
         size: sizeS.get(),
-        color: colorChk.get() ? colorPick.value : undefined,
+        color: colorChk.get() ? colorCtl.get() : undefined,
         resolution: res.get(),
         watertight: wtight.get(),
       });
@@ -1339,7 +1400,7 @@ export function initSurfaceUI(api: SurfaceApi): void {
     { id: 'surface-waffle', title: 'Surface: Waffle stitch', hint: 'Modifier', keywords: 'waffle stitch grid honeycomb cell recessed border', run: () => openSurfaceModal(api, 'waffle') },
     { id: 'surface-fur', title: 'Surface: Fur / velvet', hint: 'Modifier', keywords: 'fur velvet pile fabric soft directional fiber', run: () => openSurfaceModal(api, 'fur') },
     { id: 'surface-woven', title: 'Surface: Woven fabric', hint: 'Modifier', keywords: 'woven weave fabric basket cloth interlace thread', run: () => openSurfaceModal(api, 'woven') },
-    { id: 'surface-knurl', title: 'Surface: Knurl (grip)', hint: 'Modifier', keywords: 'knurl grip diamond cross-hatch machinist ridges splines knob', run: () => openSurfaceModal(api, 'knurl') },
+    { id: 'surface-knurl', title: 'Surface: Knurl grip', hint: 'Modifier', keywords: 'knurl knurling grip diamond cross-hatch straight splines ribs knob thumbscrew handle texture', run: () => openSurfaceModal(api, 'knurl') },
     { id: 'surface-voronoi', title: 'Surface: Voronoi texture', hint: 'Modifier', keywords: 'voronoi cell relief organic cracked web ridges struts texture', run: () => openSurfaceModal(api, 'voronoi') },
     { id: 'surface-voronoi-lamp', title: 'Surface: Voronoi lamp (perforated shell)', hint: 'Modifier', keywords: 'voronoi lamp shell lattice perforated cutout holes see-through planter lampshade voxel', run: () => openSurfaceModal(api, 'voronoiLamp') },
     { id: 'surface-engrave', title: 'Surface: Engrave / emboss / cut-through text or image', hint: 'Modifier', keywords: 'engrave emboss carve raised relief cut through text image stencil label logo name plate recess channel color', run: () => openSurfaceModal(api, 'engrave') },

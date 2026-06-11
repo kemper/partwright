@@ -15,6 +15,7 @@ import { waffleStitch } from '../../src/surface/waffleStitch';
 import { knurlTexture } from '../../src/surface/knurlTexture';
 import { furVelvet } from '../../src/surface/furVelvet';
 import { wovenFabric } from '../../src/surface/wovenFabric';
+import { knurlTexture } from '../../src/surface/knurlTexture';
 import { voronoiShell } from '../../src/surface/voronoiShell';
 import { voronoiLattice } from '../../src/surface/voronoiLattice';
 import { surfaceNetsField } from '../../src/surface/surfaceNetsField';
@@ -24,7 +25,7 @@ import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
 import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp } from '../../src/surface/modifiers';
-import { nearestTriangleMap, remapTriangleSets, selectTrianglesNearSeeds } from '../../src/surface/colorTransfer';
+import { nearestTriangleMap, remapTriangleSets, selectTrianglesNearSeeds, nearestSurfaceDistance } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
 function cube(s = 10): MeshData {
@@ -186,7 +187,7 @@ describe('fabric textures (cable / waffle / fur / woven / knurl / voronoi)', () 
     { name: 'waffleStitch', fn: waffleStitch as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellWidth: 2, seed: 3 } },
     { name: 'furVelvet', fn: furVelvet as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, fiberSpacing: 2, seed: 3 } },
     { name: 'wovenFabric', fn: wovenFabric as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, threadSpacing: 2, seed: 3 } },
-    { name: 'knurlTexture', fn: knurlTexture as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, pitch: 2, seed: 3 } },
+    { name: 'knurlTexture', fn: knurlTexture as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellWidth: 2, seed: 3 } },
     { name: 'voronoiShell', fn: voronoiShell as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellSize: 3, seed: 3 } },
   ] as const;
 
@@ -214,22 +215,25 @@ describe('fabric textures (cable / waffle / fur / woven / knurl / voronoi)', () 
   }
 });
 
-describe('knurlTexture (pattern variants)', () => {
-  it('diamond and straight patterns produce different displacement', () => {
-    const diamond = knurlTexture(cube(10), { amplitude: 0.5, pitch: 2, pattern: 'diamond' });
-    const straight = knurlTexture(cube(10), { amplitude: 0.5, pitch: 2, pattern: 'straight' });
-    expect(diamond.numVert).toBe(straight.numVert); // same subdivision
+describe('knurlTexture', () => {
+  it('the three styles produce distinct displacements', () => {
+    const diamond = knurlTexture(cube(10), { amplitude: 0.5, cellWidth: 2, style: 'diamond' });
+    const straight = knurlTexture(cube(10), { amplitude: 0.5, cellWidth: 2, style: 'straight' });
+    const ribs = knurlTexture(cube(10), { amplitude: 0.5, cellWidth: 2, style: 'ribs' });
     expect([...diamond.vertProperties]).not.toEqual([...straight.vertProperties]);
+    expect([...straight.vertProperties]).not.toEqual([...ribs.vertProperties]);
   });
 
-  it('displacement never exceeds the amplitude (outward-only ridges)', () => {
+  it('displacement is outward-bounded by amplitude (ridges only raise)', () => {
+    // A knurl raises the surface by [0, amplitude] along the normal; on an
+    // axis-aligned cube face the max coordinate can grow by at most amplitude.
     const amp = 0.5;
-    const out = knurlTexture(cube(10), { amplitude: amp, pitch: 2 });
-    // A displaced axis-aligned cube can reach at most 10 + amplitude on each face.
-    for (let i = 0; i < out.vertProperties.length; i++) {
-      expect(out.vertProperties[i]).toBeGreaterThanOrEqual(-amp - 1e-6);
-      expect(out.vertProperties[i]).toBeLessThanOrEqual(10 + amp + 1e-6);
-    }
+    const out = knurlTexture(cube(10), { amplitude: amp, cellWidth: 2, style: 'diamond' });
+    let maxX = -Infinity;
+    for (let v = 0; v < out.numVert; v++) maxX = Math.max(maxX, out.vertProperties[v * 3]);
+    // Cube spans [0,10]; the +X face can rise to at most 10 + amplitude (+ε).
+    expect(maxX).toBeLessThanOrEqual(10 + amp + 1e-3);
+    expect(maxX).toBeGreaterThan(10); // something raised
   });
 });
 
@@ -553,6 +557,45 @@ describe('modifiers (codegen)', () => {
       );
       const sel = selectTrianglesNearSeeds(dense, seed, 6);
       expect(sel.size).toBeGreaterThan(0);
+    });
+  });
+
+  describe('nearestSurfaceDistance (engrave/emboss displacement)', () => {
+    it('reports ~0 for an identical mesh', () => {
+      const c = cube(10);
+      const d = nearestSurfaceDistance(c, c);
+      expect(d.length).toBe(c.numTri);
+      for (let t = 0; t < c.numTri; t++) expect(d[t]).toBeCloseTo(0, 5);
+    });
+
+    it('has no tessellation floor — points on a re-meshed surface read ~0', () => {
+      // Point-to-triangle (not centroid-to-centroid) distance: a re-tessellated
+      // copy of the same surface reads ~0 everywhere, even though its triangle
+      // centroids don't coincide with the reference's. (A centroid-to-centroid
+      // proxy would report up to ~half the reference edge length instead.) The
+      // reference is moderately dense so the nearest triangle is picked correctly.
+      const ref = subdivideToMaxEdge(cube(20), { maxEdge: 2 });
+      const requeried = subdivideToMaxEdge(cube(20), { maxEdge: 3 });
+      const d = nearestSurfaceDistance(ref, requeried);
+      for (let t = 0; t < requeried.numTri; t++) expect(d[t]).toBeLessThan(1e-3);
+    });
+
+    it('reports the offset distance for a translated-off copy', () => {
+      // Translate every vertex straight up by 3: the moved top/bottom/side faces
+      // now sit 3 off the original surface, so the max distance is ~3.
+      const c = cube(20);
+      const moved: MeshData = { ...c, vertProperties: Float32Array.from(c.vertProperties, (v, i) => (i % 3 === 2 ? v + 3 : v)) };
+      const d = nearestSurfaceDistance(c, moved);
+      let maxD = 0;
+      for (let t = 0; t < d.length; t++) maxD = Math.max(maxD, d[t]);
+      expect(maxD).toBeGreaterThan(2.5);
+      expect(maxD).toBeLessThanOrEqual(3 + 1e-3);
+    });
+
+    it('reports Infinity entries when the reference mesh is empty', () => {
+      const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
+      const d = nearestSurfaceDistance(empty, cube(10));
+      expect([...d].every(v => v === Infinity)).toBe(true);
     });
   });
 

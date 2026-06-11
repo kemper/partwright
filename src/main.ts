@@ -7175,17 +7175,17 @@ async function main() {
         );
       }
     } else if (id === 'knurl') {
-      const pitch = (opts.pitch as number | undefined) ?? 0;
-      if (pitch > diag * 0.35) {
+      const cw = (opts.cellWidth as number | undefined) ?? 0;
+      if (cw > diag * 0.4) {
         warnings.push(
-          `pitch (${pitch.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
-          `fewer than 3 diamonds; try pitch ≈ ${(diag * 0.05).toFixed(3)}`,
+          `cellWidth (${cw.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
+          `fewer than 3 ridges visible; try cellWidth ≈ ${(diag * 0.05).toFixed(3)}`,
         );
       }
-      if (pitch > 0 && pitch < diag / 400) {
+      if (cw > 0 && cw < diag / 400) {
         warnings.push(
-          `pitch (${pitch.toFixed(4)}) is very small — the knurl will be invisible; ` +
-          `try pitch ≈ ${(diag * 0.05).toFixed(3)}`,
+          `cellWidth (${cw.toFixed(4)}) is very small — the knurl will be invisible; ` +
+          `try cellWidth ≈ ${(diag * 0.05).toFixed(3)}`,
         );
       }
     } else if (id === 'voronoi') {
@@ -7693,9 +7693,10 @@ async function main() {
       const base = defaultKnurlOptions(mesh);
       const knurlOpts = {
         amplitude: (opts?.amplitude as number) ?? base.amplitude,
-        pitch: (opts?.pitch as number) ?? base.pitch,
-        aspect: (opts?.aspect as number) ?? base.aspect,
-        pattern: (opts?.pattern as 'diamond' | 'straight') ?? base.pattern,
+        cellWidth: (opts?.cellWidth as number) ?? base.cellWidth,
+        cellHeight: (opts?.cellHeight as number) ?? base.cellHeight,
+        style: (opts?.style as 'diamond' | 'straight' | 'ribs') ?? base.style,
+        sharpness: (opts?.sharpness as number) ?? base.sharpness,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         seed: (opts?.seed as number) ?? base.seed,
         quality: (opts?.quality as number) ?? base.quality,
@@ -8145,21 +8146,21 @@ async function main() {
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
 
-    /** Apply a knurl surface texture to the current model; saves a new version.
-     *  The machinist's grip pattern: two opposite-handed groove sets leaving
-     *  raised diamond pyramids (or `pattern: 'straight'` for axial splines) —
-     *  the texture-family counterpart of the parametric api.knurl cylinders.
+    /** Apply a knurl grip texture to the current model; saves a new version.
+     *  Functional grip relief — diamond cross-hatch, straight axial splines, or
+     *  horizontal finger ribs — displaced along surface normals. Distinct from
+     *  the `api.knurl.*` shape generator: this textures any existing mesh.
      *  `preserveColor` (default true) carries paint across subdivision.
      *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
     async applyKnurlTexture(opts?: {
       amplitude?: number;
-      pitch?: number;
-      aspect?: number;
-      pattern?: 'diamond' | 'straight';
+      cellWidth?: number;
+      cellHeight?: number;
+      style?: 'diamond' | 'straight' | 'ribs';
+      sharpness?: number;
       grainAngleDeg?: number;
       seed?: number;
       quality?: number;
-      selectedTriangles?: Set<number>;
       preserveColor?: boolean;
     }) {
       try {
@@ -13456,7 +13457,7 @@ async function main() {
         'applyWaffleStitch': { signature: 'await applyWaffleStitch({amplitude?, cellWidth?, cellHeight?, sharpness?, rowOffset?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE waffle grid; saves a new version. In-code alternative: api.surface.waffle', docs: '/ai/textures.md' },
         'applyFurVelvet':  { signature: 'await applyFurVelvet({amplitude?, fiberSpacing?, fiberLength?, octaves?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE fur/velvet fibers; saves a new version. In-code alternative: api.surface.fur', docs: '/ai/textures.md' },
         'applyWovenFabric':{ signature: 'await applyWovenFabric({amplitude?, threadSpacing?, threadWidth?, underDepth?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE woven threads; saves a new version. In-code alternative: api.surface.woven', docs: '/ai/textures.md' },
-        'applyKnurlTexture': { signature: 'await applyKnurlTexture({amplitude?, pitch?, aspect?, pattern?, grainAngleDeg?, seed?, quality?, selectedTriangles?, preserveColor?}) -- BAKE a machinist diamond/straight knurl grip; saves a new version. In-code alternative: api.surface.knurl', docs: '/ai/textures.md' },
+        'applyKnurlTexture':{ signature: 'await applyKnurlTexture({amplitude?, cellWidth?, cellHeight?, style?, sharpness?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE knurl grip (style: diamond|straight|ribs); saves a new version. In-code alternative: api.surface.knurl', docs: '/ai/textures.md' },
         'applyVoronoiShell': { signature: 'await applyVoronoiShell({amplitude?, cellSize?, wallWidth?, raised?, jitter?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE Voronoi cell relief; saves a new version. In-code alternative: api.surface.voronoi', docs: '/ai/textures.md' },
         'applyVoronoiLamp':{ signature: 'await applyVoronoiLamp({cellSize?, wallThickness?, strutWidth?, resolution?, jitter?, grainAngleDeg?, seed?, preserveColor?}) -- Convert the model into a perforated Voronoi lamp shell (bake only — no api.surface twin)', docs: '/ai/textures.md' },
         'engraveModel':    { signature: "await engraveModel({text | imageUrl, raised?, through?, depth?, size?, color?, axis?, side?, posU?, posV?, rotationDeg?, curveAxis?, curveAngleDeg?, font?, resolution?, watertight?, preserveColor?}) -- Carve text/image as recessed channels (engrave), holes (through), or a raised relief (raised = emboss); color paints the letters ('#rrggbb' or [r,g,b] 0–1). Saves a new version.", docs: '/ai/textures.md#engravemodel' },

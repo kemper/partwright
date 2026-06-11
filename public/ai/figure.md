@@ -91,6 +91,7 @@ F.rig({
   height,      // number, total world height (default 60)
   headsTall,   // 2..12, head-count proportion (default 6). LOWER = bigger head.
   build,       // 'slim' | 'average' | 'stocky' — limb/torso thickness
+  sex,         // 'neutral' (default) | 'male' | 'female' — silhouette balance
   pose: {      // all optional; neutral standing defaults
     arms, legs, // SYMMETRIC shorthand — seeds BOTH sides at once (see below)
     armL, armR, // { abduct, flex, elbow, twist }   degrees — override per side
@@ -101,6 +102,18 @@ F.rig({
 })
 ```
 
+> **`headsTall` rescales the WHOLE figure coherently.** Every girth (shoulders,
+> chest, waist, hips, limb thickness) is measured in **head-units** (the artistic
+> "heads tall" canon, e.g. Loomis), so a low `headsTall` gives a chunky big-headed
+> chibi and a high one a lean, small-headed adult — automatically, at any value.
+> `headsTall` 6 is the calibrated default; ≈3 chibi, ≈7.5 adult.
+
+> **`sex` shifts the silhouette along the same canon, independent of `build`.**
+> `'male'` widens the shoulders and narrows the waist/hips; `'female'` narrows the
+> shoulders and widens the hips with a smaller waist-to-hip ratio (the hourglass).
+> `'neutral'` (default) sits between them. `build` (overall thickness) composes on
+> top, so e.g. `{ sex: 'female', build: 'stocky' }` is a sturdy hourglass.
+
 **Symmetric shorthand:** `pose.arms` / `pose.legs` set BOTH sides at once;
 `armL`/`armR` (`legL`/`legR`) override a single side. Use it for any symmetric
 pose so you can't introduce an accidental L/R asymmetry:
@@ -110,7 +123,11 @@ pose: { arms: { abduct: 95, elbow: 95, twist: 90 } }          // both arms, doub
 pose: { arms: { abduct: 90 }, armL: { abduct: 0 } }           // right arm out, left down
 ```
 
-**Pose angles (degrees), zero = neutral standing:**
+**Pose angles (degrees), zero = neutral standing.** Each DOF also accepts a
+plain-language alias (the biomechanical name wins if you give both):
+`abduct`=`raiseSide`, `flex`=`raiseFwd`, `elbow`/`knee`=`bend`, `twist`=`roll`;
+head `turn`=`yaw`, `nod`=`pitch`, `tilt`=`roll`. So
+`armL: { raiseSide: 90, bend: 110 }` ≡ `armL: { abduct: 90, elbow: 110 }`.
 
 | Joint param | Meaning |
 |---|---|
@@ -144,6 +161,15 @@ pose: { arms: { abduct: 90 }, armL: { abduct: 0 } }           // right arm out, 
 The rig exposes (read-only, for custom parts):
 - `rig.joints.{shoulderL/R, elbowL/R, wristL/R, handL/R, hipL/R, kneeL/R,
   ankleL/R, pelvis, navel, chest, neckBase, headCenter, crown, chin}` — world `Vec3`.
+  Standard-skeleton (VRM/Unity humanoid) **aliases** also resolve: `hips` (=`pelvis`),
+  `upperArmL/R` (=`shoulderL/R`), `upperLegL/R` (=`hipL/R`).
+
+> **The rig names JOINTS (points between bones); a standard skeleton names BONES.**
+> They're duals: the standard `leftUpperArm` *bone* ≡ this rig's `shoulderL`
+> *joint* (its root) + `dir.upperArmL` (its direction). One subtlety: here
+> `shoulderL/R` is the **glenohumeral joint** where the arm bone starts — NOT the
+> clavicle (which VRM/Unity confusingly call the "shoulder" bone). Use
+> `upperArmL/R` if you want the unambiguous standard name for that point.
 - `rig.r.*` — radii / half-extents: `upperArm, foreArm, hand, thigh, shank,
   foot, neck, head, headX, headZ, chestX, chestY, pelvisX, pelvisY,` and
   **`waist`** (the garment-fitting radius at the natural waist — use this, not
@@ -326,13 +352,18 @@ F.clothing.top(rig, { sleeve, hemZ, thickness })        // sleeve: none|short|lo
 //   cone is added down to the hem so legs stay covered all round.
 ```
 
-Clothing is the body region **inflated and trimmed** — it reuses the rig's
-joints and follows the **posed** bones (pant legs track each leg's own
-hip→knee→ankle chain; `cuffZ` is projected onto the bone, so a lunge's
-diagonal shank keeps its cuff at the ankle). Hair carves out a **face
-window** (an above-the-brow hairline), so it never bleeds through carved
-mouths or face features. Give each garment its own `.label()` so it paints
-separately from skin.
+Clothing is the body region **inflated and trimmed**, and **coverage is
+guaranteed by construction**: under the shaped garment sits the actual body
+mass, offset outward by the garment `thickness` and clipped to the garment zone.
+A body can't poke through its own offset, so there are **no bare-skin patches** —
+the spots that used to escape (flexed-hip and knee weld bulges, the sternum V,
+the armpit wedge) are filled automatically. The shaped shell on top still gives
+the silhouette and follows the **posed** bones (pant legs track each leg's own
+hip→knee→ankle chain; `cuffZ` is projected onto the bone, so a lunge's diagonal
+shank keeps its cuff at the ankle). Raise `thickness` for a bulkier, looser
+garment; lower it for a skin-tight one. Hair carves out a **face window** (an
+above-the-brow hairline), so it never bleeds through carved mouths or face
+features. Give each garment its own `.label()` so it paints separately from skin.
 
 > **The waist is `rig.joints.navel` (radius `rig.r.waist`), not the hips.** Hips
 > (`rig.joints.hipL/hipR`) are the *leg-insertion* points and sit lower; a

@@ -17,9 +17,9 @@ import { fuzzySkin, type FuzzySkinOptions } from './fuzzySkin';
 import { knitTextureUV, knitTextureUVAsync, knitTextureUVPatch, knitTextureUVPatchAsync, type KnitTextureOptions } from './knitTexture';
 import { cableKnit, type CableKnitOptions } from './cableKnit';
 import { waffleStitch, type WaffleStitchOptions } from './waffleStitch';
-import { knurlTexture, type KnurlTextureOptions } from './knurlTexture';
 import { furVelvet, type FurVelvetOptions } from './furVelvet';
 import { wovenFabric, type WovenFabricOptions } from './wovenFabric';
+import { knurlTexture, type KnurlTextureOptions } from './knurlTexture';
 import { voronoiShell, type VoronoiShellOptions } from './voronoiShell';
 import { voronoiLattice, type VoronoiLampOptions } from './voronoiLattice';
 import { smoothSurface, type SmoothOptions } from './smoothSurface';
@@ -32,8 +32,8 @@ import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 import { voronoiLampSdfMesh } from './voronoiLampSdf';
 import { engraveMesh, engraveFieldResolution, type EngraveSdfOptions } from './engraveSdf';
-import { stampEvaluator, maskAspect, type EngraveProjection } from './engraveStamp';
-import { nearestTriangleMap } from './colorTransfer';
+import { stampEvaluator, type EngraveProjection } from './engraveStamp';
+import { nearestTriangleMap, nearestSurfaceDistance } from './colorTransfer';
 import { type SdfRunControl } from './sdfModifier';
 
 export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
@@ -143,9 +143,9 @@ return Manifold.ofMesh(api.imports[0]);
 export { type KnitTextureOptions };
 export { type CableKnitOptions };
 export { type WaffleStitchOptions };
-export { type KnurlTextureOptions };
 export { type FurVelvetOptions };
 export { type WovenFabricOptions };
+export { type KnurlTextureOptions };
 export { type VoronoiShellOptions };
 export { type VoronoiLampOptions };
 export { type EngraveProjection, type StampMask } from './engraveStamp';
@@ -365,7 +365,7 @@ export function applyWafflePatch(mesh: MeshData, opts: WaffleStitchOptions, sele
 
 export function applyKnurlPatch(mesh: MeshData, opts: KnurlTextureOptions, selectedTris: Set<number>): ModifierManifoldResult {
   const diag = modelDiagonal(mesh) || 10;
-  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.pitch), opts.quality ?? 3);
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.cellWidth), opts.quality ?? 3);
   const patched = runOnPatch(mesh, selectedTris, (sub) => knurlTexture(sub, { ...opts, subdivide: false }), pre);
   return { kind: 'manifold', label: 'knurl (patch)', mesh: patched, code: manifoldWrapper([`Knurl patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
 }
@@ -435,12 +435,11 @@ export function defaultWaffleOptions(mesh: MeshData): Required<WaffleStitchOptio
 export function defaultKnurlOptions(mesh: MeshData): Required<KnurlTextureOptions> {
   const d = modelDiagonal(mesh) || 10;
   return {
-    // Mirrors the api.knurl cylinder defaults, size-relative: depth ~2% of the
-    // model, pitch ~5% (a hand-grip diamond at typical knob scale).
     amplitude: d * 0.02,
-    pitch: d * 0.05,
-    aspect: 1,
-    pattern: 'diamond',
+    cellWidth: d * 0.05,
+    cellHeight: d * 0.05,
+    style: 'diamond',
+    sharpness: 2,
     grainAngleDeg: 0,
     seed: 1,
     quality: 3,
@@ -550,7 +549,7 @@ export function applyKnurl(mesh: MeshData, opts: KnurlTextureOptions): ModifierM
     label: 'knurl',
     mesh: baked,
     code: manifoldWrapper([
-      `Knurl applied on ${today()} — ${opts.pattern ?? 'diamond'}, pitch ${opts.pitch.toFixed(2)}, depth ${opts.amplitude.toFixed(2)}.`,
+      `Knurl applied on ${today()} — ${opts.style ?? 'diamond'}, cell ${opts.cellWidth.toFixed(2)}, amplitude ${opts.amplitude.toFixed(2)}.`,
       `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
     ]),
   };
@@ -773,10 +772,34 @@ function stampTriColors(
   // Surface-nets places vertices within ~half a voxel of the true surface;
   // classify with that tolerance off the face so seam triangles don't flicker.
   const eps = (Math.max(...bbox.size) || 10) / engraveFieldResolution(opts.resolution) * 0.5;
-  // The same tolerance in normalized stamp coordinates, for the rect bound.
-  const stampW = Math.max(1e-6, opts.size);
-  const stampH = stampW / Math.max(1e-6, maskAspect(opts.mask));
-  const epsU = eps / stampW, epsV = eps / stampH;
+  // Ink coverage threshold: bounds the letters laterally for *every* mode (the
+  // m≈0.5 isocontour is the relief/channel wall, so this keeps the walls while
+  // trimming the antialiased fringe outside the letters).
+  const inkMin = 0.15;
+  // How far a baked triangle's centroid must sit off the original surface to count
+  // as stamp geometry rather than the untouched skin. Distance from the surface
+  // (not a projection-relative depth band) is what makes emboss/engrave coloring
+  // robust on curved faces: on a sphere the planar/cylindrical "face" the stamp
+  // projects onto drifts away from the real surface, so a depth-band test both
+  // misses far channel walls (engrave) and catches unraised skin inside the stamp
+  // rectangle (emboss bleed). Displacement keys off the geometry change instead.
+  // `nearestSurfaceDistance` is a true point-to-triangle distance (no
+  // tessellation floor), so the threshold can sit just above the surface-nets
+  // noise — the channel/relief walls then color right up to the rim.
+  const dispMin = eps * 1.5;
+  // Dense geometric reference for the displacement test. The distance is
+  // point-to-triangle (so there's no tessellation floor — points on the surface
+  // read ~0), but the *nearest* triangle is picked by centroid, which only lands
+  // on the right face when faces are small; densify a coarse input (e.g. a plain
+  // cube) so that selection is reliable. Reuse the paint-dense source if built.
+  const geomRef = denseSrc
+    ?? (input.numTri > 0
+      ? subdivideToMaxEdge(input, { maxEdge: (modelDiagonal(input) || 10) / 80, maxRounds: 5 })
+      : input);
+  // Through-cut hole walls aren't "displaced" from the surface (material is
+  // removed, leaving no far side under the cut), so they stay on the depth-band
+  // test; emboss/engrave use the displacement test.
+  const dist = !opts.through && geomRef.numTri > 0 ? nearestSurfaceDistance(geomRef, baked) : null;
   const [r, g, b] = opts.color!.map(c => Math.round(Math.min(1, Math.max(0, c)) * 255));
   const { vertProperties: vp, triVerts: tv, numProp, numTri } = baked;
   for (let t = 0; t < numTri; t++) {
@@ -784,15 +807,20 @@ function stampTriColors(
     const cx = (vp[a] + vp[bI] + vp[c]) / 3;
     const cy = (vp[a + 1] + vp[bI + 1] + vp[c + 1]) / 3;
     const cz = (vp[a + 2] + vp[bI + 2] + vp[c + 2]) / 3;
-    const { m, depthInto, u, v } = evalStamp(cx, cy, cz);
-    // Emboss: anything above the face inside the stamp rectangle is relief —
-    // the rect (not ink coverage) bounds it laterally, so relief side-walls at
-    // an ink edge still color. Engrave/through: below the face, under ink,
-    // within the carve depth.
-    const inRect = u >= -epsU && u <= 1 + epsU && v >= -epsV && v <= 1 + epsV;
-    const stamped = opts.raised
-      ? depthInto < -eps && inRect
-      : depthInto > eps && m > 0.15 && (opts.through || depthInto < opts.depth + 2 * eps);
+    const { m, depthInto } = evalStamp(cx, cy, cz);
+    // Color the stamp itself, bounded laterally by ink (m). Emboss and engrave
+    // share one rule — a baked triangle is stamp geometry iff it's under ink AND
+    // displaced off the original surface (the raised relief, or the carved channel
+    // walls + floor). Distance-from-surface — not a projection-relative depth band
+    // — is what makes this robust on curved faces: the planar/cylindrical "face"
+    // the stamp projects onto drifts away from a sphere, so a depth test misses far
+    // channel walls (engrave under-color) and catches unraised skin inside the
+    // stamp rectangle (emboss bleed); the geometry change has neither failure.
+    // Through-cuts remove material (no far side under the cut, nothing
+    // "displaced"), so the hole walls stay on the depth-band test.
+    const stamped = opts.through
+      ? depthInto > eps && m > inkMin
+      : m > inkMin && (dist ? dist[t] > dispMin : false);
     if (!stamped) continue;
     triColors[t * 3] = r; triColors[t * 3 + 1] = g; triColors[t * 3 + 2] = b;
     painted[t] = 1;

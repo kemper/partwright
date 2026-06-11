@@ -38,8 +38,8 @@ describe('surfaceOpSpec', () => {
 
 describe('parseSurfaceOpts (shared scalar + scope validator)', () => {
   it('splits scalar params from a label scope', () => {
-    const out = parseSurfaceOpts('knurl', { pitch: 2, label: 'grip' });
-    expect(out.params).toEqual({ pitch: 2 });
+    const out = parseSurfaceOpts('knurl', { cellWidth: 2, label: 'grip' });
+    expect(out.params).toEqual({ cellWidth: 2 });
     expect(out.scope).toEqual({ kind: 'label', label: 'grip' });
   });
 

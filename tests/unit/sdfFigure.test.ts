@@ -65,6 +65,75 @@ describe('figure rig — proportions', () => {
   });
 });
 
+describe('figure rig — head-unit proportions & sex (Loomis canon)', () => {
+  it('keeps shoulder width a CONSTANT multiple of head size across headsTall', () => {
+    // The old fixed-fraction-of-height widths let this ratio drift with
+    // headsTall (pin-narrow chibi shoulders, broad-shouldered tall figures);
+    // head-unit widths hold it steady, so every headsTall stays coherent.
+    const ratio = (n: number) => {
+      const rig = buildRig({ height: 60, headsTall: n });
+      return Math.abs(rig.joints.shoulderL[0]) / rig.r.head;
+    };
+    expect(ratio(3)).toBeCloseTo(ratio(8), 5);
+    expect(ratio(6)).toBeCloseTo(ratio(8), 5);
+  });
+  it('still scales every width linearly with height', () => {
+    const a = buildRig({ height: 60 });
+    const b = buildRig({ height: 120 });
+    expect(b.r.chestX).toBeCloseTo(a.r.chestX * 2, 5);
+    expect(Math.abs(b.joints.shoulderL[0])).toBeCloseTo(Math.abs(a.joints.shoulderL[0]) * 2, 5);
+  });
+  it("defaults to 'neutral' and preserves the previous headsTall:6 silhouette", () => {
+    // Calibration anchor: at the default headsTall, neutral widths equal the
+    // historical fractions-of-height, so existing figures/catalog are unchanged.
+    const rig = buildRig({ height: 60, headsTall: 6 });
+    expect(Math.abs(rig.joints.shoulderL[0])).toBeCloseTo(60 * 0.108, 4);
+    expect(rig.r.chestX).toBeCloseTo(60 * 0.105, 4);
+    expect(rig.r.thigh).toBeCloseTo(60 * 0.048, 4);
+  });
+  it('sex shifts the shoulder/hip balance and waist-to-hip ratio', () => {
+    const male = buildRig({ sex: 'male' });
+    const female = buildRig({ sex: 'female' });
+    const neutral = buildRig({});
+    // male: wider shoulders; female: narrower shoulders.
+    expect(Math.abs(male.joints.shoulderL[0])).toBeGreaterThan(Math.abs(neutral.joints.shoulderL[0]));
+    expect(Math.abs(female.joints.shoulderL[0])).toBeLessThan(Math.abs(neutral.joints.shoulderL[0]));
+    // female: wider hips than male.
+    expect(female.r.pelvisX).toBeGreaterThan(male.r.pelvisX);
+    // female: smaller waist-to-hip ratio (the hourglass signal).
+    expect(female.r.waist / female.r.pelvisX).toBeLessThan(male.r.waist / male.r.pelvisX);
+  });
+});
+
+describe('figure rig — plain-language pose aliases & standard joint names', () => {
+  it('accepts raiseSide/raiseFwd/bend/roll aliases for arm & leg DOFs', () => {
+    const a = buildRig({ pose: { armL: { abduct: 90, flex: 20, elbow: 100, twist: 30 } } });
+    const b = buildRig({ pose: { armL: { raiseSide: 90, raiseFwd: 20, bend: 100, roll: 30 } } });
+    expect(a.joints.wristL).toEqual(b.joints.wristL);
+    const c = buildRig({ pose: { legL: { raiseSide: 15, raiseFwd: 30, bend: 60, roll: 10 } } });
+    const d = buildRig({ pose: { legL: { abduct: 15, flex: 30, knee: 60, twist: 10 } } });
+    expect(c.joints.ankleL).toEqual(d.joints.ankleL);
+  });
+  it('accepts head yaw/pitch/roll aliases', () => {
+    const a = buildRig({ pose: { head: { turn: 20, nod: 10, tilt: 5 } } });
+    const b = buildRig({ pose: { head: { yaw: 20, pitch: 10, roll: 5 } } });
+    expect(a.dir.headForward).toEqual(b.dir.headForward);
+  });
+  it('the biomechanical name wins when both forms are supplied', () => {
+    const rig = buildRig({ pose: { armL: { abduct: 90, raiseSide: 0 } } });
+    const ref = buildRig({ pose: { armL: { abduct: 90 } } });
+    expect(rig.joints.elbowL).toEqual(ref.joints.elbowL);
+  });
+  it('exposes standard-skeleton joint aliases (hips, upperArm*, upperLeg*)', () => {
+    const rig = buildRig({});
+    expect(rig.joints.hips).toEqual(rig.joints.pelvis);
+    expect(rig.joints.upperArmL).toEqual(rig.joints.shoulderL);
+    expect(rig.joints.upperArmR).toEqual(rig.joints.shoulderR);
+    expect(rig.joints.upperLegL).toEqual(rig.joints.hipL);
+    expect(rig.joints.upperLegR).toEqual(rig.joints.hipR);
+  });
+});
+
 describe('figure rig — symmetry', () => {
   it('mirrors L/R joints across X for a symmetric pose', () => {
     const rig = buildRig({});
@@ -739,7 +808,7 @@ describe('figure rig — validation', () => {
     expect(() => buildRig({ headsTall: 20 })).toThrow();
   });
   it('rejects unknown pose joint keys', () => {
-    expect(() => buildRig({ pose: { armL: { bend: 90 } } })).toThrow();
+    expect(() => buildRig({ pose: { armL: { flap: 90 } } })).toThrow();
     expect(() => buildRig({ pose: { wings: {} } })).toThrow();
   });
   it('accepts an empty / omitted opts object', () => {

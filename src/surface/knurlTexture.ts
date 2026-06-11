@@ -1,21 +1,22 @@
 // Knurl surface texture.
 //
-// The machinist's grip pattern, as a displacement skin over any model — the
-// texture-family counterpart of the parametric `api.knurl` cylinders
-// (`src/geometry/knurl.ts`), sharing its vocabulary (pitch / depth / aspect /
-// diamond vs straight).
+// Produces functional grip relief — the diamond cross-hatch of a thumbscrew,
+// the straight axial splines of a knob, or horizontal finger ribs — displaced
+// along surface normals over a triplanar projection (the same projection the
+// waffle / woven textures use). Unlike the `api.knurl.*` shape generator (which
+// builds a whole knurled cylinder), this textures ANY existing mesh's surface.
 //
-// Algorithm (sibling of waffleStitch.ts):
-//   1. Map world position onto pattern axes via triplanar coords
-//      (grainAngleDeg rotates in the surface plane; the second axis runs "up"
-//      the model by default, so diamonds tilt like a helical knurl).
-//   2. Diagonal coordinates a = u + v, b = u − v (u = s/pitch,
-//      v = t/(pitch·aspect)) — the two opposite-handed groove sets.
-//   3. tri(x) = 1 − 2·|frac(x) − ½| is a triangular wave: 1 mid-cell, 0 on the
-//      groove lines. Diamond knurl height = amplitude · min(tri(a), tri(b)) —
-//      straight-sided pyramids on diamond bases, exactly the intersection look
-//      of two opposite-handed ridge sets. `pattern: 'straight'` uses a single
-//      set (axial splines): amplitude · tri(u).
+// Algorithm (mirrors waffleStitch):
+//   1. Map world position onto grip-grid axes (grainAngleDeg rotates in XY; the
+//      second axis is Z so the pattern runs "up" the model by default).
+//   2. Compute a raise field in [0,1] per style:
+//        diamond  — product of two opposite-handed cosine ridge families →
+//                   a 45°-rotated diamond bump grid
+//        straight — a single cosine ridge family across the column axis →
+//                   vertical splines
+//        ribs     — a single cosine ridge family across the row axis →
+//                   horizontal rings
+//   3. Displacement = amplitude × raise^sharpness, accumulated triplanar.
 //
 // Pure logic (no DOM/WASM) → unit-tested in the vitest tier.
 
@@ -28,20 +29,22 @@ import {
   triplanarCoords,
 } from './meshSubdivide';
 
+export type KnurlStyle = 'diamond' | 'straight' | 'ribs';
+
 export interface KnurlTextureOptions {
-  /** Peak displacement (ridge height) in world units. */
+  /** Peak ridge height in world units. */
   amplitude: number;
-  /** Spacing between grooves in world units (diamond width). */
-  pitch: number;
-  /** Diamond height ÷ width. 1 = square diamonds (default); >1 stretches the
-   *  diamonds along the grain. Ignored for `pattern: 'straight'`. */
-  aspect?: number;
-  /** 'diamond' (cross-hatch pyramids, default) or 'straight' (parallel
-   *  splines along the grain). */
-  pattern?: 'diamond' | 'straight';
-  /** Rotate the pattern in the surface plane (degrees). Default 0. */
+  /** Spacing of one ridge cell along the column axis, world units. */
+  cellWidth: number;
+  /** Spacing along the row (Z) axis. Default cellWidth (square diamonds). */
+  cellHeight?: number;
+  /** Knurl pattern. Default 'diamond'. */
+  style?: KnurlStyle;
+  /** Ridge crispness. 1 = soft rounded, 2–4 = crisp, 6+ = sharp peaks. Default 2. */
+  sharpness?: number;
+  /** Rotate the grid in the XY plane (degrees). Default 0. */
   grainAngleDeg?: number;
-  /** Deterministic seed (currently unused; reserved for future variation). Default 1. */
+  /** Deterministic seed (reserved for future variation). Default 1. */
   seed?: number;
   /** Densify mesh before displacing. Default true. */
   subdivide?: boolean;
@@ -49,17 +52,14 @@ export interface KnurlTextureOptions {
   quality?: number;
 }
 
-/** Triangular wave: 1 at cell centers, 0 on the groove lines. */
-function tri(x: number): number {
-  const f = ((x % 1) + 1) % 1;
-  return 1 - 2 * Math.abs(f - 0.5);
-}
+const TAU = Math.PI * 2;
 
 export function knurlTexture(mesh: MeshData, opts: KnurlTextureOptions): MeshData {
   const amplitude = Math.max(0, opts.amplitude);
-  const pitch = Math.max(1e-4, opts.pitch);
-  const aspect = Math.max(0.1, opts.aspect ?? 1);
-  const pattern = opts.pattern ?? 'diamond';
+  const cellW = Math.max(1e-4, opts.cellWidth);
+  const cellH = Math.max(1e-4, opts.cellHeight ?? cellW);
+  const style: KnurlStyle = opts.style ?? 'diamond';
+  const sharpness = Math.max(1, opts.sharpness ?? 2);
   const angleRad = ((opts.grainAngleDeg ?? 0) * Math.PI) / 180;
   const cosA = Math.cos(angleRad), sinA = Math.sin(angleRad);
 
@@ -68,9 +68,7 @@ export function knurlTexture(mesh: MeshData, opts: KnurlTextureOptions): MeshDat
     const quality = Math.max(1, Math.min(5, Math.round(opts.quality ?? 3)));
     const qScale = 2 ** ((quality - 3) / 2);
     const diag = Math.hypot(...bboxOf(extractPositions(mesh)).size);
-    // The pyramid faces are linear, but their edges (the grooves and ridges)
-    // need edge lengths well under the pitch to read as crisp.
-    const targetEdge = Math.max(pitch / (4 * qScale), diag / (400 * qScale));
+    const targetEdge = Math.max(Math.min(cellW, cellH) / (4 * qScale), diag / (400 * qScale));
     base = subdivideToMaxEdge(mesh, { maxEdge: targetEdge, maxRounds: 6 });
   }
 
@@ -87,14 +85,23 @@ export function knurlTexture(mesh: MeshData, opts: KnurlTextureOptions): MeshDat
     let d = 0;
     for (let i = 0; i < 3; i++) {
       const [s, t] = pairs[i];
-      const gs = cosA * s + sinA * t;
-      const gt = -sinA * s + cosA * t;
+      const gx = cosA * s + sinA * t;
+      const gz = -sinA * s + cosA * t;
+      const col = gx / cellW;
+      const row = gz / cellH;
 
-      const u = gs / pitch;
-      const h = pattern === 'straight'
-        ? tri(u)
-        : Math.min(tri(u + gt / (pitch * aspect)), tri(u - gt / (pitch * aspect)));
-      d += weights[i] * amplitude * h;
+      let raise: number;
+      if (style === 'straight') {
+        raise = 0.5 + 0.5 * Math.cos(TAU * col);
+      } else if (style === 'ribs') {
+        raise = 0.5 + 0.5 * Math.cos(TAU * row);
+      } else {
+        // diamond: two opposite-handed ridge families → a 45° bump grid.
+        const a = 0.5 + 0.5 * Math.cos(TAU * (col + row));
+        const b = 0.5 + 0.5 * Math.cos(TAU * (col - row));
+        raise = a * b;
+      }
+      d += weights[i] * amplitude * raise ** sharpness;
     }
 
     positions[v * 3]     = px + nx * d;

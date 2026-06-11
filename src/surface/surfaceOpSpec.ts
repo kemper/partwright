@@ -68,7 +68,7 @@ export const SURFACE_OP_FIELDS: Record<SurfaceOpId, readonly string[]> = {
   waffle: ['amplitude', 'cellWidth', 'cellHeight', 'sharpness', 'rowOffset', 'grainAngleDeg', 'seed', 'quality', 'subdivide'],
   fur: ['amplitude', 'fiberSpacing', 'fiberLength', 'octaves', 'grainAngleDeg', 'seed', 'quality', 'subdivide'],
   woven: ['amplitude', 'threadSpacing', 'threadWidth', 'underDepth', 'grainAngleDeg', 'seed', 'quality', 'subdivide'],
-  knurl: ['amplitude', 'pitch', 'aspect', 'pattern', 'grainAngleDeg', 'seed', 'quality', 'subdivide'],
+  knurl: ['amplitude', 'cellWidth', 'cellHeight', 'style', 'sharpness', 'grainAngleDeg', 'seed', 'quality', 'subdivide'],
   voronoi: ['amplitude', 'cellSize', 'wallWidth', 'raised', 'jitter', 'grainAngleDeg', 'seed', 'quality', 'subdivide'],
   smooth: ['iterations', 'subdivide'],
 };
