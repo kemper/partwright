@@ -25,22 +25,28 @@ function centroids(mesh: MeshData): Float32Array {
   return out;
 }
 
-/** Core nearest-centroid query: for each triangle of `newMesh`, the index of the
- *  nearest (by centroid) triangle of `oldMesh` *and* the squared distance to it.
- *  Index entries are `-1` (and dist2 `Infinity`) only when `oldMesh` has no
- *  triangles. Uses a uniform spatial hash over old centroids with ring-expanding
- *  search, so it stays near-linear instead of the naive O(new·old). Shared by
- *  {@link nearestTriangleMap} (index only) and {@link nearestCentroidDistance}. */
-function nearestCentroidCore(oldMesh: MeshData, newMesh: MeshData): { index: Int32Array; dist2: Float32Array } {
-  const index = new Int32Array(newMesh.numTri).fill(-1);
-  const dist2 = new Float32Array(newMesh.numTri).fill(Infinity);
-  if (oldMesh.numTri === 0 || newMesh.numTri === 0) return { index, dist2 };
+interface NearestTriHash {
+  /** Nearest ref triangle to a point, *by centroid* (`-1` if the ref is empty).
+   *  Cheap; used for the color transfer, where centroid proximity is enough. */
+  nearestIndex(px: number, py: number, pz: number): number;
+  /** Minimum *squared point-to-triangle* distance from a point to the ref
+   *  surface (`Infinity` if the ref is empty). Searches over all nearby
+   *  candidate triangles (not just the nearest centroid) and takes the closest
+   *  surface, so a point lying on a flat, finely-triangulated region reads ~0
+   *  instead of the lateral gap to whichever single triangle's centroid happened
+   *  to be nearest — the spurious displacement that speckled flat faces. */
+  surfaceDist2(px: number, py: number, pz: number): number;
+}
 
-  const oc = centroids(oldMesh);
-  // Bounds of the old centroids.
+/** Build a spatial hash over `refMesh`'s triangle centroids. Uniform grid with
+ *  ring-expanding search, so each query is near-O(1) for spatially-coincident
+ *  meshes. Shared by every consumer below so there's one hashing implementation. */
+function buildNearestTriHash(refMesh: MeshData): NearestTriHash {
+  if (refMesh.numTri === 0) return { nearestIndex: () => -1, surfaceDist2: () => Infinity };
+  const oc = centroids(refMesh);
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let i = 0; i < oldMesh.numTri; i++) {
+  for (let i = 0; i < refMesh.numTri; i++) {
     const x = oc[i * 3], y = oc[i * 3 + 1], z = oc[i * 3 + 2];
     if (x < minX) minX = x; if (x > maxX) maxX = x;
     if (y < minY) minY = y; if (y > maxY) maxY = y;
@@ -48,7 +54,7 @@ function nearestCentroidCore(oldMesh: MeshData, newMesh: MeshData): { index: Int
   }
   const span = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1e-6);
   // Aim for ~1 triangle per cell on average: n cells per axis ≈ cbrt(numTri).
-  const n = Math.max(1, Math.round(Math.cbrt(oldMesh.numTri)));
+  const n = Math.max(1, Math.round(Math.cbrt(refMesh.numTri)));
   const cell = span / n || 1;
   const cx = (x: number) => Math.floor((x - minX) / cell);
   const cy = (y: number) => Math.floor((y - minY) / cell);
@@ -56,53 +62,86 @@ function nearestCentroidCore(oldMesh: MeshData, newMesh: MeshData): { index: Int
   const key = (ix: number, iy: number, iz: number) => `${ix},${iy},${iz}`;
 
   const buckets = new Map<string, number[]>();
-  for (let i = 0; i < oldMesh.numTri; i++) {
+  for (let i = 0; i < refMesh.numTri; i++) {
     const k = key(cx(oc[i * 3]), cy(oc[i * 3 + 1]), cz(oc[i * 3 + 2]));
     let arr = buckets.get(k);
     if (!arr) { arr = []; buckets.set(k, arr); }
     arr.push(i);
   }
-
-  const nc = centroids(newMesh);
-  // Old and new meshes are spatially coincident (a modifier displaces the
+  // Ref and query meshes are spatially coincident (a modifier displaces the
   // surface only slightly), so the nearest is almost always in ring 0–1. The
-  // cap bounds the search for any stray centroid outside the old bounds.
+  // cap bounds the search for any stray point outside the ref bounds.
   const maxR = n * 2 + 4;
-  for (let t = 0; t < newMesh.numTri; t++) {
-    const px = nc[t * 3], py = nc[t * 3 + 1], pz = nc[t * 3 + 2];
-    const bx = cx(px), by = cy(py), bz = cz(pz);
-    let best = -1, bestD = Infinity;
-    for (let r = 0; r <= maxR; r++) {
-      // Stop once no candidate in this ring or beyond can beat the best found:
-      // the closest a point in Chebyshev ring r can be is (r-1)·cell.
-      if (best >= 0 && Math.sqrt(bestD) <= (r - 1) * cell) break;
-      for (let ix = bx - r; ix <= bx + r; ix++) {
-        for (let iy = by - r; iy <= by + r; iy++) {
-          for (let iz = bz - r; iz <= bz + r; iz++) {
-            // Only the shell at Chebyshev distance r (inner cells done already).
-            if (Math.max(Math.abs(ix - bx), Math.abs(iy - by), Math.abs(iz - bz)) !== r) continue;
-            const arr = buckets.get(key(ix, iy, iz));
-            if (!arr) continue;
-            for (const i of arr) {
-              const dx = oc[i * 3] - px, dy = oc[i * 3 + 1] - py, dz = oc[i * 3 + 2] - pz;
-              const d = dx * dx + dy * dy + dz * dz;
-              if (d < bestD) { bestD = d; best = i; }
+  const { vertProperties: rvp, triVerts: rtv, numProp: rnp } = refMesh;
+  const triDist2 = (i: number, px: number, py: number, pz: number): number => {
+    const a = rtv[i * 3] * rnp, b = rtv[i * 3 + 1] * rnp, c = rtv[i * 3 + 2] * rnp;
+    return pointTriDist2(px, py, pz, rvp[a], rvp[a + 1], rvp[a + 2], rvp[b], rvp[b + 1], rvp[b + 2], rvp[c], rvp[c + 1], rvp[c + 2]);
+  };
+  return {
+    nearestIndex(px, py, pz) {
+      const bx = cx(px), by = cy(py), bz = cz(pz);
+      let best = -1, bestD = Infinity;
+      for (let r = 0; r <= maxR; r++) {
+        // Stop once no candidate in this ring or beyond can beat the best found:
+        // the closest a point in Chebyshev ring r can be is (r-1)·cell.
+        if (best >= 0 && Math.sqrt(bestD) <= (r - 1) * cell) break;
+        for (let ix = bx - r; ix <= bx + r; ix++) {
+          for (let iy = by - r; iy <= by + r; iy++) {
+            for (let iz = bz - r; iz <= bz + r; iz++) {
+              if (Math.max(Math.abs(ix - bx), Math.abs(iy - by), Math.abs(iz - bz)) !== r) continue;
+              const arr = buckets.get(key(ix, iy, iz));
+              if (!arr) continue;
+              for (const i of arr) {
+                const dx = oc[i * 3] - px, dy = oc[i * 3 + 1] - py, dz = oc[i * 3 + 2] - pz;
+                const d = dx * dx + dy * dy + dz * dz;
+                if (d < bestD) { bestD = d; best = i; }
+              }
             }
           }
         }
       }
-    }
-    index[t] = best;
-    if (best >= 0) dist2[t] = bestD;
-  }
-  return { index, dist2 };
+      return best;
+    },
+    surfaceDist2(px, py, pz) {
+      const bx = cx(px), by = cy(py), bz = cz(pz);
+      let best2 = Infinity;
+      for (let r = 0; r <= maxR; r++) {
+        // A triangle whose centroid is in ring ≥ r is at least (r-1)·cell from
+        // the point, so its surface is at least (r-1)·cell − (max centroid→vertex
+        // ≈ cell) away. Stop once that lower bound exceeds the best surface
+        // distance found — one extra ring of slack over the centroid bound.
+        if (best2 < Infinity && (r - 2) * cell > Math.sqrt(best2)) break;
+        for (let ix = bx - r; ix <= bx + r; ix++) {
+          for (let iy = by - r; iy <= by + r; iy++) {
+            for (let iz = bz - r; iz <= bz + r; iz++) {
+              if (Math.max(Math.abs(ix - bx), Math.abs(iy - by), Math.abs(iz - bz)) !== r) continue;
+              const arr = buckets.get(key(ix, iy, iz));
+              if (!arr) continue;
+              for (const i of arr) {
+                const d2 = triDist2(i, px, py, pz);
+                if (d2 < best2) best2 = d2;
+              }
+            }
+          }
+        }
+      }
+      return best2;
+    },
+  };
 }
 
 /** For each triangle of `newMesh`, the index of the nearest (by centroid)
  *  triangle of `oldMesh`. Returns an `Int32Array` of length `newMesh.numTri`
  *  (entries are `-1` only when `oldMesh` has no triangles). */
 export function nearestTriangleMap(oldMesh: MeshData, newMesh: MeshData): Int32Array {
-  return nearestCentroidCore(oldMesh, newMesh).index;
+  const result = new Int32Array(newMesh.numTri).fill(-1);
+  if (oldMesh.numTri === 0 || newMesh.numTri === 0) return result;
+  const hash = buildNearestTriHash(oldMesh);
+  const nc = centroids(newMesh);
+  for (let t = 0; t < newMesh.numTri; t++) {
+    result[t] = hash.nearestIndex(nc[t * 3], nc[t * 3 + 1], nc[t * 3 + 2]);
+  }
+  return result;
 }
 
 /** Squared distance from point `p` to triangle `(a,b,c)` — the standard
@@ -152,36 +191,28 @@ function pointTriDist2(
   return (px - qx) ** 2 + (py - qy) ** 2 + (pz - qz) ** 2;
 }
 
-/** For each triangle of `queryMesh`, the true distance from its centroid to the
- *  nearest *surface* of `refMesh` (point-to-triangle, not centroid-to-centroid,
- *  so it has no tessellation-density floor — a point lying on the reference
- *  surface reads ~0 regardless of how coarse the reference is). Entries are
- *  `Infinity` only when `refMesh` has no triangles. The engrave/emboss colorizer
- *  uses it to tell stamp geometry (raised relief / carved channel, displaced off
- *  the surface) from the untouched skin — robust on curved faces, where a
- *  projection-relative depth band drifts. The nearest *triangle* is taken by
- *  centroid (cheap spatial hash); for the meshes here (a dense base vs its
- *  re-meshed carve) that triangle is the geometrically nearest too. */
-export function nearestSurfaceDistance(refMesh: MeshData, queryMesh: MeshData): Float32Array {
-  const out = new Float32Array(queryMesh.numTri).fill(Infinity);
-  if (refMesh.numTri === 0 || queryMesh.numTri === 0) return out;
-  const { index } = nearestCentroidCore(refMesh, queryMesh);
-  const { vertProperties: rvp, triVerts: rtv, numProp: rnp } = refMesh;
-  const { vertProperties: qvp, triVerts: qtv, numProp: qnp } = queryMesh;
-  for (let t = 0; t < queryMesh.numTri; t++) {
-    const ti = index[t];
-    if (ti < 0) continue;
-    const qa = qtv[t * 3] * qnp, qb = qtv[t * 3 + 1] * qnp, qc = qtv[t * 3 + 2] * qnp;
-    const px = (qvp[qa] + qvp[qb] + qvp[qc]) / 3;
-    const py = (qvp[qa + 1] + qvp[qb + 1] + qvp[qc + 1]) / 3;
-    const pz = (qvp[qa + 2] + qvp[qb + 2] + qvp[qc + 2]) / 3;
-    const a = rtv[ti * 3] * rnp, b = rtv[ti * 3 + 1] * rnp, c = rtv[ti * 3 + 2] * rnp;
-    out[t] = Math.sqrt(pointTriDist2(
-      px, py, pz,
-      rvp[a], rvp[a + 1], rvp[a + 2],
-      rvp[b], rvp[b + 1], rvp[b + 2],
-      rvp[c], rvp[c + 1], rvp[c + 2],
-    ));
+/** For each *vertex* of `queryMesh`, the true distance to the nearest *surface*
+ *  of `refMesh` (point-to-triangle, not centroid-to-centroid, so it has no
+ *  tessellation-density floor — a vertex lying on the reference surface reads
+ *  ~0 regardless of how coarse the reference is). Length is `queryMesh.numVert`;
+ *  entries are `Infinity` only when `refMesh` has no triangles.
+ *
+ *  The engrave/emboss colorizer uses per-vertex (rather than per-centroid)
+ *  distance so it can color a triangle when its *most-displaced vertex* clears
+ *  the threshold: a wall-base triangle whose centroid sits below the surface
+ *  cut-off still has its upper vertices well up the wall, so the color reaches
+ *  the rim cleanly instead of leaving a sawtooth of base triangles. The distance
+ *  is the minimum over all nearby ref triangles (not just the nearest centroid),
+ *  so a vertex on a flat, finely-triangulated region reads ~0 rather than the
+ *  lateral gap to whichever single centroid was closest — which otherwise
+ *  speckled flat faces with spurious "displaced" triangles. */
+export function nearestSurfaceVertexDistance(refMesh: MeshData, queryMesh: MeshData): Float32Array {
+  const out = new Float32Array(queryMesh.numVert).fill(Infinity);
+  if (refMesh.numTri === 0 || queryMesh.numVert === 0) return out;
+  const hash = buildNearestTriHash(refMesh);
+  const { vertProperties: qvp, numProp: qnp, numVert } = queryMesh;
+  for (let v = 0; v < numVert; v++) {
+    out[v] = Math.sqrt(hash.surfaceDist2(qvp[v * qnp], qvp[v * qnp + 1], qvp[v * qnp + 2]));
   }
   return out;
 }
