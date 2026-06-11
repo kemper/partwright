@@ -124,7 +124,8 @@ import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionF
 import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
-import { surfaceCacheStatus, computeChain, type SurfaceOp } from './surface/surfaceOps';
+import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, type SurfaceOp } from './surface/surfaceOps';
+import type { PersistedSurfaceTexture } from './surface/surfaceOpSpec';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
 import { initPlaceUI } from './ui/placeModal';
@@ -470,6 +471,31 @@ let surfaceReapplyEl: HTMLElement | null = null;
 // by the Re-apply handler. Null when there's nothing pending.
 let pendingSurface: { base: MeshData; ops: SurfaceOp[]; baseKey: string; src: string } | null = null;
 let surfaceReapplyBusy = false;
+// The most recent APPLIED `api.surface.*` result: the full-chain memo key plus
+// the textured mesh it produced (the same object that became the live
+// currentMeshData / paintBaseMesh). Persisted onto the version on save so
+// reopening the session renders textured instantly — and pins the texture's
+// appearance at save time as the modifier math evolves. Reset on every
+// mesh-producing run by applySurfaceTextures (null when the run declared no
+// ops or left them pending); save-time use is identity-guarded against the
+// live mesh so a version restored from partMeshCache never persists another
+// run's texture. See currentSurfaceTextureForSave.
+let lastAppliedSurface: { key: string; mesh: MeshData } | null = null;
+
+/** The `api.surface.*` texture to persist with a save, or undefined when the
+ *  live mesh isn't an applied-texture result. Identity-guarded: the tracked
+ *  textured mesh must BE the live mesh object (paintBaseMesh stays the run's
+ *  mesh through paint refinement; a version restored from partMeshCache is a
+ *  different object, so another run's texture can never be attributed to it).
+ *  Oversized meshes aren't persisted — the version still saves and reopening
+ *  recomputes the chain on demand, exactly as if nothing was stored. */
+function currentSurfaceTextureForSave(): PersistedSurfaceTexture | undefined {
+  if (!lastAppliedSurface) return undefined;
+  const live = paintBaseMesh ?? currentMeshData;
+  if (!live || lastAppliedSurface.mesh !== live) return undefined;
+  if (lastAppliedSurface.mesh.numTri > getConfig().renderer.surfaceTexturePersistMaxTriangles) return undefined;
+  return { key: lastAppliedSurface.key, mesh: lastAppliedSurface.mesh };
+}
 // The disconnected-components warning is surfaced as a transient toast (recorded
 // in the Diagnostic Log) rather than the persistent pill. Track the last one we
 // toasted so re-runs of an unchanged broken model don't re-spam the same toast;
@@ -1698,7 +1724,7 @@ async function saveCurrentVersion(label?: string): Promise<
     return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
   }
   const thumbnail = await captureThumbnail();
-  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles() });
+  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
   if (version) {
     // Keep the mesh cache valid for the newly-saved version so that switching
     // away and back doesn't trigger a recompile. The code/geometry didn't
@@ -4803,6 +4829,23 @@ async function main() {
       // preserveCamera keeps the user's interactive angle across the switch
       // (see captureCameraToPreserve); the cache-hit branch above relies on the
       // preservedCameraPose restore at the end of this function instead.
+      //
+      // If the version carries a persisted api.surface.* texture, seed the
+      // memo cache with it first so the run's force-apply hits instantly
+      // instead of recomputing the chain — this is what makes a reopened
+      // session render textured with no progress modal, and what pins the
+      // texture to the mesh the user saved (modifier math may have evolved
+      // since). The key is self-validating: it folds in code + params +
+      // import identity, so a seed that doesn't match this run's recomputed
+      // key is simply never read and the chain recomputes as before.
+      const persistedTexture = version.surfaceTexture as PersistedSurfaceTexture | undefined;
+      if (
+        persistedTexture && typeof persistedTexture.key === 'string' &&
+        persistedTexture.mesh && persistedTexture.mesh.vertProperties instanceof Float32Array &&
+        persistedTexture.mesh.triVerts instanceof Uint32Array
+      ) {
+        seedSurfaceCache(persistedTexture.key, persistedTexture.mesh as MeshData);
+      }
       const meshBeforeRun = currentMeshData;
       const applied = await runCodeSync(version.code, { preserveCamera: true });
       // If a newer version-switch arrived while we were compiling, our result
@@ -9477,7 +9520,7 @@ async function main() {
       }
 
       const thumbnail = await captureThumbnail();
-      const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles() });
+      const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -9600,7 +9643,7 @@ async function main() {
       const annotationsCarried = (parent.annotations?.length ?? 0) > 0;
 
       const thumbnail = await captureThumbnail();
-      const version = await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles() });
+      const version = await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -13764,6 +13807,9 @@ async function main() {
    *  Returns true unless a forced compute failed (caller treats failure as a
    *  non-fatal "base shown" run). */
   async function applySurfaceTextures(result: MeshResult, src: string, force: boolean): Promise<void> {
+    // Each mesh-producing run re-establishes what (if any) applied texture the
+    // live mesh carries; stale-by-default until a branch below applies one.
+    lastAppliedSurface = null;
     const ops = result.surfaceOps;
     if (!ops || ops.length === 0 || !result.mesh) {
       hideSurfaceReapplyPill();
@@ -13778,6 +13824,7 @@ async function main() {
       // mesh (and fall back to render-only if it isn't watertight).
       result.mesh = status.mesh;
       result.manifold = null;
+      lastAppliedSurface = { key: surfaceChainKey(baseKey, ops)!, mesh: status.mesh };
       hideSurfaceReapplyPill();
       return;
     }
@@ -13790,6 +13837,7 @@ async function main() {
         const textured = await computeChain(base, baseKey, ops, (f) => updateProgress(progressId, f));
         result.mesh = textured;
         result.manifold = null;
+        lastAppliedSurface = { key: surfaceChainKey(baseKey, ops)!, mesh: textured };
         hideSurfaceReapplyPill();
       } catch (e) {
         // Compute failed — keep the base mesh and raise the pill so the user can

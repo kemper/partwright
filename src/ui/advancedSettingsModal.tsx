@@ -632,6 +632,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={100_000} max={100_000_000} integer
           onChange={v => set('renderer', 'enhanceMaxTriangles', v)}
         />
+        <Field
+          label="Persist surface textures up to"
+          unit="tris"
+          tooltip="Computed api.surface.* textures are saved with the version so reopening the session renders them instantly. Above this triangle count the texture is not persisted (the version still saves; reopening just recomputes the texture on demand). A textured mesh costs roughly 18 bytes per triangle of storage."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.surfaceTexturePersistMaxTriangles}
+          value={c.renderer.surfaceTexturePersistMaxTriangles}
+          min={0} max={20_000_000} integer
+          onChange={v => set('renderer', 'surfaceTexturePersistMaxTriangles', v)}
+        />
       </Section>
 
       <Section title="Import">
