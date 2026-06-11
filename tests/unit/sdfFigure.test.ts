@@ -5,7 +5,7 @@
 // exercised headlessly via model:preview / the e2e tier.
 
 import { describe, it, expect } from 'vitest';
-import { __figureTestables__ } from '../../src/geometry/sdfFigure';
+import { __figureTestables__, createFigureNamespace } from '../../src/geometry/sdfFigure';
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
@@ -596,6 +596,134 @@ describe('figure faceDetail — detail-region helper', () => {
     expect(head.edgeLength).toBe(0.1);
     expect(mouth.edgeLength).toBe(0.05);
     expect(() => faceDetail(rig, { density: 2 })).toThrow();
+  });
+});
+
+describe('figure rig — head tilt (was a silent no-op)', () => {
+  // Regression: tilt was applied as `rotY(hf, tilt)` to the forward vector and
+  // then discarded by the cross-product frame rebuild, so it did nothing. It is
+  // now a roll of the up/left axes about the forward axis.
+  it('rolls the head toward a shoulder — headUp leans laterally', () => {
+    const neutral = buildRig({});
+    const tilted = buildRig({ pose: { head: { tilt: 20 } } });
+    // Positive tilt drops the crown toward the figure's LEFT shoulder (+X).
+    expect(neutral.dir.headUp[0]).toBeCloseTo(0, 6);
+    expect(tilted.dir.headUp[0]).toBeGreaterThan(0.2);
+    // It is a pure roll: the forward direction is unchanged.
+    expect(dist(tilted.dir.headForward, neutral.dir.headForward)).toBeLessThan(1e-9);
+  });
+
+  it('moves the face anchors (eyes follow the roll)', () => {
+    const neutral = buildRig({});
+    const tilted = buildRig({ pose: { head: { tilt: 20 } } });
+    expect(dist(tilted.face.eyeL, neutral.face.eyeL)).toBeGreaterThan(0.1);
+  });
+
+  it('tilt: 0 is byte-identical to no head pose', () => {
+    const a = buildRig({});
+    const b = buildRig({ pose: { head: { tilt: 0 } } });
+    expect(b.dir.headUp).toEqual(a.dir.headUp);
+    expect(b.face.eyeL).toEqual(a.face.eyeL);
+  });
+});
+
+describe('figure rig — spine (was parsed but never applied)', () => {
+  // Regression: spine.{lean,turn,side} were validated and stored but no FK ever
+  // read them. They now rigidly rotate the above-waist mass about the navel.
+  const neutral = buildRig({});
+
+  it('lean bends the upper body forward (−Y) at the waist', () => {
+    const leaned = buildRig({ pose: { spine: { lean: 25 } } });
+    expect(leaned.joints.chest[1]).toBeLessThan(neutral.joints.chest[1] - 0.5);
+    expect(leaned.joints.headCenter[1]).toBeLessThan(neutral.joints.headCenter[1] - 1);
+    // legs stay planted — the figure bends at the waist, not the ankles.
+    expect(leaned.joints.ankleL).toEqual(neutral.joints.ankleL);
+    expect(leaned.joints.pelvis).toEqual(neutral.joints.pelvis);
+  });
+
+  it('side leans toward the figure-left shoulder (+X); turn twists the shoulders', () => {
+    const sided = buildRig({ pose: { spine: { side: 25 } } });
+    expect(sided.joints.headCenter[0]).toBeGreaterThan(neutral.joints.headCenter[0] + 0.5);
+    const turned = buildRig({ pose: { spine: { turn: 30 } } });
+    // the shoulder line rotates about Z — shoulders are no longer purely ±X.
+    expect(Math.abs(turned.joints.shoulderL[1])).toBeGreaterThan(0.5);
+  });
+
+  it('is a rigid rotation: arms ride the spine but keep their bone lengths', () => {
+    const leaned = buildRig({ pose: { spine: { lean: 25 }, armL: { abduct: 40, elbow: 60 } } });
+    const upright = buildRig({ pose: { armL: { abduct: 40, elbow: 60 } } });
+    // the whole arm moved with the torso…
+    expect(dist(leaned.joints.handL, upright.joints.handL)).toBeGreaterThan(0.5);
+    // …but the upper-arm bone length is preserved (rigid, still attached).
+    const boneLen = (rig: typeof leaned) => dist(rig.joints.shoulderL, rig.joints.elbowL);
+    expect(boneLen(leaned)).toBeCloseTo(boneLen(upright), 5);
+  });
+
+  it('zero spine is byte-identical to no spine (every existing pose unchanged)', () => {
+    const z = buildRig({ pose: { spine: { lean: 0, turn: 0, side: 0 } } });
+    for (const j of ['chest', 'headCenter', 'shoulderL', 'handR', 'crown'] as const) {
+      expect(z.joints[j]).toEqual(neutral.joints[j]);
+    }
+    expect(z.dir.headForward).toEqual(neutral.dir.headForward);
+  });
+});
+
+describe('figure eyes — protrusion floor', () => {
+  it('floors the eyeball push at ~2 face-detail cells so labels never bury', () => {
+    // Regression: a `rad * 0.28` push was ~1 march cell and shrank to 0 on many
+    // figures, collapsing the eye/iris/pupil labels. Now floored at r.head*0.09.
+    const rig = buildRig({ height: 60, headsTall: 6 });
+    const rad = rig.r.head * 0.16;            // the default eyes radius
+    const solid = buildEyes(api, rig, { style: 'solid' }) as SdfNode;
+    // forward (−Y) reach of the eyeball front past the eye anchor plane.
+    const reach = -solid.bounds().min[1];
+    expect(reach).toBeGreaterThan(-rig.face.eyeL[1] + rig.r.head * 0.09 + rad - 1e-6);
+  });
+});
+
+describe('figure face.assemble — eyes default OFF', () => {
+  const F = createFigureNamespace(api);
+  const rig = buildRig({ height: 60, headsTall: 5 });
+  const labelsOf = (node: unknown): string[] =>
+    partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n).sort();
+
+  it('omits eyes by default (so a later .label("skin") cannot flatten them)', () => {
+    const face = F.face.assemble(F.head(rig), rig);
+    expect(labelsOf(face)).not.toContain('iris');
+    expect(labelsOf(face)).not.toContain('pupil');
+  });
+
+  it('eyes: true opts the in-face eyes back in', () => {
+    const face = F.face.assemble(F.head(rig), rig, { eyes: true });
+    expect(labelsOf(face)).toEqual(expect.arrayContaining(['eyes', 'iris', 'pupil']));
+  });
+});
+
+describe('figure brows — validated options (were silently ignored)', () => {
+  const F = createFigureNamespace(api);
+  const rig = buildRig({});
+  it('accepts thickness / lift and rejects unknown keys', () => {
+    expect(() => F.face.brows(rig, { thickness: 2, lift: 1.5 })).not.toThrow();
+    expect(() => F.face.brows(rig, { bogus: 1 })).toThrow();
+  });
+  it('thickness actually changes the ridge (no longer a no-op payload)', () => {
+    const thin = (F.face.brows(rig, { thickness: 1 }) as SdfNode).bounds();
+    const thick = (F.face.brows(rig, { thickness: 3 }) as SdfNode).bounds();
+    // a heavier ridge has a larger bbox than a slim one.
+    const span = (b: { min: number[]; max: number[] }) => b.max[2] - b.min[2];
+    expect(span(thick)).toBeGreaterThan(span(thin));
+  });
+});
+
+describe('figure hair — bald does not poison bounds()', () => {
+  it('bald returns an empty node bounded at the head, not at z ≈ −1e6', () => {
+    // Regression: bald returned sphere(1e-3) parked at z=−1e6, which broke
+    // bounds()/placeAt (snapped a million units down).
+    const rig = buildRig({ height: 60 });
+    const b = (buildHair(api, rig, { style: 'bald' }) as SdfNode).bounds();
+    const cz = (b.min[2] + b.max[2]) / 2;
+    expect(cz).toBeCloseTo(rig.joints.headCenter[2], 2);
+    expect(cz).toBeGreaterThan(0);
   });
 });
 
