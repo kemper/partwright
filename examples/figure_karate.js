@@ -37,7 +37,7 @@ const face = F.face.assemble(head, rig, {
   ears:  { size: r.head * 0.25 },
   brows: {},
 });
-const eyes = F.face.eyes(rig, { radius: r.head * 0.15 });
+const eyes = F.face.eyes(rig, { radius: r.head * 0.17 });
 const mouthParts = F.face.mouthAccents(rig, mouthOpts);  // provides 'teeth' label
 
 // 3. SKIN — fists on both hands.
@@ -123,18 +123,25 @@ const hl = rig.dir.headLeft;
 const hu = rig.dir.headUp;
 const hc = j.headCenter;
 
-// Lower than previous — sit it at the brow line (upper third of face).
-// headZ * 0.18 up from headCenter, headZ * 0.08 forward.
+// On the FOREHEAD: above the brow arcs (u ≈ 0.4·headZ) and below the 'high'
+// hairline. At 0.18 the band sat across the EYES like a blindfold — it
+// buried the eye domes entirely (their paint labels resolved to 0 triangles
+// at bake time, which is how this was caught).
 const bandCenter = [
-  hc[0] + hu[0] * r.headZ * 0.18 + hf[0] * r.headZ * 0.08,
-  hc[1] + hu[1] * r.headZ * 0.18 + hf[1] * r.headZ * 0.08,
-  hc[2] + hu[2] * r.headZ * 0.18 + hf[2] * r.headZ * 0.08,
+  hc[0] + hu[0] * r.headZ * 0.52 + hf[0] * r.headZ * 0.04,
+  hc[1] + hu[1] * r.headZ * 0.52 + hf[1] * r.headZ * 0.04,
+  hc[2] + hu[2] * r.headZ * 0.52 + hf[2] * r.headZ * 0.04,
 ];
 
-// Ring sits just outside the head surface — headX/Z + small clearance.
-const bandRadLR   = r.headX * 1.10;
-const bandRadFB   = r.headZ * 1.06;
-const bandThick   = r.head  * 0.10;
+// Ring centerline pinned ON the hair-cap surface (skull + hair thickness)
+// so the band crosses the hair shell TRANSVERSALLY all the way around — a
+// centerline slightly inside or outside that surface leaves the band
+// grazing the shell at near-tangent angles (genus 5, measured). Fat enough
+// that both faces clear the shell by ≥ 2 march cells.
+const hairT       = r.head * 0.12;          // F.hair default thickness
+const bandRadLR   = r.headX + hairT;
+const bandRadFB   = r.head * 1.12;
+const bandThick   = r.head  * 0.14;
 const NBAND = 14;
 let band;
 for (let i = 0; i < NBAND; i++) {

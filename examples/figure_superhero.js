@@ -32,7 +32,7 @@ const face = F.face.assemble(head, rig, {
   ears:  { size: r.head * 0.24 },
   brows: {},
 });
-const eyes = F.face.eyes(rig, { radius: r.head * 0.145 });
+const eyes = F.face.eyes(rig, { radius: r.head * 0.17 });
 
 // 3. SKIN — fists (detail region required for knuckles).
 const skin = F.weld(rig, [

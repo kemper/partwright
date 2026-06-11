@@ -804,6 +804,41 @@
       "file": "ballerina.partwright.json",
       "language": "manifold-js",
       "description": "An elegant ballerina with arms raised overhead and a layered tutu, balanced on a base — a graceful figure-rig pose."
+    },
+    {
+      "id": "storytime-reader",
+      "name": "Storytime Reader",
+      "file": "sitting_reader.partwright.json",
+      "language": "manifold-js",
+      "description": "A child sitting on a stool absorbed in a chunky storybook — chair-sit pose, bangs, and sculpted hands cradling the open book."
+    },
+    {
+      "id": "karate-master",
+      "name": "Karate Master",
+      "file": "karate.partwright.json",
+      "language": "manifold-js",
+      "description": "A martial artist mid-punch in a white gi with a knotted black belt and red headband — front stance, chambered fist, gritted teeth."
+    },
+    {
+      "id": "waving-princess",
+      "name": "Waving Princess",
+      "file": "princess.partwright.json",
+      "language": "manifold-js",
+      "description": "A princess in a floor-length gown giving a royal wave — gold five-point crown, ponytail, painted lips, open-fingered hand."
+    },
+    {
+      "id": "rock-guitarist",
+      "name": "Rock Guitarist",
+      "file": "rocker.partwright.json",
+      "language": "manifold-js",
+      "description": "A guitarist mid-solo with an electric guitar slung low — fretting and strumming hands on the instrument, bangs, mouth open singing."
+    },
+    {
+      "id": "superhero-takeoff",
+      "name": "Superhero Takeoff",
+      "file": "superhero.partwright.json",
+      "language": "manifold-js",
+      "description": "A stocky hero launching skyward with one fist punched up — sweeping cape, chest emblem, gloves and boots over a two-tone suit."
     }
   ]
 }
