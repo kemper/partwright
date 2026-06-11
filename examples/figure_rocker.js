@@ -12,12 +12,13 @@ const rig = F.rig({
   headsTall: 7,
   build: 'slim',
   pose: {
-    // Left arm: fretting hand raised IN FRONT of the left shoulder (not splayed
-    // out to the side) to grip the guitar neck. abduct=20 keeps the upper arm
-    // close in; flex=55 sweeps it forward; a deep elbow=120 curl folds the
-    // forearm up so the hand lands just left of the shoulder near the guitar's
-    // depth plane (≈ [6.5, −7.4, 58]). The neck is then drawn TO this hand.
-    armL: { abduct: 20, flex: 55, elbow: 120, twist: 0 },
+    // Left arm: fretting hand raised in front of the chest, oriented so its GRIP
+    // AXIS (rig.grip.L.gripAxis — the line a held bar lies along) is parallel to
+    // the diagonal neck. Found by sweeping the pose for max grip↔neck alignment
+    // (|dot| ≈ 0.996): the neck then lies IN the curled fingers instead of
+    // stabbing through the palm perpendicular. twist=−30 rolls the grip so the
+    // bar runs up the neck, not across it; the hand lands ≈ [3.8, −6.4, 53.4].
+    armL: { abduct: 55, flex: 40, elbow: 130, twist: -30 },
     // Right arm: strumming hand drops DOWN over the lower guitar body.
     // Low abduct and flex=20 hang the arm at waist height; elbow=0 keeps it
     // straight so the hand hovers just in front of the lower bout.
