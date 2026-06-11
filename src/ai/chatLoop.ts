@@ -24,6 +24,7 @@ import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
 import { isTransientError } from './transientError';
+import { elideStaleToolImages } from './historyElision';
 
 /** Look up the stored API key for a hosted provider. Returns null when
  *  no key is stored; chatLoop turns that into an "open AI Settings to
@@ -326,6 +327,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     let transientAttempt = 0;
     let apiCallStart = Date.now();
     let result;
+    // Trim stale render images out of the request (the persisted/displayed
+    // history keeps them) so a long modeling session's image tokens don't
+    // compound on every turn. Recomputed each iteration as tool results grow.
+    const sentHistory = elideStaleToolImages(workingHistory, getConfig().ai.keepRecentToolImages);
     for (;;) { // transient-retry loop — see maxTransientRetries below
     apiCallStart = Date.now();
     try {
@@ -334,7 +339,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         // Replay captured thinking blocks only when thinking is on for this
         // turn — required so the tool-use loop doesn't 400 on a tool_use that
         // isn't preceded by its signed thinking block.
-        const apiMessages = buildApiMessages(workingHistory, { replayThinking: toggles.thinking !== 'off' });
+        const apiMessages = buildApiMessages(sentHistory, { replayThinking: toggles.thinking !== 'off' });
         result = await streamTurn({
           apiKey,
           model: toggles.anthropicModel,
@@ -354,7 +359,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           model: toggles.openaiModel,
           systemPrompt,
           systemSuffix: toggleSuffix(toggles),
-          history: workingHistory,
+          history: sentHistory,
           tools,
           thinking: toggles.thinking,
         }, streamCallbacks, signal);
@@ -366,7 +371,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           model: toggles.geminiModel,
           systemPrompt,
           systemSuffix: toggleSuffix(toggles),
-          history: workingHistory,
+          history: sentHistory,
           tools,
           thinking: toggles.thinking,
         }, streamCallbacks, signal);
@@ -384,7 +389,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           model: toggles.customModel,
           systemPrompt,
           systemSuffix: toggleSuffix(toggles),
-          history: workingHistory,
+          history: sentHistory,
           tools,
         }, streamCallbacks, signal);
       } else {
@@ -395,7 +400,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           modelId: toggles.localModel,
           systemPrompt,
           systemSuffix: toggleSuffix(toggles),
-          history: workingHistory,
+          history: sentHistory,
           tools,
         }, streamCallbacks, signal);
       }

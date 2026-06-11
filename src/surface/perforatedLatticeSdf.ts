@@ -28,7 +28,7 @@
 
 import type { MeshData } from '../geometry/types';
 import { latticeEdgeDist2D, type LatticePattern } from './latticePattern';
-import { sdfModifierMesh, MAX_FIELD_RESOLUTION } from './sdfModifier';
+import { sdfModifierMesh, MAX_FIELD_RESOLUTION, type SdfRunControl } from './sdfModifier';
 import { extractPositions, bboxOf } from './meshSubdivide';
 
 export interface PerforatedLatticeOptions {
@@ -63,7 +63,7 @@ const KEEP_FRACTION = 0.01;
 
 /** Build a smooth perforated-lattice mesh from a solid model. Returns an empty
  *  mesh for an empty input. */
-export function perforatedLatticeSdfMesh(mesh: MeshData, opts: PerforatedLatticeOptions): MeshData {
+export async function perforatedLatticeSdfMesh(mesh: MeshData, opts: PerforatedLatticeOptions, ctl?: SdfRunControl): Promise<MeshData> {
   if (mesh.numTri === 0) return { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
 
   const pattern: LatticePattern = opts.pattern ?? 'square';
@@ -94,5 +94,5 @@ export function perforatedLatticeSdfMesh(mesh: MeshData, opts: PerforatedLattice
     const edge = latticeEdgeDist2D(gx, gy, pattern);
     const strut = edge * cell - halfStrutWorld;
     return Math.max(shell, strut);
-  });
+  }, ctl);
 }

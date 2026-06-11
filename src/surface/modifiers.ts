@@ -23,8 +23,7 @@ import { voronoiShell, type VoronoiShellOptions } from './voronoiShell';
 import { voronoiLattice, type VoronoiLampOptions } from './voronoiLattice';
 import { smoothSurface, type SmoothOptions } from './smoothSurface';
 import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
-import { extractPositions, bboxOf, subdivideWithMask } from './meshSubdivide';
-import { carryTriColors } from './colorTransfer';
+import { extractPositions, bboxOf, subdivideWithMask, subdivideToMaxEdge } from './meshSubdivide';
 import { encodeGrid } from '../geometry/voxel/grid';
 import { formatSurfacingCall } from '../geometry/voxel/editCodegen';
 import { scaleMesh } from './scaleMesh';
@@ -32,8 +31,11 @@ import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 import { voronoiLampSdfMesh } from './voronoiLampSdf';
 import { perforatedLatticeSdfMesh, type PerforatedLatticeOptions } from './perforatedLatticeSdf';
+import { engraveMesh, type EngraveSdfOptions } from './engraveSdf';
+import { type EngraveProjection } from './engraveStamp';
+import { type SdfRunControl } from './sdfModifier';
 
-export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'perforate' | 'smooth' | 'voxelize';
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'perforate' | 'engrave' | 'smooth' | 'voxelize';
 
 export interface ModifierManifoldResult {
   kind: 'manifold';
@@ -43,6 +45,11 @@ export interface ModifierManifoldResult {
   code: string;
   /** Baked mesh to attach to the new version as an imported mesh. */
   mesh: MeshData;
+  /** Optional painted source mesh for color carry when the baked `mesh` itself
+   *  carries no per-triangle color — i.e. a fully re-meshed result (engrave,
+   *  voronoi lamp) where colors can only be transferred spatially from the
+   *  original. The commit falls back to a nearest-triangle transfer from this. */
+  colorSource?: MeshData;
 }
 
 export interface ModifierVoxelResult {
@@ -65,6 +72,19 @@ function today(): string {
 export function modelDiagonal(mesh: MeshData): number {
   const { size } = bboxOf(extractPositions(mesh));
   return Math.hypot(size[0], size[1], size[2]);
+}
+
+/** A dense color-source for a fully re-meshed result (engrave / voronoi lamp).
+ *  The color carry maps each new triangle to the *nearest old triangle centroid*,
+ *  which is unreliable when the source has a few huge faces (a plain cube): a new
+ *  top-face triangle near a corner can be closer to a side-face centroid. We
+ *  subdivide the painted input to small triangles first (carrying triColors and
+ *  the `_painted` mask) so the centroids are dense and the transfer is faithful.
+ *  Returns undefined when the input carries no paint. */
+function denseColorSource(mesh: MeshData): MeshData | undefined {
+  if (mesh.triColors == null) return undefined;
+  const maxEdge = (modelDiagonal(mesh) || 10) / 80;
+  return subdivideToMaxEdge(mesh, { maxEdge, maxRounds: 5 });
 }
 
 /** Size-relative starting parameters for fuzzy skin (subtle ~1% displacement). */
@@ -127,6 +147,8 @@ export { type WovenFabricOptions };
 export { type VoronoiShellOptions };
 export { type VoronoiLampOptions };
 export { type PerforatedLatticeOptions };
+export { type EngraveProjection, type StampMask } from './engraveStamp';
+export { type SdfRunControl, SdfAbortError } from './sdfModifier';
 
 export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierManifoldResult {
   const baked = fuzzySkin(mesh, opts);
@@ -619,19 +641,21 @@ export function applyTransform(
   };
 }
 
-export function applyVoronoiLamp(mesh: MeshData, opts: VoronoiLampModifierOptions): ModifierResult {
+export async function applyVoronoiLamp(mesh: MeshData, opts: VoronoiLampModifierOptions, ctl?: SdfRunControl): Promise<ModifierResult> {
   // Default: a smooth manifold-js mesh built from a CONTINUOUS signed-distance
   // field (the principle behind Manifold.levelSet, done pure-JS on the main
   // thread). The wall follows the true distance to the *smooth* original surface
   // sub-voxel, so there's no voxel "corduroy" — and resolution genuinely sharpens
   // it. See voronoiLampSdf.ts.
   if ((opts.output ?? 'mesh') === 'mesh') {
-    // Brand-new Surface-Nets topology — carry painted input colors by proximity.
-    const baked = carryTriColors(mesh, voronoiLampSdfMesh(mesh, opts));
+    const baked = await voronoiLampSdfMesh(mesh, opts, ctl);
     return {
       kind: 'manifold',
       label: 'voronoi lamp',
       mesh: baked,
+      // Re-meshed shell carries no colors; transfer them spatially from a dense
+      // version of the painted input (coarse faces would map unreliably).
+      colorSource: denseColorSource(mesh),
       code: manifoldWrapper([
         `Voronoi lamp (perforated shell) from the current model on ${today()} — cell ~${opts.cellSize.toFixed(2)}, wall ${opts.wallThickness.toFixed(2)}.`,
         `Smooth (SDF) mesh baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
@@ -662,23 +686,72 @@ return v;
   };
 }
 
-export function applyPerforate(mesh: MeshData, opts: PerforatedLatticeOptions): ModifierManifoldResult {
+export async function applyPerforate(mesh: MeshData, opts: PerforatedLatticeOptions, ctl?: SdfRunControl): Promise<ModifierManifoldResult> {
   // Regular-pattern sibling of the Voronoi lamp: a thin shell with square / hex /
   // triangular windows cut clean through it. Built from a CONTINUOUS signed-
   // distance field (smooth curved walls, no voxel stair-stepping) via the shared
   // SDF scaffolding. See perforatedLatticeSdf.ts.
-  // The SDF mesh is brand-new Surface-Nets topology, so carry the painted input's
-  // per-triangle colors onto it by nearest-surface proximity (commitSurfaceModifier
-  // then rehydrates them into color regions). No-op when the input is unpainted.
-  const baked = carryTriColors(mesh, perforatedLatticeSdfMesh(mesh, opts));
+  const baked = await perforatedLatticeSdfMesh(mesh, opts, ctl);
   const pattern = opts.pattern ?? 'square';
   return {
     kind: 'manifold',
     label: 'perforated lattice',
     mesh: baked,
+    // Re-meshed shell carries no per-triangle colors; transfer them spatially
+    // from a dense version of the painted input (coarse faces map unreliably).
+    colorSource: denseColorSource(mesh),
     code: manifoldWrapper([
       `Perforated lattice (${pattern}) from the current model on ${today()} — cell ~${opts.cellSize.toFixed(2)}, wall ${opts.wallThickness.toFixed(2)}.`,
       `Smooth (SDF) mesh baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
+export interface EngraveModifierOptions extends Omit<EngraveSdfOptions, 'mask'> {
+  /** The pre-rasterized ink mask (built by the host from text or an image). */
+  mask: EngraveSdfOptions['mask'];
+  /** Short human label for the version (e.g. the text or "image"). */
+  source?: string;
+}
+
+/** Size-relative starting parameters for engrave (a square-ish stamp on the top
+ *  face, recessed ~6% of the diagonal). The mask + projection are supplied by
+ *  the caller; this only fills the geometric knobs. */
+export function defaultEngraveOptions(mesh: MeshData): {
+  projection: EngraveProjection; through: boolean; depth: number; size: number; resolution: number; watertight: boolean;
+} {
+  const { size } = bboxOf(extractPositions(mesh));
+  const span = Math.max(size[0], size[1], 1e-6);
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    projection: { mode: 'planar', axis: 'z', side: 'max' },
+    through: false,
+    depth: d * 0.06,
+    size: span * 0.7,
+    resolution: 180,
+    watertight: true,
+  };
+}
+
+export async function applyEngrave(mesh: MeshData, opts: EngraveModifierOptions, ctl?: SdfRunControl): Promise<ModifierManifoldResult> {
+  const baked = await engraveMesh(mesh, opts, ctl);
+  const proj = opts.projection.mode === 'planar'
+    ? `${opts.projection.side === 'max' ? '+' : '-'}${opts.projection.axis.toUpperCase()} face`
+    : opts.projection.mode === 'free'
+      ? 'a clicked face'
+      : `${opts.projection.side} cylinder`;
+  const what = opts.source ? `"${opts.source}"` : 'stamp';
+  return {
+    kind: 'manifold',
+    label: opts.through ? 'engrave (cut through)' : 'engrave',
+    mesh: baked,
+    // The carved mesh is a fresh surface-nets surface with no per-triangle
+    // colors; carry the original paint by spatial transfer from a dense version
+    // of the painted input (coarse faces would map unreliably).
+    colorSource: denseColorSource(mesh),
+    code: manifoldWrapper([
+      `Engraved ${what} on ${today()} — ${opts.through ? 'cut clean through' : `recessed ${opts.depth.toFixed(2)} deep`} on the ${proj}.`,
+      `The carved mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
     ]),
   };
 }
