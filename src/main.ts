@@ -37,7 +37,7 @@ import './renderer/viewportSubsystems';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
+import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
@@ -121,7 +121,7 @@ import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geom
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
 import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampHost';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
@@ -203,6 +203,7 @@ import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
 import { encodeShare, decodeShare, validateSharePayloadShape, ShareUnsupportedError } from './share/shareLink';
 import { openShareModal, renderSharedBanner, renderSharedOverlay } from './share/shareUI';
+import { initInsertPalette, setInsertPaletteAvailable } from './ui/insertPalette';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
@@ -6372,6 +6373,21 @@ async function main() {
   initDimensionsToggle(clipControls);
   initAnnotateUI(clipControls);
   initPaintUI(clipControls);
+  initInsertPalette(clipControls, {
+    getLanguage: () => getActiveLanguage(),
+    getCode: () => getValue(),
+    setCode: (code: string) => setValue(code),
+    getSelection: () => getSelection(),
+    run: (code?: string) => runCode(code),
+    showToast: (msg, opts) => showToast(msg, opts),
+    getMeshData: () => currentMeshData,
+    getCamera: () => getCamera(),
+    getCanvas: () => getCanvas(),
+  });
+  // initInsertPalette wires the toolbar button itself. All four engines now
+  // have insert codegen, so the palette is always available; per-engine shape
+  // and operation support is handled inside the palette.
+  setInsertPaletteAvailable(true);
   initImagePaintUI(clipControls);
   setSmoothStampCallback(smoothReplayCb = (imageData, stampOpts, maxEdge) => {
     if (!currentMeshData) return null;
@@ -6899,6 +6915,9 @@ async function main() {
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
     setVoxelPaintAvailable(lang === 'voxel');
+    // All four engines have insert codegen; the palette repaints its per-engine
+    // sections on this call (when open) and on its next open.
+    setInsertPaletteAvailable(true);
     notifyQualityLangChanged(lang);
     syncEditorTitle(getState());
     const loadingLabel =
@@ -7070,7 +7089,7 @@ async function main() {
    *  feature size relative to the model's bounding-box diagonal so the AI gets
    *  actionable feedback before spending time on a degenerate run. */
   function textureWarnings(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi',
     opts: Record<string, unknown>,
     mesh: MeshData,
   ): string[] {
@@ -7172,6 +7191,20 @@ async function main() {
         warnings.push(
           `threadSpacing (${ts.toFixed(4)}) is very small — weave will be invisible; ` +
           `try threadSpacing ≈ ${(diag * 0.04).toFixed(3)}`,
+        );
+      }
+    } else if (id === 'knurl') {
+      const cw = (opts.cellWidth as number | undefined) ?? 0;
+      if (cw > diag * 0.4) {
+        warnings.push(
+          `cellWidth (${cw.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
+          `fewer than 3 ridges visible; try cellWidth ≈ ${(diag * 0.05).toFixed(3)}`,
+        );
+      }
+      if (cw > 0 && cw < diag / 400) {
+        warnings.push(
+          `cellWidth (${cw.toFixed(4)}) is very small — the knurl will be invisible; ` +
+          `try cellWidth ≈ ${(diag * 0.05).toFixed(3)}`,
         );
       }
     } else if (id === 'voronoi') {
@@ -7572,7 +7605,7 @@ async function main() {
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
   async function buildSurfaceModifier(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
     ctl?: SdfRunControl,
@@ -7673,6 +7706,22 @@ async function main() {
       };
       if (sel && sel.size > 0) return applyWovenPatch(mesh, wovenOpts, sel);
       return applyWoven(mesh, wovenOpts);
+    }
+    if (id === 'knurl') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultKnurlOptions(mesh);
+      const knurlOpts = {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        cellWidth: (opts?.cellWidth as number) ?? base.cellWidth,
+        cellHeight: (opts?.cellHeight as number) ?? base.cellHeight,
+        style: (opts?.style as 'diamond' | 'straight' | 'ribs') ?? base.style,
+        sharpness: (opts?.sharpness as number) ?? base.sharpness,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
+      };
+      if (sel && sel.size > 0) return applyKnurlPatch(mesh, knurlOpts, sel);
+      return applyKnurl(mesh, knurlOpts);
     }
     if (id === 'voronoi') {
       const mesh = meshForModifier(preserveColor);
@@ -7808,7 +7857,7 @@ async function main() {
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
      *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize'. */
-    async previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): Promise<{ ok: true } | { error: string }> {
+    async previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): Promise<{ ok: true } | { error: string }> {
       try {
         previewSurfaceModifier(await buildSurfaceModifierProgress(id, opts, preserveColor), preserveColor);
         return { ok: true };
@@ -8052,6 +8101,36 @@ async function main() {
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('woven', opts ?? {}, mesh);
         const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('woven', opts, preserve), preserve);
+        if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
+          const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
+          return { ...result, warnings: [...warns, ...(existing ?? [])] };
+        }
+        return result;
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Apply a knurl grip texture to the current model; saves a new version.
+     *  Functional grip relief — diamond cross-hatch, straight axial splines, or
+     *  horizontal finger ribs — displaced along surface normals. Distinct from
+     *  the `api.knurl.*` shape generator: this textures any existing mesh.
+     *  `preserveColor` (default true) carries paint across subdivision.
+     *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async applyKnurlTexture(opts?: {
+      amplitude?: number;
+      cellWidth?: number;
+      cellHeight?: number;
+      style?: 'diamond' | 'straight' | 'ribs';
+      sharpness?: number;
+      grainAngleDeg?: number;
+      seed?: number;
+      quality?: number;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        const mesh = requireCurrentMeshForModifier();
+        const warns = textureWarnings('knurl', opts ?? {}, mesh);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('knurl', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -13334,6 +13413,7 @@ async function main() {
         'applyWaffleStitch': { signature: 'await applyWaffleStitch({amplitude?, cellWidth?, cellHeight?, sharpness?, rowOffset?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE waffle grid; saves a new version. In-code alternative: api.surface.waffle', docs: '/ai/textures.md' },
         'applyFurVelvet':  { signature: 'await applyFurVelvet({amplitude?, fiberSpacing?, fiberLength?, octaves?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE fur/velvet fibers; saves a new version. In-code alternative: api.surface.fur', docs: '/ai/textures.md' },
         'applyWovenFabric':{ signature: 'await applyWovenFabric({amplitude?, threadSpacing?, threadWidth?, underDepth?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE woven threads; saves a new version. In-code alternative: api.surface.woven', docs: '/ai/textures.md' },
+        'applyKnurlTexture':{ signature: 'await applyKnurlTexture({amplitude?, cellWidth?, cellHeight?, style?, sharpness?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE knurl grip (style: diamond|straight|ribs); saves a new version. In-code alternative: api.surface.knurl', docs: '/ai/textures.md' },
         'applyVoronoiShell': { signature: 'await applyVoronoiShell({amplitude?, cellSize?, wallWidth?, raised?, jitter?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE Voronoi cell relief; saves a new version. In-code alternative: api.surface.voronoi', docs: '/ai/textures.md' },
         'applyVoronoiLamp':{ signature: 'await applyVoronoiLamp({cellSize?, wallThickness?, strutWidth?, resolution?, jitter?, grainAngleDeg?, seed?, preserveColor?}) -- Convert the model into a perforated Voronoi lamp shell (bake only — no api.surface twin)', docs: '/ai/textures.md' },
         'engraveModel':    { signature: "await engraveModel({text | imageUrl, raised?, through?, depth?, size?, color?, axis?, side?, posU?, posV?, rotationDeg?, curveAxis?, curveAngleDeg?, font?, resolution?, watertight?, preserveColor?}) -- Carve text/image as recessed channels (engrave), holes (through), or a raised relief (raised = emboss); color paints the letters ('#rrggbb' or [r,g,b] 0–1). Saves a new version.", docs: '/ai/textures.md#engravemodel' },
@@ -14756,7 +14836,10 @@ function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'load
   el.setAttribute('aria-live', 'polite');
   el.textContent = text;
   el.title = text;
-  el.className = 'text-xs font-mono max-w-[60%] truncate text-right ';
+  // Keep the indicator click-transparent — `setStatus` overwrites the className
+  // so the original `pointer-events-none` from layout.ts would otherwise be
+  // lost, letting it intercept clicks on the Insert button it overlaps.
+  el.className = 'text-xs font-mono max-w-[60%] truncate text-right pointer-events-none ';
   switch (state) {
     case 'ready':
       el.className += 'text-emerald-400';

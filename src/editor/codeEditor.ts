@@ -513,3 +513,12 @@ export function setReadOnly(readOnly: boolean): void {
     effects: readOnlyCompartment.reconfigure(EditorState.readOnly.of(readOnly)),
   });
 }
+
+/** Current primary selection as character offsets plus its text. When nothing
+ *  is selected, `from === to` and `text` is empty. Used by the insert palette's
+ *  "wrap selection" operand mode. */
+export function getSelection(): { from: number; to: number; text: string } {
+  if (!editorView) return { from: 0, to: 0, text: '' };
+  const sel = editorView.state.selection.main;
+  return { from: sel.from, to: sel.to, text: editorView.state.sliceDoc(sel.from, sel.to) };
+}

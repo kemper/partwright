@@ -23,7 +23,7 @@ const rig = F.rig({
     legL: { abduct: 5,  flex: 42,  knee: 46  },   // front leg bent
     legR: { abduct: 8,  flex: -32, knee: 5   },   // back leg nearly straight
     head: { nod: 3 },                              // head slightly forward — focused
-    spine: { lean: 7 },                            // lean into the punch
+    spine: { lean: 5 },                            // lean into the punch (5°: clears the deep-stance graze that lean 7 caused now that spine is live)
   },
 });
 const j = rig.joints, r = rig.r;
