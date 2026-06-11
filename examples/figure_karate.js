@@ -9,7 +9,8 @@ const F = sdf.figure;
 // 1. RIG — front stance.
 //    Left arm: flex 88 = nearly straight forward punch; low abduct keeps it
 //    close to the centreline. elbow 5 = arm nearly straight.
-//    Right arm: flex -30 pulls it behind, elbow 90 folds forearm → fist at waist.
+//    Right arm: flex -10 (slight behind), elbow 60 folds forearm down, twist 25
+//    orients elbow outward → fist at waist/hip height at the side.
 //    Front leg (left): flex 40, knee 44 — knee forward over foot.
 //    Back leg (right): flex -30, knee 5 — nearly straight.
 const rig = F.rig({
@@ -18,7 +19,7 @@ const rig = F.rig({
   build: 'slim',
   pose: {
     armL: { abduct: 8,  flex: 88,  elbow: 5  },   // left: straight punch forward at shoulder height
-    armR: { abduct: 10, flex: -35, elbow: 88 },   // right: chambered fist at the hip
+    armR: { abduct: 5,  flex: -10, elbow: 60, twist: 25 },   // right: chambered fist at the hip
     legL: { abduct: 5,  flex: 42,  knee: 46  },   // front leg bent
     legR: { abduct: 8,  flex: -32, knee: 5   },   // back leg nearly straight
     head: { nod: 3 },                              // head slightly forward — focused
