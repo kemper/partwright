@@ -286,6 +286,7 @@ import {
   checkAssertions,
   type GeometryAssertions,
 } from './geometry/statsComputation';
+import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
 import { nextStarter, isStarterCode } from './editor/starters';
 import { parseLabelColor } from './color/labelColor';
@@ -9740,10 +9741,30 @@ async function main() {
       if (!ctx) return { error: 'No active session' };
       const geo = JSON.parse(geometryDataEl.textContent || '{}');
       const warnings = geometryWarnings(geo);
+      // User-drawn annotations are direct feedback on the model; surface a
+      // compact summary so a resuming or external agent sees them without a
+      // separate listAnnotations() round-trip (the per-turn suffix pushes the
+      // same signal to the in-app chat agent).
+      const annoTexts = getAnnotationTexts();
+      const annoStrokes = getAnnotationStrokes();
+      const annotations = (annoTexts.length > 0 || annoStrokes.length > 0)
+        ? {
+            textNotes: annoTexts.map(t => ({
+              text: t.text,
+              anchor: [
+                Math.round(t.anchor.x * 1000) / 1000,
+                Math.round(t.anchor.y * 1000) / 1000,
+                Math.round(t.anchor.z * 1000) / 1000,
+              ] as [number, number, number],
+            })),
+            strokeCount: annoStrokes.length,
+          }
+        : null;
       return {
         ...ctx,
         currentCode: getValue(),
         ...(warnings.length > 0 ? { geometryWarnings: warnings } : {}),
+        ...(annotations ? { annotations } : {}),
       };
     },
 
@@ -13689,6 +13710,22 @@ async function main() {
         'Re-add the label, or drop the region with removeRegion / clearColors and repaint by coordinates.',
       );
     }
+    // Cheap numeric heuristics (tri budget, aspect ratio, sub-extrusion detail,
+    // interpenetrating parts) — the signals the headless model:preview already
+    // emits but the in-app AI was previously blind to. Surfacing them here lets
+    // the agent catch these from stats without paying for a render.
+    const cc = typeof geo.componentCount === 'number' ? geo.componentCount : 1;
+    const enclosed = typeof geo.containedComponents === 'number' ? geo.containedComponents : 0;
+    warnings.push(...buildGeometryHeuristicWarnings(
+      {
+        triangleCount: typeof geo.triangleCount === 'number' ? geo.triangleCount : 0,
+        aspectRatio: typeof geo.aspectRatio === 'number' ? geo.aspectRatio : null,
+        minEdgeLength: typeof geo.minEdgeLength === 'number' ? geo.minEdgeLength : 0,
+        floatingComponentCount: cc - enclosed,
+        componentsInterpenetrate: geo.componentsInterpenetrate === true,
+      },
+      getConfig().geometry,
+    ));
     return warnings;
   }
 

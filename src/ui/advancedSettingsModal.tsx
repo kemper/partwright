@@ -25,6 +25,7 @@ function cloneConfig(c: AppConfig): AppConfig {
     renderer: { ...c.renderer },
     import: { ...c.import },
     ui: { ...c.ui },
+    geometry: { ...c.geometry },
   };
 }
 
@@ -264,6 +265,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.maxAttachments}
           min={1} max={100} integer
           onChange={v => set('ai', 'maxAttachments', v)}
+        />
+        <Field
+          label="Recent render images kept in context"
+          unit="images"
+          hint="How many of the latest render snapshots stay in the request sent to the AI."
+          tooltip="renderView / renderViews / runIsolated return PNG snapshots so the agent can see the model. Every snapshot is otherwise re-sent to the provider on every subsequent turn, so a long session's image tokens compound. This keeps only the N most-recent render images in the request (their text stats always stay); older ones are replaced with a short note. The on-screen transcript still shows every image — only the wire request is trimmed. Raise it to give the model more visual memory at higher token cost; set very high to disable trimming."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.keepRecentToolImages}
+          value={c.ai.keepRecentToolImages}
+          min={0} max={50} integer
+          onChange={v => set('ai', 'keepRecentToolImages', v)}
         />
       </Section>
 
@@ -712,6 +723,39 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.import.filamentConfidenceWarnThreshold}
           min={0.1} max={1} step={0.05}
           onChange={v => set('import', 'filamentConfidenceWarnThreshold', v)}
+        />
+      </Section>
+
+      <Section title="Geometry warnings">
+        <Field
+          label="Triangle-count warning budget"
+          unit="triangles"
+          hint="Live model warns above this triangle count."
+          tooltip="When the model exceeds this many triangles, the geometry warnings (shown to you and to the AI agent) flag it as heavy to slice and over the catalog budget. Mirrors the headless model:preview tri-budget warning. Raise it if you routinely build dense organic models; lower it to be nudged toward lighter geometry sooner."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.triCountWarnBudget}
+          value={c.geometry.triCountWarnBudget}
+          min={10_000} max={2_000_000} integer
+          onChange={v => set('geometry', 'triCountWarnBudget', v)}
+        />
+        <Field
+          label="Minimum edge-length warning"
+          unit="units (≈mm)"
+          hint="Warns when the smallest mesh edge is below this."
+          tooltip="Features whose mesh edges fall below a typical FDM extrusion width silently disappear on the print. When the shortest edge is under this threshold, the geometry warnings flag possible sub-extrusion detail. Mirrors model:preview's sub-0.4 mm detail warning. Lower it if you print on a fine nozzle; raise it for chunky FDM."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.minEdgeLengthWarn}
+          value={c.geometry.minEdgeLengthWarn}
+          min={0} max={5} step={0.05}
+          onChange={v => set('geometry', 'minEdgeLengthWarn', v)}
+        />
+        <Field
+          label="Aspect-ratio warning"
+          unit=": 1"
+          hint="Warns when longest ÷ shortest dimension exceeds this."
+          tooltip="Tall, thin parts (high bounding-box aspect ratio) are fragile and tip-prone on an FDM bed. When the ratio of the longest to the shortest non-zero dimension exceeds this, the geometry warnings flag it. Mirrors model:preview. Raise it if you intentionally build slender parts; lower it to be warned earlier."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.aspectRatioWarn}
+          value={c.geometry.aspectRatioWarn}
+          min={2} max={100} step={1}
+          onChange={v => set('geometry', 'aspectRatioWarn', v)}
         />
       </Section>
 

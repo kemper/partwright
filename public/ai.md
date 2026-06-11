@@ -401,6 +401,7 @@ await partwright.getSessionContext()     // -> {session, versions[], notes[], cu
   "boundingBox": { "x":[-5,5], "y":[-5,5], "z":[-5,5], "dimensions":[10,10,10] },
   "centroid": [0,0,0],
   "volume": 1000, "surfaceArea": 600,
+  "minEdgeLength": 0.8, "meanEdgeLength": 2.1, "aspectRatio": 1.0,
   "genus": 0, "isManifold": true, "componentCount": 1,
   "crossSections": {
     "z25": {"z":-2.5,"area":100,"contours":1},
@@ -412,10 +413,15 @@ await partwright.getSessionContext()     // -> {session, versions[], notes[], cu
 }
 ```
 
+Always present (cheap mesh-quality signals — read them *instead of* paying for a render when the question is structural, not visual):
+- **`minEdgeLength` / `meanEdgeLength`** — shortest and mean triangle-edge length, in model units. A `minEdgeLength` under ~0.4 (≈ FDM extrusion width) means fine detail that will silently vanish on the print.
+- **`aspectRatio`** — longest bounding-box dimension ÷ shortest non-zero one. A high value (>12) flags a tall/thin, tip-prone, fragile part. Omitted when not measurable (empty/degenerate).
+
 Extra fields that appear conditionally:
 - **`containedComponents: N`** — present when N components are fully enclosed inside another solid (e.g. sealed interior voids in a voxel shell). These are excluded from `maxComponents` assertion checks and from the floater warning, since they can't detach in print. Use `runAndExplain(code)` to inspect them individually.
+- **`componentsInterpenetrate: true`** — present when two *separate* components' bounding boxes overlap: they interpenetrate rather than sit apart. If the model should be ONE solid, a boolean didn't fuse (operands must overlap by ≥ 0.5 units); if it's an intentional multi-part assembly, sanity-check the clearance gap.
 - **`stale: true`** — present when the editor code has changed since the last execution (e.g. `setCode` was called without a subsequent run). Stats reflect the *previous* run. Call `runAndSave`/`run` before relying on component counts or other metrics.
-- **`warnings: string[]`** — present when the geometry has printability issues (non-manifold, free-floating components, etc.).
+- **`warnings: string[]`** — present when the geometry has issues worth acting on. Beyond the structural ones (non-manifold, free-floating components, empty paint regions) these now include the same cheap heuristics the headless `model:preview` emits: **over the ~200k triangle budget**, **extreme aspect ratio**, **sub-extrusion-width detail** (smallest edge < 0.4), and **interpenetrating components**. Treat every warning as a to-do before declaring done — they catch a whole class of defects from stats alone, no render needed.
 
 On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}`
 

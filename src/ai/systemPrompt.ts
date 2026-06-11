@@ -215,6 +215,16 @@ export function toggleSuffix(toggles: ChatToggles): string {
     // doesn't have to. Harmless on non-organic tasks (it self-scopes).
     'Organic subjects (a person, child, animal, creature, bust — any soft / anatomical body) → DEFAULT TO SDF: api.sdf capsule limbs + ellipsoid masses welded with smoothUnion (call readDoc("sdf") first). Do NOT build them from a union of primitive spheres/capsules ("primitive soup" looks wrong no matter how you tune it) unless the user explicitly asked for voxel / low-poly / relief. Choose SDF yourself from the first version — "model this person/animal" triggers SDF the way "exact fillet" triggers BREP.',
     '',
+  ];
+  // User-drawn annotations are direct, zero-cost feedback (the human is looking
+  // at the viewport you can't see). Push them every turn so the agent acts on
+  // them without having to call listAnnotations itself. Self-scoping: nothing
+  // is added when the model is unmarked.
+  const annoHint = annotationHint();
+  if (annoHint) {
+    lines.push('## User annotations on the model', '', annoHint, '');
+  }
+  lines.push(
     // Positive, explicit capability list. The user can flip these toggles
     // mid-conversation; this suffix is regenerated every turn, so it is the
     // live source of truth. Declaring each one ON/OFF — rather than only
@@ -227,7 +237,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
     `- Paint / color regions: ${onOff(toggles.scope.paintFaces)}`,
     `- Session notes: ${onOff(toggles.scope.sessionNotes)}`,
     `- Auto-render (renderView / renderViews): ${onOff(toggles.vision.views)}`,
-  ];
+  );
   if (toggles.printOptimized) {
     lines.push('');
     lines.push(printableGuidance());
@@ -252,6 +262,65 @@ function currentLanguage(): Language {
     return 'manifold-js';
   } catch {
     return 'manifold-js';
+  }
+}
+
+/** Serialized text annotation as the console API returns it (anchor rounded). */
+interface SerializedTextAnnotation { text: string; anchor: [number, number, number] }
+
+/** Build the per-turn push line for user-drawn annotations, or null when the
+ *  model is unmarked. Pure (no window access) so it's unit-testable. The whole
+ *  point of rec: a user who draws on the model is the cheapest, highest-
+ *  bandwidth feedback signal there is (like watching a game), so push it into
+ *  the prompt every turn instead of waiting for the agent to pull it via
+ *  readDoc/listAnnotations. */
+export function formatAnnotationHint(
+  texts: SerializedTextAnnotation[],
+  strokeCount: number,
+): string | null {
+  if (texts.length === 0 && strokeCount === 0) return null;
+  const fmt = (n: number): string => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+  const MAX = 8;
+  const shown = texts.slice(0, MAX).map((t, i) => {
+    const label = t.text.length > 80 ? t.text.slice(0, 77) + '…' : t.text;
+    return `[${i + 1}] "${label}" at (${t.anchor.map(fmt).join(', ')})`;
+  });
+  const parts: string[] = [];
+  if (texts.length > 0) {
+    parts.push(
+      `${texts.length} text note${texts.length > 1 ? 's' : ''}: ${shown.join('; ')}` +
+      (texts.length > MAX ? `; …and ${texts.length - MAX} more (call listTextAnnotations())` : ''),
+    );
+  }
+  if (strokeCount > 0) {
+    parts.push(`${strokeCount} freehand mark${strokeCount > 1 ? 's' : ''} drawn on the surface (call listAnnotations() for the stroke points)`);
+  }
+  return [
+    'The user has DRAWN ANNOTATIONS on the model — treat these as direct art-direction / feedback on what to change, not optional trivia. ' +
+    parts.join('. ') + '.',
+    'Address each one (adjust the geometry, or say why not) before declaring the task done. The coordinates use the model\'s own units.',
+  ].join(' ');
+}
+
+/** Read the live annotation state off the console API (same window-access
+ *  pattern as currentLanguage). Returns null when there's nothing to push, so
+ *  an unmarked model costs zero suffix tokens. */
+function annotationHint(): string | null {
+  try {
+    const w = window as unknown as {
+      partwright?: {
+        listTextAnnotations?: () => SerializedTextAnnotation[];
+        getAnnotationCount?: () => number;
+        listAnnotations?: () => unknown[];
+      };
+    };
+    const api = w.partwright;
+    if (!api?.listTextAnnotations) return null;
+    const texts = api.listTextAnnotations() ?? [];
+    const strokeCount = api.listAnnotations ? (api.listAnnotations() ?? []).length : 0;
+    return formatAnnotationHint(texts, strokeCount);
+  } catch {
+    return null;
   }
 }
 

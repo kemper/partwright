@@ -22,6 +22,15 @@ them. Inspect them via `listAnnotations()` / `listTextAnnotations()`, infer whic
 being pointed at from the 3D points/anchors, and confirm your interpretation before making
 changes.
 
+> **You don't have to go looking.** A user drawing on the model is the cheapest,
+> highest-bandwidth feedback there is — so when annotations exist they are
+> **pushed to you automatically**: the in-app chat agent gets a "User annotations
+> on the model" line in every turn's prompt, and `getSessionContext()` returns an
+> `annotations` summary (`{ textNotes: [{text, anchor}], strokeCount }`). Read
+> these as direct art-direction: address each one (adjust the geometry, or say why
+> not) before declaring the task done. Call `listAnnotations()` /
+> `listTextAnnotations()` for the full stroke points / exact coordinates.
+
 ```js
 partwright.listAnnotations()
 // -> [{id, color: [r,g,b], width: 4, pointCount: 24, points: [[x,y,z], ...]}]
