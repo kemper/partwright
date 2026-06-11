@@ -23,6 +23,7 @@ import { getCurrentMesh, previewTriangles } from '../color/paintMode';
 import { buildTriColors } from '../color/regions';
 import type { StampMask, EngraveProjection } from '../surface/modifiers';
 import { engravePlanarFootprint, engraveFreeFootprint } from '../surface/engraveStamp';
+import { listFilaments } from '../color/palette';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
@@ -229,6 +230,63 @@ function dropdown<T extends string>(
   sel.addEventListener('change', onChange);
   wrap.append(sel);
   return { wrap, get: () => sel.value as T };
+}
+
+/** Normalize any hex form to the `#rrggbb` a native colour input requires. */
+function toColorInputHex(hex: string): string {
+  let h = hex.trim().replace(/^#/, '');
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  return /^[0-9a-fA-F]{6}$/.test(h) ? `#${h.toLowerCase()}` : '#d4af37';
+}
+
+/** A colour control that mirrors the paint tools: the shared filament palette as
+ *  a swatch grid (click to pick a slot) plus a native picker for an off-palette
+ *  colour. Returns the current hex via `get()`. `onChange` fires on every pick.
+ *  Snapshots the palette at creation — the panel is short-lived, so it doesn't
+ *  subscribe to live palette edits the way the persistent paint drawer does. */
+function colorField(initial: string, onChange: () => void) {
+  const wrap = el('div', 'mb-3');
+  let value = toColorInputHex(initial);
+
+  const grid = el('div', 'grid grid-cols-6 gap-1.5 mb-2');
+  const swatches: { btn: HTMLButtonElement; hex: string }[] = [];
+  const syncRings = () => {
+    for (const s of swatches) {
+      const on = toColorInputHex(s.hex) === value;
+      s.btn.classList.toggle('border-white/80', on);
+      s.btn.classList.toggle('ring-1', on);
+      s.btn.classList.toggle('ring-white/30', on);
+      s.btn.classList.toggle('border-transparent', !on);
+    }
+  };
+
+  for (const f of listFilaments()) {
+    const btn = el('button', 'w-6 h-6 rounded border-2 border-transparent hover:border-white/50 transition-colors');
+    btn.type = 'button';
+    btn.style.backgroundColor = f.hex;
+    btn.title = `${f.name} (${f.hex})`;
+    btn.addEventListener('click', () => {
+      value = toColorInputHex(f.hex);
+      picker.value = value;
+      syncRings();
+      onChange();
+    });
+    swatches.push({ btn, hex: f.hex });
+    grid.append(btn);
+  }
+
+  // Off-palette custom colour. 'change' (not 'input') — re-running the SDF carve
+  // on every drag tick of the native picker would queue a carve per hover.
+  const customRow = el('label', 'flex items-center gap-1.5 cursor-pointer');
+  const picker = el('input', 'w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent');
+  picker.type = 'color';
+  picker.value = value;
+  picker.addEventListener('change', () => { value = picker.value; syncRings(); onChange(); });
+  customRow.append(picker, el('span', 'text-[10px] text-zinc-500', 'Custom colour'));
+
+  wrap.append(grid, customRow);
+  syncRings();
+  return { wrap, get: () => value };
 }
 
 /** Find the viewport container used by the other overlay panels. */
@@ -821,15 +879,12 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         schedulePreview, { round: n => Math.round(n * 1000) / 1000 });
       const depthWrap = depth.wrap;
       // Optional letter color — colors the raised relief (emboss) or the
-      // channel walls (engrave/through) for multicolor prints.
-      const colorChk = checkbox('Color the letters', false, () => { colorPick.style.display = colorChk.get() ? '' : 'none'; schedulePreview(); });
-      const colorPick = el('input', 'w-full h-7 mb-3 bg-zinc-800 border border-zinc-700 rounded cursor-pointer');
-      colorPick.type = 'color';
-      colorPick.value = '#d4af37';
-      colorPick.style.display = 'none';
-      // 'change' (not 'input') — re-running the SDF sweep on every drag tick of
-      // the native picker would queue a carve per swatch hover.
-      colorPick.addEventListener('change', schedulePreview);
+      // channel walls (engrave/through) for multicolor prints. The picker is the
+      // shared filament palette (same swatches as the paint tools) + a custom
+      // off-palette colour, so engrave colours stay consistent with painting.
+      const colorChk = checkbox('Color the letters', false, () => { colorCtl.wrap.style.display = colorChk.get() ? '' : 'none'; schedulePreview(); });
+      const colorCtl = colorField('#d4af37', schedulePreview);
+      colorCtl.wrap.style.display = 'none';
       const syncEngraveModeUI = () => { depthWrap.style.display = modeSel.get() === 'through' ? 'none' : ''; };
       const res = sliderWithEntry('Resolution', 48, 220, 180, 1, 256, schedulePreview);
       const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
@@ -838,7 +893,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       engraveSizeGet = () => sizeS.get();
       engraveIsPlanar = () => true; // placement is always face-based now → outline always applies
 
-      body.append(textWrap, font.wrap, imgWrap, invert.wrap, placeWrap, angle.wrap, curveAxis.wrap, curveAngle.wrap, modeSel.wrap, sizeS.wrap, depthWrap, colorChk.wrap, colorPick, res.wrap, wtight.wrap);
+      body.append(textWrap, font.wrap, imgWrap, invert.wrap, placeWrap, angle.wrap, curveAxis.wrap, curveAngle.wrap, modeSel.wrap, sizeS.wrap, depthWrap, colorChk.wrap, colorCtl.wrap, res.wrap, wtight.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Stamps text or an image onto the model — engraved channels, a raised emboss, or holes cut clean through (stencil). Type text and press Apply, then "place on model": move over the model (a blue outline follows the cursor) and click to drop it on that face. Fine-tune with the position sliders / rotation, and use Curve to wrap the text around a cylinder or dome. "Color the letters" paints the stamp for multicolor prints. Raise resolution if thin strokes look mushy.'));
       syncCurveUI();
       syncEngraveModeUI();
@@ -859,7 +914,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         raised: modeSel.get() === 'emboss',
         depth: depth.get(),
         size: sizeS.get(),
-        color: colorChk.get() ? colorPick.value : undefined,
+        color: colorChk.get() ? colorCtl.get() : undefined,
         resolution: res.get(),
         watertight: wtight.get(),
       });
