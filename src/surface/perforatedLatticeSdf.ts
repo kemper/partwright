@@ -54,6 +54,13 @@ export interface PerforatedLatticeOptions {
  *  has room to round them); the resolution auto-raises to honour it. */
 const MIN_STRUT_VOXELS = 6;
 
+/** When watertight, keep every connected piece this large relative to the biggest
+ *  rather than only the single largest. On a tapered or multi-feature model the
+ *  Z-projected pattern breaks the shell into rings; keeping only the largest then
+ *  deletes most of the model. This keeps every substantial piece (the whole model
+ *  stays) while still dropping sub-1% dust/specks. */
+const KEEP_FRACTION = 0.01;
+
 /** Build a smooth perforated-lattice mesh from a solid model. Returns an empty
  *  mesh for an empty input. */
 export function perforatedLatticeSdfMesh(mesh: MeshData, opts: PerforatedLatticeOptions): MeshData {
@@ -73,7 +80,7 @@ export function perforatedLatticeSdfMesh(mesh: MeshData, opts: PerforatedLattice
   const resFloor = Math.ceil((maxDim / Math.max(strutWorld, 1e-4)) * MIN_STRUT_VOXELS);
   const resolution = Math.min(MAX_FIELD_RESOLUTION, Math.max(Math.round(opts.resolution ?? 110), resFloor));
 
-  return sdfModifierMesh(mesh, { resolution, bandWorld: wall, watertight: opts.watertight }, ({ d, x, y, voxelSize }) => {
+  return sdfModifierMesh(mesh, { resolution, bandWorld: wall, watertight: opts.watertight, keepFraction: KEEP_FRACTION }, ({ d, x, y, voxelSize }) => {
     // Shell band: inside the wall (between the surface and its inward offset).
     const shell = Math.max(d, -(d + wall));
     // Skip the pattern field where the shell already reads "outside"

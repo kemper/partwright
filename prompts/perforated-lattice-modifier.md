@@ -116,3 +116,26 @@ N.Ns" success toast (the modal closes on apply, so the toast is where the final
 time lands). The preview path now appends "(rendered in N.Ns)" to its status.
 Verified: modal shows a live "Rendering… 8.7s", toast shows "perforated lattice
 rendered in 21.2s". Unit test added for `carryTriColors`.
+
+## Follow-up 3 (user: "perforate only kept the top, the rest was gone")
+
+Reproduced on the catalog lighthouse. Mechanism: the pattern is held constant
+along Z, so on a **tapered** tower the vertical struts aren't continuous (the
+cross-section radius changes with height) — the shell severs into disconnected
+rings. `watertight` then kept only the single largest connected component
+(`keepLargestFaceConnected` in the field + `largestMeshComponent` on the mesh),
+which on a multi-feature model can be a chunky sub-feature (the solid top),
+deleting the rest.
+
+Fix: keep **every component ≥ 1% of the largest** instead of only the largest —
+drops dust/specks but preserves the model's real features. Generalized
+`keepLargestFaceConnected` → `keepFaceConnectedComponents(…, fraction)` and added
+`meshComponentsAboveFraction(mesh, fraction)`; threaded a `keepFraction` option
+through `sdfModifierMesh`, with perforate passing `0.01` (the lamp keeps
+largest-only, unchanged). Verified on the lighthouse: with aggressive thin struts
+the whole model (dome, gallery, tower, base) now survives where before only the
+largest piece did. Updated the `watertight` copy (UI checkbox "Drop loose specks",
+tool schema, textures.md) and the limitation note to reflect that a tapered shell
+may end up multi-part. Unit tests added for `meshComponentsAboveFraction`. (The
+underlying Z-slot aesthetic on tapered/vertical walls remains the documented v1
+limitation — a surface-following projection is future work.)

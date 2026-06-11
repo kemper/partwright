@@ -1622,7 +1622,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         strutWidth: { type: 'number', description: 'Strut width as a fraction of cellSize [0.05–0.8]. Default 0.3. Smaller = thinner struts, larger windows.', minimum: 0.05, maximum: 0.8 },
         resolution: { type: 'integer', description: 'Field resolution along the longest axis [16–256]. Higher = crisper struts, slower. Default 110 (auto-raised for thin struts).', minimum: 16, maximum: 256 },
         grainAngleDeg: { type: 'number', description: 'Rotate the pattern in the XY plane, degrees. Default 0.' },
-        watertight: { type: 'boolean', description: 'Keep only the largest connected strut web — one watertight, manifold, printable piece (drops loose fragments). Default true — leave on unless you want the raw multi-part cut.' },
+        watertight: { type: 'boolean', description: 'Drop loose dust/specks from the cut while keeping every substantial piece (so the whole model survives even when a tapered/multi-feature shell severs into several pieces). Default true. Turn off to keep the raw cut including specks.' },
         preserveColor: { type: 'boolean', description: 'Sample model paint onto the struts. Default true.' },
       },
     },

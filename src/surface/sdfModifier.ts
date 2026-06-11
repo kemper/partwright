@@ -29,7 +29,7 @@ import { MeshBVH } from 'three-mesh-bvh';
 import type { MeshData } from '../geometry/types';
 import { rasterizeSolid } from './voxelizeMesh';
 import { surfaceNetsField } from './surfaceNetsField';
-import { largestMeshComponent } from './meshComponents';
+import { largestMeshComponent, meshComponentsAboveFraction } from './meshComponents';
 import { smoothSurface } from './smoothSurface';
 import { extractPositions } from './meshSubdivide';
 
@@ -63,6 +63,12 @@ export interface SdfModifierOptions {
   /** Keep only the largest physically-connected piece (default true). Turn off
    *  to keep every fragment of the raw cut. */
   watertight?: boolean;
+  /** When watertight, keep every connected component whose size is at least this
+   *  fraction of the largest, instead of only the single largest. Drops dust/
+   *  specks while preserving a model's real features when the cut severs it into
+   *  several substantial pieces (e.g. a perforated lattice on a tapered/multi-
+   *  feature model). `0`/undefined keeps only the largest (the lamp's behavior). */
+  keepFraction?: number;
   /** Light Taubin passes to relax the mesh rims (default 3, no subdivide). */
   smoothIterations?: number;
 }
@@ -141,27 +147,35 @@ export function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, combin
   }
   bvhGeom.dispose(); // BVH is only consulted in the field sweep above
 
-  // Keep the largest face-connected region of inside samples *before* meshing
-  // (drops detached fragments without sealing windows the way growing the iso
-  // level would). Face-connectivity is what fuses on an FDM plate.
-  if (opts.watertight !== false) keepLargestFaceConnected(field, fnx, fny, fnz, 0);
+  // Prune disconnected fragments of inside samples *before* meshing (drops
+  // detached pieces without sealing windows the way growing the iso level would).
+  // Face-connectivity is what fuses on an FDM plate. With keepFraction the model's
+  // real features survive even when the cut severs it into several pieces; without
+  // it, only the single largest piece is kept (the lamp's "one watertight solid").
+  const keepFraction = Math.max(0, opts.keepFraction ?? 0);
+  if (opts.watertight !== false) keepFaceConnectedComponents(field, fnx, fny, fnz, 0, keepFraction);
 
   let m = surfaceNetsField({ field, dims: [fnx, fny, fnz], origin, spacing: voxelSize, iso: 0 });
-  if (opts.watertight !== false) m = largestMeshComponent(m);
+  if (opts.watertight !== false) {
+    m = keepFraction > 0 ? meshComponentsAboveFraction(m, keepFraction) : largestMeshComponent(m);
+  }
   // A few light Taubin passes relax residual lattice ripple on the rims without
   // subdividing (walls are already smooth from the continuous field).
   m = smoothSurface(m, { iterations: opts.smoothIterations ?? 3, subdivide: false });
   return m;
 }
 
-/** Keep only the largest 6-connected (face-adjacent) region of inside samples
- *  (`field < iso`); push every other inside sample to +∞ so it meshes as empty. */
-function keepLargestFaceConnected(field: Float32Array, nx: number, ny: number, nz: number, iso: number): void {
+/** Prune disconnected 6-connected (face-adjacent) regions of inside samples
+ *  (`field < iso`), pushing the pruned samples to +∞ so they mesh as empty.
+ *  Keeps every region whose size is ≥ `fraction × (largest region)`; `fraction
+ *  <= 0` keeps only the single largest. */
+function keepFaceConnectedComponents(field: Float32Array, nx: number, ny: number, nz: number, iso: number, fraction: number): void {
   const total = nx * ny * nz;
   const label = new Int32Array(total).fill(-1);
   const inside = (i: number) => field[i] < iso;
   const stack: number[] = [];
-  let bestLabel = -1, bestSize = 0, next = 0;
+  const sizes: number[] = [];
+  let bestSize = 0, next = 0;
   for (let s = 0; s < total; s++) {
     if (!inside(s) || label[s] !== -1) continue;
     const id = next++;
@@ -183,11 +197,15 @@ function keepLargestFaceConnected(field: Float32Array, nx: number, ny: number, n
       tryN(i, j + 1, k); tryN(i, j - 1, k);
       tryN(i, j, k + 1); tryN(i, j, k - 1);
     }
-    if (size > bestSize) { bestSize = size; bestLabel = id; }
+    sizes[id] = size;
+    if (size > bestSize) bestSize = size;
   }
-  if (bestLabel < 0) return;
+  if (bestSize === 0) return;
+  const threshold = fraction > 0 ? Math.max(1, fraction * bestSize) : bestSize;
   const BIG = 1e9;
-  for (let s = 0; s < total; s++) if (inside(s) && label[s] !== bestLabel) field[s] = BIG;
+  for (let s = 0; s < total; s++) {
+    if (inside(s) && sizes[label[s]] < threshold) field[s] = BIG;
+  }
 }
 
 /** Mark lattice samples within `bandVox` hops of a surface voxel (BFS over the

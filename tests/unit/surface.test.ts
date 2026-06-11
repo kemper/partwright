@@ -17,7 +17,7 @@ import { wovenFabric } from '../../src/surface/wovenFabric';
 import { voronoiShell } from '../../src/surface/voronoiShell';
 import { voronoiLattice } from '../../src/surface/voronoiLattice';
 import { surfaceNetsField } from '../../src/surface/surfaceNetsField';
-import { largestMeshComponent } from '../../src/surface/meshComponents';
+import { largestMeshComponent, meshComponentsAboveFraction } from '../../src/surface/meshComponents';
 import { sdfModifierMesh } from '../../src/surface/sdfModifier';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
@@ -333,6 +333,31 @@ describe('largestMeshComponent (edge-connected)', () => {
     const mesh: MeshData = { vertProperties: vp, triVerts: tv, numVert: v + 3, numTri: big.numTri + 1, numProp: 3 };
     const kept = largestMeshComponent(mesh);
     expect(kept.numTri).toBe(big.numTri); // the lone point-joined triangle is dropped
+  });
+});
+
+describe('meshComponentsAboveFraction (keep substantial pieces)', () => {
+  // A big component (a dense cube) and a small disjoint one (a far plain cube).
+  const big = subdivideToMaxEdge(cube(20), { maxEdge: 4 }); // many tris
+  const smallVerts = Float32Array.from(cube(2).vertProperties, (v, i) => v + (i % 3 === 0 ? 100 : 0));
+  const small = { ...cube(2), vertProperties: smallVerts }; // 12 tris, far away → disjoint
+  const combined: MeshData = {
+    vertProperties: Float32Array.from([...big.vertProperties, ...small.vertProperties]),
+    triVerts: Uint32Array.from([...big.triVerts, ...Array.from(small.triVerts, v => v + big.numVert)]),
+    numVert: big.numVert + small.numVert,
+    numTri: big.numTri + small.numTri,
+    numProp: 3,
+  };
+
+  it('keeps both pieces below the threshold, drops the small one above it', () => {
+    expect(big.numTri).toBeGreaterThan(small.numTri * 3); // sizes are well separated
+    // A low fraction keeps everything; a high fraction drops the small piece.
+    expect(meshComponentsAboveFraction(combined, 0.001).numTri).toBe(combined.numTri);
+    expect(meshComponentsAboveFraction(combined, 0.5).numTri).toBe(big.numTri);
+  });
+
+  it('fraction <= 0 returns the mesh unchanged (keep everything)', () => {
+    expect(meshComponentsAboveFraction(combined, 0)).toBe(combined);
   });
 });
 

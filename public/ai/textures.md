@@ -387,7 +387,7 @@ perforates in one step.
 | `strutWidth` | 0.3 | Strut width as a fraction of cellSize [0.05–0.8]. Smaller = thinner struts, bigger windows. |
 | `resolution` | 110 | Field resolution along the longest axis [16–256]. **Auto-raised** so struts resolve to ≥6 cells — you rarely set it. Higher sharpens the struts. |
 | `grainAngleDeg` | 0 | Rotate the pattern in the XY plane. |
-| `watertight` | true | Keep only the largest connected web → one watertight, manifold, printable piece. Leave on for printing. |
+| `watertight` | true | Drop loose dust/specks while keeping every substantial piece — so the whole model survives even when a tapered/multi-feature shell severs into several pieces. Leave on for printing. |
 
 **Look guidance** (defaults already look good on a typical solid — mostly pick a pattern and tune cellSize + strutWidth):
 - Grid lampshade: `pattern='square'`, `cellSize=d*0.14`, `strutWidth=0.3`
@@ -396,7 +396,9 @@ perforates in one step.
 
 **Limitation (v1):** because the pattern is held constant along Z, a surface that
 runs **parallel to Z** — e.g. the side wall of an upright cylinder — sees the
-windows as axial slots rather than discrete cells. The pattern reads cleanly on
+windows as axial slots rather than discrete cells, and on a **tapered** tower the
+slots break into segments so the shell can split into several connected pieces
+(all substantial pieces are kept — see `watertight`). The pattern reads cleanly on
 faces that turn toward the Z axis (a sphere's caps, a vase's curved shoulder).
 Use `applyVoronoiLamp` for an organic, orientation-free look. Verify with
 `renderViews`.

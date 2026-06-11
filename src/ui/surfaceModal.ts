@@ -612,9 +612,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const wt = slider('Wall thickness', span * 0.01, span * 0.12, span * 0.04, span * 0.002, n => n.toFixed(3), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
       const res = sliderWithEntry('Resolution', 48, 200, 110, 1, 256, schedulePreview);
-      const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
+      const wtight = checkbox('Drop loose specks (cleaner print)', true, schedulePreview);
       body.append(pat.wrap, cs.wrap, sw.wrap, wt.wrap, grain.wrap, res.wrap, wtight.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'A see-through shell with REGULAR windows cut clean through (the deterministic sibling of the Voronoi lamp): square, hexagonal, or triangular-truss holes. The pattern is projected along Z, so it reads cleanly on faces turning toward Z (a sphere’s caps, a vase’s shoulder) and becomes axial slots on walls parallel to Z (an upright cylinder’s side). Smaller cell size = more, smaller windows; smaller strut width = thinner struts / bigger holes.'));
+      body.append(el('p', 'text-[11px] text-zinc-500', 'A see-through shell with REGULAR windows cut clean through (the deterministic sibling of the Voronoi lamp): square, hexagonal, or triangular-truss holes. The pattern is projected along Z, so it reads cleanly on faces turning toward Z (a sphere’s caps, a vase’s shoulder) and becomes axial slots on walls parallel to Z (an upright cylinder’s side). Smaller cell size = more, smaller windows; smaller strut width = thinner struts / bigger holes. On a tapered or multi-part model the shell can split into several pieces — all substantial pieces are kept (only dust is dropped), so the whole model survives.'));
       body.append(el('p', 'text-[11px] text-amber-400/90', 'Meshes a continuous distance field — smooth curved walls, no voxel stair-stepping (a heavier op; allow a few seconds). Stays on manifold-js.'));
       currentOpts = () => ({
         pattern: pat.get(),
