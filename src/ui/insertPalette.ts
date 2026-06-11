@@ -98,6 +98,10 @@ const specByName = new Map<string, PrimitiveSpec>();
 
 let cb: InsertPaletteCallbacks | null = null;
 let panel: HTMLElement | null = null;
+// The DOM node the panel mounts into, captured at init; the panel itself is
+// appended lazily on first open (keeps its hidden `role="dialog"` out of the
+// app-wide modal selector until it's actually used).
+let panelHost: HTMLElement | null = null;
 
 // Multi-select state: parts the user has marked (via 3D-pick select mode or
 // the "+" buttons next to operands) so the quick-action buttons can operate on
@@ -179,11 +183,14 @@ export function initInsertPalette(container: HTMLElement, callbacks: InsertPalet
   else mount.appendChild(toolBtn);
 
   panel = buildPanel();
-  // The panel is anchored to the positioned viewport pane (clipControls'
-  // parent), the same place every shared tool panel docks — so it sits above
-  // the model and the drag-positioning math measures against the full viewport.
-  const overlayHost = container.parentElement ?? container;
-  overlayHost.appendChild(panel);
+  // The panel anchors to the positioned viewport pane (clipControls' parent),
+  // the same place every shared tool panel docks. It is mounted *lazily* on
+  // first open (see openInsertPalette), not here: the panel carries
+  // `role="dialog"` (shared tool-panel chrome), and an always-present hidden
+  // dialog makes the app-wide `[role="dialog"]` modal selector ambiguous in
+  // every test — so, like the other viewport panels, it only enters the DOM
+  // once actually opened.
+  panelHost = container.parentElement ?? container;
 
   // Sessions don't share registry/spec state. Without a reset, a part named
   // `box` from session A would persist into session B and either contaminate
@@ -218,6 +225,8 @@ function setToolBtnState(active: boolean): void {
 
 function openInsertPalette(): void {
   if (!panel) return;
+  // Lazy first mount — keeps the hidden dialog out of the DOM until used.
+  if (!panel.parentElement && panelHost) panelHost.appendChild(panel);
   refreshForLanguage();
   panel.classList.remove('hidden');
   setInitialPanelPosition(panel);
