@@ -25,22 +25,17 @@ function centroids(mesh: MeshData): Float32Array {
   return out;
 }
 
-/** Core nearest-centroid query: for each triangle of `newMesh`, the index of the
- *  nearest (by centroid) triangle of `oldMesh` *and* the squared distance to it.
- *  Index entries are `-1` (and dist2 `Infinity`) only when `oldMesh` has no
- *  triangles. Uses a uniform spatial hash over old centroids with ring-expanding
- *  search, so it stays near-linear instead of the naive O(new·old). Shared by
- *  {@link nearestTriangleMap} (index only) and {@link nearestCentroidDistance}. */
-function nearestCentroidCore(oldMesh: MeshData, newMesh: MeshData): { index: Int32Array; dist2: Float32Array } {
-  const index = new Int32Array(newMesh.numTri).fill(-1);
-  const dist2 = new Float32Array(newMesh.numTri).fill(Infinity);
-  if (oldMesh.numTri === 0 || newMesh.numTri === 0) return { index, dist2 };
-
-  const oc = centroids(oldMesh);
-  // Bounds of the old centroids.
+/** Build a spatial hash over `refMesh`'s triangle centroids and return a query
+ *  for the nearest ref-triangle index to an arbitrary point. Uniform grid with
+ *  ring-expanding search, so each query is near-O(1) for spatially-coincident
+ *  meshes. Returns a query that yields `-1` when `refMesh` has no triangles.
+ *  Shared by every consumer below so there's one hashing implementation. */
+function buildNearestTriHash(refMesh: MeshData): (px: number, py: number, pz: number) => number {
+  if (refMesh.numTri === 0) return () => -1;
+  const oc = centroids(refMesh);
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let i = 0; i < oldMesh.numTri; i++) {
+  for (let i = 0; i < refMesh.numTri; i++) {
     const x = oc[i * 3], y = oc[i * 3 + 1], z = oc[i * 3 + 2];
     if (x < minX) minX = x; if (x > maxX) maxX = x;
     if (y < minY) minY = y; if (y > maxY) maxY = y;
@@ -48,7 +43,7 @@ function nearestCentroidCore(oldMesh: MeshData, newMesh: MeshData): { index: Int
   }
   const span = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1e-6);
   // Aim for ~1 triangle per cell on average: n cells per axis ≈ cbrt(numTri).
-  const n = Math.max(1, Math.round(Math.cbrt(oldMesh.numTri)));
+  const n = Math.max(1, Math.round(Math.cbrt(refMesh.numTri)));
   const cell = span / n || 1;
   const cx = (x: number) => Math.floor((x - minX) / cell);
   const cy = (y: number) => Math.floor((y - minY) / cell);
@@ -56,20 +51,17 @@ function nearestCentroidCore(oldMesh: MeshData, newMesh: MeshData): { index: Int
   const key = (ix: number, iy: number, iz: number) => `${ix},${iy},${iz}`;
 
   const buckets = new Map<string, number[]>();
-  for (let i = 0; i < oldMesh.numTri; i++) {
+  for (let i = 0; i < refMesh.numTri; i++) {
     const k = key(cx(oc[i * 3]), cy(oc[i * 3 + 1]), cz(oc[i * 3 + 2]));
     let arr = buckets.get(k);
     if (!arr) { arr = []; buckets.set(k, arr); }
     arr.push(i);
   }
-
-  const nc = centroids(newMesh);
-  // Old and new meshes are spatially coincident (a modifier displaces the
+  // Ref and query meshes are spatially coincident (a modifier displaces the
   // surface only slightly), so the nearest is almost always in ring 0–1. The
-  // cap bounds the search for any stray centroid outside the old bounds.
+  // cap bounds the search for any stray point outside the ref bounds.
   const maxR = n * 2 + 4;
-  for (let t = 0; t < newMesh.numTri; t++) {
-    const px = nc[t * 3], py = nc[t * 3 + 1], pz = nc[t * 3 + 2];
+  return (px, py, pz) => {
     const bx = cx(px), by = cy(py), bz = cz(pz);
     let best = -1, bestD = Infinity;
     for (let r = 0; r <= maxR; r++) {
@@ -92,17 +84,22 @@ function nearestCentroidCore(oldMesh: MeshData, newMesh: MeshData): { index: Int
         }
       }
     }
-    index[t] = best;
-    if (best >= 0) dist2[t] = bestD;
-  }
-  return { index, dist2 };
+    return best;
+  };
 }
 
 /** For each triangle of `newMesh`, the index of the nearest (by centroid)
  *  triangle of `oldMesh`. Returns an `Int32Array` of length `newMesh.numTri`
  *  (entries are `-1` only when `oldMesh` has no triangles). */
 export function nearestTriangleMap(oldMesh: MeshData, newMesh: MeshData): Int32Array {
-  return nearestCentroidCore(oldMesh, newMesh).index;
+  const result = new Int32Array(newMesh.numTri).fill(-1);
+  if (oldMesh.numTri === 0 || newMesh.numTri === 0) return result;
+  const nearest = buildNearestTriHash(oldMesh);
+  const nc = centroids(newMesh);
+  for (let t = 0; t < newMesh.numTri; t++) {
+    result[t] = nearest(nc[t * 3], nc[t * 3 + 1], nc[t * 3 + 2]);
+  }
+  return result;
 }
 
 /** Squared distance from point `p` to triangle `(a,b,c)` — the standard
@@ -152,31 +149,32 @@ function pointTriDist2(
   return (px - qx) ** 2 + (py - qy) ** 2 + (pz - qz) ** 2;
 }
 
-/** For each triangle of `queryMesh`, the true distance from its centroid to the
- *  nearest *surface* of `refMesh` (point-to-triangle, not centroid-to-centroid,
- *  so it has no tessellation-density floor — a point lying on the reference
- *  surface reads ~0 regardless of how coarse the reference is). Entries are
- *  `Infinity` only when `refMesh` has no triangles. The engrave/emboss colorizer
- *  uses it to tell stamp geometry (raised relief / carved channel, displaced off
- *  the surface) from the untouched skin — robust on curved faces, where a
- *  projection-relative depth band drifts. The nearest *triangle* is taken by
- *  centroid (cheap spatial hash); for the meshes here (a dense base vs its
- *  re-meshed carve) that triangle is the geometrically nearest too. */
-export function nearestSurfaceDistance(refMesh: MeshData, queryMesh: MeshData): Float32Array {
-  const out = new Float32Array(queryMesh.numTri).fill(Infinity);
-  if (refMesh.numTri === 0 || queryMesh.numTri === 0) return out;
-  const { index } = nearestCentroidCore(refMesh, queryMesh);
+/** For each *vertex* of `queryMesh`, the true distance to the nearest *surface*
+ *  of `refMesh` (point-to-triangle, not centroid-to-centroid, so it has no
+ *  tessellation-density floor — a vertex lying on the reference surface reads
+ *  ~0 regardless of how coarse the reference is). Length is `queryMesh.numVert`;
+ *  entries are `Infinity` only when `refMesh` has no triangles.
+ *
+ *  The engrave/emboss colorizer uses per-vertex (rather than per-centroid)
+ *  distance so it can color a triangle when its *most-displaced vertex* clears
+ *  the threshold: a wall-base triangle whose centroid sits below the surface
+ *  cut-off still has its upper vertices well up the wall, so the color reaches
+ *  the rim cleanly instead of leaving a sawtooth of base triangles. The nearest
+ *  *triangle* is taken by centroid (cheap spatial hash); for the meshes here (a
+ *  dense base vs its re-meshed carve) that triangle is the geometrically nearest
+ *  too. */
+export function nearestSurfaceVertexDistance(refMesh: MeshData, queryMesh: MeshData): Float32Array {
+  const out = new Float32Array(queryMesh.numVert).fill(Infinity);
+  if (refMesh.numTri === 0 || queryMesh.numVert === 0) return out;
+  const nearest = buildNearestTriHash(refMesh);
   const { vertProperties: rvp, triVerts: rtv, numProp: rnp } = refMesh;
-  const { vertProperties: qvp, triVerts: qtv, numProp: qnp } = queryMesh;
-  for (let t = 0; t < queryMesh.numTri; t++) {
-    const ti = index[t];
+  const { vertProperties: qvp, numProp: qnp, numVert } = queryMesh;
+  for (let v = 0; v < numVert; v++) {
+    const px = qvp[v * qnp], py = qvp[v * qnp + 1], pz = qvp[v * qnp + 2];
+    const ti = nearest(px, py, pz);
     if (ti < 0) continue;
-    const qa = qtv[t * 3] * qnp, qb = qtv[t * 3 + 1] * qnp, qc = qtv[t * 3 + 2] * qnp;
-    const px = (qvp[qa] + qvp[qb] + qvp[qc]) / 3;
-    const py = (qvp[qa + 1] + qvp[qb + 1] + qvp[qc + 1]) / 3;
-    const pz = (qvp[qa + 2] + qvp[qb + 2] + qvp[qc + 2]) / 3;
     const a = rtv[ti * 3] * rnp, b = rtv[ti * 3 + 1] * rnp, c = rtv[ti * 3 + 2] * rnp;
-    out[t] = Math.sqrt(pointTriDist2(
+    out[v] = Math.sqrt(pointTriDist2(
       px, py, pz,
       rvp[a], rvp[a + 1], rvp[a + 2],
       rvp[b], rvp[b + 1], rvp[b + 2],

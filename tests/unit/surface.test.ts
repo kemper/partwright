@@ -23,7 +23,7 @@ import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
 import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp } from '../../src/surface/modifiers';
-import { nearestTriangleMap, nearestSurfaceDistance } from '../../src/surface/colorTransfer';
+import { nearestTriangleMap, nearestSurfaceVertexDistance } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
 function cube(s = 10): MeshData {
@@ -461,24 +461,24 @@ describe('modifiers (codegen)', () => {
     });
   });
 
-  describe('nearestSurfaceDistance (engrave/emboss displacement)', () => {
-    it('reports ~0 for an identical mesh', () => {
+  describe('nearestSurfaceVertexDistance (engrave/emboss displacement)', () => {
+    it('reports ~0 per-vertex for an identical mesh', () => {
       const c = cube(10);
-      const d = nearestSurfaceDistance(c, c);
-      expect(d.length).toBe(c.numTri);
-      for (let t = 0; t < c.numTri; t++) expect(d[t]).toBeCloseTo(0, 5);
+      const d = nearestSurfaceVertexDistance(c, c);
+      expect(d.length).toBe(c.numVert);
+      for (let v = 0; v < c.numVert; v++) expect(d[v]).toBeCloseTo(0, 5);
     });
 
-    it('has no tessellation floor — points on a re-meshed surface read ~0', () => {
+    it('has no tessellation floor — vertices on a re-meshed surface read ~0', () => {
       // Point-to-triangle (not centroid-to-centroid) distance: a re-tessellated
-      // copy of the same surface reads ~0 everywhere, even though its triangle
-      // centroids don't coincide with the reference's. (A centroid-to-centroid
-      // proxy would report up to ~half the reference edge length instead.) The
-      // reference is moderately dense so the nearest triangle is picked correctly.
+      // copy of the same surface reads ~0 at every vertex, even though its verts
+      // don't coincide with the reference's. (A centroid-to-centroid proxy would
+      // report up to ~half the reference edge length instead.) The reference is
+      // moderately dense so the nearest triangle is picked correctly.
       const ref = subdivideToMaxEdge(cube(20), { maxEdge: 2 });
       const requeried = subdivideToMaxEdge(cube(20), { maxEdge: 3 });
-      const d = nearestSurfaceDistance(ref, requeried);
-      for (let t = 0; t < requeried.numTri; t++) expect(d[t]).toBeLessThan(1e-3);
+      const d = nearestSurfaceVertexDistance(ref, requeried);
+      for (let v = 0; v < requeried.numVert; v++) expect(d[v]).toBeLessThan(1e-3);
     });
 
     it('reports the offset distance for a translated-off copy', () => {
@@ -486,16 +486,16 @@ describe('modifiers (codegen)', () => {
       // now sit 3 off the original surface, so the max distance is ~3.
       const c = cube(20);
       const moved: MeshData = { ...c, vertProperties: Float32Array.from(c.vertProperties, (v, i) => (i % 3 === 2 ? v + 3 : v)) };
-      const d = nearestSurfaceDistance(c, moved);
+      const d = nearestSurfaceVertexDistance(c, moved);
       let maxD = 0;
-      for (let t = 0; t < d.length; t++) maxD = Math.max(maxD, d[t]);
+      for (let v = 0; v < d.length; v++) maxD = Math.max(maxD, d[v]);
       expect(maxD).toBeGreaterThan(2.5);
       expect(maxD).toBeLessThanOrEqual(3 + 1e-3);
     });
 
     it('reports Infinity entries when the reference mesh is empty', () => {
       const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
-      const d = nearestSurfaceDistance(empty, cube(10));
+      const d = nearestSurfaceVertexDistance(empty, cube(10));
       expect([...d].every(v => v === Infinity)).toBe(true);
     });
   });
