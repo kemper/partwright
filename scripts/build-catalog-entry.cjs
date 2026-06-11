@@ -16,6 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
+const { paletteFromEntry } = require('./lib/catalog-palette.cjs');
 
 function arg(name, def) {
   const i = process.argv.indexOf(`--${name}`);
@@ -32,12 +33,42 @@ const BASE_URL = arg('base', 'http://localhost:5173');
 // replicad, whose label() carries no baked color. Pass either:
 //   --palette '{"cowling":"#c9ccd1","blades":"#5a7fb0"}'   (inline JSON)
 //   --palette-file path/to/palette.json
+//   --palette-from-existing path/to/old-entry.partwright.json
+// The last form recovers the palette from a previously baked entry's byLabel
+// colorRegions — the standard way to re-bake an entry whose palette file was
+// never committed. Committed palettes live in public/catalog/palettes/
+// (regenerate with scripts/extract-catalog-palettes.cjs).
 const PALETTE_FILE = arg('palette-file');
+const PALETTE_FROM = arg('palette-from-existing');
+if (PALETTE_FROM && (PALETTE_FILE || arg('palette'))) {
+  console.error('--palette-from-existing cannot be combined with --palette/--palette-file');
+  process.exit(2);
+}
 let PALETTE = null;
 try {
   const raw = PALETTE_FILE ? fs.readFileSync(PALETTE_FILE, 'utf8') : arg('palette');
   if (raw) PALETTE = JSON.parse(raw);
 } catch (e) { console.error('Bad --palette JSON: ' + e); process.exit(2); }
+if (PALETTE_FROM) {
+  try {
+    PALETTE = paletteFromEntry(JSON.parse(fs.readFileSync(PALETTE_FROM, 'utf8')));
+    if (!PALETTE) throw new Error('no byLabel colorRegions found in any version');
+    console.log(`   palette from ${PALETTE_FROM}: ${JSON.stringify(PALETTE)}`);
+  } catch (e) { console.error('Bad --palette-from-existing: ' + e); process.exit(2); }
+}
+
+// Gates (exit non-zero so CI / bake loops catch regressions mechanically):
+//   --max-genus N            fail if the baked solid's genus exceeds N
+//   --require-labels a,b,c   fail if any listed label is missing — or, when a
+//                            palette is given, resolves to 0 painted triangles
+//                            (a buried/aliased-away feature)
+const MAX_GENUS = arg('max-genus') !== undefined ? Number(arg('max-genus')) : undefined;
+if (MAX_GENUS !== undefined && !Number.isFinite(MAX_GENUS)) {
+  console.error('--max-genus must be a number');
+  process.exit(2);
+}
+const REQUIRE_LABELS = (arg('require-labels') || '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
 
 // hex '#rrggbb' -> [r,g,b] in 0..1 (paintByLabels color format)
 function hexToRgb(hex) {
@@ -62,7 +93,8 @@ const THUMB_CAMERA = (Number.isFinite(THUMB_AZ) || Number.isFinite(THUMB_EL))
   : null;
 
 if (!SOURCE || !NAME || !OUT) {
-  console.error('Required: --source <file> --name <name> --out <file> [--lang manifold-js|scad|replicad|voxel] [--palette JSON | --palette-file FILE]');
+  console.error('Required: --source <file> --name <name> --out <file> [--lang manifold-js|scad|replicad|voxel] [--palette JSON | --palette-file FILE | --palette-from-existing ENTRY.json]');
+  console.error('Gates: [--max-genus N] [--require-labels a,b,c]');
   console.error('Optional env: THUMB_AZIMUTH / THUMB_ELEVATION (degrees) — pin the thumbnail camera.');
   process.exit(2);
 }
@@ -135,13 +167,16 @@ async function main() {
         if (!r || !r.version) return { error: 'no version saved: ' + JSON.stringify(r).slice(0, 500), where: 'runAndSave' };
         const geo = r.geometry || {};
 
+        // Label inventory is always collected (the --require-labels gate needs
+        // it even for unpainted bakes).
+        const ll = window.partwright.listLabels();
+        const labelInfo = { count: ll && ll.count, labels: ll && ll.labels && ll.labels.map((l) => l.name), lostLabels: ll && ll.lostLabels };
+
         // Optional: paint api.label() regions, then re-snapshot a colored version
         // (scad/replicad label() carries no baked color, so the catalog tile would
         // otherwise be gray). manifold-js api.label({color}) already bakes color.
-        let labelInfo = null, paintInfo = null;
+        let paintInfo = null;
         if (paintItems && paintItems.length) {
-          const ll = window.partwright.listLabels();
-          labelInfo = { count: ll && ll.count, labels: ll && ll.labels && ll.labels.map((l) => l.name), lostLabels: ll && ll.lostLabels };
           paintInfo = window.partwright.paintByLabels(paintItems);
           await window.partwright.commitWithColors({ label: 'painted' });
         }
@@ -163,6 +198,34 @@ async function main() {
 
   if (!result || !result.ok) {
     console.error(`FAIL [${result && result.where}]: ${result && result.error}`);
+    process.exit(1);
+  }
+
+  // --- Gates: fail BEFORE writing OUT so a regressed bake can't be committed.
+  const gateFailures = [];
+  if (MAX_GENUS !== undefined) {
+    const genus = result.stats && result.stats.genus;
+    if (!Number.isFinite(genus)) {
+      gateFailures.push(`--max-genus ${MAX_GENUS}: genus unavailable in geometry stats`);
+    } else if (genus > MAX_GENUS) {
+      gateFailures.push(`--max-genus ${MAX_GENUS}: baked genus is ${genus}`);
+    }
+  }
+  if (REQUIRE_LABELS.length) {
+    const present = new Set((result.labelInfo && result.labelInfo.labels) || []);
+    const lost = new Set((result.labelInfo && result.labelInfo.lostLabels) || []);
+    const paintFailed = new Set(((result.paintInfo && result.paintInfo.failed) || []).map((f) => f.label));
+    for (const label of REQUIRE_LABELS) {
+      if (!present.has(label)) gateFailures.push(`--require-labels: '${label}' missing (labels: ${[...present].join(', ') || 'none'})`);
+      else if (lost.has(label)) gateFailures.push(`--require-labels: '${label}' was lost (resolved to no surface)`);
+      else if (paintFailed.has(label)) gateFailures.push(`--require-labels: paint for '${label}' resolved to 0 triangles (buried/aliased-away feature)`);
+    }
+  }
+  if (gateFailures.length) {
+    if (result.labelInfo) console.error(`   labels=${JSON.stringify(result.labelInfo)}`);
+    console.error(`   stats=${JSON.stringify(result.stats)}`);
+    for (const g of gateFailures) console.error(`GATE FAIL: ${g}`);
+    console.error(`FAIL [gates]: ${gateFailures.length} gate(s) failed — entry NOT written`);
     process.exit(1);
   }
 
