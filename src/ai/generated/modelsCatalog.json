@@ -220,6 +220,50 @@
           "cache_write": 18.75
         }
       },
+      "claude-fable-5": {
+        "id": "claude-fable-5",
+        "name": "Claude Fable 5",
+        "family": "claude-fable",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "temperature": false,
+        "release_date": "2026-06-09",
+        "last_updated": "2026-06-09",
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 10,
+          "output": 50,
+          "cache_read": 1,
+          "cache_write": 12.5
+        }
+      },
       "claude-sonnet-4-5-20250929": {
         "id": "claude-sonnet-4-5-20250929",
         "name": "Claude Sonnet 4.5",
