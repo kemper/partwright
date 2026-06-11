@@ -111,26 +111,43 @@ can weld parts that clear everywhere else). Below ~0.25 mm most FDM printers
 fuse the barrel; go to 0.4–0.5 for a coarse nozzle or if a test print won't
 break free.
 
-### `ballSocket({ ballD?, clearance?, openingRatio?, stemD?, stemL?, baseD?, baseT?, segments? }) → { ball, socket }`
-**Snap-together ball-and-socket joint** — TWO separate Manifolds, printed
-apart and snapped together afterwards (not print-in-place). `ball` is a sphere
-on a cylindrical stem rising from a mounting disc (base on z=0). `socket` is a
-cylindrical housing (base on z=0) whose spherical cavity opens upward through
-a circular mouth with a conical entry chamfer.
+### `ballSocket({ ballD?, clearance?, openingRatio?, retention?, slots?, screwD?, stemD?, stemL?, baseD?, baseT?, segments? }) → { ball, socket }`
+**Articulating ball-and-socket joint** — TWO separate Manifolds, printed apart
+and assembled afterwards (not print-in-place). `ball` is a sphere on a
+cylindrical stem rising from a mounting disc (base on z=0), with a conical
+fillet at the stem root so it doesn't snap. `socket` is a cylindrical housing
+(base on z=0) whose spherical cavity (`ballD + 2·clearance`) opens upward
+through a circular mouth of `openingRatio · ballD` with a conical entry chamfer.
 
-**Captivity comes from the opening being smaller than the ball**: the mouth is
-`openingRatio · ballD` (validated to 0.7–0.95, default 0.85), so the ball
-snaps in past the lip and then articulates freely — the cavity is bored
-`ballD + 2·clearance` — but can't fall out. Smaller `openingRatio` = harder to
-snap in, harder to pop out.
+**`retention` picks how the ball is held** — a plain solid socket can't be both
+easy to insert AND hold a pose, so choose:
+
+- **`'friction'` (default)** — the rim is split into `slots` springy fingers.
+  They splay on insertion (low force, so the stem survives) then clamp the ball,
+  so it **holds the angle you set it to**. No hardware. Grip rises as
+  `openingRatio` shrinks or `slots` decreases.
+- **`'clamp'`** — a single pinch slot + a pair of lugs bored for an M-screw
+  (Ø `screwD`). The ball drops in free; tighten the screw to set friction up to
+  a hard lock (camera-ball-head style). Add your own screw + nut.
+- **`'snap'`** — the legacy solid retention lip: the ball is forced past a mouth
+  smaller than itself and stays captive but **swivels freely** (no friction).
+  High insertion force — drives load through the stem. Smaller `openingRatio` =
+  harder to snap in, harder to pop out.
 
 | key | meaning | default |
 |---|---|---|
 | `ballD` | ball diameter | `10` |
 | `clearance` | radial articulation gap (mm) | `0.15` |
 | `openingRatio` | opening ⌀ as a fraction of `ballD`, 0.7..0.95 | `0.85` |
+| `retention` | `'friction'` \| `'clamp'` \| `'snap'` | `'friction'` |
+| `slots` | finger count for `'friction'` (min 2) | `4` |
+| `screwD` | clamp-screw bore Ø for `'clamp'` (mm) | `3.4` (M3 clearance) |
 | `stemD` / `stemL` | stem diameter / length (stem must fit through the opening) | `0.4·ballD` / `0.6·ballD` |
 | `baseD` / `baseT` | mounting-disc diameter / thickness | `1.6·ballD` / `3` |
+
+> Friction/clamp grip is printer- and material-dependent — start at the
+> defaults, print, and dial `openingRatio`/`slots` (friction) or screw torque
+> (clamp) to taste.
 
 ```js
 const bs = api.joints.ballSocket({ ballD: 12 });
