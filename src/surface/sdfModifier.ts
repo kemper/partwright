@@ -52,6 +52,23 @@ export interface SdfSample {
 /** SDF value at a sample: `< 0` is inside the result solid. */
 export type SdfCombine = (s: SdfSample) => number;
 
+/** Cooperative-cancellation + progress hooks for the (otherwise main-thread,
+ *  synchronous) field sweep. The sweep yields to the event loop periodically so
+ *  the UI can paint a progress indicator and an abort can take effect between
+ *  slices. */
+export interface SdfRunControl {
+  signal?: AbortSignal;
+  /** Reports sweep progress in [0,1] as slices complete. */
+  onProgress?: (fraction: number) => void;
+}
+
+/** Thrown when the caller aborts a carve via `SdfRunControl.signal`. */
+export class SdfAbortError extends Error {
+  constructor() { super('aborted'); this.name = 'AbortError'; }
+}
+
+const yieldToEventLoop = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+
 export interface SdfModifierOptions {
   /** Desired field resolution along the longest axis (clamped to
    *  [16, MAX_FIELD_RESOLUTION]). The caller folds in any feature-specific floor. */
@@ -68,8 +85,12 @@ export interface SdfModifierOptions {
 }
 
 /** Build a smooth manifold mesh as the iso-0 surface of a feature-defined SDF.
- *  Returns a position-only `MeshData` (empty for an empty input mesh). */
-export function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, combine: SdfCombine): MeshData {
+ *  Returns a position-only `MeshData` (empty for an empty input mesh).
+ *
+ *  Async because the field sweep is the heavy step: it yields to the event loop
+ *  every few slices (via `ctl`) so the main thread can paint a progress modal
+ *  and honor a cancel between slices. Throws {@link SdfAbortError} if aborted. */
+export async function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, combine: SdfCombine, ctl?: SdfRunControl): Promise<MeshData> {
   const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
   if (mesh.numTri === 0) return empty;
 
@@ -113,7 +134,16 @@ export function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, combin
   const BIG = bandWorld + (bandVox + 2) * voxelSize; // exceeds any in-band magnitude
 
   const field = new Float32Array(fnx * fny * fnz);
+  // Yield roughly every YIELD_SLICES depth-slices so the event loop can paint
+  // the progress modal and apply a cancel; small enough to stay responsive,
+  // large enough that the setTimeout overhead is negligible next to the sweep.
+  const YIELD_SLICES = 4;
   for (let k = 0; k < fnz; k++) {
+    if (k > 0 && k % YIELD_SLICES === 0) {
+      await yieldToEventLoop();
+      if (ctl?.signal?.aborted) { bvhGeom.dispose(); throw new SdfAbortError(); }
+      ctl?.onProgress?.(k / fnz);
+    }
     for (let j = 0; j < fny; j++) {
       for (let i = 0; i < fnx; i++) {
         const fi = fidx(i, j, k);
@@ -140,6 +170,7 @@ export function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, combin
     }
   }
   bvhGeom.dispose(); // BVH is only consulted in the field sweep above
+  ctl?.onProgress?.(1);
 
   // Keep the largest face-connected region of inside samples *before* meshing
   // (drops detached fragments without sealing windows the way growing the iso
