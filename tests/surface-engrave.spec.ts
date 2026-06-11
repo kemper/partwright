@@ -124,7 +124,8 @@ test.describe('Engrave / cut-through surface modifier', () => {
     await page.getByPlaceholder('HELLO').fill('HI');
     await page.locator('#engrave-apply-text').click();
     await expect(page.getByText('Previewing — Apply to save a version.')).toBeVisible({ timeout: 15_000 });
-    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    // Engrave is bake-only, so the footer button reads "Apply (bake)".
+    await page.getByRole('button', { name: 'Apply (bake)', exact: true }).click();
 
     await expect.poll(async () =>
       page.evaluate(() => (window as unknown as { partwright: any }).partwright.getCode()),
