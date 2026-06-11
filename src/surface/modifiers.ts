@@ -31,8 +31,8 @@ import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 import { voronoiLampSdfMesh } from './voronoiLampSdf';
 import { engraveMesh, engraveFieldResolution, type EngraveSdfOptions } from './engraveSdf';
-import { stampEvaluator, maskAspect, type EngraveProjection } from './engraveStamp';
-import { nearestTriangleMap } from './colorTransfer';
+import { stampEvaluator, type EngraveProjection } from './engraveStamp';
+import { nearestTriangleMap, nearestSurfaceDistance } from './colorTransfer';
 import { type SdfRunControl } from './sdfModifier';
 
 export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
@@ -735,10 +735,34 @@ function stampTriColors(
   // Surface-nets places vertices within ~half a voxel of the true surface;
   // classify with that tolerance off the face so seam triangles don't flicker.
   const eps = (Math.max(...bbox.size) || 10) / engraveFieldResolution(opts.resolution) * 0.5;
-  // The same tolerance in normalized stamp coordinates, for the rect bound.
-  const stampW = Math.max(1e-6, opts.size);
-  const stampH = stampW / Math.max(1e-6, maskAspect(opts.mask));
-  const epsU = eps / stampW, epsV = eps / stampH;
+  // Ink coverage threshold: bounds the letters laterally for *every* mode (the
+  // m≈0.5 isocontour is the relief/channel wall, so this keeps the walls while
+  // trimming the antialiased fringe outside the letters).
+  const inkMin = 0.15;
+  // How far a baked triangle's centroid must sit off the original surface to count
+  // as stamp geometry rather than the untouched skin. Distance from the surface
+  // (not a projection-relative depth band) is what makes emboss/engrave coloring
+  // robust on curved faces: on a sphere the planar/cylindrical "face" the stamp
+  // projects onto drifts away from the real surface, so a depth-band test both
+  // misses far channel walls (engrave) and catches unraised skin inside the stamp
+  // rectangle (emboss bleed). Displacement keys off the geometry change instead.
+  // `nearestSurfaceDistance` is a true point-to-triangle distance (no
+  // tessellation floor), so the threshold can sit just above the surface-nets
+  // noise — the channel/relief walls then color right up to the rim.
+  const dispMin = eps * 1.5;
+  // Dense geometric reference for the displacement test. The distance is
+  // point-to-triangle (so there's no tessellation floor — points on the surface
+  // read ~0), but the *nearest* triangle is picked by centroid, which only lands
+  // on the right face when faces are small; densify a coarse input (e.g. a plain
+  // cube) so that selection is reliable. Reuse the paint-dense source if built.
+  const geomRef = denseSrc
+    ?? (input.numTri > 0
+      ? subdivideToMaxEdge(input, { maxEdge: (modelDiagonal(input) || 10) / 80, maxRounds: 5 })
+      : input);
+  // Through-cut hole walls aren't "displaced" from the surface (material is
+  // removed, leaving no far side under the cut), so they stay on the depth-band
+  // test; emboss/engrave use the displacement test.
+  const dist = !opts.through && geomRef.numTri > 0 ? nearestSurfaceDistance(geomRef, baked) : null;
   const [r, g, b] = opts.color!.map(c => Math.round(Math.min(1, Math.max(0, c)) * 255));
   const { vertProperties: vp, triVerts: tv, numProp, numTri } = baked;
   for (let t = 0; t < numTri; t++) {
@@ -746,15 +770,20 @@ function stampTriColors(
     const cx = (vp[a] + vp[bI] + vp[c]) / 3;
     const cy = (vp[a + 1] + vp[bI + 1] + vp[c + 1]) / 3;
     const cz = (vp[a + 2] + vp[bI + 2] + vp[c + 2]) / 3;
-    const { m, depthInto, u, v } = evalStamp(cx, cy, cz);
-    // Emboss: anything above the face inside the stamp rectangle is relief —
-    // the rect (not ink coverage) bounds it laterally, so relief side-walls at
-    // an ink edge still color. Engrave/through: below the face, under ink,
-    // within the carve depth.
-    const inRect = u >= -epsU && u <= 1 + epsU && v >= -epsV && v <= 1 + epsV;
-    const stamped = opts.raised
-      ? depthInto < -eps && inRect
-      : depthInto > eps && m > 0.15 && (opts.through || depthInto < opts.depth + 2 * eps);
+    const { m, depthInto } = evalStamp(cx, cy, cz);
+    // Color the stamp itself, bounded laterally by ink (m). Emboss and engrave
+    // share one rule — a baked triangle is stamp geometry iff it's under ink AND
+    // displaced off the original surface (the raised relief, or the carved channel
+    // walls + floor). Distance-from-surface — not a projection-relative depth band
+    // — is what makes this robust on curved faces: the planar/cylindrical "face"
+    // the stamp projects onto drifts away from a sphere, so a depth test misses far
+    // channel walls (engrave under-color) and catches unraised skin inside the
+    // stamp rectangle (emboss bleed); the geometry change has neither failure.
+    // Through-cuts remove material (no far side under the cut, nothing
+    // "displaced"), so the hole walls stay on the depth-band test.
+    const stamped = opts.through
+      ? depthInto > eps && m > inkMin
+      : m > inkMin && (dist ? dist[t] > dispMin : false);
     if (!stamped) continue;
     triColors[t * 3] = r; triColors[t * 3 + 1] = g; triColors[t * 3 + 2] = b;
     painted[t] = 1;
