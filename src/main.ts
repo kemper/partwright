@@ -7315,9 +7315,12 @@ async function main() {
     // subdivision). When the result is fully re-meshed (engrave, voronoi lamp) it
     // has none, so fall back to a spatial transfer from the painted source mesh
     // the modifier handed back — otherwise the carve would wipe all paint.
-    const colorMesh = (preserveColor && result.kind === 'manifold')
+    // A result that bakes its own triColors (a colored engrave/emboss stamp)
+    // persists them even with preserveColor off: that flag scopes the carry of
+    // EXISTING paint, not paint the modifier itself just introduced.
+    const colorMesh = result.kind === 'manifold'
       ? (result.mesh.triColors != null ? result.mesh
-        : (result.colorSource?.triColors != null ? result.colorSource : null))
+        : (preserveColor && result.colorSource?.triColors != null ? result.colorSource : null))
       : null;
     cancelVoxelPaintIfActive();
     dropPaintState();
@@ -7704,24 +7707,28 @@ async function main() {
       }, ctl);
     }
     if (id === 'engrave') {
-      // Whole-model carve (no region patch). The ink mask is pre-rasterized by
-      // the host (text via the app's font path, or a decoded image) and passed
-      // in opts.mask. The SDF carve yields via `ctl` so the UI shows progress.
+      // Whole-model carve or emboss (no region patch). The ink mask is
+      // pre-rasterized by the host (text via the app's font path, or a decoded
+      // image) and passed in opts.mask. The SDF sweep yields via `ctl` so the
+      // UI shows progress.
       const mesh = meshForModifier(preserveColor);
       const base = defaultEngraveOptions(mesh);
       const mask = opts?.mask as StampMask | undefined;
       if (!mask || mask.width === 0 || mask.height === 0) {
         throw new Error('engrave requires a rasterized stamp — provide text or an image first.');
       }
+      const raised = (opts?.raised as boolean) ?? false;
       return applyEngrave(mesh, {
         mask,
         projection: (opts?.projection as EngraveProjection) ?? base.projection,
-        through: (opts?.through as boolean) ?? base.through,
+        through: raised ? false : ((opts?.through as boolean) ?? base.through),
+        raised,
         depth: (opts?.depth as number) ?? base.depth,
         size: (opts?.size as number) ?? base.size,
         resolution: (opts?.resolution as number) ?? base.resolution,
         watertight: (opts?.watertight as boolean) ?? base.watertight,
         source: opts?.source as string | undefined,
+        color: parseStampColor(opts?.color),
       }, ctl);
     }
     if (id === 'smooth') {
@@ -7739,6 +7746,21 @@ async function main() {
       resolution: (opts?.resolution as number) ?? 32,
       smooth: (opts?.smooth as boolean) ?? false,
     });
+  }
+
+  /** Normalize a stamp color from its console/UI forms — '#rrggbb' hex (the
+   *  color input) or [r,g,b] in [0,1] (the paint API's convention) — to the
+   *  modifier's [0,1] tuple. Returns undefined for absent or malformed input
+   *  (engraveModel validates and reports the error before reaching here). */
+  function parseStampColor(c: unknown): [number, number, number] | undefined {
+    if (typeof c === 'string') {
+      return /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c.trim()) ? hexToRgb(c) : undefined;
+    }
+    if (Array.isArray(c) && c.length === 3 && c.every(n => typeof n === 'number' && Number.isFinite(n))) {
+      const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
+      return [clamp01(c[0]), clamp01(c[1]), clamp01(c[2])];
+    }
+    return undefined;
   }
 
   // The SDF carves (engrave, voronoi lamp) sweep a dense lattice and can take a
@@ -8044,12 +8066,14 @@ async function main() {
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Carve TEXT or an IMAGE into the current model as recessed channels
-     *  (engrave) or holes through the whole wall (cut-through). Unlike the relief
-     *  textures (which only displace the skin), this removes material. The stamp
-     *  is projected onto a chosen face (planar) or wrapped around Z (cylindrical).
-     *  Pass `text` (rasterized via the app's font path) or `imageUrl`; the modal
-     *  may pass a prebuilt `mask`. Saves a new version. Returns
-     *  `{ ok, label, geometry, warnings? }`. */
+     *  (engrave) or holes through the whole wall (cut-through) — or, with
+     *  `raised`, EMBOSS it as a raised relief instead. Unlike the relief
+     *  textures (which only displace the skin), this removes (or adds) material.
+     *  The stamp is projected onto a chosen face (planar) or wrapped around Z
+     *  (cylindrical). Pass `text` (rasterized via the app's font path) or
+     *  `imageUrl`; the modal may pass a prebuilt `mask`. `color` paints the
+     *  letters ('#rrggbb' or [r,g,b] in 0–1) for multicolor prints. Saves a new
+     *  version. Returns `{ ok, label, geometry, warnings? }`. */
     async engraveModel(opts?: {
       text?: string;
       imageUrl?: string;
@@ -8066,8 +8090,10 @@ async function main() {
       curveAxis?: 'none' | 'u' | 'v';
       curveAngleDeg?: number;
       through?: boolean;
+      raised?: boolean;
       depth?: number;
       size?: number;
+      color?: string | [number, number, number];
       resolution?: number;
       watertight?: boolean;
       preserveColor?: boolean;
@@ -8075,6 +8101,9 @@ async function main() {
       try {
         const preserve = opts?.preserveColor ?? true;
         requireCurrentMeshForModifier();
+        if (opts?.color !== undefined && parseStampColor(opts.color) === undefined) {
+          return { error: "engraveModel: `color` must be '#rrggbb' hex or [r,g,b] with components in 0–1." };
+        }
         let mask = opts?.mask;
         let source: string | undefined;
         if (!mask) {
@@ -13241,6 +13270,8 @@ async function main() {
         'applyWovenFabric':{ signature: 'await applyWovenFabric({amplitude?, threadSpacing?, threadWidth?, underDepth?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE woven threads; saves a new version. In-code alternative: api.surface.woven', docs: '/ai/textures.md' },
         'applyVoronoiShell': { signature: 'await applyVoronoiShell({amplitude?, cellSize?, wallWidth?, raised?, jitter?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE Voronoi cell relief; saves a new version. In-code alternative: api.surface.voronoi', docs: '/ai/textures.md' },
         'applyVoronoiLamp':{ signature: 'await applyVoronoiLamp({cellSize?, wallThickness?, strutWidth?, resolution?, jitter?, grainAngleDeg?, seed?, preserveColor?}) -- Convert the model into a perforated Voronoi lamp shell (bake only — no api.surface twin)', docs: '/ai/textures.md' },
+        'engraveModel':    { signature: "await engraveModel({text | imageUrl, raised?, through?, depth?, size?, color?, axis?, side?, posU?, posV?, rotationDeg?, curveAxis?, curveAngleDeg?, font?, resolution?, watertight?, preserveColor?}) -- Carve text/image as recessed channels (engrave), holes (through), or a raised relief (raised = emboss); color paints the letters ('#rrggbb' or [r,g,b] 0–1). Saves a new version.", docs: '/ai/textures.md#engravemodel' },
+        'buildEngraveStamp': { signature: 'await buildEngraveStamp({text?, font?, imageUrl?, invert?}) -- Rasterize an ink mask for engraveModel/the Surface panel -> {mask, width, height}', docs: '/ai/textures.md#engravemodel' },
         'smoothModel':     { signature: 'await smoothModel({iterations?, subdivide?, preserveColor?}) -- BAKE a Taubin smoothing pass; saves a new version. In-code alternative: api.surface.smooth', docs: '/ai/textures.md' },
         'voxelizeModel':   { signature: 'await voxelizeModel({resolution?, smooth?, preserveColor?}) -- Convert the mesh to a voxel-language session (engine change — bake only)', docs: '/ai/voxel.md' },
         // Transform / placement (mode 'parametric' wraps the code; 'bake' rewrites the mesh; 'auto' picks)

@@ -22,6 +22,14 @@
 //       engrave:      combine = max( d, -max(stampSDF, depthInto - depth) )
 //                     (subtract only within `depth` of the chosen face — the
 //                     face-relative depth, NOT |d|, so the back face is untouched)
+//       emboss:       combine = min( d, max(stampSDF, -depthInto - depth,
+//                                            depthInto - 2·voxel,
+//                                            d + depthInto - 1.5·voxel) )
+//                     (the dual: UNION an ink prism extending `depth` above the
+//                     face instead of subtracting one below it; the prism is
+//                     capped just below the face so it fuses without tunneling
+//                     out the back of the model, and culled where it isn't over
+//                     solid so an overhanging stamp closes at the model's edge)
 //     where `< 0` is inside the result solid (the SDF convention of sdfModifier).
 
 import type { SdfCombine, SdfSample } from './sdfModifier';
@@ -193,10 +201,14 @@ export interface EngraveFieldOptions {
   projection: EngraveProjection;
   /** Cut all the way through the wall (true) or only recess to `depth` (false). */
   through: boolean;
-  /** Engrave depth in world units (ignored when `through`). */
+  /** Engrave depth — or, when `raised`, the emboss height — in world units
+   *  (ignored when `through`). */
   depth: number;
   /** Stamp width in world units (the mask's wider dimension maps to this). */
   size: number;
+  /** EMBOSS: add the stamp as a raised relief instead of carving it out.
+   *  `depth` becomes the raised height; `through` is ignored. */
+  raised?: boolean;
 }
 
 export interface Bbox {
@@ -236,10 +248,18 @@ export function tangentFrame(normal: Vec3, rotationDeg = 0): { u: Vec3; v: Vec3;
   return { u, v, n };
 }
 
-/** Build the SDF `combine` that cuts the stamp into a solid with the given
- *  bbox. `< 0` = inside the result solid (sdfModifier convention). Pure. */
-export function engraveCombine(bbox: Bbox, opts: EngraveFieldOptions): SdfCombine {
-  const { mask, projection, through, depth, size } = opts;
+/** World-point → stamp evaluator for a projection: `m` is the ink coverage
+ *  ∈ [0,1] at the point (0 outside the stamp rectangle), `depthInto` its
+ *  signed distance from the nominal stamped face INTO the solid (> 0 below the
+ *  face, < 0 above it), and `u`/`v` the normalized stamp coordinates (inside
+ *  the rectangle ⇔ both in [0,1]). Shared by the field math
+ *  ({@link engraveCombine}) and the stamp-region colorizer so they classify
+ *  points identically. Pure. */
+export function stampEvaluator(
+  bbox: Bbox,
+  opts: Pick<EngraveFieldOptions, 'mask' | 'projection' | 'size'>,
+): (x: number, y: number, z: number) => { m: number; depthInto: number; u: number; v: number } {
+  const { mask, projection, size } = opts;
   const cx = (bbox.min[0] + bbox.max[0]) / 2;
   const cy = (bbox.min[1] + bbox.max[1]) / 2;
   const cz = (bbox.min[2] + bbox.max[2]) / 2;
@@ -247,10 +267,11 @@ export function engraveCombine(bbox: Bbox, opts: EngraveFieldOptions): SdfCombin
   const stampW = Math.max(1e-6, size);
   const stampH = stampW / Math.max(1e-6, aspect);
 
-  // evalStamp(p) → { m, depthInto }: the ink coverage m∈[0,1] at the world point
-  // (0 = outside the stamp rectangle) and its distance from the nominal surface
-  // into the solid (≥0 inside), used for the engrave (non-through) depth band.
-  let evalStamp: (x: number, y: number, z: number) => { m: number; depthInto: number };
+  // evalStamp(p) → { m, depthInto, u, v }: the ink coverage m∈[0,1] at the world
+  // point (0 = outside the stamp rectangle), its distance from the nominal
+  // surface into the solid (≥0 inside) — used for the engrave (non-through)
+  // depth band — and the normalized stamp coordinates.
+  let evalStamp: (x: number, y: number, z: number) => { m: number; depthInto: number; u: number; v: number };
 
   if (projection.mode === 'cylindrical') {
     // Cylindrical: wrap around Z. u = angle fraction, v = height fraction.
@@ -268,9 +289,9 @@ export function engraveCombine(bbox: Bbox, opts: EngraveFieldOptions): SdfCombin
       const arc = theta * rRef;                    // signed arc length at rRef
       // Points on the far side wrap to u outside [0,1] → sampleMask returns 0,
       // so the stamp doesn't mirror onto the back of the cylinder.
-      const m = sampleMask(mask, arc / stampW + 0.5, 0.5 - (z - cz) / stampH);
+      const u = arc / stampW + 0.5, v = 0.5 - (z - cz) / stampH;
       const r = Math.hypot(x - cx, y - cy);
-      return { m, depthInto: sign === 1 ? rRef - r : r - rRef };
+      return { m: sampleMask(mask, u, v), depthInto: sign === 1 ? rRef - r : r - rRef, u, v };
     };
   } else {
     // Planar / free both reduce to a local stamp frame: `local(p)` returns
@@ -324,7 +345,8 @@ export function engraveCombine(bbox: Bbox, opts: EngraveFieldOptions): SdfCombin
           const [du, dv, nOut] = local(x, y, z);
           const rr = nOut + R;
           const arc = R * Math.atan2(du, rr);   // signed arc length along the bend
-          return { m: sampleMask(mask, arc / stampW + 0.5, 0.5 - dv / stampH), depthInto: R - Math.hypot(du, rr) };
+          const u = arc / stampW + 0.5, v = 0.5 - dv / stampH;
+          return { m: sampleMask(mask, u, v), depthInto: R - Math.hypot(du, rr), u, v };
         };
       } else {
         // Bend about the horizontal axis: the vertical extent (dv) wraps instead.
@@ -333,19 +355,57 @@ export function engraveCombine(bbox: Bbox, opts: EngraveFieldOptions): SdfCombin
           const [du, dv, nOut] = local(x, y, z);
           const rr = nOut + R;
           const arc = R * Math.atan2(dv, rr);
-          return { m: sampleMask(mask, du / stampW + 0.5, 0.5 - arc / stampH), depthInto: R - Math.hypot(dv, rr) };
+          const u = du / stampW + 0.5, v = 0.5 - arc / stampH;
+          return { m: sampleMask(mask, u, v), depthInto: R - Math.hypot(dv, rr), u, v };
         };
       }
     } else {
       evalStamp = (x, y, z) => {
         const [du, dv, nOut] = local(x, y, z);
-        return { m: sampleMask(mask, du / stampW + 0.5, 0.5 - dv / stampH), depthInto: -nOut };
+        const u = du / stampW + 0.5, v = 0.5 - dv / stampH;
+        return { m: sampleMask(mask, u, v), depthInto: -nOut, u, v };
       };
     }
   }
 
+  return evalStamp;
+}
+
+/** Build the SDF `combine` that cuts the stamp into a solid with the given
+ *  bbox — or, with `raised`, adds it as an embossed relief. `< 0` = inside the
+ *  result solid (sdfModifier convention). Pure. */
+export function engraveCombine(bbox: Bbox, opts: EngraveFieldOptions): SdfCombine {
+  const { through, depth, raised } = opts;
+  const evalStamp = stampEvaluator(bbox, opts);
+
   return (s: SdfSample): number => {
     const { d, x, y, z, voxelSize } = s;
+    if (raised) {
+      // Emboss: union an ink prism extending `depth` above the face. Two extra
+      // bounds keep the union watertight:
+      //  • `depthInto - 2·voxel` caps the prism a couple of voxels BELOW the
+      //    face — enough overlap to fuse seamlessly (the cap stays buried where
+      //    d < 0) without extending an infinite ink column through, and out the
+      //    back of, the model (which would reach the lattice boundary and leave
+      //    the mesh open there).
+      //  • `d + depthInto` culls relief that isn't over solid: directly above a
+      //    face the nearest surface is that face, so d ≈ -depthInto and the
+      //    term ≈ 0; where the stamp rectangle overhangs the model's edge it
+      //    grows with the overhang, closing the relief smoothly at the edge
+      //    instead of leaving a floating apron clipped open at the lattice.
+      //    (This needs `d` exact out to depth + the closure margin — the raised
+      //    band in engraveSdf covers it.)
+      const { m, depthInto } = evalStamp(x, y, z);
+      const scale = Math.max(voxelSize, depth * 0.25);
+      const stampSdf = (0.5 - m) * scale; // < 0 where ink
+      const addition = Math.max(
+        stampSdf,
+        -depthInto - depth,
+        depthInto - 2 * voxelSize,
+        d + depthInto - 1.5 * voxelSize,
+      );
+      return Math.min(d, addition);
+    }
     // Far outside the solid — nothing to carve; cheapest branch first.
     if (d > voxelSize) return d;
     const { m, depthInto } = evalStamp(x, y, z);
