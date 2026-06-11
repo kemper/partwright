@@ -38,7 +38,7 @@ export interface SurfaceApi {
   applyVoronoiShell(opts?: { amplitude?: number; cellSize?: number; wallWidth?: number; raised?: boolean; jitter?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiLamp(opts?: { cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; jitter?: number; grainAngleDeg?: number; seed?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   buildEngraveStamp(spec?: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }): Promise<{ mask: StampMask; width: number; height: number } | { error: string }>;
-  engraveModel(opts?: { mask?: StampMask; source?: string; projection?: EngraveProjection; through?: boolean; depth?: number; size?: number; resolution?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
+  engraveModel(opts?: { mask?: StampMask; source?: string; projection?: EngraveProjection; through?: boolean; raised?: boolean; depth?: number; size?: number; color?: string; resolution?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   /** Write the texture into the code as `api.surface.<id>({…})` instead of
@@ -811,12 +811,29 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const curveAngle = slider('Wrap angle', 10, 300, engravePlace.curveAngle, 5, n => `${n}°`, () => { engravePlace.curveAngle = curveAngle.get(); schedulePreview(); });
       const syncCurveUI = () => { curveAngle.wrap.style.display = curveAxis.get() === 'none' ? 'none' : ''; };
 
-      const through = checkbox('Cut clean through (stencil)', false, () => { depthWrap.style.display = through.get() ? 'none' : ''; schedulePreview(); });
+      // Engrave (subtract) / emboss (add) / cut-through are one field math with
+      // a sign flip, so they share every other control on this tab.
+      const modeSel = dropdown<'engrave' | 'emboss' | 'through'>('Mode', [
+        ['engrave', 'Engrave (recessed)'],
+        ['emboss', 'Emboss (raised)'],
+        ['through', 'Cut clean through (stencil)'],
+      ], 'engrave', () => { syncEngraveModeUI(); schedulePreview(); });
       const sizeS = sliderWithEntry('Text size (width)', span * 0.1, span * 1.5, span * 0.7, span * 0.01, span * 8,
         () => { refreshEngraveOutline(); schedulePreview(); }, { round: n => Math.round(n * 1000) / 1000 });
-      const depth = sliderWithEntry('Engrave depth', span * 0.005, span * 0.3, span * 0.06, span * 0.005, span * 4,
+      const depth = sliderWithEntry('Depth / raised height', span * 0.005, span * 0.3, span * 0.06, span * 0.005, span * 4,
         schedulePreview, { round: n => Math.round(n * 1000) / 1000 });
       const depthWrap = depth.wrap;
+      // Optional letter color — colors the raised relief (emboss) or the
+      // channel walls (engrave/through) for multicolor prints.
+      const colorChk = checkbox('Color the letters', false, () => { colorPick.style.display = colorChk.get() ? '' : 'none'; schedulePreview(); });
+      const colorPick = el('input', 'w-full h-7 mb-3 bg-zinc-800 border border-zinc-700 rounded cursor-pointer');
+      colorPick.type = 'color';
+      colorPick.value = '#d4af37';
+      colorPick.style.display = 'none';
+      // 'change' (not 'input') — re-running the SDF sweep on every drag tick of
+      // the native picker would queue a carve per swatch hover.
+      colorPick.addEventListener('change', schedulePreview);
+      const syncEngraveModeUI = () => { depthWrap.style.display = modeSel.get() === 'through' ? 'none' : ''; };
       const res = sliderWithEntry('Resolution', 48, 220, 180, 1, 256, schedulePreview);
       const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
 
@@ -824,9 +841,10 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       engraveSizeGet = () => sizeS.get();
       engraveIsPlanar = () => true; // placement is always face-based now → outline always applies
 
-      body.append(textWrap, font.wrap, imgWrap, invert.wrap, placeWrap, angle.wrap, curveAxis.wrap, curveAngle.wrap, through.wrap, sizeS.wrap, depthWrap, res.wrap, wtight.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'Carves text or an image into the model — recessed channels, or holes cut clean through (stencil). Type text and press Apply, then "place on model": move over the model (a blue outline follows the cursor) and click to drop it on that face. Fine-tune with the position sliders / rotation, and use Curve to wrap the text around a cylinder or dome. Raise resolution if thin strokes look mushy.'));
+      body.append(textWrap, font.wrap, imgWrap, invert.wrap, placeWrap, angle.wrap, curveAxis.wrap, curveAngle.wrap, modeSel.wrap, sizeS.wrap, depthWrap, colorChk.wrap, colorPick, res.wrap, wtight.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Stamps text or an image onto the model — engraved channels, a raised emboss, or holes cut clean through (stencil). Type text and press Apply, then "place on model": move over the model (a blue outline follows the cursor) and click to drop it on that face. Fine-tune with the position sliders / rotation, and use Curve to wrap the text around a cylinder or dome. "Color the letters" paints the stamp for multicolor prints. Raise resolution if thin strokes look mushy.'));
       syncCurveUI();
+      syncEngraveModeUI();
       updateEngravePlacementUI();
       refreshEngraveOutline();
 
@@ -840,9 +858,11 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         mask: engraveMask,
         source: engraveSource,
         projection: projOf(),
-        through: through.get(),
+        through: modeSel.get() === 'through',
+        raised: modeSel.get() === 'emboss',
         depth: depth.get(),
         size: sizeS.get(),
+        color: colorChk.get() ? colorPick.value : undefined,
         resolution: res.get(),
         watertight: wtight.get(),
       });
@@ -1168,7 +1188,7 @@ export function initSurfaceUI(api: SurfaceApi): void {
     { id: 'surface-woven', title: 'Surface: Woven fabric', hint: 'Modifier', keywords: 'woven weave fabric basket cloth interlace thread', run: () => openSurfaceModal(api, 'woven') },
     { id: 'surface-voronoi', title: 'Surface: Voronoi texture', hint: 'Modifier', keywords: 'voronoi cell relief organic cracked web ridges struts texture', run: () => openSurfaceModal(api, 'voronoi') },
     { id: 'surface-voronoi-lamp', title: 'Surface: Voronoi lamp (perforated shell)', hint: 'Modifier', keywords: 'voronoi lamp shell lattice perforated cutout holes see-through planter lampshade voxel', run: () => openSurfaceModal(api, 'voronoiLamp') },
-    { id: 'surface-engrave', title: 'Surface: Engrave / cut-through text or image', hint: 'Modifier', keywords: 'engrave emboss carve cut through text image stencil label logo name plate recess channel', run: () => openSurfaceModal(api, 'engrave') },
+    { id: 'surface-engrave', title: 'Surface: Engrave / emboss / cut-through text or image', hint: 'Modifier', keywords: 'engrave emboss carve raised relief cut through text image stencil label logo name plate recess channel color', run: () => openSurfaceModal(api, 'engrave') },
     { id: 'surface-smooth', title: 'Surface: Smooth / round edges', hint: 'Modifier', keywords: 'smooth round fillet taubin low-poly', run: () => openSurfaceModal(api, 'smooth') },
     { id: 'surface-voxelize', title: 'Surface: Voxelize model', hint: 'Modifier', keywords: 'voxel blocky minecraft pixel', run: () => openSurfaceModal(api, 'voxelize') },
   ]);

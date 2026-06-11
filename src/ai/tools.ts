@@ -1202,23 +1202,25 @@ Plus preserveColor (default true — bake path only; on the code path paint re-r
   },
   {
     name: 'engraveModel',
-    description: `Carve **text** into the current model as recessed channels (engrave) or holes cut clean through the wall (cut-through). Saves a new version.
+    description: `Stamp **text** onto the current model: carve it as recessed channels (engrave), cut holes clean through the wall (cut-through), or — with \`raised: true\` — **EMBOSS it as a raised relief**. Saves a new version.
 
-**This removes material** — unlike the relief textures (\`applySurfaceTexture\`: voronoi, knit, waffle…) which only displace the surface skin. The text is rasterized (the app's font path) and projected onto a chosen face (planar) or wrapped around the Z axis (cylindrical), then subtracted from the solid.
+**This removes (or, embossing, adds) material** — unlike the relief textures (\`applySurfaceTexture\`: voronoi, knit, waffle…) which only displace the surface skin. The text is rasterized (the app's font path) and projected onto a chosen face (planar) or wrapped around the Z axis (cylindrical), then subtracted from (or unioned onto) the solid.
 
-**When to use:** to label / brand a part (a name on a tag, a logo plate), cut a stencil, or perforate a sign. Start from a slab, plate, ring, or cylinder.
+**When to use:** to label / brand a part (a name on a tag, a logo plate), cut a stencil, perforate a sign, or add raised lettering. Start from a slab, plate, ring, or cylinder.
 
 **Key parameters:**
-- text: the string to engrave (required)
+- text: the string to engrave/emboss (required)
+- raised: true = EMBOSS — raise the text \`depth\` above the face instead of carving (through is ignored). Default false.
 - through: false (default) recesses to \`depth\`; true cuts a hole clean through the wall (stencil)
-- depth: engrave depth in world units (ignored when through); default ~6% of the model diagonal
+- depth: engrave depth — or emboss height with raised — in world units (ignored when through); default ~6% of the model diagonal
 - size: stamp width in world units — how wide the text spans across the face; default ~70% of the face
+- color: paint the letters ('#rrggbb' hex) for a multicolor print — the raised relief (emboss) or the channel walls (engrave/through). Existing paint is still carried.
 - mode: 'planar' (default — onto one face) or 'cylindrical' (wrap around Z, e.g. text around a ring/cup)
 - axis + side: planar face — axis 'x'|'y'|'z' (default 'z') and side 'min'|'max' (default 'max' = the +axis face). For cylindrical, side 'outer' (default) or 'inner'.
 - resolution: field resolution [48–256], default 180. Thin strokes need higher; raise it if letters look mushy.
 - watertight: keep only the largest connected piece (default true).
 
-**Return:** { ok, label, geometry, warnings? }. Verify with renderViews — check the letters are legible and (for through) the holes are open. With watertight on the result should be manifold.
+**Return:** { ok, label, geometry, warnings? }. Verify with renderViews — check the letters are legible, (for through) the holes are open, and (for raised) the relief stands proud. With watertight on the result should be manifold.
 
 **Note:** engraving an **image** is supported only from the Surface UI panel (it needs local image bytes); this tool handles text.`,
     input_schema: {
@@ -1226,9 +1228,11 @@ Plus preserveColor (default true — bake path only; on the code path paint re-r
       properties: {
         text: { type: 'string', description: 'The text to engrave/cut. Required.' },
         font: { type: 'string', enum: ['regular', 'bold', 'italic', 'bold-italic'], description: "Font weight/style. Default 'bold' (heavier strokes engrave more legibly)." },
-        through: { type: 'boolean', description: 'true = cut clean through the wall (stencil); false (default) = recess to `depth`.' },
-        depth: { type: 'number', description: 'Engrave depth in world units (ignored when through). Default ~6% of the model diagonal.' },
+        through: { type: 'boolean', description: 'true = cut clean through the wall (stencil); false (default) = recess to `depth`. Ignored when raised.' },
+        raised: { type: 'boolean', description: 'true = EMBOSS: add the text as a raised relief `depth` high instead of carving it. Default false.' },
+        depth: { type: 'number', description: 'Engrave depth — or emboss height when raised — in world units (ignored when through). Default ~6% of the model diagonal.' },
         size: { type: 'number', description: 'Stamp width in world units — how wide the text spans. Default ~70% of the face span.' },
+        color: { type: 'string', description: "Paint the letters for a multicolor print, '#rrggbb' hex — colors the raised relief (emboss) or the channel walls (engrave/through). Existing paint is still carried." },
         mode: { type: 'string', enum: ['planar', 'cylindrical'], description: "'planar' (default): onto one flat face. 'cylindrical': wrap the text around the Z axis." },
         axis: { type: 'string', enum: ['x', 'y', 'z'], description: "Planar only: which face axis. Default 'z' (top/bottom)." },
         side: { type: 'string', enum: ['min', 'max', 'outer', 'inner'], description: "Planar: 'max' (default, +axis face) or 'min'. Cylindrical: 'outer' (default) or 'inner'." },
