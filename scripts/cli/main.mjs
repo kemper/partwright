@@ -3,7 +3,7 @@
 // docs/headless-cli.md.
 import { resolve, dirname, basename, join } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { runPreview, composePng } from './preview.mjs';
+import { runPreview, composePng, composeContactSheet, explainComponents, checkExpectComponents, resolveViews, defaultPreviewPng } from './preview.mjs';
 import { runPhoto, meshToPng, loadPalette } from './photo.mjs';
 import { runDaemon } from './daemon.mjs';
 import { startDaemon, stopDaemon, statusDaemon, rpc, evalInPage, resetPage } from './client.mjs';
@@ -32,20 +32,50 @@ function writeDataUrl(dataUrl, outPath) {
 const json = (v) => JSON.stringify(v, (_k, val) => (ArrayBuffer.isView(val) ? undefined : val), 2);
 
 async function cmdPreview(argv, { pngDefault }) {
-  const a = parse(argv, ['json']);
+  const a = parse(argv, ['json', 'explain-components']);
   const file = a._[0];
-  if (!file) { console.error('usage: partwright preview <file.js> [--lang manifold-js|voxel] [--png out] [--json] [--size N] [-p k=v]'); process.exit(2); }
+  if (!file) { console.error('usage: partwright preview <file.js> [--lang manifold-js|voxel] [--png out] [--json] [--size N] [--view az,el] [--views front,iso,…] [--explain-components] [--expect-components N] [-p k=v]'); process.exit(2); }
   const abs = resolve(file);
+  const { views, error: viewErr } = resolveViews(a.view, a.views);
+  if (viewErr) { console.error(viewErr); process.exit(2); }
   const result = await runPreview(abs, { params: a.params, lang: a.lang || 'manifold-js' });
   if (!result.ok) { console.log(json({ ok: false, error: result.error, diagnostics: result.diagnostics })); process.exit(1); }
 
   let pngPath = null;
   if (pngDefault && !a.json && result.render) {
-    pngPath = a.png ? resolve(a.png) : join(dirname(abs), basename(abs).replace(/\.[^.]+$/, '') + '.preview.png');
-    const img = composePng(result.render.positions, result.render.triVerts, result.render.triColors, result.render.bbox, Number(a.size) || 480);
+    pngPath = a.png ? resolve(a.png) : defaultPreviewPng(abs);
+    const img = composePng(result.render.positions, result.render.triVerts, result.render.triColors, result.render.bbox, Number(a.size) || 480, views || undefined);
     await img.toFile(pngPath);
   }
   console.log(json({ ok: true, png: pngPath, stats: result.stats }));
+
+  if (a['explain-components']) console.error(explainComponents(result.stats));
+  const expectErr = checkExpectComponents(result.stats, a['expect-components']);
+  if (expectErr) { console.error(expectErr); process.exit(1); }
+}
+
+// Contact sheet — run N model files and tile one iso view of each into a single
+// PNG for side-by-side comparison (variant sweeps, before/after, A/B params).
+async function cmdCompare(argv) {
+  const a = parse(argv, ['json']);
+  const files = a._;
+  if (files.length < 2) { console.error('usage: partwright compare <a.js> <b.js> [more.js …] [--lang manifold-js|voxel|scad] [--png out] [--size N] [--view az,el] [--json] [-p k=v]'); process.exit(2); }
+  if (a.views !== undefined) { console.error('compare renders one view per model — use --view az,el (not --views).'); process.exit(2); }
+  const { views, error: viewErr } = resolveViews(a.view, undefined);
+  if (viewErr) { console.error(viewErr); process.exit(2); }
+  const results = [];
+  for (const f of files) {
+    const r = await runPreview(resolve(f), { params: a.params, lang: a.lang || 'manifold-js' });
+    results.push({ file: f, ok: r.ok, error: r.error, stats: r.stats, render: r.render });
+  }
+  let pngPath = null;
+  if (!a.json) {
+    pngPath = a.png ? resolve(a.png) : resolve('compare.png');
+    await composeContactSheet(results, Number(a.size) || 360, views ? views[0] : undefined).toFile(pngPath);
+  }
+  // Drop the heavy render buffers from the JSON; the PNG carries the pixels.
+  const models = results.map((r, i) => ({ cell: i, file: r.file, ok: r.ok, error: r.error, stats: r.stats }));
+  console.log(json({ ok: true, png: pngPath, models }));
 }
 
 // Photo → palette-constrained voxel model. Stateless (no daemon): decode +
@@ -139,8 +169,9 @@ async function cmdBake(argv) {
   if (!metas.length) { console.error(`no *.meta.json fixtures in ${dir}`); process.exit(2); }
 
   const body = `
-    const { model, name, paints } = arg;
+    const { model, name, paints, thumbCamera } = arg;
     await pw.createSession(name);
+    if (thumbCamera && pw.setThumbnailCamera) await pw.setThumbnailCamera(thumbCamera);
     const run = await pw.runAndSave(model, 'shape');
     if (run && run.geometry && run.geometry.status === 'error') return { error: 'model error: ' + run.geometry.error };
     const paintResults = [];
@@ -164,7 +195,9 @@ async function cmdBake(argv) {
     const paints = (meta.paints || []).map((p) => ({ label: p.label, color: hexToRgb01(p.color), name: p.name ?? p.label }));
 
     await resetPage(); // fresh page per entry, mirroring tests/_catalogBake.spec.ts
-    const r = await evalInPage(body, { model, name: meta.name, paints });
+    // Optional per-entry tile-camera pin: `"thumbCamera": {"azimuth":225,"elevation":30}`
+    // in the .meta.json (degrees; default iso az 45 / el 35).
+    const r = await evalInPage(body, { model, name: meta.name, paints, thumbCamera: meta.thumbCamera ?? null });
     const out = r.result;
     if (!r.ok || out?.error || !out?.data) { console.log(`BAKE_FAIL ${meta.id}: ${r.error || out?.error || 'no data'}`); continue; }
 
@@ -205,6 +238,34 @@ async function cmdIterate(argv) {
   console.log(json({ ok: true, png, stats }));
 }
 
+// Fetch a remote image (or any file) to disk so the stateless `photo` flow can
+// consume it — agents often have an image URL but `photo` needs a local path.
+// (The original "chat-attached image" ask isn't reachable from a Node CLI; a URL
+// download is the implementable equivalent. Honors the env's network policy.)
+async function cmdFetch(argv) {
+  const a = parse(argv);
+  const url = a._[0];
+  if (!url) { console.error('usage: partwright fetch <url> [--out file]'); process.exit(2); }
+  if (!/^https?:\/\//i.test(url)) { console.log(json({ ok: false, error: 'fetch needs an http(s) URL' })); process.exit(1); }
+  let out = a.out;
+  if (!out) { try { out = basename(new URL(url).pathname) || 'download'; } catch { out = 'download'; } }
+  out = resolve(out);
+  let res;
+  try { res = await fetch(url); } catch (e) { console.log(json({ ok: false, error: `fetch failed: ${e?.message || e}` })); process.exit(1); }
+  if (!res.ok) { console.log(json({ ok: false, error: `HTTP ${res.status} ${res.statusText}` })); process.exit(1); }
+  // Guard against an oversized/hostile response OOMing the process. 50 MB is far
+  // larger than any reference image; reject up front on the advertised length.
+  const MAX_FETCH_BYTES = 50 * 1024 * 1024;
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_FETCH_BYTES) {
+    console.log(json({ ok: false, error: `response is ${declared} bytes, over the ${MAX_FETCH_BYTES}-byte fetch cap` })); process.exit(1);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > MAX_FETCH_BYTES) { console.log(json({ ok: false, error: `downloaded ${buf.length} bytes, over the ${MAX_FETCH_BYTES}-byte fetch cap` })); process.exit(1); }
+  writeFileSync(out, buf);
+  console.log(json({ ok: true, out, bytes: buf.length, contentType: res.headers.get('content-type') || 'unknown' }));
+}
+
 // Discovery — list the window.partwright methods reachable via `call`.
 async function cmdMethods(argv) {
   const a = parse(argv);
@@ -218,11 +279,16 @@ async function cmdMethods(argv) {
 const USAGE = `partwright — headless Partwright CLI for driving model creation + feedback
 
 Phase 1 (stateless, no browser — fast inner loop):
-  partwright preview <file.js> [--lang manifold-js|voxel] [--png out] [--json] [--size N] [-p k=v]
+  partwright preview <file.js> [--lang manifold-js|voxel] [--png out] [--json] [--size N]
+                               [--view az,el] [--views front,right,top,bottom,left,back,iso]
+                               [--explain-components] [--expect-components N] [-p k=v]
   partwright run     <file.js> [--lang …] [-p k=v]       stats JSON only
+  partwright compare <a.js> <b.js> [more.js …] [--png out] [--size N] [--view az,el] [-p k=v]
+                                                         tile each model's view into one contact-sheet PNG
   partwright photo   <image>   [--palette p.json] [--max N] [--mode billboard|heightmap]
                                [--depth N] [--bg] [--crop x,y,w,h] [--out model.js] [--png out]
                                photo → palette-snapped voxel model + preview
+  partwright fetch   <url>     [--out file]              download a remote image to disk (for photo)
 
 Phase 2 (headless-browser daemon — full fidelity + state):
   partwright iterate <file.js> [--out png] [--views all] [-p k=v]
@@ -240,7 +306,9 @@ export async function main(argv) {
   switch (cmd) {
     case 'preview': return cmdPreview(rest, { pngDefault: true });
     case 'run': return cmdPreview(rest, { pngDefault: false });
+    case 'compare': return cmdCompare(rest);
     case 'photo': return cmdPhoto(rest);
+    case 'fetch': return cmdFetch(rest);
     case 'iterate': return cmdIterate(rest);
     case 'daemon': return cmdDaemon(rest);
     case 'call': return cmdCall(rest);

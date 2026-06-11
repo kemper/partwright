@@ -1,6 +1,6 @@
 import type { MeshData } from '../geometry/types';
 import { downloadBlob, getExportFilename, getExportTitle } from './download';
-import { assertFiniteMesh, cleanMeshForExport } from './meshClean';
+import { assertFiniteMesh, assertExportableMesh, cleanMeshForExport } from './meshClean';
 import type { BuiltExport } from './gltf';
 
 /** Build the binary STL blob for a mesh without triggering a download. */
@@ -15,6 +15,7 @@ export function buildSTL(meshData: MeshData, customName?: string): BuiltExport {
   // `validTris` (the non-degenerate triangle indices) and read the original
   // vertex positions.
   const { validTris } = cleanMeshForExport(meshData);
+  assertExportableMesh(validTris);
   const { vertProperties, triVerts } = meshData;
   const numTri = validTris.length;
 

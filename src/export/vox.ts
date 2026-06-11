@@ -9,13 +9,19 @@
 //   MAIN { contentSize = 0, childrenSize } wrapping, in order:
 //     SIZE { x, y, z : uint32 }
 //     XYZI { count : uint32, count × (x, y, z, colorIndex : uint8) }
+//     nTRN/nGRP/nTRN/nSHP — the scene graph that positions the model
 //     RGBA { 256 × (r, g, b, a : uint8) }   — file slot k holds palette index k+1
 //
 // XYZI coordinates are single bytes (0–255), so one model spans at most 256³,
 // and color indices are 1-based into a 255-color palette (slot 0 is reserved /
 // transparent). We translate the grid's min corner to the origin, build a
 // palette from its distinct colors (reducing to the 255 most-frequent, with
-// nearest-color snapping, when a grid has more), and emit a single model.
+// nearest-color snapping, when a grid has more), and emit a single model wrapped
+// in a canonical root-transform → group → transform → shape scene graph (the
+// same structure MagicaVoxel itself writes), so the file round-trips through
+// any conforming reader. Materials (MATL) are intentionally omitted: a voxel
+// grid carries only RGBA color, so there is no metal/glass/emissive data to
+// serialize — a MATL chunk of fabricated defaults would add bytes, not fidelity.
 //
 // `encodeVox` is pure logic (no DOM, no WASM) so it's unit-tested in the vitest
 // tier and round-tripped against `parseVox`; `buildVOX` / `exportVOX` wrap it
@@ -51,6 +57,78 @@ function leafChunk(id: string, content: Uint8Array): Uint8Array {
   new DataView(out.buffer).setUint32(4, content.length, true); // contentSize; childrenSize stays 0
   out.set(content, 12);
   return out;
+}
+
+/** Growable little-endian byte writer for the scene-graph chunk encodings. */
+class ByteWriter {
+  private bytes: number[] = [];
+  int32(v: number): this {
+    this.bytes.push(v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff);
+    return this;
+  }
+  /** STRING: int32 length + raw bytes (ASCII, no terminator). */
+  string(s: string): this {
+    this.int32(s.length);
+    for (let i = 0; i < s.length; i++) this.bytes.push(s.charCodeAt(i) & 0xff);
+    return this;
+  }
+  /** DICT: int32 pair count, then STRING key / STRING value pairs. */
+  dict(entries: [string, string][]): this {
+    this.int32(entries.length);
+    for (const [k, v] of entries) this.string(k).string(v);
+    return this;
+  }
+  done(): Uint8Array { return new Uint8Array(this.bytes); }
+}
+
+/** Build the canonical single-model scene graph: a root transform node feeds a
+ *  group, which holds one transform node positioning the shape's model. The
+ *  shape transform translates the model by its center (floor(size/2)) so a
+ *  conforming reader (including {@link parseVox}) reconstructs the same
+ *  occupancy the legacy center-on-corner layout produced. */
+function sceneGraphChunks(sx: number, sy: number, sz: number): Uint8Array[] {
+  const cx = Math.floor(sx / 2), cy = Math.floor(sy / 2), cz = Math.floor(sz / 2);
+  // nTRN(0): root, identity transform → group node 1.
+  const rootTrn = new ByteWriter()
+    .int32(0)          // node id
+    .dict([])          // node attributes
+    .int32(1)          // child = group node 1
+    .int32(-1)         // reserved
+    .int32(-1)         // layer id
+    .int32(1)          // 1 frame
+    .dict([])          // frame: identity (no _t / _r)
+    .done();
+  // nGRP(1): one child, the shape's transform node 2.
+  const grp = new ByteWriter()
+    .int32(1)          // node id
+    .dict([])          // node attributes
+    .int32(1)          // 1 child
+    .int32(2)          // child = transform node 2
+    .done();
+  // nTRN(2): positions the shape's model by its center → shape node 3.
+  const shapeTrn = new ByteWriter()
+    .int32(2)          // node id
+    .dict([])          // node attributes
+    .int32(3)          // child = shape node 3
+    .int32(-1)         // reserved
+    .int32(0)          // layer id
+    .int32(1)          // 1 frame
+    .dict([['_t', `${cx} ${cy} ${cz}`]])
+    .done();
+  // nSHP(3): references model 0.
+  const shp = new ByteWriter()
+    .int32(3)          // node id
+    .dict([])          // node attributes
+    .int32(1)          // 1 model
+    .int32(0)          // model id 0
+    .dict([])          // model attributes
+    .done();
+  return [
+    leafChunk('nTRN', rootTrn),
+    leafChunk('nGRP', grp),
+    leafChunk('nTRN', shapeTrn),
+    leafChunk('nSHP', shp),
+  ];
 }
 
 /** Serialize a grid to MagicaVoxel `.vox` bytes. Throws a clear, actionable
@@ -121,7 +199,9 @@ export function encodeVox(grid: VoxelGrid): Uint8Array {
   const sizeChunk = leafChunk('SIZE', size);
   const xyziChunk = leafChunk('XYZI', xyzi);
   const rgbaChunk = leafChunk('RGBA', rgba);
-  const childrenLen = sizeChunk.length + xyziChunk.length + rgbaChunk.length;
+  const sceneChunks = sceneGraphChunks(sx, sy, sz);
+  const children = [sizeChunk, xyziChunk, ...sceneChunks, rgbaChunk];
+  const childrenLen = children.reduce((sum, c) => sum + c.length, 0);
 
   // ── File header + MAIN wrapper (children follow MAIN's 12-byte header).
   const header = new Uint8Array(8);
@@ -138,9 +218,7 @@ export function encodeVox(grid: VoxelGrid): Uint8Array {
   let p = 0;
   out.set(header, p); p += header.length;
   out.set(main, p); p += main.length;
-  out.set(sizeChunk, p); p += sizeChunk.length;
-  out.set(xyziChunk, p); p += xyziChunk.length;
-  out.set(rgbaChunk, p);
+  for (const chunk of children) { out.set(chunk, p); p += chunk.length; }
   return out;
 }
 

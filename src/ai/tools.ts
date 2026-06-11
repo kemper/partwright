@@ -23,6 +23,15 @@ import { applyLiteralPatch, applyPatches } from './patch';
 export interface ToolDefinition {
   name: string;
   description: string;
+  // `input_schema` is JSON Schema, but it's sent verbatim to every provider —
+  // and Gemini's API only accepts an OpenAPI *subset*. Keep schemas within that
+  // subset: type, description, properties, required, items, enum, minimum,
+  // maximum. Keywords Gemini rejects (it 400s the whole tool list with
+  // `Unknown name "X" … Cannot find field`) must be stripped by
+  // `sanitizeSchemaForGemini` in gemini.ts — it already drops `$schema`,
+  // `additionalProperties`, `exclusiveMinimum`, and `exclusiveMaximum`. If you
+  // reach for a keyword not in that safe list (e.g. `pattern`, `const`,
+  // `oneOf`), add it to the sanitizer's strip set in the same change.
   input_schema: {
     type: 'object';
     properties: Record<string, unknown>;
@@ -48,10 +57,13 @@ export interface ToolExecResult {
  *  from this so the schema can't silently omit a name the validator accepts
  *  (which previously schema-blocked the model from 5 valid subdocs). */
 export const SUBDOC_NAMES_LIST = [
-  'curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety',
-  'print-fit', 'reference-images', 'file-io', 'annotations', 'printing',
-  'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
+  'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'voxel', 'colors', 'print-safety',
+  'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
+  'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api',
+  // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
+  // cached prompt requesting it gets the redirect stub instead of an error.
+  'print-fit',
 ] as const;
 
 const ALL_TOOLS: ToolDefinition[] = [
@@ -196,6 +208,11 @@ const ALL_TOOLS: ToolDefinition[] = [
   {
     name: 'listLabels',
     description: 'Return labels registered in the current run via api.label(shape, name) — the cleanest paint primitive on agent-authored geometry, in both manifold-js and SCAD (where labels come from top-level `label("name") <expr>;` wrappers). Each entry: {name, triangleCount, bbox, centroid}. Empty when the code did not call api.label or `label("name")`. Use to confirm labels resolved correctly before paintByLabel; otherwise prefer calling paintByLabel directly to save a round-trip.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'getModelColors',
+    description: 'Report the colors the current run declared in code via api.label(shape, name, {color}) (and api.labeledUnion entries with a color). These render and export automatically as a derived underlay — no paint step — and the editor stays editable; manual paint composites on top. Returns {count, colors: [{name, color, triangleCount}]}; an empty list means no colors were declared (or the labelled triangles vanished in a boolean — check listLabels().lostLabels). Sibling of listLabels (uncolored label features) and listRegions (manual paint regions).',
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -379,7 +396,7 @@ const ALL_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         box: { type: 'object', description: '{min: [x,y,z], max: [x,y,z]}' },
-        cylinder: { type: 'object', description: 'Radial-shell selector: {rMin, rMax, zMin, zMax, center?: [x,y]}. Previews the same triangles paintInCylinder would select (unsmoothed).' },
+        cylinder: { type: 'object', description: 'Radial-shell selector: {rMin, rMax, zMin, zMax, center?: [a,b], axis?: "x"|"y"|"z"}. axis (default z) picks the shell axis; radius is measured in the plane normal to it. Previews the same triangles paintInCylinder would select (unsmoothed).' },
         slab: { type: 'object', description: 'Slab selector: {axis: "x"|"y"|"z" OR normal: [nx,ny,nz], offset, thickness}. Previews the same triangles paintSlab would select (unsmoothed).' },
         point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         radius: { type: 'number' },
@@ -440,7 +457,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'readDoc',
-    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, print-fit, reference-images, file-io, annotations, printing, relief, textures, mechanisms, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, figure, voxel, colors, print-safety, fasteners, joints, gears, threads, reference-images, file-io, annotations, printing, relief, textures, mechanisms, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
     input_schema: {
       type: 'object',
       properties: {
@@ -924,7 +941,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintInCylinder',
-    description: 'Paint triangles whose centroids fall within a cylindrical shell: rMin ≤ dist(centroid, axis) ≤ rMax AND zMin ≤ centroid.z ≤ zMax. The canonical tool for inner walls of hollow cylinders, mugs, vases, and any revolved shape where paintInBox catches too many faces. Set rMin > 0 to exclude the axis core; set rMax to the inner radius to select only the inner surface. Optional normalCone/topOnly for further filtering.',
+    description: 'Paint triangles whose centroids fall within a cylindrical shell: rMin ≤ dist(centroid, axis) ≤ rMax AND zMin ≤ height ≤ zMax. The canonical tool for inner walls of hollow cylinders, mugs, vases, and any revolved shape where paintInBox catches too many faces. Set rMin > 0 to exclude the axis core; set rMax to the inner radius to select only the inner surface. The shell runs along the chosen axis (default z); for an x- or y-aligned cylinder pass axis. Optional normalCone/topOnly for further filtering.',
     input_schema: {
       type: 'object',
       properties: {
@@ -933,12 +950,17 @@ const ALL_TOOLS: ToolDefinition[] = [
           items: { type: 'number' },
           minItems: 2,
           maxItems: 2,
-          description: 'Center of the cylinder axis in the XY plane [cx, cy]. Use [0, 0] for Z-centered models.',
+          description: 'Center of the cylinder axis in the radial plane [a, b]. For axis="z" this is [x, y]; for "x" it is [y, z]; for "y" it is [z, x]. Use [0, 0] for an axis-centered model.',
+        },
+        axis: {
+          type: 'string',
+          enum: ['x', 'y', 'z'],
+          description: 'World axis the shell runs along (default z). Radius is measured in the plane normal to it and the zMin..zMax band runs along it.',
         },
         rMin: { type: 'number', description: 'Minimum radial distance from axis (0 to include everything up to rMax).' },
         rMax: { type: 'number', description: 'Maximum radial distance from axis.' },
-        zMin: { type: 'number', description: 'Bottom of the cylindrical band.' },
-        zMax: { type: 'number', description: 'Top of the cylindrical band.' },
+        zMin: { type: 'number', description: 'Start of the band along the chosen axis.' },
+        zMax: { type: 'number', description: 'End of the band along the chosen axis.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional region name.' },
         normalCone: {
@@ -1467,6 +1489,253 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'applyVoronoiShell',
+    description: `Apply a Voronoi-shell surface texture — an organic network of raised ridges that trace the boundaries between Voronoi cells, leaving flat cell interiors. This is the "cracked-mud", "dragonfly-wing", or decorative-lampshade look. Saves a new version.
+
+**When to use:** After geometry is final. Great on vases, planters, lampshades, and shells where you want an organic cell pattern. This is a *relief* texture (displaces along normals) — it raises/engraves cell walls but does NOT cut through-holes; for an open strut lattice, model that with booleans instead. Paint is carried automatically.
+
+**Key parameters:**
+- amplitude: peak wall height (~3% of diagonal)
+- cellSize: approximate spacing between cells (~12% of diagonal → ~8 cells across)
+- wallWidth: raised-wall band width as a fraction of cellSize [0.05–0.6] (default 0.25; smaller = thinner struts)
+- raised: true = raised wall network (default); false = engrave the network as recessed channels
+- jitter: cell irregularity [0–1] (1 = full irregular Voronoi, default; 0 = a regular square grid)
+- grainAngleDeg: rotate the cell pattern in the XY plane (default 0)
+- seed: deterministic seed — change it to reshuffle the cell layout
+
+**Return:** { ok, label, geometry, colorsCarried, warnings? }. Typical warnings: cellSize out of range.
+
+**Workflow guidance:** Use a larger amplitude + smaller wallWidth for a delicate, deep-celled shell; jitter=0 turns it into a clean square-cell waffle-like grid. Increase cellSize for fewer, larger cells.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        amplitude: {
+          type: 'number',
+          description: 'Peak wall displacement in world units. Default ~3% of model diagonal.',
+        },
+        cellSize: {
+          type: 'number',
+          description: 'Approximate spacing between cells in world units. Default ~12% of diagonal (~8 cells across).',
+        },
+        wallWidth: {
+          type: 'number',
+          description: 'Raised-wall band width as a fraction of cellSize [0.05–0.6]. Default 0.25. Smaller = thinner, crisper struts.',
+          minimum: 0.05,
+          maximum: 0.6,
+        },
+        raised: {
+          type: 'boolean',
+          description: 'true = raised wall network (default); false = engrave the cell-wall network as recessed channels.',
+        },
+        jitter: {
+          type: 'number',
+          description: 'Cell irregularity [0–1]. 1 = full irregular Voronoi (default); 0 = a regular square grid.',
+          minimum: 0,
+          maximum: 1,
+        },
+        grainAngleDeg: {
+          type: 'number',
+          description: 'Rotate the cell pattern in the XY plane, degrees. Default 0.',
+        },
+        seed: {
+          type: 'integer',
+          description: 'Deterministic seed — change it to reshuffle the cell layout. Default 1.',
+        },
+        quality: {
+          type: 'integer',
+          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = crisper wall definition.',
+          minimum: 1,
+          maximum: 5,
+        },
+        preserveColor: {
+          type: 'boolean',
+          description: 'Carry existing paint onto the retessellated mesh. Default true.',
+        },
+      },
+    },
+  },
+  {
+    name: 'applyVoronoiLamp',
+    description: `Turn the current model into a **true perforated Voronoi shell** — a "Voronoi lamp" / planter: a thin hollow wall with the cell interiors cut clean through, leaving a see-through network of struts along the cell edges. Saves a new version.
+
+**This is the real cutaway, not a texture.** Unlike \`applyVoronoiShell\` (which only displaces the surface — a relief, no holes), this opens actual windows through the wall. \`output:'mesh'\` (default) bakes a smooth manifold-js mesh (Taubin-rounded, no engine change). \`output:'voxel'\` switches the session to the \`voxel\` language (paintable, \`.vox\`-exportable, blockier).
+
+**When to use:** when the user wants a Voronoi lamp / lampshade, a perforated planter, or any see-through cell-lattice shell. Start from a closed solid (vase, sphere, vessel).
+
+**Key parameters:**
+- cellSize: approximate spacing between cells, world units (~16% of diagonal)
+- wallThickness: shell thickness in world units (~3% of diagonal); the struts are this thick
+- strutWidth: kept edge-network width as a fraction of cellSize [0.05–0.6] (default 0.3; smaller = thinner struts / bigger windows)
+- resolution: field/voxel resolution along the longest axis (default 140, up to 256). **Auto-raised** so struts resolve to ≥6 cells, so you rarely need to touch it; the default mesh output meshes a continuous SDF (smooth walls, no voxel stair-stepping), and higher resolution sharpens the struts
+- jitter: cell irregularity [0–1] (1 = irregular Voronoi, default; 0 = a regular grid of windows)
+- grainAngleDeg, seed: orient / reshuffle the cell layout
+- watertight: keep only the largest connected web → one printable manifold piece (default true — leave on)
+- output: 'mesh' (default, smooth manifold-js mesh) or 'voxel' (paintable voxel session)
+- smooth: voxel output only — round the struts (default true)
+
+**Return:** { ok, label, geometry, warnings? }. Verify with renderViews — check the windows are open. With watertight on, the result should be manifold (isManifold true).
+
+**Workflow guidance:** the defaults are tuned to look good on a typical solid; mostly just adjust cellSize (fewer/larger vs more/smaller cells) and strutWidth (thicker vs thinner struts). If windows don't open, lower strutWidth or raise cellSize. Keep watertight on for printing.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        cellSize: { type: 'number', description: 'Approximate spacing between cells in world units. Default ~16% of diagonal.' },
+        wallThickness: { type: 'number', description: 'Shell wall thickness in world units (strut thickness through the wall). Default ~3% of diagonal.' },
+        strutWidth: { type: 'number', description: 'Kept edge-network width as a fraction of cellSize [0.05–0.6]. Default 0.3. Smaller = thinner struts, larger windows.', minimum: 0.05, maximum: 0.6 },
+        resolution: { type: 'integer', description: 'Field/voxel resolution along the longest axis [16–256]. Higher = crisper struts, slower. Default 110.', minimum: 16, maximum: 256 },
+        jitter: { type: 'number', description: 'Cell irregularity [0–1]. 1 = irregular Voronoi (default); 0 = a regular grid.', minimum: 0, maximum: 1 },
+        grainAngleDeg: { type: 'number', description: 'Rotate the cell pattern in the XY plane, degrees. Default 0.' },
+        seed: { type: 'integer', description: 'Deterministic seed — change to reshuffle the cell layout. Default 1.' },
+        watertight: { type: 'boolean', description: 'Keep only the largest connected strut web — one watertight, manifold, printable piece (drops loose fragments). Default true — leave on unless you want the raw multi-part cut.' },
+        output: { type: 'string', enum: ['mesh', 'voxel'], description: "'mesh' (default): smooth manifold-js mesh, no engine change. 'voxel': switch to the voxel engine (paintable / .vox)." },
+        smooth: { type: 'boolean', description: 'Voxel output only: round the struts with a smoothing pass. Default true.' },
+        preserveColor: { type: 'boolean', description: 'Sample model paint onto the struts. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'engraveModel',
+    description: `Stamp **text** onto the current model: carve it as recessed channels (engrave), cut holes clean through the wall (cut-through), or — with \`raised: true\` — **EMBOSS it as a raised relief**. Saves a new version.
+
+**This removes (or, embossing, adds) material** — unlike the relief textures (\`applyVoronoiShell\`, knit, waffle…) which only displace the surface skin. The text is rasterized (the app's font path) and projected onto a chosen face (planar) or wrapped around the Z axis (cylindrical), then subtracted from (or unioned onto) the solid.
+
+**When to use:** to label / brand a part (a name on a tag, a logo plate), cut a stencil, perforate a sign, or add raised lettering. Start from a slab, plate, ring, or cylinder.
+
+**Key parameters:**
+- text: the string to engrave/emboss (required)
+- raised: true = EMBOSS — raise the text \`depth\` above the face instead of carving (through is ignored). Default false.
+- through: false (default) recesses to \`depth\`; true cuts a hole clean through the wall (stencil)
+- depth: engrave depth — or emboss height with raised — in world units (ignored when through); default ~6% of the model diagonal
+- size: stamp width in world units — how wide the text spans across the face; default ~70% of the face
+- color: paint the letters ('#rrggbb' hex) for a multicolor print — the raised relief (emboss) or the channel walls (engrave/through). Existing paint is still carried.
+- mode: 'planar' (default — onto one face) or 'cylindrical' (wrap around Z, e.g. text around a ring/cup)
+- axis + side: planar face — axis 'x'|'y'|'z' (default 'z') and side 'min'|'max' (default 'max' = the +axis face). For cylindrical, side 'outer' (default) or 'inner'.
+- resolution: field resolution [48–256], default 180. Thin strokes need higher; raise it if letters look mushy.
+- watertight: keep only the largest connected piece (default true).
+
+**Return:** { ok, label, geometry, warnings? }. Verify with renderViews — check the letters are legible, (for through) the holes are open, and (for raised) the relief stands proud. With watertight on the result should be manifold.
+
+**Note:** engraving an **image** is supported only from the Surface UI panel (it needs local image bytes); this tool handles text.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The text to engrave/cut. Required.' },
+        font: { type: 'string', enum: ['regular', 'bold', 'italic', 'bold-italic'], description: "Font weight/style. Default 'bold' (heavier strokes engrave more legibly)." },
+        through: { type: 'boolean', description: 'true = cut clean through the wall (stencil); false (default) = recess to `depth`. Ignored when raised.' },
+        raised: { type: 'boolean', description: 'true = EMBOSS: add the text as a raised relief `depth` high instead of carving it. Default false.' },
+        depth: { type: 'number', description: 'Engrave depth — or emboss height when raised — in world units (ignored when through). Default ~6% of the model diagonal.' },
+        size: { type: 'number', description: 'Stamp width in world units — how wide the text spans. Default ~70% of the face span.' },
+        color: { type: 'string', description: "Paint the letters for a multicolor print, '#rrggbb' hex — colors the raised relief (emboss) or the channel walls (engrave/through). Existing paint is still carried." },
+        mode: { type: 'string', enum: ['planar', 'cylindrical'], description: "'planar' (default): onto one flat face. 'cylindrical': wrap the text around the Z axis." },
+        axis: { type: 'string', enum: ['x', 'y', 'z'], description: "Planar only: which face axis. Default 'z' (top/bottom)." },
+        side: { type: 'string', enum: ['min', 'max', 'outer', 'inner'], description: "Planar: 'max' (default, +axis face) or 'min'. Cylindrical: 'outer' (default) or 'inner'." },
+        posU: { type: 'number', description: 'Planar only: stamp center across the face, as a fraction [0–1] of the bbox on the first in-plane axis. Default 0.5 (centered); 0.25/0.75 = quarter points.', minimum: 0, maximum: 1 },
+        posV: { type: 'number', description: 'Planar only: stamp center up the face, as a fraction [0–1] of the bbox on the second in-plane axis. Default 0.5 (centered).', minimum: 0, maximum: 1 },
+        rotationDeg: { type: 'number', description: 'Rotate the stamp in the face plane (planar) or around Z (cylindrical), degrees. Default 0.' },
+        curveAxis: { type: 'string', enum: ['none', 'u', 'v'], description: "Planar/free only: bend the flat stamp around a surface. 'v' = wrap around the vertical axis (text curves left↔right, e.g. around a cylinder/tower/mug); 'u' = wrap around the horizontal axis (text curves up↔down, over a dome). 'none' (default) = flat." },
+        curveAngleDeg: { type: 'number', description: 'Total arc the curved stamp subtends, in degrees (used with curveAxis). The whole word spans this angle; larger = tighter wrap. Default 90.' },
+        resolution: { type: 'integer', description: 'Field resolution along the longest axis [48–256]. Higher = crisper letters, slower. Default 180.', minimum: 48, maximum: 256 },
+        watertight: { type: 'boolean', description: 'Keep only the largest connected piece — one manifold result. Default true.' },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint onto the carved mesh. Default true.' },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'smoothModel',
+    description: `Smooth/round the current model with a Taubin λ/μ pass — softens sharp edges and facets without the shrinkage a naive Laplacian causes. Saves a new version.
+
+**When to use:** to round a blocky/low-poly model or take the edge off hard corners, after the geometry is final. This is mesh smoothing, not a true fillet — for exact fillets/chamfers use the replicad (BREP) engine.
+
+**Parameters:** iterations = smoothing passes (more → rounder/softer; start ~5); subdivide = densify the mesh first for finer smoothing (default true); preserveColor = carry existing paint (default true).
+
+**Cross-engine note:** a SCAD or BREP/replicad model is baked to a manifold-js mesh by this operation — the parametric source (and STEP export for BREP) is then unavailable. Returns { ok, label, geometry, warnings? } — always check warnings.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        iterations: { type: 'integer', description: 'Number of Taubin smoothing passes. More = rounder/softer. Default ~5.', minimum: 1, maximum: 50 },
+        subdivide: { type: 'boolean', description: 'Subdivide the mesh before smoothing for finer results. Default true.' },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint regions onto the smoothed mesh. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'voxelizeModel',
+    description: `Convert the current model into the voxel engine — a grid of colored cubes (Minecraft / pixel-art look). Saves a new version and switches the session to the voxel language.
+
+**When to use:** for a deliberately blocky aesthetic, or to hand a model to the voxel-paint tools.
+
+**Parameters:** resolution = voxels along the longest axis (higher → finer and slower; start ~32); smooth = lightly round the voxel result (default false); preserveColor = sample existing paint into the voxels (default true).
+
+**Cross-engine note:** this replaces the session's code with a voxels.decode(...) program; the prior manifold-js / SCAD / BREP source is no longer editable. Returns { ok, label, geometry, warnings? }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        resolution: { type: 'integer', description: 'Voxels along the longest axis. Higher = finer and slower. Default ~32.', minimum: 4, maximum: 256 },
+        smooth: { type: 'boolean', description: 'Lightly round the voxelized result. Default false.' },
+        preserveColor: { type: 'boolean', description: 'Sample existing paint into the voxel colors. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'scaleModel',
+    description: `Resize the current model by per-axis multiplicative factors and save a new version. 1 = unchanged, 2 = double, 0.5 = half. For a uniform resize pass the same factor for sx, sy, and sz.
+
+**Cross-engine note:** a SCAD or BREP/replicad model is baked to a manifold-js mesh; a manifold-js model stays editable. Returns { ok, label, geometry, warnings? }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        sx: { type: 'number', description: 'X-axis scale factor (1 = no change).', exclusiveMinimum: 0 },
+        sy: { type: 'number', description: 'Y-axis scale factor (1 = no change).', exclusiveMinimum: 0 },
+        sz: { type: 'number', description: 'Z-axis scale factor (1 = no change).', exclusiveMinimum: 0 },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint onto the scaled mesh. Default true.' },
+      },
+      required: ['sx', 'sy', 'sz'],
+    },
+  },
+  {
+    name: 'placeModel',
+    description: `Reposition the current model on the print bed and save a new version. Combine any of dropToFloor (sit the model's bottom on Z=0), centerX, centerY, centerZ. Use this to fix a model that floats above or sinks below the bed, or to center it.
+
+**Write-back:** mode 'auto' (default) keeps the model parametric (an editable .translate) when safe, otherwise bakes to a mesh; 'parametric' forces editable code; 'bake' flattens to a mesh. A SCAD/BREP/painted model can only bake. Returns { ok, noop?, geometry, warnings? } — noop:true when already positioned.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        dropToFloor: { type: 'boolean', description: "Move the model so its lowest point sits on Z=0 (the bed)." },
+        centerX: { type: 'boolean', description: 'Center the model on the X axis.' },
+        centerY: { type: 'boolean', description: 'Center the model on the Y axis.' },
+        centerZ: { type: 'boolean', description: 'Center the model on the Z axis.' },
+        mode: { type: 'string', enum: ['auto', 'parametric', 'bake'], description: "Write-back mode. Default 'auto'." },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint when baking. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'rotateModel',
+    description: `Rotate the current model by Euler angles in degrees, about its own center, and save a new version. Same write-back modes as placeModel (auto / parametric / bake). Returns { ok, geometry, warnings? }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: 'Rotation about the X axis, in degrees.' },
+        y: { type: 'number', description: 'Rotation about the Y axis, in degrees.' },
+        z: { type: 'number', description: 'Rotation about the Z axis, in degrees.' },
+        mode: { type: 'string', enum: ['auto', 'parametric', 'bake'], description: "Write-back mode. Default 'auto'." },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint when baking. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'layFlatModel',
+    description: `Auto-orient the current model for printing: rotate its largest flat face down onto the bed and drop it to the floor. Saves a new version. Same write-back modes as placeModel. Returns { ok, geometry, warnings? }.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['auto', 'parametric', 'bake'], description: "Write-back mode. Default 'auto'." },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint when baking. Default true.' },
+      },
+    },
+  },
+  {
     name: 'finish',
     description: 'Signal that the user\'s request is fully complete and you have nothing left to do. This ENDS your turn. Auto-continue is on: if you stop WITHOUT calling finish, you will be automatically resumed to keep working — so never end with a plain "all done" message; call finish instead. Call it once, only when the task is genuinely complete and verified. Optionally include a one-line summary of what you accomplished.',
     input_schema: {
@@ -1503,6 +1772,7 @@ const ALWAYS_AVAILABLE = new Set([
   'findFaces',
   'listComponents',
   'listLabels',
+  'getModelColors',
   // listRegions is a pure read, not a paint mutation, so it stays always-on
   // even when paintFaces is disabled — its consumers paintExplain/assertPaint
   // are always-available and need a region id to target.
@@ -1541,8 +1811,33 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
   'importSvgAsRelief',
 ]);
 
+/** Tools that are safe to auto-retry on error: pure reads/queries, idempotent
+ *  renders, and runs that don't commit (re-executing reproduces the same
+ *  transient state). The chat loop's `autoRetry` re-invokes a failed tool, so
+ *  it must NOT re-run non-idempotent mutations — `runAndSave`/`saveVersion`/
+ *  `forkVersion` (would duplicate a version), the `paint*` family (would
+ *  double-paint or stack a second region), `addSessionNote` (would append
+ *  twice), the relief imports (already confirmed once — a retry skips the
+ *  prompt), the surface modifiers (re-bake), `modifyAndTest` (a patch won't
+ *  re-match after it's applied), and the part/code mutators. Anything not in
+ *  this set runs exactly once even when the user opted into retries. */
+export const RETRY_SAFE_TOOLS = new Set([
+  // Pure reads / queries
+  'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary',
+  'getFeatureCentroids', 'getReferenceImages', 'getSessionContext', 'listVersions',
+  'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
+  'getModelColors',
+  'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
+  'listParts', 'getCurrentPart', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
+  'getPrinterSettings', 'getReliefSwapGuide',
+  // Idempotent renders (produce a snapshot; no persistent mutation)
+  'renderView', 'renderViews', 'runIsolated',
+  // Run-without-commit (re-running the same code reproduces the same state)
+  'runCode', 'runAndAssert', 'runAndExplain',
+]);
+
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'engraveModel', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -1909,6 +2204,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintComponent(input);
     case 'listLabels':
       return api.listLabels();
+    case 'getModelColors':
+      return api.getModelColors();
     case 'paintByLabel':
       return api.paintByLabel(input);
     case 'paintByLabels':
@@ -2044,6 +2341,24 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.applyFurVelvet(input);
     case 'applyWovenFabric':
       return api.applyWovenFabric(input);
+    case 'applyVoronoiShell':
+      return api.applyVoronoiShell(input);
+    case 'applyVoronoiLamp':
+      return api.applyVoronoiLamp(input);
+    case 'engraveModel':
+      return api.engraveModel(input);
+    case 'smoothModel':
+      return api.smoothModel(input);
+    case 'voxelizeModel':
+      return api.voxelizeModel(input);
+    case 'scaleModel':
+      return api.scaleModel(input.sx as number, input.sy as number, input.sz as number, { preserveColor: input.preserveColor as boolean | undefined });
+    case 'placeModel':
+      return api.placeModel(input);
+    case 'rotateModel':
+      return api.rotateModel(input);
+    case 'layFlatModel':
+      return api.layFlatModel(input);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

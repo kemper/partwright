@@ -15,7 +15,7 @@ const base: BuildInfo = {
   commit: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
   branch: 'main',
   buildTime: '2026-05-24T00:00:00.000Z',
-  repo: 'kemper/mainifold',
+  repo: 'kemper/partwright',
   dirty: false,
 };
 
@@ -31,7 +31,7 @@ describe('shortCommit', () => {
 
 describe('commitUrl', () => {
   test('links to the commit on GitHub', () => {
-    expect(commitUrl(base)).toBe(`https://github.com/kemper/mainifold/commit/${base.commit}`);
+    expect(commitUrl(base)).toBe(`https://github.com/kemper/partwright/commit/${base.commit}`);
   });
 
   test('returns null when the commit is unknown', () => {
@@ -48,12 +48,12 @@ describe('branchUrl', () => {
     // GitHub's /tree/<branch> 404s on a percent-encoded slash, so slashes in
     // slash-namespaced branch names must stay raw.
     expect(branchUrl({ ...base, branch: 'claude/laughing-davinci' }))
-      .toBe('https://github.com/kemper/mainifold/tree/claude/laughing-davinci');
+      .toBe('https://github.com/kemper/partwright/tree/claude/laughing-davinci');
   });
 
   test('encodes unsafe characters per segment but preserves slashes', () => {
     expect(branchUrl({ ...base, branch: 'feature/a b' }))
-      .toBe('https://github.com/kemper/mainifold/tree/feature/a%20b');
+      .toBe('https://github.com/kemper/partwright/tree/feature/a%20b');
   });
 
   test('returns null when the branch is unknown', () => {
@@ -64,7 +64,7 @@ describe('branchUrl', () => {
 describe('pullRequestsUrl', () => {
   test('builds a PR search scoped to the branch head', () => {
     expect(pullRequestsUrl({ ...base, branch: 'feature/x' }))
-      .toBe(`https://github.com/kemper/mainifold/pulls?q=${encodeURIComponent('is:pr head:feature/x')}`);
+      .toBe(`https://github.com/kemper/partwright/pulls?q=${encodeURIComponent('is:pr head:feature/x')}`);
   });
 
   test('returns null when the branch is unknown', () => {

@@ -1117,7 +1117,7 @@ export function buildRefinedMeshFromSet(
     mesh = nm;
   }
 
-  return { mesh, childToParent: comp };
+  return { mesh: propagateTriColors(base, mesh, comp), childToParent: comp };
 }
 
 /** Refine each region of a mesh until its boundary triangles fall below the
@@ -1151,7 +1151,7 @@ export function buildRefinedMesh(
       comp = composeMaps(comp, childToParent);
     }
   }
-  return { mesh, childToParent: comp };
+  return { mesh: propagateTriColors(base, mesh, comp), childToParent: comp };
 }
 
 /** Convenience wrapper: refine a base mesh under an ordered list of brush
@@ -1167,6 +1167,31 @@ function composeMaps(parentToBase: Int32Array, childToParent: Int32Array): Int32
   const out = new Int32Array(childToParent.length);
   for (let i = 0; i < out.length; i++) out[i] = parentToBase[childToParent[i]];
   return out;
+}
+
+/** Carry a base mesh's per-triangle colours onto a refined mesh: each output
+ *  triangle inherits the colour (and `_painted` flag) of the base triangle it
+ *  was split from. This lets a pre-coloured mesh (a voxel grid, an imported
+ *  coloured model) keep its colours through paint subdivision instead of the
+ *  refined triangles reverting to the default shade. No-op when the base carries
+ *  no `triColors`, or when nothing was refined (output === base). */
+function propagateTriColors(base: MeshData, refined: MeshData, childToParent: Int32Array): MeshData {
+  const src = base.triColors as (Uint8Array & { _painted?: Uint8Array }) | undefined;
+  if (!src || refined === base) return refined;
+  const n = refined.numTri;
+  const dst = new Uint8Array(n * 3);
+  const srcPainted = src._painted;
+  const dstPainted = srcPainted ? new Uint8Array(n) : undefined;
+  for (let i = 0; i < n; i++) {
+    const p = childToParent[i];
+    if (p < 0) continue;
+    dst[i * 3] = src[p * 3];
+    dst[i * 3 + 1] = src[p * 3 + 1];
+    dst[i * 3 + 2] = src[p * 3 + 2];
+    if (srcPainted && dstPainted) dstPainted[i] = srcPainted[p];
+  }
+  if (dstPainted) (dst as Uint8Array & { _painted?: Uint8Array })._painted = dstPainted;
+  return { ...refined, triColors: dst };
 }
 
 /** Invert a final→base triangle map into base→[final children]. Used to carry

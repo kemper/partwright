@@ -103,7 +103,7 @@ function resolveBuildInfo() {
   const repo =
     process.env.GITHUB_REPOSITORY ||
     parseGitHubRepo(git('git config --get remote.origin.url')) ||
-    'kemper/mainifold';
+    'kemper/partwright';
   // "dirty" only means something for a local working tree; a fresh CI / CF
   // clone is always clean, so skip the (possibly slow) status call there.
   const dirty = !onCloudflare && git('git status --porcelain') !== '';

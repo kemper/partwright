@@ -109,6 +109,12 @@ export interface QuantizedOptions {
   colorSpace: 'rgb' | 'lab';
   /** Floyd–Steinberg dithering when assigning pixels to clusters. */
   dither: boolean;
+  /** When set (non-empty), skip k-means clustering and snap every cell to the
+   *  nearest of these fixed RGB (0–255) colours instead — the "constrain colours
+   *  to filament palette" option. The cluster count (`clusters`) is then ignored;
+   *  the palette size defines the number of colour regions. Omitted/empty =
+   *  ordinary k-means quantization. */
+  fixedPalette?: [number, number, number][];
   /** Output geometry kind — 'flat' makes a printable colour tile (default,
    *  Bambu-keychain style); 'relief' keeps the original cluster->height cliffs;
    *  'silhouette' cuts the flat tile to the image's subject outline. */

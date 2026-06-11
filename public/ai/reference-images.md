@@ -39,6 +39,8 @@ Attached images appear in the Images tab and the Gallery; render the model with 
 
 ## Photo-to-model workflow
 
+> **Pick the method for the subject first.** The mass-decomposition loop below is for **rigid, faceted subjects** — buildings, vehicles, hard products. For an **organic / figural subject** (a person, child, animal, creature, figurine, or bust), the medium is SDF smooth blends, not a union of primitives: build the body from capsule limbs + ellipsoid masses welded with `smoothUnion` (`readDoc("sdf")` → "Organic figures & creature bodies"), and the success criterion is **resemblance to the photo**, not just `isManifold`. The `/portrait` slash command prefills this workflow for busts. Either way, compare your render against the reference at each stage.
+
 > **Optional tooling.** This workflow uses `scripts/generate-views.js` and Gemini, which may not be installed in every environment. If unavailable, skip the analysis step and supply images manually via `setImages()`.
 
 To recreate a building or object from a photo:

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { VoxelGrid } from '../../src/geometry/voxel/grid';
 import { gridToMeshWithProvenance } from '../../src/geometry/voxel/mesher';
-import { bucketRecolor, clearBox, fillBoxRecolor, addTarget, brushApply, levelRecolor, inBrush } from '../../src/geometry/voxel/edits';
+import { bucketRecolor, clearBox, fillBoxRecolor, addTarget, addBlock, addBlockCells, extrudeBox, brushApply, levelRecolor, inBrush } from '../../src/geometry/voxel/edits';
 
 // Pure-logic tests for the Voxel Studio multi-voxel edit operations + the
 // provenance the "add" tool relies on. The DOM/raycast glue (voxelPaint.ts)
@@ -11,10 +11,10 @@ describe('VoxelGrid.clone', () => {
   it('deep-copies cells + surfacing without aliasing', () => {
     const g = new VoxelGrid();
     g.fillBox([0, 0, 0], [2, 2, 2], '#abcdef');
-    g.smooth({ iterations: 3, detail: 2 });
+    g.smooth({ algorithm: 'taubin', iterations: 3, detail: 2 });
     const c = g.clone();
     expect(c.size).toBe(g.size);
-    expect(c.surfacing()).toEqual({ mode: 'smooth', iterations: 3, detail: 2 });
+    expect(c.surfacing()).toEqual({ mode: 'smooth', algorithm: 'taubin', iterations: 3, detail: 2, strength: 1, flatBottom: undefined, baseLayers: undefined, lockBox: undefined });
     // Mutating the clone must not touch the original.
     c.remove(0, 0, 0);
     c.set(9, 9, 9, '#fff');
@@ -102,6 +102,114 @@ describe('addTarget + provenance triNormal', () => {
       expect(target).not.toBeNull();
       expect(g.has(target![0], target![1], target![2])).toBe(false);
     }
+  });
+});
+
+describe('addBlockCells (anchored block add)', () => {
+  const key = (c: [number, number, number]) => c.join(',');
+  const has = (cells: [number, number, number][], c: [number, number, number]) =>
+    cells.some((x) => x[0] === c[0] && x[1] === c[1] && x[2] === c[2]);
+
+  it('default size + depth reduces to a single voxel out from the face (addTarget)', () => {
+    const cells = addBlockCells([0, 0, 0], [0, 0, 1], [1, 1, 1], 0);
+    expect(cells).toEqual([[0, 0, 1]]);
+    // Matches the legacy single-voxel add target.
+    expect(cells[0]).toEqual(addTarget([0, 0, 0], [0, 0, 1]));
+  });
+
+  it('front-attaches a thick block: never pokes out the far side of a thin tile', () => {
+    // Click the +Z face of a 1-thick tile voxel at z=0 with a 1×1×3 block.
+    const cells = addBlockCells([0, 0, 0], [0, 0, 1], [1, 1, 3], 0);
+    // All three layers sit ABOVE the surface (z = 1,2,3) — none at or below 0.
+    expect(cells.map((c) => c[2]).sort((a, b) => a - b)).toEqual([1, 2, 3]);
+    expect(cells.every((c) => c[2] >= 1)).toBe(true);
+  });
+
+  it('centers the block across the two tangent axes', () => {
+    // 3×3 across X/Y on a +Z face at the origin → a 3×3 plate one above.
+    const cells = addBlockCells([0, 0, 0], [0, 0, 1], [3, 3, 1], 0);
+    expect(cells).toHaveLength(9);
+    expect(has(cells, [-1, -1, 1])).toBe(true);
+    expect(has(cells, [1, 1, 1])).toBe(true);
+    expect(cells.every((c) => c[2] === 1)).toBe(true);
+  });
+
+  it('depth sinks the block into the surface along the normal', () => {
+    // depth 1 → the near layer overwrites the clicked voxel (z=0), rest grow up.
+    const cells = addBlockCells([0, 0, 0], [0, 0, 1], [1, 1, 3], 1).map((c) => c[2]).sort((a, b) => a - b);
+    expect(cells).toEqual([0, 1, 2]);
+    // depth === thickness → fully embedded, ending flush at the clicked voxel.
+    const deep = addBlockCells([0, 0, 0], [0, 0, 1], [1, 1, 3], 3).map((c) => c[2]).sort((a, b) => a - b);
+    expect(deep).toEqual([-2, -1, 0]);
+  });
+
+  it('respects the clicked face direction (negative normal grows the other way)', () => {
+    const cells = addBlockCells([5, 5, 5], [-1, 0, 0], [3, 1, 1], 0).map((c) => c[0]).sort((a, b) => a - b);
+    expect(cells).toEqual([2, 3, 4]); // x = 5-1, 5-2, 5-3
+  });
+
+  it('drops out-of-range cells at the coordinate extreme', () => {
+    // At x=1023 a +X block would land at 1024+ which is out of range.
+    expect(addBlockCells([1023, 0, 0], [1, 0, 0], [3, 1, 1], 0)).toEqual([]);
+  });
+
+  it('addBlock stamps the block into the grid and counts changes', () => {
+    const g = new VoxelGrid();
+    g.set(0, 0, 0, '#fff'); // a 1-voxel tile
+    const changed = addBlock(g, [0, 0, 0], [0, 0, 1], [3, 3, 1], 0, '#00ff00');
+    expect(changed).toBe(9);
+    expect(g.get(0, 0, 1)).toBe(0x00ff00);
+    expect(g.get(1, 1, 1)).toBe(0x00ff00);
+    expect(g.has(0, 0, -1)).toBe(false); // nothing below the surface
+    // The original tile is untouched (the block sits on top, depth 0).
+    expect(g.get(0, 0, 0)).toBe(0xffffff);
+    expect(new Set(addBlockCells([0, 0, 0], [0, 0, 1], [3, 3, 1], 0).map(key)).size).toBe(9);
+  });
+});
+
+describe('extrudeBox (box-tool depth)', () => {
+  it('depth 0 returns the corners unchanged (legacy box behavior)', () => {
+    expect(extrudeBox([0, 0, 0], [4, 4, 0], [0, 0, 1], 0, false)).toEqual([[0, 0, 0], [4, 4, 0]]);
+    expect(extrudeBox([0, 0, 0], [4, 4, 0], [0, 0, 1], 0, true)).toEqual([[0, 0, 0], [4, 4, 0]]);
+  });
+
+  it('box-fill grows a slab outward along the clicked normal', () => {
+    // Flat 5×5 selection on a +Z face → fill extrudes UP into a 5×5×4 slab.
+    const [a, b] = extrudeBox([0, 0, 0], [4, 4, 0], [0, 0, 1], 3, false);
+    expect(a).toEqual([0, 0, 0]);
+    expect(b).toEqual([4, 4, 3]);
+  });
+
+  it('box-subtract carves inward along the clicked normal', () => {
+    // Click the +Z top face at z=5 → subtract digs DOWN, removing z 2..5.
+    const [a, b] = extrudeBox([0, 0, 5], [4, 4, 5], [0, 0, 1], 3, true);
+    expect(a).toEqual([0, 0, 2]);
+    expect(b).toEqual([4, 4, 5]);
+  });
+
+  it('respects a negative face normal', () => {
+    // -X face: a fill grows toward -X (outward from that face).
+    const [a, b] = extrudeBox([0, 0, 0], [0, 4, 4], [-1, 0, 0], 2, false);
+    expect(a).toEqual([-2, 0, 0]);
+    expect(b).toEqual([0, 4, 4]);
+  });
+
+  it('preserves a non-coplanar box extent on the extrude axis', () => {
+    // Corners already span z 0..2; extruding up by 2 → z 0..4, not lost to 2..4.
+    const [a, b] = extrudeBox([0, 0, 0], [4, 4, 2], [0, 0, 1], 2, false);
+    expect(Math.min(a[2], b[2])).toBe(0);
+    expect(Math.max(a[2], b[2])).toBe(4);
+  });
+
+  it('drives a real fill/clear when fed through fillBoxRecolor/clearBox', () => {
+    const g = new VoxelGrid();
+    g.fillBox([0, 0, 0], [4, 4, 0], '#888'); // 5×5 tile at z=0
+    const [fa, fb] = extrudeBox([0, 0, 0], [4, 4, 0], [0, 0, 1], 2, false);
+    // 5×5×3 slab (z 0..2): recolors the 25 tile cells + 50 new = 75 changed.
+    expect(fillBoxRecolor(g, fa, fb, '#0f0')).toBe(75);
+    expect(g.size).toBe(75);
+    expect(g.has(2, 2, 2)).toBe(true);
+    expect(g.has(2, 2, -1)).toBe(false); // never pokes below the surface
   });
 });
 

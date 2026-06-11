@@ -17,13 +17,14 @@ import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCal
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, RETRY_SAFE_TOOLS } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
 import { isTransientError } from './transientError';
+import { elideStaleToolImages } from './historyElision';
 
 /** Look up the stored API key for a hosted provider. Returns null when
  *  no key is stored; chatLoop turns that into an "open AI Settings to
@@ -227,8 +228,8 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   const { apiKey, toggles, sessionId, history, userBlocks, signal } = input;
   const tools = buildToolList(toggles);
 
-  // The full ai.md is ~12.5K tokens — fine for hosted Claude with prompt
-  // caching. Most local models have 32K context so it technically fits
+  // The preamble + full ai.md is ~22K tokens — fine for hosted Claude with
+  // prompt caching. Most local models have 32K context so it technically fits
   // there too, but smaller models do better with the hand-tuned
   // slim/medium prompts (which leave more room for tool docs +
   // conversation + the reply) and call readDoc to pull subdocs on demand.
@@ -326,6 +327,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     let transientAttempt = 0;
     let apiCallStart = Date.now();
     let result;
+    // Trim stale render images out of the request (the persisted/displayed
+    // history keeps them) so a long modeling session's image tokens don't
+    // compound on every turn. Recomputed each iteration as tool results grow.
+    const sentHistory = elideStaleToolImages(workingHistory, getConfig().ai.keepRecentToolImages);
     for (;;) { // transient-retry loop — see maxTransientRetries below
     apiCallStart = Date.now();
     try {
@@ -334,7 +339,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         // Replay captured thinking blocks only when thinking is on for this
         // turn — required so the tool-use loop doesn't 400 on a tool_use that
         // isn't preceded by its signed thinking block.
-        const apiMessages = buildApiMessages(workingHistory, { replayThinking: toggles.thinking !== 'off' });
+        const apiMessages = buildApiMessages(sentHistory, { replayThinking: toggles.thinking !== 'off' });
         result = await streamTurn({
           apiKey,
           model: toggles.anthropicModel,
@@ -354,7 +359,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           model: toggles.openaiModel,
           systemPrompt,
           systemSuffix: toggleSuffix(toggles),
-          history: workingHistory,
+          history: sentHistory,
           tools,
           thinking: toggles.thinking,
         }, streamCallbacks, signal);
@@ -366,7 +371,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           model: toggles.geminiModel,
           systemPrompt,
           systemSuffix: toggleSuffix(toggles),
-          history: workingHistory,
+          history: sentHistory,
           tools,
           thinking: toggles.thinking,
         }, streamCallbacks, signal);
@@ -384,7 +389,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           model: toggles.customModel,
           systemPrompt,
           systemSuffix: toggleSuffix(toggles),
-          history: workingHistory,
+          history: sentHistory,
           tools,
         }, streamCallbacks, signal);
       } else {
@@ -395,7 +400,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           modelId: toggles.localModel,
           systemPrompt,
           systemSuffix: toggleSuffix(toggles),
-          history: workingHistory,
+          history: sentHistory,
           tools,
         }, streamCallbacks, signal);
       }
@@ -729,7 +734,12 @@ async function executeAllWithRetry(
     }
     let attempt = 0;
     let result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
-    while (result.isError && attempt < toggles.autoRetry && !signal?.aborted) {
+    // Only auto-retry idempotent tools. Re-running a mutation (save a version,
+    // paint a region, append a note, confirm an import) that partially
+    // succeeded before erroring would double-apply it; the retry budget is for
+    // transient read/render/run failures, not state changes.
+    const retryable = RETRY_SAFE_TOOLS.has(tc.name);
+    while (result.isError && retryable && attempt < toggles.autoRetry && !signal?.aborted) {
       attempt++;
       result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
     }

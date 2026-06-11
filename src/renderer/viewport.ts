@@ -7,6 +7,7 @@ import { initMeasureOverlay } from './measureOverlay';
 import { initOrientationGizmo, renderGizmo, updateGizmo, isGizmoAnimating } from './orientationGizmo';
 import { initDimensionLines, updateDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
 import { runViewportInitHooks, runViewportResizeHooks } from './viewportRegistry';
+import { frameRateAdjustedDamping } from './orbitDamping';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
 import { getConfig } from '../config/appConfig';
 
@@ -323,6 +324,18 @@ export function initViewport(container: HTMLElement): {
     const delta = timer.getDelta();
     updateGizmo(delta);
     syncOrbitState();
+    // OrbitControls applies damping once per frame with no time term, so a fixed
+    // dampingFactor makes the orbit "coast" decay per-frame instead of per-second.
+    // When the frame rate dips — exactly what heavy/smoothed voxel meshes do — the
+    // same rotation backlog drips out over many more wall-clock seconds and the
+    // model lags far behind the cursor: it reads as sluggish, slow rotation.
+    // Re-derive the per-frame factor from the real frame delta so the decay rate
+    // (and thus the feel) stays constant across frame rates. At the reference rate
+    // this returns the configured factor unchanged.
+    const rcfg = getConfig().renderer;
+    controls.dampingFactor = frameRateAdjustedDamping(
+      rcfg.orbitDampingFactor, delta, rcfg.orbitDampingReferenceFps,
+    );
     // controls.update() applies damping and synchronously fires 'change' (which
     // sets needsRender) whenever the camera actually moves, so inertia keeps the
     // loop painting until it settles.
@@ -426,6 +439,20 @@ function frameModel(): void {
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z);
+
+  // A zero-size box (all vertices coincident — e.g. a degenerate zero-radius
+  // sphere, a `scale(0)`, or an empty boolean result) or non-finite bounds
+  // (NaN vertices from a degenerate kernel result) is NOT "empty" per
+  // Box3.isEmpty(), so the guard above doesn't catch it. Framing it anyway
+  // places the camera exactly on the orbit target, from which OrbitControls
+  // derives a NaN spherical angle whose damping never converges — it fires a
+  // 'change' event every frame and pins the render loop at full rate forever
+  // (the "frozen tab" symptom). Leave the camera where it is instead; the next
+  // valid model re-frames normally.
+  if (!Number.isFinite(maxDim) || maxDim <= 0 ||
+      !Number.isFinite(center.x) || !Number.isFinite(center.y) || !Number.isFinite(center.z)) {
+    return;
+  }
 
   // Update model bounds for clip slider
   modelBounds = { min: box.min.z, max: box.max.z };
@@ -788,6 +815,28 @@ export function isPointerOverModel(event: { clientX: number; clientY: number }):
   ndcForHit.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycasterForHit.setFromCamera(ndcForHit, camera);
   return raycasterForHit.intersectObject(solid).length > 0;
+}
+
+const boundsForHit = new THREE.Box3();
+
+/** Like {@link isPointerOverModel}, but tests the model's axis-aligned bounding
+ *  box instead of its surface. The Voxel Studio uses this to veto OrbitControls
+ *  while editing: the delete tool carves holes straight through the mesh, so a
+ *  surface-only test lets a click that lands in a just-made hole fall through
+ *  and rotate the camera mid-edit. Testing the bounds keeps any click within the
+ *  model's footprint as edit-intent (never rotates), while a drag that starts
+ *  clearly outside the model still orbits. */
+export function isPointerWithinModelBounds(event: { clientX: number; clientY: number }): boolean {
+  if (!meshGroup || meshGroup.children.length === 0) return false;
+  const solid = meshGroup.children[0];
+  if (!(solid instanceof THREE.Mesh)) return false;
+  const rect = renderer.domElement.getBoundingClientRect();
+  ndcForHit.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  ndcForHit.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycasterForHit.setFromCamera(ndcForHit, camera);
+  boundsForHit.setFromObject(solid);
+  if (boundsForHit.isEmpty()) return false;
+  return raycasterForHit.ray.intersectsBox(boundsForHit);
 }
 
 function isVerticallyScrollable(el: HTMLElement): boolean {

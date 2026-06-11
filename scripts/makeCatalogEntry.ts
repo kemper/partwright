@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { manifoldJsEngine, getManifoldModule } from '../src/geometry/engines/manifoldJs';
+import { voxelEngine } from '../src/geometry/engines/voxel';
 import { pruneParamValues, type ParamSpec } from '../src/geometry/params';
 import { SCHEMA_VERSION } from '../src/storage/sessionManager';
 
@@ -64,15 +65,24 @@ async function main(): Promise<void> {
   const desc = arg('desc') ?? '';
   const label = arg('label') ?? 'v1';
   const paramsRaw = arg('params');
+  const language = (arg('language') ?? 'manifold-js') as 'manifold-js' | 'voxel';
   if (!model || !id || !name) {
-    console.error('usage: --model <file> --id <id> --name <name> [--desc <text>] [--params <json>] [--label <label>]');
+    console.error('usage: --model <file> --id <id> --name <name> [--desc <text>] [--params <json>] [--label <label>] [--language manifold-js|voxel]');
+    process.exit(2);
+  }
+  if (language !== 'manifold-js' && language !== 'voxel') {
+    console.error(`unsupported --language "${language}" (expected manifold-js or voxel)`);
     process.exit(2);
   }
   const overrides: Record<string, unknown> = paramsRaw ? JSON.parse(paramsRaw) : {};
   const code = readFileSync(model, 'utf8');
 
+  // manifold-3d is always initialized: it runs manifold-js models directly and
+  // provides the mesh→Manifold round-trip used to compute stats for voxel meshes.
   await manifoldJsEngine.init();
-  const result = manifoldJsEngine.run(code, overrides);
+  const result = language === 'voxel'
+    ? voxelEngine.run(code, overrides)
+    : manifoldJsEngine.run(code, overrides);
   if (result.error || !result.mesh) {
     console.error(`model failed to run: ${result.error ?? 'no mesh'}`);
     process.exit(1);
@@ -91,7 +101,7 @@ async function main(): Promise<void> {
   const now = Date.now();
   const session = {
     partwright: SCHEMA_VERSION,
-    session: { name, created: now, updated: now, images: null, language: 'manifold-js' as const },
+    session: { name, created: now, updated: now, images: null, language },
     parts: [{ name: 'Part 1', order: 0 }],
     versions: [{
       index: 1,
@@ -99,7 +109,7 @@ async function main(): Promise<void> {
       label,
       geometryData,
       timestamp: now,
-      language: 'manifold-js' as const,
+      language,
       ...(Object.keys(paramValues).length > 0 ? { paramValues } : {}),
     }],
   };
@@ -110,7 +120,7 @@ async function main(): Promise<void> {
   // Upsert the manifest row (keyed by id).
   const manifestPath = resolve(CATALOG_DIR, 'manifest.json');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { entries: Array<Record<string, unknown>> };
-  const row = { id, name, file, language: 'manifold-js', description: desc };
+  const row = { id, name, file, language, description: desc };
   const idx = manifest.entries.findIndex(e => e.id === id);
   if (idx >= 0) manifest.entries[idx] = row; else manifest.entries.push(row);
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');

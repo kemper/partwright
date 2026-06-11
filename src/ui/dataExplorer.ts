@@ -38,6 +38,7 @@ export function refreshDataExplorer(): void {
 
 function recordKey(store: StoreName, rec: Record<string, unknown>): string {
   if (store === 'aiKeys') return String(rec.provider ?? '');
+  if (store === 'reliefSources') return String(rec.sessionId ?? ''); // keyed by sessionId, no `id`
   return String(rec.id ?? '');
 }
 
@@ -47,6 +48,8 @@ function recordLabel(store: StoreName, rec: Record<string, unknown>): string {
     case 'versions': return `v${rec.index ?? '?'} · ${String(rec.label ?? '')}`.trim();
     case 'parts': return String(rec.name ?? rec.id ?? '(unnamed)');
     case 'notes': return truncate(String(rec.text ?? ''), 60);
+    case 'drafts': return `${String(rec.language ?? '?')} · ${truncate(String(rec.code ?? ''), 50)}`.trim();
+    case 'reliefSources': return `${String(rec.filename ?? rec.sessionId ?? '')}${rec.isSvg ? ' (SVG)' : ''}`.trim();
     case 'aiKeys': return String(rec.provider ?? '');
     case 'aiChats': return `${String(rec.role ?? '?')} · ${truncate(blocksToText(rec.blocks), 50)}`;
     case 'aiAttachments': return String(rec.label || rec.mediaType || rec.id || '');

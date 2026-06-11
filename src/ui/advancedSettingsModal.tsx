@@ -25,6 +25,7 @@ function cloneConfig(c: AppConfig): AppConfig {
     renderer: { ...c.renderer },
     import: { ...c.import },
     ui: { ...c.ui },
+    geometry: { ...c.geometry },
   };
 }
 
@@ -264,6 +265,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.maxAttachments}
           min={1} max={100} integer
           onChange={v => set('ai', 'maxAttachments', v)}
+        />
+        <Field
+          label="Recent render images kept in context"
+          unit="images"
+          hint="How many of the latest render snapshots stay in the request sent to the AI."
+          tooltip="renderView / renderViews / runIsolated return PNG snapshots so the agent can see the model. Every snapshot is otherwise re-sent to the provider on every subsequent turn, so a long session's image tokens compound. This keeps only the N most-recent render images in the request (their text stats always stay); older ones are replaced with a short note. The on-screen transcript still shows every image — only the wire request is trimmed. Raise it to give the model more visual memory at higher token cost; set very high to disable trimming."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.keepRecentToolImages}
+          value={c.ai.keepRecentToolImages}
+          min={0} max={50} integer
+          onChange={v => set('ai', 'keepRecentToolImages', v)}
         />
       </Section>
 
@@ -545,6 +556,14 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'orbitDampingFactor', v)}
         />
         <Field
+          label="Orbit damping reference fps"
+          tooltip="The frame rate the orbit damping factor is tuned for. The coast is re-derived from the real frame delta so it decays at a constant rate per second — without this, a heavy mesh that drops the frame rate makes the same drag coast for far longer and the model lags behind the cursor (sluggish, slow rotation). Leave at 60 unless you target a different refresh rate."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.orbitDampingReferenceFps}
+          value={c.renderer.orbitDampingReferenceFps}
+          min={30} max={240} step={5}
+          onChange={v => set('renderer', 'orbitDampingReferenceFps', v)}
+        />
+        <Field
           label="Max zoom-out factor"
           tooltip="How far you can zoom the camera out, as a multiple of the model's largest dimension. The default framing sits at roughly 2× that dimension, so a value of 12 lets you pull back about 6× from the default before hitting the limit. Lower it to keep the model filling more of the view; raise it for more room. Re-applied each time the model is framed."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.maxZoomOutFactor}
@@ -632,6 +651,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={100_000} max={100_000_000} integer
           onChange={v => set('renderer', 'enhanceMaxTriangles', v)}
         />
+        <Field
+          label="Persist surface textures up to"
+          unit="tris"
+          tooltip="Computed api.surface.* textures are saved with the version so reopening the session renders them instantly. Above this triangle count the texture is not persisted (the version still saves; reopening just recomputes the texture on demand). A textured mesh costs roughly 18 bytes per triangle of storage."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.surfaceTexturePersistMaxTriangles}
+          value={c.renderer.surfaceTexturePersistMaxTriangles}
+          min={0} max={20_000_000} integer
+          onChange={v => set('renderer', 'surfaceTexturePersistMaxTriangles', v)}
+        />
       </Section>
 
       <Section title="Import">
@@ -664,6 +692,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.import.voxelHeavyThreshold}
           min={10_000} max={5_000_000} integer
           onChange={v => set('import', 'voxelHeavyThreshold', v)}
+        />
+        <Field
+          label="Voxel SDF sample budget"
+          unit="cells"
+          hint="Max lattice cells v.sdf() may sample in one call before it refuses."
+          tooltip="When voxel code rasterizes an SDF expression with v.sdf(node), it samples the field once per voxel over the model's bounds. A tiny `res` over large bounds can explode into hundreds of millions of samples and freeze the engine. Past this budget the call throws and asks for a coarser `res` or tighter bounds. Raise it on a fast machine for very high-resolution SDF voxelization."
+          defaultValue={APP_CONFIG_DEFAULTS.import.voxelSdfMaxSamples}
+          value={c.import.voxelSdfMaxSamples}
+          min={100_000} max={64_000_000} integer
+          onChange={v => set('import', 'voxelSdfMaxSamples', v)}
         />
         <Field
           label="Relief max resolution"
@@ -705,6 +743,39 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         />
       </Section>
 
+      <Section title="Geometry warnings">
+        <Field
+          label="Triangle-count warning budget"
+          unit="triangles"
+          hint="Live model warns above this triangle count."
+          tooltip="When the model exceeds this many triangles, the geometry warnings (shown to you and to the AI agent) flag it as heavy to slice and over the catalog budget. Mirrors the headless model:preview tri-budget warning. Raise it if you routinely build dense organic models; lower it to be nudged toward lighter geometry sooner."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.triCountWarnBudget}
+          value={c.geometry.triCountWarnBudget}
+          min={10_000} max={2_000_000} integer
+          onChange={v => set('geometry', 'triCountWarnBudget', v)}
+        />
+        <Field
+          label="Minimum edge-length warning"
+          unit="units (≈mm)"
+          hint="Warns when the smallest mesh edge is below this."
+          tooltip="Features whose mesh edges fall below a typical FDM extrusion width silently disappear on the print. When the shortest edge is under this threshold, the geometry warnings flag possible sub-extrusion detail. Mirrors model:preview's sub-0.4 mm detail warning. Lower it if you print on a fine nozzle; raise it for chunky FDM."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.minEdgeLengthWarn}
+          value={c.geometry.minEdgeLengthWarn}
+          min={0} max={5} step={0.05}
+          onChange={v => set('geometry', 'minEdgeLengthWarn', v)}
+        />
+        <Field
+          label="Aspect-ratio warning"
+          unit=": 1"
+          hint="Warns when longest ÷ shortest dimension exceeds this."
+          tooltip="Tall, thin parts (high bounding-box aspect ratio) are fragile and tip-prone on an FDM bed. When the ratio of the longest to the shortest non-zero dimension exceeds this, the geometry warnings flag it. Mirrors model:preview. Raise it if you intentionally build slender parts; lower it to be warned earlier."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.aspectRatioWarn}
+          value={c.geometry.aspectRatioWarn}
+          min={2} max={100} step={1}
+          onChange={v => set('geometry', 'aspectRatioWarn', v)}
+        />
+      </Section>
+
       <Section title="UI">
         <ToggleField
           label="Show editor hints"
@@ -734,6 +805,24 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'toastDurationMs', v)}
         />
         <Field
+          label="Default palette capacity"
+          hint="How many filament slots the paint panel assumes your printer has."
+          tooltip="The default number of colour slots (e.g. 4 for one Bambu AMS). Drives the paint panel's over-budget warning when a model uses more colours than your printer can load. Never blocks painting or export — it's just a heads-up."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.defaultPaletteCapacity}
+          value={c.ui.defaultPaletteCapacity}
+          min={1} max={16} integer
+          onChange={v => set('ui', 'defaultPaletteCapacity', v)}
+        />
+        <Field
+          label="Palette history size"
+          hint="How many recent colours the palette keeps in its history."
+          tooltip="The size of the palette's recent-colour history ring. Raise it to keep more previously-used colours one click away; lower it to keep the history compact."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paletteHistoryMax}
+          value={c.ui.paletteHistoryMax}
+          min={8} max={256} integer
+          onChange={v => set('ui', 'paletteHistoryMax', v)}
+        />
+        <Field
           label="Tooltip delay"
           unit="ms"
           hint="Hover delay before a tooltip appears."
@@ -751,6 +840,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.codeEditorErrorIdleMs}
           min={0} max={5_000} integer
           onChange={v => set('ui', 'codeEditorErrorIdleMs', v)}
+        />
+        <Field
+          label="Code editor bottom-scroll stabilizer"
+          unit="ms"
+          tooltip="When the code editor is scrolled near the very bottom, real Chrome can snap the visible code by a line whenever CodeMirror re-measures (a focus change, opening a tool menu/panel, etc.). The stabilizer reverts that one-line snap so the code doesn't stutter, while always honoring real scrolling. This is the input-grace window: a wheel/scrollbar/touch/keyboard scroll within this window is treated as your intent and never reverted. Set to 0 to disable."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.codeEditorScrollPinMs}
+          value={c.ui.codeEditorScrollPinMs}
+          min={0} max={1_000} integer
+          onChange={v => set('ui', 'codeEditorScrollPinMs', v)}
         />
         <Field
           label="Companion draft autosave debounce"

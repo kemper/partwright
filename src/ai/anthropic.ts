@@ -217,12 +217,25 @@ export async function streamTurn(
   // the 'text' event) and tool_use block starts (so the UI can render a
   // "calling X..." chip before the input finishes streaming).
   let collectedThinking = '';
+  // Track usage as it streams so an aborted turn can still report the tokens it
+  // already consumed (input + cache tokens are billed at request time, and any
+  // output produced before the abort is billed too). `message_start` carries
+  // the input/cache counts; `message_delta` carries the running output count.
+  const partialUsage: TurnUsage = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
   stream.on('streamEvent', event => {
     if (event.type === 'content_block_delta' && event.delta.type === 'thinking_delta') {
       collectedThinking += event.delta.thinking;
       callbacks.onThinking?.(event.delta.thinking);
     } else if (event.type === 'content_block_start' && event.content_block.type === 'tool_use') {
       callbacks.onToolStart?.(event.content_block.id, event.content_block.name);
+    } else if (event.type === 'message_start') {
+      const u = event.message.usage;
+      partialUsage.inputTokens = u.input_tokens ?? 0;
+      partialUsage.outputTokens = u.output_tokens ?? 0;
+      partialUsage.cacheCreationInputTokens = u.cache_creation_input_tokens ?? 0;
+      partialUsage.cacheReadInputTokens = u.cache_read_input_tokens ?? 0;
+    } else if (event.type === 'message_delta') {
+      if (event.usage?.output_tokens != null) partialUsage.outputTokens = event.usage.output_tokens;
     }
   });
 
@@ -252,7 +265,9 @@ export async function streamTurn(
         text: collectedText,
         toolCalls: [],
         stopReason: 'aborted',
-        usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+        // Report the tokens consumed before the abort rather than zeros, so the
+        // spend cap and cost meter don't under-count an aborted turn.
+        usage: partialUsage,
         // Surface partial reasoning for display, but no replay payload: an
         // aborted turn dropped its tool calls, so there's no tool_use that
         // would require a signed thinking block on the next request. (A

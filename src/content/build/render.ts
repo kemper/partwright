@@ -19,8 +19,9 @@ import {
   type CatalogLanguage,
   type CatalogManifestEntry,
 } from '../data/catalogCategories';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 
 /** Production origin for absolute links baked into the static pages (e.g. the
  *  help page's example agent prompt). Mirrors the absoluteUrls plugin's env
@@ -146,6 +147,57 @@ interface BuiltTile {
   category: CategoryId;
 }
 
+// Per-entry hashed thumbnail URL (entry.file → "/catalog/thumbs/<id>.<hash>.png"),
+// filled by prepareCatalogThumbnails() and read by catalogTileHtml(). Empty until
+// the prerender plugin's buildStart runs (dev + build).
+const thumbSrcByFile = new Map<string, string>();
+
+/** Decode each catalog entry's stored thumbnail (a base64 PNG data URL in its
+ *  session JSON) into a **content-hashed** PNG under `<publicDir>/catalog/thumbs/`,
+ *  and remember the hashed URL per entry so the tiles can point `<img src>` at it.
+ *
+ *  Content-hashed filenames make these immutably cacheable (see `public/_headers`):
+ *  a refresh re-uses the cached image with no request, while a *changed* thumbnail
+ *  hashes to a new name — so a new build busts only what actually changed, never
+ *  the unchanged tiles. This replaces the old client-side per-entry JSON fetch.
+ *
+ *  Idempotent and deterministic; called once from the prerender plugin's
+ *  `buildStart` (so the files exist for both the dev server and the production
+ *  build). Failures for one entry just skip its thumbnail (the tile keeps its
+ *  placeholder glyph). */
+export function prepareCatalogThumbnails(publicDir: string): void {
+  thumbSrcByFile.clear();
+  const catalogDir = resolve(publicDir, 'catalog');
+  const thumbsDir = resolve(catalogDir, 'thumbs');
+  let entries: CatalogManifestEntry[];
+  try {
+    entries = (JSON.parse(readFileSync(resolve(catalogDir, 'manifest.json'), 'utf8')) as { entries: CatalogManifestEntry[] }).entries ?? [];
+  } catch {
+    return;
+  }
+  // Start clean so stale hashes (from removed or re-baked thumbnails) don't pile up.
+  try { rmSync(thumbsDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  mkdirSync(thumbsDir, { recursive: true });
+  for (const entry of entries) {
+    try {
+      const payload = JSON.parse(readFileSync(resolve(catalogDir, entry.file), 'utf8')) as {
+        versions?: { thumbnail?: string | null }[];
+      };
+      const versions = payload.versions ?? [];
+      const dataUrl = versions.length > 0 ? versions[versions.length - 1].thumbnail : null;
+      const m = dataUrl?.match(/^data:image\/png;base64,(.+)$/);
+      if (!m) continue;
+      const bytes = Buffer.from(m[1], 'base64');
+      const hash = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+      const fileName = `${entry.id}.${hash}.png`;
+      writeFileSync(resolve(thumbsDir, fileName), bytes);
+      thumbSrcByFile.set(entry.file, `/catalog/thumbs/${fileName}`);
+    } catch {
+      // No usable thumbnail for this entry — the tile falls back to its glyph.
+    }
+  }
+}
+
 /** Read the catalog manifest + each session file from public/catalog at build
  *  time, deriving each tile's language, traits, version count, and category.
  *  Failures degrade to an empty list (the page still renders its intro). */
@@ -195,10 +247,17 @@ function catalogTileHtml(tile: BuiltTile): string {
     ? `<span>${tile.versionCount} version${tile.versionCount !== 1 ? 's' : ''}</span>`
     : '';
   const haystack = [tile.entry.name, tile.entry.description ?? '', tile.entry.id, badge.label, print.search].join(' ').toLowerCase();
-  return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-pw-thumb="${escAttr(tile.entry.file)}" data-catalog-tile data-language="${escAttr(tile.language)}" data-search="${escAttr(haystack)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
+  // Thumbnail src is a content-hashed PNG emitted at build time (see
+  // prepareCatalogThumbnails); the browser lazy-loads it natively. Tiles with no
+  // thumbnail keep just the placeholder glyph.
+  const thumbSrc = thumbSrcByFile.get(tile.entry.file);
+  const thumbImg = thumbSrc
+    ? `<img src="${escAttr(thumbSrc)}" alt="${escAttr(tile.entry.name)}" loading="lazy" decoding="async" class="absolute inset-0 w-full h-full object-contain" />`
+    : '';
+  return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-catalog-tile data-language="${escAttr(tile.language)}" data-search="${escAttr(haystack)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
   <div class="relative w-full aspect-square bg-zinc-900 flex items-center justify-center overflow-hidden">
     <span class="text-3xl text-zinc-700">&#11041;</span>
-    <img alt="${escAttr(tile.entry.name)}" loading="lazy" class="absolute inset-0 w-full h-full object-contain" style="opacity:0;transition:opacity .2s" />
+    ${thumbImg}
   </div>
   <div class="px-3 py-2.5">
     <div class="text-sm font-medium text-zinc-100 truncate">${esc(tile.entry.name)}</div>

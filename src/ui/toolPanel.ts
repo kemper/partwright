@@ -13,7 +13,7 @@ import { openViewportPanel, closeViewportPanel, type ViewportPanel } from './vie
  *  above the model (z-20) but below centered dialogs. Does NOT include `hidden`:
  *  singleton panels that toggle visibility prepend it themselves. */
 export const TOOL_PANEL_CLASS =
-  'absolute z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 rounded-lg shadow-xl';
+  'fixed z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 rounded-lg shadow-xl';
 
 /** Drag-handle header bar (title + close ×). Pass to attachViewportPanelDrag. */
 export const TOOL_PANEL_HEADER =
@@ -124,6 +124,11 @@ export function createToolPanelShell(opts: {
   host.appendChild(panel);
   const drag = attachViewportPanelDrag(header, panel);
   setInitialPanelPosition(panel);
+  // The panel is now window-anchored (position: fixed), so a tall panel docked
+  // near the bottom of a short window (e.g. the stacked mobile layout) could
+  // extend off-screen. Pull it fully back into view once it has measured,
+  // mirroring the params panel's open path.
+  requestAnimationFrame(() => drag.clampIntoView());
   document.addEventListener('keydown', onEsc);
   openViewportPanel(entry); // close any other open tool panel
 

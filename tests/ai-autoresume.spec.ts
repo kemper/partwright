@@ -194,26 +194,27 @@ test.describe('Auto-continue (finish-tool resume)', () => {
     expect(out.reason).toBe('end_turn'); // not iteration_cap (32) — the ceiling stopped it first
   });
 
-  test('auto-continue is ON by default, and a disable persists across reload', async ({ page }) => {
+  test('auto-continue is OFF by default, and an enable persists across reload', async ({ page }) => {
     await page.goto('/editor');
     await waitForEditorReady(page);
     await openAiPanel(page);
     const pill = page.locator('#ai-panel button:has-text("Auto-continue")');
     await expect(pill).toBeVisible();
-    // Enabled by default (fresh context → default standard preset).
-    await expect(pill).toHaveAttribute('aria-pressed', 'true');
-    expect(await page.evaluate(async () => (await import('/src/ai/settings.ts')).loadSettings().toggles.autoResume)).toBe(true);
-
-    // Disable it.
-    await pill.dispatchEvent('click');
+    // Disabled by default (fresh context → default standard preset) so the
+    // agent waits at end_turn instead of pressing past a clarifying question.
     await expect(pill).toHaveAttribute('aria-pressed', 'false');
+    expect(await page.evaluate(async () => (await import('/src/ai/settings.ts')).loadSettings().toggles.autoResume)).toBe(false);
 
-    // The disable must survive a page refresh (the user's explicit ask).
+    // Enable it.
+    await pill.dispatchEvent('click');
+    await expect(pill).toHaveAttribute('aria-pressed', 'true');
+
+    // The enable must survive a page refresh (the user's explicit opt-in).
     await page.reload();
     await waitForEditorReady(page);
     await openAiPanel(page);
     const pillAfter = page.locator('#ai-panel button:has-text("Auto-continue")');
-    await expect(pillAfter).toHaveAttribute('aria-pressed', 'false');
-    expect(await page.evaluate(async () => (await import('/src/ai/settings.ts')).loadSettings().toggles.autoResume)).toBe(false);
+    await expect(pillAfter).toHaveAttribute('aria-pressed', 'true');
+    expect(await page.evaluate(async () => (await import('/src/ai/settings.ts')).loadSettings().toggles.autoResume)).toBe(true);
   });
 });

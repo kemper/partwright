@@ -90,7 +90,7 @@ test.describe('voxel studio', () => {
     expect(r.second.pendingBoxCorner).toBeNull();
   });
 
-  test('brush size stamps a footprint of voxels in one apply', async ({ page }) => {
+  test('add-block size stamps a footprint of voxels in one apply', async ({ page }) => {
     const r = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -98,15 +98,49 @@ test.describe('voxel studio', () => {
       await pw.run(`return api.voxels().set(0,0,0,'#ffffff');`);
       pw.activateVoxelPaint();
       pw.setVoxelTool('add');
-      const brush = pw.setVoxelBrush({ radius: 1, shape: 'cube' });
-      // Add a 3×3×3 cube footprint onto the clicked face.
+      // The add tool stamps a block sized by X/Y/Z (not the paint brush radius);
+      // depth 1 sinks its near layer into the clicked voxel so the 3×3×3 block
+      // overlaps the origin.
+      const brush = pw.setVoxelBrush({ block: [3, 3, 3], depth: 1 });
       const added = pw.voxelStudioApply({ faceIndex: 0, color: [255, 0, 0] });
       return { brush, added };
     });
-    expect(r.brush.radius).toBe(1);
-    expect(r.brush.shape).toBe('cube');
+    expect(r.brush.block).toEqual([3, 3, 3]);
+    expect(r.brush.depth).toBe(1);
     expect(r.added.changed).toBe(true);
-    expect(r.added.voxelCount).toBe(27); // 1 original ∪ 3×3×3 stamp (overlaps the origin)
+    expect(r.added.voxelCount).toBe(27); // 3×3×3 block, near layer overlapping the origin
+  });
+
+  test('depth accepts a typed value past the slider max (no hard upper clamp)', async ({ page }) => {
+    // The depth slider tops out at 16, but the typed number input has no max —
+    // setAddDepth keeps whatever you type (>= 0). Drive both the API and the
+    // panel's number input to prove neither re-clamps at 16.
+    const viaApi = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().set(0,0,0,'#ffffff');`);
+      pw.activateVoxelPaint();
+      pw.setVoxelTool('add');
+      return pw.setVoxelBrush({ depth: 40 }).depth;
+    });
+    expect(viaApi).toBe(40); // not clamped to 16
+
+    // Now the panel's number input: typing 50 and committing keeps 50, while the
+    // range slider pins its thumb at its own max of 16.
+    const input = page.locator('#voxel-paint-panel input[title^="Depth in layers"]');
+    await input.fill('50');
+    await input.press('Enter');
+    await expect(input).toHaveValue('50');
+    const storedDepth = await page.evaluate(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      () => (window as any).partwright.setVoxelBrush({}).depth,
+    );
+    expect(storedDepth).toBe(50);
+    const sliderVal = await page
+      .locator('#voxel-paint-panel input[title^="Add: layers the block sinks"]')
+      .inputValue();
+    expect(Number(sliderVal)).toBeLessThanOrEqual(16);
   });
 
   test('level tool recolors a whole axis layer without changing the count', async ({ page }) => {
