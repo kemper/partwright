@@ -12,12 +12,13 @@ const rig = F.rig({
   headsTall: 7,
   build: 'slim',
   pose: {
-    // Left arm: fretting hand raised IN FRONT of the left shoulder (not splayed
-    // out to the side) to grip the guitar neck. abduct=20 keeps the upper arm
-    // close in; flex=55 sweeps it forward; a deep elbow=120 curl folds the
-    // forearm up so the hand lands just left of the shoulder near the guitar's
-    // depth plane (≈ [6.5, −7.4, 58]). The neck is then drawn TO this hand.
-    armL: { abduct: 20, flex: 55, elbow: 120, twist: 0 },
+    // Left arm: fretting hand raised in front of the chest, oriented so its GRIP
+    // AXIS (rig.grip.L.gripAxis — the line a held bar lies along) is parallel to
+    // the diagonal neck. Found by sweeping the pose for max grip↔neck alignment
+    // (|dot| ≈ 0.996): the neck then lies IN the curled fingers instead of
+    // stabbing through the palm perpendicular. twist=−30 rolls the grip so the
+    // bar runs up the neck, not across it; the hand lands ≈ [3.8, −6.4, 53.4].
+    armL: { abduct: 55, flex: 40, elbow: 130, twist: -30 },
     // Right arm: strumming hand drops DOWN over the lower guitar body.
     // Low abduct and flex=20 hang the arm at waist height; elbow=0 keeps it
     // straight so the hand hovers just in front of the lower bout.
@@ -95,11 +96,13 @@ const gR = rig.grip.R;   // strumming (right) grip frame
 const boutH     = r.head * 0.70;   // guitar body depth (shallow disc)
 const boutRound = r.head * 0.10;
 
-// Lower bout: X at the strumming cup, Y pulled slightly back from gR.point
-// so the arms connect the guitar to the torso (no large free-floating gap in
-// the rendered silhouette). The right arm bridges guitar to torso.
+// Lower bout: X at the strumming cup. Pull the body BACK so its front face sits
+// just behind the strumming hand's CENTRE (j.handR) — that keeps the palm and
+// fingers in FRONT of the surface (resting on it, not poking through) while the
+// back of the hand overlaps enough (~0.5 units) to fuse into one piece. Keying
+// off handR, not gR.point, is what guarantees the hand clears the front face.
 const lbX = gR.point[0];
-const lbY = gR.point[1] + r.head * 0.55;  // pull back ~half a head toward body
+const lbY = j.handR[1] + boutH * 0.5 + r.head * 0.10;
 const lbZ = gR.point[2] - r.head * 0.15;  // just below strumming cup height
 const lowerCenter = [lbX, lbY, lbZ];
 
