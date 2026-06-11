@@ -1123,442 +1123,49 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: 'applyFuzzySkin',
-    description: `Apply a fuzzy-skin surface texture to the current model — a 3D-printing finish that roughens the surface with fine, irregular noise displacement along per-vertex normals. Saves a new version.
+    name: 'applySurfaceTexture',
+    description: `Apply a surface texture (fuzzy skin, knit, cable knit, waffle, fur/velvet, woven, voronoi relief, or smooth) to the WHOLE current model and save a new version.
 
-**When to use:** After the geometry is final, before or after paint. Paint is carried through subdivision automatically (preserveColor: true) — region descriptors (coplanar/slab/label) re-resolve against the denser mesh; raw triangle-id regions survive as nearest-triangle transfers.
+**Routing — prefer the default.** mode 'auto' (default): in a manifold-js session the texture is written INTO THE CODE as an \`api.surface.<id>({…})\` call (inserted before the final return, or the existing call for that id is updated in place) — the model stays parametric, the texture recomputes when the code changes, and saved versions keep the computed result. In a SCAD/BREP/voxel session it falls back to BAKING the textured mesh (the parametric source is replaced — the returned warnings say so). mode 'code' forces the in-code path (errors off manifold-js); mode 'bake' forces the destructive bake. To fine-tune on manifold-js, just call again with new opts — the code call is edited in place, no undo round-trip needed.
 
-**Parameters:** amplitude = peak outward displacement (world units; start at ~1% of model diagonal); scale = characteristic feature size (smaller → finer fuzz; ~4% of diagonal is a good default); octaves = 1–5 fractal layers (more → busier surface; default 2); seed = reproducibility.
+**opts by id** (all optional — size-relative defaults fill in; amplitude in world units, start ~1–3% of model diagonal; quality 1–5 mesh detail; seed for reproducibility):
+- fuzzy: amplitude, scale (feature size, ~4% of diagonal), octaves (1–5), seed, quality
+- knit: amplitude, stitchWidth, stitchHeight, rowOffset (0–1), roundness (0–1), grainAngleDeg, variation, seed, quality, algorithm ('bfs'|'lscm'|'harmonic')
+- cable: amplitude, cableWidth, cablePitch, plyWidth, grainAngleDeg, variation, seed, quality
+- waffle: amplitude, cellWidth, cellHeight, sharpness (1=soft…8+=thin border), rowOffset (0.5=honeycomb), grainAngleDeg, seed, quality
+- fur: amplitude, fiberSpacing, fiberLength, octaves, grainAngleDeg, seed, quality
+- woven: amplitude, threadSpacing, threadWidth (0.1–0.9 fraction), underDepth (0–1), grainAngleDeg, seed, quality
+- voronoi: amplitude, cellSize, wallWidth (fraction), raised (false = engraved channels), jitter (0–1), grainAngleDeg, seed, quality
+- smooth: iterations (Taubin passes, ~5), subdivide (default true)
+Plus preserveColor (default true — bake path only; on the code path paint re-resolves against the textured mesh every run automatically).
 
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. warnings is an array of strings — always check it. Typical warnings: amplitude-too-large (try ≤ 5% of diagonal), scale-too-small/too-large, color-transfer-low-coverage (repaint those areas or use copyColorsFromVersion).
-
-**Workflow guidance:** call renderViews after to verify the texture. For fine-tuning: apply → render → undo (loadVersion to the prior version) → re-apply with adjusted params.`,
+**Return:** { path: 'code'|'bake', ok, … } — code path: { call, replaced, version, geometry }; bake path: { label, geometry, colorsCarried, warnings? }. Always check warnings. Call renderViews after to verify. Patch/region texturing is not available from chat — tell the user to use the Surface panel's region picker.`,
     input_schema: {
       type: 'object',
       properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Peak displacement in world units. Default: ~1% of model diagonal. Keep ≤ 5% to avoid manifold artifacts.',
+        id: {
+          type: 'string',
+          enum: ['fuzzy', 'knit', 'cable', 'waffle', 'fur', 'woven', 'voronoi', 'smooth'],
+          description: 'Which texture to apply.',
         },
-        scale: {
-          type: 'number',
-          description: 'Characteristic feature size in world units (smaller = finer fuzz). Default ~4% of diagonal.',
+        opts: {
+          type: 'object',
+          description: "That id's options (see the per-id list in the tool description) plus preserveColor. Omit for size-relative defaults.",
         },
-        octaves: {
-          type: 'integer',
-          description: 'Fractal octaves 1–5 (more = busier/noisier surface). Default 2.',
-          minimum: 1,
-          maximum: 5,
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic seed. Different seeds produce different patterns with identical parameters. Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Default 3. Higher = smoother displacement curves, longer compute. Use 4–5 for final renders, 1–2 for quick iteration.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint regions onto the retessellated mesh. Default true. Pass false for an intentionally clean-slate texture.',
+        mode: {
+          type: 'string',
+          enum: ['auto', 'code', 'bake'],
+          description: "Routing. Default 'auto' (in-code on manifold-js, bake elsewhere). Only pass 'bake' when the user explicitly wants the mesh flattened.",
         },
       },
-    },
-  },
-  {
-    name: 'applyKnitTexture',
-    description: `Apply a knit-stitch surface texture — a repeating brick-offset V-pattern mimicking hand-knitted fabric (stockinette stitch). Each stitch is a smooth raised bump arranged in alternating rows whose horizontal offset creates the characteristic interlocking V shapes.
-
-**When to use:** After the geometry is final; works best on organic and rounded models. Paint is carried through subdivision automatically (preserveColor: true).
-
-**Key parameters:**
-- amplitude: peak bump height (world units; ~3% of diagonal is a good start)
-- stitchWidth: width of one stitch (horizontal repeat; ~5% of diagonal)
-- stitchHeight: height of one stitch (default stitchWidth × 1.4 — stitches are taller than wide)
-- rowOffset: brick pattern offset in [0,1] (default 0.5 = classic half-stitch)
-- roundness: 0 = sharp V-ridges (heavy column contrast), 1 = soft round bumps (default 0.5)
-- grainAngleDeg: rotate the knit grain in the XY plane (default 0 = stitches run up Z)
-- variation: per-stitch amplitude jitter 0–1 (default 0.1 for organic handmade feel)
-- seed: deterministic seed for per-stitch variation
-
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. warnings is an array of strings — always check it. Typical warnings: amplitude-too-large, stitchWidth/Height too large (too few stitches visible) or too small (invisible), color-transfer-low-coverage.
-
-**Workflow guidance:** Start with default parameters, render to verify, then tune. A coarser stitchWidth (10–20% of diagonal) gives a chunky knit look; finer (3–6%) gives a tight knit. For sweater-like geometry, grainAngleDeg=0 (stitches vertical) is typical.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Peak displacement in world units. Default ~3% of model diagonal. Keep ≤ 5% to avoid manifold artifacts.',
-        },
-        stitchWidth: {
-          type: 'number',
-          description: 'Horizontal stitch repeat in world units. Default ~5% of diagonal. Larger = chunkier knit.',
-        },
-        stitchHeight: {
-          type: 'number',
-          description: 'Vertical stitch repeat in world units. Default stitchWidth × 1.4 (stitches taller than wide).',
-        },
-        rowOffset: {
-          type: 'number',
-          description: 'Brick-pattern horizontal offset for alternating rows as a fraction [0, 1]. Default 0.5 (half-stitch, classic stockinette).',
-          minimum: 0,
-          maximum: 1,
-        },
-        roundness: {
-          type: 'number',
-          description: 'Blend from sharp V-ridges (0) to soft circular bumps (1). Default 0.5.',
-          minimum: 0,
-          maximum: 1,
-        },
-        grainAngleDeg: {
-          type: 'number',
-          description: 'Rotate the knit grain in the XY plane, degrees. 0 = stitches run up the Z axis (default, natural for standing models). 90 = stitches run left–right.',
-        },
-        variation: {
-          type: 'number',
-          description: 'Per-stitch amplitude variation 0–1. 0.1 = each stitch varies by ±10% for an organic handmade feel (default). 0 = perfectly uniform machine-knit look.',
-          minimum: 0,
-          maximum: 1,
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic seed for per-stitch variation. Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = smoother stitch curves.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint regions onto the retessellated mesh. Default true. Pass false for an intentionally unpainted result.',
-        },
-      },
-    },
-  },
-  {
-    name: 'applyCableKnit',
-    description: `Apply a cable-knit surface texture — pairs of Gaussian ply ridges that cross sinusoidally within each cable column, mimicking traditional rope-like cable knit fabric. Saves a new version.
-
-**When to use:** After the geometry is final; ideal for sweaters, hats, and organic shapes. Paint is carried through subdivision automatically (preserveColor: true).
-
-**Key parameters:**
-- amplitude: peak ply-ridge height (~3% of diagonal is a good start)
-- cableWidth: width of one cable column (~8% of diagonal)
-- cablePitch: distance between twist repeats along the column (default cableWidth × 2.5)
-- plyWidth: width of each individual ply ridge (default cableWidth × 0.3)
-- grainAngleDeg: rotate the cable grain in the XY plane (default 0 = cables run up Z)
-- variation: per-cable jitter 0–1 (default 0.08)
-- seed: deterministic seed for variation
-
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. warnings is an array of strings — always check it. Typical warnings: amplitude-too-large, cableWidth too large (too few cables visible).
-
-**Workflow guidance:** Start with defaults. A wider cableWidth (15–25% of diagonal) gives bold Aran-style cables; narrower (5–8%) gives a fine twisted-rope look. Pair with knit background by layering.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Peak ply-ridge displacement in world units. Default ~3% of model diagonal.',
-        },
-        cableWidth: {
-          type: 'number',
-          description: 'Width of one cable column in world units. Default ~8% of diagonal.',
-        },
-        cablePitch: {
-          type: 'number',
-          description: 'Length of one twist repeat along the column. Default cableWidth × 2.5.',
-        },
-        plyWidth: {
-          type: 'number',
-          description: 'Width of each individual ply ridge. Default cableWidth × 0.3.',
-        },
-        grainAngleDeg: {
-          type: 'number',
-          description: 'Rotate cable columns in the XY plane, degrees. 0 = cables run up Z (default).',
-        },
-        variation: {
-          type: 'number',
-          description: 'Per-cable amplitude jitter 0–1. Default 0.08.',
-          minimum: 0,
-          maximum: 1,
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic seed for per-cable variation. Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = smoother ply ridges.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint onto the retessellated mesh. Default true.',
-        },
-      },
-    },
-  },
-  {
-    name: 'applyWaffleStitch',
-    description: `Apply a waffle-stitch surface texture — a regular grid of recessed cells with raised border ridges, producing the classic waffle-knit or waffle-iron look. Set rowOffset=0.5 for a honeycomb/brick variant. Saves a new version.
-
-**When to use:** After geometry is final. Works well on flat-ish or gently curved surfaces; the grid pattern reads clearly on large, low-curvature areas. Paint is carried automatically.
-
-**Key parameters:**
-- amplitude: height of the raised border (~2.5% of diagonal is a good start)
-- cellWidth: width of one cell (~6% of diagonal)
-- cellHeight: height of one cell (default cellWidth for square cells)
-- sharpness: 1 = soft rounded borders, 3–5 = crisp waffle, 8+ = very thin crisp border (default 3)
-- rowOffset: 0 = straight grid (waffle, default); 0.5 = honeycomb offset; any value [0,1] shifts alternate rows
-- grainAngleDeg: rotate the grid in the XY plane (default 0)
-
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. Typical warnings: amplitude-too-large, cellWidth out of range.
-
-**Workflow guidance:** Increase sharpness for a more defined waffle. Use rowOffset=0.5 for a diamond/honeycomb pattern. Try cellWidth = 10–15% of diagonal for a chunky waffle blanket look.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Peak border height in world units. Default ~2.5% of model diagonal.',
-        },
-        cellWidth: {
-          type: 'number',
-          description: 'Width of one waffle cell in world units. Default ~6% of diagonal.',
-        },
-        cellHeight: {
-          type: 'number',
-          description: 'Height of one waffle cell in world units. Default cellWidth (square cells).',
-        },
-        sharpness: {
-          type: 'number',
-          description: 'Controls border width vs. cell recess. 1 = soft rounded, 3 = crisp waffle (default), 8+ = very thin crisp border.',
-          minimum: 1,
-        },
-        rowOffset: {
-          type: 'number',
-          description: 'Alternating-row horizontal offset as a fraction [0, 1]. 0 = straight grid (default). 0.5 = honeycomb offset.',
-          minimum: 0,
-          maximum: 1,
-        },
-        grainAngleDeg: {
-          type: 'number',
-          description: 'Rotate the cell grid in the XY plane, degrees. Default 0.',
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic seed (reserved for future variation). Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = crisper cell borders.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint onto the retessellated mesh. Default true.',
-        },
-      },
-    },
-  },
-  {
-    name: 'applyFurVelvet',
-    description: `Apply a fur/velvet surface texture — directional pile using anisotropic FBM noise. Simulates velvet, velour, short fur, or chenille: the noise is sampled at fine scale perpendicular to the grain (creating individual fibers) and coarse scale along the grain (smooth fiber length). Saves a new version.
-
-**When to use:** After geometry is final. Works best on soft, organic forms. Paint is carried automatically.
-
-**Key parameters:**
-- amplitude: pile height (~2.5% of diagonal)
-- fiberSpacing: cross-grain repeat (individual fiber width; ~2% of diagonal for fine velvet, ~4% for shaggy fur)
-- fiberLength: along-grain scale (default fiberSpacing × 6 — fibers are 6× longer than wide)
-- octaves: fractal detail layers 1–4 (2 = default for fine sub-fiber detail)
-- grainAngleDeg: rotate the fiber direction in the XY plane (default 0 = fibers run up Z)
-- seed: deterministic seed for the noise pattern
-
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. Typical warnings: amplitude-too-large, fiberSpacing out of range.
-
-**Workflow guidance:** Smaller fiberSpacing = denser, finer velvet. Larger = coarser fur. Adjust grainAngleDeg to match the model's natural grain direction. Pair with paint to simulate different colored fur patches.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Pile height in world units. Default ~2.5% of model diagonal.',
-        },
-        fiberSpacing: {
-          type: 'number',
-          description: 'Cross-grain fiber spacing in world units. Default ~2% of diagonal. Smaller = finer velvet; larger = shaggy fur.',
-        },
-        fiberLength: {
-          type: 'number',
-          description: 'Along-grain scale (fiber length). Default fiberSpacing × 6.',
-        },
-        octaves: {
-          type: 'integer',
-          description: 'Fractal octaves 1–4. More = finer sub-fiber detail. Default 2.',
-          minimum: 1,
-          maximum: 4,
-        },
-        grainAngleDeg: {
-          type: 'number',
-          description: 'Rotate the fiber grain in the XY plane, degrees. Default 0 = fibers run up Z.',
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic noise seed. Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = finer fiber strands.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint onto the retessellated mesh. Default true.',
-        },
-      },
-    },
-  },
-  {
-    name: 'applyWovenFabric',
-    description: `Apply a woven-fabric surface texture — a plain-weave interlacing pattern where warp and weft threads alternate over/under at each crossing, producing the characteristic checker-board weave. Saves a new version.
-
-**When to use:** After geometry is final. Looks great on cloth-like forms (bags, cushions, baskets). Paint is carried automatically.
-
-**Key parameters:**
-- amplitude: peak thread height (~2% of diagonal)
-- threadSpacing: distance between thread center-lines (the weave cell size; ~4% of diagonal)
-- threadWidth: width of each thread bump as fraction of spacing [0.1–0.9] (default 0.4)
-- underDepth: how much the under-thread is recessed [0–1] (0 = flat valleys; 0.3 = subtle dip, default; 1 = deep recess)
-- grainAngleDeg: rotate the weave in the XY plane (default 0 = warp runs up Z)
-- seed: deterministic seed
-
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. Typical warnings: amplitude-too-large, threadSpacing out of range.
-
-**Workflow guidance:** threadWidth 0.4 = loose weave with visible gaps; 0.7 = tight weave; 0.9 = nearly closed. Increase underDepth for a more pronounced over-under contrast.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Peak thread displacement in world units. Default ~2% of model diagonal.',
-        },
-        threadSpacing: {
-          type: 'number',
-          description: 'Distance between thread center-lines in world units (weave cell size). Default ~4% of diagonal.',
-        },
-        threadWidth: {
-          type: 'number',
-          description: 'Width of each thread bump as a fraction of threadSpacing [0.1–0.9]. 0.4 = default (open weave); 0.7 = tight weave.',
-          minimum: 0.1,
-          maximum: 0.9,
-        },
-        underDepth: {
-          type: 'number',
-          description: 'How much the under-thread is depressed relative to amplitude [0–1]. 0 = flat valleys; 0.3 = subtle dip (default); 1 = deep recess.',
-          minimum: 0,
-          maximum: 1,
-        },
-        grainAngleDeg: {
-          type: 'number',
-          description: 'Rotate the weave in the XY plane, degrees. Default 0 = warp runs up Z.',
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic seed. Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = finer thread definition.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint onto the retessellated mesh. Default true.',
-        },
-      },
-    },
-  },
-  {
-    name: 'applyVoronoiShell',
-    description: `Apply a Voronoi-shell surface texture — an organic network of raised ridges that trace the boundaries between Voronoi cells, leaving flat cell interiors. This is the "cracked-mud", "dragonfly-wing", or decorative-lampshade look. Saves a new version.
-
-**When to use:** After geometry is final. Great on vases, planters, lampshades, and shells where you want an organic cell pattern. This is a *relief* texture (displaces along normals) — it raises/engraves cell walls but does NOT cut through-holes; for an open strut lattice, model that with booleans instead. Paint is carried automatically.
-
-**Key parameters:**
-- amplitude: peak wall height (~3% of diagonal)
-- cellSize: approximate spacing between cells (~12% of diagonal → ~8 cells across)
-- wallWidth: raised-wall band width as a fraction of cellSize [0.05–0.6] (default 0.25; smaller = thinner struts)
-- raised: true = raised wall network (default); false = engrave the network as recessed channels
-- jitter: cell irregularity [0–1] (1 = full irregular Voronoi, default; 0 = a regular square grid)
-- grainAngleDeg: rotate the cell pattern in the XY plane (default 0)
-- seed: deterministic seed — change it to reshuffle the cell layout
-
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. Typical warnings: cellSize out of range.
-
-**Workflow guidance:** Use a larger amplitude + smaller wallWidth for a delicate, deep-celled shell; jitter=0 turns it into a clean square-cell waffle-like grid. Increase cellSize for fewer, larger cells.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Peak wall displacement in world units. Default ~3% of model diagonal.',
-        },
-        cellSize: {
-          type: 'number',
-          description: 'Approximate spacing between cells in world units. Default ~12% of diagonal (~8 cells across).',
-        },
-        wallWidth: {
-          type: 'number',
-          description: 'Raised-wall band width as a fraction of cellSize [0.05–0.6]. Default 0.25. Smaller = thinner, crisper struts.',
-          minimum: 0.05,
-          maximum: 0.6,
-        },
-        raised: {
-          type: 'boolean',
-          description: 'true = raised wall network (default); false = engrave the cell-wall network as recessed channels.',
-        },
-        jitter: {
-          type: 'number',
-          description: 'Cell irregularity [0–1]. 1 = full irregular Voronoi (default); 0 = a regular square grid.',
-          minimum: 0,
-          maximum: 1,
-        },
-        grainAngleDeg: {
-          type: 'number',
-          description: 'Rotate the cell pattern in the XY plane, degrees. Default 0.',
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic seed — change it to reshuffle the cell layout. Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = crisper wall definition.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint onto the retessellated mesh. Default true.',
-        },
-      },
+      required: ['id'],
     },
   },
   {
     name: 'applyVoronoiLamp',
     description: `Turn the current model into a **true perforated Voronoi shell** — a "Voronoi lamp" / planter: a thin hollow wall with the cell interiors cut clean through, leaving a see-through network of struts along the cell edges. Saves a new version.
 
-**This is the real cutaway, not a texture.** Unlike \`applyVoronoiShell\` (which only displaces the surface — a relief, no holes), this opens actual windows through the wall. \`output:'mesh'\` (default) bakes a smooth manifold-js mesh (Taubin-rounded, no engine change). \`output:'voxel'\` switches the session to the \`voxel\` language (paintable, \`.vox\`-exportable, blockier).
+**This is the real cutaway, not a texture.** Unlike the voronoi relief texture (\`applySurfaceTexture\` with id 'voronoi' — displacement only, no holes), this opens actual windows through the wall. \`output:'mesh'\` (default) bakes a smooth manifold-js mesh (Taubin-rounded, no engine change). \`output:'voxel'\` switches the session to the \`voxel\` language (paintable, \`.vox\`-exportable, blockier).
 
 **When to use:** when the user wants a Voronoi lamp / lampshade, a perforated planter, or any see-through cell-lattice shell. Start from a closed solid (vase, sphere, vessel).
 
@@ -1597,7 +1204,7 @@ const ALL_TOOLS: ToolDefinition[] = [
     name: 'engraveModel',
     description: `Carve **text** into the current model as recessed channels (engrave) or holes cut clean through the wall (cut-through). Saves a new version.
 
-**This removes material** — unlike the relief textures (\`applyVoronoiShell\`, knit, waffle…) which only displace the surface skin. The text is rasterized (the app's font path) and projected onto a chosen face (planar) or wrapped around the Z axis (cylindrical), then subtracted from the solid.
+**This removes material** — unlike the relief textures (\`applySurfaceTexture\`: voronoi, knit, waffle…) which only displace the surface skin. The text is rasterized (the app's font path) and projected onto a chosen face (planar) or wrapped around the Z axis (cylindrical), then subtracted from the solid.
 
 **When to use:** to label / brand a part (a name on a tag, a logo plate), cut a stencil, or perforate a sign. Start from a slab, plate, ring, or cylinder.
 
@@ -1638,24 +1245,6 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: 'smoothModel',
-    description: `Smooth/round the current model with a Taubin λ/μ pass — softens sharp edges and facets without the shrinkage a naive Laplacian causes. Saves a new version.
-
-**When to use:** to round a blocky/low-poly model or take the edge off hard corners, after the geometry is final. This is mesh smoothing, not a true fillet — for exact fillets/chamfers use the replicad (BREP) engine.
-
-**Parameters:** iterations = smoothing passes (more → rounder/softer; start ~5); subdivide = densify the mesh first for finer smoothing (default true); preserveColor = carry existing paint (default true).
-
-**Cross-engine note:** a SCAD or BREP/replicad model is baked to a manifold-js mesh by this operation — the parametric source (and STEP export for BREP) is then unavailable. Returns { ok, label, geometry, warnings? } — always check warnings.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        iterations: { type: 'integer', description: 'Number of Taubin smoothing passes. More = rounder/softer. Default ~5.', minimum: 1, maximum: 50 },
-        subdivide: { type: 'boolean', description: 'Subdivide the mesh before smoothing for finer results. Default true.' },
-        preserveColor: { type: 'boolean', description: 'Carry existing paint regions onto the smoothed mesh. Default true.' },
-      },
-    },
-  },
-  {
     name: 'voxelizeModel',
     description: `Convert the current model into the voxel engine — a grid of colored cubes (Minecraft / pixel-art look). Saves a new version and switches the session to the voxel language.
 
@@ -1677,7 +1266,7 @@ const ALL_TOOLS: ToolDefinition[] = [
     name: 'scaleModel',
     description: `Resize the current model by per-axis multiplicative factors and save a new version. 1 = unchanged, 2 = double, 0.5 = half. For a uniform resize pass the same factor for sx, sy, and sz.
 
-**Cross-engine note:** a SCAD or BREP/replicad model is baked to a manifold-js mesh; a manifold-js model stays editable. Returns { ok, label, geometry, warnings? }.`,
+**Cross-engine note:** the result is always BAKED to a manifold-js mesh — the parametric source is replaced on every engine. For an editable resize in a manifold-js session, edit the code instead (wrap the returned shape with .scale([sx, sy, sz]) via runAndSave). Returns { ok, label, geometry, warnings? }.`,
     input_schema: {
       type: 'object',
       properties: {
@@ -1833,7 +1422,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'engraveModel', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -2325,26 +1914,16 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.getReliefSwapGuide();
     case 'setReliefPreviewMode':
       return api.setReliefPreviewMode(input.mode);
-    case 'applyFuzzySkin':
-      return api.applyFuzzySkin(input);
-    case 'applyKnitTexture':
-      return api.applyKnitTexture(input);
-    case 'applyCableKnit':
-      return api.applyCableKnit(input);
-    case 'applyWaffleStitch':
-      return api.applyWaffleStitch(input);
-    case 'applyFurVelvet':
-      return api.applyFurVelvet(input);
-    case 'applyWovenFabric':
-      return api.applyWovenFabric(input);
-    case 'applyVoronoiShell':
-      return api.applyVoronoiShell(input);
+    case 'applySurfaceTexture':
+      return api.applySurfaceTexture(
+        input.id as 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'smooth',
+        input.opts as Record<string, number | boolean | string> | undefined,
+        input.mode as 'auto' | 'code' | 'bake' | undefined,
+      );
     case 'applyVoronoiLamp':
       return api.applyVoronoiLamp(input);
     case 'engraveModel':
       return api.engraveModel(input);
-    case 'smoothModel':
-      return api.smoothModel(input);
     case 'voxelizeModel':
       return api.voxelizeModel(input);
     case 'scaleModel':

@@ -7862,6 +7862,49 @@ async function main() {
         geometry: getGeometryDataObj(),
       };
     },
+    /** Apply a surface texture by the best available path — the auto-routing
+     *  twin of the Surface panel's Apply (and the in-app AI's single texture
+     *  tool). mode 'auto' (default): a manifold-js session gets the texture AS
+     *  CODE (`api.surface.<id>` upserted via applySurfaceTextureAsCode — stays
+     *  parametric); any other engine falls back to the BAKE tool for that id
+     *  (with the engine-bake warning). 'code' forces the in-code path (errors
+     *  off manifold-js); 'bake' forces the destructive bake on any engine.
+     *  Whole-model only — for a selected patch use the per-texture bake
+     *  methods' selectedTriangles. opts: that id's api.surface options, plus
+     *  preserveColor (bake path only; code-path paint re-resolves every run).
+     *  Returns the underlying result plus `path: 'code' | 'bake'`. */
+    async applySurfaceTexture(
+      id: SurfaceOpId,
+      opts?: Record<string, number | boolean | string>,
+      mode: 'auto' | 'code' | 'bake' = 'auto',
+    ) {
+      const check = guard(() => {
+        assertEnum(id, SURFACE_OP_IDS, 'applySurfaceTexture(id)');
+        assertEnum(mode, ['auto', 'code', 'bake'], 'applySurfaceTexture(_, _, mode)');
+        if (opts !== undefined) {
+          const o = assertObject(opts, 'applySurfaceTexture(_, opts)')!;
+          assertNoUnknownKeys(o, [...(SURFACE_OP_FIELDS[id as SurfaceOpId] ?? []), 'preserveColor'], 'applySurfaceTexture(_, opts)');
+        }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const { preserveColor, ...opOpts } = (opts ?? {}) as Record<string, number | boolean | string> & { preserveColor?: boolean };
+      const asCode = mode === 'code' || (mode === 'auto' && getActiveLanguage() === 'manifold-js');
+      if (asCode) {
+        const r = await partwrightAPI.applySurfaceTextureAsCode(id, opOpts);
+        return { path: 'code' as const, ...r };
+      }
+      const bakeOpts = { ...opOpts, ...(preserveColor !== undefined ? { preserveColor } : {}) };
+      const r = id === 'fuzzy' ? await partwrightAPI.applyFuzzySkin(bakeOpts)
+        : id === 'knit' ? await partwrightAPI.applyKnitTexture(bakeOpts)
+        : id === 'cable' ? await partwrightAPI.applyCableKnit(bakeOpts)
+        : id === 'waffle' ? await partwrightAPI.applyWaffleStitch(bakeOpts)
+        : id === 'fur' ? await partwrightAPI.applyFurVelvet(bakeOpts)
+        : id === 'woven' ? await partwrightAPI.applyWovenFabric(bakeOpts)
+        : id === 'voronoi' ? await partwrightAPI.applyVoronoiShell(bakeOpts)
+        : await partwrightAPI.smoothModel(bakeOpts);
+      return { path: 'bake' as const, ...(r as Record<string, unknown>) };
+    },
     /** Apply a fuzzy-skin surface texture to the current model; saves a new version.
      *  `preserveColor` (default true) re-resolves paint regions onto the new mesh.
      *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
@@ -13298,6 +13341,7 @@ async function main() {
         'modelHasColor':   { signature: 'modelHasColor() -- Whether the model carries any color (user paint or code-declared)', docs: '/ai/colors.md' },
         'previewSurfaceModifier': { signature: "previewSurfaceModifier(id, opts?, preserveColor?) -- Non-destructive viewport preview of a modifier; id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize' -> {ok} or {error}", docs: '/ai/textures.md' },
         'clearSurfacePreview': { signature: 'clearSurfacePreview() -- Discard a live surface preview and restore the current mesh', docs: '/ai/textures.md' },
+        'applySurfaceTexture': { signature: "await applySurfaceTexture(id, opts?, mode?) -- Texture by the best path: mode 'auto' (default) writes api.surface.<id> as code on manifold-js, bakes elsewhere; 'code'/'bake' force a path. Returns the result plus path: 'code'|'bake'", docs: '/ai/textures.md' },
         'applySurfaceTextureAsCode': { signature: "await applySurfaceTextureAsCode(id, opts?) -- Write api.surface.<id>({…}) into the code (insert before the final return, or update the existing call) instead of baking; re-runs and saves a version. manifold-js + whole-model only. id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'smooth'", docs: '/ai/textures.md' },
         'applyFuzzySkin':  { signature: 'await applyFuzzySkin({amplitude?, scale?, octaves?, seed?, quality?, preserveColor?}) -- BAKE fuzzy-skin noise; saves a new version. In-code alternative: api.surface.fuzzy', docs: '/ai/textures.md' },
         'applyKnitTexture':{ signature: 'await applyKnitTexture({amplitude?, stitchWidth?, stitchHeight?, rowOffset?, roundness?, grainAngleDeg?, variation?, seed?, quality?, algorithm?, selectedTriangles?, preserveColor?}) -- BAKE knit stitches; saves a new version. In-code alternative: api.surface.knit', docs: '/ai/textures.md' },

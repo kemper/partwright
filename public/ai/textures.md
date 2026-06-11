@@ -1,7 +1,17 @@
 # Surface Texture & Mesh Operations
 
 Post-hoc operations that add surface detail to a finished model by displacing
-vertices along their normals. Seven textures are available:
+vertices along their normals.
+
+> **In-app chat tool:** the chat AI has ONE texture tool —
+> **`applySurfaceTexture(id, opts?, mode?)`** with
+> `id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'smooth'`.
+> It routes automatically: in a manifold-js session it writes the texture
+> **into the code** (`api.surface.<id>` — stays parametric); on SCAD/BREP/voxel
+> it falls back to baking (with a warning). The same auto method exists on the
+> console as `partwright.applySurfaceTexture`. The per-texture `apply*` console
+> methods below remain for external agents and for patch
+> (`selectedTriangles`) texturing. Seven textures are available:
 
 | Texture | Look | Best for |
 |---------|------|----------|
@@ -54,6 +64,10 @@ return body;
   version. This is what the Surface panel's **"Apply as code"** button uses for
   whole-model textures in manifold-js sessions — region/patch applies, voxelize,
   voronoiLamp, and SCAD/BREP sessions still take the bake path.
+- **`applySurfaceTexture(id, opts?, mode?)`** is the auto-routing wrapper (and
+  the in-app chat AI's only texture tool): `mode: 'auto'` (default) takes the
+  in-code path on manifold-js and falls back to bake elsewhere; `'code'`/`'bake'`
+  force a path. Returns the underlying result plus `path: 'code' | 'bake'`.
 - Calls are recorded, not applied during evaluation — they texture the **final
   returned mesh** in the order called (a terminal skin; you can chain several).
 - Surface textures are **expensive**, so they're **memoized**: a render reuses
