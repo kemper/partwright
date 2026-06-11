@@ -70,6 +70,7 @@ export interface SdfApi {
 // --- Small vector math ----------------------------------------------------
 
 function add3(a: Vec3, b: Vec3): Vec3 { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+function sub3(a: Vec3, b: Vec3): Vec3 { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
 function scale3(a: Vec3, s: number): Vec3 { return [a[0] * s, a[1] * s, a[2] * s]; }
 function len3(a: Vec3): number { return Math.hypot(a[0], a[1], a[2]); }
 function norm3(a: Vec3): Vec3 { const l = len3(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
@@ -343,11 +344,20 @@ function buildRig(rawOpts: unknown): Rig {
   let hf: Vec3 = [0, -1, 0];
   hf = rotZ(hf, pose.head.turn);    // yaw
   hf = rotX(hf, pose.head.nod);     // nod
-  hf = rotY(hf, pose.head.tilt);    // tilt
   hf = norm3(hf);
   const up: Vec3 = [0, 0, 1];
-  const headLeft = norm3(cross3(up, hf));   // +X when facing −Y (figure's left)
-  const headUp = norm3(cross3(hf, headLeft)); // +Z when upright
+  let headLeft = norm3(cross3(up, hf));   // +X when facing −Y (figure's left)
+  let headUp = norm3(cross3(hf, headLeft)); // +Z when upright
+  // `tilt` rolls the head toward a shoulder — a rotation of the up/left axes
+  // ABOUT the forward axis. It must be applied here, not to `hf`: rolling `hf`
+  // about itself is a no-op, and the cross-product frame above discards any
+  // roll component, so the old `rotY(hf, tilt)` did literally nothing. Positive
+  // tilt drops the crown toward the figure's LEFT shoulder (+X), matching the
+  // `turn`-left-positive convention.
+  if (pose.head.tilt) {
+    headLeft = norm3(rotAxis(headLeft, hf, -pose.head.tilt));
+    headUp = norm3(rotAxis(headUp, hf, -pose.head.tilt));
+  }
 
   const fAnchor = (f: number, u: number, s: number): Vec3 =>
     add3(headCenter, add3(add3(scale3(hf, f), scale3(headUp, u)), scale3(headLeft, s)));
@@ -364,28 +374,53 @@ function buildRig(rawOpts: unknown): Rig {
     chinTip: fAnchor(r.headZ * 0.55, -headH * 0.46, 0),
   };
 
+  // --- Spine: rigid-rotate the above-waist mass about the navel ----------
+  // `spine.{lean,turn,side}` were parsed and validated but never applied.
+  // Model the spine as a single waist pivot: rotate every above-navel joint and
+  // direction (chest, neck, head, BOTH arms, and the face anchors) about the
+  // navel line. lean = forward(+)/back(−) bend (about the lateral X axis);
+  // side = lean toward the figure's LEFT(+)/right(−) shoulder (about the
+  // forward Y axis); turn = twist the shoulders toward figure-left(+) (about
+  // the vertical Z axis) — matching the head.turn/side sign conventions. The
+  // pelvis, hips, legs and feet stay planted: the figure bends at the waist.
+  // A rigid rotation about the pivot preserves every limb's internal shape, so
+  // transforming each point/direction individually keeps the arms attached.
+  // Zero spine ⇒ identity, so every existing pose (incl. the documented
+  // double-biceps / ballet / lunge recipes) is byte-for-byte unchanged.
+  const sp = pose.spine;
+  const spineActive = sp.lean !== 0 || sp.turn !== 0 || sp.side !== 0;
+  const spinePivot: Vec3 = [0, 0, navelZ];
+  const spineRot = (v: Vec3): Vec3 => rotY(rotX(rotZ(v, sp.turn), sp.lean), sp.side);
+  const sPt = (p: Vec3): Vec3 => spineActive ? add3(spinePivot, spineRot(sub3(p, spinePivot))) : p;
+  const sDir = (v: Vec3): Vec3 => spineActive ? spineRot(v) : v;
+  const sFace: FaceAnchors = spineActive ? {
+    eyeL: sPt(face.eyeL), eyeR: sPt(face.eyeR), browL: sPt(face.browL), browR: sPt(face.browR),
+    nose: sPt(face.nose), mouth: sPt(face.mouth), earL: sPt(face.earL), earR: sPt(face.earR),
+    chinTip: sPt(face.chinTip),
+  } : face;
+
   return {
     joints: {
-      pelvis: [0, 0, pelvisZ], navel: [0, -r.chestY * 0.4, navelZ], chest: [0, -r.chestY * 0.2, chestZ],
-      neckBase: [0, 0, shoulderZ + neckLen * 0.2], headCenter, crown: [headCenter[0], headCenter[1], H], chin: [0, 0, chinZ],
-      shoulderL: aL.S, elbowL: aL.E, wristL: aL.W, handL: aL.handC,
-      shoulderR: aR.S, elbowR: aR.E, wristR: aR.W, handR: aR.handC,
+      pelvis: [0, 0, pelvisZ], navel: [0, -r.chestY * 0.4, navelZ], chest: sPt([0, -r.chestY * 0.2, chestZ]),
+      neckBase: sPt([0, 0, shoulderZ + neckLen * 0.2]), headCenter: sPt(headCenter), crown: sPt([headCenter[0], headCenter[1], H]), chin: sPt([0, 0, chinZ]),
+      shoulderL: sPt(aL.S), elbowL: sPt(aL.E), wristL: sPt(aL.W), handL: sPt(aL.handC),
+      shoulderR: sPt(aR.S), elbowR: sPt(aR.E), wristR: sPt(aR.W), handR: sPt(aR.handC),
       hipL: lL.Hj, kneeL: lL.K, ankleL: lL.A, hipR: lR.Hj, kneeR: lR.K, ankleR: lR.A,
     },
     r,
     dir: {
-      upperArmL: aL.dir, foreArmL: aL.foreDir, upperArmR: aR.dir, foreArmR: aR.foreDir,
+      upperArmL: sDir(aL.dir), foreArmL: sDir(aL.foreDir), upperArmR: sDir(aR.dir), foreArmR: sDir(aR.foreDir),
       // The elbow-hinge axis (post-twist) — ⟂ to the forearm-curl plane. The
       // hand frame derives from it: fingers splay along the hinge, the palm
       // faces hinge × foreArm (the curl direction).
-      elbowHingeL: aL.hinge, elbowHingeR: aR.hinge,
+      elbowHingeL: sDir(aL.hinge), elbowHingeR: sDir(aR.hinge),
       thighL: lL.dir, shankL: lL.shankDir, thighR: lR.dir, shankR: lR.shankDir,
       // Foot heading per side (front −Y yawed by hip turnout) — buildFeet
       // orients toe/heel along it, so leg twist turns the feet out.
       footL: lL.footFwd, footR: lR.footFwd,
-      headForward: hf, headUp, headLeft,
+      headForward: sDir(hf), headUp: sDir(headUp), headLeft: sDir(headLeft),
     },
-    face,
+    face: sFace,
     opts: { height: H, headsTall: N, build, pose },
   };
 }
@@ -638,13 +673,17 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const style = o.style === undefined ? 'iris'
     : assertEnum(o.style, ['solid', 'iris'] as const, 'eyes.style');
   const f = rig.dir.headForward;
-  // Push the eyeballs out by a fraction of their radius: enough that a dome
-  // reliably protrudes past the cheek welds (an eye centred ON the anchor
-  // can be fully swallowed, leaving a paintable label with zero triangles),
-  // but shallow enough that the eye reads as sitting IN the face rather
-  // than stuck onto it.
-  const cL = add3(rig.face.eyeL, scale3(f, rad * 0.28));
-  const cR = add3(rig.face.eyeR, scale3(f, rad * 0.28));
+  // Push the eyeballs out so a dome reliably protrudes past the cheek welds —
+  // an eye centred ON the anchor can be fully swallowed, leaving a paintable
+  // label with zero triangles. `rad * 0.28` alone is ~1 face-detail march cell
+  // (faceDetail's head edge ≈ r.head * 0.045) and shrinks toward zero as the
+  // head is posed/enlarged, so the eye/iris/pupil labels collapse to 0 tris on
+  // many figures. Floor the push at ~2 cells (r.head * 0.09) — the same
+  // cell-count discipline the mouth cavity (`cavH`) already uses — while
+  // staying shallow enough that the eye reads as sitting IN the face.
+  const push = Math.max(rad * 0.28, rig.r.head * 0.09);
+  const cL = add3(rig.face.eyeL, scale3(f, push));
+  const cR = add3(rig.face.eyeR, scale3(f, push));
   const pair = (r: number, forwardOff: number): Node => {
     const off = scale3(f, forwardOff);
     return sdf.sphere(r).translate(add3(cL, off)).union(sdf.sphere(r).translate(add3(cR, off)));
@@ -666,9 +705,14 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       orientToHeadPose(sdf.ellipsoid(rxz, ry, rxz), rig).translate(add3(c, d));
     return one(cL).union(one(cR));
   };
+  // Lens depth (the `ry` term) is set ≥ ~1.5 cells thick so each lens resolves
+  // even when the build forgets the recommended `detail: F.faceDetail(rig)` and
+  // marches the whole figure on the coarse global grid — a thinner cap aliased
+  // the pupil away to 0 triangles there. It only deepens the lens INTO the
+  // eyeball; the front face (and thus the painted-on-circle read) is unchanged.
   const sclera = pair(rad, 0).label('eyes');
-  const iris = lensPair(rad * 0.52, rad * 0.2, rad * 1.08).label('iris');
-  const pupil = lensPair(rad * 0.3, rad * 0.14, rad * 1.15).label('pupil');
+  const iris = lensPair(rad * 0.52, rad * 0.24, rad * 1.08).label('iris');
+  const pupil = lensPair(rad * 0.3, rad * 0.18, rad * 1.15).label('pupil');
   return sclera.union(iris).union(pupil);
 }
 
@@ -691,11 +735,16 @@ interface MouthPart { node: Node; mode: 'add' | 'carve' }
 
 const MOUTH_FIELDS = ['width', 'smirk', 'open', 'style', 'teeth', 'lips'];
 
-/** Replay the rig's head rotation order (turn → nod → tilt) on an
- *  origin-built node, so axis-aligned mouth parts follow the head pose. */
+/** Orient an origin-built node into the posed head frame, so axis-aligned
+ *  mouth/eye parts follow the head pose. `tilt` is a ROLL about the (canonical)
+ *  forward axis, so it is applied FIRST (innermost) — carrying it through the
+ *  yaw/nod rotation is equivalent to rolling about the posed forward axis last,
+ *  which is exactly how the head frame applies tilt. (The old form applied tilt
+ *  as an outer `rotY`, which disagreed with the frame once tilt actually did
+ *  anything.) */
 function orientToHeadPose(node: Node, rig: Rig): Node {
   const p = rig.opts.pose.head;
-  return node.rotate([0, 0, p.turn]).rotate([p.nod, 0, 0]).rotate([0, p.tilt, 0]);
+  return node.rotate([0, p.tilt, 0]).rotate([0, 0, p.turn]).rotate([p.nod, 0, 0]);
 }
 
 /** Shared geometry of the open-mouth cavity, used by both the carve and the
@@ -886,16 +935,20 @@ function buildEars(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   return earL.union(earR);
 }
 
-function buildBrows(sdf: SdfApi, rig: Rig): Node {
+function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // Arched ridges that HUG the skull. A straight capsule chord between two
   // points on a curved surface leaves its middle proud (the "shelf brow"
   // look), so each brow is an arc whose points (a) curve up toward the
   // middle and (b) pull BACK following the skull's lateral curvature, and
   // the whole ridge is sunk by part of its radius.
+  const o = obj(opts, 'brows(opts)');
+  assertNoUnknownKeys(o, ['thickness', 'lift'], 'brows(opts)');
+  const thickness = num(o.thickness, 1, 'brows.thickness', 0.1, 5); // ridge weight
+  const lift = num(o.lift, 1, 'brows.lift', 0, 5);                   // mid-brow arch
   const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
-  const w = rig.r.head * 0.24;          // half-span of one brow
-  const browRad = rig.r.head * 0.045;   // slimmer than the old 0.06 bar
-  const arch = rig.r.head * 0.06;       // mid-brow lift
+  const w = rig.r.head * 0.24;                  // half-span of one brow
+  const browRad = rig.r.head * 0.045 * thickness;
+  const arch = rig.r.head * 0.06 * lift;        // mid-brow lift
   const sink = browRad * 0.5;
   const SEGS = 4;
   const browArc = (anchor: Vec3): Node => {
@@ -923,16 +976,19 @@ function buildBrows(sdf: SdfApi, rig: Rig): Node {
  *  the soft body weld. Carved mouth styles ('smile'/'open') are subtracted
  *  instead. Pass `false` for any feature to skip it.
  *
- *  Eyes are hard-unioned (paintable seam) — for separately-paintable eyes,
- *  pass `eyes: false` here and union `F.face.eyes(rig).label('eyes')` at the
- *  top level instead (see /ai/figure.md). */
+ *  Eyes default to OFF here. The recommended flow welds the assembled face into
+ *  the body and labels the whole thing `.label('skin')` — which would FLATTEN
+ *  in-face eyes into the skin region (their `eyes`/`iris`/`pupil` labels resolve
+ *  to 0 paintable triangles). So build eyes at the top level instead:
+ *  `sdf.union(skin, F.face.eyes(rig), …)`. Pass `eyes: true` (or an options
+ *  object) only when you are NOT re-labelling the result. (See /ai/figure.md.) */
 function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'face.assemble(opts)');
   assertNoUnknownKeys(o, ['eyes', 'nose', 'mouth', 'ears', 'brows'], 'face.assemble(opts)');
   const crease = rig.r.head * 0.12;
   let result = head;
   if (o.nose !== false) result = result.smoothUnion(buildNose(sdf, rig, o.nose === true ? undefined : o.nose), crease);
-  if (o.brows !== false && o.brows !== undefined) result = result.smoothUnion(buildBrows(sdf, rig), crease);
+  if (o.brows !== false && o.brows !== undefined) result = result.smoothUnion(buildBrows(sdf, rig, o.brows === true ? undefined : o.brows), crease);
   if (o.ears !== false) result = result.smoothUnion(buildEars(sdf, rig, o.ears === true ? undefined : o.ears), crease * 1.5);
   if (o.mouth !== false) {
     const mouth = buildMouthPart(sdf, rig, o.mouth === true ? undefined : o.mouth);
@@ -940,7 +996,12 @@ function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
       ? result.smoothUnion(mouth.node, crease * 0.7)
       : result.smoothSubtract(mouth.node, crease * 0.5);
   }
-  if (o.eyes !== false) result = result.union(buildEyes(sdf, rig, o.eyes === true ? undefined : o.eyes));
+  // Eyes default OFF (see docstring): only build them when explicitly opted in,
+  // so the canonical weld-then-`.label('skin')` flow can't silently flatten the
+  // eye paint labels. `eyes: true` or `eyes: { … }` opts in.
+  if (o.eyes !== undefined && o.eyes !== false) {
+    result = result.union(buildEyes(sdf, rig, o.eyes === true ? undefined : o.eyes));
+  }
   return result;
 }
 
@@ -973,7 +1034,12 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   assertNoUnknownKeys(o, ['style', 'thickness', 'hairline'], 'hair(opts)');
   const style = o.style === undefined ? 'short'
     : assertEnum(o.style, ['short', 'long', 'bun', 'bald', 'bangs', 'ponytail'] as const, 'hair.style');
-  if (style === 'bald') return sdf.sphere(1e-3).translate([0, 0, -1e6]); // empty-ish
+  // bald = no hair. Return a sub-cell sphere AT the head centre (not parked at
+  // z ≈ −1e6): it meshes to nothing on any real grid and is swallowed inside
+  // the skull in a figure union, but its `bounds()` stays at the head — so
+  // `F.placeAt(baldHair, …)` and any bbox-driven composition still work,
+  // instead of snapping to a point a million units below the model.
+  if (style === 'bald') return sdf.sphere(1e-3).translate(rig.joints.headCenter as Vec3);
   // Hairline height = where the face window's top edge sits. 'low' brings the
   // hair down to the brows (the bangs default), 'high' shows more forehead.
   const hairline = o.hairline === undefined ? (style === 'bangs' ? 'low' : 'mid')
@@ -1171,14 +1237,13 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
 
 /** Smooth-weld the major body masses with one rig-derived soft k. Face
  *  features keep their crisp creases (they were welded in assembleFace). */
-function weldBody(sdf: SdfApi, rig: Rig, parts: unknown, opts?: unknown): Node {
+function weldBody(rig: Rig, parts: unknown, opts?: unknown): Node {
   if (!Array.isArray(parts) || parts.length === 0) {
     throw new ValidationError('figure.weld(rig, parts): `parts` must be a non-empty array of SDF nodes.');
   }
   const o = obj(opts, 'weld(opts)');
   assertNoUnknownKeys(o, ['k'], 'weld(opts)');
   const k = num(o.k, Math.min(rig.r.foreArm, rig.r.neck) * 0.85, 'weld.k', 1e-4);
-  void sdf;
   let acc = parts[0] as Node;
   for (let i = 1; i < parts.length; i++) acc = acc.smoothUnion(parts[i] as Node, k);
   return acc;
@@ -1262,7 +1327,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     head: (rig) => buildHead(sdf, assertRig(rig, 'head(rig)')),
     base: (rig, opts) => buildBase(sdf, assertRig(rig, 'base(rig)'), opts),
     hair: (rig, opts) => buildHair(sdf, assertRig(rig, 'hair(rig)'), opts),
-    weld: (rig, parts, opts) => weldBody(sdf, assertRig(rig, 'weld(rig)'), parts, opts),
+    weld: (rig, parts, opts) => weldBody(assertRig(rig, 'weld(rig)'), parts, opts),
     placeAt: (node, joint, opts) => placeAt(node as Node, joint, opts),
     faceDetail: (rig, opts) => faceDetail(assertRig(rig, 'faceDetail(rig)'), opts),
     handDetail: (rig, opts) => handDetail(assertRig(rig, 'handDetail(rig)'), opts),
@@ -1272,7 +1337,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
       mouth: (rig, opts) => buildMouth(sdf, assertRig(rig, 'face.mouth(rig)'), opts),
       mouthAccents: (rig, opts) => buildMouthAccents(sdf, assertRig(rig, 'face.mouthAccents(rig)'), opts),
       ears: (rig, opts) => buildEars(sdf, assertRig(rig, 'face.ears(rig)'), opts),
-      brows: (rig) => buildBrows(sdf, assertRig(rig, 'face.brows(rig)')),
+      brows: (rig, opts) => buildBrows(sdf, assertRig(rig, 'face.brows(rig)'), opts),
       assemble: (head, rig, opts) => assembleFace(sdf, head as Node, assertRig(rig, 'face.assemble(rig)'), opts),
     },
     clothing: {
