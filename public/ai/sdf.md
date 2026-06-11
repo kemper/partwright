@@ -226,9 +226,32 @@ return node.build();                              // sensible defaults
 return node.build({ edgeLength: 0.25 });          // finer mesh
 return node.build({ bounds: { min: [-30,-30,-30], max: [30,30,30] } });  // override bounds
 return node.build({ edgeLength: 0.5, level: 0, tolerance: 0.05 });
+return node.build({ edgeLength: 0.5, detail: [{ center: [0, 0, 52], radius: 9, edgeLength: 0.15 }] });
 ```
 
 **`edgeLength` controls quality and speed.** Default is ~1/32 of the smallest bbox extent, clamped to `[0.1, 5]`. Halving `edgeLength` quadruples-or-more the triangle count and runtime — bump it down only when you can see facets you don't want.
+
+### Detail regions — fine features on a big model {#detail-regions}
+
+A uniform grid makes small features (a figurine's face, engraved lettering, a
+fine clasp) faceted unless you pay for a fine grid over the *whole* model.
+`detail` refines locally instead: after the march, triangles inside each
+sphere are subdivided down to that sphere's `edgeLength` and the new vertices
+are re-projected onto the exact SDF surface. The mesh stays watertight, labels
+and welds are unaffected, and cost scales with the sphere's surface area only.
+
+```js
+// A 60-tall figure on a 0.5 grid, with the head meshed ~3× finer:
+return body.build({
+  edgeLength: 0.5,
+  detail: [{ center: rig.joints.headCenter, radius: 9, edgeLength: 0.16 }],
+});
+```
+
+- Up to 16 spheres; each only refines (a sphere coarser than the global grid
+  is a no-op). Refinement is capped at ~400k triangles per labelled region.
+- For figures, `api.sdf.figure.faceDetail(rig)` returns ready-made spheres (head + a finer mouth sphere)
+  covering the head — see `/ai/figure.md`.
 
 **`bounds`** is auto-inferred from the primitives in your tree. **Override it explicitly** when you use `gyroid` or `.repeat()` (which are unbounded), or when you intersect with something to cut a finite chunk from an infinite surface.
 
@@ -267,6 +290,7 @@ return sdf.union(sdf.sphere(5).label('a'), sdf.sphere(5).translate(4, 0, 0).labe
 **Label propagation rules:**
 
 - Labels propagate up through **transforms** (`translate`, `rotate`, `scale`, `mirror`), **modifiers** (`shell`, `round`, `twist`, `bend`), and the **A side of both `subtract` and `smoothSubtract`** — so `sphere.label('shell').subtract(hole).translate(0, 0, 5)` and `sphere.label('shell').smoothSubtract(dimple, 0.5)` both paint under `'shell'`. The result of a subtract IS A's surface (with a chunk or a soft bite removed), so A's label is the natural owner.
+- Transforms also work **above a labelled union**: `sdf.union(a.label('a'), b.label('b')).translate(0, 0, -5)` keeps both labels — rigid transforms (`translate`, `rotate`, `scale`, `mirror`) distribute onto each labelled region at partition time. Use this to move/orient a whole labelled assembly in one call.
 - Labels do **NOT** propagate through `smoothUnion`, `smoothIntersect`, or sharp `intersect` — those mix two surfaces and "which label wins" is ambiguous. Wrap the outer expression in `.label()` to paint the whole blend as one region.
 - The B side of a subtract / smoothSubtract (the carving tool) has its labels ignored — the geometry is removed, so there's no surface to paint.
 

@@ -112,7 +112,9 @@ const newBuilderCases: Array<{ name: string; code: string; components: number }>
   { name: 'joints.hinge (defaults)', code: `return api.joints.hinge({});`, components: 2 },
   { name: 'joints.hinge (7 knuckles, tight clearance)', code: `return api.joints.hinge({ knuckles: 7, clearance: 0.25 });`, components: 2 },
   { name: 'joints.ballSocket ball', code: `return api.joints.ballSocket({}).ball;`, components: 1 },
-  { name: 'joints.ballSocket socket', code: `return api.joints.ballSocket({}).socket;`, components: 1 },
+  { name: 'joints.ballSocket socket (friction default)', code: `return api.joints.ballSocket({}).socket;`, components: 1 },
+  { name: 'joints.ballSocket socket (clamp)', code: `return api.joints.ballSocket({ retention: 'clamp' }).socket;`, components: 1 },
+  { name: 'joints.ballSocket socket (snap)', code: `return api.joints.ballSocket({ retention: 'snap' }).socket;`, components: 1 },
   { name: 'joints.snapRim bead', code: `return api.joints.snapRim({ diameter: 40 }).bead;`, components: 1 },
   {
     name: 'joints.snapRim lid + body pair',

@@ -1,17 +1,26 @@
-// Ball-and-socket articulating mount — a snap-together swivel for small
-// cameras, sensors, phone cradles, or desk gadgets. The ball half rises on a
-// stem from a screw-down base plate; the socket half is a housing whose
-// spherical cavity opens through a mouth smaller than the ball, so it snaps in
-// past the lip, stays captive, and articulates freely. Both halves are laid
-// side by side for printing — built with api.joints.ballSocket.
+// Ball-and-socket articulating mount — a swivel for small cameras, sensors,
+// phone cradles, or desk gadgets. The ball half rises on a filleted stem from a
+// screw-down base plate; the socket half is a housing that holds the ball.
+//
+// `retention` is the key choice — a plain solid socket can't be both easy to
+// insert and hold a pose, so pick how the ball is gripped:
+//   • friction (default) — the rim is split into springy fingers that splay on
+//     insertion (so the stem survives) then clamp the ball, holding the angle
+//     you set it to. No hardware.
+//   • clamp — a pinch slot + bored lugs take an M3 screw; the ball drops in
+//     free and you tighten the screw to set friction up to a hard lock.
+//   • snap — the legacy solid lip: captive but swivels freely (no friction).
+// Both halves are laid side by side for printing — built with joints.ballSocket.
 const { Manifold, joints, fasteners } = api;
 
 const p = api.params({
   ballD:        { type: 'number', default: 14,   min: 6,    max: 30,   step: 1,    unit: 'mm', label: 'Ball diameter' },
-  openingRatio: { type: 'number', default: 0.85, min: 0.7,  max: 0.95, step: 0.01,             label: 'Opening ratio' },
-  clearance:    { type: 'number', default: 0.15, min: 0,    max: 0.4,  step: 0.05, unit: 'mm', label: 'Articulation gap' },
-  stemD:        { type: 'number', default: 6,    min: 3,    max: 12,   step: 0.5,  unit: 'mm', label: 'Stem diameter' },
-  stemL:        { type: 'number', default: 12,   min: 4,    max: 30,   step: 1,    unit: 'mm', label: 'Stem length' },
+  retention:    { type: 'select', default: 'friction', options: ['friction', 'clamp', 'snap'],  label: 'Retention' },
+  openingRatio: { type: 'number', default: 0.86, min: 0.7,  max: 0.95, step: 0.01,             label: 'Lip grip (opening ratio)' },
+  clearance:    { type: 'number', default: 0.25, min: 0,    max: 0.5,  step: 0.05, unit: 'mm', label: 'Articulation gap' },
+  slots:        { type: 'number', default: 4,    min: 2,    max: 8,    step: 1,                label: 'Friction fingers' },
+  stemD:        { type: 'number', default: 8,    min: 3,    max: 12,   step: 0.5,  unit: 'mm', label: 'Stem diameter' },
+  stemL:        { type: 'number', default: 10,   min: 4,    max: 30,   step: 1,    unit: 'mm', label: 'Stem length' },
   screwSize:    { type: 'select', default: 'M3', options: ['M2.5', 'M3', 'M4'],                label: 'Mount screws' },
 });
 
@@ -24,8 +33,10 @@ const stemD = Math.min(p.stemD, p.openingRatio * p.ballD - 0.6);
 
 const { ball, socket } = joints.ballSocket({
   ballD: p.ballD,
+  retention: p.retention,
   clearance: p.clearance,
   openingRatio: p.openingRatio,
+  slots: p.slots,
   stemD,
   stemL: p.stemL,
   baseD: p.ballD * 1.4,

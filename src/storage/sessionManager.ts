@@ -58,6 +58,7 @@ import {
   type SerializedAnnotation,
 } from '../annotations/annotations';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
+import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
 import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
 import { effectiveVersionLanguage, asLanguage } from './languageFallback';
@@ -147,8 +148,15 @@ import { effectiveVersionLanguage, asLanguage } from './languageFallback';
  *           the user last orbited the live viewport to, restored on session open
  *           so the view survives reload. Absent ⇒ auto-frame. Older readers
  *           ignore the field.
+ *  - `1.14` — per-version persisted surface texture (`versions[].surfaceTexture`).
+ *           The computed `api.surface.*` result (full-chain memo key + textured
+ *           mesh, buffers base64-encoded) saved with the version so reopening
+ *           renders textured immediately instead of recomputing — and so the
+ *           texture's appearance is pinned at save time. Self-validating via
+ *           the key (a stale key just recomputes); absent ⇒ recompute on
+ *           demand. Older readers ignore the field.
  */
-export const SCHEMA_VERSION = '1.13';
+export const SCHEMA_VERSION = '1.14';
 
 const CURRENT_MAJOR = 1;
 
@@ -240,6 +248,14 @@ export interface ExportedSession {
      * @since 1.10
      */
     companionFiles?: Record<string, string>;
+    /**
+     * Persisted `api.surface.*` texture result (full-chain memo key + textured
+     * mesh, buffers base64-encoded). Restored into the version's
+     * `surfaceTexture` on import so reopening renders textured without a
+     * recompute. Absent ⇒ the texture chain recomputes on demand.
+     * @since 1.14
+     */
+    surfaceTexture?: ExportedSurfaceTexture;
   }[];
   notes?: { text: string; timestamp: number }[];
   /**
@@ -280,8 +296,25 @@ export interface ExportedImportedMesh {
   triVerts: string;
 }
 
+/** A {@link PersistedSurfaceTexture} with its typed-array buffers
+ *  base64-encoded so it can be embedded in JSON.
+ *  @since 1.14 */
+export interface ExportedSurfaceTexture {
+  /** Full-chain memo key the mesh was computed under (see surfaceOps.ts). */
+  key: string;
+  numVert: number;
+  numTri: number;
+  numProp: number;
+  /** base64 of the Float32Array vertex-property buffer. */
+  vertProperties: string;
+  /** base64 of the Uint32Array triangle-index buffer. */
+  triVerts: string;
+  /** base64 of the optional Uint8Array per-triangle RGB buffer. */
+  triColors?: string;
+}
+
 /** Encode a typed array's bytes as base64. */
-function typedArrayToBase64(arr: Float32Array | Uint32Array): string {
+function typedArrayToBase64(arr: Float32Array | Uint32Array | Uint8Array): string {
   const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
   let bin = '';
   const CHUNK = 0x8000; // avoid call-stack limits on String.fromCharCode.apply
@@ -311,6 +344,45 @@ function serializeImportedMeshes(meshes: ImportedMesh[] | undefined): ExportedIm
     vertProperties: typedArrayToBase64(m.vertProperties),
     triVerts: typedArrayToBase64(m.triVerts),
   }));
+}
+
+function serializeSurfaceTexture(tex: PersistedSurfaceTexture | undefined): ExportedSurfaceTexture | undefined {
+  if (!tex || typeof tex.key !== 'string' || !tex.mesh) return undefined;
+  const m = tex.mesh;
+  return {
+    key: tex.key,
+    numVert: m.numVert,
+    numTri: m.numTri,
+    numProp: m.numProp,
+    vertProperties: typedArrayToBase64(m.vertProperties),
+    triVerts: typedArrayToBase64(m.triVerts),
+    ...(m.triColors ? { triColors: typedArrayToBase64(m.triColors) } : {}),
+  };
+}
+
+/** Validating decode of an exported surface texture. Returns undefined (the
+ *  version simply recomputes on demand) rather than failing the whole import
+ *  when the field is malformed. */
+function deserializeSurfaceTexture(tex: ExportedSurfaceTexture | undefined): PersistedSurfaceTexture | undefined {
+  if (!tex || typeof tex !== 'object' || typeof tex.key !== 'string') return undefined;
+  try {
+    if (typeof tex.vertProperties !== 'string' || typeof tex.triVerts !== 'string') return undefined;
+    return {
+      key: tex.key,
+      mesh: {
+        numVert: tex.numVert,
+        numTri: tex.numTri,
+        numProp: tex.numProp,
+        vertProperties: new Float32Array(base64ToArrayBuffer(tex.vertProperties)),
+        triVerts: new Uint32Array(base64ToArrayBuffer(tex.triVerts)),
+        ...(typeof tex.triColors === 'string'
+          ? { triColors: new Uint8Array(base64ToArrayBuffer(tex.triColors)) }
+          : {}),
+      },
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function deserializeImportedMeshes(meshes: ExportedImportedMesh[] | undefined): ImportedMesh[] | undefined {
@@ -1001,6 +1073,12 @@ export async function saveVersion(
     companionFiles?: Record<string, string>;
     parentVersionId?: string | null;
     operation?: VersionOperation | null;
+    /** Computed `api.surface.*` texture (full-chain memo key + textured mesh)
+     *  for THIS save's code/params/imports. Unlike `importedMeshes`, never
+     *  carried forward from the previous version — a texture is only valid for
+     *  the exact base identity it was computed under, so callers pass the
+     *  current one or nothing. */
+    surfaceTexture?: PersistedSurfaceTexture;
   },
 ): Promise<Version | null> {
   if (!currentState.session || !currentState.currentPart) return null;
@@ -1056,6 +1134,7 @@ export async function saveVersion(
     Object.keys(nextCompanions).length > 0 ? nextCompanions : undefined,
     options?.parentVersionId ?? null,
     options?.operation ?? null,
+    options?.surfaceTexture,
   );
 
   currentState = {
@@ -1685,6 +1764,7 @@ export async function exportSession(
       const versionAnnotations = opts.includeAnnotations ? ((v.annotations ?? []) as SerializedAnnotation[]) : [];
       const thumbDataUrl = thumbnailDataUrls[i];
       const importedMeshes = serializeImportedMeshes(v.importedMeshes as ImportedMesh[] | undefined);
+      const surfaceTexture = serializeSurfaceTexture(v.surfaceTexture as PersistedSurfaceTexture | undefined);
       return {
         index: v.index,
         code: v.code,
@@ -1698,6 +1778,7 @@ export async function exportSession(
         ...(versionAnnotations.length > 0 ? { annotations: versionAnnotations } : {}),
         ...(thumbDataUrl ? { thumbnail: thumbDataUrl } : {}),
         ...(importedMeshes ? { importedMeshes } : {}),
+        ...(surfaceTexture ? { surfaceTexture } : {}),
         ...(v.paramValues && Object.keys(v.paramValues).length > 0 ? { paramValues: v.paramValues } : {}),
         ...(v.companionFiles && Object.keys(v.companionFiles).length > 0 ? { companionFiles: v.companionFiles } : {}),
       };
@@ -1857,6 +1938,11 @@ export async function importSession(
         // those versions import with no companions, which is correct for all
         // non-SCAD and pre-companion SCAD sessions.
         v.companionFiles && typeof v.companionFiles === 'object' ? v.companionFiles as Record<string, string> : undefined,
+        null,
+        null,
+        // Persisted surface texture (schema 1.14+). Pre-1.14 files omit it;
+        // the texture chain then recomputes on the version's first load.
+        deserializeSurfaceTexture(v.surfaceTexture),
       );
     }
   }
@@ -2038,6 +2124,11 @@ export async function importSessionPartsIntoActive(
         importedMeshes,
         asLanguage(v.language),
         v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
+        undefined,
+        null,
+        null,
+        // Persisted surface texture (schema 1.14+); absent ⇒ recompute on load.
+        deserializeSurfaceTexture(v.surfaceTexture),
       );
       copiedVersions++;
     }

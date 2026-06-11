@@ -151,7 +151,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
 | `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over) and `get/setPrinterSettings`. The same check also runs automatically on STL / OBJ / 3MF / GLB export. Read before declaring a model print-ready, then steer the user to the dedicated Resize and Split tools if it doesn't fit. |
 | `fasteners` | Before building parts that mate with real hardware — `api.fasteners.*` screw holes, tap/pilot holes, heat-set insert bosses, captive-nut pockets, the M2–M8 metric table, clearance presets, and a calibration coupon. |
-| `joints` | Before connecting printed parts to each other — `api.joints.*` alignment pins, sliding dovetails, snap-fits, print-in-place barrel hinges, snap-together ball joints, and annular snap rims for press-on lids. |
+| `joints` | Before connecting printed parts to each other — `api.joints.*` alignment pins, sliding dovetails, snap-fits, print-in-place barrel hinges, articulating ball joints (friction / clamp / snap retention), and annular snap rims for press-on lids. |
 | `gears` | Before modeling an involute spur gear, a meshing gear pair, or a rack — `api.gears.spur/pair/rack(...)`, module/teeth/pressure-angle, centre distance, ratio, bores and hubs. |
 | `threads` | Before modeling a threaded rod, bolt, or nut — `api.threads.rod/bolt/nut(...)`, the metric coarse-pitch table, fit clearance, and handedness. |
 | `enclosure` | Before modeling a project box / case, a rounded shell, or PCB standoffs — `api.enclosure.box/shell/standoff(...)`, lip vs screw lids, mate clearance, and the `componentCount === 2` fit check. |
@@ -161,7 +161,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
 | `annotations` | When the user has marked up the model with the Annotate tool (or you need to write annotations programmatically). |
 | `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
-| `textures` | Before adding fabric/knit surface detail with `applyFuzzySkin` / `applyKnitTexture` / `applyCableKnit` / `applyWaffleStitch` / `applyFurVelvet` / `applyWovenFabric` / `applyVoronoiShell` — normal-displaced textures (knit, cable, waffle, fur/velvet, woven, voronoi shell, fuzzy skin), their parameters, and the paint-ordering rules. Also covers `applyVoronoiLamp` — a true perforated Voronoi shell (see-through lamp/planter; smooth-mesh output by default, optional voxel). |
+| `textures` | Before adding fabric/knit surface detail with `applyFuzzySkin` / `applyKnitTexture` / `applyCableKnit` / `applyWaffleStitch` / `applyFurVelvet` / `applyWovenFabric` / `applyVoronoiShell` — normal-displaced textures (knit, cable, waffle, fur/velvet, woven, voronoi shell, fuzzy skin), their parameters, and the paint-ordering rules. Also covers `applyVoronoiLamp` — a true perforated Voronoi shell (see-through lamp/planter; smooth-mesh output by default, optional voxel) — and `engraveModel`, which stamps text (or, from the UI, an image) onto the model as recessed channels, holes cut clean through (stencil), or an embossed raised relief (`raised: true`), with optional letter `color` for multicolor prints. |
 | `iteration-workflow` | Before calling `runAndSave`, `forkVersion`, `modifyAndTest`, `createSessionWithVersions`, or managing session notes — the full versioning and iteration workflow. |
 | `gotchas` | When something looks wrong — boolean overlap requirements, disconnected components, `paintRegion` on smooth surfaces, `probeRay` normals, `rotate` direction, re-running invalidating painted colors. |
 | `visual-verification` | Before declaring a build done — all-faces check, edge overlay options, feature-specific checks, stat-based validation. |
@@ -406,6 +406,7 @@ await partwright.getSessionContext()     // -> {session, versions[], notes[], cu
   "boundingBox": { "x":[-5,5], "y":[-5,5], "z":[-5,5], "dimensions":[10,10,10] },
   "centroid": [0,0,0],
   "volume": 1000, "surfaceArea": 600,
+  "minEdgeLength": 0.8, "meanEdgeLength": 2.1, "aspectRatio": 1.0,
   "genus": 0, "isManifold": true, "componentCount": 1,
   "crossSections": {
     "z25": {"z":-2.5,"area":100,"contours":1},
@@ -417,10 +418,15 @@ await partwright.getSessionContext()     // -> {session, versions[], notes[], cu
 }
 ```
 
+Always present (cheap mesh-quality signals — read them *instead of* paying for a render when the question is structural, not visual):
+- **`minEdgeLength` / `meanEdgeLength`** — shortest and mean triangle-edge length, in model units. A `minEdgeLength` under ~0.4 (≈ FDM extrusion width) means fine detail that will silently vanish on the print.
+- **`aspectRatio`** — longest bounding-box dimension ÷ shortest non-zero one. A high value (>12) flags a tall/thin, tip-prone, fragile part. Omitted when not measurable (empty/degenerate).
+
 Extra fields that appear conditionally:
 - **`containedComponents: N`** — present when N components are fully enclosed inside another solid (e.g. sealed interior voids in a voxel shell). These are excluded from `maxComponents` assertion checks and from the floater warning, since they can't detach in print. Use `runAndExplain(code)` to inspect them individually.
+- **`componentsInterpenetrate: true`** — present when two *separate* components' bounding boxes overlap: they interpenetrate rather than sit apart. If the model should be ONE solid, a boolean didn't fuse (operands must overlap by ≥ 0.5 units); if it's an intentional multi-part assembly, sanity-check the clearance gap.
 - **`stale: true`** — present when the editor code has changed since the last execution (e.g. `setCode` was called without a subsequent run). Stats reflect the *previous* run. Call `runAndSave`/`run` before relying on component counts or other metrics.
-- **`warnings: string[]`** — present when the geometry has printability issues (non-manifold, free-floating components, etc.).
+- **`warnings: string[]`** — present when the geometry has issues worth acting on. Beyond the structural ones (non-manifold, free-floating components, empty paint regions) these now include the same cheap heuristics the headless `model:preview` emits: **over the ~200k triangle budget**, **extreme aspect ratio**, **sub-extrusion-width detail** (smallest edge < 0.4), and **interpenetrating components**. Treat every warning as a to-do before declaring done — they catch a whole class of defects from stats alone, no render needed.
 
 On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}`
 
@@ -538,7 +544,7 @@ api.surface.knit({ stitchWidth: 1.2, amplitude: 0.6 });
 return Manifold.sphere(10, 64);
 ```
 
-Textures are expensive, so they're **memoized**: an unchanged model renders the cached result instantly. An **explicit run computes the texture automatically** — `partwright.run` / `runAndSave` (and the Run button / version loads) force the compute and return the **textured** mesh, so you don't need to do anything special; the result you render/inspect is already textured. Only the editor's **live-typing** auto-run is gated (it shows the base mesh + a "⟳ Re-apply" pill so keystrokes stay snappy) — that never affects `run`/`runAndSave`. manifold-js-only. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
+Textures are expensive, so they're **memoized**: an unchanged model renders the cached result instantly. An **explicit run computes the texture automatically** — `partwright.run` / `runAndSave` (and the Run button / version loads) force the compute and return the **textured** mesh, so you don't need to do anything special; the result you render/inspect is already textured. Only the editor's **live-typing** auto-run is gated (it shows the base mesh + a "⟳ Re-apply" pill so keystrokes stay snappy) — that never affects `run`/`runAndSave`. manifold-js-only. `partwright.applySurfaceTextureAsCode(id, opts?)` writes/updates the call in the code for you (insert before the final `return`, or edit the existing call), re-runs, and saves a version — the same path the Surface panel's "Apply as code" button takes. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
 
 ### Primitive origins and orientations
 

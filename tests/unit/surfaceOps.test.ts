@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { MeshData } from '../../src/geometry/types';
 import { SURFACE_OP_FIELDS, SURFACE_OP_IDS, isSurfaceOpId } from '../../src/surface/surfaceOpSpec';
-import { surfaceCacheStatus, computeChain, __clearSurfaceCache, type SurfaceOp } from '../../src/surface/surfaceOps';
+import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, __clearSurfaceCache, type SurfaceOp } from '../../src/surface/surfaceOps';
 
 /** Axis-aligned cube from [0,s]^3 as an 8-vertex / 12-triangle MeshData. */
 function cube(s = 10): MeshData {
@@ -85,5 +85,45 @@ describe('surfaceOps memoization', () => {
     await computeChain(cube(), 'k', [smooth, { id: 'smooth', params: { iterations: 2, subdivide: false } }], f => fractions.push(f));
     expect(fractions.length).toBe(2);
     expect(fractions[fractions.length - 1]).toBe(1);
+  });
+});
+
+// Phase 3 — persisting computed textures on saved versions. A version stores
+// `{ key: surfaceChainKey(...), mesh }`; loading it seeds the memo cache so
+// the load's force-apply hits instead of recomputing.
+describe('surface texture persistence (seed + chain key)', () => {
+  beforeEach(() => __clearSurfaceCache());
+
+  const smooth: SurfaceOp = { id: 'smooth', params: { iterations: 1, subdivide: false } };
+
+  it('surfaceChainKey is the full-chain memo key computeChain caches under', async () => {
+    const out = await computeChain(cube(), 'base', [smooth]);
+    __clearSurfaceCache();
+
+    // Seeding a fresh (e.g. post-reload) cache under the persisted key makes
+    // the exact same base + chain a hit — served by reference, no recompute.
+    seedSurfaceCache(surfaceChainKey('base', [smooth])!, out);
+    const status = surfaceCacheStatus('base', [smooth]);
+    expect(status.cached).toBe(true);
+    expect(status.mesh).toBe(out);
+  });
+
+  it('computeChain resumes from a seeded full chain without re-applying', async () => {
+    const persisted = cube(7); // stand-in "textured" mesh persisted on a version
+    seedSurfaceCache(surfaceChainKey('base', [smooth])!, persisted);
+    // The deepest cached prefix is the whole chain, so computeChain returns the
+    // seeded mesh itself — this is the "pinned at save time" property: the
+    // saved result is reused even if the modifier math has since changed.
+    const out = await computeChain(cube(), 'base', [smooth]);
+    expect(out).toBe(persisted);
+  });
+
+  it('a stale key (changed code/params/imports) is simply never read', async () => {
+    seedSurfaceCache(surfaceChainKey('saved-base', [smooth])!, cube(7));
+    expect(surfaceCacheStatus('current-base', [smooth]).cached).toBe(false);
+  });
+
+  it('surfaceChainKey is null for an empty chain', () => {
+    expect(surfaceChainKey('base', [])).toBeNull();
   });
 });

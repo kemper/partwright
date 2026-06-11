@@ -1,6 +1,8 @@
 // Golden path for the Voronoi-shell surface modifier. Covers the public API
 // (applyVoronoiShell → watertight single-component mesh) and the Surface panel
-// UI wiring (Voronoi tab → whole-model Apply bakes an ofMesh wrapper).
+// UI wiring (Voronoi tab → whole-model Apply writes an api.surface.voronoi
+// call into the code — the in-code path for manifold-js sessions; the bake
+// path is covered by the applyVoronoiShell API tests above).
 
 import { test, expect, type Page } from 'playwright/test';
 
@@ -111,15 +113,19 @@ test.describe('Voronoi shell surface modifier', () => {
     await page.locator('#surface-viewport-toggle').click();
     await expect(page.getByText('Surface modifiers')).toBeVisible();
 
-    // Switch to the Voronoi (relief) tab and apply to the whole model.
+    // Switch to the Voronoi (relief) tab and apply to the whole model. In a
+    // manifold-js session whole-model textures apply AS CODE (phase 4): the
+    // button says so, and Apply writes the api.surface call instead of baking.
     await page.getByRole('button', { name: 'Voronoi (relief)', exact: true }).click();
     await page.getByRole('button', { name: 'Whole model', exact: true }).click();
-    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await page.getByRole('button', { name: 'Apply as code', exact: true }).click();
 
-    // Apply saves a new version that bakes the textured mesh.
+    // Apply saves a new version whose code carries the parametric texture call.
     await expect.poll(async () =>
       page.evaluate(() => (window as unknown as { partwright: any }).partwright.getCode()),
       { timeout: 30_000 },
-    ).toContain('Manifold.ofMesh(api.imports[0])');
+    ).toContain('api.surface.voronoi(');
+    const code = await page.evaluate(() => (window as unknown as { partwright: any }).partwright.getCode());
+    expect(code).not.toContain('Manifold.ofMesh(api.imports[0])');
   });
 });

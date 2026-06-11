@@ -336,24 +336,32 @@ describe('largestMeshComponent (edge-connected)', () => {
 });
 
 describe('sdfModifierMesh (shared volumetric scaffolding)', () => {
-  it('meshes a feature SDF (a hollow shell) into a non-empty mesh', () => {
+  it('meshes a feature SDF (a hollow shell) into a non-empty mesh', async () => {
     const wall = 2;
     // combine = max(d, -(d+wall)) keeps material within `wall` of the surface.
-    const m = sdfModifierMesh(cube(20), { resolution: 48, bandWorld: wall }, ({ d }) => Math.max(d, -(d + wall)));
+    const m = await sdfModifierMesh(cube(20), { resolution: 48, bandWorld: wall }, ({ d }) => Math.max(d, -(d + wall)));
     expect(m.numTri).toBeGreaterThan(12);
     expect(m.numVert).toBeGreaterThan(8);
   });
 
-  it('returns an empty mesh for an empty input', () => {
+  it('returns an empty mesh for an empty input', async () => {
     const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
-    const m = sdfModifierMesh(empty, { resolution: 32, bandWorld: 1 }, ({ d }) => d);
+    const m = await sdfModifierMesh(empty, { resolution: 32, bandWorld: 1 }, ({ d }) => d);
     expect(m.numTri).toBe(0);
+  });
+
+  it('aborts a carve via the AbortSignal', async () => {
+    const ctl = new AbortController();
+    ctl.abort();
+    await expect(
+      sdfModifierMesh(cube(20), { resolution: 48, bandWorld: 2 }, ({ d }) => d, { signal: ctl.signal }),
+    ).rejects.toThrow(/abort/i);
   });
 });
 
 describe('applyVoronoiLamp (mesh output)', () => {
-  it('emits a smooth (SDF) manifold mesh wrapper with struts', () => {
-    const r = applyVoronoiLamp(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 64 });
+  it('emits a smooth (SDF) manifold mesh wrapper with struts', async () => {
+    const r = await applyVoronoiLamp(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 64 });
     expect(r.kind).toBe('manifold');
     if (r.kind === 'manifold') {
       // SDF mesh path: ofMesh wrapper over a baked, smooth perforated shell.

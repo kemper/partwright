@@ -216,6 +216,8 @@ return part;
 
 Like the tools, these resolve **by triangle**, so paint a refined mesh (`refine(n)` / higher segments) for crisp edges. `color` is the same hex/`[r,g,b]` form as `api.label`. Arguments are validated strictly (unknown keys, bad color/axis throw). Use `api.paint.*` when the colors are intrinsic to the design and you want them to live with the code; reach for the standalone `paintByLabel` / `paint*` tools for interactive, coordinate, or click-driven painting between runs. (manifold-js sandbox only.)
 
+Because the code is the source of truth, these colors are **read-only at runtime**: `getModelColors()` lists them, but `getRegions()`/`listRegions()` stay empty, and `replaceColor` / palette operations / the paint panel's Clear button don't touch them — change a code-declared color by editing the `color` argument and re-running.
+
 SCAD has the same `label()` pattern, but **without** the `{ color }`
 option — a SCAD `label()` is a passthrough wrapper for `paintByLabel`
 only, so color a SCAD model with an explicit `paintByLabel` call. Partwright pre-injects a
@@ -623,6 +625,8 @@ partwright.replaceColor({ from: [1, 0, 0], to: [0, 0, 1] })  // -> { replaced: 3
 ```
 
 This only changes region *colors*, not which triangles they cover — to repaint different triangles, use the paint selectors.
+
+**It only rewrites user paint regions.** Colors declared *in code* (`api.paint.*` / `api.label({color})`) are re-derived from the source on every run, so `replaceColor` — like the palette slot/replace/merge operations — deliberately leaves them alone. To change one, edit the `color` argument in the code and re-run. When nothing matched but the model has code-declared colors, the result carries a `hint` saying exactly that.
 
 ## Stamping an image onto the surface
 

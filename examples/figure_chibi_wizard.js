@@ -13,9 +13,9 @@ const rig = F.rig({
   build: 'average',
   pose: {
     // Left arm: pointing slightly forward-down to grip staff
-    armL: { abduct: 10, flex: 8, elbow: 15 },
-    // Right arm raised — spell-casting
-    armR: { abduct: 80, flex: 35, elbow: 50 },
+    armL: { abduct: 10, flex: 18, elbow: 20 },
+    // Right arm raised — spell-casting (arm high and out, forward sweep, elbow raises forearm)
+    armR: { abduct: 85, flex: 30, elbow: 45 },
     legL: { abduct: 8 },
     legR: { abduct: 8 },
     head: { turn: 8, tilt: -3, nod: 2 },
@@ -24,11 +24,13 @@ const rig = F.rig({
 });
 
 // 2. HEAD + FACE
+// eyes: false — lifted to top-level labelled region so they can be painted separately.
+// mouth: 'smile' style with slight smirk — the carved groove sits above the beard top blob.
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
-  eyes: { radius: rig.r.head * 0.20 },
+  eyes: false,
   nose: { tipRadius: rig.r.head * 0.08 },
-  mouth: { smirk: 0.25, width: rig.r.head * 0.45 },
+  mouth: { style: 'smile', smirk: 0.1, width: rig.r.head * 0.3 },
   ears: { size: rig.r.head * 0.25 },
   brows: {},
 });
@@ -43,6 +45,9 @@ const skin = F.weld(rig, [
   F.feet(rig),
   face,
 ]).label('skin');
+
+// 3b. EYES — paintable separate region (hard-unioned at top level)
+const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.20 }); // iris style: labels eyes/iris/pupil itself
 
 // 4. ROBE
 const robe = F.clothing.top(rig, {
@@ -133,29 +138,34 @@ const hatTipApproxZ = brimZ + hatH;  // approximate hat tip height
 const staffBottomZ = rig.opts.height * 0.04;
 const staffTopZ = hatTipApproxZ + headR * 1.0;  // extends notably above hat
 
-const staffRod = sdf.capsule(
-  [staffX, staffY, staffBottomZ],
-  [staffX, staffY, staffTopZ],
-  staffRodR
-);
-
-// ORB: large glowing sphere above the hat
+// ORB: large glowing sphere above the hat. The rod runs INTO the orb centre
+// so the two stay one component across the hard label seam.
 const orbR = headR * 0.82;
 const orbZ = staffTopZ + orbR * 0.95;
 const orbCenter = [staffX, staffY, orbZ];
 
-const orb = sdf.sphere(orbR).translate(orbCenter);
-const staffWithOrb = staffRod.smoothUnion(orb, orbR * 0.22);
+const staffRod = sdf.capsule(
+  [staffX, staffY, staffBottomZ],
+  [staffX, staffY, orbZ],          // reaches the orb centre — deep overlap
+  staffRodR
+);
 
-// Connect to left hand
-const handBridgeL = sdf.sphere(rig.r.hand * 0.85).translate(handL);
-const staff = staffWithOrb
+// Connect to left hand: a capsule from the fist TO the rod axis at grip
+// height — a real welded grip. (A bridge sphere AT the hand never reached
+// the rod ~1.2 head-radii away; the staff used to stay connected only by
+// incidentally piercing the hat brim, which a pose tweak silently broke.)
+const handBridgeL = sdf.capsule(handL, [staffX, staffY, handL[2]], rig.r.hand * 0.55);
+const staff = staffRod
   .smoothUnion(handBridgeL, rig.r.hand * 0.50)
   .label('staff');
 
-// Separate orb label
-const orbLabel = sdf.sphere(orbR * 0.88).translate(orbCenter).label('orb');
+// The orb is its own top-level label region (hard seam against the rod —
+// hidden inside the orb), so it paints separately from the wooden staff.
+const orb = sdf.sphere(orbR).translate(orbCenter).label('orb');
 
 // 10. Final union and build
-return sdf.union(skin, robe, hair, hat, beard, staff, orbLabel, base)
-  .build({ edgeLength: 0.52 });
+// eyes: lifted to top-level so they carry their own paint label.
+// detail: faceDetail refines the head mesh for smooth carved smile and round
+// eye domes; handDetail resolves the sculpted fist knuckles.
+return sdf.union(skin, eyes, robe, hair, hat, beard, staff, orb, base)
+  .build({ edgeLength: 0.52, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] });

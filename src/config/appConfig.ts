@@ -59,6 +59,14 @@ export interface AppConfig {
     charsPerToken: number;
     /** Estimated tokens per image block at standard resolution. */
     imageTokenEstimate: number;
+    /** How many of the most-recent render images (renderView / renderViews /
+     *  runIsolated tool snapshots) to keep in the history sent to the provider.
+     *  Older tool-result images are dropped from the request (their text stats
+     *  stay) so a long modeling session's image tokens don't compound every
+     *  turn — the same reason the CLI uses the model-sculpt subagent. The
+     *  on-screen transcript still shows every image; only the provider request
+     *  is trimmed. Set high to disable trimming. */
+    keepRecentToolImages: number;
     /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
      *  OpenSCAD validation and include-detection. (The render path has no
      *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
@@ -103,6 +111,13 @@ export interface AppConfig {
     gizmoSnapDurationSec: number;
     /** OrbitControls damping factor — lower is snappier, higher is smoother. */
     orbitDampingFactor: number;
+    /** Frame rate (fps) that `orbitDampingFactor` is authored against. The orbit
+     *  coast is re-derived from the real frame delta so its decay-per-second
+     *  stays constant regardless of frame rate — otherwise a heavy mesh that
+     *  drops the frame rate makes the same drag "coast" for far longer and the
+     *  model lags behind the cursor (reads as sluggish, slow rotation). At this
+     *  rate the correction is a no-op. */
+    orbitDampingReferenceFps: number;
     /** Zoom-out limit as a multiple of the model's largest dimension. Caps how
      *  far the camera can dolly back (OrbitControls maxDistance) so the model
      *  can't shrink to a speck. Re-derived from the model size on each frame. */
@@ -128,6 +143,12 @@ export interface AppConfig {
      *  prevents a runaway refine from freezing the main thread when the giant
      *  result is committed to the viewport. */
     enhanceMaxTriangles: number;
+    /** Triangle count above which a computed `api.surface.*` texture is NOT
+     *  persisted with the saved version (the version still saves; reopening it
+     *  just recomputes the texture on demand instead of restoring instantly).
+     *  Caps how much IndexedDB space one save can take — a textured mesh costs
+     *  roughly 18 bytes per triangle. */
+    surfaceTexturePersistMaxTriangles: number;
   };
   import: {
     /** Vertex-weld tolerance for STL imports (world units). */
@@ -208,6 +229,19 @@ export interface AppConfig {
      *  next one (ms). */
     hintRotationMs: number;
   };
+  geometry: {
+    /** Triangle count above which the live model warns it may be too heavy for
+     *  the catalog budget / slow to slice. Mirrors the headless model:preview
+     *  tri-budget warning so the in-app AI sees the same signal. */
+    triCountWarnBudget: number;
+    /** Shortest mesh edge (world units) below which a fine-detail warning fires
+     *  — features this small are dropped by FDM slicers (sub-extrusion-width).
+     *  Mirrors model:preview's sub-0.4 mm detail warning. */
+    minEdgeLengthWarn: number;
+    /** Bounding-box aspect ratio (longest dim ÷ shortest non-zero dim) above
+     *  which a sliver/thin-model warning fires. Mirrors model:preview. */
+    aspectRatioWarn: number;
+  };
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
@@ -232,6 +266,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxOutputTokensGemini: 32768,
     charsPerToken: 4,
     imageTokenEstimate: 1500,
+    keepRecentToolImages: 3,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,
@@ -252,6 +287,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     gizmoHitRadius: 0.4,
     gizmoSnapDurationSec: 0.4,
     orbitDampingFactor: 0.1,
+    orbitDampingReferenceFps: 60,
     maxZoomOutFactor: 12,
     ambientLightIntensity: 0.6,
     primaryLightIntensity: 0.8,
@@ -261,6 +297,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     thumbnailTimeoutMs: 4000,
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
+    surfaceTexturePersistMaxTriangles: 1_000_000,
   },
   import: {
     stlWeldTolerance: 1e-5,
@@ -293,6 +330,11 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     workerPanelRefreshMs: 1000,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
+  },
+  geometry: {
+    triCountWarnBudget: 200_000,
+    minEdgeLengthWarn: 0.4,
+    aspectRatioWarn: 12,
   },
 };
 

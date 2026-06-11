@@ -1594,6 +1594,54 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'engraveModel',
+    description: `Stamp **text** onto the current model: carve it as recessed channels (engrave), cut holes clean through the wall (cut-through), or — with \`raised: true\` — **EMBOSS it as a raised relief**. Saves a new version.
+
+**This removes (or, embossing, adds) material** — unlike the relief textures (\`applyVoronoiShell\`, knit, waffle…) which only displace the surface skin. The text is rasterized (the app's font path) and projected onto a chosen face (planar) or wrapped around the Z axis (cylindrical), then subtracted from (or unioned onto) the solid.
+
+**When to use:** to label / brand a part (a name on a tag, a logo plate), cut a stencil, perforate a sign, or add raised lettering. Start from a slab, plate, ring, or cylinder.
+
+**Key parameters:**
+- text: the string to engrave/emboss (required)
+- raised: true = EMBOSS — raise the text \`depth\` above the face instead of carving (through is ignored). Default false.
+- through: false (default) recesses to \`depth\`; true cuts a hole clean through the wall (stencil)
+- depth: engrave depth — or emboss height with raised — in world units (ignored when through); default ~6% of the model diagonal
+- size: stamp width in world units — how wide the text spans across the face; default ~70% of the face
+- color: paint the letters ('#rrggbb' hex) for a multicolor print — the raised relief (emboss) or the channel walls (engrave/through). Existing paint is still carried.
+- mode: 'planar' (default — onto one face) or 'cylindrical' (wrap around Z, e.g. text around a ring/cup)
+- axis + side: planar face — axis 'x'|'y'|'z' (default 'z') and side 'min'|'max' (default 'max' = the +axis face). For cylindrical, side 'outer' (default) or 'inner'.
+- resolution: field resolution [48–256], default 180. Thin strokes need higher; raise it if letters look mushy.
+- watertight: keep only the largest connected piece (default true).
+
+**Return:** { ok, label, geometry, warnings? }. Verify with renderViews — check the letters are legible, (for through) the holes are open, and (for raised) the relief stands proud. With watertight on the result should be manifold.
+
+**Note:** engraving an **image** is supported only from the Surface UI panel (it needs local image bytes); this tool handles text.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The text to engrave/cut. Required.' },
+        font: { type: 'string', enum: ['regular', 'bold', 'italic', 'bold-italic'], description: "Font weight/style. Default 'bold' (heavier strokes engrave more legibly)." },
+        through: { type: 'boolean', description: 'true = cut clean through the wall (stencil); false (default) = recess to `depth`. Ignored when raised.' },
+        raised: { type: 'boolean', description: 'true = EMBOSS: add the text as a raised relief `depth` high instead of carving it. Default false.' },
+        depth: { type: 'number', description: 'Engrave depth — or emboss height when raised — in world units (ignored when through). Default ~6% of the model diagonal.' },
+        size: { type: 'number', description: 'Stamp width in world units — how wide the text spans. Default ~70% of the face span.' },
+        color: { type: 'string', description: "Paint the letters for a multicolor print, '#rrggbb' hex — colors the raised relief (emboss) or the channel walls (engrave/through). Existing paint is still carried." },
+        mode: { type: 'string', enum: ['planar', 'cylindrical'], description: "'planar' (default): onto one flat face. 'cylindrical': wrap the text around the Z axis." },
+        axis: { type: 'string', enum: ['x', 'y', 'z'], description: "Planar only: which face axis. Default 'z' (top/bottom)." },
+        side: { type: 'string', enum: ['min', 'max', 'outer', 'inner'], description: "Planar: 'max' (default, +axis face) or 'min'. Cylindrical: 'outer' (default) or 'inner'." },
+        posU: { type: 'number', description: 'Planar only: stamp center across the face, as a fraction [0–1] of the bbox on the first in-plane axis. Default 0.5 (centered); 0.25/0.75 = quarter points.', minimum: 0, maximum: 1 },
+        posV: { type: 'number', description: 'Planar only: stamp center up the face, as a fraction [0–1] of the bbox on the second in-plane axis. Default 0.5 (centered).', minimum: 0, maximum: 1 },
+        rotationDeg: { type: 'number', description: 'Rotate the stamp in the face plane (planar) or around Z (cylindrical), degrees. Default 0.' },
+        curveAxis: { type: 'string', enum: ['none', 'u', 'v'], description: "Planar/free only: bend the flat stamp around a surface. 'v' = wrap around the vertical axis (text curves left↔right, e.g. around a cylinder/tower/mug); 'u' = wrap around the horizontal axis (text curves up↔down, over a dome). 'none' (default) = flat." },
+        curveAngleDeg: { type: 'number', description: 'Total arc the curved stamp subtends, in degrees (used with curveAxis). The whole word spans this angle; larger = tighter wrap. Default 90.' },
+        resolution: { type: 'integer', description: 'Field resolution along the longest axis [48–256]. Higher = crisper letters, slower. Default 180.', minimum: 48, maximum: 256 },
+        watertight: { type: 'boolean', description: 'Keep only the largest connected piece — one manifold result. Default true.' },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint onto the carved mesh. Default true.' },
+      },
+      required: ['text'],
+    },
+  },
+  {
     name: 'smoothModel',
     description: `Smooth/round the current model with a Taubin λ/μ pass — softens sharp edges and facets without the shrinkage a naive Laplacian causes. Saves a new version.
 
@@ -1789,7 +1837,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'engraveModel', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -2297,6 +2345,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.applyVoronoiShell(input);
     case 'applyVoronoiLamp':
       return api.applyVoronoiLamp(input);
+    case 'engraveModel':
+      return api.engraveModel(input);
     case 'smoothModel':
       return api.smoothModel(input);
     case 'voxelizeModel':
