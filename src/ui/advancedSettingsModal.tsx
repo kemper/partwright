@@ -556,6 +556,14 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'orbitDampingFactor', v)}
         />
         <Field
+          label="Orbit damping reference fps"
+          tooltip="The frame rate the orbit damping factor is tuned for. The coast is re-derived from the real frame delta so it decays at a constant rate per second — without this, a heavy mesh that drops the frame rate makes the same drag coast for far longer and the model lags behind the cursor (sluggish, slow rotation). Leave at 60 unless you target a different refresh rate."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.orbitDampingReferenceFps}
+          value={c.renderer.orbitDampingReferenceFps}
+          min={30} max={240} step={5}
+          onChange={v => set('renderer', 'orbitDampingReferenceFps', v)}
+        />
+        <Field
           label="Max zoom-out factor"
           tooltip="How far you can zoom the camera out, as a multiple of the model's largest dimension. The default framing sits at roughly 2× that dimension, so a value of 12 lets you pull back about 6× from the default before hitting the limit. Lower it to keep the model filling more of the view; raise it for more room. Re-applied each time the model is framed."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.maxZoomOutFactor}
