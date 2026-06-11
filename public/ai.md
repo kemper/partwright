@@ -537,7 +537,7 @@ api.surface.knit({ stitchWidth: 1.2, amplitude: 0.6 });
 return Manifold.sphere(10, 64);
 ```
 
-Textures are expensive, so they're **memoized**: an unchanged model renders the cached result instantly. An **explicit run computes the texture automatically** — `partwright.run` / `runAndSave` (and the Run button / version loads) force the compute and return the **textured** mesh, so you don't need to do anything special; the result you render/inspect is already textured. Only the editor's **live-typing** auto-run is gated (it shows the base mesh + a "⟳ Re-apply" pill so keystrokes stay snappy) — that never affects `run`/`runAndSave`. manifold-js-only. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
+Textures are expensive, so they're **memoized**: an unchanged model renders the cached result instantly. An **explicit run computes the texture automatically** — `partwright.run` / `runAndSave` (and the Run button / version loads) force the compute and return the **textured** mesh, so you don't need to do anything special; the result you render/inspect is already textured. Only the editor's **live-typing** auto-run is gated (it shows the base mesh + a "⟳ Re-apply" pill so keystrokes stay snappy) — that never affects `run`/`runAndSave`. manifold-js-only. `partwright.applySurfaceTextureAsCode(id, opts?)` writes/updates the call in the code for you (insert before the final `return`, or edit the existing call), re-runs, and saves a version — the same path the Surface panel's "Apply as code" button takes. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
 
 ### Primitive origins and orientations
 

@@ -41,9 +41,13 @@ export interface SurfaceApi {
   engraveModel(opts?: { mask?: StampMask; source?: string; projection?: EngraveProjection; through?: boolean; depth?: number; size?: number; resolution?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
+  /** Write the texture into the code as `api.surface.<id>({…})` instead of
+   *  baking (manifold-js sessions, whole-model mode). Re-runs + saves a version. */
+  applySurfaceTextureAsCode(id: string, opts?: Record<string, number | boolean | string>): Promise<ApplyResult>;
   previewSurfaceModifier(id: ModId, opts?: Record<string, unknown>, preserveColor?: boolean): Promise<{ ok: true } | { error: string }>;
   clearSurfacePreview(): { ok: true };
   modelHasColor(): boolean;
+  getActiveLanguage(): string;
   getGeometryData(): { boundingBox?: { min?: number[]; max?: number[] } | null } | Record<string, unknown>;
 }
 
@@ -366,21 +370,44 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     regionControls,
   );
 
+  // Modifiers expressible as in-code `api.surface.*` calls. voxelize/voronoiLamp
+  // change engines and engrave is a boolean cut, so they stay bake-only.
+  const IN_CODE_IDS = new Set<Tab>(['fuzzy', 'knit', 'cable', 'waffle', 'fur', 'woven', 'voronoi', 'smooth']);
+  // Tabs that hide the region picker entirely (always whole-model).
+  const REGIONLESS_TABS = new Set<Tab>(['voxelize', 'voronoiLamp', 'engrave']);
+
   /** Returns the effective selectedTriangles for currentOpts(). */
   function activeSelection(): Set<number> | undefined {
     return regionMode === 'region' ? regionSelection ?? undefined : undefined;
   }
 
-  /** Whether Apply/preview should be blocked (region mode, nothing picked yet). */
+  /** Whether Apply/preview should be blocked (region mode, nothing picked yet).
+   *  Tabs that hide the region UI (voxelize/voronoiLamp) are always whole-model,
+   *  so a lingering empty region selection must not dead-lock them. */
   function regionBlocked(): boolean {
-    // Region-less tabs (whole-model only — their region picker is hidden) are
-    // never blocked; only the region-capable tabs gate on having a selection.
-    if (active === 'voxelize' || active === 'voronoiLamp' || active === 'engrave') return false;
+    if (REGIONLESS_TABS.has(active)) return false;
     return regionMode === 'region' && !regionSelection;
+  }
+
+  /** True when Apply will write an `api.surface.*` call into the code instead
+   *  of baking: an in-code-able modifier, applied to the whole model, in a
+   *  manifold-js session. Region/patch applies and SCAD/BREP/voxel sessions
+   *  keep the bake path (api.surface.* is whole-model, manifold-js only). */
+  function applyWritesCode(): boolean {
+    if (!IN_CODE_IDS.has(active)) return false;
+    if (regionMode !== 'whole') return false;
+    try { return api.getActiveLanguage() === 'manifold-js'; } catch { return false; }
   }
 
   function updateApplyBtn() {
     const blocked = regionBlocked();
+    const asCode = applyWritesCode();
+    applyBtn.textContent = asCode ? 'Apply as code' : 'Apply (bake)';
+    pathHint.textContent = asCode
+      ? `Adds api.surface.${active}(…) to your code — stays parametric, recomputes with the model.`
+      : REGIONLESS_TABS.has(active)
+        ? 'Saves a new version with the result baked in (the parametric code is replaced).'
+        : 'Bakes the textured mesh into a new version (the parametric code is replaced). Whole-model textures in JS sessions apply as code instead.';
     applyBtn.disabled = blocked;
     applyBtn.className = blocked
       ? 'px-3 py-1.5 rounded bg-blue-900/40 text-blue-300/40 text-xs font-medium cursor-not-allowed'
@@ -829,8 +856,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       body.append(el('p', 'text-[11px] text-zinc-500', 'Rasterizes the model into voxels. The result switches to the voxel engine, so you can paint, re-block, or .vox export it.'));
       currentOpts = () => ({ resolution: res.get(), smooth: sm.get() });
     }
-    // Refresh Apply/Preview enabled state — switching to a region-less tab must
-    // clear the "pick a region first" block left by a region-capable tab.
+    // Refresh Apply/Preview state — switching to a region-less tab must clear
+    // the "pick a region first" block, and the Apply label + path hint depend
+    // on the active tab.
     updateApplyBtn();
     schedulePreview();
   }
@@ -1023,6 +1051,11 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   if (painted) scrollBody.append(colorRow);
   scrollBody.append(status);
 
+  // Which path Apply takes for the current tab/mode/session — kept current by
+  // updateApplyBtn so the bake-vs-code distinction is visible before clicking.
+  const pathHint = el('div', 'text-[11px] text-zinc-500 mb-2');
+  scrollBody.append(pathHint);
+
   // Footer: Cancel | Preview | Apply.
   const footer = el('div', 'flex justify-end gap-2 mt-2');
   const cancelBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs', 'Cancel');
@@ -1066,7 +1099,20 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     status.textContent = 'Working…';
     try {
       const opts = { ...currentOpts(), preserveColor };
-      const result = active === 'fuzzy' ? await api.applyFuzzySkin(opts)
+      // In-code path (manifold-js, whole model, in-code-able modifier): write an
+      // api.surface.* call instead of baking. selectedTriangles is always
+      // undefined here (whole-model mode) and preserveColor doesn't apply —
+      // paint re-resolves against the textured mesh on every run.
+      const asCodeOpts = (): Record<string, number | boolean | string> => {
+        const out: Record<string, number | boolean | string> = {};
+        for (const [k, v] of Object.entries(currentOpts())) {
+          if (k === 'selectedTriangles' || v === undefined) continue;
+          if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') out[k] = v;
+        }
+        return out;
+      };
+      const result = applyWritesCode() ? await api.applySurfaceTextureAsCode(active, asCodeOpts())
+        : active === 'fuzzy' ? await api.applyFuzzySkin(opts)
         : active === 'knit' ? await api.applyKnitTexture(opts)
         : active === 'cable' ? await api.applyCableKnit(opts)
         : active === 'waffle' ? await api.applyWaffleStitch(opts)
