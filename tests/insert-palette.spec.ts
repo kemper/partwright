@@ -60,6 +60,11 @@ test.describe('Insert palette', () => {
 
   test('insert a cube and a sphere, then subtract via the parts list', async ({ page }) => {
     await gotoEditor(page);
+    // Pin a clean placeholder starter so the first insert replaces it (rather
+    // than folding into whatever multi-part sampler the landing flow loaded).
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
     await page.locator('#btn-insert').dispatchEvent('click');
 
     // Cube
@@ -192,24 +197,47 @@ test.describe('Insert palette', () => {
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
     await expect.poll(() => getCode(page)).toMatch(/return\s+box\s*;/);
 
-    // Second insert: the bare-identifier return is *extended* into
-    // `box.add(ball);` so both shapes stay visible without manual Union.
+    // Second insert: the bare-identifier return folds into a readable
+    // `Manifold.union([box, ball])` so both shapes stay visible.
     await page.locator(palette).getByRole('button', { name: 'Sphere' }).click();
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
-    await expect.poll(() => getCode(page)).toMatch(/return\s+box\.add\(ball\);/);
+    await expect.poll(() => getCode(page)).toMatch(/return\s+Manifold\.union\(\[box, ball\]\);/);
 
-    // Third insert: the chain grows by another `.add(...)`.
+    // Third insert: the union array grows.
     await page.locator(palette).getByRole('button', { name: 'Cylinder' }).click();
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
-    await expect.poll(() => getCode(page)).toMatch(/return\s+box\.add\(ball\)\.add\(cyl\);/);
+    await expect.poll(() => getCode(page)).toMatch(/return\s+Manifold\.union\(\[box, ball, cyl\]\);/);
 
-    // The geometry still renders cleanly (the engine accepted the union chain).
+    // The geometry still renders cleanly (the engine accepted the union).
     const geo = await getGeo(page);
     expect(geo.status).not.toBe('error');
   });
 
+  test('Auto-combine off inserts a part without showing it', async ({ page }) => {
+    await gotoEditor(page);
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nconst widget = Manifold.sphere(8);\nreturn widget;'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
+
+    await page.locator('#btn-insert').dispatchEvent('click');
+    // Turn Auto-combine off.
+    await page.locator('#insert-auto-combine').uncheck();
+
+    await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+
+    // The const is inserted, but the existing return is left untouched.
+    await expect.poll(() => getCode(page)).toContain('const box');
+    expect(await getCode(page)).toMatch(/return\s+widget\s*;/);
+    expect(await getCode(page)).not.toContain('union');
+  });
+
   test('Build mode freehand body-drag rewrites the part translate', async ({ page }) => {
     await gotoEditor(page);
+    // Pin a clean starter so the inserted cube is the only/primary part.
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
     await page.locator('#btn-insert').dispatchEvent('click');
 
     // Insert a centered cube so the proxy renders at the canvas center.
@@ -218,7 +246,7 @@ test.describe('Insert palette', () => {
     await expect.poll(() => getCode(page)).toContain('const box');
 
     // Enter Build mode.
-    await page.locator(palette).getByRole('button', { name: 'Build' }).click();
+    await page.locator('#insert-move-mode').click();
     await expect(page.getByText(/Build mode/i)).toBeVisible();
 
     // Drag the proxy body (not the gizmo arrows) — start at canvas center,
@@ -265,8 +293,10 @@ test.describe('Insert palette', () => {
     await page.locator('canvas').first().click();
     await page.getByRole('button', { name: 'Done', exact: true }).click();
 
-    // After a successful pick the chip strip should hold "box" and Delete is enabled.
-    await expect(page.locator(palette).getByText('box', { exact: false })).toBeVisible({ timeout: 5000 });
+    // After a successful pick the chip strip should hold "box" and Delete is
+    // enabled. Scope to the selection strip — the Enclosure "▣ Box" button also
+    // contains "box".
+    await expect(page.locator('#insert-selection-strip').getByText('box', { exact: false })).toBeVisible({ timeout: 5000 });
     await expect(deleteBtn).toBeEnabled();
   });
 
@@ -285,7 +315,7 @@ test.describe('Insert palette', () => {
     await page.getByRole('button', { name: 'Insert', exact: true }).click();
 
     // Enter build mode (closes the palette, hides the merged mesh, shows proxies).
-    await page.locator(palette).getByRole('button', { name: 'Build' }).click();
+    await page.locator('#insert-move-mode').click();
     await expect(page.getByText(/Build mode/i)).toBeVisible();
 
     // Click the framed proxy at canvas-center to select it — constructs the

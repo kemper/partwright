@@ -27,30 +27,43 @@ import { viewportToolsMount } from './popoverMenu';
 import { getScene, getMeshGroup, setGizmoLock } from '../renderer/viewport';
 import {
   emitPrimitive,
+  emitPrimitiveVoxel,
   emitOperationJs,
   emitOperationScad,
+  emitOperationBrep,
+  emitEnclosure,
   scanParts,
+  shapesFor,
+  supportsBooleanOps,
   uniqueName,
   sanitizeName,
   baseNameFor,
+  ENCLOSURE_BASE_NAME,
+  VOXEL_DEFAULT_COLOR,
   type PrimitiveKind,
   type BooleanOpKind,
   type MirrorAxis,
   type PrimitiveSpec,
+  type EnclosureKind,
+  type EnclosureSpec,
   type InsertLanguage,
   type Vec3,
 } from '../insert/codegen';
 import {
-  addJsDeclaration,
+  addManagedDeclaration,
   appendScadStatement,
   replaceScadRanges,
+  appendVoxelStatement,
+  ensureVoxelScaffold,
+  replaceVoxelStatement,
+  voxelGridVar,
   setPartTranslateDeltaJs,
   setPartTranslateDeltaScad,
   mirrorPartJs,
   mirrorPartScad,
   duplicatePartJs,
   duplicatePartScad,
-  removeJsDeclaration,
+  removeManagedPart,
   removeScadStatement,
 } from '../insert/controller';
 import { primitiveEntry, unionBoxes, pickPart, translateEntry, type RegistryEntry } from '../insert/spatial';
@@ -94,6 +107,23 @@ const selection = new Set<string>();
 // DOM refs for live UI updates when the selection changes.
 let selectionStripEl: HTMLElement | null = null;
 let quickActionsEl: HTMLElement | null = null;
+
+// Auto-combine: when on (default), each inserted shape folds into the engine's
+// visible union (Manifold.union / BREP.fuseAll) so you see it; when off, the
+// shape is added to the code + registered for pick/move but not shown until you
+// explicitly Union it. Only meaningful for the single-return engines
+// (manifold-js / replicad) — scad & voxel union implicitly.
+let autoCombine = true;
+
+// Refs to the sections that show/hide per active engine, repainted by
+// refreshForLanguage() on open + on language change.
+let shapeBtnByKind: Partial<Record<PrimitiveKind, HTMLButtonElement>> = {};
+let shapeSectionEl: HTMLElement | null = null;
+let opsSectionEl: HTMLElement | null = null;
+let enclosureSectionEl: HTMLElement | null = null;
+let autoCombineRowEl: HTMLElement | null = null;
+let mirrorBtnEl: HTMLButtonElement | null = null;
+let combineHintEl: HTMLElement | null = null;
 
 const RESULT_BASE: Record<BooleanOpKind, string> = {
   union: 'merged',
@@ -188,11 +218,55 @@ function setToolBtnState(active: boolean): void {
 
 function openInsertPalette(): void {
   if (!panel) return;
+  refreshForLanguage();
   panel.classList.remove('hidden');
   setInitialPanelPosition(panel);
   setToolBtnState(true);
   openViewportPanel(insertRegistryEntry);
   document.addEventListener('keydown', onInsertEscape);
+}
+
+/** Show/hide the per-engine sections (shape buttons, ops, enclosure, auto-
+ *  combine, mirror) for the active language. Driven on open + on language
+ *  change so a session that switches engines reflects what that engine can do.
+ *  The mesh engines do everything; BREP omits sketch-only shapes; voxel omits
+ *  whole-solid booleans + mirror + the SDF-less shapes. */
+function refreshForLanguage(): void {
+  if (!cb) return;
+  const lang = cb.getLanguage();
+  const shapes = new Set(shapesFor(lang));
+  for (const kind of Object.keys(shapeBtnByKind) as PrimitiveKind[]) {
+    shapeBtnByKind[kind]?.classList.toggle('hidden', !shapes.has(kind));
+  }
+  opsSectionEl?.classList.toggle('hidden', !supportsBooleanOps(lang));
+  // Enclosure builders are a manifold-js (api.enclosure) feature.
+  enclosureSectionEl?.classList.toggle('hidden', lang !== 'manifold-js');
+  // The auto-combine toggle only governs the single-return engines.
+  autoCombineRowEl?.classList.toggle('hidden', !isManagedLang(lang));
+  // Mirror is in-place reflection: voxel grids can't reflect, and replicad's
+  // BrepShape has no `.mirror`, so hide it for both.
+  mirrorBtnEl?.classList.toggle('hidden', lang === 'voxel' || lang === 'replicad');
+  updateCombineHint();
+}
+
+/** Whether `lang` manages a single `return` we fold parts into (vs the
+ *  implicit-union statement engines scad/voxel). */
+function isManagedLang(lang: InsertLanguage): lang is 'manifold-js' | 'replicad' {
+  return lang === 'manifold-js' || lang === 'replicad';
+}
+
+function updateCombineHint(): void {
+  if (!combineHintEl || !cb) return;
+  const lang = cb.getLanguage();
+  if (isManagedLang(lang)) {
+    combineHintEl.textContent = autoCombine
+      ? 'New shapes join the scene as a union so you see them — turn off Auto-combine to add parts without showing them, then Union explicitly.'
+      : 'Auto-combine is off: inserted parts are added to the code and selectable, but not shown until you Union them.';
+  } else if (lang === 'voxel') {
+    combineHintEl.textContent = 'Every shape fills the same voxel grid (union is automatic). Use Move to arrange, or Delete to remove a fill.';
+  } else {
+    combineHintEl.textContent = 'Top-level shapes union automatically. Use the ops to subtract/intersect, or Move to arrange them.';
+  }
 }
 
 function closeInsertPalette(): void {
@@ -208,13 +282,16 @@ export function toggleInsertPalette(): void {
   else openInsertPalette();
 }
 
-/** Show / hide the toolbar Insert button. Called from the language-change
- *  handler so the palette only appears for languages whose codegen we support
- *  (manifold-js + scad) — voxel and replicad sessions hide it. */
+/** Show / hide the toolbar Insert button. All four engines now have insert
+ *  codegen, so this is normally `true`; it stays a guard for any future
+ *  language without palette support. Called from the language-change handler,
+ *  which also repaints the per-engine sections via the open path. */
 export function setInsertPaletteAvailable(available: boolean): void {
   if (!toolBtn) return;
   toolBtn.classList.toggle('hidden', !available);
   if (!available && isInsertPaletteOpen()) closeInsertPalette();
+  // Reflect the new engine's capabilities if the panel is currently open.
+  else if (available && isInsertPaletteOpen()) refreshForLanguage();
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +336,23 @@ function buildPanel(): HTMLElement {
   p.className = 'flex-1 min-h-0 overflow-y-auto px-3 py-2.5 flex flex-col gap-1.5 text-sm text-zinc-200';
   shell.appendChild(p);
 
-  p.appendChild(sectionLabel('Shapes'));
+  // --- Move / arrange toggle (drag mode) ---
+  // A prominent switch into the Tinkercad-style drag session: click a shape and
+  // drag to slide it around the viewport instead of orbiting, so parts can be
+  // positioned before combining.
+  const moveBtn = document.createElement('button');
+  moveBtn.id = 'insert-move-mode';
+  moveBtn.className =
+    'w-full px-2 py-2 rounded text-xs font-medium text-zinc-100 bg-blue-600/80 hover:bg-blue-600 border border-blue-500/60 transition-colors mb-1';
+  moveBtn.textContent = '✥ Move / arrange shapes';
+  moveBtn.title =
+    'Drag mode: click a shape and drag to slide it around the viewport (instead of orbiting the camera), so you can position parts before combining them.';
+  moveBtn.addEventListener('click', startBuildSession);
+  p.appendChild(moveBtn);
+
+  // --- Shapes ---
+  shapeSectionEl = document.createElement('div');
+  shapeSectionEl.appendChild(sectionLabel('Shapes'));
   const shapeRow = document.createElement('div');
   shapeRow.className = 'grid grid-cols-4 gap-1 mb-1';
   const shapeBtns: [PrimitiveKind, string, string][] = [
@@ -276,14 +369,48 @@ function buildPanel(): HTMLElement {
     ['polygon', '⬢ N-gon', 'Insert a regular polygon prism'],
     ['star', '✦ Star', 'Insert a star prism'],
   ];
+  shapeBtnByKind = {};
   for (const [kind, label, title] of shapeBtns) {
-    shapeRow.appendChild(paletteButton(label, title, () => openPrimitiveModal(kind)));
+    const btn = paletteButton(label, title, () => openPrimitiveModal(kind));
+    shapeBtnByKind[kind] = btn;
+    shapeRow.appendChild(btn);
   }
-  p.appendChild(shapeRow);
+  shapeSectionEl.appendChild(shapeRow);
+
+  // Auto-combine toggle — folds new shapes into the visible union (managed-
+  // return engines only). Hidden for scad/voxel, which union implicitly.
+  autoCombineRowEl = document.createElement('label');
+  autoCombineRowEl.className = 'flex items-center gap-2 text-[11px] text-zinc-400 cursor-pointer select-none mb-1';
+  const autoCb = document.createElement('input');
+  autoCb.type = 'checkbox';
+  autoCb.id = 'insert-auto-combine';
+  autoCb.checked = autoCombine;
+  autoCb.className = 'accent-blue-500 w-3.5 h-3.5';
+  autoCb.addEventListener('change', () => {
+    autoCombine = autoCb.checked;
+    updateCombineHint();
+  });
+  const autoCbLabel = document.createElement('span');
+  autoCbLabel.textContent = 'Auto-combine new shapes';
+  autoCombineRowEl.append(autoCb, autoCbLabel);
+  shapeSectionEl.appendChild(autoCombineRowEl);
+  p.appendChild(shapeSectionEl);
+
+  // --- Enclosures ("containers": parametric project boxes / shells) ---
+  enclosureSectionEl = document.createElement('div');
+  enclosureSectionEl.appendChild(sectionLabel('Enclosure'));
+  const encRow = document.createElement('div');
+  encRow.className = 'flex flex-wrap gap-1.5';
+  encRow.appendChild(paletteButton('▣ Box', 'Two-part project box (base + lid) via api.enclosure.box', () => openEnclosureModal('box')));
+  encRow.appendChild(paletteButton('⊓ Shell', 'Single open-top rounded shell via api.enclosure.shell', () => openEnclosureModal('shell')));
+  encRow.appendChild(paletteButton('⊥ Standoff', 'PCB mounting post via api.enclosure.standoff', () => openEnclosureModal('standoff')));
+  enclosureSectionEl.appendChild(encRow);
+  p.appendChild(enclosureSectionEl);
 
   // --- Selection strip (chips + Select / Clear buttons) ---
   p.appendChild(sectionLabel('Selection'));
   selectionStripEl = document.createElement('div');
+  selectionStripEl.id = 'insert-selection-strip';
   selectionStripEl.className = 'flex flex-wrap items-center gap-1 min-h-[26px] p-1 bg-zinc-900/60 border border-zinc-700 rounded mb-1';
   p.appendChild(selectionStripEl);
   const selBtnRow = document.createElement('div');
@@ -297,7 +424,8 @@ function buildPanel(): HTMLElement {
   p.appendChild(selBtnRow);
 
   // --- Boolean operations ---
-  p.appendChild(sectionLabel('Operations'));
+  opsSectionEl = document.createElement('div');
+  opsSectionEl.appendChild(sectionLabel('Operations'));
   const opRow = document.createElement('div');
   opRow.className = 'flex flex-wrap gap-1.5';
   (['union', 'subtract', 'intersect'] as BooleanOpKind[]).forEach(op => {
@@ -309,32 +437,26 @@ function buildPanel(): HTMLElement {
       ),
     );
   });
-  p.appendChild(opRow);
+  opsSectionEl.appendChild(opRow);
+  p.appendChild(opsSectionEl);
 
   // --- Quick-edit row (selection-driven) ---
   p.appendChild(sectionLabel('Edit selection'));
   quickActionsEl = document.createElement('div');
   quickActionsEl.className = 'flex flex-wrap gap-1.5';
   quickActionsEl.appendChild(paletteButton('⎘ Duplicate', 'Clone the selected parts (offset along +X)', applyQuickDuplicate));
-  quickActionsEl.appendChild(paletteButton('▥ Mirror', 'Flip the selected parts in place', openMirrorPicker));
+  mirrorBtnEl = paletteButton('▥ Mirror', 'Flip the selected parts in place', openMirrorPicker);
+  quickActionsEl.appendChild(mirrorBtnEl);
   quickActionsEl.appendChild(paletteButton('✕ Delete', 'Remove the selected parts from the code', applyQuickDelete));
   p.appendChild(quickActionsEl);
 
-  p.appendChild(sectionLabel('Scene'));
-  const editRow = document.createElement('div');
-  editRow.className = 'flex flex-wrap gap-1.5';
-  editRow.appendChild(
-    paletteButton('⛶ Build scene', 'Show the inserted shapes separately and drag them around (Tinkercad-style)', startBuildSession),
-  );
-  p.appendChild(editRow);
+  combineHintEl = document.createElement('div');
+  combineHintEl.className = 'text-[10px] text-zinc-500 leading-tight mt-2';
+  p.appendChild(combineHintEl);
 
-  const hint = document.createElement('div');
-  hint.className = 'text-[10px] text-zinc-500 leading-tight mt-2';
-  hint.textContent = 'New shapes join the scene as a union — use the ops above (or Build) to combine, move, or remove them.';
-  p.appendChild(hint);
-
-  // Paint the selection strip and the disabled-state of the quick actions.
-  setTimeout(rerenderSelectionUI, 0);
+  // Paint the selection strip + quick-action disabled-state, and the
+  // per-engine section visibility.
+  setTimeout(() => { rerenderSelectionUI(); refreshForLanguage(); }, 0);
 
   return shell;
 }
@@ -457,6 +579,27 @@ function textField(parent: HTMLElement, label: string, value: string): () => str
   controls.appendChild(input);
   parent.appendChild(row);
   return () => input.value;
+}
+
+function selectField(
+  parent: HTMLElement,
+  label: string,
+  options: [value: string, text: string][],
+  value: string,
+): () => string {
+  const { row, controls } = fieldRow(label);
+  const sel = document.createElement('select');
+  sel.className = 'bg-zinc-900 border border-zinc-600 rounded px-2 py-1 text-xs text-zinc-100';
+  for (const [val, text] of options) {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = text;
+    if (val === value) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  controls.appendChild(sel);
+  parent.appendChild(row);
+  return () => sel.value;
 }
 
 // ---------------------------------------------------------------------------
@@ -614,28 +757,115 @@ function openPrimitiveModal(kind: PrimitiveKind): void {
 
 function applyPrimitive(spec: PrimitiveSpec, lang: InsertLanguage): void {
   if (!cb) return;
-  const snippet = emitPrimitive(spec, lang);
   const code = cb.getCode();
 
   if (lang === 'scad') {
-    cb.setCode(appendScadStatement(code, snippet));
+    cb.setCode(appendScadStatement(code, emitPrimitive(spec, lang)));
+  } else if (lang === 'voxel') {
+    // Voxel: scaffold a grid if needed, emit the fill against it, append before
+    // the return. Union is implicit (every fill accumulates into the grid).
+    const { code: scaffolded, gridVar } = ensureVoxelScaffold(code);
+    const stmt = emitPrimitiveVoxel(spec, gridVar, VOXEL_DEFAULT_COLOR);
+    cb.setCode(appendVoxelStatement(scaffolded, stmt));
   } else {
-    // Primitive inserts are additive by default: if the return is a part
-    // chain we extend it with `.add(<newName>)` so adding a second shape
-    // doesn't hide the first. A hand-written / complex return is left alone
-    // (returnSet=false) and the user gets a hint.
-    const result = addJsDeclaration(code, snippet, spec.name, 'addOrReplace');
+    // manifold-js / replicad: fold the part into the managed visible union
+    // (never dropping existing geometry). Auto-combine off inserts the const
+    // but leaves the return alone until the user combines explicitly.
+    const result = addManagedDeclaration(code, emitPrimitive(spec, lang), {
+      lang, addNames: [spec.name], combine: autoCombine,
+    });
     cb.setCode(result.code);
     if (!result.returnSet) {
-      cb.showToast(
-        `Added "${spec.name}". Your existing return is custom — combine it with an operation or edit the code to include "${spec.name}".`,
-        { variant: 'neutral' },
-      );
+      cb.showToast(`Added "${spec.name}" — not shown yet. Union it (or turn on Auto-combine) to combine.`, { variant: 'neutral' });
     }
   }
 
   registry.set(spec.name, primitiveEntry(spec));
   specByName.set(spec.name, spec);
+  cb.run(cb.getCode());
+}
+
+// ---------------------------------------------------------------------------
+// Enclosure inserts (api.enclosure — manifold-js only)
+// ---------------------------------------------------------------------------
+
+/** A parametric enclosure insert: a small modal whose Insert builds an
+ *  `EnclosureSpec` and an approximate bounding `size` (for 3D-pick). */
+function openEnclosureModal(kind: EnclosureKind): void {
+  if (!cb) return;
+  const modal = createModalShell({ title: `Insert ${kind}`, maxWidth: 'sm' });
+  const taken = existingNames();
+  let build: (() => { spec: EnclosureSpec; size: Vec3 }) | null = null;
+
+  if (kind === 'box') {
+    const getSize = vec3Field(modal.body, 'Outer size (x, y, z)', [60, 40, 30]);
+    const getWall = numField(modal.body, 'Wall', 2);
+    const getRadius = numField(modal.body, 'Corner radius', 3);
+    const getType = selectField(modal.body, 'Lid type', [['lip', 'Lip (press-fit)'], ['screw', 'Screw bosses']], 'lip');
+    build = () => {
+      const base = uniqueName(ENCLOSURE_BASE_NAME.box, taken);
+      const lid = uniqueName('lid', [...taken, base]);
+      const size = getSize();
+      return { spec: { kind: 'box', base, lid, size, wall: getWall(), radius: getRadius(), type: getType() as 'lip' | 'screw' }, size };
+    };
+  } else if (kind === 'shell') {
+    const getSize = vec3Field(modal.body, 'Outer size (x, y, z)', [40, 40, 25]);
+    const getWall = numField(modal.body, 'Wall', 2);
+    const getRadius = numField(modal.body, 'Corner radius', 4);
+    const getOpen = selectField(modal.body, 'Top', [['top', 'Open top'], ['none', 'Sealed']], 'top');
+    const getName = textField(modal.body, 'Name', uniqueName(ENCLOSURE_BASE_NAME.shell, taken));
+    build = () => {
+      const name = uniqueName(sanitizeName(getName()), taken);
+      const size = getSize();
+      return { spec: { kind: 'shell', name, size, wall: getWall(), radius: getRadius(), open: getOpen() as 'top' | 'none' }, size };
+    };
+  } else {
+    const getScrew = textField(modal.body, 'Screw size', 'M3');
+    const getHeight = numField(modal.body, 'Height', 6);
+    const getBore = selectField(modal.body, 'Bore', [['tap', 'Tap (self-tapping)'], ['through', 'Through (clearance)']], 'tap');
+    const getName = textField(modal.body, 'Name', uniqueName(ENCLOSURE_BASE_NAME.standoff, taken));
+    build = () => {
+      const name = uniqueName(sanitizeName(getName()), taken);
+      const height = getHeight();
+      return { spec: { kind: 'standoff', name, screwSize: getScrew().trim() || 'M3', height, bore: getBore() as 'tap' | 'through' }, size: [8, 8, height] };
+    };
+  }
+
+  const cancel = document.createElement('button');
+  cancel.className = BUTTON_CANCEL;
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', modal.close);
+
+  const create = document.createElement('button');
+  create.className = BUTTON_PRIMARY;
+  create.textContent = 'Insert';
+  create.addEventListener('click', () => {
+    const built = build!();
+    modal.close();
+    applyEnclosure(built.spec, built.size);
+  });
+
+  modal.footer.appendChild(cancel);
+  modal.footer.appendChild(create);
+}
+
+function applyEnclosure(spec: EnclosureSpec, size: Vec3): void {
+  if (!cb) return;
+  const { decl, names } = emitEnclosure(spec);
+  // Enclosures are manifold-js only; fold their part(s) into the managed union.
+  const result = addManagedDeclaration(cb.getCode(), decl, {
+    lang: 'manifold-js', addNames: names, combine: autoCombine,
+  });
+  cb.setCode(result.code);
+  // Approximate AABB for 3D-pick: footprint x×y, base on z=0. (Enclosure parts
+  // carry no PrimitiveSpec, so they're pickable/operand-able but not draggable
+  // in build mode — they're recipe parts, positioned via code.)
+  const min: Vec3 = [-size[0] / 2, -size[1] / 2, 0];
+  const max: Vec3 = [size[0] / 2, size[1] / 2, size[2]];
+  for (const name of names) registry.set(name, { box: { min, max }, center: [0, 0, size[2] / 2] });
+  if (!result.returnSet) {
+    cb.showToast(`Added ${names.join(' + ')} — not shown yet. Union to combine.`, { variant: 'neutral' });
+  }
   cb.run(cb.getCode());
 }
 
@@ -824,6 +1054,9 @@ function openOperationModal(op: BooleanOpKind, operands: Operand[]): void {
 
 function applyOperation(op: BooleanOpKind, operands: Operand[], lang: InsertLanguage): void {
   if (!cb) return;
+  // Voxel grids union implicitly and can't subtract/intersect whole solids, so
+  // the palette hides the Operations row there — guard defensively anyway.
+  if (lang === 'voxel') return;
   const code = cb.getCode();
   const resultName = uniqueName(RESULT_BASE[op], existingNames());
 
@@ -842,9 +1075,16 @@ function applyOperation(op: BooleanOpKind, operands: Operand[], lang: InsertLang
       const block = emitOperationScad(op, statements, resultName);
       cb.setCode(replaceScadRanges(code, ranges, block));
     } else {
+      // manifold-js / replicad: build `const <result> = a.<op>(b)…;` then fold
+      // the result into the managed union *in place of* its operands (so they
+      // don't linger in the visible union alongside the merged result).
       const names = operands.map(o => o.expr ?? o.name);
-      const snippet = emitOperationJs(op, names, resultName);
-      const result = addJsDeclaration(code, snippet, resultName, 'force');
+      const snippet = lang === 'replicad'
+        ? emitOperationBrep(op, names, resultName)
+        : emitOperationJs(op, names, resultName);
+      const result = addManagedDeclaration(code, snippet, {
+        lang, addNames: [resultName], replaceNames: operands.map(o => o.name), combine: true,
+      });
       cb.setCode(result.code);
     }
   } catch (e) {
@@ -1170,7 +1410,23 @@ function startBuildSession(): void {
         return false;
       }
       newCode = setPartTranslateDeltaScad(cb.getCode(), part.range, delta);
+    } else if (lang === 'voxel') {
+      // Voxels bake position into their coordinate args (no translate to bump),
+      // so re-emit the whole fill statement at the moved position. Preserve the
+      // statement's current colour literal so a recolour isn't lost on drag.
+      const spec = specByName.get(name);
+      const part = scanParts(cb.getCode(), 'voxel').find(p => p.name === name);
+      if (!spec || !part?.range) {
+        cb.showToast('Could not locate that voxel shape in the code.', { variant: 'warn' });
+        return false;
+      }
+      const old = spec.position ?? [0, 0, 0];
+      const moved = { ...spec, position: [old[0] + delta[0], old[1] + delta[1], old[2] + delta[2]] as Vec3 } as PrimitiveSpec;
+      const colour = /'(#[0-9a-fA-F]{3,8})'/.exec(part.statement ?? '');
+      const stmt = emitPrimitiveVoxel(moved, voxelGridVar(cb.getCode()), colour ? colour[1] : VOXEL_DEFAULT_COLOR);
+      newCode = replaceVoxelStatement(cb.getCode(), part.range, stmt);
     } else {
+      // manifold-js + replicad share the `.translate([…])` writeback.
       newCode = setPartTranslateDeltaJs(cb.getCode(), name, delta);
     }
     cb.setCode(newCode);
@@ -1372,6 +1628,8 @@ function startBuildSession(): void {
     bodyDrag = null;
     buildCleanup = null;
     cb?.run(); // refresh the merged result now that we're back
+    // Reopen the palette so Move/arrange reads as a round-trip toggle.
+    openInsertPalette();
   };
 
   const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') endSession(); };
@@ -1534,7 +1792,18 @@ function applyQuickDuplicate(): void {
       const part = scanParts(code, 'scad').find(p => p.name === name);
       if (!part?.range) continue;
       code = duplicatePartScad(code, part.range, newName, offset);
+    } else if (lang === 'voxel') {
+      // Re-emit the fill at the offset position under the new name (the common
+      // tail below records its spec/registry, same as the manifold-js path).
+      const origSpec = specByName.get(name);
+      const part = scanParts(code, 'voxel').find(p => p.name === name);
+      if (!origSpec || !part) continue;
+      const pos = origSpec.position ?? [0, 0, 0];
+      const dupSpec = { ...origSpec, name: newName, position: [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]] as Vec3 } as PrimitiveSpec;
+      const colour = /'(#[0-9a-fA-F]{3,8})'/.exec(part.statement ?? '');
+      code = appendVoxelStatement(code, emitPrimitiveVoxel(dupSpec, voxelGridVar(code), colour ? colour[1] : VOXEL_DEFAULT_COLOR));
     } else {
+      // manifold-js + replicad: `const copy = orig.translate([dx,0,0]);`.
       code = duplicatePartJs(code, name, newName, offset);
     }
     cb.setCode(code);
@@ -1625,13 +1894,16 @@ function applyQuickDelete(): void {
   let count = 0;
   for (const name of [...selection]) {
     let code = cb.getCode();
-    if (lang === 'scad') {
-      // Re-scan each iteration since prior deletions shift offsets.
-      const part = scanParts(code, 'scad').find(p => p.name === name);
+    if (lang === 'scad' || lang === 'voxel') {
+      // Statement engines: drop the tagged statement (re-scan each iteration
+      // since prior deletions shift offsets).
+      const part = scanParts(code, lang).find(p => p.name === name);
       if (!part?.range) continue;
       code = removeScadStatement(code, part.range);
     } else {
-      code = removeJsDeclaration(code, name);
+      // manifold-js + replicad: remove the declaration *and* prune the name
+      // from the managed union so no dangling reference remains.
+      code = removeManagedPart(code, name, lang);
     }
     cb.setCode(code);
     registry.delete(name);

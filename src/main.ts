@@ -6374,7 +6374,7 @@ async function main() {
   initAnnotateUI(clipControls);
   initPaintUI(clipControls);
   initInsertPalette(clipControls, {
-    getLanguage: () => getActiveLanguage() as 'manifold-js' | 'scad',
+    getLanguage: () => getActiveLanguage(),
     getCode: () => getValue(),
     setCode: (code: string) => setValue(code),
     getSelection: () => getSelection(),
@@ -6384,9 +6384,10 @@ async function main() {
     getCamera: () => getCamera(),
     getCanvas: () => getCanvas(),
   });
-  // initInsertPalette wires the toolbar button itself; codegen only covers
-  // manifold-js + scad so hide it on voxel / replicad sessions.
-  setInsertPaletteAvailable(getActiveLanguage() === 'manifold-js' || getActiveLanguage() === 'scad');
+  // initInsertPalette wires the toolbar button itself. All four engines now
+  // have insert codegen, so the palette is always available; per-engine shape
+  // and operation support is handled inside the palette.
+  setInsertPaletteAvailable(true);
   initImagePaintUI(clipControls);
   setSmoothStampCallback(smoothReplayCb = (imageData, stampOpts, maxEdge) => {
     if (!currentMeshData) return null;
@@ -6914,7 +6915,9 @@ async function main() {
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
     setVoxelPaintAvailable(lang === 'voxel');
-    setInsertPaletteAvailable(lang === 'manifold-js' || lang === 'scad');
+    // All four engines have insert codegen; the palette repaints its per-engine
+    // sections on this call (when open) and on its next open.
+    setInsertPaletteAvailable(true);
     notifyQualityLangChanged(lang);
     syncEditorTitle(getState());
     const loadingLabel =

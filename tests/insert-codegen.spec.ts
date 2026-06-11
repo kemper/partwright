@@ -6,11 +6,18 @@ import {
   emitPrimitive,
   emitPrimitiveJs,
   emitPrimitiveScad,
+  emitPrimitiveBrep,
+  emitPrimitiveVoxel,
   emitOperationJs,
   emitOperationScad,
+  emitOperationBrep,
+  emitEnclosure,
   scanPartsJs,
   scanPartsScad,
+  scanPartsVoxel,
   splitTopLevelScad,
+  shapesFor,
+  supportsBooleanOps,
   uniqueName,
   sanitizeName,
   fmt,
@@ -19,11 +26,14 @@ import {
   type PrimitiveSpec,
 } from '../src/insert/codegen';
 import {
-  addJsDeclaration,
+  addManagedDeclaration,
   ensureManifoldDestructure,
   ensureCrossSectionDestructure,
-  isSimpleReturnExpr,
-  isAdditiveReturnExpr,
+  ensureBrepDestructure,
+  ensureVoxelScaffold,
+  appendVoxelStatement,
+  replaceVoxelStatement,
+  splitTopLevelCommas,
   appendScadStatement,
   replaceScadRanges,
   setPartTranslateDeltaJs,
@@ -33,6 +43,7 @@ import {
   duplicatePartJs,
   duplicatePartScad,
   removeJsDeclaration,
+  removeManagedPart,
   removeScadStatement,
 } from '../src/insert/controller';
 import { primitiveEntry, unionBoxes, pickPart, translateEntry, type RegistryEntry } from '../src/insert/spatial';
@@ -205,11 +216,11 @@ test.describe('naming helpers', () => {
   });
 });
 
-test.describe('controller — JS return management', () => {
-  test('isSimpleReturnExpr', () => {
-    expect(isSimpleReturnExpr('box1')).toBe(true);
-    expect(isSimpleReturnExpr('Manifold.cube([10,10,10], true)')).toBe(true);
-    expect(isSimpleReturnExpr('a.subtract(b).union(c).warp(f).hull()')).toBe(false);
+test.describe('controller — managed return (addManagedDeclaration)', () => {
+  test('splitTopLevelCommas respects nested brackets', () => {
+    expect(splitTopLevelCommas('a, b, c').map(s => s.trim())).toEqual(['a', 'b', 'c']);
+    expect(splitTopLevelCommas('a, b.translate([1, 2, 3]), c').map(s => s.trim()))
+      .toEqual(['a', 'b.translate([1, 2, 3])', 'c']);
   });
 
   test('ensureManifoldDestructure adds the line only when missing', () => {
@@ -221,33 +232,88 @@ test.describe('controller — JS return management', () => {
     expect(ensureManifoldDestructure(direct)).toBe(direct);
   });
 
-  test('inserting into the default program repoints the return', () => {
+  test('ensureBrepDestructure adds / extends the api destructure', () => {
+    expect(ensureBrepDestructure('return BREP.box([1,1,1]);'))
+      .toBe('const { BREP } = api;\nreturn BREP.box([1,1,1]);');
+    expect(ensureBrepDestructure('const { Manifold } = api;\nreturn x;'))
+      .toBe('const { Manifold, BREP } = api;\nreturn x;');
+    const already = 'const { BREP } = api;\nreturn x;';
+    expect(ensureBrepDestructure(already)).toBe(already);
+  });
+
+  test('first insert replaces the throwaway default placeholder', () => {
     const code = 'const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
-    const out = addJsDeclaration(code, 'const ball1 = Manifold.sphere(6);', 'ball1', 'ifSimple');
+    const out = addManagedDeclaration(code, 'const ball1 = Manifold.sphere(6);', {
+      lang: 'manifold-js', addNames: ['ball1'], combine: true,
+    });
     expect(out.returnSet).toBe(true);
-    expect(out.code).toBe(
-      'const { Manifold } = api;\nconst ball1 = Manifold.sphere(6);\nreturn ball1;',
-    );
+    expect(out.code).toBe('const { Manifold } = api;\nconst ball1 = Manifold.sphere(6);\nreturn ball1;');
   });
 
-  test('appends a return when none exists', () => {
-    const out = addJsDeclaration('const { Manifold } = api;\n', 'const box1 = Manifold.cube([1,1,1], true);', 'box1', 'force');
-    expect(out.returnSet).toBe(true);
-    expect(out.code).toContain('const box1 = Manifold.cube([1,1,1], true);');
-    expect(out.code.trimEnd().endsWith('return box1;')).toBe(true);
+  test('second insert folds into a readable Manifold.union array', () => {
+    const code = 'const { Manifold } = api;\nconst ball1 = Manifold.sphere(6);\nreturn ball1;';
+    const out = addManagedDeclaration(code, 'const box2 = Manifold.cube([4,4,4], true);', {
+      lang: 'manifold-js', addNames: ['box2'], combine: true,
+    });
+    expect(out.code).toContain('return Manifold.union([ball1, box2]);');
   });
 
-  test('ifSimple preserves a complex hand-written return', () => {
-    const code = 'const { Manifold } = api;\nconst a = Manifold.cube([1,1,1]);\nreturn a.subtract(foo()).warp(fn).refine(3);';
-    const out = addJsDeclaration(code, 'const ball1 = Manifold.sphere(2);', 'ball1', 'ifSimple');
+  test('extends an existing managed union', () => {
+    const code = 'const { Manifold } = api;\nconst a = Manifold.cube([1,1,1]);\nreturn Manifold.union([a, b]);';
+    const out = addManagedDeclaration(code, 'const c = Manifold.sphere(2);', {
+      lang: 'manifold-js', addNames: ['c'], combine: true,
+    });
+    expect(out.code).toContain('return Manifold.union([a, b, c]);');
+  });
+
+  test('NEVER drops existing geometry — folds a real return in (the reported bug)', () => {
+    // User had real geometry returned; inserting a box must union with it, not
+    // replace it. `widget` is a named part so this is not a placeholder.
+    const code = 'const { Manifold } = api;\nconst widget = makeWidget();\nreturn widget;';
+    const out = addManagedDeclaration(code, 'const box1 = Manifold.cube([4,4,4], true);', {
+      lang: 'manifold-js', addNames: ['box1'], combine: true,
+    });
+    expect(out.returnSet).toBe(true);
+    expect(out.code).toContain('const widget = makeWidget();');
+    expect(out.code).toContain('return Manifold.union([widget, box1]);');
+  });
+
+  test('wraps a complex hand-written return rather than dropping it', () => {
+    const code = 'const { Manifold } = api;\nconst a = Manifold.cube([1,1,1]);\nreturn a.subtract(foo()).warp(fn);';
+    const out = addManagedDeclaration(code, 'const ball1 = Manifold.sphere(2);', {
+      lang: 'manifold-js', addNames: ['ball1'], combine: true,
+    });
+    expect(out.code).toContain('return Manifold.union([(a.subtract(foo()).warp(fn)), ball1]);');
+  });
+
+  test('auto-combine off inserts the const but leaves the return alone', () => {
+    const code = 'const { Manifold } = api;\nconst a = Manifold.cube([1,1,1]);\nreturn a;';
+    const out = addManagedDeclaration(code, 'const ball1 = Manifold.sphere(2);', {
+      lang: 'manifold-js', addNames: ['ball1'], combine: false,
+    });
     expect(out.returnSet).toBe(false);
     expect(out.code).toContain('const ball1 = Manifold.sphere(2);');
-    expect(out.code).toContain('return a.subtract(foo()).warp(fn).refine(3);');
+    expect(out.code).toContain('return a;');
+    expect(out.code).not.toContain('union');
+  });
+
+  test('operation result replaces its operands in the union', () => {
+    const code = 'const { Manifold } = api;\nconst a = Manifold.cube([1,1,1]);\nconst b = Manifold.sphere(1);\nconst c = Manifold.cube([2,2,2]);\nreturn Manifold.union([a, b, c]);';
+    const out = addManagedDeclaration(code, 'const merged = a.add(b);', {
+      lang: 'manifold-js', addNames: ['merged'], replaceNames: ['a', 'b'], combine: true,
+    });
+    expect(out.code).toContain('return Manifold.union([c, merged]);');
+  });
+
+  test('BREP folds into BREP.fuseAll', () => {
+    const code = 'const { BREP } = api;\nconst a = BREP.box([1,1,1]);\nreturn a;';
+    const out = addManagedDeclaration(code, 'const b = BREP.sphere(2);', {
+      lang: 'replicad', addNames: ['b'], combine: true,
+    });
+    expect(out.code).toContain('return BREP.fuseAll([a, b]);');
   });
 
   test('ignores the word "return" inside comments (default example regression)', () => {
-    // The default "Basic shapes demo" has this exact comment, which previously
-    // caused the real `return` to be merged into the comment and lost.
     const code = [
       'const { Manifold } = api;',
       'const box = Manifold.cube([10, 10, 10], true);',
@@ -256,19 +322,26 @@ test.describe('controller — JS return management', () => {
       '// Always return the final Manifold object',
       'return result;',
     ].join('\n');
-    const out = addJsDeclaration(code, 'const cut = box.subtract(ball);', 'cut', 'force');
-    expect(out.returnSet).toBe(true);
+    const out = addManagedDeclaration(code, 'const ball = Manifold.sphere(2);', {
+      lang: 'manifold-js', addNames: ['ball'], combine: true,
+    });
     expect(out.code).toContain('// Always return the final Manifold object');
-    expect(out.code).toMatch(/^return cut;$/m);
-    expect(out.code).toContain('const cut = box.subtract(ball);');
+    expect(out.code).toContain('return Manifold.union([result, ball]);');
+  });
+});
+
+test.describe('controller — removeManagedPart', () => {
+  test('prunes the name from the union and drops its const', () => {
+    const code = 'const { Manifold } = api;\nconst a = Manifold.cube([1,1,1]);\nconst b = Manifold.sphere(1);\nreturn Manifold.union([a, b]);';
+    const out = removeManagedPart(code, 'b', 'manifold-js');
+    expect(out).not.toContain('const b =');
+    expect(out).toContain('return a;'); // collapses to the lone survivor
   });
 
-  test('force overrides even a complex return (used by operations)', () => {
-    const code = 'const { Manifold } = api;\nreturn a.subtract(foo()).warp(fn);';
-    const out = addJsDeclaration(code, 'const cut1 = box1.subtract(ball1);', 'cut1', 'force');
-    expect(out.returnSet).toBe(true);
-    expect(out.code).toContain('return cut1;');
-    expect(out.code).not.toContain('warp(fn)');
+  test('keeps the union when 2+ parts remain', () => {
+    const code = 'const { Manifold } = api;\nconst a = Manifold.cube([1,1,1]);\nconst b = Manifold.sphere(1);\nconst c = Manifold.cube([2,2,2]);\nreturn Manifold.union([a, b, c]);';
+    const out = removeManagedPart(code, 'b', 'manifold-js');
+    expect(out).toContain('return Manifold.union([a, c]);');
   });
 });
 
@@ -691,11 +764,11 @@ test.describe('mirrorPartScad', () => {
   });
 });
 
-test.describe('addJsDeclaration + CrossSection auto-destructure', () => {
+test.describe('addManagedDeclaration + CrossSection auto-destructure', () => {
   test('snippet that mentions CrossSection gets the destructure extended', () => {
     const code = 'const { Manifold } = api;\nreturn Manifold.cube([1,1,1], true);';
     const decl = 'const t1 = CrossSection.circle(2).translate([10, 0]).revolve(48);';
-    const out = addJsDeclaration(code, decl, 't1', 'force');
+    const out = addManagedDeclaration(code, decl, { lang: 'manifold-js', addNames: ['t1'], combine: true });
     expect(out.code).toContain('const { Manifold, CrossSection } = api;');
     expect(out.code).toContain(decl);
     expect(out.returnSet).toBe(true);
@@ -704,69 +777,139 @@ test.describe('addJsDeclaration + CrossSection auto-destructure', () => {
   test('snippet with only Manifold does not add CrossSection', () => {
     const code = 'const { Manifold } = api;\nreturn Manifold.cube([1,1,1], true);';
     const decl = 'const ball = Manifold.sphere(3);';
-    const out = addJsDeclaration(code, decl, 'ball', 'force');
+    const out = addManagedDeclaration(code, decl, { lang: 'manifold-js', addNames: ['ball'], combine: true });
     expect(out.code).not.toContain('CrossSection');
   });
 });
 
-test.describe('isAdditiveReturnExpr', () => {
-  test('matches a bare identifier', () => {
-    expect(isAdditiveReturnExpr('box')).toBe(true);
-    expect(isAdditiveReturnExpr('  ball ')).toBe(true);
+test.describe('emitPrimitive — replicad (BREP)', () => {
+  test('centered cube → BREP.box with Z recenter', () => {
+    expect(emitPrimitiveBrep({ kind: 'cube', name: 'b', size: [10, 10, 10], center: true }))
+      .toBe('const b = BREP.box([10, 10, 10]).translate([0, 0, -5]);');
   });
-  test('matches a chain of .add(identifier) calls', () => {
-    expect(isAdditiveReturnExpr('box.add(ball)')).toBe(true);
-    expect(isAdditiveReturnExpr('a.add(b).add(c)')).toBe(true);
-    expect(isAdditiveReturnExpr('a . add ( b )')).toBe(true);
+  test('uncentered cube shifts the corner to the origin', () => {
+    expect(emitPrimitiveBrep({ kind: 'cube', name: 'b', size: [4, 6, 8], center: false }))
+      .toBe('const b = BREP.box([4, 6, 8]).translate([2, 3, 0]);');
   });
-  test('rejects constructor calls and unrelated chains', () => {
-    expect(isAdditiveReturnExpr('Manifold.cube([1,1,1], true)')).toBe(false);
-    expect(isAdditiveReturnExpr('box.subtract(ball)')).toBe(false);
-    expect(isAdditiveReturnExpr('a.add(b.translate([1,0,0]))')).toBe(false);
+  test('sphere is centred (no translate)', () => {
+    expect(emitPrimitiveBrep({ kind: 'sphere', name: 's', radius: 6 }))
+      .toBe('const s = BREP.sphere(6);');
+  });
+  test('cylinder uses (r, h) order and recenters when centered', () => {
+    expect(emitPrimitiveBrep({ kind: 'cylinder', name: 'c', height: 20, radius: 5, center: true }))
+      .toBe('const c = BREP.cylinder(5, 20).translate([0, 0, -10]);');
+  });
+  test('cone maps to BREP.cone(rBottom, rTop, h)', () => {
+    expect(emitPrimitiveBrep({ kind: 'cone', name: 'cn', height: 12, radiusBottom: 6, radiusTop: 0, center: false }))
+      .toBe('const cn = BREP.cone(6, 0, 12);');
+  });
+  test('torus maps to BREP.torus(major, tube)', () => {
+    expect(emitPrimitiveBrep({ kind: 'torus', name: 't', majorRadius: 12, tubeRadius: 3, segments: 48 }))
+      .toBe('const t = BREP.torus(12, 3);');
+  });
+  test('emitOperationBrep chains fuse/cut/intersect', () => {
+    expect(emitOperationBrep('union', ['a', 'b'], 'm')).toBe('const m = a.fuse(b);');
+    expect(emitOperationBrep('subtract', ['a', 'b', 'c'], 'm')).toBe('const m = a.cut(b).cut(c);');
+    expect(emitOperationBrep('intersect', ['a', 'b'], 'm')).toBe('const m = a.intersect(b);');
   });
 });
 
-test.describe('addJsDeclaration — addOrReplace (additive primitive insert)', () => {
-  test('first insert replaces the constructor-call return', () => {
-    const code = 'const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
-    const out = addJsDeclaration(code, 'const wedge = Manifold.cube([1,1,1], true);', 'wedge', 'addOrReplace');
-    expect(out.code).toMatch(/return\s+wedge;/);
-    expect(out.code).not.toMatch(/Manifold\.cube\(\[10/);
-    expect(out.returnSet).toBe(true);
+test.describe('emitPrimitive — voxel', () => {
+  test('centered cube → inclusive fillBox of `size` voxels', () => {
+    expect(emitPrimitiveVoxel({ kind: 'cube', name: 'b', size: [10, 10, 10], center: true }, 'v', '#abc'))
+      .toBe("v.fillBox([-5, -5, -5], [4, 4, 4], '#abc'); // part: b");
   });
-
-  test('second insert extends a bare-identifier return into a union chain', () => {
-    const code = [
-      'const { Manifold } = api;',
-      'const wedge = Manifold.cube([2,2,2], true);',
-      'return wedge;',
-    ].join('\n');
-    const out = addJsDeclaration(code, 'const cyl = Manifold.cylinder(5, 2);', 'cyl', 'addOrReplace');
-    expect(out.code).toContain('const cyl = Manifold.cylinder(5, 2);');
-    expect(out.code).toMatch(/return\s+wedge\.add\(cyl\);/);
-    expect(out.returnSet).toBe(true);
+  test('uncentered cube grows from the position', () => {
+    expect(emitPrimitiveVoxel({ kind: 'cube', name: 'b', size: [4, 4, 4], center: false, position: [10, 0, 0] }, 'v', '#abc'))
+      .toBe("v.fillBox([10, 0, 0], [13, 3, 3], '#abc'); // part: b");
   });
-
-  test('third insert extends an existing union chain', () => {
-    const code = [
-      'const a = Manifold.cube([1,1,1], true);',
-      'const b = Manifold.sphere(1);',
-      'return a.add(b);',
-    ].join('\n');
-    const out = addJsDeclaration(code, 'const c = Manifold.cylinder(2, 1);', 'c', 'addOrReplace');
-    expect(out.code).toMatch(/return\s+a\.add\(b\)\.add\(c\);/);
-    expect(out.returnSet).toBe(true);
+  test('sphere → v.sphere(center, r)', () => {
+    expect(emitPrimitiveVoxel({ kind: 'sphere', name: 's', radius: 6, position: [1, 2, 3] }, 'v', '#abc'))
+      .toBe("v.sphere([1, 2, 3], 6, '#abc'); // part: s");
   });
+  test('cylinder → v.cylinder(base, r, h) with center → base z down', () => {
+    expect(emitPrimitiveVoxel({ kind: 'cylinder', name: 'c', height: 20, radius: 5, center: true }, 'v', '#abc'))
+      .toBe("v.cylinder([0, 0, -10], 5, 20, '#abc', 'z'); // part: c");
+  });
+  test('torus → v.sdf(api.sdf.torus(...))', () => {
+    expect(emitPrimitiveVoxel({ kind: 'torus', name: 't', majorRadius: 12, tubeRadius: 3, segments: 48 }, 'v', '#abc'))
+      .toBe("v.sdf(api.sdf.torus(12, 3), { color: '#abc' }); // part: t");
+  });
+  test('scanPartsVoxel finds tagged fills with ranges', () => {
+    const code = "const v = voxels();\nv.fillBox([0,0,0], [1,1,1], '#fff'); // part: a\nv.sphere([0,0,0], 2, '#eee'); // part: b\nreturn v;";
+    const parts = scanPartsVoxel(code);
+    expect(parts.map(p => p.name)).toEqual(['a', 'b']);
+    // The range covers the statement+tag so a move can re-emit it.
+    expect(code.slice(parts[0].range!.from, parts[0].range!.to)).toContain('// part: a');
+  });
+});
 
-  test('a custom return (subtract / hand-edited) is left untouched', () => {
-    const code = [
-      'const a = Manifold.cube([1,1,1], true);',
-      'const b = Manifold.sphere(1);',
-      'return a.subtract(b);',
-    ].join('\n');
-    const out = addJsDeclaration(code, 'const c = Manifold.cylinder(2, 1);', 'c', 'addOrReplace');
-    expect(out.code).toContain('const c =');
-    expect(out.code).toMatch(/return\s+a\.subtract\(b\);/);
-    expect(out.returnSet).toBe(false);
+test.describe('enclosure inserts', () => {
+  test('box binds both parts and reads them via api.enclosure', () => {
+    const { decl, names } = emitEnclosure({ kind: 'box', base: 'base', lid: 'lid', size: [60, 40, 30], wall: 2, radius: 3, type: 'lip' });
+    expect(names).toEqual(['base', 'lid']);
+    expect(decl).toContain('const { base, lid } = api.enclosure.box(');
+    expect(decl).toContain("type: 'lip'");
+    // scanPartsJs must surface the destructured names (not skip them as `= api`).
+    expect(scanPartsJs(decl).map(p => p.name)).toEqual(['base', 'lid']);
+  });
+  test('renamed box parts alias the real builder keys', () => {
+    // A second box names its parts base2/lid2 — the destructure must still read
+    // the `base`/`lid` keys (aliasing), not look up non-existent props.
+    const { decl, names } = emitEnclosure({ kind: 'box', base: 'base2', lid: 'lid2', size: [40, 40, 20], wall: 2, radius: 2, type: 'screw' });
+    expect(names).toEqual(['base2', 'lid2']);
+    expect(decl).toContain('const { base: base2, lid: lid2 } = api.enclosure.box(');
+    expect(scanPartsJs(decl).map(p => p.name)).toEqual(['base2', 'lid2']);
+  });
+  test('shell + standoff are single-part', () => {
+    expect(emitEnclosure({ kind: 'shell', name: 'shell', size: [40, 40, 25], wall: 2, radius: 4, open: 'top' }).names).toEqual(['shell']);
+    expect(emitEnclosure({ kind: 'standoff', name: 'post', screwSize: 'M3', height: 6, bore: 'tap' }).decl)
+      .toContain("api.enclosure.standoff({ size: 'M3', height: 6, bore: 'tap' })");
+  });
+});
+
+test.describe('per-engine capability map', () => {
+  test('mesh engines do every shape; brep/voxel are subsets', () => {
+    expect(shapesFor('manifold-js')).toContain('star');
+    expect(shapesFor('scad')).toContain('wedge');
+    expect(shapesFor('replicad')).toEqual(['cube', 'sphere', 'cylinder', 'cone', 'torus']);
+    expect(shapesFor('voxel')).toEqual(['cube', 'sphere', 'cylinder', 'torus']);
+  });
+  test('voxel has no explicit boolean ops', () => {
+    expect(supportsBooleanOps('voxel')).toBe(false);
+    expect(supportsBooleanOps('manifold-js')).toBe(true);
+    expect(supportsBooleanOps('replicad')).toBe(true);
+  });
+});
+
+test.describe('voxel scaffold (controller)', () => {
+  test('ensureVoxelScaffold adds grid + return; idempotent', () => {
+    const { code, gridVar } = ensureVoxelScaffold('');
+    expect(gridVar).toBe('v');
+    expect(code).toContain('const v = api.voxels();');
+    expect(code).toContain('return v;');
+    expect(ensureVoxelScaffold(code).code).toBe(code);
+  });
+  test('ensureVoxelScaffold binds an inline returned grid (no double grid)', () => {
+    const { code, gridVar } = ensureVoxelScaffold("return api.voxels().fillBox([0,0,0],[2,2,2], '#abc');");
+    expect(gridVar).toBe('v');
+    expect(code).toBe("const v = api.voxels().fillBox([0,0,0],[2,2,2], '#abc');\nreturn v;");
+    // No second `voxels()` grid was introduced.
+    expect(code.match(/voxels\(\)/g)?.length).toBe(1);
+  });
+  test('ensureVoxelScaffold reuses an existing destructured handle', () => {
+    const src = "const { voxels } = api;\nconst v = voxels();\nv.sphere([0,0,0], 3, '#abc');\nreturn v;";
+    expect(ensureVoxelScaffold(src)).toEqual({ code: src, gridVar: 'v' });
+  });
+  test('appendVoxelStatement inserts before the return', () => {
+    const out = appendVoxelStatement('const v = voxels();\nreturn v;', "v.sphere([0,0,0], 3, '#abc'); // part: s");
+    expect(out).toMatch(/v\.sphere[\s\S]*\nreturn v;/);
+  });
+  test('replaceVoxelStatement swaps a scanned range', () => {
+    const code = "const v = voxels();\nv.sphere([0,0,0], 3, '#abc'); // part: s\nreturn v;";
+    const part = scanPartsVoxel(code)[0];
+    const out = replaceVoxelStatement(code, part.range!, "v.sphere([5,0,0], 3, '#abc'); // part: s");
+    expect(out).toContain('v.sphere([5,0,0]');
+    expect(out).not.toContain('v.sphere([0,0,0]');
   });
 });

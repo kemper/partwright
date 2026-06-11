@@ -6,28 +6,44 @@
 // shapes/operations accumulate; OpenSCAD just appends statements (all
 // top-level geometry renders) and wraps statements for operations.
 
-import { fmt, type Vec3 } from './codegen';
+import { fmt, scanPartsJs, type Vec3 } from './codegen';
 
-/** True for a `return` expression we're willing to overwrite automatically:
- *  a bare identifier (a managed part) or a single constructor call. A more
- *  complex hand-written return is preserved instead of being clobbered. */
-export function isSimpleReturnExpr(expr: string): boolean {
+/** A bare identifier — the simplest return expression (a single managed part). */
+function isBareIdent(expr: string): boolean {
+  return /^[A-Za-z_$][\w$]*$/.test(expr.trim());
+}
+
+/** A single library constructor call — the throwaway placeholder a fresh
+ *  session returns (e.g. the default `Manifold.cube(...)`). Distinguished from
+ *  a user's real geometry by also requiring the program to have no named
+ *  parts (see addManagedDeclaration). */
+function isConstructorCall(expr: string): boolean {
   const e = expr.trim();
-  if (/^[A-Za-z_$][\w$]*$/.test(e)) return true;
   return (
-    /^(api\.)?(Manifold|CrossSection|Curves)\b/.test(e) ||
+    /^(api\.)?(Manifold|CrossSection|Curves|BREP)\b/.test(e) ||
     /^labeledUnion\s*\(/.test(e) ||
     /^api\.renderMesh\s*\(/.test(e)
   );
 }
 
-/** True when the return expression is the shape the additive-insert flow
- *  produces: a bare identifier (the very first inserted part) OR a chain of
- *  `.add(identifier)` calls on a bare identifier (the union of every
- *  palette-inserted part so far). When this matches we *extend* the chain
- *  instead of overwriting it, so adding a second shape doesn't hide the first. */
-export function isAdditiveReturnExpr(expr: string): boolean {
-  return /^[A-Za-z_$][\w$]*(?:\s*\.\s*add\s*\(\s*[A-Za-z_$][\w$]*\s*\))*$/.test(expr.trim());
+/** Split a comma-separated expression list at top level, respecting nested
+ *  brackets/parens/braces (so `Manifold.union([a, b.translate([1,2,3])])`
+ *  splits into `a` and `b.translate([1,2,3])`, not at the inner commas). */
+export function splitTopLevelCommas(s: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '[' || c === '(' || c === '{') depth++;
+    else if (c === ']' || c === ')' || c === '}') depth--;
+    else if (c === ',' && depth === 0) {
+      out.push(s.slice(start, i));
+      start = i + 1;
+    }
+  }
+  if (start < s.length) out.push(s.slice(start));
+  return out;
 }
 
 /** Ensure `Manifold` is destructured from `api` (the house style every
@@ -57,6 +73,21 @@ export function ensureCrossSectionDestructure(code: string): string {
   return `const { CrossSection } = api;\n${code}`;
 }
 
+/** Ensure `BREP` is destructured from `api` (the replicad house style:
+ *  `const { BREP } = api;` then bare `BREP.box(...)`). Slips into an existing
+ *  `const { … } = api` line when there is one. */
+export function ensureBrepDestructure(code: string): string {
+  if (/const\s*\{[^}]*\bBREP\b[^}]*\}\s*=\s*api\b/.test(code)) return code;
+  const re = /const\s*\{\s*([^}]+?)\s*\}\s*=\s*api\b/;
+  const m = re.exec(code);
+  if (m) {
+    const names = m[1].split(',').map(s => s.trim()).filter(Boolean);
+    if (!names.includes('BREP')) names.push('BREP');
+    return code.slice(0, m.index) + `const { ${names.join(', ')} } = api` + code.slice(m.index + m[0].length);
+  }
+  return `const { BREP } = api;\n${code}`;
+}
+
 interface ReturnMatch {
   index: number;
   expr: string;
@@ -76,75 +107,114 @@ function findLastReturn(code: string): ReturnMatch | null {
   return last;
 }
 
-export type ReturnMode = 'force' | 'ifSimple' | 'addOrReplace' | 'none';
-
 export interface AddDeclarationResult {
   code: string;
-  /** Whether the visible `return` now points at `resultName` (either replaced
-   *  outright or extended with a `.add(resultName)` so it's part of the union).
-   *  When false the caller should tell the user the part was added but isn't
-   *  shown yet. */
+  /** Whether the visible `return` now includes the new part(s). When false the
+   *  part was inserted but isn't shown yet (auto-combine off) — the caller can
+   *  hint the user to combine it. */
   returnSet: boolean;
 }
 
-/** Insert a `const <resultName> = …;` declaration and (optionally) repoint the
- *  trailing `return` at it. The declaration lands just before the return line,
- *  or at end-of-file when there is no return.
+/** The engine-specific "show every part" combinator + how to recognise one we
+ *  already manage so its element list can be extended in place. */
+type ManagedLang = 'manifold-js' | 'replicad';
+const MANAGED: Record<ManagedLang, {
+  wrap: (parts: string[]) => string;
+  match: RegExp;
+  ensure: (code: string) => string;
+}> = {
+  'manifold-js': {
+    wrap: (p) => `Manifold.union([${p.join(', ')}])`,
+    match: /^(?:api\.)?Manifold\.union\(\s*\[([\s\S]*)\]\s*\)$/,
+    ensure: ensureManifoldDestructure,
+  },
+  'replicad': {
+    wrap: (p) => `BREP.fuseAll([${p.join(', ')}])`,
+    match: /^(?:api\.)?BREP\.fuseAll\(\s*\[([\s\S]*)\]\s*\)$/,
+    ensure: ensureBrepDestructure,
+  },
+};
+
+export interface ManagedDeclOptions {
+  /** Engine — selects the union combinator + destructure preamble. */
+  lang: ManagedLang;
+  /** Part name(s) the declaration introduces (usually one; `enclosure.box`
+   *  binds two). Folded into the visible union when `combine`. */
+  addNames: string[];
+  /** When false (auto-combine off), insert the declaration but leave the
+   *  return untouched — the part exists in code but isn't shown yet. */
+  combine: boolean;
+  /** Names to drop from the visible union as they're folded in. Operations
+   *  pass their operands so the result replaces them rather than piling up. */
+  replaceNames?: string[];
+}
+
+/** Insert a `const …;` declaration and fold its part(s) into the engine's
+ *  managed "show everything" union (`Manifold.union([…])` / `BREP.fuseAll([…])`).
  *
- *  Modes:
- *  - `force` — always replace the return with `return <resultName>;`. Used by
- *    operations (union/subtract/intersect) whose result subsumes the operands.
- *  - `addOrReplace` — the additive flow for primitive insertion. If the return
- *    is already a part chain (`a` or `a.add(b)`), append `.add(<resultName>)`
- *    so the new shape joins the existing scene. If the return is a single
- *    constructor call (e.g. the default `Manifold.cube(...)`), replace it so
- *    the first inserted shape doesn't double up with the placeholder.
- *  - `ifSimple` — legacy: replace whenever the return is "simple" (constructor
- *    call OR bare identifier). Kept for back-compat but no longer used by the
- *    palette.
- *  - `none` — never repoint the return. */
-export function addJsDeclaration(
+ *  The cardinal rule: **never silently drop existing geometry.** Whatever the
+ *  current return is — a bare part, a managed union, or a hand-written
+ *  expression — it becomes an element of the new union. The one exception is a
+ *  throwaway placeholder return (a lone constructor call in a program with no
+ *  named parts, i.e. a fresh session's default), which is replaced so the first
+ *  insert doesn't double up with it. */
+export function addManagedDeclaration(
   code: string,
   declLine: string,
-  resultName: string,
-  mode: ReturnMode,
+  opts: ManagedDeclOptions,
 ): AddDeclarationResult {
-  let withDestructure = ensureManifoldDestructure(code);
-  if (/\bCrossSection\b/.test(declLine)) {
-    withDestructure = ensureCrossSectionDestructure(withDestructure);
+  const cfg = MANAGED[opts.lang];
+  let withPre = cfg.ensure(code);
+  if (opts.lang === 'manifold-js' && /\bCrossSection\b/.test(declLine)) {
+    withPre = ensureCrossSectionDestructure(withPre);
   }
-  const ret = findLastReturn(withDestructure);
+  const ret = findLastReturn(withPre);
+
+  const toReturnExpr = (list: string[]): string =>
+    list.length === 1 ? list[0] : cfg.wrap(list);
 
   if (!ret) {
-    const sep = withDestructure.length === 0 || withDestructure.endsWith('\n') ? '' : '\n';
+    // No return yet — declare and return the part(s). (Auto-combine off is
+    // meaningless without an existing return to leave alone, so we still emit
+    // one so the program is valid.)
+    const sep = withPre.length === 0 || withPre.endsWith('\n') ? '' : '\n';
     return {
-      code: `${withDestructure}${sep}${declLine}\nreturn ${resultName};\n`,
+      code: `${withPre}${sep}${declLine}\nreturn ${toReturnExpr(opts.addNames)};\n`,
       returnSet: true,
     };
   }
 
-  const lineStart = withDestructure.lastIndexOf('\n', ret.index - 1) + 1;
-  const before = withDestructure.slice(0, lineStart);
-  const after = withDestructure.slice(lineStart);
+  const lineStart = withPre.lastIndexOf('\n', ret.index - 1) + 1;
+  const before = withPre.slice(0, lineStart);
+  const after = withPre.slice(lineStart);
 
-  const isAdditive = mode === 'addOrReplace' && isAdditiveReturnExpr(ret.expr);
-  const shouldReplace =
-    !isAdditive && (
-      mode === 'force'
-      || (mode === 'ifSimple' && isSimpleReturnExpr(ret.expr))
-      || (mode === 'addOrReplace' && isSimpleReturnExpr(ret.expr))
-    );
-
-  let newAfter: string;
-  if (isAdditive) {
-    newAfter = after.replace(/return\s+([^;]+?)\s*;/, `return $1.add(${resultName});`);
-  } else if (shouldReplace) {
-    newAfter = after.replace(/return\s+[^;]+;/, `return ${resultName};`);
-  } else {
-    newAfter = after;
+  if (!opts.combine) {
+    // Insert the declaration before the return; leave the return as-is.
+    return { code: `${before}${declLine}\n${after}`, returnSet: false };
   }
 
-  return { code: `${before}${declLine}\n${newAfter}`, returnSet: isAdditive || shouldReplace };
+  // Derive the current union element list from the existing return expression.
+  const expr = ret.expr.trim();
+  let list: string[];
+  const managed = cfg.match.exec(expr);
+  if (managed) {
+    list = splitTopLevelCommas(managed[1]).map(s => s.trim()).filter(Boolean);
+  } else if (isBareIdent(expr)) {
+    list = [expr];
+  } else if (isConstructorCall(expr) && scanPartsJs(withPre).length === 0) {
+    // Throwaway placeholder (default starter) — drop it.
+    list = [];
+  } else {
+    // Real hand-written return — preserve it as an element (never drop).
+    list = [`(${expr})`];
+  }
+
+  const drop = new Set(opts.replaceNames ?? []);
+  list = list.filter(e => !drop.has(e));
+  for (const n of opts.addNames) if (!list.includes(n)) list.push(n);
+
+  const newAfter = after.replace(/return\s+[^;]+;/, `return ${toReturnExpr(list)};`);
+  return { code: `${before}${declLine}\n${newAfter}`, returnSet: true };
 }
 
 /** Append a top-level OpenSCAD statement. */
@@ -182,6 +252,85 @@ export function replaceScadRanges(
   const headSep = head.length > 0 && !head.endsWith('\n') ? '\n' : '';
   const tailSep = tail.length > 0 ? '\n' : '';
   return `${head}${headSep}${block}${tailSep}${tail}`;
+}
+
+// ---------------------------------------------------------------------------
+// Voxel scaffold + statements (one grid `v`; every fill unions into it)
+// ---------------------------------------------------------------------------
+
+// Matches a grid handle declared as `const v = voxels()` or `= api.voxels()`
+// (the destructured and namespaced forms both appear in voxel sessions).
+const VOXEL_GRID_RE = /\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:api\.)?voxels\s*\(\s*\)/;
+
+/** The grid variable a voxel session fills (`const v = voxels()`), or `'v'`. */
+export function voxelGridVar(code: string): string {
+  const m = VOXEL_GRID_RE.exec(code);
+  return m ? m[1] : 'v';
+}
+
+/** Ensure the voxel scaffold exists — a grid handle near the top and a trailing
+ *  `return <grid>;` — so fills can chain onto a named handle. Idempotent.
+ *
+ *  Three cases: (1) a `const v = voxels()` handle already exists → reuse it;
+ *  (2) the session returns an inline grid expression (`return voxels().fillBox(…)`)
+ *  → bind that expression to a handle so further fills append to it instead of
+ *  racing a second grid; (3) empty/no return → a fresh `const v = api.voxels()`
+ *  (the namespaced form needs no `const { voxels } = api` destructure). */
+export function ensureVoxelScaffold(code: string): { code: string; gridVar: string } {
+  const existing = VOXEL_GRID_RE.exec(code);
+  if (existing) {
+    const gridVar = existing[1];
+    let out = code;
+    if (!new RegExp(`^[ \\t]*return\\s+${gridVar}\\s*;`, 'm').test(out)) {
+      const sep = out.length === 0 || out.endsWith('\n') ? '' : '\n';
+      out = `${out}${sep}return ${gridVar};\n`;
+    }
+    return { code: out, gridVar };
+  }
+
+  const ret = findLastReturn(code);
+  if (ret) {
+    // Bind the inline returned grid to a handle, preserving whatever form the
+    // user wrote (`voxels()` / `api.voxels()` / a variable).
+    const gridVar = 'v';
+    const lineStart = code.lastIndexOf('\n', ret.index - 1) + 1;
+    const before = code.slice(0, lineStart);
+    const after = code.slice(lineStart);
+    const newAfter = after.replace(/return\s+([^;]+);/, `const ${gridVar} = $1;\nreturn ${gridVar};`);
+    return { code: before + newAfter, gridVar };
+  }
+
+  const sep = code.length === 0 || code.endsWith('\n') ? '' : '\n';
+  return { code: `${code}${sep}const v = api.voxels();\nreturn v;\n`, gridVar: 'v' };
+}
+
+/** Insert a voxel fill statement just before the `return v;` line (so fills
+ *  accumulate into the grid in source order). Scaffolds first if needed. */
+export function appendVoxelStatement(code: string, statement: string): string {
+  const { code: scaffolded, gridVar } = ensureVoxelScaffold(code);
+  const retRe = new RegExp(`(^|\\n)([ \\t]*return\\s+${gridVar}\\s*;)`);
+  const m = retRe.exec(scaffolded);
+  if (!m) {
+    const sep = scaffolded.endsWith('\n') ? '' : '\n';
+    return `${scaffolded}${sep}${statement}\n`;
+  }
+  const insertAt = m.index + (m[1] ? m[1].length : 0);
+  const head = scaffolded.slice(0, insertAt);
+  const tail = scaffolded.slice(insertAt);
+  const headSep = head.length > 0 && !head.endsWith('\n') ? '\n' : '';
+  return `${head}${headSep}${statement}\n${tail}`;
+}
+
+/** Replace a voxel statement (located by its scanned range) with `newStmt` —
+ *  used by the drag writeback, which re-emits the whole `v.…(); // part: name`
+ *  line at the moved coordinates (voxels bake position into their args, so
+ *  there is no `translate()` to bump). */
+export function replaceVoxelStatement(
+  code: string,
+  range: { from: number; to: number },
+  newStmt: string,
+): string {
+  return code.slice(0, range.from) + newStmt + code.slice(range.to);
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +505,37 @@ export function removeJsDeclaration(code: string, name: string): string {
     }
   }
   return out;
+}
+
+/** Remove a managed-engine part: delete its `const <name> = …;` *and* drop it
+ *  from the managed visible union (`Manifold.union([…])` / `BREP.fuseAll([…])`)
+ *  so the union doesn't keep a dangling reference to the deleted const. Collapses
+ *  the union to a bare return when one part remains, and repoints to the last
+ *  surviving const (or drops the return) when none do. */
+export function removeManagedPart(code: string, name: string, lang: ManagedLang): string {
+  let out = removeJsDeclaration(code, name);
+  const cfg = MANAGED[lang];
+  const ret = findLastReturn(out);
+  if (!ret) return out;
+  const m = cfg.match.exec(ret.expr.trim());
+  if (!m) return out;
+
+  const list = splitTopLevelCommas(m[1]).map(s => s.trim()).filter(Boolean).filter(e => e !== name);
+  const lineStart = out.lastIndexOf('\n', ret.index - 1) + 1;
+  const before = out.slice(0, lineStart);
+  const after = out.slice(lineStart);
+
+  if (list.length >= 1) {
+    const expr = list.length === 1 ? list[0] : cfg.wrap(list);
+    return before + after.replace(/return\s+[^;]+;/, `return ${expr};`);
+  }
+  // Union emptied — repoint to the last remaining named const, or drop the
+  // return so the engine reports the empty scene with its usual message.
+  const remaining = scanPartsJs(out).map(p => p.name);
+  const last = remaining[remaining.length - 1];
+  return last
+    ? before + after.replace(/return\s+[^;]+;/, `return ${last};`)
+    : before + after.replace(/^[ \t]*return\s+[^;]+;[ \t]*\n?/m, '');
 }
 
 /** Remove an OpenSCAD statement at `[from, to)`, collapsing leftover blank lines. */
