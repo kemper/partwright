@@ -657,6 +657,15 @@ function refreshPreview(): void {
 // if it leaves the canvas.
 let capturedPointerId: number | null = null;
 
+// The canvas's inline `cursor` / `touch-action` before the studio overrode them,
+// captured on attach and restored on detach. Critically, OrbitControls sets
+// `touch-action: none` once on connect and relies on it staying put; clearing it
+// to '' on detach (instead of restoring it) lets the browser reclaim touch
+// gestures, so on mobile a post-studio orbit drag only partially rotates ("turns
+// far less"). Restoring the captured value keeps OrbitControls' 'none' intact.
+let prevCanvasCursor: string | null = null;
+let prevCanvasTouchAction: string | null = null;
+
 function onPointerDown(event: PointerEvent): void {
   if (!active || event.button !== 0) return;
   // This listener is on the container in the CAPTURE phase, so it also sees
@@ -732,6 +741,8 @@ function attachPointerHandler(): void {
   container.addEventListener('pointermove', onPointerMove, { capture: true });
   container.addEventListener('pointerleave', onPointerLeave);
   window.addEventListener('pointerup', onPointerUp, { capture: true });
+  prevCanvasCursor = canvas.style.cursor;
+  prevCanvasTouchAction = canvas.style.touchAction;
   canvas.style.cursor = 'crosshair';
   canvas.style.touchAction = 'none'; // claim the gesture so touch-drag paints
   // Veto OrbitControls on primary-button presses within the model's bounds so
@@ -756,8 +767,13 @@ function detachPointerHandler(): void {
   container.removeEventListener('pointermove', onPointerMove, { capture: true } as EventListenerOptions);
   container.removeEventListener('pointerleave', onPointerLeave);
   window.removeEventListener('pointerup', onPointerUp, { capture: true } as EventListenerOptions);
-  canvas.style.cursor = '';
-  canvas.style.touchAction = '';
+  // Restore what was there before (OrbitControls' `touch-action: none`), not ''.
+  // Clearing touch-action would let the browser reclaim touch gestures, leaving a
+  // post-studio orbit drag only partially rotating on mobile. See above.
+  canvas.style.cursor = prevCanvasCursor ?? '';
+  canvas.style.touchAction = prevCanvasTouchAction ?? '';
+  prevCanvasCursor = null;
+  prevCanvasTouchAction = null;
   if (capturedPointerId !== null) {
     try { canvas.releasePointerCapture(capturedPointerId); } catch { /* already released */ }
     capturedPointerId = null;
