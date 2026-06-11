@@ -276,20 +276,26 @@ function buildRig(rawOpts: unknown): Rig {
     dir = rotX(dir, -p.flex);
     dir = norm3(dir);
     const E = add3(S, scale3(dir, upperArmLen));
-    // Elbow flexion curls the forearm in the plane of the upper arm. The hinge
-    // ⟂ to (upperArm, front) gives an anatomical FORWARD curl at twist 0.
+    // Elbow flexion curls the forearm in the plane of (upper arm, body front).
+    // hinge = dir × fwd points along −X for a hanging arm, so the POSITIVE
+    // angle gives the anatomical FORWARD (−Y) curl. (The negative angle curled
+    // the forearm backward — same hinge-sign bug family as the knee.)
     let hinge = cross3(dir, fwd);
-    if (len3(hinge) < 1e-4) hinge = [side, 0, 0];
+    // Degenerate (arm ∥ front, flex ±90): use the continuous limit of
+    // dir × fwd as flex → 90, which is [−1,0,0] for BOTH sides — the old
+    // [side,0,0] fallback flipped one arm's curl in exactly-forward poses.
+    if (len3(hinge) < 1e-4) hinge = [-1, 0, 0];
     hinge = norm3(hinge);
     // `twist` (shoulder/forearm roll) rolls that curl plane about the upper-arm
     // axis — the DOF that lets a RAISED arm curl the fist UP (double-biceps) or
-    // inward (ballet fifth) instead of only forward. Multiplying by `side`
-    // keeps a symmetric `arms:{twist}` lifting both fists the same way.
-    if (p.twist) hinge = norm3(rotAxis(hinge, dir, p.twist * side));
-    const foreDir = norm3(rotAxis(dir, hinge, -(p.elbow ?? 0)));
+    // inward (ballet fifth) instead of only forward. The roll sign pairs with
+    // the forward curl so `twist: 90` lifts a side-raised fist UP; multiplying
+    // by `side` keeps a symmetric `arms:{twist}` lifting both fists the same way.
+    if (p.twist) hinge = norm3(rotAxis(hinge, dir, -p.twist * side));
+    const foreDir = norm3(rotAxis(dir, hinge, p.elbow ?? 0));
     const W = add3(E, scale3(foreDir, foreArmLen));
     const handC = add3(W, scale3(foreDir, r.hand * 0.9));
-    return { S, E, W, handC, dir, foreDir };
+    return { S, E, W, handC, dir, foreDir, hinge };
   }
   const aL = armChain(+1, pose.armL);
   const aR = armChain(-1, pose.armR);
@@ -303,13 +309,17 @@ function buildRig(rawOpts: unknown): Rig {
     dir = rotX(dir, -p.flex);
     dir = norm3(dir);
     const K = add3(Hj, scale3(dir, thighLen));
-    // Knee bends the shank backward (+Y) relative to the thigh. The hinge
-    // (cross of thigh dir and forward) points along −X for a downward leg, so
-    // the BACKWARD bend needs the negative angle (positive swings forward —
+    // Knee bends the shank backward (+Y) relative to the thigh, about the
+    // thigh's LATERAL axis: the rest hinge [−1,0,0] carried through the same
+    // abduct/flex rotations as the bone. (It was cross(dir, fwd) before,
+    // which degenerates toward a VERTICAL axis as flex → 90 with any nonzero
+    // abduct — the documented chair-sit pose then swung the shins sideways,
+    // frog-style, because the tiny abduct component dominated the cross
+    // product. The frame-derived hinge equals the old one wherever abduct or
+    // flex is ~0 — every catalog pose — and stays lateral when both are not.)
+    // The BACKWARD bend needs the negative angle (positive swings forward —
     // that sign error once gave lunges a horizontal shin floating mid-air).
-    let hinge = cross3(dir, fwd);
-    if (len3(hinge) < 1e-4) hinge = [side, 0, 0];
-    hinge = norm3(hinge);
+    const hinge = norm3(rotX(rotY([-1, 0, 0], -side * p.abduct), -p.flex));
     const shankDir = norm3(rotAxis(dir, hinge, -(p.knee ?? 0)));
     const A = add3(K, scale3(shankDir, shankLen));
     return { Hj, K, A, dir, shankDir };
@@ -357,6 +367,10 @@ function buildRig(rawOpts: unknown): Rig {
     r,
     dir: {
       upperArmL: aL.dir, foreArmL: aL.foreDir, upperArmR: aR.dir, foreArmR: aR.foreDir,
+      // The elbow-hinge axis (post-twist) — ⟂ to the forearm-curl plane. The
+      // hand frame derives from it: fingers splay along the hinge, the palm
+      // faces hinge × foreArm (the curl direction).
+      elbowHingeL: aL.hinge, elbowHingeR: aR.hinge,
       thighL: lL.dir, shankL: lL.shankDir, thighR: lR.dir, shankR: lR.shankDir,
       headForward: hf, headUp, headLeft,
     },
@@ -419,22 +433,111 @@ function buildArms(sdf: SdfApi, rig: Rig): Node {
 
 function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hands(opts)');
-  assertNoUnknownKeys(o, ['grip'], 'hands(opts)');
+  assertNoUnknownKeys(o, ['grip', 'fingers'], 'hands(opts)');
   const grip = o.grip === undefined ? 'relaxed'
     : assertEnum(o.grip, ['fist', 'open', 'relaxed'] as const, 'hands.grip');
+  // Sculpted three-finger + thumb hands (the art-toy convention — three fat
+  // fingers keep the inter-finger gaps printable where four go sub-cell at
+  // figure scale). Pass `fingers: false` for the legacy blob/paddle hands.
+  // Fingers are ADDITIVE capsules (no carving → no aliasing trap), but they
+  // are finer than the global figure grid — pair with
+  // `detail: F.handDetail(rig)` so the march resolves them.
+  const fingers = o.fingers !== false;
   const j = rig.joints, r = rig.r;
-  function hand(c: Vec3, dir: Vec3): Node {
-    if (grip === 'fist') return sdf.sphere(r.hand * 1.05).translate(c);
-    if (grip === 'open') {
-      // A flattened paddle aligned with the forearm.
-      const palm = sdf.ellipsoid(r.hand * 0.55, r.hand * 1.2, r.hand * 0.9).translate(c);
-      return palm;
+
+  function hand(c: Vec3, dir: Vec3, hinge: Vec3, side: number): Node {
+    // Hand frame: fingers extend along the forearm `dir`, splay across the
+    // elbow-hinge axis, palm faces the curl direction (hinge × dir).
+    const splay = hinge;
+    const palmN = norm3(cross3(splay, dir));
+    const inner = scale3(splay, side);     // toward the body for a neutral pose
+    const fr = r.hand * 0.24;              // finger radius
+    const at = (base: Vec3, ...offs: Vec3[]): Vec3 => offs.reduce(add3, base);
+
+    if (!fingers) {
+      if (grip === 'fist') return sdf.sphere(r.hand * 1.05).translate(c);
+      if (grip === 'open') {
+        return sdf.ellipsoid(r.hand * 0.55, r.hand * 1.2, r.hand * 0.9).translate(c);
+      }
+      const tip = add3(c, scale3(dir, r.hand * 1.1));
+      return tapered(sdf, c, tip, r.hand * 0.95, r.hand * 0.6, r.hand * 0.5);
     }
-    // relaxed: a soft tapered blob
-    const tip = add3(c, scale3(dir, r.hand * 1.1));
-    return tapered(sdf, c, tip, r.hand * 0.95, r.hand * 0.6, r.hand * 0.5);
+
+    if (grip === 'fist') {
+      // Ball fist + three chunky folded-finger ridges on the dir face + a
+      // thumb capsule folded across the palm side. The ridges are short
+      // capsules (not spheres) with a tight weld so the knuckle creases
+      // survive the union instead of melting into the ball.
+      const ball = sdf.ellipsoid(r.hand * 0.95, r.hand * 0.95, r.hand * 0.88).translate(c);
+      let out = ball;
+      for (const s of [-0.62, 0, 0.62]) {
+        const kc = at(c, scale3(dir, r.hand * 0.62), scale3(splay, s * r.hand * 0.85));
+        const ridge = sdf.capsule(
+          at(kc, scale3(palmN, -r.hand * 0.25)),
+          at(kc, scale3(palmN, r.hand * 0.45)),
+          r.hand * 0.3,
+        );
+        out = out.smoothUnion(ridge, r.hand * 0.16);
+      }
+      const thumb = sdf.capsule(
+        at(c, scale3(inner, r.hand * 0.8), scale3(palmN, r.hand * 0.35)),
+        at(c, scale3(palmN, r.hand * 0.95), scale3(dir, r.hand * 0.25)),
+        fr * 1.25,
+      );
+      return out.smoothUnion(thumb, r.hand * 0.18);
+    }
+
+    // Palm: a squashed knuckle-block oriented along the forearm — wider
+    // across the splay axis than front-to-back, so the hand reads flat.
+    const palm = sdf.capsule(
+      add3(c, scale3(dir, -r.hand * 0.55)),
+      add3(c, scale3(dir, r.hand * 0.1)),
+      r.hand * 0.72,
+    ).smoothUnion(
+      sdf.capsule(
+        at(c, scale3(dir, r.hand * 0.15), scale3(splay, -r.hand * 0.45)),
+        at(c, scale3(dir, r.hand * 0.15), scale3(splay, r.hand * 0.45)),
+        r.hand * 0.5,
+      ), r.hand * 0.5,
+    );
+
+    // Three fingers, middle longest, fanned slightly. `relaxed` curls them
+    // toward the palm; `open` keeps them straight.
+    const curl = grip === 'relaxed' ? 0.45 : 0;
+    const lens = [1.0, 1.18, 0.92];
+    let out = palm;
+    [-1, 0, 1].forEach((t, i) => {
+      const len = r.hand * lens[i];
+      const s = t * r.hand * 0.62;
+      const base = at(c, scale3(dir, r.hand * 0.38), scale3(splay, s * 0.85));
+      const reach = norm3(add3(scale3(dir, 1 - curl * 0.45), scale3(palmN, curl)));
+      const tip = at(base, scale3(reach, len), scale3(splay, s * 0.25));
+      out = out.smoothUnion(sdf.capsule(base, tip, fr), fr * 1.05);
+    });
+    // Thumb: from the inner palm edge, angled out and slightly palm-ward.
+    const thumbBase = at(c, scale3(dir, -r.hand * 0.25), scale3(inner, r.hand * 0.55));
+    const thumbDir = norm3(add3(add3(scale3(inner, 0.8), scale3(dir, 0.55)), scale3(palmN, 0.35)));
+    const thumb = sdf.capsule(thumbBase, at(thumbBase, scale3(thumbDir, r.hand * 0.85)), fr * 1.08);
+    return out.smoothUnion(thumb, fr * 1.1);
   }
-  return hand(j.handL as Vec3, rig.dir.foreArmL).union(hand(j.handR as Vec3, rig.dir.foreArmR));
+
+  return hand(j.handL as Vec3, rig.dir.foreArmL, rig.dir.elbowHingeL, +1)
+    .union(hand(j.handR as Vec3, rig.dir.foreArmR, rig.dir.elbowHingeR, -1));
+}
+
+/** Detail-region spheres for the hands, mirroring `faceDetail` — fingers are
+ *  finer than the recommended 0.4–0.6 figure grid, so sculpted hands need a
+ *  local fine march to resolve (an under-marched finger aliases away). */
+function handDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
+  const o = obj(opts, 'handDetail(opts)');
+  assertNoUnknownKeys(o, ['radius', 'edgeLength'], 'handDetail(opts)');
+  const r = rig.r;
+  const radius = num(o.radius, r.hand * 2.6, 'handDetail.radius', 1e-3);
+  const edgeLength = num(o.edgeLength, Math.max(r.hand * 0.085, 0.08), 'handDetail.edgeLength', 1e-4);
+  return [
+    { center: [...(rig.joints.handL as Vec3)] as Vec3, radius, edgeLength },
+    { center: [...(rig.joints.handR as Vec3)] as Vec3, radius, edgeLength },
+  ];
 }
 
 function buildLegs(sdf: SdfApi, rig: Rig): Node {
@@ -850,10 +953,14 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
 
 function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hair(opts)');
-  assertNoUnknownKeys(o, ['style', 'thickness'], 'hair(opts)');
+  assertNoUnknownKeys(o, ['style', 'thickness', 'hairline'], 'hair(opts)');
   const style = o.style === undefined ? 'short'
-    : assertEnum(o.style, ['short', 'long', 'bun', 'bald'] as const, 'hair.style');
+    : assertEnum(o.style, ['short', 'long', 'bun', 'bald', 'bangs', 'ponytail'] as const, 'hair.style');
   if (style === 'bald') return sdf.sphere(1e-3).translate([0, 0, -1e6]); // empty-ish
+  // Hairline height = where the face window's top edge sits. 'low' brings the
+  // hair down to the brows (the bangs default), 'high' shows more forehead.
+  const hairline = o.hairline === undefined ? (style === 'bangs' ? 'low' : 'mid')
+    : assertEnum(o.hairline, ['high', 'mid', 'low'] as const, 'hair.hairline');
   const r = rig.r, c = rig.joints.headCenter as Vec3;
   const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
   const t = num(o.thickness, r.head * 0.12, 'hair.thickness', 0.01);
@@ -868,15 +975,35 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   } else if (style === 'bun') {
     const bun = sdf.sphere(r.head * 0.55).translate(add3(c, add3(scale3(f, -r.headZ * 0.7), scale3(u, r.head * 0.9))));
     cap = cap.smoothUnion(bun, r.head * 0.3);
+  } else if (style === 'bangs') {
+    // A straight fringe: a wide slab rooted in the cap, hanging over the
+    // forehead. The face window (lowered to the brows by the 'low' hairline
+    // default) trims its bottom edge into a clean straight-ish line.
+    const fringe = sdf.ellipsoid(r.headX * 0.85, r.headZ * 0.5, r.headZ * 0.42)
+      .translate(add3(c, add3(scale3(f, r.headZ * 0.55), scale3(u, r.headZ * 0.6))));
+    cap = cap.smoothUnion(fringe, r.head * 0.25);
+  } else if (style === 'ponytail') {
+    // Gathered anchor high on the back of the skull + a tapered tail swinging
+    // down. Segments chain anchor→mid→tip so the tail curves, and each
+    // segment shares its joint point — always one welded piece.
+    const anchor = add3(c, add3(scale3(f, -r.headZ * 0.7), scale3(u, r.headZ * 0.55)));
+    const mid = add3(anchor, add3(scale3(f, -r.head * 0.28), scale3(u, -r.head * 0.85)));
+    const tip = add3(mid, add3(scale3(f, r.head * 0.08), scale3(u, -r.head * 0.95)));
+    const tail = sdf.sphere(r.head * 0.4).translate(anchor)
+      .smoothUnion(sdf.capsule(anchor, mid, r.head * 0.3), r.head * 0.25)
+      .smoothUnion(sdf.capsule(mid, tip, r.head * 0.2), r.head * 0.22);
+    cap = cap.smoothUnion(tail, r.head * 0.25);
   }
   void right;
   // Face window: the cap overlaps the face INTERIOR, and since hair is its
   // own labelled region it survives the skin's mouth/feature carves — a
   // carved smile then exposes pale hair volume inside its corners ("nub
   // teeth"). Carve the face zone out of the hair so only skin lives there.
-  // Top edge sits above the brows (a cartoon hairline), sides keep the
-  // temples framed.
-  const windowC = add3(c, add3(scale3(f, r.headZ * 0.9), scale3(u, -r.headZ * 0.2)));
+  // The hairline option slides the window's top edge: 'mid' sits above the
+  // brows (the cartoon hairline), 'low' lands ON the brow line (bangs),
+  // 'high' opens the forehead. Sides keep the temples framed.
+  const drop = hairline === 'low' ? -r.headZ * 0.25 : hairline === 'high' ? r.headZ * 0.15 : 0;
+  const windowC = add3(c, add3(scale3(f, r.headZ * 0.9), scale3(u, -r.headZ * 0.2 + drop)));
   const faceWindow = orientToHeadPose(
     sdf.ellipsoid(r.headX * 0.72, r.headZ * 0.75, r.headZ * 0.85), rig,
   ).translate(windowC);
@@ -1060,6 +1187,9 @@ export interface FigureNamespace {
   /** The face's detail-region spheres (head + finer mouth) for
    *  `build({ detail: F.faceDetail(rig) })`. */
   faceDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
+  /** Detail spheres over both hands — required for sculpted fingers:
+   *  `build({ detail: [...F.faceDetail(rig), ...F.handDetail(rig)] })`. */
+  handDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
   face: {
     eyes(rig: Rig, opts?: object): Node;
     nose(rig: Rig, opts?: object): Node;
@@ -1118,6 +1248,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     weld: (rig, parts, opts) => weldBody(sdf, assertRig(rig, 'weld(rig)'), parts, opts),
     placeAt: (node, joint, opts) => placeAt(node as Node, joint, opts),
     faceDetail: (rig, opts) => faceDetail(assertRig(rig, 'faceDetail(rig)'), opts),
+    handDetail: (rig, opts) => handDetail(assertRig(rig, 'handDetail(rig)'), opts),
     face: {
       eyes: (rig, opts) => buildEyes(sdf, assertRig(rig, 'face.eyes(rig)'), opts),
       nose: (rig, opts) => buildNose(sdf, assertRig(rig, 'face.nose(rig)'), opts),
@@ -1135,4 +1266,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants };
+export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildHands, handDetail, buildHair };

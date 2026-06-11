@@ -9,7 +9,7 @@ import { __figureTestables__ } from '../../src/geometry/sdfFigure';
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants } = __figureTestables__;
+const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -112,6 +112,38 @@ describe('figure rig — pose forward kinematics', () => {
     expect(dist(straight.joints.wristL, curled.joints.wristL)).toBeGreaterThan(1);
   });
 
+  it('elbow flexion curls a hanging forearm FORWARD (−Y), like a real elbow', () => {
+    // Regression: the hinge sign once curled the forearm BACKWARD (+Y) — the
+    // same sign-bug family as the knee. A hanging arm with a bent elbow must
+    // bring the wrist forward of the body and raise it, on both sides.
+    for (const side of ['L', 'R'] as const) {
+      const straight = buildRig({ pose: { [`arm${side}`]: { abduct: 0, elbow: 0 } } });
+      const bent = buildRig({ pose: { [`arm${side}`]: { abduct: 0, elbow: 70 } } });
+      expect(bent.joints[`wrist${side}`][1]).toBeLessThan(straight.joints[`wrist${side}`][1] - 1);
+      expect(bent.joints[`wrist${side}`][2]).toBeGreaterThan(straight.joints[`wrist${side}`][2] + 1);
+    }
+  });
+
+  it('sitting pose (flex 90, knee 90) bends BOTH shanks down, symmetrically', () => {
+    // Regression ×2: flex 90 makes the thigh (nearly) parallel to body-front.
+    // The old cross(dir, fwd) knee hinge degenerated there — exactly parallel
+    // bent the left knee UP ([side,0,0] fallback), and any nonzero abduct
+    // swung the shins SIDEWAYS frog-style (the tiny abduct component
+    // dominated the cross product). The frame-derived hinge must drop the
+    // shins straight down in a chair sit, with or without stance width.
+    for (const abduct of [0, 8]) {
+      const rig = buildRig({ pose: { legs: { abduct, flex: 90, knee: 90 } } });
+      for (const side of ['L', 'R'] as const) {
+        const K = rig.joints[`knee${side}`], A = rig.joints[`ankle${side}`];
+        expect(A[2]).toBeLessThan(K[2] - 1);     // shin drops below the knee
+        // and stays under it, not swung out sideways (frog-sit regression).
+        expect(Math.abs(A[0] - K[0])).toBeLessThan(2);
+      }
+      expect(rig.joints.ankleL[0]).toBeCloseTo(-rig.joints.ankleR[0], 5);
+      expect(rig.joints.ankleL[2]).toBeCloseTo(rig.joints.ankleR[2], 5);
+    }
+  });
+
   it('knee flexion bends the shank BACKWARD (+Y), like a real knee', () => {
     // Regression: the hinge sign once swung the shank FORWARD, giving a
     // lunge a horizontal shin floating in front of the figure.
@@ -137,7 +169,7 @@ describe('figure rig — pose forward kinematics', () => {
   });
 
   it('twist rolls the forearm-curl plane so a raised arm can curl the fist up', () => {
-    // With the arm out to the side, elbow alone curls backward; twist lifts the
+    // With the arm out to the side, elbow alone curls forward; twist lifts the
     // fist UP (the double-biceps / ballet-fifth pose that needs the roll DOF).
     const noTwist = buildRig({ pose: { armL: { abduct: 90, elbow: 95, twist: 0 } } });
     const rolled = buildRig({ pose: { armL: { abduct: 90, elbow: 95, twist: 90 } } });
@@ -340,6 +372,109 @@ describe('figure mouthAccents — paintable teeth and lips', () => {
     expect(m[0]).toBeLessThan(b.max[0]);
     expect(m[2]).toBeGreaterThan(b.min[2]);
     expect(m[2]).toBeLessThan(b.max[2]);
+  });
+});
+
+describe('figure hands — sculpted fingers', () => {
+  const rig = buildRig({ height: 60, headsTall: 6 });
+
+  it('sculpted open fingers reach past the legacy paddle hand', () => {
+    // Straight fingers extend beyond the old flat paddle along the forearm.
+    const blob = (buildHands(api, rig, { grip: 'open', fingers: false }) as SdfNode).bounds();
+    const sculpted = (buildHands(api, rig, { grip: 'open' }) as SdfNode).bounds();
+    expect(sculpted.min[2]).toBeLessThan(blob.min[2] - 0.5); // hanging arms: fingers point down
+  });
+
+  it('every grip contains the hand-centre joint (welds to the arm)', () => {
+    for (const grip of ['fist', 'open', 'relaxed'] as const) {
+      const hands = buildHands(api, rig, { grip }) as SdfNode;
+      for (const side of ['L', 'R'] as const) {
+        const c = rig.joints[`hand${side}`];
+        expect(hands.evaluate(c[0], c[1], c[2])).toBeLessThan(0);
+      }
+    }
+  });
+
+  it('open fingers splay symmetrically L/R', () => {
+    const hands = buildHands(api, rig, { grip: 'open' }) as SdfNode;
+    const b = hands.bounds();
+    expect(b.max[0]).toBeCloseTo(-b.min[0], 1);
+  });
+
+  it('rejects unknown grips and keys', () => {
+    expect(() => buildHands(api, rig, { grip: 'claw' })).toThrow(/grip/);
+    expect(() => buildHands(api, rig, { claws: true })).toThrow();
+  });
+});
+
+describe('figure hair — styles and hairline', () => {
+  const rig = buildRig({ height: 60, headsTall: 5 });
+  const browPoint = (): number[] => {
+    // a point just above the brow line on the forehead surface
+    const b = rig.face.browL;
+    return [0, b[1], b[2] + rig.r.headZ * 0.12];
+  };
+
+  it('bangs bring the hairline down over the forehead (short does not)', () => {
+    const p = browPoint();
+    const short = buildHair(api, rig, { style: 'short' }) as SdfNode;
+    const bangs = buildHair(api, rig, { style: 'bangs' }) as SdfNode;
+    expect(short.evaluate(p[0], p[1], p[2])).toBeGreaterThan(0);  // forehead bare
+    expect(bangs.evaluate(p[0], p[1], p[2])).toBeLessThan(0);     // fringe covers it
+  });
+
+  it('hairline option moves the face-window top edge', () => {
+    // A point near the MID window's top edge: carved away at 'mid'
+    // (inside the window), kept at 'low' (window dropped below it).
+    const c = rig.joints.headCenter;
+    const p = [c[0], c[1] - rig.r.headZ * 0.7, c[2] + rig.r.headZ * 0.55];
+    const mid = buildHair(api, rig, { style: 'short', hairline: 'mid' }) as SdfNode;
+    const low = buildHair(api, rig, { style: 'short', hairline: 'low' }) as SdfNode;
+    expect(mid.evaluate(p[0], p[1], p[2])).toBeGreaterThan(0);
+    expect(low.evaluate(p[0], p[1], p[2])).toBeLessThan(0);
+  });
+
+  it('ponytail adds a tail down the back of the skull', () => {
+    // Midpoint of the tail's mid→tip segment: outside the enlarged cap,
+    // inside the swinging tail capsule.
+    const c = rig.joints.headCenter, R = rig.r.head, hz = rig.r.headZ;
+    const p = [
+      c[0],
+      c[1] + hz * 0.7 + R * 0.28 - R * 0.04,
+      c[2] + hz * 0.55 - R * 0.85 - R * 0.475,
+    ];
+    const short = buildHair(api, rig, { style: 'short' }) as SdfNode;
+    const tail = buildHair(api, rig, { style: 'ponytail' }) as SdfNode;
+    expect(short.evaluate(p[0], p[1], p[2])).toBeGreaterThan(0);
+    expect(tail.evaluate(p[0], p[1], p[2])).toBeLessThan(0);
+  });
+
+  it('rejects unknown style / hairline / keys', () => {
+    expect(() => buildHair(api, rig, { style: 'mohawk' })).toThrow(/style/);
+    expect(() => buildHair(api, rig, { hairline: 'widow' })).toThrow(/hairline/);
+    expect(() => buildHair(api, rig, { volume: 2 })).toThrow();
+  });
+});
+
+describe('figure handDetail — detail-region helper', () => {
+  const rig = buildRig({ height: 60, headsTall: 6 });
+
+  it('returns one sphere per hand, centred on the hand joints, finer than the figure grid', () => {
+    const [L, R] = handDetail(rig);
+    expect(L.center).toEqual(rig.joints.handL);
+    expect(R.center).toEqual(rig.joints.handR);
+    expect(L.edgeLength).toBeLessThan(0.4);          // finer than the 0.4–0.6 figure grid
+    expect(L.radius).toBeGreaterThan(rig.r.hand * 2); // covers the fingers
+  });
+
+  it('follows posed hands and honours overrides', () => {
+    const posed = buildRig({ pose: { armL: { abduct: 150, elbow: 40 } } });
+    const [L] = handDetail(posed);
+    expect(L.center).toEqual(posed.joints.handL);
+    const [o] = handDetail(rig, { radius: 9, edgeLength: 0.11 });
+    expect(o.radius).toBe(9);
+    expect(o.edgeLength).toBe(0.11);
+    expect(() => handDetail(rig, { density: 1 })).toThrow();
   });
 });
 

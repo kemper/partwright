@@ -85,6 +85,7 @@ const base = F.base(rig, {
 
 // 7. Hard-union all labeled regions and build.
 // The face detail region refines the head mesh (smooth carved smile, round
-// eyes) without paying for a fine grid over the whole body.
+// eyes); the hand regions resolve the sculpted fingers — both stay local so
+// the body keeps the cheap global grid.
 return sdf.union(skin, eyes, mouthParts, pants, shirt, hair, base)
-  .build({ edgeLength: 0.55, detail: F.faceDetail(rig) });
+  .build({ edgeLength: 0.55, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] });
