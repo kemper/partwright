@@ -76,4 +76,23 @@ test.describe('voxel studio camera', () => {
     );
     expect(outside).toBeGreaterThan(5);
   });
+
+  // OrbitControls sets `touch-action: none` on the canvas once (on connect) and
+  // relies on it staying. The studio overrides it while editing, so on teardown
+  // it must RESTORE that value — clearing it to '' would let the browser reclaim
+  // touch gestures, leaving a post-studio orbit drag only partially rotating on
+  // mobile ("the model turns far less"). Mouse orbit is unaffected, so this is a
+  // touch-only regression; we assert the underlying style is preserved.
+  test('restores the canvas touch-action after the studio closes (mobile orbit)', async ({ page }) => {
+    await setup(page);
+    const touchAction = () => page.evaluate(
+      () => (document.querySelector('#viewport') as HTMLCanvasElement).style.touchAction,
+    );
+    // Studio is open here (setup opened the panel); OrbitControls/studio both want 'none'.
+    expect(await touchAction()).toBe('none');
+    // Close the studio and confirm touch-action is restored, not cleared.
+    await page.evaluate(() => (window as unknown as { partwright: { deactivateVoxelPaint(): unknown } }).partwright.deactivateVoxelPaint());
+    await page.waitForTimeout(200);
+    expect(await touchAction()).toBe('none');
+  });
 });

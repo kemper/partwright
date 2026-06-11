@@ -111,6 +111,13 @@ export interface AppConfig {
     gizmoSnapDurationSec: number;
     /** OrbitControls damping factor — lower is snappier, higher is smoother. */
     orbitDampingFactor: number;
+    /** Frame rate (fps) that `orbitDampingFactor` is authored against. The orbit
+     *  coast is re-derived from the real frame delta so its decay-per-second
+     *  stays constant regardless of frame rate — otherwise a heavy mesh that
+     *  drops the frame rate makes the same drag "coast" for far longer and the
+     *  model lags behind the cursor (reads as sluggish, slow rotation). At this
+     *  rate the correction is a no-op. */
+    orbitDampingReferenceFps: number;
     /** Zoom-out limit as a multiple of the model's largest dimension. Caps how
      *  far the camera can dolly back (OrbitControls maxDistance) so the model
      *  can't shrink to a speck. Re-derived from the model size on each frame. */
@@ -280,6 +287,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     gizmoHitRadius: 0.4,
     gizmoSnapDurationSec: 0.4,
     orbitDampingFactor: 0.1,
+    orbitDampingReferenceFps: 60,
     maxZoomOutFactor: 12,
     ambientLightIntensity: 0.6,
     primaryLightIntensity: 0.8,

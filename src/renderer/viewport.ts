@@ -7,6 +7,7 @@ import { initMeasureOverlay } from './measureOverlay';
 import { initOrientationGizmo, renderGizmo, updateGizmo, isGizmoAnimating } from './orientationGizmo';
 import { initDimensionLines, updateDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
 import { runViewportInitHooks, runViewportResizeHooks } from './viewportRegistry';
+import { frameRateAdjustedDamping } from './orbitDamping';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
 import { getConfig } from '../config/appConfig';
 
@@ -323,6 +324,18 @@ export function initViewport(container: HTMLElement): {
     const delta = timer.getDelta();
     updateGizmo(delta);
     syncOrbitState();
+    // OrbitControls applies damping once per frame with no time term, so a fixed
+    // dampingFactor makes the orbit "coast" decay per-frame instead of per-second.
+    // When the frame rate dips — exactly what heavy/smoothed voxel meshes do — the
+    // same rotation backlog drips out over many more wall-clock seconds and the
+    // model lags far behind the cursor: it reads as sluggish, slow rotation.
+    // Re-derive the per-frame factor from the real frame delta so the decay rate
+    // (and thus the feel) stays constant across frame rates. At the reference rate
+    // this returns the configured factor unchanged.
+    const rcfg = getConfig().renderer;
+    controls.dampingFactor = frameRateAdjustedDamping(
+      rcfg.orbitDampingFactor, delta, rcfg.orbitDampingReferenceFps,
+    );
     // controls.update() applies damping and synchronously fires 'change' (which
     // sets needsRender) whenever the camera actually moves, so inertia keeps the
     // loop painting until it settles.
