@@ -14,6 +14,7 @@ import { cableKnit } from '../../src/surface/cableKnit';
 import { waffleStitch } from '../../src/surface/waffleStitch';
 import { furVelvet } from '../../src/surface/furVelvet';
 import { wovenFabric } from '../../src/surface/wovenFabric';
+import { knurlTexture } from '../../src/surface/knurlTexture';
 import { voronoiShell } from '../../src/surface/voronoiShell';
 import { voronoiLattice } from '../../src/surface/voronoiLattice';
 import { surfaceNetsField } from '../../src/surface/surfaceNetsField';
@@ -186,6 +187,7 @@ describe('fabric textures (cable / waffle / fur / woven / voronoi)', () => {
     { name: 'furVelvet', fn: furVelvet as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, fiberSpacing: 2, seed: 3 } },
     { name: 'wovenFabric', fn: wovenFabric as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, threadSpacing: 2, seed: 3 } },
     { name: 'voronoiShell', fn: voronoiShell as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellSize: 3, seed: 3 } },
+    { name: 'knurlTexture', fn: knurlTexture as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellWidth: 2, seed: 3 } },
   ] as const;
 
   for (const { name, fn, opts } of cases) {
@@ -210,6 +212,28 @@ describe('fabric textures (cable / waffle / fur / woven / voronoi)', () => {
       expect([...out.triColors!].every(v => v === 42)).toBe(true);
     });
   }
+});
+
+describe('knurlTexture', () => {
+  it('the three styles produce distinct displacements', () => {
+    const diamond = knurlTexture(cube(10), { amplitude: 0.5, cellWidth: 2, style: 'diamond' });
+    const straight = knurlTexture(cube(10), { amplitude: 0.5, cellWidth: 2, style: 'straight' });
+    const ribs = knurlTexture(cube(10), { amplitude: 0.5, cellWidth: 2, style: 'ribs' });
+    expect([...diamond.vertProperties]).not.toEqual([...straight.vertProperties]);
+    expect([...straight.vertProperties]).not.toEqual([...ribs.vertProperties]);
+  });
+
+  it('displacement is outward-bounded by amplitude (ridges only raise)', () => {
+    // A knurl raises the surface by [0, amplitude] along the normal; on an
+    // axis-aligned cube face the max coordinate can grow by at most amplitude.
+    const amp = 0.5;
+    const out = knurlTexture(cube(10), { amplitude: amp, cellWidth: 2, style: 'diamond' });
+    let maxX = -Infinity;
+    for (let v = 0; v < out.numVert; v++) maxX = Math.max(maxX, out.vertProperties[v * 3]);
+    // Cube spans [0,10]; the +X face can rise to at most 10 + amplitude (+ε).
+    expect(maxX).toBeLessThanOrEqual(10 + amp + 1e-3);
+    expect(maxX).toBeGreaterThan(10); // something raised
+  });
 });
 
 describe('voronoiShell', () => {

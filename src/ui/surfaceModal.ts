@@ -26,7 +26,7 @@ import { engravePlanarFootprint, engraveFreeFootprint } from '../surface/engrave
 import { listFilaments } from '../color/palette';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
-type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
+type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
 
 /** The subset of the console API the surface UI needs. */
 export interface SurfaceApi {
@@ -36,6 +36,7 @@ export interface SurfaceApi {
   applyWaffleStitch(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; sharpness?: number; rowOffset?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyFurVelvet(opts?: { amplitude?: number; fiberSpacing?: number; fiberLength?: number; octaves?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyWovenFabric(opts?: { amplitude?: number; threadSpacing?: number; threadWidth?: number; underDepth?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyKnurlTexture(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; style?: 'diamond' | 'straight' | 'ribs'; sharpness?: number; grainAngleDeg?: number; seed?: number; quality?: number; selectedTriangles?: Set<number>; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiShell(opts?: { amplitude?: number; cellSize?: number; wallWidth?: number; raised?: boolean; jitter?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiLamp(opts?: { cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; jitter?: number; grainAngleDeg?: number; seed?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   buildEngraveStamp(spec?: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }): Promise<{ mask: StampMask; width: number; height: number } | { error: string }>;
@@ -329,6 +330,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     { id: 'waffle', label: 'Waffle' },
     { id: 'fur', label: 'Fur' },
     { id: 'woven', label: 'Woven' },
+    { id: 'knurl', label: 'Knurl' },
     { id: 'voronoi', label: 'Voronoi (relief)' },
     { id: 'voronoiLamp', label: 'Voronoi lamp' },
     { id: 'engrave', label: 'Engrave' },
@@ -430,7 +432,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   // Modifiers expressible as in-code `api.surface.*` calls. voxelize/voronoiLamp
   // change engines and engrave is a boolean cut, so they stay bake-only.
-  const IN_CODE_IDS = new Set<Tab>(['fuzzy', 'knit', 'cable', 'waffle', 'fur', 'woven', 'voronoi', 'smooth']);
+  const IN_CODE_IDS = new Set<Tab>(['fuzzy', 'knit', 'cable', 'waffle', 'fur', 'woven', 'knurl', 'voronoi', 'smooth']);
   // Tabs that hide the region picker entirely (always whole-model).
   const REGIONLESS_TABS = new Set<Tab>(['voxelize', 'voronoiLamp', 'engrave']);
 
@@ -734,6 +736,29 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         threadWidth: tw.get(),
         amplitude: amp.get(),
         underDepth: ud.get(),
+        grainAngleDeg: grain.get(),
+        quality: detail.get(),
+        selectedTriangles: activeSelection(),
+      });
+    } else if (active === 'knurl') {
+      const style = dropdown<'diamond' | 'straight' | 'ribs'>('Pattern', [
+        ['diamond', 'Diamond (cross-hatch)'],
+        ['straight', 'Straight (axial splines)'],
+        ['ribs', 'Ribs (horizontal rings)'],
+      ], 'diamond', schedulePreview);
+      const cw = slider('Cell width (ridge spacing)', span * 0.008, span * 0.25, span * 0.05, span * 0.004, n => n.toFixed(3), schedulePreview);
+      const ch = slider('Cell height', span * 0.008, span * 0.25, span * 0.05, span * 0.004, n => n.toFixed(3), schedulePreview);
+      const amp = slider('Amplitude (ridge height)', 0, span * 0.06, span * 0.02, span * 0.001, n => n.toFixed(3), schedulePreview);
+      const sharp = slider('Sharpness', 1, 8, 2, 0.5, n => n.toFixed(1), schedulePreview);
+      const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
+      body.append(style.wrap, cw.wrap, ch.wrap, amp.wrap, sharp.wrap, grain.wrap, detail.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Functional grip relief. Diamond = thumbscrew cross-hatch; straight = axial splines; ribs = horizontal finger rings. Sharpness 1=soft rounded, 2=crisp, 6+=sharp peaks.'));
+      currentOpts = () => ({
+        style: style.get(),
+        cellWidth: cw.get(),
+        cellHeight: ch.get(),
+        amplitude: amp.get(),
+        sharpness: sharp.get(),
         grainAngleDeg: grain.get(),
         quality: detail.get(),
         selectedTriangles: activeSelection(),
@@ -1193,6 +1218,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         : active === 'waffle' ? await api.applyWaffleStitch(opts)
         : active === 'fur' ? await api.applyFurVelvet(opts)
         : active === 'woven' ? await api.applyWovenFabric(opts)
+        : active === 'knurl' ? await api.applyKnurlTexture(opts)
         : active === 'voronoi' ? await api.applyVoronoiShell(opts)
         : active === 'voronoiLamp' ? await api.applyVoronoiLamp(opts)
         : active === 'engrave' ? await api.engraveModel(opts)
@@ -1234,6 +1260,7 @@ export function initSurfaceUI(api: SurfaceApi): void {
     { id: 'surface-waffle', title: 'Surface: Waffle stitch', hint: 'Modifier', keywords: 'waffle stitch grid honeycomb cell recessed border', run: () => openSurfaceModal(api, 'waffle') },
     { id: 'surface-fur', title: 'Surface: Fur / velvet', hint: 'Modifier', keywords: 'fur velvet pile fabric soft directional fiber', run: () => openSurfaceModal(api, 'fur') },
     { id: 'surface-woven', title: 'Surface: Woven fabric', hint: 'Modifier', keywords: 'woven weave fabric basket cloth interlace thread', run: () => openSurfaceModal(api, 'woven') },
+    { id: 'surface-knurl', title: 'Surface: Knurl grip', hint: 'Modifier', keywords: 'knurl knurling grip diamond cross-hatch straight splines ribs knob thumbscrew handle texture', run: () => openSurfaceModal(api, 'knurl') },
     { id: 'surface-voronoi', title: 'Surface: Voronoi texture', hint: 'Modifier', keywords: 'voronoi cell relief organic cracked web ridges struts texture', run: () => openSurfaceModal(api, 'voronoi') },
     { id: 'surface-voronoi-lamp', title: 'Surface: Voronoi lamp (perforated shell)', hint: 'Modifier', keywords: 'voronoi lamp shell lattice perforated cutout holes see-through planter lampshade voxel', run: () => openSurfaceModal(api, 'voronoiLamp') },
     { id: 'surface-engrave', title: 'Surface: Engrave / emboss / cut-through text or image', hint: 'Modifier', keywords: 'engrave emboss carve raised relief cut through text image stencil label logo name plate recess channel color', run: () => openSurfaceModal(api, 'engrave') },

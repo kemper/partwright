@@ -19,6 +19,7 @@ import { cableKnit, type CableKnitOptions } from './cableKnit';
 import { waffleStitch, type WaffleStitchOptions } from './waffleStitch';
 import { furVelvet, type FurVelvetOptions } from './furVelvet';
 import { wovenFabric, type WovenFabricOptions } from './wovenFabric';
+import { knurlTexture, type KnurlTextureOptions } from './knurlTexture';
 import { voronoiShell, type VoronoiShellOptions } from './voronoiShell';
 import { voronoiLattice, type VoronoiLampOptions } from './voronoiLattice';
 import { smoothSurface, type SmoothOptions } from './smoothSurface';
@@ -35,7 +36,7 @@ import { stampEvaluator, type EngraveProjection } from './engraveStamp';
 import { nearestTriangleMap, nearestSurfaceDistance } from './colorTransfer';
 import { type SdfRunControl } from './sdfModifier';
 
-export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
 
 export interface ModifierManifoldResult {
   kind: 'manifold';
@@ -144,6 +145,7 @@ export { type CableKnitOptions };
 export { type WaffleStitchOptions };
 export { type FurVelvetOptions };
 export { type WovenFabricOptions };
+export { type KnurlTextureOptions };
 export { type VoronoiShellOptions };
 export { type VoronoiLampOptions };
 export { type EngraveProjection, type StampMask } from './engraveStamp';
@@ -361,6 +363,13 @@ export function applyWafflePatch(mesh: MeshData, opts: WaffleStitchOptions, sele
   return { kind: 'manifold', label: 'waffle stitch (patch)', mesh: patched, code: manifoldWrapper([`Waffle stitch patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
 }
 
+export function applyKnurlPatch(mesh: MeshData, opts: KnurlTextureOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const diag = modelDiagonal(mesh) || 10;
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.cellWidth), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => knurlTexture(sub, { ...opts, subdivide: false }), pre);
+  return { kind: 'manifold', label: 'knurl (patch)', mesh: patched, code: manifoldWrapper([`Knurl patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
 export function applyFurPatch(mesh: MeshData, opts: FurVelvetOptions, selectedTris: Set<number>): ModifierManifoldResult {
   const diag = modelDiagonal(mesh) || 10;
   const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.fiberSpacing), opts.quality ?? 3);
@@ -416,6 +425,21 @@ export function defaultWaffleOptions(mesh: MeshData): Required<WaffleStitchOptio
     cellHeight: d * 0.06,
     sharpness: 3,
     rowOffset: 0,
+    grainAngleDeg: 0,
+    seed: 1,
+    quality: 3,
+    subdivide: true,
+  };
+}
+
+export function defaultKnurlOptions(mesh: MeshData): Required<KnurlTextureOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    amplitude: d * 0.02,
+    cellWidth: d * 0.05,
+    cellHeight: d * 0.05,
+    style: 'diamond',
+    sharpness: 2,
     grainAngleDeg: 0,
     seed: 1,
     quality: 3,
@@ -513,6 +537,19 @@ export function applyWaffle(mesh: MeshData, opts: WaffleStitchOptions): Modifier
     mesh: baked,
     code: manifoldWrapper([
       `Waffle stitch applied on ${today()} — cell ${opts.cellWidth.toFixed(2)} × ${(opts.cellHeight ?? opts.cellWidth).toFixed(2)}, sharpness ${opts.sharpness ?? 3}.`,
+      `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
+export function applyKnurl(mesh: MeshData, opts: KnurlTextureOptions): ModifierManifoldResult {
+  const baked = knurlTexture(mesh, opts);
+  return {
+    kind: 'manifold',
+    label: 'knurl',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Knurl applied on ${today()} — ${opts.style ?? 'diamond'}, cell ${opts.cellWidth.toFixed(2)}, amplitude ${opts.amplitude.toFixed(2)}.`,
       `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
     ]),
   };
