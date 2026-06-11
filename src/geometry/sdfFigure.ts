@@ -180,12 +180,32 @@ export interface FaceAnchors {
   nose: Vec3; mouth: Vec3; earL: Vec3; earR: Vec3; chinTip: Vec3;
 }
 
+/** A hand's grip as a full coordinate frame — the missing piece for connecting
+ *  held props (guitar neck, sword, staff, mug) to a hand. Unlike `joints.handL`
+ *  (the hand's *centre*), `point` is the grip *cup* where a held cylinder's axis
+ *  rests, so a prop seated here sits IN the closed hand instead of passing
+ *  THROUGH its centre. The three unit axes orient the prop. */
+export interface GripFrame {
+  /** World point at the centre of the grip cup — offset from the hand centre
+   *  toward the palm. Aim a held prop's contact line here. */
+  point: Vec3;
+  /** Unit normal the palm faces (the fingers curl toward this). */
+  palmNormal: Vec3;
+  /** Unit axis a gripped bar/handle lies ALONG (the finger-splay axis, pinky→
+   *  index). A guitar neck, staff, or sword grip runs parallel to this. */
+  gripAxis: Vec3;
+  /** Unit forearm / finger-reach direction (the way the fingers point). */
+  reach: Vec3;
+}
+
 export interface Rig {
   joints: Record<string, Vec3>;
   /** Canonical radii / half-extents, in world units. */
   r: Record<string, number>;
   /** Unit directions for orienting parts. */
   dir: Record<string, Vec3>;
+  /** Per-hand grip frames for connecting held props — see {@link GripFrame}. */
+  grip: { L: GripFrame; R: GripFrame };
   /** Facial landmark world positions (derived; never hand-typed). */
   face: FaceAnchors;
   opts: { height: number; headsTall: number; build: string; sex: string; pose: ResolvedPose };
@@ -430,6 +450,21 @@ function buildRig(rawOpts: unknown): Rig {
     chinTip: sPt(face.chinTip),
   } : face;
 
+  // Grip frames: a held cylinder rests in the cup of the curled fingers, offset
+  // from the hand centre toward the palm by GRIP_REACH × r.hand, and lies along
+  // the splay (elbow-hinge) axis. palmN matches the curl direction the hand
+  // builder uses (cross(hinge, foreDir)). All spine-transformed like the joints.
+  const GRIP_REACH = 0.72;
+  const gripFrame = (a: { handC: Vec3; foreDir: Vec3; hinge: Vec3 }): GripFrame => {
+    const palmN = norm3(cross3(a.hinge, a.foreDir));
+    return {
+      point: add3(sPt(a.handC), scale3(sDir(palmN), r.hand * GRIP_REACH)),
+      palmNormal: sDir(palmN),
+      gripAxis: sDir(a.hinge),
+      reach: sDir(a.foreDir),
+    };
+  };
+
   return {
     joints: {
       pelvis: [0, 0, pelvisZ], navel: [0, -r.chestY * 0.4, navelZ], chest: sPt([0, -r.chestY * 0.2, chestZ]),
@@ -459,6 +494,7 @@ function buildRig(rawOpts: unknown): Rig {
       footL: lL.footFwd, footR: lR.footFwd,
       headForward: sDir(hf), headUp: sDir(headUp), headLeft: sDir(headLeft),
     },
+    grip: { L: gripFrame(aL), R: gripFrame(aR) },
     face: sFace,
     opts: { height: H, headsTall: N, build, sex, pose },
   };
@@ -1353,6 +1389,10 @@ export interface FigureNamespace {
   /** Snap an accessory node to a rig joint by its bbox anchor (no offset math).
    *  `joint` is a Vec3 like `rig.joints.crown`; `opts.anchor` ∈ center|bottom|top. */
   placeAt(node: Node, joint: Vec3, opts?: object): Node;
+  /** Seat + orient a held prop into a hand grip frame (`rig.grip.L`/`.R`).
+   *  Aligns the prop's local long axis (`opts.along`, default 'z') to the grip
+   *  axis and drops its origin on the grip point. `opts.flip` reverses it. */
+  holdAt(node: Node, grip: GripFrame, opts?: object): Node;
   /** The face's detail-region spheres (head + finer mouth) for
    *  `build({ detail: F.faceDetail(rig) })`. */
   faceDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
@@ -1394,6 +1434,39 @@ function placeAt(node: Node, joint: Vec3, opts?: unknown): Node {
   return node.translate([j[0] - cx, j[1] - cy, j[2] - cz]);
 }
 
+/** Euler [rx, ry, 0] (degrees) that rotates the local +Z axis onto unit `t`,
+ *  given the engine's Rz·Ry·Rx convention (see opRotate in sdf.ts). Derived:
+ *  with rz=0, R·[0,0,1] = [cx·sy, −sx, cx·cy], so sx=−ty and (sy,cy)∝(tx,tz). */
+function eulerAlignZ(t: Vec3): Vec3 {
+  const ty = Math.max(-1, Math.min(1, t[1]));
+  return [-Math.asin(ty) / DEG, Math.atan2(t[0], t[2]) / DEG, 0];
+}
+
+/** Seat and orient a held prop into a hand's grip frame. Aligns the prop's local
+ *  long axis (`opts.along`, default +Z) to `grip.gripAxis`, then drops its local
+ *  origin onto `grip.point`. Build the prop centred at the origin along its axis
+ *  and holdAt lays it across the closed fingers — fixing the "passes through the
+ *  hand" / "crooked" failure of aiming a prop at the hand centre by hand. Pass
+ *  `flip: true` to reverse the axis direction. */
+function holdAt(node: Node, grip: unknown, opts?: unknown): Node {
+  const g = obj(grip, 'holdAt(grip)');
+  const point = assertNumberTuple(g.point, 3, 'holdAt(grip.point)') as Vec3;
+  let axis = norm3(assertNumberTuple(g.gripAxis, 3, 'holdAt(grip.gripAxis)') as Vec3);
+  const o = obj(opts, 'holdAt(opts)');
+  assertNoUnknownKeys(o, ['along', 'flip'], 'holdAt(opts)');
+  const along = o.along === undefined ? 'z'
+    : assertEnum(o.along, ['x', 'y', 'z'] as const, 'holdAt.along');
+  if (o.flip !== undefined && typeof o.flip !== 'boolean') {
+    throw new ValidationError('holdAt.flip must be a boolean');
+  }
+  if (o.flip === true) axis = scale3(axis, -1);
+  // Bring the chosen local axis onto +Z first, then align +Z to the grip axis.
+  let n = node;
+  if (along === 'x') n = n.rotate([0, -90, 0]);      // local +X → +Z
+  else if (along === 'y') n = n.rotate([90, 0, 0]);   // local +Y → +Z
+  return n.rotate(eulerAlignZ(axis)).translate(point);
+}
+
 function assertRig(rig: unknown, name: string): Rig {
   if (!rig || typeof rig !== 'object' || !('joints' in rig) || !('face' in rig)) {
     throw new ValidationError(`${name} must be a rig from api.sdf.figure.rig(...). See /ai/figure.md`);
@@ -1416,6 +1489,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     hair: (rig, opts) => buildHair(sdf, assertRig(rig, 'hair(rig)'), opts),
     weld: (rig, parts, opts) => weldBody(assertRig(rig, 'weld(rig)'), parts, opts),
     placeAt: (node, joint, opts) => placeAt(node as Node, joint, opts),
+    holdAt: (node, grip, opts) => holdAt(node as Node, grip, opts),
     faceDetail: (rig, opts) => faceDetail(assertRig(rig, 'faceDetail(rig)'), opts),
     handDetail: (rig, opts) => handDetail(assertRig(rig, 'handDetail(rig)'), opts),
     face: {

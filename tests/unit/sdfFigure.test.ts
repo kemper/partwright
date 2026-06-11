@@ -816,3 +816,89 @@ describe('figure rig — validation', () => {
     expect(() => buildRig({})).not.toThrow();
   });
 });
+
+describe('figure grip frames — connecting held props to the palm', () => {
+  const unit = (v: number[]) => Math.hypot(v[0], v[1], v[2]);
+  const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+  it('exposes a grip frame per hand with orthonormal-ish axes', () => {
+    const rig = buildRig({ height: 64 });
+    for (const g of [rig.grip.L, rig.grip.R]) {
+      expect(g.point).toHaveLength(3);
+      // Axes are unit length.
+      expect(unit(g.palmNormal)).toBeCloseTo(1, 6);
+      expect(unit(g.gripAxis)).toBeCloseTo(1, 6);
+      expect(unit(g.reach)).toBeCloseTo(1, 6);
+      // palmNormal ⟂ gripAxis and ⟂ reach (it's their cross product).
+      expect(dot(g.palmNormal, g.gripAxis)).toBeCloseTo(0, 5);
+      expect(dot(g.palmNormal, g.reach)).toBeCloseTo(0, 5);
+    }
+  });
+
+  it('offsets the grip point off the hand centre toward the palm', () => {
+    const rig = buildRig({ height: 64 });
+    // The cup is NOT the hand centre — that's the whole point (props seated at
+    // the centre pass through the hand). It sits along +palmNormal from handL.
+    const offL = [
+      rig.grip.L.point[0] - rig.joints.handL[0],
+      rig.grip.L.point[1] - rig.joints.handL[1],
+      rig.grip.L.point[2] - rig.joints.handL[2],
+    ];
+    const offLen = unit(offL);
+    expect(offLen).toBeGreaterThan(0.2);
+    // The offset points purely along +palmNormal.
+    expect(dot(offL.map((c) => c / offLen), rig.grip.L.palmNormal)).toBeCloseTo(1, 4);
+  });
+
+  it('tracks the pose — raising the arm moves the grip with the hand', () => {
+    const down = buildRig({ height: 64, pose: { armL: { abduct: 0 } } });
+    const up = buildRig({ height: 64, pose: { armL: { abduct: 150 } } });
+    expect(up.grip.L.point[2]).toBeGreaterThan(down.grip.L.point[2]);
+  });
+
+  it('spine bend transforms the grip frame with the upper body', () => {
+    const straight = buildRig({ height: 64 });
+    const leaned = buildRig({ height: 64, pose: { spine: { lean: 30 } } });
+    // The grip frame rides the spine rotation: both its point and its axes move.
+    const movedPoint = dist(leaned.grip.L.point, straight.grip.L.point);
+    expect(movedPoint).toBeGreaterThan(1);
+    const axisDot = dot(leaned.grip.L.gripAxis, straight.grip.L.gripAxis);
+    expect(axisDot).toBeLessThan(0.999); // the grip axis rotated, not identical
+  });
+});
+
+describe('figure holdAt — orient + seat a prop into a grip', () => {
+  const F = createFigureNamespace(api);
+
+  it('aligns the prop long axis to the grip axis and seats it at the point', () => {
+    // A capsule along local +Z, centred at the origin, length 6, radius 0.5.
+    const bar = api.capsule([0, 0, -3], [0, 0, 3], 0.5);
+    const grip = { point: [10, 2, 5], palmNormal: [0, 0, 1], gripAxis: [1, 0, 0], reach: [0, 1, 0] };
+    const held = (F.holdAt(bar as unknown as SdfNode, grip as never) as SdfNode).bounds();
+    // Long axis is now world X (extent = length 6 + 2×radius = 7); the other two
+    // are the diameter (≈1).
+    expect(held.max[0] - held.min[0]).toBeCloseTo(7, 4);
+    expect(held.max[1] - held.min[1]).toBeCloseTo(1, 4);
+    expect(held.max[2] - held.min[2]).toBeCloseTo(1, 4);
+    // Centred on the grip point.
+    expect((held.min[0] + held.max[0]) / 2).toBeCloseTo(10, 4);
+    expect((held.min[1] + held.max[1]) / 2).toBeCloseTo(2, 4);
+    expect((held.min[2] + held.max[2]) / 2).toBeCloseTo(5, 4);
+  });
+
+  it('honours along: a +X-axis prop aligns the same way', () => {
+    const bar = api.capsule([-3, 0, 0], [3, 0, 0], 0.5);  // along local +X
+    const grip = { point: [0, 0, 0], palmNormal: [1, 0, 0], gripAxis: [0, 0, 1], reach: [0, 1, 0] };
+    const held = (F.holdAt(bar as unknown as SdfNode, grip as never, { along: 'x' }) as SdfNode).bounds();
+    // gripAxis is world +Z, so the long extent (6 + 2×radius = 7) is now Z.
+    expect(held.max[2] - held.min[2]).toBeCloseTo(7, 4);
+    expect(held.max[0] - held.min[0]).toBeCloseTo(1, 4);
+  });
+
+  it('rejects unknown opts and non-boolean flip', () => {
+    const bar = api.capsule([0, 0, -1], [0, 0, 1], 0.5);
+    const grip = { point: [0, 0, 0], palmNormal: [0, 0, 1], gripAxis: [1, 0, 0], reach: [0, 1, 0] };
+    expect(() => F.holdAt(bar as unknown as SdfNode, grip as never, { tilt: 5 } as never)).toThrow();
+    expect(() => F.holdAt(bar as unknown as SdfNode, grip as never, { flip: 'yes' } as never)).toThrow();
+  });
+});
