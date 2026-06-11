@@ -7744,6 +7744,11 @@ async function main() {
         await runCodeSync(previousCode);
         return { error: `Applying the texture failed: ${geo.error ?? 'run error'}. The code was restored.` };
       }
+      // The code ran, but the texture compute itself can still have failed —
+      // applySurfaceTextures keeps the base mesh and raises the Re-apply pill
+      // in that case (geometry status stays 'ok'). The call is in the code, so
+      // the edit stands; report it honestly instead of implying textured stats.
+      const computeFailed = pendingSurface !== null;
       const saved = await saveCurrentVersion(`api.surface.${id}`);
       return {
         ok: true,
@@ -7751,6 +7756,8 @@ async function main() {
         replaced: up.replaced,
         ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
         ...('error' in saved ? { saveWarning: saved.error } : {}),
+        ...('skipped' in saved ? { saveSkipped: saved.reason } : {}),
+        ...(computeFailed ? { warnings: ['The texture compute failed — the call is in the code but the model shows the untextured base mesh. Press the ⟳ Re-apply pill (or run again) to retry.'] } : {}),
         geometry: getGeometryDataObj(),
       };
     },
