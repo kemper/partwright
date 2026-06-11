@@ -123,8 +123,17 @@ pose: { arms: { abduct: 90 }, armL: { abduct: 0 } }           // right arm out, 
 | `leg*.knee` | bend the shank toward the back +Y (0–150) |
 | `leg*.twist` | **hip turnout** — yaw the foot OUT (toe toward +X on the left, −X on the right) and roll a bent-knee plié outward. 0 = toes forward; `legs: { twist: 30 }` is a relaxed turnout, ~`45–60` a ballet first/fifth. |
 | `head.turn` | yaw (look figure-left +/right −) |
-| `head.tilt` | tip toward a shoulder |
+| `head.tilt` | roll the head toward a shoulder (+ = toward the figure's LEFT shoulder) |
 | `head.nod` | look down (+) / up (−) |
+| `spine.lean` | bend the upper body forward −Y (+) / back +Y (−) at the waist |
+| `spine.side` | lean the upper body toward the figure's LEFT (+) / right (−) shoulder |
+| `spine.turn` | twist the shoulders/upper body toward figure-left (+) / right (−) |
+
+> **`spine.{lean,side,turn}` bend the whole upper body at the waist** — chest,
+> neck, head, and both arms rotate together about the navel while the legs stay
+> planted. Use it for a bow, a slouch, a weight shift, or a contrapposto twist
+> (combine with `head.*` to counter-rotate the gaze). `head.tilt` rolls only the
+> head; `spine.side` leans the whole torso.
 
 > **Arms-overhead / fists-up poses need `twist`.** Elbow flexion alone curls the
 > forearm *forward* (toward −Y); for a side-raised arm that plane is horizontal,
@@ -202,13 +211,20 @@ second component.
 
 ```js
 F.face.assemble(head, rig, {
-  eyes:  true | { radius } | false,
+  eyes:  true | { radius } | false,   // OFF by default — see note below
   nose:  true | { tipRadius, length } | false,
   mouth: true | { style, width, smirk, open } | false,
   ears:  true | { size } | false,
-  brows: { } | false,        // off by default; pass {} to add
+  brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
 })
 ```
+
+> **Eyes default to OFF in `assemble`.** The recommended flow welds the face into
+> the body and `.label('skin')`s it — which would flatten any in-face eyes into
+> the skin region (their `eyes`/`iris`/`pupil` labels would resolve to **0
+> paintable triangles**). So build eyes at the **top level** instead —
+> `sdf.union(skin, F.face.eyes(rig), …)` — and only pass `eyes: true` to
+> `assemble` when you are *not* re-labelling the result.
 
 `assemble` welds features onto the head with **small** `k` so the nose bridge
 and ear margins stay crisp (vs the soft body weld), and **carves** the carved
