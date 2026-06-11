@@ -536,7 +536,7 @@ return part;
 
 #### Surface textures in code — `api.surface.*`
 
-Just like paint, **surface textures** can live in the code instead of being baked: `api.surface.fuzzy / .knit / .cable / .waffle / .fur / .woven / .voronoi / .smooth` (or the generic `api.surface.apply('knit', {…})`). Each call records a texture op applied to the **final returned mesh**, in order — a parametric, non-baking counterpart of the `applyFuzzySkin` / `applyKnitTexture` / … tools (same options; size-relative defaults fill in omissions).
+Just like paint, **surface textures** can live in the code instead of being baked: `api.surface.fuzzy / .knit / .cable / .waffle / .fur / .woven / .knurl / .voronoi / .smooth` (or the generic `api.surface.apply('knit', {…})`). Each call records a texture op applied to the **final returned mesh**, in order — a parametric, non-baking counterpart of the `applyFuzzySkin` / `applyKnitTexture` / … tools (same options; size-relative defaults fill in omissions).
 
 ```js
 const { Manifold } = api;

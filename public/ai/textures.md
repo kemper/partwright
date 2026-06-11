@@ -5,13 +5,13 @@ vertices along their normals.
 
 > **In-app chat tool:** the chat AI has ONE texture tool —
 > **`applySurfaceTexture(id, opts?, mode?)`** with
-> `id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'smooth'`.
+> `id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'smooth'`.
 > It routes automatically: in a manifold-js session it writes the texture
 > **into the code** (`api.surface.<id>` — stays parametric); on SCAD/BREP/voxel
 > it falls back to baking (with a warning). The same auto method exists on the
 > console as `partwright.applySurfaceTexture`. The per-texture `apply*` console
 > methods below remain for external agents and for patch
-> (`selectedTriangles`) texturing. Seven textures are available:
+> (`selectedTriangles`) texturing. Eight textures are available:
 
 | Texture | Look | Best for |
 |---------|------|----------|
@@ -22,6 +22,7 @@ vertices along their normals.
 | `applyFurVelvet` | Directional anisotropic pile (velvet, fur, chenille) | Animal fur, velvet fabric, soft plush surfaces |
 | `applyWovenFabric` | Plain-weave over/under interlacing | Baskets, woven cloth, twill, burlap |
 | `applyVoronoiShell` | Organic cell-wall ridge network (Voronoi cells) | Lampshades, planters, vases, cracked-mud / dragonfly-wing shells |
+| `applyKnurlTexture` | Machinist grip: diamond cross-hatch pyramids or straight splines | Knobs, handles, tool grips, bottle caps (the `api.knurl` cylinders' texture counterpart) |
 
 Two further mesh operations live in the same panel and share the same
 apply→save→verify workflow:
@@ -55,7 +56,7 @@ return body;
 ```
 
 - Available ops: `api.surface.fuzzy`, `.knit`, `.cable`, `.waffle`, `.fur`,
-  `.woven`, `.voronoi`, `.smooth`. Each takes the **same options** as its
+  `.woven`, `.knurl`, `.voronoi`, `.smooth`. Each takes the **same options** as its
   `apply*` tool (size-relative defaults fill in anything you omit). There's also
   a generic `api.surface.apply('knit', { … })` form.
 - **`applySurfaceTextureAsCode(id, opts?)`** writes the call into the code for

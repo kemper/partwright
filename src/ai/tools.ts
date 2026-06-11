@@ -1124,7 +1124,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'applySurfaceTexture',
-    description: `Apply a surface texture (fuzzy skin, knit, cable knit, waffle, fur/velvet, woven, voronoi relief, or smooth) to the WHOLE current model and save a new version.
+    description: `Apply a surface texture (fuzzy skin, knit, cable knit, waffle, fur/velvet, woven, knurl grip, voronoi relief, or smooth) to the WHOLE current model and save a new version.
 
 **Routing — prefer the default.** mode 'auto' (default): in a manifold-js session the texture is written INTO THE CODE as an \`api.surface.<id>({…})\` call (inserted before the final return, or the existing call for that id is updated in place) — the model stays parametric, the texture recomputes when the code changes, and saved versions keep the computed result. In a SCAD/BREP/voxel session it falls back to BAKING the textured mesh (the parametric source is replaced — the returned warnings say so). mode 'code' forces the in-code path (errors off manifold-js); mode 'bake' forces the destructive bake. To fine-tune on manifold-js, just call again with new opts — the code call is edited in place, no undo round-trip needed.
 
@@ -1135,6 +1135,7 @@ const ALL_TOOLS: ToolDefinition[] = [
 - waffle: amplitude, cellWidth, cellHeight, sharpness (1=soft…8+=thin border), rowOffset (0.5=honeycomb), grainAngleDeg, seed, quality
 - fur: amplitude, fiberSpacing, fiberLength, octaves, grainAngleDeg, seed, quality
 - woven: amplitude, threadSpacing, threadWidth (0.1–0.9 fraction), underDepth (0–1), grainAngleDeg, seed, quality
+- knurl: amplitude (ridge depth), pitch (groove spacing), aspect (diamond height÷width), pattern ('diamond'|'straight'), grainAngleDeg, seed, quality — the machinist grip pattern (api.knurl cylinders' texture-family counterpart)
 - voronoi: amplitude, cellSize, wallWidth (fraction), raised (false = engraved channels), jitter (0–1), grainAngleDeg, seed, quality
 - smooth: iterations (Taubin passes, ~5), subdivide (default true)
 Plus preserveColor (default true — bake path only; on the code path paint re-resolves against the textured mesh every run automatically).
@@ -1145,7 +1146,7 @@ Plus preserveColor (default true — bake path only; on the code path paint re-r
       properties: {
         id: {
           type: 'string',
-          enum: ['fuzzy', 'knit', 'cable', 'waffle', 'fur', 'woven', 'voronoi', 'smooth'],
+          enum: ['fuzzy', 'knit', 'cable', 'waffle', 'fur', 'woven', 'knurl', 'voronoi', 'smooth'],
           description: 'Which texture to apply.',
         },
         opts: {

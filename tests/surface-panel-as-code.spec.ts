@@ -132,6 +132,43 @@ test.describe('surface textures applied as code', () => {
     await expect(page.getByRole('button', { name: /Re-apply/ })).toBeHidden();
   });
 
+  test('the Knurl tab applies a diamond grip as code', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('surface-knurl-panel');
+      await pw.run([
+        'const { Manifold } = api;',
+        'return Manifold.cylinder(30, 10, 10, 64);',
+      ].join('\n'));
+    });
+
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    const palette = page.locator('input[aria-label="Search commands"]');
+    await palette.fill('Knurl');
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('heading', { name: 'Surface modifiers' })).toBeVisible();
+
+    // The Knurl tab is in-code-able: whole-model mode applies as code.
+    await page.getByRole('button', { name: 'Whole model' }).click();
+    const applyAsCode = page.getByRole('button', { name: 'Apply as code' });
+    await expect(applyAsCode).toBeVisible();
+    await expect(page.getByText(/Adds api\.surface\.knurl/)).toBeVisible();
+    await applyAsCode.click();
+    await expect(page.getByRole('heading', { name: 'Surface modifiers' })).toHaveCount(0, { timeout: 60_000 });
+
+    const out = await page.evaluate(() => {
+      const pw = (window as unknown as { partwright: PW & { getGeometryData: () => { triangleCount?: number; isManifold?: boolean } } }).partwright;
+      return { code: pw.getCode(), geo: pw.getGeometryData() };
+    });
+    expect(out.code).toContain('api.surface.knurl({');
+    expect(out.geo.triangleCount ?? 0).toBeGreaterThan(5_000); // subdivided + displaced
+    await expect(page.getByRole('button', { name: /Re-apply/ })).toBeHidden();
+  });
+
   test('voxelize tab is not dead-locked by an empty region selection', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);

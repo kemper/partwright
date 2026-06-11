@@ -12,6 +12,7 @@ import { fuzzySkin } from '../../src/surface/fuzzySkin';
 import { knitTextureUV } from '../../src/surface/knitTexture';
 import { cableKnit } from '../../src/surface/cableKnit';
 import { waffleStitch } from '../../src/surface/waffleStitch';
+import { knurlTexture } from '../../src/surface/knurlTexture';
 import { furVelvet } from '../../src/surface/furVelvet';
 import { wovenFabric } from '../../src/surface/wovenFabric';
 import { voronoiShell } from '../../src/surface/voronoiShell';
@@ -179,12 +180,13 @@ describe('knitTextureUV', () => {
 // The four fabric textures added after fuzzySkin share its structure (densify →
 // displace along normals, deterministic per seed, color carried through
 // subdivision). One parameterized table guards the invariants for all of them.
-describe('fabric textures (cable / waffle / fur / woven / voronoi)', () => {
+describe('fabric textures (cable / waffle / fur / woven / knurl / voronoi)', () => {
   const cases = [
     { name: 'cableKnit', fn: cableKnit as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cableWidth: 2, seed: 3 } },
     { name: 'waffleStitch', fn: waffleStitch as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellWidth: 2, seed: 3 } },
     { name: 'furVelvet', fn: furVelvet as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, fiberSpacing: 2, seed: 3 } },
     { name: 'wovenFabric', fn: wovenFabric as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, threadSpacing: 2, seed: 3 } },
+    { name: 'knurlTexture', fn: knurlTexture as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, pitch: 2, seed: 3 } },
     { name: 'voronoiShell', fn: voronoiShell as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellSize: 3, seed: 3 } },
   ] as const;
 
@@ -210,6 +212,25 @@ describe('fabric textures (cable / waffle / fur / woven / voronoi)', () => {
       expect([...out.triColors!].every(v => v === 42)).toBe(true);
     });
   }
+});
+
+describe('knurlTexture (pattern variants)', () => {
+  it('diamond and straight patterns produce different displacement', () => {
+    const diamond = knurlTexture(cube(10), { amplitude: 0.5, pitch: 2, pattern: 'diamond' });
+    const straight = knurlTexture(cube(10), { amplitude: 0.5, pitch: 2, pattern: 'straight' });
+    expect(diamond.numVert).toBe(straight.numVert); // same subdivision
+    expect([...diamond.vertProperties]).not.toEqual([...straight.vertProperties]);
+  });
+
+  it('displacement never exceeds the amplitude (outward-only ridges)', () => {
+    const amp = 0.5;
+    const out = knurlTexture(cube(10), { amplitude: amp, pitch: 2 });
+    // A displaced axis-aligned cube can reach at most 10 + amplitude on each face.
+    for (let i = 0; i < out.vertProperties.length; i++) {
+      expect(out.vertProperties[i]).toBeGreaterThanOrEqual(-amp - 1e-6);
+      expect(out.vertProperties[i]).toBeLessThanOrEqual(10 + amp + 1e-6);
+    }
+  });
 });
 
 describe('voronoiShell', () => {

@@ -486,6 +486,7 @@ export const manifoldJsEngine: Engine = {
       waffle: makeSurfaceFn('waffle'),
       fur: makeSurfaceFn('fur'),
       woven: makeSurfaceFn('woven'),
+      knurl: makeSurfaceFn('knurl'),
       voronoi: makeSurfaceFn('voronoi'),
       smooth: makeSurfaceFn('smooth'),
       /** Generic form: `api.surface.apply('knit', { … })` — handy for data-driven code. */

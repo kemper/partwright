@@ -121,7 +121,7 @@ import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geom
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
 import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampHost';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
@@ -7070,7 +7070,7 @@ async function main() {
    *  feature size relative to the model's bounding-box diagonal so the AI gets
    *  actionable feedback before spending time on a degenerate run. */
   function textureWarnings(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi',
     opts: Record<string, unknown>,
     mesh: MeshData,
   ): string[] {
@@ -7172,6 +7172,20 @@ async function main() {
         warnings.push(
           `threadSpacing (${ts.toFixed(4)}) is very small — weave will be invisible; ` +
           `try threadSpacing ≈ ${(diag * 0.04).toFixed(3)}`,
+        );
+      }
+    } else if (id === 'knurl') {
+      const pitch = (opts.pitch as number | undefined) ?? 0;
+      if (pitch > diag * 0.35) {
+        warnings.push(
+          `pitch (${pitch.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
+          `fewer than 3 diamonds; try pitch ≈ ${(diag * 0.05).toFixed(3)}`,
+        );
+      }
+      if (pitch > 0 && pitch < diag / 400) {
+        warnings.push(
+          `pitch (${pitch.toFixed(4)}) is very small — the knurl will be invisible; ` +
+          `try pitch ≈ ${(diag * 0.05).toFixed(3)}`,
         );
       }
     } else if (id === 'voronoi') {
@@ -7572,7 +7586,7 @@ async function main() {
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
   async function buildSurfaceModifier(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
     ctl?: SdfRunControl,
@@ -7673,6 +7687,21 @@ async function main() {
       };
       if (sel && sel.size > 0) return applyWovenPatch(mesh, wovenOpts, sel);
       return applyWoven(mesh, wovenOpts);
+    }
+    if (id === 'knurl') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultKnurlOptions(mesh);
+      const knurlOpts = {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        pitch: (opts?.pitch as number) ?? base.pitch,
+        aspect: (opts?.aspect as number) ?? base.aspect,
+        pattern: (opts?.pattern as 'diamond' | 'straight') ?? base.pattern,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
+      };
+      if (sel && sel.size > 0) return applyKnurlPatch(mesh, knurlOpts, sel);
+      return applyKnurl(mesh, knurlOpts);
     }
     if (id === 'voronoi') {
       const mesh = meshForModifier(preserveColor);
@@ -7818,7 +7847,7 @@ async function main() {
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
      *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize'. */
-    async previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): Promise<{ ok: true } | { error: string }> {
+    async previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): Promise<{ ok: true } | { error: string }> {
       try {
         previewSurfaceModifier(await buildSurfaceModifierProgress(id, opts, preserveColor), preserveColor);
         return { ok: true };
@@ -7933,6 +7962,7 @@ async function main() {
         : id === 'waffle' ? await partwrightAPI.applyWaffleStitch(bakeOpts)
         : id === 'fur' ? await partwrightAPI.applyFurVelvet(bakeOpts)
         : id === 'woven' ? await partwrightAPI.applyWovenFabric(bakeOpts)
+        : id === 'knurl' ? await partwrightAPI.applyKnurlTexture(bakeOpts)
         : id === 'voronoi' ? await partwrightAPI.applyVoronoiShell(bakeOpts)
         : await partwrightAPI.smoothModel(bakeOpts);
       return { path: 'bake' as const, ...(r as Record<string, unknown>) };
@@ -8105,6 +8135,36 @@ async function main() {
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('woven', opts ?? {}, mesh);
         const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('woven', opts, preserve), preserve);
+        if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
+          const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
+          return { ...result, warnings: [...warns, ...(existing ?? [])] };
+        }
+        return result;
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Apply a knurl surface texture to the current model; saves a new version.
+     *  The machinist's grip pattern: two opposite-handed groove sets leaving
+     *  raised diamond pyramids (or `pattern: 'straight'` for axial splines) —
+     *  the texture-family counterpart of the parametric api.knurl cylinders.
+     *  `preserveColor` (default true) carries paint across subdivision.
+     *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async applyKnurlTexture(opts?: {
+      amplitude?: number;
+      pitch?: number;
+      aspect?: number;
+      pattern?: 'diamond' | 'straight';
+      grainAngleDeg?: number;
+      seed?: number;
+      quality?: number;
+      selectedTriangles?: Set<number>;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        const mesh = requireCurrentMeshForModifier();
+        const warns = textureWarnings('knurl', opts ?? {}, mesh);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('knurl', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -13382,13 +13442,14 @@ async function main() {
         'previewSurfaceModifier': { signature: "previewSurfaceModifier(id, opts?, preserveColor?) -- Non-destructive viewport preview of a modifier; id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize' -> {ok} or {error}", docs: '/ai/textures.md' },
         'clearSurfacePreview': { signature: 'clearSurfacePreview() -- Discard a live surface preview and restore the current mesh', docs: '/ai/textures.md' },
         'applySurfaceTexture': { signature: "await applySurfaceTexture(id, opts?, mode?) -- Texture by the best path: mode 'auto' (default) writes api.surface.<id> as code on manifold-js, bakes elsewhere; 'code'/'bake' force a path. Returns the result plus path: 'code'|'bake'", docs: '/ai/textures.md' },
-        'applySurfaceTextureAsCode': { signature: "await applySurfaceTextureAsCode(id, opts?) -- Write api.surface.<id>({…}) into the code (insert before the final return, or update the existing call) instead of baking; re-runs and saves a version. manifold-js + whole-model only. id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'smooth'", docs: '/ai/textures.md' },
+        'applySurfaceTextureAsCode': { signature: "await applySurfaceTextureAsCode(id, opts?) -- Write api.surface.<id>({…}) into the code (insert before the final return, or update the existing call) instead of baking; re-runs and saves a version. manifold-js + whole-model only. id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'smooth'", docs: '/ai/textures.md' },
         'applyFuzzySkin':  { signature: 'await applyFuzzySkin({amplitude?, scale?, octaves?, seed?, quality?, preserveColor?}) -- BAKE fuzzy-skin noise; saves a new version. In-code alternative: api.surface.fuzzy', docs: '/ai/textures.md' },
         'applyKnitTexture':{ signature: 'await applyKnitTexture({amplitude?, stitchWidth?, stitchHeight?, rowOffset?, roundness?, grainAngleDeg?, variation?, seed?, quality?, algorithm?, selectedTriangles?, preserveColor?}) -- BAKE knit stitches; saves a new version. In-code alternative: api.surface.knit', docs: '/ai/textures.md' },
         'applyCableKnit':  { signature: 'await applyCableKnit({amplitude?, cableWidth?, cablePitch?, plyWidth?, grainAngleDeg?, variation?, seed?, quality?, preserveColor?}) -- BAKE cable-knit ropes; saves a new version. In-code alternative: api.surface.cable', docs: '/ai/textures.md' },
         'applyWaffleStitch': { signature: 'await applyWaffleStitch({amplitude?, cellWidth?, cellHeight?, sharpness?, rowOffset?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE waffle grid; saves a new version. In-code alternative: api.surface.waffle', docs: '/ai/textures.md' },
         'applyFurVelvet':  { signature: 'await applyFurVelvet({amplitude?, fiberSpacing?, fiberLength?, octaves?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE fur/velvet fibers; saves a new version. In-code alternative: api.surface.fur', docs: '/ai/textures.md' },
         'applyWovenFabric':{ signature: 'await applyWovenFabric({amplitude?, threadSpacing?, threadWidth?, underDepth?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE woven threads; saves a new version. In-code alternative: api.surface.woven', docs: '/ai/textures.md' },
+        'applyKnurlTexture': { signature: 'await applyKnurlTexture({amplitude?, pitch?, aspect?, pattern?, grainAngleDeg?, seed?, quality?, selectedTriangles?, preserveColor?}) -- BAKE a machinist diamond/straight knurl grip; saves a new version. In-code alternative: api.surface.knurl', docs: '/ai/textures.md' },
         'applyVoronoiShell': { signature: 'await applyVoronoiShell({amplitude?, cellSize?, wallWidth?, raised?, jitter?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE Voronoi cell relief; saves a new version. In-code alternative: api.surface.voronoi', docs: '/ai/textures.md' },
         'applyVoronoiLamp':{ signature: 'await applyVoronoiLamp({cellSize?, wallThickness?, strutWidth?, resolution?, jitter?, grainAngleDeg?, seed?, preserveColor?}) -- Convert the model into a perforated Voronoi lamp shell (bake only — no api.surface twin)', docs: '/ai/textures.md' },
         'engraveModel':    { signature: "await engraveModel({text | imageUrl, raised?, through?, depth?, size?, color?, axis?, side?, posU?, posV?, rotationDeg?, curveAxis?, curveAngleDeg?, font?, resolution?, watertight?, preserveColor?}) -- Carve text/image as recessed channels (engrave), holes (through), or a raised relief (raised = emboss); color paints the letters ('#rrggbb' or [r,g,b] 0–1). Saves a new version.", docs: '/ai/textures.md#engravemodel' },
