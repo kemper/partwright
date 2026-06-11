@@ -1,5 +1,5 @@
 // Storytime kid — sitting on a bench reading an open book.
-// Kneeling-sit pose (flex 90 / knee 90 — thighs forward, shins alongside),
+// Chair-sit pose (flex 90 / knee 90 — thighs forward, shins straight down),
 // both hands holding a chunky storybook at chest/belly level, bangs hair,
 // gentle smile, head nodded down toward the page.
 // ~5 heads tall (cute child proportions). Front = −Y, Z up.
