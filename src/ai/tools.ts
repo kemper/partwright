@@ -1140,7 +1140,12 @@ const ALL_TOOLS: ToolDefinition[] = [
 - smooth: iterations (Taubin passes, ~5), subdivide (default true)
 Plus preserveColor (default true — bake path only; on the code path paint re-resolves against the textured mesh every run automatically).
 
-**Return:** { path: 'code'|'bake', ok, … } — code path: { call, replaced, version, geometry }; bake path: { label, geometry, colorsCarried, warnings? }. Always check warnings. Call renderViews after to verify. Patch/region texturing is not available from chat — tell the user to use the Surface panel's region picker.`,
+**Scoping (code path / manifold-js only).** By default the texture covers the whole skin. Add ONE of these to opts to limit it to part of the model:
+- label: 'name' — texture only the triangles of an \`api.label(shape, 'name', …)\` region. Lets you texture one shape of a union (e.g. a knurled grip on a smooth body): label that shape in the code, union it, then \`applySurfaceTexture('knurl', { label: 'grip' })\`.
+- region: { point: [x,y,z], radius } — texture every triangle whose surface is within \`radius\` of a world-space point. Use getGeometryData's bbox/centroid to pick a point on the model.
+(Scoping is ignored on the bake path; pass label/region only with mode 'auto'/'code'.)
+
+**Return:** { path: 'code'|'bake', ok, … } — code path: { call, replaced, version, geometry }; bake path: { label, geometry, colorsCarried, warnings? }. Always check warnings. Call renderViews after to verify.`,
     input_schema: {
       type: 'object',
       properties: {

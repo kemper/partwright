@@ -17,7 +17,7 @@ import { createKnurlNamespace } from '../knurl';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import type { RegionDescriptor } from '../../color/regions';
-import { SURFACE_OP_FIELDS, isSurfaceOpId, type SurfaceOp, type SurfaceOpId, type SurfaceScope } from '../../surface/surfaceOpSpec';
+import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
 import { wasmFaultHint } from '../workerFaults';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
@@ -455,24 +455,6 @@ export const manifoldJsEngine: Engine = {
     // chain; the chain is applied to the final returned mesh. Unlike the Surface
     // panel's destructive bake, the parametric op stays in the code — edit a
     // param and press "Re-apply" to recompute. ===
-    const parseRegionScope = (id: SurfaceOpId, v: unknown): SurfaceScope => {
-      if (typeof v !== 'object' || v === null || Array.isArray(v)) {
-        throw new Error(`api.surface.${id}.region: must be an object, e.g. { point: [x, y, z], radius: 8 }.`);
-      }
-      const r = v as Record<string, unknown>;
-      for (const k of Object.keys(r)) {
-        if (k !== 'point' && k !== 'radius') throw new Error(`api.surface.${id}.region: unknown key "${k}". Accepted: point, radius.`);
-      }
-      const point = r.point;
-      if (!Array.isArray(point) || point.length !== 3 || !point.every(n => typeof n === 'number' && Number.isFinite(n))) {
-        throw new Error(`api.surface.${id}.region.point: must be [x, y, z] finite numbers.`);
-      }
-      const radius = r.radius;
-      if (typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0) {
-        throw new Error(`api.surface.${id}.region.radius: must be a positive number.`);
-      }
-      return { kind: 'point', point: [point[0] as number, point[1] as number, point[2] as number], radius };
-    };
     const recordSurfaceOp = (id: SurfaceOpId, params: unknown): void => {
       let opts: Record<string, unknown> = {};
       if (params !== undefined && params !== null) {
@@ -481,37 +463,11 @@ export const manifoldJsEngine: Engine = {
         }
         opts = params as Record<string, unknown>;
       }
-      // `label` and `region` are reserved SCOPE keys (limit the op to part of
-      // the model), handled separately from the per-modifier scalar params.
-      if ('label' in opts && 'region' in opts) {
-        throw new Error(`api.surface.${id}: pass either label or region to scope the op, not both.`);
-      }
-      const allowed = SURFACE_OP_FIELDS[id];
-      const clean: Record<string, number | boolean | string> = {};
-      let scope: SurfaceScope | undefined;
-      for (const [k, v] of Object.entries(opts)) {
-        if (k === 'label') {
-          if (typeof v !== 'string' || v.length === 0) {
-            throw new Error(`api.surface.${id}.label: must be a non-empty string naming an api.label(...) region.`);
-          }
-          scope = { kind: 'label', label: v };
-          continue;
-        }
-        if (k === 'region') {
-          scope = parseRegionScope(id, v);
-          continue;
-        }
-        if (!allowed.includes(k)) {
-          throw new Error(`api.surface.${id}: unknown option "${k}". Accepted: ${allowed.join(', ')} (or scope keys: label, region).`);
-        }
-        if (typeof v === 'number') {
-          if (!Number.isFinite(v)) throw new Error(`api.surface.${id}.${k}: must be a finite number.`);
-        } else if (typeof v !== 'boolean' && typeof v !== 'string') {
-          throw new Error(`api.surface.${id}.${k}: must be a number, boolean, or string.`);
-        }
-        clean[k] = v;
-      }
-      surfaceOps.push(scope ? { id, params: clean, scope } : { id, params: clean });
+      // parseSurfaceOpts validates the scalar params AND the reserved scope keys
+      // (label / region) — the single source of truth shared with the console
+      // twin (applySurfaceTextureAsCode).
+      const parsed = parseSurfaceOpts(id, opts);
+      surfaceOps.push(parsed.scope ? { id, params: parsed.params, scope: parsed.scope } : { id, params: parsed.params });
     };
     const makeSurfaceFn = (id: SurfaceOpId) => (params?: unknown): void => recordSurfaceOp(id, params);
     const surface: Record<SurfaceOpId, (params?: unknown) => void> & { apply(id: unknown, params?: unknown): void } = {

@@ -126,7 +126,7 @@ import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampH
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap, remapTriangleSets } from './surface/colorTransfer';
 import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, meshContentKey, cancelSurfaceCompute, surfaceComputeInFlight, SurfaceComputeCancelled, type SurfaceOp } from './surface/surfaceOps';
-import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, type SurfaceOpId, type PersistedSurfaceTexture, type ResolvedScope } from './surface/surfaceOpSpec';
+import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, parseSurfaceOpts, type SurfaceOpId, type PersistedSurfaceTexture, type ResolvedScope } from './surface/surfaceOpSpec';
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
@@ -7871,16 +7871,18 @@ async function main() {
      *  opts: that op's api.surface options (see /ai/textures.md); omitted keys
      *  use size-relative defaults at apply time.
      *  Returns `{ ok, call, replaced, version?, geometry }` or `{ error }`. */
-    async applySurfaceTextureAsCode(id: SurfaceOpId, opts?: Record<string, number | boolean | string>) {
+    async applySurfaceTextureAsCode(id: SurfaceOpId, opts?: Record<string, unknown>) {
       const check = guard(() => {
         assertEnum(id, SURFACE_OP_IDS, 'applySurfaceTextureAsCode(id)');
         if (opts !== undefined) {
           const o = assertObject(opts, 'applySurfaceTextureAsCode(_, opts)')!;
-          assertNoUnknownKeys(o, SURFACE_OP_FIELDS[id as SurfaceOpId] ?? [], 'applySurfaceTextureAsCode(_, opts)');
-          for (const [k, v] of Object.entries(o)) {
-            if (typeof v !== 'number' && typeof v !== 'boolean' && typeof v !== 'string') {
-              throw new ValidationError(`applySurfaceTextureAsCode(_, opts): "${k}" must be a number, boolean, or string (api.surface options are flat primitives). See /ai/textures.md`);
-            }
+          // Shared validator: scalar params + the reserved scope keys
+          // (label / region). It throws a plain Error; re-wrap as a
+          // ValidationError so guard() returns { error } instead of throwing.
+          try {
+            parseSurfaceOpts(id as SurfaceOpId, o as Record<string, unknown>);
+          } catch (e) {
+            throw new ValidationError(e instanceof Error ? e.message : String(e));
           }
         }
         return true;
@@ -7891,7 +7893,7 @@ async function main() {
         return { error: `api.surface.* textures live in manifold-js code only — this session is ${getActiveLanguage()}. Use the bake tools (applyFuzzySkin / applyKnitTexture / …), which convert the result to a mesh.` };
       }
       const previousCode = getValue();
-      const up = upsertSurfaceCall(previousCode, id, (opts ?? {}) as Record<string, number | boolean | string>);
+      const up = upsertSurfaceCall(previousCode, id, (opts ?? {}) as Record<string, unknown>);
       if (!up) {
         return { error: 'Could not find a top-level `return` in the code to insert the api.surface call before. Add the call manually, or bake instead.' };
       }
@@ -12793,6 +12795,11 @@ async function main() {
       });
       return { count: labels.length, labels, ...(lost ? { lostLabels: lost } : {}) };
     },
+    /** Just the current run's label names (for the Surface panel's code-path
+     *  scope dropdown). Empty when the model declares none. */
+    getLabelNames(): string[] {
+      return currentLabelMap ? [...currentLabelMap.keys()] : [];
+    },
 
     /** Report the colors the current run declared in code — via
      *  `api.label(shape, name, { color })` (and `api.labeledUnion` entries with
@@ -13441,8 +13448,8 @@ async function main() {
         'ensureSurfaceTexturesApplied': { signature: 'await ensureSurfaceTexturesApplied() -- Apply any pending (cancelled/failed) api.surface.* chain so the live mesh is textured -> {ok}', docs: '/ai/textures.md' },
         'previewSurfaceModifier': { signature: "previewSurfaceModifier(id, opts?, preserveColor?) -- Non-destructive viewport preview of a modifier; id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize' -> {ok} or {error}", docs: '/ai/textures.md' },
         'clearSurfacePreview': { signature: 'clearSurfacePreview() -- Discard a live surface preview and restore the current mesh', docs: '/ai/textures.md' },
-        'applySurfaceTexture': { signature: "await applySurfaceTexture(id, opts?, mode?) -- Texture by the best path: mode 'auto' (default) writes api.surface.<id> as code on manifold-js, bakes elsewhere; 'code'/'bake' force a path. Returns the result plus path: 'code'|'bake'", docs: '/ai/textures.md' },
-        'applySurfaceTextureAsCode': { signature: "await applySurfaceTextureAsCode(id, opts?) -- Write api.surface.<id>({…}) into the code (insert before the final return, or update the existing call) instead of baking; re-runs and saves a version. manifold-js + whole-model only. id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'smooth'", docs: '/ai/textures.md' },
+        'applySurfaceTexture': { signature: "await applySurfaceTexture(id, opts?, mode?) -- Texture by the best path: mode 'auto' (default) writes api.surface.<id> as code on manifold-js, bakes elsewhere; 'code'/'bake' force a path. opts may scope the code path with label:'name' or region:{point,radius}. Returns the result plus path: 'code'|'bake'", docs: '/ai/textures.md' },
+        'applySurfaceTextureAsCode': { signature: "await applySurfaceTextureAsCode(id, opts?) -- Write api.surface.<id>({…}) into the code (insert before the final return, or update the existing call) instead of baking; re-runs and saves a version. manifold-js only. opts may add a scope: label:'name' (an api.label region) or region:{point:[x,y,z],radius}. id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'smooth'", docs: '/ai/textures.md' },
         'applyFuzzySkin':  { signature: 'await applyFuzzySkin({amplitude?, scale?, octaves?, seed?, quality?, preserveColor?}) -- BAKE fuzzy-skin noise; saves a new version. In-code alternative: api.surface.fuzzy', docs: '/ai/textures.md' },
         'applyKnitTexture':{ signature: 'await applyKnitTexture({amplitude?, stitchWidth?, stitchHeight?, rowOffset?, roundness?, grainAngleDeg?, variation?, seed?, quality?, algorithm?, selectedTriangles?, preserveColor?}) -- BAKE knit stitches; saves a new version. In-code alternative: api.surface.knit', docs: '/ai/textures.md' },
         'applyCableKnit':  { signature: 'await applyCableKnit({amplitude?, cableWidth?, cablePitch?, plyWidth?, grainAngleDeg?, variation?, seed?, quality?, preserveColor?}) -- BAKE cable-knit ropes; saves a new version. In-code alternative: api.surface.cable', docs: '/ai/textures.md' },

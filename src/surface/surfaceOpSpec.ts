@@ -75,6 +75,71 @@ export const SURFACE_OP_FIELDS: Record<SurfaceOpId, readonly string[]> = {
 
 export const SURFACE_OP_IDS = Object.keys(SURFACE_OP_FIELDS) as SurfaceOpId[];
 
+/** Reserved option keys that scope an op to part of the model rather than name
+ *  a per-modifier parameter (see {@link SurfaceScope}). Handled separately from
+ *  `SURFACE_OP_FIELDS`. */
+export const SURFACE_SCOPE_KEYS = ['label', 'region'] as const;
+
+/** Validate and split a raw `api.surface.<id>(opts)` options object into the
+ *  per-modifier scalar `params` and an optional `scope` (from the reserved
+ *  `label` / `region` keys). Throws an `Error` with an actionable message on
+ *  anything invalid. Pure + dependency-free, so the Worker sandbox recorder
+ *  (`engines/manifoldJs.ts`) and the console twin (`applySurfaceTextureAsCode`
+ *  in `main.ts`) share ONE source of truth and can't drift. */
+export function parseSurfaceOpts(
+  id: SurfaceOpId,
+  opts: Record<string, unknown>,
+): { params: Record<string, number | boolean | string>; scope?: SurfaceScope } {
+  if ('label' in opts && 'region' in opts) {
+    throw new Error(`api.surface.${id}: pass either label or region to scope the op, not both.`);
+  }
+  const allowed = SURFACE_OP_FIELDS[id];
+  const params: Record<string, number | boolean | string> = {};
+  let scope: SurfaceScope | undefined;
+  for (const [k, v] of Object.entries(opts)) {
+    if (k === 'label') {
+      if (typeof v !== 'string' || v.length === 0) {
+        throw new Error(`api.surface.${id}.label: must be a non-empty string naming an api.label(...) region.`);
+      }
+      scope = { kind: 'label', label: v };
+      continue;
+    }
+    if (k === 'region') {
+      scope = parseRegionScope(id, v);
+      continue;
+    }
+    if (!allowed.includes(k)) {
+      throw new Error(`api.surface.${id}: unknown option "${k}". Accepted: ${allowed.join(', ')} (or scope keys: label, region).`);
+    }
+    if (typeof v === 'number') {
+      if (!Number.isFinite(v)) throw new Error(`api.surface.${id}.${k}: must be a finite number.`);
+    } else if (typeof v !== 'boolean' && typeof v !== 'string') {
+      throw new Error(`api.surface.${id}.${k}: must be a number, boolean, or string.`);
+    }
+    params[k] = v;
+  }
+  return scope ? { params, scope } : { params };
+}
+
+function parseRegionScope(id: SurfaceOpId, v: unknown): SurfaceScope {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    throw new Error(`api.surface.${id}.region: must be an object, e.g. { point: [x, y, z], radius: 8 }.`);
+  }
+  const r = v as Record<string, unknown>;
+  for (const k of Object.keys(r)) {
+    if (k !== 'point' && k !== 'radius') throw new Error(`api.surface.${id}.region: unknown key "${k}". Accepted: point, radius.`);
+  }
+  const point = r.point;
+  if (!Array.isArray(point) || point.length !== 3 || !point.every(n => typeof n === 'number' && Number.isFinite(n))) {
+    throw new Error(`api.surface.${id}.region.point: must be [x, y, z] finite numbers.`);
+  }
+  const radius = r.radius;
+  if (typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0) {
+    throw new Error(`api.surface.${id}.region.radius: must be a positive number.`);
+  }
+  return { kind: 'point', point: [point[0] as number, point[1] as number, point[2] as number], radius };
+}
+
 export function isSurfaceOpId(v: unknown): v is SurfaceOpId {
   return typeof v === 'string' && Object.prototype.hasOwnProperty.call(SURFACE_OP_FIELDS, v);
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { MeshData } from '../../src/geometry/types';
-import { SURFACE_OP_FIELDS, SURFACE_OP_IDS, isSurfaceOpId } from '../../src/surface/surfaceOpSpec';
+import { SURFACE_OP_FIELDS, SURFACE_OP_IDS, isSurfaceOpId, parseSurfaceOpts } from '../../src/surface/surfaceOpSpec';
 import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, meshContentKey, __clearSurfaceCache, type SurfaceOp } from '../../src/surface/surfaceOps';
 
 /** Axis-aligned cube from [0,s]^3 as an 8-vertex / 12-triangle MeshData. */
@@ -33,6 +33,43 @@ describe('surfaceOpSpec', () => {
     expect(isSurfaceOpId('voxelize')).toBe(false); // engine-changing → not a code op
     expect(isSurfaceOpId('nope')).toBe(false);
     expect(isSurfaceOpId(42)).toBe(false);
+  });
+});
+
+describe('parseSurfaceOpts (shared scalar + scope validator)', () => {
+  it('splits scalar params from a label scope', () => {
+    const out = parseSurfaceOpts('knurl', { pitch: 2, label: 'grip' });
+    expect(out.params).toEqual({ pitch: 2 });
+    expect(out.scope).toEqual({ kind: 'label', label: 'grip' });
+  });
+
+  it('parses a region scope into a normalized point + radius', () => {
+    const out = parseSurfaceOpts('fuzzy', { amplitude: 1, region: { point: [1, 2, 3], radius: 5 } });
+    expect(out.params).toEqual({ amplitude: 1 });
+    expect(out.scope).toEqual({ kind: 'point', point: [1, 2, 3], radius: 5 });
+  });
+
+  it('returns no scope for plain params', () => {
+    expect(parseSurfaceOpts('smooth', { iterations: 3 }).scope).toBeUndefined();
+  });
+
+  it('rejects passing both label and region', () => {
+    expect(() => parseSurfaceOpts('fuzzy', { label: 'a', region: { point: [0, 0, 0], radius: 1 } })).toThrow(/not both/);
+  });
+
+  it('rejects an unknown option (mentioning the scope keys)', () => {
+    expect(() => parseSurfaceOpts('fuzzy', { nope: 1 })).toThrow(/nope/);
+    expect(() => parseSurfaceOpts('fuzzy', { nope: 1 })).toThrow(/label, region/);
+  });
+
+  it('rejects a malformed region (bad point, bad radius, unknown key)', () => {
+    expect(() => parseSurfaceOpts('fuzzy', { region: { point: [0, 0], radius: 5 } })).toThrow(/point/);
+    expect(() => parseSurfaceOpts('fuzzy', { region: { point: [0, 0, 0], radius: -1 } })).toThrow(/radius/);
+    expect(() => parseSurfaceOpts('fuzzy', { region: { point: [0, 0, 0], radius: 5, nope: 1 } })).toThrow(/nope/);
+  });
+
+  it('rejects an empty label', () => {
+    expect(() => parseSurfaceOpts('fuzzy', { label: '' })).toThrow(/non-empty string/);
   });
 });
 

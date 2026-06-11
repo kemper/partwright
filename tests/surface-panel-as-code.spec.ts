@@ -169,6 +169,82 @@ test.describe('surface textures applied as code', () => {
     await expect(page.getByRole('button', { name: /Re-apply/ })).toBeHidden();
   });
 
+  test('the Scope picker writes a label-scoped call (one shape of a union)', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('surface-scope-label-panel');
+      await pw.run([
+        'const { Manifold } = api;',
+        "const box = api.label(Manifold.cube([16, 16, 16], true).translate([-6, 0, 0]), 'grip', { color: [0.2, 0.6, 1] });",
+        'const ball = Manifold.sphere(9, 48).translate([7, 0, 0]);',
+        'return box.add(ball);',
+      ].join('\n'));
+    });
+
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    const palette = page.locator('input[aria-label="Search commands"]');
+    await palette.fill('Knurl');
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('heading', { name: 'Surface modifiers' })).toBeVisible();
+
+    // Whole model → the Scope section appears; By label → the 'grip' dropdown.
+    await page.getByRole('button', { name: 'Whole model' }).click();
+    await expect(page.getByText('Scope', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'By label' }).click();
+    const select = page.locator('select[aria-label="Scope label"]');
+    await expect(select).toHaveValue('grip');
+
+    await page.getByRole('button', { name: 'Apply as code' }).click();
+    await expect(page.getByRole('heading', { name: 'Surface modifiers' })).toHaveCount(0, { timeout: 60_000 });
+    const code = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode());
+    expect(code).toContain('api.surface.knurl({');
+    expect(code).toContain("label: 'grip'");
+  });
+
+  test('the Scope picker captures a clicked point and writes a region scope', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('surface-scope-region-panel');
+      await pw.run('const { Manifold } = api;\nreturn Manifold.sphere(14, 96);');
+    });
+    await page.waitForTimeout(2500); // let WASM + auto-frame settle so the raycast hits
+
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    const palette = page.locator('input[aria-label="Search commands"]');
+    await palette.fill('Fuzzy skin');
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('heading', { name: 'Surface modifiers' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Whole model' }).click();
+    await page.getByRole('button', { name: 'Near point' }).click();
+    await page.getByRole('button', { name: 'Pick point on model' }).click();
+
+    // Dispatch a pointerdown at the canvas center, where the auto-framed model is.
+    await page.evaluate(() => {
+      const canvas = document.querySelector('canvas')!;
+      const r = canvas.getBoundingClientRect();
+      canvas.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+        button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true,
+      }));
+    });
+    await expect(page.getByText(/Point \(/)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Apply as code' }).click();
+    await expect(page.getByRole('heading', { name: 'Surface modifiers' })).toHaveCount(0, { timeout: 60_000 });
+    const code = await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode());
+    expect(code).toContain('api.surface.fuzzy({');
+    expect(code).toContain('region: {');
+  });
+
   test('voxelize tab is not dead-locked by an empty region selection', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);

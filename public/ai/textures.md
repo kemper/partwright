@@ -96,10 +96,27 @@ return body;
   `export*Data`: a `warning` field) because the file would carry the untextured
   base. The Surface panel applies any parked chain automatically before its
   previews, so previews always show modifiers on the textured model.
-- **Whole-model only.** `api.surface.*` always textures the entire returned
-  mesh — there is no `region`/`triangles` option (passing one throws "unknown
-  option"). To texture only a selected patch, use the bake path: the Surface
-  panel's region selector, or `applyKnitTexture({ selectedTriangles })`.
+- **Scoping — texture part of the model.** By default `api.surface.*` textures
+  the whole returned mesh. Add **one** of these scope keys to limit it:
+  - `label: 'name'` — texture only the triangles of an `api.label(shape, 'name',
+    …)` region. This is how you texture **one shape of a union** — label that
+    shape, union it in, then scope the op to it:
+    ```js
+    const grip = api.label(Manifold.cube([16,16,16], true).translate([-6,0,0]), 'grip');
+    const body = Manifold.sphere(9, 48).translate([7,0,0]);
+    api.surface.knurl({ label: 'grip', pitch: 2.4 });  // only the cube knurls
+    return grip.add(body);
+    ```
+  - `region: { point: [x,y,z], radius }` — texture every triangle whose surface
+    is within `radius` of a world-space point (e.g. one captured from a viewport
+    click). The Surface panel's **Scope → Near point** picker writes this for you
+    from a click; for code, read `getGeometryData()`'s `boundingBox`/`centroid`
+    to choose a point.
+
+  Scoping is the code-path counterpart of the bake path's `selectedTriangles`
+  patch, and the label's color carries onto the textured region automatically.
+  (Scope keys are ignored on the bake path — pass them only in manifold-js code
+  or with `applySurfaceTexture` mode `'auto'`/`'code'`.)
 - This is the in-code counterpart of the bake tools, mirroring `api.paint.*`
   (see [colors](/ai/colors.md)). Use it when you want the texture to live with
   the code; use the `apply*` tools when you want a one-shot baked result.
