@@ -313,6 +313,88 @@ test.describe('Insert palette', () => {
     await expect(deleteBtn).toBeEnabled();
   });
 
+  test('Undo / Redo reverses a palette insert and the engine re-runs', async ({ page }) => {
+    await gotoEditor(page);
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
+
+    await page.locator('#btn-insert').dispatchEvent('click');
+
+    // Undo / Redo start disabled — no history yet.
+    await expect(page.locator('#insert-undo')).toBeDisabled();
+    await expect(page.locator('#insert-redo')).toBeDisabled();
+
+    // Insert two parts. After each, Undo enables (Redo stays disabled until an undo).
+    await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toContain('const box');
+    await expect(page.locator('#insert-undo')).toBeEnabled();
+
+    await page.locator(palette).getByRole('button', { name: 'Sphere' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toContain('const ball');
+
+    // Undo: the second insert (sphere) goes; cube remains. Redo enables.
+    await page.locator('#insert-undo').click();
+    await expect.poll(() => getCode(page)).not.toContain('const ball');
+    await expect.poll(() => getCode(page)).toContain('const box');
+    await expect(page.locator('#insert-redo')).toBeEnabled();
+
+    // Redo: sphere restored.
+    await page.locator('#insert-redo').click();
+    await expect.poll(() => getCode(page)).toContain('const ball');
+  });
+
+  test('Arrange mode: shift+drag draws a marquee that selects parts inside it', async ({ page }) => {
+    await gotoEditor(page);
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
+
+    await page.locator('#btn-insert').dispatchEvent('click');
+
+    // Two palette parts so the marquee has something to lasso.
+    await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toContain('const box');
+    await page.locator(palette).getByRole('button', { name: 'Sphere' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toContain('const ball');
+
+    // Move the palette out of the way so the canvas drag isn't intercepted.
+    await page.evaluate(() => {
+      const p = document.querySelector('#insert-palette-panel') as HTMLElement | null;
+      if (p) { p.style.left = '8px'; p.style.top = '8px'; p.style.right = 'auto'; }
+    });
+
+    await page.locator('#insert-arrange-toggle').click();
+    await expect(page.locator('#insert-arrange-toggle')).toContainText('ON');
+
+    // Shift + drag a marquee that covers most of the viewport — the cube/sphere
+    // bbox centres at origin project to the canvas centre, so a generous diagonal
+    // drag captures both parts.
+    const box = await page.locator('canvas').first().boundingBox();
+    if (!box) throw new Error('canvas missing');
+    const startX = box.x + box.width * 0.85;
+    const startY = box.y + box.height * 0.15;
+    const endX = box.x + box.width * 0.15;
+    const endY = box.y + box.height * 0.85;
+    await page.keyboard.down('Shift');
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(endX, endY, { steps: 12 });
+    await page.mouse.up();
+    await page.keyboard.up('Shift');
+
+    // Selection chip strip carries BOTH parts.
+    await expect(page.locator('#insert-selection-strip').getByText('box', { exact: false })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('#insert-selection-strip').getByText('ball', { exact: false })).toBeVisible();
+    // Align section appears (only visible when 2+ selected) — title query targets
+    // the row's tooltip since the visible accessible name is just "X ⊣" etc.
+    await expect(page.locator(palette).getByTitle(/Align selected parts on X — min surface/)).toBeVisible();
+  });
+
   test('Arrange mode: click on the real model selects + reveals Size/Align sections', async ({ page }) => {
     await gotoEditor(page);
     // Pin a deterministic starter so the catalog sampler's existing parts don't
@@ -346,8 +428,10 @@ test.describe('Insert palette', () => {
     // The Size section shows once 1+ parts are selected. The chip strip carries `box`.
     await expect(page.locator('#insert-selection-strip').getByText('box', { exact: false })).toBeVisible({ timeout: 5000 });
     await expect(page.locator(palette).getByRole('button', { name: /Apply size/i })).toBeVisible();
-    // The Align section is hidden until a second part is selected.
-    await expect(page.locator(palette).getByRole('button', { name: /Align selected parts on X — min surface/ })).toBeHidden();
+    // The Align section is hidden until a second part is selected. Use a title
+    // query since the visible accessible name of each align button is just "X ⊣"
+    // (the title carries the descriptive label).
+    await expect(page.locator(palette).getByTitle(/Align selected parts on X — min surface/)).toBeHidden();
 
     // Toggle Arrange off cleanly.
     await page.locator('#insert-arrange-toggle').click();

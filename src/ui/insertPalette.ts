@@ -78,6 +78,18 @@ import {
   type AlignAxis,
   type AlignMode,
 } from '../insert/arrangeMode';
+import {
+  initUndoStack,
+  subscribeUndoStack,
+  recordOperation,
+  undo as undoOp,
+  redo as redoOp,
+  canUndo,
+  canRedo,
+  peekUndoLabel,
+  peekRedoLabel,
+  clearUndoHistory,
+} from '../insert/undoStack';
 import type { MeshData } from '../geometry/types';
 
 export interface InsertPaletteCallbacks {
@@ -149,6 +161,8 @@ let arrangeToggleBtn: HTMLButtonElement | null = null;
 let sizeSectionEl: HTMLElement | null = null;
 let alignSectionEl: HTMLElement | null = null;
 let sizeInputs: [HTMLInputElement, HTMLInputElement, HTMLInputElement] | null = null;
+let undoBtn: HTMLButtonElement | null = null;
+let redoBtn: HTMLButtonElement | null = null;
 
 const RESULT_BASE: Record<BooleanOpKind, string> = {
   union: 'merged',
@@ -229,6 +243,22 @@ export function initInsertPalette(container: HTMLElement, callbacks: InsertPalet
     shiftRegistryEntry: bumpRegistryFor,
   });
 
+  // Undo / redo stack — shared across the palette and arrangeMode. The stack
+  // operates on the same registry / specByName / selection these modules
+  // already mutate; restoring a snapshot clears-and-refills them in place so
+  // every existing reference (the chip-strip renderer, the bounding-box
+  // overlay, the SCAD scanner) keeps working unchanged.
+  initUndoStack({
+    getCode: () => callbacks.getCode(),
+    setCode: (c) => callbacks.setCode(c),
+    registry,
+    specByName,
+    selection,
+    run: () => callbacks.run(),
+    onAfterRestore: () => { rerenderSelectionUI(); refreshArrangeOverlay(); updateUndoRedoButtons(); },
+  });
+  subscribeUndoStack(updateUndoRedoButtons);
+
   // Sessions don't share registry/spec state. Without a reset, a part named
   // `box` from session A would persist into session B and either contaminate
   // 3D-pick (stale bbox) or trip `pruneSelection` only if the name *also*
@@ -251,9 +281,14 @@ function resetInsertPaletteState(): void {
   selection.clear();
   registry.clear();
   specByName.clear();
+  // Drop the undo history too — its snapshots refer to the previous session's
+  // code/registry/spec maps; carrying them across would let Ctrl-Z reach into
+  // the old session's state, breaking the per-session isolation rule.
+  clearUndoHistory();
   if (isInsertPaletteOpen()) closeInsertPalette();
   rerenderSelectionUI();
   updateArrangeToggleState();
+  updateUndoRedoButtons();
 }
 
 function isInsertPaletteOpen(): boolean {
@@ -281,6 +316,19 @@ function updateArrangeToggleState(): void {
   const on = isArrangeActive();
   arrangeToggleBtn.className = on ? ARRANGE_TOGGLE_ACTIVE : ARRANGE_TOGGLE_IDLE;
   arrangeToggleBtn.textContent = on ? '✥ Arrange — ON · click again to exit' : '✥ Arrange';
+}
+
+function updateUndoRedoButtons(): void {
+  if (undoBtn) {
+    const lbl = peekUndoLabel();
+    undoBtn.disabled = !canUndo();
+    undoBtn.title = lbl ? `Undo: ${lbl}` : 'Nothing to undo';
+  }
+  if (redoBtn) {
+    const lbl = peekRedoLabel();
+    redoBtn.disabled = !canRedo();
+    redoBtn.title = lbl ? `Redo: ${lbl}` : 'Nothing to redo';
+  }
 }
 
 function openInsertPalette(): void {
@@ -409,6 +457,34 @@ function buildPanel(): HTMLElement {
   const p = document.createElement('div');
   p.className = 'flex-1 min-h-0 overflow-y-auto px-3 py-2.5 flex flex-col gap-1.5 text-sm text-zinc-200';
   shell.appendChild(p);
+
+  // --- Undo / Redo (coarse-grained palette-operation history) ---
+  // One stack entry per Tinkercad-style action (insert / move / resize / align
+  // / boolean / duplicate / mirror / delete), independent of CodeMirror's
+  // per-text-edit history so a single drag is one Ctrl+Z away from being
+  // reversed. Buttons sit at the top of the panel so they're always reachable.
+  const historyRow = document.createElement('div');
+  historyRow.className = 'flex items-stretch gap-1 mb-1';
+  undoBtn = document.createElement('button');
+  undoBtn.id = 'insert-undo';
+  undoBtn.className = 'flex-1 px-2 py-1.5 rounded text-xs font-medium text-zinc-100 bg-zinc-700/60 hover:bg-zinc-600 border border-zinc-600/60 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+  undoBtn.textContent = '↶ Undo';
+  undoBtn.title = 'Undo the last palette operation';
+  undoBtn.addEventListener('click', () => {
+    const label = undoOp();
+    if (label && cb) cb.showToast(`Undid: ${label}`, { variant: 'neutral' });
+  });
+  redoBtn = document.createElement('button');
+  redoBtn.id = 'insert-redo';
+  redoBtn.className = undoBtn.className;
+  redoBtn.textContent = '↷ Redo';
+  redoBtn.title = 'Redo the last undone palette operation';
+  redoBtn.addEventListener('click', () => {
+    const label = redoOp();
+    if (label && cb) cb.showToast(`Redid: ${label}`, { variant: 'neutral' });
+  });
+  historyRow.append(undoBtn, redoBtn);
+  p.appendChild(historyRow);
 
   // --- Arrange toggle (Tinkercad-style direct manipulation) ---
   // A persistent toggle (NOT a modal session): when on, clicking a shape in the
@@ -701,46 +777,57 @@ function applyResize(scale: Vec3): void {
   if (names.length === 0) return;
   const skipped: string[] = [];
   let appliedAny = false;
-  for (const name of names) {
-    if (lang === 'voxel') {
-      const spec = specByName.get(name);
-      const part = scanParts(cb.getCode(), 'voxel').find(p => p.name === name);
-      if (!spec || !part?.range) { skipped.push(name); continue; }
-      const scaled = scaleSpecForVoxel(spec, scale);
-      const colour = /'(#[0-9a-fA-F]{3,8})'/.exec(part.statement ?? '');
-      const stmt = emitPrimitiveVoxel(scaled, voxelGridVar(cb.getCode()), colour ? colour[1] : VOXEL_DEFAULT_COLOR);
-      cb.setCode(replaceVoxelStatement(cb.getCode(), part.range, stmt));
-      specByName.set(name, scaled);
-      registry.set(name, primitiveEntry(scaled));
-      appliedAny = true;
-    } else if (lang === 'scad') {
-      const part = scanParts(cb.getCode(), 'scad').find(p => p.name === name);
-      if (!part?.range) { skipped.push(name); continue; }
-      cb.setCode(setPartScaleScad(cb.getCode(), part.range, scale));
-      bumpRegistryAfterScale(name, scale);
-      appliedAny = true;
-    } else {
-      // manifold-js + replicad
-      const code = cb.getCode();
-      const updated = setPartScaleJs(code, name, scale);
-      if (updated === code) { skipped.push(name); continue; }
-      cb.setCode(updated);
-      bumpRegistryAfterScale(name, scale);
-      appliedAny = true;
+  const label = `Resize ${fmtScale(scale)} · ${names.length === 1 ? names[0] : `${names.length} parts`}`;
+  const c = cb; // capture non-null `cb` once; the recordOperation lambda below uses this.
+  recordOperation(label, () => {
+    for (const name of names) {
+      if (lang === 'voxel') {
+        const spec = specByName.get(name);
+        const part = scanParts(c.getCode(), 'voxel').find(p => p.name === name);
+        if (!spec || !part?.range) { skipped.push(name); continue; }
+        const scaled = scaleSpecForVoxel(spec, scale);
+        const colour = /'(#[0-9a-fA-F]{3,8})'/.exec(part.statement ?? '');
+        const stmt = emitPrimitiveVoxel(scaled, voxelGridVar(c.getCode()), colour ? colour[1] : VOXEL_DEFAULT_COLOR);
+        c.setCode(replaceVoxelStatement(c.getCode(), part.range, stmt));
+        specByName.set(name, scaled);
+        registry.set(name, primitiveEntry(scaled));
+        appliedAny = true;
+      } else if (lang === 'scad') {
+        const part = scanParts(c.getCode(), 'scad').find(p => p.name === name);
+        if (!part?.range) { skipped.push(name); continue; }
+        c.setCode(setPartScaleScad(c.getCode(), part.range, scale));
+        bumpRegistryAfterScale(name, scale);
+        appliedAny = true;
+      } else {
+        // manifold-js + replicad
+        const code = c.getCode();
+        const updated = setPartScaleJs(code, name, scale);
+        if (updated === code) { skipped.push(name); continue; }
+        c.setCode(updated);
+        bumpRegistryAfterScale(name, scale);
+        appliedAny = true;
+      }
     }
-  }
-  if (skipped.length > 0) {
-    cb.showToast(
-      skipped.length === names.length
-        ? 'Resize could not locate the selected parts in the code.'
-        : `Resized ${names.length - skipped.length}; skipped ${skipped.length} (no matching declaration).`,
-      { variant: skipped.length === names.length ? 'warn' : 'neutral' },
-    );
-  }
-  if (appliedAny) {
-    cb.run();
-    refreshArrangeOverlay();
-  }
+    if (skipped.length > 0) {
+      c.showToast(
+        skipped.length === names.length
+          ? 'Resize could not locate the selected parts in the code.'
+          : `Resized ${names.length - skipped.length}; skipped ${skipped.length} (no matching declaration).`,
+        { variant: skipped.length === names.length ? 'warn' : 'neutral' },
+      );
+    }
+    if (appliedAny) {
+      c.run();
+      refreshArrangeOverlay();
+    }
+  });
+}
+
+function fmtScale(s: Vec3): string {
+  // Compact "2× / 2×3×1 / 0.5×" rendering for the undo label so the tooltip
+  // stays readable. Uniform → one factor; per-axis → triple.
+  if (s[0] === s[1] && s[1] === s[2]) return `${s[0]}×`;
+  return `${s[0]}×${s[1]}×${s[2]}`;
 }
 
 /** For voxel-engine resize, rewrite the spec's dimensions directly — voxel
@@ -805,14 +892,16 @@ function applyAlign(axis: AlignAxis, mode: AlignMode): void {
   if (!cb || selection.size < 2) return;
   const deltas = alignDeltas(selection, registry, axis, mode);
   if (deltas.size === 0) return;
-  let anyApplied = false;
-  for (const [name, delta] of deltas) {
-    if (writePartTranslateDelta(name, delta)) anyApplied = true;
-  }
-  if (anyApplied) {
-    cb.run();
-    refreshArrangeOverlay();
-  }
+  recordOperation(`Align ${axis.toUpperCase()} ${mode}`, () => {
+    let anyApplied = false;
+    for (const [name, delta] of deltas) {
+      if (writePartTranslateDelta(name, delta)) anyApplied = true;
+    }
+    if (anyApplied) {
+      cb!.run();
+      refreshArrangeOverlay();
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1116,32 +1205,34 @@ function openPrimitiveModal(kind: PrimitiveKind): void {
 
 function applyPrimitive(spec: PrimitiveSpec, lang: InsertLanguage): void {
   if (!cb) return;
-  const code = cb.getCode();
+  recordOperation(`Insert ${spec.kind} "${spec.name}"`, () => {
+    const code = cb!.getCode();
 
-  if (lang === 'scad') {
-    cb.setCode(appendScadStatement(code, emitPrimitive(spec, lang)));
-  } else if (lang === 'voxel') {
-    // Voxel: scaffold a grid if needed, emit the fill against it, append before
-    // the return. Union is implicit (every fill accumulates into the grid).
-    const { code: scaffolded, gridVar } = ensureVoxelScaffold(code);
-    const stmt = emitPrimitiveVoxel(spec, gridVar, VOXEL_DEFAULT_COLOR);
-    cb.setCode(appendVoxelStatement(scaffolded, stmt));
-  } else {
-    // manifold-js / replicad: fold the part into the managed visible union
-    // (never dropping existing geometry). Auto-combine off inserts the const
-    // but leaves the return alone until the user combines explicitly.
-    const result = addManagedDeclaration(code, emitPrimitive(spec, lang), {
-      lang, addNames: [spec.name], combine: autoCombine,
-    });
-    cb.setCode(result.code);
-    if (!result.returnSet) {
-      cb.showToast(`Added "${spec.name}" — not shown yet. Union it (or turn on Auto-combine) to combine.`, { variant: 'neutral' });
+    if (lang === 'scad') {
+      cb!.setCode(appendScadStatement(code, emitPrimitive(spec, lang)));
+    } else if (lang === 'voxel') {
+      // Voxel: scaffold a grid if needed, emit the fill against it, append before
+      // the return. Union is implicit (every fill accumulates into the grid).
+      const { code: scaffolded, gridVar } = ensureVoxelScaffold(code);
+      const stmt = emitPrimitiveVoxel(spec, gridVar, VOXEL_DEFAULT_COLOR);
+      cb!.setCode(appendVoxelStatement(scaffolded, stmt));
+    } else {
+      // manifold-js / replicad: fold the part into the managed visible union
+      // (never dropping existing geometry). Auto-combine off inserts the const
+      // but leaves the return alone until the user combines explicitly.
+      const result = addManagedDeclaration(code, emitPrimitive(spec, lang), {
+        lang, addNames: [spec.name], combine: autoCombine,
+      });
+      cb!.setCode(result.code);
+      if (!result.returnSet) {
+        cb!.showToast(`Added "${spec.name}" — not shown yet. Union it (or turn on Auto-combine) to combine.`, { variant: 'neutral' });
+      }
     }
-  }
 
-  registry.set(spec.name, primitiveEntry(spec));
-  specByName.set(spec.name, spec);
-  cb.run(cb.getCode());
+    registry.set(spec.name, primitiveEntry(spec));
+    specByName.set(spec.name, spec);
+    cb!.run(cb!.getCode());
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1210,22 +1301,24 @@ function openEnclosureModal(kind: EnclosureKind): void {
 
 function applyEnclosure(spec: EnclosureSpec, size: Vec3): void {
   if (!cb) return;
-  const { decl, names } = emitEnclosure(spec);
-  // Enclosures are manifold-js only; fold their part(s) into the managed union.
-  const result = addManagedDeclaration(cb.getCode(), decl, {
-    lang: 'manifold-js', addNames: names, combine: autoCombine,
+  recordOperation(`Insert enclosure ${spec.kind}`, () => {
+    const { decl, names } = emitEnclosure(spec);
+    // Enclosures are manifold-js only; fold their part(s) into the managed union.
+    const result = addManagedDeclaration(cb!.getCode(), decl, {
+      lang: 'manifold-js', addNames: names, combine: autoCombine,
+    });
+    cb!.setCode(result.code);
+    // Approximate AABB for 3D-pick: footprint x×y, base on z=0. (Enclosure parts
+    // carry no PrimitiveSpec, so they're pickable/operand-able but not draggable
+    // in build mode — they're recipe parts, positioned via code.)
+    const min: Vec3 = [-size[0] / 2, -size[1] / 2, 0];
+    const max: Vec3 = [size[0] / 2, size[1] / 2, size[2]];
+    for (const name of names) registry.set(name, { box: { min, max }, center: [0, 0, size[2] / 2] });
+    if (!result.returnSet) {
+      cb!.showToast(`Added ${names.join(' + ')} — not shown yet. Union to combine.`, { variant: 'neutral' });
+    }
+    cb!.run(cb!.getCode());
   });
-  cb.setCode(result.code);
-  // Approximate AABB for 3D-pick: footprint x×y, base on z=0. (Enclosure parts
-  // carry no PrimitiveSpec, so they're pickable/operand-able but not draggable
-  // in build mode — they're recipe parts, positioned via code.)
-  const min: Vec3 = [-size[0] / 2, -size[1] / 2, 0];
-  const max: Vec3 = [size[0] / 2, size[1] / 2, size[2]];
-  for (const name of names) registry.set(name, { box: { min, max }, center: [0, 0, size[2] / 2] });
-  if (!result.returnSet) {
-    cb.showToast(`Added ${names.join(' + ')} — not shown yet. Union to combine.`, { variant: 'neutral' });
-  }
-  cb.run(cb.getCode());
 }
 
 // ---------------------------------------------------------------------------
@@ -1419,42 +1512,44 @@ function applyOperation(op: BooleanOpKind, operands: Operand[], lang: InsertLang
   const code = cb.getCode();
   const resultName = uniqueName(RESULT_BASE[op], existingNames());
 
-  try {
-    if (lang === 'scad') {
-      const ranges = operands.map(o => o.range).filter((r): r is { from: number; to: number } => !!r);
-      const statements = operands.map(o => o.statement ?? o.name);
-      if (ranges.length !== operands.length) {
-        cb.showToast('Each SCAD operand must come from the code (list, 3D pick, or selection).', { variant: 'warn' });
-        return;
+  recordOperation(`${op[0].toUpperCase() + op.slice(1)} ${operands.length} parts → ${resultName}`, () => {
+    try {
+      if (lang === 'scad') {
+        const ranges = operands.map(o => o.range).filter((r): r is { from: number; to: number } => !!r);
+        const statements = operands.map(o => o.statement ?? o.name);
+        if (ranges.length !== operands.length) {
+          cb!.showToast('Each SCAD operand must come from the code (list, 3D pick, or selection).', { variant: 'warn' });
+          return;
+        }
+        if (rangesOverlap(ranges)) {
+          cb!.showToast('Operands overlap in the code — pick distinct statements.', { variant: 'warn' });
+          return;
+        }
+        const block = emitOperationScad(op, statements, resultName);
+        cb!.setCode(replaceScadRanges(code, ranges, block));
+      } else {
+        // manifold-js / replicad: build `const <result> = a.<op>(b)…;` then fold
+        // the result into the managed union *in place of* its operands (so they
+        // don't linger in the visible union alongside the merged result).
+        const names = operands.map(o => o.expr ?? o.name);
+        const snippet = lang === 'replicad'
+          ? emitOperationBrep(op, names, resultName)
+          : emitOperationJs(op, names, resultName);
+        const result = addManagedDeclaration(code, snippet, {
+          lang, addNames: [resultName], replaceNames: operands.map(o => o.name), combine: true,
+        });
+        cb!.setCode(result.code);
       }
-      if (rangesOverlap(ranges)) {
-        cb.showToast('Operands overlap in the code — pick distinct statements.', { variant: 'warn' });
-        return;
-      }
-      const block = emitOperationScad(op, statements, resultName);
-      cb.setCode(replaceScadRanges(code, ranges, block));
-    } else {
-      // manifold-js / replicad: build `const <result> = a.<op>(b)…;` then fold
-      // the result into the managed union *in place of* its operands (so they
-      // don't linger in the visible union alongside the merged result).
-      const names = operands.map(o => o.expr ?? o.name);
-      const snippet = lang === 'replicad'
-        ? emitOperationBrep(op, names, resultName)
-        : emitOperationJs(op, names, resultName);
-      const result = addManagedDeclaration(code, snippet, {
-        lang, addNames: [resultName], replaceNames: operands.map(o => o.name), combine: true,
-      });
-      cb.setCode(result.code);
+    } catch (e) {
+      cb!.showToast(e instanceof Error ? e.message : 'Could not create operation.', { variant: 'warn' });
+      return;
     }
-  } catch (e) {
-    cb.showToast(e instanceof Error ? e.message : 'Could not create operation.', { variant: 'warn' });
-    return;
-  }
 
-  const merged = unionEntries(operands.map(o => o.name));
-  if (merged) registry.set(resultName, merged);
-  cb.run(cb.getCode());
-  cb.showToast(`Created "${resultName}".`, { variant: 'success' });
+    const merged = unionEntries(operands.map(o => o.name));
+    if (merged) registry.set(resultName, merged);
+    cb!.run(cb!.getCode());
+    cb!.showToast(`Created "${resultName}".`, { variant: 'success' });
+  });
 }
 
 function rangesOverlap(ranges: { from: number; to: number }[]): boolean {
@@ -1712,7 +1807,9 @@ function applyQuickDuplicate(): void {
     cb.showToast('Nothing selected — pick parts with 🎯 Select first.', { variant: 'warn' });
     return;
   }
-  const lang = cb.getLanguage();
+  const c = cb;
+  recordOperation(`Duplicate ${selection.size} part${selection.size === 1 ? '' : 's'}`, () => {
+  const lang = c.getLanguage();
   // Offset each duplicate along +X by 1.1× the part's X extent so the copy
   // sits next to the original instead of overlapping.
   const newNames: string[] = [];
@@ -1720,7 +1817,7 @@ function applyQuickDuplicate(): void {
     const entry = registry.get(name);
     const dx = entry ? (entry.box.max[0] - entry.box.min[0]) * 1.1 : 10;
     const offset: Vec3 = [dx, 0, 0];
-    let code = cb.getCode();
+    let code = c.getCode();
     const newName = uniqueName(`${name}_copy`, existingNames());
     if (lang === 'scad') {
       const part = scanParts(code, 'scad').find(p => p.name === name);
@@ -1740,7 +1837,7 @@ function applyQuickDuplicate(): void {
       // manifold-js + replicad: `const copy = orig.translate([dx,0,0]);`.
       code = duplicatePartJs(code, name, newName, offset);
     }
-    cb.setCode(code);
+    c.setCode(code);
     const origSpec = specByName.get(name);
     if (origSpec) {
       const pos = origSpec.position ?? [0, 0, 0];
@@ -1756,10 +1853,11 @@ function applyQuickDuplicate(): void {
   selection.clear();
   for (const n of newNames) selection.add(n);
   rerenderSelectionUI();
-  cb.run(cb.getCode());
+  c.run(c.getCode());
   if (newNames.length > 0) {
-    cb.showToast(`Duplicated ${newNames.length} part${newNames.length === 1 ? '' : 's'}.`, { variant: 'success' });
+    c.showToast(`Duplicated ${newNames.length} part${newNames.length === 1 ? '' : 's'}.`, { variant: 'success' });
   }
+  });
 }
 
 function openMirrorPicker(): void {
@@ -1796,26 +1894,28 @@ function openMirrorPicker(): void {
 
 function applyQuickMirror(axisKey: MirrorAxis): void {
   if (!cb) return;
-  const axis: Vec3 = axisKey === 'x' ? [1, 0, 0] : axisKey === 'y' ? [0, 1, 0] : [0, 0, 1];
-  const lang = cb.getLanguage();
-  let count = 0;
-  for (const name of [...selection]) {
-    let code = cb.getCode();
-    if (lang === 'scad') {
-      const part = scanParts(code, 'scad').find(p => p.name === name);
-      if (!part?.range) continue;
-      code = mirrorPartScad(code, part.range, axis);
-    } else {
-      code = mirrorPartJs(code, name, axis);
+  recordOperation(`Mirror ${axisKey.toUpperCase()}`, () => {
+    const axis: Vec3 = axisKey === 'x' ? [1, 0, 0] : axisKey === 'y' ? [0, 1, 0] : [0, 0, 1];
+    const lang = cb!.getLanguage();
+    let count = 0;
+    for (const name of [...selection]) {
+      let code = cb!.getCode();
+      if (lang === 'scad') {
+        const part = scanParts(code, 'scad').find(p => p.name === name);
+        if (!part?.range) continue;
+        code = mirrorPartScad(code, part.range, axis);
+      } else {
+        code = mirrorPartJs(code, name, axis);
+      }
+      cb!.setCode(code);
+      count++;
     }
-    cb.setCode(code);
-    count++;
-  }
-  rerenderSelectionUI();
-  cb.run(cb.getCode());
-  if (count > 0) {
-    cb.showToast(`Mirrored ${count} part${count === 1 ? '' : 's'} across ${axisKey.toUpperCase()}.`, { variant: 'success' });
-  }
+    rerenderSelectionUI();
+    cb!.run(cb!.getCode());
+    if (count > 0) {
+      cb!.showToast(`Mirrored ${count} part${count === 1 ? '' : 's'} across ${axisKey.toUpperCase()}.`, { variant: 'success' });
+    }
+  });
 }
 
 function applyQuickDelete(): void {
@@ -1824,32 +1924,34 @@ function applyQuickDelete(): void {
     cb.showToast('Nothing selected — pick parts with 🎯 Select first.', { variant: 'warn' });
     return;
   }
-  const lang = cb.getLanguage();
-  let count = 0;
-  for (const name of [...selection]) {
-    let code = cb.getCode();
-    if (lang === 'scad' || lang === 'voxel') {
-      // Statement engines: drop the tagged statement (re-scan each iteration
-      // since prior deletions shift offsets).
-      const part = scanParts(code, lang).find(p => p.name === name);
-      if (!part?.range) continue;
-      code = removeScadStatement(code, part.range);
-    } else {
-      // manifold-js + replicad: remove the declaration *and* prune the name
-      // from the managed union so no dangling reference remains.
-      code = removeManagedPart(code, name, lang);
+  recordOperation(`Delete ${selection.size} part${selection.size === 1 ? '' : 's'}`, () => {
+    const lang = cb!.getLanguage();
+    let count = 0;
+    for (const name of [...selection]) {
+      let code = cb!.getCode();
+      if (lang === 'scad' || lang === 'voxel') {
+        // Statement engines: drop the tagged statement (re-scan each iteration
+        // since prior deletions shift offsets).
+        const part = scanParts(code, lang).find(p => p.name === name);
+        if (!part?.range) continue;
+        code = removeScadStatement(code, part.range);
+      } else {
+        // manifold-js + replicad: remove the declaration *and* prune the name
+        // from the managed union so no dangling reference remains.
+        code = removeManagedPart(code, name, lang);
+      }
+      cb!.setCode(code);
+      registry.delete(name);
+      specByName.delete(name);
+      count++;
     }
-    cb.setCode(code);
-    registry.delete(name);
-    specByName.delete(name);
-    count++;
-  }
-  selection.clear();
-  rerenderSelectionUI();
-  cb.run(cb.getCode());
-  if (count > 0) {
-    cb.showToast(`Deleted ${count} part${count === 1 ? '' : 's'}.`, { variant: 'success' });
-  }
+    selection.clear();
+    rerenderSelectionUI();
+    cb!.run(cb!.getCode());
+    if (count > 0) {
+      cb!.showToast(`Deleted ${count} part${count === 1 ? '' : 's'}.`, { variant: 'success' });
+    }
+  });
 }
 
 function meshDataToGeometry(mesh: MeshData): THREE.BufferGeometry {

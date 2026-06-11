@@ -23,6 +23,7 @@ import { getScene, setGizmoLock, requestRender } from '../renderer/viewport';
 import { primitiveEntry, pickPart, type RegistryEntry } from './spatial';
 import { type PrimitiveSpec, type Vec3, type InsertLanguage } from './codegen';
 import { alignDeltas, formatScaleCall, type AlignAxis, type AlignMode } from './arrangeMath';
+import { recordOperation } from './undoStack';
 
 // Re-export the pure helpers so callers can pick them up from one entry point.
 export { alignDeltas, formatScaleCall };
@@ -90,6 +91,18 @@ let dragBaseline = new Map<string, Vec3>(); // pre-drag centres for each ghost
 const DRAG_THRESHOLD_PX = 4;
 let dragging = false;
 
+// Marquee (shift+drag on empty space) — a DOM overlay rectangle that selects
+// every part whose bbox centre projects inside it on release. State is held
+// at module scope so the pointermove handler can mutate the rect without
+// reconstructing it each frame; the overlay element is mounted under document.body
+// (not the canvas — Three.js owns the canvas) and removed on commit/cancel.
+let marquee: {
+  startX: number;
+  startY: number;
+  el: HTMLDivElement;
+  shiftAtStart: boolean; // true ⇒ additive (preserve existing selection)
+} | null = null;
+
 export function initArrangeMode(d: ArrangeModeDeps): void {
   deps = d;
 }
@@ -137,6 +150,7 @@ export function exitArrangeMode(): void {
   document.removeEventListener('keydown', onKey);
 
   cancelDrag();
+  cancelMarquee();
   if (overlayGroup) {
     overlayGroup.parent?.remove(overlayGroup);
     disposeOverlayGroup(overlayGroup);
@@ -225,9 +239,17 @@ function onPointerDown(e: PointerEvent): void {
 
   const hit = pickHit(e.clientX, e.clientY, camera, canvas);
   if (!hit) {
-    // Empty-space click: clear the selection (matches Tinkercad's deselect-on-blank)
-    // but let orbit pan still happen — don't capture the pointer.
-    if (deps.selection.size > 0) {
+    // Empty-space pointerdown. With Shift held, begin a marquee drag — a
+    // translucent rectangle the user drags out to lasso parts (Tinkercad-
+    // style additive marquee). Without Shift, fall back to the original
+    // deselect-on-blank behaviour and let orbit handle the gesture.
+    if (e.shiftKey) {
+      beginMarquee(e.clientX, e.clientY);
+      e.stopPropagation();
+      e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
+      setGizmoLock(true);
+    } else if (deps.selection.size > 0) {
       deps.selection.clear();
       deps.onSelectionChanged();
       refreshArrangeOverlay();
@@ -245,7 +267,14 @@ function onPointerDown(e: PointerEvent): void {
 }
 
 function onPointerMove(e: PointerEvent): void {
-  if (!active || !deps || !pendingPart || !pointerStart) return;
+  if (!active || !deps) return;
+  if (marquee) {
+    updateMarquee(e.clientX, e.clientY);
+    e.stopPropagation();
+    e.preventDefault();
+    return;
+  }
+  if (!pendingPart || !pointerStart) return;
   const canvas = deps.getCanvas();
   const camera = deps.getCamera();
   if (!canvas || !camera) return;
@@ -283,6 +312,13 @@ function onPointerUp(e: PointerEvent): void {
   if (canvas?.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
   setGizmoLock(false);
 
+  if (marquee) {
+    e.stopPropagation();
+    e.preventDefault();
+    commitMarquee();
+    return;
+  }
+
   if (dragging) {
     e.stopPropagation();
     e.preventDefault();
@@ -306,12 +342,13 @@ function onPointerUp(e: PointerEvent): void {
   dragging = false;
 }
 
-function onPointerCancel(_e: PointerEvent): void { cancelDrag(); }
+function onPointerCancel(_e: PointerEvent): void { cancelDrag(); cancelMarquee(); }
 
 function onKey(e: KeyboardEvent): void {
   if (!active) return;
   if (e.key === 'Escape') {
     if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+    if (marquee) { cancelMarquee(); return; }
     if (dragging) { cancelDrag(); return; }
     if (deps && deps.selection.size > 0) {
       deps.selection.clear();
@@ -378,12 +415,19 @@ function commitDrag(): void {
   }
   // Apply the same delta to every dragged part via the palette's per-engine
   // writeback (handles voxel snap, scad statement, js .translate). The palette
-  // also bumps the registry so the post-commit overlay sync is correct.
-  for (const name of names) {
-    deps.writebackMoveDelta(name, delta);
-  }
+  // also bumps the registry so the post-commit overlay sync is correct. The
+  // whole multi-part drag is ONE undo step — recordOperation snapshots the
+  // pre-drag state once and pushes after the loop, so Ctrl-Z restores every
+  // moved part together (matches the user's gesture, not the per-part edits).
+  const label = names.length === 1 ? `Move ${names[0]}` : `Move ${names.length} parts`;
+  const d = deps;
+  recordOperation(label, () => {
+    for (const name of names) {
+      d.writebackMoveDelta(name, delta);
+    }
+  });
   refreshArrangeOverlay();
-  deps.getCb()?.run();
+  d.getCb()?.run();
 }
 
 function cancelDrag(): void {
@@ -408,6 +452,106 @@ function cleanupGhosts(): void {
   for (const [, box] of boxByName) {
     (box.material as THREE.LineBasicMaterial).opacity = 0.95;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Marquee selection (shift + drag on empty space)
+// ---------------------------------------------------------------------------
+
+function beginMarquee(clientX: number, clientY: number): void {
+  const el = document.createElement('div');
+  el.style.cssText =
+    'position: fixed; pointer-events: none; z-index: 10000; ' +
+    'border: 1.5px dashed rgb(253 224 71); background: rgba(253, 224, 71, 0.12); ' +
+    'box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);';
+  el.style.left = `${clientX}px`;
+  el.style.top = `${clientY}px`;
+  el.style.width = '0px';
+  el.style.height = '0px';
+  document.body.appendChild(el);
+  marquee = { startX: clientX, startY: clientY, el, shiftAtStart: true };
+}
+
+function updateMarquee(clientX: number, clientY: number): void {
+  if (!marquee) return;
+  const x = Math.min(marquee.startX, clientX);
+  const y = Math.min(marquee.startY, clientY);
+  const w = Math.abs(clientX - marquee.startX);
+  const h = Math.abs(clientY - marquee.startY);
+  marquee.el.style.left = `${x}px`;
+  marquee.el.style.top = `${y}px`;
+  marquee.el.style.width = `${w}px`;
+  marquee.el.style.height = `${h}px`;
+}
+
+function commitMarquee(): void {
+  if (!marquee || !deps) { cancelMarquee(); return; }
+  const camera = deps.getCamera();
+  const canvas = deps.getCanvas();
+  if (!camera || !canvas) { cancelMarquee(); return; }
+  const rect = marquee.el.getBoundingClientRect();
+  const w = rect.width;
+  const h = rect.height;
+  marquee.el.remove();
+  marquee = null;
+  // A near-zero drag is treated as a click on empty space — just deselect.
+  // (Threshold matches DRAG_THRESHOLD_PX so a click-to-deselect path that
+  // happened to be shift-held doesn't accidentally hold the selection.)
+  if (w < DRAG_THRESHOLD_PX && h < DRAG_THRESHOLD_PX) {
+    refreshArrangeOverlay();
+    return;
+  }
+  // Project every registered part's bbox centre onto the canvas; the parts
+  // whose centre lands inside the marquee rect get added to the selection.
+  // Centre-in-rect (rather than "any bbox corner overlaps") matches Tinkercad
+  // and avoids picking up huge background parts whose corners poke through.
+  const added: string[] = [];
+  for (const [name, entry] of deps.registry) {
+    const screen = projectWorldToScreen(entry.center, camera, canvas);
+    if (!screen) continue;
+    if (screen.x >= rect.left && screen.x <= rect.right && screen.y >= rect.top && screen.y <= rect.bottom) {
+      added.push(name);
+    }
+  }
+  if (added.length === 0) {
+    // Empty drag: still meaningful as "clear selection" iff shift wasn't held
+    // — but shift IS held by construction (that's how the marquee was opened).
+    // So a no-hit marquee is just a no-op; don't drop the existing selection.
+    refreshArrangeOverlay();
+    return;
+  }
+  for (const name of added) deps.selection.add(name);
+  deps.onSelectionChanged();
+  refreshArrangeOverlay();
+}
+
+function cancelMarquee(): void {
+  if (!marquee) return;
+  marquee.el.remove();
+  marquee = null;
+  if (active) refreshArrangeOverlay();
+}
+
+/** Project a world-space point through the camera to canvas-relative screen
+ *  coordinates (in CSS px, matching client* coords). Returns null when the
+ *  point sits behind the camera — for an orthographic / perspective frustum
+ *  that's rare in practice, but cheap to guard against. */
+function projectWorldToScreen(
+  world: Vec3,
+  camera: THREE.Camera,
+  canvas: HTMLCanvasElement,
+): { x: number; y: number } | null {
+  const v = new THREE.Vector3(world[0], world[1], world[2]);
+  v.project(camera);
+  // After project(), v.z > 1 or < -1 puts the point outside the frustum;
+  // we still allow it as long as it's not behind the camera (z within [-1, 1]
+  // is on-screen; outside that is clipped but its NDC projection still maps to
+  // a valid 2D coord, which is what we want for the marquee check).
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (v.x + 1) * 0.5 * rect.width + rect.left,
+    y: (1 - v.y) * 0.5 * rect.height + rect.top,
+  };
 }
 
 // ---------------------------------------------------------------------------

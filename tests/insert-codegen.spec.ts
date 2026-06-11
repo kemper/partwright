@@ -53,6 +53,19 @@ import {
 import { primitiveEntry, unionBoxes, pickPart, translateEntry, type RegistryEntry } from '../src/insert/spatial';
 import { STARTERS } from '../src/editor/starters';
 import { alignDeltas } from '../src/insert/arrangeMath';
+import {
+  initUndoStack,
+  recordOperation,
+  undo,
+  redo,
+  canUndo,
+  canRedo,
+  peekUndoLabel,
+  peekRedoLabel,
+  clearUndoHistory,
+  __testGetHistoryLength,
+  __testGetCursor,
+} from '../src/insert/undoStack';
 
 test.describe('fmt', () => {
   test('trims trailing zeros and normalizes -0', () => {
@@ -1011,6 +1024,126 @@ test.describe('Arrange — per-axis scale codegen (setPartScale*)', () => {
     const out = setPartScaleScad(code, part.range!, [2, 3, 1]);
     expect(out).toMatch(/scale\(\[4, 3, 1\]\) cube/);
     expect(out.match(/scale\(/g)!.length).toBe(1);
+  });
+});
+
+test.describe('Insert palette — undo / redo stack', () => {
+  // A fresh in-memory rig per test: a string holding the "code", live registry
+  // / specByName / selection Maps the way the palette holds them, and a count
+  // of how many engine re-runs were triggered (so we can assert restore() runs
+  // the engine).
+  function setupStack(initialCode = 'return undefined;'): {
+    state: { code: string; runs: number; restores: number };
+    insert: (name: string) => void;
+  } {
+    const state = { code: initialCode, runs: 0, restores: 0 };
+    const registry = new Map<string, RegistryEntry>();
+    const specByName = new Map<string, PrimitiveSpec>();
+    const selection = new Set<string>();
+    initUndoStack({
+      getCode: () => state.code,
+      setCode: (c) => { state.code = c; },
+      registry,
+      specByName,
+      selection,
+      run: () => { state.runs++; },
+      onAfterRestore: () => { state.restores++; },
+    });
+    const insert = (name: string): void => {
+      recordOperation(`Insert ${name}`, () => {
+        state.code += `\nconst ${name} = Manifold.cube([10,10,10], true);`;
+        const spec = { kind: 'cube', name, size: [10, 10, 10], center: true, position: [0, 0, 0] } as PrimitiveSpec;
+        specByName.set(name, spec);
+        registry.set(name, { box: { min: [-5, -5, -5], max: [5, 5, 5] }, center: [0, 0, 0] });
+        selection.clear();
+        selection.add(name);
+      });
+    };
+    return { state, insert };
+  }
+
+  test('records one snapshot per recordOperation; canUndo/canRedo track the cursor', () => {
+    const { state, insert } = setupStack();
+    expect(canUndo()).toBe(false);
+    expect(canRedo()).toBe(false);
+    insert('box');
+    insert('ball');
+    insert('cyl');
+    expect(__testGetHistoryLength()).toBe(3);
+    expect(__testGetCursor()).toBe(2);
+    expect(canUndo()).toBe(true);
+    expect(canRedo()).toBe(false);
+    expect(peekUndoLabel()).toBe('Insert cyl');
+    expect(state.code).toContain('const cyl');
+  });
+
+  test('undo restores the previous code/state and triggers run()', () => {
+    const { state, insert } = setupStack();
+    insert('box');
+    insert('ball');
+    const runsBefore = state.runs;
+    const restoresBefore = state.restores;
+    const label = undo();
+    expect(label).toBe('Insert ball');
+    expect(state.code).not.toContain('const ball');
+    expect(state.code).toContain('const box');
+    expect(state.runs).toBe(runsBefore + 1);
+    expect(state.restores).toBe(restoresBefore + 1);
+    expect(canUndo()).toBe(true);
+    expect(canRedo()).toBe(true);
+    expect(peekRedoLabel()).toBe('Insert ball');
+  });
+
+  test('redo re-applies the undone operation; cursor walks back', () => {
+    const { state, insert } = setupStack();
+    insert('box');
+    insert('ball');
+    undo();
+    const label = redo();
+    expect(label).toBe('Insert ball');
+    expect(state.code).toContain('const ball');
+    expect(canRedo()).toBe(false);
+  });
+
+  test('a new operation after undo truncates the redo tail', () => {
+    const { state, insert } = setupStack();
+    insert('box');
+    insert('ball');
+    undo();
+    expect(canRedo()).toBe(true);
+    insert('newpart');
+    // The "Insert ball" redo slot should be gone — it's clobbered by newpart.
+    expect(canRedo()).toBe(false);
+    expect(state.code).not.toContain('const ball');
+    expect(state.code).toContain('const newpart');
+  });
+
+  test('no-op operation (code unchanged) pushes no snapshot', () => {
+    const { state, insert } = setupStack();
+    insert('box');
+    const beforeLen = __testGetHistoryLength();
+    recordOperation('noop', () => { /* don't touch state.code */ });
+    expect(__testGetHistoryLength()).toBe(beforeLen);
+  });
+
+  test('clearUndoHistory drops everything (used on session-changed)', () => {
+    const { insert } = setupStack();
+    insert('a'); insert('b'); insert('c');
+    clearUndoHistory();
+    expect(__testGetHistoryLength()).toBe(0);
+    expect(canUndo()).toBe(false);
+    expect(canRedo()).toBe(false);
+  });
+
+  test('undo then undo restores two steps back; pure walking the stack', () => {
+    const { state, insert } = setupStack();
+    insert('a'); insert('b'); insert('c');
+    undo(); undo();
+    expect(state.code).toContain('const a');
+    expect(state.code).not.toContain('const b');
+    expect(state.code).not.toContain('const c');
+    expect(canUndo()).toBe(true);
+    expect(canRedo()).toBe(true);
   });
 });
 
