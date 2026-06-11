@@ -7,17 +7,47 @@
 // and the GPU knit path falls back to JS elsewhere.
 
 import type { MeshData } from '../geometry/types';
-import type { SurfaceOp, SurfaceOpId } from './surfaceOpSpec';
+import type { SurfaceOp, SurfaceOpId, ResolvedScope } from './surfaceOpSpec';
+import { selectTrianglesNearSeeds } from './colorTransfer';
 import {
   applyFuzzy, applyKnitAsync, applyCable, applyWaffle, applyFur, applyWoven, applyKnurl, applyVoronoi, applySmooth,
+  applyFuzzyPatch, applyKnitPatchAsync, applyCablePatch, applyWafflePatch, applyFurPatch, applyWovenPatch, applyKnurlPatch, applyVoronoiPatch, applySmoothPatch,
   defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions,
   defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultSmoothOptions,
 } from './modifiers';
 
+/** A chain op as the Worker / in-process kernel sees it: the recorded
+ *  {@link SurfaceOp} plus its main-side-resolved scope (seed points + radius),
+ *  when scoped. */
+export type ChainOp = SurfaceOp & { resolvedScope?: ResolvedScope };
+
 /** Apply one op to `mesh`, filling size-relative defaults from the actual mesh
- *  and reusing the modifier math. The async knit path uses the GPU when present. */
-export async function applySurfaceOp(mesh: MeshData, op: SurfaceOp): Promise<MeshData> {
+ *  and reusing the modifier math. When the op carries a resolved scope, only
+ *  the selected triangles are textured (the existing patch path); an empty
+ *  selection is a no-op (the scope matched nothing on this mesh). The async
+ *  knit path uses the GPU when present. */
+export async function applySurfaceOp(mesh: MeshData, op: ChainOp): Promise<MeshData> {
   const p = op.params;
+  const scope = op.resolvedScope;
+  if (scope) {
+    const sel = selectTrianglesNearSeeds(mesh, scope.seeds, scope.radius);
+    if (sel.size === 0) return mesh; // scope matched no triangles — leave the mesh as-is
+    switch (op.id) {
+      case 'fuzzy':   return applyFuzzyPatch(mesh, { ...defaultFuzzyOptions(mesh), ...p }, sel).mesh;
+      case 'knit':    return (await applyKnitPatchAsync(mesh, { ...defaultKnitOptions(mesh), ...p }, sel)).mesh;
+      case 'cable':   return applyCablePatch(mesh, { ...defaultCableOptions(mesh), ...p }, sel).mesh;
+      case 'waffle':  return applyWafflePatch(mesh, { ...defaultWaffleOptions(mesh), ...p }, sel).mesh;
+      case 'fur':     return applyFurPatch(mesh, { ...defaultFurOptions(mesh), ...p }, sel).mesh;
+      case 'woven':   return applyWovenPatch(mesh, { ...defaultWovenOptions(mesh), ...p }, sel).mesh;
+      case 'knurl':   return applyKnurlPatch(mesh, { ...defaultKnurlOptions(mesh), ...p }, sel).mesh;
+      case 'voronoi': return applyVoronoiPatch(mesh, { ...defaultVoronoiOptions(mesh), ...p }, sel).mesh;
+      case 'smooth':  return applySmoothPatch(mesh, { ...defaultSmoothOptions(), ...p }, sel).mesh;
+      default: {
+        const _never: never = op.id;
+        throw new Error(`surface: unsupported op "${_never as SurfaceOpId}"`);
+      }
+    }
+  }
   switch (op.id) {
     case 'fuzzy':   return applyFuzzy(mesh, { ...defaultFuzzyOptions(mesh), ...p }).mesh;
     case 'knit':    return (await applyKnitAsync(mesh, { ...defaultKnitOptions(mesh), ...p })).mesh;
@@ -41,7 +71,7 @@ export async function applySurfaceOp(mesh: MeshData, op: SurfaceOp): Promise<Mes
  *  final mesh. */
 export async function applyChainOps(
   base: MeshData,
-  ops: SurfaceOp[],
+  ops: ChainOp[],
   onOpApplied?: (index: number, mesh: MeshData) => void | Promise<void>,
 ): Promise<MeshData> {
   let mesh = base;

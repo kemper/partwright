@@ -24,13 +24,37 @@ export type SurfaceOpId =
   | 'voronoi'
   | 'smooth';
 
+/** Optional scope limiting a surface op to part of the model instead of the
+ *  whole skin. Declarative (resolved against the actual mesh at apply time):
+ *   - `label` — the triangles of an `api.label(shape, name, …)` region, so one
+ *     shape of a unioned model can be textured (e.g. a knurled grip on a
+ *     smooth body).
+ *   - `point` — every triangle whose surface sits within `radius` of a
+ *     world-space point, e.g. captured from a viewport click. */
+export type SurfaceScope =
+  | { kind: 'label'; label: string }
+  | { kind: 'point'; point: [number, number, number]; radius: number };
+
+/** A scope resolved to seed points + a catch radius (computed main-side from
+ *  the base mesh, then handed to the surface Worker). The Worker selects every
+ *  triangle whose centroid lies within `radius` of any seed and textures only
+ *  those (the existing patch path). Not part of the memo key — it's derived
+ *  deterministically from {@link SurfaceScope} + the base mesh, both already
+ *  keyed. */
+export interface ResolvedScope {
+  seeds: Float32Array;
+  radius: number;
+}
+
 /** One recorded surface operation. Ops form an ordered chain applied to the
  *  final returned mesh (a terminal skin, like the current Surface-panel bake).
  *  `params` carries only the user-supplied overrides — size-relative defaults
- *  are filled in main-side from the actual mesh at apply time. */
+ *  are filled in main-side from the actual mesh at apply time. `scope`, when
+ *  present, limits the op to part of the model (see {@link SurfaceScope}). */
 export interface SurfaceOp {
   id: SurfaceOpId;
   params: Record<string, number | boolean | string>;
+  scope?: SurfaceScope;
 }
 
 /** Accepted option keys per modifier — mirrors the `Required<…Options>` field

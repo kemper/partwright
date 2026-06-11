@@ -22,7 +22,8 @@
 
 import type { MeshData } from '../geometry/types';
 import { simpleHash } from '../geometry/statsComputation';
-import type { SurfaceOp } from './surfaceOpSpec';
+import type { SurfaceOp, ResolvedScope } from './surfaceOpSpec';
+import type { ChainOp } from './applyChain';
 
 /** Memo cache: prefix key → textured mesh after that prefix of the chain.
  *  Bounded so a long editing session can't grow it without limit (insertion
@@ -68,7 +69,10 @@ export function meshContentKey(mesh: MeshData): string {
  *  the same geometry + ops always maps to the same key — and any
  *  geometry-affecting change shifts it (→ a recompute). */
 function prefixKey(baseKey: string, ops: SurfaceOp[], upTo: number): string {
-  const chain = ops.slice(0, upTo + 1).map(o => ({ id: o.id, params: o.params }));
+  // Include `scope` (declarative): a scoped op produces a different mesh than
+  // the same op unscoped, so they must key apart. The resolved seeds are NOT
+  // keyed — they derive deterministically from scope + the base mesh (baseKey).
+  const chain = ops.slice(0, upTo + 1).map(o => ({ id: o.id, params: o.params, scope: o.scope }));
   return simpleHash(`${baseKey}|${JSON.stringify(chain)}`);
 }
 
@@ -190,8 +194,16 @@ export async function computeChain(
   baseKey: string,
   ops: SurfaceOp[],
   onProgress?: (fraction: number) => void,
+  resolved?: (ResolvedScope | null)[],
 ): Promise<MeshData> {
   if (ops.length === 0) return base;
+
+  // The kernel sees each op with its resolved scope attached (when scoped). The
+  // memo key still uses the declarative `ops` (resolved seeds derive from scope
+  // + baseKey), so keying and cache lookups below stay on `ops`.
+  const chainOps: ChainOp[] = resolved
+    ? ops.map((op, i) => (resolved[i] ? { ...op, resolvedScope: resolved[i]! } : op))
+    : ops;
 
   // Resume from the deepest cached prefix so editing the last op doesn't redo
   // the whole stack.
@@ -207,7 +219,7 @@ export async function computeChain(
   if (typeof Worker === 'undefined') {
     const { applyChainOps } = await import('./applyChain');
     const remaining = ops.length - start;
-    return applyChainOps(mesh, ops.slice(start), (i, m) => {
+    return applyChainOps(mesh, chainOps.slice(start), (i, m) => {
       remember(prefixKey(baseKey, ops, start + i), m);
       onProgress?.((i + 1) / remaining);
     });
@@ -220,7 +232,7 @@ export async function computeChain(
     pending = { callId: nextCallId++, baseKey, ops, startIndex: start, resolve, reject, onProgress };
     // The starting mesh may be a cache entry — post WITHOUT a transfer list so
     // the structured clone leaves the cached buffers intact.
-    w.postMessage({ type: 'computeChain', callId: pending.callId, base: mesh, ops: ops.slice(start) });
+    w.postMessage({ type: 'computeChain', callId: pending.callId, base: mesh, ops: chainOps.slice(start) });
   });
 }
 

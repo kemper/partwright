@@ -24,7 +24,7 @@ import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
 import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp } from '../../src/surface/modifiers';
-import { nearestTriangleMap, remapTriangleSets } from '../../src/surface/colorTransfer';
+import { nearestTriangleMap, remapTriangleSets, selectTrianglesNearSeeds } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
 function cube(s = 10): MeshData {
@@ -520,6 +520,39 @@ describe('modifiers (codegen)', () => {
       const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
       const out = remapTriangleSets(new Map([['x', new Set([0])]]), c, empty);
       expect(out.get('x')).toEqual(new Set());
+    });
+  });
+
+  describe('selectTrianglesNearSeeds (op scoping)', () => {
+    it('selects only triangles within radius of a seed point', () => {
+      const c = cube(10); // spans [0,10]^3
+      // A seed at one corner with a small radius hits only the triangles that
+      // touch that corner, not the whole cube.
+      const near = selectTrianglesNearSeeds(c, Float32Array.of(0, 0, 0), 8);
+      const all = selectTrianglesNearSeeds(c, Float32Array.of(5, 5, 5), 100);
+      expect(near.size).toBeGreaterThan(0);
+      expect(near.size).toBeLessThan(c.numTri);
+      expect(all.size).toBe(c.numTri); // huge radius from the center catches all
+    });
+
+    it('returns nothing for empty seeds or non-positive radius', () => {
+      const c = cube(10);
+      expect(selectTrianglesNearSeeds(c, new Float32Array(0), 5).size).toBe(0);
+      expect(selectTrianglesNearSeeds(c, Float32Array.of(0, 0, 0), 0).size).toBe(0);
+    });
+
+    it('catches a subdivided triangle from its parent centroid seed', () => {
+      const c = cube(10);
+      const dense = subdivideToMaxEdge(c, { maxEdge: 3 });
+      // Seed at the centroid of original triangle 0 with a generous radius: its
+      // children (which sit on the same face) must be selected.
+      const { vertProperties: vp, triVerts: tv, numProp } = c;
+      const a = tv[0] * numProp, b = tv[1] * numProp, d = tv[2] * numProp;
+      const seed = Float32Array.of(
+        (vp[a] + vp[b] + vp[d]) / 3, (vp[a + 1] + vp[b + 1] + vp[d + 1]) / 3, (vp[a + 2] + vp[b + 2] + vp[d + 2]) / 3,
+      );
+      const sel = selectTrianglesNearSeeds(dense, seed, 6);
+      expect(sel.size).toBeGreaterThan(0);
     });
   });
 

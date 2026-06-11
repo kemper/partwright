@@ -14,14 +14,13 @@
 // rebuild on first use after a respawn.
 
 import type { MeshData } from '../geometry/types';
-import type { SurfaceOp } from './surfaceOpSpec';
-import { applyChainOps } from './applyChain';
+import { applyChainOps, type ChainOp } from './applyChain';
 
 interface ComputeRequest {
   type: 'computeChain';
   callId: number;
   base: MeshData;
-  ops: SurfaceOp[];
+  ops: ChainOp[];
 }
 
 /** Buffers backing a mesh, for the transfer list. triColors and the other

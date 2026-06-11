@@ -95,6 +95,49 @@ export function nearestTriangleMap(oldMesh: MeshData, newMesh: MeshData): Int32A
   return result;
 }
 
+/** Triangles of `mesh` whose centroid lies within `radius` of any seed point
+ *  in `seeds` (a flat `[x,y,z, …]` array). Used to scope a surface op to part
+ *  of the model: a `label` scope passes the centroids of the labeled base
+ *  triangles (so subdivided children, which sit within the parent face, are
+ *  caught); a `point` scope passes one click point. A uniform spatial hash over
+ *  the seeds (cell = radius) keeps it near-linear in the triangle count. */
+export function selectTrianglesNearSeeds(mesh: MeshData, seeds: Float32Array, radius: number): Set<number> {
+  const out = new Set<number>();
+  const seedCount = (seeds.length / 3) | 0;
+  if (seedCount === 0 || mesh.numTri === 0 || !(radius > 0)) return out;
+  const r2 = radius * radius;
+  const cell = radius;
+  const ck = (ix: number, iy: number, iz: number) => `${ix},${iy},${iz}`;
+  const buckets = new Map<string, number[]>();
+  for (let s = 0; s < seedCount; s++) {
+    const x = seeds[s * 3], y = seeds[s * 3 + 1], z = seeds[s * 3 + 2];
+    const k = ck(Math.floor(x / cell), Math.floor(y / cell), Math.floor(z / cell));
+    let arr = buckets.get(k);
+    if (!arr) { arr = []; buckets.set(k, arr); }
+    arr.push(s);
+  }
+  const c = centroids(mesh);
+  for (let t = 0; t < mesh.numTri; t++) {
+    const px = c[t * 3], py = c[t * 3 + 1], pz = c[t * 3 + 2];
+    const bx = Math.floor(px / cell), by = Math.floor(py / cell), bz = Math.floor(pz / cell);
+    let hit = false;
+    for (let ix = bx - 1; ix <= bx + 1 && !hit; ix++) {
+      for (let iy = by - 1; iy <= by + 1 && !hit; iy++) {
+        for (let iz = bz - 1; iz <= bz + 1 && !hit; iz++) {
+          const arr = buckets.get(ck(ix, iy, iz));
+          if (!arr) continue;
+          for (const s of arr) {
+            const dx = seeds[s * 3] - px, dy = seeds[s * 3 + 1] - py, dz = seeds[s * 3 + 2] - pz;
+            if (dx * dx + dy * dy + dz * dz <= r2) { hit = true; break; }
+          }
+        }
+      }
+    }
+    if (hit) out.add(t);
+  }
+  return out;
+}
+
 /** Remap named triangle sets defined on `oldMesh` onto `newMesh` after a surface
  *  modifier changed the tessellation. Each old triangle's children in `newMesh`
  *  are found by inverting {@link nearestTriangleMap}: a new triangle joins set

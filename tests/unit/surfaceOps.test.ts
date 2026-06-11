@@ -128,6 +128,47 @@ describe('surface texture persistence (seed + chain key)', () => {
   });
 });
 
+describe('surface op scoping', () => {
+  beforeEach(() => __clearSurfaceCache());
+
+  it('a scoped op keys apart from the same op unscoped', () => {
+    const plain: SurfaceOp = { id: 'smooth', params: { iterations: 1 } };
+    const scoped: SurfaceOp = { id: 'smooth', params: { iterations: 1 }, scope: { kind: 'label', label: 'grip' } };
+    expect(surfaceChainKey('b', [plain])).not.toBe(surfaceChainKey('b', [scoped]));
+    // Two different scopes also key apart.
+    const otherLabel: SurfaceOp = { id: 'smooth', params: { iterations: 1 }, scope: { kind: 'label', label: 'body' } };
+    expect(surfaceChainKey('b', [scoped])).not.toBe(surfaceChainKey('b', [otherLabel]));
+  });
+
+  it('a point-scoped op textures a different (smaller) region than unscoped', async () => {
+    const fuzzy: SurfaceOp = { id: 'fuzzy', params: { amplitude: 0.6 } };
+    const baseKey = meshContentKey(cube(10));
+
+    const whole = await computeChain(cube(10), baseKey, [fuzzy]);
+    __clearSurfaceCache();
+    // Scope to one corner with a small radius — only nearby triangles texture.
+    const scoped = await computeChain(
+      cube(10), baseKey, [{ ...fuzzy, scope: { kind: 'point', point: [0, 0, 0], radius: 4 } }],
+      undefined,
+      [{ seeds: Float32Array.of(0, 0, 0), radius: 4 }],
+    );
+
+    // Both displaced the surface (output differs from a plain re-mesh), and the
+    // scoped output is a different mesh than the whole-model one.
+    expect(meshContentKey(scoped)).not.toBe(meshContentKey(whole));
+    // The scoped patch subdivides only the selected region, so it stays smaller
+    // than texturing the entire skin.
+    expect(scoped.numTri).toBeLessThan(whole.numTri);
+  });
+
+  it('an unresolved scope (empty seeds) leaves the mesh untextured', async () => {
+    const fuzzy: SurfaceOp = { id: 'fuzzy', params: { amplitude: 0.6 }, scope: { kind: 'label', label: 'missing' } };
+    // Empty seeds (label not found) → the op selects nothing → mesh unchanged.
+    const out = await computeChain(cube(10), 'b', [fuzzy], undefined, [{ seeds: new Float32Array(0), radius: 1 }]);
+    expect(out.numTri).toBe(cube(10).numTri);
+  });
+});
+
 // The memo base identity is the BASE MESH CONTENT — not the source text — so
 // whitespace/comment/refactor edits that produce identical geometry keep every
 // cached texture, and any real geometry change re-keys the chain.

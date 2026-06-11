@@ -278,4 +278,82 @@ test.describe('api.surface.* (textures declared in code)', () => {
     });
     expect(err).toContain('nope');
   });
+
+  test('label scope textures only the labeled shape of a union', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW & { listLabels: () => { labels: { name: string; triangleCount: number }[] } } }).partwright;
+      await pw.createSession('surface-scope-label');
+      // A smooth sphere unioned with a labeled cube; only the cube knurls.
+      const plain = await pw.run([
+        'const { Manifold } = api;',
+        "const box = api.label(Manifold.cube([16, 16, 16], true).translate([-6, 0, 0]), 'grip', { color: [0.2, 0.6, 1] });",
+        'const ball = Manifold.sphere(9, 48).translate([7, 0, 0]);',
+        'return box.add(ball);',
+      ].join('\n')) as { triangleCount?: number };
+      const scoped = await pw.run([
+        'const { Manifold } = api;',
+        "const box = api.label(Manifold.cube([16, 16, 16], true).translate([-6, 0, 0]), 'grip', { color: [0.2, 0.6, 1] });",
+        'const ball = Manifold.sphere(9, 48).translate([7, 0, 0]);',
+        "api.surface.knurl({ label: 'grip', pitch: 2.4, amplitude: 0.7 });",
+        'return box.add(ball);',
+      ].join('\n')) as { triangleCount?: number };
+      return { plainTris: plain.triangleCount ?? 0, scopedTris: scoped.triangleCount ?? 0, labels: pw.listLabels().labels };
+    });
+
+    // Scoping subdivided the cube region, so the textured mesh has many more
+    // triangles than the plain union — but far from texturing the whole skin.
+    expect(out.scopedTris).toBeGreaterThan(out.plainTris * 2);
+    // The label's color carried onto the textured (denser) triangles.
+    const grip = out.labels.find(l => l.name === 'grip');
+    expect(grip).toBeTruthy();
+    expect(grip!.triangleCount).toBeGreaterThan(100);
+  });
+
+  test('region scope textures a patch near a point', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('surface-scope-region');
+      const plain = await pw.run('const { Manifold } = api;\nreturn Manifold.sphere(14, 96);') as { triangleCount?: number };
+      const scoped = await pw.run([
+        'const { Manifold } = api;',
+        'const ball = Manifold.sphere(14, 96);',
+        'api.surface.fuzzy({ region: { point: [0, 0, 14], radius: 9 }, amplitude: 1.2 });',
+        'return ball;',
+      ].join('\n')) as { triangleCount?: number };
+      return { plainTris: plain.triangleCount ?? 0, scopedTris: scoped.triangleCount ?? 0 };
+    });
+
+    // The patch was subdivided + displaced, so the result has more triangles
+    // than the plain sphere — but the bulk of the sphere stays untouched.
+    expect(out.scopedTris).toBeGreaterThan(out.plainTris);
+  });
+
+  test('rejects a malformed region scope with an actionable error', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const errs = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('surface-scope-errors');
+      const badPoint = await pw.run([
+        'const { Manifold } = api;',
+        'api.surface.fuzzy({ region: { point: [0, 0], radius: 5 } });',
+        'return Manifold.sphere(8, 24);',
+      ].join('\n')) as { error?: string | null };
+      const both = await pw.run([
+        'const { Manifold } = api;',
+        "api.surface.fuzzy({ label: 'x', region: { point: [0, 0, 0], radius: 5 } });",
+        'return Manifold.sphere(8, 24);',
+      ].join('\n')) as { error?: string | null };
+      return { badPoint: badPoint?.error ?? '', both: both?.error ?? '' };
+    });
+    expect(errs.badPoint).toContain('point');
+    expect(errs.both).toContain('not both');
+  });
 });

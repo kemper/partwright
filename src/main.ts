@@ -126,7 +126,7 @@ import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampH
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap, remapTriangleSets } from './surface/colorTransfer';
 import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, meshContentKey, cancelSurfaceCompute, surfaceComputeInFlight, SurfaceComputeCancelled, type SurfaceOp } from './surface/surfaceOps';
-import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, type SurfaceOpId, type PersistedSurfaceTexture } from './surface/surfaceOpSpec';
+import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, type SurfaceOpId, type PersistedSurfaceTexture, type ResolvedScope } from './surface/surfaceOpSpec';
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
@@ -14264,6 +14264,60 @@ async function main() {
    *     in-flight one (latest wins, like run generations).
    *   - Cancel (or a compute failure) keeps the base mesh and parks the chain
    *     behind the sticky "⟳ Re-apply" pill. */
+  /** Mean triangle-edge length of a base mesh (sampled), used to size a label
+   *  scope's catch radius so subdivided children — which sit within a parent
+   *  face — are selected without bleeding onto neighbours. */
+  function baseMeanEdge(mesh: MeshData): number {
+    const { vertProperties: vp, triVerts: tv, numProp, numTri } = mesh;
+    if (numTri === 0) return 1;
+    const step = Math.max(1, Math.floor(numTri / 2000));
+    const d = (i: number, j: number) => {
+      const dx = vp[i] - vp[j], dy = vp[i + 1] - vp[j + 1], dz = vp[i + 2] - vp[j + 2];
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    };
+    let total = 0, count = 0;
+    for (let t = 0; t < numTri; t += step) {
+      const a = tv[t * 3] * numProp, b = tv[t * 3 + 1] * numProp, c = tv[t * 3 + 2] * numProp;
+      total += d(a, b) + d(b, c) + d(c, a);
+      count += 3;
+    }
+    return count > 0 ? total / count : 1;
+  }
+
+  /** Resolve each scoped op (`label` / `point`) to seed centroids + a catch
+   *  radius against the BASE mesh. Unscoped ops → null (whole-model texture).
+   *  Returns undefined when no op is scoped, so the common path passes nothing.
+   *  An unknown/empty label yields empty seeds → the op textures nothing rather
+   *  than silently falling back to the whole model. */
+  function resolveSurfaceScopes(
+    ops: SurfaceOp[],
+    base: MeshData,
+    labelMap: Map<string, Set<number>> | null,
+  ): (ResolvedScope | null)[] | undefined {
+    if (!ops.some(o => o.scope)) return undefined;
+    let meanEdge = -1;
+    const { vertProperties: vp, triVerts: tv, numProp } = base;
+    return ops.map((op): ResolvedScope | null => {
+      const s = op.scope;
+      if (!s) return null;
+      if (s.kind === 'point') {
+        return { seeds: Float32Array.of(s.point[0], s.point[1], s.point[2]), radius: s.radius };
+      }
+      const tris = labelMap?.get(s.label);
+      if (!tris || tris.size === 0) return { seeds: new Float32Array(0), radius: 1 };
+      if (meanEdge < 0) meanEdge = baseMeanEdge(base);
+      const seeds = new Float32Array(tris.size * 3);
+      let i = 0;
+      for (const t of tris) {
+        const a = tv[t * 3] * numProp, b = tv[t * 3 + 1] * numProp, c = tv[t * 3 + 2] * numProp;
+        seeds[i++] = (vp[a] + vp[b] + vp[c]) / 3;
+        seeds[i++] = (vp[a + 1] + vp[b + 1] + vp[c + 1]) / 3;
+        seeds[i++] = (vp[a + 2] + vp[b + 2] + vp[c + 2]) / 3;
+      }
+      return { seeds, radius: Math.max(meanEdge * 1.1, 1e-3) };
+    });
+  }
+
   async function applySurfaceTextures(result: MeshResult, src: string): Promise<void> {
     // Each mesh-producing run re-establishes what (if any) applied texture the
     // live mesh carries; stale-by-default until a branch below applies one.
@@ -14299,12 +14353,15 @@ async function main() {
       hideSurfaceReapplyPill();
       return;
     }
+    // Resolve any label/point scopes to seed points + radius against the BASE
+    // mesh (before carryLabels rewrites result.labelMap to textured indices).
+    const resolvedScopes = resolveSurfaceScopes(ops, base, result.labelMap ?? null);
     const label = ops.length > 1 ? `Applying ${ops.length} textures...` : 'Applying texture...';
     const timer = startSurfaceTimer(label);
     try {
       const textured = await computeChain(base, baseKey, ops, (f) => {
         if (ops.length > 1) _surfaceProgressNote = ` ${Math.min(Math.round(f * ops.length), ops.length)}/${ops.length}`;
-      });
+      }, resolvedScopes);
       result.mesh = textured;
       result.manifold = null;
       carryLabels(textured);
