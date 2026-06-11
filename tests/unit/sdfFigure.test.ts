@@ -179,6 +179,57 @@ describe('figure rig — pose forward kinematics', () => {
   });
 });
 
+describe('figure rig — documented pose recipes (public/ai/figure.md)', () => {
+  // The recipes figure.md hands to modeling agents, asserted verbatim as rig
+  // math. An FK change that breaks a documented recipe must fail HERE, in
+  // vitest, not in a sculpt agent's render loop. If one of these fails after
+  // an intentional FK change, update figure.md's recipe in the same commit.
+  // (Chair-sit `legs: {flex: 90, knee: 90}` is pinned by the sitting-pose
+  // test above; this block covers the remaining documented recipes.)
+
+  it('double-biceps `arms: {abduct: 95, elbow: 95, twist: 90}` puts both fists up by the head', () => {
+    const rig = buildRig({ height: 60, pose: { arms: { abduct: 95, elbow: 95, twist: 90 } } });
+    for (const side of ['L', 'R'] as const) {
+      const S = rig.joints[`shoulder${side}`], W = rig.joints[`wrist${side}`], H = rig.joints[`hand${side}`];
+      // fist raised well above the shoulder, up beside the head…
+      expect(W[2]).toBeGreaterThan(S[2] + rig.r.head);
+      expect(H[2]).toBeGreaterThan(rig.joints.headCenter[2]);
+      // …and OUT to the side (a flex pose, not hands clasped at the chest).
+      expect(Math.abs(W[0])).toBeGreaterThan(Math.abs(S[0]) * 1.5);
+    }
+    expect(rig.joints.handL[0]).toBeCloseTo(-rig.joints.handR[0], 5);
+    expect(rig.joints.handL[2]).toBeCloseTo(rig.joints.handR[2], 5);
+  });
+
+  it('ballet fifth `arms: {abduct: 150, elbow: 70, twist: 90}` rounds an "O" overhead', () => {
+    const rig = buildRig({ height: 60, pose: { arms: { abduct: 150, elbow: 70, twist: 90 } } });
+    for (const side of ['L', 'R'] as const) {
+      const E = rig.joints[`elbow${side}`], H = rig.joints[`hand${side}`];
+      // hands above the crown…
+      expect(H[2]).toBeGreaterThan(rig.joints.crown[2]);
+      // …curling inward toward the midline (the rounded "O") without crossing it.
+      expect(Math.abs(H[0])).toBeLessThan(Math.abs(E[0]) * 0.6);
+      expect(H[0] * E[0]).toBeGreaterThan(0); // same side of the midline
+    }
+    // the hands approach each other to close the "O" (gap under ~a head width).
+    expect(dist(rig.joints.handL, rig.joints.handR)).toBeLessThan(rig.r.head * 2.2);
+  });
+
+  it('matched flex+knee keeps the shin vertical at any lunge depth', () => {
+    // The generalized lunge rule behind figure.md's flex/knee guidance: a
+    // forward step with knee bend equal to hip flex lands the ankle directly
+    // under the knee. This is the configuration the old cross-product hinge
+    // distorted as flex grew — sweep it well past the 45° case.
+    for (const a of [20, 45, 70, 85]) {
+      const rig = buildRig({ pose: { legL: { abduct: 0, flex: a, knee: a } } });
+      const K = rig.joints.kneeL, A = rig.joints.ankleL;
+      expect(A[0]).toBeCloseTo(K[0], 4);
+      expect(A[1]).toBeCloseTo(K[1], 4);
+      expect(A[2]).toBeLessThan(K[2]);
+    }
+  });
+});
+
 describe('figure rig — symmetric pose shorthand', () => {
   it('`arms` / `legs` seed both sides symmetrically', () => {
     const rig = buildRig({ pose: { arms: { abduct: 90 }, legs: { abduct: 25 } } });
