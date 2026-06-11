@@ -125,7 +125,8 @@ import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch,
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, type SurfaceOp } from './surface/surfaceOps';
-import type { PersistedSurfaceTexture } from './surface/surfaceOpSpec';
+import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, type SurfaceOpId, type PersistedSurfaceTexture } from './surface/surfaceOpSpec';
+import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
 import { initPlaceUI } from './ui/placeModal';
@@ -7696,6 +7697,63 @@ async function main() {
     },
     /** Discard a live surface preview and restore the current model's mesh. */
     clearSurfacePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
+    /** Write a surface texture into the model code as an `api.surface.<id>({…})`
+     *  call instead of baking the mesh (manifold-js sessions only). Updates the
+     *  existing call for the same modifier in place, or inserts a new one before
+     *  the code's final `return`; then re-runs (computing the texture) and saves
+     *  a new version. The texture stays parametric — it recomputes when the model
+     *  changes and persists with the saved version. Whole-model only: for a
+     *  selected patch, or for SCAD/BREP/voxel sessions, use the bake tools
+     *  (applyFuzzySkin / applyKnitTexture / …) instead.
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'smooth'.
+     *  opts: that op's api.surface options (see /ai/textures.md); omitted keys
+     *  use size-relative defaults at apply time.
+     *  Returns `{ ok, call, replaced, version?, geometry }` or `{ error }`. */
+    async applySurfaceTextureAsCode(id: SurfaceOpId, opts?: Record<string, number | boolean | string>) {
+      const check = guard(() => {
+        assertEnum(id, SURFACE_OP_IDS, 'applySurfaceTextureAsCode(id)');
+        if (opts !== undefined) {
+          const o = assertObject(opts, 'applySurfaceTextureAsCode(_, opts)')!;
+          assertNoUnknownKeys(o, SURFACE_OP_FIELDS[id as SurfaceOpId] ?? [], 'applySurfaceTextureAsCode(_, opts)');
+          for (const [k, v] of Object.entries(o)) {
+            if (typeof v !== 'number' && typeof v !== 'boolean' && typeof v !== 'string') {
+              throw new ValidationError(`applySurfaceTextureAsCode(_, opts): "${k}" must be a number, boolean, or string (api.surface options are flat primitives). See /ai/textures.md`);
+            }
+          }
+        }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+      if (getActiveLanguage() !== 'manifold-js') {
+        return { error: `api.surface.* textures live in manifold-js code only — this session is ${getActiveLanguage()}. Use the bake tools (applyFuzzySkin / applyKnitTexture / …), which convert the result to a mesh.` };
+      }
+      const previousCode = getValue();
+      const up = upsertSurfaceCall(previousCode, id, (opts ?? {}) as Record<string, number | boolean | string>);
+      if (!up) {
+        return { error: 'Could not find a top-level `return` in the code to insert the api.surface call before. Add the call manually, or bake instead.' };
+      }
+      setValue(up.code);
+      const applied = await runCodeSync(up.code);
+      if (!applied) return { error: 'Run was superseded by a concurrent execution — retry' };
+      const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
+      if (geo?.status === 'error') {
+        // The edited code doesn't run — put the buffer back the way it was
+        // (and re-render the previous model) rather than leaving a broken edit.
+        setValue(previousCode);
+        await runCodeSync(previousCode);
+        return { error: `Applying the texture failed: ${geo.error ?? 'run error'}. The code was restored.` };
+      }
+      const saved = await saveCurrentVersion(`api.surface.${id}`);
+      return {
+        ok: true,
+        call: up.call,
+        replaced: up.replaced,
+        ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
+        ...('error' in saved ? { saveWarning: saved.error } : {}),
+        geometry: getGeometryDataObj(),
+      };
+    },
     /** Apply a fuzzy-skin surface texture to the current model; saves a new version.
      *  `preserveColor` (default true) re-resolves paint regions onto the new mesh.
      *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
@@ -13043,6 +13101,7 @@ async function main() {
         'modelHasColor':   { signature: 'modelHasColor() -- Whether the model carries any color (user paint or code-declared)', docs: '/ai/colors.md' },
         'previewSurfaceModifier': { signature: "previewSurfaceModifier(id, opts?, preserveColor?) -- Non-destructive viewport preview of a modifier; id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize' -> {ok} or {error}", docs: '/ai/textures.md' },
         'clearSurfacePreview': { signature: 'clearSurfacePreview() -- Discard a live surface preview and restore the current mesh', docs: '/ai/textures.md' },
+        'applySurfaceTextureAsCode': { signature: "await applySurfaceTextureAsCode(id, opts?) -- Write api.surface.<id>({…}) into the code (insert before the final return, or update the existing call) instead of baking; re-runs and saves a version. manifold-js + whole-model only. id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'smooth'", docs: '/ai/textures.md' },
         'applyFuzzySkin':  { signature: 'await applyFuzzySkin({amplitude?, scale?, octaves?, seed?, quality?, preserveColor?}) -- BAKE fuzzy-skin noise; saves a new version. In-code alternative: api.surface.fuzzy', docs: '/ai/textures.md' },
         'applyKnitTexture':{ signature: 'await applyKnitTexture({amplitude?, stitchWidth?, stitchHeight?, rowOffset?, roundness?, grainAngleDeg?, variation?, seed?, quality?, algorithm?, selectedTriangles?, preserveColor?}) -- BAKE knit stitches; saves a new version. In-code alternative: api.surface.knit', docs: '/ai/textures.md' },
         'applyCableKnit':  { signature: 'await applyCableKnit({amplitude?, cableWidth?, cablePitch?, plyWidth?, grainAngleDeg?, variation?, seed?, quality?, preserveColor?}) -- BAKE cable-knit ropes; saves a new version. In-code alternative: api.surface.cable', docs: '/ai/textures.md' },

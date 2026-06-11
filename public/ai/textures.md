@@ -47,6 +47,12 @@ return body;
   `.woven`, `.voronoi`, `.smooth`. Each takes the **same options** as its
   `apply*` tool (size-relative defaults fill in anything you omit). There's also
   a generic `api.surface.apply('knit', { … })` form.
+- **`applySurfaceTextureAsCode(id, opts?)`** writes the call into the code for
+  you: it updates an existing `api.surface.<id>` call in place (or inserts one
+  before the final `return`), re-runs (computing the texture), and saves a
+  version. This is what the Surface panel's **"Apply as code"** button uses for
+  whole-model textures in manifold-js sessions — region/patch applies, voxelize,
+  voronoiLamp, and SCAD/BREP sessions still take the bake path.
 - Calls are recorded, not applied during evaluation — they texture the **final
   returned mesh** in the order called (a terminal skin; you can chain several).
 - Surface textures are **expensive**, so they're **memoized**: a render reuses
