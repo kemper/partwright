@@ -52,3 +52,30 @@ export const SURFACE_OP_IDS = Object.keys(SURFACE_OP_FIELDS) as SurfaceOpId[];
 export function isSurfaceOpId(v: unknown): v is SurfaceOpId {
   return typeof v === 'string' && Object.prototype.hasOwnProperty.call(SURFACE_OP_FIELDS, v);
 }
+
+/** A computed `api.surface.*` result persisted with a saved version, so that
+ *  reopening the session renders the textured mesh instantly instead of
+ *  recomputing the chain (and so the texture's appearance is pinned at save
+ *  time, even as the modifier math evolves between releases).
+ *
+ *  `key` is the full-chain memo key (a hash of code + customizer params +
+ *  import identity + the serialized op chain — see `surfaceChainKey` in
+ *  `surfaceOps.ts`). On version load the mesh is seeded into the memo cache
+ *  under this key; if the freshly recomputed key no longer matches (different
+ *  code, params, imports, or hash algorithm), the seed simply never hits and
+ *  the chain recomputes — the field is self-validating and can never render a
+ *  texture that doesn't belong to the version.
+ *
+ *  `mesh` structurally mirrors `MeshData` (`src/geometry/types.ts`); it is
+ *  declared inline here to keep this spec module dependency-free. */
+export interface PersistedSurfaceTexture {
+  key: string;
+  mesh: {
+    vertProperties: Float32Array;
+    triVerts: Uint32Array;
+    numVert: number;
+    numTri: number;
+    numProp: number;
+    triColors?: Uint8Array;
+  };
+}

@@ -52,6 +52,11 @@ return body;
   returned mesh** in the order called (a terminal skin; you can chain several).
 - Surface textures are **expensive**, so they're **memoized**: a render reuses
   the cached textured result when the code, params and ops are unchanged.
+- **Saved versions keep the computed texture.** `runAndSave` / `saveVersion`
+  persist the textured mesh with the version, so reopening the session (or
+  loading the version later) renders textured immediately — no recompute, no
+  pill. Any change to the code, params, or imports invalidates it safely (the
+  chain just recomputes). Session JSON exports carry it too.
 - **Explicit runs compute the texture automatically.** A `runCode` / `runAndSave`
   / `run` call (and the editor's Run button + version loads) force the
   (memoized) compute and return the **textured** mesh — so an AI/console caller
