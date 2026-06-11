@@ -16,9 +16,9 @@ import type { MeshData } from '../geometry/types';
 import { simpleHash } from '../geometry/statsComputation';
 import type { SurfaceOp, SurfaceOpId } from './surfaceOpSpec';
 import {
-  applyFuzzy, applyKnitAsync, applyCable, applyWaffle, applyFur, applyWoven, applyVoronoi, applySmooth,
+  applyFuzzy, applyKnitAsync, applyCable, applyWaffle, applyFur, applyWoven, applyKnurl, applyVoronoi, applySmooth,
   defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions,
-  defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultSmoothOptions,
+  defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultSmoothOptions,
 } from './modifiers';
 
 /** Memo cache: prefix key → textured mesh after that prefix of the chain.
@@ -58,6 +58,7 @@ async function applyOne(mesh: MeshData, op: SurfaceOp): Promise<MeshData> {
     case 'waffle':  return applyWaffle(mesh, { ...defaultWaffleOptions(mesh), ...p }).mesh;
     case 'fur':     return applyFur(mesh, { ...defaultFurOptions(mesh), ...p }).mesh;
     case 'woven':   return applyWoven(mesh, { ...defaultWovenOptions(mesh), ...p }).mesh;
+    case 'knurl':   return applyKnurl(mesh, { ...defaultKnurlOptions(mesh), ...p }).mesh;
     case 'voronoi': return applyVoronoi(mesh, { ...defaultVoronoiOptions(mesh), ...p }).mesh;
     case 'smooth':  return applySmooth(mesh, { ...defaultSmoothOptions(), ...p }).mesh;
     default: {
