@@ -24,6 +24,7 @@ import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPane
 import { openViewportPanel, closeViewportPanel, type ViewportPanel } from './viewportPanelRegistry';
 import { viewportToolsMount } from './popoverMenu';
 import { getScene, getMeshGroup } from '../renderer/viewport';
+import { meshDataToGeometry } from '../renderer/meshGeometry';
 import {
   emitPrimitive,
   emitPrimitiveVoxel,
@@ -549,6 +550,11 @@ export function apiCanRedo(): boolean { return canRedo(); }
 export function apiResizeSelection(scale: Vec3): { ok: boolean; reason?: string } {
   if (!cb) return { ok: false, reason: 'insert palette not initialized' };
   if (selection.size === 0) return { ok: false, reason: 'no selection' };
+  // applyResize() toasts and silently no-ops on a non-positive factor; a
+  // scripted/AI caller needs the failure surfaced, not a false { ok: true }.
+  if (scale[0] <= 0 || scale[1] <= 0 || scale[2] <= 0) {
+    return { ok: false, reason: 'scale factors must be positive' };
+  }
   applyResize(scale);
   return { ok: true };
 }
@@ -689,19 +695,13 @@ function buildPanel(): HTMLElement {
   undoBtn.className = 'flex-1 px-2 py-1.5 rounded text-xs font-medium text-zinc-100 bg-zinc-700/60 hover:bg-zinc-600 border border-zinc-600/60 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
   undoBtn.textContent = '↶ Undo';
   undoBtn.title = 'Undo the last palette operation';
-  undoBtn.addEventListener('click', () => {
-    const label = undoOp();
-    if (label && cb) cb.showToast(`Undid: ${label}`, { variant: 'neutral' });
-  });
+  undoBtn.addEventListener('click', () => { apiUndo(); });
   redoBtn = document.createElement('button');
   redoBtn.id = 'insert-redo';
   redoBtn.className = undoBtn.className;
   redoBtn.textContent = '↷ Redo';
   redoBtn.title = 'Redo the last undone palette operation';
-  redoBtn.addEventListener('click', () => {
-    const label = redoOp();
-    if (label && cb) cb.showToast(`Redid: ${label}`, { variant: 'neutral' });
-  });
+  redoBtn.addEventListener('click', () => { apiRedo(); });
   historyRow.append(undoBtn, redoBtn);
   p.appendChild(historyRow);
 
@@ -2352,15 +2352,3 @@ function applyQuickDelete(): void {
   });
 }
 
-function meshDataToGeometry(mesh: MeshData): THREE.BufferGeometry {
-  const geometry = new THREE.BufferGeometry();
-  const positions = new Float32Array(mesh.numVert * 3);
-  for (let i = 0; i < mesh.numVert; i++) {
-    positions[i * 3] = mesh.vertProperties[i * mesh.numProp];
-    positions[i * 3 + 1] = mesh.vertProperties[i * mesh.numProp + 1];
-    positions[i * 3 + 2] = mesh.vertProperties[i * mesh.numProp + 2];
-  }
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setIndex(new THREE.BufferAttribute(mesh.triVerts, 1));
-  return geometry;
-}
