@@ -801,9 +801,18 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // marches the whole figure on the coarse global grid — a thinner cap aliased
   // the pupil away to 0 triangles there. It only deepens the lens INTO the
   // eyeball; the front face (and thus the painted-on-circle read) is unchanged.
+  //
+  // CONCENTRIC SIZING is what makes the eye read as eye rather than a flat
+  // coloured bead: the iris must be clearly SMALLER than the visible eyeball
+  // cap so a white sclera almond shows AROUND it, and the pupil clearly smaller
+  // than the iris. An earlier iris radius of 0.52·rad spanned almost the whole
+  // eyeball front, swallowing the white — so the three labels survived meshing
+  // but read as one blue disc. The radii/forward-offsets below give nested
+  // steps (white → iris at 1.09·rad → pupil at 1.24·rad) that read as
+  // concentric layers from the front at print scale.
   const sclera = pair(rad, 0).label('eyes');
-  const iris = lensPair(rad * 0.52, rad * 0.24, rad * 1.08).label('iris');
-  const pupil = lensPair(rad * 0.3, rad * 0.18, rad * 1.15).label('pupil');
+  const iris = lensPair(rad * 0.36, rad * 0.26, rad * 1.09).label('iris');
+  const pupil = lensPair(rad * 0.18, rad * 0.18, rad * 1.24).label('pupil');
   return sclera.union(iris).union(pupil);
 }
 

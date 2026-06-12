@@ -366,12 +366,19 @@ disc and black pupil dot, pre-labelled `'eyes'` / `'iris'` / `'pupil'` — do
 **not** wrap it in `.label()` (the outer label wins and flattens the eye to
 one colour). `'solid'` returns plain spheres for you to label.
 
+The iris/pupil are concentric ellipsoid lenses sized so a **white sclera ring
+shows around the iris** (iris ≈ 0.36·eyeRadius, pupil ≈ 0.18·eyeRadius) and each
+sits slightly proud of the one beneath it, so the three layers read as
+recognizable nested eyes from the front at print scale — colour them by their
+labels (white sclera, mid iris, black pupil) and they no longer read as a flat
+bead. Give the build `detail: F.faceDetail(rig)` so the small iris/pupil lenses
+mesh crisply instead of aliasing toward the eyeball.
+
 Either way, keep eyes OUT of the skin weld (`eyes: false` in `assemble`) and
 hard-union them at the top level — smooth-welded features can't carry paint
 labels, and an eye buried under the cheek welds resolves to a label with zero
-paintable triangles. The eyeballs are pushed forward half their radius so the
-domes always protrude. (Brows can use the same top-level pattern if you want
-them painted.)
+paintable triangles. The eyeballs are pushed forward so the domes always
+protrude. (Brows can use the same top-level pattern if you want them painted.)
 
 ## Face detail — `F.faceDetail(rig)` (use it on every figure with a face)
 

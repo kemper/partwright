@@ -455,6 +455,27 @@ describe('figure eyes — styles and labels', () => {
     expect(reach(all)).toBeGreaterThan(reach(sclera) + 1e-6);
   });
 
+  it('iris and pupil are concentric discs smaller than the eyeball (white sclera shows)', () => {
+    // The eye reads as eye — not a flat coloured bead — only when the iris is
+    // clearly smaller than the visible eyeball cap so a white sclera ring shows
+    // around it, and the pupil clearly smaller than the iris. Both eyes sit at
+    // the same height under a neutral pose, so each region's vertical (Z) extent
+    // equals its in-plane diameter — a clean concentric-size comparison.
+    const parts = partitionByLabel(buildEyes(api, rig) as SdfNode);
+    const zExtent = (name: string): number => {
+      const p = parts.find((p) => p.labelName === name);
+      if (!p) throw new Error(`no ${name} region`);
+      const b = p.node.bounds();
+      return b.max[2] - b.min[2];
+    };
+    const sclera = zExtent('eyes'), iris = zExtent('iris'), pupil = zExtent('pupil');
+    expect(iris).toBeLessThan(sclera);   // white sclera ring shows around the iris
+    expect(pupil).toBeLessThan(iris);    // pupil dot nests inside the iris
+    // Guard the specific regression (iris ≈ eyeball swallowed the white): the
+    // iris must leave a generous white margin, not span the whole eyeball front.
+    expect(iris).toBeLessThan(sclera * 0.6);
+  });
+
   it('rejects unknown style and keys', () => {
     expect(() => buildEyes(api, rig, { style: 'laser' })).toThrow(/style/);
     expect(() => buildEyes(api, rig, { glow: true })).toThrow();
