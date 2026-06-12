@@ -73,8 +73,11 @@ are **integers** in the range −1024…1023 on each axis. 1 voxel = 1 world uni
 | `v.cylinder([cx,cy,cz], radius, height, color, axis?)` | Fill a solid cylinder; base centered on the point, extends `height` along `axis` (`'x'`/`'y'`/`'z'`, default `'z'`). |
 | `v.line([x0,y0,z0], [x1,y1,z1], color)` | Draw a 1-voxel-thick line (3D Bresenham). |
 | `v.translate([dx,dy,dz])` | Shift every voxel by an integer offset. |
+| `v.rotate('x' \| 'y' \| 'z', degrees)` | Rotate the whole grid about the origin around that axis. `degrees` must be a multiple of 90 (the only angles that stay on the voxel lattice); positive = right-hand rule. About the origin, so `translate` first to pick a pivot. Use it to reorient a model — e.g. `v.rotate('z', 180)` spins a +Y-facing figure to face the −Y front. |
 | `v.mirror('x' \| 'y' \| 'z')` | Add a mirrored copy across that axis's 0-plane (great for symmetric models; the mirrored copy wins where it overlaps an existing voxel). |
 | `v.hollow(thickness?)` | Remove interior voxels, leaving a shell of the given wall thickness (default 1). |
+| `v.sdf(node, opts?)` | Rasterize an `api.sdf.*` expression into the grid — gyroids, TPMS lattices, smooth blends, twists → colored voxels. See [SDF → voxel](#sdf--voxel-vsdf). |
+| `v.keepLargest(count?)` | Keep only the largest face-connected component(s), deleting smaller islands (`count` default 1). The cheap printability fix for a fragmented grid — e.g. an SDF lattice that sheds stray specks. |
 | `v.size` | Number of occupied voxels. |
 | `v.bounds()` → `{min,max} \| null` | Inclusive extents, or null when empty. |
 | `v.forEach((x,y,z,color) => …)` | Iterate occupied voxels. |
@@ -99,9 +102,9 @@ or near the ground plane (Z=0) by convention.
 
 Each voxel's color is written onto the triangles of its exposed faces, so the
 rendered model is colored with no extra step, and GLB / 3MF / OBJ exports carry
-those colors out. (The face-region **paint tools** are mesh-triangle based and
-designed around the solid engines — painting *on top of* a voxel model is a
-planned follow-up; for now, set color per voxel in code.)
+those colors out. (The face-region **paint tools** in the toolbar are
+mesh-triangle based and designed around the solid engines; for voxel models use
+the **Voxel Studio** overlay below, or set color per voxel in code.)
 
 ## Rounded edges (smooth surfacing)
 
@@ -116,21 +119,72 @@ return voxels()
   .smooth();              // rounded edges
 ```
 
-`.smooth(opts)` accepts an iteration count or `{ iterations, detail }`:
+`.smooth(opts)` accepts an iteration count or `{ algorithm, iterations, detail }`:
 
-- **`iterations`** (1–8, default 2) — more passes = rounder. It's a Taubin
-  λ/μ smoothing of the mesh, so the model rounds without collapsing/shrinking.
-- **`detail`** (1–4, default 1) — supersamples the grid ×`detail` before
-  smoothing, giving finer, more controlled rounding on coarse/small models (at
-  more triangles). The result is scaled back to the original world size.
+- **`algorithm`** (`'surfaceNets'` | `'taubin'`, default `'surfaceNets'`) — which
+  smoother to use:
+  - **`surfaceNets`** (default) — builds a genuinely smooth surface from the
+    voxel occupancy at native resolution. Rounder than `taubin` at the same
+    triangle count, no supersampling needed, and no pole-spike artifacts. The
+    best general "round my voxels" choice.
+  - **`taubin`** — the original: relaxes the *block* mesh (λ/μ passes), so
+    topology is unchanged and `detail` supersampling applies. Reach for it when
+    you specifically want the block topology preserved or the `detail` knob.
+- **`iterations`** (1–8, default 2) — more passes = rounder. For `taubin` these
+  are the relaxation passes; for `surfaceNets` they're a light cleanup on top
+  (and what makes the base pins below take effect).
+- **`strength`** (0–1, default 1) — the rounding *amount*. Scales how far each
+  smoothing pass moves vertices, so it dials roundness continuously without
+  changing the pass count: `1` is fully rounded, `0.3` is a gentle bevel, `0`
+  leaves the mesh un-rounded. (For perfectly hard cubes use `.blocky()` / no
+  smooth call.) Works for both algorithms.
+- **`detail`** (1–4, default 1) — **`taubin` only.** Supersamples the grid
+  ×`detail` before smoothing for finer rounding on coarse shapes (at more
+  triangles), then scales back to original size. Ignored by `surfaceNets`.
+  **Caution:** `detail > 1` on small, dense features tends to *add* stair-stepping
+  rather than remove it — use plain `iterations` tuning there.
 
 ```js
-return voxels().fillBox([-4,-4,0],[4,4,8], '#6cf').smooth({ iterations: 4, detail: 2 });
+// Default (Surface Nets) — smooth at native resolution:
+return voxels().sphere([0,0,0], 8, '#e7b').smooth();
+// Taubin with supersampling, for block-topology rounding:
+return voxels().fillBox([-4,-4,0],[4,4,8], '#6cf').smooth({ algorithm: 'taubin', iterations: 4, detail: 2 });
 ```
 
-Smoothing only moves vertices — topology is unchanged — so per-voxel colors are
-preserved and the result stays a watertight manifold (exports/paint still work).
-Call `.blocky()` to switch back to hard faces (the default).
+Both algorithms keep per-voxel colors and produce a watertight manifold
+(exports/paint still work). `surfaceNets` centres the surface on voxel centres,
+so a model rounds slightly *inward* of its blocky extent. Call `.blocky()` to
+switch back to hard faces (the default surfacing).
+
+### Keeping a flat / blocky base (printability)
+
+Plain `.smooth()` rounds the bottom too, so the model rocks on the build plate.
+Three options pin part of the model so it stays printable while the rest rounds:
+
+- **`flatBottom: true`** — pins the Z of the bottom-most plane. The build-plate
+  face stays perfectly flat; sides and edges still round. The cheap fix for
+  "it won't sit flat" — reach for this first.
+- **`baseLayers: N`** — keeps the bottom `N` voxel layers fully **blocky** (a
+  solid, sharp pedestal) while the body above smooths. Use when you want a
+  deliberate base/stand, or sharp first-layer walls for adhesion.
+- **`lockBox: [[x0,y0,z0],[x1,y1,z1]]`** — keeps the voxels in that inclusive
+  box (voxel coordinates, any corner order) blocky, for a custom base region
+  that isn't the whole bottom.
+
+```js
+// Smooth character on a perfectly flat bottom face:
+return voxels().sphere([0,0,6], 6, '#e7b').fillBox([-2,-2,0],[2,2,1],'#888')
+  .smooth({ iterations: 3, flatBottom: true });
+
+// Smooth body on a sharp 2-layer pedestal:
+return voxels().sphere([0,0,8], 6, '#6cf').fillBox([-7,-7,0],[7,7,2],'#444')
+  .smooth({ baseLayers: 2 });
+```
+
+All three combine with `iterations` / `detail`, and the pinned region acts as a
+fixed boundary the smoothed part still relaxes toward — so the seam between the
+blocky base and the rounded body stays clean. (`baseLayers` already covers the
+bottom plane, so it subsumes `flatBottom`.)
 
 **Smoothing wants features at least 2 voxels thick.** A `λ` pass pulls each
 vertex toward its neighbours, so smoothing a 1-voxel-thick wall or a
@@ -141,6 +195,94 @@ feature (`hollow(2)`, ≥2-voxel walls) or use fewer `iterations` if you see it.
 > For a fully organic surface from an implicit field, manifold-js's
 > `Manifold.levelSet` or the `api.sdf` engine are better suited; `.smooth()` is
 > the lightweight "round my voxels" option that stays inside the voxel workflow.
+
+## SDF → voxel (`v.sdf`)
+
+The same declarative **SDF namespace** that manifold-js sessions use — `api.sdf`
+— is available in voxel sessions, and `v.sdf(node, opts?)` **rasterizes** it into
+the grid. Instead of hand-writing triple loops with the field math inline, you
+compose primitives and let the engine sample them:
+
+```js
+const { voxels, sdf } = api;
+const v = voxels();
+// A gyroid infill lattice clipped to a rounded cube — one expression.
+v.sdf(sdf.gyroid(10, 0.6).intersect(sdf.roundedBox([34, 34, 34], 5)), { res: 0.6, color: '#7ad0ff' });
+return v;
+```
+
+This is the bridge between the smooth/implicit world and the blocky one. Reach
+for it when you want a shape that's painful to place cube-by-cube — **gyroids /
+TPMS lattices** (`sdf.gyroid`, `sdf.schwarzP`, `sdf.diamond`, `sdf.lidinoid`),
+**smooth-blended organic forms** (`sdf.smoothUnion`), **twisted / bent /
+tapered** bodies — but you still want the voxel pipeline (VOX export, per-cell
+color, the blocky aesthetic). It's **additive**: it unions into whatever is
+already in the grid, so mix it freely with `v.fillBox` / `v.sphere` / `v.set`.
+
+### How sampling works
+
+The voxel at integer coord `(i, j, k)` tests the field at world
+`(i·res, j·res, k·res)` and is occupied when `f ≤ level` (inside the surface).
+So an SDF centered at the origin produces a voxel model centered at the origin,
+and the model's size in voxels is `worldSize / res`.
+
+### Options (`v.sdf(node, opts)`)
+
+| Option | Default | What it does |
+|--------|---------|--------------|
+| `res` | `1` | World units per voxel. Smaller = finer & larger (in voxels). `res: 0.5` doubles the voxel resolution. |
+| `color` | `'#cccccc'` | Fill color when no `colors` entry applies. |
+| `colors` | — | Map of SDF `.label(name)` → color. Each cell is colored by the labelled region it sits **deepest inside** (SDF union = min distance). Unlabelled / unmapped geometry falls back to `color`. |
+| `bounds` | node's own | Explicit world sampling box `{ min:[x,y,z], max:[x,y,z] }`. **Required for infinite SDFs** (a bare `sdf.gyroid(...)` or `.repeat()` — intersect with a finite shape or pass this). |
+| `level` | `0` | Iso level. `f ≤ level` is filled; a small positive value dilates the solid, negative erodes it. |
+
+Two-tone example (label the SDF subtrees, map them to colors):
+
+```js
+const { voxels, sdf } = api;
+const shell  = sdf.sphere(16).subtract(sdf.sphere(13)).label('shell');
+const core   = sdf.gyroid(7, 0.7).intersect(sdf.sphere(13)).label('core');
+return voxels().sdf(sdf.union(shell, core), {
+  res: 1,
+  colors: { shell: '#5bd0ff', core: '#ff6b9d' },
+});
+```
+
+### Notes & gotchas
+
+- **`api.sdf.build()` / `levelSet` is NOT available here** — there's no Manifold
+  engine in a voxel session. Use `v.sdf(node)` to rasterize instead (the error
+  message says so if you try `.build()`).
+- **TPMS `thickness` is in field units, not world units.** A gyroid's field only
+  ranges about ±1.5, so `thickness ≥ 1.5` fills almost solid; for an *open*
+  lattice use a thin wall like `0.4`–`0.8`. Verify with a render — don't guess.
+- **Sample budget.** `v.sdf` samples once per cell over the bounds; a tiny `res`
+  over big bounds is capped (`import.voxelSdfMaxSamples`, default 8M) and throws,
+  asking for a coarser `res` or tighter `bounds`, rather than freezing.
+- **Printability — fragmentation.** Open lattices can fragment into many
+  disconnected pieces (each a separate piece on the plate). Check
+  **`voxelPieceCount`** — the face-connected (6-neighbour) piece count, which is
+  the trustworthy "how many separate printable pieces?" number for voxel models.
+  Do **not** judge this by `componentCount`: that comes from the meshed solid and
+  over-reports voxel models (an enclosed cavity counts as a second component, and
+  voxels touching only at an edge/corner split), so a one-piece hollow shell
+  shows `componentCount: 2` but `voxelPieceCount: 1`. Fixes, cheapest first: call
+  **`v.keepLargest()`** to drop stray specks; thicken walls so the lattice stays
+  face-connected; weld a solid core/skin through it (e.g.
+  `lattice.union(smallSolidCore)`, or subtract an inner shape from an outer solid
+  and union the lattice inside).
+- **Thin TPMS struts at `res: 1` can be non-manifold.** A lattice strut only one
+  voxel wide tends to touch its neighbour along an *edge* (diagonal), not a face
+  — a non-manifold edge. The fix is **resolution, not thickness**: a finer `res`
+  (e.g. 0.6–0.7) thickens the same world-space strut to ≥2 voxels so it
+  rasterizes face-connected. (`v.keepLargest()` can't repair this — diagonal
+  contacts aren't separate components, they're a bad join *within* one.)
+- **`colors`/`.label()` does NOT survive `smoothUnion`.** A label on a sub-shape
+  that's then `smoothUnion`'d is never the *deepest* region at the blended
+  surface, so its `colors` entry yields zero voxels (same reason the mesh path
+  hard-unions across labels — see `/ai/sdf.md`). For a smooth-blended organic,
+  either label the *outer* expression, or fill one base `color` and recolor
+  detail regions afterward with `v.fillBox`/`v.set`/`v.sphere`.
 
 ## MagicaVoxel `.vox` import
 
@@ -164,6 +306,15 @@ read the format. The other 3D formats (GLB / 3MF / OBJ / STL) still work too —
 they export the *meshed* voxels with vertex colors — but `.vox` is the only one
 that keeps the editable voxel grid intact.
 
+> **Blocky STL / OBJ / 3MF use greedy meshing.** For a blocky (non-smoothed)
+> grid these mesh-file exports coalesce coplanar same-color faces into the fewest
+> rectangles, so a flat or large single-color region ships as a couple of
+> triangles instead of hundreds — several-fold smaller files, which matters for
+> print prep. The merge introduces T-junctions, which are harmless in a
+> triangle-soup export; the in-app render, stats, and slicing keep the per-face
+> manifold mesh, so nothing else is affected. A **smoothed** grid exports the
+> rounded mesh you see in the viewport instead (same as GLB), not blocky cubes.
+
 Programmatic / AI equivalent:
 
 ```js
@@ -183,42 +334,161 @@ when voxel paint is active). Format limits, surfaced as a clear `{ error }`:
   nearest kept color — no voxel is ever dropped. `.smooth()` surfacing doesn't
   affect the export; `.vox` always stores the underlying blocky cells.
 
-## Voxel paint
+## Voxel Studio
 
-Click on the **🎨 Voxel paint** button (appears in voxel sessions only,
-viewport overlay) to enter paint mode. Click a face on the model to set that
-voxel's color to the picker color; toggle **⌫ Eraser** to remove voxels
-instead. The editor is locked while paint is active so an auto-run can't
-clobber your edits. When you're done, click **Bake → code** to replace the
-editor with `voxels.decode(<your painted grid>)` and save a new version, or
-**Cancel** to discard.
+Click the **🧊 Voxel Studio** button (appears in voxel sessions only, viewport
+overlay) to enter a Minecraft-style direct-editing mode. It mirrors the main
+Paint menu's layout, adapted for voxels. Pick a **tool**, then click — or
+**drag** — across faces on the model:
 
-> Painting *bakes* the procedural code into a static voxel grid — the new
-> version captures the painted state exactly, while the previous version (with
-> the original code) is preserved in the version history.
+| Tool | Glyph | What it does |
+|------|-------|--------------|
+| Brush | 🖌 | Recolor voxels. **Drag** to paint a stroke; use **Size** for a wider brush. |
+| Add | ➕ | Build new cubes onto the clicked faces (stacks/extends). Drag to sculpt; respects brush size/shape. |
+| Remove | ⌫ | Delete voxels. Drag to erase; respects brush size/shape. |
+| Bucket | 🪣 | Recolor the whole face-connected region that shares the clicked voxel's color. |
+| Level | 🧱 | Recolor a whole **X/Y/Z layer** through the clicked voxel (pick the axis in the panel). |
+| Box fill | ⬚➕ | Click two voxels to fill the inclusive box between them (bridges gaps; use **Add** to grow outward). |
+| Box subtract | ⬚⌫ | Click two voxels to carve out the box between them (great for cutting holes). |
+
+**Brush** (for the Brush / Add / Remove tools): a **Size** slider (0 = a single
+voxel, up to a wide radius), three brush **shapes** — ● sphere, ◻ cube, ◆
+diamond (the 3D analogues of the paint menu's circle/square/diamond) — and a
+**Spray** toggle that scatters a random subset of the footprint (with a density
+slider) for a speckled look. A click-**drag** paints a continuous stroke that
+undoes as a single step.
+
+Pick a color from the swatches or the **custom color** picker (any RGB). **↺
+Undo** / **↻ Redo** (also **Cmd/Ctrl+Z** / **Shift+Cmd/Ctrl+Z**) step through
+your edits. The panel is **draggable** by its header and closes with its **×**
+or **Esc** (discarding edits). The editor is locked while the studio is active
+so an auto-run can't clobber your edits.
+
+Two ways to commit when you're done:
+
+- **Update code** — keeps your existing code and appends your edits as readable
+  `v.set(...)` / `v.remove(...)` statements before the `return`. Best when the
+  code is procedural (`v.fillBox`, `v.sphere`, …) and you want to keep it
+  editable.
+- **Save as raw voxel data** — replaces the editor with `voxels.decode(<your
+  edited grid>)` of the whole grid. It **warns first** because it overwrites
+  whatever code is there. The result is still an editable voxel session you can
+  re-open in the Studio.
+
+> Mesh-only paint features (edge-smoothing/subdivision, geodesic depth, the
+> rotatable shape gizmo, and named color regions) don't apply to voxels —
+> color lives per-cell in the grid and undo/redo replaces region history.
+
+#### Rounding controls
+
+The Studio's **Rounding** section sets the model's surfacing without leaving the
+editor: an algorithm toggle — **Off** (hard blocks) / **Surface Nets** (re-mesh
+to a fully smooth surface; no amount knob) / **Taubin** (round the blocky mesh by
+an adjustable amount) — plus a **0–100% strength slider** shown for Taubin only
+(Surface Nets is inherently smooth at any strength), a **Flat bottom** toggle
+(keep the build-plate face flat), and a **Flat base … layers** field (keep the
+bottom N layers blocky).
+
+The Studio opens in the non-editing **👁 View** tool, which orbits the model and
+shows the **rounded** result. Picking any edit tool switches the view to blocks
+(per-voxel picking needs the hard-faced mesh) and shows a "rounding is hidden
+while editing" notice; switch back to 👁 View to see the rounded result again.
+Rounding rides both commit paths: an **Update code** commit appends
+`.smooth({ … })` / `.blocky()` to your code, and **Save as raw voxel data** bakes
+the surfacing into the emitted call. This is the UI equivalent of calling
+`.smooth({ algorithm, strength, … })` in code.
+
+### Editing an imported voxel
+
+Image-import (and `.vox`) sessions open as `voxels.decode("…")` code. That
+string *is* a live grid — Voxel Studio decodes it, so every tool works on an
+imported model too. Use **Box subtract** / **Remove** to carve away parts you
+didn't want, **Add** to extend it, and **Paint** / **Bucket** to recolor, then
+**Update code** (appends the edits) or **Save as raw voxel data** (replaces with
+the full decoded grid) to commit a new version.
 
 ### Programmatic / AI equivalent
 
 ```js
 await partwright.setActiveLanguage('voxel');
 await partwright.run(`return api.voxels().fillBox([-3,-3,0],[3,3,3], '#888');`);
-partwright.activateVoxelPaint();                       // -> { ok, voxelCount } | { error }
+partwright.activateVoxelPaint();                       // -> { voxelCount } | { error }
+
+// Single-voxel paint / erase (back-compat shortcut):
 partwright.paintVoxelFace({ faceIndex: 0, color: [255, 0, 0] });
 partwright.paintVoxelFace({ faceIndex: 12, erase: true });
-await partwright.bakeVoxelsToCode({ label: 'sad-cube' });   // commits + saves
+
+// Multi-tool studio:
+partwright.setVoxelTool('add');                                  // -> { tool }
+partwright.setVoxelBrush({ radius: 2, shape: 'sphere' });        // wider brush
+partwright.voxelStudioApply({ faceIndex: 0, color: [80,160,255] }); // sculpt a blob
+partwright.setVoxelBrush({ block: [5,5,1], depth: 0 });          // add a 5×5×1 plate flush to the clicked face
+partwright.voxelStudioApply({ faceIndex: 0, color: '#cc8844' });    // stamp the block
+partwright.setVoxelTool('bucket');
+partwright.voxelStudioApply({ faceIndex: 4, color: '#33cc55' });    // flood recolor
+partwright.setVoxelTool('level');
+partwright.setVoxelLevelAxis(2);                                  // z layers
+partwright.voxelStudioApply({ faceIndex: 8, color: '#ffcc00' });    // recolor a layer
+partwright.setVoxelTool('boxRemove');
+partwright.voxelStudioApply({ faceIndex: 0 });   // bank one corner (changed:false)
+partwright.voxelStudioApply({ faceIndex: 30 });  // complete the box → carve it out
+
+// A drag stroke = one undo step (programmatic equivalent of click-drag):
+partwright.setVoxelTool('paint');
+partwright.voxelStudioBeginStroke();
+partwright.voxelStudioApply({ faceIndex: 0, color: '#ff0000' });
+partwright.voxelStudioApply({ faceIndex: 2 });
+partwright.voxelStudioEndStroke();               // -> { ok, voxelCount }
+
+partwright.voxelStudioUndo();                                    // -> { undone, voxelCount }
+partwright.voxelStudioRedo();                                    // -> { redone, voxelCount }
+
+// Commit — two options:
+await partwright.updateVoxelCode({ label: 'castle' });   // keep code, append edits
+await partwright.bakeVoxelsToCode({ label: 'castle' });  // replace with voxels.decode(...)
 // (or) partwright.deactivateVoxelPaint() to cancel without saving
 ```
 
 - `activateVoxelPaint()` re-runs the current code locally to capture the grid
-  + per-triangle voxel provenance. Returns `{ error }` outside voxel sessions
-  or if the code doesn't return a grid.
-- `paintVoxelFace({ faceIndex, color?, erase? })` mutates the live grid.
-  `faceIndex` is the triangle index a raycast would return (e.g. from a
-  pointer event); the API maps it back to the originating voxel. Returns
-  `{ changed, voxelCount }`.
-- `bakeVoxelsToCode({ label? })` deactivates paint, writes
-  `voxels.decode(...)` to the editor, runs it, and saves a new version. Returns
-  `{ versionIndex, voxelCount }` (or `{ error }` for an empty grid).
+  + per-triangle voxel/normal provenance. Works on smooth-surfaced grids too
+  (editing happens on the blocky preview; the rounding is preserved). Returns
+  `{ error }` outside voxel sessions or if the code doesn't return a grid.
+- `setVoxelTool(tool)` — `'view' | 'paint' | 'add' | 'remove' | 'bucket' |
+  'level' | 'boxAdd' | 'boxRemove'`. `'view'` is the non-editing default (orbit +
+  rounded preview); the rest edit (and render blocks). Returns `{ tool }` or `{ error }`.
+- `setVoxelBrush({ radius?, shape?, spray?, sprayDensity?, block?, depth? })` —
+  brush/block settings. For paint/remove: `radius` in voxels (0 = single, max
+  16); `shape` is `'sphere' | 'cube' | 'diamond'`; `spray` scatters a random
+  subset; `sprayDensity` 0.05..1. For the `add` tool: `block` is the `[x,y,z]`
+  size in voxels (1..32 each) and the block is anchored to the clicked face so a
+  thick block never pokes out the far side of a thin tile. `depth` (≥ 0; the
+  panel slider tops out at 16 but a typed value can go deeper) sinks
+  the add block into the surface, and for the box tools extrudes the
+  fill/subtract along the clicked face (a `boxAdd` grows a slab that many extra
+  layers, a `boxRemove` carves that many deeper); `0` = flush to the face.
+  Returns the resolved settings.
+- `setVoxelLevelAxis(axis)` — `0`/`1`/`2` (x/y/z) for the `level` tool.
+- `voxelStudioBeginStroke()` / `voxelStudioEndStroke()` — bracket a run of
+  `voxelStudioApply` calls so they collapse into one undo step (the
+  programmatic equivalent of a click-drag).
+- `voxelStudioApply({ faceIndex, color?, tool? })` applies the active tool at a
+  face. `faceIndex` is the triangle index a raycast would return; the API maps
+  it back to the originating voxel (and, for **Add**, the empty cell on the
+  clicked face). The box tools need **two** calls — the first banks a corner
+  (`changed:false`, `pendingBoxCorner` set), the second completes the region.
+  Returns `{ changed, voxelCount, tool, pendingBoxCorner }`.
+- `paintVoxelFace({ faceIndex, color?, erase? })` is the original single-voxel
+  shortcut (paint or erase one voxel); still supported.
+- `voxelStudioUndo()` / `voxelStudioRedo()` step the edit history (returns
+  `{ undone|redone, voxelCount }`). In the UI, Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z
+  do the same while the studio is active.
+- `updateVoxelCode({ label? })` ("Update code") keeps the current procedural
+  source and appends the edits as `v.set` / `v.remove` statements, runs it, and
+  saves a new version. Returns `{ versionIndex, voxelCount }` (or `{ error }`).
+- `bakeVoxelsToCode({ label? })` ("Save as raw voxel data") replaces the editor
+  with `voxels.decode(...)` of the whole grid, runs it, and saves a new version.
+  Returns `{ versionIndex, voxelCount }` (or `{ error }` for an empty grid). The
+  in-app button confirms before overwriting; the API call does not.
 
 ## Image import
 
@@ -316,6 +586,13 @@ the settings you used.
 - **No booleans / fillets / history.** Voxel modeling is direct: place and
   remove cubes. For CSG, fillets, or parametric edits, use manifold-js or BREP.
 - **Coordinate range is −1024…1023 per axis.** Out-of-range coordinates throw.
+- **Catalog thumbnail faces iso azimuth ≈45° (the +X,−Y corner) by default.** The
+  catalog 3/4 tile camera looks from the +X/−Y corner — camera-facing surfaces are
+  the −Y and +X faces. By default, build characters and faced models with their
+  front on the −Y/+X corner; a face authored on flat +Y shows the *back* of the
+  head in the tile. **Or pin the tile angle** instead of reorienting the model:
+  `partwright.setThumbnailCamera({ azimuth, elevation })` (degrees) before saving
+  makes the thumbnail render from any angle you choose.
 
 ## A complete example
 

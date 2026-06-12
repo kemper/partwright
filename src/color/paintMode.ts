@@ -7,13 +7,13 @@ import { pickFace, type FacePickResult } from './facePicker';
 import { projectBrushFootprint, invalidateProjection, disposeProjection } from './projectionPaint';
 import { disposeBaseRemap } from './baseRemap';
 import { buildAdjacency, findColorRegion, findCoplanarRegion, gateRegionByBend, getTriangleNormal, type AdjacencyGraph } from './adjacency';
-import { addRegion, getRegions, buildTriColors } from './regions';
+import { addRegion, getRegions, buildTriColors, isPainted } from './regions';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 import { smoothEdgeForResolution } from './slabPaint';
 import { setPaintAccessors } from './paintAccessors';
-import { getSlotById, hexToRgb } from './palette';
+import { getSlotById, hexToRgb, isPaletteConstrained, nearestSlot, onPaletteChange } from './palette';
 import { tangentBasis, wrapAngleGate, type BrushShape } from './subdivide';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
@@ -155,9 +155,32 @@ let onToolChange: ((tool: PaintTool) => void) | null = null;
 export function isActive(): boolean { return active; }
 
 export function setColor(color: [number, number, number]): void {
+  // Constrain mode forbids ad-hoc colours: snap the requested colour onto the
+  // nearest filament slot so every paint tool — and the Replace tool's target,
+  // and any programmatic setColor — stays on palette. The custom picker is also
+  // hidden in the UI, but this is the actual enforcement. Empty palette ⇒ no
+  // slot to snap to, so fall through to the ad-hoc colour.
+  if (isPaletteConstrained()) {
+    const slot = nearestSlot(color);
+    if (slot) { currentColor = hexToRgb(slot.hex); currentSlotId = slot.id; return; }
+  }
   currentColor = color;
   currentSlotId = null; // ad-hoc colour — no longer tied to a palette slot
 }
+
+/** Re-snap the active paint colour onto the palette when constrain mode is on
+ *  and the current colour is ad-hoc (unslotted) — e.g. the user enabled
+ *  constrain while the default red was active, or activated paint with an
+ *  ad-hoc colour held over. Keeps an already-slotted colour as-is. */
+function enforcePaletteConstraint(): void {
+  if (!isPaletteConstrained() || currentSlotId !== null) return;
+  const slot = nearestSlot(currentColor);
+  if (slot) { currentColor = hexToRgb(slot.hex); currentSlotId = slot.id; }
+}
+
+// Constrain toggles and palette edits fire onPaletteChange; re-enforce so the
+// active colour can never linger off-palette while constrain is on.
+onPaletteChange(enforcePaletteConstraint);
 
 export function getColor(): [number, number, number] {
   return currentColor;
@@ -384,6 +407,7 @@ export function updatePaintMesh(mesh: MeshData): void {
 export function activate(): void {
   if (active) return;
   active = true;
+  enforcePaletteConstraint(); // a constrained palette must not paint an ad-hoc held-over colour
 
   if (currentMesh && !adjacency) {
     // Fallback: pre-warm callback hasn't fired yet (e.g. user opened paint
@@ -901,13 +925,21 @@ function onPointerUp(event: PointerEvent): void {
   const result = pickFace(event);
   if (!result) return;
 
-  // Replace tool: set the source color from the clicked triangle
+  // Replace tool: set the source color from the clicked triangle. An unpainted
+  // triangle isn't in any region, so buildTriColors leaves it at the buffer's
+  // 0,0,0 default (and returns null entirely when there are no regions yet).
+  // Reading those raw bytes made the eyedropper pick pure black on any
+  // unpainted surface instead of the base color the viewport actually shows
+  // (0x4a9eff) — so fall back to that displayed base color when the triangle
+  // is unpainted. (The bucket color-flood seed below deliberately keeps the
+  // raw 0,0,0 for unpainted faces — it's the match key re-flooded on reconcile,
+  // and the buffer stores unpainted as 0,0,0, so the two must agree.)
   if (currentTool === 'replace') {
     const triColors = buildTriColors(currentMesh.numTri);
     const t = result.triangleIndex;
-    const color: [number, number, number] = triColors
+    const color: [number, number, number] = triColors && isPainted(triColors, t)
       ? [triColors[t * 3] / 255, triColors[t * 3 + 1] / 255, triColors[t * 3 + 2] / 255]
-      : [0, 0, 0];
+      : [0x4a / 255, 0x9e / 255, 0xff / 255];
     setReplaceSourceColor(color);
     return;
   }

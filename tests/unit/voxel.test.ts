@@ -7,7 +7,7 @@ import {
   decodeGrid,
   COORD_MAX,
 } from '../../src/geometry/voxel/grid';
-import { gridToMeshData, meshGrid } from '../../src/geometry/voxel/mesher';
+import { gridToMeshData, greedyMeshGrid, meshGrid } from '../../src/geometry/voxel/mesher';
 import { taubinSmooth } from '../../src/geometry/voxel/smooth';
 import {
   imageDataToVoxelGrid,
@@ -84,6 +84,39 @@ describe('VoxelGrid', () => {
     const v = new VoxelGrid();
     expect(() => v.set(COORD_MAX + 1, 0, 0, '#fff')).toThrow();
   });
+
+  it('rotate(z, 180) sends a +Y feature to −Y and preserves color', () => {
+    const v = new VoxelGrid();
+    v.set(2, 5, 1, '#abc');            // a feature on +Y
+    v.rotate('z', 180);
+    expect(v.has(2, 5, 1)).toBe(false);
+    // Rotation is about the world origin of the cube CENTRES, so 180° about Z
+    // maps cell (x,y) → (−x−1,−y−1) — not (−x,−y), which would shift by a voxel.
+    expect(v.get(-3, -6, 1)).toBe(0xaabbcc);
+    expect(v.has(-2, -5, 1)).toBe(false);
+    expect(v.size).toBe(1);
+  });
+
+  it('rotate follows the right-hand rule for each axis (90°)', () => {
+    // 90° rotates the cube centre about the origin; cell n → round(rot(n+0.5)−0.5).
+    expect(new VoxelGrid().set(3, 0, 0, '#fff').rotate('z', 90).has(-1, 3, 0)).toBe(true);  // +X → +Y
+    expect(new VoxelGrid().set(0, 3, 0, '#fff').rotate('x', 90).has(0, -1, 3)).toBe(true);  // +Y → +Z
+    expect(new VoxelGrid().set(0, 0, 3, '#fff').rotate('y', 90).has(3, 0, -1)).toBe(true);  // +Z → +X
+  });
+
+  it('rotate is exact and reversible (4×90° returns to start)', () => {
+    const v = new VoxelGrid().fillBox([0, 0, 0], [2, 4, 1], '#123');
+    const n = v.size;
+    v.rotate('z', 90).rotate('z', 90).rotate('z', 90).rotate('z', 90);
+    expect(v.size).toBe(n);
+    expect(v.has(0, 0, 0)).toBe(true);
+    expect(v.has(2, 4, 1)).toBe(true);
+  });
+
+  it('rotate rejects non-90° multiples and normalizes negatives', () => {
+    expect(() => new VoxelGrid().rotate('z', 45)).toThrow();
+    expect(new VoxelGrid().set(3, 0, 0, '#fff').rotate('z', -90).has(0, -4, 0)).toBe(true); // −90° = 270°: (x,y)→(y,−x−1)
+  });
 });
 
 describe('encodeGrid / decodeGrid', () => {
@@ -106,6 +139,17 @@ describe('encodeGrid / decodeGrid', () => {
 
   it('rejects garbage input', () => {
     expect(() => decodeGrid('bm90LXZveGVscw==')).toThrow();
+  });
+
+  it('rejects a bounding box too large to encode rather than silently corrupting it', () => {
+    // Full-extent corners span 2048³ ≈ 8.6e9 cells — past the 2^31 boundary
+    // where the old `idx >> 3` byte index went negative and dropped voxels,
+    // round-tripping the grid to empty. The guard now throws before the
+    // O(cellCount) loop instead of producing a corrupt encoding.
+    const v = new VoxelGrid();
+    v.set(COORD_MAX, COORD_MAX, COORD_MAX, '#fff');
+    v.set(-1024, -1024, -1024, '#000');
+    expect(() => encodeGrid(v)).toThrow(/too large/i);
   });
 });
 
@@ -176,6 +220,59 @@ describe('gridToMeshData', () => {
     expect(painted).toBeDefined();
     expect(painted!.length).toBe(m.numTri);
     expect(Array.from(painted!).every(x => x === 1)).toBe(true);
+  });
+});
+
+describe('greedyMeshGrid (export-only coalesced mesh)', () => {
+  it('meshes a single voxel identically to the per-face mesher', () => {
+    const v = new VoxelGrid().set(0, 0, 0, '#ff0000');
+    const m = greedyMeshGrid(v);
+    expect(m.numVert).toBe(8);
+    expect(m.numTri).toBe(12);
+    expect([m.triColors![0], m.triColors![1], m.triColors![2]]).toEqual([255, 0, 0]);
+    assertClosedManifold(m.triVerts); // a lone voxel has no T-junctions
+  });
+
+  it('collapses a solid block to one quad per face (12 tris vs 192)', () => {
+    const v = new VoxelGrid().fillBox([0, 0, 0], [3, 3, 3], '#3399ff');
+    const greedy = greedyMeshGrid(v);
+    const perFace = gridToMeshData(v);
+    expect(perFace.numTri).toBe(192);
+    expect(greedy.numTri).toBe(12);   // 6 faces, each one merged rectangle
+    expect(greedy.numVert).toBe(8);
+    assertClosedManifold(greedy.triVerts); // a uniform box stays manifold
+  });
+
+  it('coalesces a flat same-color slab far below the per-face count', () => {
+    const v = new VoxelGrid().fillBox([0, 0, 0], [9, 9, 0], '#6cf'); // 10×10×1 plate
+    const greedy = greedyMeshGrid(v);
+    const perFace = gridToMeshData(v);
+    expect(greedy.numTri).toBeLessThan(perFace.numTri);
+    // Top + bottom merge to 1 quad each; the 4 side strips merge per side.
+    expect(greedy.numTri).toBe(12);
+  });
+
+  it('does not merge across a color boundary', () => {
+    // Two-color split plate: the top face cannot be one quad.
+    const v = new VoxelGrid();
+    v.fillBox([0, 0, 0], [3, 0, 0], '#f00');
+    v.fillBox([4, 0, 0], [7, 0, 0], '#0f0');
+    const greedy = greedyMeshGrid(v);
+    // Colors preserved per triangle and the _painted mask set.
+    expect(greedy.triColors!.length).toBe(greedy.numTri * 3);
+    const painted = (greedy.triColors as Uint8Array & { _painted?: Uint8Array })._painted;
+    expect(painted!.length).toBe(greedy.numTri);
+    // Two distinct colors appear among the triangles.
+    const colors = new Set<string>();
+    for (let t = 0; t < greedy.numTri; t++) colors.add(`${greedy.triColors![t * 3]},${greedy.triColors![t * 3 + 1]},${greedy.triColors![t * 3 + 2]}`);
+    expect(colors.has('255,0,0')).toBe(true);
+    expect(colors.has('0,255,0')).toBe(true);
+  });
+
+  it('returns an empty mesh for an empty grid', () => {
+    const m = greedyMeshGrid(new VoxelGrid());
+    expect(m.numTri).toBe(0);
+    expect(m.numVert).toBe(0);
   });
 });
 
@@ -334,9 +431,9 @@ describe('voxel surfacing (Taubin smoothing)', () => {
     expect(taubinSmooth(m, 0)).toBe(m);
   });
 
-  it('meshGrid applies smooth surfacing (detail 1 keeps topology, detail>1 densifies)', () => {
+  it('meshGrid applies taubin smooth surfacing (detail 1 keeps topology, detail>1 densifies)', () => {
     const v = new VoxelGrid();
-    v.fillBox([0, 0, 0], [3, 3, 3], '#3399ff').smooth();
+    v.fillBox([0, 0, 0], [3, 3, 3], '#3399ff').smooth({ algorithm: 'taubin' });
     const m = meshGrid(v);
     expect(m.numTri).toBe(192); // detail 1 → same topology as the block mesh
     const block = gridToMeshData(new VoxelGrid().fillBox([0, 0, 0], [3, 3, 3], '#3399ff'));
@@ -347,7 +444,7 @@ describe('voxel surfacing (Taubin smoothing)', () => {
     expect(moved).toBe(true);
 
     const v2 = new VoxelGrid();
-    v2.fillBox([0, 0, 0], [3, 3, 3], '#3399ff').smooth({ iterations: 2, detail: 2 });
+    v2.fillBox([0, 0, 0], [3, 3, 3], '#3399ff').smooth({ algorithm: 'taubin', iterations: 2, detail: 2 });
     const m2 = meshGrid(v2);
     expect(m2.numTri).toBeGreaterThan(192); // supersampled → denser mesh
     expect(Array.from(m2.vertProperties).every(Number.isFinite)).toBe(true);

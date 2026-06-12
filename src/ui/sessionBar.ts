@@ -223,15 +223,12 @@ function render(state: SessionState) {
   barEl.appendChild(el('div', 'flex-1', ''));
 
   // (Session switcher moved to the activity rail header — see createLayout.)
-
-  // "Close" starts a fresh blank session rather than dropping to a
-  // session-less editor — a session always exists while the editor is open.
-  const closeBtn = btn('✕', async () => {
-    await createSession();
-    callbacks.onNewSession();
-  });
-  closeBtn.title = 'Close & start a new session';
-  barEl.appendChild(closeBtn);
+  //
+  // No "close" button here: a session always exists while the editor is open,
+  // so there's nothing to close. Starting a fresh session is an explicit action
+  // via the Sessions modal ("+ New Session") or the command palette ("New
+  // session") — the old "✕" mislabeled "make a new session" as "close" and
+  // silently swapped the session id when touched.
 }
 
 function el(tag: string, className: string, text: string): HTMLElement {

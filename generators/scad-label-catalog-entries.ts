@@ -42,6 +42,9 @@ interface Spec {
   scadCode: string;
   paintCalls: PaintCall[];
   triangleCount?: number;
+  /** Optional per-entry thumbnail-camera pin (degrees; default iso az 45 / el
+   *  35) — see generators/catalog-entries.ts. */
+  thumbCamera?: { azimuth: number; elevation: number };
 }
 
 function loadSpecs(): Spec[] {
@@ -92,10 +95,11 @@ test.describe.serial('generate SCAD label catalog entries', () => {
       await page.goto('/editor');
       await waitForEngine(page);
 
-      const payload = await page.evaluate(async ({ code, name, paintCalls }) => {
+      const payload = await page.evaluate(async ({ code, name, paintCalls, thumbCamera }) => {
         const pw = (window as unknown as { partwright: {
           setActiveLanguage: (lang: 'manifold-js' | 'scad') => Promise<void>;
           createSession: (n: string) => Promise<unknown>;
+          setThumbnailCamera: (c: { azimuth: number; elevation: number }) => Promise<unknown>;
           runAndSave: (c: string, label?: string, a?: unknown) => Promise<{ passed?: boolean; failures?: string[]; geometry?: { status?: string; error?: string } }>;
           paintByLabel: (opts: { label: string; color: [number, number, number] }) => Promise<unknown> | { error?: string };
           listLabels: () => { labels?: Array<{ name: string }> } | { error?: string };
@@ -104,6 +108,7 @@ test.describe.serial('generate SCAD label catalog entries', () => {
         } }).partwright;
         await pw.setActiveLanguage('scad');
         await pw.createSession(name);
+        if (thumbCamera) await pw.setThumbnailCamera(thumbCamera);
         const run = await pw.runAndSave(code, 'v1', { isManifold: true });
         if (run.failures && run.failures.length > 0) {
           throw new Error('runAndSave assertions failed: ' + run.failures.join('; '));
@@ -139,7 +144,7 @@ test.describe.serial('generate SCAD label catalog entries', () => {
         const exported = await pw.exportSessionData(undefined, { includeThumbnails: true });
         if (exported.error) throw new Error('exportSessionData: ' + exported.error);
         return exported.data;
-      }, { code: spec.scadCode, name: spec.name, paintCalls: spec.paintCalls });
+      }, { code: spec.scadCode, name: spec.name, paintCalls: spec.paintCalls, thumbCamera: spec.thumbCamera ?? null });
 
       const outPath = path.join(catalogDir, `${spec.slug.replace(/-/g, '_')}.partwright.json`);
       fs.writeFileSync(outPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');

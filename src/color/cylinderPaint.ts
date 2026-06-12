@@ -16,10 +16,26 @@ import type { RefineRegion, TriClass, Aabb } from './subdivide';
 
 export type CylinderCoverage = 'centroid' | 'fully_inside' | 'any_vertex_inside';
 
+/** Which world axis the cylindrical shell runs along. `'z'` (the default and
+ *  the only legacy behaviour) measures radius in XY and the band along Z;
+ *  `'x'` measures radius in YZ with the band along X; `'y'` measures radius in
+ *  ZX with the band along Y. The two radial coordinates follow cyclic order
+ *  (x→y→z→x), so `center` is interpreted in that plane. */
+export type CylinderAxis = 'x' | 'y' | 'z';
+
+/** Project a world point onto [radialA, radialB, height] for the chosen axis. */
+function projectAxis(axis: CylinderAxis, x: number, y: number, z: number): [number, number, number] {
+  if (axis === 'x') return [y, z, x];
+  if (axis === 'y') return [z, x, y];
+  return [x, y, z];
+}
+
 /** Collect triangle ids whose centroids (or every vertex, depending on
  *  `coverage`) fall inside a cylindrical shell. Mirrors `findSlabTriangles`
  *  / `findBoxTriangles` in shape — top-level so the post-refine descriptor
- *  resolver can call it without going through `main.ts`'s closure scope. */
+ *  resolver can call it without going through `main.ts`'s closure scope.
+ *  `axis` selects the shell's axis (default `'z'` = the legacy XY-radius
+ *  behaviour). */
 export function findCylinderTriangles(
   mesh: MeshData,
   center: [number, number],
@@ -30,6 +46,7 @@ export function findCylinderTriangles(
   cone?: { axis: [number, number, number]; angleDeg: number },
   coverage: CylinderCoverage = 'centroid',
   maxArea?: number,
+  axis: CylinderAxis = 'z',
 ): Set<number> {
   const adjacency = cone ? buildAdjacency(mesh) : null;
   let coneAxis: [number, number, number] | null = null;
@@ -45,9 +62,10 @@ export function findCylinderTriangles(
   const { triVerts, vertProperties, numProp, numTri } = mesh;
 
   const inShell = (x: number, y: number, z: number): boolean => {
-    const dx = x - cx, dy = y - cy;
+    const [rA, rB, h] = projectAxis(axis, x, y, z);
+    const dx = rA - cx, dy = rB - cy;
     const r2 = dx * dx + dy * dy;
-    return r2 >= rMin2 && r2 <= rMax2 && z >= zMin && z <= zMax;
+    return r2 >= rMin2 && r2 <= rMax2 && h >= zMin && h <= zMax;
   };
 
   for (let t = 0; t < numTri; t++) {
@@ -70,9 +88,9 @@ export function findCylinderTriangles(
       if (coneAxis[0] * nx + coneAxis[1] * ny + coneAxis[2] * nz < coneCos) continue;
     }
     if (maxArea !== undefined) {
-      // Inline 2× triangle area via the cross product magnitude so we don't
-      // need a buildAdjacency() call when the cone branch didn't already
-      // build one. The factor of 2 is consistent on both sides of the test.
+      // Inline the true triangle area via the cross-product magnitude so we
+      // don't need a buildAdjacency() call when the cone branch didn't already
+      // build one. Matches `triangleArea`'s real-area semantics (0.5·|cross|).
       const ex1 = bx - ax, ey1 = by - ay, ez1 = bz - az;
       const ex2 = cx2 - ax, ey2 = cy2 - ay, ez2 = cz2 - az;
       const nx = ey1 * ez2 - ez1 * ey2;
@@ -100,15 +118,19 @@ export function cylinderRefineRegion(
   zMin: number,
   zMax: number,
   maxEdge: number,
+  axis: CylinderAxis = 'z',
 ): RefineRegion {
   const [cx, cy] = center;
   const rMin2 = rMin * rMin;
   const rMax2 = rMax * rMax;
   const classify = (a: number[], b: number[], c: number[]): TriClass => {
-    const ra2 = (a[0] - cx) * (a[0] - cx) + (a[1] - cy) * (a[1] - cy);
-    const rb2 = (b[0] - cx) * (b[0] - cx) + (b[1] - cy) * (b[1] - cy);
-    const rc2 = (c[0] - cx) * (c[0] - cx) + (c[1] - cy) * (c[1] - cy);
-    const az = a[2], bz = b[2], cz = c[2];
+    const pa = projectAxis(axis, a[0], a[1], a[2]);
+    const pb = projectAxis(axis, b[0], b[1], b[2]);
+    const pc = projectAxis(axis, c[0], c[1], c[2]);
+    const ra2 = (pa[0] - cx) * (pa[0] - cx) + (pa[1] - cy) * (pa[1] - cy);
+    const rb2 = (pb[0] - cx) * (pb[0] - cx) + (pb[1] - cy) * (pb[1] - cy);
+    const rc2 = (pc[0] - cx) * (pc[0] - cx) + (pc[1] - cy) * (pc[1] - cy);
+    const az = pa[2], bz = pb[2], cz = pc[2];
 
     // Outside on any single side — all three vertices fail the same test.
     // This is conservative: a thin triangle that happens to lie tangent to
@@ -128,12 +150,19 @@ export function cylinderRefineRegion(
     return 'straddle';
   };
   // Cheap outer-AABB reject: anything fully outside the [cx±rMax, cy±rMax,
-  // zMin..zMax] box can't be in the shell at all. The inner hole (rMin) is
-  // unbounded by a single AABB so we live with the false positives — the
-  // classify catches them.
+  // zMin..zMax] box (in the shell's own projected frame) can't be in the shell
+  // at all. The inner hole (rMin) is unbounded by a single AABB so we live with
+  // the false positives — the classify catches them. The box is built in
+  // projected coords then permuted back to world for the chosen axis (the
+  // projection is a pure axis permutation, so min/max map componentwise).
+  const unproject = (p: [number, number, number]): [number, number, number] => {
+    if (axis === 'x') return [p[2], p[0], p[1]];
+    if (axis === 'y') return [p[1], p[2], p[0]];
+    return p;
+  };
   const aabb: Aabb = {
-    min: [cx - rMax, cy - rMax, zMin],
-    max: [cx + rMax, cy + rMax, zMax],
+    min: unproject([cx - rMax, cy - rMax, zMin]),
+    max: unproject([cx + rMax, cy + rMax, zMax]),
   };
   return { aabb, maxEdge, classify };
 }

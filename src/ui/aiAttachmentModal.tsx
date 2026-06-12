@@ -5,6 +5,7 @@
 import { signal, type Signal } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
 import { mountPreactModal } from './preact/mount';
+import { BUTTON_PRIMARY } from './styleConstants';
 import { loadSettings } from '../ai/settings';
 import { resolveLocalModel } from '../ai/local';
 import { fileToImageSource } from '../ai/images';
@@ -80,7 +81,7 @@ function AttachmentBody(props: {
       <div class="flex items-center gap-2">
         <button
           type="button"
-          class="px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white"
+          class={BUTTON_PRIMARY}
           onClick={() => fileInputRef.current?.click()}
         >Choose file…</button>
         <input

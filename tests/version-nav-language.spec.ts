@@ -19,8 +19,8 @@ return Manifold.cube([10, 10, 10], true);
 
 const JS_PARAMS = `
 const { Manifold } = api;
-api.params({ size: { type: 'number', default: 10 } });
-return Manifold.cube([api.size, api.size, api.size], true);
+const p = api.params({ size: { type: 'number', default: 10 } });
+return Manifold.cube([p.size, p.size, p.size], true);
 `;
 
 const VOXEL_CODE = `

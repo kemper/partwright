@@ -14,6 +14,7 @@ import {
   onImportInboxChange,
   type ImportInboxEntry,
 } from '../import/importInbox';
+import { createMenuSectionHeader, createMenuDivider } from './popoverMenu';
 
 export interface ToolbarCallbacks {
   onRun: () => void;
@@ -288,10 +289,15 @@ export function createToolbar(
   langHelpBtn.addEventListener('click', () => { void callbacks.onLanguageHelp(); });
   toolbar.appendChild(langHelpBtn);
 
-  // Spacer
-  const spacer = document.createElement('div');
-  spacer.className = 'flex-1';
-  toolbar.appendChild(spacer);
+  // Hints ticker host — fills the flexible middle of the toolbar, between the
+  // language help "?" and the "Use AI" button. Kept flex-1 so it also acts as
+  // the spacer that right-aligns the AI/Import/Export group even when the ticker
+  // is dismissed or disabled (the host is then empty). main.ts mounts the ticker
+  // (src/ui/hints/hintsTicker.ts) into this element by id.
+  const hintsHost = document.createElement('div');
+  hintsHost.id = 'editor-hints-host';
+  hintsHost.className = 'flex-1 min-w-0 flex items-center justify-center mx-2';
+  toolbar.appendChild(hintsHost);
 
   // Use AI — primary entry point to the chat drawer. The activity rail also
   // has a "✦ AI" item, but on mobile it lives in a horizontally-scrollable
@@ -345,7 +351,7 @@ export function createToolbar(
   importDropdown.id = 'import-dropdown';
   importDropdown.className = 'fixed left-2 right-2 top-14 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 max-h-[80vh] overflow-y-auto md:absolute md:left-auto md:right-0 md:top-full md:mt-1 md:w-72';
 
-  importDropdown.appendChild(createSectionHeader('From file'));
+  importDropdown.appendChild(createMenuSectionHeader('From file'));
   const chooseFileOpt = createDescribedItem(
     'Choose file\u2026',
     'Open a .partwright.json session, a .js / .scad source file, or an .stl mesh.',
@@ -367,8 +373,8 @@ export function createToolbar(
   });
   importDropdown.appendChild(fromUrlOpt);
 
-  importDropdown.appendChild(createDivider());
-  importDropdown.appendChild(createSectionHeader('Create'));
+  importDropdown.appendChild(createMenuDivider());
+  importDropdown.appendChild(createMenuSectionHeader('Create'));
   const reliefOpt = createDescribedItem(
     'Image → keychain / tile / relief…',
     'Turn an image (or SVG) into a printable colour tile, keychain, sticker, or stepped relief.',
@@ -394,7 +400,7 @@ export function createToolbar(
   importDropdown.appendChild(imageVoxelOpt);
 
   // Recent Imports section — populated from the import inbox.
-  const importRecentDivider = createDivider();
+  const importRecentDivider = createMenuDivider();
   const importRecentHeaderRow = document.createElement('div');
   importRecentHeaderRow.className = 'flex items-center justify-between px-3 pt-1 pb-0.5';
   const importRecentHeader = document.createElement('div');
@@ -515,7 +521,7 @@ export function createToolbar(
   dropdown.className = 'fixed left-2 right-2 top-14 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 max-h-[80vh] overflow-y-auto md:absolute md:left-auto md:right-0 md:top-full md:mt-1 md:w-72';
 
   // Section: 3D model formats
-  dropdown.appendChild(createSectionHeader('3D model'));
+  dropdown.appendChild(createMenuSectionHeader('3D model'));
 
   // Units selector — declares what the model's numbers mean (metadata only,
   // no coordinate transform). Drives export filenames + the 3MF unit
@@ -554,7 +560,7 @@ export function createToolbar(
   unitsRow.appendChild(unitsLabel);
   unitsRow.appendChild(unitsSelect);
   dropdown.appendChild(unitsRow);
-  dropdown.appendChild(createDivider());
+  dropdown.appendChild(createMenuDivider());
 
   const threemfOpt = createDescribedItem(
     '3MF',
@@ -626,8 +632,8 @@ export function createToolbar(
   dropdown.appendChild(voxOpt);
 
   // Section: project / source — for sharing between users or working with the code directly
-  dropdown.appendChild(createDivider());
-  dropdown.appendChild(createSectionHeader('Project'));
+  dropdown.appendChild(createMenuDivider());
+  dropdown.appendChild(createMenuSectionHeader('Project'));
 
   const sessionOpt = createDescribedItem(
     'Session (.partwright.json)',
@@ -661,7 +667,7 @@ export function createToolbar(
   dropdown.appendChild(shareOpt);
 
   // Section: Recent Exports — reuse-anything-you-just-downloaded list. Hidden when empty.
-  const recentDivider = createDivider();
+  const recentDivider = createMenuDivider();
   const recentHeaderRow = document.createElement('div');
   recentHeaderRow.className = 'flex items-center justify-between px-3 pt-1 pb-0.5';
   const recentHeader = document.createElement('div');
@@ -821,19 +827,6 @@ function createDescribedItem(label: string, description: string, badge?: string)
   btn.appendChild(descEl);
 
   return btn;
-}
-
-function createSectionHeader(text: string): HTMLElement {
-  const el = document.createElement('div');
-  el.className = 'px-3 pt-1 pb-0.5 text-[10px] uppercase tracking-wider text-zinc-500 font-semibold';
-  el.textContent = text;
-  return el;
-}
-
-function createDivider(): HTMLElement {
-  const el = document.createElement('div');
-  el.className = 'my-1 border-t border-zinc-700';
-  return el;
 }
 
 function formatSize(bytes: number): string {

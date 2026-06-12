@@ -4,6 +4,7 @@
 //   MAIN chunk wrapping the rest as children:
 //     PACK   (optional)        — number of models in the file
 //     SIZE  + XYZI repeated    — one pair per model (dims + occupancy)
+//     nTRN / nGRP / nSHP       — scene graph: positions each model in the world
 //     RGBA  (optional)         — 256-entry palette; if absent use the default
 //
 // Each XYZI voxel is { x, y, z, i } with `i` a 1-based palette index.
@@ -13,7 +14,17 @@
 // so the model lands upright; users can `.mirror('x')` if they want the
 // opposite-handed view.
 //
+// Multi-object scenes: MagicaVoxel stores each object as its own SIZE/XYZI
+// model and positions it through a scene graph of transform (nTRN), group
+// (nGRP), and shape (nSHP) nodes. We traverse that graph from the root node,
+// compose each node's translation + rotation, and assemble every shape into one
+// grid at its world position — so a multi-part scene imports whole instead of
+// collapsing to model 0. Files with no scene graph (older single-model exports,
+// and the synthetic fixtures in our tests) fall back to the legacy single-model
+// path that centers one model around the origin.
+//
 // Reference: https://github.com/ephtracy/voxel-model/blob/master/MagicaVoxel-file-format-vox.txt
+//            https://github.com/ephtracy/voxel-model/blob/master/MagicaVoxel-file-format-vox-extension.txt
 //
 // Pure logic (no DOM/WASM): unit-tested in the vitest tier.
 
@@ -56,10 +67,151 @@ const DEFAULT_PALETTE: number[] = (() => {
 })();
 
 export interface VoxParseOptions {
-  /** When the file contains multiple models, this index picks one (default 0).
-   *  Other models are silently ignored — multi-model placement belongs at a
-   *  higher layer (where we'd want translation offsets / part-per-model). */
+  /** Force the legacy single-model path and pick this model by index, ignoring
+   *  any scene graph. When omitted (the default), a multi-object scene is
+   *  assembled whole via its scene graph; pass an index only to extract one
+   *  specific model from a multi-model file. */
   modelIndex?: number;
+}
+
+/** A signed-permutation rotation: row `i` of the matrix has its single non-zero
+ *  entry at column `cols[i]` with sign `signs[i]`. Applying it to a vector `v`
+ *  yields `[signs[0]*v[cols[0]], signs[1]*v[cols[1]], signs[2]*v[cols[2]]]`. */
+interface Rot {
+  cols: [number, number, number];
+  signs: [number, number, number];
+}
+
+const IDENTITY_ROT: Rot = { cols: [0, 1, 2], signs: [1, 1, 1] };
+
+/** Decode a MagicaVoxel `_r` rotation byte into a {@link Rot}. Bits 0–1 and 2–3
+ *  give the non-zero column of rows 0 and 1; row 2's column is whichever index
+ *  remains. Bits 4–6 are the per-row signs (1 = negative). Falls back to
+ *  identity for a malformed byte (rows 0 and 1 sharing a column) or for an
+ *  improper rotation (determinant −1, a mirror): MagicaVoxel only ever writes
+ *  proper rotations, so a reflection means a corrupt/crafted file — we decline
+ *  to silently mirror the geometry. */
+function decodeRotation(byte: number): Rot {
+  const c0 = byte & 0b11;
+  const c1 = (byte >> 2) & 0b11;
+  if (c0 > 2 || c1 > 2 || c0 === c1) return IDENTITY_ROT;
+  const c2 = 3 - c0 - c1; // the remaining index of {0,1,2}
+  const s0 = (byte >> 4) & 1 ? -1 : 1;
+  const s1 = (byte >> 5) & 1 ? -1 : 1;
+  const s2 = (byte >> 6) & 1 ? -1 : 1;
+  // Determinant of a signed permutation matrix = sign(permutation) × ∏signs.
+  // sign([c0,c1,c2]) is +1 for an even permutation of (0,1,2), −1 for odd.
+  const even = (c0 === 0 && c1 === 1) || (c0 === 1 && c1 === 2) || (c0 === 2 && c1 === 0);
+  const det = (even ? 1 : -1) * s0 * s1 * s2;
+  if (det !== 1) return IDENTITY_ROT;
+  return { cols: [c0, c1, c2], signs: [s0, s1, s2] };
+}
+
+/** Apply a rotation to an integer vector. */
+function applyRot(r: Rot, v: [number, number, number]): [number, number, number] {
+  return [r.signs[0] * v[r.cols[0]], r.signs[1] * v[r.cols[1]], r.signs[2] * v[r.cols[2]]];
+}
+
+/** Compose two rotations: `parent ∘ local` (apply local first, then parent). */
+function composeRot(parent: Rot, local: Rot): Rot {
+  const cols = [0, 1, 2].map((i) => local.cols[parent.cols[i]]) as [number, number, number];
+  const signs = [0, 1, 2].map((i) => parent.signs[i] * local.signs[parent.cols[i]]) as [number, number, number];
+  return { cols, signs };
+}
+
+/** A composed world transform (translation + rotation) for a scene-graph node. */
+interface Xform {
+  t: [number, number, number];
+  r: Rot;
+}
+
+const IDENTITY_XFORM: Xform = { t: [0, 0, 0], r: IDENTITY_ROT };
+
+/** Compose two transforms: place `local` inside `parent`'s frame. */
+function composeXform(parent: Xform, local: Xform): Xform {
+  const rt = applyRot(parent.r, local.t);
+  return {
+    t: [parent.t[0] + rt[0], parent.t[1] + rt[1], parent.t[2] + rt[2]],
+    r: composeRot(parent.r, local.r),
+  };
+}
+
+interface TrnNode { childId: number; xform: Xform }
+interface GrpNode { children: number[] }
+interface ShpNode { models: number[] }
+
+/** Cursor over a chunk's content for reading the extension chunk encodings.
+ *  Throws `RangeError` past `end` so a malformed scene node is caught and the
+ *  import falls back to the legacy single-model path rather than corrupting. */
+class ChunkReader {
+  private dv: DataView;
+  p: number;
+  private end: number;
+  constructor(dv: DataView, p: number, end: number) {
+    this.dv = dv;
+    this.p = p;
+    this.end = end;
+  }
+  private require(n: number): void {
+    if (this.p + n > this.end) throw new RangeError('scene-graph chunk truncated');
+  }
+  int32(): number { this.require(4); const v = this.dv.getInt32(this.p, true); this.p += 4; return v; }
+  uint32(): number { this.require(4); const v = this.dv.getUint32(this.p, true); this.p += 4; return v; }
+  /** STRING: int32 length + raw bytes (no terminator). */
+  string(): string {
+    const len = this.uint32();
+    this.require(len);
+    let s = '';
+    for (let i = 0; i < len; i++) s += String.fromCharCode(this.dv.getUint8(this.p + i));
+    this.p += len;
+    return s;
+  }
+  /** DICT: int32 pair count, then STRING key / STRING value pairs. */
+  dict(): Map<string, string> {
+    const n = this.uint32();
+    const m = new Map<string, string>();
+    for (let i = 0; i < n; i++) {
+      const k = this.string();
+      m.set(k, this.string());
+    }
+    return m;
+  }
+}
+
+/** Parse a `_t` translation string ("x y z") into a vector, or null. */
+function parseTranslation(s: string | undefined): [number, number, number] | null {
+  if (!s) return null;
+  const parts = s.trim().split(/\s+/).map(Number);
+  if (parts.length === 3 && parts.every(Number.isFinite)) {
+    return [parts[0], parts[1], parts[2]];
+  }
+  return null;
+}
+
+/** Walk the scene graph from the root and place every shape's model(s) into the
+ *  output via `place`. Returns false if the graph yielded no shapes (so the
+ *  caller can fall back to the legacy single-model path). */
+function traverseScene(
+  trn: Map<number, TrnNode>,
+  grp: Map<number, GrpNode>,
+  shp: Map<number, ShpNode>,
+  place: (modelId: number, xform: Xform) => void,
+): boolean {
+  if (trn.size === 0 && grp.size === 0 && shp.size === 0) return false;
+  let placedAny = false;
+  const seen = new Set<number>();
+  const visit = (nodeId: number, xform: Xform): void => {
+    if (seen.has(nodeId)) return; // guard against a cyclic/corrupt graph
+    seen.add(nodeId);
+    const t = trn.get(nodeId);
+    if (t) { visit(t.childId, composeXform(xform, t.xform)); return; }
+    const g = grp.get(nodeId);
+    if (g) { for (const child of g.children) visit(child, xform); return; }
+    const s = shp.get(nodeId);
+    if (s) { for (const modelId of s.models) { place(modelId, xform); placedAny = true; } }
+  };
+  visit(0, IDENTITY_XFORM); // MagicaVoxel's root node is always id 0
+  return placedAny;
 }
 
 /** Parse a MagicaVoxel `.vox` file into a {@link VoxelGrid}. Returns null and
@@ -70,13 +222,16 @@ export function parseVox(bytes: Uint8Array, options: VoxParseOptions = {}): Voxe
   }
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
-  // Collect the model SIZE/XYZI pairs and the palette as we walk the chunk
-  // tree. MAIN's content lives between the header (12 bytes total) and EOF,
-  // skipping MAIN's own chunkContentSize/childrenSize.
+  // Collect the model SIZE/XYZI pairs, the palette, and the scene-graph nodes
+  // as we walk the chunk tree. MAIN's content lives between the header (12
+  // bytes total) and EOF, skipping MAIN's own chunkContentSize/childrenSize.
   if (bytes.length < 20) throw new Error('Truncated .vox file (no MAIN chunk).');
   const sizes: { x: number; y: number; z: number }[] = [];
   const voxels: { x: number; y: number; z: number; i: number }[][] = [];
   let palette: number[] | null = null;
+  const trn = new Map<number, TrnNode>();
+  const grp = new Map<number, GrpNode>();
+  const shp = new Map<number, ShpNode>();
 
   // Walk children of MAIN. MAIN's header occupies bytes [8, 20); its children
   // span [20, bytes.length).
@@ -120,6 +275,46 @@ export function parseVox(bytes: Uint8Array, options: VoxParseOptions = {}): Voxe
         pal[i + 1] = (r << 16) | (g << 8) | b;
       }
       palette = pal;
+    } else if (id === 'nTRN' || id === 'nGRP' || id === 'nSHP') {
+      // Scene-graph nodes. Parse defensively: a malformed node is skipped (the
+      // import then falls back to the legacy single-model path).
+      try {
+        const rd = new ChunkReader(dv, start, end);
+        const nodeId = rd.int32();
+        rd.dict(); // node attributes (_name, _hidden) — unused
+        if (id === 'nTRN') {
+          const childId = rd.int32();
+          rd.int32(); // reserved (-1)
+          rd.int32(); // layer id
+          const numFrames = rd.uint32();
+          let xform = IDENTITY_XFORM;
+          for (let f = 0; f < numFrames; f++) {
+            const frame = rd.dict();
+            if (f === 0) {
+              const t = parseTranslation(frame.get('_t')) ?? [0, 0, 0];
+              const rByte = frame.has('_r') ? parseInt(frame.get('_r')!, 10) : NaN;
+              const r = Number.isFinite(rByte) ? decodeRotation(rByte) : IDENTITY_ROT;
+              xform = { t, r };
+            }
+          }
+          trn.set(nodeId, { childId, xform });
+        } else if (id === 'nGRP') {
+          const numChildren = rd.uint32();
+          const children: number[] = [];
+          for (let c = 0; c < numChildren; c++) children.push(rd.int32());
+          grp.set(nodeId, { children });
+        } else {
+          const numModels = rd.uint32();
+          const models: number[] = [];
+          for (let m = 0; m < numModels; m++) {
+            models.push(rd.int32());
+            rd.dict(); // per-model attributes (_f frame index) — unused
+          }
+          shp.set(nodeId, { models });
+        }
+      } catch {
+        // Malformed scene node — ignore it; legacy fallback covers the file.
+      }
     }
     p = end;
   }
@@ -127,13 +322,49 @@ export function parseVox(bytes: Uint8Array, options: VoxParseOptions = {}): Voxe
   if (sizes.length === 0 || voxels.length === 0) {
     throw new Error('.vox file has no model (missing SIZE/XYZI chunks).');
   }
+  const pal = palette ?? DEFAULT_PALETTE;
+  const colorOf = (i: number): number => pal[i] ?? 0xffffff;
+
+  // Multi-object path: when no explicit model index was requested, assemble the
+  // whole scene through its graph so every positioned part lands correctly.
+  //
+  // Note MagicaVoxel writes a scene graph even for a *single* model, so real
+  // single-model files take this path too — `assemblePlaced` grounds the scene
+  // on z=0 and centers it horizontally, the same "land it in view" framing the
+  // legacy path applies (rather than preserving the file's authored world
+  // origin). That's intentional and consistent across import sources; pass an
+  // explicit `modelIndex` to get the legacy per-model centering instead.
+  if (options.modelIndex === undefined) {
+    const placed: { x: number; y: number; z: number; c: number }[] = [];
+    const place = (modelId: number, xform: Xform): void => {
+      const size = sizes[modelId];
+      const cells = voxels[modelId];
+      if (!size || !cells) return; // shape references a model the file didn't ship
+      // MagicaVoxel's transform positions the model by its center; the center
+      // in local voxel space is floor(size/2) per axis.
+      const cx = Math.floor(size.x / 2), cy = Math.floor(size.y / 2), cz = Math.floor(size.z / 2);
+      for (const c of cells) {
+        const lv: [number, number, number] = [c.x - cx, c.y - cy, c.z - cz];
+        const rv = applyRot(xform.r, lv);
+        placed.push({
+          x: xform.t[0] + rv[0],
+          y: xform.t[1] + rv[1],
+          z: xform.t[2] + rv[2],
+          c: colorOf(c.i),
+        });
+      }
+    };
+    if (traverseScene(trn, grp, shp, place) && placed.length > 0) {
+      return assemblePlaced(placed);
+    }
+  }
+
+  // Legacy single-model path: no scene graph (or an explicit modelIndex). Pick
+  // one model and center it horizontally, sitting it on z=0 — so it lands where
+  // an image-import would, in a coordinate range likely to fit.
   const modelIndex = Math.max(0, Math.min(options.modelIndex ?? 0, voxels.length - 1));
   const cells = voxels[modelIndex];
   const size = sizes[modelIndex] ?? sizes[0];
-  const pal = palette ?? DEFAULT_PALETTE;
-
-  // Center the model horizontally and sit it on z=0, so it lands in the same
-  // place an image-import would and at a coordinate range likely to fit.
   const cx = Math.floor(size.x / 2);
   const cy = Math.floor(size.y / 2);
   const grid = new VoxelGrid();
@@ -141,13 +372,36 @@ export function parseVox(bytes: Uint8Array, options: VoxParseOptions = {}): Voxe
     const x = c.x - cx;
     const y = c.y - cy;
     const z = c.z;
-    if (x < COORD_MIN || x > COORD_MAX || y < COORD_MIN || y > COORD_MAX || z < COORD_MIN || z > COORD_MAX) {
-      // The model exceeds the grid range — silently drop the out-of-range
-      // voxels rather than fail the whole import. (The .vox spec allows up to
-      // 256³, comfortably inside ±1024 once centered.)
-      continue;
-    }
-    grid.set(x, y, z, pal[c.i] ?? 0xffffff);
+    if (!inRange(x, y, z)) continue; // drop out-of-range voxels rather than fail
+    grid.set(x, y, z, colorOf(c.i));
+  }
+  return grid;
+}
+
+/** True if a voxel coordinate sits inside the grid's addressable range. */
+function inRange(x: number, y: number, z: number): boolean {
+  return x >= COORD_MIN && x <= COORD_MAX
+    && y >= COORD_MIN && y <= COORD_MAX
+    && z >= COORD_MIN && z <= COORD_MAX;
+}
+
+/** Normalize a set of world-space voxels into a grid: center the whole scene
+ *  horizontally about the origin and sit its lowest layer on z=0, preserving
+ *  the relative placement of every part. Out-of-range voxels are dropped. */
+function assemblePlaced(placed: { x: number; y: number; z: number; c: number }[]): VoxelGrid {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity;
+  for (const v of placed) {
+    if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+    if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
+    if (v.z < minZ) minZ = v.z;
+  }
+  const offX = Math.floor((minX + maxX) / 2);
+  const offY = Math.floor((minY + maxY) / 2);
+  const grid = new VoxelGrid();
+  for (const v of placed) {
+    const x = v.x - offX, y = v.y - offY, z = v.z - minZ;
+    if (!inRange(x, y, z)) continue;
+    grid.set(x, y, z, v.c);
   }
   return grid;
 }

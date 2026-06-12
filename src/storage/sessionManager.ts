@@ -43,6 +43,7 @@ import {
   type AttachedImage,
 } from './db';
 import { publishTabSync, onTabSync } from './tabSync';
+import { clearReliefSettings } from '../relief/reliefSettings';
 import { listMessages as dbListMessages, putMessages as dbPutMessages } from '../ai/db';
 import { getSpendingSummary } from '../ai/settings';
 import type { ChatMessage } from '../ai/types';
@@ -57,6 +58,7 @@ import {
   type SerializedAnnotation,
 } from '../annotations/annotations';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
+import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
 import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
 import { effectiveVersionLanguage, asLanguage } from './languageFallback';
@@ -137,8 +139,24 @@ import { effectiveVersionLanguage, asLanguage } from './languageFallback';
  *           filament/AMS slot and follows slot recolours. Additive: pre-1.11
  *           regions omit it and import as unslotted (ad-hoc colour). Older
  *           readers ignore the field.
+ *  - `1.12` — session-level pinned thumbnail camera (`session.thumbCamera`).
+ *           `{ azimuth, elevation }` in degrees; when present, captured
+ *           thumbnails render from this angle instead of the default iso view.
+ *           Absent ⇒ the default iso 3/4 view. Older readers ignore the field.
+ *  - `1.13` — session-level interactive working-view camera (`session.workCamera`).
+ *           `{ position, target }` world-space vectors recording the angle/zoom
+ *           the user last orbited the live viewport to, restored on session open
+ *           so the view survives reload. Absent ⇒ auto-frame. Older readers
+ *           ignore the field.
+ *  - `1.14` — per-version persisted surface texture (`versions[].surfaceTexture`).
+ *           The computed `api.surface.*` result (full-chain memo key + textured
+ *           mesh, buffers base64-encoded) saved with the version so reopening
+ *           renders textured immediately instead of recomputing — and so the
+ *           texture's appearance is pinned at save time. Self-validating via
+ *           the key (a stale key just recomputes); absent ⇒ recompute on
+ *           demand. Older readers ignore the field.
  */
-export const SCHEMA_VERSION = '1.11';
+export const SCHEMA_VERSION = '1.14';
 
 const CURRENT_MAJOR = 1;
 
@@ -160,7 +178,7 @@ export interface ExportedSession {
   mainifold?: string;
   /** Images may be the array form or the legacy object map ({front, right, ...}).
    * Both also exist under `referenceImages` for pre-rename exports. */
-  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel' };
+  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number }; workCamera?: { position: [number, number, number]; target: [number, number, number] } };
   /**
    * The session's parts, ordered by `order`. Present from schema 1.7. Pre-1.7
    * files omit this; on import they collapse into a single default part.
@@ -230,6 +248,14 @@ export interface ExportedSession {
      * @since 1.10
      */
     companionFiles?: Record<string, string>;
+    /**
+     * Persisted `api.surface.*` texture result (full-chain memo key + textured
+     * mesh, buffers base64-encoded). Restored into the version's
+     * `surfaceTexture` on import so reopening renders textured without a
+     * recompute. Absent ⇒ the texture chain recomputes on demand.
+     * @since 1.14
+     */
+    surfaceTexture?: ExportedSurfaceTexture;
   }[];
   notes?: { text: string; timestamp: number }[];
   /**
@@ -270,8 +296,25 @@ export interface ExportedImportedMesh {
   triVerts: string;
 }
 
+/** A {@link PersistedSurfaceTexture} with its typed-array buffers
+ *  base64-encoded so it can be embedded in JSON.
+ *  @since 1.14 */
+export interface ExportedSurfaceTexture {
+  /** Full-chain memo key the mesh was computed under (see surfaceOps.ts). */
+  key: string;
+  numVert: number;
+  numTri: number;
+  numProp: number;
+  /** base64 of the Float32Array vertex-property buffer. */
+  vertProperties: string;
+  /** base64 of the Uint32Array triangle-index buffer. */
+  triVerts: string;
+  /** base64 of the optional Uint8Array per-triangle RGB buffer. */
+  triColors?: string;
+}
+
 /** Encode a typed array's bytes as base64. */
-function typedArrayToBase64(arr: Float32Array | Uint32Array): string {
+function typedArrayToBase64(arr: Float32Array | Uint32Array | Uint8Array): string {
   const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
   let bin = '';
   const CHUNK = 0x8000; // avoid call-stack limits on String.fromCharCode.apply
@@ -301,6 +344,45 @@ function serializeImportedMeshes(meshes: ImportedMesh[] | undefined): ExportedIm
     vertProperties: typedArrayToBase64(m.vertProperties),
     triVerts: typedArrayToBase64(m.triVerts),
   }));
+}
+
+function serializeSurfaceTexture(tex: PersistedSurfaceTexture | undefined): ExportedSurfaceTexture | undefined {
+  if (!tex || typeof tex.key !== 'string' || !tex.mesh) return undefined;
+  const m = tex.mesh;
+  return {
+    key: tex.key,
+    numVert: m.numVert,
+    numTri: m.numTri,
+    numProp: m.numProp,
+    vertProperties: typedArrayToBase64(m.vertProperties),
+    triVerts: typedArrayToBase64(m.triVerts),
+    ...(m.triColors ? { triColors: typedArrayToBase64(m.triColors) } : {}),
+  };
+}
+
+/** Validating decode of an exported surface texture. Returns undefined (the
+ *  version simply recomputes on demand) rather than failing the whole import
+ *  when the field is malformed. */
+function deserializeSurfaceTexture(tex: ExportedSurfaceTexture | undefined): PersistedSurfaceTexture | undefined {
+  if (!tex || typeof tex !== 'object' || typeof tex.key !== 'string') return undefined;
+  try {
+    if (typeof tex.vertProperties !== 'string' || typeof tex.triVerts !== 'string') return undefined;
+    return {
+      key: tex.key,
+      mesh: {
+        numVert: tex.numVert,
+        numTri: tex.numTri,
+        numProp: tex.numProp,
+        vertProperties: new Float32Array(base64ToArrayBuffer(tex.vertProperties)),
+        triVerts: new Uint32Array(base64ToArrayBuffer(tex.triVerts)),
+        ...(typeof tex.triColors === 'string'
+          ? { triColors: new Uint8Array(base64ToArrayBuffer(tex.triColors)) }
+          : {}),
+      },
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function deserializeImportedMeshes(meshes: ExportedImportedMesh[] | undefined): ImportedMesh[] | undefined {
@@ -559,6 +641,10 @@ export async function listSessions(): Promise<Session[]> {
 
 export async function deleteSession(id: string): Promise<void> {
   await dbDeleteSession(id);
+  // The IndexedDB cascade (dbDeleteSession) sweeps the relief *source* blob,
+  // but the per-session relief settings live in localStorage — clear them here
+  // so a deleted session doesn't leak a stale entry.
+  clearReliefSettings(id);
   publishTabSync({ kind: 'session-deleted', sessionId: id });
   if (currentState.session?.id === id) {
     await closeSession();
@@ -649,6 +735,66 @@ export async function setSessionAiPreference(
   await dbUpdateSession(id, { aiPreference });
   if (currentState.session?.id === id) {
     currentState.session = { ...currentState.session, aiPreference };
+  }
+}
+
+// === Per-session thumbnail camera ===
+
+/** Coerce an untrusted value (from an export file or an API caller) into a
+ *  valid `{ azimuth, elevation }` thumbnail-camera record, or null. Elevation
+ *  is clamped to the renderable −90…90 range; azimuth wraps freely. */
+function asThumbCamera(v: unknown): { azimuth: number; elevation: number } | null {
+  if (!v || typeof v !== 'object') return null;
+  const { azimuth, elevation } = v as { azimuth?: unknown; elevation?: unknown };
+  if (typeof azimuth !== 'number' || !Number.isFinite(azimuth)) return null;
+  if (typeof elevation !== 'number' || !Number.isFinite(elevation)) return null;
+  return { azimuth, elevation: Math.max(-90, Math.min(90, elevation)) };
+}
+
+/** Pin (or clear, with `null`) the thumbnail camera angle for the current
+ *  session. Persisted to the session row and reflected in runtime state so the
+ *  next `captureThumbnail` uses it. No-op when nothing is open or in a viewer
+ *  tab (a read-only viewer must not mutate the shared session row). */
+export async function setSessionThumbCamera(camera: { azimuth: number; elevation: number } | null): Promise<void> {
+  if (!currentState.session) return;
+  if (isViewerTab()) return;
+  const next = camera ? asThumbCamera(camera) ?? undefined : undefined;
+  const id = currentState.session.id;
+  await dbUpdateSession(id, { thumbCamera: next });
+  if (currentState.session?.id === id) {
+    currentState.session = { ...currentState.session, thumbCamera: next };
+  }
+}
+
+// === Per-session working-view camera ===
+
+/** Coerce an untrusted value into a valid working-view camera pose (world-space
+ *  position + orbit target, each a finite [x, y, z]), or null. */
+function asWorkCamera(v: unknown): { position: [number, number, number]; target: [number, number, number] } | null {
+  if (!v || typeof v !== 'object') return null;
+  const { position, target } = v as { position?: unknown; target?: unknown };
+  const vec = (a: unknown): [number, number, number] | null =>
+    Array.isArray(a) && a.length === 3 && a.every(n => typeof n === 'number' && Number.isFinite(n))
+      ? [a[0], a[1], a[2]]
+      : null;
+  const p = vec(position);
+  const t = vec(target);
+  return p && t ? { position: p, target: t } : null;
+}
+
+/** Persist (or clear, with `null`) the interactive working-view camera for the
+ *  current session, so the angle/zoom survives reload and reopening. Mirrors
+ *  `setSessionThumbCamera`: no-op when nothing is open or in a viewer tab (a
+ *  read-only viewer must not mutate the shared session row, and its viewport
+ *  angle isn't the owner's). */
+export async function setSessionWorkCamera(camera: { position: [number, number, number]; target: [number, number, number] } | null): Promise<void> {
+  if (!currentState.session) return;
+  if (isViewerTab()) return;
+  const next = camera ? asWorkCamera(camera) ?? undefined : undefined;
+  const id = currentState.session.id;
+  await dbUpdateSession(id, { workCamera: next });
+  if (currentState.session?.id === id) {
+    currentState.session = { ...currentState.session, workCamera: next };
   }
 }
 
@@ -927,6 +1073,12 @@ export async function saveVersion(
     companionFiles?: Record<string, string>;
     parentVersionId?: string | null;
     operation?: VersionOperation | null;
+    /** Computed `api.surface.*` texture (full-chain memo key + textured mesh)
+     *  for THIS save's code/params/imports. Unlike `importedMeshes`, never
+     *  carried forward from the previous version — a texture is only valid for
+     *  the exact base identity it was computed under, so callers pass the
+     *  current one or nothing. */
+    surfaceTexture?: PersistedSurfaceTexture;
   },
 ): Promise<Version | null> {
   if (!currentState.session || !currentState.currentPart) return null;
@@ -982,6 +1134,7 @@ export async function saveVersion(
     Object.keys(nextCompanions).length > 0 ? nextCompanions : undefined,
     options?.parentVersionId ?? null,
     options?.operation ?? null,
+    options?.surfaceTexture,
   );
 
   currentState = {
@@ -1603,7 +1756,7 @@ export async function exportSession(
 
   return {
     partwright: SCHEMA_VERSION,
-    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}) },
+    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}) },
     parts: parts.map(p => ({ name: p.name, order: p.order })),
     versions: flat.map(({ v, partOrder }, i) => {
       const colorRegions = opts.includeColorRegions ? extractColorRegions(v.geometryData) : undefined;
@@ -1611,6 +1764,7 @@ export async function exportSession(
       const versionAnnotations = opts.includeAnnotations ? ((v.annotations ?? []) as SerializedAnnotation[]) : [];
       const thumbDataUrl = thumbnailDataUrls[i];
       const importedMeshes = serializeImportedMeshes(v.importedMeshes as ImportedMesh[] | undefined);
+      const surfaceTexture = serializeSurfaceTexture(v.surfaceTexture as PersistedSurfaceTexture | undefined);
       return {
         index: v.index,
         code: v.code,
@@ -1624,6 +1778,7 @@ export async function exportSession(
         ...(versionAnnotations.length > 0 ? { annotations: versionAnnotations } : {}),
         ...(thumbDataUrl ? { thumbnail: thumbDataUrl } : {}),
         ...(importedMeshes ? { importedMeshes } : {}),
+        ...(surfaceTexture ? { surfaceTexture } : {}),
         ...(v.paramValues && Object.keys(v.paramValues).length > 0 ? { paramValues: v.paramValues } : {}),
         ...(v.companionFiles && Object.keys(v.companionFiles).length > 0 ? { companionFiles: v.companionFiles } : {}),
       };
@@ -1676,6 +1831,16 @@ export async function importSession(
       : legacyImagesObjectToArray(rawImages);
     await dbUpdateSession(session.id, { images: imagesArr });
   }
+
+  // Restore the pinned thumbnail camera (schema 1.12+). Validate both angles
+  // are finite numbers so a malformed export can't poison captureThumbnail.
+  const cam = asThumbCamera(data.session.thumbCamera);
+  if (cam) await dbUpdateSession(session.id, { thumbCamera: cam });
+
+  // Restore the interactive working-view camera (schema 1.13+). Validated so a
+  // malformed export can't feed a bad pose to setCameraPose on open.
+  const workCam = asWorkCamera(data.session.workCamera);
+  if (workCam) await dbUpdateSession(session.id, { workCamera: workCam });
 
   // Determine the index of the latest exported version. Schema 1.2 stored
   // annotations at the top level; for back-compat we attach them to whichever
@@ -1773,6 +1938,11 @@ export async function importSession(
         // those versions import with no companions, which is correct for all
         // non-SCAD and pre-companion SCAD sessions.
         v.companionFiles && typeof v.companionFiles === 'object' ? v.companionFiles as Record<string, string> : undefined,
+        null,
+        null,
+        // Persisted surface texture (schema 1.14+). Pre-1.14 files omit it;
+        // the texture chain then recomputes on the version's first load.
+        deserializeSurfaceTexture(v.surfaceTexture),
       );
     }
   }
@@ -1954,6 +2124,11 @@ export async function importSessionPartsIntoActive(
         importedMeshes,
         asLanguage(v.language),
         v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
+        undefined,
+        null,
+        null,
+        // Persisted surface texture (schema 1.14+); absent ⇒ recompute on load.
+        deserializeSurfaceTexture(v.surfaceTexture),
       );
       copiedVersions++;
     }

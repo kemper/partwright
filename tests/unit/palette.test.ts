@@ -27,6 +27,8 @@ import {
   clearColorHistory,
   hexToRgb,
   rgbToHex,
+  listSlotRgb255,
+  nearestSlot,
   __resetPaletteCacheForTests,
 } from '../../src/color/palette';
 
@@ -228,5 +230,33 @@ describe('palette: colour helpers', () => {
 
   it('falls back to black on malformed hex', () => {
     expect(hexToRgb('nope')).toEqual([0, 0, 0]);
+  });
+});
+
+describe('palette: import-constrain helpers', () => {
+  it('listSlotRgb255 returns the active slots as 0–255 triples in order', () => {
+    resetPalette();
+    const rgb = listSlotRgb255();
+    expect(rgb.length).toBe(DEFAULT_FILAMENTS.length);
+    // First default is White (#f5f5f0).
+    expect(rgb[0]).toEqual([0xf5, 0xf5, 0xf0]);
+    // Second is Black (#181818).
+    expect(rgb[1]).toEqual([0x18, 0x18, 0x18]);
+  });
+
+  it('nearestSlot snaps an RGB (0–1) colour to the closest slot', () => {
+    resetPalette();
+    // Pure red is closest to the Red slot (#c02525), not White/Black/etc.
+    const slot = nearestSlot([1, 0, 0]);
+    expect(slot?.id).toBe('def-red');
+    // Near-white snaps to White.
+    expect(nearestSlot([0.96, 0.96, 0.94])?.id).toBe('def-white');
+  });
+
+  it('nearestSlot returns null for an empty palette', () => {
+    // Drain every slot (removeFilament refuses nothing here).
+    for (const f of listFilaments()) removeFilament(f.id);
+    expect(listFilaments().length).toBe(0);
+    expect(nearestSlot([0.5, 0.5, 0.5])).toBeNull();
   });
 });

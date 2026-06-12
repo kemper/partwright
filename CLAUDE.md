@@ -5,6 +5,8 @@
 ```bash
 npm run dev          # Start dev server at http://localhost:5173
 npm run build        # Production build to dist/ (runs tsc first — also the type-check)
+npm run typecheck    # tsc --noEmit only — fast type check without the Vite production build
+npm run preflight    # typecheck + test:unit + lint:deps + lint:consistency in one command (the pre-push bundle)
 npm run test:unit    # Fast vitest unit tier (pure-logic, no browser) — ~1s
 npm run test:e2e     # Playwright browser suite (auto-starts dev server)
 npm test             # Both tiers: unit, then e2e
@@ -12,6 +14,7 @@ npm run lint:consistency  # ast-grep UI-convention scan (advisory)
 npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (advisory)
 npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 npm run model:preview -- <file.js>   # headless model stats + 4-view PNG (Node+WASM, ~2s) — see below
+npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle→screenshot, no spec needed — see Manual Verification
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -113,12 +116,13 @@ See `docs/playwright-guide.md` for sandbox vs laptop Chromium binary detection a
 
 **Manually verify any UI-visible change in a real browser before pushing.**
 
-> **How to drive the browser in this environment: write and run a Playwright spec — there is no Playwright MCP.** The remote/web execution environment only configures the `typescript` MCP server (see `.mcp.json`); the `playwright_navigate` / `playwright_click` / `playwright_screenshot` tools do **not** exist here. Don't waste turns calling them. The real eyes-on check is a short `.spec.ts` that navigates, interacts, and writes a screenshot file you then view.
+> **How to drive the browser in this environment: write and run a Playwright spec — there is no Playwright MCP.** The remote/web execution environment only configures the `serena` MCP server (see `.mcp.json`); the `playwright_navigate` / `playwright_click` / `playwright_screenshot` tools do **not** exist here. Don't waste turns calling them. The real eyes-on check is a short `.spec.ts` that navigates, interacts, and writes a screenshot file you then view.
 
 The pattern:
 
 1. **Install deps once per container:** a fresh remote container starts with no `node_modules` — run `npm ci` before your first `npx playwright test` (you'll get `Cannot find package 'playwright'` otherwise).
-2. **Write a spec that screenshots the feature.** It can be a throwaway probe (`tests/_scratch-*.spec.ts`, delete it after) or — better, for a new feature — the permanent golden-path spec you'd add anyway. Navigate, exercise the change, and capture the result:
+2. **For a look-only check, skip the spec: `npm run snap -- <route>`.** When all you need is "load this route and show me" (no clicks/typing), `npm run snap -- "/editor?session=x" --out test-results/x.png [--wait ms] [--width N --height N] [--full]` generates and runs the throwaway spec for you — it waits for the editor engine on `/editor` routes, screenshots, and cleans up after itself. Anything that needs interaction still wants a real spec (next step).
+3. **Write a spec that screenshots the feature.** It can be a throwaway probe (`tests/_scratch-*.spec.ts`, delete it after) or — better, for a new feature — the permanent golden-path spec you'd add anyway. Navigate, exercise the change, and capture the result:
 
    ```ts
    import { test } from 'playwright/test';
@@ -131,8 +135,8 @@ The pattern:
    });
    ```
 
-3. **Run it:** `npx playwright test _scratch-` (or the spec name). You do **not** need to start the dev server yourself — `playwright.config.ts`'s `webServer` block boots `npm run dev` automatically and reuses an already-running one, and the config auto-detects the sandbox Chromium under `/opt/pw-browsers/`.
-4. **View the screenshot and post it in the chat** — `Read` the PNG to see it inline, then `SendUserFile` to surface it to the user. This is the most valuable thing you can do: the user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case.
+4. **Run it:** `npx playwright test _scratch-` (or the spec name). You do **not** need to start the dev server yourself — `playwright.config.ts`'s `webServer` block boots `npm run dev` automatically and reuses an already-running one, and the config auto-detects the sandbox Chromium under `/opt/pw-browsers/`.
+5. **View the screenshot and post it in the chat** — `Read` the PNG to see it inline, then `SendUserFile` to surface it to the user. This is the most valuable thing you can do: the user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case.
 
 This takes a handful of tool calls and catches wiring mistakes, visual regressions, and WASM timing issues that TypeScript can't see. It's your own eyes-on check before CI runs the headless suite. If you used a throwaway `_scratch-*.spec.ts`, delete it (and its `test-results/*.png`) before pushing.
 
@@ -151,19 +155,41 @@ This takes a handful of tool calls and catches wiring mistakes, visual regressio
 
 ## Headless Model Preview — `model:preview` (for CLI agents authoring geometry)
 
-When you're iterating on a **model snippet** (catalog entries, `examples/`, mechanism prototypes) from the CLI, don't round-trip through the browser for every guess. `npm run model:preview -- <file.js>` runs the snippet against the **real `manifold-js` engine in Node** (via vite SSR — no dev server, no Playwright, ~2 s) and gives you everything needed to self-correct in one call:
+When you're iterating on a **model snippet** (catalog entries, `examples/`, mechanism prototypes) from the CLI, don't round-trip through the browser for every guess. `npm run model:preview -- <file.js>` runs the snippet against the **real `manifold-js`, `voxel`, or `scad` engine in Node** (via vite SSR — no dev server, no Playwright, ~2 s). **`replicad`/BREP is excluded**: OpenCASCADE won't init under Node SSR — verify BREP-language models in the browser. The tool gives you everything needed to self-correct in one call:
 
 ```bash
-npm run model:preview -- .plans/fidgets/spiral-cone.js          # writes <file>.preview.png + prints JSON
+npm run model:preview -- .plans/fidgets/spiral-cone.js          # writes <file>.preview-<stamp>.png + prints JSON
 npm run model:preview -- model.js --json                        # stats only, no PNG
 npm run model:preview -- model.js --png out.png -p turns=6      # override api.params, custom PNG path
+npm run model:preview -- model.js --view 130,35                 # ONE custom-angle tile (peek behind a feature)
+npm run model:preview -- model.js --views front,iso,back        # pick/reorder named views (front,back,right,left,top,bottom,iso)
 ```
 
-- **JSON stat block** (stdout): `isManifold`, `componentCount`, per-component `{volume, bbox, triangleCount}`, `volume`, `surfaceArea`, `genus`, `bbox`, `aspectRatio`, `minEdgeLength`/`meanEdgeLength`, model-declared `labels` (name + color), `paramsSchema`, and a `warnings[]` array (fused parts, tri-count over the ~200k catalog budget, sub-0.4 mm detail, …).
-- **4-view PNG** (front / right / top / iso), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail.
+- **JSON stat block** (stdout): `isManifold`, `componentCount`, per-component `{volume, bbox, triangleCount, center}`, `volume`, `surfaceArea`, `genus`, `bbox`, `aspectRatio`, `minEdgeLength`/`meanEdgeLength`, model-declared `labels` (name + color), `paramsSchema`, and a `warnings[]` array (fused parts, **interpenetrating components / clearance**, tri-count over the ~200k catalog budget, sub-0.4 mm detail, …).
+- **4-view PNG** (front / right / top / iso by default; override with `--view`/`--views`), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail. Use `--view az,el` to rotate to an occluded feature when the four default angles hide it. The default PNG path is **stamped unique per run** (old stamps for the same model are cleaned up) so the Read tool's per-path image cache can never serve a stale render — take the path from the JSON's `png` field.
+- **Paint-in-code is verified headlessly.** `api.paint.*` ops (box/slab/cylinder/label) resolve against the mesh with the same pure helpers the browser uses: the PNG shows the colours and `stats.paintOps` lists per-op `{name, kind, triangleCount}` — an op that resolves to **0 triangles warns** (region misses the surface / label doesn't exist). Brush-painted sidecar regions still need the browser.
+- **Voxel `v.sdf` extras:** `voxelRes` (world-units-per-voxel, when all `v.sdf` calls agree), `worldBBox` (bbox × res — the authored world size, no mental ×res), and `sdfLabelCounts` (fills per `colors` label, **including 0** — a zero-fill label warns, surfacing the smoothUnion deepest-region trap instead of silently coloring nothing).
 - Implementation: `scripts/model-preview.mjs` (CLI + pure-JS rasterizer → `sharp`) + `src/tools/previewModel.ts` (the faithful engine call). No WebGL needed.
 
 **`componentCount` is the instrument for print-in-place mechanisms.** A model that returns separate moving parts (screw, spinner, hinge, captive ball, two-tone spiral) must report `componentCount === N`. If it fuses to `1`, the clearance gap is too small or parts collide. The reliable recipe for splitting one solid into interleaved colored parts: subtract a clearance-thick cutter (e.g. a full-diameter helical **slab** for a spiral), then `manifold.decompose()` and color each component. Verify topological/geometric claims with `model:preview`, not from memory.
+
+**When `componentCount` is wrong: decompose and inspect, don't tune blindly.** Call `Manifold.decompose()` on the result, iterate the parts, and check which one floated or fused — a 10-line diagnostic snippet beats 3 rounds of parameter-tweaking on the whole assembly. Note that many legitimate catalog subjects (assemblies, orreries, watch movements) intentionally have `componentCount > 1`; `isManifold: true` is the correctness gate, not the count. Pass `{ maxComponents: N }` to `runAndSave` when the model is intentionally multi-part.
+
+> **Voxel models: trust `voxelPieceCount`, not `componentCount`, for "is this one printable piece?"** `componentCount` comes from the meshed solid and over-reports voxel grids — an enclosed cavity counts as a second component, and voxels touching only at an edge/corner split apart. The stats also carry `voxelPieceCount`, a face-connected (6-neighbour) BFS over the grid that matches what actually fuses on an FDM plate. A one-piece hollow voxel shell reports `componentCount: 2` but `voxelPieceCount: 1`.
+
+`model:preview` can do that island inspection for you:
+
+```bash
+npm run model:preview -- model.js --explain-components   # per-island vol/tris/size/center (to stderr)
+npm run model:preview -- model.js --expect-components 3   # assert; exits non-zero on mismatch (CI gate)
+node bin/partwright.mjs compare a.js b.js c.js --png out.png        # tile each model's iso view into one contact sheet
+node bin/partwright.mjs compare a.js b.js --view 130,35 --png o.png # …from a custom angle
+node bin/partwright.mjs fetch <image-url> --out ref.png            # pull a remote image to disk (then `photo` it)
+```
+
+`--explain-components` prints the per-island breakdown (already in the JSON's `stats.components`, capped at the top 16 by volume) to stderr so the stdout JSON stays parseable. `--expect-components N` compares against the uncapped `stats.componentCount` and exits 1 on mismatch — the escape hatch for "this mechanism MUST stay N parts." `compare` runs several variants and lays one view of each side-by-side (default iso, `--view az,el` to change it), for A/B param sweeps or before/after checks. `fetch` downloads a remote image to disk so the `photo` voxel-import flow can consume a URL (the env's network policy governs reachability).
+
+**Delegate multi-pass visual iteration to the `model-sculpt` subagent.** Each preview PNG you `Read` in the main context stays there and is re-billed every subsequent turn — image tokens compound. For 3+ render passes on the same model, delegate to `model-sculpt` (or `general-purpose` with its instructions): it owns the render→look→adjust loop in its own disposable context and returns only text. The main agent calls `SendUserFile` to ship the final PNG to the user **without** reading it.
 
 > **CLI agents vs in-app/extension AI.** `model:preview` is for agents running in *this repo* (you). The in-app and chrome-extension AI cannot run a CLI — they verify with the in-browser `renderViews()` / `runAndSave(code, label, {maxComponents})` and read `public/ai/*.md` subdocs (e.g. `mechanisms`). Keep tool-specific instructions in `CLAUDE.md`/`docs/` (this audience) and in-browser instructions in `ai.md`/subdocs (that audience).
 
@@ -177,7 +203,7 @@ The right-side AI drawer can drive Partwright through any of:
 
 - **Anthropic (cloud)** — user pastes their own API key (`src/ai/anthropic.ts`). Streams from Anthropic's hosted Claude with prompt caching on the long system prompt + tool list.
 - **OpenAI (cloud)** — `src/ai/openai.ts`. Raw `fetch` with SSE streaming; no extra SDK. Routes per model: reasoning models (`gpt-5*`, `o1/o3/o4`) use the Responses API (`/v1/responses`); all others use Chat Completions (`/v1/chat/completions`). See `docs/ai-internals.md` for routing details.
-- **Google Gemini (cloud)** — `src/ai/gemini.ts`. Raw `fetch` against `generativelanguage.googleapis.com` with SSE streaming via `:streamGenerateContent?alt=sse`; no extra SDK. Requires careful handling of `functionResponse.response` (plain object, not JSON string) and `thoughtSignature` echo-back. See `docs/ai-internals.md` for thought-signature and routing details.
+- **Google Gemini (cloud)** — `src/ai/gemini.ts`. Raw `fetch` against `generativelanguage.googleapis.com` with SSE streaming via `:streamGenerateContent?alt=sse`; no extra SDK. Requires careful handling of `functionResponse.response` (plain object, not JSON string) and `thoughtSignature` echo-back. **Tool schemas must stay within Gemini's OpenAPI subset** — it 400s the *entire* tool list on any JSON-Schema keyword it doesn't recognize (`Unknown name "X" … Cannot find field`), so `sanitizeSchemaForGemini` strips the known offenders (`$schema`, `additionalProperties`, `exclusiveMinimum`, `exclusiveMaximum`). When you add a tool param in `src/ai/tools.ts` that uses a less-common keyword, extend that strip set in the same change. See `docs/ai-internals.md` for thought-signature and routing details.
 - **Local (WebGPU)** — runs a model entirely in the browser via [WebLLM](https://webllm.mlc.ai) (`src/ai/local.ts`). The user opts in from the AI settings modal and the weights download once into the browser cache. No API key, no network traffic per turn.
 - **Custom (OpenAI-compatible)** — `src/ai/custom.ts`. Points to any OpenAI-compatible endpoint (llama.cpp, vLLM, LM Studio, Ollama, …). User sets a base URL in AI settings; optional API key stored in `aiKeys` keyed by `'custom'`. Model id and base URL live on `ChatToggles` as `customModel` / `customBaseUrl`.
 
@@ -206,6 +232,7 @@ The AI chat input supports `/command` shortcuts (`src/ai/slashCommands.ts`). A l
 | `/review` | Open the cross-provider review modal |
 | `/export` | Download the conversation as Markdown |
 | `/models` (alias `/settings`) | Open AI settings modal |
+| `/portrait` (alias `/bust`) | Prefill a prompt to model a stylized 3D bust from a photo you attach |
 | `/help` (alias `/commands`) | List all commands in chat |
 
 The command names and descriptions are defined in `SLASH_COMMANDS` in `slashCommands.ts`; the panel's handler map is type-checked against `SlashCommandName` so a name can't exist without a handler. Tests: `tests/unit/slashCommands.test.ts` (unit), `tests/ai-slash-commands.spec.ts` (e2e).
@@ -232,6 +259,7 @@ Static site, no backend. Vanilla TypeScript + Vite.
 - `src/geometry/engines/manifoldJs.ts` — manifold-3d sandbox. Exposes `api = { Manifold, CrossSection, Curves, BREP, ... }` to user code. `BREP` is `null` until `ensureBrepLoaded()` runs in the Worker (triggered by `sourceUsesBrep(code)`).
 - `src/geometry/engines/openscad.ts` — OpenSCAD WASM via `openscad-wasm-prebuilt`, lazy-loaded on first SCAD session.
 - `src/geometry/engines/replicad.ts` — BREP/replicad engine for full BREP-language sessions. The returned BREP shape is retained in `lastShape` so `exportSTEP` can grab it. Imported STEP files appear in `api.imports[0]` as `BrepShape` (separate from `api.meshImports` for STL); the pending-imports list lives in `brepRuntime.ts` so it survives across runs.
+- `src/geometry/engines/voxel.ts` — voxel-grid engine (pure JS, no WASM). User code calls `api.voxels()` then `v.set`/`v.fillBox`/`v.sphere`/`v.line` and `return v`. Backs the `voxel` language, VOX export, the image→voxel import, and the `voxelize` surface modifier.
 - `src/geometry/brepRuntime.ts` — Lazy loader + chainable `BrepShape` wrapper. The single source of truth for "is OCCT loaded?" and `getBrepNamespace()` — used by both the manifold-js sandbox (Phase C — `api.BREP.*`) and the replicad engine (Phase A — full BREP session). Also houses `parseStepBlob` and the pending-BREP-imports side-channel used by the STEP import flow.
 - `src/renderer/viewport.ts` — Three.js interactive viewport
 - `src/renderer/multiview.ts` — Offscreen multi-angle render API (`renderViews`/`renderView`/`renderCompositeCanvas` for thumbnails)
@@ -248,17 +276,21 @@ Static site, no backend. Vanilla TypeScript + Vite.
 - `src/import/parsers/stl.ts` — STL import (binary + ASCII)
 - `src/import/codegen.ts` — Generates `Manifold.ofMesh(api.imports[i])` wrapper code
 - `src/import/importedMesh.ts` — Active-imports register exposed to the sandbox as `api.imports`
-- `src/surface/modifiers.ts` — Surface modifier pipeline: `applyFuzzy` (noise-displaced skin), `applySmooth` (Taubin smoothing pass), `applyVoxelize` (mesh → voxel grid), `applyScale` (non-destructive resize). Each returns a `ModifierResult` — either `'manifold'` (baked mesh + wrapper code, mirroring the STL import path) or `'voxel'` (encoded grid + inline `voxels.decode(…)` code). Pure math lives in sibling modules: `fuzzySkin.ts`, `smoothSurface.ts`, `voxelizeMesh.ts`, `meshSubdivide.ts`, `colorTransfer.ts`, `scaleMesh.ts`. Unit tests: `tests/unit/surface.test.ts`.
+- `src/surface/modifiers.ts` — Surface modifier pipeline (`SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize'`): `applyFuzzy` (noise-displaced skin), the fabric-texture family `applyKnit` / `applyCable` / `applyWaffle` / `applyFur` / `applyWoven` (stockinette knit, cable knit, waffle stitch, fur/velvet, woven fabric — displaced along normals over a UV unwrap, with WebGPU compute where available), `applyVoronoi` (Voronoi cell relief), `applyVoronoiLamp` (perforated SDF lamp shell), `applySmooth` (Taubin smoothing pass), `applyVoxelize` (mesh → voxel grid), `applyScale` (non-destructive resize — `scaleModel` also has a parametric `mode` that wraps the source in `.scale(...)` via the `placement.ts` transform chain, like place/rotate). Knurl takes a `profile` knob (`'round'` cosine bumps vs `'pyramid'` straight-sided machinist diamonds). Most modifiers also have an `apply*Patch` variant that textures only a selected triangle set. **The engrave/emboss SDF carve runs off the main thread** in `engraveWorker.ts` (via `engraveWorkerClient.ts` → `engraveInWorker`); `applyEngrave`'s assembly half is split into `buildEngraveResult` so the heavy `engraveMesh` sweep can run in the Worker while the cheap paint-transfer/version-code stays main-side (terminate-on-cancel, progress messages drive the inline "Rendering… Xs"). Each returns a `ModifierResult` — either `'manifold'` (baked mesh + wrapper code, mirroring the STL import path) or `'voxel'` (encoded grid + inline `voxels.decode(…)` code). Pure math lives in sibling modules: `fuzzySkin.ts`, `knitTexture.ts`, `knitTextureGPU.ts`, `cableKnit.ts`, `waffleStitch.ts`, `furVelvet.ts`, `wovenFabric.ts`, `knurlTexture.ts`, `voronoiShell.ts`, `voronoiLattice.ts`, `voronoiLampSdf.ts` (over the `sdfModifier.ts` scaffolding), `engraveSdf.ts`, `smoothSurface.ts`, `voxelizeMesh.ts`, `meshSubdivide.ts`, `colorTransfer.ts`, `scaleMesh.ts`, plus the UV layers `uvParameterize.ts`, `uvUnwrap.ts`, and `placement.ts` (region placement). Unit tests: `tests/unit/surface.test.ts`.
+- `src/surface/surfaceOps.ts` + `surfaceOpSpec.ts` — the **in-code** (non-baking) surface-texture path: manifold-js model code declares textures via `api.surface.*` (`fuzzy`/`knit`/`cable`/`waffle`/`fur`/`woven`/`knurl`/`voronoi`/`smooth` — the mesh-producing subset; `voxelize`/`voronoiLamp` change engines so they stay bake-only). The Worker records the validated op chain (`surfaceOpSpec.ts` is the dependency-free shared spec — its option allow-lists are effectively **append-only** once user code persists them, since unknown keys throw), `surfaceOps.ts` applies it in the dedicated **surface Worker** (`surfaceWorker.ts` + the pure kernel `applyChain.ts` — the modifier math is Worker-clean, WebGPU included), memoized per chain prefix on the **base mesh content** (`meshContentKey`), so whitespace/comment/refactor edits that don't change geometry hit the cache instantly and never drop the textures. **Every run applies the chain** — explicit and live-typing alike — behind an inline "Applying texture… Xs" status + the shared Cancel button (the "Rendering… Xs" pattern); Cancel (terminate+respawn, the only true interrupt for synchronous math) parks the chain behind the sticky "⟳ Re-apply" pill, and `ensureSurfaceTexturesApplied()` (which the Surface panel awaits before previews) recovers it. Computed textures **persist on saved versions** (`Version.surfaceTexture` = full-chain memo key + textured mesh, export schema 1.14): a version load seeds the memo cache so a reopened session renders textured instantly with no recompute, pinning the texture's appearance at save time — a stale key just recomputes (never renders the wrong texture). The **Surface panel writes this path too**: in a manifold-js session with whole-model mode, Apply becomes "Apply as code" and upserts the `api.surface.<id>({…})` call via `src/surface/surfaceCodegen.ts` + `partwright.applySurfaceTextureAsCode` (region/patch flood-fill applies, voxelize/voronoiLamp, and SCAD/BREP sessions keep the bake path). **Ops can be scoped** to part of the model with a `label` (an `api.label` region) or `region: {point, radius}` key — `parseSurfaceOpts` (in `surfaceOpSpec.ts`) is the single validator shared by the Worker recorder and the console twin; the main thread resolves the scope to seed points + a catch radius (`resolveSurfaceScopes` in `main.ts`), and the surface Worker selects triangles near the seeds (`selectTrianglesNearSeeds` in `colorTransfer.ts`) then runs the existing `apply*Patch` path. The panel's whole-model **Scope** picker (label dropdown / "Near point" click) writes these. `api.label`/`byLabel` colors carry through any texture via `remapTriangleSets` (the nearest-centroid map the bake path also uses). The sibling `api.paint.*` (recorded in `engines/manifoldJs.ts`, resolved into the model-color underlay in `src/color/regions.ts`) declares paint in code the same way. Unit tests: `tests/unit/surfaceOps.test.ts`, `tests/unit/surfaceCodegen.test.ts`; e2e: `tests/surface-in-code.spec.ts`, `tests/surface-panel-as-code.spec.ts`, `tests/paint-in-code.spec.ts`.
 
-### Modeling engines (three of them)
+### Modeling engines (four of them)
 
-Partwright supports three language/engine pairs. The mesh-side pipeline below the engine boundary (painting, render, ray-cast, export, queries) is engine-agnostic — anything new that lives there works across all three.
+Partwright supports four language/engine pairs. The mesh-side pipeline below the engine boundary (painting, render, ray-cast, export, queries) is engine-agnostic — anything new that lives there works across all four.
 
 | Language | Engine | Kernel | Unique features |
 |---|---|---|---|
 | `manifold-js` (default) | manifold-3d | mesh | `warp`, `levelSet`, `smoothOut`, `Curves` helpers, fast booleans on weird shapes |
 | `scad` | OpenSCAD via `openscad-wasm-prebuilt` | CSG | BOSL2 (`threaded_rod`, `spur_gear`, `cuboid(rounding=)`, …) |
 | `replicad` | OpenCASCADE via `replicad-opencascadejs` | BREP | True selective edge fillets/chamfers, STEP export, exact surfaces |
+| `voxel` | in-house JS voxel grid (`src/geometry/engines/voxel.ts`) | voxel grid | Blocky colored cubes (Minecraft / pixel-art); `api.voxels()` + `v.set`/`v.fillBox`/`v.sphere`/`v.line`; VOX export; target of image→voxel import and `voxelizeModel` |
+
+> **Engine awareness for mesh-side tools.** Most tools work off the engine-agnostic tessellated mesh and need no special casing. But anything that *bakes a result back into a session* (surface modifiers, scale/place/rotate transforms, voxelize) converts a SCAD/BREP session into a `manifold-js` (or `voxel`) mesh, discarding the parametric source — and for BREP, STEP export. Those paths emit a user-facing warning via `engineBakeWarning` (see `commitSurfaceModifier` / `commitTransform` in `src/main.ts`); preserve that warning when adding new commit paths.
 
 **Two ways to reach BREP** — these are deliberately complementary, not competing:
 
@@ -341,6 +373,19 @@ The app runs in multiple browser windows/tabs at once, often each driving a **di
 
 See `docs/architecture-notes.md` for the concrete implementation patterns (per-tab prefs, `storage`-event scoping, global-state rules).
 
+### UI ↔ JS-API parity — the AI must be able to drive what the UI can
+
+A core product goal: **anything a user can do from the UI, an AI agent can do through `window.partwright`** (the console / external-agent surface) and, where it fits, the in-app AI tool layer. New UI affordances drift out of parity *silently* — the mid-2026 feature audit found whole capabilities (smooth/voxelize/scale/orient, image-stamp paint, STL import, version rename/delete) reachable only by clicking. When you add or change a user-facing capability, close the loop in the **same PR**:
+
+1. **Add the `window.partwright` method** in `partwrightAPI` (`src/main.ts`), validating arguments with the `guard()` / `assert*` helpers (`src/validation/apiValidation.ts`) so console/MCP callers get the same checks as the UI. Return `{ error }` on bad input from value-returning methods; don't throw.
+2. **Register it in the `help()` table** (`src/main.ts`) — that's the discoverability surface and it must not drift from the implementation.
+3. **Document it** in `public/ai.md` (the console-API list) and the relevant `public/ai/*.md` subdoc (`file-io`, `textures`, `printing`, …). External agents read these.
+4. **Consider an in-app AI tool** (`src/ai/tools.ts`): a schema + dispatch case + the correct gating set (`SAVE_GATED` / `PAINT_GATED` / …) when the chat AI should drive it. Skip it only when it can't be driven from chat (e.g. needs local file bytes) or is too destructive to expose unscoped — and say which in the PR.
+
+> A pure static lint can't tell that a new DOM button lacks an API method — there's no typed link between the two — so **this same-PR norm plus the `work-reviewer`'s parity check are the enforcement**, not a gate. (The robust structural fix would be a single capability registry both the command palette and the API derive from; that's a deliberate larger refactor, not done yet.) `npm run lint:consistency` (ast-grep) *does* catch the related UI-*consistency* drift — modals not on `modalShell`, buttons bypassing the `BUTTON_*` constants — so run it, and prefer promoting a clean rule to `error`.
+
+**Cross-engine parity is part of this.** A tool that bakes or commits a result must work for — or explicitly warn about — all four engines; don't add a commit path that silently assumes manifold-js. See the engine-bake note under [Modeling engines](#modeling-engines-four-of-them).
+
 ### Numeric Constants and App Config
 
 Never hardcode numeric tuning constants — timeouts, limits, thresholds, budgets, quality knobs — directly in source files. Instead:
@@ -361,7 +406,8 @@ Don't export functions unless they're imported elsewhere. When removing usage of
 This repo ships custom Claude Code subagents and a deterministic static-analysis layer they lean on — see `docs/agent-tooling.md` for the full reference. In short:
 
 - **`work-reviewer`** (`.claude/agents/work-reviewer.md`, Opus, read-only) reviews the branch diff vs `origin/main` for correctness, back-compat, security, and **UI consistency** against the shared component layer (`modalShell`, `styleConstants` `BUTTON_*`, `showToast`, `commandPalette` keyboard model). Launch it before marking a PR ready.
-- **`explore`** (`.claude/agents/explore.md`, Sonnet, read-only) overrides the built-in Haiku Explore agent for sharper codebase discovery, preferring the TypeScript LSP MCP (`mcp__typescript__*`, configured in `.mcp.json`) for reference/definition queries.
+- **`explore`** (`.claude/agents/explore.md`, Sonnet, read-only) overrides the built-in Haiku Explore agent for sharper codebase discovery, preferring the Serena LSP MCP (`mcp__serena__*`, configured in `.mcp.json`) for reference/definition queries.
+- **Search ladder** — match the search modality to the question (full guidance in `docs/agent-tooling.md`): `Grep` (ripgrep) for literals/strings → `npm run ag -- run -p '<pattern>' -l ts src` for code *shapes* (call-site sweeps, convention checks — `$X` matches one node, `$$$` any number; no comment/string false positives) → Serena (`find_symbol` / `find_referencing_symbols` / `get_symbols_overview`) for resolved references over the real type graph ("who actually uses this export"). Delegate broad multi-file discovery to the `explore` agent rather than running the fan-out in the main context. **Run ast-grep via `npm run ag --` (after `npm ci`), not `npx ast-grep`** — on a bare container (no `node_modules`) `npx ast-grep` silently pulls a squatted impostor package instead of the pinned `@ast-grep/cli`. And a bare-identifier pattern like `runAndSave($$$)` won't match method calls (`api.runAndSave(...)`) — use the member form `$OBJ.runAndSave($$$)`. See `docs/agent-tooling.md`.
 - **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), and **`lint:deps`** (madge) run in CI (`code-quality.yml`). `lint:consistency` gates on `error`-severity ast-grep rules (`no-native-dialogs` is `error`; the rest are `warning`/`hint` — promote one to `error` once the codebase is clean for it). `lint:deadcode` gates on knip's trustworthy categories (`dependencies`/`unlisted`/`unresolved`/`files`) but keeps `exports`/`types` advisory (knip can't see exports used only via the e2e suite's dynamic `import('/src/…')`, and the dead-export backlog needs per-symbol triage). `lint:deps` (madge circular deps) is a **gate**: the module graph is acyclic, so any new cycle fails CI. Scope each advisory hit to the diff — they over-report by design. See `docs/agent-tooling.md`.
 
 ### Module Layering — keep the dependency graph acyclic

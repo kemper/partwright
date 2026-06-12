@@ -28,6 +28,31 @@ test.describe('Static, app-free landing route', () => {
     await expect(page.locator('#li-sessions-grid > *').first()).toBeVisible({ timeout: 15000 });
   });
 
+  test('the "New" hero bubble links to the What\'s-new page', async ({ page }) => {
+    await page.goto('/');
+    const bubble = page.locator('#li-hero a[href="/whats-new"]');
+    await expect(bubble).toBeVisible();
+    await expect(bubble).toContainText('Voxels, BREP solids');
+    await bubble.click();
+    await expect(page).toHaveURL(/\/whats-new$/, { timeout: 30000 });
+    await expect(page.getByRole('heading', { name: /What.s new/i })).toBeVisible({ timeout: 30000 });
+  });
+
+  test('in-page anchors scroll #landing-inline and Back returns to the top', async ({ page }) => {
+    // The landing scrolls inside #landing-inline (body is overflow-hidden), so
+    // Back-button scroll must be restored by landingEntry, not the browser.
+    const scrollTop = () => page.evaluate(() => document.getElementById('landing-inline')!.scrollTop);
+    await page.goto('/');
+    expect(await scrollTop()).toBeLessThan(50);
+
+    await page.locator('#li-hero a[href="#li-agent-section"]').click();
+    await expect(page).toHaveURL(/#li-agent-section$/);
+    await expect.poll(scrollTop).toBeGreaterThan(200);
+
+    await page.goBack();
+    await expect.poll(scrollTop).toBeLessThan(50);
+  });
+
   test('a catalog tile loads that entry into the editor via /editor?catalog=', async ({ page }) => {
     await page.goto('/');
     const firstTile = page.locator('#li-catalog-grid a').first();

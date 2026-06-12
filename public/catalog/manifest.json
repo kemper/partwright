@@ -540,11 +540,67 @@
       "description": "A retro CRT television with a lofted tapered housing, a curved-glass screen, a swept carry handle, round control knobs, and rabbit-ear antennas."
     },
     {
+      "id": "japanese-pagoda",
+      "name": "Japanese Pagoda",
+      "file": "japanese_pagoda.partwright.json",
+      "language": "manifold-js",
+      "description": "A five-story vermilion-and-white temple pagoda whose dark tiled roofs sweep up into graceful upturned eaves, crowned by a gilt-bronze sōrin spire atop a stepped stone base."
+    },
+    {
+      "id": "steampunk-airship",
+      "name": "Steampunk Airship",
+      "file": "steampunk_airship.partwright.json",
+      "language": "manifold-js",
+      "description": "A crimson-silk dirigible with a brass-ribbed envelope, a wooden gondola lined with brass portholes, a verdigris-copper wheelhouse, cruciform tail fins, and an outrigger propeller."
+    },
+    {
+      "id": "mechanical-orrery",
+      "name": "Mechanical Orrery",
+      "file": "mechanical_orrery.partwright.json",
+      "language": "scad",
+      "description": "A brass tabletop orrery whose meshing involute gear train drives a gilded sun, with red, blue, and ringed teal planets swinging out on graceful arms at staggered orbits."
+    },
+    {
+      "id": "pocket-watch",
+      "name": "Pocket Watch Movement",
+      "file": "pocket_watch.partwright.json",
+      "language": "scad",
+      "description": "An open-face skeleton pocket watch laid bare — a stepped brass bezel with a fluted crown and suspension bow framing an exposed train of involute spur gears down to a blued balance, jeweled with red rubies at every pivot."
+    },
+    {
+      "id": "turbofan-engine",
+      "name": "Turbofan Jet Engine",
+      "file": "turbofan_engine.partwright.json",
+      "language": "replicad",
+      "description": "The front of a high-bypass airliner turbofan: a smoothly swept nacelle cowl with a chamfered intake lip, a dark spinner cone, and a full ring of fan blades — an exact-surface BREP showcase."
+    },
+    {
+      "id": "kitchen-faucet",
+      "name": "Kitchen Faucet",
+      "file": "kitchen_faucet.partwright.json",
+      "language": "replicad",
+      "description": "A sleek brushed-metal gooseneck mixer tap, its tall toroidal spout arching from a flared deck column down to a flush aerator, with a single blue lever handle at the bend — a smooth-surface BREP showcase."
+    },
+    {
+      "id": "voxel-pirate-ship",
+      "name": "Voxel Pirate Ship",
+      "file": "voxel_pirate_ship.partwright.json",
+      "language": "voxel",
+      "description": "A blocky pirate galleon — a curved wooden hull with a red gold-windowed stern castle, three masts of billowing cream sails, a crow's nest, iron cannons, a gilded figurehead, and a skull-and-crossbones flag."
+    },
+    {
+      "id": "voxel-locomotive",
+      "name": "Voxel Steam Locomotive",
+      "file": "voxel_locomotive.partwright.json",
+      "language": "voxel",
+      "description": "A cute blocky 4-4-0 steam engine — a green brass-banded boiler, a flared funnel trailing a white smoke puff, twin steam domes, a windowed wood cab, big red driving wheels linked by silver rods, and a cowcatcher."
+    },
+    {
       "id": "spiral-fidget-cone",
       "name": "Spiral Fidget Cone",
       "file": "spiral_fidget_cone.partwright.json",
       "language": "manifold-js",
-      "description": "Print-in-place spiral cone — twist the two interleaved helical ribbons and they screw apart. A captive two-part fidget printed in one piece.",
+      "description": "Print-in-place bolt & nut — a 5-start helical screw captive inside a matching spiral-cage cone. Twist and it rides the threads; prints in one piece and unscrews apart.",
       "group": "fidget-toys"
     },
     {
@@ -567,6 +623,243 @@
       "file": "ringed_planet.partwright.json",
       "language": "manifold-js",
       "description": "A banded gas giant encircled by a tilted, multi-band ring system. Latitude color bands are cut from the sphere with overlapping slabs; the concentric ring disk welds into the planet's equator so it prints as one self-colored piece. Parametric planet radius, ring span, band count, and axial tilt."
+    },
+    {
+      "id": "print-fit-knob",
+      "name": "Captive-Nut Tightening Knob",
+      "file": "print_fit_knob.partwright.json",
+      "language": "manifold-js",
+      "description": "A knurled hand knob with a captive M4 hex-nut pocket and a clearance bore — trap a nut and turn it onto any M4 bolt or rod. Useful for jigs, clamps, and adjustable feet. Built with api.fasteners.",
+      "group": "print-fit"
+    },
+    {
+      "id": "print-fit-project-box",
+      "name": "Electronics Project Box",
+      "file": "print_fit_project_box.partwright.json",
+      "language": "manifold-js",
+      "description": "A parametric base tray with lid-mount bosses, a matching countersunk-screwed lid, and vent slots to keep electronics cool. Pick the mounting style: heat-set insert bosses or thread-forming pilot bores the screws bite into directly. Built with api.fasteners.",
+      "group": "print-fit"
+    },
+    {
+      "id": "print-fit-dovetail-system",
+      "name": "Dovetail Rail System",
+      "file": "print_fit_dovetail_system.partwright.json",
+      "language": "manifold-js",
+      "description": "A wall-mount plate with a full-length dovetail rail and a matching hook that slides on and locks — lift to remove. Print one plate, print as many hooks as you need. Both parts parameterizable. Built with api.joints and api.fasteners.",
+      "group": "print-fit"
+    },
+    {
+      "id": "print-in-place-hinge",
+      "name": "Print-in-Place Hinge",
+      "file": "print_in_place_hinge.partwright.json",
+      "language": "manifold-js",
+      "description": "A barrel hinge that prints lying open flat and works straight off the bed — one leaf carries an integral captive pin, the other's bored knuckles wrap it. Knuckle count, pin size, and clearance are parametric. Built with api.joints.hinge.",
+      "group": "print-fit"
+    },
+    {
+      "id": "ball-socket-mount",
+      "name": "Ball-and-Socket Mount",
+      "file": "ball_socket_mount.partwright.json",
+      "language": "manifold-js",
+      "description": "An articulating ball-and-socket mount that holds the angle you set it to — pick a retention mode: friction (default; springy fingers grip the ball), clamp (a screw-tightened pinch), or snap (free-swivel). Both halves stand on screw-down plates and ball size, grip, and slots are parametric. Built with api.joints.ballSocket.",
+      "group": "print-fit"
+    },
+    {
+      "id": "snap-lid-box",
+      "name": "Snap-Lid Box",
+      "file": "snap_lid_box.partwright.json",
+      "language": "manifold-js",
+      "description": "A round container whose press-on lid clicks shut — a bead ring on the lid skirt snaps into a groove inside the box mouth, both from one api.joints.snapRim call so they share the exact interface diameter.",
+      "group": "print-fit"
+    },
+    {
+      "id": "sdf-asteroid",
+      "name": "SDF Asteroid",
+      "file": "sdf_asteroid.partwright.json",
+      "language": "manifold-js",
+      "description": "A craggy asteroid — a sphere pushed in and out by an fBm noise field via the new sdf.noise() + node.displace(). One watertight rock; smooth (non-ridged) noise keeps it a single piece."
+    },
+    {
+      "id": "sdf-bark-vase",
+      "name": "SDF Bark Vase",
+      "file": "sdf_bark_vase.partwright.json",
+      "language": "manifold-js",
+      "description": "A hollow vase textured with vertical bark grooves — ridged noise carved inward-only with node.displace() so the thin wall stays one piece. Shows shaping a noise field to one side to avoid floating islands."
+    },
+    {
+      "id": "sdf-brain-coral",
+      "name": "SDF Brain Coral",
+      "file": "sdf_brain_coral.partwright.json",
+      "language": "manifold-js",
+      "description": "A boulder scored with winding labyrinthine grooves — inward-only ridged-noise displacement gives the brain-coral pattern in one watertight solid."
+    },
+    {
+      "id": "sdf-lsystem-fern",
+      "name": "L-System Fern",
+      "file": "sdf_lsystem_fern.partwright.json",
+      "language": "manifold-js",
+      "description": "The textbook Lindenmayer plant grammar grown into printable 3D geometry via the new api.sdf.lsystem() — a flat fractal fern of welded capsules."
+    },
+    {
+      "id": "sdf-lsystem-coral",
+      "name": "L-System Coral",
+      "file": "sdf_lsystem_coral.partwright.json",
+      "language": "manifold-js",
+      "description": "A chunky branching coral grown from an L-system — four-way radial splits with smooth-blended (fleshy) joints via api.sdf.lsystem({ blend })."
+    },
+    {
+      "id": "sdf-lsystem-tree",
+      "name": "L-System Tree",
+      "file": "sdf_lsystem_tree.partwright.json",
+      "language": "manifold-js",
+      "description": "A stylized tree grown from an L-system: a trunk with a radial branch crown and a canopy of leaf spheres, in two painted regions (wood + leaves) from one call."
+    },
+    {
+      "id": "voxel-sdf-gyroid-vase",
+      "name": "Voxel SDF Gyroid Vase",
+      "file": "voxel_sdf_gyroid_vase.partwright.json",
+      "language": "voxel",
+      "description": "A desktop pen & brush holder with an open gyroid-lattice wall welded between a solid base and rim — one SDF expression (gyroid intersected with a tube) rasterized into voxels with v.sdf. Two-tone teal body and gold trim."
+    },
+    {
+      "id": "voxel-sdf-coral",
+      "name": "Voxel SDF Coral",
+      "file": "voxel_sdf_coral.partwright.json",
+      "language": "voxel",
+      "description": "A porous brain-coral on a sandy rock base — a smooth-blended SDF blob (smoothUnion of ellipsoids) made knobby and holey by a diamond TPMS, then rasterized into voxels with v.sdf. The organic SDF-to-voxel showcase."
+    },
+    {
+      "id": "voxel-sdf-blob",
+      "name": "Voxel SDF Blob Mascot",
+      "file": "voxel_sdf_blob.partwright.json",
+      "language": "voxel",
+      "description": "A cute mint-green blob mascot built entirely from SDF smooth-blends (smoothUnion of ellipsoids, flat-bottomed by a half-space clip) and rasterized into voxels with v.sdf — organic character modeling in the blocky voxel world."
+    },
+    {
+      "id": "voxel-sdf-lattice-cube",
+      "name": "Voxel SDF Lattice Cube",
+      "file": "voxel_sdf_lattice_cube.partwright.json",
+      "language": "voxel",
+      "description": "A graphite desk paperweight whose four windows reveal a glowing-cyan Schwarz-P TPMS lattice core — frame, window cuts, and lattice are one SDF expression rasterized into voxels with v.sdf."
+    },
+    {
+      "id": "voxel-sdf-twist-tower",
+      "name": "Voxel SDF Twist Tower",
+      "file": "voxel_sdf_twist_tower.partwright.json",
+      "language": "voxel",
+      "description": "A twisted pen & utensil holder — a hollow rounded-square wall punched with a grid of windows and twisted on its axis, then rasterized into voxels with v.sdf. Solid flat base, lavender rim, violet body."
+    },
+    {
+      "id": "gear-pair",
+      "name": "Parametric Gear Pair",
+      "file": "gear_pair.partwright.json",
+      "language": "manifold-js",
+      "description": "Meshing involute spur-gear pair with adjustable module, tooth counts (ratio), thickness, and shaft bore."
+    },
+    {
+      "id": "screw-top-jar",
+      "name": "Screw-Top Jar",
+      "file": "screw_top_jar.partwright.json",
+      "language": "manifold-js",
+      "description": "Watertight container with a matching threaded screw-on lid — real external + internal threads, fully parametric (diameter, height, pitch, fit)."
+    },
+    {
+      "id": "rack-and-pinion",
+      "name": "Rack & Pinion",
+      "file": "rack_and_pinion.partwright.json",
+      "language": "manifold-js",
+      "description": "Involute pinion meshing a straight rack to turn rotation into linear motion — adjustable module, teeth, and length."
+    },
+    {
+      "id": "waving-kid",
+      "name": "Waving Kid",
+      "file": "waving_kid.partwright.json",
+      "language": "manifold-js",
+      "description": "A cheerful stylized child waving hello — one arm raised high, chunky cargo pants, long hair, built with the SDF figure rig."
+    },
+    {
+      "id": "flexing-strongman",
+      "name": "Flexing Strongman",
+      "file": "flexing_strongman.partwright.json",
+      "language": "manifold-js",
+      "description": "A vintage-circus strongman hitting a double-biceps pose — stocky build, both fists raised, short trunks and a handlebar mustache."
+    },
+    {
+      "id": "chibi-wizard",
+      "name": "Chibi Wizard",
+      "file": "chibi_wizard.partwright.json",
+      "language": "manifold-js",
+      "description": "An adorable chibi wizard with an oversized pointed hat, a magic staff topped by a glowing orb, and a long beard — extreme cute proportions."
+    },
+    {
+      "id": "warrior-pose",
+      "name": "Warrior Pose",
+      "file": "warrior_pose.partwright.json",
+      "language": "manifold-js",
+      "description": "A figure in a yoga warrior lunge — front knee bent, back leg straight, arms outstretched in a T — showing off the figure rig's leg posing."
+    },
+    {
+      "id": "ballerina",
+      "name": "Ballerina",
+      "file": "ballerina.partwright.json",
+      "language": "manifold-js",
+      "description": "An elegant ballerina with arms raised overhead and a layered tutu, balanced on a base — a graceful figure-rig pose."
+    },
+    {
+      "id": "storytime-reader",
+      "name": "Storytime Reader",
+      "file": "sitting_reader.partwright.json",
+      "language": "manifold-js",
+      "description": "A child sitting on a stool absorbed in a chunky storybook — chair-sit pose, bangs, and sculpted hands cradling the open book."
+    },
+    {
+      "id": "karate-master",
+      "name": "Karate Master",
+      "file": "karate.partwright.json",
+      "language": "manifold-js",
+      "description": "A martial artist mid-punch in a white gi with a knotted black belt and red headband — front stance, chambered fist, gritted teeth."
+    },
+    {
+      "id": "waving-princess",
+      "name": "Waving Princess",
+      "file": "princess.partwright.json",
+      "language": "manifold-js",
+      "description": "A princess in a floor-length gown giving a royal wave — gold five-point crown, ponytail, painted lips, open-fingered hand."
+    },
+    {
+      "id": "rock-guitarist",
+      "name": "Rock Guitarist",
+      "file": "rocker.partwright.json",
+      "language": "manifold-js",
+      "description": "A guitarist mid-solo with an electric guitar slung low — fretting and strumming hands on the instrument, bangs, mouth open singing."
+    },
+    {
+      "id": "superhero-takeoff",
+      "name": "Superhero Takeoff",
+      "file": "superhero.partwright.json",
+      "language": "manifold-js",
+      "description": "A stocky hero launching skyward with one fist punched up — sweeping cape, chest emblem, gloves and boots over a two-tone suit."
+    },
+    {
+      "id": "staff-mage",
+      "name": "Staff Mage",
+      "file": "staff_mage.partwright.json",
+      "language": "manifold-js",
+      "description": "A robed mage raising a quarterstaff in one hand — the staff seated into the grip with the figure API's holdAt helper so it follows the hand instead of impaling it."
+    },
+    {
+      "id": "parametric-enclosure",
+      "name": "Project Box / Enclosure",
+      "file": "parametric_enclosure.partwright.json",
+      "language": "manifold-js",
+      "description": "A fully parametric two-part project box built with api.enclosure — choose a lip-nesting or screw-down lid, then tune size, wall, corner radius, fit, and screw size in the Customizer. The screw lid composes api.fasteners for its tapped corner bosses and countersunk holes."
+    },
+    {
+      "id": "knurled-control-knob",
+      "name": "Knurled Control Knob",
+      "file": "knurled_control_knob.partwright.json",
+      "language": "manifold-js",
+      "description": "A customizable control knob with a functional knurled grip built with api.knurl — switch between a diamond cross-hatch, straight splines, or finger ribs, and mount it on a plain shaft, a D-shaft, or a heat-set threaded insert. Pointer notch optional."
     }
   ]
 }

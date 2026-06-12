@@ -91,9 +91,12 @@ import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/t
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
 import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, getShapeType, getShapeVisible, setShapeVisible, onShapeVisibilityChange, type BoxMode, type ShapeType } from './boxDrag';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
+import { forceDeactivate as closePrintToolsMenu } from '../ui/printToolsUI';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
 import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
+import { viewportToolsMount } from '../ui/popoverMenu';
+import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 
 let paintBtn: HTMLButtonElement | null = null;
 let pickerPanel: HTMLElement | null = null;
@@ -117,7 +120,7 @@ const shapeSmoothSyncs: (() => void)[] = [];
 export function initPaintUI(controlsContainer: HTMLElement): void {
   paintBtn = document.createElement('button');
   paintBtn.id = 'paint-toggle';
-  paintBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  paintBtn.className = TOOL_TOGGLE_IDLE;
   paintBtn.textContent = '\uD83C\uDFA8 Paint';
   paintBtn.title = 'Paint color regions on model faces';
 
@@ -127,22 +130,18 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
 
   paintBtn.addEventListener('click', togglePaintMode);
 
-  const measureBtn = controlsContainer.querySelector('#measure-toggle');
-  if (measureBtn) {
-    controlsContainer.insertBefore(paintBtn, measureBtn);
-  } else {
-    controlsContainer.appendChild(paintBtn);
-  }
+  const toolsMount = viewportToolsMount(controlsContainer);
+  toolsMount.appendChild(paintBtn);
 
   // Standalone palette manager entry point — edit filament slots without
   // entering paint mode. Edits propagate to the paint swatches and relief.
   const paletteBtn = document.createElement('button');
   paletteBtn.id = 'palette-manager-toggle';
-  paletteBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  paletteBtn.className = TOOL_TOGGLE_IDLE;
   paletteBtn.textContent = '🧵 Palette';
   paletteBtn.title = 'Manage the filament palette (slots, colours, capacity)';
   paletteBtn.addEventListener('click', () => openPaletteManager());
-  controlsContainer.insertBefore(paletteBtn, paintBtn);
+  toolsMount.insertBefore(paletteBtn, paintBtn);
 
   pickerPanel = createPickerPanel();
   // Anchor the panel to the positioned viewport pane (the toolbar's parent)
@@ -187,7 +186,9 @@ function togglePaintMode(): void {
     forceDeactivateAnnotateText();
     forceDeactivateAnnotateSelect();
     closeSimplifyMenu();
+    closePrintToolsMenu();
     deactivateMode('imagePaint');
+    deactivateMode('voxelStudio');
     activate();
     updateButtonState(true);
     if (pickerPanel) setInitialPanelPosition(pickerPanel);
@@ -200,11 +201,7 @@ function togglePaintMode(): void {
 
 function updateButtonState(active: boolean): void {
   if (!paintBtn) return;
-  if (active) {
-    paintBtn.className = 'px-2 py-1 rounded text-xs bg-blue-500/30 backdrop-blur text-blue-300 border border-blue-500/50 transition-colors';
-  } else {
-    paintBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  }
+  paintBtn.className = active ? TOOL_TOGGLE_ACTIVE : TOOL_TOGGLE_IDLE;
 }
 
 /** Build the palette section: the slot swatch grid, an over-budget badge, the
@@ -264,6 +261,14 @@ function createPaletteSection(): HTMLElement {
   customRow.appendChild(customLabel);
   wrap.appendChild(customRow);
 
+  // Shown instead of the custom picker when the palette is constrained — makes
+  // the enforcement legible (painting snaps to the nearest slot; see
+  // enforcePaletteConstraint in paintMode).
+  const constrainNote = document.createElement('div');
+  constrainNote.className = 'hidden text-[10px] text-zinc-500 leading-snug';
+  constrainNote.textContent = 'Constrained to palette — painting snaps to the nearest slot.';
+  wrap.appendChild(constrainNote);
+
   function renderSwatches(): void {
     grid.replaceChildren();
     const slots = getActivePalette().slots;
@@ -295,7 +300,9 @@ function createPaletteSection(): HTMLElement {
   }
 
   function renderConstrain(): void {
-    customRow.classList.toggle('hidden', isPaletteConstrained());
+    const on = isPaletteConstrained();
+    customRow.classList.toggle('hidden', on);
+    constrainNote.classList.toggle('hidden', !on);
   }
 
   // Don't pre-select a slot: that would override the default paint colour with
@@ -333,20 +340,8 @@ function createPickerPanel(): HTMLElement {
   // no matter how long the region list grows.
   panel.className = 'hidden z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl absolute rounded-lg w-60 max-h-[calc(100%-3.5rem)]';
 
-  // === Header: drag handle + title + \u00D7 close button ===
-  const header = document.createElement('div');
-  header.className = 'shrink-0 flex items-center justify-between gap-2 px-2.5 py-2 border-b border-zinc-700/70';
-  const headerTitle = document.createElement('div');
-  headerTitle.className = 'text-[11px] text-zinc-300 font-medium';
-  headerTitle.textContent = '\uD83C\uDFA8 Paint';
-  header.appendChild(headerTitle);
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'shrink-0 -mr-1 w-7 h-7 flex items-center justify-center rounded text-base leading-none text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 transition-colors';
-  closeBtn.title = 'Close paint menu';
-  closeBtn.setAttribute('aria-label', 'Close paint menu');
-  closeBtn.textContent = '\u00D7';
-  closeBtn.addEventListener('click', () => { togglePaintMode(); });
-  header.appendChild(closeBtn);
+  // === Header: drag handle + title + \u00D7 close button (shared tool-panel chrome) ===
+  const header = createToolPanelHeader('\uD83C\uDFA8 Paint', () => { togglePaintMode(); }, 'Close paint menu');
   panel.appendChild(header);
   attachViewportPanelDrag(header, panel);
 

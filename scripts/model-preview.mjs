@@ -11,16 +11,21 @@
 // This is a thin back-compat wrapper: the implementation now lives in
 // scripts/cli/preview.mjs and is also exposed as `partwright preview`
 // (bin/partwright.mjs). See docs/headless-cli.md.
-import { resolve, dirname, basename, join } from 'node:path';
-import { runPreview, composePng } from './cli/preview.mjs';
+import { resolve } from 'node:path';
+import { runPreview, composePng, explainComponents, checkExpectComponents, resolveViews, defaultPreviewPng } from './cli/preview.mjs';
 
 function parseArgs(argv) {
-  const a = { params: {}, size: 480, json: false, png: null, file: null };
+  const a = { params: {}, size: 480, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--json') a.json = true;
     else if (t === '--size') a.size = parseInt(argv[++i], 10);
     else if (t === '--png') a.png = argv[++i];
+    else if (t === '--lang') a.lang = argv[++i];
+    else if (t === '--view') a.view = argv[++i];
+    else if (t === '--views') a.views = argv[++i];
+    else if (t === '--explain-components') a.explain = true;
+    else if (t === '--expect-components') a.expect = argv[++i];
     else if (t === '-p' || t === '--param') { const [k, ...v] = argv[++i].split('='); a.params[k] = coerce(v.join('=')); }
     else if (!a.file && !t.startsWith('-')) a.file = t;
   }
@@ -30,9 +35,11 @@ function coerce(s) { if (s === 'true') return true; if (s === 'false') return fa
 
 async function main() {
   const a = parseArgs(process.argv.slice(2));
-  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [-p k=v]'); process.exit(2); }
+  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view az,el] [--views front,iso,…] [--explain-components] [--expect-components N] [-p k=v]'); process.exit(2); }
   const file = resolve(a.file);
-  const result = await runPreview(file, { params: a.params });
+  const { views, error: viewErr } = resolveViews(a.view, a.views);
+  if (viewErr) { console.error(viewErr); process.exit(2); }
+  const result = await runPreview(file, { params: a.params, lang: a.lang });
 
   if (!result.ok) {
     console.log(JSON.stringify({ ok: false, error: result.error, diagnostics: result.diagnostics }, null, 2));
@@ -40,11 +47,18 @@ async function main() {
   }
 
   let pngPath = null;
-  if (!a.json && result.render) {
-    pngPath = a.png ? resolve(a.png) : join(dirname(file), basename(file).replace(/\.[^.]+$/, '') + '.preview.png');
-    const img = composePng(result.render.positions, result.render.triVerts, result.render.triColors, result.render.bbox, a.size);
+  // Render the PNG unless --json was passed WITHOUT an explicit --png. (An
+  // explicit --png always wins, so `--json --png out.png` writes both — agents
+  // kept losing the image when they wanted stats and a picture together.)
+  if (result.render && (!a.json || a.png)) {
+    pngPath = a.png ? resolve(a.png) : defaultPreviewPng(file);
+    const img = composePng(result.render.positions, result.render.triVerts, result.render.triColors, result.render.bbox, a.size, views || undefined);
     await img.toFile(pngPath);
   }
   console.log(JSON.stringify({ ok: true, png: pngPath, stats: result.stats }, (_k, v) => (ArrayBuffer.isView(v) ? undefined : v), 2));
+
+  if (a.explain) console.error(explainComponents(result.stats));
+  const expectErr = checkExpectComponents(result.stats, a.expect);
+  if (expectErr) { console.error(expectErr); process.exit(1); }
 }
 main().catch((e) => { console.error('model:preview failed:', e?.stack || e?.message || e); process.exit(1); });

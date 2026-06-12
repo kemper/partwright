@@ -1,7 +1,17 @@
-# Surface Texture Operations
+# Surface Texture & Mesh Operations
 
 Post-hoc operations that add surface detail to a finished model by displacing
-vertices along their normals. Six textures are available:
+vertices along their normals.
+
+> **In-app chat tool:** the chat AI has ONE texture tool —
+> **`applySurfaceTexture(id, opts?, mode?)`** with
+> `id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'smooth'`.
+> It routes automatically: in a manifold-js session it writes the texture
+> **into the code** (`api.surface.<id>` — stays parametric); on SCAD/BREP/voxel
+> it falls back to baking (with a warning). The same auto method exists on the
+> console as `partwright.applySurfaceTexture`. The per-texture `apply*` console
+> methods below remain for external agents and for patch
+> (`selectedTriangles`) texturing. Eight textures are available:
 
 | Texture | Look | Best for |
 |---------|------|----------|
@@ -11,6 +21,106 @@ vertices along their normals. Six textures are available:
 | `applyWaffleStitch` | Recessed grid cells with raised borders | Waffle-knit, waffle irons, honeycomb patterns |
 | `applyFurVelvet` | Directional anisotropic pile (velvet, fur, chenille) | Animal fur, velvet fabric, soft plush surfaces |
 | `applyWovenFabric` | Plain-weave over/under interlacing | Baskets, woven cloth, twill, burlap |
+| `applyKnurlTexture` | Functional grip relief — diamond / straight / ribs | Knobs, thumbscrews, tool handles, grips |
+| `applyVoronoiShell` | Organic cell-wall ridge network (Voronoi cells) | Lampshades, planters, vases, cracked-mud / dragonfly-wing shells |
+| `applyKnurlTexture` | Machinist grip: diamond cross-hatch pyramids or straight splines | Knobs, handles, tool grips, bottle caps (the `api.knurl` cylinders' texture counterpart) |
+
+Two further mesh operations live in the same panel and share the same
+apply→save→verify workflow:
+
+| Operation | What it does | Notes |
+|-----------|--------------|-------|
+| `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
+| `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
+| `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
+| `engraveModel({ text, raised, through, depth, size, color, axis, side, posU, posV, curveAxis, resolution })` | **Stamps text onto the model** — recessed channels (engrave), holes cut clean through the wall (`through:true`, a stencil), or a **raised relief** (`raised:true`, emboss). `color` paints the letters. Lands on a face; `curveAxis` wraps it around a round surface (cup, tower). | Unlike the relief textures (which only displace the skin), this **removes or adds** material. Image stamps are UI-only (need local bytes); the tool handles text. See [`engraveModel`](#engravemodel) below. |
+
+> **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
+> BREP/replicad model this discards the parametric source (and, for BREP, STEP
+> export) — the returned `warnings` array says so. Prefer editing the source for
+> parametric models when the change can be expressed there.
+
+---
+
+## Textures as code — `api.surface.*` (non-baking, in a manifold-js session)
+
+The tool calls above (`applyFuzzySkin`, …) **bake** the textured mesh into
+`api.imports[0]` and replace the editor code. As an alternative, in a
+**manifold-js** session you can declare the same textures **in the model code**
+so they stay parametric — edit a number, re-render, no lost source:
+
+```js
+const { Manifold } = api;
+const body = Manifold.sphere(10, 64);
+api.surface.knit({ stitchWidth: 1.2, amplitude: 0.6 });  // texture the returned mesh
+return body;
+```
+
+- Available ops: `api.surface.fuzzy`, `.knit`, `.cable`, `.waffle`, `.fur`,
+  `.woven`, `.knurl`, `.voronoi`, `.smooth`. Each takes the **same options** as its
+  `apply*` tool (size-relative defaults fill in anything you omit). There's also
+  a generic `api.surface.apply('knit', { … })` form.
+- **`applySurfaceTextureAsCode(id, opts?)`** writes the call into the code for
+  you: it updates an existing `api.surface.<id>` call in place (or inserts one
+  before the final `return`), re-runs (computing the texture), and saves a
+  version. This is what the Surface panel's **"Apply as code"** button uses for
+  whole-model textures in manifold-js sessions — region/patch applies, voxelize,
+  voronoiLamp, and SCAD/BREP sessions still take the bake path.
+- **`applySurfaceTexture(id, opts?, mode?)`** is the auto-routing wrapper (and
+  the in-app chat AI's only texture tool): `mode: 'auto'` (default) takes the
+  in-code path on manifold-js and falls back to bake elsewhere; `'code'`/`'bake'`
+  force a path. Returns the underlying result plus `path: 'code' | 'bake'`.
+- Calls are recorded, not applied during evaluation — they texture the **final
+  returned mesh** in the order called (a terminal skin; you can chain several).
+- Surface textures are **expensive**, so they're **memoized on the BASE MESH
+  CONTENT**: a render reuses the cached textured result whenever the code
+  produces the same geometry — whitespace, comment, and refactor edits never
+  drop the textures. The compute itself runs in a dedicated Worker, so the UI
+  stays responsive while a chain applies.
+- **Saved versions keep the computed texture.** `runAndSave` / `saveVersion`
+  persist the textured mesh with the version, so reopening the session (or
+  loading the version later) renders textured immediately — no recompute, no
+  pill. Any change to the code, params, or imports invalidates it safely (the
+  chain just recomputes). Session JSON exports carry it too.
+- **Explicit runs compute the texture automatically.** A `runCode` / `runAndSave`
+  / `run` call (and the editor's Run button + version loads) force the
+  (memoized) compute and return the **textured** mesh — so an AI/console caller
+  sees the real result with no extra step. The first compute shows a progress
+  modal; repeats are instant (cache hit).
+- **Every run applies — live typing included.** A run whose chain isn't cached
+  shows an inline **"Applying texture… Xs"** status with a **Cancel** button
+  (the "Rendering… Xs" pattern) while the Worker computes; the UI stays
+  interactive throughout. Pressing **Cancel** keeps the base (untextured) mesh
+  and parks the chain behind a **"⟳ Texture stale — Re-apply"** pill (top-left);
+  press the pill — or call `ensureSurfaceTexturesApplied()` / re-run — to
+  compute it. Exporting while parked warns (UI: a confirm modal; console
+  `export*Data`: a `warning` field) because the file would carry the untextured
+  base. The Surface panel applies any parked chain automatically before its
+  previews, so previews always show modifiers on the textured model.
+- **Scoping — texture part of the model.** By default `api.surface.*` textures
+  the whole returned mesh. Add **one** of these scope keys to limit it:
+  - `label: 'name'` — texture only the triangles of an `api.label(shape, 'name',
+    …)` region. This is how you texture **one shape of a union** — label that
+    shape, union it in, then scope the op to it:
+    ```js
+    const grip = api.label(Manifold.cube([16,16,16], true).translate([-6,0,0]), 'grip');
+    const body = Manifold.sphere(9, 48).translate([7,0,0]);
+    api.surface.knurl({ label: 'grip', cellWidth: 2.4 });  // only the cube knurls
+    return grip.add(body);
+    ```
+  - `region: { point: [x,y,z], radius }` — texture every triangle whose surface
+    is within `radius` of a world-space point (e.g. one captured from a viewport
+    click). The Surface panel's **Scope → Near point** picker writes this for you
+    from a click; for code, read `getGeometryData()`'s `boundingBox`/`centroid`
+    to choose a point.
+
+  Scoping is the code-path counterpart of the bake path's `selectedTriangles`
+  patch, and the label's color carries onto the textured region automatically.
+  (Scope keys are ignored on the bake path — pass them only in manifold-js code
+  or with `applySurfaceTexture` mode `'auto'`/`'code'`.)
+- This is the in-code counterpart of the bake tools, mirroring `api.paint.*`
+  (see [colors](/ai/colors.md)). Use it when you want the texture to live with
+  the code; use the `apply*` tools when you want a one-shot baked result.
 
 ---
 
@@ -39,7 +149,7 @@ the texture (`loadVersion`) and re-applying.
 ## applyFuzzySkin
 
 ```
-applyFuzzySkin({ amplitude?, scale?, octaves?, seed?, preserveColor? })
+applyFuzzySkin({ amplitude?, scale?, octaves?, seed?, quality?, preserveColor? })
 ```
 
 Applies multi-octave value-noise (FBM) displacement along per-vertex normals.
@@ -50,6 +160,7 @@ Applies multi-octave value-noise (FBM) displacement along per-vertex normals.
 | `scale` | ~4% of diagonal | Characteristic feature size. Smaller = finer fuzz. |
 | `octaves` | 2 | Fractal layers 1–5. More = busier surface. |
 | `seed` | 1 | Different seeds → different patterns with identical params. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = smoother displacement, slower. |
 | `preserveColor` | true | Carry paint through subdivision. |
 
 **Size guidance (model diagonal `d`):**
@@ -63,7 +174,7 @@ Applies multi-octave value-noise (FBM) displacement along per-vertex normals.
 
 ```
 applyKnitTexture({ amplitude?, stitchWidth?, stitchHeight?, rowOffset?,
-                   roundness?, grainAngleDeg?, variation?, seed?, preserveColor? })
+                   roundness?, grainAngleDeg?, variation?, seed?, quality?, preserveColor? })
 ```
 
 Applies a brick-offset grid of smooth cosine bumps shaped by the V-profile of
@@ -79,6 +190,7 @@ stockinette stitch loops.
 | `grainAngleDeg` | 0 | Rotate grain in XY plane. 0 = stitches run up Z. 90 = horizontal. |
 | `variation` | 0.1 | Per-stitch amplitude jitter (0 = machine-uniform, 0.1 = handmade feel). |
 | `seed` | 1 | Deterministic seed for per-stitch variation. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = smoother displacement, slower. |
 | `preserveColor` | true | Carry paint through subdivision. |
 
 **Look guidance by `roundness`:**
@@ -92,7 +204,7 @@ stockinette stitch loops.
 
 ```
 applyCableKnit({ amplitude?, cableWidth?, cablePitch?, plyWidth?,
-                 grainAngleDeg?, variation?, seed?, preserveColor? })
+                 grainAngleDeg?, variation?, seed?, quality?, preserveColor? })
 ```
 
 Two Gaussian ply ridges cross sinusoidally within each cable column, creating
@@ -107,6 +219,7 @@ rope-like Aran/cable-knit relief.
 | `grainAngleDeg` | 0 | Rotate cable columns in the XY plane. 0 = cables run up Z. |
 | `variation` | 0.08 | Per-cable amplitude jitter. |
 | `seed` | 1 | Deterministic seed. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = smoother displacement, slower. |
 | `preserveColor` | true | Carry paint through subdivision. |
 
 **Size guidance:**
@@ -120,7 +233,7 @@ rope-like Aran/cable-knit relief.
 
 ```
 applyWaffleStitch({ amplitude?, cellWidth?, cellHeight?, sharpness?,
-                    rowOffset?, grainAngleDeg?, seed?, preserveColor? })
+                    rowOffset?, grainAngleDeg?, seed?, quality?, preserveColor? })
 ```
 
 Regular grid of recessed cells with raised border ridges. `rowOffset=0.5`
@@ -134,6 +247,7 @@ produces a honeycomb/brick variant.
 | `sharpness` | 3 | 1 = soft rounded, 3 = crisp waffle, 8+ = very thin border. |
 | `rowOffset` | 0 | 0 = straight grid; 0.5 = honeycomb offset; any value [0,1]. |
 | `grainAngleDeg` | 0 | Rotate the cell grid in the XY plane. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = smoother displacement, slower. |
 | `preserveColor` | true | Carry paint through subdivision. |
 
 **Look guidance:**
@@ -147,7 +261,7 @@ produces a honeycomb/brick variant.
 
 ```
 applyFurVelvet({ amplitude?, fiberSpacing?, fiberLength?, octaves?,
-                 grainAngleDeg?, seed?, preserveColor? })
+                 grainAngleDeg?, seed?, quality?, preserveColor? })
 ```
 
 Anisotropic FBM noise: fine sampling cross-grain (individual fiber width),
@@ -162,6 +276,7 @@ or short fur.
 | `octaves` | 2 | Fractal detail 1–4. More = finer sub-fiber variation. |
 | `grainAngleDeg` | 0 | Rotate grain direction in XY plane. 0 = fibers run up Z. |
 | `seed` | 1 | Deterministic noise seed. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = smoother displacement, slower. |
 | `preserveColor` | true | Carry paint through subdivision. |
 
 **Look guidance:**
@@ -175,7 +290,7 @@ or short fur.
 
 ```
 applyWovenFabric({ amplitude?, threadSpacing?, threadWidth?, underDepth?,
-                   grainAngleDeg?, seed?, preserveColor? })
+                   grainAngleDeg?, seed?, quality?, preserveColor? })
 ```
 
 Plain-weave interlacing: alternating warp and weft thread ridges cross at each
@@ -190,12 +305,228 @@ slightly depressed.
 | `underDepth` | 0.3 | Under-thread depression depth [0–1]. 0 = flat valleys; 1 = deep recess. |
 | `grainAngleDeg` | 0 | Rotate the weave in the XY plane. 0 = warp runs up Z. |
 | `seed` | 1 | Deterministic seed. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = smoother displacement, slower. |
 | `preserveColor` | true | Carry paint through subdivision. |
 
 **Look guidance:**
 - Open weave / burlap: `threadWidth=0.35`, `threadSpacing=d*0.05`, `underDepth=0.5`
 - Tight fabric: `threadWidth=0.65`, `threadSpacing=d*0.03`, `underDepth=0.2`
 - Basket weave: `threadWidth=0.55`, `threadSpacing=d*0.06`, `underDepth=0.4`
+
+---
+
+## applyKnurlTexture
+
+```
+applyKnurlTexture({ amplitude?, cellWidth?, cellHeight?, style?, profile?, sharpness?,
+                    grainAngleDeg?, seed?, quality?, preserveColor? })
+```
+
+Functional grip relief, displaced along surface normals. This textures **any
+existing mesh** — distinct from the `api.knurl.*` shape generator (which builds
+a whole knurled cylinder). Use it to add grip to a knob, bottle, pen barrel, or
+handle you already modeled. Region-selectable (texture only painted triangles).
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `style` | `'diamond'` | `'diamond'` (cross-hatch), `'straight'` (axial splines), `'ribs'` (horizontal rings). |
+| `profile` | `'round'` | Ridge cross-section. `'round'` = soft cosine bumps; `'pyramid'` = triangle-wave ridges → true straight-sided machinist diamonds with continuous sharp ridge lines. |
+| `amplitude` | ~2% of diagonal | Peak ridge height. |
+| `cellWidth` | ~5% of diagonal | Ridge spacing along the column axis. |
+| `cellHeight` | = cellWidth | Ridge spacing along the row (Z) axis. For square diamonds keep equal to cellWidth. |
+| `sharpness` | 2 | Ridge crispness. 1 = soft rounded, 2–4 = crisp, 6+ = sharp peaks. |
+| `grainAngleDeg` | 0 | Rotate the grid in the XY plane. |
+| `seed` | 1 | Deterministic seed (reserved). |
+| `quality` | 3 | Mesh detail 1 (draft) to 5 (ultra). Higher = smoother, slower. |
+| `preserveColor` | true | Carry paint through subdivision. |
+
+**Look guidance:**
+- Thumbscrew grip: `style='diamond'`, `cellWidth=d*0.04`, `sharpness=2`
+- Knob splines: `style='straight'`, `cellWidth=d*0.05`
+- Finger ridges: `style='ribs'`, `cellHeight=d*0.06`
+- Machinist diamonds: `style='diamond'`, `profile='pyramid'`, `sharpness=2` (straight-sided, continuous ridge lines)
+
+In-code form: `api.surface.knurl({ style:'diamond', cellWidth: 2, amplitude: 0.6 })`.
+
+---
+
+## applyVoronoiShell
+
+```
+applyVoronoiShell({ amplitude?, cellSize?, wallWidth?, raised?, jitter?,
+                    grainAngleDeg?, seed?, quality?, preserveColor? })
+```
+
+Organic cell-wall relief: a network of raised ridges tracing the boundaries
+between Voronoi cells, with flat cell interiors (cracked-mud / dragonfly-wing /
+decorative-lampshade look). Computed as a cellular (Worley F2−F1) distance field
+over jittered grid seeds, so it follows the surface like the other textures.
+
+> **This is a relief, not a cutaway.** It raises or engraves cell walls along the
+> surface; it does **not** cut through-holes to leave an open strut lattice. For
+> an actually-perforated, see-through Voronoi shell (a "Voronoi lamp"), use
+> [`applyVoronoiLamp`](#applyvoronoilamp) instead.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `amplitude` | ~3% of diagonal | Wall height. |
+| `cellSize` | ~12% of diagonal | Approx spacing between cells (~8 cells across). |
+| `wallWidth` | 0.25 | Raised-wall band width as a fraction of cellSize [0.05–0.6]. Smaller = thinner struts. |
+| `raised` | true | true = raised wall network; false = engrave the network as recessed channels. |
+| `jitter` | 1 | Cell irregularity [0–1]. 1 = full irregular Voronoi; 0 = a regular square grid. |
+| `grainAngleDeg` | 0 | Rotate the cell pattern in the XY plane. |
+| `seed` | 1 | Deterministic seed — change it to reshuffle the cell layout. |
+| `quality` | 3 | Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Higher = crisper walls, slower. |
+| `preserveColor` | true | Carry paint through subdivision. |
+
+**Look guidance:**
+- Lampshade shell: `cellSize=d*0.15`, `wallWidth=0.15`, `amplitude=d*0.04`
+- Cracked mud / dry earth: `cellSize=d*0.1`, `wallWidth=0.2`, `raised=false`
+- Regular grid (waffle-like): `jitter=0`, `cellSize=d*0.08`
+
+> Want **actual holes** (a see-through Voronoi lamp), not a raised pattern? Use
+> [`applyVoronoiLamp`](#applyvoronoilamp).
+
+---
+
+## applyVoronoiLamp
+
+```
+applyVoronoiLamp({ cellSize?, wallThickness?, strutWidth?, resolution?,
+                   jitter?, grainAngleDeg?, seed?, output?, smooth? })
+```
+
+The **cutaway** counterpart to `applyVoronoiShell`: turns a solid model into a
+true perforated Voronoi shell — a thin hollow wall with the cell interiors cut
+clean through, leaving a see-through strut network (the classic 3D-printed
+Voronoi lamp / planter).
+
+`output` chooses the form:
+- **`'mesh'` (default)** — bakes a smooth manifold-js mesh by meshing a
+  **continuous signed-distance field** (the principle behind `Manifold.levelSet`),
+  so the curved walls follow the true surface with **no voxel stair-stepping**,
+  and **no engine change**. Best for most lamps. It's a heavier operation than the
+  other textures (allow a few seconds); a thin web can fuse into a few connected
+  islands, so it stays manifold but may report `componentCount > 1`.
+- **`'voxel'`** — switches the session to the `voxel` language (paintable,
+  `.vox`-exportable, re-blockable), at the cost of a blockier look.
+
+Start from a **closed solid** (vase, sphere, vessel). It hollows + perforates in
+one step.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `cellSize` | ~10% of diagonal | Approx spacing between cells (world units). |
+| `wallThickness` | ~4% of diagonal | Shell thickness — how thick the struts are through the wall. |
+| `strutWidth` | 0.32 | Kept edge-network width as a fraction of cellSize [0.05–0.6]. Smaller = thinner struts, bigger windows. |
+| `resolution` | 110 | Field/voxel resolution along the longest axis [16–256]. **Auto-raised** so struts resolve to ≥6 cells — you rarely set it. Higher sharpens the struts (the walls are already smooth from the continuous field). |
+| `jitter` | 1 | Cell irregularity [0–1]. 1 = irregular Voronoi; 0 = a regular grid of windows. |
+| `grainAngleDeg` | 0 | Rotate the cell pattern in the XY plane. |
+| `seed` | 1 | Deterministic seed — change to reshuffle the cell layout. |
+| `watertight` | true | Keep only the largest connected web → one watertight, manifold, printable piece (drops loose fragments). Leave on for printing. |
+| `output` | `'mesh'` | `'mesh'` = smooth manifold-js mesh (no engine change); `'voxel'` = voxel engine (paintable / .vox). |
+| `smooth` | true | Voxel output only: round the struts with a smoothing pass. |
+
+**Look guidance** (defaults already look good on a typical solid — mostly tune cellSize + strutWidth):
+- Voronoi lamp: `cellSize=d*0.1`, `wallThickness=d*0.04`, `strutWidth=0.3`
+- Chunky planter: `cellSize=d*0.16`, `wallThickness=d*0.06`, `strutWidth=0.4`
+- Fine lattice: `cellSize=d*0.07`, `strutWidth=0.22`
+
+**Tips:** with `watertight` on (default) the result is manifold/printable. If
+windows don't open, lower `strutWidth` or raise `cellSize`. Resolution
+auto-raises for thin struts, so you rarely touch it. Verify with `renderViews`.
+
+---
+
+## engraveModel
+
+```
+engraveModel({ text, font?, raised?, through?, depth?, size?, color?,
+               mode?, axis?, side?, posU?, posV?, rotationDeg?,
+               curveAxis?, curveAngleDeg?, resolution?, watertight?,
+               preserveColor? })
+```
+
+**Stamps text onto the model** — recessed channels (engrave), holes cut clean
+through the wall (cut-through / stencil), or a **raised relief**
+(`raised: true`, emboss). Unlike every texture above (which only *displaces*
+the surface skin), this **removes or adds** material: the text is rasterized
+(the app's own font path, so it matches `api.text()`) and projected onto the
+model, then subtracted from — or, embossing, unioned onto — the solid. Use it
+to label / brand a part (a name on a tag, a logo plate), cut a stencil,
+perforate a sign, or add raised lettering. Start from a **slab, plate, ring, or
+cylinder**. Returns `{ ok, label, geometry, warnings? }`.
+
+It meshes a **continuous signed-distance field** like `applyVoronoiLamp`, so the
+channel walls follow the true surface with no voxel stair-stepping. A heavier op
+than the relief textures — allow a few seconds.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `text` | — | **Required.** The string to engrave/cut. |
+| `font` | `'bold'` | `'regular' \| 'bold' \| 'italic' \| 'bold-italic'`. Bold engraves more legibly. |
+| `raised` | `false` | `true` = **emboss**: raise the text `depth` above the face instead of carving it (`through` is then ignored). |
+| `through` | `false` | `false` = recess to `depth`; `true` = cut clean through the wall (stencil). |
+| `depth` | ~6% of diagonal | Engrave depth — or emboss height when `raised` — in world units (ignored when `through`). |
+| `size` | ~70% of the face | Stamp **width** in world units — how wide the text spans. |
+| `color` | — | Paint the letters for a multicolor print: `'#rrggbb'` hex or `[r,g,b]` in 0–1. Colors the raised relief (emboss) or the channel/hole walls (engrave/through); existing paint is still carried. |
+| `mode` | `'planar'` | `'planar'` = onto one flat face; `'cylindrical'` = wrap around the Z axis (rings, cups). |
+| `axis` | `'z'` | Planar only: which face axis (`'x' \| 'y' \| 'z'`). |
+| `side` | `'max'` | Planar: `'max'` (+axis face) or `'min'`. Cylindrical: `'outer'` (default) or `'inner'`. |
+| `posU` | 0.5 | Planar only: stamp center *across* the face, as a fraction [0–1] of the bbox on the first in-plane axis. 0.5 = centered; 0.25/0.75 = quarter points (the snap buttons in the UI). |
+| `posV` | 0.5 | Planar only: stamp center *up* the face, fraction [0–1] on the second in-plane axis. |
+| `rotationDeg` | 0 | Rotate the stamp in the face plane (planar) or around Z (cylindrical), degrees. |
+| `curveAxis` | `'none'` | Bend the flat stamp around a surface (planar/free). `'v'` = wrap around the **vertical** axis → text curves left↔right (around a cylinder, tower, mug); `'u'` = wrap around the **horizontal** axis → text curves up↔down (over a dome). |
+| `curveAngleDeg` | 90 | Total arc the curved stamp subtends (with `curveAxis`). The whole word spans this angle; larger = tighter wrap. |
+| `resolution` | 180 | Field resolution along the longest axis [48–256]. Raise if thin strokes look mushy. |
+| `watertight` | true | Keep only the largest connected piece — one manifold result. |
+
+**Placement:** in the **Surface panel**, type the text and press the small
+**Apply** button (typing no longer re-renders on every keystroke), then press
+**"place on model"** — a live footprint outline follows the cursor over the
+model; click to drop it on that face. Clicking a flat axis-aligned face snaps to
+that face (the position sliders + 0/25/50/75% snaps and `rotationDeg` apply);
+clicking a **sloped or curved face** lies the stamp flat on it (a "free"
+projection, positioned by the click). To wrap text around a round surface (a
+cup, a lighthouse), place it on the side then set **Curve** (`curveAxis` +
+`curveAngleDeg`). The live preview keeps the model's colors. Heavy carves drive
+the inline **"Rendering…"** status (with the toolbar Cancel link) just like a
+normal run, so you can cancel a slow carve.
+
+For a sloped/curved face from code, pass an explicit free projection (with an
+optional `curve`):
+`engraveModel({ text:'A', projection:{ mode:'free', origin:[x,y,z], normal:[nx,ny,nz], curve:{ axis:'v', angleDeg:120 } }, … })`
+— `origin` is the surface point and `normal` its outward direction.
+
+> **`cylindrical` is legacy.** The old `mode:'cylindrical'` (wrap around the
+> global Z axis) still works from code, but it guesses a single radius from the
+> bbox and misses tapered/eccentric shapes. Prefer **place-on-face + `curveAxis`**,
+> which anchors the wrap at the point you actually clicked.
+
+**Colors are preserved.** Engraving a painted model carries the existing paint
+onto the carved mesh (a spatial transfer), so a painted nameplate keeps its
+color and the channel walls take the nearest color. Pass `preserveColor:false`
+to clear instead. On top of the carry, `color` paints the stamp itself — e.g.
+`engraveModel({ text:'OPEN', raised:true, color:'#d4af37' })` gives gold raised
+letters on the existing model colors, ready for a multicolor print.
+
+**Tips:** verify with `renderViews` — check the letters are legible and (for
+`through`) the holes are open (genus rises above 0; the result stays manifold).
+If letters look mushy, raise `resolution`. Counters (the holes in O, A, B, …) are
+handled automatically — an engrave keeps the island; a cut-through drops it,
+leaving a clean ring.
+
+> **Image stamps are UI-only.** Engraving an *image* (logo, silhouette) needs
+> local image bytes, so it's available only from the **Surface** panel's Engrave
+> tab (upload an image; dark pixels cut). This tool handles **text**.
+
+### buildEngraveStamp — rasterize an ink mask
+
+`buildEngraveStamp({ text?, font?, imageUrl?, invert? })` rasterizes text (or an
+image) into an ink mask `{ mask, width, height }` — the same mask `engraveModel`
+and the Surface panel's Engrave tab consume internally. You rarely need it
+directly (pass `text` to `engraveModel` instead); it's exposed for callers that
+want to inspect or reuse the rasterized mask.
 
 ---
 

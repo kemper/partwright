@@ -67,7 +67,9 @@ test.describe('filament palette + slot painting', () => {
     expect(regions[1].color[0]).toBeLessThan(0.3);
 
     // Drop the printer capacity to 1 via the palette manager → 2 slots used now
-    // exceeds it, so the over-budget badge appears in the paint panel.
+    // exceeds it, so the over-budget badge appears in the paint panel. Opening
+    // the palette panel closes Paint (one tool panel at a time), so reopen Paint
+    // afterwards to see the badge.
     await page.locator('#palette-manager-toggle').dispatchEvent('click');
     const dialog = page.locator('[role="dialog"]');
     const capInput = dialog.locator('input[type="number"]');
@@ -75,8 +77,52 @@ test.describe('filament palette + slot painting', () => {
     await capInput.dispatchEvent('change');
     await dialog.locator('button:has-text("Done")').dispatchEvent('click');
 
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
     const badge = page.locator('#paint-picker-panel').getByText(/\/1 slots/);
     await expect(badge).toBeVisible();
+  });
+
+  test('constrain mode snaps an ad-hoc colour to the nearest slot when painting', async ({ page }) => {
+    await openEditorWithSlab(page);
+
+    // Pick an off-palette ad-hoc colour via the custom picker (pure green).
+    await page.evaluate(() => {
+      const input = document.querySelector('#paint-picker-panel input[type="color"][title="Custom color (unslotted)"]') as HTMLInputElement;
+      input.value = '#00ff00';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    // Turn on constrain mode via the palette manager (opening it closes Paint).
+    await page.locator('#palette-manager-toggle').dispatchEvent('click');
+    await page.getByRole('checkbox', { name: /Constrain painting to the palette/ })
+      .evaluate((el: HTMLInputElement) => { el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); });
+    await page.getByRole('button', { name: 'Done' }).dispatchEvent('click');
+
+    // Reopen Paint — activate() re-snaps the held-over ad-hoc colour — and the
+    // constrain note now shows in place of the custom picker.
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('#paint-picker-panel button:has-text("Bucket")').dispatchEvent('click');
+    await expect(page.locator('#paint-picker-panel').getByText(/Constrained to palette/)).toBeVisible();
+
+    await bucketPaintCentre(page);
+
+    const regions = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (window as any).partwright.listRegions();
+    });
+    expect(regions.length).toBe(1);
+    const [r, g, b] = regions[0].color as [number, number, number];
+    // NOT the off-palette green we picked…
+    expect(g > 0.9 && r < 0.1 && b < 0.1).toBe(false);
+    // …it snapped to one of the six default filament slot colours.
+    const slots: number[][] = [
+      [0xf5, 0xf5, 0xf0], [0x18, 0x18, 0x18], [0xc0, 0x25, 0x25],
+      [0xe8, 0xc0, 0x24], [0x24, 0x52, 0xc0], [0x80, 0x80, 0x80],
+    ].map(c => c.map(v => v / 255));
+    const onPalette = slots.some(s => Math.abs(s[0] - r) < 0.02 && Math.abs(s[1] - g) < 0.02 && Math.abs(s[2] - b) < 0.02);
+    expect(onPalette).toBe(true);
   });
 
   test('the palette manager opens from the viewport and its edits reach the swatches', async ({ page }) => {
@@ -158,8 +204,8 @@ test.describe('filament palette + slot painting', () => {
     await cap.dispatchEvent('change');
     await page.locator('[role="dialog"] button:has-text("Done")').dispatchEvent('click');
     await page.waitForSelector('[role="dialog"]', { state: 'detached' });
-    // Close the paint panel so it can't intercept the toolbar click.
-    await page.locator('#paint-toggle').dispatchEvent('click');
+    // Opening the palette panel already closed the paint panel (one tool panel
+    // at a time), so nothing overlaps the toolbar Export menu below.
 
     // Trigger 3MF export from the toolbar Export menu (the 3MF item is unique by
     // its Bambu description).

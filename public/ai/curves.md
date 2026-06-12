@@ -120,9 +120,39 @@ return Curves.sweep(profile, path);
 `closed: true` treats the path as a loop (no end caps, last segment wraps to
 first). Use this for torus-like sweeps.
 
+> **Shorthand:** `loft`, `sweep`, and `sweepArc` are also exposed as flat
+> aliases on `api`, so `api.loft(...)` / `api.sweep(...)` / `api.sweepArc(...)`
+> work without the `Curves.` prefix (same as `api.text`).
+
+### `Curves.sweepArc(profile, {radius, angle?, startAngle?, plane?, center?, segments?, refine?})`
+The common "curved pipe / elbow / torus section" case without hand-building a 3D
+path: traces a circular arc spine of `radius` in the chosen `plane` (`'xy'`,
+`'xz'` (default), or `'yz'`) and sweeps `profile` along it. `angle` is the sweep
+in degrees (default `90`); `startAngle` rotates where the arc begins; `center`
+moves the arc center (default `[0,0,0]`). A full `angle: 360` closes the loop
+automatically (a torus).
+
+```js
+// A 90deg elbow — a circular tube curving up in Z.
+const profile = CrossSection.circle(3, 32);
+return api.sweepArc(profile, { radius: 14, angle: 90, plane: 'xz' });
+```
+
+`Curves.sweep` (and `loft` / `sweepArc` / `revolveAxis`) return a **regular `Manifold`** —
+not some special curve type. So you can union it, subtract it, and crucially
+**`api.label()` it**: `const handle = api.label(Curves.sweep(profile, path),
+"handle")`. Label it before unioning it into the body and you can recolor the
+whole feature later with one `paintByLabel("handle", color)` call — no triangle
+coordinates to guess. (The `api.label "must be a Manifold"` error only fires for
+a `CrossSection` or a raw `Mesh`, never for a `Curves.*` result.)
+
 ### `Curves.revolveAxis(profile, axis, {angle?, segments?})`
-Like `Manifold.revolve`, but the axis can be any `[x,y,z]` direction instead of
-just +Y. Useful when the natural axis of your part is X or skew.
+`Manifold.revolve` spins the XY profile (X = radial distance, Y = height) and
+produces a **Z-up** solid — internally it revolves about Y, then remaps Y→Z, so
+the result's axis of symmetry is **+Z** (height runs +Z). `revolveAxis` is the
+same revolve with that natural +Z axis rotated to any `[x,y,z]` direction —
+useful when the natural axis of your part is X or skew. Passing `[0,0,1]` is
+identical to a plain `Manifold.revolve`.
 
 ```js
 // Revolve around the X axis instead of Y.

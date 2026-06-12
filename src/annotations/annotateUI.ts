@@ -42,6 +42,8 @@ import { setAnnotationsVisible, isAnnotationsVisible } from './annotationOverlay
 import { endSession as endSessionPlane, hidePlaneOutline } from './sessionPlane';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
+import { viewportToolsMount } from '../ui/popoverMenu';
+import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 
 const PRESET_COLORS: [number, number, number][] = [
   [0.95, 0.20, 0.45], // hot pink (default)
@@ -81,11 +83,11 @@ let restoreViewBtn: HTMLButtonElement | null = null;
 let redoBtn: HTMLButtonElement | null = null;
 let selectionInfo: HTMLElement | null = null;
 
-const inactiveBtnClass = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-const activeBtnClass = 'px-2 py-1 rounded text-xs bg-pink-500/30 backdrop-blur text-pink-200 border border-pink-400/60 transition-colors';
+const inactiveBtnClass = TOOL_TOGGLE_IDLE;
+const activeBtnClass = TOOL_TOGGLE_ACTIVE;
 
 const tabInactiveClass = 'flex-1 px-2 py-1 rounded text-[11px] bg-zinc-700/40 text-zinc-400 hover:bg-zinc-600/60 transition-colors';
-const tabActiveClass = 'flex-1 px-2 py-1 rounded text-[11px] bg-pink-500/30 text-pink-200 ring-1 ring-pink-400/60 transition-colors';
+const tabActiveClass = 'flex-1 px-2 py-1 rounded text-[11px] bg-blue-500/30 text-blue-200 ring-1 ring-blue-400/60 transition-colors';
 
 export function initAnnotateUI(controlsContainer: HTMLElement): void {
   annotateBtn = document.createElement('button');
@@ -95,16 +97,14 @@ export function initAnnotateUI(controlsContainer: HTMLElement): void {
   annotateBtn.title = 'Draw, type, or move marks pinned to a virtual plane in front of the model';
 
   countBadge = document.createElement('span');
-  countBadge.className = 'hidden ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-pink-500 text-white leading-none';
+  countBadge.className = 'hidden ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-500 text-white leading-none';
   annotateBtn.appendChild(countBadge);
 
   annotateBtn.addEventListener('click', toggleAnnotateMode);
 
-  const paintBtn = controlsContainer.querySelector('#paint-toggle');
-  const measureBtn = controlsContainer.querySelector('#measure-toggle');
-  const anchor = paintBtn ?? measureBtn;
-  if (anchor) controlsContainer.insertBefore(annotateBtn, anchor);
-  else controlsContainer.appendChild(annotateBtn);
+  // Mount the button into the Tools popover (falls back to the bar itself).
+  // Order within the popover follows init order; no sibling anchoring needed.
+  viewportToolsMount(controlsContainer).appendChild(annotateBtn);
 
   pickerPanel = createPickerPanel();
   // Parent to the viewport container (same as paint panel) so the panel can be
@@ -232,20 +232,8 @@ function createPickerPanel(): HTMLElement {
   panel.className = 'hidden absolute z-20 bg-zinc-800/95 backdrop-blur border border-zinc-600/60 rounded-lg shadow-xl';
   panel.style.minWidth = '220px';
 
-  // Header: drag handle + title + × close button.
-  const header = document.createElement('div');
-  header.className = 'flex items-center justify-between px-2.5 py-2 border-b border-zinc-700/70';
-  const headerTitle = document.createElement('div');
-  headerTitle.className = 'text-[11px] text-zinc-300 font-medium';
-  headerTitle.textContent = '✏️ Annotate';
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'text-zinc-400 hover:text-zinc-200 transition-colors leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-700/60';
-  closeBtn.textContent = '×';
-  closeBtn.title = 'Close annotate menu';
-  closeBtn.setAttribute('aria-label', 'Close annotate menu');
-  closeBtn.addEventListener('click', () => { toggleAnnotateMode(); });
-  header.appendChild(headerTitle);
-  header.appendChild(closeBtn);
+  // Header: drag handle + title + × close button (shared tool-panel chrome).
+  const header = createToolPanelHeader('✏️ Annotate', () => { toggleAnnotateMode(); }, 'Close annotate menu');
   panel.appendChild(header);
   attachViewportPanelDrag(header, panel);
 
@@ -256,7 +244,7 @@ function createPickerPanel(): HTMLElement {
 
   // Info banner — explains the purpose of annotations to the user.
   const info = document.createElement('div');
-  info.className = 'mb-2 p-2 rounded bg-pink-500/10 border border-pink-400/30 text-[10px] text-pink-200 leading-snug';
+  info.className = 'mb-2 p-2 rounded bg-blue-500/10 border border-blue-400/30 text-[10px] text-blue-200 leading-snug';
   info.textContent = 'Annotations are saved with this session and exported in the JSON. Use them to point out specific improvements for an AI working on the model.';
   content.appendChild(info);
 

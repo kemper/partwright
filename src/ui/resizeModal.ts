@@ -7,16 +7,21 @@
 
 import { registerCommands } from './commandPalette';
 import { getConfig } from '../config/appConfig';
+import { getBuildVolume } from '../geometry/printerSettings';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
+import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 
+type BBox = { x?: number[]; y?: number[]; z?: number[]; min?: number[]; max?: number[] } | null;
+
 export interface ResizeApi {
-  scaleModel(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }): Promise<ApplyResult>;
+  scaleModel(sx: number, sy: number, sz: number, opts?: { mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }): Promise<ApplyResult>;
   previewScale(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }): { ok: true } | { error: string };
   clearScalePreview(): { ok: true };
-  getGeometryData(): { boundingBox?: { min?: number[]; max?: number[] } | null } | Record<string, unknown>;
+  getGeometryData(): { boundingBox?: BBox } | Record<string, unknown>;
+  canPlaceParametric(): boolean;
   modelHasColor(): boolean;
 }
 
@@ -42,11 +47,21 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text = ''):
 
 function getBbox(api: ResizeApi): { size: [number, number, number]; min: [number, number, number]; max: [number, number, number] } | null {
   try {
-    const gd = api.getGeometryData() as { boundingBox?: { min?: number[]; max?: number[] } | null };
+    const gd = api.getGeometryData() as { boundingBox?: BBox };
     const bb = gd?.boundingBox;
-    if (bb?.min && bb?.max) {
-      const mn = bb.min as number[];
-      const mx = bb.max as number[];
+    if (!bb) return null;
+    // The geometry-data payload encodes the box as per-axis [min, max] pairs
+    // (x/y/z); accept the legacy {min, max} vector form as a fallback.
+    let mn: number[] | undefined;
+    let mx: number[] | undefined;
+    if (bb.x && bb.y && bb.z) {
+      mn = [bb.x[0], bb.y[0], bb.z[0]];
+      mx = [bb.x[1], bb.y[1], bb.z[1]];
+    } else if (bb.min && bb.max) {
+      mn = bb.min;
+      mx = bb.max;
+    }
+    if (mn && mx) {
       return {
         min: [mn[0], mn[1], mn[2]],
         max: [mx[0], mx[1], mx[2]],
@@ -62,7 +77,18 @@ function getViewportContainer(): HTMLElement {
   return (document.getElementById('clip-controls')?.offsetParent as HTMLElement | null) ?? document.body;
 }
 
-export function openResizeModal(api: ResizeApi): void {
+/** The uniform scale factor that makes a model of the given size touch — but not
+ *  exceed — the printer build volume on its most-constraining axis. Returns null
+ *  when the model has no measurable size. */
+function fitToBedFactor(size: [number, number, number], bed: [number, number, number]): number | null {
+  let f = Infinity;
+  for (let i = 0; i < 3; i++) {
+    if (size[i] > 1e-9) f = Math.min(f, bed[i] / size[i]);
+  }
+  return Number.isFinite(f) && f > 0 ? f : null;
+}
+
+export function openResizeModal(api: ResizeApi, opts?: { fitToBed?: boolean }): void {
   if (openModal) { openModal.remove(); openModal = null; currentResizeClose = null; }
 
   const bbox = getBbox(api);
@@ -81,6 +107,13 @@ export function openResizeModal(api: ResizeApi): void {
 
   let preserveColor = true;
   const hasColor = api.modelHasColor();
+  const canParametric = api.canPlaceParametric();
+  // Write-back: keep a manifold-js model editable (wrap the source in .scale)
+  // or bake the scaled mesh. Defaults to parametric when available.
+  let writeBack: 'parametric' | 'bake' = canParametric ? 'parametric' : 'bake';
+  let colorRow: HTMLElement | null = null;
+  // Preserve-colors only applies to the bake path; parametric re-runs the code.
+  const syncColorRow = () => { if (colorRow) colorRow.style.display = writeBack === 'bake' ? '' : 'none'; };
 
   let previewDirty = false;
   let previewTimer: number | undefined;
@@ -88,12 +121,12 @@ export function openResizeModal(api: ResizeApi): void {
   const container = getViewportContainer();
 
   // Absolutely positioned inside the viewport container, below the toolbar.
-  const panel = el('div', 'absolute z-[60] bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,360px)] select-none flex flex-col');
+  const panel = el('div', `${TOOL_PANEL_CLASS} text-zinc-100 w-[min(94vw,360px)] max-h-[calc(100%-3.5rem)] select-none`);
 
-  // Header — drag handle + title + × button.
-  const header = el('div', 'flex items-center justify-between px-4 py-3 border-b border-zinc-700 shrink-0');
-  header.append(el('h2', 'text-sm font-semibold', 'Resize model'));
-  const closeBtn = el('button', 'text-zinc-400 hover:text-zinc-100 text-lg leading-none cursor-pointer', '×');
+  // Header — drag handle + title + × button (shared tool-panel chrome).
+  const header = el('div', TOOL_PANEL_HEADER);
+  header.append(el('h2', TOOL_PANEL_TITLE, 'Resize model'));
+  const closeBtn = el('button', TOOL_PANEL_CLOSE, '×');
   closeBtn.setAttribute('aria-label', 'Close resize panel');
   header.append(closeBtn);
   panel.append(header);
@@ -104,12 +137,39 @@ export function openResizeModal(api: ResizeApi): void {
 
   const status = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mt-1');
 
+  // ---- Fit to print bed ----
+  // Scales uniformly so the model fits within the configured build volume. The
+  // factor is staged into the percent controls and previewed; Apply commits it,
+  // so the user always sees the result before it's saved.
+  const bed = getBuildVolume();
+  const fitRow = el('div', 'mb-4');
+  const fitBtn = el('button', 'w-full text-left px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs flex items-center gap-2');
+  fitBtn.innerHTML = `<span aria-hidden="true">▣</span><span>Fit to print bed <span class="text-zinc-500">(${bed[0]}×${bed[1]}×${bed[2]})</span></span>`;
+  fitBtn.title = 'Scale uniformly so the model fits within the printer build volume';
+  fitRow.append(fitBtn);
+  body.append(fitRow);
+
+  function applyFit() {
+    const factor = fitToBedFactor(size as [number, number, number], bed);
+    if (factor === null) { status.textContent = 'Cannot fit: model has no measurable size.'; return; }
+    mode = 'percent';
+    uniform = true;
+    uniformCheck.checked = true;
+    pctX = pctY = pctZ = factor * 100;
+    rawX = size[0] * factor; rawY = size[1] * factor; rawZ = size[2] * factor;
+    syncModeBtns();
+    renderControls();
+    schedulePreview();
+    status.textContent = `Fit to bed: ${(factor * 100).toFixed(1)}% → ${(size[0] * factor).toFixed(1)} × ${(size[1] * factor).toFixed(1)} × ${(size[2] * factor).toFixed(1)}. Apply to save.`;
+  }
+  fitBtn.addEventListener('click', applyFit);
+
   // ---- Mode toggle (% / units) ----
   const modeRow = el('div', 'flex items-center gap-2 mb-4');
   modeRow.append(el('span', 'text-xs text-zinc-400', 'Scale by'));
   const btnPct = el('button', '', '%');
   const btnUnits = el('button', '', 'Raw units');
-  const ACTIVE_TAB = 'px-2.5 py-1 rounded text-xs bg-sky-600 text-white';
+  const ACTIVE_TAB = 'px-2.5 py-1 rounded text-xs bg-blue-600 text-white';
   const IDLE_TAB = 'px-2.5 py-1 rounded text-xs bg-zinc-800 text-zinc-300 hover:bg-zinc-700';
   function syncModeBtns() {
     btnPct.className = mode === 'percent' ? ACTIVE_TAB : IDLE_TAB;
@@ -123,7 +183,7 @@ export function openResizeModal(api: ResizeApi): void {
 
   // ---- Uniform toggle ----
   const uniformRow = el('label', 'flex items-center gap-2 mb-4 text-xs text-zinc-300 cursor-pointer');
-  const uniformCheck = el('input', 'accent-sky-500');
+  const uniformCheck = el('input', 'accent-blue-500');
   uniformCheck.type = 'checkbox';
   uniformCheck.checked = uniform;
   uniformCheck.addEventListener('change', () => {
@@ -169,10 +229,40 @@ export function openResizeModal(api: ResizeApi): void {
   const axisContainer = el('div', 'space-y-3 mb-4');
   body.append(axisContainer);
 
+  // ---- Write-back mode ----
+  const modeWrap = el('div', 'flex flex-col gap-1.5 mb-3 pt-1 border-t border-zinc-800');
+  modeWrap.append(el('div', 'text-[11px] text-zinc-400 font-medium pt-2', 'Write-back'));
+  if (canParametric) {
+    const mkRadio = (value: 'parametric' | 'bake', label: string, hint: string): HTMLElement => {
+      const row = el('label', 'flex items-start gap-2 text-xs text-zinc-300 cursor-pointer');
+      const radio = el('input', 'accent-blue-500 mt-0.5');
+      radio.type = 'radio';
+      radio.name = 'resize-writeback';
+      radio.value = value;
+      radio.checked = writeBack === value;
+      radio.addEventListener('change', () => { if (radio.checked) { writeBack = value; syncColorRow(); } });
+      const txt = el('span', '');
+      txt.append(el('span', 'text-zinc-200', label));
+      txt.append(el('span', 'block text-[10px] text-zinc-500', hint));
+      row.append(radio, txt);
+      return row;
+    };
+    modeWrap.append(
+      mkRadio('parametric', 'Keep editable code', 'Wraps your model code in .scale(...) — stays parametric.'),
+      mkRadio('bake', 'Bake to mesh', 'Flattens the scaled model to a fixed mesh.'),
+    );
+  } else {
+    modeWrap.append(el('p', 'text-[11px] text-zinc-500 leading-snug',
+      hasColor
+        ? 'This model has manual paint, so the result is baked to a mesh (keeps the paint).'
+        : 'Baked to a mesh (editable-code scaling needs a manifold-js model).'));
+  }
+  body.append(modeWrap);
+
   // ---- Preserve colors checkbox (only when the model has paint) ----
   if (hasColor) {
-    const colorRow = el('label', 'flex items-center gap-2 mb-3 text-xs text-zinc-300 cursor-pointer');
-    const colorCheck = el('input', 'accent-sky-500');
+    colorRow = el('label', 'flex items-center gap-2 mb-3 text-xs text-zinc-300 cursor-pointer');
+    const colorCheck = el('input', 'accent-blue-500');
     colorCheck.type = 'checkbox';
     colorCheck.checked = preserveColor;
     colorCheck.addEventListener('change', () => {
@@ -181,6 +271,7 @@ export function openResizeModal(api: ResizeApi): void {
     });
     colorRow.append(colorCheck, el('span', '', 'Preserve colors (best-effort)'));
     body.append(colorRow);
+    syncColorRow();
   }
 
   // ---- Current size display ----
@@ -196,7 +287,7 @@ export function openResizeModal(api: ResizeApi): void {
   const footer = el('div', 'flex justify-end gap-2 px-4 pb-4 shrink-0');
   const resetBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs', 'Reset');
   const cancelBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs', 'Cancel');
-  const applyBtn = el('button', 'px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium', 'Apply');
+  const applyBtn = el('button', 'px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium', 'Apply');
   footer.append(resetBtn, cancelBtn, applyBtn);
   panel.append(footer);
 
@@ -209,7 +300,7 @@ export function openResizeModal(api: ResizeApi): void {
     labelRow.append(label, readout);
 
     const controlRow = el('div', 'flex items-center gap-2');
-    const slider = el('input', 'flex-1 accent-sky-500');
+    const slider = el('input', 'flex-1 accent-blue-500');
     slider.type = 'range';
     const numInput = el('input', 'w-20 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 text-right text-zinc-200 font-mono focus:border-blue-400 focus:outline-none text-xs');
     numInput.type = 'number';
@@ -339,7 +430,7 @@ export function openResizeModal(api: ResizeApi): void {
     status.textContent = 'Working…';
     try {
       const [sx, sy, sz] = getScaleFactors();
-      const result = await api.scaleModel(sx, sy, sz, { preserveColor });
+      const result = await api.scaleModel(sx, sy, sz, { mode: writeBack, preserveColor });
       const err = (result as { error?: string })?.error;
       if (err) {
         status.textContent = `Error: ${err}`;
@@ -362,6 +453,10 @@ export function openResizeModal(api: ResizeApi): void {
   openViewportPanel(resizeRegistryEntry);
   document.addEventListener('keydown', onResizeEscape);
   openModal = panel as HTMLDivElement;
+
+  // Opened from the "fit to print bed" command: stage the fit immediately so the
+  // user lands on a previewed result, one Apply away from saving.
+  if (opts?.fitToBed) applyFit();
 }
 
 const BTN_BASE =
@@ -376,22 +471,30 @@ export function initResizeUI(api: ResizeApi): void {
       keywords: 'scale resize dimension size transform',
       run: () => openResizeModal(api),
     },
+    {
+      id: 'resize-fit-bed',
+      title: 'Scale model to fit print bed',
+      hint: 'Modifier',
+      keywords: 'scale fit bed build volume printer shrink size resize plate',
+      run: () => openResizeModal(api, { fitToBed: true }),
+    },
   ]);
 
   const mount = () => {
     if (document.getElementById('resize-viewport-toggle')) return;
-    const anchor = document.getElementById('surface-viewport-toggle')
-      ?? document.getElementById('relief-viewport-toggle')
-      ?? document.getElementById('paint-toggle')
-      ?? document.querySelector<HTMLElement>('[id$="-viewport-toggle"]');
-    if (!anchor || !anchor.parentElement) return;
-    const btnCls = anchor.className.split(' ').filter(c => c !== 'hidden').join(' ') || BTN_BASE;
+    // Land inside the Tools popover (after Surface, if present), matching the
+    // neighbouring tool pill's styling.
+    const styleRef = document.getElementById('surface-viewport-toggle')
+      ?? document.getElementById('paint-toggle');
+    const host = document.getElementById('viewport-tools-menu') ?? styleRef?.parentElement;
+    if (!host) return;
+    const btnCls = (styleRef?.className ?? '').split(' ').filter(c => c !== 'hidden').join(' ') || BTN_BASE;
     const btn = el('button', btnCls);
     btn.id = 'resize-viewport-toggle';
     btn.textContent = '⇲ Resize';
     btn.title = 'Scale the model along X, Y, and Z';
     btn.addEventListener('click', () => openResizeModal(api));
-    anchor.after(btn);
+    host.appendChild(btn);
   };
   let tries = 0;
   const timer = setInterval(() => {

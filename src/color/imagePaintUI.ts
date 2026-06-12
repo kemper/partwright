@@ -30,9 +30,16 @@ import {
   canRedoRegion,
   redoLastRegion,
 } from './regions';
-import { getCurrentMesh as getPaintMesh } from './paintMode';
+// Read the current mesh through the paintAccessors leaf (published by paintMode)
+// rather than importing paintMode directly — same one-way dependency the drag
+// tools (boxDrag/slabDrag) use, so this stays a leaf read, not a back-edge.
+import { getCurrentMesh as getPaintMesh } from './paintAccessors';
 import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
+import { viewportToolsMount } from '../ui/popoverMenu';
+import { setInitialPanelPosition, attachViewportPanelDrag } from '../ui/viewportPanelDrag';
+import { createToolPanelHeader } from '../ui/toolPanel';
+import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { forceDeactivate as closeAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as closeAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as closeAnnotateSelect } from '../annotations/selectMode';
@@ -60,12 +67,6 @@ let pickedImageThumb: ImageData | null = null;    // downscaled for the preview 
 let previewCanvas: HTMLCanvasElement | null = null;
 let previewCtx: CanvasRenderingContext2D | null = null;
 let sourceLabel: HTMLElement | null = null;
-
-// Panel drag state
-let dragAnchorX = 0;
-let dragAnchorY = 0;
-let panelLeft = -1; // -1 = not yet dragged (use CSS right: 8px)
-let panelTop = 48;
 
 // Settings state
 let opts: {
@@ -147,14 +148,15 @@ export function initImagePaintUI(controlsContainer: HTMLElement): void {
 
   imagePaintBtn.addEventListener('click', toggleImagePaint);
 
-  // Insert right after the paint toggle button
-  const paintBtn = controlsContainer.querySelector('#paint-toggle');
+  // Insert right after the paint toggle button, within the Tools popover (or the
+  // bar itself as fallback). insertBefore needs the same parent as the reference
+  // node, so anchor off whichever container actually holds the paint button.
+  const toolsMount = viewportToolsMount(controlsContainer);
+  const paintBtn = toolsMount.querySelector('#paint-toggle');
   if (paintBtn?.nextSibling) {
-    controlsContainer.insertBefore(imagePaintBtn, paintBtn.nextSibling);
-  } else if (paintBtn) {
-    controlsContainer.appendChild(imagePaintBtn);
+    toolsMount.insertBefore(imagePaintBtn, paintBtn.nextSibling);
   } else {
-    controlsContainer.appendChild(imagePaintBtn);
+    toolsMount.appendChild(imagePaintBtn);
   }
 
   panel = buildPanel();
@@ -177,6 +179,7 @@ function toggleImagePaint(): void {
   } else {
     // Close conflicting modes
     deactivateMode('paint');
+    deactivateMode('voxelStudio');
     closeSimplifyMenu();
     closeAnnotate();
     closeAnnotateText();
@@ -185,10 +188,33 @@ function toggleImagePaint(): void {
   }
 }
 
+/** Registry entry so opening any other tool panel closes Image Paint, and
+ *  opening Image Paint closes whatever else is open (single panel at a time). */
+const imagePanelEntry = { close: (): void => { if (isOpen) closePanel(); } };
+
+function onImagePaintEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  // Let a centered dialog (e.g. a confirm) consume Escape first.
+  if (document.querySelector('[role="dialog"]')) return;
+  if (isOpen) closePanel();
+}
+
 function openPanel(): void {
   isOpen = true;
   imagePaintBtn!.className = btnClass(true);
+  openViewportPanel(imagePanelEntry); // close any other open tool panel
   panel?.classList.remove('hidden');
+  // Desktop: dock beneath the toolbar (or the open Tools menu), right-aligned —
+  // same as every other tool panel. Mobile: a bottom sheet positioned by its
+  // inset-x classes, so clear any inline offsets left from a desktop session.
+  if (panel) {
+    if (window.matchMedia('(min-width: 768px)').matches) {
+      setInitialPanelPosition(panel);
+    } else {
+      panel.style.top = ''; panel.style.right = ''; panel.style.left = ''; panel.style.bottom = '';
+    }
+  }
+  document.addEventListener('keydown', onImagePaintEscape);
   updateStampMode();
 }
 
@@ -196,6 +222,8 @@ function closePanel(): void {
   isOpen = false;
   imagePaintBtn!.className = btnClass(false);
   panel?.classList.add('hidden');
+  document.removeEventListener('keydown', onImagePaintEscape);
+  closeViewportPanel(imagePanelEntry);
   updateStampMode();
 }
 
@@ -325,55 +353,86 @@ function updatePreviewLines(
 
 function executeStamp(hitPoint: [number, number, number], hitNormal: [number, number, number]): void {
   if (!pickedImageData) return;
-
-  const stampOpts: StampImageOptions = {
+  const maxEdge = stampDetail > 0 ? stampSize / stampDetail : 0;
+  runStamp({
+    imageData: pickedImageData,
     hitPoint,
     hitNormal,
     size: stampSize,
     rotationDeg: stampRotation,
-    preprocess: { ...opts.preprocess },
+    smooth: stampSmooth && maxEdge > 0,
+    maxEdge,
     removeBackground: opts.removeBackground,
-    manualBgColor: opts.manualBgColor ? [...opts.manualBgColor] as [number, number, number] : undefined,
+    manualBgColor: opts.manualBgColor,
+    preprocess: opts.preprocess,
+  });
+}
+
+interface StampRun {
+  imageData: ImageData;
+  hitPoint: [number, number, number];
+  hitNormal: [number, number, number];
+  size: number;
+  rotationDeg: number;
+  /** Subdivide the stamp footprint for crisp detail (uses the smooth callback). */
+  smooth: boolean;
+  /** Target triangle edge length when smoothing (stampSize / detail-rows). */
+  maxEdge: number;
+  removeBackground: boolean;
+  manualBgColor?: [number, number, number];
+  preprocess: PreprocessOptions;
+  name?: string;
+}
+
+/** Shared stamp core: compute the per-triangle colours (smooth-subdivided when
+ *  asked, else flat on the current mesh) and commit them as an `imagePaint`
+ *  region. Used by both the click-driven UI (executeStamp) and the programmatic
+ *  `stampImageProgrammatic` API. Returns the committed region summary, or null
+ *  when nothing was painted (empty footprint / no mesh). */
+function runStamp(r: StampRun): { name: string; triangles: number; avgColor: [number, number, number] } | null {
+  const stampOpts: StampImageOptions = {
+    hitPoint: r.hitPoint,
+    hitNormal: r.hitNormal,
+    size: r.size,
+    rotationDeg: r.rotationDeg,
+    preprocess: { ...r.preprocess },
+    removeBackground: r.removeBackground,
+    manualBgColor: r.manualBgColor ? [...r.manualBgColor] as [number, number, number] : undefined,
     bgTolerance: 36 * 36 * 3,
   };
 
   let result: ImagePaintResult;
-
-  // Convert the size-independent Detail level (triangle rows across the stamp)
-  // into an absolute target edge length for the subdivision. Stored on the
-  // descriptor so a reloaded session reproduces the same tessellation regardless
-  // of how the slider is later expressed.
-  const maxEdge = stampDetail > 0 ? stampSize / stampDetail : 0;
-
-  if (stampSmooth && maxEdge > 0 && smoothStampCb) {
+  const useSmooth = r.smooth && r.maxEdge > 0 && !!smoothStampCb;
+  if (useSmooth) {
     // Smooth mode: callback subdivides the stamp footprint to maxEdge (confined
     // to the stamp square), then stamps on the fine mesh — giving crisp detail.
-    const refined = smoothStampCb(pickedImageData, stampOpts, maxEdge);
-    if (!refined || refined.result.entries.length === 0) return;
+    const refined = smoothStampCb!(r.imageData, stampOpts, r.maxEdge);
+    if (!refined || refined.result.entries.length === 0) return null;
     result = refined.result;
   } else {
     const mesh = getPaintMesh();
-    if (!mesh) return;
-    result = stampImageOntoMesh(mesh, pickedImageData, stampOpts);
-    if (result.entries.length === 0) return;
+    if (!mesh) return null;
+    result = stampImageOntoMesh(mesh, r.imageData, stampOpts);
+    if (result.entries.length === 0) return null;
   }
 
   stampCounter++;
+  const name = r.name ?? `Stamp ${stampCounter}`;
   const triangles = new Set(result.perTriColors.keys());
   const commit = () => addRegion(
-    `Stamp ${stampCounter}`,
+    name,
     result.avgColor,
     'imagePaint',
     {
       kind: 'imagePaint',
-      entries: stampSmooth ? [] : result.entries,
+      entries: useSmooth ? [] : result.entries,
       avgColor: result.avgColor,
-      ...(stampSmooth ? {
-        smooth: true, maxEdge,
-        hitPoint, hitNormal, stampSize, rotationDeg: stampRotation,
-        imageDataUrl: compactImageDataUrl(pickedImageData!),
-        removeBackground: opts.removeBackground,
-        ...(opts.manualBgColor ? { manualBgColor: opts.manualBgColor } : {}),
+      ...(useSmooth ? {
+        smooth: true, maxEdge: r.maxEdge,
+        hitPoint: r.hitPoint, hitNormal: r.hitNormal, stampSize: r.size, rotationDeg: r.rotationDeg,
+        imageDataUrl: compactImageDataUrl(r.imageData),
+        removeBackground: r.removeBackground,
+        ...(r.manualBgColor ? { manualBgColor: r.manualBgColor } : {}),
         bgTolerance: 36 * 36 * 3,
       } : {}),
     },
@@ -386,6 +445,51 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
   // so adding the stamp can't trigger a mesh rebuild that drops it or existing paint.
   if (stampCommitHook) stampCommitHook(commit);
   else commit();
+  return { name, triangles: triangles.size, avgColor: result.avgColor };
+}
+
+export interface ProgrammaticStampParams {
+  /** Stamp centre on the surface (world coords). */
+  hitPoint: [number, number, number];
+  /** Outward face direction at the stamp centre. */
+  hitNormal: [number, number, number];
+  /** Stamp diameter in world units. */
+  size: number;
+  rotationDeg?: number;
+  /** Triangle rows across the stamp; >0 subdivides for crisp detail (default
+   *  96, matching the UI). 0 = flat stamp on the existing tessellation. */
+  detail?: number;
+  removeBackground?: boolean;
+  manualBgColor?: [number, number, number];
+  preprocess?: PreprocessOptions;
+  /** Region label; defaults to "Stamp N". */
+  name?: string;
+}
+
+/** Stamp `imageData` onto the current mesh programmatically — the engine behind
+ *  the Image-paint tool, exposed so `window.partwright.paintImage` can drive it
+ *  without a click. Mirrors the UI's executeStamp but takes explicit params
+ *  instead of panel state. Returns the committed region summary or null. */
+export function stampImageProgrammatic(
+  imageData: ImageData,
+  params: ProgrammaticStampParams,
+): { name: string; triangles: number; avgColor: [number, number, number] } | null {
+  const size = params.size;
+  const detail = params.detail ?? 96;
+  const maxEdge = detail > 0 ? size / detail : 0;
+  return runStamp({
+    imageData,
+    hitPoint: params.hitPoint,
+    hitNormal: params.hitNormal,
+    size,
+    rotationDeg: params.rotationDeg ?? 0,
+    smooth: maxEdge > 0,
+    maxEdge,
+    removeBackground: params.removeBackground ?? true,
+    manualBgColor: params.manualBgColor,
+    preprocess: params.preprocess ?? defaultPreprocess(),
+    name: params.name,
+  });
 }
 
 // ─── Panel construction ───────────────────────────────────────────────────────
@@ -401,55 +505,10 @@ function buildPanel(): HTMLElement {
     'md:inset-x-auto md:bottom-auto md:left-auto md:right-2 md:top-12 md:w-64 md:max-h-[calc(100%-3.5rem)] md:rounded-lg',
   ].join(' ');
 
-  // ── Header / drag handle ──
-  const header = document.createElement('div');
-  header.className = 'shrink-0 flex items-center justify-between gap-2 px-2.5 py-2 border-b border-zinc-700/70 cursor-grab active:cursor-grabbing select-none';
-  header.title = 'Drag to reposition';
-
-  const titleEl = document.createElement('div');
-  titleEl.className = 'text-[11px] text-zinc-300 font-medium';
-  titleEl.textContent = '🖼️ Image Paint';
-  header.appendChild(titleEl);
-
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'shrink-0 -mr-1 w-7 h-7 flex items-center justify-center rounded text-base leading-none text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 transition-colors';
-  closeBtn.title = 'Close image paint panel';
-  closeBtn.setAttribute('aria-label', 'Close');
-  closeBtn.textContent = '✕';
-  closeBtn.addEventListener('click', toggleImagePaint);
-  header.appendChild(closeBtn);
-
-  // Drag-to-move
-  header.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0 || !el) return;
-    // Don't capture drag when the user is clicking an interactive child (e.g. the
-    // close button) — setPointerCapture + preventDefault would swallow the click.
-    if ((e.target as HTMLElement).closest('button')) return;
-    const rect = el.getBoundingClientRect();
-    // Initialize absolute left/top from current render position on first drag
-    if (panelLeft < 0) {
-      panelLeft = rect.left;
-      panelTop = rect.top;
-      el.style.right = '';
-      el.style.top = '';
-    }
-    dragAnchorX = e.clientX - panelLeft;
-    dragAnchorY = e.clientY - panelTop;
-    header.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  });
-  header.addEventListener('pointermove', (e) => {
-    if (!header.hasPointerCapture(e.pointerId) || !el) return;
-    panelLeft = e.clientX - dragAnchorX;
-    panelTop = e.clientY - dragAnchorY;
-    el.style.left = `${panelLeft}px`;
-    el.style.top = `${panelTop}px`;
-  });
-  header.addEventListener('pointerup', (e) => {
-    if (header.hasPointerCapture(e.pointerId)) header.releasePointerCapture(e.pointerId);
-  });
-
+  // ── Header / drag handle (shared tool-panel chrome) ──
+  const header = createToolPanelHeader('🖼️ Image Paint', toggleImagePaint, 'Close image paint panel');
   el.appendChild(header);
+  attachViewportPanelDrag(header, el);
 
   // ── Scrollable content ──
   const content = document.createElement('div');

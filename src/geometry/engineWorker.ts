@@ -21,7 +21,7 @@
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
-//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema, workerMs }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
 //   { type: 'exportSTEP_result',       callId, blob, error }
@@ -47,7 +47,7 @@ import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
 import type { Language } from './engines/types';
-import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, type SimplifyResult, type EnhanceResult } from './simplify';
+import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, isEnhanceExceeded, type SimplifyResult, type EnhanceResult, type EnhanceExceeded } from './simplify';
 import type { MeshData } from './types';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
@@ -127,8 +127,15 @@ self.onmessage = async (event: MessageEvent) => {
       // most-recently-started run, whose result the main thread keeps, sets the
       // override last and so always reads the correct value.
       if (typeof circularSegments === 'number') setCircularSegmentsOverride(circularSegments);
-      // Populate the per-run import registry so api.imports works in user code.
-      setActiveImports(imports ?? []);
+      // Snapshot this run's imports. `setActiveImports` writes a module-global
+      // registry, and the lazy-init / font / BREP-preload awaits below yield the
+      // event loop — so a second `execute` message arriving mid-init would
+      // overwrite the registry out from under this run, and the engine (which
+      // reads getActiveImports() synchronously at the top of its evaluation)
+      // would then tessellate with the wrong imports. Install the snapshot at
+      // the last synchronous moment before each engine reads it, after the
+      // awaits, instead of here — closing that interleaving window.
+      const runImports = imports ?? [];
 
       const effectiveLang: Language =
         lang === 'scad' ? 'scad' :
@@ -138,10 +145,12 @@ self.onmessage = async (event: MessageEvent) => {
       let result;
       if (effectiveLang === 'voxel') {
         // Pure-JS voxel meshing — no WASM, no lazy init, synchronous.
+        setActiveImports(runImports);
         result = voxelEngine.run(code as string, params ?? undefined);
       } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
+        setActiveImports(runImports);
         // Preview callback: post the rough mesh to the main thread so it can
         // update the viewport immediately while Phase 2 (full quality) runs.
         const onScadPreview = (previewResult: { mesh: import('./types').MeshData | null }) => {
@@ -160,6 +169,7 @@ self.onmessage = async (event: MessageEvent) => {
         // Full replicad-language session — lazy-init OCCT then evaluate as
         // BREP. Tessellation happens inside the engine before returning.
         if (!replicadEngine.isReady()) await replicadEngine.init();
+        setActiveImports(runImports);
         result = await runReplicadAsync(code as string, params ?? undefined);
       } else {
         if (!manifoldReady) {
@@ -177,11 +187,14 @@ self.onmessage = async (event: MessageEvent) => {
         if (sourceUsesBrep(code as string)) {
           await ensureBrepLoaded();
         }
-        // Pre-load Liberation Sans fonts if the code calls api.text / api.textSection.
+        // Pre-load Liberation Sans fonts if the code calls api.text / api.textSection,
+        // or uses api.fasteners (clearanceCoupon engraves text labels internally) —
+        // including via its deprecated api.printFit alias, kept for old sessions.
         // Same lazy-load pattern as BREP — fonts are cached after the first run.
-        if (sourceUsesManifoldText(code as string)) {
+        if (sourceUsesManifoldText(code as string) || /\bapi\.(?:fasteners|printFit)\b/.test(code as string) || /[{,]\s*(?:fasteners|printFit)\s*[,}]/.test(code as string)) {
           await preloadTextFonts();
         }
+        setActiveImports(runImports);
         result = manifoldJsEngine.run(code as string, params ?? undefined);
       }
 
@@ -194,6 +207,11 @@ self.onmessage = async (event: MessageEvent) => {
         ? Array.from(result.labelColors.entries())
         : null;
       const lostLabels = result.lostLabels ?? null;
+      // api.paint.* operations declared in code — already plain serialisable
+      // objects ({ name, color, descriptor }), so they cross as-is.
+      const paintOps = result.paintOps ?? null;
+      // api.surface.* ops — plain serialisable { id, params } objects, cross as-is.
+      const surfaceOps = result.surfaceOps ?? null;
       const paramsSchema = result.paramsSchema ?? null;
       // Heap high-water for manifold-js runs (other engines own separate heaps).
       const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
@@ -215,7 +233,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts },
           transfer,
         );
       } else {
@@ -362,7 +380,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── enhance ────────────────────────────────────────────────────────────
   if (msg.type === 'enhance') {
-    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength, maxTriangles } = msg as unknown as {
       callId: string;
       mesh: MeshData;
       targetTriangles: number;
@@ -372,6 +390,10 @@ self.onmessage = async (event: MessageEvent) => {
       // size" knob. Splits only edges longer than this, so the larger triangles
       // densify first.
       edgeLength?: number;
+      // Hard ceiling on the refined triangle count — the Worker refuses to
+      // return a mesh larger than this so a runaway refine can't freeze the
+      // main thread when the result is committed.
+      maxTriangles?: number;
     };
     if (!manifoldReady) {
       self.postMessage({
@@ -386,12 +408,13 @@ self.onmessage = async (event: MessageEvent) => {
     try {
       baseManifold = mod.Manifold.ofMesh(mesh);
       const direct = typeof edgeLength === 'number' && edgeLength > 0;
-      let result: EnhanceResult | null;
+      let result: EnhanceResult | EnhanceExceeded | null;
       if (direct) {
         self.postMessage({ type: 'enhance_progress', callId, fraction: 0 });
         result = refineToEdgeLength(
           baseManifold as unknown as Parameters<typeof refineToEdgeLength>[0],
           edgeLength,
+          maxTriangles,
         );
         self.postMessage({ type: 'enhance_progress', callId, fraction: 1 });
       } else {
@@ -404,6 +427,7 @@ self.onmessage = async (event: MessageEvent) => {
             return new Promise<void>(r => setTimeout(r, 0));
           },
           () => enhanceCancelFlags.get(callId) === true,
+          maxTriangles,
         );
       }
       const cancelled = enhanceCancelFlags.get(callId) === true;
@@ -412,6 +436,13 @@ self.onmessage = async (event: MessageEvent) => {
         self.postMessage({
           type: 'enhance_result', callId, mesh: null, triangleCount: 0,
           cancelled: true, error: null,
+        });
+      } else if (result && isEnhanceExceeded(result)) {
+        // Refused: the refine would exceed the hard cap. Report the count with
+        // no mesh so the main thread can warn without ever committing it.
+        self.postMessage({
+          type: 'enhance_result', callId, mesh: null, triangleCount: result.triangleCount,
+          cancelled: false, exceeded: true, error: null,
         });
       } else if (result) {
         const transfer: Transferable[] = [

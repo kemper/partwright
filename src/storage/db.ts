@@ -23,6 +23,20 @@ export interface Session {
    *  from the AI types) and `preset` mirrors the settings preset. Sessions saved
    *  before this field gains `toggles` simply restore provider/model only. */
   aiPreference?: { provider: string; model: string; toggles?: Record<string, unknown>; preset?: string };
+  /** Pinned thumbnail camera angle (degrees). When set, captured thumbnails
+   *  (catalog tiles, gallery, version snapshots) render from this azimuth /
+   *  elevation instead of the default iso 3/4 view — so a faced model can show
+   *  its front in the tile without baking orientation into the geometry. Set
+   *  via `partwright.setThumbnailCamera({ azimuth, elevation })`; absent ⇒ the
+   *  default iso view. Persisted so re-bakes and reloads reuse the angle. */
+  thumbCamera?: { azimuth: number; elevation: number };
+  /** Persisted interactive working-view camera (world-space position + orbit
+   *  target). Unlike `thumbCamera` (which only steers thumbnail capture), this
+   *  records the angle/zoom the user last orbited the live viewport to, so it
+   *  survives reload / reopening the session instead of snapping back to the
+   *  default 3/4 framing. Written (debounced) when the user finishes an orbit;
+   *  restored on session open. Absent ⇒ auto-frame on open. */
+  workCamera?: { position: [number, number, number]; target: [number, number, number] };
 }
 
 /** A modeling target within a session. A session holds one or more parts; each
@@ -117,6 +131,16 @@ export interface Version {
    *  `include <models.scad>` inside the main code resolves at compile time.
    *  Only present for SCAD sessions that need companion files. */
   companionFiles?: Record<string, string>;
+  /** Computed `api.surface.*` texture result (full-chain memo key + textured
+   *  mesh) persisted at save time, so reopening the version renders textured
+   *  immediately instead of recomputing the chain — and so the texture's
+   *  appearance is pinned to what the user saw when they saved. Shape is
+   *  `PersistedSurfaceTexture` (`src/surface/surfaceOpSpec.ts`); kept as
+   *  `unknown` here to preserve db-layer isolation (typed arrays survive
+   *  IndexedDB's structured clone as-is). Absent on versions saved before this
+   *  field existed or without in-code textures — loaders must treat absence as
+   *  "recompute on demand". */
+  surfaceTexture?: unknown;
   /** The version this was derived from. Set when a mesh-capture operation
    *  (simplify, enhance, paint-bake, import) creates a child version from an
    *  existing parametric version. Absent for versions created from scratch.
@@ -586,7 +610,7 @@ export function legacyImagesObjectToArray(obj: LegacyImagesObject): AttachedImag
   return result;
 }
 
-export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference'>>): Promise<void> {
+export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference' | 'thumbCamera' | 'workCamera'>>): Promise<void> {
   const store = await tx('sessions', 'readwrite');
   // Read-modify-write inside one transaction: queue the put from the get's
   // callback (awaiting between them risks auto-commit), then await oncomplete.
@@ -769,6 +793,8 @@ export async function saveVersion(
   parentVersionId?: string | null,
   /** The operation that produced this version. */
   operation?: VersionOperation | null,
+  /** Computed `api.surface.*` texture (key + mesh) — see {@link Version.surfaceTexture}. */
+  surfaceTexture?: unknown,
 ): Promise<Version> {
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
@@ -809,6 +835,7 @@ export async function saveVersion(
         ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
         ...(parentVersionId ? { parentVersionId } : {}),
         ...(operation ? { operation } : {}),
+        ...(surfaceTexture ? { surfaceTexture } : {}),
       };
       const putReq = store.put(v);
       putReq.onsuccess = () => resolve(v);

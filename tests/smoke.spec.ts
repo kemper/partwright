@@ -48,18 +48,19 @@ test.describe('AI chat panel', () => {
     // a COI service-worker reload / WASM boot on the default Interactive tab.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
 
-    // The drawer opens by default on a fresh visit.
-    await expect(page.locator('#ai-panel')).toBeVisible();
-    // Close via the ✕, then reopen via the rail button.
-    await page.click('#ai-panel button:has-text("✕")');
+    // The drawer starts closed on a fresh visit — it only opens when the user
+    // reaches for it via the rail button.
     await expect(page.locator('#ai-panel')).toBeHidden();
     await page.click('#btn-ai');
     await expect(page.locator('#ai-panel')).toBeVisible();
-    // Disconnected → reopening via the rail also surfaces the AI Settings modal
+    // Disconnected → opening via the rail also surfaces the AI Settings modal
     // (the connect flow). Dismiss it to leave a clean state.
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeHidden();
+    // Toggling the rail again closes it.
+    await page.click('#btn-ai');
+    await expect(page.locator('#ai-panel')).toBeHidden();
   });
 
   test('connected: reopening via the rail opens the panel with no settings modal', async ({ page }) => {
@@ -84,9 +85,7 @@ test.describe('AI chat panel', () => {
         open.onerror = () => reject(open.error);
       });
     });
-    // Panel is open by default; close it, then reopen via the rail.
-    await expect(page.locator('#ai-panel')).toBeVisible();
-    await page.click('#ai-panel button:has-text("✕")');
+    // Panel starts closed; open it via the rail.
     await expect(page.locator('#ai-panel')).toBeHidden();
     await page.click('#btn-ai');
     await expect(page.locator('#ai-panel')).toBeVisible();
@@ -94,9 +93,21 @@ test.describe('AI chat panel', () => {
   });
 
   test('code pane defaults hidden when the AI drawer is open, and respects an explicit Show code', async ({ page }) => {
-    // First visit: drawer opens by default, so the code pane should NOT
-    // compete with it for screen real estate. The "▶ Show code" expand
-    // button only shows when the editor group is collapsed.
+    // With the AI drawer open, the code pane should NOT compete with it for
+    // screen real estate, so it defaults collapsed (`editorCollapsed ??
+    // drawerOpen`). The drawer no longer opens on a fresh visit, so seed the
+    // remembered-open preference to exercise that path. The "▶ Show code"
+    // expand button only shows when the editor group is collapsed.
+    // Seed only on the very first load — addInitScript re-runs on every
+    // navigation, so guard it or the reload below would clobber the
+    // editorCollapsed=false that the "Show code" click persists.
+    await page.addInitScript(() => {
+      try {
+        if (!localStorage.getItem('partwright-ai-settings-v1')) {
+          localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ drawerOpen: true }));
+        }
+      } catch { /* ignore */ }
+    });
     await page.goto('/editor');
     await page.waitForSelector('#btn-ai');
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
@@ -117,18 +128,26 @@ test.describe('AI chat panel', () => {
     await expect(page.locator('.cm-content')).toBeVisible();
   });
 
-  test('drawer close state persists across reload', async ({ page }) => {
-    // The drawer opens by default, but the user's choice is remembered: once
-    // they close it, the stored drawerOpen=false keeps it closed on reload.
+  test('drawer open/close state persists across reload', async ({ page }) => {
+    // The drawer starts closed on a fresh visit, and the user's choice is
+    // remembered both ways: open it and the stored drawerOpen=true keeps it
+    // open on reload; close it and drawerOpen=false keeps it closed.
     await page.goto('/editor');
     await page.waitForSelector('#btn-ai');
     // Wait for full editor init (console API ready) so the click doesn't race
     // a COI service-worker reload / WASM boot on the default Interactive tab.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
-    await expect(page.locator('#ai-panel')).toBeVisible();
-    await page.click('#ai-panel button:has-text("✕")');
     await expect(page.locator('#ai-panel')).toBeHidden();
 
+    // Open it; the remembered-open preference survives a reload.
+    await openAiPanel(page);
+    await page.reload();
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await expect(page.locator('#ai-panel')).toBeVisible();
+
+    // Close it; the remembered-closed preference survives a reload.
+    await page.click('#ai-panel button:has-text("✕")');
+    await expect(page.locator('#ai-panel')).toBeHidden();
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
     await expect(page.locator('#ai-panel')).toBeHidden();
@@ -180,9 +199,9 @@ test.describe('AI chat panel', () => {
     await expect(page.locator('input[type="password"]')).toBeVisible();
     await expect(page.locator('button:has-text("Connect Anthropic API")')).toBeVisible();
 
-    // Done closes the modal; no key was persisted. The AI control now lives in
+    // Close closes the modal; no key was persisted. The AI control now lives in
     // the rail and shows the disconnected state via its status dot (grey).
-    await page.locator('.bg-zinc-800.rounded-xl button:text-is("Done")').click();
+    await page.locator('.bg-zinc-800.rounded-xl button:text-is("Close")').click();
     await expect(page.locator('input[type="password"]')).toHaveCount(0);
     await expect(page.locator('#ai-status-dot')).toHaveClass(/bg-zinc-500/);
   });
@@ -234,7 +253,7 @@ test.describe('AI chat panel', () => {
   test('toggle pills carry tooltips explaining what they do', async ({ page }) => {
     await page.goto('/editor');
     await openAiPanel(page);
-    const pillNames = ['📸 Auto-render', '▶ Run', '💾 Save', '🎨 Paint'];
+    const pillNames = ['📸 Auto-render', '▶ Run', '💾 Save', '🎨 Paint', '🖨 3D-printable'];
     for (const name of pillNames) {
       const pill = page.locator('#ai-panel button', { hasText: name });
       await expect(pill).toBeVisible();
@@ -243,6 +262,50 @@ test.describe('AI chat panel', () => {
       expect(title!.length).toBeGreaterThan(20);
       expect(title!.toLowerCase()).toMatch(/on|off|click/);
     }
+  });
+
+  test('the 3D-printable pill is ON by default and flips off', async ({ page }) => {
+    await page.goto('/editor');
+    await openAiPanel(page);
+    const pill = page.locator('#ai-panel button', { hasText: /🖨 3D-printable/ });
+    await expect(pill).toBeVisible();
+    // Default-on: standard preset ships printOptimized: true, so a fresh
+    // session presents the pill pressed.
+    await expect(pill).toHaveAttribute('aria-pressed', 'true');
+    await pill.dispatchEvent('click');
+    await expect(pill).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  test('the system-prompt bubble shows the prompt and updates with the 3D-printable pill', async ({ page }) => {
+    await page.goto('/editor');
+    await openAiPanel(page);
+    const bubble = page.locator('#ai-transcript details[data-system-prompt-box]');
+    await expect(bubble).toBeVisible();
+    // Expand it; the body fills async from the same assembly the chat loop uses.
+    await bubble.locator('summary').click();
+    const body = bubble.locator('pre');
+    await expect(body).toContainText('Design for 3D printing', { timeout: 15000 });
+    // Flipping the pill OFF must drop the guidance from the live preview without
+    // a full page reload (applyToggleChange refreshes the bubble in place).
+    await page.locator('#ai-panel button', { hasText: /🖨 3D-printable/ }).dispatchEvent('click');
+    await expect(body).not.toContainText('Design for 3D printing', { timeout: 15000 });
+  });
+
+  test('3D-printable toggle injects FDM design guidance into the system suffix', async ({ page }) => {
+    await page.goto('/editor');
+    const result = await page.evaluate(async () => {
+      const { loadSettings } = await import('/src/ai/settings.ts');
+      const { toggleSuffix } = await import('/src/ai/systemPrompt.ts');
+      const base = loadSettings().toggles;
+      const on = toggleSuffix({ ...base, printOptimized: true, planFirst: false });
+      const off = toggleSuffix({ ...base, printOptimized: false, planFirst: false });
+      return {
+        onHas: on.includes('Design for 3D printing') && on.includes('45°'),
+        offHas: off.includes('Design for 3D printing'),
+      };
+    });
+    expect(result.onHas).toBe(true);
+    expect(result.offHas).toBe(false);
   });
 
   test('the AI drawer (and app bundle) does not load on the landing route', async ({ page }) => {

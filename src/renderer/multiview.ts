@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { createWhiteMaterial, createBlackWireframeMaterial, createCreaseEdgeMaterial } from './materials';
 import type { MeshData } from '../geometry/types';
-import { buildStrokesGroup, disposeStrokesGroup } from '../annotations/annotationOverlay';
+import { buildOffscreenOverlay, disposeOffscreenOverlay } from './viewportRegistry';
 import { presetIndex } from '../storage/db';
 import { CREASE_ANGLE_DEG, resolveEdgeMode, type EdgeMode } from './edgeMode';
 import { getConfig } from '../config/appConfig';
@@ -22,7 +22,7 @@ export const STANDARD_VIEWS = {
   front: { label: 'Front', elevation: 0,  azimuth: 0,   ortho: true  },
   right: { label: 'Right', elevation: 0,  azimuth: 90,  ortho: true  },
   top:   { label: 'Top',   elevation: 90, azimuth: 0,   ortho: true  },
-  iso:   { label: 'Iso',   elevation: 35, azimuth: 135, ortho: false },
+  iso:   { label: 'Iso',   elevation: 35, azimuth: 45,  ortho: false },
 } as const;
 /** Solid-shaded grey applied to triangles that have no color region.
  *  Sits between the white render background and the brightest painted
@@ -40,10 +40,10 @@ interface ViewConfig {
 
 // 4 isometric angles from alternating cube corners — every face visible in 3+ views
 const VIEWS: ViewConfig[] = [
-  { name: 'Upper Front-Right', position: (d) => [d, d, d],     up: [0, 0, 1] },
-  { name: 'Upper Back-Left',   position: (d) => [-d, -d, d],   up: [0, 0, 1] },
-  { name: 'Under Front-Left',  position: (d) => [-d, d, -d],   up: [0, 0, 1] },
-  { name: 'Under Back-Right',  position: (d) => [d, -d, -d],   up: [0, 0, 1] },
+  { name: 'Upper Front-Right', position: (d) => [d, -d, d],    up: [0, 0, 1] },
+  { name: 'Upper Back-Left',   position: (d) => [-d, d, d],    up: [0, 0, 1] },
+  { name: 'Under Front-Left',  position: (d) => [-d, -d, -d],  up: [0, 0, 1] },
+  { name: 'Under Back-Right',  position: (d) => [d, d, -d],    up: [0, 0, 1] },
 ];
 
 function meshDataToGeometry(meshData: MeshData): THREE.BufferGeometry {
@@ -203,7 +203,7 @@ export function renderCompositeCanvas(meshData: MeshData): HTMLCanvasElement {
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 1000);
   const renderer = getOffscreenRenderer(viewSize);
 
-  const annotations = buildStrokesGroup(new THREE.Vector2(viewSize, viewSize));
+  const annotations = buildOffscreenOverlay(viewSize);
   if (annotations) scene.add(annotations);
 
   const labelHeight = 28;
@@ -243,7 +243,7 @@ export function renderCompositeCanvas(meshData: MeshData): HTMLCanvasElement {
 
   if (annotations) {
     scene.remove(annotations);
-    disposeStrokesGroup(annotations);
+    disposeOffscreenOverlay(annotations);
   }
   disposeScene(scene);
   geometry.dispose();
@@ -320,7 +320,7 @@ function createElevationScene(geometry: THREE.BufferGeometry, bgColor: number, e
 /** Render a single view from any camera angle. Returns a data URL (PNG).
  *  For orthographic views, pass ortho: true.
  *  elevation/azimuth are in degrees: elevation 0 = horizon, 90 = top-down.
- *  azimuth 0 = front (+Y), 90 = right (+X), 180 = back (-Y), 270 = left (-X). */
+ *  azimuth 0 = front (-Y), 90 = right (+X), 180 = back (+Y), 270 = left (-X). */
 /** Build the same THREE.Camera that `renderSingleView` would render
  *  through for these options. Exported so `probePixel` (in
  *  geometry/rayCast.ts) can replay the camera exactly and unproject
@@ -356,7 +356,7 @@ export function buildViewCamera(meshData: MeshData, options: {
 
   // Spherical to cartesian (Z-up)
   const cx = dist * Math.cos(elevation) * Math.sin(azimuth);
-  const cy = dist * Math.cos(elevation) * Math.cos(azimuth);
+  const cy = dist * Math.cos(elevation) * (-Math.cos(azimuth));
   const cz = dist * Math.sin(elevation);
 
   // When looking straight down or up (elevation ≈ ±90°), the Z-up vector is
@@ -401,7 +401,7 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   const camera = buildViewCamera(meshData, options);
   const renderer = getOffscreenRenderer(viewSize);
 
-  const annotations = buildStrokesGroup(new THREE.Vector2(viewSize, viewSize));
+  const annotations = buildOffscreenOverlay(viewSize);
   if (annotations) scene.add(annotations);
 
   renderer.render(scene, camera);
@@ -414,7 +414,7 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
 
   if (annotations) {
     scene.remove(annotations);
-    disposeStrokesGroup(annotations);
+    disposeOffscreenOverlay(annotations);
   }
   disposeScene(scene);
   geometry.dispose();
