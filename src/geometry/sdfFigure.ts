@@ -780,39 +780,40 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     return sdf.sphere(r).translate(add3(cL, off)).union(sdf.sphere(r).translate(add3(cR, off)));
   };
   if (style === 'solid') return pair(rad, 0);
-  // 'iris' (default): white eyeball + coloured iris LENS + black pupil LENS,
-  // each its own pre-labelled hard-union region so paintByLabels can colour
-  // them independently. Don't wrap the result in another .label() — the
-  // outer label would win and flatten the eye back to one colour.
+  // 'iris' (default): a perfectly ROUND white eyeball with the coloured iris and
+  // black pupil PAINTED ON as flush concentric discs — each its own pre-labelled
+  // hard-union region so paintByLabels can colour them independently. Don't wrap
+  // the result in another .label() — the outer label would win and flatten the
+  // eye back to one colour.
   //
-  // The lenses are flat ellipsoid caps proud of the eyeball by only a few
-  // hundredths of the eye radius — they read as painted-on circles rather
-  // than stacked beads. (Thin reliefs survive the union because booleans are
-  // exact on the meshed surfaces; only each region's own march needs to
-  // resolve its solid, and a lens is a chunky ellipsoid.)
-  const lensPair = (rxz: number, ry: number, frontAt: number): Node => {
-    const d = scale3(f, frontAt - ry); // lens centre so its front face sits at `frontAt`
-    const one = (c: Vec3): Node =>
-      orientToHeadPose(sdf.ellipsoid(rxz, ry, rxz), rig).translate(add3(c, d));
+  // The discs are NOT raised lenses (those protruded forward as beads — a pupil
+  // bump read as a "nipple"). Instead each is a thick cylindrical plug clipped to
+  // a sphere CONCENTRIC with the eyeball but a hair larger (`capR`), so the plug's
+  // front face exactly follows the eyeball's curvature and wins the hard-union
+  // over its disc with no perceptible bump — the iris/pupil read as painted on a
+  // round eye. The plug is deep (it spans the eyeball), so it always meshes; only
+  // its flush front cap survives the union (the rest is interior), carrying the
+  // label. `capR` increases sclera < iris < pupil so each disc reliably wins the
+  // union over the one beneath it; the increments are <3% of `rad` — sub-visual,
+  // so the silhouette stays round.
+  //
+  // The cylinder is built along +Z then rotated 90° about X so its axis points
+  // along the (canonical −Y) head-forward before `orientToHeadPose` carries it
+  // into the posed head frame, so the disc always faces out of the face.
+  // (`rotate` is in DEGREES.)
+  const disc = (capR: number, discR: number): Node => {
+    const plug = sdf.sphere(capR).intersect(
+      sdf.cylinder(discR, capR * 3).rotate([90, 0, 0]),
+    );
+    const one = (c: Vec3): Node => orientToHeadPose(plug, rig).translate(c);
     return one(cL).union(one(cR));
   };
-  // Lens depth (the `ry` term) is set ≥ ~1.5 cells thick so each lens resolves
-  // even when the build forgets the recommended `detail: F.faceDetail(rig)` and
-  // marches the whole figure on the coarse global grid — a thinner cap aliased
-  // the pupil away to 0 triangles there. It only deepens the lens INTO the
-  // eyeball; the front face (and thus the painted-on-circle read) is unchanged.
-  //
-  // CONCENTRIC SIZING is what makes the eye read as eye rather than a flat
-  // coloured bead: the iris must be clearly SMALLER than the visible eyeball
-  // cap so a white sclera almond shows AROUND it, and the pupil clearly smaller
-  // than the iris. An earlier iris radius of 0.52·rad spanned almost the whole
-  // eyeball front, swallowing the white — so the three labels survived meshing
-  // but read as one blue disc. The radii/forward-offsets below give nested
-  // steps (white → iris at 1.09·rad → pupil at 1.24·rad) that read as
-  // concentric layers from the front at print scale.
+  // discR sets how much white shows: the iris spans a bit over half the eyeball
+  // width (a generous coloured disc, the look that read best) leaving a clear
+  // white margin; the pupil is half the iris.
   const sclera = pair(rad, 0).label('eyes');
-  const iris = lensPair(rad * 0.36, rad * 0.26, rad * 1.09).label('iris');
-  const pupil = lensPair(rad * 0.18, rad * 0.18, rad * 1.24).label('pupil');
+  const iris = disc(rad * 1.012, rad * 0.55).label('iris');
+  const pupil = disc(rad * 1.024, rad * 0.27).label('pupil');
   return sclera.union(iris).union(pupil);
 }
 

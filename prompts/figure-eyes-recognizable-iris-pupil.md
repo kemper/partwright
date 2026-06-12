@@ -49,3 +49,28 @@ the `public/ai/figure.md` eyes section. All 11 catalog figures use
 ~4px (no visible change) and loading a figure regenerates the new eyes from its
 unchanged code; per the "smallest, self-contained" steer I rebaked only
 `waving_kid` as the proof entry rather than all 11.
+
+## Round 2 — painted-on round eyes (user feedback)
+
+Human: "I like the old eyes better. The smaller irises don't look as good and the
+pupils stand out like nipples. I was thinking the eyes would be completely round
+with the irises and pupils painted on, or the sclera has an indention the iris
+sits into — or just paint them perfectly. Either way, iterate."
+
+**Redesigned the iris/pupil from raised lenses to flush painted-on discs.** The
+forward-offset ellipsoid lenses protruded as beads (the pupil read as a
+"nipple"). New approach: keep the eyeball a perfectly round sphere; build each
+iris/pupil as a deep cylindrical plug clipped to a sphere CONCENTRIC with the
+eyeball but a hair larger (`capR` = 1.012/1.024·rad). The plug's front face
+follows the eyeball's exact curvature and wins the hard-union over its disc with
+a sub-3%-of-radius step — sub-visual, so the silhouette stays round while the
+iris/pupil read as flat painted concentric circles. The plug is deep (spans the
+eyeball) so it always meshes; only its flush front cap survives the union and
+carries the label. Went back to the bigger iris the user preferred
+(0.55·rad / pupil 0.27·rad).
+
+**Bug caught during iteration:** `SdfNode.rotate` takes DEGREES, not radians —
+the first attempt passed `Math.PI/2` (≈1.57°), leaving the masking cylinder
+vertical so the iris painted the eyeball's poles instead of the front. Fixed to
+`rotate([90, 0, 0])`; verified the disc centres on the front and follows a
+yaw/pitch/roll-posed head via `orientToHeadPose`. Re-rebaked `waving_kid`.
