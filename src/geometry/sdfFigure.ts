@@ -781,7 +781,7 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     // offset, so the shaped overlay's gaps are filled structurally.
     const footMass = (() => {
       const s = sdf.capsule(heel, toe, r.foot * 0.62);
-      const inst = sdf.ellipsoid(r.foot * 0.8, footLen * 0.5, r.foot * 0.8)
+      const inst = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.5, r.foot * 0.8)
         .translate([instepC[0], instepC[1], sz + r.foot * 0.15]);
       const col = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.lowerLeg * 0.8);
       let m = s.smoothUnion(inst, r.foot * 0.6).smoothUnion(col, r.foot * 0.6);
