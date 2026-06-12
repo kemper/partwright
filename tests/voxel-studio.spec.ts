@@ -300,4 +300,45 @@ test.describe('voxel studio', () => {
     expect(r.added.voxelCount).toBe(r.importedCount + 1);
     expect(r.baked.error).toBeFalsy();
   });
+
+  test('setVoxelRounding / getVoxelRounding drive the Rounding panel from the API', async ({ page }) => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().fillBox([-3,-3,0],[3,3,3], '#888');`);
+      pw.activateVoxelPaint();
+      // Bad input returns { error } (it must not throw out of the API method).
+      const badAlg = pw.setVoxelRounding({ algorithm: 'nope' });
+      const badBase = pw.setVoxelRounding({ baseLayers: -1 });
+      // Happy paths: surfaceNets, then taubin with a flat base, read back, then off.
+      const sn = pw.setVoxelRounding({ algorithm: 'surfaceNets' });
+      const tb = pw.setVoxelRounding({ algorithm: 'taubin', strength: 0.5, baseLayers: 3 });
+      const readBack = pw.getVoxelRounding();
+      const off = pw.setVoxelRounding(null);
+      return { badAlg, badBase, sn, tb, readBack, off };
+    });
+    expect(r.badAlg.error).toContain('algorithm');
+    expect(r.badBase.error).toContain('baseLayers');
+    expect(r.sn.surfacing.mode).toBe('smooth');
+    expect(r.sn.surfacing.algorithm).toBe('surfaceNets');
+    expect(r.tb.surfacing.algorithm).toBe('taubin');
+    expect(r.tb.surfacing.strength).toBeCloseTo(0.5);
+    expect(r.tb.surfacing.baseLayers).toBe(3);
+    expect(r.readBack.surfacing.algorithm).toBe('taubin');
+    expect(r.off.surfacing.mode).toBe('blocks');
+  });
+
+  test('setVoxelRounding / getVoxelRounding error when the studio is not active', async ({ page }) => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().set(0,0,0,'#fff');`);
+      // No activateVoxelPaint() — both must report the studio is inactive.
+      return { set: pw.setVoxelRounding(null), get: pw.getVoxelRounding() };
+    });
+    expect(r.set.error).toContain('not active');
+    expect(r.get.error).toContain('not active');
+  });
 });
