@@ -49,9 +49,13 @@ let currentLanguage: EditorLanguage = 'manifold-js';
 // Per-tab (with a shared seed for fresh tabs) so toggling auto-format in one
 // window doesn't flip it in another open window.
 let autoFormatEnabled: boolean = readPerTabPref('editor-auto-format') !== 'false';
+// Soft-wrap long lines. Off by default (matches the usual code-editor default of
+// a horizontal scrollbar); persisted per-tab like auto-format.
+let lineWrapEnabled: boolean = readPerTabPref('editor-line-wrap') === 'true';
 const languageCompartment = new Compartment();
 const readOnlyCompartment = new Compartment();
 const themeCompartment = new Compartment();
+const lineWrapCompartment = new Compartment();
 
 function themeExt(theme: Theme): Extension {
   return theme === 'dark' ? oneDark : [];
@@ -345,6 +349,7 @@ export function initEditor(
       lintGutter(),
       readOnlyCompartment.of(EditorState.readOnly.of(false)),
       themeCompartment.of(themeExt(getTheme())),
+      lineWrapCompartment.of(lineWrapEnabled ? EditorView.lineWrapping : []),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           if (activeDiagnostics.length > 0) {
@@ -477,6 +482,20 @@ export function getAutoFormat(): boolean {
 export function setAutoFormat(enabled: boolean): void {
   autoFormatEnabled = enabled;
   writePerTabPref('editor-auto-format', enabled ? 'true' : 'false');
+}
+
+export function getLineWrap(): boolean {
+  return lineWrapEnabled;
+}
+
+/** Toggle soft-wrapping of long lines. Reconfigures the live editor's
+ *  line-wrap compartment and persists the choice per-tab. */
+export function setLineWrap(enabled: boolean): void {
+  lineWrapEnabled = enabled;
+  writePerTabPref('editor-line-wrap', enabled ? 'true' : 'false');
+  editorView?.dispatch({
+    effects: lineWrapCompartment.reconfigure(enabled ? EditorView.lineWrapping : []),
+  });
 }
 
 export function setEditorDiagnostics(diagnostics: SourceDiagnostic[]): void {

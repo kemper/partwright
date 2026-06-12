@@ -28,6 +28,7 @@ export interface LayoutElements {
   findReplaceBtn: HTMLButtonElement;
   formatBtn: HTMLButtonElement;
   autoFormatToggle: HTMLButtonElement;
+  lineWrapToggle: HTMLButtonElement;
   switchTab: (tab: TabName, options?: SwitchTabOptions) => void;
   /** Collapse/expand the parts rail (wired to the rail's own collapse button). */
   togglePartsRail: () => void;
@@ -114,6 +115,12 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   autoFormatToggle.className = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border';
   autoFormatToggle.title = 'Toggle automatic formatting when code is loaded';
   editorHeader.appendChild(autoFormatToggle);
+
+  const lineWrapToggle = document.createElement('button');
+  lineWrapToggle.id = 'line-wrap-toggle';
+  lineWrapToggle.className = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border';
+  lineWrapToggle.title = 'Toggle soft word wrap for long lines';
+  editorHeader.appendChild(lineWrapToggle);
 
   // Status row: an absolutely-positioned flex strip that holds the status text
   // and an inline cancel button. Lives on rightPane so it stays visible even
@@ -687,7 +694,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, partsRail, editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
+  return { editorPane, partsRail, editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
 }
 
 // Rail item base — a bottom accent border on mobile (horizontal strip) becomes
