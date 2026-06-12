@@ -1225,23 +1225,23 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     };
     cap = cap.smoothUnion(braid(1), r.head * 0.25).smoothUnion(braid(-1), r.head * 0.25);
   } else if (style === 'spiked') {
-    // Tapered spikes radiating up and out from the crown — anime/punk. Base
-    // radii stay well above the print min-feature so no spike prints as a wisp.
-    const dirs: Vec3[] = [
-      norm3(add3(u, scale3(f, 0.25))),
-      norm3(add3(u, scale3(f, -0.45))),
-      norm3(add3(u, scale3(right, 0.55))),
-      norm3(add3(u, scale3(right, -0.55))),
-      norm3(add3(add3(u, scale3(right, 0.38)), scale3(f, 0.38))),
-      norm3(add3(add3(u, scale3(right, -0.38)), scale3(f, 0.38))),
-      norm3(add3(add3(u, scale3(right, 0.38)), scale3(f, -0.38))),
-      norm3(add3(add3(u, scale3(right, -0.38)), scale3(f, -0.38))),
-    ];
-    const spikeLen = r.head * 0.95 * lenMul;
-    for (const d of dirs) {
-      const root = add3(c, scale3(d, r.head * 0.68));
-      const tip = add3(c, scale3(d, r.head * 0.68 + spikeLen));
-      cap = cap.smoothUnion(sdf.capsule(root, tip, r.head * 0.17 * volume), r.head * 0.18);
+    // A tousled mop of upward spikes: roots are spread across the whole crown
+    // and each spike points mostly UP with a varied lateral/fore-aft tilt and
+    // length — so it reads as messy anime/punk hair, not an evenly-radiating
+    // ring (which looked like a crown). Deterministic pseudo-random keeps the
+    // bake stable. Base radii stay above the print min-feature.
+    const N = 13;
+    for (let i = 0; i < N; i++) {
+      const ha = Math.sin(i * 12.9898) * 43758.5453; const a = ha - Math.floor(ha);
+      const hb = Math.sin(i * 78.233) * 24634.6345; const b = hb - Math.floor(hb);
+      const hc = Math.sin(i * 39.425) * 11853.113;  const cc = hc - Math.floor(hc);
+      // Direction: dominated by +up, with a modest sideways + fore/aft tilt.
+      const dir = norm3(add3(scale3(u, 1.3), add3(scale3(right, (a - 0.5) * 1.05), scale3(f, (b - 0.5) * 0.95))));
+      // Roots spread over the crown so spikes sprout from the whole top.
+      const root = add3(c, add3(scale3(u, r.headZ * 0.5),
+        add3(scale3(right, (a - 0.5) * r.headX * 1.15), scale3(f, (b - 0.5) * r.headZ * 1.0))));
+      const len = r.head * (0.65 + cc * 0.75) * lenMul;
+      cap = cap.smoothUnion(sdf.capsule(root, add3(root, scale3(dir, len)), r.head * 0.15 * volume), r.head * 0.16);
     }
   }
   // Strand/curl relief: a directional displacement field in the head's own
@@ -1274,13 +1274,16 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     }
     cap = cap.displace(amp, field);
   }
-  // Parting groove: a shallow channel cut into the crown along the front-back
-  // axis, offset to one side for a side part. Kept shallow (it dents the crown,
-  // never reaching the scalp) so the cap stays one component.
+  // Parting groove: a shallow channel skimmed off the TOP of the cap along the
+  // front-back axis, offset to one side for a side part. Its bottom stays above
+  // the scalp (only the top fraction of the cap shell is removed) so the part
+  // never cuts through to expose skin underneath.
   if (part !== 'none') {
     const off = part === 'left' ? -r.headX * 0.35 : part === 'right' ? r.headX * 0.35 : 0;
-    const groove = orientToHeadPose(sdf.roundedBox([r.head * 0.13, r.head * 1.7, r.head * 0.5], r.head * 0.05), rig)
-      .translate(add3(c, add3(scale3(right, off), scale3(u, r.headZ + tv + r.head * 0.12))));
+    const big = r.head * 2;
+    const bottomZ = r.headZ + tv * 0.45;   // above the skull surface (z = r.headZ)
+    const groove = orientToHeadPose(sdf.roundedBox([r.head * 0.12, r.head * 1.3, big], r.head * 0.05), rig)
+      .translate(add3(c, add3(scale3(right, off), scale3(u, bottomZ + big / 2))));
     cap = cap.subtract(groove);
   }
   // Face window: the cap overlaps the face INTERIOR, and since hair is its
