@@ -805,14 +805,14 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'toastDurationMs', v)}
         />
         <Field
-          label="AI panel slide"
+          label="Pane slide"
           unit="ms"
-          hint="How long the AI panel takes to slide open/closed."
-          tooltip="The docked AI panel animates its layout so the viewport grows/shrinks smoothly instead of snapping. Lower for a snappier toggle, 0 for instant. Ignored when your OS is set to reduce motion."
-          defaultValue={APP_CONFIG_DEFAULTS.ui.aiPanelSlideMs}
-          value={c.ui.aiPanelSlideMs}
+          hint="How long the side panes (AI panel, code editor) take to slide open/closed."
+          tooltip="The docked AI panel and code editor pane animate their layout so the viewport grows/shrinks smoothly instead of snapping. Lower for a snappier toggle, 0 for instant. Ignored when your OS is set to reduce motion."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paneSlideMs}
+          value={c.ui.paneSlideMs}
           min={0} max={600} integer
-          onChange={v => set('ui', 'aiPanelSlideMs', v)}
+          onChange={v => set('ui', 'paneSlideMs', v)}
         />
         <Field
           label="Default palette capacity"

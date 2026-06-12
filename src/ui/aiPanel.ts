@@ -453,7 +453,7 @@ let drawerBooted = false;
 function effectiveSlideMs(): number {
   if (!drawerBooted) { drawerBooted = true; return 0; }
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0;
-  return getConfig().ui.aiPanelSlideMs;
+  return getConfig().ui.paneSlideMs;
 }
 
 function setDrawerTransition(ms: number): void {

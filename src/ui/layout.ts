@@ -4,6 +4,7 @@ import { showAboutModal } from './aboutModal';
 import { loadSettings, saveSettings } from '../ai/settings';
 import { createPopoverGroup } from './popoverMenu';
 import { MOD_LABEL, combo } from './shortcutDefs';
+import { getConfig } from '../config/appConfig';
 
 export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
@@ -441,20 +442,64 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   expandEditorBtn.title = 'Show the code editor pane';
   rightPane.appendChild(expandEditorBtn);
 
+  // Slide duration (ms) for the code pane, honoring reduced-motion (0 = instant).
+  // Shares the same knob as the AI panel so both side panes feel consistent.
+  function paneSlideMs(): number {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0;
+    return getConfig().ui.paneSlideMs;
+  }
+  // Pending "settle to the final width once the slide finishes" timer.
+  let editorSlideTimer: number | null = null;
+
   function collapseEditor(): void {
     editorCollapsed = true;
-    editorGroup.style.width = '0';
-    editorGroup.style.overflow = 'hidden';
     expandEditorBtn.classList.remove('hidden');
     splitter.classList.add('hidden');
+    if (editorSlideTimer !== null) { clearTimeout(editorSlideTimer); editorSlideTimer = null; }
+    const ms = paneSlideMs();
+    if (ms > 0 && mqDesktop.matches) {
+      // Slide the pane off the left edge: collapse its layout footprint via a
+      // negative margin (so the viewport grows into the gap) while it keeps its
+      // width, so the code doesn't reflow. `body` is overflow-hidden, so the
+      // off-screen pane is clipped. Settle to the canonical width:0 state after.
+      const w = editorGroup.getBoundingClientRect().width;
+      editorGroup.style.overflow = 'hidden';
+      editorGroup.style.transition = `margin-left ${ms}ms ease`;
+      editorGroup.style.marginLeft = `-${w}px`;
+      editorSlideTimer = window.setTimeout(() => {
+        editorGroup.style.transition = '';
+        editorGroup.style.marginLeft = '';
+        editorGroup.style.width = '0';
+        editorSlideTimer = null;
+      }, ms);
+    } else {
+      editorGroup.style.width = '0';
+      editorGroup.style.overflow = 'hidden';
+    }
     window.dispatchEvent(new Event('resize'));
   }
 
   function expandEditor(): void {
     editorCollapsed = false;
-    editorGroup.style.width = '40%';
-    editorGroup.style.overflow = '';
     expandEditorBtn.classList.add('hidden');
+    if (editorSlideTimer !== null) { clearTimeout(editorSlideTimer); editorSlideTimer = null; }
+    editorGroup.style.overflow = '';
+    editorGroup.style.width = '40%';
+    const ms = paneSlideMs();
+    if (ms > 0 && mqDesktop.matches) {
+      // Start from the off-screen-left position without animating, then slide in.
+      const w = editorGroup.getBoundingClientRect().width;
+      editorGroup.style.transition = '';
+      editorGroup.style.marginLeft = `-${w}px`;
+      void editorGroup.offsetWidth; // force reflow so the next change transitions
+      editorGroup.style.transition = `margin-left ${ms}ms ease`;
+      requestAnimationFrame(() => { editorGroup.style.marginLeft = ''; });
+      editorSlideTimer = window.setTimeout(() => {
+        editorGroup.style.transition = '';
+        editorGroup.style.marginLeft = '';
+        editorSlideTimer = null;
+      }, ms);
+    }
     syncPaneVisibility();
     window.dispatchEvent(new Event('resize'));
   }
@@ -524,8 +569,12 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
       mobilePaneToggle.classList.add('hidden');
     } else {
       // Mobile: clear inline width so flex sizing controls the editor's height.
+      // Also drop any in-flight desktop slide offset so a breakpoint flip mid-
+      // animation can't leave the stacked pane shifted off-screen.
       editorGroup.style.width = '';
       editorGroup.style.overflow = '';
+      editorGroup.style.marginLeft = '';
+      editorGroup.style.transition = '';
       splitter.classList.add('hidden');
       expandEditorBtn.classList.add('hidden');
       if (tabHidesEditor) {

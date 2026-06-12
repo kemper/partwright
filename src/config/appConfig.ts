@@ -228,10 +228,11 @@ export interface AppConfig {
     /** How long each "Did you know?" hint stays before the strip rotates to the
      *  next one (ms). */
     hintRotationMs: number;
-    /** Slide duration (ms) for the docked AI panel opening/closing. The panel
-     *  animates its layout footprint so the viewport grows/shrinks smoothly
-     *  instead of snapping. Set to 0 for an instant toggle. */
-    aiPanelSlideMs: number;
+    /** Slide duration (ms) for the docked side panes (the AI panel and the code
+     *  editor pane) opening/closing. Each pane animates its layout footprint so
+     *  the viewport grows/shrinks smoothly instead of snapping. Set to 0 for an
+     *  instant toggle. */
+    paneSlideMs: number;
   };
   geometry: {
     /** Triangle count above which the live model warns it may be too heavy for
@@ -334,7 +335,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     workerPanelRefreshMs: 1000,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
-    aiPanelSlideMs: 200,
+    paneSlideMs: 280,
   },
   geometry: {
     triCountWarnBudget: 200_000,
