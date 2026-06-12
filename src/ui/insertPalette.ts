@@ -861,7 +861,12 @@ function buildPanel(): HTMLElement {
   snapCb.addEventListener('change', () => { snapToGrid = snapCb.checked; });
   snapToGridCheckbox = snapCb;
   const snapLabel = document.createElement('span');
-  snapLabel.textContent = 'Snap drag to whole units';
+  // Covers all per-engine translate writebacks — drag commit, align spread,
+  // and the group-centroid scale/rotate spread — not just drag. Label the
+  // broader scope so a user toggling it for drag-cleanup isn't surprised
+  // when their next Align rounds too.
+  snapLabel.textContent = 'Snap moves to whole units';
+  snapLabel.title = 'Round every translate writeback (drag, align, group resize/rotate spread) to integers';
   snapRow.append(snapCb, snapLabel);
   sizeSectionEl.appendChild(snapRow);
 
@@ -895,7 +900,7 @@ function buildPanel(): HTMLElement {
   rotateSectionEl.appendChild(rotRow);
   const rotBtnRow = document.createElement('div');
   rotBtnRow.className = 'flex gap-1.5 mb-1';
-  const applyRotBtn = paletteButton('✓ Apply rotate', 'Rotate the selected parts by these degrees (in place around the part / group centroid)', () => {
+  const applyRotBtn = paletteButton('✓ Apply rotate', 'Rotate the selected parts by these degrees in place. For 2+ parts, the Z rotation also swings the group around its centroid; X/Y rotations stay per-part.', () => {
     const rx = parseFloat(rotateInputs![0].value) || 0;
     const ry = parseFloat(rotateInputs![1].value) || 0;
     const rz = parseFloat(rotateInputs![2].value) || 0;

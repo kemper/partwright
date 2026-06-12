@@ -542,11 +542,13 @@ export function setPartRotateScad(
   const afterTrans = transMatch ? stmt.slice(transMatch[0].length) : stmt;
   const head = transMatch ? transMatch[0] : '';
 
-  // A leading scale, if present, must run after rotate (rotate-then-scale
-  // matches the JS chain order and avoids a sheared shape). Place the new
-  // `rotate(...)` between translate and scale so the chain reads:
-  //   translate(t) rotate(r) scale(s) <construction>
-  const leadingScaleRe = new RegExp(`^scale\\(${TRIPLE}\\)\\s*`);
+  // Place the new `rotate(...)` between any leading translate and whatever
+  // else (scale / construction call) is in the chain. SCAD applies modifiers
+  // right-to-left, so `translate(t) rotate(r) scale(s) cube(...)` reads as
+  // scale-at-origin → rotate-around-origin → translate-to-position, matching
+  // the JS chain `cube(...).scale(s).rotate(r).translate(t)`. We don't need
+  // a separate "leading scale" branch — `afterTrans` already carries the
+  // scale (if present) and prepending rotate before it gives the right order.
   const leadingRotateRe = new RegExp(`^rotate\\(${TRIPLE}\\)\\s*`);
   const rotateMatch = leadingRotateRe.exec(afterTrans);
   let updated: string;
@@ -554,15 +556,8 @@ export function setPartRotateScad(
     const compound = addRotateTriple(rotateMatch[0].replace(/\s*$/, ''), deg);
     updated = `${head}${compound} ${afterTrans.slice(rotateMatch[0].length)}`;
   } else {
-    const scaleMatch = leadingScaleRe.exec(afterTrans);
     const rotateCall = `rotate([${fmt(deg[0])}, ${fmt(deg[1])}, ${fmt(deg[2])}])`;
-    if (scaleMatch) {
-      // Insert rotate BEFORE the leading scale so SCAD's right-to-left
-      // application order runs scale first (around origin), then rotate.
-      updated = `${head}${rotateCall} ${afterTrans}`;
-    } else {
-      updated = `${head}${rotateCall} ${afterTrans}`;
-    }
+    updated = `${head}${rotateCall} ${afterTrans}`;
   }
   return code.slice(0, statement.from) + updated + code.slice(statement.to);
 }

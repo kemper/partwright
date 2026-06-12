@@ -1350,6 +1350,16 @@ test.describe('parseStatement — manifold-js / BREP', () => {
   test('returns null for arbitrary expressions', () => {
     expect(parseStatement(`const x = api.text("hi");`, 'manifold-js', 'x')).toBeNull();
   });
+
+  test('returns null when translate precedes rotate (only rotate-then-translate is accepted)', () => {
+    // setPartRotateJs always inserts rotate BEFORE translate, so palette-touched
+    // parts always parse. Hand-written code in the reverse order is
+    // unrecognised — the chain-order contract is one-way.
+    expect(parseStatement(
+      `const x = Manifold.cube([10,10,10]).translate([5,0,0]).rotate([0,0,30]);`,
+      'manifold-js', 'x',
+    )).toBeNull();
+  });
 });
 
 test.describe('scanPartsJs now also returns statement text for single-line const decls', () => {
@@ -1432,6 +1442,26 @@ test.describe('setPartRotateScad', () => {
   test('identity rotation returns the code unchanged', () => {
     const code = 'cube([1,1,1]); // part: a';
     expect(setPartRotateScad(code, { from: 0, to: code.length }, [0, 0, 0])).toBe(code);
+  });
+
+  test('bare cube (no leading transforms) prepends rotate at the head', () => {
+    const code = 'cube([10, 10, 10]); // part: box';
+    const updated = setPartRotateScad(code, { from: 0, to: code.length }, [0, 0, 90]);
+    expect(updated).toContain('rotate([0, 0, 90]) cube([10, 10, 10]);');
+  });
+
+  test('inserts rotate between leading scale and construction (no leading translate)', () => {
+    // scale-then-rotate-then-cube right-to-left == rotate(scale(cube)) — the
+    // rotate sits between the existing scale and the bare construction call.
+    const code = 'scale([2, 1, 1]) cube([10, 10, 10]); // part: box';
+    const updated = setPartRotateScad(code, { from: 0, to: code.length }, [0, 0, 45]);
+    expect(updated).toContain('rotate([0, 0, 45]) scale([2, 1, 1]) cube([10, 10, 10]);');
+  });
+
+  test('chain order with translate + scale + cube reads translate→rotate→scale→cube', () => {
+    const code = 'translate([5, 0, 0]) scale([2, 1, 1]) cube([10, 10, 10]); // part: box';
+    const updated = setPartRotateScad(code, { from: 0, to: code.length }, [0, 0, 45]);
+    expect(updated).toContain('translate([5, 0, 0]) rotate([0, 0, 45]) scale([2, 1, 1]) cube([10, 10, 10]);');
   });
 });
 

@@ -99,6 +99,12 @@ let dragNames: string[] = [];
 let dragBaseline = new Map<string, Vec3>(); // pre-drag centres for each ghost
 const DRAG_THRESHOLD_PX = 4;
 let dragging = false;
+// Drag-plane choice is locked at `beginDrag` — alt-held at drag-start picks the
+// vertical (Z) plane; releasing alt mid-drag does NOT switch back to horizontal
+// (and pressing alt mid-drag does NOT switch in). Otherwise the ghost would
+// jump as the alt key changes state — confusing UX caught in the post-merge
+// review of this milestone.
+let dragVertical = false;
 
 // Marquee (shift+drag on empty space) — a DOM overlay rectangle that selects
 // every part whose bbox centre projects inside it on release. State is held
@@ -337,24 +343,29 @@ function onPointerMove(e: PointerEvent): void {
       deps.onSelectionChanged();
       refreshArrangeOverlay();
     }
+    // Lock the drag-plane choice at this point — alt held when the user
+    // crossed the drag threshold picks the vertical (Z) plane for the whole
+    // gesture. Toggling alt mid-drag would otherwise jump the ghost between
+    // horizontal-XY and vertical-Z projections, which the post-PR-#609 review
+    // flagged as a UX surprise.
+    dragVertical = e.altKey;
     beginDrag();
   }
 
   if (dragging) {
-    // Drag plane selection:
+    // Drag plane selection (locked at `dragVertical`):
     //   - default: horizontal plane through the pickup point — slides the part
     //     across the build plate.
-    //   - alt held: vertical plane facing the camera through the pickup point
-    //     — lifts the part along the world Z axis. Cleaner than a "use Y mouse
-    //     motion as Z" approximation because the projection picks up the
-    //     camera distance correctly, so a click on a high feature scales the
-    //     drag the same way the horizontal drag does.
-    const plane = e.altKey
+    //   - alt at drag-start: vertical plane facing the camera through the
+    //     pickup point — lifts the part along the world Z axis. Cleaner than
+    //     a "use Y mouse motion as Z" approximation because the projection
+    //     picks up the camera distance correctly.
+    const plane = dragVertical
       ? makeVerticalPlane(camera, pointerStart.world)
       : new THREE.Plane(new THREE.Vector3(0, 0, 1), -pointerStart.world.z);
     const hit = projectToPlane(e.clientX, e.clientY, camera, canvas, plane);
     if (!hit) return;
-    const delta: Vec3 = e.altKey
+    const delta: Vec3 = dragVertical
       ? [0, 0, hit.z - pointerStart.world.z]
       : [hit.x - pointerStart.world.x, hit.y - pointerStart.world.y, 0];
     applyGhostDelta(delta);
@@ -510,6 +521,7 @@ function commitDrag(): void {
 function cancelDrag(): void {
   cleanupGhosts();
   dragging = false;
+  dragVertical = false;
   pendingPart = null;
   pointerStart = null;
   if (active) refreshArrangeOverlay();
