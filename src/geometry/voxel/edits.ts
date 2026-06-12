@@ -7,13 +7,12 @@
 // vitest tier without pulling in the viewport/raycast glue that lives in
 // src/color/voxelPaint.ts.
 
-import type { Vec3 } from './grid';
-import { VoxelGrid, normalizeColor, type ColorInput, COORD_MIN, COORD_MAX } from './grid';
+import { VoxelGrid, normalizeColor, FACE_NEIGHBORS, type Vec3, type ColorInput, COORD_MIN, COORD_MAX } from './grid';
 
-/** The 6 face-neighbor offsets (shared by flood fill and the "add" tool). */
-export const FACE_NEIGHBORS: Vec3[] = [
-  [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
-];
+// `FACE_NEIGHBORS` (the 6 face-neighbour offsets, shared by the flood-fill and
+// "add" tools below) now lives in `grid.ts` as the single source of truth — see
+// its definition there. Re-exported here for back-compat with existing importers.
+export { FACE_NEIGHBORS };
 
 function inRange(x: number, y: number, z: number): boolean {
   return x >= COORD_MIN && x <= COORD_MAX

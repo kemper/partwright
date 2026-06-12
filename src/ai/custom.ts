@@ -55,10 +55,6 @@ function authHeaders(apiKey: string): HeadersInit {
   return headers;
 }
 
-export function resetClient(): void {
-  // Stateless — each request opens its own fetch.
-}
-
 export async function streamTurn(
   spec: CustomRequestSpec,
   callbacks: StreamCallbacks = {},

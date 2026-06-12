@@ -16,6 +16,13 @@ export type Vec3 = [number, number, number];
  *  packed `0xRRGGBB` number. Normalized to a 24-bit integer internally. */
 export type ColorInput = Vec3 | string | number;
 
+/** The 6 face-neighbour offsets (±X, ±Y, ±Z). The single source of truth for
+ *  face-connectivity across the voxel modules: `faceComponentCount` below and
+ *  the flood-fill / "add" tools in `edits.ts` both consume it. */
+export const FACE_NEIGHBORS: Vec3[] = [
+  [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+];
+
 // Coordinates are packed into a single JS integer key for fast Map lookups.
 // 11 bits per axis (offset by HALF) gives a usable range of [-1024, 1023] per
 // axis; the largest key (~8.59e9) stays well under Number.MAX_SAFE_INTEGER.
@@ -208,7 +215,6 @@ export class VoxelGrid {
   faceComponentCount(): number {
     if (this.cells.size === 0) return 0;
     const visited = new Set<number>();
-    const NEIGHBORS: Vec3[] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
     let components = 0;
     for (const startKey of this.cells.keys()) {
       if (visited.has(startKey)) continue;
@@ -221,7 +227,7 @@ export class VoxelGrid {
         const z = (key % DIM) - HALF;
         const y = (Math.floor(key / DIM) % DIM) - HALF;
         const x = Math.floor(key / (DIM * DIM)) - HALF;
-        for (const [dx, dy, dz] of NEIGHBORS) {
+        for (const [dx, dy, dz] of FACE_NEIGHBORS) {
           const nx = x + dx, ny = y + dy, nz = z + dz;
           if (!inRange(nx, ny, nz)) continue;
           const nKey = packKey(nx, ny, nz);
