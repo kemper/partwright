@@ -394,11 +394,21 @@ body keeps the cheap global grid — typically +30–60k triangles instead of th
 ## Hair & clothing — derived from the rig, so they always fit
 
 ```js
-F.hair(rig, { style, hairline })
-//   style: 'short' | 'long' | 'bun' | 'bald' | 'bangs' | 'ponytail'
+F.hair(rig, { style, hairline, length, volume, part, texture })
+//   style: 'short' | 'long' | 'bob' | 'bun' | 'bald' | 'bangs' | 'ponytail'
+//          | 'afro' | 'braids' | 'spiked'
 //   hairline: 'high' | 'mid' | 'low' — where the face window's top edge sits.
 //   'bangs' adds a straight fringe and defaults to 'low' (hair to the brows);
-//   'ponytail' adds a gathered tail swinging down the back of the skull.
+//   'ponytail'/'braids' add tails down the back; 'bob' frames the jaw; 'afro'
+//   puffs a textured sphere around the skull; 'spiked' radiates anime spikes.
+//   length: 'short' | 'mid' (default) | 'long' — how far tails/manes fall.
+//   volume: 0.3..4 (default 1) — puffs the cap + tail girth (afro wants 1.5+).
+//   part: 'none' (default) | 'left' | 'right' | 'center' — a shallow part groove.
+//   texture: 'none' | 'strands' | 'curls' | 'wavy' — physical strand/curl
+//     relief displaced into the surface (the print-native hair-texture analog;
+//     real geometry, not a screen shader). 'afro' defaults to 'curls',
+//     'braids' to 'wavy'; the classic styles stay smooth. Mesh fine enough
+//     (edgeLength ≤ ~0.4, faceDetail on the head) or the relief aliases away.
 F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
 //   rise: low|mid|high · leg: slim|cargo · length: 'full' (default) | 'briefs'
 //   'briefs' = seat + gusset + hip coverage only (leotard bottoms, swimwear,
