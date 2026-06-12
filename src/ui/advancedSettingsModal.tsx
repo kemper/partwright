@@ -843,6 +843,36 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'tooltipDelayMs', v)}
         />
         <Field
+          label="Default editor font size"
+          unit="px"
+          hint="Seeds a fresh tab; change the live size from the editor's ⚙ menu (−/+)."
+          tooltip="The code editor's starting font size. The active size is remembered per browser tab via the ⚙ Editor menu's −/+ stepper; this default applies to a fresh tab and is the value the stepper returns to. Must sit within the min/max bounds below."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.editorFontSizeDefault}
+          value={c.ui.editorFontSizeDefault}
+          min={6} max={48} integer
+          onChange={v => set('ui', 'editorFontSizeDefault', v)}
+        />
+        <Field
+          label="Min editor font size"
+          unit="px"
+          hint="Lower bound for the editor's −/+ font stepper."
+          tooltip="The smallest font size the editor's ⚙ menu −/+ stepper will go down to."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.editorFontSizeMin}
+          value={c.ui.editorFontSizeMin}
+          min={6} max={24} integer
+          onChange={v => set('ui', 'editorFontSizeMin', v)}
+        />
+        <Field
+          label="Max editor font size"
+          unit="px"
+          hint="Upper bound for the editor's −/+ font stepper."
+          tooltip="The largest font size the editor's ⚙ menu −/+ stepper will go up to."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.editorFontSizeMax}
+          value={c.ui.editorFontSizeMax}
+          min={12} max={64} integer
+          onChange={v => set('ui', 'editorFontSizeMax', v)}
+        />
+        <Field
           label="Code editor error idle delay"
           unit="ms"
           tooltip="After you stop typing, the code editor waits this long before showing error annotations (red underlines, error panel). This prevents the error display from flickering while you're mid-edit. Lower it for faster feedback; raise it if error annotations distract you while typing."

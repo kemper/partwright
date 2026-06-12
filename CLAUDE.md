@@ -99,6 +99,8 @@ automatically. **Run this whenever you touch UI, routing, or anything in
 it covers landing → editor → AI panel toggle → key modal → toggle pills →
 ai.md serving, plus paint/export/import/surface-modifier flows.
 
+**Before renaming a user-visible UI string** (button label, panel title, or anything the suite clicks with `getByRole`/`getByText`/`getByLabel`): run `grep -rn '<old label>' tests/` first, and again after every merge from main that touches the same area. Two CI round-trips for a label rename is exactly the class of drift this one-second check eliminates.
+
 Each e2e test boots WASM in its own browser page, which is CPU-heavy, so the
 suite runs **serially on any single machine** (`playwright.config.ts` pins
 `workers: 1`). Running pages concurrently on one box starves the renderer and
@@ -160,7 +162,7 @@ When you're iterating on a **model snippet** (catalog entries, `examples/`, mech
 ```bash
 npm run model:preview -- .plans/fidgets/spiral-cone.js          # writes <file>.preview-<stamp>.png + prints JSON
 npm run model:preview -- model.js --json                        # stats only, no PNG
-npm run model:preview -- model.js --png out.png -p turns=6      # override api.params, custom PNG path
+npm run model:preview -- model.js --png out.png -p turns=6      # override api.params (only binds when snippet declares a paramsSchema)
 npm run model:preview -- model.js --view 130,35                 # ONE custom-angle tile (peek behind a feature)
 npm run model:preview -- model.js --views front,iso,back        # pick/reorder named views (front,back,right,left,top,bottom,iso)
 ```
@@ -190,6 +192,10 @@ node bin/partwright.mjs fetch <image-url> --out ref.png            # pull a remo
 `--explain-components` prints the per-island breakdown (already in the JSON's `stats.components`, capped at the top 16 by volume) to stderr so the stdout JSON stays parseable. `--expect-components N` compares against the uncapped `stats.componentCount` and exits 1 on mismatch — the escape hatch for "this mechanism MUST stay N parts." `compare` runs several variants and lays one view of each side-by-side (default iso, `--view az,el` to change it), for A/B param sweeps or before/after checks. `fetch` downloads a remote image to disk so the `photo` voxel-import flow can consume a URL (the env's network policy governs reachability).
 
 **Delegate multi-pass visual iteration to the `model-sculpt` subagent.** Each preview PNG you `Read` in the main context stays there and is re-billed every subsequent turn — image tokens compound. For 3+ render passes on the same model, delegate to `model-sculpt` (or `general-purpose` with its instructions): it owns the render→look→adjust loop in its own disposable context and returns only text. The main agent calls `SendUserFile` to ship the final PNG to the user **without** reading it.
+
+> **`-p key=val` only binds when the model declares a `paramsSchema`.** If the stat block shows no `paramsSchema` field, the `-p` override is silently ignored and the render is byte-identical to the baseline. Declare params via `api.params = { ... }` in your snippet to enable overrides. If two renders return the same `triCount`/`bbox` after a `-p` change, missing `paramsSchema` is the first thing to check.
+
+> **`scripts/build-catalog-entry.cjs` requires a visible display** (headed Chromium for real WebGL thumbnails). In this container: `xvfb-run -a node scripts/build-catalog-entry.cjs <entry.js> <out.json> --palette palette.json`. `catalog-regen.cjs` already uses `headless: true` — the single-entry script still doesn't. If the script exits immediately with a Chromium launch error, `xvfb-run` is the fix.
 
 > **CLI agents vs in-app/extension AI.** `model:preview` is for agents running in *this repo* (you). The in-app and chrome-extension AI cannot run a CLI — they verify with the in-browser `renderViews()` / `runAndSave(code, label, {maxComponents})` and read `public/ai/*.md` subdocs (e.g. `mechanisms`). Keep tool-specific instructions in `CLAUDE.md`/`docs/` (this audience) and in-browser instructions in `ai.md`/subdocs (that audience).
 
@@ -365,6 +371,18 @@ Always await `txn.oncomplete` before returning from functions that modify Indexe
 
 **Never `await` between a `get` and the `put`/`delete` that depends on it inside one readwrite transaction.** Awaiting yields the microtask queue and lets IndexedDB auto-commit the (now request-less) transaction before the write is queued — a `TransactionInactiveError`, and across two tabs a lost update. Issue the dependent write from inside the `get`'s `onsuccess` callback (chain further requests from *their* callbacks too), then await `txn.oncomplete` once. See `recordUsage`, `updateSession`, and `putAttachment` for the pattern.
 
+### Session Schema Migrations
+
+When adding a field to the persisted session schema, **seven locations must stay in sync** — missing one trips a CI test or silently corrupts imports:
+
+1. `SCHEMA_VERSION` constant in `sessionManager.ts` (bump it)
+2. `ExportedSession` type + its doc-comment version ladder
+3. Serialize path (save / export)
+4. Deserialize path — **both** import loops (`importSessionPayload` + the URL-param import)
+5. `trimForShare` — strip if the field is large or private
+6. Tests that assert `SCHEMA_VERSION` — import the constant instead of hardcoding the string, so a bump doesn't break them silently
+7. `dbSaveVersion` call sites — the positional signature is now 16+ args; use `null` placeholders for trailing fields or convert the tail to an options object before adding more
+
 ### Cross-Tab Isolation — No Data Bleed Between Windows
 
 The app runs in multiple browser windows/tabs at once, often each driving a **different session** (and a different AI provider). Tabs share one origin, so they share IndexedDB *and* localStorage; separate windows do **not** share JS module memory. The rule:
@@ -400,6 +418,15 @@ The only exceptions are values that are truly structural constants (array indice
 ### Dead Code
 
 Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers — or run `npm run lint:deadcode` (knip), which reports exports with no importers and unused files/types.
+
+### Editing `src/main.ts` — NUL-byte zones
+
+`src/main.ts` embeds literal NUL bytes (`\0`) as separator characters inside template-literal cache keys (e.g. `surfaceBaseKey`). Standard tools treat the file as binary:
+
+- **`grep`/`rg` silently truncate results** or skip the file — use `grep -a` or `rg -a` for any search targeting `main.ts`.
+- **`Edit` and most regex engines fail on the NUL boundary** — use a Python slice-between-anchors script instead: `python3 -c "t=open('src/main.ts','rb').read(); ..."`.
+
+If a grep on `main.ts` returns nothing for a symbol you expect to find there, binary-detection is the first thing to check. Three independent sessions have each spent 4+ turns re-discovering this.
 
 ### Agent Tooling & Static Analysis
 
@@ -500,7 +527,7 @@ Guardrails for automated work, learned the hard way:
 
 Opening the draft is the start of the verification phase, not the finish line. The task is done when every PR-checks shard is green.
 
-1. **Subscribe and watch CI.** Call `subscribe_pr_activity`. PR-checks runs build + unit + 3 e2e shards on every push, draft or ready — don't flip to ready to trigger it. Fix failures on the branch (each push re-runs the suite); fall back to local `npm run test:e2e` only when iterating tight on a CI failure.
+1. **Subscribe and watch CI.** Call `subscribe_pr_activity`. PR-checks runs build + unit + 3 e2e shards on every push, draft or ready — don't flip to ready to trigger it. Fix failures on the branch (each push re-runs the suite); fall back to local `npm run test:e2e` only when iterating tight on a CI failure. **`send_later` is unavailable in web/remote sessions** — there is no automated self-wake after a push. Webhook events drive the session forward; CI-success is not delivered as a webhook. If you need to self-check after the last push, use a Monitor-based background poll (arm it before ending the turn) rather than sleeping in a loop.
 2. **Confirm manual browser verification happened.** If you haven't yet exercised the feature in the browser and posted a screenshot in the chat, do it now — write/run a Playwright spec that navigates to the changed feature and screenshots the result, then view and post the PNG (see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)). There is no Playwright MCP here; the spec is the check. The user is watching this session and this is the most direct signal that the feature works.
 3. **Launch a review subagent** (Agent tool) over the diff vs `origin/main`. Hunt for: defects and unhandled cases; functionality silently dropped in a merge; backwards-incompatible schema changes (old IndexedDB sessions and exported files must still load); security issues (XSS, leaked keys, weakened CSP/COEP/COOP). Surface findings as PR comments or fold clear fixes into the branch; raise ambiguous/large ones with the user.
 4. **Auto-fix CI failures you're confident about.** Reproduce locally first. Re-sync `origin/main` if the branch has drifted, then push the fix. Ask the user for anything ambiguous, unrelated to your changes, or requiring a large refactor.

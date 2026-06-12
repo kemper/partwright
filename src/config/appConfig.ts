@@ -233,6 +233,13 @@ export interface AppConfig {
      *  the viewport grows/shrinks smoothly instead of snapping. Set to 0 for an
      *  instant toggle. */
     paneSlideMs: number;
+    /** Default code-editor font size (px). The live size is a per-tab pref
+     *  (editor-font-size); this seeds a fresh tab and the Reset-to-default. */
+    editorFontSizeDefault: number;
+    /** Smallest code-editor font size (px) the −/+ stepper allows. */
+    editorFontSizeMin: number;
+    /** Largest code-editor font size (px) the −/+ stepper allows. */
+    editorFontSizeMax: number;
   };
   geometry: {
     /** Triangle count above which the live model warns it may be too heavy for
@@ -336,6 +343,9 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
     paneSlideMs: 280,
+    editorFontSizeDefault: 13,
+    editorFontSizeMin: 9,
+    editorFontSizeMax: 28,
   },
   geometry: {
     triCountWarnBudget: 200_000,
