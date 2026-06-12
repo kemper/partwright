@@ -141,6 +141,8 @@ let quickActionsEl: HTMLElement | null = null;
 // explicitly Union it. Only meaningful for the single-return engines
 // (manifold-js / replicad) — scad & voxel union implicitly.
 let autoCombine = true;
+// Cached checkbox element so the public API can flip the toggle from a script.
+let autoCombineCheckbox: HTMLInputElement | null = null;
 
 // Refs to the sections that show/hide per active engine, repainted by
 // refreshForLanguage() on open + on language change.
@@ -417,6 +419,189 @@ export function setInsertPaletteAvailable(available: boolean): void {
 }
 
 // ---------------------------------------------------------------------------
+// Public API surface — drives the palette's tool behaviours from
+// `window.partwright` (and the in-app AI). Keeps the UI <-> JS-API parity rule
+// from CLAUDE.md: anything you can click here should also be callable in code.
+// ---------------------------------------------------------------------------
+
+/** Programmatic equivalent of clicking the ✥ Arrange toggle ON.
+ *
+ *  **Side effect:** opens the Insert palette panel if it wasn't already open
+ *  so the chip strip / Undo / Size / Align controls are visible to whatever
+ *  drives the API next — matching what a user sees when they enable arrange
+ *  by hand. Headless / scripted flows that just want the canvas pointer hook
+ *  without the panel mounted should still call this (the panel never steals
+ *  focus from `window.partwright.*`); it does occupy viewport real estate. */
+export function apiEnterArrange(): { ok: boolean; reason?: string } {
+  if (!cb) return { ok: false, reason: 'insert palette not initialized' };
+  if (!isInsertPaletteOpen()) openInsertPalette();
+  if (!isArrangeActive()) {
+    enterArrangeMode();
+    updateArrangeToggleState();
+  }
+  return { ok: isArrangeActive() };
+}
+
+/** Toggle the "Auto-combine new shapes" checkbox programmatically. When off,
+ *  inserted shapes are added to the code but not folded into the visible
+ *  union (managed-return engines only). Keeps the panel's checkbox state in
+ *  sync so the user sees the new value if they then open the panel. */
+export function apiSetAutoCombine(on: boolean): void {
+  autoCombine = on;
+  if (autoCombineCheckbox) autoCombineCheckbox.checked = on;
+  updateCombineHint();
+}
+
+export function apiGetAutoCombine(): boolean { return autoCombine; }
+
+/** Programmatic equivalent of clicking the toggle OFF. */
+export function apiExitArrange(): void {
+  if (isArrangeActive()) {
+    exitArrangeMode();
+    updateArrangeToggleState();
+  }
+}
+
+export function apiIsArrangeActive(): boolean { return isArrangeActive(); }
+
+/** Replace the arrange-mode selection with `names`. Names are matched against
+ *  the live code's scanned parts (so a typo just produces an empty selection).
+ *  Returns the names that actually matched. */
+export function apiSetSelection(names: readonly string[]): string[] {
+  if (!cb) return [];
+  const valid = new Set(scanParts(cb.getCode(), cb.getLanguage()).map(p => p.name));
+  selection.clear();
+  const matched: string[] = [];
+  for (const name of names) {
+    if (valid.has(name)) { selection.add(name); matched.push(name); }
+  }
+  rerenderSelectionUI();
+  return matched;
+}
+
+/** Add `names` to the current selection without clearing existing entries.
+ *  Mirrors shift-click. Returns names that matched live parts. */
+export function apiAddToSelection(names: readonly string[]): string[] {
+  if (!cb) return [];
+  const valid = new Set(scanParts(cb.getCode(), cb.getLanguage()).map(p => p.name));
+  const matched: string[] = [];
+  for (const name of names) {
+    if (valid.has(name)) { selection.add(name); matched.push(name); }
+  }
+  rerenderSelectionUI();
+  return matched;
+}
+
+/** Drop everything from the selection — equivalent to clicking empty space in
+ *  arrange mode without Shift held. */
+export function apiClearSelection(): void {
+  if (selection.size === 0) return;
+  selection.clear();
+  rerenderSelectionUI();
+}
+
+/** Snapshot the current selection — the names the UI is treating as the
+ *  active group. */
+export function apiGetSelection(): string[] { return [...selection]; }
+
+/** Run the undo stack's `undo()` and surface its label as a toast (matches
+ *  the panel button). Returns the undone op's label, or null. */
+export function apiUndo(): string | null {
+  const label = undoOp();
+  if (label && cb) cb.showToast(`Undid: ${label}`, { variant: 'neutral' });
+  return label;
+}
+
+export function apiRedo(): string | null {
+  const label = redoOp();
+  if (label && cb) cb.showToast(`Redid: ${label}`, { variant: 'neutral' });
+  return label;
+}
+
+export function apiCanUndo(): boolean { return canUndo(); }
+export function apiCanRedo(): boolean { return canRedo(); }
+
+/** Resize the current selection — same call applyResize uses, exposed for
+ *  scripted edits. `scale` may be uniform-or-anisotropic. */
+export function apiResizeSelection(scale: Vec3): { ok: boolean; reason?: string } {
+  if (!cb) return { ok: false, reason: 'insert palette not initialized' };
+  if (selection.size === 0) return { ok: false, reason: 'no selection' };
+  applyResize(scale);
+  return { ok: true };
+}
+
+/** Align the current selection on `axis` to `mode` (min / center / max). */
+export function apiAlignSelection(axis: AlignAxis, mode: AlignMode): { ok: boolean; reason?: string } {
+  if (!cb) return { ok: false, reason: 'insert palette not initialized' };
+  if (selection.size < 2) return { ok: false, reason: 'need 2+ parts' };
+  applyAlign(axis, mode);
+  return { ok: true };
+}
+
+/** Group the current selection — same union the palette's ∪ button drives.
+ *  Engine-aware: voxel grids union implicitly, so this is a no-op there. */
+export function apiGroupSelection(): { ok: boolean; reason?: string } {
+  return apiBooleanSelection('union');
+}
+
+export function apiSubtractSelection(): { ok: boolean; reason?: string } {
+  return apiBooleanSelection('subtract');
+}
+
+export function apiIntersectSelection(): { ok: boolean; reason?: string } {
+  return apiBooleanSelection('intersect');
+}
+
+function apiBooleanSelection(op: BooleanOpKind): { ok: boolean; reason?: string } {
+  if (!cb) return { ok: false, reason: 'insert palette not initialized' };
+  if (selection.size < 2) return { ok: false, reason: 'need 2+ parts' };
+  const lang = cb.getLanguage();
+  if (lang === 'voxel') return { ok: false, reason: 'voxel grids union implicitly' };
+  const liveParts = scanParts(cb.getCode(), lang);
+  const partByName = new Map(liveParts.map(p => [p.name, p]));
+  const operands: Operand[] = [];
+  for (const name of selection) {
+    const part = partByName.get(name);
+    if (!part) continue;
+    operands.push({ name: part.name, statement: part.statement, range: part.range });
+  }
+  if (operands.length < 2) return { ok: false, reason: 'selection lost in code' };
+  applyOperation(op, operands, lang);
+  selection.clear();
+  rerenderSelectionUI();
+  return { ok: true };
+}
+
+export function apiDeleteSelection(): { ok: boolean; reason?: string } {
+  if (!cb) return { ok: false, reason: 'insert palette not initialized' };
+  if (selection.size === 0) return { ok: false, reason: 'no selection' };
+  applyQuickDelete();
+  return { ok: true };
+}
+
+export function apiDuplicateSelection(): { ok: boolean; reason?: string } {
+  if (!cb) return { ok: false, reason: 'insert palette not initialized' };
+  if (selection.size === 0) return { ok: false, reason: 'no selection' };
+  applyQuickDuplicate();
+  return { ok: true };
+}
+
+export function apiMirrorSelection(axis: MirrorAxis): { ok: boolean; reason?: string } {
+  if (!cb) return { ok: false, reason: 'insert palette not initialized' };
+  if (selection.size === 0) return { ok: false, reason: 'no selection' };
+  applyQuickMirror(axis);
+  return { ok: true };
+}
+
+/** List the parts arrange mode currently knows about, with their bboxes.
+ *  Includes both palette-inserted parts and hand-written parts the parser
+ *  could resolve (arrange enters once to seed). Returns an array so external
+ *  callers don't get a live reference to the internal Map. */
+export function apiListParts(): Array<{ name: string; box: RegistryEntry['box']; center: RegistryEntry['center'] }> {
+  return [...registry.entries()].map(([name, entry]) => ({ name, box: entry.box, center: entry.center }));
+}
+
+// ---------------------------------------------------------------------------
 // Panel
 // ---------------------------------------------------------------------------
 
@@ -547,6 +732,7 @@ function buildPanel(): HTMLElement {
     autoCombine = autoCb.checked;
     updateCombineHint();
   });
+  autoCombineCheckbox = autoCb;
   const autoCbLabel = document.createElement('span');
   autoCbLabel.textContent = 'Auto-combine new shapes';
   autoCombineRowEl.append(autoCb, autoCbLabel);

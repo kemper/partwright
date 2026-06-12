@@ -252,6 +252,28 @@ partwright.setTheme('dark'|'light')  // Set color theme
 partwright.getTheme()                // -> 'dark' or 'light'
 partwright.setAutoRun(enabled)       // Enable/disable auto-render on code edit
 partwright.isAutoRunEnabled()        // Whether auto-run is active
+
+// Arrange mode (Tinkercad-style direct manipulation) -- see #arrange-mode
+partwright.enterArrange()                 // Activate the click-to-select / drag-to-move tool -> {ok}
+partwright.exitArrange()                  // Deactivate
+partwright.isArrangeActive()              // -> boolean
+partwright.selectParts(['box','ball'])    // Replace selection -> matched names
+partwright.addToSelection(['cyl'])        // Extend (shift-click equivalent) -> matched names
+partwright.clearSelection()
+partwright.getSelection()                 // -> string[]
+partwright.listArrangeParts()             // -> [{name, box:{min,max}, center}] every part the tool knows about
+partwright.resizeSelection([2,1,1])       // Per-axis scale (or uniform [s,s,s]) -> {ok, reason?}
+partwright.alignSelection('z','center')   // axis 'x'|'y'|'z', mode 'min'|'center'|'max' -> {ok, reason?}
+partwright.groupSelection()               // ∪ Union the selected parts in code (not voxel) -> {ok, reason?}
+partwright.subtractSelection()            // ∖ first - rest
+partwright.intersectSelection()           // ∩
+partwright.duplicateSelection()           // Clone, offset along +X -> {ok}
+partwright.mirrorSelection('x')           // Mirror across axis
+partwright.deleteSelection()              // Remove selected parts from the code
+partwright.undo() / partwright.redo()     // Coarse-grained: one Tinkercad action = one step
+partwright.canUndo() / partwright.canRedo()
+partwright.setAutoCombine(false)          // Insert without auto-union (managed engines)
+partwright.getAutoCombine()               // -> boolean
 await partwright.exportGLB()   // Download GLB (browser file dialog -- prefer exportGLBData() in agent flows)
 partwright.exportSTL()         // Download STL ("                                       exportSTLData() ")
 partwright.exportOBJ()         // Download OBJ ("                                       exportOBJData() ")
@@ -1007,4 +1029,31 @@ Read `partwright.getSpendingMode()` at session start and honor the user's budget
 Users can mark up the model surface with the **Annotate** tool (✏️ in the viewport overlay): freehand strokes raycast onto the mesh, and text labels pinned to a 3D anchor. Annotations are per-version, persist in session exports, and are distinct from color regions — they do not modify geometry.
 
 **Call `readDoc({name: "annotations"})`** when the user has placed annotations and you want to read them, or when you need to write annotations programmatically — covers the `getAnnotations` / `setAnnotations` shape and the persistence model.
+
+## Arrange mode
+
+<a id="arrange-mode"></a>
+
+Arrange mode is the Tinkercad-style direct-manipulation tool reached from the Insert palette: a persistent viewport mode where clicking a shape selects it, shift-click extends the selection, drag slides parts around, and a shift-drag marquee lassos every part whose centre lands inside it. The same selection drives **Size** (per-axis scale), **Align** (min/center/max along X/Y/Z), and the **Operations** row (Group / Subtract / Intersect / Duplicate / Mirror / Delete). Every action is recorded in a coarse-grained **undo** stack — one Tinkercad-style gesture = one Ctrl-Z step — independent of CodeMirror's per-text-edit history.
+
+The tool also seeds itself from the live code when you enter it: any hand-written declaration the parser recognises (e.g. `const myCube = Manifold.cube([10,10,10]).translate([5,0,0])`, `cube([10,10,10]) // part: foo`, `v.fillBox([0,0,0],[10,10,10],'#abc') // part: ball`) becomes draggable / resizable / alignable — not just parts you inserted from the palette.
+
+Every UI action is exposed on `window.partwright` so you can drive the same flow from code:
+
+```js
+partwright.enterArrange();
+partwright.selectParts(['ball', 'box']);   // Replace selection
+partwright.alignSelection('z', 'min');     // Drop them to the same Z floor
+partwright.resizeSelection([2, 2, 1]);     // 2x2x1 anisotropic scale
+partwright.groupSelection();               // ∪ Union them in code
+partwright.undo();                         // Reverse one step
+partwright.listArrangeParts();             // [{name, box:{min,max}, center}, …]
+partwright.exitArrange();
+```
+
+A successful action returns `{ ok: true }`; rejected ones return `{ ok: false, reason: <why> }` (e.g. `'no selection'`, `'need 2+ parts'`, `'voxel grids union implicitly'`). The selection set, registry, and undo stack are the **same** instances the panel buttons use — alternating UI clicks and `partwright.*` calls is supported.
+
+**`enterArrange()` opens the Insert panel as a side effect** so the chip strip, Size/Align inputs, and Undo/Redo buttons are visible — matching what a user sees when they enable arrange by hand. Headless flows that just want the canvas pointer hook should still call it; the panel doesn't steal focus from `partwright.*` calls.
+
+**Caveats.** Hand-written parts the regex parser can't decode (chained `.rotate()`, computed args, custom expressions) stay out of the registry and are skipped silently. The current Z-axis drag is locked to a horizontal plane through the pickup point. Voxel grids union implicitly, so `groupSelection` / `subtractSelection` / `intersectSelection` are no-ops in a voxel session.
 
