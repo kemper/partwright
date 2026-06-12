@@ -121,12 +121,13 @@ import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geom
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, buildEngraveResult, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
+import { engraveInWorker } from './surface/engraveWorkerClient';
 import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampHost';
-import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
-import { nearestTriangleMap, remapTriangleSets } from './surface/colorTransfer';
+import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, isNoopScale, placementLabel, rotationLabel, mirrorLabel, scaleLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
+import { nearestTriangleMap, remapTriangleSets, selectTrianglesNearSeeds } from './surface/colorTransfer';
 import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, meshContentKey, cancelSurfaceCompute, surfaceComputeInFlight, SurfaceComputeCancelled, type SurfaceOp } from './surface/surfaceOps';
-import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, parseSurfaceOpts, type SurfaceOpId, type PersistedSurfaceTexture, type ResolvedScope } from './surface/surfaceOpSpec';
+import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, parseSurfaceOpts, isSurfaceOpId, type SurfaceOpId, type PersistedSurfaceTexture, type ResolvedScope } from './surface/surfaceOpSpec';
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
@@ -7768,7 +7769,7 @@ async function main() {
         throw new Error('engrave requires a rasterized stamp — provide text or an image first.');
       }
       const raised = (opts?.raised as boolean) ?? false;
-      return applyEngrave(mesh, {
+      const engraveOpts = {
         mask,
         projection: (opts?.projection as EngraveProjection) ?? base.projection,
         through: raised ? false : ((opts?.through as boolean) ?? base.through),
@@ -7779,7 +7780,11 @@ async function main() {
         watertight: (opts?.watertight as boolean) ?? base.watertight,
         source: opts?.source as string | undefined,
         color: parseStampColor(opts?.color),
-      }, ctl);
+      };
+      // Run the dense SDF carve in the engrave Worker so it never janks the UI;
+      // the cheap result assembly (paint transfer + version code) stays here.
+      const baked = await engraveInWorker(mesh, engraveOpts, ctl);
+      return buildEngraveResult(mesh, baked, engraveOpts);
     }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
@@ -7849,6 +7854,35 @@ async function main() {
     }
   }
 
+  /** Resolve a preview op's `label` / `region` scope (the same keys Apply uses)
+   *  into a concrete `selectedTriangles` set against the current mesh, so a
+   *  scoped preview shows the same patch Apply will produce — closing the gap
+   *  where "By label" / "Near point" previewed the whole-model texture. Strips
+   *  the scope keys (buildSurfaceModifier only understands selectedTriangles).
+   *  Returns opts unchanged when the op isn't scoped; throws (→ surfaced as a
+   *  preview error) on a malformed scope, matching Apply's validation. */
+  function resolvePreviewScope(
+    id: string,
+    opts: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined {
+    if (!opts || (!('label' in opts) && !('region' in opts))) return opts;
+    const rest: Record<string, unknown> = { ...opts };
+    delete rest.label;
+    delete rest.region;
+    if (!isSurfaceOpId(id) || !currentMeshData) return rest;
+    const scopeOnly: Record<string, unknown> = {};
+    if ('label' in opts) scopeOnly.label = opts.label;
+    if ('region' in opts) scopeOnly.region = opts.region;
+    const { scope } = parseSurfaceOpts(id, scopeOnly);
+    if (!scope) return rest;
+    const resolved = resolveSurfaceScopes([{ id, params: {}, scope }], currentMeshData, currentLabelMap);
+    const rs = resolved?.[0];
+    // Resolve to a patch selection; an empty label set selects nothing (the op
+    // previews as a no-op, mirroring Apply rather than texturing the whole model).
+    rest.selectedTriangles = rs ? selectTrianglesNearSeeds(currentMeshData, rs.seeds, rs.radius) : new Set<number>();
+    return rest;
+  }
+
   // === Expose window.partwright console API ===
   const partwrightAPI = {
     /** Whether the current model carries paint (so the UI can warn before a
@@ -7869,7 +7903,8 @@ async function main() {
      *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize'. */
     async previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): Promise<{ ok: true } | { error: string }> {
       try {
-        previewSurfaceModifier(await buildSurfaceModifierProgress(id, opts, preserveColor), preserveColor);
+        const scopedOpts = resolvePreviewScope(id, opts);
+        previewSurfaceModifier(await buildSurfaceModifierProgress(id, scopedOpts, preserveColor), preserveColor);
         return { ok: true };
       } catch (e) {
         // A superseded / user-cancelled carve isn't an error — keep the prior preview.
@@ -8370,12 +8405,24 @@ async function main() {
     clearScalePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
     /** Scale the current model and save as a new version.
      *  sx/sy/sz are multiplicative factors (1 = no change, 2 = double, 0.5 = half).
-     *  `preserveColor` (default true) re-resolves paint regions onto the scaled mesh. */
-    async scaleModel(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }) {
+     *  `mode`: 'auto' (default) keeps a manifold-js model parametric (wraps the
+     *  source in `.scale([sx,sy,sz])`), else bakes; 'parametric' forces the wrap;
+     *  'bake' flattens to a mesh. `preserveColor` (default true) re-resolves paint
+     *  regions onto the scaled mesh. */
+    async scaleModel(sx: number, sy: number, sz: number, opts?: { mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }) {
       try {
         if (!currentMeshData) return { error: 'No model loaded' };
-        const preserve = opts?.preserveColor ?? true;
-        return await commitSurfaceModifier(applyScale(meshForModifier(preserve), sx, sy, sz), preserve);
+        // Match applyScale's guard: a negative factor mirrors the mesh (inside-out,
+        // non-manifold) and zero collapses an axis — reject before either path.
+        for (const [name, f] of [['sx', sx], ['sy', sy], ['sz', sz]] as const) {
+          if (typeof f !== 'number' || !Number.isFinite(f) || f <= 0) {
+            return { error: `scaleModel: ${name} must be a positive, finite factor (got ${f}). A negative or zero scale would mirror or collapse the mesh into non-manifold geometry.` };
+          }
+        }
+        const factors: Vec3 = [sx, sy, sz];
+        const label = scaleLabel(factors);
+        if (isNoopScale(factors)) return { ok: true, noop: true, label, message: 'Scale factors are all 1 — nothing to do' };
+        return await commitTransform([{ kind: 'scale', v: factors }], label, opts?.mode, opts?.preserveColor);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Reposition the current model onto the print bed and save a new version.
@@ -13487,7 +13534,7 @@ async function main() {
         'canPlaceParametric': { signature: 'canPlaceParametric() -- Whether transforms can be written into the code parametrically (manifold-js sessions)', docs: '/ai/printing.md' },
         'previewScale':    { signature: 'previewScale(sx, sy, sz, {preserveColor?}?) -- Non-destructive viewport preview of a resize -> {ok} or {error}', docs: '/ai/printing.md' },
         'clearScalePreview': { signature: 'clearScalePreview() -- Discard a live scale preview', docs: '/ai/printing.md' },
-        'scaleModel':      { signature: 'await scaleModel(sx, sy, sz, {preserveColor?}?) -- Resize the model; saves a new version', docs: '/ai/printing.md' },
+        'scaleModel':      { signature: "await scaleModel(sx, sy, sz, {mode?: 'parametric'|'bake'|'auto', preserveColor?}?) -- Resize the model (mode 'auto' keeps manifold-js parametric); saves a new version", docs: '/ai/printing.md' },
         'placeModel':      { signature: "await placeModel({dropToFloor?, centerX?, centerY?, centerZ?, mode?: 'parametric'|'bake'|'auto', preserveColor?}) -- Drop to the bed / center on axes; saves a new version", docs: '/ai/printing.md' },
         'rotateModel':     { signature: "await rotateModel({x?, y?, z?, mode?: 'parametric'|'bake'|'auto', preserveColor?}) -- Rotate by Euler degrees about the model's center; saves a new version", docs: '/ai/printing.md' },
         'layFlatModel':    { signature: "await layFlatModel({mode?: 'parametric'|'bake'|'auto', preserveColor?}) -- Auto-orient: largest flat face down onto the bed; saves a new version", docs: '/ai/printing.md' },
