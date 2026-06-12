@@ -217,6 +217,29 @@ export interface SpanFrame {
   mid: Vec3;
 }
 
+/** The foot analog of {@link GripFrame}: the canonical ground-contact frame of
+ *  one foot. Where grip frames stop a held prop passing through the hand, sole
+ *  frames stop footwear / skates / platforms / a base from guessing at where the
+ *  foot meets the ground. `buildFeet`, `buildFootwear` and `buildBase` all derive
+ *  from these, so they can't drift apart (the drift that let footwear clip
+ *  through the base). Returned per side as `rig.sole.L` / `rig.sole.R`. */
+export interface SoleFrame {
+  /** World point at the centre of the footprint, on the ground-contact plane —
+   *  drop anything that attaches under the foot here (see `figure.standOn`). */
+  point: Vec3;
+  /** Unit ground-up normal (`[0,0,1]`). */
+  normal: Vec3;
+  /** Unit toe direction (== `rig.dir.footL/R`), so attachments track turnout. */
+  heading: Vec3;
+  /** Footprint length, heel→toe. */
+  length: number;
+  /** Footprint width, side→side. */
+  width: number;
+  /** Z of the ground-contact plane (the underside of the bare sole). The lowest
+   *  of the two is where a base/floor sits. */
+  groundZ: number;
+}
+
 export interface Rig {
   joints: Record<string, Vec3>;
   /** Canonical radii / half-extents, in world units. */
@@ -225,6 +248,9 @@ export interface Rig {
   dir: Record<string, Vec3>;
   /** Per-hand grip frames for connecting held props — see {@link GripFrame}. */
   grip: { L: GripFrame; R: GripFrame };
+  /** Per-foot sole frames for connecting things under the feet — see
+   *  {@link SoleFrame}. */
+  sole: { L: SoleFrame; R: SoleFrame };
   /** Facial landmark world positions (derived; never hand-typed). */
   face: FaceAnchors;
   opts: { height: number; headsTall: number; build: string; sex: string; pose: ResolvedPose };
@@ -511,6 +537,7 @@ function buildRig(rawOpts: unknown): Rig {
       headForward: sDir(hf), headUp: sDir(headUp), headLeft: sDir(headLeft),
     },
     grip: { L: gripFrame(aL), R: gripFrame(aR) },
+    sole: { L: makeSoleFrame(lL.A, lL.footFwd, r), R: makeSoleFrame(lR.A, lR.footFwd, r) },
     face: sFace,
     opts: { height: H, headsTall: N, build, sex, pose },
   };
@@ -689,19 +716,43 @@ function buildLegs(sdf: SdfApi, rig: Rig): Node {
     .union(leg(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3));
 }
 
-/** The ground-contact Z of a foot, derived from its ankle. The foot FOLLOWS
- *  the ankle (one foot-radius below it) instead of being pinned to z=0, so a
- *  posed/elevated ankle (lunge, tiptoe) keeps the foot attached to the leg —
- *  no detached component. For a normal standing ankle this lands near z≈0. */
+/** The sole-plane Z of a foot (centre of the sole capsule), derived from its
+ *  ankle. The foot FOLLOWS the ankle (one foot-radius below it) instead of being
+ *  pinned to z=0, so a posed/elevated ankle (lunge, tiptoe) keeps the foot
+ *  attached to the leg — no detached component. For a normal standing ankle this
+ *  lands near z≈0. The {@link SoleFrame} shares this basis, so feet, footwear and
+ *  the base agree on where the ground is. */
 function footSoleZ(rig: Rig, ankle: Vec3): number {
   return ankle[2] - rig.r.foot;
 }
 
+/** Build the canonical {@link SoleFrame} for one foot from its ankle + heading.
+ *  Single source of truth for the footprint + ground plane that `buildFeet`,
+ *  `buildFootwear` and `buildBase` (and `figure.standOn`) all read. */
+function makeSoleFrame(ankle: Vec3, heading: Vec3, r: Record<string, number>): SoleFrame {
+  const footLen = r.foot * 2.4;
+  const soleCenterZ = ankle[2] - r.foot;          // == footSoleZ
+  const groundZ = soleCenterZ - r.foot * 0.62;    // underside of the bare sole capsule
+  // Footprint centre: the ankle sits ~40% from the heel, so the centre is a
+  // little forward of the ankle along the heading.
+  const cx = ankle[0] + heading[0] * footLen * 0.12;
+  const cy = ankle[1] + heading[1] * footLen * 0.12;
+  return {
+    point: [cx, cy, groundZ],
+    normal: [0, 0, 1],
+    heading: [heading[0], heading[1], heading[2]],
+    length: footLen,
+    width: r.foot * 1.24,
+    groundZ,
+  };
+}
+
 function buildFeet(sdf: SdfApi, rig: Rig): Node {
   const j = rig.joints, r = rig.r;
-  function foot(A: Vec3, fwd: Vec3, side: number): Node {
-    const footLen = r.foot * 2.4;
-    const sz = footSoleZ(rig, A);
+  function foot(A: Vec3, s: SoleFrame, side: number): Node {
+    const footLen = s.length;
+    const fwd = s.heading;
+    const sz = s.groundZ + r.foot * 0.62;        // sole capsule centre (== footSoleZ)
     // Toe forward along the foot heading (default −Y, yawed by hip turnout),
     // heel back, ankle ~40% from the heel so the foot sits UNDER the body
     // instead of jutting forward (which reads as leaning back). The toe gets a
@@ -719,8 +770,8 @@ function buildFeet(sdf: SdfApi, rig: Rig): Node {
     const ankleCol = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.lowerLeg * 0.8);
     return sole.smoothUnion(instep, r.foot * 0.6).smoothUnion(ankleCol, r.foot * 0.6);
   }
-  return foot(j.footL as Vec3, rig.dir.footL as Vec3, +1)
-    .union(foot(j.footR as Vec3, rig.dir.footR as Vec3, -1));
+  return foot(j.footL as Vec3, rig.sole.L, +1)
+    .union(foot(j.footR as Vec3, rig.sole.R, -1));
 }
 
 /** Shoes and boots — footwear that wraps each foot, following the foot heading
@@ -754,10 +805,13 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     return lerp3(A, K, Math.min(0.95, Math.max(0.1, frac)));
   }
 
-  function boot(A: Vec3, K: Vec3, fwd: Vec3, side: number): Node {
-    // Mirror buildFeet's foot, inflated by `t` and scaled by `size`.
-    const footLen = r.foot * 2.4 * size;
-    const sz = footSoleZ(rig, A);
+  function boot(A: Vec3, K: Vec3, sole0: SoleFrame, side: number): Node {
+    // Mirror buildFeet's foot, inflated by `t` and scaled by `size`. Everything
+    // keys off the canonical sole frame so footwear can't drift from the foot.
+    const footLen = sole0.length * size;
+    const fwd = sole0.heading;
+    const groundZ = sole0.groundZ;
+    const sz = groundZ + r.foot * 0.62;            // sole capsule centre (== footSoleZ)
     const lat: Vec3 = [-fwd[1], fwd[0], 0];        // heading yawed +90° in XY
     const onGround = (p: Vec3): Vec3 => [p[0], p[1], sz];
     const toe = onGround(add3(A, add3(scale3(fwd, footLen * 0.62), scale3(lat, side * r.foot * 0.12))));
@@ -791,11 +845,16 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     const big = Math.max(footLen, r.lowerLeg) * 8;
     const topZ = kind === 'boots' ? shaftTop(A, K)[2] : sz + r.foot * 1.2 + t;
     const zone = sdf.box([big, big, big]).translate([A[0], A[1], topZ - big / 2]); // z ≤ topZ
-    return shoe.union(footMass.intersect(zone));
+    const result = shoe.union(footMass.intersect(zone));
+    // Flat sole: slice off everything below the ground plane so the bottom is a
+    // flat sole flush with the floor/base (prints flat, sits flush on F.base)
+    // instead of the rounded capsule underside.
+    const floor = sdf.box([big, big, big]).translate([A[0], A[1], groundZ + big / 2]); // z ≥ groundZ
+    return result.intersect(floor);
   }
 
-  return boot(j.footL as Vec3, j.lowerLegL as Vec3, rig.dir.footL as Vec3, +1)
-    .union(boot(j.footR as Vec3, j.lowerLegR as Vec3, rig.dir.footR as Vec3, -1));
+  return boot(j.footL as Vec3, j.lowerLegL as Vec3, rig.sole.L, +1)
+    .union(boot(j.footR as Vec3, j.lowerLegR as Vec3, rig.sole.R, -1));
 }
 
 function buildShoes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
@@ -1496,10 +1555,16 @@ export interface FigureNamespace {
    *  — guitar, barbell, bow, broom. Returns the {@link SpanFrame} (endpoints,
    *  unit axis, length, midpoint) so `sdf.capsule(s.a, s.b, r)` is one line. */
   spanGrips(a: GripFrame | Vec3, b: GripFrame | Vec3): SpanFrame;
+  /** Seat a node UNDER a foot at its {@link SoleFrame} (`rig.sole.L`/`.R`) — a
+   *  skate, platform, ski, snowshoe, or a per-foot base. The foot analog of
+   *  `holdAt`: drops the node's bbox anchor on the sole's ground-contact point
+   *  (`opts.anchor` ∈ top|center|bottom, default 'top' so the prop hangs below
+   *  the foot). Accepts a sole frame or a raw `[x,y,z]` point. */
+  standOn(node: Node, sole: SoleFrame | Vec3, opts?: object): Node;
   /** Deterministic world-coordinate dump of the rig's joints, grip frames, and
    *  directions (rounded) plus a `.text` summary — use instead of hand-rolled
    *  JSON scratch probes when authoring a pose. */
-  poseProbe(rig: Rig): { height: number; headsTall: number; build: string; sex: string; joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame }; dir: Record<string, Vec3>; text: string };
+  poseProbe(rig: Rig): { height: number; headsTall: number; build: string; sex: string; joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame }; soles: { L: SoleFrame; R: SoleFrame }; dir: Record<string, Vec3>; text: string };
   /** The face's detail-region spheres (head + finer mouth) for
    *  `build({ detail: F.faceDetail(rig) })`. */
   faceDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
@@ -1541,6 +1606,25 @@ function placeAt(node: Node, joint: Vec3, opts?: unknown): Node {
   const cy = (b.min[1] + b.max[1]) / 2;
   const cz = anchor === 'bottom' ? b.min[2] : anchor === 'top' ? b.max[2] : (b.min[2] + b.max[2]) / 2;
   return node.translate([j[0] - cx, j[1] - cy, j[2] - cz]);
+}
+
+/** Seat a node under a foot at its {@link SoleFrame} ground-contact point — the
+ *  foot analog of `holdAt`. Drops the node's bbox anchor on `sole.point` so an
+ *  agent never guesses the sole Z: `anchor: 'top'` (default) lands the node's TOP
+ *  on the sole, hanging it below the foot (skate, platform, ski); 'bottom' rests
+ *  the node ON the sole point; 'center' centres it. Accepts a sole frame
+ *  (`rig.sole.L/R`) or a raw `[x,y,z]`. */
+function standOn(node: Node, sole: unknown, opts?: unknown): Node {
+  const o = obj(opts, 'standOn(opts)');
+  assertNoUnknownKeys(o, ['anchor'], 'standOn(opts)');
+  const anchor = o.anchor === undefined ? 'top'
+    : assertEnum(o.anchor, ['center', 'bottom', 'top'] as const, 'standOn.anchor');
+  const p = asPoint3(sole, 'standOn(sole)');
+  const b = node.bounds();
+  const cx = (b.min[0] + b.max[0]) / 2;
+  const cy = (b.min[1] + b.max[1]) / 2;
+  const cz = anchor === 'bottom' ? b.min[2] : anchor === 'top' ? b.max[2] : (b.min[2] + b.max[2]) / 2;
+  return node.translate([p[0] - cx, p[1] - cy, p[2] - cz]);
 }
 
 /** Euler [rx, ry, 0] (degrees) that rotates the local +Z axis onto unit `t`,
@@ -1623,7 +1707,7 @@ function round3(v: Vec3, p = 2): Vec3 {
 function poseProbe(rig: Rig): {
   height: number; headsTall: number; build: string; sex: string;
   joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame };
-  dir: Record<string, Vec3>; text: string;
+  soles: { L: SoleFrame; R: SoleFrame }; dir: Record<string, Vec3>; text: string;
 } {
   const joints: Record<string, Vec3> = {};
   for (const k of Object.keys(rig.joints)) joints[k] = round3(rig.joints[k]);
@@ -1634,6 +1718,12 @@ function poseProbe(rig: Rig): {
     gripAxis: round3(g.gripAxis), reach: round3(g.reach),
   });
   const grips = { L: grip(rig.grip.L), R: grip(rig.grip.R) };
+  const soleR = (s: SoleFrame): SoleFrame => ({
+    point: round3(s.point), normal: round3(s.normal), heading: round3(s.heading),
+    length: Math.round(s.length * 100) / 100, width: Math.round(s.width * 100) / 100,
+    groundZ: Math.round(s.groundZ * 100) / 100,
+  });
+  const soles = { L: soleR(rig.sole.L), R: soleR(rig.sole.R) };
   const o = rig.opts;
   const lines: string[] = [
     `figure poseProbe — height ${o.height}, headsTall ${o.headsTall}, build ${o.build}, sex ${o.sex}`,
@@ -1642,8 +1732,11 @@ function poseProbe(rig: Rig): {
     'grips:',
     `  L.point [${grips.L.point.join(', ')}]  gripAxis [${grips.L.gripAxis.join(', ')}]`,
     `  R.point [${grips.R.point.join(', ')}]  gripAxis [${grips.R.gripAxis.join(', ')}]`,
+    'soles:',
+    `  L.point [${soles.L.point.join(', ')}]  heading [${soles.L.heading.join(', ')}]  groundZ ${soles.L.groundZ}`,
+    `  R.point [${soles.R.point.join(', ')}]  heading [${soles.R.heading.join(', ')}]  groundZ ${soles.R.groundZ}`,
   ];
-  return { height: o.height, headsTall: o.headsTall, build: o.build, sex: o.sex, joints, grips, dir, text: lines.join('\n') };
+  return { height: o.height, headsTall: o.headsTall, build: o.build, sex: o.sex, joints, grips, soles, dir, text: lines.join('\n') };
 }
 
 function assertRig(rig: unknown, name: string): Rig {
@@ -1670,6 +1763,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     placeAt: (node, joint, opts) => placeAt(node as Node, joint, opts),
     holdAt: (node, grip, opts) => holdAt(node as Node, grip, opts),
     spanGrips: (a, b) => spanGrips(a, b),
+    standOn: (node, sole, opts) => standOn(node as Node, sole, opts),
     poseProbe: (rig) => poseProbe(assertRig(rig, 'poseProbe(rig)')),
     faceDetail: (rig, opts) => faceDetail(assertRig(rig, 'faceDetail(rig)'), opts),
     handDetail: (rig, opts) => handDetail(assertRig(rig, 'handDetail(rig)'), opts),
@@ -1692,4 +1786,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildFeet, standOn, buildHands, handDetail, buildHair };

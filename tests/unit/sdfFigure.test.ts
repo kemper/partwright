@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildFeet, standOn, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -558,6 +558,78 @@ describe('figure footwear — shoes & boots', () => {
     const rig = buildRig({});
     expect(() => buildShoes(api, rig, { shaftZ: 5 })).toThrow(/shaftZ/);
     expect(() => buildBoots(api, rig, { bogus: 1 })).toThrow(/bogus/);
+  });
+
+  it('boots have a flat bottom clipped at the ground plane', () => {
+    const rig = buildRig({});
+    const boots = buildBoots(api, rig) as SdfNode;
+    const s = rig.sole.L;
+    // inside just above the ground plane, empty just below it (flat cut, not a
+    // rounded capsule underside).
+    expect(boots.evaluate(s.point[0], s.point[1], s.groundZ + 0.3)).toBeLessThan(0);
+    expect(boots.evaluate(s.point[0], s.point[1], s.groundZ - 0.4)).toBeGreaterThan(0);
+  });
+});
+
+describe('figure sole frames — the ground-contact anchor (foot analog of grips)', () => {
+  it('exposes a sole frame per foot derived from the ankle', () => {
+    const rig = buildRig({});
+    for (const side of ['L', 'R'] as const) {
+      const s = rig.sole[side];
+      const A = rig.joints[`foot${side}`];
+      expect(s.groundZ).toBeLessThan(A[2]);          // ground is below the ankle
+      expect(s.point[2]).toBeCloseTo(s.groundZ);     // footprint point sits on the plane
+      expect(s.length).toBeGreaterThan(0);
+      expect(s.width).toBeGreaterThan(0);
+      expect(s.normal).toEqual([0, 0, 1]);
+    }
+  });
+
+  it('sole heading equals dir.foot, so it tracks turnout', () => {
+    const rig = buildRig({ pose: { legL: { twist: 40 } } });
+    expect(rig.sole.L.heading).toEqual(rig.dir.footL);
+  });
+
+  it('the sole frame plane matches the bare foot underside', () => {
+    const rig = buildRig({});
+    const feet = buildFeet(api, rig) as SdfNode;
+    const s = rig.sole.L;
+    // just above the ground plane at the footprint centre is inside the foot.
+    expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + 0.2)).toBeLessThan(0);
+  });
+
+  it('poseProbe reports the sole frames', () => {
+    const rig = buildRig({});
+    const probe = createFigureNamespace(api).poseProbe(rig);
+    expect(probe.soles.L.groundZ).toBeCloseTo(rig.sole.L.groundZ);
+    expect(probe.text).toMatch(/soles:/);
+  });
+});
+
+describe('figure standOn — seat a prop under a foot', () => {
+  const boxN = () => sdfT.primBox([4, 4, 4]) as unknown as SdfNode;
+
+  it("drops a node's top onto the sole point by default", () => {
+    const rig = buildRig({});
+    const s = rig.sole.L;
+    const placed = standOn(boxN(), s) as SdfNode;
+    const b = placed.bounds();
+    expect(b.max[2]).toBeCloseTo(s.point[2]);                  // top meets the sole
+    expect((b.min[0] + b.max[0]) / 2).toBeCloseTo(s.point[0]); // centred under the foot
+    expect((b.min[1] + b.max[1]) / 2).toBeCloseTo(s.point[1]);
+  });
+
+  it("anchor 'bottom' rests the node ON the sole point", () => {
+    const rig = buildRig({});
+    const s = rig.sole.L;
+    const placed = standOn(boxN(), s, { anchor: 'bottom' }) as SdfNode;
+    expect(placed.bounds().min[2]).toBeCloseTo(s.point[2]);
+  });
+
+  it('accepts a raw point and rejects unknown options', () => {
+    const rig = buildRig({});
+    expect(() => (standOn(boxN(), [0, 0, 0]) as SdfNode).bounds()).not.toThrow();
+    expect(() => standOn(boxN(), rig.sole.L, { foo: 1 })).toThrow();
   });
 });
 

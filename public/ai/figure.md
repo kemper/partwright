@@ -193,6 +193,15 @@ The rig exposes (read-only, for custom parts):
     A guitar neck / staff / sword grip runs parallel to this.
   - `palmNormal` — unit normal the palm faces (fingers curl toward it).
   - `reach` — unit forearm/finger direction.
+- `rig.sole.{L,R}` — **a full sole frame per foot, for connecting things UNDER
+  the feet** (footwear, skates, skis, snowshoes, a platform/base). The foot analog
+  of `rig.grip`. Each has `{ point, normal, heading, length, width, groundZ }`:
+  - `point` — the footprint **centre on the ground-contact plane**. Drop anything
+    that attaches under the foot here (see `F.standOn`) instead of guessing a sole Z.
+  - `groundZ` — the Z of the ground-contact plane (underside of the bare sole).
+    The **lower** of `sole.L.groundZ` / `sole.R.groundZ` is where a floor/base sits.
+  - `heading` — toe direction (== `dir.footL/R`), so attachments track turnout.
+  - `length` / `width` — footprint extents. `normal` is ground-up `[0,0,1]`.
 - `rig.face.{eyeL, eyeR, browL, browR, nose, mouth, earL, earR, chinTip}`.
 
 **`build` scales every width:** `slim` ×0.82, `average` ×1.0, `stocky` ×1.22 —
@@ -282,9 +291,26 @@ the grip `point` (not `handL/R`) is what stops the bar passing through a hand.
 `figure_rocker.js` builds its guitar neck + headstock on `spanGrips`;
 `figure_staff_mage.js` seats a single-hand staff with `holdAt`.
 
+**Putting something UNDER a foot — `F.standOn(node, rig.sole.L|R, opts?)`.** The
+foot analog of `holdAt`: it drops a node onto a foot's sole frame so you never
+guess the sole Z — for a skate, ski, snowshoe, platform, or a per-foot base.
+`opts.anchor` ∈ `top` (default — the node's top meets the sole, hanging it below
+the foot) | `bottom` (rests the node ON the sole point) | `center`.
+
+```js
+// A flat platform flush under each foot (tracks turnout via the sole heading):
+const plat = () => sdf.roundedBox([rig.r.foot * 2.8, rig.r.foot * 3.4, rig.r.foot * 0.8], rig.r.foot * 0.2);
+const skates = sdf.union(F.standOn(plat(), rig.sole.L), F.standOn(plat(), rig.sole.R)).label('skates');
+```
+
+`F.clothing.shoes`/`boots` already key off the sole frame, so their soles come
+out **flat** on the ground plane (they sit flush on `F.base` and print flat) and
+track turnout — you don't hand-roll footwear. `F.base` rises to meet the lower of
+the two `groundZ`, so at least one foot always welds to it (one component).
+
 **Reading a pose — `F.poseProbe(rig)`.** Returns a deterministic, rounded dump
-of every world joint position, both grip frames, and the key directions, plus a
-`.text` summary — use it instead of hand-rolled `JSON.stringify` probes when
+of every world joint position, both grip frames, both sole frames, and the key
+directions, plus a `.text` summary — use it instead of hand-rolled `JSON.stringify` probes when
 tuning a pose. `throw new Error(F.poseProbe(rig).text)` (or `console.log` it)
 prints the whole readout so you can read where a hand/grip actually landed
 before aiming a prop at it.
@@ -408,11 +434,13 @@ F.clothing.top(rig, { sleeve, hemZ, thickness })        // sleeve: none|short|lo
 //   cone is added down to the hem so legs stay covered all round.
 F.clothing.shoes(rig, { size, thickness })              // sole + upper over each foot
 F.clothing.boots(rig, { size, shaftZ, thickness })      // shoes + a shaft up the lower leg
-//   Footwear is anchored on rig.joints.footL/R and FOLLOWS rig.dir.footL/R, so
-//   it tracks leg*.twist turnout exactly like F.feet. `size` scales the
-//   footprint, `thickness` the shell over the foot. For boots, `shaftZ` is a
-//   world-Z target projected onto each leg's own ankle→knee bone (default
-//   mid-calf), so a posed/lunge shank keeps the shaft on the bone.
+//   Footwear keys off the rig.sole.{L,R} frames, so it tracks leg*.twist turnout
+//   like F.feet AND comes out with a FLAT sole on the ground plane — it sits
+//   flush on F.base and prints flat. `size` scales the footprint, `thickness`
+//   the shell over the foot. For boots, `shaftZ` is a world-Z target projected
+//   onto each leg's own ankle→knee bone (default mid-calf), so a posed/lunge
+//   shank keeps the shaft on the bone. (See F.standOn / rig.sole above for
+//   attaching skates/platforms/a base under the feet.)
 ```
 
 Clothing is the body region **inflated and trimmed**, and **coverage is
