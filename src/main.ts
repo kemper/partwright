@@ -2011,7 +2011,11 @@ async function main() {
       return captureThumbnail();
     });
     const version = await openSession(session.id);
-    if (version) await loadVersionIntoEditor(version);
+    // Skip surface texture computation during catalog import — the surface
+    // Worker (voronoi/knurl/woven) can take 30–120s on complex catalog models
+    // and blocks the entire import. Textures apply on the first user-triggered
+    // run (edit code, or click Re-apply if the pill appears).
+    if (version) await loadVersionIntoEditor(version, { skipSurface: true });
     return { sessionId: session.id };
   }
 
@@ -4759,7 +4763,7 @@ async function main() {
     void ensureEngineStarted();
   }
 
-  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
+  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean; skipSurface?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
     // Cancel any active voxel paint before loading a different version — its
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
     // after navigation would write the wrong session's voxels into the new
@@ -4876,7 +4880,7 @@ async function main() {
         seedSurfaceCache(persistedTexture.key, persistedTexture.mesh as MeshData);
       }
       const meshBeforeRun = currentMeshData;
-      const applied = await runCodeSync(version.code, { preserveCamera: true });
+      const applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
       if (!applied) return;
