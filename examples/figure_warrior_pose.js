@@ -8,19 +8,19 @@ const F = sdf.figure;
 // 1. RIG — warrior lunge.
 //    legL = front leg: stepped forward, knee bent
 //    legR = back leg: pushed back, knee nearly straight
-//    Arms: both abducted 90° = straight out to sides (T)
+//    Arms: both raiseSide 90° = straight out to sides (T)
 const rig = F.rig({
   height: 60,
   headsTall: 7.5,
   build: 'slim',
   pose: {
-    armL: { abduct: 90, flex: 0, elbow: 0 },
-    armR: { abduct: 90, flex: 0, elbow: 0 },
+    armL: { raiseSide: 90, raiseFwd: 0, bend: 0 },
+    armR: { raiseSide: 90, raiseFwd: 0, bend: 0 },
     // Front leg: thigh forward 45°, knee bent 45° → shin vertical, foot
     // planted forward of the body. Back leg pushed back, nearly straight.
-    legL: { abduct: 3, flex: 45, knee: 45 },
-    legR: { abduct: 3, flex: -30, knee: 5 },
-    head: { turn: 0, tilt: 0, nod: 2 },
+    legL: { raiseSide: 3, raiseFwd: 45, bend: 45 },
+    legR: { raiseSide: 3, raiseFwd: -30, bend: 5 },
+    head: { yaw: 0, roll: 0, pitch: 2 },
     spine: { lean: 5, turn: 0, side: 0 },
   },
 });
@@ -62,8 +62,8 @@ const hair = F.hair(rig, { style: 'bun' }).label('hair');
 // bones shorten the legs' vertical reach), so the body is lowered until the
 // back sole sinks into a display slab, and the front foot — still higher —
 // gets a small stepping-stone.
-const ankleL = rig.joints.ankleL;   // front-leg ankle (higher)
-const ankleR = rig.joints.ankleR;   // back-leg ankle
+const ankleL = rig.joints.footL;   // front-leg ankle (higher)
+const ankleR = rig.joints.footR;   // back-leg ankle
 
 const H    = rig.opts.height;
 const midX = (ankleL[0] + ankleR[0]) * 0.5;

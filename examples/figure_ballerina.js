@@ -5,26 +5,26 @@ const { sdf } = api;
 const F = sdf.figure;
 
 // 1. RIG — elongated elegant proportions (8 heads = very tall/slim).
-// Arms raised in high fifth: abduct 165, elbow 78, twist 90 — the twist rolls
+// Arms raised in high fifth: raiseSide 165, bend 78, twist 90 — the twist rolls
 // the (forward) elbow-curl plane inward so the forearms arc toward each other
 // over the head, the rounded ballet-fifth "O".
-// Arabesque: right leg back (flex -38, knee 30) — knee bend keeps foot close
+// Arabesque: right leg back (raiseFwd -38, bend 30) — knee bend keeps foot close
 // enough to the standing leg/base to remain connected.
 const rig = F.rig({
   height: 72,
   headsTall: 8,
   build: 'slim',
   pose: {
-    // Arms raised, forearms arc gracefully inward overhead. abduct 157 keeps
+    // Arms raised, forearms arc gracefully inward overhead. raiseSide 157 keeps
     // the sculpted fingertips MEETING over the head — at 165 the two hands
     // overlap and the fingers interpenetrate in a tangle.
-    arms: { abduct: 157, flex: 0, elbow: 78, twist: 90 },
+    arms: { raiseSide: 157, raiseFwd: 0, bend: 78, twist: 90 },
     // Standing left leg: ballet turnout
-    legL: { abduct: 8 },
+    legL: { raiseSide: 8 },
     // Arabesque right leg: swept back and up
-    legR: { abduct: 2, flex: -38, knee: 30 },
+    legR: { raiseSide: 2, raiseFwd: -38, bend: 30 },
     // Head: upward gaze
-    head: { nod: -13, tilt: 2 },
+    head: { pitch: -13, roll: 2 },
     spine: { lean: 2 },
   },
 });
@@ -66,17 +66,17 @@ const bodice = F.clothing.top(rig, {
 const briefs = F.clothing.pants(rig, {
   rise: 'high',
   length: 'briefs',
-  thickness: rig.r.thigh * 0.22,
+  thickness: rig.r.upperLeg * 0.22,
 });
 const leotard = bodice.union(briefs).label('leotard');
 
 // 5. TUTU — wide disk skirt placed at the NAVEL/waist level.
-// rig.joints.navel Z ≈ 40.1, which is the natural waistline.
+// rig.joints.spine Z ≈ 40.1, which is the natural waistline.
 // Tutu at the waist means: torso is visible above it, legs below it.
 // This creates the correct visual read of a skirt from the front.
-const navelPos  = rig.joints.navel;
+const navelPos  = rig.joints.spine;
 const navelZ    = navelPos[2];    // ≈ 40.1
-const bodyR     = rig.r.pelvisX;  // ≈ 5.1 (body half-width at hip level)
+const bodyR     = rig.r.hipsX;  // ≈ 5.1 (body half-width at hip level)
 
 // The tutu disk center is at waist level
 // Lowered slightly from navel so it sits at the top of the hip area

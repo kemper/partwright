@@ -1,5 +1,5 @@
 // Storytime kid — sitting on a bench reading an open book.
-// Chair-sit pose (flex 90 / knee 90 — thighs forward, shins straight down),
+// Chair-sit pose (raiseFwd 90 / bend 90 — thighs forward, shins straight down),
 // both hands holding a chunky storybook at chest/belly level, bangs hair,
 // gentle smile, head nodded down toward the page.
 // ~5 heads tall (cute child proportions). Front = −Y, Z up.
@@ -7,17 +7,17 @@ const { sdf } = api;
 const F = sdf.figure;
 
 // 1. RIG — sitting pose.
-// legs: flex 90 + knee 90 = pelvis at bench level, thighs forward.
-// arms: low abduct, moderate forward flex, elbows bent inward — hands at chest.
+// legs: raiseFwd 90 + bend 90 = pelvis at bench level, thighs forward.
+// arms: low raiseSide, moderate forward flex, elbows bent inward — hands at chest.
 const rig = F.rig({
   height: 60,
   headsTall: 5,
   build: 'average',
   pose: {
-    legs:  { abduct: 8, flex: 90, knee: 90 },
-    armL:  { abduct: 14, flex: 38, elbow: 85 },
-    armR:  { abduct: 14, flex: 38, elbow: 85 },
-    head:  { nod: 22 },       // looking down at the book
+    legs:  { raiseSide: 8, raiseFwd: 90, bend: 90 },
+    armL:  { raiseSide: 14, raiseFwd: 38, bend: 85 },
+    armR:  { raiseSide: 14, raiseFwd: 38, bend: 85 },
+    head:  { pitch: 22 },       // looking down at the book
     spine: { lean: 4 },       // gentle reading hunch
   },
 });
@@ -44,7 +44,7 @@ const skin = F.weld(rig, [
   F.legs(rig),
   F.feet(rig),
   face,
-], { k: r.foreArm * 1.25 }).label('skin');
+], { k: r.lowerArm * 1.25 }).label('skin');
 
 // 4. CLOTHES — short-sleeve t-shirt + slim pants.
 const shirt = F.clothing.top(rig, {
@@ -54,14 +54,14 @@ const shirt = F.clothing.top(rig, {
 const pants = F.clothing.pants(rig, {
   leg: 'slim',
   rise: 'mid',
-  thickness: r.thigh * 0.22,
+  thickness: r.upperLeg * 0.22,
 }).label('pants');
 
 // 5. HAIR — bangs style: straight fringe to the brows.
 const hair = F.hair(rig, { style: 'bangs' }).label('hair');
 
 // 6. OPEN STORYBOOK — chunky board-book held at chest level, tilted for reading.
-// Hand joints (abduct 16, flex 28, elbow 82):
+// Hand joints (raiseSide 16, raiseFwd 28, bend 82):
 //   handL ≈ [+8.1, −15.1, 39]   handR ≈ [−8.1, −15.1, 39]   span ≈ 16.2
 // Book is narrower than hand span so the hands clearly grip its outer edges.
 // A thick body (2× hand radius) prevents topological holes at the hand boundary.
@@ -90,19 +90,19 @@ const book = sdf.roundedBox([bookW, bookH, bookT], r.hand * 0.22)
 // 7. BENCH — sits under the pelvis (the weight-bearing seat surface).
 // Pelvis center z ≈ 24.9, radius Y ≈ 3.6 → pelvis bottom ≈ 21.3.
 // Raise seatTopZ slightly above pelvis bottom to ensure solid overlap.
-const seatTopZ  = j.pelvis[2] - r.pelvisY * 0.75;  // z ≈ 22.2 (above pelvis bottom 21.3)
+const seatTopZ  = j.hips[2] - r.hipsY * 0.75;  // z ≈ 22.2 (above pelvis bottom 21.3)
 const benchH    = seatTopZ;
-const benchW    = r.pelvisX * 4.2;   // covers the full hip width
+const benchW    = r.hipsX * 4.2;   // covers the full hip width
 const benchD    = r.head * 2.4;      // deep enough to sit on comfortably
 // Bench Y center: aligned with pelvis Y so the seat is directly below the body.
-const benchCy   = j.pelvis[1];        // = 0
+const benchCy   = j.hips[1];        // = 0
 const bench     = sdf.roundedBox([benchW, benchD, benchH], r.foot * 0.35)
   .translate([0, benchCy, benchH / 2]).label('bench');
 
 // 8. Ground slab — oval base connecting bench, thighs, and feet into one piece.
 // With the sitting pose the feet are near the knee height (z≈23), not at z=0.
 // The slab at z=0 connects to the bench bottom and extends under the outstretched legs.
-const ankleAvgY = (j.ankleL[1] + j.ankleR[1]) / 2;   // ≈ −11
+const ankleAvgY = (j.footL[1] + j.footR[1]) / 2;   // ≈ −11
 const slabR     = rig.opts.height * 0.38;
 const slabH     = rig.opts.height * 0.036;
 // Center slab between the bench Y and the ankle Y.

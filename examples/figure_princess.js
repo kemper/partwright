@@ -6,24 +6,24 @@ const F = sdf.figure;
 
 // 1. RIG
 // Royal wave pose — right arm.
-// abduct 97: upper arm nearly horizontal (7° above horizontal). Arm extends straight
+// raiseSide 97: upper arm nearly horizontal (7° above horizontal). Arm extends straight
 // out to figure's right (+X).
-// elbow 55: forearm curls 55° from the upper arm's axis. Without twist, this curves
+// bend 55: forearm curls 55° from the upper arm's axis. Without twist, this curves
 // the forearm forward (−Y). With twist 90 this plane rotates so the forearm curves UP.
 // twist 90: rotates the elbow-curl plane so the forearm bends upward rather than forward.
 // Result: upper arm horizontal to the right, forearm angled upward from the elbow,
 // wrist/hand near head height on the right side. The open palm faces the audience (−Y).
-// flex 4: slight forward sweep of the shoulder — keeps the arm visible from front.
+// raiseFwd 4: slight forward sweep of the shoulder — keeps the arm visible from front.
 const rig = F.rig({
   height: 68,
   headsTall: 7,
   build: 'slim',
   pose: {
-    armR: { abduct: 100, flex: 14, elbow: 50, twist: 90 },  // royal wave: palm out at head height, flex brings arm forward for front-view palm read
-    armL: { abduct: 15, flex: 5, elbow: 18 },              // relaxed at side
-    legL: { abduct: 5 },
-    legR: { abduct: 5 },
-    head: { tilt: 4, turn: -8 },  // slight tilt toward waving side, face toward audience
+    armR: { raiseSide: 100, raiseFwd: 14, bend: 50, twist: 90 },  // royal wave: palm out at head height, flex brings arm forward for front-view palm read
+    armL: { raiseSide: 15, raiseFwd: 5, bend: 18 },              // relaxed at side
+    legL: { raiseSide: 5 },
+    legR: { raiseSide: 5 },
+    head: { roll: 4, yaw: -8 },  // slight tilt toward waving side, face toward audience
     spine: { lean: 2 },
   },
 });

@@ -7,22 +7,22 @@ const { sdf } = api;
 const F = sdf.figure;
 
 // 1. RIG — front stance.
-//    Left arm: flex 88 = nearly straight forward punch; low abduct keeps it
-//    close to the centreline. elbow 5 = arm nearly straight.
-//    Right arm: flex -10 (slight behind), elbow 60 folds forearm down, twist 25
+//    Left arm: raiseFwd 88 = nearly straight forward punch; low raiseSide keeps it
+//    close to the centreline. bend 5 = arm nearly straight.
+//    Right arm: raiseFwd -10 (slight behind), bend 60 folds forearm down, twist 25
 //    orients elbow outward → fist at waist/hip height at the side.
-//    Front leg (left): flex 40, knee 44 — knee forward over foot.
-//    Back leg (right): flex -30, knee 5 — nearly straight.
+//    Front leg (left): raiseFwd 40, bend 44 — knee forward over foot.
+//    Back leg (right): raiseFwd -30, bend 5 — nearly straight.
 const rig = F.rig({
   height: 64,
   headsTall: 7,
   build: 'slim',
   pose: {
-    armL: { abduct: 8,  flex: 88,  elbow: 5  },   // left: straight punch forward at shoulder height
-    armR: { abduct: 5,  flex: -10, elbow: 60, twist: 25 },   // right: chambered fist at the hip
-    legL: { abduct: 5,  flex: 42,  knee: 46  },   // front leg bent
-    legR: { abduct: 8,  flex: -32, knee: 5   },   // back leg nearly straight
-    head: { nod: 3 },                              // head slightly forward — focused
+    armL: { raiseSide: 8,  raiseFwd: 88,  bend: 5  },   // left: straight punch forward at shoulder height
+    armR: { raiseSide: 5,  raiseFwd: -10, bend: 60, twist: 25 },   // right: chambered fist at the hip
+    legL: { raiseSide: 5,  raiseFwd: 42,  bend: 46  },   // front leg bent
+    legR: { raiseSide: 8,  raiseFwd: -32, bend: 5   },   // back leg nearly straight
+    head: { pitch: 3 },                              // head slightly forward — focused
     spine: { lean: 5 },                            // lean into the punch (5°: clears the deep-stance graze that lean 7 caused now that spine is live)
   },
 });
@@ -56,7 +56,7 @@ const skin = F.weld(rig, [
 //    Top hem sits just below the navel to give the jacket length without
 //    creating a deep overlap with the pants that bloats tri count.
 //    Pants: slim cut — cleaner silhouette for karate gi trousers.
-const giHemZ = j.navel[2] - r.pelvisY * 0.30;
+const giHemZ = j.spine[2] - r.hipsY * 0.30;
 const giTop = F.clothing.top(rig, {
   sleeve:    'long',
   thickness: r.chestY * 0.26,
@@ -71,7 +71,7 @@ const giPants = F.clothing.pants(rig, {
 // 5. BELT — an elliptical band around the natural waist.
 //    Sits just outside the gi top surface (gi thickness ~ chestY*0.26).
 //    The belt is at beltCenterZ, slightly below the gi hem.
-const beltCenterZ = j.navel[2] - r.pelvisY * 0.22;
+const beltCenterZ = j.spine[2] - r.hipsY * 0.22;
 const beltC = [0, 0, beltCenterZ];
 // Radial clearance: waist radius + gi shell + a little more to read clearly.
 const beltR   = r.waist + r.chestY * 0.40;
@@ -122,7 +122,7 @@ const hair = F.hair(rig, { style: 'short', hairline: 'high' }).label('hair');
 const hf = rig.dir.headForward;
 const hl = rig.dir.headLeft;
 const hu = rig.dir.headUp;
-const hc = j.headCenter;
+const hc = j.head;
 
 // On the FOREHEAD: above the brow arcs (u ≈ 0.4·headZ) and below the 'high'
 // hairline. At 0.18 the band sat across the EYES like a blindfold — it

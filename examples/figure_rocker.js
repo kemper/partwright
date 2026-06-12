@@ -18,16 +18,16 @@ const rig = F.rig({
     // (|dot| ≈ 0.996): the neck then lies IN the curled fingers instead of
     // stabbing through the palm perpendicular. twist=−30 rolls the grip so the
     // bar runs up the neck, not across it; the hand lands ≈ [3.8, −6.4, 53.4].
-    armL: { abduct: 55, flex: 40, elbow: 130, twist: -30 },
+    armL: { raiseSide: 55, raiseFwd: 40, bend: 130, twist: -30 },
     // Right arm: strumming hand drops DOWN over the lower guitar body.
-    // Low abduct and flex=20 hang the arm at waist height; elbow=0 keeps it
+    // Low raiseSide and raiseFwd=20 hang the arm at waist height; bend=0 keeps it
     // straight so the hand hovers just in front of the lower bout.
-    armR: { abduct: 0, flex: 20, elbow: 0, twist: 0 },
+    armR: { raiseSide: 0, raiseFwd: 20, bend: 0, twist: 0 },
     // Wide rock stance
-    legL: { abduct: 26 },
-    legR: { abduct: 26 },
+    legL: { raiseSide: 26 },
+    legR: { raiseSide: 26 },
     // Head up slightly — open mouth visible from front (not hidden by jaw)
-    head: { turn: -8, tilt: 4, nod: -5 },
+    head: { yaw: -8, roll: 4, pitch: -5 },
     // Backward lean — rock energy
     spine: { lean: -5, side: -2 },
   },
@@ -67,7 +67,7 @@ const tee = F.clothing.top(rig, {
 const jeans = F.clothing.pants(rig, {
   leg: 'slim',
   rise: 'mid',
-  thickness: r.thigh * 0.22,
+  thickness: r.upperLeg * 0.22,
 }).label('jeans');
 
 // 5. HAIR — bangs (fringe).

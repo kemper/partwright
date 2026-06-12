@@ -13,17 +13,17 @@ const rig = F.rig({
   headsTall: 5,
   build: 'average',
   pose: {
-    // Right arm raised high — waving hello. abduct 148 = up but slightly out.
-    // flex 18 brings it forward so it's visible from the front view.
+    // Right arm raised high — waving hello. raiseSide 148 = up but slightly out.
+    // raiseFwd 18 brings it forward so it's visible from the front view.
     // Slight elbow bend — natural "hi!" wave, not a stiff salute.
-    armR: { abduct: 148, flex: 18, elbow: 20 },
+    armR: { raiseSide: 148, raiseFwd: 18, bend: 20 },
     // Left arm: relaxed hanging down, slight elbow bend for natural rest.
-    armL: { abduct: 14, flex: 6, elbow: 15 },
+    armL: { raiseSide: 14, raiseFwd: 6, bend: 15 },
     // Wide kid stance
-    legL: { abduct: 14 },
-    legR: { abduct: 14 },
+    legL: { raiseSide: 14 },
+    legR: { raiseSide: 14 },
     // Head turned slightly toward viewer/wave side, looking up slightly (cheerful).
-    head: { turn: -10, tilt: 6, nod: -8 },
+    head: { yaw: -10, roll: 6, pitch: -8 },
     // Slight spine lean — weight shift as arm goes up
     spine: { side: 3, lean: 2 },
   },
@@ -60,13 +60,13 @@ const skin = F.weld(rig, [
   F.legs(rig),
   F.feet(rig),
   face,
-], { k: rig.r.foreArm * 1.4 }).label('skin');
+], { k: rig.r.lowerArm * 1.4 }).label('skin');
 
 // 4. CLOTHES — cargo pants + short-sleeve shirt
 const pants = F.clothing.pants(rig, {
   leg: 'cargo',
   rise: 'mid',
-  thickness: rig.r.thigh * 0.26,
+  thickness: rig.r.upperLeg * 0.26,
 }).label('pants');
 
 const shirt = F.clothing.top(rig, {

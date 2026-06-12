@@ -34,10 +34,10 @@ const rig = F.rig({
   headsTall: 5,        // master stylization knob (≈3 chibi, 5 child, 7.5 adult)
   build: 'average',    // 'slim' | 'average' | 'stocky'
   pose: {
-    armR: { abduct: 92, elbow: 5 },     // right arm straight out to the side
-    armL: { abduct: 78, elbow: 115 },   // left arm flexing the bicep
-    legL: { abduct: 9 }, legR: { abduct: 9 },
-    head: { turn: -12, tilt: -6 },
+    armR: { raiseSide: 92, bend: 5 },     // right arm straight out to the side
+    armL: { raiseSide: 78, bend: 115 },   // left arm flexing the bicep
+    legL: { raiseSide: 9 }, legR: { raiseSide: 9 },
+    head: { yaw: -12, roll: -6 },
   },
 });
 
@@ -94,9 +94,9 @@ F.rig({
   sex,         // 'neutral' (default) | 'male' | 'female' — silhouette balance
   pose: {      // all optional; neutral standing defaults
     arms, legs, // SYMMETRIC shorthand — seeds BOTH sides at once (see below)
-    armL, armR, // { abduct, flex, elbow, twist }   degrees — override per side
-    legL, legR, // { abduct, flex, knee, twist }    degrees
-    head,       // { turn, tilt, nod }
+    armL, armR, // { raiseSide, raiseFwd, bend, twist }   degrees — override per side
+    legL, legR, // { raiseSide, raiseFwd, bend, twist }   degrees
+    head,       // { yaw, pitch, roll }
     spine,      // { lean, turn, side }
   },
 })
@@ -119,29 +119,29 @@ F.rig({
 pose so you can't introduce an accidental L/R asymmetry:
 
 ```js
-pose: { arms: { abduct: 95, elbow: 95, twist: 90 } }          // both arms, double-biceps
-pose: { arms: { abduct: 90 }, armL: { abduct: 0 } }           // right arm out, left down
+pose: { arms: { raiseSide: 95, bend: 95, twist: 90 } }          // both arms, double-biceps
+pose: { arms: { raiseSide: 90 }, armL: { raiseSide: 0 } }           // right arm out, left down
 ```
 
-**Pose angles (degrees), zero = neutral standing.** Each DOF also accepts a
-plain-language alias (the biomechanical name wins if you give both):
-`abduct`=`raiseSide`, `flex`=`raiseFwd`, `elbow`/`knee`=`bend`, `twist`=`roll`;
-head `turn`=`yaw`, `nod`=`pitch`, `tilt`=`roll`. So
-`armL: { raiseSide: 90, bend: 110 }` ≡ `armL: { abduct: 90, elbow: 110 }`.
+**Pose angles (degrees), zero = neutral standing.** The DOF vocabulary is plain
+language: limbs take `raiseSide` (lift sideways), `raiseFwd` (swing forward/back),
+`bend` (elbow/knee flexion), and `twist` (axial roll); the head takes `yaw`,
+`pitch`, and `roll`. e.g. `armL: { raiseSide: 90, bend: 110 }`. These are the
+only accepted names — an unknown key throws (see the Naming policy below).
 
 | Joint param | Meaning |
 |---|---|
-| `arm*.abduct` | raise arm sideways: 0 = hangs down, 90 = straight out, 180 = up |
-| `arm*.flex` | swing arm forward −Y (+) / back +Y (−) at the shoulder |
-| `arm*.elbow` | bend the forearm (0–160) — an anatomical curl: a hanging arm brings the fist forward and up |
+| `arm*.raiseSide` | raise arm sideways: 0 = hangs down, 90 = straight out, 180 = up |
+| `arm*.raiseFwd` | swing arm forward −Y (+) / back +Y (−) at the shoulder |
+| `arm*.bend` | bend the forearm (0–160) — an anatomical curl: a hanging arm brings the fist forward and up |
 | `arm*.twist` | **roll the elbow-curl plane** about the upper-arm axis. 0 = curl forward (−Y). **For a raised arm, `twist ≈ 90` curls the fist UP** (double-biceps, ballet fifth, victory) — see recipe below. |
-| `leg*.abduct` | spread the leg sideways (stance width) |
-| `leg*.flex` | step the leg forward −Y (+) / back +Y (−) at the hip |
-| `leg*.knee` | bend the shank toward the back +Y (0–150) |
+| `leg*.raiseSide` | spread the leg sideways (stance width) |
+| `leg*.raiseFwd` | step the leg forward −Y (+) / back +Y (−) at the hip |
+| `leg*.bend` | bend the shank toward the back +Y (0–150) |
 | `leg*.twist` | **hip turnout** — yaw the foot OUT (toe toward +X on the left, −X on the right) and roll a bent-knee plié outward. 0 = toes forward; `legs: { twist: 30 }` is a relaxed turnout, ~`45–60` a ballet first/fifth. |
-| `head.turn` | yaw (look figure-left +/right −) |
-| `head.tilt` | roll the head toward a shoulder (+ = toward the figure's LEFT shoulder) |
-| `head.nod` | look down (+) / up (−) |
+| `head.yaw` | yaw (look figure-left +/right −) |
+| `head.roll` | roll the head toward a shoulder (+ = toward the figure's LEFT shoulder) |
+| `head.pitch` | look down (+) / up (−) |
 | `spine.lean` | bend the upper body forward −Y (+) / back +Y (−) at the waist |
 | `spine.side` | lean the upper body toward the figure's LEFT (+) / right (−) shoulder |
 | `spine.turn` | twist the shoulders/upper body toward figure-left (+) / right (−) |
@@ -149,33 +149,39 @@ head `turn`=`yaw`, `nod`=`pitch`, `tilt`=`roll`. So
 > **`spine.{lean,side,turn}` bend the whole upper body at the waist** — chest,
 > neck, head, and both arms rotate together about the navel while the legs stay
 > planted. Use it for a bow, a slouch, a weight shift, or a contrapposto twist
-> (combine with `head.*` to counter-rotate the gaze). `head.tilt` rolls only the
+> (combine with `head.*` to counter-rotate the gaze). `head.roll` rolls only the
 > head; `spine.side` leans the whole torso.
 
-> **Arms-overhead / fists-up poses need `twist`.** Elbow flexion alone curls the
+> **Arms-overhead / fists-up poses need `twist`.** `bend` alone curls the
 > forearm *forward* (toward −Y); for a side-raised arm that plane is horizontal,
-> so `elbow` by itself can't put the fist up by the head. Add `twist ≈ 90`:
-> e.g. double-biceps is `arms: { abduct: 95, elbow: 95, twist: 90 }`;
-> a rounded ballet-fifth "O" overhead is roughly `arms: { abduct: 150, elbow: 70, twist: 90 }`.
+> so `bend` by itself can't put the fist up by the head. Add `twist ≈ 90`:
+> e.g. double-biceps is `arms: { raiseSide: 95, bend: 95, twist: 90 }`;
+> a rounded ballet-fifth "O" overhead is roughly `arms: { raiseSide: 150, bend: 70, twist: 90 }`.
+
+> **Naming policy — one canonical vocabulary.** Poses use `raiseSide` / `raiseFwd`
+> / `bend` / `twist` (head: `yaw` / `pitch` / `roll`); joints, radii, and
+> directions use the VRM/Unity humanoid bone names (`upperArm`, `lowerArm`,
+> `upperLeg`, `lowerLeg`, `hips`, `spine`, …). There are **no legacy aliases** —
+> the older biomechanical names (`abduct`/`flex`/`elbow`/`knee`; `shoulder`/`hip`/
+> `ankle`/`pelvis`/`navel`) are retired and an unknown key throws.
 
 The rig exposes (read-only, for custom parts):
-- `rig.joints.{shoulderL/R, elbowL/R, wristL/R, handL/R, hipL/R, kneeL/R,
-  ankleL/R, pelvis, navel, chest, neckBase, headCenter, crown, chin}` — world `Vec3`.
-  Standard-skeleton (VRM/Unity humanoid) **aliases** also resolve: `hips` (=`pelvis`),
-  `upperArmL/R` (=`shoulderL/R`), `upperLegL/R` (=`hipL/R`).
+- `rig.joints.{upperArmL/R, lowerArmL/R, wristL/R, handL/R, upperLegL/R, lowerLegL/R,
+  footL/R, hips, spine, chest, neck, head, crown, chin}` — world `Vec3`. Names follow
+  the VRM/Unity humanoid skeleton (the single canonical vocabulary).
 
-> **The rig names JOINTS (points between bones); a standard skeleton names BONES.**
-> They're duals: the standard `leftUpperArm` *bone* ≡ this rig's `shoulderL`
-> *joint* (its root) + `dir.upperArmL` (its direction). One subtlety: here
-> `shoulderL/R` is the **glenohumeral joint** where the arm bone starts — NOT the
-> clavicle (which VRM/Unity confusingly call the "shoulder" bone). Use
-> `upperArmL/R` if you want the unambiguous standard name for that point.
-- `rig.r.*` — radii / half-extents: `upperArm, foreArm, hand, thigh, shank,
-  foot, neck, head, headX, headZ, chestX, chestY, pelvisX, pelvisY,` and
+> **The rig names JOINTS (points between bones), in VRM/Unity humanoid terms.** A
+> joint is the bone's ROOT point: `upperArmL` is the **glenohumeral joint** where
+> the upper-arm bone starts (NOT the clavicle, which VRM confusingly calls the
+> "shoulder" bone). `wristL` is the forearm end; `handL` is the hand-mass centre
+> (use it — and `rig.grip` — for held props, not `wristL`). `footL` is the
+> ankle/foot attach point.
+- `rig.r.*` — radii / half-extents: `upperArm, lowerArm, hand, upperLeg, lowerLeg,
+  foot, neck, head, headX, headZ, chestX, chestY, hipsX, hipsY,` and
   **`waist`** (the garment-fitting radius at the natural waist — use this, not
-  `pelvisX`, to size belts/skirts/tutus).
-- `rig.dir.{headForward, headUp, headLeft, upperArmL/R, foreArmL/R, elbowHingeL/R,
-  thighL/R, shankL/R, footL/R}` — unit directions for orienting parts (`footL/R`
+  `hipsX`, to size belts/skirts/tutus).
+- `rig.dir.{headForward, headUp, headLeft, upperArmL/R, lowerArmL/R, elbowHingeL/R,
+  upperLegL/R, lowerLegL/R, footL/R}` — unit directions for orienting parts (`footL/R`
   is the foot heading, yawed by `leg*.twist` turnout).
 - `rig.grip.{L,R}` — **a full grip frame per hand, for connecting HELD props**
   (guitar neck, sword, staff, mug). Each has `{ point, palmNormal, gripAxis, reach }`:
@@ -415,11 +421,11 @@ garment; lower it for a skin-tight one. Hair carves out a **face window** (an
 above-the-brow hairline), so it never bleeds through carved mouths or face
 features. Give each garment its own `.label()` so it paints separately from skin.
 
-> **The waist is `rig.joints.navel` (radius `rig.r.waist`), not the hips.** Hips
-> (`rig.joints.hipL/hipR`) are the *leg-insertion* points and sit lower; a
-> skirt/belt/tutu anchored there cuts through the thighs. Anchor waist garments
-> at `navel` and size them off `rig.r.waist`. Example tutu:
-> `sdf.cylinder(rig.r.waist * 3, rig.r.waist * 0.4).taper(0.5,'z').translate(rig.joints.navel).label('tutu')`.
+> **The waist is `rig.joints.spine` (radius `rig.r.waist`), not the hips.** The
+> leg roots (`rig.joints.upperLegL/upperLegR`) are the *leg-insertion* points and
+> sit lower; a skirt/belt/tutu anchored there cuts through the thighs. Anchor
+> waist garments at `spine` and size them off `rig.r.waist`. Example tutu:
+> `sdf.cylinder(rig.r.waist * 3, rig.r.waist * 0.4).taper(0.5,'z').translate(rig.joints.spine).label('tutu')`.
 
 ## `figure.weld(rig, parts[], opts?)`
 
@@ -436,8 +442,8 @@ hard seams (see `/ai/sdf.md` paint-by-label).
 1. **Block with the rig first.** Pick `height`, `headsTall`, `build`, and the
    pose. Render front + side + iso (`renderViews`) and check the *silhouette and
    pose* against the reference before any face detail.
-2. **Match the pose with joint angles, not coordinates.** Arm out = `abduct 90`;
-   flexing = `elbow 110–130`; sitting = `legs flex 90, knee 90`.
+2. **Match the pose with joint angles, not coordinates.** Arm out = `raiseSide 90`;
+   flexing = `bend 110–130`; sitting = `legs raiseFwd 90, bend 90`.
 3. **Add the face via `face.assemble`** (with `eyes: false` + a top-level
    labelled `F.face.eyes(rig)`), then hair and clothes — all off the same rig.
 4. **Weld, label, union, build.** `edgeLength: 0.4–0.6` is a good figure
@@ -453,13 +459,13 @@ hard seams (see `/ai/sdf.md` paint-by-label).
 - **Don't label individual parts you want welded together** — label the welded
   result. Labels turn smooth blends into hard seams (this is the SDF paint
   trade-off, not a figure-specific quirk).
-- **Pose, don't translate.** Re-pose a limb with `arm*.abduct/flex/elbow`, not by
+- **Pose, don't translate.** Re-pose a limb with `arm*.raiseSide/raiseFwd/bend`, not by
   translating the part afterward — translating breaks the joint overlap that
   keeps the figure one component.
 - **`headsTall` is the stylization dial.** Want a cuter/chibi figure? Lower it
   (3–4). Want a lankier hero? Raise it (7–8). It rescales the whole figure
   coherently.
 - **Front faces −Y.** For a catalog thumbnail (camera at the +X/−Y corner) the
-  default front already points the right way; use `head.turn` for a 3/4 look.
+  default front already points the right way; use `head.yaw` for a 3/4 look.
 - Everything is plain `api.sdf` underneath, so you can still `smoothUnion` your
   own extra primitives (a hat, a sword, wings) onto the welded body.

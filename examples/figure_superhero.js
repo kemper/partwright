@@ -13,11 +13,11 @@ const rig = F.rig({
   headsTall: 7.5,
   build: 'stocky',
   pose: {
-    armL: { abduct: 178, flex: 0, elbow: 12, twist: 90 },  // sky punch, twist rotates fist up
-    armR: { abduct: 8,   flex: -8, elbow: 22 },             // braced at the side
-    legL: { abduct: 6 },
-    legR: { abduct: 8, knee: 28, flex: 10 },                // popped knee
-    head: { nod: -12 },                                     // looking up
+    armL: { raiseSide: 178, raiseFwd: 0, bend: 12, twist: 90 },  // sky punch, twist rotates fist up
+    armR: { raiseSide: 8,   raiseFwd: -8, bend: 22 },             // braced at the side
+    legL: { raiseSide: 6 },
+    legR: { raiseSide: 8, bend: 28, raiseFwd: 10 },                // popped knee
+    head: { pitch: -12 },                                     // looking up
     spine: { lean: -3 },
   },
 });
@@ -47,7 +47,7 @@ const skin = F.weld(rig, [
 
 // 4. SUIT — snug long-sleeve top + leggings.
 const suitTop  = F.clothing.top(rig, { sleeve: 'long', thickness: r.chestY * 0.17 }).label('suit');
-const suitLegs = F.clothing.pants(rig, { leg: 'slim', rise: 'high', thickness: r.thigh * 0.18 }).label('suitLegs');
+const suitLegs = F.clothing.pants(rig, { leg: 'slim', rise: 'high', thickness: r.upperLeg * 0.18 }).label('suitLegs');
 
 // 5. EMBLEM — a proud disc on the chest, facing forward (front = −Y).
 // A roundedCylinder oriented along Z, rotated 90° around X so flat faces
@@ -69,13 +69,13 @@ const emblem = sdf.roundedCylinder(emblemR, emblemTotalH, emblemR * 0.12)
 // The cape overlaps the figure's back at the top (so the union fills any gap),
 // then sweeps outward and downward. No separate pins needed — the top of the
 // panel is buried a few units into the back and smoothly merges.
-const SL = j.shoulderL, SR = j.shoulderR;
+const SL = j.upperArmL, SR = j.upperArmR;
 const shoulderSpan = Math.abs(SL[0] - SR[0]);
 
 // Vertical span: from just above shoulder level down to just above the knees.
 const capeTopZ  = SL[2] + r.neck * 0.3;
-const kneeZ     = Math.max(j.kneeL[2], j.kneeR[2]);
-const capeBotZ  = kneeZ + r.shank * 0.1;   // stop just above knee level
+const kneeZ     = Math.max(j.lowerLegL[2], j.lowerLegR[2]);
+const capeBotZ  = kneeZ + r.lowerLeg * 0.1;   // stop just above knee level
 const capeH     = capeTopZ - capeBotZ;
 
 // Panel half-extents: slightly wider than shoulder span.
@@ -117,13 +117,13 @@ function makeBoot(knee, ankle) {
   ];
   const soleZ = ankle[2] - r.foot * 0.95;
   // Shank portion: capsule from mid-shin to ankle
-  const shank = sdf.capsule(midShin, ankle, r.shank * 1.22);
+  const shank = sdf.capsule(midShin, ankle, r.lowerLeg * 1.22);
   // Toe/foot cap: ellipsoid covering the foot
   const toeCap = sdf.ellipsoid(r.foot * 1.08, r.foot * 1.65, r.foot * 1.0)
     .translate([ankle[0], ankle[1] - r.foot * 0.5, soleZ + r.foot * 0.62]);
   return shank.smoothUnion(toeCap, r.foot * 0.65);
 }
-const boots = makeBoot(j.kneeL, j.ankleL).union(makeBoot(j.kneeR, j.ankleR)).label('boots');
+const boots = makeBoot(j.lowerLegL, j.footL).union(makeBoot(j.lowerLegR, j.footR)).label('boots');
 
 // 8. GLOVES — colored overlays from mid-forearm to hand/fist.
 // Each glove: capsule from mid-forearm to wrist + a sphere over the fist.
@@ -133,13 +133,13 @@ function makeGlove(elbow, wrist, hand) {
     elbow[1] * 0.45 + wrist[1] * 0.55,
     elbow[2] * 0.45 + wrist[2] * 0.55,
   ];
-  const fore = sdf.capsule(midFore, wrist, r.foreArm * 1.28);
+  const fore = sdf.capsule(midFore, wrist, r.lowerArm * 1.28);
   // Fist cover: a rounded sphere over the hand joint (gloved fist reads cleanly)
   const fistCover = sdf.sphere(r.hand * 1.08).translate(hand);
   return fore.smoothUnion(fistCover, r.hand * 0.45);
 }
-const gloves = makeGlove(j.elbowL, j.wristL, j.handL)
-  .union(makeGlove(j.elbowR, j.wristR, j.handR))
+const gloves = makeGlove(j.lowerArmL, j.wristL, j.handL)
+  .union(makeGlove(j.lowerArmR, j.wristR, j.handR))
   .label('gloves');
 
 // 9. HAIR — short heroic cut.

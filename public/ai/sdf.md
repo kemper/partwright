@@ -244,7 +244,7 @@ and welds are unaffected, and cost scales with the sphere's surface area only.
 // A 60-tall figure on a 0.5 grid, with the head meshed ~3× finer:
 return body.build({
   edgeLength: 0.5,
-  detail: [{ center: rig.joints.headCenter, radius: 9, edgeLength: 0.16 }],
+  detail: [{ center: rig.joints.head, radius: 9, edgeLength: 0.16 }],
 });
 ```
 

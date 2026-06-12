@@ -118,8 +118,8 @@ function obj(v: unknown, name: string): Record<string, unknown> {
   return (assertObject(v, name, { optional: true }) ?? {}) as Record<string, unknown>;
 }
 
-interface JointPose { abduct: number; flex: number; elbow?: number; knee?: number; twist: number }
-interface HeadPose { turn: number; tilt: number; nod: number }
+interface JointPose { raiseSide: number; raiseFwd: number; bend?: number; twist: number }
+interface HeadPose { yaw: number; pitch: number; roll: number }
 interface SpinePose { lean: number; turn: number; side: number }
 
 interface ResolvedPose {
@@ -128,35 +128,35 @@ interface ResolvedPose {
   head: HeadPose; spine: SpinePose;
 }
 
-// Pose DOFs accept plain-language ALIASES alongside the biomechanical names, so
-// the AI can reach for "raiseSide / raiseFwd / bend / roll" (and head
-// "yaw / pitch / roll") instead of "abduct / flex / elbow|knee / twist". The
-// biomechanical name wins when both are supplied.
-const ARM_FIELDS = ['abduct', 'flex', 'elbow', 'twist', 'raiseSide', 'raiseFwd', 'bend', 'roll'];
-const LEG_FIELDS = ['abduct', 'flex', 'knee', 'twist', 'raiseSide', 'raiseFwd', 'bend', 'roll'];
-const HEAD_FIELDS = ['turn', 'tilt', 'nod', 'yaw', 'roll', 'pitch'];
+// The figure's pose vocabulary (the single, canonical name set — see the
+// "Naming policy" in public/ai/figure.md). Limbs: raiseSide (lift sideways),
+// raiseFwd (swing forward/back), bend (elbow/knee flexion), twist (axial roll).
+// Head: yaw / pitch / roll. There are no legacy aliases — these are the names.
+const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
+const LEG_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
+const HEAD_FIELDS = ['yaw', 'pitch', 'roll'];
 const SPINE_FIELDS = ['lean', 'turn', 'side'];
 const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'pose'];
 const POSE_FIELDS = ['arms', 'legs', 'armL', 'armR', 'legL', 'legR', 'head', 'spine'];
 
-function parseArm(v: unknown, name: string, defAbduct: number): JointPose {
+function parseArm(v: unknown, name: string, defRaiseSide: number): JointPose {
   const o = obj(v, name);
   assertNoUnknownKeys(o, ARM_FIELDS, name);
   return {
-    abduct: num(o.abduct ?? o.raiseSide, defAbduct, `${name}.abduct`),
-    flex: num(o.flex ?? o.raiseFwd, 0, `${name}.flex`),
-    elbow: num(o.elbow ?? o.bend, 0, `${name}.elbow`, 0, 160),
-    twist: num(o.twist ?? o.roll, 0, `${name}.twist`),
+    raiseSide: num(o.raiseSide, defRaiseSide, `${name}.raiseSide`),
+    raiseFwd: num(o.raiseFwd, 0, `${name}.raiseFwd`),
+    bend: num(o.bend, 0, `${name}.bend`, 0, 160),
+    twist: num(o.twist, 0, `${name}.twist`),
   };
 }
 function parseLeg(v: unknown, name: string): JointPose {
   const o = obj(v, name);
   assertNoUnknownKeys(o, LEG_FIELDS, name);
   return {
-    abduct: num(o.abduct ?? o.raiseSide, 6, `${name}.abduct`),
-    flex: num(o.flex ?? o.raiseFwd, 0, `${name}.flex`),
-    knee: num(o.knee ?? o.bend, 0, `${name}.knee`, 0, 150),
-    twist: num(o.twist ?? o.roll, 0, `${name}.twist`),
+    raiseSide: num(o.raiseSide, 6, `${name}.raiseSide`),
+    raiseFwd: num(o.raiseFwd, 0, `${name}.raiseFwd`),
+    bend: num(o.bend, 0, `${name}.bend`, 0, 150),
+    twist: num(o.twist, 0, `${name}.twist`),
   };
 }
 
@@ -267,9 +267,9 @@ function buildRig(rawOpts: unknown): Rig {
     legL: parseLeg(mergeLeg(poseRaw.legL), 'rig.pose.legL'),
     legR: parseLeg(mergeLeg(poseRaw.legR), 'rig.pose.legR'),
     head: {
-      turn: num(headRaw.turn ?? headRaw.yaw, 0, 'rig.pose.head.turn'),
-      tilt: num(headRaw.tilt ?? headRaw.roll, 0, 'rig.pose.head.tilt'),
-      nod: num(headRaw.nod ?? headRaw.pitch, 0, 'rig.pose.head.nod'),
+      yaw: num(headRaw.yaw, 0, 'rig.pose.head.yaw'),
+      pitch: num(headRaw.pitch, 0, 'rig.pose.head.pitch'),
+      roll: num(headRaw.roll, 0, 'rig.pose.head.roll'),
     },
     spine: {
       lean: num(spineRaw.lean, 0, 'rig.pose.spine.lean'),
@@ -326,12 +326,12 @@ function buildRig(rawOpts: unknown): Rig {
     head: ryHead, headX: rxHead, headZ: rzHead,
     neck: hu(0.204),
     chestX: hu(0.630) * sm.chest, chestY: hu(0.396),
-    pelvisX: hu(0.516) * sm.hip, pelvisY: hu(0.360),
-    // The garment-fitting radius at the natural waist (rig.joints.navel) — use
-    // this, not pelvisX (a leg-insertion radius), to size belts/skirts/tutus.
+    hipsX: hu(0.516) * sm.hip, hipsY: hu(0.360),
+    // The garment-fitting radius at the natural waist (rig.joints.spine) — use
+    // this, not hipsX (a leg-insertion radius), to size belts/skirts/tutus.
     waist: hu(0.492) * sm.waist,
-    upperArm: hu(0.204), foreArm: hu(0.168), hand: hu(0.252),
-    thigh: hu(0.288), shank: hu(0.216), foot: hu(0.240),
+    upperArm: hu(0.204), lowerArm: hu(0.168), hand: hu(0.252),
+    upperLeg: hu(0.288), lowerLeg: hu(0.216), foot: hu(0.240),
   };
 
   // --- Arm FK ------------------------------------------------------------
@@ -340,29 +340,29 @@ function buildRig(rawOpts: unknown): Rig {
 
   function armChain(side: number, p: JointPose) {
     const S: Vec3 = [side * shoulderHalfX, 0, shoulderZ];
-    // abduct: 0 = hanging down, 90 = straight out to the side, 180 = up.
-    let dir: Vec3 = [side * Math.sin(p.abduct * DEG), 0, -Math.cos(p.abduct * DEG)];
-    // flex: + brings the arm forward (−Y).
-    dir = rotX(dir, -p.flex);
+    // raiseSide: 0 = hanging down, 90 = straight out to the side, 180 = up.
+    let dir: Vec3 = [side * Math.sin(p.raiseSide * DEG), 0, -Math.cos(p.raiseSide * DEG)];
+    // raiseFwd: + brings the arm forward (−Y).
+    dir = rotX(dir, -p.raiseFwd);
     dir = norm3(dir);
     const E = add3(S, scale3(dir, upperArmLen));
     // Elbow flexion curls the forearm about a hinge ⟂ to the upper-arm axis.
     // The hinge is FRAME-DERIVED — the rest axis [−1,0,0] carried through the
-    // bone's own abduct/flex rotations — exactly like the knee. This equals the
-    // old `cross(dir, fwd)` form wherever abduct OR flex is ~0 (every neutral,
+    // bone's own raiseSide/raiseFwd rotations — exactly like the knee. This equals the
+    // old `cross(dir, fwd)` form wherever raiseSide OR raiseFwd is ~0 (every neutral,
     // side-raised, hanging, forward, or overhead pose), but stays a clean
     // lateral hinge when BOTH are large. The cross form degenerated there: as
-    // flex → ±90 its magnitude collapsed and its direction swung through the
+    // raiseFwd → ±90 its magnitude collapsed and its direction swung through the
     // pole, so a forward-reaching bent arm (karate punch, reading pose) curled
     // in a pose-dependent wrong plane — the knee-sign instability, arm edition.
-    let hinge = norm3(rotX(rotY([-1, 0, 0], -side * p.abduct), -p.flex));
+    let hinge = norm3(rotX(rotY([-1, 0, 0], -side * p.raiseSide), -p.raiseFwd));
     // `twist` (shoulder/forearm roll) rolls that curl plane about the upper-arm
     // axis — the DOF that lets a RAISED arm curl the fist UP (double-biceps) or
     // inward (ballet fifth) instead of only forward. The roll sign pairs with
     // the forward curl so `twist: 90` lifts a side-raised fist UP; multiplying
     // by `side` keeps a symmetric `arms:{twist}` lifting both fists the same way.
     if (p.twist) hinge = norm3(rotAxis(hinge, dir, -p.twist * side));
-    const foreDir = norm3(rotAxis(dir, hinge, p.elbow ?? 0));
+    const foreDir = norm3(rotAxis(dir, hinge, p.bend ?? 0));
     const W = add3(E, scale3(foreDir, foreArmLen));
     const handC = add3(W, scale3(foreDir, r.hand * 0.9));
     return { S, E, W, handC, dir, foreDir, hinge };
@@ -375,26 +375,26 @@ function buildRig(rawOpts: unknown): Rig {
   const shankLen = kneeZ - ankleZ;
   function legChain(side: number, p: JointPose) {
     const Hj: Vec3 = [side * hipHalfX, 0, hipZ];
-    let dir: Vec3 = [side * Math.sin(p.abduct * DEG), 0, -Math.cos(p.abduct * DEG)];
-    dir = rotX(dir, -p.flex);
+    let dir: Vec3 = [side * Math.sin(p.raiseSide * DEG), 0, -Math.cos(p.raiseSide * DEG)];
+    dir = rotX(dir, -p.raiseFwd);
     dir = norm3(dir);
     const K = add3(Hj, scale3(dir, thighLen));
     // Knee bends the shank backward (+Y) relative to the thigh, about the
     // thigh's LATERAL axis: the rest hinge [−1,0,0] carried through the same
-    // abduct/flex rotations as the bone. (It was cross(dir, fwd) before,
-    // which degenerates toward a VERTICAL axis as flex → 90 with any nonzero
-    // abduct — the documented chair-sit pose then swung the shins sideways,
-    // frog-style, because the tiny abduct component dominated the cross
-    // product. The frame-derived hinge equals the old one wherever abduct or
-    // flex is ~0 — every catalog pose — and stays lateral when both are not.)
+    // raiseSide/raiseFwd rotations as the bone. (It was cross(dir, fwd) before,
+    // which degenerates toward a VERTICAL axis as raiseFwd → 90 with any nonzero
+    // raiseSide — the documented chair-sit pose then swung the shins sideways,
+    // frog-style, because the tiny raiseSide component dominated the cross
+    // product. The frame-derived hinge equals the old one wherever raiseSide or
+    // raiseFwd is ~0 — every catalog pose — and stays lateral when both are not.)
     // The BACKWARD bend needs the negative angle (positive swings forward —
     // that sign error once gave lunges a horizontal shin floating mid-air).
-    let hinge = norm3(rotX(rotY([-1, 0, 0], -side * p.abduct), -p.flex));
+    let hinge = norm3(rotX(rotY([-1, 0, 0], -side * p.raiseSide), -p.raiseFwd));
     // twist = hip turnout: roll the knee-bend plane about the thigh axis so a
     // bent knee turns outward (plié, ballet positions), pairing `side` so a
     // symmetric `legs:{twist}` turns BOTH legs out the same way. 0 = neutral.
     if (p.twist) hinge = norm3(rotAxis(hinge, dir, -p.twist * side));
-    const shankDir = norm3(rotAxis(dir, hinge, -(p.knee ?? 0)));
+    const shankDir = norm3(rotAxis(dir, hinge, -(p.bend ?? 0)));
     const A = add3(K, scale3(shankDir, shankLen));
     // Foot heading: front (−Y) yawed about world-up by the turnout, OUTWARD
     // (+X for the left foot, −X for the right). A straight, turned-out leg
@@ -412,8 +412,8 @@ function buildRig(rawOpts: unknown): Rig {
   // the lateral axis pointing to the figure's LEFT (+X when facing −Y), so the
   // `L` anchors land on +X, matching the body's L/R convention.
   let hf: Vec3 = [0, -1, 0];
-  hf = rotZ(hf, pose.head.turn);    // yaw
-  hf = rotX(hf, pose.head.nod);     // nod
+  hf = rotZ(hf, pose.head.yaw);    // yaw
+  hf = rotX(hf, pose.head.pitch);     // nod
   hf = norm3(hf);
   const up: Vec3 = [0, 0, 1];
   let headLeft = norm3(cross3(up, hf));   // +X when facing −Y (figure's left)
@@ -424,9 +424,9 @@ function buildRig(rawOpts: unknown): Rig {
   // roll component, so the old `rotY(hf, tilt)` did literally nothing. Positive
   // tilt drops the crown toward the figure's LEFT shoulder (+X), matching the
   // `turn`-left-positive convention.
-  if (pose.head.tilt) {
-    headLeft = norm3(rotAxis(headLeft, hf, -pose.head.tilt));
-    headUp = norm3(rotAxis(headUp, hf, -pose.head.tilt));
+  if (pose.head.roll) {
+    headLeft = norm3(rotAxis(headLeft, hf, -pose.head.roll));
+    headUp = norm3(rotAxis(headUp, hf, -pose.head.roll));
   }
 
   const fAnchor = (f: number, u: number, s: number): Vec3 =>
@@ -485,29 +485,26 @@ function buildRig(rawOpts: unknown): Rig {
   };
 
   return {
+    // Joint POINTS named in the VRM/Unity humanoid scheme (the single canonical
+    // vocabulary — see public/ai/figure.md). A joint is the bone's ROOT point:
+    // `upperArmL` is the glenohumeral joint where the upper-arm bone starts (NOT
+    // the clavicle, which VRM confusingly calls the "shoulder" bone). `wristL`
+    // is the forearm end; `handL` is the hand-mass centre (the prop/grip point).
     joints: {
-      pelvis: [0, 0, pelvisZ], navel: [0, -r.chestY * 0.4, navelZ], chest: sPt([0, -r.chestY * 0.2, chestZ]),
-      neckBase: sPt([0, 0, shoulderZ + neckLen * 0.2]), headCenter: sPt(headCenter), crown: sPt([headCenter[0], headCenter[1], H]), chin: sPt([0, 0, chinZ]),
-      shoulderL: sPt(aL.S), elbowL: sPt(aL.E), wristL: sPt(aL.W), handL: sPt(aL.handC),
-      shoulderR: sPt(aR.S), elbowR: sPt(aR.E), wristR: sPt(aR.W), handR: sPt(aR.handC),
-      hipL: lL.Hj, kneeL: lL.K, ankleL: lL.A, hipR: lR.Hj, kneeR: lR.K, ankleR: lR.A,
-      // Standard-skeleton (VRM/Unity humanoid) aliases for the bone-ROOT joints,
-      // so AI code can address the rig with the bone vocabulary it knows. These
-      // are aliases, not new joints: `hips` = pelvis, `upperArm*` = shoulder*
-      // (the glenohumeral joint where the arm bone STARTS — note the standard
-      // "shoulder"/clavicle bone is a different thing), `upperLeg*` = hip*.
-      hips: [0, 0, pelvisZ],
-      upperArmL: sPt(aL.S), upperArmR: sPt(aR.S),
-      upperLegL: lL.Hj, upperLegR: lR.Hj,
+      hips: [0, 0, pelvisZ], spine: [0, -r.chestY * 0.4, navelZ], chest: sPt([0, -r.chestY * 0.2, chestZ]),
+      neck: sPt([0, 0, shoulderZ + neckLen * 0.2]), head: sPt(headCenter), crown: sPt([headCenter[0], headCenter[1], H]), chin: sPt([0, 0, chinZ]),
+      upperArmL: sPt(aL.S), lowerArmL: sPt(aL.E), wristL: sPt(aL.W), handL: sPt(aL.handC),
+      upperArmR: sPt(aR.S), lowerArmR: sPt(aR.E), wristR: sPt(aR.W), handR: sPt(aR.handC),
+      upperLegL: lL.Hj, lowerLegL: lL.K, footL: lL.A, upperLegR: lR.Hj, lowerLegR: lR.K, footR: lR.A,
     },
     r,
     dir: {
-      upperArmL: sDir(aL.dir), foreArmL: sDir(aL.foreDir), upperArmR: sDir(aR.dir), foreArmR: sDir(aR.foreDir),
+      upperArmL: sDir(aL.dir), lowerArmL: sDir(aL.foreDir), upperArmR: sDir(aR.dir), lowerArmR: sDir(aR.foreDir),
       // The elbow-hinge axis (post-twist) — ⟂ to the forearm-curl plane. The
       // hand frame derives from it: fingers splay along the hinge, the palm
-      // faces hinge × foreArm (the curl direction).
+      // faces hinge × lowerArm (the curl direction).
       elbowHingeL: sDir(aL.hinge), elbowHingeR: sDir(aR.hinge),
-      thighL: lL.dir, shankL: lL.shankDir, thighR: lR.dir, shankR: lR.shankDir,
+      upperLegL: lL.dir, lowerLegL: lL.shankDir, upperLegR: lR.dir, lowerLegR: lR.shankDir,
       // Foot heading per side (front −Y yawed by hip turnout) — buildFeet
       // orients toe/heel along it, so leg twist turns the feet out.
       footL: lL.footFwd, footR: lR.footFwd,
@@ -530,21 +527,21 @@ function buildTorso(sdf: SdfApi, rig: Rig): Node {
   // heads-tall rigs and buries the lower face inside the torso (the carved
   // mouth then lands in solid chest and teeth/lips labels resolve to zero).
   const chestSemiZ = Math.min(
-    (j.chest[2] - j.navel[2]) * 1.15 + r.chestY,
-    j.shoulderL[2] + r.neck * 0.8 - j.chest[2],
+    (j.chest[2] - j.spine[2]) * 1.15 + r.chestY,
+    j.upperArmL[2] + r.neck * 0.8 - j.chest[2],
   );
   const chest = sdf.ellipsoid(r.chestX, r.chestY, chestSemiZ)
     .translate(j.chest);
-  const belly = sdf.ellipsoid(r.chestX * 0.92, r.chestY * 0.94, (j.navel[2] - j.pelvis[2]) * 0.9 + r.chestY * 0.6)
-    .translate([0, -r.chestY * 0.1, mix(j.navel[2], j.pelvis[2], 0.4)]);
-  const pelvis = sdf.ellipsoid(r.pelvisX, r.pelvisY, r.pelvisY * 1.25).translate(j.pelvis);
+  const belly = sdf.ellipsoid(r.chestX * 0.92, r.chestY * 0.94, (j.spine[2] - j.hips[2]) * 0.9 + r.chestY * 0.6)
+    .translate([0, -r.chestY * 0.1, mix(j.spine[2], j.hips[2], 0.4)]);
+  const pelvis = sdf.ellipsoid(r.hipsX, r.hipsY, r.hipsY * 1.25).translate(j.hips);
   const k = r.chestY * 0.6;
   return chest.smoothUnion(belly, k).smoothUnion(pelvis, k);
 }
 
 function buildNeck(sdf: SdfApi, rig: Rig): Node {
   const j = rig.joints, r = rig.r;
-  return sdf.capsule(j.chest as Vec3, add3(j.headCenter as Vec3, [0, 0, -r.headZ * 0.5]), r.neck);
+  return sdf.capsule(j.chest as Vec3, add3(j.head as Vec3, [0, 0, -r.headZ * 0.5]), r.neck);
 }
 
 function tapered(sdf: SdfApi, a: Vec3, b: Vec3, ra: number, rb: number, k: number): Node {
@@ -558,16 +555,16 @@ function tapered(sdf: SdfApi, a: Vec3, b: Vec3, ra: number, rb: number, k: numbe
 
 function buildArms(sdf: SdfApi, rig: Rig): Node {
   const j = rig.joints, r = rig.r;
-  const k = r.foreArm * 1.3;             // elbow weld — soft, no kink
+  const k = r.lowerArm * 1.3;             // elbow weld — soft, no kink
   function arm(S: Vec3, E: Vec3, W: Vec3): Node {
-    const upper = tapered(sdf, S, E, r.upperArm, r.foreArm * 1.05, k);
-    const fore = tapered(sdf, E, W, r.foreArm * 1.02, r.foreArm * 0.8, k);
+    const upper = tapered(sdf, S, E, r.upperArm, r.lowerArm * 1.05, k);
+    const fore = tapered(sdf, E, W, r.lowerArm * 1.02, r.lowerArm * 0.8, k);
     // Deltoid cap so the shoulder reads as a rounded mass, not a tube stub.
     const deltoid = sdf.sphere(r.upperArm * 1.15).translate(S);
     return upper.smoothUnion(fore, k).smoothUnion(deltoid, r.upperArm * 0.9);
   }
-  const armL = arm(j.shoulderL as Vec3, j.elbowL as Vec3, j.wristL as Vec3);
-  const armR = arm(j.shoulderR as Vec3, j.elbowR as Vec3, j.wristR as Vec3);
+  const armL = arm(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3);
+  const armR = arm(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3);
   return armL.union(armR);
 }
 
@@ -661,8 +658,8 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     return out.smoothUnion(thumb, fr * 1.1);
   }
 
-  return hand(j.handL as Vec3, rig.dir.foreArmL, rig.dir.elbowHingeL, +1)
-    .union(hand(j.handR as Vec3, rig.dir.foreArmR, rig.dir.elbowHingeR, -1));
+  return hand(j.handL as Vec3, rig.dir.lowerArmL, rig.dir.elbowHingeL, +1)
+    .union(hand(j.handR as Vec3, rig.dir.lowerArmR, rig.dir.elbowHingeR, -1));
 }
 
 /** Detail-region spheres for the hands, mirroring `faceDetail` — fingers are
@@ -682,14 +679,14 @@ function handDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
 
 function buildLegs(sdf: SdfApi, rig: Rig): Node {
   const j = rig.joints, r = rig.r;
-  const k = r.shank * 1.3;               // knee weld — soft, no kink
+  const k = r.lowerLeg * 1.3;               // knee weld — soft, no kink
   function leg(Hj: Vec3, K: Vec3, A: Vec3): Node {
-    const thigh = tapered(sdf, Hj, K, r.thigh, r.shank * 1.1, k);
-    const shank = tapered(sdf, K, A, r.shank * 1.05, r.shank * 0.78, k);
+    const thigh = tapered(sdf, Hj, K, r.upperLeg, r.lowerLeg * 1.1, k);
+    const shank = tapered(sdf, K, A, r.lowerLeg * 1.05, r.lowerLeg * 0.78, k);
     return thigh.smoothUnion(shank, k);
   }
-  return leg(j.hipL as Vec3, j.kneeL as Vec3, j.ankleL as Vec3)
-    .union(leg(j.hipR as Vec3, j.kneeR as Vec3, j.ankleR as Vec3));
+  return leg(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3)
+    .union(leg(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3));
 }
 
 /** The ground-contact Z of a foot, derived from its ankle. The foot FOLLOWS
@@ -719,15 +716,15 @@ function buildFeet(sdf: SdfApi, rig: Rig): Node {
       .translate([instepC[0], instepC[1], sz + r.foot * 0.15]);
     // A short ankle column bridges the (possibly elevated) ankle to the sole so
     // the foot stays welded to the leg in any pose.
-    const ankleCol = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.shank * 0.8);
+    const ankleCol = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.lowerLeg * 0.8);
     return sole.smoothUnion(instep, r.foot * 0.6).smoothUnion(ankleCol, r.foot * 0.6);
   }
-  return foot(j.ankleL as Vec3, rig.dir.footL as Vec3, +1)
-    .union(foot(j.ankleR as Vec3, rig.dir.footR as Vec3, -1));
+  return foot(j.footL as Vec3, rig.dir.footL as Vec3, +1)
+    .union(foot(j.footR as Vec3, rig.dir.footR as Vec3, -1));
 }
 
 function buildHead(sdf: SdfApi, rig: Rig): Node {
-  const r = rig.r, c = rig.joints.headCenter as Vec3;
+  const r = rig.r, c = rig.joints.head as Vec3;
   const f = rig.dir.headForward, u = rig.dir.headUp;
   const skull = sdf.ellipsoid(r.headX, r.head, r.headZ).translate(c);
   // Jaw: a smaller ellipsoid pulled down + forward, welded for a soft chin.
@@ -744,7 +741,7 @@ function buildBase(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'base(opts)');
   assertNoUnknownKeys(o, ['radius', 'thickness'], 'base(opts)');
   const H = rig.opts.height, r = rig.r;
-  const aL = rig.joints.ankleL, aR = rig.joints.ankleR;
+  const aL = rig.joints.footL, aR = rig.joints.footR;
   const footLen = r.foot * 2.4;
   // Auto-size: cover the stance footprint (so a wide/lunge stance isn't off the
   // edge) and rise to meet the LOWEST foot (so at least one foot always merges
@@ -838,7 +835,7 @@ const MOUTH_FIELDS = ['width', 'smirk', 'open', 'style', 'teeth', 'lips'];
  *  anything.) */
 function orientToHeadPose(node: Node, rig: Rig): Node {
   const p = rig.opts.pose.head;
-  return node.rotate([0, p.tilt, 0]).rotate([0, 0, p.turn]).rotate([p.nod, 0, 0]);
+  return node.rotate([0, p.roll, 0]).rotate([0, 0, p.yaw]).rotate([p.pitch, 0, 0]);
 }
 
 /** Shared geometry of the open-mouth cavity, used by both the carve and the
@@ -1116,7 +1113,7 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   const edgeLength = num(o.edgeLength, Math.max(r.head * 0.045, 0.05), 'faceDetail.edgeLength', 1e-4);
   const mouthEdgeLength = num(o.mouthEdgeLength, Math.max(r.head * 0.02, 0.03), 'faceDetail.mouthEdgeLength', 1e-4);
   return [
-    { center: [...(rig.joints.headCenter as Vec3)] as Vec3, radius, edgeLength },
+    { center: [...(rig.joints.head as Vec3)] as Vec3, radius, edgeLength },
     { center: [...(rig.face.mouth as Vec3)] as Vec3, radius: r.head * 0.55, edgeLength: mouthEdgeLength },
   ];
 }
@@ -1133,12 +1130,12 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // the skull in a figure union, but its `bounds()` stays at the head — so
   // `F.placeAt(baldHair, …)` and any bbox-driven composition still work,
   // instead of snapping to a point a million units below the model.
-  if (style === 'bald') return sdf.sphere(1e-3).translate(rig.joints.headCenter as Vec3);
+  if (style === 'bald') return sdf.sphere(1e-3).translate(rig.joints.head as Vec3);
   // Hairline height = where the face window's top edge sits. 'low' brings the
   // hair down to the brows (the bangs default), 'high' shows more forehead.
   const hairline = o.hairline === undefined ? (style === 'bangs' ? 'low' : 'mid')
     : assertEnum(o.hairline, ['high', 'mid', 'low'] as const, 'hair.hairline');
-  const r = rig.r, c = rig.joints.headCenter as Vec3;
+  const r = rig.r, c = rig.joints.head as Vec3;
   const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
   const t = num(o.thickness, r.head * 0.12, 'hair.thickness', 0.01);
   // Skull cap: a slightly enlarged ellipsoid pushed back, covering all but
@@ -1198,10 +1195,10 @@ function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const j = rig.joints, r = rig.r;
   // Generous default: the knee weld bulge exceeds a thin shell and pokes
   // through as a bare-skin patch on bent legs.
-  const t = num(o.thickness, r.thigh * 0.3, 'pants.thickness', 0.01);
+  const t = num(o.thickness, r.upperLeg * 0.3, 'pants.thickness', 0.01);
   const cuffZ = o.cuffZ === undefined ? undefined : num(o.cuffZ, 0, 'pants.cuffZ');
   const flare = leg === 'cargo' ? 1.35 : 1.08;
-  const waistZ = rise === 'high' ? j.navel[2] : rise === 'low' ? j.pelvis[2] : mix(j.pelvis[2], j.navel[2], 0.5);
+  const waistZ = rise === 'high' ? j.spine[2] : rise === 'low' ? j.hips[2] : mix(j.hips[2], j.spine[2], 0.5);
 
   // The cuff must sit ON the knee→ankle bone — a fixed world-Z endpoint pulls
   // the pant shank off a posed leg (a lunge's diagonal shank ends up wearing a
@@ -1211,7 +1208,7 @@ function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     if (cuffZ === undefined) {
       // Default: cuff ends 1.5 shank-radii above the ankle, along the bone.
       const len = len3([A[0] - K[0], A[1] - K[1], A[2] - K[2]]);
-      return lerp3(K, A, len > 1e-6 ? Math.max(0.3, 1 - (r.shank * 1.5) / len) : 1);
+      return lerp3(K, A, len > 1e-6 ? Math.max(0.3, 1 - (r.lowerLeg * 1.5) / len) : 1);
     }
     const segZ = K[2] - A[2];
     if (Math.abs(segZ) < 1e-6) return lerp3(K, A, 0.85); // near-horizontal shank: height is meaningless
@@ -1223,25 +1220,25 @@ function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     // Trim the leg above the cuff: build inflated capsules from waist height
     // down to the cuff.
     const top: Vec3 = [Hj[0], Hj[1], waistZ];
-    const thighS = sdf.capsule(top, K, (r.thigh + t) * flare);
-    const shankS = sdf.capsule(K, cuffPoint(K, A), (r.shank + t) * flare);
-    // Knee pad: the skin's knee weld (k = r.shank*1.3) bulges past both
+    const thighS = sdf.capsule(top, K, (r.upperLeg + t) * flare);
+    const shankS = sdf.capsule(K, cuffPoint(K, A), (r.lowerLeg + t) * flare);
+    // Knee pad: the skin's knee weld (k = r.lowerLeg*1.3) bulges past both
     // capsule radii on a bent knee — a sphere at the joint guarantees cover
     // at any bend angle.
-    const knee = sdf.sphere((r.shank * 1.1 + t) * 1.18).translate(K);
-    return thighS.smoothUnion(shankS, r.shank * 1.4).smoothUnion(knee, r.shank * 0.9);
+    const knee = sdf.sphere((r.lowerLeg * 1.1 + t) * 1.18).translate(K);
+    return thighS.smoothUnion(shankS, r.lowerLeg * 1.4).smoothUnion(knee, r.lowerLeg * 0.9);
   }
   // Seat: tall enough to reach DOWN past the crotch line (a short seat leaves
   // a bare wedge of groin between the leg sleeves), plus an explicit hip-to-
   // hip gusset filling the inner-thigh wedge in any stance.
-  const seat = sdf.ellipsoid((r.pelvisX + t) * 1.05, (r.pelvisY + t) * 1.05, r.pelvisY * 1.8)
-    .translate([0, 0, mix(j.pelvis[2], waistZ, 0.4)]);
-  const gusset = sdf.capsule(j.hipL as Vec3, j.hipR as Vec3, (r.thigh + t) * 0.85);
+  const seat = sdf.ellipsoid((r.hipsX + t) * 1.05, (r.hipsY + t) * 1.05, r.hipsY * 1.8)
+    .translate([0, 0, mix(j.hips[2], waistZ, 0.4)]);
+  const gusset = sdf.capsule(j.upperLegL as Vec3, j.upperLegR as Vec3, (r.upperLeg + t) * 0.85);
   // Hip pads: a flexed hip's skin weld bulge (thigh⊔pelvis) escapes between
   // the seat and the leaning thigh sleeve. The bulge zone runs from the hip
   // joint down the upper thigh, so cover it with a capsule along the bone.
   const hipPad = (Hj: Vec3, K: Vec3): Node =>
-    sdf.capsule(Hj, lerp3(Hj, K, length === 'briefs' ? 0.3 : 0.45), (r.thigh + t) * 1.22);
+    sdf.capsule(Hj, lerp3(Hj, K, length === 'briefs' ? 0.3 : 0.45), (r.upperLeg + t) * 1.22);
 
   // --- Guaranteed-coverage underlayer (additive, never subtractive) ------
   // "Clothing = the body region inflated and trimmed": the actual body masses,
@@ -1254,38 +1251,38 @@ function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // above the lower shank, so the shaped cuff — not a fat offset cap reaching
   // the foot — defines the hem.
   const body = buildTorso(sdf, rig).union(buildLegs(sdf, rig)).round(t);
-  const big = Math.max(r.pelvisX, r.chestX, r.thigh) * 8;
+  const big = Math.max(r.hipsX, r.chestX, r.upperLeg) * 8;
   const underWaist = sdf.box([big, big, big]).translate([0, 0, waistZ - big / 2]); // z ≤ waistZ
-  const seatBot = j.hipL[2] - r.thigh;
+  const seatBot = j.upperLegL[2] - r.upperLeg;
   const seatZone = sdf.box([big, big, waistZ - seatBot]).translate([0, 0, (waistZ + seatBot) / 2]);
   const legZone = (Hj: Vec3, K: Vec3): Node =>
-    sdf.capsule(Hj, K, (r.thigh + t) * 1.8).union(sdf.sphere((r.shank + t) * 1.9).translate(K));
+    sdf.capsule(Hj, K, (r.upperLeg + t) * 1.8).union(sdf.sphere((r.lowerLeg + t) * 1.9).translate(K));
   let zone = seatZone;
   if (length !== 'briefs') {
-    zone = zone.union(legZone(j.hipL as Vec3, j.kneeL as Vec3)).union(legZone(j.hipR as Vec3, j.kneeR as Vec3));
+    zone = zone.union(legZone(j.upperLegL as Vec3, j.lowerLegL as Vec3)).union(legZone(j.upperLegR as Vec3, j.lowerLegR as Vec3));
   }
   const coverage = body.intersect(zone.intersect(underWaist));
 
   // briefs: seat + gusset + hip pads only — leotard bottoms, swimwear.
   if (length === 'briefs') {
     return seat
-      .smoothUnion(gusset, r.thigh * 0.8)
-      .smoothUnion(hipPad(j.hipL as Vec3, j.kneeL as Vec3), r.thigh * 0.8)
-      .smoothUnion(hipPad(j.hipR as Vec3, j.kneeR as Vec3), r.thigh * 0.8)
+      .smoothUnion(gusset, r.upperLeg * 0.8)
+      .smoothUnion(hipPad(j.upperLegL as Vec3, j.lowerLegL as Vec3), r.upperLeg * 0.8)
+      .smoothUnion(hipPad(j.upperLegR as Vec3, j.lowerLegR as Vec3), r.upperLeg * 0.8)
       .union(coverage);
   }
   // Seat↔sleeve welds must be at least as soft as the body's hip weld — a
   // flexed hip's skin bulge pokes through a tighter garment weld.
   let pants = seat
-    .smoothUnion(gusset, r.thigh * 0.8)
-    .smoothUnion(hipPad(j.hipL as Vec3, j.kneeL as Vec3), r.thigh * 0.8)
-    .smoothUnion(hipPad(j.hipR as Vec3, j.kneeR as Vec3), r.thigh * 0.8)
-    .smoothUnion(legSleeve(j.hipL as Vec3, j.kneeL as Vec3, j.ankleL as Vec3), r.thigh * 1.2)
-    .smoothUnion(legSleeve(j.hipR as Vec3, j.kneeR as Vec3, j.ankleR as Vec3), r.thigh * 1.2);
+    .smoothUnion(gusset, r.upperLeg * 0.8)
+    .smoothUnion(hipPad(j.upperLegL as Vec3, j.lowerLegL as Vec3), r.upperLeg * 0.8)
+    .smoothUnion(hipPad(j.upperLegR as Vec3, j.lowerLegR as Vec3), r.upperLeg * 0.8)
+    .smoothUnion(legSleeve(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3), r.upperLeg * 1.2)
+    .smoothUnion(legSleeve(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3), r.upperLeg * 1.2);
   if (leg === 'cargo') {
-    const pkt = (side: number): Node => sdf.roundedBox([r.thigh * 0.9, r.thigh * 0.4, r.thigh * 1.4], r.thigh * 0.18)
-      .translate([side * (r.thigh + t) * 1.15, -r.thigh * 0.2, mix(j.kneeL[2], j.hipL[2], 0.5)]);
-    pants = pants.smoothUnion(pkt(+1), r.thigh * 0.25).smoothUnion(pkt(-1), r.thigh * 0.25);
+    const pkt = (side: number): Node => sdf.roundedBox([r.upperLeg * 0.9, r.upperLeg * 0.4, r.upperLeg * 1.4], r.upperLeg * 0.18)
+      .translate([side * (r.upperLeg + t) * 1.15, -r.upperLeg * 0.2, mix(j.lowerLegL[2], j.upperLegL[2], 0.5)]);
+    pants = pants.smoothUnion(pkt(+1), r.upperLeg * 0.25).smoothUnion(pkt(-1), r.upperLeg * 0.25);
   }
   return pants.union(coverage);
 }
@@ -1300,7 +1297,7 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const t = num(o.thickness, r.chestY * 0.3, 'top(thickness)', 0.01);
   // Default hem reaches BELOW the navel so it overlaps a mid-rise waistband —
   // the old navel-height hem left a bare midriff strip above the pants.
-  const hemZ = num(o.hemZ, mix(j.pelvis[2], j.navel[2], 0.3), 'top.hemZ');
+  const hemZ = num(o.hemZ, mix(j.hips[2], j.spine[2], 0.3), 'top.hemZ');
   // Torso shell from shoulders to hem, centred on the body's actual chest
   // line (the chest mass sits FORWARD of x/z axis at j.chest[1]; a garment
   // centred at y=0 lets the chest bulge straight through its front).
@@ -1310,9 +1307,9 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // A hem below the pelvis means a robe/dress — the chest ELLIPSOID recedes
   // toward its bottom tip, so legs poke out of its lower front. Add a flared
   // cone skirt from the waist down to the hem.
-  if (hemZ < j.pelvis[2] - r.pelvisY * 0.6) {
-    const skirtH = j.navel[2] - hemZ;
-    const r0 = Math.max(r.pelvisX, r.chestX) + t;
+  if (hemZ < j.hips[2] - r.hipsY * 0.6) {
+    const skirtH = j.spine[2] - hemZ;
+    const r0 = Math.max(r.hipsX, r.chestX) + t;
     const skirt = sdf.cylinder(r0, skirtH)
       .taper(-0.8 / skirtH)
       .translate([0, 0, hemZ + skirtH / 2]);
@@ -1328,22 +1325,22 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       }
       // long: upper-arm segment + forearm segment, welded at the elbow.
       return sdf.capsule(S, E, rad)
-        .smoothUnion(sdf.capsule(E, lerp3(E, W, 0.9), rad * 0.95), r.foreArm * 0.8);
+        .smoothUnion(sdf.capsule(E, lerp3(E, W, 0.9), rad * 0.95), r.lowerArm * 0.8);
     }
     // Shoulder yokes: spheres over the shoulder joints bridging the chest
     // shell and the sleeve tops. Without them a wedge of skin shows at the
     // armpit/collar where the shell's side ends inboard of the shoulder.
     const yoke = (S: Vec3): Node => sdf.sphere((r.upperArm + t) * 1.2).translate(S);
     top = top
-      .smoothUnion(sl(j.shoulderL as Vec3, j.elbowL as Vec3, j.wristL as Vec3), r.upperArm * 0.7)
-      .smoothUnion(sl(j.shoulderR as Vec3, j.elbowR as Vec3, j.wristR as Vec3), r.upperArm * 0.7)
-      .smoothUnion(yoke(j.shoulderL as Vec3), r.upperArm * 0.8)
-      .smoothUnion(yoke(j.shoulderR as Vec3), r.upperArm * 0.8);
+      .smoothUnion(sl(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3), r.upperArm * 0.7)
+      .smoothUnion(sl(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3), r.upperArm * 0.7)
+      .smoothUnion(yoke(j.upperArmL as Vec3), r.upperArm * 0.8)
+      .smoothUnion(yoke(j.upperArmR as Vec3), r.upperArm * 0.8);
   }
   // Clavicle bar: the chest ellipsoid's front-top slopes away below the
   // collarbones, leaving a deep bare V at the sternum. A shoulder-to-shoulder
   // capsule on the chest line closes the neckline into a crew collar.
-  const S_L = j.shoulderL as Vec3, S_R = j.shoulderR as Vec3;
+  const S_L = j.upperArmL as Vec3, S_R = j.upperArmR as Vec3;
   const clav = sdf.capsule(
     [S_L[0] * 0.92, j.chest[1], S_L[2]],
     [S_R[0] * 0.92, j.chest[1], S_R[2]],
@@ -1360,7 +1357,7 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const masses = sleeve === 'none' ? buildTorso(sdf, rig) : buildTorso(sdf, rig).union(buildArms(sdf, rig));
   const body = masses.round(t);
   const big = Math.max(r.chestX, r.upperArm) * 8;
-  const torsoTop = j.shoulderL[2] + r.upperArm;
+  const torsoTop = j.upperArmL[2] + r.upperArm;
   let zone = sdf.box([big, big, torsoTop - hemZ]).translate([0, 0, (torsoTop + hemZ) / 2]);
   if (sleeve !== 'none') {
     const slZone = (S: Vec3, E: Vec3, W: Vec3): Node => {
@@ -1369,8 +1366,8 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       return sdf.capsule(S, E, rad).union(sdf.capsule(E, lerp3(E, W, 0.9), rad));
     };
     zone = zone
-      .union(slZone(j.shoulderL as Vec3, j.elbowL as Vec3, j.wristL as Vec3))
-      .union(slZone(j.shoulderR as Vec3, j.elbowR as Vec3, j.wristR as Vec3));
+      .union(slZone(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3))
+      .union(slZone(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3));
   }
   return top.smoothUnion(clav, r.neck * 0.9).union(body.intersect(zone));
 }
@@ -1385,7 +1382,7 @@ function weldBody(rig: Rig, parts: unknown, opts?: unknown): Node {
   }
   const o = obj(opts, 'weld(opts)');
   assertNoUnknownKeys(o, ['k'], 'weld(opts)');
-  const k = num(o.k, Math.min(rig.r.foreArm, rig.r.neck) * 0.85, 'weld.k', 1e-4);
+  const k = num(o.k, Math.min(rig.r.lowerArm, rig.r.neck) * 0.85, 'weld.k', 1e-4);
   let acc = parts[0] as Node;
   for (let i = 1; i < parts.length; i++) acc = acc.smoothUnion(parts[i] as Node, k);
   return acc;

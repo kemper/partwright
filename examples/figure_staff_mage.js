@@ -21,12 +21,12 @@ const rig = F.rig({
     // Right arm: elevated ~55 ° to the side, elbow bent 90 ° so the forearm
     // hangs down; twist 0 gives gripAxis mostly up (+Z≈0.81), so the staff
     // stands diagonally beside the mage with the orb end rising above the hand.
-    armR: { abduct: 48, flex: 14, elbow: 78, twist: 0 },
+    armR: { raiseSide: 48, raiseFwd: 14, bend: 78, twist: 0 },
     // Left arm: relaxed at the side.
-    armL: { abduct: 12, flex: 8, elbow: 14 },
-    legL: { abduct: 9 },
-    legR: { abduct: 9 },
-    head: { turn: -6, tilt: 2, nod: -2 },
+    armL: { raiseSide: 12, raiseFwd: 8, bend: 14 },
+    legL: { raiseSide: 9 },
+    legR: { raiseSide: 9 },
+    head: { yaw: -6, roll: 2, pitch: -2 },
     spine: { lean: -2 },
   },
 });
