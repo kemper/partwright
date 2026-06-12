@@ -234,6 +234,19 @@ describe('knurlTexture', () => {
     expect(maxX).toBeLessThanOrEqual(10 + amp + 1e-3);
     expect(maxX).toBeGreaterThan(10); // something raised
   });
+
+  it('the pyramid profile differs from round but stays amplitude-bounded', () => {
+    const amp = 0.5;
+    const round = knurlTexture(cube(10), { amplitude: amp, cellWidth: 2, style: 'diamond', profile: 'round' });
+    const pyramid = knurlTexture(cube(10), { amplitude: amp, cellWidth: 2, style: 'diamond', profile: 'pyramid' });
+    // Straight-sided pyramids ≠ rounded cosine bumps.
+    expect([...round.vertProperties]).not.toEqual([...pyramid.vertProperties]);
+    // Same outward bound: ridges only raise, capped at amplitude.
+    let maxX = -Infinity;
+    for (let v = 0; v < pyramid.numVert; v++) maxX = Math.max(maxX, pyramid.vertProperties[v * 3]);
+    expect(maxX).toBeLessThanOrEqual(10 + amp + 1e-3);
+    expect(maxX).toBeGreaterThan(10);
+  });
 });
 
 describe('voronoiShell', () => {

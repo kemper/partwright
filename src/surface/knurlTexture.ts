@@ -10,12 +10,19 @@
 //   1. Map world position onto grip-grid axes (grainAngleDeg rotates in XY; the
 //      second axis is Z so the pattern runs "up" the model by default).
 //   2. Compute a raise field in [0,1] per style:
-//        diamond  — product of two opposite-handed cosine ridge families →
-//                   a 45°-rotated diamond bump grid
-//        straight — a single cosine ridge family across the column axis →
+//        diamond  — two opposite-handed ridge families combined →
+//                   a 45°-rotated diamond grid
+//        straight — a single ridge family across the column axis →
 //                   vertical splines
-//        ribs     — a single cosine ridge family across the row axis →
+//        ribs     — a single ridge family across the row axis →
 //                   horizontal rings
+//      The `profile` knob picks the ridge shape:
+//        round   — cosine ridges; the diamond multiplies the two families
+//                  into soft rounded bumps (the default).
+//        pyramid — triangle-wave ridges; the diamond takes min() of the two
+//                  families into true straight-sided machinist pyramids with
+//                  continuous sharp ridge lines (cosine bumps round off at the
+//                  cell corners, pyramids keep dead-straight edges).
 //   3. Displacement = amplitude × raise^sharpness, accumulated triplanar.
 //
 // Pure logic (no DOM/WASM) → unit-tested in the vitest tier.
@@ -30,6 +37,7 @@ import {
 } from './meshSubdivide';
 
 export type KnurlStyle = 'diamond' | 'straight' | 'ribs';
+export type KnurlProfile = 'round' | 'pyramid';
 
 export interface KnurlTextureOptions {
   /** Peak ridge height in world units. */
@@ -40,6 +48,11 @@ export interface KnurlTextureOptions {
   cellHeight?: number;
   /** Knurl pattern. Default 'diamond'. */
   style?: KnurlStyle;
+  /**
+   * Ridge cross-section. 'round' = cosine bumps (default); 'pyramid' =
+   * triangle-wave ridges → true straight-sided machinist diamonds.
+   */
+  profile?: KnurlProfile;
   /** Ridge crispness. 1 = soft rounded, 2–4 = crisp, 6+ = sharp peaks. Default 2. */
   sharpness?: number;
   /** Rotate the grid in the XY plane (degrees). Default 0. */
@@ -54,11 +67,21 @@ export interface KnurlTextureOptions {
 
 const TAU = Math.PI * 2;
 
+/**
+ * Unit triangle ridge in [0,1]: 1 at integer x, 0 at half-integers, linear
+ * between. The straight-sided counterpart to `0.5 + 0.5*cos(TAU*x)`.
+ */
+function triRidge(x: number): number {
+  const f = x - Math.round(x); // centered fractional part in [-0.5, 0.5)
+  return 1 - 2 * Math.abs(f);
+}
+
 export function knurlTexture(mesh: MeshData, opts: KnurlTextureOptions): MeshData {
   const amplitude = Math.max(0, opts.amplitude);
   const cellW = Math.max(1e-4, opts.cellWidth);
   const cellH = Math.max(1e-4, opts.cellHeight ?? cellW);
   const style: KnurlStyle = opts.style ?? 'diamond';
+  const profile: KnurlProfile = opts.profile ?? 'round';
   const sharpness = Math.max(1, opts.sharpness ?? 2);
   const angleRad = ((opts.grainAngleDeg ?? 0) * Math.PI) / 180;
   const cosA = Math.cos(angleRad), sinA = Math.sin(angleRad);
@@ -91,7 +114,18 @@ export function knurlTexture(mesh: MeshData, opts: KnurlTextureOptions): MeshDat
       const row = gz / cellH;
 
       let raise: number;
-      if (style === 'straight') {
+      if (profile === 'pyramid') {
+        // Triangle-wave ridges → straight-sided splines / machinist pyramids.
+        if (style === 'straight') {
+          raise = triRidge(col);
+        } else if (style === 'ribs') {
+          raise = triRidge(row);
+        } else {
+          // diamond: min() of two opposite-handed ramps → faceted pyramids
+          // with dead-straight edges and continuous ridge lines.
+          raise = Math.min(triRidge(col + row), triRidge(col - row));
+        }
+      } else if (style === 'straight') {
         raise = 0.5 + 0.5 * Math.cos(TAU * col);
       } else if (style === 'ribs') {
         raise = 0.5 + 0.5 * Math.cos(TAU * row);
