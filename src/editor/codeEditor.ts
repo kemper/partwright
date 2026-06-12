@@ -52,10 +52,42 @@ let autoFormatEnabled: boolean = readPerTabPref('editor-auto-format') !== 'false
 // Soft-wrap long lines. Off by default (matches the usual code-editor default of
 // a horizontal scrollbar); persisted per-tab like auto-format.
 let lineWrapEnabled: boolean = readPerTabPref('editor-line-wrap') === 'true';
+// Line-number gutter — on by default; persisted per-tab.
+let lineNumbersEnabled: boolean = readPerTabPref('editor-line-numbers') !== 'false';
+
+/** Clamp a requested font size into the configured [min, max] px bounds,
+ *  rounding to a whole pixel. Falls back to the configured default when the
+ *  input isn't a finite number. */
+function clampFontSize(px: number): number {
+  const { editorFontSizeMin, editorFontSizeMax, editorFontSizeDefault } = getConfig().ui;
+  if (!Number.isFinite(px)) return editorFontSizeDefault;
+  return Math.round(Math.min(editorFontSizeMax, Math.max(editorFontSizeMin, px)));
+}
+
+// Editor font size (px) — per-tab pref seeded from the configured default.
+let fontSizePx: number = clampFontSize(
+  parseInt(readPerTabPref('editor-font-size') ?? '', 10) || getConfig().ui.editorFontSizeDefault,
+);
+
 const languageCompartment = new Compartment();
 const readOnlyCompartment = new Compartment();
 const themeCompartment = new Compartment();
 const lineWrapCompartment = new Compartment();
+const lineNumbersCompartment = new Compartment();
+const fontSizeCompartment = new Compartment();
+
+function fontSizeExt(px: number): Extension {
+  return EditorView.theme({ '&': { fontSize: `${px}px` } });
+}
+
+/** basicSetup already installs the line-number gutter, so "off" hides it with a
+ *  scoped theme rule rather than rebuilding the extension set. The fold/lint
+ *  gutters stay visible. */
+function lineNumbersExt(on: boolean): Extension {
+  // CodeMirror's core gutter style sets `display: flex !important`, so the hide
+  // rule must also be `!important` to win.
+  return on ? [] : EditorView.theme({ '.cm-lineNumbers': { display: 'none !important' } });
+}
 
 function themeExt(theme: Theme): Extension {
   return theme === 'dark' ? oneDark : [];
@@ -350,6 +382,8 @@ export function initEditor(
       readOnlyCompartment.of(EditorState.readOnly.of(false)),
       themeCompartment.of(themeExt(getTheme())),
       lineWrapCompartment.of(lineWrapEnabled ? EditorView.lineWrapping : []),
+      lineNumbersCompartment.of(lineNumbersExt(lineNumbersEnabled)),
+      fontSizeCompartment.of(fontSizeExt(fontSizePx)),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           if (activeDiagnostics.length > 0) {
@@ -370,7 +404,7 @@ export function initEditor(
         blur: () => { hooks.onBlur?.(); return false; },
       }),
       EditorView.theme({
-        '&': { height: '100%', fontSize: '13px' },
+        '&': { height: '100%' },
         '.cm-scroller': { overflow: 'auto' },
         '.cm-content': { fontFamily: 'monospace' },
         '.cm-lint-marker-error': { cursor: 'help' },
@@ -495,6 +529,41 @@ export function setLineWrap(enabled: boolean): void {
   writePerTabPref('editor-line-wrap', enabled ? 'true' : 'false');
   editorView?.dispatch({
     effects: lineWrapCompartment.reconfigure(enabled ? EditorView.lineWrapping : []),
+  });
+}
+
+export function getLineNumbers(): boolean {
+  return lineNumbersEnabled;
+}
+
+/** Toggle the line-number gutter. Reconfigures the live editor and persists
+ *  the choice per-tab. */
+export function setLineNumbers(enabled: boolean): void {
+  lineNumbersEnabled = enabled;
+  writePerTabPref('editor-line-numbers', enabled ? 'true' : 'false');
+  editorView?.dispatch({
+    effects: lineNumbersCompartment.reconfigure(lineNumbersExt(enabled)),
+  });
+}
+
+export function getFontSize(): number {
+  return fontSizePx;
+}
+
+/** Configured [min, max] px bounds for the editor font size, so callers can
+ *  disable the −/+ stepper at the edges. */
+export function getFontSizeBounds(): { min: number; max: number } {
+  const { editorFontSizeMin, editorFontSizeMax } = getConfig().ui;
+  return { min: editorFontSizeMin, max: editorFontSizeMax };
+}
+
+/** Set the editor font size (px), clamped to the configured bounds.
+ *  Reconfigures the live editor and persists per-tab. */
+export function setFontSize(px: number): void {
+  fontSizePx = clampFontSize(px);
+  writePerTabPref('editor-font-size', String(fontSizePx));
+  editorView?.dispatch({
+    effects: fontSizeCompartment.reconfigure(fontSizeExt(fontSizePx)),
   });
 }
 

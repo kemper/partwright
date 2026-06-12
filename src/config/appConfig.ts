@@ -228,6 +228,13 @@ export interface AppConfig {
     /** How long each "Did you know?" hint stays before the strip rotates to the
      *  next one (ms). */
     hintRotationMs: number;
+    /** Default code-editor font size (px). The live size is a per-tab pref
+     *  (editor-font-size); this seeds a fresh tab and the Reset-to-default. */
+    editorFontSizeDefault: number;
+    /** Smallest code-editor font size (px) the −/+ stepper allows. */
+    editorFontSizeMin: number;
+    /** Largest code-editor font size (px) the −/+ stepper allows. */
+    editorFontSizeMax: number;
   };
   geometry: {
     /** Triangle count above which the live model warns it may be too heavy for
@@ -330,6 +337,9 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     workerPanelRefreshMs: 1000,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
+    editorFontSizeDefault: 13,
+    editorFontSizeMin: 9,
+    editorFontSizeMax: 28,
   },
   geometry: {
     triCountWarnBudget: 200_000,

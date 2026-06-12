@@ -2,7 +2,7 @@ import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
 import { showAdvancedSettingsModal } from './advancedSettingsModal';
 import { showAboutModal } from './aboutModal';
 import { loadSettings, saveSettings } from '../ai/settings';
-import { createPopoverGroup } from './popoverMenu';
+import { createPopoverGroup, createMenuSectionHeader, createMenuDivider } from './popoverMenu';
 import { MOD_LABEL, combo } from './shortcutDefs';
 
 export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
@@ -29,6 +29,10 @@ export interface LayoutElements {
   formatBtn: HTMLButtonElement;
   autoFormatToggle: HTMLButtonElement;
   lineWrapToggle: HTMLButtonElement;
+  lineNumbersToggle: HTMLButtonElement;
+  fontSizeDecBtn: HTMLButtonElement;
+  fontSizeIncBtn: HTMLButtonElement;
+  fontSizeValueEl: HTMLElement;
   switchTab: (tab: TabName, options?: SwitchTabOptions) => void;
   /** Collapse/expand the parts rail (wired to the rail's own collapse button). */
   togglePartsRail: () => void;
@@ -105,22 +109,120 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
 
   const formatBtn = document.createElement('button');
   formatBtn.id = 'format-btn';
-  formatBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
-  formatBtn.textContent = 'Format';
+  formatBtn.className = 'block w-full text-left px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 transition-colors';
+  formatBtn.textContent = 'Format code now';
   formatBtn.title = 'Format code (Shift+Alt+F)';
-  editorHeader.appendChild(formatBtn);
 
   const autoFormatToggle = document.createElement('button');
   autoFormatToggle.id = 'auto-format-toggle';
-  autoFormatToggle.className = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border';
   autoFormatToggle.title = 'Toggle automatic formatting when code is loaded';
-  editorHeader.appendChild(autoFormatToggle);
 
   const lineWrapToggle = document.createElement('button');
   lineWrapToggle.id = 'line-wrap-toggle';
-  lineWrapToggle.className = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border';
   lineWrapToggle.title = 'Toggle soft word wrap for long lines';
-  editorHeader.appendChild(lineWrapToggle);
+
+  const lineNumbersToggle = document.createElement('button');
+  lineNumbersToggle.id = 'line-numbers-toggle';
+  lineNumbersToggle.title = 'Toggle the line-number gutter';
+
+  // Font-size stepper — main.ts wires the −/+ buttons and writes the value label.
+  const fontSizeDecBtn = document.createElement('button');
+  fontSizeDecBtn.id = 'font-size-dec';
+  fontSizeDecBtn.type = 'button';
+  fontSizeDecBtn.textContent = '−'; // minus sign
+  fontSizeDecBtn.title = 'Smaller editor font';
+  fontSizeDecBtn.setAttribute('aria-label', 'Decrease editor font size');
+  fontSizeDecBtn.className = 'w-6 h-6 rounded border border-zinc-600 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 text-sm leading-none flex items-center justify-center';
+
+  const fontSizeValueEl = document.createElement('span');
+  fontSizeValueEl.id = 'font-size-value';
+  fontSizeValueEl.className = 'text-xs text-zinc-300 font-mono tabular-nums w-10 text-center';
+
+  const fontSizeIncBtn = document.createElement('button');
+  fontSizeIncBtn.id = 'font-size-inc';
+  fontSizeIncBtn.type = 'button';
+  fontSizeIncBtn.textContent = '+';
+  fontSizeIncBtn.title = 'Larger editor font';
+  fontSizeIncBtn.setAttribute('aria-label', 'Increase editor font size');
+  fontSizeIncBtn.className = 'w-6 h-6 rounded border border-zinc-600 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 text-sm leading-none flex items-center justify-center';
+
+  // "⚙ Editor settings" popover — collapses Format / Auto-format / Word wrap /
+  // Line numbers / Font size into one menu so the header stays uncluttered.
+  // Self-contained open/close (mirrors the toolbar Import/Export dropdowns); the
+  // inner controls' behavior is wired in main.ts.
+  const settingsWrapper = document.createElement('div');
+  settingsWrapper.className = 'relative shrink-0';
+
+  const editorSettingsBtn = document.createElement('button');
+  editorSettingsBtn.id = 'editor-settings-btn';
+  editorSettingsBtn.type = 'button';
+  editorSettingsBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600 flex items-center gap-1';
+  editorSettingsBtn.title = 'Editor settings — formatting, word wrap, line numbers, font size';
+  editorSettingsBtn.setAttribute('aria-haspopup', 'true');
+  editorSettingsBtn.setAttribute('aria-expanded', 'false');
+  editorSettingsBtn.innerHTML = '<span aria-hidden="true">⚙</span><span>Editor</span><span class="text-[9px] leading-none opacity-70" aria-hidden="true">▾</span>';
+  settingsWrapper.appendChild(editorSettingsBtn);
+
+  const settingsDropdown = document.createElement('div');
+  settingsDropdown.id = 'editor-settings-dropdown';
+  settingsDropdown.className = 'absolute right-0 top-full mt-1 hidden z-30 w-56 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1';
+
+  // Build a label/control row for a toggle.
+  const settingRow = (labelText: string, control: HTMLElement): HTMLElement => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center justify-between gap-2 px-3 py-1.5';
+    const label = document.createElement('span');
+    label.className = 'text-xs text-zinc-300';
+    label.textContent = labelText;
+    row.appendChild(label);
+    row.appendChild(control);
+    return row;
+  };
+
+  settingsDropdown.appendChild(createMenuSectionHeader('Formatting'));
+  settingsDropdown.appendChild(formatBtn);
+  settingsDropdown.appendChild(settingRow('Auto-format on load', autoFormatToggle));
+  settingsDropdown.appendChild(createMenuDivider());
+  settingsDropdown.appendChild(createMenuSectionHeader('View'));
+  settingsDropdown.appendChild(settingRow('Word wrap', lineWrapToggle));
+  settingsDropdown.appendChild(settingRow('Line numbers', lineNumbersToggle));
+
+  const fontRow = document.createElement('div');
+  fontRow.className = 'flex items-center justify-between gap-2 px-3 py-1.5';
+  const fontLabel = document.createElement('span');
+  fontLabel.className = 'text-xs text-zinc-300';
+  fontLabel.textContent = 'Font size';
+  const fontStepper = document.createElement('div');
+  fontStepper.className = 'flex items-center gap-1';
+  fontStepper.appendChild(fontSizeDecBtn);
+  fontStepper.appendChild(fontSizeValueEl);
+  fontStepper.appendChild(fontSizeIncBtn);
+  fontRow.appendChild(fontLabel);
+  fontRow.appendChild(fontStepper);
+  settingsDropdown.appendChild(fontRow);
+
+  settingsWrapper.appendChild(settingsDropdown);
+
+  const isSettingsOpen = (): boolean => !settingsDropdown.classList.contains('hidden');
+  const closeSettings = (): void => {
+    settingsDropdown.classList.add('hidden');
+    editorSettingsBtn.setAttribute('aria-expanded', 'false');
+  };
+  editorSettingsBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    settingsDropdown.classList.toggle('hidden');
+    editorSettingsBtn.setAttribute('aria-expanded', String(isSettingsOpen()));
+  });
+  // Click-outside and Escape dismiss; flipping a setting inside keeps it open
+  // (sticky, like the viewport popover groups) so several can be changed at once.
+  document.addEventListener('click', (e) => {
+    if (isSettingsOpen() && !settingsWrapper.contains(e.target as Node)) closeSettings();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isSettingsOpen()) closeSettings();
+  });
+
+  editorHeader.appendChild(settingsWrapper);
 
   // Status row: an absolutely-positioned flex strip that holds the status text
   // and an inline cancel button. Lives on rightPane so it stays visible even
@@ -694,7 +796,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, partsRail, editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
+  return { editorPane, partsRail, editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, lineNumbersToggle, fontSizeDecBtn, fontSizeIncBtn, fontSizeValueEl, switchTab, togglePartsRail, collapseEditor, expandEditor };
 }
 
 // Rail item base — a bottom accent border on mobile (horizontal strip) becomes
