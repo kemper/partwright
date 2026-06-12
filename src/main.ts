@@ -2026,11 +2026,18 @@ async function main() {
     // finishes, so no manual restore is needed here.
     const session = await importSession(data, async (code, importedMeshes) => {
       setActiveImports(importedMeshes ?? []);
-      await runCodeSync(code);
+      // Skip surface texture computation during thumbnail generation — the
+      // heavy surface Worker run would hang the import for complex models.
+      // The textures will apply on first interactive load instead.
+      await runCodeSync(code, { skipSurface: true });
       return captureThumbnail();
     });
     const version = await openSession(session.id);
-    if (version) await loadVersionIntoEditor(version);
+    // Skip surface texture computation during catalog import — the surface
+    // Worker (voronoi/knurl/woven) can take 30–120s on complex catalog models
+    // and blocks the entire import. Textures apply on the first user-triggered
+    // run (edit code, or click Re-apply if the pill appears).
+    if (version) await loadVersionIntoEditor(version, { skipSurface: true });
     return { sessionId: session.id };
   }
 
@@ -4813,7 +4820,7 @@ async function main() {
     void ensureEngineStarted();
   }
 
-  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
+  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean; skipSurface?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
     // Cancel any active voxel paint before loading a different version — its
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
     // after navigation would write the wrong session's voxels into the new
@@ -4930,7 +4937,7 @@ async function main() {
         seedSurfaceCache(persistedTexture.key, persistedTexture.mesh as MeshData);
       }
       const meshBeforeRun = currentMeshData;
-      const applied = await runCodeSync(version.code, { preserveCamera: true });
+      const applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
       if (!applied) return;
@@ -14945,7 +14952,7 @@ async function main() {
     cancelInlineBtn.classList.add('hidden');
   }
 
-  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean } = {}): Promise<boolean> {
+  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean; skipSurface?: boolean } = {}): Promise<boolean> {
     // Hard refusal in shared-preview mode: this is the single execution
     // chokepoint that the console API (partwright.run / runAndSave) also routes
     // through, so guarding it here keeps the sharer's untrusted code from ever
@@ -15069,7 +15076,9 @@ async function main() {
       // behind an inline "Applying texture… Xs" timer + Cancel. The textured
       // mesh is swapped in so all the downstream wiring (manifold
       // reconstruction, paint resolution, stats) sees final geometry.
-      await applySurfaceTextures(result, src);
+      // skipSurface: skip during thumbnail-regeneration imports so the
+      // heavy surface computation doesn't hang the import flow.
+      if (!opts.skipSurface) await applySurfaceTextures(result, src);
       // A compute can take seconds; if a newer run started meanwhile, abandon
       // this one rather than stamping a stale mesh over the new render.
       if (myGen !== _runGeneration) return false;
