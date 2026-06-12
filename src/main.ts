@@ -49,7 +49,8 @@ import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { confirmDialog, promptDialog } from './ui/dialogs';
 import { updateAppHistory, currentURLPathAndSearch } from './ui/appHistory';
-import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive } from './ui/aiPanel';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive, closeAiPanel } from './ui/aiPanel';
+import { onViewportPanelOpen } from './ui/viewportPanelRegistry';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
@@ -6918,6 +6919,13 @@ async function main() {
       window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
     }
   }
+
+  // Opening a hands-on viewport tool (Paint, Customize, Surface, Resize, …)
+  // steps the AI panel out of the way: once the user is driving a tool by hand
+  // they're not chatting, and the docked AI column would otherwise sit beneath
+  // the freshly-opened tool panel and be easy to miss. Wired here (not in the
+  // registry) so the registry stays a dependency-free leaf.
+  onViewportPanelOpen(() => closeAiPanel());
 
   // Initialize the AI chat side drawer once the editor UI is mounted.
   // Wraps initAiPanel + setAiToolbarState; tolerated if it fails (e.g.

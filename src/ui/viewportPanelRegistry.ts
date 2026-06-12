@@ -8,10 +8,29 @@ export interface ViewportPanel {
 
 let active: ViewportPanel | null = null;
 
+type OpenListener = () => void;
+const openListeners: OpenListener[] = [];
+
+/**
+ * Subscribe to "a viewport tool panel just opened". Used to step the AI panel
+ * out of the way when the user reaches for a hands-on tool (Paint, Customize,
+ * Surface, …). Kept as a listener so this module stays a dependency-free leaf
+ * rather than importing the AI panel and risking a cycle — the subscriber is
+ * wired in `main.ts`.
+ */
+export function onViewportPanelOpen(fn: OpenListener): void {
+  openListeners.push(fn);
+}
+
 /** Call when a panel is about to become visible. Closes any other open panel. */
 export function openViewportPanel(panel: ViewportPanel): void {
   if (active && active !== panel) active.close();
+  const reopening = active === panel;
   active = panel;
+  // Notify subscribers only on a genuine open (a panel re-asserting itself —
+  // e.g. a params re-sync on the already-open panel — shouldn't keep stomping
+  // the AI panel the user may have just reopened).
+  if (!reopening) for (const fn of openListeners) fn();
 }
 
 /** Call when a panel hides itself (× button, Escape, or forced close). */

@@ -352,6 +352,14 @@ export function toggleAiPanel(): void {
   else showDrawer();
 }
 
+/** Close the AI drawer if it's open; no-op when already closed. Used when the
+ *  user opens a hands-on viewport tool (Paint, Customize, Surface, …) — at that
+ *  point they're working by hand, so the AI column steps out of the way instead
+ *  of sitting underneath the tool panel. */
+export function closeAiPanel(): void {
+  if (state.open) hideDrawer();
+}
+
 /** Open the AI panel (if closed) and drop `text` into the chat input without
  *  sending it — the user reads/tweaks it and hits send themselves. Used by the
  *  prompt library and the /ideas page so picking a prompt lands here. */
