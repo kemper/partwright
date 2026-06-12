@@ -13,6 +13,7 @@
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import { formatDimension } from '../geometry/units';
+import { escapeHtml } from './htmlUtils';
 
 export interface ExportWarningInfo {
   /** True when the active unit system is 'unitless'. */
@@ -70,7 +71,7 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<boolean> {
       block.innerHTML =
         '<strong>No units set.</strong> Most slicers assume <strong>millimeters</strong>. ' +
         'If you modeled at another scale, the printed part will be the wrong size. ' +
-        (dimText ? `This model\'s bounding box is <span class="font-mono">${dimText}</span>. ` : '') +
+        (dimText ? `This model\'s bounding box is <span class="font-mono">${escapeHtml(dimText)}</span>. ` : '') +
         'Set units in the Export menu to silence this check.';
       shell.body.appendChild(block);
     }
@@ -83,7 +84,7 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<boolean> {
         lines.push('the geometry is <strong>not manifold</strong> (not watertight)');
       }
       if (info.componentCount > 1) {
-        lines.push(`it has <strong>${info.componentCount} disconnected components</strong>`);
+        lines.push(`it has <strong>${escapeHtml(String(info.componentCount))} disconnected components</strong>`);
       }
       block.innerHTML =
         '<strong>Printability warning:</strong> ' + lines.join(' and ') +
