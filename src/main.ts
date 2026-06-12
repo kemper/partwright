@@ -2004,7 +2004,10 @@ async function main() {
     // finishes, so no manual restore is needed here.
     const session = await importSession(data, async (code, importedMeshes) => {
       setActiveImports(importedMeshes ?? []);
-      await runCodeSync(code);
+      // Skip surface texture computation during thumbnail generation — the
+      // heavy surface Worker run would hang the import for complex models.
+      // The textures will apply on first interactive load instead.
+      await runCodeSync(code, { skipSurface: true });
       return captureThumbnail();
     });
     const version = await openSession(session.id);
@@ -14871,7 +14874,7 @@ async function main() {
     cancelInlineBtn.classList.add('hidden');
   }
 
-  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean } = {}): Promise<boolean> {
+  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean; skipSurface?: boolean } = {}): Promise<boolean> {
     // Hard refusal in shared-preview mode: this is the single execution
     // chokepoint that the console API (partwright.run / runAndSave) also routes
     // through, so guarding it here keeps the sharer's untrusted code from ever
@@ -14995,7 +14998,9 @@ async function main() {
       // behind an inline "Applying texture… Xs" timer + Cancel. The textured
       // mesh is swapped in so all the downstream wiring (manifold
       // reconstruction, paint resolution, stats) sees final geometry.
-      await applySurfaceTextures(result, src);
+      // skipSurface: skip during thumbnail-regeneration imports so the
+      // heavy surface computation doesn't hang the import flow.
+      if (!opts.skipSurface) await applySurfaceTextures(result, src);
       // A compute can take seconds; if a newer run started meanwhile, abandon
       // this one rather than stamping a stale mesh over the new render.
       if (myGen !== _runGeneration) return false;
