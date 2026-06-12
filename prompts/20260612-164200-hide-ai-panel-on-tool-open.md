@@ -42,6 +42,17 @@ a genuine open (`active !== panel`), so a panel re-registering while already
 active won't keep closing an AI panel the user may have just reopened.
 
 **Verified** in-browser with a Playwright spec (before/after screenshots) and
-landed it as a permanent regression test
-(`tests/ai-panel-hides-on-tool.spec.ts`): open AI panel → run a customizable
-model → Customize panel visible, AI panel hidden.
+landed regression coverage.
+
+## Follow-up — CI fix
+
+The e2e suite surfaced a test that directly encoded the *old* behavior:
+`customizer.spec.ts` › "with the AI panel open, the Customize panel docks over
+it" asserted the AI panel stays visible underneath the Customize panel — now
+false, so `ai.boundingBox()` returned null ("missing box"). Rewrote that test to
+assert the new contract (opening Customize hides the AI panel, and the panel
+still hugs the right edge). Since the customizer spec now owns this scenario, I
+removed the redundant standalone `ai-panel-hides-on-tool.spec.ts` I'd added
+rather than keep two specs asserting the same thing. The two
+`ai-slash-commands` failures in the same shard were flaky (passed on retry) and
+unrelated.
