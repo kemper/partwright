@@ -385,19 +385,20 @@ protrude. (Brows can use the same top-level pattern if you want them painted.)
 
 Face features are far smaller than the body, so at the recommended figure grid
 (`edgeLength 0.4–0.6`) they mesh as angular slabs. `F.faceDetail(rig)` returns
-a `{ center, radius, edgeLength }` sphere covering the head, sized off
-`rig.r.head`, for `.build()`'s `detail` option (see
-`/ai/sdf.md#detail-regions`):
+`{ center, radius, edgeLength }` spheres — one covering the head, a finer one
+over the mouth groove, and an extra-fine one over each eyeball front — for
+`.build()`'s `detail` option (see `/ai/sdf.md#detail-regions`):
 
 ```js
 return sdf.union(skin, eyes, hair, base)
   .build({ edgeLength: 0.5, detail: F.faceDetail(rig) });
 ```
 
-The head meshes ~3× finer (smooth smile groove, round eye domes) while the
-body keeps the cheap global grid — typically +30–60k triangles instead of the
-~10× a globally fine grid would cost. For a final extra-fine pass, halve it:
-`F.faceDetail(rig, { edgeLength: rig.r.head * 0.02 })`.
+The head meshes ~3× finer (smooth smile groove) and the eyes finer still, so the
+iris/pupil circles tessellate round instead of faceting into polygons — while
+the body keeps the cheap global grid. Typically +30–60k triangles instead of the
+~10× a globally fine grid would cost. Override per region:
+`F.faceDetail(rig, { edgeLength: rig.r.head * 0.02, eyeEdgeLength: rig.r.head * 0.006 })`.
 
 ## Hair & clothing — derived from the rig, so they always fit
 

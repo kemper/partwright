@@ -1114,7 +1114,7 @@ function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
  *  grid either way. */
 function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
   const o = obj(opts, 'faceDetail(opts)');
-  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength'], 'faceDetail(opts)');
+  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength', 'eyeEdgeLength'], 'faceDetail(opts)');
   const r = rig.r;
   const radius = num(o.radius, Math.max(r.headX, r.head, r.headZ) * 1.5, 'faceDetail.radius', 1e-3);
   // ~4.5% of the head radius ≈ one subdivision round below the recommended
@@ -1122,9 +1122,18 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   // count. Halve it (e.g. r.head * 0.02) for a final extra-fine pass.
   const edgeLength = num(o.edgeLength, Math.max(r.head * 0.045, 0.05), 'faceDetail.edgeLength', 1e-4);
   const mouthEdgeLength = num(o.mouthEdgeLength, Math.max(r.head * 0.02, 0.03), 'faceDetail.mouthEdgeLength', 1e-4);
+  // The iris/pupil are small painted-on discs whose *circular edge* is only as
+  // smooth as the local mesh — at the head grid (~r.head·0.045) a disc that
+  // small reads as a faceted polygon. Give each eyeball front its own extra-fine
+  // sphere (like the mouth groove) so the iris/pupil circles tessellate round.
+  const eyeEdgeLength = num(o.eyeEdgeLength, Math.max(r.head * 0.008, 0.025), 'faceDetail.eyeEdgeLength', 1e-4);
+  const f = rig.dir.headForward;
+  const eyeFront = (anchor: Vec3): Vec3 => add3(anchor, scale3(f, r.head * 0.22));
   return [
     { center: [...(rig.joints.head as Vec3)] as Vec3, radius, edgeLength },
     { center: [...(rig.face.mouth as Vec3)] as Vec3, radius: r.head * 0.55, edgeLength: mouthEdgeLength },
+    { center: eyeFront(rig.face.eyeL), radius: r.head * 0.26, edgeLength: eyeEdgeLength },
+    { center: eyeFront(rig.face.eyeR), radius: r.head * 0.26, edgeLength: eyeEdgeLength },
   ];
 }
 

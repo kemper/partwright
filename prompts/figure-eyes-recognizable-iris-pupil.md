@@ -74,3 +74,19 @@ the first attempt passed `Math.PI/2` (≈1.57°), leaving the masking cylinder
 vertical so the iris painted the eyeball's poles instead of the front. Fixed to
 `rotate([90, 0, 0])`; verified the disc centres on the front and follows a
 yaw/pitch/roll-posed head via `orientToHeadPose`. Re-rebaked `waving_kid`.
+
+## Round 3 — smooth iris/pupil disc edges (user feedback)
+
+Human: "Now the classic just-painting problem: the smoothness/roundness of the
+pupils and irises isn't right. Either apply 'Smooth edges' (mesh subdivision) or
+a 3d-modeling effect that approximates being painted on."
+
+The iris/pupil circle edge is only as smooth as the local mesh; at the head
+detail grid (~r.head·0.045) a disc that small facets into a polygon. Rather than
+post-hoc subdivision/smoothing of the whole model, added a dedicated extra-fine
+detail sphere over each eyeball front to `F.faceDetail` (mirroring the existing
+mouth-groove sphere) so the SDF build direct-marches the small iris/pupil regions
+finely and their circles tessellate round. Default `eyeEdgeLength` ≈ r.head·0.008
+(overridable). Cost on the full waving-kid figure: +~14k triangles → 177k, under
+the 200k catalog budget, no warnings. Added a `faceDetail` unit test for the two
+eye spheres and re-rebaked `waving_kid`.
