@@ -26,6 +26,56 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'June 8 – 12, 2026',
+    headline: 'Pose-able figures, Tinkercad-style Arrange mode, scoped textures, and engraving',
+    groups: [
+      {
+        label: 'Figures',
+        items: [
+          {
+            title: 'Pose-able humanoid figures',
+            body: 'A new figure builder (api.sdf.figure) generates smooth, single-piece humanoid characters from a rig you pose joint by joint — arms, legs, head, hands — using one consistent vocabulary. A dozen ready-made figures (ballerina, warrior, rocker, wizard, and more) join the catalog as starting points.',
+          },
+        ],
+      },
+      {
+        label: 'Arrange & assemble',
+        items: [
+          {
+            title: 'Tinkercad-style Arrange mode',
+            body: 'Insert primitives from the palette, then drag, rotate, resize, align, group, and boolean them right in the viewport. Snap-to-grid, group-centroid pivots, a shift-drag marquee, and full undo/redo make assembling multi-part models direct and forgiving.',
+          },
+        ],
+      },
+      {
+        label: 'Surface textures',
+        items: [
+          {
+            title: 'Scope a texture to part of a model',
+            body: 'Surface textures (knit, fuzzy, knurl, voronoi, …) can now be confined to a named region or an area you click, instead of always covering the whole model — so a grip is knurled while the rest stays smooth.',
+          },
+          {
+            title: 'Engrave and emboss text or images',
+            body: 'Carve or raise text and image artwork onto any surface, including wrapping it around curved faces. The heavy carve runs off the main thread with a live progress indicator and a Cancel button.',
+          },
+          {
+            title: 'Machinist-diamond knurl',
+            body: 'The knurl texture gained a pyramid profile — straight-sided machinist diamonds — alongside the original rounded bumps.',
+          },
+        ],
+      },
+      {
+        label: 'Printing & transforms',
+        items: [
+          {
+            title: 'Non-destructive parametric scale',
+            body: 'Resizing a manifold-js model now keeps it parametric (wrapping the source in a scale) instead of baking it to a fixed mesh, so you can keep editing the original code afterward.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'June 7, 2026',
     headline: 'Voxel rotation, print-ready AI, voice input, and remembered views',
     groups: [

@@ -735,7 +735,7 @@ describe('figure rig — spine (was parsed but never applied)', () => {
 
   it('zero spine is byte-identical to no spine (every existing pose unchanged)', () => {
     const z = buildRig({ pose: { spine: { lean: 0, turn: 0, side: 0 } } });
-    for (const j of ['chest', 'headCenter', 'shoulderL', 'handR', 'crown'] as const) {
+    for (const j of ['chest', 'head', 'upperArmL', 'handR', 'crown'] as const) {
       expect(z.joints[j]).toEqual(neutral.joints[j]);
     }
     expect(z.dir.headForward).toEqual(neutral.dir.headForward);

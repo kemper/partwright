@@ -520,6 +520,14 @@ leaving a clean ring.
 > local image bytes, so it's available only from the **Surface** panel's Engrave
 > tab (upload an image; dark pixels cut). This tool handles **text**.
 
+### buildEngraveStamp — rasterize an ink mask
+
+`buildEngraveStamp({ text?, font?, imageUrl?, invert? })` rasterizes text (or an
+image) into an ink mask `{ mask, width, height }` — the same mask `engraveModel`
+and the Surface panel's Engrave tab consume internally. You rarely need it
+directly (pass `text` to `engraveModel` instead); it's exposed for callers that
+want to inspect or reuse the rasterized mask.
+
 ---
 
 ## Warnings

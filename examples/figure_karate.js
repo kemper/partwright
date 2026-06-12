@@ -116,8 +116,8 @@ belt = belt.union(knot).union(tailL).union(tailR).label('belt');
 const hair = F.hair(rig, { style: 'short', hairline: 'high' }).label('hair');
 
 // Headband: a ring centered on the forehead, in the head's left/forward plane.
-// Position: offset from headCenter toward the crown + slightly forward.
-// The forehead is approx r.headZ * 0.25 above headCenter along headUp,
+// Position: offset from the head joint toward the crown + slightly forward.
+// The forehead is approx r.headZ * 0.25 above the head joint along headUp,
 // and r.headZ * 0.15 forward along headForward.
 const hf = rig.dir.headForward;
 const hl = rig.dir.headLeft;

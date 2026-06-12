@@ -59,6 +59,8 @@ You can drive orientation and sizing yourself — no need to hand off to the UI:
   on Z=0 / center it on the bed.
 - `rotateModel({ x, y, z, mode })` — rotate by Euler degrees about the model's center.
 - `layFlatModel({ mode })` — auto-orient the largest flat face onto the bed and drop it.
+- `mirrorModel({ axis, mode })` — mirror across the `'x'` / `'y'` / `'z'` plane (e.g. to make a left/right pair).
+- `previewScale(sx, sy, sz)` — show a non-destructive viewport preview of a resize without saving a version (call `clearSurfacePreview()` or re-run to restore); commit it with `scaleModel`.
 
 Each saves a new version and returns `{ ok, geometry, warnings? }`. `mode`
 (`'auto'` default / `'parametric'` / `'bake'`) controls write-back: on a

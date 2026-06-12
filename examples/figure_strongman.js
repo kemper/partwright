@@ -42,9 +42,9 @@ const r = rig.r;
 // Right arm (figure's right = −X side)
 //
 // For a stocky 7-head figure at height=60:
-//   shoulderL = [7.9,  0, 48.5]
-//   shoulderR = [-7.9, 0, 48.5]
-//   headCenter = [0, 0, 55.7]
+//   upperArmL = [7.9,  0, 48.5]
+//   upperArmR = [-7.9, 0, 48.5]
+//   head = [0, 0, 55.7]
 //   chin = [0, 0, 51.4]
 //
 // Classic double-biceps: elbow directly OUT to the side (same Z as shoulder,
