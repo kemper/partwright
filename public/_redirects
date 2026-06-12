@@ -3,7 +3,7 @@
 /api /ai.md 301
 
 # Pre-rendered, app-free content pages (catalog.html / help.html / legal.html /
-# whats-new.html) are served by Cloudflare Pages at their CLEAN URLs
+# whats-new.html / ideas.html) are served by Cloudflare Pages at their CLEAN URLs
 # (/catalog, /help, …) automatically — Pages maps an `.html` asset to its
 # extensionless path and canonicalizes /foo.html → /foo with a 308. So NO
 # explicit rule is needed here; an explicit `/catalog /catalog.html 200` rewrite

@@ -69,3 +69,14 @@ tiles, no `#ideas-page`/spinner) instead of the old SPA overlay; all 5 pass.
 typecheck clean · 1273 unit tests pass · production build emits
 `dist/ideas.html` with crawlable content + absolutized JSON-LD · sitemap still
 lists `/ideas` · 5/5 ideas e2e green · screenshot of the static page posted.
+
+## Follow-up (work-reviewer nits)
+
+The work-reviewer found no blocking/should-fix issues, just three nits, all
+applied:
+1. The transient file `<input>` for an interactive deep-link leaked if the user
+   *cancelled* the picker (no `change` event). Added a one-shot window-`focus`
+   cleanup (deferred so a real selection's `change` runs first) to reclaim it.
+2. & 3. Refreshed the "four content pages" comments that hadn't counted the new
+   ideas page — `prerenderPlugin.ts`, `public/_redirects`, `vite.config.ts`,
+   and `shell.ts` now say five and list `ideas`.

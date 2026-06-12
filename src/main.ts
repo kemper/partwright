@@ -5251,6 +5251,14 @@ async function main() {
         { once: true },
       );
       input.click();
+      // Cancelling the native picker fires no 'change' — reclaim the orphaned
+      // input once focus returns (deferred so a real selection's change runs
+      // first and removes it).
+      window.addEventListener(
+        'focus',
+        () => setTimeout(() => { if (input.isConnected && !input.files?.length) input.remove(); }, 0),
+        { once: true },
+      );
     } else {
       prefillAiInput(idea.prompt ?? '');
     }
