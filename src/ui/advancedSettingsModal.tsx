@@ -805,6 +805,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'toastDurationMs', v)}
         />
         <Field
+          label="AI panel slide"
+          unit="ms"
+          hint="How long the AI panel takes to slide open/closed."
+          tooltip="The docked AI panel animates its layout so the viewport grows/shrinks smoothly instead of snapping. Lower for a snappier toggle, 0 for instant. Ignored when your OS is set to reduce motion."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.aiPanelSlideMs}
+          value={c.ui.aiPanelSlideMs}
+          min={0} max={600} integer
+          onChange={v => set('ui', 'aiPanelSlideMs', v)}
+        />
+        <Field
           label="Default palette capacity"
           hint="How many filament slots the paint panel assumes your printer has."
           tooltip="The default number of colour slots (e.g. 4 for one Bambu AMS). Drives the paint panel's over-budget warning when a model uses more colours than your printer can load. Never blocks painting or export — it's just a heads-up."
