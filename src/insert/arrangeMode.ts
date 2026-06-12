@@ -22,12 +22,20 @@ import * as THREE from 'three';
 import { getScene, setGizmoLock, requestRender } from '../renderer/viewport';
 import { primitiveEntry, pickPart, type RegistryEntry } from './spatial';
 import { type PrimitiveSpec, type Vec3, type InsertLanguage } from './codegen';
-import { alignDeltas, formatScaleCall, type AlignAxis, type AlignMode } from './arrangeMath';
+import {
+  alignDeltas,
+  formatScaleCall,
+  groupCentroid,
+  groupCentroidScaleDelta,
+  groupCentroidRotateZDelta,
+  type AlignAxis,
+  type AlignMode,
+} from './arrangeMath';
 import { recordOperation } from './undoStack';
 import { parseStatement } from './parseStatement';
 
 // Re-export the pure helpers so callers can pick them up from one entry point.
-export { alignDeltas, formatScaleCall };
+export { alignDeltas, formatScaleCall, groupCentroid, groupCentroidScaleDelta, groupCentroidRotateZDelta };
 export type { AlignAxis, AlignMode };
 
 export interface ScannedPart {
@@ -333,15 +341,46 @@ function onPointerMove(e: PointerEvent): void {
   }
 
   if (dragging) {
-    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -pointerStart.world.z);
+    // Drag plane selection:
+    //   - default: horizontal plane through the pickup point — slides the part
+    //     across the build plate.
+    //   - alt held: vertical plane facing the camera through the pickup point
+    //     — lifts the part along the world Z axis. Cleaner than a "use Y mouse
+    //     motion as Z" approximation because the projection picks up the
+    //     camera distance correctly, so a click on a high feature scales the
+    //     drag the same way the horizontal drag does.
+    const plane = e.altKey
+      ? makeVerticalPlane(camera, pointerStart.world)
+      : new THREE.Plane(new THREE.Vector3(0, 0, 1), -pointerStart.world.z);
     const hit = projectToPlane(e.clientX, e.clientY, camera, canvas, plane);
     if (!hit) return;
-    const delta: Vec3 = [hit.x - pointerStart.world.x, hit.y - pointerStart.world.y, 0];
+    const delta: Vec3 = e.altKey
+      ? [0, 0, hit.z - pointerStart.world.z]
+      : [hit.x - pointerStart.world.x, hit.y - pointerStart.world.y, 0];
     applyGhostDelta(delta);
     requestRender();
     e.stopPropagation();
     e.preventDefault();
   }
+}
+
+/** Build a vertical plane through `pivot` whose normal is the horizontal
+ *  component of the camera's look direction. Lets alt-drag map the user's
+ *  in-plane pointer motion to a clean world-Z delta (we still only consume
+ *  the Z component, but the plane orientation keeps the in-plane projection
+ *  meaningful — the part stays under the cursor as the camera turns). */
+function makeVerticalPlane(camera: THREE.Camera, pivot: THREE.Vector3): THREE.Plane {
+  // Look-direction from camera to pivot, flattened onto the XY plane.
+  const look = pivot.clone().sub(camera.getWorldPosition(new THREE.Vector3()));
+  look.z = 0;
+  if (look.lengthSq() < 1e-6) look.set(1, 0, 0); // top-down camera: fall back to +X
+  look.normalize();
+  // Plane normal = -look so the user faces the plane (the plane equation
+  // n·x = -d is consistent with Three's setFromNormalAndCoplanarPoint).
+  const normal = look.clone().multiplyScalar(-1);
+  const plane = new THREE.Plane();
+  plane.setFromNormalAndCoplanarPoint(normal, pivot);
+  return plane;
 }
 
 function onPointerUp(e: PointerEvent): void {

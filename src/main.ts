@@ -228,6 +228,9 @@ import {
   apiListParts,
   apiSetAutoCombine,
   apiGetAutoCombine,
+  apiSetSnapToGrid,
+  apiGetSnapToGrid,
+  apiRotateSelection,
 } from './ui/insertPalette';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
@@ -9204,6 +9207,26 @@ async function main() {
     /** Read the current Auto-combine flag. */
     getAutoCombine(): boolean { return apiGetAutoCombine(); },
 
+    /** Toggle "Snap drag to whole units" — when on, arrange-mode drag
+     *  commits and the per-engine writeback paths round to whole units.
+     *  Voxel grids already snap; this gives the JS/SCAD/BREP engines an
+     *  opt-in "tidy lattice" mode. */
+    setSnapToGrid(on: boolean): void {
+      assertBoolean(on, 'setSnapToGrid(on)');
+      apiSetSnapToGrid(on);
+    },
+
+    /** Read the current snap-to-grid flag. */
+    getSnapToGrid(): boolean { return apiGetSnapToGrid(); },
+
+    /** Rotate the current selection in place (degrees, per-axis). For 2+
+     *  selected parts, the rotation pivots around the group centroid in the
+     *  XY plane. Voxel sessions are rejected (lattice quantization). */
+    rotateSelection(deg: [number, number, number]): { ok: boolean; reason?: string } {
+      assertNumberTuple(deg, 3, 'rotateSelection(deg)');
+      return apiRotateSelection(deg as [number, number, number]);
+    },
+
     // === View rendering API ===
 
     /** Render a single view from any camera angle. Returns a data URL (PNG).
@@ -13552,6 +13575,9 @@ async function main() {
         'mirrorSelection':      { signature: 'mirrorSelection("x"|"y"|"z") -- Mirror selected parts in place across axis -> {ok}', docs: '/ai.md#arrange-mode' },
         'setAutoCombine':       { signature: 'setAutoCombine(on) -- Toggle "Auto-combine new shapes" (managed-return engines only)', docs: '/ai.md#arrange-mode' },
         'getAutoCombine':       { signature: 'getAutoCombine() -- Whether Auto-combine is currently on', docs: '/ai.md#arrange-mode' },
+        'setSnapToGrid':        { signature: 'setSnapToGrid(on) -- Round arrange-drag deltas to whole units (non-voxel engines)', docs: '/ai.md#arrange-mode' },
+        'getSnapToGrid':        { signature: 'getSnapToGrid() -- Whether snap-to-grid is currently on', docs: '/ai.md#arrange-mode' },
+        'rotateSelection':      { signature: 'rotateSelection([rx,ry,rz]) -- Rotate selected parts in place (degrees); 2+ parts pivot around the group centroid (Z plane) -> {ok}', docs: '/ai.md#arrange-mode' },
         // View
         'setView':         { signature: 'setView(tab) -- Switch tab: "interactive", "gallery", "images", "diff", "notes"', docs: '/ai.md#how-to-use-this-tool' },
         'getViewState':    { signature: 'getViewState() -- Current tab and camera state', docs: '/ai.md#how-to-use-this-tool' },

@@ -164,23 +164,29 @@ function parseJsStatement(stmt: string, name: string): PrimitiveSpec | null {
   // the declaration head and trailing `;` to leave the expression chain.
   const decl = /^\s*(?:const|let)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(.+?);?\s*$/s.exec(stmt);
   const expr = decl ? decl[1].trim() : stmt.trim();
-  // Pull out any trailing `.translate([x,y,z])` first; the construction call
-  // is whatever's left. (We only support a single translate suffix — anything
-  // more elaborate like .rotate() or compound transforms is out of scope here.)
+  // Strip optional trailing `.translate([x,y,z])` (position) and a single
+  // trailing `.rotate([rx,ry,rz])` before it. We accept the chain order
+  // `.rotate(...).translate(...)` because that's what `setPartRotateJs` emits
+  // (rotate around origin, then translate to position). Anything beyond a
+  // single rotate-translate suffix is out of scope and the parse returns null.
   let position: Vec3 = [0, 0, 0];
-  const trMatch = new RegExp(`\\.translate\\s*\\(\\s*${VEC3}\\s*\\)\\s*$`).exec(expr);
-  let head = expr;
+  let working = expr;
+  const trMatch = new RegExp(`\\.translate\\s*\\(\\s*${VEC3}\\s*\\)\\s*$`).exec(working);
   if (trMatch) {
     position = [Number(trMatch[1]), Number(trMatch[2]), Number(trMatch[3])];
-    head = expr.slice(0, trMatch.index);
+    working = working.slice(0, trMatch.index);
   }
-  head = head.trim();
-  // Note: we deliberately don't strip *other* trailing `.method()` calls. If
-  // the user chained `.rotate()` / `.color()` / `.simplify()`, the construction
-  // call no longer matches our anchored regexes and the parse returns null —
-  // arrange mode then skips the part instead of moving it under an incorrect
-  // bounding box. Adding broader chain support belongs in a follow-up that can
-  // also extend the per-engine codegen writers to honour those transforms.
+  const rotMatch = new RegExp(`\\.rotate\\s*\\(\\s*${VEC3}\\s*\\)\\s*$`).exec(working);
+  if (rotMatch) {
+    // We accept rotation in the chain but don't model it in the spec (no
+    // rotation field). Arrange-mode treats this part as draggable / resizable
+    // / re-rotateable; bbox is the un-rotated AABB, which over-estimates the
+    // footprint but never falsely under-estimates — and the controller's
+    // setPartRotateJs compounds onto the existing `.rotate` rather than
+    // stacking a new one, so iterated rotates round-trip correctly.
+    working = working.slice(0, rotMatch.index);
+  }
+  let head = working.trim();
 
   // Manifold.cube([x,y,z], centered?) / Manifold.cube({size: [...], center?})
   const cubeArr = new RegExp(`^(?:Manifold|BREP)\\.cube\\s*\\(\\s*${VEC3}(?:\\s*,\\s*(true|false))?\\s*\\)$`).exec(head);

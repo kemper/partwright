@@ -471,6 +471,103 @@ export function setPartScaleScad(
 }
 
 // ---------------------------------------------------------------------------
+// Rotate: insert a per-axis `.rotate([rx,ry,rz])` into the chain. Like scale,
+// rotation happens at the origin and translate moves the part, so the rotate
+// must come *before* any trailing `.translate(...)` (otherwise the rotation
+// would swing the part around the world origin). Tinkercad-style "rotate in
+// place around the part's centre" for any origin-centred primitive.
+//
+// Angles are degrees. Identity (all zero) returns the code unchanged so
+// chasing-no-op resize/rotate buttons doesn't pile up `.rotate([0,0,0])`.
+// ---------------------------------------------------------------------------
+
+function addRotateTriple(call: string, delta: Vec3): string {
+  // `.rotate([a,b,c])` → `.rotate([a+rx,b+ry,c+rz])`. Lets a second rotation
+  // compound onto the first (additive in degrees) instead of stacking calls.
+  // Rotations don't commute in 3D, but the chained-degree convention is what
+  // every Tinkercad-style tool uses; the model recomputes on apply so the
+  // user sees the effect immediately and can iterate.
+  const re = new RegExp(TRIPLE);
+  return call.replace(re, (_full, a: string, b: string, c: string) =>
+    `[${fmt(parseFloat(a) + delta[0])}, ${fmt(parseFloat(b) + delta[1])}, ${fmt(parseFloat(c) + delta[2])}]`,
+  );
+}
+
+/** Apply a per-axis rotation (degrees) to a JS-engine part. Inserted *before*
+ *  any trailing `.translate([…])` so the rotation pivots around the part's own
+ *  origin and the position is preserved. Compounds with an existing `.rotate`
+ *  rather than stacking a second call. Returns the code unchanged when no
+ *  matching `const <name> = …;` is found, or when the rotation is the identity. */
+export function setPartRotateJs(code: string, name: string, deg: Vec3): string {
+  if (deg[0] === 0 && deg[1] === 0 && deg[2] === 0) return code;
+  const declRe = new RegExp(`(const\\s+${escapeRegExp(name)}\\s*=\\s*)([\\s\\S]*?)(;)`);
+  const m = declRe.exec(code);
+  if (!m) return code;
+  let rhs = m[2];
+  const rotRe = new RegExp(`\\.rotate\\(${TRIPLE}\\)`, 'g');
+  const existing = [...rhs.matchAll(rotRe)];
+  if (existing.length > 0) {
+    const last = existing[existing.length - 1];
+    const updated = addRotateTriple(last[0], deg);
+    rhs = rhs.slice(0, last.index!) + updated + rhs.slice(last.index! + last[0].length);
+  } else {
+    const rotCall = `.rotate([${fmt(deg[0])}, ${fmt(deg[1])}, ${fmt(deg[2])}])`;
+    const transRe = new RegExp(`\\.translate\\(${TRIPLE}\\)`, 'g');
+    const trans = [...rhs.matchAll(transRe)];
+    if (trans.length > 0) {
+      // Place rotate before the first translate so the part keeps its position.
+      const first = trans[0];
+      rhs = rhs.slice(0, first.index!) + rotCall + rhs.slice(first.index!);
+    } else {
+      rhs = `${rhs}${rotCall}`;
+    }
+  }
+  return code.slice(0, m.index) + m[1] + rhs + m[3] + code.slice(m.index + m[0].length);
+}
+
+/** Apply a per-axis rotation (degrees) to an OpenSCAD part: wrap its
+ *  construction in `rotate([rx,ry,rz])`, placed *after* any leading
+ *  `translate([…])` (so the chain reads as rotate-then-translate, putting
+ *  the rotation at the part's centre). Compounds additively with an existing
+ *  leading rotate. */
+export function setPartRotateScad(
+  code: string,
+  statement: { from: number; to: number },
+  deg: Vec3,
+): string {
+  if (deg[0] === 0 && deg[1] === 0 && deg[2] === 0) return code;
+  const stmt = code.slice(statement.from, statement.to);
+  const leadingTransRe = new RegExp(`^translate\\(${TRIPLE}\\)\\s*`);
+  const transMatch = leadingTransRe.exec(stmt);
+  const afterTrans = transMatch ? stmt.slice(transMatch[0].length) : stmt;
+  const head = transMatch ? transMatch[0] : '';
+
+  // A leading scale, if present, must run after rotate (rotate-then-scale
+  // matches the JS chain order and avoids a sheared shape). Place the new
+  // `rotate(...)` between translate and scale so the chain reads:
+  //   translate(t) rotate(r) scale(s) <construction>
+  const leadingScaleRe = new RegExp(`^scale\\(${TRIPLE}\\)\\s*`);
+  const leadingRotateRe = new RegExp(`^rotate\\(${TRIPLE}\\)\\s*`);
+  const rotateMatch = leadingRotateRe.exec(afterTrans);
+  let updated: string;
+  if (rotateMatch) {
+    const compound = addRotateTriple(rotateMatch[0].replace(/\s*$/, ''), deg);
+    updated = `${head}${compound} ${afterTrans.slice(rotateMatch[0].length)}`;
+  } else {
+    const scaleMatch = leadingScaleRe.exec(afterTrans);
+    const rotateCall = `rotate([${fmt(deg[0])}, ${fmt(deg[1])}, ${fmt(deg[2])}])`;
+    if (scaleMatch) {
+      // Insert rotate BEFORE the leading scale so SCAD's right-to-left
+      // application order runs scale first (around origin), then rotate.
+      updated = `${head}${rotateCall} ${afterTrans}`;
+    } else {
+      updated = `${head}${rotateCall} ${afterTrans}`;
+    }
+  }
+  return code.slice(0, statement.from) + updated + code.slice(statement.to);
+}
+
+// ---------------------------------------------------------------------------
 // Mirror / Duplicate / Delete (selection-driven quick actions)
 // ---------------------------------------------------------------------------
 

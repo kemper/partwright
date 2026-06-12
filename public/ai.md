@@ -269,11 +269,14 @@ partwright.subtractSelection()            // ∖ first - rest
 partwright.intersectSelection()           // ∩
 partwright.duplicateSelection()           // Clone, offset along +X -> {ok}
 partwright.mirrorSelection('x')           // Mirror across axis
+partwright.rotateSelection([0,0,90])      // Rotate in place (degrees, per-axis); 2+ pivots around group centroid (Z)
 partwright.deleteSelection()              // Remove selected parts from the code
 partwright.undo() / partwright.redo()     // Coarse-grained: one Tinkercad action = one step
 partwright.canUndo() / partwright.canRedo()
 partwright.setAutoCombine(false)          // Insert without auto-union (managed engines)
 partwright.getAutoCombine()               // -> boolean
+partwright.setSnapToGrid(true)            // Round drag/translate deltas to whole units (non-voxel)
+partwright.getSnapToGrid()                // -> boolean
 await partwright.exportGLB()   // Download GLB (browser file dialog -- prefer exportGLBData() in agent flows)
 partwright.exportSTL()         // Download STL ("                                       exportSTLData() ")
 partwright.exportOBJ()         // Download OBJ ("                                       exportOBJData() ")
@@ -1055,5 +1058,11 @@ A successful action returns `{ ok: true }`; rejected ones return `{ ok: false, r
 
 **`enterArrange()` opens the Insert panel as a side effect** so the chip strip, Size/Align inputs, and Undo/Redo buttons are visible — matching what a user sees when they enable arrange by hand. Headless flows that just want the canvas pointer hook should still call it; the panel doesn't steal focus from `partwright.*` calls.
 
-**Caveats.** Hand-written parts the regex parser can't decode (chained `.rotate()`, computed args, custom expressions) stay out of the registry and are skipped silently. The current Z-axis drag is locked to a horizontal plane through the pickup point. Voxel grids union implicitly, so `groupSelection` / `subtractSelection` / `intersectSelection` are no-ops in a voxel session.
+**Drag along Z.** Hold **Alt** during drag to slide the part along the world Z axis instead of across the horizontal plane (Tinkercad's lift-up gesture). The drag plane is built from the camera's look direction so the part stays under the cursor as the camera turns.
+
+**Group centroid.** When 2+ parts are selected, `resizeSelection` scales around — and `rotateSelection` (Z axis) pivots around — the **union centroid** rather than each part's own centre. This matches Tinkercad's behaviour: a group resize spreads the parts apart and a Z-rotation swings them around the common pivot.
+
+**Snap-to-grid.** `setSnapToGrid(true)` rounds every per-engine translate delta (drag commit, align spread, rotate spread) to whole units. Voxel grids already snap; this gives the JS/SCAD/BREP engines an opt-in tidy-lattice mode.
+
+**Caveats.** Hand-written parts the regex parser can't decode (chained `.scale()`/`.color()`/computed args/custom expressions) stay out of the registry and are skipped silently — a single trailing `.translate(...)` and a single trailing `.rotate(...)` are recognised. Voxel rotation is rejected (lattice quantization makes arbitrary angles unfaithful). Voxel grids union implicitly, so `groupSelection` / `subtractSelection` / `intersectSelection` are no-ops in a voxel session.
 
