@@ -13235,6 +13235,54 @@ async function main() {
       return { axis };
     },
 
+    /** Set the active grid's surfacing (corner rounding) — the programmatic twin
+     *  of the Voxel Studio Rounding panel. Pass `null` for hard blocks, or
+     *  `{ algorithm?: 'taubin'|'surfaceNets', strength?: 0..1, iterations?: 1..8,
+     *  flatBottom?: bool, baseLayers?: int (0 = no flat base) }` to smooth.
+     *  Requires `activateVoxelPaint()` first. Returns `{ surfacing }` (the
+     *  resolved surfacing, or `null` when blocky) or `{ error }`. */
+    setVoxelRounding(opts: import('./color/voxelPaint').RoundingOpts | null) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      if (opts === null) {
+        voxelPaint.setRounding(null);
+        syncVoxelPaintUI();
+        return { surfacing: voxelPaint.getSurfacing() };
+      }
+      if (typeof opts !== 'object' || Array.isArray(opts)) return { error: 'setVoxelRounding.opts must be an object or null' };
+      const clean: import('./color/voxelPaint').RoundingOpts = {};
+      if (opts.algorithm !== undefined) {
+        if (opts.algorithm !== 'taubin' && opts.algorithm !== 'surfaceNets') return { error: "setVoxelRounding.algorithm must be 'taubin' or 'surfaceNets'" };
+        clean.algorithm = opts.algorithm;
+      }
+      if (opts.strength !== undefined) {
+        if (typeof opts.strength !== 'number' || opts.strength < 0 || opts.strength > 1) return { error: 'setVoxelRounding.strength must be a number 0..1' };
+        clean.strength = opts.strength;
+      }
+      if (opts.iterations !== undefined) {
+        if (typeof opts.iterations !== 'number' || !Number.isInteger(opts.iterations) || opts.iterations < 1 || opts.iterations > 8) return { error: 'setVoxelRounding.iterations must be an integer 1..8' };
+        clean.iterations = opts.iterations;
+      }
+      if (opts.flatBottom !== undefined) {
+        if (typeof opts.flatBottom !== 'boolean') return { error: 'setVoxelRounding.flatBottom must be a boolean' };
+        clean.flatBottom = opts.flatBottom;
+      }
+      if (opts.baseLayers !== undefined) {
+        if (typeof opts.baseLayers !== 'number' || !Number.isInteger(opts.baseLayers) || opts.baseLayers < 0 || opts.baseLayers > 1024) return { error: 'setVoxelRounding.baseLayers must be an integer 0..1024' };
+        if (opts.baseLayers > 0) clean.baseLayers = opts.baseLayers; // 0 = no flat base
+      }
+      voxelPaint.setRounding(clean);
+      syncVoxelPaintUI();
+      return { surfacing: voxelPaint.getSurfacing() };
+    },
+
+    /** Read the active grid's current surfacing (corner rounding) settings.
+     *  Returns `{ surfacing }` (the Surfacing object, or `null` when blocky) or
+     *  `{ error }` when Voxel Studio is not active. */
+    getVoxelRounding() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      return { surfacing: voxelPaint.getSurfacing() };
+    },
+
     /** Begin a brush stroke: subsequent `voxelStudioApply` calls collapse into a
      *  single undo step until `voxelStudioEndStroke()`. This is the programmatic
      *  equivalent of a click-drag. Returns `{ ok }` or `{ error }`. */
@@ -13736,6 +13784,8 @@ async function main() {
         'buildEngraveStamp': { signature: 'await buildEngraveStamp({text?, font?, imageUrl?, invert?}) -- Rasterize an ink mask for engraveModel/the Surface panel -> {mask, width, height}', docs: '/ai/textures.md#engravemodel' },
         'smoothModel':     { signature: 'await smoothModel({iterations?, subdivide?, preserveColor?}) -- BAKE a Taubin smoothing pass; saves a new version. In-code alternative: api.surface.smooth', docs: '/ai/textures.md' },
         'voxelizeModel':   { signature: 'await voxelizeModel({resolution?, smooth?, preserveColor?}) -- Convert the mesh to a voxel-language session (engine change — bake only)', docs: '/ai/voxel.md' },
+        'setVoxelRounding': { signature: "setVoxelRounding(opts | null) -- Voxel Studio corner rounding: null = hard blocks; {algorithm?: 'taubin'|'surfaceNets', strength?: 0..1, iterations?: 1..8, flatBottom?: bool, baseLayers?: int} = smooth. Requires activateVoxelPaint(). Returns {surfacing} or {error}", docs: '/ai/voxel.md' },
+        'getVoxelRounding': { signature: 'getVoxelRounding() -- Read the active grid surfacing -> {surfacing} (null when blocky) or {error}', docs: '/ai/voxel.md' },
         // Transform / placement (mode 'parametric' wraps the code; 'bake' rewrites the mesh; 'auto' picks)
         'canPlaceParametric': { signature: 'canPlaceParametric() -- Whether transforms can be written into the code parametrically (manifold-js sessions)', docs: '/ai/printing.md' },
         'previewScale':    { signature: 'previewScale(sx, sy, sz, {preserveColor?}?) -- Non-destructive viewport preview of a resize -> {ok} or {error}', docs: '/ai/printing.md' },

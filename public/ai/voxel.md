@@ -443,6 +443,12 @@ partwright.voxelStudioEndStroke();               // -> { ok, voxelCount }
 partwright.voxelStudioUndo();                                    // -> { undone, voxelCount }
 partwright.voxelStudioRedo();                                    // -> { redone, voxelCount }
 
+// Corner rounding (the Rounding panel, programmatically):
+partwright.setVoxelRounding({ algorithm: 'surfaceNets' });        // -> { surfacing }
+partwright.setVoxelRounding({ algorithm: 'taubin', strength: 0.5, baseLayers: 3 });
+partwright.getVoxelRounding();                                    // -> { surfacing } (null when blocky)
+partwright.setVoxelRounding(null);                                // back to hard blocks
+
 // Commit — two options:
 await partwright.updateVoxelCode({ label: 'castle' });   // keep code, append edits
 await partwright.bakeVoxelsToCode({ label: 'castle' });  // replace with voxels.decode(...)
@@ -468,6 +474,12 @@ await partwright.bakeVoxelsToCode({ label: 'castle' });  // replace with voxels.
   layers, a `boxRemove` carves that many deeper); `0` = flush to the face.
   Returns the resolved settings.
 - `setVoxelLevelAxis(axis)` — `0`/`1`/`2` (x/y/z) for the `level` tool.
+- `setVoxelRounding(opts | null)` — the Rounding panel's surfacing, set in code.
+  `null` = hard blocks; an object smooths: `algorithm` (`'taubin' | 'surfaceNets'`),
+  `strength` (0..1, taubin only), `iterations` (1..8), `flatBottom` (bool, keep a
+  flat print bed), `baseLayers` (int — keep the bottom N voxel layers blocky;
+  `0` = none). Returns `{ surfacing }` or `{ error }`. `getVoxelRounding()` reads
+  the current surfacing back (`{ surfacing }`, `null` when blocky).
 - `voxelStudioBeginStroke()` / `voxelStudioEndStroke()` — bracket a run of
   `voxelStudioApply` calls so they collapse into one undo step (the
   programmatic equivalent of a click-drag).

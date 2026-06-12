@@ -1964,6 +1964,44 @@ function rangesOverlap(ranges: { from: number; to: number }[]): boolean {
 
 let pickCleanup: (() => void) | null = null;
 
+/** Wire a click-to-pick raycaster over the live model canvas. Builds a temp
+ *  mesh from `mesh`, and on a click (pointer that barely moved, so orbit-drag
+ *  still rotates) raycasts from the camera and invokes `onPick` with the
+ *  world-space hit point. Returns a teardown that unbinds the listeners and
+ *  frees the temp mesh's geometry + material. Shared by the operand-pick and
+ *  multi-select sessions below — both built this same wiring inline. */
+function attachPartPicker(
+  canvas: HTMLCanvasElement,
+  camera: THREE.Camera,
+  mesh: MeshData,
+  onPick: (pt: Vec3) => void,
+): () => void {
+  const raycaster = new THREE.Raycaster();
+  const geometry = meshDataToGeometry(mesh);
+  const tempMesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+  let downX = 0;
+  let downY = 0;
+  const onDown = (e: PointerEvent): void => { downX = e.clientX; downY = e.clientY; };
+  const onUp = (e: PointerEvent): void => {
+    if (Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4) return;
+    const rect = canvas.getBoundingClientRect();
+    const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+    const hits = raycaster.intersectObject(tempMesh);
+    if (hits.length === 0) return;
+    onPick([hits[0].point.x, hits[0].point.y, hits[0].point.z]);
+  };
+  canvas.addEventListener('pointerdown', onDown);
+  canvas.addEventListener('pointerup', onUp);
+  return () => {
+    canvas.removeEventListener('pointerdown', onDown);
+    canvas.removeEventListener('pointerup', onUp);
+    geometry.dispose();
+    (tempMesh.material as THREE.Material).dispose();
+  };
+}
+
 function startPickSession(op: BooleanOpKind, operands: Operand[], validNames: Set<string>): void {
   if (!cb) return;
   const canvas = cb.getCanvas();
@@ -2003,26 +2041,7 @@ function startPickSession(op: BooleanOpKind, operands: Operand[], validNames: Se
   bar.appendChild(cancelBtn);
   document.body.appendChild(bar);
 
-  const raycaster = new THREE.Raycaster();
-  const geometry = meshDataToGeometry(mesh);
-  const tempMesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
-
-  let downX = 0;
-  let downY = 0;
-  const onDown = (e: PointerEvent) => {
-    downX = e.clientX;
-    downY = e.clientY;
-  };
-  const onUp = (e: PointerEvent) => {
-    // Treat as a click only if the pointer barely moved (so orbit-drag still rotates).
-    if (Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4) return;
-    const rect = canvas.getBoundingClientRect();
-    const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-    raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
-    const hits = raycaster.intersectObject(tempMesh);
-    if (hits.length === 0) return;
-    const pt: Vec3 = [hits[0].point.x, hits[0].point.y, hits[0].point.z];
+  const detachPicker = attachPartPicker(canvas, camera, mesh, (pt) => {
     const name = resolvePartAtPoint(pt, validNames);
     if (!name) {
       cb!.showToast('Could not match that spot to an inserted part.', { variant: 'warn' });
@@ -2031,16 +2050,10 @@ function startPickSession(op: BooleanOpKind, operands: Operand[], validNames: Se
     operands.push({ name, statement: partStatementFor(name), range: partRangeFor(name) });
     msg.textContent = count();
     cb!.showToast(`Added "${name}".`, { variant: 'neutral' });
-  };
-
-  canvas.addEventListener('pointerdown', onDown);
-  canvas.addEventListener('pointerup', onUp);
+  });
 
   pickCleanup = () => {
-    canvas.removeEventListener('pointerdown', onDown);
-    canvas.removeEventListener('pointerup', onUp);
-    geometry.dispose();
-    (tempMesh.material as THREE.Material).dispose();
+    detachPicker();
     bar.remove();
     pickCleanup = null;
   };
@@ -2141,22 +2154,7 @@ function startSelectMode(): void {
   bar.appendChild(doneBtn);
   document.body.appendChild(bar);
 
-  const raycaster = new THREE.Raycaster();
-  const geometry = meshDataToGeometry(mesh);
-  const tempMesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
-
-  let downX = 0;
-  let downY = 0;
-  const onDown = (e: PointerEvent): void => { downX = e.clientX; downY = e.clientY; };
-  const onUp = (e: PointerEvent): void => {
-    if (Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4) return;
-    const rect = canvas.getBoundingClientRect();
-    const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-    raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
-    const hits = raycaster.intersectObject(tempMesh);
-    if (hits.length === 0) return;
-    const pt: Vec3 = [hits[0].point.x, hits[0].point.y, hits[0].point.z];
+  const detachPicker = attachPartPicker(canvas, camera, mesh, (pt) => {
     const name = pickPart(pt, registry, validNames);
     if (!name) {
       cb!.showToast('Could not match that spot to an inserted part.', { variant: 'warn' });
@@ -2167,16 +2165,10 @@ function startSelectMode(): void {
     updateMsg();
     refreshHighlights();
     rerenderSelectionUI();
-  };
-
-  canvas.addEventListener('pointerdown', onDown);
-  canvas.addEventListener('pointerup', onUp);
+  });
 
   const endSession = (): void => {
-    canvas.removeEventListener('pointerdown', onDown);
-    canvas.removeEventListener('pointerup', onUp);
-    geometry.dispose();
-    (tempMesh.material as THREE.Material).dispose();
+    detachPicker();
     for (const c of [...highlightGroup.children]) {
       if (c instanceof THREE.LineSegments) {
         c.geometry.dispose();
