@@ -580,4 +580,57 @@ test.describe('Insert palette', () => {
     expect(undone).toContain('Move');
     await expect.poll(() => getCode(page)).toBe(codeBeforeDrag);
   });
+
+  test('partwright API: groupSelection on two parts produces a union in code', async ({ page }) => {
+    await gotoEditor(page);
+    await page.evaluate(() => {
+      const code = [
+        'const { Manifold } = api;',
+        'const a = Manifold.cube([6, 6, 6], true);',
+        'const b = Manifold.sphere(3).translate([4, 0, 0]);',
+        'return a.add(b);',
+      ].join('\n');
+      (window as unknown as { partwright: { setCode(c: string): void; run(): void } }).partwright.setCode(code);
+      (window as unknown as { partwright: { run(): void } }).partwright.run();
+    });
+
+    const result = await page.evaluate(() => {
+      const w = window as unknown as { partwright: { enterArrange(): unknown; selectParts(n: string[]): string[]; groupSelection(): { ok: boolean } } };
+      w.partwright.enterArrange();
+      w.partwright.selectParts(['a', 'b']);
+      return w.partwright.groupSelection();
+    });
+    expect(result.ok).toBe(true);
+    // Union codegen: `const merged = a.add(b);`. The exact result name varies
+    // (uniqueName picks merged / merged2 / …), but a new declaration with .add
+    // is the signature.
+    await expect.poll(() => getCode(page)).toMatch(/const merged\d* = a\.add\(b\);/);
+
+    // Undo reverses the group (the operation goes; `a` and `b` reappear standalone).
+    await page.evaluate(() => (window as unknown as { partwright: { undo(): string | null } }).partwright.undo());
+    await expect.poll(() => getCode(page)).not.toMatch(/const merged\d* = a\.add\(b\);/);
+
+    await page.evaluate(() => (window as unknown as { partwright: { exitArrange(): void } }).partwright.exitArrange());
+  });
+
+  test('session-changed event clears the palette undo history', async ({ page }) => {
+    await gotoEditor(page);
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
+
+    // Insert a part to seed the undo stack.
+    await page.locator('#btn-insert').dispatchEvent('click');
+    await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toContain('const box');
+    expect(await page.evaluate(() => (window as unknown as { partwright: { canUndo(): boolean } }).partwright.canUndo())).toBe(true);
+
+    // Fire the session-changed event the way the session manager would.
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('session-changed')));
+
+    // History is dropped — canUndo returns false even though the editor still
+    // shows code that previously had an Insert step on the stack.
+    expect(await page.evaluate(() => (window as unknown as { partwright: { canUndo(): boolean } }).partwright.canUndo())).toBe(false);
+  });
 });
