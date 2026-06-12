@@ -49,7 +49,7 @@ import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { confirmDialog, promptDialog } from './ui/dialogs';
 import { updateAppHistory, currentURLPathAndSearch } from './ui/appHistory';
-import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive, closeAiPanel } from './ui/aiPanel';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive, closeAiPanel, isAiTurnInFlight, onAiTurnEnd } from './ui/aiPanel';
 import { onViewportPanelOpen } from './ui/viewportPanelRegistry';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
@@ -345,16 +345,37 @@ let paramsPanel: ParamsPanelController | null = null;
 /** Reconcile the Customizer panel + override state with the parameter schema a
  *  model declared on its latest run. Pass `undefined` when the model declared
  *  none (hides the panel and clears overrides). */
+// Set while an AI turn deferred the Customizer reveal (see syncParamsPanel); the
+// onAiTurnEnd flush below consumes it.
+let paramsRevealDeferred = false;
+
 function syncParamsPanel(schema: ParamSpec[] | undefined): void {
   if (schema && schema.length > 0) {
     currentParamSchema = schema;
     // Keep only overrides the model still declares (drops stale keys from a
     // previously-run model) and store the minimal non-default set.
     currentParamValues = pruneParamValues(schema, currentParamValues);
-    paramsPanel?.update(schema, resolveParamValues(schema, currentParamValues));
   } else {
     currentParamSchema = null;
     currentParamValues = {};
+  }
+  // While the AI is mid-turn (e.g. a runAndSave during a chat response), don't
+  // pop the Customizer over the chat or yank the AI panel aside — the user is
+  // still reading the model think. Record the schema now but defer the reveal
+  // until the turn ends, then reveal it *silently* so the AI panel stays open.
+  if (isAiTurnInFlight()) {
+    paramsRevealDeferred = true;
+    return;
+  }
+  refreshParamsPanelUI(false);
+}
+
+/** Push the current schema/values into the Customizer panel. `silentReveal`
+ *  opens it without hiding the AI panel — used for the post-AI-turn flush. */
+function refreshParamsPanelUI(silentReveal: boolean): void {
+  if (currentParamSchema && currentParamSchema.length > 0) {
+    paramsPanel?.update(currentParamSchema, resolveParamValues(currentParamSchema, currentParamValues), { silentReveal });
+  } else {
     paramsPanel?.update(undefined, {});
   }
 }
@@ -6926,6 +6947,16 @@ async function main() {
   // the freshly-opened tool panel and be easy to miss. Wired here (not in the
   // registry) so the registry stays a dependency-free leaf.
   onViewportPanelOpen(() => closeAiPanel());
+
+  // When a chat turn produced a customizable model, the Customizer reveal was
+  // deferred (see syncParamsPanel) so it didn't pop over the live chat. Flush it
+  // now that the turn has ended — silently, so the AI panel stays open and the
+  // user sees the result and its knobs side by side.
+  onAiTurnEnd(() => {
+    if (!paramsRevealDeferred) return;
+    paramsRevealDeferred = false;
+    refreshParamsPanelUI(true);
+  });
 
   // Initialize the AI chat side drawer once the editor UI is mounted.
   // Wraps initAiPanel + setAiToolbarState; tolerated if it fails (e.g.

@@ -360,6 +360,21 @@ export function closeAiPanel(): void {
   if (state.open) hideDrawer();
 }
 
+/** Whether a chat turn is currently running. The host uses this to hold back
+ *  side effects that would disrupt a live turn — e.g. popping the Customizer
+ *  over the chat while the AI is mid-runAndSave (see syncParamsPanel). */
+export function isAiTurnInFlight(): boolean {
+  return state.inFlight;
+}
+
+const turnEndListeners: Array<() => void> = [];
+/** Subscribe to "a chat turn just finished" (the true end — retries and queued
+ *  follow-ups don't fire it). Lets the host flush work it deferred during the
+ *  turn, like the Customizer auto-reveal. */
+export function onAiTurnEnd(fn: () => void): void {
+  turnEndListeners.push(fn);
+}
+
 /** Open the AI panel (if closed) and drop `text` into the chat input without
  *  sending it — the user reads/tweaks it and hits send themselves. Used by the
  *  prompt library and the /ideas page so picking a prompt lands here. */
@@ -3514,6 +3529,10 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       pushStopNotice(finalOutcome);
     }
     broadcastChatChanged();
+    // The turn truly ended (retries/queued follow-ups `continue` above and never
+    // reach here) — let the host flush anything it held back during the turn,
+    // e.g. the deferred Customizer reveal.
+    for (const fn of turnEndListeners) fn();
     return;
   }
 }

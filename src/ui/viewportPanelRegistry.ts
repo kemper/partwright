@@ -22,15 +22,19 @@ export function onViewportPanelOpen(fn: OpenListener): void {
   openListeners.push(fn);
 }
 
-/** Call when a panel is about to become visible. Closes any other open panel. */
-export function openViewportPanel(panel: ViewportPanel): void {
+/** Call when a panel is about to become visible. Closes any other open panel.
+ *
+ *  `silent` opens (e.g. the Customizer auto-revealing after an AI turn) skip the
+ *  open-listeners, so they don't pull the AI panel out of the way — only a
+ *  hands-on, user-initiated tool open should do that. */
+export function openViewportPanel(panel: ViewportPanel, opts?: { silent?: boolean }): void {
   if (active && active !== panel) active.close();
   const reopening = active === panel;
   active = panel;
-  // Notify subscribers only on a genuine open (a panel re-asserting itself —
-  // e.g. a params re-sync on the already-open panel — shouldn't keep stomping
-  // the AI panel the user may have just reopened).
-  if (!reopening) for (const fn of openListeners) fn();
+  // Notify subscribers only on a genuine, non-silent open (a panel re-asserting
+  // itself — e.g. a params re-sync on the already-open panel — shouldn't keep
+  // stomping the AI panel the user may have just reopened).
+  if (!reopening && !opts?.silent) for (const fn of openListeners) fn();
 }
 
 /** Call when a panel hides itself (× button, Escape, or forced close). */
