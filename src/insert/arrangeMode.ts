@@ -22,12 +22,20 @@ import * as THREE from 'three';
 import { getScene, setGizmoLock, requestRender } from '../renderer/viewport';
 import { primitiveEntry, pickPart, type RegistryEntry } from './spatial';
 import { type PrimitiveSpec, type Vec3, type InsertLanguage } from './codegen';
-import { alignDeltas, formatScaleCall, type AlignAxis, type AlignMode } from './arrangeMath';
+import {
+  alignDeltas,
+  formatScaleCall,
+  groupCentroid,
+  groupCentroidScaleDelta,
+  groupCentroidRotateZDelta,
+  type AlignAxis,
+  type AlignMode,
+} from './arrangeMath';
 import { recordOperation } from './undoStack';
 import { parseStatement } from './parseStatement';
 
 // Re-export the pure helpers so callers can pick them up from one entry point.
-export { alignDeltas, formatScaleCall };
+export { alignDeltas, formatScaleCall, groupCentroid, groupCentroidScaleDelta, groupCentroidRotateZDelta };
 export type { AlignAxis, AlignMode };
 
 export interface ScannedPart {
@@ -91,6 +99,12 @@ let dragNames: string[] = [];
 let dragBaseline = new Map<string, Vec3>(); // pre-drag centres for each ghost
 const DRAG_THRESHOLD_PX = 4;
 let dragging = false;
+// Drag-plane choice is locked at `beginDrag` — alt-held at drag-start picks the
+// vertical (Z) plane; releasing alt mid-drag does NOT switch back to horizontal
+// (and pressing alt mid-drag does NOT switch in). Otherwise the ghost would
+// jump as the alt key changes state — confusing UX caught in the post-merge
+// review of this milestone.
+let dragVertical = false;
 
 // Marquee (shift+drag on empty space) — a DOM overlay rectangle that selects
 // every part whose bbox centre projects inside it on release. State is held
@@ -329,19 +343,55 @@ function onPointerMove(e: PointerEvent): void {
       deps.onSelectionChanged();
       refreshArrangeOverlay();
     }
+    // Lock the drag-plane choice at this point — alt held when the user
+    // crossed the drag threshold picks the vertical (Z) plane for the whole
+    // gesture. Toggling alt mid-drag would otherwise jump the ghost between
+    // horizontal-XY and vertical-Z projections, which the post-PR-#609 review
+    // flagged as a UX surprise.
+    dragVertical = e.altKey;
     beginDrag();
   }
 
   if (dragging) {
-    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -pointerStart.world.z);
+    // Drag plane selection (locked at `dragVertical`):
+    //   - default: horizontal plane through the pickup point — slides the part
+    //     across the build plate.
+    //   - alt at drag-start: vertical plane facing the camera through the
+    //     pickup point — lifts the part along the world Z axis. Cleaner than
+    //     a "use Y mouse motion as Z" approximation because the projection
+    //     picks up the camera distance correctly.
+    const plane = dragVertical
+      ? makeVerticalPlane(camera, pointerStart.world)
+      : new THREE.Plane(new THREE.Vector3(0, 0, 1), -pointerStart.world.z);
     const hit = projectToPlane(e.clientX, e.clientY, camera, canvas, plane);
     if (!hit) return;
-    const delta: Vec3 = [hit.x - pointerStart.world.x, hit.y - pointerStart.world.y, 0];
+    const delta: Vec3 = dragVertical
+      ? [0, 0, hit.z - pointerStart.world.z]
+      : [hit.x - pointerStart.world.x, hit.y - pointerStart.world.y, 0];
     applyGhostDelta(delta);
     requestRender();
     e.stopPropagation();
     e.preventDefault();
   }
+}
+
+/** Build a vertical plane through `pivot` whose normal is the horizontal
+ *  component of the camera's look direction. Lets alt-drag map the user's
+ *  in-plane pointer motion to a clean world-Z delta (we still only consume
+ *  the Z component, but the plane orientation keeps the in-plane projection
+ *  meaningful — the part stays under the cursor as the camera turns). */
+function makeVerticalPlane(camera: THREE.Camera, pivot: THREE.Vector3): THREE.Plane {
+  // Look-direction from camera to pivot, flattened onto the XY plane.
+  const look = pivot.clone().sub(camera.getWorldPosition(new THREE.Vector3()));
+  look.z = 0;
+  if (look.lengthSq() < 1e-6) look.set(1, 0, 0); // top-down camera: fall back to +X
+  look.normalize();
+  // Plane normal = -look so the user faces the plane (the plane equation
+  // n·x = -d is consistent with Three's setFromNormalAndCoplanarPoint).
+  const normal = look.clone().multiplyScalar(-1);
+  const plane = new THREE.Plane();
+  plane.setFromNormalAndCoplanarPoint(normal, pivot);
+  return plane;
 }
 
 function onPointerUp(e: PointerEvent): void {
@@ -471,6 +521,7 @@ function commitDrag(): void {
 function cancelDrag(): void {
   cleanupGhosts();
   dragging = false;
+  dragVertical = false;
   pendingPart = null;
   pointerStart = null;
   if (active) refreshArrangeOverlay();

@@ -41,6 +41,8 @@ import {
   setPartTranslateDeltaJs,
   setPartTranslateDeltaScad,
   setPartScaleJs,
+  setPartRotateJs,
+  setPartRotateScad,
   setPartScaleScad,
   mirrorPartJs,
   mirrorPartScad,
@@ -1323,15 +1325,40 @@ test.describe('parseStatement — manifold-js / BREP', () => {
     expect(spec.height).toBe(10);
   });
 
-  test('returns null for chained transforms we do not understand', () => {
-    expect(parseStatement(
+  test('accepts a single trailing .rotate(...).translate(...) chain', () => {
+    // We model the spec's bbox as the un-rotated AABB (over-estimates the
+    // post-rotation footprint, but never under-estimates — and arrange's
+    // controller compounds rotations rather than stacking). Position comes
+    // from the trailing translate; size from the construction call.
+    const spec = parseStatement(
       `const x = Manifold.cube([10,10,10]).rotate([0,0,30]).translate([5,0,0]);`,
+      'manifold-js', 'x',
+    );
+    if (!spec || spec.kind !== 'cube') throw new Error('expected cube');
+    expect(spec.size).toEqual([10, 10, 10]);
+    expect(spec.position).toEqual([5, 0, 0]);
+  });
+
+  test('still returns null for transforms beyond a single rotate-then-translate', () => {
+    // Two translate suffixes / arbitrary other chain methods stay null.
+    expect(parseStatement(
+      `const x = Manifold.cube([10,10,10]).color([1,0,0]).translate([5,0,0]);`,
       'manifold-js', 'x',
     )).toBeNull();
   });
 
   test('returns null for arbitrary expressions', () => {
     expect(parseStatement(`const x = api.text("hi");`, 'manifold-js', 'x')).toBeNull();
+  });
+
+  test('returns null when translate precedes rotate (only rotate-then-translate is accepted)', () => {
+    // setPartRotateJs always inserts rotate BEFORE translate, so palette-touched
+    // parts always parse. Hand-written code in the reverse order is
+    // unrecognised — the chain-order contract is one-way.
+    expect(parseStatement(
+      `const x = Manifold.cube([10,10,10]).translate([5,0,0]).rotate([0,0,30]);`,
+      'manifold-js', 'x',
+    )).toBeNull();
   });
 });
 
@@ -1360,6 +1387,149 @@ test.describe('scanPartsJs now also returns statement text for single-line const
     const refs = scanPartsJs(code);
     const box = refs.find(r => r.name === 'box');
     expect(box?.statement).toContain('.translate');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rotate codegen — JS / SCAD per-engine `.rotate([rx,ry,rz])` insertion
+// ---------------------------------------------------------------------------
+
+test.describe('setPartRotateJs', () => {
+  test('inserts .rotate before a trailing .translate so the pivot is the part origin', () => {
+    const code = 'const box = Manifold.cube([10,10,10], true).translate([5,0,0]);';
+    const updated = setPartRotateJs(code, 'box', [0, 0, 90]);
+    expect(updated).toBe('const box = Manifold.cube([10,10,10], true).rotate([0, 0, 90]).translate([5,0,0]);');
+  });
+
+  test('appends .rotate when no translate exists', () => {
+    const code = 'const box = Manifold.cube([10,10,10], true);';
+    const updated = setPartRotateJs(code, 'box', [45, 0, 0]);
+    expect(updated).toBe('const box = Manifold.cube([10,10,10], true).rotate([45, 0, 0]);');
+  });
+
+  test('compounds additively with an existing .rotate triple', () => {
+    const code = 'const box = Manifold.cube([10,10,10], true).rotate([0, 0, 45]).translate([5,0,0]);';
+    const updated = setPartRotateJs(code, 'box', [0, 0, 45]);
+    expect(updated).toContain('.rotate([0, 0, 90])');
+    // The translate is preserved.
+    expect(updated).toContain('.translate([5,0,0])');
+  });
+
+  test('identity rotation returns the code unchanged', () => {
+    const code = 'const box = Manifold.cube([10,10,10], true);';
+    expect(setPartRotateJs(code, 'box', [0, 0, 0])).toBe(code);
+  });
+
+  test('returns code unchanged when the named part is missing', () => {
+    const code = 'const box = Manifold.cube([10,10,10], true);';
+    expect(setPartRotateJs(code, 'missing', [0, 0, 90])).toBe(code);
+  });
+});
+
+test.describe('setPartRotateScad', () => {
+  test('wraps construction with rotate AFTER the leading translate', () => {
+    const code = 'translate([5, 0, 0]) cube([10, 10, 10], center=true); // part: box';
+    const updated = setPartRotateScad(code, { from: 0, to: code.length }, [0, 0, 90]);
+    expect(updated).toContain('translate([5, 0, 0]) rotate([0, 0, 90]) cube([10, 10, 10], center=true);');
+  });
+
+  test('compounds additively with an existing leading rotate', () => {
+    const code = 'translate([0,0,0]) rotate([0, 0, 30]) cube([10,10,10]); // part: box';
+    const updated = setPartRotateScad(code, { from: 0, to: code.length }, [0, 0, 30]);
+    expect(updated).toContain('rotate([0, 0, 60])');
+  });
+
+  test('identity rotation returns the code unchanged', () => {
+    const code = 'cube([1,1,1]); // part: a';
+    expect(setPartRotateScad(code, { from: 0, to: code.length }, [0, 0, 0])).toBe(code);
+  });
+
+  test('bare cube (no leading transforms) prepends rotate at the head', () => {
+    const code = 'cube([10, 10, 10]); // part: box';
+    const updated = setPartRotateScad(code, { from: 0, to: code.length }, [0, 0, 90]);
+    expect(updated).toContain('rotate([0, 0, 90]) cube([10, 10, 10]);');
+  });
+
+  test('inserts rotate between leading scale and construction (no leading translate)', () => {
+    // scale-then-rotate-then-cube right-to-left == rotate(scale(cube)) — the
+    // rotate sits between the existing scale and the bare construction call.
+    const code = 'scale([2, 1, 1]) cube([10, 10, 10]); // part: box';
+    const updated = setPartRotateScad(code, { from: 0, to: code.length }, [0, 0, 45]);
+    expect(updated).toContain('rotate([0, 0, 45]) scale([2, 1, 1]) cube([10, 10, 10]);');
+  });
+
+  test('chain order with translate + scale + cube reads translate→rotate→scale→cube', () => {
+    const code = 'translate([5, 0, 0]) scale([2, 1, 1]) cube([10, 10, 10]); // part: box';
+    const updated = setPartRotateScad(code, { from: 0, to: code.length }, [0, 0, 45]);
+    expect(updated).toContain('translate([5, 0, 0]) rotate([0, 0, 45]) scale([2, 1, 1]) cube([10, 10, 10]);');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group-centroid math (resize + Z-rotation pivots for 2+ selection)
+// ---------------------------------------------------------------------------
+
+import { groupCentroid, groupCentroidScaleDelta, groupCentroidRotateZDelta } from '../src/insert/arrangeMath';
+
+test.describe('groupCentroid', () => {
+  function entryRE(min: Vec3, max: Vec3): RegistryEntry {
+    return { box: { min, max }, center: [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2] };
+  }
+
+  test('returns midpoint of the union bbox', () => {
+    const reg = new Map<string, RegistryEntry>([
+      ['a', entryRE([-5, -5, 0], [5, 5, 10])],
+      ['b', entryRE([15, -5, 0], [25, 5, 10])],
+    ]);
+    expect(groupCentroid(['a', 'b'], reg)).toEqual([10, 0, 5]);
+  });
+
+  test('null when nothing resolves', () => {
+    expect(groupCentroid(['ghost'], new Map())).toBeNull();
+  });
+});
+
+test.describe('groupCentroidScaleDelta', () => {
+  test('zero delta when scale is identity', () => {
+    expect(groupCentroidScaleDelta([5, 0, 0], [0, 0, 0], [1, 1, 1])).toEqual([0, 0, 0]);
+  });
+
+  test('2x scale doubles the distance from the pivot', () => {
+    // Centre at [5,0,0], pivot at origin → new centre [10,0,0]; delta = [5,0,0].
+    expect(groupCentroidScaleDelta([5, 0, 0], [0, 0, 0], [2, 1, 1])).toEqual([5, 0, 0]);
+  });
+
+  test('per-axis anisotropic factors apply independently', () => {
+    expect(groupCentroidScaleDelta([4, 6, 0], [0, 0, 0], [2, 0.5, 1])).toEqual([4, -3, 0]);
+  });
+
+  test('zero delta when the centre coincides with the pivot', () => {
+    expect(groupCentroidScaleDelta([0, 0, 0], [0, 0, 0], [3, 3, 3])).toEqual([0, 0, 0]);
+  });
+});
+
+test.describe('groupCentroidRotateZDelta', () => {
+  test('zero rotation gives zero delta', () => {
+    expect(groupCentroidRotateZDelta([5, 0, 0], [0, 0, 0], 0)).toEqual([0, 0, 0]);
+  });
+
+  test('90° around origin swings a point on +X to +Y', () => {
+    const d = groupCentroidRotateZDelta([5, 0, 0], [0, 0, 0], 90);
+    // Expected new position: [0, 5, 0]; delta from [5,0,0] is [-5, 5, 0].
+    expect(d[0]).toBeCloseTo(-5, 6);
+    expect(d[1]).toBeCloseTo(5, 6);
+    expect(d[2]).toBe(0);
+  });
+
+  test('preserves Z untouched', () => {
+    const d = groupCentroidRotateZDelta([5, 0, 7], [0, 0, 0], 45);
+    expect(d[2]).toBe(0);
+  });
+
+  test('point at pivot stays put under any rotation', () => {
+    const d = groupCentroidRotateZDelta([3, 4, 0], [3, 4, 0], 137);
+    expect(d[0]).toBeCloseTo(0, 6);
+    expect(d[1]).toBeCloseTo(0, 6);
   });
 });
 

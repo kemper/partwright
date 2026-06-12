@@ -633,4 +633,104 @@ test.describe('Insert palette', () => {
     // shows code that previously had an Insert step on the stack.
     expect(await page.evaluate(() => (window as unknown as { partwright: { canUndo(): boolean } }).partwright.canUndo())).toBe(false);
   });
+
+  test('partwright API: rotateSelection writes .rotate before .translate', async ({ page }) => {
+    await gotoEditor(page);
+    await page.evaluate(() => {
+      const code = [
+        'const { Manifold } = api;',
+        'const box = Manifold.cube([10, 10, 10], true).translate([5, 0, 0]);',
+        'return box;',
+      ].join('\n');
+      (window as unknown as { partwright: { setCode(c: string): void; run(): void } }).partwright.setCode(code);
+      (window as unknown as { partwright: { run(): void } }).partwright.run();
+    });
+
+    const result = await page.evaluate(() => {
+      const w = window as unknown as { partwright: { enterArrange(): unknown; selectParts(n: string[]): string[]; rotateSelection(d: number[]): { ok: boolean } } };
+      w.partwright.enterArrange();
+      w.partwright.selectParts(['box']);
+      return w.partwright.rotateSelection([0, 0, 90]);
+    });
+    expect(result.ok).toBe(true);
+    // Rotate goes before translate so the pivot is the part's own origin.
+    await expect.poll(() => getCode(page)).toMatch(/Manifold\.cube\(\[10, 10, 10\], true\)\.rotate\(\[0, 0, 90\]\)\.translate\(\[5, 0, 0\]\);/);
+
+    await page.evaluate(() => (window as unknown as { partwright: { exitArrange(): void } }).partwright.exitArrange());
+  });
+
+  test('partwright API: group-centroid scale spreads two parts apart', async ({ page }) => {
+    await gotoEditor(page);
+    // Two cubes 10 apart, centred at ±5 on X. After 2× X scale around their
+    // group centroid (origin), each centre should move to ±10 on X — i.e.
+    // each part gets an extra translate of ±5.
+    await page.evaluate(() => {
+      const code = [
+        'const { Manifold } = api;',
+        'const a = Manifold.cube([4, 4, 4], true).translate([-5, 0, 0]);',
+        'const b = Manifold.cube([4, 4, 4], true).translate([5, 0, 0]);',
+        'return a.add(b);',
+      ].join('\n');
+      (window as unknown as { partwright: { setCode(c: string): void; run(): void } }).partwright.setCode(code);
+      (window as unknown as { partwright: { run(): void } }).partwright.run();
+    });
+
+    const result = await page.evaluate(() => {
+      const w = window as unknown as { partwright: { enterArrange(): unknown; selectParts(n: string[]): string[]; resizeSelection(s: number[]): { ok: boolean } } };
+      w.partwright.enterArrange();
+      w.partwright.selectParts(['a', 'b']);
+      return w.partwright.resizeSelection([2, 1, 1]);
+    });
+    expect(result.ok).toBe(true);
+
+    // Each cube doubles in X AND its centre's distance from the origin doubles.
+    // `b` was at +5; after 2× group-centroid scale, centre is at +10 — so the
+    // translate's X should now be 10.
+    const code = await getCode(page);
+    const bMatch = /const b =.*?\.translate\(\[(-?\d+(?:\.\d+)?), [^,]+, [^,]+\]\)/.exec(code);
+    expect(bMatch).not.toBeNull();
+    expect(parseFloat(bMatch![1])).toBeCloseTo(10, 1);
+    const aMatch = /const a =.*?\.translate\(\[(-?\d+(?:\.\d+)?), [^,]+, [^,]+\]\)/.exec(code);
+    expect(parseFloat(aMatch![1])).toBeCloseTo(-10, 1);
+
+    await page.evaluate(() => (window as unknown as { partwright: { exitArrange(): void } }).partwright.exitArrange());
+  });
+
+  test('partwright API: setSnapToGrid rounds non-voxel drag commits', async ({ page }) => {
+    await gotoEditor(page);
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
+
+    await page.locator('#btn-insert').dispatchEvent('click');
+    await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toContain('const box');
+
+    // Snap on, then move palette out of the way and drag the box.
+    await page.evaluate(() => (window as unknown as { partwright: { setSnapToGrid(on: boolean): void } }).partwright.setSnapToGrid(true));
+    await page.evaluate(() => {
+      const p = document.querySelector('#insert-palette-panel') as HTMLElement | null;
+      if (p) { p.style.left = '8px'; p.style.top = '8px'; p.style.right = 'auto'; }
+    });
+    await page.locator('#insert-arrange-toggle').click();
+
+    const cBox = await page.locator('canvas').first().boundingBox();
+    if (!cBox) throw new Error('canvas missing');
+    const cx = cBox.x + cBox.width / 2;
+    const cy = cBox.y + cBox.height / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx + 100, cy, { steps: 10 });
+    await page.mouse.up();
+
+    // The translate triple should be integers when snap is on.
+    await expect.poll(() => getCode(page)).toMatch(/\.translate\(\[/);
+    const code = await getCode(page);
+    const triple = /\.translate\(\[(-?\d+(?:\.\d+)?), (-?\d+(?:\.\d+)?), (-?\d+(?:\.\d+)?)\]\)/.exec(code);
+    expect(triple).not.toBeNull();
+    for (let i = 1; i <= 3; i++) {
+      expect(Number.isInteger(parseFloat(triple![i]))).toBe(true);
+    }
+  });
 });
