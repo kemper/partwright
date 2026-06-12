@@ -25,11 +25,11 @@ const rig = F.rig({
   pose: {
     // Arms neutral so torso/shoulder geometry computes at the right position.
     // We override the arm geometry below with manual capsules.
-    armL: { abduct: 0, flex: 0, elbow: 0 },
-    armR: { abduct: 0, flex: 0, elbow: 0 },
-    legL: { abduct: 14 },
-    legR: { abduct: 14 },
-    head: { nod: -5 },
+    armL: { raiseSide: 0, raiseFwd: 0, bend: 0 },
+    armR: { raiseSide: 0, raiseFwd: 0, bend: 0 },
+    legL: { raiseSide: 14 },
+    legR: { raiseSide: 14 },
+    head: { pitch: -5 },
   },
 });
 
@@ -57,8 +57,8 @@ const foreArmLen  = 60 * 0.150;   // 9.0
 // Elbows: directly out to the side at shoulder height, slightly forward.
 // Classic double-biceps: elbow at same Z as shoulder, arm horizontal.
 // Extend the upper arm a bit beyond the standard length for extra visual space.
-const elbowLX = j.shoulderL[0] + upperArmLen * 1.05;  // ~18.7 — arm extended out
-const elbowZ  = j.shoulderL[2] + 0.5;                 // 49 — barely above shoulder
+const elbowLX = j.upperArmL[0] + upperArmLen * 1.05;  // ~18.7 — arm extended out
+const elbowZ  = j.upperArmL[2] + 0.5;                 // 49 — barely above shoulder
 const elbowY  = -1.5;                                  // slightly forward toward camera
 
 const elbowL = [elbowLX,  elbowY, elbowZ];
@@ -84,10 +84,10 @@ const fistR = [-fistLX, fistY, fistZ];
 
 // Build the arms as thick tapered capsule chains — bodybuilder scale
 function makeArm(shoulderPos, elbow, wrist, fist) {
-  const k = r.foreArm * 0.85;
+  const k = r.lowerArm * 0.85;
   // Bodybuilder arms — notably thicker than average
   const rU = r.upperArm * 1.25;   // thick upper arm
-  const rF = r.foreArm * 1.15;    // thick forearm
+  const rF = r.lowerArm * 1.15;    // thick forearm
   // Upper arm: full capsule shoulder→elbow
   const upper = sdf.capsule(shoulderPos, elbow, rU);
   // Bicep peak: forward-offset sphere at the midpoint of the upper arm
@@ -110,11 +110,11 @@ function makeArm(shoulderPos, elbow, wrist, fist) {
     .smoothUnion(bicepPeak, k * 0.7)
     .smoothUnion(deltoid, r.upperArm * 0.6)
     .smoothUnion(fore, k)
-    .smoothUnion(fistSphere, r.foreArm * 0.9);
+    .smoothUnion(fistSphere, r.lowerArm * 0.9);
 }
 
-const armL = makeArm(j.shoulderL, elbowL, wristL, fistL);
-const armR = makeArm(j.shoulderR, elbowR, wristR, fistR);
+const armL = makeArm(j.upperArmL, elbowL, wristL, fistL);
+const armR = makeArm(j.upperArmR, elbowR, wristR, fistR);
 
 // 2. HEAD + FACE
 // eyes: false — eyes are lifted to the top-level hard-union with their own label
@@ -146,10 +146,10 @@ const chestPuff = sdf.ellipsoid(
 
 const trapL = sdf.ellipsoid(
   r.upperArm * 1.2, r.upperArm * 0.75, r.upperArm * 1.0,
-).translate([j.shoulderL[0] * 0.65, -r.chestY * 0.2, j.shoulderL[2] + r.upperArm * 0.1]);
+).translate([j.upperArmL[0] * 0.65, -r.chestY * 0.2, j.upperArmL[2] + r.upperArm * 0.1]);
 const trapR = sdf.ellipsoid(
   r.upperArm * 1.2, r.upperArm * 0.75, r.upperArm * 1.0,
-).translate([j.shoulderR[0] * 0.65, -r.chestY * 0.2, j.shoulderR[2] + r.upperArm * 0.1]);
+).translate([j.upperArmR[0] * 0.65, -r.chestY * 0.2, j.upperArmR[2] + r.upperArm * 0.1]);
 
 // 4. WELDED SKIN — note: F.arms and F.hands are NOT included here; we use
 //    our manual arm geometry above instead.
@@ -164,10 +164,10 @@ const skin = F.weld(rig, [
   trapR,
   armL,
   armR,
-], { k: r.foreArm * 0.7 }).label('skin');
+], { k: r.lowerArm * 0.7 }).label('skin');
 
 // 5. SHORT TRUNKS — high-cut bodybuilding shorts
-const trunkCuffZ = j.hipL[2] + r.thigh * 0.4;
+const trunkCuffZ = j.upperLegL[2] + r.upperLeg * 0.4;
 const trunks = F.clothing.pants(rig, {
   rise: 'mid',
   leg: 'slim',
