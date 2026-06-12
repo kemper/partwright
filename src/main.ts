@@ -37,7 +37,7 @@ import './renderer/viewportSubsystems';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
+import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
@@ -4352,7 +4352,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
+  const { editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, lineNumbersToggle, fontSizeDecBtn, fontSizeIncBtn, fontSizeValueEl, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
@@ -4468,21 +4468,56 @@ async function main() {
   syncEditorTitle(getState());
   onStateChange(syncEditorTitle);
 
-  // Format button and auto-format toggle
-  const AUTO_FORMAT_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40';
-  const AUTO_FORMAT_OFF_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-zinc-500 border-zinc-700 hover:text-zinc-300';
-  function syncAutoFormatToggleUI(): void {
-    const on = getAutoFormat();
-    autoFormatToggle.textContent = on ? 'Auto ✓' : 'Auto';
-    autoFormatToggle.title = on ? 'Auto-format on — click to disable' : 'Auto-format off — click to enable';
-    autoFormatToggle.className = on ? AUTO_FORMAT_ON_CLASS : AUTO_FORMAT_OFF_CLASS;
+  // Editor settings menu (⚙) — Format / Auto-format / Word wrap / Line numbers /
+  // Font size. Each toggle renders as a compact On/Off pill via a shared helper.
+  const TOGGLE_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-[11px] leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40 min-w-[2.75rem] text-center';
+  const TOGGLE_OFF_CLASS = 'shrink-0 px-2 py-0.5 rounded text-[11px] leading-none border text-zinc-400 border-zinc-700 hover:text-zinc-200 min-w-[2.75rem] text-center';
+  function syncTogglePill(btn: HTMLButtonElement, on: boolean, name: string): void {
+    btn.textContent = on ? 'On' : 'Off';
+    btn.title = `${name}: ${on ? 'on' : 'off'} — click to toggle`;
+    btn.setAttribute('aria-pressed', String(on));
+    btn.className = on ? TOGGLE_ON_CLASS : TOGGLE_OFF_CLASS;
+  }
+  const syncAutoFormatToggleUI = (): void => syncTogglePill(autoFormatToggle, getAutoFormat(), 'Auto-format on load');
+  const syncLineWrapToggleUI = (): void => syncTogglePill(lineWrapToggle, getLineWrap(), 'Word wrap');
+  const syncLineNumbersToggleUI = (): void => syncTogglePill(lineNumbersToggle, getLineNumbers(), 'Line numbers');
+  function syncFontSizeUI(): void {
+    const px = getFontSize();
+    const { min, max } = getFontSizeBounds();
+    fontSizeValueEl.textContent = `${px}px`;
+    fontSizeDecBtn.disabled = px <= min;
+    fontSizeIncBtn.disabled = px >= max;
+    fontSizeDecBtn.classList.toggle('opacity-40', fontSizeDecBtn.disabled);
+    fontSizeDecBtn.classList.toggle('cursor-not-allowed', fontSizeDecBtn.disabled);
+    fontSizeIncBtn.classList.toggle('opacity-40', fontSizeIncBtn.disabled);
+    fontSizeIncBtn.classList.toggle('cursor-not-allowed', fontSizeIncBtn.disabled);
   }
   syncAutoFormatToggleUI();
+  syncLineWrapToggleUI();
+  syncLineNumbersToggleUI();
+  syncFontSizeUI();
+
   findReplaceBtn.addEventListener('click', () => openFindReplace());
   formatBtn.addEventListener('click', () => formatCode());
   autoFormatToggle.addEventListener('click', () => {
     setAutoFormat(!getAutoFormat());
     syncAutoFormatToggleUI();
+  });
+  lineWrapToggle.addEventListener('click', () => {
+    setLineWrap(!getLineWrap());
+    syncLineWrapToggleUI();
+  });
+  lineNumbersToggle.addEventListener('click', () => {
+    setLineNumbers(!getLineNumbers());
+    syncLineNumbersToggleUI();
+  });
+  fontSizeDecBtn.addEventListener('click', () => {
+    setFontSize(getFontSize() - 1);
+    syncFontSizeUI();
+  });
+  fontSizeIncBtn.addEventListener('click', () => {
+    setFontSize(getFontSize() + 1);
+    syncFontSizeUI();
   });
   document.addEventListener('keydown', (e) => {
     // Use e.code (physical key) — on macOS, Option+Shift+F composes a dead-key
