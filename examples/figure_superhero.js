@@ -8,7 +8,7 @@ const F = sdf.figure;
 // one knee slightly popped for the take-off look, head looking up.
 // twist: 90 on the raised arm rotates the elbow-curl plane so the forearm
 // curls UPWARD (not forward) — the fist ends up above the crown.
-const rig = F.rig({
+const rig0 = F.rig({
   height: 66,
   headsTall: 7.5,
   build: 'stocky',
@@ -21,6 +21,10 @@ const rig = F.rig({
     spine: { lean: -3 },
   },
 });
+// Stand both feet on one plane so the boots' soles are coplanar on the base
+// (drop re-poses the popped leg down via IK). Build everything from the
+// grounded rig so feet, footwear and base all share the ground plane.
+const rig = F.ground(rig0, { mode: 'drop' });
 const j = rig.joints, r = rig.r;
 
 // 2. HEAD + FACE — determined smile, strong brows, jaw set.
@@ -109,9 +113,11 @@ const capeAll = capePanel.label('cape');
 // 7. BOOTS — first-class footwear builder. Anchored on the ankles and
 // following each foot's heading (so they track the popped knee's turnout),
 // with a shaft up to mid-shin. No more hand-rolled capsules.
+// Footwear OWNS its paint regions ('boots' upper + 'sole') — don't add .label().
 const boots = F.clothing.boots(rig, {
   shaftZ: j.footL[2] * 0.35 + j.lowerLegL[2] * 0.65,  // shaft top ~mid-shin
-}).label('boots');
+  label: 'boots',
+});
 
 // 8. GLOVES — colored overlays from mid-forearm to hand/fist.
 // Each glove: capsule from mid-forearm to wrist + a sphere over the fist.

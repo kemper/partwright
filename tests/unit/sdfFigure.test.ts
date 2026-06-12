@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -656,6 +656,75 @@ describe('figure standOn — seat a prop under a foot', () => {
     const rig = buildRig({});
     expect(() => (standOn(boxN(), [0, 0, 0]) as SdfNode).bounds()).not.toThrow();
     expect(() => standOn(boxN(), rig.sole.L, { foo: 1 })).toThrow();
+  });
+});
+
+describe('figure footwear — separate sole region', () => {
+  it('emits a distinct sole region plus the upper, by default', () => {
+    const rig = buildRig({});
+    const names = partitionByLabel(buildBoots(api, rig) as SdfNode).map(r => r.labelName);
+    expect(names).toContain('boots');
+    expect(names).toContain('sole');
+  });
+
+  it("sole: false folds the sole into the upper (one region name)", () => {
+    const rig = buildRig({});
+    const names = partitionByLabel(buildBoots(api, rig, { sole: false }) as SdfNode).map(r => r.labelName);
+    expect(names).toContain('boots');
+    expect(names).not.toContain('sole');
+  });
+
+  it('custom upper + sole labels', () => {
+    const rig = buildRig({});
+    const names = partitionByLabel(buildBoots(api, rig, { label: 'kicks', sole: { label: 'tread' } }) as SdfNode).map(r => r.labelName);
+    expect(names).toContain('kicks');
+    expect(names).toContain('tread');
+  });
+
+  it('shoes default their upper label to "shoes"', () => {
+    const rig = buildRig({});
+    const names = partitionByLabel(buildShoes(api, rig) as SdfNode).map(r => r.labelName);
+    expect(names).toContain('shoes');
+  });
+});
+
+describe('figure ground — stand feet on one plane', () => {
+  it('plant levels near-plane feet to a common groundZ', () => {
+    const rig = buildRig({ pose: { legR: { bend: 28, raiseFwd: 10 } } });
+    const g = groundRig(rig, { mode: 'plant' });
+    expect(g.sole.L.groundZ).toBeCloseTo(g.sole.R.groundZ);
+  });
+
+  it('plant lifts a foot that is beyond tolerance', () => {
+    const rig = buildRig({ pose: { legR: { raiseFwd: 80, bend: 80 } } });
+    const g = groundRig(rig, { mode: 'plant', tolerance: 0.5 });
+    expect(Math.abs(g.sole.L.groundZ - g.sole.R.groundZ)).toBeGreaterThan(0.5);
+  });
+
+  it('drop re-poses the legs so both feet reach the plane, preserving bone lengths', () => {
+    const rig = buildRig({ pose: { legR: { bend: 28, raiseFwd: 10 } } });
+    const g = groundRig(rig, { mode: 'drop' });
+    expect(g.sole.L.groundZ).toBeCloseTo(g.sole.R.groundZ);
+    // thigh + shank lengths are preserved by the 2-bone IK.
+    for (const side of ['L', 'R'] as const) {
+      const t0 = dist(rig.joints[`upperLeg${side}`], rig.joints[`lowerLeg${side}`]);
+      const t1 = dist(g.joints[`upperLeg${side}`], g.joints[`lowerLeg${side}`]);
+      const s0 = dist(rig.joints[`lowerLeg${side}`], rig.joints[`foot${side}`]);
+      const s1 = dist(g.joints[`lowerLeg${side}`], g.joints[`foot${side}`]);
+      expect(t1).toBeCloseTo(t0, 2);
+      expect(s1).toBeCloseTo(s0, 2);
+    }
+  });
+
+  it('grounds to an explicit z', () => {
+    const g = groundRig(buildRig({}), { mode: 'plant', z: -5 });
+    expect(g.sole.L.groundZ).toBeCloseTo(-5);
+    expect(g.sole.R.groundZ).toBeCloseTo(-5);
+  });
+
+  it('rejects unknown options and bad modes', () => {
+    expect(() => groundRig(buildRig({}), { foo: 1 })).toThrow();
+    expect(() => groundRig(buildRig({}), { mode: 'hover' })).toThrow(/mode/);
   });
 });
 

@@ -793,14 +793,27 @@ function buildFeet(sdf: SdfApi, rig: Rig): Node {
 function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'boots'): Node {
   const name = `clothing.${kind}(opts)`;
   const o = obj(opts, name);
-  assertNoUnknownKeys(o, kind === 'boots' ? ['size', 'shaftZ', 'thickness'] : ['size', 'thickness'], name);
+  const keys = kind === 'boots' ? ['size', 'shaftZ', 'thickness', 'label', 'sole'] : ['size', 'thickness', 'label', 'sole'];
+  assertNoUnknownKeys(o, keys, name);
   const j = rig.joints, r = rig.r;
   // Footprint scale (chunkier/daintier footwear) and shell offset over the foot.
   const size = num(o.size, 1, `${kind}.size`, 0.1);
   const t = num(o.thickness, r.foot * 0.18, `${kind}.thickness`, 0.001);
-  // Boot shaft top: a world-Z target projected onto each leg's OWN ankle→knee
-  // bone (so a posed/lunge shank keeps its shaft on the bone, like pants'
-  // cuffPoint). Default ~mid-calf.
+  // This builder OWNS its paint regions (like F.face.eyes): the upper carries
+  // `label` and the sole its own `sole.label`, so don't add `.label()` on top —
+  // an outer label would swallow the sole region (the outermost label wins).
+  if (o.label !== undefined && typeof o.label !== 'string') throw new ValidationError(`${kind}.label must be a string`);
+  const upperLabel = (o.label as string | undefined) ?? kind;
+  // Sole = a distinct, slightly-wider, flat region by default (paints separately
+  // — a real shoe/boot sole). `sole: false` folds it into the upper (one colour).
+  const soleOn = o.sole !== false;
+  const so = soleOn && typeof o.sole === 'object' && o.sole !== null ? o.sole as Record<string, unknown> : {};
+  assertNoUnknownKeys(so, ['label', 'thickness', 'overhang'], `${kind}.sole`);
+  if (so.label !== undefined && typeof so.label !== 'string') throw new ValidationError(`${kind}.sole.label must be a string`);
+  const soleLabel = (so.label as string | undefined) ?? 'sole';
+  const soleThick = num(so.thickness, r.foot * 0.5, `${kind}.sole.thickness`, 0.001);
+  const overhang = num(so.overhang, r.foot * 0.12, `${kind}.sole.overhang`, 0);
+
   const shaftZ = o.shaftZ === undefined ? undefined : num(o.shaftZ, 0, `${kind}.shaftZ`);
   function shaftTop(A: Vec3, K: Vec3): Vec3 {
     if (shaftZ === undefined) return lerp3(A, K, 0.55);
@@ -810,9 +823,10 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     return lerp3(A, K, Math.min(0.95, Math.max(0.1, frac)));
   }
 
-  function boot(A: Vec3, K: Vec3, sole0: SoleFrame, side: number): Node {
-    // Mirror buildFeet's foot, inflated by `t` and scaled by `size`. Everything
-    // keys off the canonical sole frame so footwear can't drift from the foot.
+  // Build one foot's two regions: the upper (boot body, clipped to sit ABOVE the
+  // sole) and the sole slab (a wide flat footprint from groundZ up). They overlap
+  // a little so the union welds into one component.
+  function foot(A: Vec3, K: Vec3, sole0: SoleFrame, side: number): { upper: Node; sole: Node | null } {
     const footLen = sole0.length * size;
     const fwd = sole0.heading;
     const groundZ = sole0.groundZ;
@@ -822,34 +836,17 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     const toe = onGround(add3(A, add3(scale3(fwd, footLen * 0.62), scale3(lat, side * r.foot * 0.12))));
     const heel = onGround(add3(A, scale3(fwd, -footLen * 0.38)));
     const instepC = onGround(add3(A, scale3(fwd, footLen * 0.35)));
-    const sole = sdf.capsule(heel, toe, r.foot * 0.62 + t);
-    const upper = sdf.ellipsoid((r.foot * 0.8 + t) * size, footLen * 0.5, r.foot * 0.8 + t)
+    const soleCap = sdf.capsule(heel, toe, r.foot * 0.62 + t);
+    const instep = sdf.ellipsoid((r.foot * 0.8 + t) * size, footLen * 0.5, r.foot * 0.8 + t)
       .translate([instepC[0], instepC[1], sz + r.foot * 0.15 + t * 0.4]);
-    // Ankle collar bridges the (possibly elevated) ankle to the sole — keeps the
-    // shoe welded to the foot/leg in any pose.
     const collar = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.lowerLeg * 0.85 + t);
-    // A real flat SOLE slab at the bottom: a footprint-shaped box (yawed to the
-    // foot heading) spanning from the ground plane UP into the foot, so it both
-    // reads as a shoe sole and fully covers the skin underside (no bare-skin
-    // patch poking through). Same label as the boot — it paints as one piece.
-    const yaw = Math.atan2(fwd[0], fwd[1]) / DEG;  // local +Y → heading
-    const soleThick = r.foot * 0.75;               // bridges groundZ up into the foot
-    const soleC: Vec3 = [sole0.point[0], sole0.point[1], groundZ + soleThick / 2];
-    const soleSlab = sdf.roundedBox(
-      [(sole0.width * size + 2 * t) * 1.05, footLen * 0.96, soleThick],
-      Math.min(r.foot * 0.14, soleThick * 0.45),
-    ).rotate([0, 0, yaw]).translate(soleC);
-    let shoe = sole.smoothUnion(upper, r.foot * 0.6).smoothUnion(collar, r.foot * 0.6)
-      .smoothUnion(soleSlab, r.foot * 0.3);
+    let upper = soleCap.smoothUnion(instep, r.foot * 0.6).smoothUnion(collar, r.foot * 0.6);
     if (kind === 'boots') {
-      // Shaft: a capsule up the shank bone from the ankle to the shaft top.
       const shaft = sdf.capsule(A, shaftTop(A, K), r.lowerLeg + t);
-      shoe = shoe.smoothUnion(shaft, r.lowerLeg * 0.9);
+      upper = upper.smoothUnion(shaft, r.lowerLeg * 0.9);
     }
-    // --- Guaranteed-coverage underlayer (additive — see buildPants) -------
-    // The body's foot mass (and, for boots, the lower-leg shank) offset by `t`
-    // and clipped to the footwear zone. The skin can't poke through its own
-    // offset, so the shaped overlay's gaps are filled structurally.
+    // Guaranteed-coverage underlayer: the body's foot/shank mass offset by `t`
+    // and clipped to the footwear zone, so the skin can't poke through.
     const footMass = (() => {
       const s = sdf.capsule(heel, toe, r.foot * 0.62);
       const inst = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.5, r.foot * 0.8)
@@ -862,16 +859,35 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     const big = Math.max(footLen, r.lowerLeg) * 8;
     const topZ = kind === 'boots' ? shaftTop(A, K)[2] : sz + r.foot * 1.2 + t;
     const zone = sdf.box([big, big, big]).translate([A[0], A[1], topZ - big / 2]); // z ≤ topZ
-    const result = shoe.union(footMass.intersect(zone));
-    // Flat sole: slice off everything below the ground plane so the bottom is a
-    // flat sole flush with the floor/base (prints flat, sits flush on F.base)
-    // instead of the rounded capsule underside.
-    const floor = sdf.box([big, big, big]).translate([A[0], A[1], groundZ + big / 2]); // z ≥ groundZ
-    return result.intersect(floor);
+    let upperFull = upper.union(footMass.intersect(zone));
+
+    const soleTopZ = soleOn ? groundZ + soleThick : groundZ;
+    // The upper sits ON the sole: clip it to z ≥ (soleTopZ − small weld overlap)
+    // when there's a sole, else flat at the ground plane.
+    const clipZ = soleOn ? soleTopZ - r.foot * 0.18 : groundZ;
+    const upperFloor = sdf.box([big, big, big]).translate([A[0], A[1], clipZ + big / 2]); // z ≥ clipZ
+    upperFull = upperFull.intersect(upperFloor);
+
+    let soleNode: Node | null = null;
+    if (soleOn) {
+      // A flat, footprint-shaped slab, wider than the upper (overhang lip) and
+      // yawed to the foot heading — reads as a real sole and fully covers the
+      // skin underside. Flat bottom at groundZ.
+      const yaw = Math.atan2(fwd[0], fwd[1]) / DEG;  // local +Y → heading
+      const slabH = soleTopZ - groundZ;
+      soleNode = sdf.roundedBox(
+        [sole0.width * size + 2 * (t + overhang), footLen * 0.98 + 2 * overhang, slabH],
+        Math.min(r.foot * 0.16, slabH * 0.45),
+      ).rotate([0, 0, yaw]).translate([sole0.point[0], sole0.point[1], (groundZ + soleTopZ) / 2]);
+    }
+    return { upper: upperFull, sole: soleNode };
   }
 
-  return boot(j.footL as Vec3, j.lowerLegL as Vec3, rig.sole.L, +1)
-    .union(boot(j.footR as Vec3, j.lowerLegR as Vec3, rig.sole.R, -1));
+  const L = foot(j.footL as Vec3, j.lowerLegL as Vec3, rig.sole.L, +1);
+  const R = foot(j.footR as Vec3, j.lowerLegR as Vec3, rig.sole.R, -1);
+  const parts: Node[] = [L.upper.label(upperLabel), R.upper.label(upperLabel)];
+  if (L.sole && R.sole) parts.push(L.sole.label(soleLabel), R.sole.label(soleLabel));
+  return parts.reduce((a, b) => a.union(b));
 }
 
 function buildShoes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
@@ -914,12 +930,98 @@ function buildBase(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // disc BOTTOM sits below the lowest sole, so no foot/boot hangs through the
   // underside. The lowest foot is embedded a little; a lifted foot stays free.
   const lowestGroundZ = Math.min(rig.sole.L.groundZ, rig.sole.R.groundZ);
-  const topZ = lowestGroundZ + r.foot * 0.7;          // weld lip into the lowest foot
+  // Rise just enough to weld the lowest sole, but LESS than a footwear sole's
+  // height (~0.5·foot) so a coloured sole still shows above the disc rim instead
+  // of being swallowed — the figure reads as standing ON the base.
+  const topZ = lowestGroundZ + r.foot * 0.32;
   const thickness = num(o.thickness, Math.max(H * 0.03, r.foot * 0.9), 'base.thickness', 0.1);
   const botZ = Math.min(topZ - thickness, lowestGroundZ - r.foot * 0.12); // always below the soles
   const h = topZ - botZ;
   return sdf.roundedCylinder(radius, h, Math.min(h * 0.35, r.foot * 0.5))
     .translate([0, 0, (topZ + botZ) / 2]);
+}
+
+/** Two-bone IK: place the knee so the leg (fixed hip, fixed bone lengths) reaches
+ *  `target` with the ankle. Keeps the original bend direction (so a knee that bent
+ *  forward stays forward). If `target` is out of reach, the leg straightens toward
+ *  it and the ankle is clamped to full extension. */
+function legIK(hip: Vec3, knee: Vec3, ankle: Vec3, target: Vec3): { knee: Vec3; ankle: Vec3 } {
+  const Lt = len3(sub3(knee, hip));
+  const Ls = len3(sub3(ankle, knee));
+  const d = sub3(target, hip);
+  const dist = len3(d);
+  if (dist < 1e-6) return { knee, ankle };
+  const u = scale3(d, 1 / dist);                 // hip → target unit
+  if (dist >= Lt + Ls) {                          // unreachable: straighten + clamp
+    return { knee: add3(hip, scale3(u, Lt)), ankle: add3(hip, scale3(u, Lt + Ls)) };
+  }
+  // Preserve the original bend plane: the component of (knee − hip) ⟂ to u.
+  const kh = sub3(knee, hip);
+  const along = kh[0] * u[0] + kh[1] * u[1] + kh[2] * u[2];
+  let bend = sub3(kh, scale3(u, along));
+  const bl = len3(bend);
+  bend = bl > 1e-6 ? scale3(bend, 1 / bl) : norm3(cross3(u, Math.abs(u[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]));
+  // Law of cosines: knee lies `a` along u from the hip, `h` off the axis.
+  const a = (Lt * Lt - Ls * Ls + dist * dist) / (2 * dist);
+  const h = Math.sqrt(Math.max(0, Lt * Lt - a * a));
+  return { knee: add3(add3(hip, scale3(u, a)), scale3(bend, h)), ankle: target };
+}
+
+/** Ground a figure so its feet stand on one plane — the "connection" between
+ *  footwear soles and a surface. Returns a NEW rig; build feet / footwear / base
+ *  from it and they share the plane (footwear soles come out coplanar, the base
+ *  meets them). `mode`:
+ *   - `'plant'` (default): feet within `tolerance` of the plane are leveled ONTO
+ *     it (their footwear sole thickens to reach it); feet beyond tolerance stay
+ *     lifted (off the ground). No re-posing — keeps the pose exactly.
+ *   - `'drop'`: re-poses each leg (2-bone IK, hips fixed) so every foot's sole
+ *     lands on the plane. Physically grounds all feet at the cost of changing the
+ *     leg geometry.
+ *  The plane is `z`, else the top of `surface` (an SDF node), else the lowest
+ *  foot's ground plane. */
+function groundRig(rig: Rig, opts?: unknown): Rig {
+  const o = obj(opts, 'ground(opts)');
+  assertNoUnknownKeys(o, ['mode', 'surface', 'z', 'tolerance'], 'ground(opts)');
+  const mode = o.mode === undefined ? 'plant' : assertEnum(o.mode, ['plant', 'drop'] as const, 'ground.mode');
+  let plane: number;
+  if (o.z !== undefined) {
+    plane = num(o.z, 0, 'ground.z');
+  } else if (o.surface !== undefined) {
+    const s = o.surface as { bounds?: () => { max: Vec3 } };
+    if (!s || typeof s.bounds !== 'function') throw new ValidationError('ground.surface must be an SDF node');
+    plane = s.bounds().max[2];
+  } else {
+    plane = Math.min(rig.sole.L.groundZ, rig.sole.R.groundZ);
+  }
+  const tol = num(o.tolerance, rig.r.foot * 1.5, 'ground.tolerance', 0);
+
+  if (mode === 'plant') {
+    const plant = (sf: SoleFrame): SoleFrame =>
+      Math.abs(sf.groundZ - plane) <= tol
+        ? { ...sf, groundZ: plane, point: [sf.point[0], sf.point[1], plane] }
+        : sf;
+    return { ...rig, sole: { L: plant(rig.sole.L), R: plant(rig.sole.R) } };
+  }
+
+  // drop: re-pose each leg so the foot's ground plane lands on `plane`.
+  const joints: Record<string, Vec3> = { ...rig.joints };
+  const dir: Record<string, Vec3> = { ...rig.dir };
+  const sole = { L: rig.sole.L, R: rig.sole.R };
+  for (const side of ['L', 'R'] as const) {
+    const hip = rig.joints[`upperLeg${side}`];
+    const knee = rig.joints[`lowerLeg${side}`];
+    const ankle = rig.joints[`foot${side}`];
+    // groundZ = ankle.z − 1.95·foot (see makeSoleFrame), so the ankle that lands
+    // the sole on `plane` is plane + 1.95·foot, directly under the current foot.
+    const target: Vec3 = [ankle[0], ankle[1], plane + rig.r.foot * 1.95];
+    const ik = legIK(hip, knee, ankle, target);
+    joints[`lowerLeg${side}`] = ik.knee;
+    joints[`foot${side}`] = ik.ankle;
+    dir[`upperLeg${side}`] = norm3(sub3(ik.knee, hip));
+    dir[`lowerLeg${side}`] = norm3(sub3(ik.ankle, ik.knee));
+    sole[side] = makeSoleFrame(ik.ankle, rig.dir[`foot${side}`], rig.r);
+  }
+  return { ...rig, joints, dir, sole };
 }
 
 // --- Face features (read rig.face anchors) --------------------------------
@@ -1567,6 +1669,12 @@ export interface FigureNamespace {
   feet(rig: Rig, opts?: object): Node;
   head(rig: Rig, opts?: object): Node;
   base(rig: Rig, opts?: object): Node;
+  /** Ground a figure so its feet stand on one plane (the footwear-sole ↔ surface
+   *  connection). Returns a NEW rig — build feet/footwear/base from it. `mode`:
+   *  `'plant'` levels near-plane feet onto it (lifts the rest); `'drop'` re-poses
+   *  legs (2-bone IK) so every foot lands. Plane = `z`, else top of `surface`,
+   *  else the lowest foot. */
+  ground(rig: Rig, opts?: object): Rig;
   hair(rig: Rig, opts?: object): Node;
   weld(rig: Rig, parts: Node[], opts?: object): Node;
   /** Snap an accessory node to a rig joint by its bbox anchor (no offset math).
@@ -1783,6 +1891,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     feet: (rig) => buildFeet(sdf, assertRig(rig, 'feet(rig)')),
     head: (rig) => buildHead(sdf, assertRig(rig, 'head(rig)')),
     base: (rig, opts) => buildBase(sdf, assertRig(rig, 'base(rig)'), opts),
+    ground: (rig, opts) => groundRig(assertRig(rig, 'ground(rig)'), opts),
     hair: (rig, opts) => buildHair(sdf, assertRig(rig, 'hair(rig)'), opts),
     weld: (rig, parts, opts) => weldBody(assertRig(rig, 'weld(rig)'), parts, opts),
     placeAt: (node, joint, opts) => placeAt(node as Node, joint, opts),
@@ -1811,4 +1920,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair };

@@ -432,15 +432,34 @@ F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
 F.clothing.top(rig, { sleeve, hemZ, thickness })        // sleeve: none|short|long
 //   hemZ below the pelvis turns the top into a robe/dress: a flared skirt
 //   cone is added down to the hem so legs stay covered all round.
-F.clothing.shoes(rig, { size, thickness })              // sole + upper over each foot
-F.clothing.boots(rig, { size, shaftZ, thickness })      // shoes + a shaft up the lower leg
-//   Footwear keys off the rig.sole.{L,R} frames, so it tracks leg*.twist turnout
-//   like F.feet AND comes out with a FLAT sole on the ground plane — it sits
-//   flush on F.base and prints flat. `size` scales the footprint, `thickness`
-//   the shell over the foot. For boots, `shaftZ` is a world-Z target projected
-//   onto each leg's own ankle→knee bone (default mid-calf), so a posed/lunge
-//   shank keeps the shaft on the bone. (See F.standOn / rig.sole above for
-//   attaching skates/platforms/a base under the feet.)
+F.clothing.shoes(rig, { size, thickness, label, sole })  // sole + upper over each foot
+F.clothing.boots(rig, { size, shaftZ, thickness, label, sole })  // + a shaft up the lower leg
+//   Footwear keys off rig.sole.{L,R}, so it tracks leg*.twist turnout like
+//   F.feet AND comes out with a FLAT sole that fully encloses the skin.
+//   It OWNS its paint regions (like F.face.eyes): the upper is labeled `label`
+//   (default 'boots'/'shoes') and the sole is its OWN region (default label
+//   'sole') — so DON'T add .label() on top (an outer label would swallow the
+//   sole). `sole` defaults ON; pass sole:false to fold it into the upper, or
+//   sole:{ label, thickness, overhang } to tune it (label:'boots' = same colour
+//   as the boot). `size` scales the footprint, `thickness` the shell. For boots,
+//   `shaftZ` is a world-Z target projected onto each leg's own ankle→knee bone.
+```
+
+**Standing on a surface — `F.ground(rig, { mode, surface?|z?, tolerance? })`.** Feet
+posed at different heights end up with soles at different Z. `F.ground` returns a
+**new rig** whose feet share one ground plane; build feet/footwear/base from it and
+the soles come out coplanar with the base meeting them. The plane is `z`, else the
+top of `surface` (an SDF node), else the lowest foot. Two modes:
+- `'plant'` (default) — feet within `tolerance` of the plane are leveled onto it
+  (their footwear sole thickens to reach it); feet beyond tolerance stay **lifted**
+  (off the ground — natural for a takeoff/walk pose).
+- `'drop'` — re-poses each leg (2-bone IK, hips fixed) so **every** foot lands on
+  the plane. Use it to make a figure stand flat-footed regardless of the pose.
+
+```js
+const rig = F.ground(F.rig({ pose: {...} }), { mode: 'drop' });   // both feet on the floor
+const boots = F.clothing.boots(rig, { label: 'boots' });          // sole region paints separately
+const base  = F.base(rig);                                        // meets the shared plane
 ```
 
 Clothing is the body region **inflated and trimmed**, and **coverage is
