@@ -36,7 +36,7 @@ export interface SurfaceApi {
   applyWaffleStitch(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; sharpness?: number; rowOffset?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyFurVelvet(opts?: { amplitude?: number; fiberSpacing?: number; fiberLength?: number; octaves?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyWovenFabric(opts?: { amplitude?: number; threadSpacing?: number; threadWidth?: number; underDepth?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
-  applyKnurlTexture(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; style?: 'diamond' | 'straight' | 'ribs'; sharpness?: number; grainAngleDeg?: number; seed?: number; quality?: number; selectedTriangles?: Set<number>; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyKnurlTexture(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; style?: 'diamond' | 'straight' | 'ribs'; profile?: 'round' | 'pyramid'; sharpness?: number; grainAngleDeg?: number; seed?: number; quality?: number; selectedTriangles?: Set<number>; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiShell(opts?: { amplitude?: number; cellSize?: number; wallWidth?: number; raised?: boolean; jitter?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiLamp(opts?: { cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; jitter?: number; grainAngleDeg?: number; seed?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   buildEngraveStamp(spec?: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }): Promise<{ mask: StampMask; width: number; height: number } | { error: string }>;
@@ -462,7 +462,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   const scopePickBtn = el('button', BTN_BASE, 'Pick point on model');
   const scopeRadius = slider('Region radius', 1, Math.max(2, Math.round(modelSpan(api))), Math.max(1, Math.round(modelSpan(api) * 0.25)), 1, n => String(n), () => {
-    if (codeScope.kind === 'point') codeScope = { ...codeScope, radius: scopeRadius.get() };
+    if (codeScope.kind === 'point') { codeScope = { ...codeScope, radius: scopeRadius.get() }; schedulePreview(); }
   });
   const scopePointStatus = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mt-1');
   const scopePointRow = el('div', 'mb-1');
@@ -537,11 +537,13 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     updateScopeUI();
   }
 
-  scopeWholeBtn.addEventListener('click', () => setScopeMode('none'));
-  scopeLabelBtn.addEventListener('click', () => setScopeMode('label'));
-  scopePointBtn.addEventListener('click', () => setScopeMode('point'));
+  // Each scope change re-fires the (debounced) preview so the scoped patch shown
+  // in the viewport tracks the picker — matching what Apply will write.
+  scopeWholeBtn.addEventListener('click', () => { setScopeMode('none'); schedulePreview(); });
+  scopeLabelBtn.addEventListener('click', () => { setScopeMode('label'); schedulePreview(); });
+  scopePointBtn.addEventListener('click', () => { setScopeMode('point'); schedulePreview(); });
   scopeLabelSelect.addEventListener('change', () => {
-    if (scopeLabelSelect.value) codeScope = { kind: 'label', label: scopeLabelSelect.value };
+    if (scopeLabelSelect.value) { codeScope = { kind: 'label', label: scopeLabelSelect.value }; schedulePreview(); }
   });
   scopePickBtn.addEventListener('click', () => {
     if (scopePickSuppressor) { stopScopePick(); updateScopeUI(); return; }
@@ -554,6 +556,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       codeScope = { kind: 'point', point: hit.point, radius: scopeRadius.get() };
       stopScopePick();
       updateScopeUI();
+      schedulePreview();
       return true;
     });
   });
@@ -881,15 +884,20 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         ['straight', 'Straight (axial splines)'],
         ['ribs', 'Ribs (horizontal rings)'],
       ], 'diamond', schedulePreview);
+      const profile = dropdown<'round' | 'pyramid'>('Profile', [
+        ['round', 'Round (soft bumps)'],
+        ['pyramid', 'Pyramid (straight-sided)'],
+      ], 'round', schedulePreview);
       const cw = slider('Cell width (ridge spacing)', span * 0.008, span * 0.25, span * 0.05, span * 0.004, n => n.toFixed(3), schedulePreview);
       const ch = slider('Cell height', span * 0.008, span * 0.25, span * 0.05, span * 0.004, n => n.toFixed(3), schedulePreview);
       const amp = slider('Amplitude (ridge height)', 0, span * 0.06, span * 0.02, span * 0.001, n => n.toFixed(3), schedulePreview);
       const sharp = slider('Sharpness', 1, 8, 2, 0.5, n => n.toFixed(1), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
-      body.append(style.wrap, cw.wrap, ch.wrap, amp.wrap, sharp.wrap, grain.wrap, detail.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'Functional grip relief. Diamond = thumbscrew cross-hatch; straight = axial splines; ribs = horizontal finger rings. Sharpness 1=soft rounded, 2=crisp, 6+=sharp peaks.'));
+      body.append(style.wrap, profile.wrap, cw.wrap, ch.wrap, amp.wrap, sharp.wrap, grain.wrap, detail.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Functional grip relief. Diamond = thumbscrew cross-hatch; straight = axial splines; ribs = horizontal finger rings. Profile: round = soft cosine bumps, pyramid = straight-sided machinist diamonds. Sharpness 1=soft rounded, 2=crisp, 6+=sharp peaks.'));
       currentOpts = () => ({
         style: style.get(),
+        profile: profile.get(),
         cellWidth: cw.get(),
         cellHeight: ch.get(),
         amplitude: amp.get(),
@@ -1108,7 +1116,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     try { await api.ensureSurfaceTexturesApplied(); } catch { /* preview on whatever is live */ }
     // SDF carves (engrave / voronoi lamp) are async + show the progress modal;
     // the rest resolve immediately. Either way we await the result.
-    const r = await api.previewSurfaceModifier(active, currentOpts(), preserveColor);
+    // In apply-as-code mode, fold in the label/point scope (empty otherwise) so a
+    // scoped preview shows the same patch Apply will write — not the whole model.
+    const r = await api.previewSurfaceModifier(active, { ...currentOpts(), ...scopeOpts() }, preserveColor);
     if ((r as { error?: string }).error) {
       status.textContent = `Preview error: ${(r as { error: string }).error}`;
     } else {

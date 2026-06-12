@@ -22,6 +22,8 @@ type PW = {
   setActiveLanguage: (l: string) => Promise<unknown>;
   applySurfaceTextureAsCode: (id: string, opts?: Record<string, number | boolean | string>) =>
     Promise<{ ok?: boolean; error?: string; call?: string; replaced?: boolean; version?: { label: string }; geometry?: { triangleCount?: number } }>;
+  previewSurfaceModifier: (id: string, opts?: Record<string, unknown>, preserveColor?: boolean) =>
+    Promise<{ ok?: true; error?: string }>;
 };
 
 test.describe('surface textures applied as code', () => {
@@ -266,5 +268,32 @@ test.describe('surface textures applied as code', () => {
     const apply = page.getByRole('button', { name: 'Apply (bake)' });
     await expect(apply).toBeVisible();
     await expect(apply).toBeEnabled();
+  });
+
+  test('previewSurfaceModifier resolves a label/region scope (preview matches a scoped apply)', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('scoped-preview');
+      // A union of a labeled grip cube + a smooth sphere.
+      await pw.run([
+        'const { Manifold } = api;',
+        "const grip = api.label(Manifold.cube([14, 14, 14], true).translate([-9, 0, 0]), 'grip');",
+        'const ball = Manifold.sphere(9, 48).translate([9, 0, 0]);',
+        'return grip.add(ball);',
+      ].join('\n'));
+      // A label-scoped preview resolves to the grip's triangles (no whole-model fallback).
+      const scoped = await pw.previewSurfaceModifier('knurl', { label: 'grip', cellWidth: 2, amplitude: 0.8 }, true);
+      // An unknown label previews as a no-op (selects nothing) rather than texturing the whole model.
+      const unknown = await pw.previewSurfaceModifier('knurl', { label: 'nope', cellWidth: 2 }, true);
+      // A malformed region surfaces the same validation error Apply would.
+      const bad = await pw.previewSurfaceModifier('knurl', { region: { point: [0, 0], radius: 5 } }, true);
+      return { scoped, unknown, bad };
+    });
+    expect(out.scoped.ok).toBe(true);
+    expect(out.scoped.error).toBeUndefined();
+    expect(out.unknown.ok).toBe(true); // empty selection, no error
+    expect(out.bad.error).toBeTruthy(); // [0,0] is not [x,y,z]
   });
 });

@@ -1135,7 +1135,7 @@ const ALL_TOOLS: ToolDefinition[] = [
 - waffle: amplitude, cellWidth, cellHeight, sharpness (1=soft…8+=thin border), rowOffset (0.5=honeycomb), grainAngleDeg, seed, quality
 - fur: amplitude, fiberSpacing, fiberLength, octaves, grainAngleDeg, seed, quality
 - woven: amplitude, threadSpacing, threadWidth (0.1–0.9 fraction), underDepth (0–1), grainAngleDeg, seed, quality
-- knurl: amplitude (ridge height), cellWidth/cellHeight (ridge spacing), style ('diamond'|'straight'|'ribs'), sharpness (1 soft … 6+ sharp peaks), grainAngleDeg, seed, quality — the machinist grip pattern (diamond cross-hatch, axial splines, or finger ribs)
+- knurl: amplitude (ridge height), cellWidth/cellHeight (ridge spacing), style ('diamond'|'straight'|'ribs'), profile ('round' soft cosine bumps | 'pyramid' straight-sided machinist diamonds), sharpness (1 soft … 6+ sharp peaks), grainAngleDeg, seed, quality — the machinist grip pattern (diamond cross-hatch, axial splines, or finger ribs)
 - voronoi: amplitude, cellSize, wallWidth (fraction), raised (false = engraved channels), jitter (0–1), grainAngleDeg, seed, quality
 - smooth: iterations (Taubin passes, ~5), subdivide (default true)
 Plus preserveColor (default true — bake path only; on the code path paint re-resolves against the textured mesh every run automatically).
@@ -1276,13 +1276,14 @@ Plus preserveColor (default true — bake path only; on the code path paint re-r
     name: 'scaleModel',
     description: `Resize the current model by per-axis multiplicative factors and save a new version. 1 = unchanged, 2 = double, 0.5 = half. For a uniform resize pass the same factor for sx, sy, and sz.
 
-**Cross-engine note:** the result is always BAKED to a manifold-js mesh — the parametric source is replaced on every engine. For an editable resize in a manifold-js session, edit the code instead (wrap the returned shape with .scale([sx, sy, sz]) via runAndSave). Returns { ok, label, geometry, warnings? }.`,
+**Write-back:** mode 'auto' (default) keeps a manifold-js model parametric (wraps the source in an editable .scale([sx, sy, sz])) when safe, otherwise bakes to a mesh; 'parametric' forces editable code; 'bake' flattens to a mesh. A SCAD/BREP/painted/voxel model can only bake. Factors must be positive (a negative or zero scale would mirror or collapse the mesh). Returns { ok, noop?, label, geometry, warnings? }.`,
     input_schema: {
       type: 'object',
       properties: {
         sx: { type: 'number', description: 'X-axis scale factor (1 = no change).', exclusiveMinimum: 0 },
         sy: { type: 'number', description: 'Y-axis scale factor (1 = no change).', exclusiveMinimum: 0 },
         sz: { type: 'number', description: 'Z-axis scale factor (1 = no change).', exclusiveMinimum: 0 },
+        mode: { type: 'string', enum: ['auto', 'parametric', 'bake'], description: "Write-back mode. Default 'auto'." },
         preserveColor: { type: 'boolean', description: 'Carry existing paint onto the scaled mesh. Default true.' },
       },
       required: ['sx', 'sy', 'sz'],
@@ -1937,7 +1938,7 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'voxelizeModel':
       return api.voxelizeModel(input);
     case 'scaleModel':
-      return api.scaleModel(input.sx as number, input.sy as number, input.sz as number, { preserveColor: input.preserveColor as boolean | undefined });
+      return api.scaleModel(input.sx as number, input.sy as number, input.sz as number, { mode: input.mode as 'auto' | 'parametric' | 'bake' | undefined, preserveColor: input.preserveColor as boolean | undefined });
     case 'placeModel':
       return api.placeModel(input);
     case 'rotateModel':

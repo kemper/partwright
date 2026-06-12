@@ -318,7 +318,7 @@ slightly depressed.
 ## applyKnurlTexture
 
 ```
-applyKnurlTexture({ amplitude?, cellWidth?, cellHeight?, style?, sharpness?,
+applyKnurlTexture({ amplitude?, cellWidth?, cellHeight?, style?, profile?, sharpness?,
                     grainAngleDeg?, seed?, quality?, preserveColor? })
 ```
 
@@ -330,6 +330,7 @@ handle you already modeled. Region-selectable (texture only painted triangles).
 | Parameter | Default | Notes |
 |-----------|---------|-------|
 | `style` | `'diamond'` | `'diamond'` (cross-hatch), `'straight'` (axial splines), `'ribs'` (horizontal rings). |
+| `profile` | `'round'` | Ridge cross-section. `'round'` = soft cosine bumps; `'pyramid'` = triangle-wave ridges → true straight-sided machinist diamonds with continuous sharp ridge lines. |
 | `amplitude` | ~2% of diagonal | Peak ridge height. |
 | `cellWidth` | ~5% of diagonal | Ridge spacing along the column axis. |
 | `cellHeight` | = cellWidth | Ridge spacing along the row (Z) axis. For square diamonds keep equal to cellWidth. |
@@ -343,6 +344,7 @@ handle you already modeled. Region-selectable (texture only painted triangles).
 - Thumbscrew grip: `style='diamond'`, `cellWidth=d*0.04`, `sharpness=2`
 - Knob splines: `style='straight'`, `cellWidth=d*0.05`
 - Finger ridges: `style='ribs'`, `cellHeight=d*0.06`
+- Machinist diamonds: `style='diamond'`, `profile='pyramid'`, `sharpness=2` (straight-sided, continuous ridge lines)
 
 In-code form: `api.surface.knurl({ style:'diamond', cellWidth: 2, amplitude: 0.6 })`.
 

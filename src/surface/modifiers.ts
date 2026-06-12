@@ -439,6 +439,7 @@ export function defaultKnurlOptions(mesh: MeshData): Required<KnurlTextureOption
     cellWidth: d * 0.05,
     cellHeight: d * 0.05,
     style: 'diamond',
+    profile: 'round',
     sharpness: 2,
     grainAngleDeg: 0,
     seed: 1,
@@ -841,6 +842,14 @@ function stampTriColors(
 
 export async function applyEngrave(mesh: MeshData, opts: EngraveModifierOptions, ctl?: SdfRunControl): Promise<ModifierManifoldResult> {
   const baked = await engraveMesh(mesh, opts, ctl);
+  return buildEngraveResult(mesh, baked, opts);
+}
+
+/** Assemble the engrave `ModifierManifoldResult` from a pre-carved mesh — the
+ *  cheap, synchronous half of {@link applyEngrave} (paint transfer + label +
+ *  wrapper code). Split out so the heavy `engraveMesh` carve can run in a Worker
+ *  (off the main thread) while this assembly stays on the caller's side. */
+export function buildEngraveResult(mesh: MeshData, baked: MeshData, opts: EngraveModifierOptions): ModifierManifoldResult {
   const proj = opts.projection.mode === 'planar'
     ? `${opts.projection.side === 'max' ? '+' : '-'}${opts.projection.axis.toUpperCase()} face`
     : opts.projection.mode === 'free'

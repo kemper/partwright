@@ -60,6 +60,8 @@ import {
   setPartTranslateDeltaScad,
   setPartScaleJs,
   setPartScaleScad,
+  setPartRotateJs,
+  setPartRotateScad,
   mirrorPartJs,
   mirrorPartScad,
   duplicatePartJs,
@@ -75,6 +77,9 @@ import {
   isArrangeActive,
   refreshArrangeOverlay,
   alignDeltas,
+  groupCentroid,
+  groupCentroidScaleDelta,
+  groupCentroidRotateZDelta,
   type AlignAxis,
   type AlignMode,
 } from '../insert/arrangeMode';
@@ -162,9 +167,17 @@ let combineHintEl: HTMLElement | null = null;
 let arrangeToggleBtn: HTMLButtonElement | null = null;
 let sizeSectionEl: HTMLElement | null = null;
 let alignSectionEl: HTMLElement | null = null;
+let rotateSectionEl: HTMLElement | null = null;
 let sizeInputs: [HTMLInputElement, HTMLInputElement, HTMLInputElement] | null = null;
+let rotateInputs: [HTMLInputElement, HTMLInputElement, HTMLInputElement] | null = null;
 let undoBtn: HTMLButtonElement | null = null;
 let redoBtn: HTMLButtonElement | null = null;
+// Snap-to-grid: when on, arrange-mode drag commits and (optionally) other
+// per-axis writebacks round to whole-unit deltas. Voxel grids already snap;
+// this affects the other engines so a CAD-feel "tidy lattice" workflow is
+// available there too. Persists across panel open/close like Auto-combine.
+let snapToGrid = false;
+let snapToGridCheckbox: HTMLInputElement | null = null;
 
 const RESULT_BASE: Record<BooleanOpKind, string> = {
   union: 'merged',
@@ -454,6 +467,16 @@ export function apiSetAutoCombine(on: boolean): void {
 
 export function apiGetAutoCombine(): boolean { return autoCombine; }
 
+/** Toggle the snap-to-whole-units checkbox programmatically. Voxel grids
+ *  already snap; the toggle gives the JS/SCAD/BREP engines an opt-in
+ *  "tidy lattice" mode for drag commits + Align/Rotate group-spread writes. */
+export function apiSetSnapToGrid(on: boolean): void {
+  snapToGrid = on;
+  if (snapToGridCheckbox) snapToGridCheckbox.checked = on;
+}
+
+export function apiGetSnapToGrid(): boolean { return snapToGrid; }
+
 /** Programmatic equivalent of clicking the toggle OFF. */
 export function apiExitArrange(): void {
   if (isArrangeActive()) {
@@ -576,6 +599,17 @@ export function apiDeleteSelection(): { ok: boolean; reason?: string } {
   if (!cb) return { ok: false, reason: 'insert palette not initialized' };
   if (selection.size === 0) return { ok: false, reason: 'no selection' };
   applyQuickDelete();
+  return { ok: true };
+}
+
+/** Rotate the current selection in place. Degrees, per-axis. Same path as
+ *  the Rotate row's Apply button. Voxel sessions reject (lattice
+ *  quantization). */
+export function apiRotateSelection(deg: Vec3): { ok: boolean; reason?: string } {
+  if (!cb) return { ok: false, reason: 'insert palette not initialized' };
+  if (selection.size === 0) return { ok: false, reason: 'no selection' };
+  if (cb.getLanguage() === 'voxel') return { ok: false, reason: 'voxel rotation not supported' };
+  applyRotate(deg);
   return { ok: true };
 }
 
@@ -813,7 +847,76 @@ function buildPanel(): HTMLElement {
   });
   sizeBtnRow.append(applySizeBtn, resetSizeBtn);
   sizeSectionEl.appendChild(sizeBtnRow);
+
+  // Snap-to-grid checkbox — only meaningful for non-voxel engines (voxel
+  // grids already snap). When on, arrange-mode drag deltas round to integer
+  // units before commit so parts slot onto a tidy lattice.
+  const snapRow = document.createElement('label');
+  snapRow.className = 'flex items-center gap-2 text-[11px] text-zinc-400 cursor-pointer select-none';
+  const snapCb = document.createElement('input');
+  snapCb.type = 'checkbox';
+  snapCb.id = 'insert-snap-to-grid';
+  snapCb.className = 'accent-blue-500 w-3.5 h-3.5';
+  snapCb.checked = snapToGrid;
+  snapCb.addEventListener('change', () => { snapToGrid = snapCb.checked; });
+  snapToGridCheckbox = snapCb;
+  const snapLabel = document.createElement('span');
+  // Covers all per-engine translate writebacks — drag commit, align spread,
+  // and the group-centroid scale/rotate spread — not just drag. Label the
+  // broader scope so a user toggling it for drag-cleanup isn't surprised
+  // when their next Align rounds too.
+  snapLabel.textContent = 'Snap moves to whole units';
+  snapLabel.title = 'Round every translate writeback (drag, align, group resize/rotate spread) to integers';
+  snapRow.append(snapCb, snapLabel);
+  sizeSectionEl.appendChild(snapRow);
+
   p.appendChild(sizeSectionEl);
+
+  // --- Rotate (per-axis degrees; 1+ selected) ---
+  rotateSectionEl = document.createElement('div');
+  rotateSectionEl.appendChild(sectionLabel('Rotate (°)'));
+  const rotRow = document.createElement('div');
+  rotRow.className = 'flex items-center gap-1.5 mb-1';
+  const rotLabels: Array<['X' | 'Y' | 'Z', string]> = [['X', 'X rotation in degrees'], ['Y', 'Y rotation in degrees'], ['Z', 'Z rotation in degrees']];
+  const rotInputsArr: HTMLInputElement[] = [];
+  for (const [axis, hint] of rotLabels) {
+    const wrap = document.createElement('div');
+    wrap.className = 'flex items-center gap-1 flex-1';
+    const lab = document.createElement('span');
+    lab.className = 'text-[10px] text-zinc-400 w-3';
+    lab.textContent = axis;
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.step = '15';
+    inp.value = '0';
+    inp.title = hint;
+    inp.className = 'flex-1 min-w-0 bg-zinc-900 border border-zinc-600 rounded px-1.5 py-1 text-[11px] text-zinc-100 text-right';
+    inp.dataset.axis = axis;
+    wrap.append(lab, inp);
+    rotRow.appendChild(wrap);
+    rotInputsArr.push(inp);
+  }
+  rotateInputs = [rotInputsArr[0], rotInputsArr[1], rotInputsArr[2]];
+  rotateSectionEl.appendChild(rotRow);
+  const rotBtnRow = document.createElement('div');
+  rotBtnRow.className = 'flex gap-1.5 mb-1';
+  const applyRotBtn = paletteButton('✓ Apply rotate', 'Rotate the selected parts by these degrees in place. For 2+ parts, the Z rotation also swings the group around its centroid; X/Y rotations stay per-part.', () => {
+    const rx = parseFloat(rotateInputs![0].value) || 0;
+    const ry = parseFloat(rotateInputs![1].value) || 0;
+    const rz = parseFloat(rotateInputs![2].value) || 0;
+    applyRotate([rx, ry, rz]);
+    rotateInputs![0].value = '0';
+    rotateInputs![1].value = '0';
+    rotateInputs![2].value = '0';
+  });
+  const resetRotBtn = paletteButton('⟲ 0°', 'Reset the rotation inputs to 0', () => {
+    rotateInputs![0].value = '0';
+    rotateInputs![1].value = '0';
+    rotateInputs![2].value = '0';
+  });
+  rotBtnRow.append(applyRotBtn, resetRotBtn);
+  rotateSectionEl.appendChild(rotBtnRow);
+  p.appendChild(rotateSectionEl);
 
   // --- Align (2+ selected) ---
   alignSectionEl = document.createElement('div');
@@ -896,6 +999,10 @@ function writePartTranslateDelta(name: string, delta: Vec3): boolean {
   if (Math.abs(delta[0]) < 1e-5 && Math.abs(delta[1]) < 1e-5 && Math.abs(delta[2]) < 1e-5) return false;
   const lang = cb.getLanguage();
   let eff: Vec3 = delta;
+  // Snap-to-grid: round every-engine delta to whole units when the panel
+  // toggle is on. Voxel already rounds (its grid IS integer) — the redundant
+  // round is cheap and keeps the path uniform.
+  if (snapToGrid) eff = [Math.round(delta[0]), Math.round(delta[1]), Math.round(delta[2])];
   let newCode: string;
   if (lang === 'scad') {
     const part = scanParts(cb.getCode(), 'scad').find(p => p.name === name);
@@ -903,7 +1010,8 @@ function writePartTranslateDelta(name: string, delta: Vec3): boolean {
       cb.showToast('Could not locate that part in the SCAD code.', { variant: 'warn' });
       return false;
     }
-    newCode = setPartTranslateDeltaScad(cb.getCode(), part.range, delta);
+    if (snapToGrid && eff[0] === 0 && eff[1] === 0 && eff[2] === 0) return false;
+    newCode = setPartTranslateDeltaScad(cb.getCode(), part.range, eff);
   } else if (lang === 'voxel') {
     eff = [Math.round(delta[0]), Math.round(delta[1]), Math.round(delta[2])];
     if (eff[0] === 0 && eff[1] === 0 && eff[2] === 0) return false;
@@ -919,7 +1027,8 @@ function writePartTranslateDelta(name: string, delta: Vec3): boolean {
     const stmt = emitPrimitiveVoxel(moved, voxelGridVar(cb.getCode()), colour ? colour[1] : VOXEL_DEFAULT_COLOR);
     newCode = replaceVoxelStatement(cb.getCode(), part.range, stmt);
   } else {
-    newCode = setPartTranslateDeltaJs(cb.getCode(), name, delta);
+    if (snapToGrid && eff[0] === 0 && eff[1] === 0 && eff[2] === 0) return false;
+    newCode = setPartTranslateDeltaJs(cb.getCode(), name, eff);
   }
   cb.setCode(newCode);
   const spec = specByName.get(name);
@@ -961,6 +1070,17 @@ function applyResize(scale: Vec3): void {
   const lang = cb.getLanguage();
   const names = [...selection];
   if (names.length === 0) return;
+  // For 2+ parts, Tinkercad scales around the GROUP centroid (the union of
+  // selected bboxes), not each part's own. We compute the pre-scale centres
+  // and centroid here, apply the per-part scale (size grows around own
+  // centre), then translate each part by the centroid-relative delta so the
+  // whole group spreads/pulls-in around the pivot.
+  const pivot = names.length >= 2 ? groupCentroid(names, registry) : null;
+  const preCenters = new Map<string, Vec3>();
+  if (pivot) for (const n of names) {
+    const e = registry.get(n);
+    if (e) preCenters.set(n, [...e.center] as Vec3);
+  }
   const skipped: string[] = [];
   let appliedAny = false;
   const label = `Resize ${fmtScale(scale)} · ${names.length === 1 ? names[0] : `${names.length} parts`}`;
@@ -994,6 +1114,18 @@ function applyResize(scale: Vec3): void {
         appliedAny = true;
       }
     }
+    // Group-centroid spread pass. Done AFTER the per-part scale loop (and
+    // inside the same recordOperation) so it's one undo step. The translate
+    // delta is computed from the PRE-scale centres, which stay constant
+    // through scale-around-own-centre, so the order is order-safe.
+    if (pivot && appliedAny) {
+      for (const name of names) {
+        const c0 = preCenters.get(name);
+        if (!c0) continue;
+        const delta = groupCentroidScaleDelta(c0, pivot, scale);
+        writePartTranslateDelta(name, delta);
+      }
+    }
     if (skipped.length > 0) {
       c.showToast(
         skipped.length === names.length
@@ -1007,6 +1139,85 @@ function applyResize(scale: Vec3): void {
       refreshArrangeOverlay();
     }
   });
+}
+
+/** Rotate the selected parts in place. JS/BREP insert `.rotate([rx,ry,rz])`
+ *  before the trailing translate so the pivot is the part's own origin; SCAD
+ *  wraps with `rotate(...)` after any leading translate. Voxel rotation is
+ *  unsupported in this pass (lattice quantization makes arbitrary angles
+ *  unfaithful) — surfaces as a warn toast.
+ *
+ *  For 2+ selected parts, each part also gets a translate delta so the group
+ *  rotates around the union centroid in the XY plane (Z rotation only —
+ *  arbitrary 3D pivots rarely match user intent in a flat-on-build-plate
+ *  workflow). Pre-rotation centres are snapshotted before any code edit so
+ *  the spread is computed against the original layout. */
+function applyRotate(deg: Vec3): void {
+  if (!cb) return;
+  if (deg[0] === 0 && deg[1] === 0 && deg[2] === 0) return;
+  const lang = cb.getLanguage();
+  const names = [...selection];
+  if (names.length === 0) return;
+  if (lang === 'voxel') {
+    cb.showToast('Voxel rotation isn’t supported yet — try manifold-js / SCAD / BREP.', { variant: 'warn' });
+    return;
+  }
+  const pivot = names.length >= 2 ? groupCentroid(names, registry) : null;
+  const preCenters = new Map<string, Vec3>();
+  if (pivot) for (const n of names) {
+    const e = registry.get(n);
+    if (e) preCenters.set(n, [...e.center] as Vec3);
+  }
+  const skipped: string[] = [];
+  let appliedAny = false;
+  const label = `Rotate ${fmtDeg(deg)} · ${names.length === 1 ? names[0] : `${names.length} parts`}`;
+  const c = cb;
+  recordOperation(label, () => {
+    for (const name of names) {
+      if (lang === 'scad') {
+        const part = scanParts(c.getCode(), 'scad').find(p => p.name === name);
+        if (!part?.range) { skipped.push(name); continue; }
+        c.setCode(setPartRotateScad(c.getCode(), part.range, deg));
+        appliedAny = true;
+      } else {
+        const code = c.getCode();
+        const updated = setPartRotateJs(code, name, deg);
+        if (updated === code) { skipped.push(name); continue; }
+        c.setCode(updated);
+        appliedAny = true;
+      }
+    }
+    // Group-centroid swing pass (Z axis only). Same one-undo-step shape as
+    // the resize pivot pass above.
+    if (pivot && appliedAny && deg[2] !== 0) {
+      for (const name of names) {
+        const c0 = preCenters.get(name);
+        if (!c0) continue;
+        const delta = groupCentroidRotateZDelta(c0, pivot, deg[2]);
+        writePartTranslateDelta(name, delta);
+      }
+    }
+    if (skipped.length > 0) {
+      c.showToast(
+        skipped.length === names.length
+          ? 'Rotate could not locate the selected parts in the code.'
+          : `Rotated ${names.length - skipped.length}; skipped ${skipped.length} (no matching declaration).`,
+        { variant: skipped.length === names.length ? 'warn' : 'neutral' },
+      );
+    }
+    if (appliedAny) {
+      c.run();
+      refreshArrangeOverlay();
+    }
+  });
+}
+
+function fmtDeg(d: Vec3): string {
+  // Compact "90°" / "0/0/90°" for the undo label.
+  if (d[0] === 0 && d[1] === 0) return `${d[2]}°`;
+  if (d[1] === 0 && d[2] === 0) return `${d[0]}°`;
+  if (d[0] === 0 && d[2] === 0) return `${d[1]}°`;
+  return `${d[0]}/${d[1]}/${d[2]}°`;
 }
 
 function fmtScale(s: Vec3): string {
@@ -1144,6 +1355,7 @@ function rerenderSelectionUI(): void {
   // Size: 1+ selected; Align: 2+ selected. Hidden otherwise so the panel stays
   // dense for the common "nothing selected yet" state.
   sizeSectionEl?.classList.toggle('hidden', selection.size === 0);
+  rotateSectionEl?.classList.toggle('hidden', selection.size === 0);
   alignSectionEl?.classList.toggle('hidden', selection.size < 2);
   refreshArrangeOverlay();
 }
