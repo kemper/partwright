@@ -1,5 +1,7 @@
-// Unit tests for the click-to-insert codegen. Pure module, runs in Node
-// (no browser) like tests/patch.spec.ts.
+// Tests for the click-to-insert codegen. The modules under test are pure logic
+// (no browser), but this is a Playwright spec that runs in the e2e tier —
+// Playwright's Node runner imports them directly and asserts on their string
+// output. (It does not live in the vitest unit tier despite being pure-logic.)
 
 import { test, expect } from 'playwright/test';
 import {
@@ -38,6 +40,8 @@ import {
   replaceScadRanges,
   setPartTranslateDeltaJs,
   setPartTranslateDeltaScad,
+  setPartScaleJs,
+  setPartScaleScad,
   mirrorPartJs,
   mirrorPartScad,
   duplicatePartJs,
@@ -47,6 +51,21 @@ import {
   removeScadStatement,
 } from '../src/insert/controller';
 import { primitiveEntry, unionBoxes, pickPart, translateEntry, type RegistryEntry } from '../src/insert/spatial';
+import { STARTERS } from '../src/editor/starters';
+import { alignDeltas } from '../src/insert/arrangeMath';
+import {
+  initUndoStack,
+  recordOperation,
+  undo,
+  redo,
+  canUndo,
+  canRedo,
+  peekUndoLabel,
+  peekRedoLabel,
+  clearUndoHistory,
+  __testGetHistoryLength,
+  __testGetCursor,
+} from '../src/insert/undoStack';
 
 test.describe('fmt', () => {
   test('trims trailing zeros and normalizes -0', () => {
@@ -284,6 +303,44 @@ test.describe('controller — managed return (addManagedDeclaration)', () => {
       lang: 'manifold-js', addNames: ['ball1'], combine: true,
     });
     expect(out.code).toContain('return Manifold.union([(a.subtract(foo()).warp(fn)), ball1]);');
+  });
+
+  test('NEVER drops a hand-written single-expression return with no named const', () => {
+    // The bug variant the old structural heuristic missed: a lone chained
+    // constructor return (no intermediate const) is real user geometry, not a
+    // throwaway starter — inserting must union with it, never replace it.
+    const code = 'const { Manifold } = api;\nreturn Manifold.cube([30, 30, 5], true).translate([0, 0, 2.5]);';
+    const out = addManagedDeclaration(code, 'const box1 = Manifold.cube([4,4,4], true);', {
+      lang: 'manifold-js', addNames: ['box1'], combine: true,
+    });
+    expect(out.returnSet).toBe(true);
+    expect(out.code).toContain('return Manifold.union([(Manifold.cube([30, 30, 5], true).translate([0, 0, 2.5])), box1]);');
+  });
+
+  test('NEVER drops a hand-written single-expression BREP return', () => {
+    const code = 'const { BREP } = api;\nreturn BREP.box([30, 30, 5]).fillet(1).translate([0, 0, 2.5]);';
+    const out = addManagedDeclaration(code, 'const box1 = BREP.box([4,4,4]);', {
+      lang: 'replicad', addNames: ['box1'], combine: true,
+    });
+    expect(out.returnSet).toBe(true);
+    expect(out.code).toContain('return BREP.fuseAll([(BREP.box([30, 30, 5]).fillet(1).translate([0, 0, 2.5])), box1]);');
+  });
+
+  test('first insert drops the real seeded starter consistently across engines', () => {
+    // isStarterCode matches the actual seeded starters, so the throwaway default
+    // is replaced — and js + brep now behave identically (previously brep
+    // dropped its BREP.label starter while js kept its api.label one, because
+    // the old regex matched one prefix but not the other).
+    for (const lang of ['manifold-js', 'replicad'] as const) {
+      const starter = STARTERS[lang][0].code;
+      const decl = lang === 'replicad'
+        ? 'const box1 = BREP.box([4,4,4]);'
+        : 'const box1 = Manifold.cube([4,4,4], true);';
+      const out = addManagedDeclaration(starter, decl, { lang, addNames: ['box1'], combine: true });
+      // Dropped → single element → bare `return box1;` (no union/fuseAll wrapper).
+      expect(out.code).toContain('return box1;');
+      expect(out.code).not.toMatch(/Manifold\.union|BREP\.fuseAll/);
+    }
   });
 
   test('auto-combine off inserts the const but leaves the return alone', () => {
@@ -913,3 +970,224 @@ test.describe('voxel scaffold (controller)', () => {
     expect(out).not.toContain('v.sphere([0,0,0]');
   });
 });
+
+test.describe('Arrange — per-axis scale codegen (setPartScale*)', () => {
+  test('JS: appends .scale before an existing .translate so position is preserved', () => {
+    const code = 'const { Manifold } = api;\nconst box = Manifold.cube([10, 10, 10], true).translate([5, 0, 0]);\nreturn box;';
+    const out = setPartScaleJs(code, 'box', [2, 1, 1]);
+    // .scale comes BEFORE .translate — scale around origin, then translate.
+    expect(out).toMatch(/Manifold\.cube\(\[10, 10, 10\], true\)\.scale\(\[2, 1, 1\]\)\.translate\(\[5, 0, 0\]\)/);
+  });
+
+  test('JS: with no existing translate appends .scale at the end', () => {
+    const code = 'const { Manifold } = api;\nconst box = Manifold.cube([10, 10, 10], true);\nreturn box;';
+    const out = setPartScaleJs(code, 'box', [3, 1, 1]);
+    expect(out).toContain('Manifold.cube([10, 10, 10], true).scale([3, 1, 1])');
+  });
+
+  test('JS: a second resize compounds onto the existing scale triple (no stacked .scale calls)', () => {
+    const code = 'const { Manifold } = api;\nconst box = Manifold.cube([10, 10, 10], true).scale([2, 1, 1]);\nreturn box;';
+    const out = setPartScaleJs(code, 'box', [2, 3, 1]);
+    // Compounds 2*2 / 1*3 / 1*1 = [4, 3, 1], no second .scale literal.
+    expect(out).toContain('.scale([4, 3, 1])');
+    expect(out.match(/\.scale\(/g)!.length).toBe(1);
+  });
+
+  test('JS: identity scale is a no-op', () => {
+    const code = 'const { Manifold } = api;\nconst box = Manifold.cube([10, 10, 10], true);\nreturn box;';
+    expect(setPartScaleJs(code, 'box', [1, 1, 1])).toBe(code);
+  });
+
+  test('JS: unknown part name returns code unchanged', () => {
+    const code = 'const { Manifold } = api;\nconst box = Manifold.cube([10, 10, 10], true);\nreturn box;';
+    expect(setPartScaleJs(code, 'missing', [2, 1, 1])).toBe(code);
+  });
+
+  test('SCAD: wraps the construction in scale() AFTER any leading translate', () => {
+    const code = "translate([5, 0, 0]) cube([10, 10, 10], center = true); // part: box\n";
+    const part = scanPartsScad(code)[0];
+    const out = setPartScaleScad(code, part.range!, [2, 1, 1]);
+    // Leading translate stays first; scale slips between it and the cube.
+    expect(out).toContain('translate([5, 0, 0]) scale([2, 1, 1]) cube([10, 10, 10]');
+  });
+
+  test('SCAD: with no leading translate prepends scale()', () => {
+    const code = 'cube([10, 10, 10], center = true); // part: box\n';
+    const part = scanPartsScad(code)[0];
+    const out = setPartScaleScad(code, part.range!, [3, 1, 1]);
+    expect(out).toMatch(/^scale\(\[3, 1, 1\]\) cube\(/m);
+  });
+
+  test('SCAD: a second resize compounds into the existing scale call', () => {
+    const code = 'scale([2, 1, 1]) cube([10, 10, 10], center = true); // part: box\n';
+    const part = scanPartsScad(code)[0];
+    const out = setPartScaleScad(code, part.range!, [2, 3, 1]);
+    expect(out).toMatch(/scale\(\[4, 3, 1\]\) cube/);
+    expect(out.match(/scale\(/g)!.length).toBe(1);
+  });
+});
+
+test.describe('Insert palette — undo / redo stack', () => {
+  // A fresh in-memory rig per test: a string holding the "code", live registry
+  // / specByName / selection Maps the way the palette holds them, and a count
+  // of how many engine re-runs were triggered (so we can assert restore() runs
+  // the engine).
+  function setupStack(initialCode = 'return undefined;'): {
+    state: { code: string; runs: number; restores: number };
+    insert: (name: string) => void;
+  } {
+    const state = { code: initialCode, runs: 0, restores: 0 };
+    const registry = new Map<string, RegistryEntry>();
+    const specByName = new Map<string, PrimitiveSpec>();
+    const selection = new Set<string>();
+    initUndoStack({
+      getCode: () => state.code,
+      setCode: (c) => { state.code = c; },
+      registry,
+      specByName,
+      selection,
+      run: () => { state.runs++; },
+      onAfterRestore: () => { state.restores++; },
+    });
+    const insert = (name: string): void => {
+      recordOperation(`Insert ${name}`, () => {
+        state.code += `\nconst ${name} = Manifold.cube([10,10,10], true);`;
+        const spec = { kind: 'cube', name, size: [10, 10, 10], center: true, position: [0, 0, 0] } as PrimitiveSpec;
+        specByName.set(name, spec);
+        registry.set(name, { box: { min: [-5, -5, -5], max: [5, 5, 5] }, center: [0, 0, 0] });
+        selection.clear();
+        selection.add(name);
+      });
+    };
+    return { state, insert };
+  }
+
+  test('records one snapshot per recordOperation; canUndo/canRedo track the cursor', () => {
+    const { state, insert } = setupStack();
+    expect(canUndo()).toBe(false);
+    expect(canRedo()).toBe(false);
+    insert('box');
+    insert('ball');
+    insert('cyl');
+    expect(__testGetHistoryLength()).toBe(3);
+    expect(__testGetCursor()).toBe(2);
+    expect(canUndo()).toBe(true);
+    expect(canRedo()).toBe(false);
+    expect(peekUndoLabel()).toBe('Insert cyl');
+    expect(state.code).toContain('const cyl');
+  });
+
+  test('undo restores the previous code/state and triggers run()', () => {
+    const { state, insert } = setupStack();
+    insert('box');
+    insert('ball');
+    const runsBefore = state.runs;
+    const restoresBefore = state.restores;
+    const label = undo();
+    expect(label).toBe('Insert ball');
+    expect(state.code).not.toContain('const ball');
+    expect(state.code).toContain('const box');
+    expect(state.runs).toBe(runsBefore + 1);
+    expect(state.restores).toBe(restoresBefore + 1);
+    expect(canUndo()).toBe(true);
+    expect(canRedo()).toBe(true);
+    expect(peekRedoLabel()).toBe('Insert ball');
+  });
+
+  test('redo re-applies the undone operation; cursor walks back', () => {
+    const { state, insert } = setupStack();
+    insert('box');
+    insert('ball');
+    undo();
+    const label = redo();
+    expect(label).toBe('Insert ball');
+    expect(state.code).toContain('const ball');
+    expect(canRedo()).toBe(false);
+  });
+
+  test('a new operation after undo truncates the redo tail', () => {
+    const { state, insert } = setupStack();
+    insert('box');
+    insert('ball');
+    undo();
+    expect(canRedo()).toBe(true);
+    insert('newpart');
+    // The "Insert ball" redo slot should be gone — it's clobbered by newpart.
+    expect(canRedo()).toBe(false);
+    expect(state.code).not.toContain('const ball');
+    expect(state.code).toContain('const newpart');
+  });
+
+  test('no-op operation (code unchanged) pushes no snapshot', () => {
+    const { state, insert } = setupStack();
+    insert('box');
+    const beforeLen = __testGetHistoryLength();
+    recordOperation('noop', () => { /* don't touch state.code */ });
+    expect(__testGetHistoryLength()).toBe(beforeLen);
+  });
+
+  test('clearUndoHistory drops everything (used on session-changed)', () => {
+    const { insert } = setupStack();
+    insert('a'); insert('b'); insert('c');
+    clearUndoHistory();
+    expect(__testGetHistoryLength()).toBe(0);
+    expect(canUndo()).toBe(false);
+    expect(canRedo()).toBe(false);
+  });
+
+  test('undo then undo restores two steps back; pure walking the stack', () => {
+    const { state, insert } = setupStack();
+    insert('a'); insert('b'); insert('c');
+    undo(); undo();
+    expect(state.code).toContain('const a');
+    expect(state.code).not.toContain('const b');
+    expect(state.code).not.toContain('const c');
+    expect(canUndo()).toBe(true);
+    expect(canRedo()).toBe(true);
+  });
+});
+
+test.describe('Arrange — alignDeltas', () => {
+  function entry(min: [number, number, number], max: [number, number, number]): RegistryEntry {
+    return { box: { min, max }, center: [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2] };
+  }
+  test('aligns to the min X surface (leftmost edge wins)', () => {
+    const reg = new Map<string, RegistryEntry>([
+      ['a', entry([-5, -5, 0], [5, 5, 10])],   // X range [-5, 5]
+      ['b', entry([10, -5, 0], [20, 5, 10])],  // X range [10, 20]
+    ]);
+    const deltas = alignDeltas(['a', 'b'], reg, 'x', 'min');
+    // b needs to move so its min.x reaches -5 → delta = -5 - 10 = -15.
+    expect(deltas.get('a')).toBeUndefined(); // no-op for the reference part
+    expect(deltas.get('b')).toEqual([-15, 0, 0]);
+  });
+
+  test('aligns to the max Z surface (top)', () => {
+    const reg = new Map<string, RegistryEntry>([
+      ['a', entry([-5, -5, 0], [5, 5, 10])],   // Z max = 10
+      ['b', entry([-5, -5, 4], [5, 5, 6])],    // Z max = 6
+    ]);
+    const deltas = alignDeltas(['a', 'b'], reg, 'z', 'max');
+    expect(deltas.get('b')).toEqual([0, 0, 4]); // bump up by 4 so its top hits 10
+  });
+
+  test('aligns to the center along Y', () => {
+    const reg = new Map<string, RegistryEntry>([
+      ['a', entry([-5, 0, 0], [5, 10, 10])],   // Y center = 5
+      ['b', entry([-5, 20, 0], [5, 30, 10])],  // Y center = 25
+    ]);
+    const deltas = alignDeltas(['a', 'b'], reg, 'y', 'center');
+    // Combined Y span: 0..30 → center = 15. a shifts +10, b shifts -10.
+    expect(deltas.get('a')).toEqual([0, 10, 0]);
+    expect(deltas.get('b')).toEqual([0, -10, 0]);
+  });
+
+  test('skips parts not in the registry', () => {
+    const reg = new Map<string, RegistryEntry>([
+      ['a', entry([-5, -5, 0], [5, 5, 10])],
+    ]);
+    const deltas = alignDeltas(['a', 'ghost'], reg, 'x', 'min');
+    expect(deltas.size).toBe(0); // only one valid entry → nothing to align against
+  });
+});
+

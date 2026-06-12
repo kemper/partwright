@@ -1,29 +1,19 @@
-// Whole-document code transforms for the insert palette. Pure and
-// dependency-free (unit-tested in tests/insert-codegen.spec.ts) — the palette
-// reads the editor, runs these, and writes the result back via setValue.
+// Whole-document code transforms for the insert palette. Pure logic, no
+// DOM/WASM — the palette reads the editor, runs these, and writes the result
+// back via setValue. Exercised by the Playwright spec
+// tests/insert-codegen.spec.ts (it imports these modules directly and asserts
+// on their string output; it runs in the e2e tier, not the vitest unit tier).
 //
 // manifold-js needs a single managed `return` so the program stays valid as
 // shapes/operations accumulate; OpenSCAD just appends statements (all
 // top-level geometry renders) and wraps statements for operations.
 
 import { fmt, scanPartsJs, type Vec3 } from './codegen';
+import { isStarterCode } from '../editor/starters';
 
 /** A bare identifier — the simplest return expression (a single managed part). */
 function isBareIdent(expr: string): boolean {
   return /^[A-Za-z_$][\w$]*$/.test(expr.trim());
-}
-
-/** A single library constructor call — the throwaway placeholder a fresh
- *  session returns (e.g. the default `Manifold.cube(...)`). Distinguished from
- *  a user's real geometry by also requiring the program to have no named
- *  parts (see addManagedDeclaration). */
-function isConstructorCall(expr: string): boolean {
-  const e = expr.trim();
-  return (
-    /^(api\.)?(Manifold|CrossSection|Curves|BREP)\b/.test(e) ||
-    /^labeledUnion\s*\(/.test(e) ||
-    /^api\.renderMesh\s*\(/.test(e)
-  );
 }
 
 /** Split a comma-separated expression list at top level, respecting nested
@@ -154,10 +144,11 @@ export interface ManagedDeclOptions {
  *
  *  The cardinal rule: **never silently drop existing geometry.** Whatever the
  *  current return is — a bare part, a managed union, or a hand-written
- *  expression — it becomes an element of the new union. The one exception is a
- *  throwaway placeholder return (a lone constructor call in a program with no
- *  named parts, i.e. a fresh session's default), which is replaced so the first
- *  insert doesn't double up with it. */
+ *  expression — it becomes an element of the new union. The one exception is an
+ *  untouched starter (a fresh session's seeded default, detected by
+ *  `isStarterCode`), which is replaced so the first insert doesn't double up
+ *  with it. A starter the user has edited is no longer a starter, so it's
+ *  preserved like any other hand-written return. */
 export function addManagedDeclaration(
   code: string,
   declLine: string,
@@ -201,8 +192,13 @@ export function addManagedDeclaration(
     list = splitTopLevelCommas(managed[1]).map(s => s.trim()).filter(Boolean);
   } else if (isBareIdent(expr)) {
     list = [expr];
-  } else if (isConstructorCall(expr) && scanPartsJs(withPre).length === 0) {
-    // Throwaway placeholder (default starter) — drop it.
+  } else if (isStarterCode(code)) {
+    // Throwaway placeholder — an untouched starter a fresh session seeds. Drop
+    // it so the first insert doesn't double up with it. Anything the user
+    // actually wrote (even a single-expression return such as
+    // `return Manifold.cube([30,30,5], true).translate([0,0,2.5]);`) is NOT a
+    // starter, so it falls through to the branch below and is preserved as a
+    // union element — never silently drop real geometry.
     list = [];
   } else {
     // Real hand-written return — preserve it as an element (never drop).
@@ -388,6 +384,88 @@ export function setPartTranslateDeltaScad(
     updated = stmt.replace(leadRe, (mm) => addDeltaToTranslate(mm, delta));
   } else {
     updated = `translate([${fmt(delta[0])}, ${fmt(delta[1])}, ${fmt(delta[2])}]) ${stmt}`;
+  }
+  return code.slice(0, statement.from) + updated + code.slice(statement.to);
+}
+
+// ---------------------------------------------------------------------------
+// Resize: insert a per-axis `.scale([sx, sy, sz])` into the chain. The chain
+// order matters — scale is applied at the origin and translate moves it, so
+// the scale must come *before* any existing translate (otherwise scaling would
+// also displace the position). For palette-inserted shapes whose primitive is
+// origin-centred this preserves the part's world position; for uncentred
+// primitives the anchor stays fixed and the part grows outward from it, which
+// matches Tinkercad's behaviour.
+// ---------------------------------------------------------------------------
+
+function multiplyScaleTriple(call: string, scale: Vec3): string {
+  // Take an existing `.scale([a,b,c])` / `scale([a,b,c])` and replace its
+  // triple with `[a*sx, b*sy, c*sz]`. Lets a second resize compound onto the
+  // first instead of stacking redundant `.scale` calls.
+  const re = new RegExp(TRIPLE);
+  return call.replace(re, (_full, a: string, b: string, c: string) =>
+    `[${fmt(parseFloat(a) * scale[0])}, ${fmt(parseFloat(b) * scale[1])}, ${fmt(parseFloat(c) * scale[2])}]`,
+  );
+}
+
+/** Apply a per-axis scale to a JS-engine part by inserting `.scale([sx,sy,sz])`
+ *  *before* its trailing `.translate([…])` (so scale-around-origin happens first
+ *  and translate-to-position is preserved). If the part already carries a
+ *  `.scale([…])`, the new factors are multiplied into the existing triple
+ *  rather than stacking a second call. Returns the code unchanged when no
+ *  matching `const <name> = …;` is found, or when the scale is the identity. */
+export function setPartScaleJs(code: string, name: string, scale: Vec3): string {
+  if (scale[0] === 1 && scale[1] === 1 && scale[2] === 1) return code;
+  const declRe = new RegExp(`(const\\s+${escapeRegExp(name)}\\s*=\\s*)([\\s\\S]*?)(;)`);
+  const m = declRe.exec(code);
+  if (!m) return code;
+  let rhs = m[2];
+  const scaleRe = new RegExp(`\\.scale\\(${TRIPLE}\\)`, 'g');
+  const existing = [...rhs.matchAll(scaleRe)];
+  if (existing.length > 0) {
+    const last = existing[existing.length - 1];
+    const updated = multiplyScaleTriple(last[0], scale);
+    rhs = rhs.slice(0, last.index!) + updated + rhs.slice(last.index! + last[0].length);
+  } else {
+    const scaleCall = `.scale([${fmt(scale[0])}, ${fmt(scale[1])}, ${fmt(scale[2])}])`;
+    const transRe = new RegExp(`\\.translate\\(${TRIPLE}\\)`, 'g');
+    const trans = [...rhs.matchAll(transRe)];
+    if (trans.length > 0) {
+      // Place scale before the first translate so position is preserved.
+      const first = trans[0];
+      rhs = rhs.slice(0, first.index!) + scaleCall + rhs.slice(first.index!);
+    } else {
+      rhs = `${rhs}${scaleCall}`;
+    }
+  }
+  return code.slice(0, m.index) + m[1] + rhs + m[3] + code.slice(m.index + m[0].length);
+}
+
+/** Apply a per-axis scale to an OpenSCAD part: wrap its construction in
+ *  `scale([sx,sy,sz])`, placed *after* any leading `translate([…])` so the
+ *  scale happens first (SCAD applies modifiers right-to-left, so the chain
+ *  `translate(t) scale(s) cube(...)` reads as scale-then-translate). Compounds
+ *  with an existing leading scale by multiplying its triple. */
+export function setPartScaleScad(
+  code: string,
+  statement: { from: number; to: number },
+  scale: Vec3,
+): string {
+  if (scale[0] === 1 && scale[1] === 1 && scale[2] === 1) return code;
+  const stmt = code.slice(statement.from, statement.to);
+  const leadingTransRe = new RegExp(`^translate\\(${TRIPLE}\\)\\s*`);
+  const transMatch = leadingTransRe.exec(stmt);
+  const afterTrans = transMatch ? stmt.slice(transMatch[0].length) : stmt;
+  const head = transMatch ? transMatch[0] : '';
+
+  const leadingScaleRe = new RegExp(`^scale\\(${TRIPLE}\\)\\s*`);
+  const scaleMatch = leadingScaleRe.exec(afterTrans);
+  let updated: string;
+  if (scaleMatch) {
+    const compound = multiplyScaleTriple(scaleMatch[0].replace(/\s*$/, ''), scale);
+    updated = `${head}${compound} ${afterTrans.slice(scaleMatch[0].length)}`;
+  } else {
+    updated = `${head}scale([${fmt(scale[0])}, ${fmt(scale[1])}, ${fmt(scale[2])}]) ${afterTrans}`;
   }
   return code.slice(0, statement.from) + updated + code.slice(statement.to);
 }
