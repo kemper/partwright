@@ -228,6 +228,11 @@ export interface AppConfig {
     /** How long each "Did you know?" hint stays before the strip rotates to the
      *  next one (ms). */
     hintRotationMs: number;
+    /** Slide duration (ms) for the docked side panes (the AI panel and the code
+     *  editor pane) opening/closing. Each pane animates its layout footprint so
+     *  the viewport grows/shrinks smoothly instead of snapping. Set to 0 for an
+     *  instant toggle. */
+    paneSlideMs: number;
     /** Default code-editor font size (px). The live size is a per-tab pref
      *  (editor-font-size); this seeds a fresh tab and the Reset-to-default. */
     editorFontSizeDefault: number;
@@ -337,6 +342,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     workerPanelRefreshMs: 1000,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
+    paneSlideMs: 280,
     editorFontSizeDefault: 13,
     editorFontSizeMin: 9,
     editorFontSizeMax: 28,

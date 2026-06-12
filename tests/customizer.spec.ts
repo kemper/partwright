@@ -383,7 +383,7 @@ return v;`;
     expect(Math.abs(after.y - before.y)).toBeLessThan(2);
   });
 
-  test('with the AI panel open, the Customize panel docks over it (window right edge)', async ({ page }) => {
+  test('opening the Customize panel with the AI panel open hides the AI panel (and docks at the right edge)', async ({ page }) => {
     await openAiPanel(page);
     const ai = page.locator('#ai-panel');
     await expect(ai).toBeVisible();
@@ -392,14 +392,15 @@ return v;`;
     const panel = page.locator('#params-panel');
     await expect(panel).toBeVisible();
 
+    // Reaching for a hands-on tool means the user isn't chatting — the AI drawer
+    // steps out of the way rather than sitting underneath the Customize panel.
+    await expect(ai).toBeHidden();
+
     const box = await panel.boundingBox();
-    const aiBox = await ai.boundingBox();
-    if (!box || !aiBox) throw new Error('missing box');
+    if (!box) throw new Error('missing box');
     const vw = await page.evaluate(() => window.innerWidth);
 
-    // The panel hugs the window's right edge rather than tucking to the left of
-    // the AI column, so it overlays the AI panel by default.
+    // With the AI column gone, the panel hugs the window's right edge.
     expect(vw - (box.x + box.width)).toBeLessThan(24); // right edge ~PANEL_EDGE_GAP from window edge
-    expect(box.x + box.width).toBeGreaterThan(aiBox.x); // and extends over the AI column
   });
 });

@@ -32,8 +32,9 @@ export interface ParamsPanelOptions {
 export interface ParamsPanelController {
   element: HTMLElement;
   /** Re-render for a new schema (or update values in place if the schema is
-   *  unchanged). Pass `undefined`/empty to hide the panel. */
-  update(schema: ParamSpec[] | undefined, values: ParamValues): void;
+   *  unchanged). Pass `undefined`/empty to hide the panel. `silentReveal` opens
+   *  the panel without hiding the AI panel (used for the post-AI-turn flush). */
+  update(schema: ParamSpec[] | undefined, values: ParamValues, opts?: { silentReveal?: boolean }): void;
   /** Show the panel (no-op when the active model declares no parameters). */
   open(): void;
   /** Hide the panel without dropping the schema — reopen via {@link open}. */
@@ -117,13 +118,13 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   let clampIntoViewRef: (() => void) | null = null;
   let escapeListenerActive = false;
 
-  function applyVisibility(): void {
+  function applyVisibility(silent = false): void {
     const wasOpen = !root.classList.contains('hidden');
     const willOpen = isOpen();
     root.classList.toggle('hidden', !willOpen);
     if (willOpen && !wasOpen) {
       setInitialPanelPosition(root);
-      openViewportPanel(registryEntry);
+      openViewportPanel(registryEntry, { silent });
       if (!escapeListenerActive) {
         document.addEventListener('keydown', onParamsEscape);
         escapeListenerActive = true;
@@ -157,7 +158,11 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     }
   }
 
-  function update(schema: ParamSpec[] | undefined, values: ParamValues): void {
+  function update(
+    schema: ParamSpec[] | undefined,
+    values: ParamValues,
+    { silentReveal = false }: { silentReveal?: boolean } = {},
+  ): void {
     if (!schema || schema.length === 0) {
       currentSig = '';
       paramCount = 0;
@@ -181,7 +186,10 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     // Reveal the Tools dropdown *before* positioning the panel, so applyVisibility
     // docks the panel beneath the now-open menu rather than the bare toolbar.
     if (schemaChanged && isOpen()) opts.onAutoReveal?.();
-    applyVisibility();
+    // `silentReveal` (the host's post-AI-turn flush) opens the panel without
+    // pulling the AI panel out of the way — the model just finished, so the user
+    // sees both at once. A normal/user-initiated reveal hides the AI panel.
+    applyVisibility(silentReveal);
   }
 
   const registryEntry = { close(): void { userClosed = true; applyVisibility(); } };

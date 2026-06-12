@@ -5,6 +5,7 @@
 
 import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
+import { getConfig } from '../config/appConfig';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
@@ -352,6 +353,29 @@ export function toggleAiPanel(): void {
   else showDrawer();
 }
 
+/** Close the AI drawer if it's open; no-op when already closed. Used when the
+ *  user opens a hands-on viewport tool (Paint, Customize, Surface, …) — at that
+ *  point they're working by hand, so the AI column steps out of the way instead
+ *  of sitting underneath the tool panel. */
+export function closeAiPanel(): void {
+  if (state.open) hideDrawer();
+}
+
+/** Whether a chat turn is currently running. The host uses this to hold back
+ *  side effects that would disrupt a live turn — e.g. popping the Customizer
+ *  over the chat while the AI is mid-runAndSave (see syncParamsPanel). */
+export function isAiTurnInFlight(): boolean {
+  return state.inFlight;
+}
+
+const turnEndListeners: Array<() => void> = [];
+/** Subscribe to "a chat turn just finished" (the true end — retries and queued
+ *  follow-ups don't fire it). Lets the host flush work it deferred during the
+ *  turn, like the Customizer auto-reveal. */
+export function onAiTurnEnd(fn: () => void): void {
+  turnEndListeners.push(fn);
+}
+
 /** Open the AI panel (if closed) and drop `text` into the chat input without
  *  sending it — the user reads/tweaks it and hits send themselves. Used by the
  *  prompt library and the /ideas page so picking a prompt lands here. */
@@ -418,6 +442,50 @@ function applyDockLayout(): void {
   }
 }
 
+// Pending "add the `hidden` class once the close slide finishes" timer.
+let drawerHideTimer: number | null = null;
+// The first show/hide (the boot-time restore of the remembered open state) is
+// instant — only user/auto toggles after mount slide.
+let drawerBooted = false;
+
+/** Slide duration (ms) for the *next* toggle, honoring reduced-motion and
+ *  suppressing the animation on the initial boot restore (0 = instant). */
+function effectiveSlideMs(): number {
+  if (!drawerBooted) { drawerBooted = true; return 0; }
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0;
+  return getConfig().ui.paneSlideMs;
+}
+
+function setDrawerTransition(ms: number): void {
+  if (!drawerEl) return;
+  // Only margin-right + transform animate — never width, so live panel-resize
+  // dragging stays snappy.
+  drawerEl.style.transition = ms > 0
+    ? `margin-right ${ms}ms ease, transform ${ms}ms ease`
+    : '';
+}
+
+/** Position the drawer for its open or closed state. Closing slides it off the
+ *  right edge: on desktop the docked column collapses its layout footprint
+ *  (negative margin-right) so the viewport grows into the space as it goes; on
+ *  the mobile full-screen overlay it just translates out. `body` is
+ *  `overflow-hidden`, so the off-screen panel is clipped (no scrollbar). */
+function setDrawerSlidePos(open: boolean): void {
+  if (!drawerEl) return;
+  if (open) {
+    drawerEl.style.marginRight = '';
+    drawerEl.style.transform = '';
+    return;
+  }
+  if (window.matchMedia('(min-width: 768px)').matches) {
+    drawerEl.style.marginRight = `-${panelWidth}px`;
+    drawerEl.style.transform = '';
+  } else {
+    drawerEl.style.transform = 'translateX(100%)';
+    drawerEl.style.marginRight = '';
+  }
+}
+
 /** Show the drawer. `focusInput` moves the caret into the chat box, which is
  *  what you want when the user *explicitly* opens the panel — but not when it's
  *  shown automatically on a default-open page load, where stealing focus from
@@ -425,8 +493,28 @@ function applyDockLayout(): void {
 function showDrawer(focusInput = true): void {
   if (!drawerEl) return;
   state.open = true;
-  drawerEl.classList.toggle('hidden', !routeActive);
-  applyDockLayout();
+  if (drawerHideTimer !== null) { clearTimeout(drawerHideTimer); drawerHideTimer = null; }
+  if (routeActive) {
+    const wasHidden = drawerEl.classList.contains('hidden');
+    drawerEl.classList.remove('hidden');
+    applyDockLayout();
+    const ms = effectiveSlideMs();
+    if (wasHidden && ms > 0) {
+      // Jump to the off-screen position without animating, then slide in on the
+      // next frame so the transition has a start state to animate *from*.
+      setDrawerTransition(0);
+      setDrawerSlidePos(false);
+      void drawerEl.offsetWidth; // force reflow
+      setDrawerTransition(ms);
+      requestAnimationFrame(() => setDrawerSlidePos(true));
+    } else {
+      // Already visible (e.g. reopening mid-close) — just animate back to open.
+      setDrawerTransition(ms);
+      setDrawerSlidePos(true);
+    }
+  } else {
+    drawerEl.classList.add('hidden');
+  }
   window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: routeActive } }));
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: true });
@@ -439,7 +527,19 @@ function hideDrawer(): void {
   // Stop dictation when the panel closes — otherwise the mic keeps recording
   // into the now-hidden textarea with no visible stop affordance.
   voiceController?.stop();
-  drawerEl.classList.add('hidden');
+  if (drawerHideTimer !== null) { clearTimeout(drawerHideTimer); drawerHideTimer = null; }
+  const ms = effectiveSlideMs();
+  if (ms > 0 && routeActive && !drawerEl.classList.contains('hidden')) {
+    // Slide out, then take it out of layout/focus once the animation lands.
+    setDrawerTransition(ms);
+    setDrawerSlidePos(false);
+    drawerHideTimer = window.setTimeout(() => {
+      drawerEl?.classList.add('hidden');
+      drawerHideTimer = null;
+    }, ms);
+  } else {
+    drawerEl.classList.add('hidden');
+  }
   window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: false } }));
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: false });
@@ -3506,6 +3606,10 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       pushStopNotice(finalOutcome);
     }
     broadcastChatChanged();
+    // The turn truly ended (retries/queued follow-ups `continue` above and never
+    // reach here) — let the host flush anything it held back during the turn,
+    // e.g. the deferred Customizer reveal.
+    for (const fn of turnEndListeners) fn();
     return;
   }
 }
