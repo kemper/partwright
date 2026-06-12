@@ -9,6 +9,7 @@ import { WHATS_NEW_INTRO, WHATS_NEW_WEEKS, type WeekEntry } from '../data/whatsN
 import { HELP_INTRO, HELP_STATIC_SECTIONS, helpDynamicSections } from '../data/help';
 import { getShortcutDocs, IS_MAC, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from '../../ui/shortcutDefs';
 import { languageBadge } from '../../ui/languageBadge';
+import { IDEAS, IDEA_CATEGORIES, type Idea, type IdeaCategoryDef } from '../../ideas/ideas';
 import {
   CATEGORIES,
   categorizeOf,
@@ -40,7 +41,7 @@ function escAttr(s: string): string {
   return esc(s).replace(/"/g, '&quot;');
 }
 
-export type ContentPage = 'catalog' | 'help' | 'legal' | 'whats-new';
+export type ContentPage = 'catalog' | 'help' | 'legal' | 'whats-new' | 'ideas';
 
 /** Map a clean route to its content-page id (and back). */
 export const CONTENT_PAGES: Record<ContentPage, { path: string; htmlFile: string }> = {
@@ -48,7 +49,16 @@ export const CONTENT_PAGES: Record<ContentPage, { path: string; htmlFile: string
   help: { path: '/help', htmlFile: 'help.html' },
   legal: { path: '/legal', htmlFile: 'legal.html' },
   'whats-new': { path: '/whats-new', htmlFile: 'whats-new.html' },
+  ideas: { path: '/ideas', htmlFile: 'ideas.html' },
 };
+
+/** Serialize a JSON-LD object into a `<script>` for a static page. Relative
+ *  `"url"` fields are rewritten to absolute at build time by the absoluteUrls
+ *  plugin (vite.config.ts); `<` is escaped so a name can't break out of the
+ *  script element. */
+function jsonLdScript(data: unknown): string {
+  return `<script type="application/ld+json">${JSON.stringify(data).replace(/</g, '\\u003c')}</script>`;
+}
 
 /** Render a list of `{id, heading, body}` sections as the app's pages do:
  *  an uppercase section heading followed by its trusted HTML body. */
@@ -136,6 +146,18 @@ function helpBody(): string {
     <span class="text-sm text-zinc-300">New to the editor? Walk through the key features.</span>
     <a href="/editor?tour=1" class="px-4 py-1.5 rounded text-xs bg-blue-600 hover:bg-blue-500 text-white transition-colors shrink-0">Take the guided tour</a>
   </div>
+  ${jsonLdScript({
+    '@context': 'https://schema.org',
+    '@type': 'TechArticle',
+    headline: 'How Partwright works',
+    description:
+      'A complete guide to Partwright: the code editor, modeling engines (JavaScript/manifold-3d, OpenSCAD, BREP, voxel, SDF), viewport tools, painting, sessions, import/export, and the in-browser AI assistant.',
+    url: '/help',
+    image: '/og-image.png',
+    inLanguage: 'en',
+    isPartOf: { '@type': 'WebSite', name: 'Partwright', url: '/' },
+    publisher: { '@type': 'Organization', name: 'Partwright', url: '/' },
+  })}
 </div>`;
 }
 
@@ -294,7 +316,25 @@ function catalogBody(): string {
 </section>`;
   }).join('');
   const empty = '<div data-catalog-empty class="hidden text-center py-12 text-zinc-500 text-sm">No models match your search and filters.</div>';
-  return `<div>${intro}${catalogControlsHtml(tiles)}${sections}${empty}</div>`;
+  const jsonLd = jsonLdScript({
+    '@context': 'https://schema.org',
+    '@type': 'CollectionPage',
+    name: 'Catalog — Partwright',
+    description:
+      'A curated catalog of premade Partwright 3D models across JavaScript (manifold-3d), implicit-surface SDF, voxel, OpenSCAD, and solid-CAD (BREP).',
+    url: '/catalog',
+    mainEntity: {
+      '@type': 'ItemList',
+      numberOfItems: tiles.length,
+      itemListElement: tiles.map((tile, i) => ({
+        '@type': 'ListItem',
+        position: i + 1,
+        name: tile.entry.name,
+        url: `/editor?catalog=${encodeURIComponent(tile.entry.file)}`,
+      })),
+    },
+  });
+  return `<div>${intro}${catalogControlsHtml(tiles)}${sections}${empty}${jsonLd}</div>`;
 }
 
 /** Search box + language filter pills for the static page, tagged with the
@@ -318,6 +358,85 @@ function catalogControlsHtml(tiles: BuiltTile[]): string {
 </div>`;
 }
 
+// === Ideas page ===
+//
+// The static twin of the in-app /ideas overlay (src/ui/ideasPage.ts), built
+// from the same IDEAS dataset so the two never drift. Because a static page
+// can't hand an in-memory tile click to the editor, every tile is a real link
+// into /editor?idea=<id>; the editor reads that param and either prefills the
+// AI panel (prompt ideas) or opens the photo flow (interactive ideas).
+
+function ideaTileHtml(idea: Idea): string {
+  const cta =
+    idea.category === 'interactive'
+      ? '<div class="text-[10px] font-semibold mt-1 text-emerald-300">\u{1F4F7} Upload a photo →</div>'
+      : '<div class="text-[10px] font-semibold mt-1 text-blue-300">✨ Use this prompt →</div>';
+  const learnMore = idea.learnMore
+    ? `<div class="px-4 pb-3 -mt-1"><a href="${escAttr(idea.learnMore)}" target="_blank" rel="noopener" class="text-[10px] text-zinc-500 hover:text-zinc-300 underline decoration-dotted">Learn how it works →</a></div>`
+    : '';
+  return `<div class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden" data-idea-id="${escAttr(idea.id)}">
+  <a href="/editor?idea=${encodeURIComponent(idea.id)}" class="flex flex-col items-start gap-1.5 text-left px-4 py-3.5 w-full no-underline">
+    <div class="flex items-center gap-2"><span class="text-xl leading-none">${esc(idea.emoji)}</span><div class="text-sm font-medium text-zinc-100">${esc(idea.title)}</div></div>
+    <div class="text-[11px] text-zinc-400 leading-snug">${esc(idea.blurb)}</div>
+    ${cta}
+  </a>
+  ${learnMore}
+</div>`;
+}
+
+function ideasCategoryHtml(def: IdeaCategoryDef, ideas: Idea[]): string {
+  return `<section class="mb-10" data-category="${def.id}">
+  <div class="flex items-baseline gap-2">
+    <h2 class="text-lg font-semibold text-zinc-100">${esc(def.title)}</h2>
+    <span class="text-xs text-zinc-500 tabular-nums">${ideas.length}</span>
+  </div>
+  <p class="text-xs text-zinc-400 mt-0.5 mb-3 leading-relaxed">${esc(def.blurb)}</p>
+  <div class="grid gap-4" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">${ideas.map(ideaTileHtml).join('')}</div>
+</section>`;
+}
+
+function ideasBody(): string {
+  // Bucket ideas by category, then emit the non-empty sections in
+  // IDEA_CATEGORIES order (entry order within a section follows the dataset) —
+  // mirrors the runtime ideas page.
+  const buckets = new Map<string, Idea[]>();
+  for (const idea of IDEAS) {
+    const arr = buckets.get(idea.category);
+    if (arr) arr.push(idea);
+    else buckets.set(idea.category, [idea]);
+  }
+  const sections = IDEA_CATEGORIES.map((def) => {
+    const ideas = buckets.get(def.id);
+    return ideas && ideas.length > 0 ? ideasCategoryHtml(def, ideas) : '';
+  }).join('');
+  const intro =
+    'Not sure what Partwright can do? Start here. Pick a starter prompt to hand the AI, try a technique you didn’t know was possible, or turn one of your own photos into a model.';
+  const jsonLd = jsonLdScript({
+    '@context': 'https://schema.org',
+    '@type': 'CollectionPage',
+    name: 'Ideas — Partwright',
+    description:
+      'Starter prompts, technique showcases, and photo-to-model flows to get started with Partwright.',
+    url: '/ideas',
+    mainEntity: {
+      '@type': 'ItemList',
+      numberOfItems: IDEAS.length,
+      itemListElement: IDEAS.map((idea, i) => ({
+        '@type': 'ListItem',
+        position: i + 1,
+        name: idea.title,
+        url: `/editor?idea=${encodeURIComponent(idea.id)}`,
+      })),
+    },
+  });
+  return `<div>
+  <h1 class="text-3xl font-bold tracking-tight mb-2">Ideas</h1>
+  <p class="text-sm text-zinc-400 leading-relaxed mb-6 max-w-3xl">${esc(intro)} Looking for finished models to remix instead? <a href="/catalog" class="text-teal-300 hover:text-teal-200 underline decoration-dotted">Browse the catalog →</a></p>
+  ${sections}
+  ${jsonLd}
+</div>`;
+}
+
 /** Return the fully-wrapped inner HTML (nav + content + footer) for a page. */
 export function renderContentBody(page: ContentPage): string {
   switch (page) {
@@ -329,5 +448,7 @@ export function renderContentBody(page: ContentPage): string {
       return pageShell('/help', helpBody());
     case 'catalog':
       return pageShell('/catalog', catalogBody());
+    case 'ideas':
+      return pageShell('/ideas', ideasBody());
   }
 }

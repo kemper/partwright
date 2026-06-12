@@ -59,7 +59,7 @@ import { showExportOptionsDialog } from './ui/exportOptionsDialog';
 import { showExportConfirm, hasExportWarning, type ExportWarningInfo } from './ui/exportConfirmModal';
 import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
 import { createIdeasPage } from './ui/ideasPage';
-import type { Idea } from './ideas/ideas';
+import { IDEAS, type Idea } from './ideas/ideas';
 import { createWhatsNewPage } from './ui/whatsNew';
 import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
@@ -1950,17 +1950,10 @@ async function main() {
     if (keyed.some(Boolean)) void requestPersistentStorage();
   })();
 
-  // Remove loading overlays as soon as JS takes over — EXCEPT on /ideas, the
-  // one app-rendered overlay page. It boots the whole app before painting any
-  // content, so dropping the spinner here would leave a blank screen until the
-  // page renders; instead showIdeasPage() removes it once the content is up
-  // (with a timeout fallback so it can never get stuck).
-  const onIdeasRoute = window.location.pathname === '/ideas';
-  if (!onIdeasRoute) {
-    document.getElementById('loading-splash')?.remove();
-  } else {
-    setTimeout(() => document.getElementById('loading-splash')?.remove(), 12000);
-  }
+  // Remove loading overlays as soon as JS takes over. (/ideas is served as a
+  // static, app-free page now, so there's no boot-spinner special-case here —
+  // a soft-nav to the in-app ideas overlay happens after boot.)
+  document.getElementById('loading-splash')?.remove();
   if (!shouldShowLanding()) {
     document.getElementById('landing-inline')?.remove();
   }
@@ -5194,18 +5187,81 @@ async function main() {
     updateDocumentTitle({ page: 'editor' });
   }
 
+  // Open the Relief import wizard in 'luminance' (tonal) mode — the "smooth
+  // relief / lithophane" idea promises a non-blocky result, unlike the global
+  // 'quantized' default (flat blocky colour clusters). Shared by the in-app
+  // tile and the /editor?idea= deep-link. Clone the defaults so we only
+  // override the mode.
+  function openReliefForIdea(file: File): void {
+    const initialOptions: ReliefOptions = { ...structuredClone(DEFAULT_RELIEF_OPTIONS), mode: 'luminance' };
+    openReliefImportFlow(file, initialOptions);
+  }
+
   // An interactive idea: emboss the user's photo as a smooth relief tile
   // (reuses the existing Relief import wizard).
   async function handleIdeaPhotoToRelief(file: File): Promise<void> {
     await enterEditorForIdea();
     if (window.location.pathname !== '/editor') return;
-    // The "smooth relief / lithophane" idea tile promises a non-blocky, tonal
-    // result, so open the wizard in 'luminance' mode rather than the global
-    // default ('quantized' — flat blocky colour clusters). Clone the defaults
-    // so we only override the mode.
-    const initialOptions: ReliefOptions = { ...structuredClone(DEFAULT_RELIEF_OPTIONS), mode: 'luminance' };
-    openReliefImportFlow(file, initialOptions);
+    openReliefForIdea(file);
     updateDocumentTitle({ page: 'editor' });
+  }
+
+  // Deep-link from the static /ideas page: /editor?idea=<id>. The static page
+  // can't hand an in-memory tile click across a real navigation, so it links
+  // here and we resolve the id against the IDEAS dataset. A prompt idea
+  // prefills the AI panel; an interactive idea opens a photo picker, then runs
+  // the same flow the in-app tile would. The editor is already entered (this
+  // runs inside syncEditorFromURL), so there's no history push — we just strip
+  // the one-shot ?idea= param for a clean URL.
+  async function loadIdeaIntoEditor(id: string): Promise<void> {
+    const clearIdeaParam = () => {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('idea')) {
+        url.searchParams.delete('idea');
+        history.replaceState(history.state, '', url.pathname + url.search);
+      }
+    };
+    const idea = IDEAS.find((i) => i.id === id);
+    // Ensure a live session exists either way (mirrors handleIdeaUsePrompt).
+    if (!getState().session) {
+      await createSession();
+      setStatus(statusBar, 'ready', 'Ready');
+      void seedStarter('manifold-js');
+    }
+    clearIdeaParam();
+    updateDocumentTitle({ page: 'editor' });
+    if (!idea) return; // unknown id — just land in a fresh editor session
+    if (idea.category === 'interactive' && idea.action) {
+      const action = idea.action;
+      // No file came across the navigation — pick one here, then run the flow.
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.style.display = 'none';
+      document.body.appendChild(input);
+      input.addEventListener(
+        'change',
+        () => {
+          const file = input.files?.[0];
+          input.remove();
+          if (!file) return;
+          if (action === 'photoToVoxel') void handleImageImport(file);
+          else openReliefForIdea(file);
+        },
+        { once: true },
+      );
+      input.click();
+      // Cancelling the native picker fires no 'change' — reclaim the orphaned
+      // input once focus returns (deferred so a real selection's change runs
+      // first and removes it).
+      window.addEventListener(
+        'focus',
+        () => setTimeout(() => { if (input.isConnected && !input.files?.length) input.remove(); }, 0),
+        { once: true },
+      );
+    } else {
+      prefillAiInput(idea.prompt ?? '');
+    }
   }
 
   let ideasEl: HTMLElement | null = null;
@@ -5448,6 +5504,13 @@ async function main() {
     const catalogFile = new URLSearchParams(window.location.search).get('catalog');
     if (catalogFile) {
       await loadCatalogFileIntoEditor(catalogFile);
+      return;
+    }
+
+    // Ideas deep-link: /editor?idea=<id> hands off from the static /ideas page.
+    const ideaId = new URLSearchParams(window.location.search).get('idea');
+    if (ideaId) {
+      await loadIdeaIntoEditor(ideaId);
       return;
     }
 

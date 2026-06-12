@@ -1,5 +1,5 @@
 // Shared chrome (nav + footer) for the statically pre-rendered content pages
-// (/catalog, /help, /legal, /whats-new). Pure HTML-string builders, run at
+// (/catalog, /help, /legal, /whats-new, /ideas). Pure HTML-string builders, run at
 // build time in Node. Tailwind classes here are picked up by Tailwind's
 // source scan (this is a .ts file under src/), so the utilities ship in the
 // app CSS that every content page links.
