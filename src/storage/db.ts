@@ -765,37 +765,54 @@ export async function deleteParts(ids: string[]): Promise<void> {
 
 // === Versions ===
 
+export interface SaveVersionOptions {
+  label?: string;
+  notes?: string;
+  /** Override the version timestamp (used by import to preserve the original). */
+  timestamp?: number;
+  /** Snapshot of annotations at save time (opaque to the db layer). */
+  annotations?: unknown[];
+  /** External meshes imported into this version (opaque to the db layer). */
+  importedMeshes?: unknown[];
+  /** Modeling language the version was authored in. Stored on the version so
+   *  navigating between versions can swap the engine independently of the
+   *  session's default language. */
+  language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
+  /** Customizer parameter overrides for this version (opaque to the db layer). */
+  paramValues?: Record<string, number | boolean | string>;
+  /** Companion SCAD files (path → source) for this version (opaque to the db layer). */
+  companionFiles?: Record<string, string>;
+  /** The version this was derived from (e.g. the parametric version before
+   *  simplify/enhance was applied). Stored so the UI can show provenance and
+   *  offer a one-click jump back to the source. */
+  parentVersionId?: string | null;
+  /** The operation that produced this version. */
+  operation?: VersionOperation | null;
+  /** Computed `api.surface.*` texture (key + mesh) — see {@link Version.surfaceTexture}. */
+  surfaceTexture?: unknown;
+}
+
 export async function saveVersion(
   partId: string,
   sessionId: string,
   code: string,
   geometryData: Record<string, unknown> | null,
   thumbnail: Blob | null,
-  label?: string,
-  notes?: string,
-  /** Override the version timestamp (used by import to preserve the original). */
-  timestamp?: number,
-  /** Snapshot of annotations at save time (opaque to the db layer). */
-  annotations?: unknown[],
-  /** External meshes imported into this version (opaque to the db layer). */
-  importedMeshes?: unknown[],
-  /** Modeling language the version was authored in. Stored on the version so
-   *  navigating between versions can swap the engine independently of the
-   *  session's default language. */
-  language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel',
-  /** Customizer parameter overrides for this version (opaque to the db layer). */
-  paramValues?: Record<string, number | boolean | string>,
-  /** Companion SCAD files (path → source) for this version (opaque to the db layer). */
-  companionFiles?: Record<string, string>,
-  /** The version this was derived from (e.g. the parametric version before
-   *  simplify/enhance was applied). Stored so the UI can show provenance and
-   *  offer a one-click jump back to the source. */
-  parentVersionId?: string | null,
-  /** The operation that produced this version. */
-  operation?: VersionOperation | null,
-  /** Computed `api.surface.*` texture (key + mesh) — see {@link Version.surfaceTexture}. */
-  surfaceTexture?: unknown,
+  options?: SaveVersionOptions,
 ): Promise<Version> {
+  const {
+    label,
+    notes,
+    timestamp,
+    annotations,
+    importedMeshes,
+    language,
+    paramValues,
+    companionFiles,
+    parentVersionId,
+    operation,
+    surfaceTexture,
+  } = options ?? {};
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
   // the same store (even across tabs), so two tabs saving to the same part

@@ -1,0 +1,418 @@
+{
+  "version": 1,
+  "entries": {
+    "ball-socket-mount": {
+      "source": "examples/ball_socket_mount.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "ballerina": {
+      "source": "examples/figure_ballerina.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "chess-rook": {
+      "source": "examples/chess_rook.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "chibi-wizard": {
+      "source": "examples/figure_chibi_wizard.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "christmas-tree": {
+      "source": "examples/christmas_tree.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "clock-face": {
+      "source": "examples/clock_face.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "dna-helix": {
+      "source": "examples/dna_helix.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "flexing-strongman": {
+      "source": "examples/figure_strongman.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "fountain-pen": {
+      "source": "examples/fountain_pen.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "gear-pair": {
+      "source": "examples/gear_pair.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "geodesic-lantern": {
+      "source": "examples/geodesic_lantern.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "hex-bolt-and-nut": {
+      "source": "examples/hex_bolt_and_nut.scad",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "honeycomb-planter": {
+      "source": "examples/honeycomb_planter.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "karate-master": {
+      "source": "examples/figure_karate.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "knurled-control-knob": {
+      "source": "examples/knurled_control_knob.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "l-bracket": {
+      "source": "examples/l_bracket.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "layer-cake": {
+      "source": "examples/layer_cake.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "modular-drawer-bin": {
+      "source": "examples/modular_drawer_bin.scad",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "openscad-twisted": {
+      "source": "examples/openscad_twisted.scad",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "parametric-enclosure": {
+      "source": "examples/parametric_enclosure.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "pipe-tee-fitting": {
+      "source": "examples/pipe_tee_fitting.scad",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "print-fit-dovetail-system": {
+      "source": "examples/print_fit_dovetail_system.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "print-fit-knob": {
+      "source": "examples/print_fit_knob.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "print-fit-project-box": {
+      "source": "examples/print_fit_project_box.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "print-in-place-hinge": {
+      "source": "examples/print_in_place_hinge.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "rack-and-pinion": {
+      "source": "examples/rack_and_pinion.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "ringed-planet": {
+      "source": "examples/ringed_planet.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "rock-guitarist": {
+      "source": "examples/figure_rocker.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "screw-top-jar": {
+      "source": "examples/screw_top_jar.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-asteroid": {
+      "source": "examples/sdf_asteroid.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-bark-vase": {
+      "source": "examples/sdf_bark_vase.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-bloom": {
+      "source": "examples/sdf_bloom.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-brain-coral": {
+      "source": "examples/sdf_brain_coral.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-brick-wall": {
+      "source": "examples/sdf_brick_wall.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-graded-tpms-study": {
+      "source": "examples/sdf_graded_tpms_study.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-gyroid-chamber": {
+      "source": "examples/sdf_gyroid_chamber.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-helix-lamp": {
+      "source": "examples/sdf_helix_lamp_standard.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-lsystem-coral": {
+      "source": "examples/sdf_lsystem_coral.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-lsystem-fern": {
+      "source": "examples/sdf_lsystem_fern.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-lsystem-tree": {
+      "source": "examples/sdf_lsystem_tree.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-mixed-mechanical": {
+      "source": "examples/sdf_mixed_mechanical.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-organic-creature": {
+      "source": "examples/sdf_organic_creature.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-spur-wheel": {
+      "source": "examples/spur_gear.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-tpms-study": {
+      "source": "examples/sdf_tpms_study.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "sdf-twisted-vessel": {
+      "source": "examples/sdf_twisted_vessel.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "smiley-cactus": {
+      "source": "examples/smiley_cactus.scad",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "snap-lid-box": {
+      "source": "examples/snap_lid_box.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "spiral-staircase": {
+      "source": "examples/spiral_staircase.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "spur-gear-pair": {
+      "source": "examples/spur_gear_pair.scad",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "staff-mage": {
+      "source": "examples/figure_staff_mage.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "storytime-reader": {
+      "source": "examples/figure_sitting_reader.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "studio-microphone": {
+      "source": "examples/studio_microphone.scad",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "superhero-takeoff": {
+      "source": "examples/figure_superhero.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "twisted-vase": {
+      "source": "examples/twisted_vase.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "vintage-biplane": {
+      "source": "examples/vintage_biplane.scad",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "warrior-pose": {
+      "source": "examples/figure_warrior_pose.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "waving-kid": {
+      "source": "examples/figure_waving_kid.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "waving-princess": {
+      "source": "examples/figure_princess.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "wind-turbine": {
+      "source": "examples/wind_turbine.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    }
+  }
+}

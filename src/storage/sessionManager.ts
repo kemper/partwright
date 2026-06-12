@@ -1121,20 +1121,21 @@ export async function saveVersion(
     code,
     geometryData,
     thumbnail,
-    label,
-    notes,
-    undefined,
-    annotationSnapshot,
-    nextImports.length > 0 ? nextImports : undefined,
-    // Snapshot the engine language at save time. Versions remember the
-    // language they were authored in, so navigating between them swaps the
-    // engine independently of the session's default.
-    getActiveLanguage(),
-    paramValues,
-    Object.keys(nextCompanions).length > 0 ? nextCompanions : undefined,
-    options?.parentVersionId ?? null,
-    options?.operation ?? null,
-    options?.surfaceTexture,
+    {
+      label,
+      notes,
+      annotations: annotationSnapshot,
+      importedMeshes: nextImports.length > 0 ? nextImports : undefined,
+      // Snapshot the engine language at save time. Versions remember the
+      // language they were authored in, so navigating between them swaps the
+      // engine independently of the session's default.
+      language: getActiveLanguage(),
+      paramValues,
+      companionFiles: Object.keys(nextCompanions).length > 0 ? nextCompanions : undefined,
+      parentVersionId: options?.parentVersionId ?? null,
+      operation: options?.operation ?? null,
+      surfaceTexture: options?.surfaceTexture,
+    }
   );
 
   currentState = {
@@ -1917,32 +1918,34 @@ export async function importSession(
         v.code,
         geometryData,
         thumbnail,
-        v.label,
-        v.notes,
-        v.timestamp,
-        versionAnnotations,
-        importedMeshes,
-        // Per-version language (schema 1.8+). Pre-1.8 files omit it; the
-        // read path falls back to session-level via effectiveVersionLanguage.
-        // Run unknown values through `asLanguage` so a malformed export
-        // (e.g. {language: 'python'}) drops the field rather than poisoning
-        // the engine + editor when this version is later loaded.
-        asLanguage(v.language),
-        // Customizer parameter overrides (schema 1.9+). Pre-1.9 files omit it;
-        // the version then runs at the model's declared defaults. Validation of
-        // the values against the model's schema happens at run time (coerced in
-        // resolveParamValues — numerics honored as-is, non-numerics validated),
-        // so a stale value can't break a load.
-        v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
-        // Companion SCAD files (schema 1.10+). Pre-1.10 files omit this field;
-        // those versions import with no companions, which is correct for all
-        // non-SCAD and pre-companion SCAD sessions.
-        v.companionFiles && typeof v.companionFiles === 'object' ? v.companionFiles as Record<string, string> : undefined,
-        null,
-        null,
-        // Persisted surface texture (schema 1.14+). Pre-1.14 files omit it;
-        // the texture chain then recomputes on the version's first load.
-        deserializeSurfaceTexture(v.surfaceTexture),
+        {
+          label: v.label,
+          notes: v.notes,
+          timestamp: v.timestamp,
+          annotations: versionAnnotations,
+          importedMeshes,
+          // Per-version language (schema 1.8+). Pre-1.8 files omit it; the
+          // read path falls back to session-level via effectiveVersionLanguage.
+          // Run unknown values through `asLanguage` so a malformed export
+          // (e.g. {language: 'python'}) drops the field rather than poisoning
+          // the engine + editor when this version is later loaded.
+          language: asLanguage(v.language),
+          // Customizer parameter overrides (schema 1.9+). Pre-1.9 files omit it;
+          // the version then runs at the model's declared defaults. Validation of
+          // the values against the model's schema happens at run time (coerced in
+          // resolveParamValues — numerics honored as-is, non-numerics validated),
+          // so a stale value can't break a load.
+          paramValues: v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
+          // Companion SCAD files (schema 1.10+). Pre-1.10 files omit this field;
+          // those versions import with no companions, which is correct for all
+          // non-SCAD and pre-companion SCAD sessions.
+          companionFiles: v.companionFiles && typeof v.companionFiles === 'object' ? v.companionFiles as Record<string, string> : undefined,
+          parentVersionId: null,
+          operation: null,
+          // Persisted surface texture (schema 1.14+). Pre-1.14 files omit it;
+          // the texture chain then recomputes on the version's first load.
+          surfaceTexture: deserializeSurfaceTexture(v.surfaceTexture),
+        }
       );
     }
   }
@@ -2117,18 +2120,19 @@ export async function importSessionPartsIntoActive(
         v.code,
         geometryData,
         thumbnail,
-        v.label,
-        v.notes,
-        v.timestamp,
-        versionAnnotations,
-        importedMeshes,
-        asLanguage(v.language),
-        v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
-        undefined,
-        null,
-        null,
-        // Persisted surface texture (schema 1.14+); absent ⇒ recompute on load.
-        deserializeSurfaceTexture(v.surfaceTexture),
+        {
+          label: v.label,
+          notes: v.notes,
+          timestamp: v.timestamp,
+          annotations: versionAnnotations,
+          importedMeshes,
+          language: asLanguage(v.language),
+          paramValues: v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
+          parentVersionId: null,
+          operation: null,
+          // Persisted surface texture (schema 1.14+); absent ⇒ recompute on load.
+          surfaceTexture: deserializeSurfaceTexture(v.surfaceTexture),
+        }
       );
       copiedVersions++;
     }

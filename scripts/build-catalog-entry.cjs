@@ -123,7 +123,7 @@ async function main() {
   const code = fs.readFileSync(SOURCE, 'utf8');
 
   const browser = await chromium.launch({
-    headless: false,
+    headless: true,
     executablePath: SANDBOX_CHROME,
     args: ['--use-gl=angle', '--enable-webgl', '--ignore-gpu-blocklist', '--no-sandbox'],
   });
