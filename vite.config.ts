@@ -167,6 +167,7 @@ export default defineConfig({
         help: resolve(__dirname, 'help.html'),
         legal: resolve(__dirname, 'legal.html'),
         'whats-new': resolve(__dirname, 'whats-new.html'),
+        ideas: resolve(__dirname, 'ideas.html'),
       },
       output: {
         // Function form (not the object map) so we can isolate Vite's

@@ -162,6 +162,10 @@ let forwardBtnRef: HTMLButtonElement | null = null;
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let inputEl: HTMLTextAreaElement | null = null;
+// A prefill requested before the drawer was built (e.g. the /editor?idea=
+// deep-link runs during boot, ahead of initAiPanel). initAiPanel flushes it
+// once the input exists. See prefillAiInput.
+let pendingPrefill: string | null = null;
 let voiceController: VoiceController | null = null;
 let planApprovalBarEl: HTMLElement | null = null;
 
@@ -298,6 +302,14 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
     // later. The drawer element already starts with the `hidden` class.
     state.open = false;
   } else hideDrawer();
+  // Apply any prefill that arrived before the drawer existed (e.g. a boot-time
+  // /editor?idea= deep-link). Done last so the input is fully built; this also
+  // opens the drawer so the user sees the queued prompt.
+  if (pendingPrefill !== null) {
+    const text = pendingPrefill;
+    pendingPrefill = null;
+    prefillAiInput(text);
+  }
 }
 
 /** Called by main.ts whenever the active session changes (open / close).
@@ -344,8 +356,13 @@ export function toggleAiPanel(): void {
  *  sending it — the user reads/tweaks it and hits send themselves. Used by the
  *  prompt library and the /ideas page so picking a prompt lands here. */
 export function prefillAiInput(text: string): void {
+  if (!inputEl) {
+    // Drawer not built yet — queue it; initAiPanel applies it once the input
+    // exists (covers the /editor?idea= deep-link that runs during boot).
+    pendingPrefill = text;
+    return;
+  }
   if (!state.open) showDrawer(false);
-  if (!inputEl) return;
   inputEl.value = text;
   inputEl.focus();
   const end = text.length;
