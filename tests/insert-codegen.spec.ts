@@ -53,6 +53,7 @@ import {
 import { primitiveEntry, unionBoxes, pickPart, translateEntry, type RegistryEntry } from '../src/insert/spatial';
 import { STARTERS } from '../src/editor/starters';
 import { alignDeltas } from '../src/insert/arrangeMath';
+import { parseStatement } from '../src/insert/parseStatement';
 import {
   initUndoStack,
   recordOperation,
@@ -1188,6 +1189,177 @@ test.describe('Arrange — alignDeltas', () => {
     ]);
     const deltas = alignDeltas(['a', 'ghost'], reg, 'x', 'min');
     expect(deltas.size).toBe(0); // only one valid entry → nothing to align against
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseStatement — recover PrimitiveSpec from hand-written code so arrange
+// mode can drag/resize/align parts the palette never inserted itself.
+// ---------------------------------------------------------------------------
+
+test.describe('parseStatement — voxel', () => {
+  test('fillBox → cube spec with size and corner position', () => {
+    const stmt = `v.fillBox([0, 0, 0], [4, 4, 4], '#abc')`;
+    const spec = parseStatement(stmt, 'voxel', 'box');
+    expect(spec).not.toBeNull();
+    expect(spec!.kind).toBe('cube');
+    if (spec!.kind !== 'cube') return;
+    expect(spec!.size).toEqual([5, 5, 5]); // inclusive fillBox: max-min+1
+    expect(spec!.position).toEqual([0, 0, 0]);
+    expect(spec!.center).toBe(false);
+  });
+
+  test('sphere → sphere spec with center position', () => {
+    const stmt = `v.sphere([10, 5, 0], 3, '#fff')`;
+    const spec = parseStatement(stmt, 'voxel', 'ball');
+    expect(spec).not.toBeNull();
+    if (spec!.kind !== 'sphere') throw new Error('expected sphere');
+    expect(spec!.radius).toBe(3);
+    expect(spec!.position).toEqual([10, 5, 0]);
+  });
+
+  test('cylinder → cylinder spec with base z', () => {
+    const stmt = `v.cylinder([0, 0, 0], 5, 10, '#fff', 'z')`;
+    const spec = parseStatement(stmt, 'voxel', 'cyl');
+    expect(spec).not.toBeNull();
+    if (spec!.kind !== 'cylinder') throw new Error('expected cylinder');
+    expect(spec!.radius).toBe(5);
+    expect(spec!.height).toBe(10);
+  });
+
+  test('sdf torus → torus spec', () => {
+    const stmt = `v.sdf(api.sdf.torus(8, 2).translate([5, 0, 0]), { color: '#fff' })`;
+    const spec = parseStatement(stmt, 'voxel', 'torus');
+    expect(spec).not.toBeNull();
+    if (spec!.kind !== 'torus') throw new Error('expected torus');
+    expect(spec!.majorRadius).toBe(8);
+    expect(spec!.tubeRadius).toBe(2);
+    expect(spec!.position).toEqual([5, 0, 0]);
+  });
+
+  test('returns null for an unparseable shape', () => {
+    expect(parseStatement(`v.someUnknownThing([1,2,3])`, 'voxel', 'x')).toBeNull();
+  });
+});
+
+test.describe('parseStatement — SCAD', () => {
+  test('cube with translate wrap', () => {
+    const stmt = `translate([5, 0, 0]) cube([10, 10, 10], center=true); // part: box`;
+    const spec = parseStatement(stmt, 'scad', 'box');
+    expect(spec).not.toBeNull();
+    if (spec!.kind !== 'cube') throw new Error('expected cube');
+    expect(spec!.size).toEqual([10, 10, 10]);
+    expect(spec!.center).toBe(true);
+    expect(spec!.position).toEqual([5, 0, 0]);
+  });
+
+  test('bare cube (no translate, no center) → uncentered at origin', () => {
+    const stmt = `cube([4, 6, 8])`;
+    const spec = parseStatement(stmt, 'scad', 'b');
+    if (!spec || spec.kind !== 'cube') throw new Error('expected cube');
+    expect(spec.size).toEqual([4, 6, 8]);
+    expect(spec.center).toBe(false);
+    expect(spec.position).toEqual([0, 0, 0]);
+  });
+
+  test('cylinder with named args', () => {
+    const stmt = `translate([0, 0, 5]) cylinder(h=20, r=4, center=false);`;
+    const spec = parseStatement(stmt, 'scad', 'c');
+    if (!spec || spec.kind !== 'cylinder') throw new Error('expected cylinder');
+    expect(spec.radius).toBe(4);
+    expect(spec.height).toBe(20);
+    expect(spec.position).toEqual([0, 0, 5]);
+  });
+
+  test('cone (cylinder with r1/r2) → cone spec', () => {
+    const stmt = `cylinder(h=10, r1=5, r2=2);`;
+    const spec = parseStatement(stmt, 'scad', 'c');
+    if (!spec || spec.kind !== 'cone') throw new Error('expected cone');
+    expect(spec.radiusBottom).toBe(5);
+    expect(spec.radiusTop).toBe(2);
+    expect(spec.height).toBe(10);
+  });
+
+  test('returns null for unrecognized SCAD shapes', () => {
+    expect(parseStatement(`linear_extrude(10) circle(r=5);`, 'scad', 'x')).toBeNull();
+  });
+});
+
+test.describe('parseStatement — manifold-js / BREP', () => {
+  test('Manifold.cube with array args', () => {
+    const stmt = `const box = Manifold.cube([10, 20, 30], true).translate([5, 0, 0]);`;
+    const spec = parseStatement(stmt, 'manifold-js', 'box');
+    if (!spec || spec.kind !== 'cube') throw new Error('expected cube');
+    expect(spec.size).toEqual([10, 20, 30]);
+    expect(spec.center).toBe(true);
+    expect(spec.position).toEqual([5, 0, 0]);
+  });
+
+  test('Manifold.cube with object args', () => {
+    const stmt = `const c = Manifold.cube({ size: [4, 6, 8], center: false });`;
+    const spec = parseStatement(stmt, 'manifold-js', 'c');
+    if (!spec || spec.kind !== 'cube') throw new Error('expected cube');
+    expect(spec.size).toEqual([4, 6, 8]);
+    expect(spec.center).toBe(false);
+  });
+
+  test('Manifold.sphere (positional)', () => {
+    const spec = parseStatement(`const ball = Manifold.sphere(5);`, 'manifold-js', 'ball');
+    if (!spec || spec.kind !== 'sphere') throw new Error('expected sphere');
+    expect(spec.radius).toBe(5);
+  });
+
+  test('Manifold.cylinder (h, r)', () => {
+    const spec = parseStatement(`const cyl = Manifold.cylinder(10, 3);`, 'manifold-js', 'cyl');
+    if (!spec || spec.kind !== 'cylinder') throw new Error('expected cylinder');
+    expect(spec.height).toBe(10);
+    expect(spec.radius).toBe(3);
+  });
+
+  test('BREP.cylinder (r, h) — arg order flipped vs Manifold', () => {
+    const spec = parseStatement(`const cyl = BREP.cylinder(3, 10);`, 'replicad', 'cyl');
+    if (!spec || spec.kind !== 'cylinder') throw new Error('expected cylinder');
+    expect(spec.radius).toBe(3);
+    expect(spec.height).toBe(10);
+  });
+
+  test('returns null for chained transforms we do not understand', () => {
+    expect(parseStatement(
+      `const x = Manifold.cube([10,10,10]).rotate([0,0,30]).translate([5,0,0]);`,
+      'manifold-js', 'x',
+    )).toBeNull();
+  });
+
+  test('returns null for arbitrary expressions', () => {
+    expect(parseStatement(`const x = api.text("hi");`, 'manifold-js', 'x')).toBeNull();
+  });
+});
+
+test.describe('scanPartsJs now also returns statement text for single-line const decls', () => {
+  test('captures statement for parsing', () => {
+    const code = 'const box = Manifold.cube([1,2,3], true);\nconst ball = Manifold.sphere(4);';
+    const refs = scanPartsJs(code);
+    const box = refs.find(r => r.name === 'box');
+    expect(box?.statement).toContain('Manifold.cube');
+    const ball = refs.find(r => r.name === 'ball');
+    expect(ball?.statement).toContain('Manifold.sphere');
+  });
+
+  test('semicolons inside string literals do not truncate the captured statement', () => {
+    // A naive `/[^;]*;/` regex would stop after `"hi;"`, leaving a
+    // malformed RHS. The skip-aware walker keeps going past the string.
+    const code = 'const greeting = "hi;bye";\nconst box = Manifold.cube([1,2,3]);';
+    const refs = scanPartsJs(code);
+    const greeting = refs.find(r => r.name === 'greeting');
+    expect(greeting?.statement).toContain('"hi;bye"');
+    expect(greeting?.statement?.trim().endsWith(';')).toBe(true);
+  });
+
+  test('multi-line statements are captured in full', () => {
+    const code = 'const box = Manifold\n  .cube([1,2,3], true)\n  .translate([5,0,0]);';
+    const refs = scanPartsJs(code);
+    const box = refs.find(r => r.name === 'box');
+    expect(box?.statement).toContain('.translate');
   });
 });
 

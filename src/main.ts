@@ -204,7 +204,32 @@ import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
 import { encodeShare, decodeShare, validateSharePayloadShape, ShareUnsupportedError } from './share/shareLink';
 import { openShareModal, renderSharedBanner, renderSharedOverlay } from './share/shareUI';
-import { initInsertPalette, setInsertPaletteAvailable } from './ui/insertPalette';
+import {
+  initInsertPalette,
+  setInsertPaletteAvailable,
+  apiEnterArrange,
+  apiExitArrange,
+  apiIsArrangeActive,
+  apiSetSelection,
+  apiAddToSelection,
+  apiClearSelection,
+  apiGetSelection,
+  apiUndo,
+  apiRedo,
+  apiCanUndo,
+  apiCanRedo,
+  apiResizeSelection,
+  apiAlignSelection,
+  apiGroupSelection,
+  apiSubtractSelection,
+  apiIntersectSelection,
+  apiDeleteSelection,
+  apiDuplicateSelection,
+  apiMirrorSelection,
+  apiListParts,
+  apiSetAutoCombine,
+  apiGetAutoCombine,
+} from './ui/insertPalette';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
@@ -9107,6 +9132,125 @@ async function main() {
       return isAutoRun();
     },
 
+    // === Insert & arrange palette ===
+    //
+    // Drives the same Tinkercad-style arrange tool you reach from the toolbar.
+    // The selection Set, undo stack, and per-engine code rewriters are shared
+    // with the panel — calling `partwright.enterArrange()` then
+    // `partwright.alignSelection('z','center')` is identical to clicking the
+    // toggle, ⇧-clicking parts, and pressing the Z⊣ Align button.
+
+    /** Turn arrange mode on (the persistent click-to-select / drag-to-move
+     *  viewport tool). Opens the Insert palette if needed so chip strip and
+     *  undo controls are visible. Returns `{ ok: true }` on success. */
+    enterArrange(): { ok: boolean; reason?: string } {
+      return apiEnterArrange();
+    },
+
+    /** Turn arrange mode off and exit the canvas pointer hook. */
+    exitArrange(): void { apiExitArrange(); },
+
+    /** Whether arrange mode is currently capturing pointer events. */
+    isArrangeActive(): boolean { return apiIsArrangeActive(); },
+
+    /** Replace the arrange-mode selection with the given part names. Names
+     *  unknown to the current code are silently dropped; the returned array
+     *  lists names that actually stuck. */
+    selectParts(names: string[]): string[] {
+      assertArray(names, 'selectParts(names)');
+      for (let i = 0; i < names.length; i++) assertString(names[i], `selectParts(names[${i}])`);
+      return apiSetSelection(names);
+    },
+
+    /** Extend the selection — equivalent to ⇧-click on each part. */
+    addToSelection(names: string[]): string[] {
+      assertArray(names, 'addToSelection(names)');
+      for (let i = 0; i < names.length; i++) assertString(names[i], `addToSelection(names[${i}])`);
+      return apiAddToSelection(names);
+    },
+
+    /** Clear the arrange-mode selection. */
+    clearSelection(): void { apiClearSelection(); },
+
+    /** Names the arrange tool is currently treating as the active group. */
+    getSelection(): string[] { return apiGetSelection(); },
+
+    /** List the parts arrange mode can currently work with. Returns
+     *  `[{ name, box: { min, max }, center }]`. Includes both palette-inserted
+     *  parts and hand-written ones the parser was able to resolve. */
+    listArrangeParts(): Array<{ name: string; box: { min: [number, number, number]; max: [number, number, number] }; center: [number, number, number] }> {
+      return apiListParts();
+    },
+
+    /** Step back one palette operation (insert / move / resize / align /
+     *  duplicate / delete / mirror / boolean). Returns the label of the
+     *  reversed op, or null when nothing to undo. */
+    undo(): string | null { return apiUndo(); },
+
+    /** Reapply the most recently undone palette operation. */
+    redo(): string | null { return apiRedo(); },
+
+    /** Whether `undo()` would do anything right now. */
+    canUndo(): boolean { return apiCanUndo(); },
+
+    /** Whether `redo()` would do anything right now. */
+    canRedo(): boolean { return apiCanRedo(); },
+
+    /** Scale every part in the selection. `scale` may be uniform `[s,s,s]`
+     *  or anisotropic `[sx, sy, sz]`. Same path as the Size X/Y/Z inputs.
+     *  Errors are returned as `{ ok: false, reason }`. */
+    resizeSelection(scale: [number, number, number]): { ok: boolean; reason?: string } {
+      assertNumberTuple(scale, 3, 'resizeSelection(scale)');
+      return apiResizeSelection(scale as [number, number, number]);
+    },
+
+    /** Align 2+ selected parts on `axis` ('x' | 'y' | 'z') to `mode`
+     *  ('min' | 'center' | 'max'). The reference is the union of the
+     *  selection's bboxes (Tinkercad-style). */
+    alignSelection(axis: 'x' | 'y' | 'z', mode: 'min' | 'center' | 'max'): { ok: boolean; reason?: string } {
+      assertEnum(axis, ['x', 'y', 'z'] as const, 'alignSelection(axis)');
+      assertEnum(mode, ['min', 'center', 'max'] as const, 'alignSelection(mode)');
+      return apiAlignSelection(axis, mode);
+    },
+
+    /** Union the selected parts in code — same as the ∪ Group button. Voxel
+     *  grids union implicitly so the call is rejected there. */
+    groupSelection(): { ok: boolean; reason?: string } { return apiGroupSelection(); },
+
+    /** Subtract every later operand from the first selected part. */
+    subtractSelection(): { ok: boolean; reason?: string } { return apiSubtractSelection(); },
+
+    /** Intersect every selected part. */
+    intersectSelection(): { ok: boolean; reason?: string } { return apiIntersectSelection(); },
+
+    /** Remove every selected part from the code. */
+    deleteSelection(): { ok: boolean; reason?: string } { return apiDeleteSelection(); },
+
+    /** Clone every selected part, offset along +X. New parts replace the
+     *  selection so a follow-up call (resize / align / move) operates on the
+     *  copies. */
+    duplicateSelection(): { ok: boolean; reason?: string } { return apiDuplicateSelection(); },
+
+    /** Mirror every selected part in place across the given axis. */
+    mirrorSelection(axis: 'x' | 'y' | 'z'): { ok: boolean; reason?: string } {
+      assertEnum(axis, ['x', 'y', 'z'] as const, 'mirrorSelection(axis)');
+      return apiMirrorSelection(axis);
+    },
+
+    /** Toggle the "Auto-combine new shapes" checkbox programmatically. When
+     *  on (default), each inserted shape folds into the managed-return
+     *  engine's visible union so it appears immediately; when off, the part
+     *  is added to the code + registered for arrange/pick but not unioned
+     *  until you call `groupSelection`. Only meaningful for manifold-js /
+     *  replicad — voxel + scad union implicitly. */
+    setAutoCombine(on: boolean): void {
+      assertBoolean(on, 'setAutoCombine(on)');
+      apiSetAutoCombine(on);
+    },
+
+    /** Read the current Auto-combine flag. */
+    getAutoCombine(): boolean { return apiGetAutoCombine(); },
+
     // === View rendering API ===
 
     /** Render a single view from any camera angle. Returns a data URL (PNG).
@@ -13432,6 +13576,29 @@ async function main() {
         'getTheme':             { signature: 'getTheme() -- Current color theme', docs: '/ai.md#viewport-controls' },
         'setAutoRun':           { signature: 'setAutoRun(enabled) -- Enable/disable auto-render on edit', docs: '/ai.md#viewport-controls' },
         'isAutoRunEnabled':     { signature: 'isAutoRunEnabled() -- Whether auto-run is active', docs: '/ai.md#viewport-controls' },
+        // Insert & arrange palette (Tinkercad-style direct manipulation)
+        'enterArrange':         { signature: 'enterArrange() -- Activate arrange-mode pointer hook (drag to move parts in 3D) -> {ok}', docs: '/ai.md#arrange-mode' },
+        'exitArrange':          { signature: 'exitArrange() -- Deactivate arrange mode', docs: '/ai.md#arrange-mode' },
+        'isArrangeActive':      { signature: 'isArrangeActive() -- Whether arrange mode is currently capturing pointer events', docs: '/ai.md#arrange-mode' },
+        'selectParts':          { signature: 'selectParts(names) -- Replace the arrange-mode selection -> matched names', docs: '/ai.md#arrange-mode' },
+        'addToSelection':       { signature: 'addToSelection(names) -- Extend the arrange-mode selection -> matched names', docs: '/ai.md#arrange-mode' },
+        'clearSelection':       { signature: 'clearSelection() -- Drop everything from the arrange-mode selection', docs: '/ai.md#arrange-mode' },
+        'getSelection':         { signature: 'getSelection() -- Current arrange-mode selection -> string[]', docs: '/ai.md#arrange-mode' },
+        'listArrangeParts':     { signature: 'listArrangeParts() -- Names + bboxes of every part arrange mode can act on -> [{name, box:{min,max}, center}]', docs: '/ai.md#arrange-mode' },
+        'undo':                 { signature: 'undo() -- Reverse the last palette operation (insert/move/resize/align/boolean/etc) -> label or null', docs: '/ai.md#arrange-mode' },
+        'redo':                 { signature: 'redo() -- Reapply the last undone palette operation -> label or null', docs: '/ai.md#arrange-mode' },
+        'canUndo':              { signature: 'canUndo() -- Whether undo() would do anything', docs: '/ai.md#arrange-mode' },
+        'canRedo':              { signature: 'canRedo() -- Whether redo() would do anything', docs: '/ai.md#arrange-mode' },
+        'resizeSelection':      { signature: 'resizeSelection([sx,sy,sz]) -- Scale selected parts per-axis (or uniform [s,s,s]) -> {ok}', docs: '/ai.md#arrange-mode' },
+        'alignSelection':       { signature: 'alignSelection(axis, mode) -- axis: "x"|"y"|"z", mode: "min"|"center"|"max" -> {ok}', docs: '/ai.md#arrange-mode' },
+        'groupSelection':       { signature: 'groupSelection() -- Union selected parts in code (∪) -> {ok}', docs: '/ai.md#arrange-mode' },
+        'subtractSelection':    { signature: 'subtractSelection() -- Subtract later operands from the first (∖) -> {ok}', docs: '/ai.md#arrange-mode' },
+        'intersectSelection':   { signature: 'intersectSelection() -- Intersect every selected part (∩) -> {ok}', docs: '/ai.md#arrange-mode' },
+        'deleteSelection':      { signature: 'deleteSelection() -- Remove selected parts from the code -> {ok}', docs: '/ai.md#arrange-mode' },
+        'duplicateSelection':   { signature: 'duplicateSelection() -- Clone selected parts, offset along +X -> {ok}', docs: '/ai.md#arrange-mode' },
+        'mirrorSelection':      { signature: 'mirrorSelection("x"|"y"|"z") -- Mirror selected parts in place across axis -> {ok}', docs: '/ai.md#arrange-mode' },
+        'setAutoCombine':       { signature: 'setAutoCombine(on) -- Toggle "Auto-combine new shapes" (managed-return engines only)', docs: '/ai.md#arrange-mode' },
+        'getAutoCombine':       { signature: 'getAutoCombine() -- Whether Auto-combine is currently on', docs: '/ai.md#arrange-mode' },
         // View
         'setView':         { signature: 'setView(tab) -- Switch tab: "interactive", "gallery", "images", "diff", "notes"', docs: '/ai.md#how-to-use-this-tool' },
         'getViewState':    { signature: 'getViewState() -- Current tab and camera state', docs: '/ai.md#how-to-use-this-tool' },

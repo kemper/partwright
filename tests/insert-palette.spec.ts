@@ -437,4 +437,200 @@ test.describe('Insert palette', () => {
     await page.locator('#insert-arrange-toggle').click();
     await expect(page.locator('#insert-arrange-toggle')).not.toContainText('ON');
   });
+
+  test('partwright API: enterArrange + alignSelection drives the same flow as the panel', async ({ page }) => {
+    await gotoEditor(page);
+    // Two cubes at different Z so an align('z', 'min') has a visible effect.
+    await page.evaluate(() => {
+      const code = [
+        'const { Manifold } = api;',
+        'const box = Manifold.cube([10, 10, 10], true);',
+        'const ball = Manifold.sphere(4).translate([20, 0, 8]);',
+        'return box.add(ball);',
+      ].join('\n');
+      (window as unknown as { partwright: { setCode(c: string): void; run(): void } }).partwright.setCode(code);
+      (window as unknown as { partwright: { run(): void } }).partwright.run();
+    });
+
+    // No UI click: arrange enters via the console API; seeding happens
+    // automatically. listArrangeParts surfaces both hand-written parts.
+    const { active, parts } = await page.evaluate(() => {
+      const w = window as unknown as { partwright: { enterArrange(): { ok: boolean }; isArrangeActive(): boolean; listArrangeParts(): Array<{ name: string }> } };
+      w.partwright.enterArrange();
+      return { active: w.partwright.isArrangeActive(), parts: w.partwright.listArrangeParts().map(p => p.name) };
+    });
+    expect(active).toBe(true);
+    expect(parts).toContain('box');
+    expect(parts).toContain('ball');
+
+    // Select both → align Z 'min'. ball was at z=8; should move down to z=0.
+    const result = await page.evaluate(() => {
+      const w = window as unknown as { partwright: { selectParts(n: string[]): string[]; alignSelection(a: 'x' | 'y' | 'z', m: 'min' | 'center' | 'max'): { ok: boolean } } };
+      w.partwright.selectParts(['box', 'ball']);
+      return w.partwright.alignSelection('z', 'min');
+    });
+    expect(result.ok).toBe(true);
+
+    // The ball's translate should have been re-emitted with a lower Z. We don't
+    // pin the exact value (depends on the precise bbox math), but its Z
+    // coordinate must drop below the original 8.
+    await expect.poll(() => getCode(page)).toMatch(/ball = Manifold\.sphere\(4\)\.translate\(\[[^\]]*, [^,]*, (-?\d+(?:\.\d+)?)\]\)/);
+    const code = await getCode(page);
+    const m = /ball = Manifold\.sphere\(4\)\.translate\(\[[^,]*,\s*[^,]*,\s*(-?\d+(?:\.\d+)?)\]\)/.exec(code);
+    expect(m).not.toBeNull();
+    expect(parseFloat(m![1])).toBeLessThan(8);
+
+    // Tidy up.
+    await page.evaluate(() => (window as unknown as { partwright: { exitArrange(): void } }).partwright.exitArrange());
+  });
+
+  test('partwright API: undo / redo round-trip mirrors the buttons', async ({ page }) => {
+    await gotoEditor(page);
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
+
+    await page.locator('#btn-insert').dispatchEvent('click');
+    await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toContain('const box');
+
+    // API-level undo reverses the insert; canUndo / canRedo agree.
+    const before = await page.evaluate(() => (window as unknown as { partwright: { canUndo(): boolean; canRedo(): boolean } }).partwright.canUndo());
+    expect(before).toBe(true);
+    const label = await page.evaluate(() => (window as unknown as { partwright: { undo(): string | null } }).partwright.undo());
+    expect(label).toContain('Insert');
+    await expect.poll(() => getCode(page)).not.toContain('const box');
+
+    const canRedo = await page.evaluate(() => (window as unknown as { partwright: { canRedo(): boolean } }).partwright.canRedo());
+    expect(canRedo).toBe(true);
+    const redoLabel = await page.evaluate(() => (window as unknown as { partwright: { redo(): string | null } }).partwright.redo());
+    expect(redoLabel).toContain('Insert');
+    await expect.poll(() => getCode(page)).toContain('const box');
+  });
+
+  test('hand-written parts seed the arrange registry on enter', async ({ page }) => {
+    await gotoEditor(page);
+    // Code typed straight into the editor — no palette involvement. The parser
+    // recognises Manifold.cube / .sphere with optional .translate.
+    await page.evaluate(() => {
+      const code = [
+        'const { Manifold } = api;',
+        'const myCube = Manifold.cube([8, 8, 8], true).translate([10, 0, 0]);',
+        'const myBall = Manifold.sphere(3);',
+        'return myCube.add(myBall);',
+      ].join('\n');
+      (window as unknown as { partwright: { setCode(c: string): void; run(): void } }).partwright.setCode(code);
+      (window as unknown as { partwright: { run(): void } }).partwright.run();
+    });
+
+    const parts = await page.evaluate(() => {
+      const w = window as unknown as { partwright: { enterArrange(): unknown; listArrangeParts(): Array<{ name: string; box: { min: number[]; max: number[] } }> } };
+      w.partwright.enterArrange();
+      return w.partwright.listArrangeParts();
+    });
+    const names = parts.map(p => p.name);
+    expect(names).toContain('myCube');
+    expect(names).toContain('myBall');
+    // The cube was translated to (10,0,0), centered with size 8 — so its bbox
+    // X spans roughly 6..14. The parser should report the correct world bbox.
+    const cube = parts.find(p => p.name === 'myCube')!;
+    expect(cube.box.min[0]).toBeCloseTo(6, 1);
+    expect(cube.box.max[0]).toBeCloseTo(14, 1);
+
+    await page.evaluate(() => (window as unknown as { partwright: { exitArrange(): void } }).partwright.exitArrange());
+  });
+
+  test('Arrange mode: drag → undo restores the original position', async ({ page }) => {
+    await gotoEditor(page);
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
+
+    await page.locator('#btn-insert').dispatchEvent('click');
+    await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toContain('const box');
+    const codeBeforeDrag = await getCode(page);
+
+    // Move palette out of the canvas's way + enter arrange mode.
+    await page.evaluate(() => {
+      const p = document.querySelector('#insert-palette-panel') as HTMLElement | null;
+      if (p) { p.style.left = '8px'; p.style.top = '8px'; p.style.right = 'auto'; }
+    });
+    await page.locator('#insert-arrange-toggle').click();
+
+    // Drag the cube right by a sensible amount in screen px so the translate
+    // commit visibly shifts +X (the world delta depends on camera, but the
+    // direction is right).
+    const cBox = await page.locator('canvas').first().boundingBox();
+    if (!cBox) throw new Error('canvas missing');
+    const cx = cBox.x + cBox.width / 2;
+    const cy = cBox.y + cBox.height / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx + 100, cy, { steps: 10 });
+    await page.mouse.up();
+
+    // After commit, the code includes a translate(...) chain on box.
+    await expect.poll(() => getCode(page)).toMatch(/\.translate\(\[/);
+
+    // Undo via the API; the code reverts to its pre-drag form.
+    const undone = await page.evaluate(() => (window as unknown as { partwright: { undo(): string | null } }).partwright.undo());
+    expect(undone).toContain('Move');
+    await expect.poll(() => getCode(page)).toBe(codeBeforeDrag);
+  });
+
+  test('partwright API: groupSelection on two parts produces a union in code', async ({ page }) => {
+    await gotoEditor(page);
+    await page.evaluate(() => {
+      const code = [
+        'const { Manifold } = api;',
+        'const a = Manifold.cube([6, 6, 6], true);',
+        'const b = Manifold.sphere(3).translate([4, 0, 0]);',
+        'return a.add(b);',
+      ].join('\n');
+      (window as unknown as { partwright: { setCode(c: string): void; run(): void } }).partwright.setCode(code);
+      (window as unknown as { partwright: { run(): void } }).partwright.run();
+    });
+
+    const result = await page.evaluate(() => {
+      const w = window as unknown as { partwright: { enterArrange(): unknown; selectParts(n: string[]): string[]; groupSelection(): { ok: boolean } } };
+      w.partwright.enterArrange();
+      w.partwright.selectParts(['a', 'b']);
+      return w.partwright.groupSelection();
+    });
+    expect(result.ok).toBe(true);
+    // Union codegen: `const merged = a.add(b);`. The exact result name varies
+    // (uniqueName picks merged / merged2 / …), but a new declaration with .add
+    // is the signature.
+    await expect.poll(() => getCode(page)).toMatch(/const merged\d* = a\.add\(b\);/);
+
+    // Undo reverses the group (the operation goes; `a` and `b` reappear standalone).
+    await page.evaluate(() => (window as unknown as { partwright: { undo(): string | null } }).partwright.undo());
+    await expect.poll(() => getCode(page)).not.toMatch(/const merged\d* = a\.add\(b\);/);
+
+    await page.evaluate(() => (window as unknown as { partwright: { exitArrange(): void } }).partwright.exitArrange());
+  });
+
+  test('session-changed event clears the palette undo history', async ({ page }) => {
+    await gotoEditor(page);
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
+
+    // Insert a part to seed the undo stack.
+    await page.locator('#btn-insert').dispatchEvent('click');
+    await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toContain('const box');
+    expect(await page.evaluate(() => (window as unknown as { partwright: { canUndo(): boolean } }).partwright.canUndo())).toBe(true);
+
+    // Fire the session-changed event the way the session manager would.
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('session-changed')));
+
+    // History is dropped — canUndo returns false even though the editor still
+    // shows code that previously had an Insert step on the stack.
+    expect(await page.evaluate(() => (window as unknown as { partwright: { canUndo(): boolean } }).partwright.canUndo())).toBe(false);
+  });
 });

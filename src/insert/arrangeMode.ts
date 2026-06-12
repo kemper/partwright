@@ -24,6 +24,7 @@ import { primitiveEntry, pickPart, type RegistryEntry } from './spatial';
 import { type PrimitiveSpec, type Vec3, type InsertLanguage } from './codegen';
 import { alignDeltas, formatScaleCall, type AlignAxis, type AlignMode } from './arrangeMath';
 import { recordOperation } from './undoStack';
+import { parseStatement } from './parseStatement';
 
 // Re-export the pure helpers so callers can pick them up from one entry point.
 export { alignDeltas, formatScaleCall };
@@ -103,6 +104,12 @@ let marquee: {
   shiftAtStart: boolean; // true ⇒ additive (preserve existing selection)
 } | null = null;
 
+// Preview wireframes painted on parts the marquee currently covers, so the user
+// sees the lasso filling in live instead of only when they release. Lighter
+// styling (thinner / more transparent) than the real selection box so the user
+// can tell them apart at a glance.
+const marqueeCandidateBoxByName = new Map<string, THREE.LineSegments>();
+
 export function initArrangeMode(d: ArrangeModeDeps): void {
   deps = d;
 }
@@ -118,6 +125,10 @@ export function enterArrangeMode(): void {
     deps.getCb()?.showToast('Open a model first to enter Arrange mode.', { variant: 'warn' });
     return;
   }
+  // Seed the registry from the live code BEFORE we activate listeners so the
+  // first click finds hand-written parts (typed straight into the editor) the
+  // same way it finds palette-inserted ones.
+  seedRegistryFromCode();
   active = true;
   overlayGroup = new THREE.Group();
   overlayGroup.renderOrder = 999;
@@ -135,6 +146,33 @@ export function enterArrangeMode(): void {
     { variant: 'neutral' },
   );
   requestRender();
+}
+
+/** Walk the live code's parts list and seed `specByName` + `registry` for any
+ *  part the palette didn't already know about. This is the bridge that makes
+ *  hand-written declarations (`const myCube = Manifold.cube([...]);`,
+ *  `v.sphere([...], r, '#...'); // part: ball`, etc.) draggable / resizable /
+ *  alignable from arrange mode — without it, only palette-inserted parts were
+ *  arrangeable, which the May 2026 follow-up audit called out as a real gap.
+ *
+ *  Best-effort: parseStatement returns null for any shape it doesn't
+ *  recognise (computed args, custom expressions, chained transforms beyond
+ *  `.translate`); those parts just stay out of the registry and the existing
+ *  "click hits nothing" fallback applies. */
+function seedRegistryFromCode(): void {
+  if (!deps) return;
+  const cb = deps.getCb();
+  if (!cb) return;
+  const lang = cb.getLanguage();
+  const parts = deps.scanParts(cb.getCode(), lang);
+  for (const part of parts) {
+    if (deps.specByName.has(part.name)) continue;
+    if (!part.statement) continue;
+    const spec = parseStatement(part.statement, lang, part.name);
+    if (!spec) continue;
+    deps.specByName.set(part.name, spec);
+    deps.registry.set(part.name, primitiveEntry(spec));
+  }
 }
 
 export function exitArrangeMode(): void {
@@ -482,6 +520,79 @@ function updateMarquee(clientX: number, clientY: number): void {
   marquee.el.style.top = `${y}px`;
   marquee.el.style.width = `${w}px`;
   marquee.el.style.height = `${h}px`;
+  refreshMarqueeCandidates(marquee.el.getBoundingClientRect());
+}
+
+/** Repaint the live candidate wireframes — every part whose bbox centre
+ *  currently projects inside the marquee rect gets a translucent yellow box so
+ *  the user sees the lasso filling in as they drag. Idempotent: drops boxes
+ *  for parts that have fallen outside the rect, adds new ones for entrants. */
+function refreshMarqueeCandidates(rect: DOMRect): void {
+  if (!deps || !overlayGroup) return;
+  const camera = deps.getCamera();
+  const canvas = deps.getCanvas();
+  if (!camera || !canvas) return;
+
+  const inside = new Set<string>();
+  for (const [name, entry] of deps.registry) {
+    // Already in the real selection? Skip — the solid yellow box owns it.
+    if (deps.selection.has(name)) continue;
+    const screen = projectWorldToScreen(entry.center, camera, canvas);
+    if (!screen) continue;
+    if (screen.x >= rect.left && screen.x <= rect.right && screen.y >= rect.top && screen.y <= rect.bottom) {
+      inside.add(name);
+    }
+  }
+
+  // Drop preview boxes that no longer match.
+  for (const [name, box] of [...marqueeCandidateBoxByName]) {
+    if (!inside.has(name) || !deps.registry.has(name)) {
+      overlayGroup.remove(box);
+      disposeLines(box);
+      marqueeCandidateBoxByName.delete(name);
+    }
+  }
+  // Add boxes for fresh entrants.
+  for (const name of inside) {
+    if (marqueeCandidateBoxByName.has(name)) continue;
+    const entry = deps.registry.get(name);
+    if (!entry) continue;
+    const box = makeMarqueeCandidateBox(entry);
+    overlayGroup.add(box);
+    marqueeCandidateBoxByName.set(name, box);
+  }
+  requestRender();
+}
+
+function makeMarqueeCandidateBox(entry: RegistryEntry): THREE.LineSegments {
+  const dx = Math.max(entry.box.max[0] - entry.box.min[0], 0.001);
+  const dy = Math.max(entry.box.max[1] - entry.box.min[1], 0.001);
+  const dz = Math.max(entry.box.max[2] - entry.box.min[2], 0.001);
+  const boxGeo = new THREE.BoxGeometry(dx, dy, dz);
+  const edges = new THREE.EdgesGeometry(boxGeo);
+  boxGeo.dispose();
+  const mat = new THREE.LineBasicMaterial({
+    color: 0xffd34d,
+    transparent: true,
+    opacity: 0.4,
+    depthTest: false,
+  });
+  const lines = new THREE.LineSegments(edges, mat);
+  lines.renderOrder = 999;
+  lines.position.set(entry.center[0], entry.center[1], entry.center[2]);
+  return lines;
+}
+
+function clearMarqueeCandidates(): void {
+  if (!overlayGroup) {
+    marqueeCandidateBoxByName.clear();
+    return;
+  }
+  for (const [, box] of marqueeCandidateBoxByName) {
+    overlayGroup.remove(box);
+    disposeLines(box);
+  }
+  marqueeCandidateBoxByName.clear();
 }
 
 function commitMarquee(): void {
@@ -494,6 +605,10 @@ function commitMarquee(): void {
   const h = rect.height;
   marquee.el.remove();
   marquee = null;
+  // Drop the live candidate previews — refreshArrangeOverlay below paints the
+  // real solid selection boxes for the same parts (no flicker because the
+  // refresh happens in the same tick).
+  clearMarqueeCandidates();
   // A near-zero drag is treated as a click on empty space — just deselect.
   // (Threshold matches DRAG_THRESHOLD_PX so a click-to-deselect path that
   // happened to be shift-held doesn't accidentally hold the selection.)
@@ -526,9 +641,13 @@ function commitMarquee(): void {
 }
 
 function cancelMarquee(): void {
-  if (!marquee) return;
+  if (!marquee) {
+    clearMarqueeCandidates();
+    return;
+  }
   marquee.el.remove();
   marquee = null;
+  clearMarqueeCandidates();
   if (active) refreshArrangeOverlay();
 }
 
