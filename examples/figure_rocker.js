@@ -154,24 +154,24 @@ const neckStartZ = upperCenter[2] + bUR * 0.55;
 // centre), so the neck seats in the finger curl rather than passing through
 // the middle of the palm.
 const neckStart = [neckStartX, neckStartY, neckStartZ];
-const neckEnd   = [gL.point[0], gL.point[1], gL.point[2]];
+
+// neck = the prop spanning the upper bout to the fretting grip CUP (gL.point,
+// inside the curled fingers — NOT j.handL, so the neck seats in the finger curl
+// instead of impaling the palm). spanGrips gives the neck's own axis + length;
+// the headstock continues collinearly past the fret cup with no kink — no
+// hand-rolled vector math.
+const neck = F.spanGrips(neckStart, gL.point);
+const neckEnd = neck.b;
 
 const neckR = r.hand * 0.28;   // slim neck fits in the curl
-const neckCaps = sdf.capsule(neckStart, neckEnd, neckR);
+const neckCaps = sdf.capsule(neck.a, neck.b, neckR);
 
-// Headstock: extends beyond gL.point along the neck axis.
-const nDir = [
-  neckEnd[0] - neckStart[0],
-  neckEnd[1] - neckStart[1],
-  neckEnd[2] - neckStart[2],
-];
-const nLen = Math.hypot(...nDir);
-const nN   = nDir.map(v => v / nLen);
+// Headstock: extends beyond the fret cup along the same neck axis.
 const hsLen = r.head * 0.50;
 const hsEnd = [
-  neckEnd[0] + nN[0] * hsLen,
-  neckEnd[1] + nN[1] * hsLen,
-  neckEnd[2] + nN[2] * hsLen,
+  neckEnd[0] + neck.axis[0] * hsLen,
+  neckEnd[1] + neck.axis[1] * hsLen,
+  neckEnd[2] + neck.axis[2] * hsLen,
 ];
 const headstock = sdf.capsule(neckEnd, hsEnd, r.hand * 0.42);
 

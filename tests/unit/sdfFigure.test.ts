@@ -902,3 +902,77 @@ describe('figure holdAt — orient + seat a prop into a grip', () => {
     expect(() => F.holdAt(bar as unknown as SdfNode, grip as never, { flip: 'yes' } as never)).toThrow();
   });
 });
+
+describe('figure spanGrips — the two-anchor (two-hand prop) frame', () => {
+  const F = createFigureNamespace(api);
+
+  it('returns endpoints, unit axis, length, and midpoint between two grips', () => {
+    const a = { point: [0, 0, 0], palmNormal: [0, 0, 1], gripAxis: [1, 0, 0], reach: [0, 1, 0] };
+    const b = { point: [6, 0, 8], palmNormal: [0, 0, 1], gripAxis: [1, 0, 0], reach: [0, 1, 0] };
+    const s = F.spanGrips(a as never, b as never);
+    expect(s.a).toEqual([0, 0, 0]);
+    expect(s.b).toEqual([6, 0, 8]);
+    expect(s.length).toBeCloseTo(10, 6);           // 6-8-10 triangle
+    expect(s.axis[0]).toBeCloseTo(0.6, 6);
+    expect(s.axis[2]).toBeCloseTo(0.8, 6);
+    expect(Math.hypot(...s.axis)).toBeCloseTo(1, 6); // unit
+    expect(s.mid).toEqual([3, 0, 4]);
+  });
+
+  it('accepts raw [x,y,z] points on either side (joint ↔ grip)', () => {
+    const grip = { point: [10, 0, 0], palmNormal: [0, 0, 1], gripAxis: [1, 0, 0], reach: [0, 1, 0] };
+    const s = F.spanGrips([0, 0, 0] as never, grip as never);
+    expect(s.b).toEqual([10, 0, 0]);
+    expect(s.length).toBeCloseTo(10, 6);
+    expect(s.axis).toEqual([1, 0, 0]);
+  });
+
+  it('a real rig spans hand-to-hand and the axis points L→R', () => {
+    const rig = buildRig({ height: 64 });
+    const s = F.spanGrips(rig.grip.L, rig.grip.R);
+    expect(s.length).toBeGreaterThan(0);
+    // L is +X side, R is −X side, so the span axis runs in −X.
+    expect(s.axis[0]).toBeLessThan(0);
+    // The capsule a/b end exactly on the two grip cups.
+    expect(s.a).toEqual(rig.grip.L.point);
+    expect(s.b).toEqual(rig.grip.R.point);
+  });
+
+  it('degenerate span (a == b) yields a safe unit axis, not NaN', () => {
+    const s = F.spanGrips([1, 2, 3] as never, [1, 2, 3] as never);
+    expect(s.length).toBe(0);
+    expect(s.axis).toEqual([0, 0, 1]);
+    expect(s.mid).toEqual([1, 2, 3]);
+  });
+});
+
+describe('figure poseProbe — deterministic joint/grip dump', () => {
+  const F = createFigureNamespace(api);
+
+  it('reports rig opts, every joint, both grips, and a text summary', () => {
+    const rig = buildRig({ height: 64, headsTall: 7, build: 'slim' });
+    const p = F.poseProbe(rig);
+    expect(p.height).toBe(64);
+    expect(p.headsTall).toBe(7);
+    expect(p.build).toBe('slim');
+    // Every joint in the rig is present in the probe.
+    expect(Object.keys(p.joints).sort()).toEqual(Object.keys(rig.joints).sort());
+    // Grips carry the four frame vectors.
+    expect(p.grips.L.point).toHaveLength(3);
+    expect(p.grips.R.gripAxis).toHaveLength(3);
+    // Values are rounded to 2 decimals (no long floats in the readout).
+    for (const k of Object.keys(p.joints)) {
+      for (const c of p.joints[k]) expect(Math.round(c * 100) / 100).toBe(c);
+    }
+    // The text summary names the joints and grips.
+    expect(p.text).toContain('poseProbe');
+    expect(p.text).toContain('handL');
+    expect(p.text).toContain('grips:');
+  });
+
+  it('tracks the pose: a leaned spine moves the probed grip point', () => {
+    const straight = F.poseProbe(buildRig({ height: 64 }));
+    const leaned = F.poseProbe(buildRig({ height: 64, pose: { spine: { lean: 30 } } }));
+    expect(leaned.grips.L.point).not.toEqual(straight.grips.L.point);
+  });
+});
