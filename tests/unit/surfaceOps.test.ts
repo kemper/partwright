@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { MeshData } from '../../src/geometry/types';
-import { SURFACE_OP_FIELDS, SURFACE_OP_IDS, isSurfaceOpId } from '../../src/surface/surfaceOpSpec';
-import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, __clearSurfaceCache, type SurfaceOp } from '../../src/surface/surfaceOps';
+import { SURFACE_OP_FIELDS, SURFACE_OP_IDS, isSurfaceOpId, parseSurfaceOpts } from '../../src/surface/surfaceOpSpec';
+import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, meshContentKey, __clearSurfaceCache, type SurfaceOp } from '../../src/surface/surfaceOps';
 
 /** Axis-aligned cube from [0,s]^3 as an 8-vertex / 12-triangle MeshData. */
 function cube(s = 10): MeshData {
@@ -33,6 +33,43 @@ describe('surfaceOpSpec', () => {
     expect(isSurfaceOpId('voxelize')).toBe(false); // engine-changing → not a code op
     expect(isSurfaceOpId('nope')).toBe(false);
     expect(isSurfaceOpId(42)).toBe(false);
+  });
+});
+
+describe('parseSurfaceOpts (shared scalar + scope validator)', () => {
+  it('splits scalar params from a label scope', () => {
+    const out = parseSurfaceOpts('knurl', { cellWidth: 2, label: 'grip' });
+    expect(out.params).toEqual({ cellWidth: 2 });
+    expect(out.scope).toEqual({ kind: 'label', label: 'grip' });
+  });
+
+  it('parses a region scope into a normalized point + radius', () => {
+    const out = parseSurfaceOpts('fuzzy', { amplitude: 1, region: { point: [1, 2, 3], radius: 5 } });
+    expect(out.params).toEqual({ amplitude: 1 });
+    expect(out.scope).toEqual({ kind: 'point', point: [1, 2, 3], radius: 5 });
+  });
+
+  it('returns no scope for plain params', () => {
+    expect(parseSurfaceOpts('smooth', { iterations: 3 }).scope).toBeUndefined();
+  });
+
+  it('rejects passing both label and region', () => {
+    expect(() => parseSurfaceOpts('fuzzy', { label: 'a', region: { point: [0, 0, 0], radius: 1 } })).toThrow(/not both/);
+  });
+
+  it('rejects an unknown option (mentioning the scope keys)', () => {
+    expect(() => parseSurfaceOpts('fuzzy', { nope: 1 })).toThrow(/nope/);
+    expect(() => parseSurfaceOpts('fuzzy', { nope: 1 })).toThrow(/label, region/);
+  });
+
+  it('rejects a malformed region (bad point, bad radius, unknown key)', () => {
+    expect(() => parseSurfaceOpts('fuzzy', { region: { point: [0, 0], radius: 5 } })).toThrow(/point/);
+    expect(() => parseSurfaceOpts('fuzzy', { region: { point: [0, 0, 0], radius: -1 } })).toThrow(/radius/);
+    expect(() => parseSurfaceOpts('fuzzy', { region: { point: [0, 0, 0], radius: 5, nope: 1 } })).toThrow(/nope/);
+  });
+
+  it('rejects an empty label', () => {
+    expect(() => parseSurfaceOpts('fuzzy', { label: '' })).toThrow(/non-empty string/);
   });
 });
 
@@ -125,5 +162,74 @@ describe('surface texture persistence (seed + chain key)', () => {
 
   it('surfaceChainKey is null for an empty chain', () => {
     expect(surfaceChainKey('base', [])).toBeNull();
+  });
+});
+
+describe('surface op scoping', () => {
+  beforeEach(() => __clearSurfaceCache());
+
+  it('a scoped op keys apart from the same op unscoped', () => {
+    const plain: SurfaceOp = { id: 'smooth', params: { iterations: 1 } };
+    const scoped: SurfaceOp = { id: 'smooth', params: { iterations: 1 }, scope: { kind: 'label', label: 'grip' } };
+    expect(surfaceChainKey('b', [plain])).not.toBe(surfaceChainKey('b', [scoped]));
+    // Two different scopes also key apart.
+    const otherLabel: SurfaceOp = { id: 'smooth', params: { iterations: 1 }, scope: { kind: 'label', label: 'body' } };
+    expect(surfaceChainKey('b', [scoped])).not.toBe(surfaceChainKey('b', [otherLabel]));
+  });
+
+  it('a point-scoped op textures a different (smaller) region than unscoped', async () => {
+    const fuzzy: SurfaceOp = { id: 'fuzzy', params: { amplitude: 0.6 } };
+    const baseKey = meshContentKey(cube(10));
+
+    const whole = await computeChain(cube(10), baseKey, [fuzzy]);
+    __clearSurfaceCache();
+    // Scope to one corner with a small radius — only nearby triangles texture.
+    const scoped = await computeChain(
+      cube(10), baseKey, [{ ...fuzzy, scope: { kind: 'point', point: [0, 0, 0], radius: 4 } }],
+      undefined,
+      [{ seeds: Float32Array.of(0, 0, 0), radius: 4 }],
+    );
+
+    // Both displaced the surface (output differs from a plain re-mesh), and the
+    // scoped output is a different mesh than the whole-model one.
+    expect(meshContentKey(scoped)).not.toBe(meshContentKey(whole));
+    // The scoped patch subdivides only the selected region, so it stays smaller
+    // than texturing the entire skin.
+    expect(scoped.numTri).toBeLessThan(whole.numTri);
+  });
+
+  it('an unresolved scope (empty seeds) leaves the mesh untextured', async () => {
+    const fuzzy: SurfaceOp = { id: 'fuzzy', params: { amplitude: 0.6 }, scope: { kind: 'label', label: 'missing' } };
+    // Empty seeds (label not found) → the op selects nothing → mesh unchanged.
+    const out = await computeChain(cube(10), 'b', [fuzzy], undefined, [{ seeds: new Float32Array(0), radius: 1 }]);
+    expect(out.numTri).toBe(cube(10).numTri);
+  });
+});
+
+// The memo base identity is the BASE MESH CONTENT — not the source text — so
+// whitespace/comment/refactor edits that produce identical geometry keep every
+// cached texture, and any real geometry change re-keys the chain.
+describe('meshContentKey', () => {
+  it('is identical for byte-identical meshes (separately allocated)', () => {
+    expect(meshContentKey(cube(10))).toBe(meshContentKey(cube(10)));
+  });
+
+  it('changes when the geometry changes', () => {
+    expect(meshContentKey(cube(10))).not.toBe(meshContentKey(cube(11)));
+    const reindexed = cube(10);
+    reindexed.triVerts = new Uint32Array(reindexed.triVerts); // copy…
+    reindexed.triVerts[0] = 3; // …then flip one index
+    expect(meshContentKey(cube(10))).not.toBe(meshContentKey(reindexed));
+  });
+
+  it('keys the memo cache: an identical re-run hits without recompute', async () => {
+    __clearSurfaceCache();
+    const smooth: SurfaceOp = { id: 'smooth', params: { iterations: 1, subdivide: false } };
+    const out = await computeChain(cube(), meshContentKey(cube()), [smooth]);
+    // A "different run" of byte-identical geometry (e.g. after a whitespace
+    // edit re-ran the code) computes the same key and hits the cache.
+    const again = surfaceCacheStatus(meshContentKey(cube()), [smooth]);
+    expect(again.cached).toBe(true);
+    expect(again.mesh).toBe(out);
   });
 });

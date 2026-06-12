@@ -17,7 +17,7 @@ import { createKnurlNamespace } from '../knurl';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import type { RegionDescriptor } from '../../color/regions';
-import { SURFACE_OP_FIELDS, isSurfaceOpId, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
+import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
 import { wasmFaultHint } from '../workerFaults';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
@@ -463,20 +463,11 @@ export const manifoldJsEngine: Engine = {
         }
         opts = params as Record<string, unknown>;
       }
-      const allowed = SURFACE_OP_FIELDS[id];
-      const clean: Record<string, number | boolean | string> = {};
-      for (const [k, v] of Object.entries(opts)) {
-        if (!allowed.includes(k)) {
-          throw new Error(`api.surface.${id}: unknown option "${k}". Accepted: ${allowed.join(', ')}.`);
-        }
-        if (typeof v === 'number') {
-          if (!Number.isFinite(v)) throw new Error(`api.surface.${id}.${k}: must be a finite number.`);
-        } else if (typeof v !== 'boolean' && typeof v !== 'string') {
-          throw new Error(`api.surface.${id}.${k}: must be a number, boolean, or string.`);
-        }
-        clean[k] = v;
-      }
-      surfaceOps.push({ id, params: clean });
+      // parseSurfaceOpts validates the scalar params AND the reserved scope keys
+      // (label / region) — the single source of truth shared with the console
+      // twin (applySurfaceTextureAsCode).
+      const parsed = parseSurfaceOpts(id, opts);
+      surfaceOps.push(parsed.scope ? { id, params: parsed.params, scope: parsed.scope } : { id, params: parsed.params });
     };
     const makeSurfaceFn = (id: SurfaceOpId) => (params?: unknown): void => recordSurfaceOp(id, params);
     const surface: Record<SurfaceOpId, (params?: unknown) => void> & { apply(id: unknown, params?: unknown): void } = {

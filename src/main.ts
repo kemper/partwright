@@ -124,9 +124,9 @@ import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionF
 import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyEngrave, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
 import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampHost';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
-import { nearestTriangleMap } from './surface/colorTransfer';
-import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, type SurfaceOp } from './surface/surfaceOps';
-import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, type SurfaceOpId, type PersistedSurfaceTexture } from './surface/surfaceOpSpec';
+import { nearestTriangleMap, remapTriangleSets } from './surface/colorTransfer';
+import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, meshContentKey, cancelSurfaceCompute, surfaceComputeInFlight, SurfaceComputeCancelled, type SurfaceOp } from './surface/surfaceOps';
+import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, parseSurfaceOpts, type SurfaceOpId, type PersistedSurfaceTexture, type ResolvedScope } from './surface/surfaceOpSpec';
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
@@ -197,7 +197,7 @@ import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
-import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
+import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
 import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
@@ -3898,7 +3898,7 @@ async function main() {
    *  field), which must stay non-blocking for AI agents. */
   const surfaceStaleExportWarning = (format: string): string | null =>
     pendingSurface
-      ? `${format} export contains the untextured base mesh — this model's api.surface.* textures haven't been applied to the current code. Run the code (runs force-apply textures) and export again to include them.`
+      ? `${format} export contains the untextured base mesh — this model's api.surface.* textures haven't been applied to the current code. Run the code (every run applies textures) and export again to include them.`
       : null;
 
   /** Toast (and log) the stale-texture warning for a console-API export. */
@@ -4822,7 +4822,7 @@ async function main() {
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;
       refreshSimplifyIfOpen();
-      // Cached entries were produced by a forced run (api.surface.* textures
+      // Cached entries come from completed runs (api.surface.* textures
       // applied), so a Re-apply pill raised by the previously shown version no
       // longer describes the restored mesh. The cache-miss branch clears it via
       // runCodeSync → applySurfaceTextures; this branch must do it explicitly.
@@ -4835,13 +4835,13 @@ async function main() {
       // preservedCameraPose restore at the end of this function instead.
       //
       // If the version carries a persisted api.surface.* texture, seed the
-      // memo cache with it first so the run's force-apply hits instantly
-      // instead of recomputing the chain — this is what makes a reopened
-      // session render textured with no progress modal, and what pins the
-      // texture to the mesh the user saved (modifier math may have evolved
-      // since). The key is self-validating: it folds in code + params +
-      // import identity, so a seed that doesn't match this run's recomputed
-      // key is simply never read and the chain recomputes as before.
+      // memo cache with it first so the run's chain apply hits instantly
+      // instead of recomputing — this is what makes a reopened session render
+      // textured immediately, and what pins the texture to the mesh the user
+      // saved (modifier math may have evolved since). The key is
+      // self-validating: it hashes the BASE MESH CONTENT + op chain, so a seed
+      // that doesn't match this run's recomputed key (different geometry, or a
+      // pre-mesh-key save) is simply never read and the chain recomputes.
       const persistedTexture = version.surfaceTexture as PersistedSurfaceTexture | undefined;
       if (
         persistedTexture && typeof persistedTexture.key === 'string' &&
@@ -7854,6 +7854,16 @@ async function main() {
     /** Whether the current model carries paint (so the UI can warn before a
      *  color-clearing modifier, or offer "preserve colors"). */
     modelHasColor(): boolean { return modelHasColor(); },
+    /** Make sure the model's pending `api.surface.*` chain (parked by a Cancel
+     *  or a compute failure — the "Re-apply" pill state) is applied, so that
+     *  previews, modifiers, and exports operate on the textured mesh rather
+     *  than the base. No-ops (resolves true) when nothing is pending. The
+     *  Surface panel awaits this before every preview. */
+    async ensureSurfaceTexturesApplied(): Promise<{ ok: boolean }> {
+      if (!pendingSurface) return { ok: true };
+      const applied = await reapplySurfaceTextures();
+      return { ok: applied && pendingSurface === null };
+    },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
      *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize'. */
@@ -7881,16 +7891,18 @@ async function main() {
      *  opts: that op's api.surface options (see /ai/textures.md); omitted keys
      *  use size-relative defaults at apply time.
      *  Returns `{ ok, call, replaced, version?, geometry }` or `{ error }`. */
-    async applySurfaceTextureAsCode(id: SurfaceOpId, opts?: Record<string, number | boolean | string>) {
+    async applySurfaceTextureAsCode(id: SurfaceOpId, opts?: Record<string, unknown>) {
       const check = guard(() => {
         assertEnum(id, SURFACE_OP_IDS, 'applySurfaceTextureAsCode(id)');
         if (opts !== undefined) {
           const o = assertObject(opts, 'applySurfaceTextureAsCode(_, opts)')!;
-          assertNoUnknownKeys(o, SURFACE_OP_FIELDS[id as SurfaceOpId] ?? [], 'applySurfaceTextureAsCode(_, opts)');
-          for (const [k, v] of Object.entries(o)) {
-            if (typeof v !== 'number' && typeof v !== 'boolean' && typeof v !== 'string') {
-              throw new ValidationError(`applySurfaceTextureAsCode(_, opts): "${k}" must be a number, boolean, or string (api.surface options are flat primitives). See /ai/textures.md`);
-            }
+          // Shared validator: scalar params + the reserved scope keys
+          // (label / region). It throws a plain Error; re-wrap as a
+          // ValidationError so guard() returns { error } instead of throwing.
+          try {
+            parseSurfaceOpts(id as SurfaceOpId, o as Record<string, unknown>);
+          } catch (e) {
+            throw new ValidationError(e instanceof Error ? e.message : String(e));
           }
         }
         return true;
@@ -7901,7 +7913,7 @@ async function main() {
         return { error: `api.surface.* textures live in manifold-js code only — this session is ${getActiveLanguage()}. Use the bake tools (applyFuzzySkin / applyKnitTexture / …), which convert the result to a mesh.` };
       }
       const previousCode = getValue();
-      const up = upsertSurfaceCall(previousCode, id, (opts ?? {}) as Record<string, number | boolean | string>);
+      const up = upsertSurfaceCall(previousCode, id, (opts ?? {}) as Record<string, unknown>);
       if (!up) {
         return { error: 'Could not find a top-level `return` in the code to insert the api.surface call before. Add the call manually, or bake instead.' };
       }
@@ -7932,6 +7944,50 @@ async function main() {
         ...(computeFailed ? { warnings: ['The texture compute failed — the call is in the code but the model shows the untextured base mesh. Press the ⟳ Re-apply pill (or run again) to retry.'] } : {}),
         geometry: getGeometryDataObj(),
       };
+    },
+    /** Apply a surface texture by the best available path — the auto-routing
+     *  twin of the Surface panel's Apply (and the in-app AI's single texture
+     *  tool). mode 'auto' (default): a manifold-js session gets the texture AS
+     *  CODE (`api.surface.<id>` upserted via applySurfaceTextureAsCode — stays
+     *  parametric); any other engine falls back to the BAKE tool for that id
+     *  (with the engine-bake warning). 'code' forces the in-code path (errors
+     *  off manifold-js); 'bake' forces the destructive bake on any engine.
+     *  Whole-model only — for a selected patch use the per-texture bake
+     *  methods' selectedTriangles. opts: that id's api.surface options, plus
+     *  preserveColor (bake path only; code-path paint re-resolves every run).
+     *  Returns the underlying result plus `path: 'code' | 'bake'`. */
+    async applySurfaceTexture(
+      id: SurfaceOpId,
+      opts?: Record<string, number | boolean | string>,
+      mode: 'auto' | 'code' | 'bake' = 'auto',
+    ) {
+      const check = guard(() => {
+        assertEnum(id, SURFACE_OP_IDS, 'applySurfaceTexture(id)');
+        assertEnum(mode, ['auto', 'code', 'bake'], 'applySurfaceTexture(_, _, mode)');
+        if (opts !== undefined) {
+          const o = assertObject(opts, 'applySurfaceTexture(_, opts)')!;
+          assertNoUnknownKeys(o, [...(SURFACE_OP_FIELDS[id as SurfaceOpId] ?? []), 'preserveColor'], 'applySurfaceTexture(_, opts)');
+        }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const { preserveColor, ...opOpts } = (opts ?? {}) as Record<string, number | boolean | string> & { preserveColor?: boolean };
+      const asCode = mode === 'code' || (mode === 'auto' && getActiveLanguage() === 'manifold-js');
+      if (asCode) {
+        const r = await partwrightAPI.applySurfaceTextureAsCode(id, opOpts);
+        return { path: 'code' as const, ...r };
+      }
+      const bakeOpts = { ...opOpts, ...(preserveColor !== undefined ? { preserveColor } : {}) };
+      const r = id === 'fuzzy' ? await partwrightAPI.applyFuzzySkin(bakeOpts)
+        : id === 'knit' ? await partwrightAPI.applyKnitTexture(bakeOpts)
+        : id === 'cable' ? await partwrightAPI.applyCableKnit(bakeOpts)
+        : id === 'waffle' ? await partwrightAPI.applyWaffleStitch(bakeOpts)
+        : id === 'fur' ? await partwrightAPI.applyFurVelvet(bakeOpts)
+        : id === 'woven' ? await partwrightAPI.applyWovenFabric(bakeOpts)
+        : id === 'knurl' ? await partwrightAPI.applyKnurlTexture(bakeOpts)
+        : id === 'voronoi' ? await partwrightAPI.applyVoronoiShell(bakeOpts)
+        : await partwrightAPI.smoothModel(bakeOpts);
+      return { path: 'bake' as const, ...(r as Record<string, unknown>) };
     },
     /** Apply a fuzzy-skin surface texture to the current model; saves a new version.
      *  `preserveColor` (default true) re-resolves paint regions onto the new mesh.
@@ -12759,6 +12815,11 @@ async function main() {
       });
       return { count: labels.length, labels, ...(lost ? { lostLabels: lost } : {}) };
     },
+    /** Just the current run's label names (for the Surface panel's code-path
+     *  scope dropdown). Empty when the model declares none. */
+    getLabelNames(): string[] {
+      return currentLabelMap ? [...currentLabelMap.keys()] : [];
+    },
 
     /** Report the colors the current run declared in code — via
      *  `api.label(shape, name, { color })` (and `api.labeledUnion` entries with
@@ -13404,9 +13465,11 @@ async function main() {
         // wraps the displaced mesh; in a manifold-js session the in-code
         // api.surface.* alternative keeps the texture parametric instead)
         'modelHasColor':   { signature: 'modelHasColor() -- Whether the model carries any color (user paint or code-declared)', docs: '/ai/colors.md' },
+        'ensureSurfaceTexturesApplied': { signature: 'await ensureSurfaceTexturesApplied() -- Apply any pending (cancelled/failed) api.surface.* chain so the live mesh is textured -> {ok}', docs: '/ai/textures.md' },
         'previewSurfaceModifier': { signature: "previewSurfaceModifier(id, opts?, preserveColor?) -- Non-destructive viewport preview of a modifier; id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize' -> {ok} or {error}", docs: '/ai/textures.md' },
         'clearSurfacePreview': { signature: 'clearSurfacePreview() -- Discard a live surface preview and restore the current mesh', docs: '/ai/textures.md' },
-        'applySurfaceTextureAsCode': { signature: "await applySurfaceTextureAsCode(id, opts?) -- Write api.surface.<id>({…}) into the code (insert before the final return, or update the existing call) instead of baking; re-runs and saves a version. manifold-js + whole-model only. id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'smooth'", docs: '/ai/textures.md' },
+        'applySurfaceTexture': { signature: "await applySurfaceTexture(id, opts?, mode?) -- Texture by the best path: mode 'auto' (default) writes api.surface.<id> as code on manifold-js, bakes elsewhere; 'code'/'bake' force a path. opts may scope the code path with label:'name' or region:{point,radius}. Returns the result plus path: 'code'|'bake'", docs: '/ai/textures.md' },
+        'applySurfaceTextureAsCode': { signature: "await applySurfaceTextureAsCode(id, opts?) -- Write api.surface.<id>({…}) into the code (insert before the final return, or update the existing call) instead of baking; re-runs and saves a version. manifold-js only. opts may add a scope: label:'name' (an api.label region) or region:{point:[x,y,z],radius}. id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'smooth'", docs: '/ai/textures.md' },
         'applyFuzzySkin':  { signature: 'await applyFuzzySkin({amplitude?, scale?, octaves?, seed?, quality?, preserveColor?}) -- BAKE fuzzy-skin noise; saves a new version. In-code alternative: api.surface.fuzzy', docs: '/ai/textures.md' },
         'applyKnitTexture':{ signature: 'await applyKnitTexture({amplitude?, stitchWidth?, stitchHeight?, rowOffset?, roundness?, grainAngleDeg?, variation?, seed?, quality?, algorithm?, selectedTriangles?, preserveColor?}) -- BAKE knit stitches; saves a new version. In-code alternative: api.surface.knit', docs: '/ai/textures.md' },
         'applyCableKnit':  { signature: 'await applyCableKnit({amplitude?, cableWidth?, cablePitch?, plyWidth?, grainAngleDeg?, variation?, seed?, quality?, preserveColor?}) -- BAKE cable-knit ropes; saves a new version. In-code alternative: api.surface.cable', docs: '/ai/textures.md' },
@@ -14158,38 +14221,131 @@ async function main() {
     });
   }
 
-  // === api.surface.* — code-declared surface textures (memoized, sticky) ===
-
-  /** Base identity for the surface memo cache: code + customizer params + the
-   *  identity of any active imports. Any change here re-keys the chain (→ a
-   *  cache miss → the Re-apply pill), since each changes the base geometry the
-   *  textures sit on. Imports must be folded in explicitly: the generated
-   *  import wrapper carries only filename + date, so two different meshes
-   *  imported the same day can yield byte-identical source — without the
-   *  import ids the cache would serve the previous mesh's textured result. */
-  function surfaceBaseKey(src: string): string {
-    const imports = getActiveImports().map(m => `${m.id}/${m.numVert}/${m.numTri}`).join(",");
-    return simpleHash(`${src} ${JSON.stringify(currentParamValues ?? {})} ${imports}`);
-  }
+  // === api.surface.* — code-declared surface textures (off-thread, memoized) ===
 
   function hideSurfaceReapplyPill(): void {
     pendingSurface = null;
     if (surfaceReapplyEl) surfaceReapplyEl.style.display = 'none';
   }
 
+  /** Park the run's chain as pending and raise the sticky "Re-apply" pill —
+   *  the post-Cancel / post-failure state. */
+  function parkSurfaceChain(
+    park: { base: MeshData; ops: SurfaceOp[]; baseKey: string; src: string },
+    pillText: string,
+  ): void {
+    pendingSurface = park;
+    if (surfaceReapplyEl) {
+      surfaceReapplyEl.textContent = pillText;
+      surfaceReapplyEl.style.display = '';
+    }
+  }
+
+  function stalePillText(opCount: number): string {
+    return opCount > 1 ? `⟳ ${opCount} textures stale — Re-apply` : '⟳ Texture stale — Re-apply';
+  }
+
+  // Inline "Applying texture… Xs" timer — mirrors the "Rendering… Xs" run
+  // timer (400 ms delayed show so cache hits never flash it, shared Cancel
+  // button). Generation-tokened so a superseded compute's cleanup can't kill
+  // the newer compute's timer.
+  let _surfaceTimerGen = 0;
+  let _surfaceTimerShow: number | null = null;
+  let _surfaceTimerInterval: number | null = null;
+  let _surfaceProgressNote = '';
+
+  function startSurfaceTimer(label: string): number {
+    const gen = ++_surfaceTimerGen;
+    if (_surfaceTimerShow !== null) { clearTimeout(_surfaceTimerShow); _surfaceTimerShow = null; }
+    if (_surfaceTimerInterval !== null) { clearInterval(_surfaceTimerInterval); _surfaceTimerInterval = null; }
+    _surfaceProgressNote = '';
+    const t0 = performance.now();
+    _surfaceTimerShow = window.setTimeout(() => {
+      _surfaceTimerShow = null;
+      cancelInlineBtn.classList.remove('hidden');
+      _surfaceTimerInterval = window.setInterval(() => {
+        const s = ((performance.now() - t0) / 1000).toFixed(1);
+        setStatus(statusBar, 'running', `${label}${_surfaceProgressNote} ${s}s`);
+      }, 100);
+    }, 400);
+    return gen;
+  }
+
+  function stopSurfaceTimer(gen: number): void {
+    if (gen !== _surfaceTimerGen) return; // a newer compute owns the timer now
+    if (_surfaceTimerShow !== null) { clearTimeout(_surfaceTimerShow); _surfaceTimerShow = null; }
+    if (_surfaceTimerInterval !== null) { clearInterval(_surfaceTimerInterval); _surfaceTimerInterval = null; }
+    cancelInlineBtn.classList.add('hidden');
+  }
+
   /** Resolve a run's `api.surface.*` chain. Mutates `result` in place so the
    *  downstream wiring sees the final mesh:
    *   - cache hit → swap in the textured mesh (drop the stale base Manifold so
-   *     the run handler reconstructs from it).
-   *   - `force` (explicit/console runs — Run button, partwright.run/runAndSave,
-   *     version load) → compute the chain inline with the progress modal, so an
-   *     AI/console caller gets the real textured result instead of the gated
-   *     base (UI parity: agents can't press the pill).
-   *   - otherwise (live-typing auto-run) → leave the base mesh and raise the
-   *     sticky Re-apply pill, keeping keystroke renders snappy.
-   *  Returns true unless a forced compute failed (caller treats failure as a
-   *  non-fatal "base shown" run). */
-  async function applySurfaceTextures(result: MeshResult, src: string, force: boolean): Promise<void> {
+   *     the run handler reconstructs from it). The memo key is the BASE MESH
+   *     CONTENT (`meshContentKey`), so whitespace/comment/refactor edits that
+   *     don't change geometry hit instantly and never drop the textures.
+   *   - miss → compute the chain in the surface Worker (the UI thread stays
+   *     free) behind an inline "Applying texture… Xs" status + the Cancel
+   *     button, mirroring the "Rendering… Xs" pattern. EVERY run applies —
+   *     explicit and live-typing alike; a newer run's compute supersedes an
+   *     in-flight one (latest wins, like run generations).
+   *   - Cancel (or a compute failure) keeps the base mesh and parks the chain
+   *     behind the sticky "⟳ Re-apply" pill. */
+  /** Mean triangle-edge length of a base mesh (sampled), used to size a label
+   *  scope's catch radius so subdivided children — which sit within a parent
+   *  face — are selected without bleeding onto neighbours. */
+  function baseMeanEdge(mesh: MeshData): number {
+    const { vertProperties: vp, triVerts: tv, numProp, numTri } = mesh;
+    if (numTri === 0) return 1;
+    const step = Math.max(1, Math.floor(numTri / 2000));
+    const d = (i: number, j: number) => {
+      const dx = vp[i] - vp[j], dy = vp[i + 1] - vp[j + 1], dz = vp[i + 2] - vp[j + 2];
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    };
+    let total = 0, count = 0;
+    for (let t = 0; t < numTri; t += step) {
+      const a = tv[t * 3] * numProp, b = tv[t * 3 + 1] * numProp, c = tv[t * 3 + 2] * numProp;
+      total += d(a, b) + d(b, c) + d(c, a);
+      count += 3;
+    }
+    return count > 0 ? total / count : 1;
+  }
+
+  /** Resolve each scoped op (`label` / `point`) to seed centroids + a catch
+   *  radius against the BASE mesh. Unscoped ops → null (whole-model texture).
+   *  Returns undefined when no op is scoped, so the common path passes nothing.
+   *  An unknown/empty label yields empty seeds → the op textures nothing rather
+   *  than silently falling back to the whole model. */
+  function resolveSurfaceScopes(
+    ops: SurfaceOp[],
+    base: MeshData,
+    labelMap: Map<string, Set<number>> | null,
+  ): (ResolvedScope | null)[] | undefined {
+    if (!ops.some(o => o.scope)) return undefined;
+    let meanEdge = -1;
+    const { vertProperties: vp, triVerts: tv, numProp } = base;
+    return ops.map((op): ResolvedScope | null => {
+      const s = op.scope;
+      if (!s) return null;
+      if (s.kind === 'point') {
+        return { seeds: Float32Array.of(s.point[0], s.point[1], s.point[2]), radius: s.radius };
+      }
+      const tris = labelMap?.get(s.label);
+      if (!tris || tris.size === 0) return { seeds: new Float32Array(0), radius: 1 };
+      if (meanEdge < 0) meanEdge = baseMeanEdge(base);
+      const seeds = new Float32Array(tris.size * 3);
+      let i = 0;
+      for (const t of tris) {
+        const a = tv[t * 3] * numProp, b = tv[t * 3 + 1] * numProp, c = tv[t * 3 + 2] * numProp;
+        seeds[i++] = (vp[a] + vp[b] + vp[c]) / 3;
+        seeds[i++] = (vp[a + 1] + vp[b + 1] + vp[c + 1]) / 3;
+        seeds[i++] = (vp[a + 2] + vp[b + 2] + vp[c + 2]) / 3;
+      }
+      return { seeds, radius: Math.max(meanEdge * 1.1, 1e-3) };
+    });
+  }
+
+  async function applySurfaceTextures(result: MeshResult, src: string): Promise<void> {
     // Each mesh-producing run re-establishes what (if any) applied texture the
     // live mesh carries; stale-by-default until a branch below applies one.
     lastAppliedSurface = null;
@@ -14199,7 +14355,19 @@ async function main() {
       return;
     }
     const base = result.mesh;
-    const baseKey = surfaceBaseKey(src);
+    const baseKey = meshContentKey(base);
+    // The textured mesh has a denser/displaced tessellation, so the run's
+    // labelMap (Set<baseTriIndex> per api.label name) no longer points at the
+    // right triangles. Remap each label's set onto the textured mesh by spatial
+    // proximity — the same nearest-centroid carry the bake path uses — so
+    // api.label / byLabel colors survive texturing. Geometric paint descriptors
+    // (box/slab/cylinder) and brush strokes re-resolve by shape downstream and
+    // need no remap.
+    const carryLabels = (textured: MeshData): void => {
+      if (result.labelMap && result.labelMap.size > 0) {
+        result.labelMap = remapTriangleSets(result.labelMap, base, textured);
+      }
+    };
     const status = surfaceCacheStatus(baseKey, ops);
     if (status.cached && status.mesh) {
       // These displaced meshes round-trip through Manifold.ofMesh like the bake
@@ -14207,53 +14375,49 @@ async function main() {
       // mesh (and fall back to render-only if it isn't watertight).
       result.mesh = status.mesh;
       result.manifold = null;
+      carryLabels(status.mesh);
       lastAppliedSurface = { key: surfaceChainKey(baseKey, ops)!, mesh: status.mesh };
       hideSurfaceReapplyPill();
       return;
     }
-    if (force) {
-      const progressId = startProgress({
-        title: ops.length > 1 ? `Applying ${ops.length} surface textures…` : 'Applying surface texture…',
-        indeterminate: false,
-      });
-      try {
-        const textured = await computeChain(base, baseKey, ops, (f) => updateProgress(progressId, f));
-        result.mesh = textured;
-        result.manifold = null;
-        lastAppliedSurface = { key: surfaceChainKey(baseKey, ops)!, mesh: textured };
-        hideSurfaceReapplyPill();
-      } catch (e) {
-        // Compute failed — keep the base mesh and raise the pill so the user can
-        // retry; surface the reason in the log.
-        const msg = e instanceof Error ? e.message : String(e);
-        showToast(`Surface texture failed: ${msg}`, { variant: 'warn', source: 'app' });
-        pendingSurface = { base, ops, baseKey, src };
-        if (surfaceReapplyEl) {
-          surfaceReapplyEl.textContent = '⟳ Texture failed — Re-apply';
-          surfaceReapplyEl.style.display = '';
-        }
-      } finally {
-        endProgress(progressId);
+    // Resolve any label/point scopes to seed points + radius against the BASE
+    // mesh (before carryLabels rewrites result.labelMap to textured indices).
+    const resolvedScopes = resolveSurfaceScopes(ops, base, result.labelMap ?? null);
+    const label = ops.length > 1 ? `Applying ${ops.length} textures...` : 'Applying texture...';
+    const timer = startSurfaceTimer(label);
+    try {
+      const textured = await computeChain(base, baseKey, ops, (f) => {
+        if (ops.length > 1) _surfaceProgressNote = ` ${Math.min(Math.round(f * ops.length), ops.length)}/${ops.length}`;
+      }, resolvedScopes);
+      result.mesh = textured;
+      result.manifold = null;
+      carryLabels(textured);
+      lastAppliedSurface = { key: surfaceChainKey(baseKey, ops)!, mesh: textured };
+      hideSurfaceReapplyPill();
+    } catch (e) {
+      if (e instanceof SurfaceComputeCancelled) {
+        // Superseded by a newer run's compute: that run owns the UI now — stay
+        // quiet (runCodeSync's generation check discards this stale result).
+        if (surfaceComputeInFlight()) return;
+        // The user pressed Cancel: keep the base mesh, park the chain.
+        parkSurfaceChain({ base, ops, baseKey, src }, stalePillText(ops.length));
+        return;
       }
-      return;
-    }
-    // Sticky miss (live-typing): keep the base mesh, remember what to compute.
-    pendingSurface = { base, ops, baseKey, src };
-    if (surfaceReapplyEl) {
-      surfaceReapplyEl.textContent = ops.length > 1
-        ? `⟳ ${ops.length} textures stale — Re-apply`
-        : '⟳ Texture stale — Re-apply';
-      surfaceReapplyEl.style.display = '';
+      // Compute failed — keep the base mesh and raise the pill so the user can
+      // retry; surface the reason in the log.
+      const msg = e instanceof Error ? e.message : String(e);
+      showToast(`Surface texture failed: ${msg}`, { variant: 'warn', source: 'app' });
+      parkSurfaceChain({ base, ops, baseKey, src }, '⟳ Texture failed — Re-apply');
+    } finally {
+      stopSurfaceTimer(timer);
     }
   }
 
-  /** The Re-apply pill's click handler: force-compute the pending chain by
-   *  re-running the exact same source — `runCodeSync` defaults to
-   *  `surfaceErrors: true`, which force-applies and clears the pill. Using the
-   *  stored `src` (not `getValue()`) keeps the base key identical so the
-   *  compute is reused on the re-run. There's deliberately no console-API
-   *  twin: `partwright.run()` / `runAndSave()` already force-apply, so agents
-   *  never see the pill state. */
+  /** The Re-apply pill's click handler: compute the parked chain by re-running
+   *  the exact same source — every run now applies its chain, so the re-run
+   *  recomputes (or cache-hits) and clears the pill. Console agents reach the
+   *  same recovery via `ensureSurfaceTexturesApplied()` (the Surface panel
+   *  awaits it before previews); `run()`/`runAndSave()` apply inline anyway. */
   async function reapplySurfaceTextures(): Promise<boolean> {
     if (!pendingSurface || surfaceReapplyBusy) return false;
     surfaceReapplyBusy = true;
@@ -14309,8 +14473,11 @@ async function main() {
   // flash them. stopRunTimer() always cancels the pending show before it fires.
   cancelInlineBtn.addEventListener('click', () => {
     // A running surface carve owns the Cancel button (it aborts the SDF sweep);
-    // otherwise this cancels the current worker execution.
+    // an in-flight surface-texture chain owns it next (terminates the surface
+    // Worker — the run already finished, so the base mesh stays + the Re-apply
+    // pill appears); otherwise this cancels the current engine execution.
     if (surfaceCarveCancel) { surfaceCarveCancel(); return; }
+    if (cancelSurfaceCompute()) return;
     cancelCurrentExecution();
   });
 
@@ -14456,16 +14623,15 @@ async function main() {
       clearEditorErrorPanel(editorErrorPanel);
       pendingEditorError = null;
       // === Surface textures declared in code (api.surface.*) ===
-      // The Worker recorded an op chain but didn't touch the mesh. Apply it on
-      // this thread. Explicit runs (`surfaceErrors` — Run button, console
-      // run/runAndSave, version load) force the (memoized) compute so the caller
-      // gets the real textured mesh; live-typing auto-runs only use a cache hit
-      // and otherwise raise the "Re-apply" pill, keeping keystrokes snappy. On a
-      // hit/force, the textured mesh is swapped in so all the downstream wiring
-      // (manifold reconstruction, paint resolution, stats) sees final geometry.
-      await applySurfaceTextures(result, src, surfaceErrors);
-      // A forced compute can take seconds; if a newer run started meanwhile,
-      // abandon this one rather than stamping a stale mesh over the new render.
+      // The geometry Worker recorded an op chain but didn't touch the mesh.
+      // Apply it here — memoized (keyed on the base mesh content, so no-op
+      // edits hit instantly) and computed in the surface Worker on a miss,
+      // behind an inline "Applying texture… Xs" timer + Cancel. The textured
+      // mesh is swapped in so all the downstream wiring (manifold
+      // reconstruction, paint resolution, stats) sees final geometry.
+      await applySurfaceTextures(result, src);
+      // A compute can take seconds; if a newer run started meanwhile, abandon
+      // this one rather than stamping a stale mesh over the new render.
       if (myGen !== _runGeneration) return false;
       // Bump the paint generation so any in-flight subdivision worker — started
       // against the previous base mesh — discards its result instead of stamping

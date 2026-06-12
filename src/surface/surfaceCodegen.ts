@@ -22,17 +22,25 @@
 import type { SurfaceOpId } from './surfaceOpSpec';
 
 /** Format an options value for source output. Numbers are rounded to 6
- *  significant digits so slider floats don't smear into 17-digit noise. */
-function formatValue(v: number | boolean | string): string {
+ *  significant digits so slider floats don't smear into 17-digit noise. Arrays
+ *  and plain objects (the `region` scope's `{ point: [x,y,z], radius }`) are
+ *  rendered recursively so scoped calls round-trip. */
+function formatValue(v: number | boolean | string | unknown[] | Record<string, unknown>): string {
   if (typeof v === 'number') return String(Number(v.toPrecision(6)));
   if (typeof v === 'boolean') return String(v);
-  return `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  if (typeof v === 'string') return `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  if (Array.isArray(v)) return `[${v.map(e => formatValue(e as number | boolean | string)).join(', ')}]`;
+  // Plain object (scope descriptor).
+  const entries = Object.entries(v as Record<string, unknown>)
+    .map(([k, val]) => `${k}: ${formatValue(val as number | boolean | string)}`);
+  return entries.length > 0 ? `{ ${entries.join(', ')} }` : '{}';
 }
 
 /** Render a params record as a single-line object literal (`{ a: 1, b: 'x' }`),
- *  or `{}` when empty. Key order follows the record's insertion order. */
-export function formatSurfaceParams(params: Record<string, number | boolean | string>): string {
-  const entries = Object.entries(params).map(([k, v]) => `${k}: ${formatValue(v)}`);
+ *  or `{}` when empty. Key order follows the record's insertion order. Values
+ *  may be scalars or, for scope keys, nested arrays/objects. */
+export function formatSurfaceParams(params: Record<string, unknown>): string {
+  const entries = Object.entries(params).map(([k, v]) => `${k}: ${formatValue(v as number | boolean | string)}`);
   return entries.length > 0 ? `{ ${entries.join(', ')} }` : '{}';
 }
 
@@ -148,7 +156,7 @@ export interface UpsertResult {
 export function upsertSurfaceCall(
   code: string,
   id: SurfaceOpId,
-  params: Record<string, number | boolean | string>,
+  params: Record<string, unknown>,
 ): UpsertResult | null {
   const call = `api.surface.${id}(${formatSurfaceParams(params)});`;
   const { masked, depth } = lexicalMask(code);

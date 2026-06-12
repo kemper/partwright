@@ -12,9 +12,9 @@ import { fuzzySkin } from '../../src/surface/fuzzySkin';
 import { knitTextureUV } from '../../src/surface/knitTexture';
 import { cableKnit } from '../../src/surface/cableKnit';
 import { waffleStitch } from '../../src/surface/waffleStitch';
+import { knurlTexture } from '../../src/surface/knurlTexture';
 import { furVelvet } from '../../src/surface/furVelvet';
 import { wovenFabric } from '../../src/surface/wovenFabric';
-import { knurlTexture } from '../../src/surface/knurlTexture';
 import { voronoiShell } from '../../src/surface/voronoiShell';
 import { voronoiLattice } from '../../src/surface/voronoiLattice';
 import { surfaceNetsField } from '../../src/surface/surfaceNetsField';
@@ -24,7 +24,7 @@ import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
 import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp } from '../../src/surface/modifiers';
-import { nearestTriangleMap, nearestSurfaceVertexDistance } from '../../src/surface/colorTransfer';
+import { nearestTriangleMap, remapTriangleSets, selectTrianglesNearSeeds, nearestSurfaceVertexDistance } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
 function cube(s = 10): MeshData {
@@ -180,14 +180,14 @@ describe('knitTextureUV', () => {
 // The four fabric textures added after fuzzySkin share its structure (densify →
 // displace along normals, deterministic per seed, color carried through
 // subdivision). One parameterized table guards the invariants for all of them.
-describe('fabric textures (cable / waffle / fur / woven / voronoi)', () => {
+describe('fabric textures (cable / waffle / fur / woven / knurl / voronoi)', () => {
   const cases = [
     { name: 'cableKnit', fn: cableKnit as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cableWidth: 2, seed: 3 } },
     { name: 'waffleStitch', fn: waffleStitch as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellWidth: 2, seed: 3 } },
     { name: 'furVelvet', fn: furVelvet as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, fiberSpacing: 2, seed: 3 } },
     { name: 'wovenFabric', fn: wovenFabric as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, threadSpacing: 2, seed: 3 } },
-    { name: 'voronoiShell', fn: voronoiShell as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellSize: 3, seed: 3 } },
     { name: 'knurlTexture', fn: knurlTexture as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellWidth: 2, seed: 3 } },
+    { name: 'voronoiShell', fn: voronoiShell as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellSize: 3, seed: 3 } },
   ] as const;
 
   for (const { name, fn, opts } of cases) {
@@ -482,6 +482,80 @@ describe('modifiers (codegen)', () => {
       const moved: MeshData = { ...c, vertProperties: Float32Array.from(c.vertProperties, (v, i) => v + (i % 3 === 0 ? 0.05 : -0.03)) };
       const map = nearestTriangleMap(c, moved);
       for (let t = 0; t < c.numTri; t++) expect(map[t]).toBe(t);
+    });
+  });
+
+  describe('remapTriangleSets (carry labels through texturing)', () => {
+    it('expands a base-triangle label set onto every subdivided child', () => {
+      const c = cube(10);
+      const dense = subdivideToMaxEdge(c, { maxEdge: 3 });
+      // Label the first two base triangles; after subdivision the textured mesh
+      // should carry MORE triangles for that label (the children), never fewer.
+      const sets = new Map<string, Set<number>>([['grip', new Set([0, 1])]]);
+      const out = remapTriangleSets(sets, c, dense);
+      const grip = out.get('grip')!;
+      expect(grip.size).toBeGreaterThanOrEqual(2);
+      // Every remapped child's nearest base triangle is one of the labeled ones.
+      const map = nearestTriangleMap(c, dense);
+      for (const t of grip) expect([0, 1]).toContain(map[t]);
+    });
+
+    it('is identity-preserving on an unchanged mesh', () => {
+      const c = cube(10);
+      const sets = new Map<string, Set<number>>([['a', new Set([0, 3, 5])]]);
+      const out = remapTriangleSets(sets, c, c);
+      expect([...out.get('a')!].sort((x, y) => x - y)).toEqual([0, 3, 5]);
+    });
+
+    it('keeps overlapping labels distinct', () => {
+      const c = cube(10);
+      const sets = new Map<string, Set<number>>([
+        ['a', new Set([0, 1])],
+        ['b', new Set([1, 2])],
+      ]);
+      const out = remapTriangleSets(sets, c, c);
+      expect(out.get('a')).toEqual(new Set([0, 1]));
+      expect(out.get('b')).toEqual(new Set([1, 2]));
+    });
+
+    it('returns empty sets (not missing keys) when nothing maps', () => {
+      const c = cube(10);
+      const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
+      const out = remapTriangleSets(new Map([['x', new Set([0])]]), c, empty);
+      expect(out.get('x')).toEqual(new Set());
+    });
+  });
+
+  describe('selectTrianglesNearSeeds (op scoping)', () => {
+    it('selects only triangles within radius of a seed point', () => {
+      const c = cube(10); // spans [0,10]^3
+      // A seed at one corner with a small radius hits only the triangles that
+      // touch that corner, not the whole cube.
+      const near = selectTrianglesNearSeeds(c, Float32Array.of(0, 0, 0), 8);
+      const all = selectTrianglesNearSeeds(c, Float32Array.of(5, 5, 5), 100);
+      expect(near.size).toBeGreaterThan(0);
+      expect(near.size).toBeLessThan(c.numTri);
+      expect(all.size).toBe(c.numTri); // huge radius from the center catches all
+    });
+
+    it('returns nothing for empty seeds or non-positive radius', () => {
+      const c = cube(10);
+      expect(selectTrianglesNearSeeds(c, new Float32Array(0), 5).size).toBe(0);
+      expect(selectTrianglesNearSeeds(c, Float32Array.of(0, 0, 0), 0).size).toBe(0);
+    });
+
+    it('catches a subdivided triangle from its parent centroid seed', () => {
+      const c = cube(10);
+      const dense = subdivideToMaxEdge(c, { maxEdge: 3 });
+      // Seed at the centroid of original triangle 0 with a generous radius: its
+      // children (which sit on the same face) must be selected.
+      const { vertProperties: vp, triVerts: tv, numProp } = c;
+      const a = tv[0] * numProp, b = tv[1] * numProp, d = tv[2] * numProp;
+      const seed = Float32Array.of(
+        (vp[a] + vp[b] + vp[d]) / 3, (vp[a + 1] + vp[b + 1] + vp[d + 1]) / 3, (vp[a + 2] + vp[b + 2] + vp[d + 2]) / 3,
+      );
+      const sel = selectTrianglesNearSeeds(dense, seed, 6);
+      expect(sel.size).toBeGreaterThan(0);
     });
   });
 

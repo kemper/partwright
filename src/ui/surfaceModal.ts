@@ -44,8 +44,15 @@ export interface SurfaceApi {
   smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   /** Write the texture into the code as `api.surface.<id>({…})` instead of
-   *  baking (manifold-js sessions, whole-model mode). Re-runs + saves a version. */
-  applySurfaceTextureAsCode(id: string, opts?: Record<string, number | boolean | string>): Promise<ApplyResult>;
+   *  baking (manifold-js sessions, whole-model mode). Re-runs + saves a version.
+   *  `opts` may carry a `label` or `region` scope (objects) alongside scalars. */
+  applySurfaceTextureAsCode(id: string, opts?: Record<string, unknown>): Promise<ApplyResult>;
+  /** Names of the current model's `api.label(...)` regions, for the code-path
+   *  scope picker's label dropdown. Empty when the model declares none. */
+  getLabelNames(): string[];
+  /** Apply any pending (cancelled/failed) in-code texture chain so previews
+   *  run on the textured mesh. No-op when nothing is pending. */
+  ensureSurfaceTexturesApplied(): Promise<{ ok: boolean }>;
   previewSurfaceModifier(id: ModId, opts?: Record<string, unknown>, preserveColor?: boolean): Promise<{ ok: true } | { error: string }>;
   clearSurfacePreview(): { ok: true };
   modelHasColor(): boolean;
@@ -430,6 +437,127 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     regionControls,
   );
 
+  // --- Code-path scope UI (whole-model "apply as code" only) ---
+  // Limits an api.surface.* call to part of the model: a labeled shape, or a
+  // patch around a clicked point. Shown only when Apply writes code.
+  type CodeScope =
+    | { kind: 'none' }
+    | { kind: 'label'; label: string }
+    | { kind: 'point'; point: [number, number, number]; radius: number };
+  let codeScope: CodeScope = { kind: 'none' };
+  let scopePickSuppressor: (() => void) | null = null;
+
+  const SCOPE_ON = 'px-2.5 py-1 rounded text-xs bg-blue-600 text-white';
+  const SCOPE_OFF = 'px-2.5 py-1 rounded text-xs bg-zinc-800 text-zinc-300 hover:bg-zinc-700';
+  const scopeWholeBtn = el('button', SCOPE_ON, 'Whole');
+  const scopeLabelBtn = el('button', SCOPE_OFF, 'By label');
+  const scopePointBtn = el('button', SCOPE_OFF, 'Near point');
+  const scopeBtnRow = el('div', 'flex gap-1 mb-2');
+  scopeBtnRow.append(scopeWholeBtn, scopeLabelBtn, scopePointBtn);
+
+  const scopeLabelSelect = el('select', 'w-full text-xs bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-zinc-200') as HTMLSelectElement;
+  scopeLabelSelect.setAttribute('aria-label', 'Scope label');
+  const scopeLabelRow = el('div', 'mb-1');
+  scopeLabelRow.append(scopeLabelSelect);
+
+  const scopePickBtn = el('button', BTN_BASE, 'Pick point on model');
+  const scopeRadius = slider('Region radius', 1, Math.max(2, Math.round(modelSpan(api))), Math.max(1, Math.round(modelSpan(api) * 0.25)), 1, n => String(n), () => {
+    if (codeScope.kind === 'point') codeScope = { ...codeScope, radius: scopeRadius.get() };
+  });
+  const scopePointStatus = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mt-1');
+  const scopePointRow = el('div', 'mb-1');
+  scopePointRow.append(scopePickBtn, scopeRadius.wrap, scopePointStatus);
+
+  const codeScopeSection = el('div', 'mb-3 pb-3 border-b border-zinc-700/50');
+  codeScopeSection.append(
+    el('div', 'text-[11px] text-zinc-500 uppercase tracking-wide mb-2', 'Scope'),
+    scopeBtnRow,
+    scopeLabelRow,
+    scopePointRow,
+  );
+  codeScopeSection.style.display = 'none';
+
+  function stopScopePick(): void {
+    scopePickSuppressor?.();
+    scopePickSuppressor = null;
+    document.body.style.cursor = '';
+    scopePickBtn.textContent = 'Pick point on model';
+  }
+
+  /** Scope keys to merge into the apply-as-code options (empty unless scoped). */
+  function scopeOpts(): Record<string, unknown> {
+    if (!applyWritesCode()) return {};
+    if (codeScope.kind === 'label') return { label: codeScope.label };
+    if (codeScope.kind === 'point') return { region: { point: codeScope.point, radius: codeScope.radius } };
+    return {};
+  }
+
+  function updateScopeUI(): void {
+    scopeWholeBtn.className = codeScope.kind === 'none' ? SCOPE_ON : SCOPE_OFF;
+    scopeLabelBtn.className = codeScope.kind === 'label' ? SCOPE_ON : SCOPE_OFF;
+    scopePointBtn.className = codeScope.kind === 'point' ? SCOPE_ON : SCOPE_OFF;
+    // Keep the sub-controls visible while a mode is selected (even before a
+    // label/point is chosen).
+    scopeLabelRow.style.display = codeScope.kind === 'label' || labelMode ? '' : 'none';
+    scopePointRow.style.display = codeScope.kind === 'point' || pointMode ? '' : 'none';
+    if (codeScope.kind === 'point') {
+      const [x, y, z] = codeScope.point;
+      scopePointStatus.textContent = `Point (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)}) · radius ${codeScope.radius}`;
+    } else if (pointMode) {
+      scopePointStatus.textContent = 'Click a point on the model to set the region center.';
+    }
+  }
+
+  // Track which mode button is selected even before a value is chosen, so the
+  // sub-controls (label dropdown / point picker) stay visible while choosing.
+  let labelMode = false;
+  let pointMode = false;
+
+  function setScopeMode(mode: 'none' | 'label' | 'point'): void {
+    stopScopePick();
+    labelMode = mode === 'label';
+    pointMode = mode === 'point';
+    if (mode === 'none') {
+      codeScope = { kind: 'none' };
+    } else if (mode === 'label') {
+      const names = (() => { try { return api.getLabelNames(); } catch { return []; } })();
+      scopeLabelSelect.innerHTML = '';
+      if (names.length === 0) {
+        const o = el('option', '', 'No api.label() regions in this model') as HTMLOptionElement;
+        o.disabled = true; o.selected = true;
+        scopeLabelSelect.append(o);
+        codeScope = { kind: 'none' };
+      } else {
+        for (const n of names) scopeLabelSelect.append(el('option', '', n) as HTMLOptionElement);
+        codeScope = { kind: 'label', label: names[0] };
+      }
+    } else {
+      codeScope = { kind: 'none' }; // becomes a point once the user clicks
+    }
+    updateScopeUI();
+  }
+
+  scopeWholeBtn.addEventListener('click', () => setScopeMode('none'));
+  scopeLabelBtn.addEventListener('click', () => setScopeMode('label'));
+  scopePointBtn.addEventListener('click', () => setScopeMode('point'));
+  scopeLabelSelect.addEventListener('change', () => {
+    if (scopeLabelSelect.value) codeScope = { kind: 'label', label: scopeLabelSelect.value };
+  });
+  scopePickBtn.addEventListener('click', () => {
+    if (scopePickSuppressor) { stopScopePick(); updateScopeUI(); return; }
+    document.body.style.cursor = 'crosshair';
+    scopePickBtn.textContent = 'Click the model…';
+    scopePickSuppressor = addPointerSuppressor((evt: PointerEvent) => {
+      if (evt.type !== 'pointerdown') return false;
+      const hit = pickFace(evt as MouseEvent);
+      if (!hit) return true; // empty space — keep listening, veto orbit
+      codeScope = { kind: 'point', point: hit.point, radius: scopeRadius.get() };
+      stopScopePick();
+      updateScopeUI();
+      return true;
+    });
+  });
+
   // Modifiers expressible as in-code `api.surface.*` calls. voxelize/voronoiLamp
   // change engines and engrave is a boolean cut, so they stay bake-only.
   const IN_CODE_IDS = new Set<Tab>(['fuzzy', 'knit', 'cable', 'waffle', 'fur', 'woven', 'knurl', 'voronoi', 'smooth']);
@@ -462,6 +590,10 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   function updateApplyBtn() {
     const blocked = regionBlocked();
     const asCode = applyWritesCode();
+    // The scope picker only applies on the code path; hide it (and drop any
+    // pending pick) when Apply would bake.
+    codeScopeSection.style.display = asCode ? '' : 'none';
+    if (!asCode && scopePickSuppressor) stopScopePick();
     applyBtn.textContent = asCode ? 'Apply as code' : 'Apply (bake)';
     pathHint.textContent = asCode
       ? `Adds api.surface.${active}(…) to your code — stays parametric, recomputes with the model.`
@@ -628,6 +760,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     engravePosWraps = []; engravePlaceNote = null;
     engraveSizeGet = null; engraveIsPlanar = null;
     exitEngravePick();
+    // Switching tabs resets the code-path scope (label sets differ per model,
+    // and a point patch is tab-agnostic but clearer to re-pick deliberately).
+    setScopeMode('none');
     regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp' || active === 'engrave') ? 'none' : '';
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
@@ -967,6 +1102,10 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   let previewTimer: number | undefined;
   let previewDirty = false; // a preview is currently shown (needs clearing on close)
   async function runPreview() {
+    // If the model's in-code textures are parked (the user cancelled a compute
+    // — the "Re-apply" pill state), apply them first so the preview shows the
+    // modifier ON TOP of the textured model, not on the untextured base.
+    try { await api.ensureSurfaceTexturesApplied(); } catch { /* preview on whatever is live */ }
     // SDF carves (engrave / voronoi lamp) are async + show the progress modal;
     // the rest resolve immediately. Either way we await the result.
     const r = await api.previewSurfaceModifier(active, currentOpts(), preserveColor);
@@ -1147,7 +1286,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     tabRow.append(b);
   }
 
-  scrollBody.append(regionSection, tabRow, body);
+  scrollBody.append(regionSection, codeScopeSection, tabRow, body);
   if (painted) scrollBody.append(colorRow);
   scrollBody.append(status);
 
@@ -1166,6 +1305,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   const close = () => {
     exitSelectionMode();
+    stopScopePick();
     exitEngravePick();
     disposeEngraveOutline();
     regionTeardown?.(); regionTeardown = null;
@@ -1203,13 +1343,13 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       // api.surface.* call instead of baking. selectedTriangles is always
       // undefined here (whole-model mode) and preserveColor doesn't apply —
       // paint re-resolves against the textured mesh on every run.
-      const asCodeOpts = (): Record<string, number | boolean | string> => {
-        const out: Record<string, number | boolean | string> = {};
+      const asCodeOpts = (): Record<string, unknown> => {
+        const out: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(currentOpts())) {
           if (k === 'selectedTriangles' || v === undefined) continue;
           if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') out[k] = v;
         }
-        return out;
+        return { ...out, ...scopeOpts() }; // add label/region scope (empty unless scoped)
       };
       const result = applyWritesCode() ? await api.applySurfaceTextureAsCode(active, asCodeOpts())
         : active === 'fuzzy' ? await api.applyFuzzySkin(opts)

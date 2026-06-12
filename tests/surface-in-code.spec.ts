@@ -66,41 +66,93 @@ test.describe('api.surface.* (textures declared in code)', () => {
     await page.screenshot({ path: 'test-results/surface-in-code-textured.png' });
   });
 
-  test('exporting while textures are stale carries a warning', async ({ page }) => {
+  test('live-typing auto-applies textures; Cancel parks them behind the pill (and exports warn)', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
 
     // Put api.surface code in the editor WITHOUT running it, then trigger the
-    // live-typing auto-run by typing. The un-cached chain renders the base mesh
-    // and raises the Re-apply pill — the one state where an export would carry
-    // the untextured mesh.
+    // live-typing auto-run by typing. The chain now computes automatically (in
+    // the surface Worker); cancelling mid-compute is the one state where the
+    // base mesh stays on screen and the Re-apply pill appears.
     await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PW & { setCode: (c: string) => void } }).partwright;
-      await pw.createSession('surface-stale-export');
+      await pw.createSession('surface-cancel-park');
       pw.setCode([
         'const { Manifold } = api;',
-        'api.surface.fuzzy({ amplitude: 0.5 });',
-        'return Manifold.sphere(10, 32);',
+        'api.surface.knit({ stitchWidth: 1.0, amplitude: 0.6, quality: 4 });',
+        'return Manifold.sphere(10, 48);',
       ].join('\n'));
     });
     await page.click('.cm-content');
     await page.keyboard.press('Control+End');
     await page.keyboard.type('\n// touch');
-    await expect(page.getByRole('button', { name: /Re-apply/ })).toBeVisible({ timeout: 15_000 });
 
+    // Catch the compute in flight and cancel it (the Cancel button's path).
+    const cancelled = await page.evaluate(async () => {
+      const ops = await import('/src/surface/surfaceOps.ts');
+      const t0 = Date.now();
+      while (!ops.surfaceComputeInFlight() && Date.now() - t0 < 10_000) {
+        await new Promise(r => setTimeout(r, 5));
+      }
+      return ops.cancelSurfaceCompute();
+    });
+    expect(cancelled).toBe(true);
+    await expect(page.getByRole('button', { name: /Re-apply/ })).toBeVisible({ timeout: 10_000 });
+
+    // While parked, an export would carry the untextured base — it warns.
     const out = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { exportSTLData: () => Promise<{ warning?: string }> } }).partwright;
       return await pw.exportSTLData();
     });
     expect(out.warning ?? '').toContain('untextured');
 
-    // An explicit run clears the pill — and with it, the warning.
+    // The pill recomputes the parked chain; the warning clears with it.
+    await page.getByRole('button', { name: /Re-apply/ }).click();
+    await expect(page.getByRole('button', { name: /Re-apply/ })).toBeHidden({ timeout: 60_000 });
     const after = await page.evaluate(async () => {
-      const pw = (window as unknown as { partwright: PW & { getCode: () => string; exportSTLData: () => Promise<{ warning?: string }> } }).partwright;
-      await pw.run(pw.getCode());
+      const pw = (window as unknown as { partwright: { exportSTLData: () => Promise<{ warning?: string }> } }).partwright;
       return await pw.exportSTLData();
     });
     expect(after.warning).toBeUndefined();
+  });
+
+  test('whitespace/comment edits keep the textures (mesh-content memo key)', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const texturedTris = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('surface-noop-edit');
+      const r = await pw.run([
+        'const { Manifold } = api;',
+        'api.surface.fuzzy({ amplitude: 0.5 });',
+        'return Manifold.sphere(10, 32);',
+      ].join('\n')) as { triangleCount?: number };
+      return r.triangleCount ?? 0;
+    });
+    expect(texturedTris).toBeGreaterThan(0);
+
+    // A pure whitespace/comment edit re-runs the code but produces the same
+    // base mesh — the chain cache hits on the mesh-content key, so the model
+    // never drops to the untextured base and no pill appears.
+    await page.click('.cm-content');
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type('\n\n// a comment that changes nothing');
+    await page.waitForFunction((tris) => {
+      const el = document.getElementById('geometry-data');
+      if (!el?.textContent) return false;
+      try {
+        const gd = JSON.parse(el.textContent) as { triangleCount?: number; codeHash?: string };
+        return gd.triangleCount === tris;
+      } catch { return false; }
+    }, texturedTris, { timeout: 15_000 });
+    // Give the auto-run time to have done anything wrong, then assert it didn't.
+    await page.waitForTimeout(1000);
+    const finalTris = await page.evaluate(() => {
+      const el = document.getElementById('geometry-data');
+      return el?.textContent ? (JSON.parse(el.textContent) as { triangleCount?: number }).triangleCount : 0;
+    });
+    expect(finalTris).toBe(texturedTris);
     await expect(page.getByRole('button', { name: /Re-apply/ })).toBeHidden();
   });
 
@@ -225,5 +277,83 @@ test.describe('api.surface.* (textures declared in code)', () => {
       return r?.error ?? '';
     });
     expect(err).toContain('nope');
+  });
+
+  test('label scope textures only the labeled shape of a union', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW & { listLabels: () => { labels: { name: string; triangleCount: number }[] } } }).partwright;
+      await pw.createSession('surface-scope-label');
+      // A smooth sphere unioned with a labeled cube; only the cube knurls.
+      const plain = await pw.run([
+        'const { Manifold } = api;',
+        "const box = api.label(Manifold.cube([16, 16, 16], true).translate([-6, 0, 0]), 'grip', { color: [0.2, 0.6, 1] });",
+        'const ball = Manifold.sphere(9, 48).translate([7, 0, 0]);',
+        'return box.add(ball);',
+      ].join('\n')) as { triangleCount?: number };
+      const scoped = await pw.run([
+        'const { Manifold } = api;',
+        "const box = api.label(Manifold.cube([16, 16, 16], true).translate([-6, 0, 0]), 'grip', { color: [0.2, 0.6, 1] });",
+        'const ball = Manifold.sphere(9, 48).translate([7, 0, 0]);',
+        "api.surface.knurl({ label: 'grip', cellWidth: 2.4, amplitude: 0.7 });",
+        'return box.add(ball);',
+      ].join('\n')) as { triangleCount?: number };
+      return { plainTris: plain.triangleCount ?? 0, scopedTris: scoped.triangleCount ?? 0, labels: pw.listLabels().labels };
+    });
+
+    // Scoping subdivided the cube region, so the textured mesh has many more
+    // triangles than the plain union — but far from texturing the whole skin.
+    expect(out.scopedTris).toBeGreaterThan(out.plainTris * 2);
+    // The label's color carried onto the textured (denser) triangles.
+    const grip = out.labels.find(l => l.name === 'grip');
+    expect(grip).toBeTruthy();
+    expect(grip!.triangleCount).toBeGreaterThan(100);
+  });
+
+  test('region scope textures a patch near a point', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('surface-scope-region');
+      const plain = await pw.run('const { Manifold } = api;\nreturn Manifold.sphere(14, 96);') as { triangleCount?: number };
+      const scoped = await pw.run([
+        'const { Manifold } = api;',
+        'const ball = Manifold.sphere(14, 96);',
+        'api.surface.fuzzy({ region: { point: [0, 0, 14], radius: 9 }, amplitude: 1.2 });',
+        'return ball;',
+      ].join('\n')) as { triangleCount?: number };
+      return { plainTris: plain.triangleCount ?? 0, scopedTris: scoped.triangleCount ?? 0 };
+    });
+
+    // The patch was subdivided + displaced, so the result has more triangles
+    // than the plain sphere — but the bulk of the sphere stays untouched.
+    expect(out.scopedTris).toBeGreaterThan(out.plainTris);
+  });
+
+  test('rejects a malformed region scope with an actionable error', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const errs = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('surface-scope-errors');
+      const badPoint = await pw.run([
+        'const { Manifold } = api;',
+        'api.surface.fuzzy({ region: { point: [0, 0], radius: 5 } });',
+        'return Manifold.sphere(8, 24);',
+      ].join('\n')) as { error?: string | null };
+      const both = await pw.run([
+        'const { Manifold } = api;',
+        "api.surface.fuzzy({ label: 'x', region: { point: [0, 0, 0], radius: 5 } });",
+        'return Manifold.sphere(8, 24);',
+      ].join('\n')) as { error?: string | null };
+      return { badPoint: badPoint?.error ?? '', both: both?.error ?? '' };
+    });
+    expect(errs.badPoint).toContain('point');
+    expect(errs.both).toContain('not both');
   });
 });
