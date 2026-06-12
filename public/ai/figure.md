@@ -406,6 +406,13 @@ F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
 F.clothing.top(rig, { sleeve, hemZ, thickness })        // sleeve: none|short|long
 //   hemZ below the pelvis turns the top into a robe/dress: a flared skirt
 //   cone is added down to the hem so legs stay covered all round.
+F.clothing.shoes(rig, { size, thickness })              // sole + upper over each foot
+F.clothing.boots(rig, { size, shaftZ, thickness })      // shoes + a shaft up the lower leg
+//   Footwear is anchored on rig.joints.footL/R and FOLLOWS rig.dir.footL/R, so
+//   it tracks leg*.twist turnout exactly like F.feet. `size` scales the
+//   footprint, `thickness` the shell over the foot. For boots, `shaftZ` is a
+//   world-Z target projected onto each leg's own ankle→knee bone (default
+//   mid-calf), so a posed/lunge shank keeps the shaft on the bone.
 ```
 
 Clothing is the body region **inflated and trimmed**, and **coverage is

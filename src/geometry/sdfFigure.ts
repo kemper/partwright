@@ -723,6 +723,89 @@ function buildFeet(sdf: SdfApi, rig: Rig): Node {
     .union(foot(j.footR as Vec3, rig.dir.footR as Vec3, -1));
 }
 
+/** Shoes and boots — footwear that wraps each foot, following the foot heading
+ *  (`rig.dir.footL/R`) so it tracks `leg*.twist` turnout exactly like
+ *  {@link buildFeet}. A shoe is the foot's sole + upper inflated by `thickness`;
+ *  a boot adds a shaft up the lower-leg bone. `kind` selects which.
+ *
+ *  Coverage follows the {@link buildPants} pattern: a shaped overlay (the visible
+ *  silhouette) plus a guaranteed-coverage underlayer — the body's own foot mass
+ *  (and, for boots, the lower-leg shank) offset outward by `t` and clipped to the
+ *  footwear zone, unioned UNDER the overlay so it only ADDS coverage and the skin
+ *  can never poke through. Footwear overlaps the foot/shank skin, so the
+ *  top-level union keeps the figure one component in any pose. */
+function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'boots'): Node {
+  const name = `clothing.${kind}(opts)`;
+  const o = obj(opts, name);
+  assertNoUnknownKeys(o, kind === 'boots' ? ['size', 'shaftZ', 'thickness'] : ['size', 'thickness'], name);
+  const j = rig.joints, r = rig.r;
+  // Footprint scale (chunkier/daintier footwear) and shell offset over the foot.
+  const size = num(o.size, 1, `${kind}.size`, 0.1);
+  const t = num(o.thickness, r.foot * 0.18, `${kind}.thickness`, 0.001);
+  // Boot shaft top: a world-Z target projected onto each leg's OWN ankle→knee
+  // bone (so a posed/lunge shank keeps its shaft on the bone, like pants'
+  // cuffPoint). Default ~mid-calf.
+  const shaftZ = o.shaftZ === undefined ? undefined : num(o.shaftZ, 0, `${kind}.shaftZ`);
+  function shaftTop(A: Vec3, K: Vec3): Vec3 {
+    if (shaftZ === undefined) return lerp3(A, K, 0.55);
+    const segZ = K[2] - A[2];
+    if (Math.abs(segZ) < 1e-6) return lerp3(A, K, 0.55); // near-horizontal shank: height is meaningless
+    const frac = (shaftZ - A[2]) / segZ;
+    return lerp3(A, K, Math.min(0.95, Math.max(0.1, frac)));
+  }
+
+  function boot(A: Vec3, K: Vec3, fwd: Vec3, side: number): Node {
+    // Mirror buildFeet's foot, inflated by `t` and scaled by `size`.
+    const footLen = r.foot * 2.4 * size;
+    const sz = footSoleZ(rig, A);
+    const lat: Vec3 = [-fwd[1], fwd[0], 0];        // heading yawed +90° in XY
+    const onGround = (p: Vec3): Vec3 => [p[0], p[1], sz];
+    const toe = onGround(add3(A, add3(scale3(fwd, footLen * 0.62), scale3(lat, side * r.foot * 0.12))));
+    const heel = onGround(add3(A, scale3(fwd, -footLen * 0.38)));
+    const instepC = onGround(add3(A, scale3(fwd, footLen * 0.35)));
+    const sole = sdf.capsule(heel, toe, r.foot * 0.62 + t);
+    const upper = sdf.ellipsoid((r.foot * 0.8 + t) * size, footLen * 0.5, r.foot * 0.8 + t)
+      .translate([instepC[0], instepC[1], sz + r.foot * 0.15 + t * 0.4]);
+    // Ankle collar bridges the (possibly elevated) ankle to the sole — keeps the
+    // shoe welded to the foot/leg in any pose.
+    const collar = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.lowerLeg * 0.85 + t);
+    let shoe = sole.smoothUnion(upper, r.foot * 0.6).smoothUnion(collar, r.foot * 0.6);
+    if (kind === 'boots') {
+      // Shaft: a capsule up the shank bone from the ankle to the shaft top.
+      const shaft = sdf.capsule(A, shaftTop(A, K), r.lowerLeg + t);
+      shoe = shoe.smoothUnion(shaft, r.lowerLeg * 0.9);
+    }
+    // --- Guaranteed-coverage underlayer (additive — see buildPants) -------
+    // The body's foot mass (and, for boots, the lower-leg shank) offset by `t`
+    // and clipped to the footwear zone. The skin can't poke through its own
+    // offset, so the shaped overlay's gaps are filled structurally.
+    const footMass = (() => {
+      const s = sdf.capsule(heel, toe, r.foot * 0.62);
+      const inst = sdf.ellipsoid(r.foot * 0.8, footLen * 0.5, r.foot * 0.8)
+        .translate([instepC[0], instepC[1], sz + r.foot * 0.15]);
+      const col = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.lowerLeg * 0.8);
+      let m = s.smoothUnion(inst, r.foot * 0.6).smoothUnion(col, r.foot * 0.6);
+      if (kind === 'boots') m = m.union(sdf.capsule(A, shaftTop(A, K), r.lowerLeg));
+      return m.round(t);
+    })();
+    const big = Math.max(footLen, r.lowerLeg) * 8;
+    const topZ = kind === 'boots' ? shaftTop(A, K)[2] : sz + r.foot * 1.2 + t;
+    const zone = sdf.box([big, big, big]).translate([A[0], A[1], topZ - big / 2]); // z ≤ topZ
+    return shoe.union(footMass.intersect(zone));
+  }
+
+  return boot(j.footL as Vec3, j.lowerLegL as Vec3, rig.dir.footL as Vec3, +1)
+    .union(boot(j.footR as Vec3, j.lowerLegR as Vec3, rig.dir.footR as Vec3, -1));
+}
+
+function buildShoes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  return buildFootwear(sdf, rig, opts, 'shoes');
+}
+
+function buildBoots(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  return buildFootwear(sdf, rig, opts, 'boots');
+}
+
 function buildHead(sdf: SdfApi, rig: Rig): Node {
   const r = rig.r, c = rig.joints.head as Vec3;
   const f = rig.dir.headForward, u = rig.dir.headUp;
@@ -1437,6 +1520,8 @@ export interface FigureNamespace {
   clothing: {
     pants(rig: Rig, opts?: object): Node;
     top(rig: Rig, opts?: object): Node;
+    shoes(rig: Rig, opts?: object): Node;
+    boots(rig: Rig, opts?: object): Node;
   };
 }
 
@@ -1600,9 +1685,11 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     clothing: {
       pants: (rig, opts) => buildPants(sdf, assertRig(rig, 'clothing.pants(rig)'), opts),
       top: (rig, opts) => buildTop(sdf, assertRig(rig, 'clothing.top(rig)'), opts),
+      shoes: (rig, opts) => buildShoes(sdf, assertRig(rig, 'clothing.shoes(rig)'), opts),
+      boots: (rig, opts) => buildBoots(sdf, assertRig(rig, 'clothing.boots(rig)'), opts),
     },
   };
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildHands, handDetail, buildHair };

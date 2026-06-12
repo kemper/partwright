@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -501,6 +501,63 @@ describe('figure pants — posed-leg coverage', () => {
   it('rejects unknown length values', () => {
     const rig = buildRig({});
     expect(() => buildPants(api, rig, { length: 'capri' })).toThrow(/length/);
+  });
+});
+
+describe('figure footwear — shoes & boots', () => {
+  it('shoes wrap each foot (sole point is inside)', () => {
+    const rig = buildRig({});
+    const shoes = buildShoes(api, rig) as SdfNode;
+    for (const side of ['L', 'R'] as const) {
+      const A = rig.joints[`foot${side}`];
+      // The sole sits one foot-radius below the ankle; a point there is shod.
+      const sole = [A[0], A[1], A[2] - rig.r.foot];
+      expect(shoes.evaluate(sole[0], sole[1], sole[2])).toBeLessThan(0);
+    }
+  });
+
+  it("boots add a shaft up the shank that shoes leave bare", () => {
+    const rig = buildRig({});
+    const shoes = buildShoes(api, rig) as SdfNode;
+    const boots = buildBoots(api, rig) as SdfNode;
+    const A = rig.joints.footL, K = rig.joints.lowerLegL;
+    // A point ~mid-calf along the ankle→knee bone: covered by the boot shaft,
+    // bare on a low shoe.
+    const calf = [A[0] * 0.5 + K[0] * 0.5, A[1] * 0.5 + K[1] * 0.5, A[2] * 0.5 + K[2] * 0.5];
+    expect(boots.evaluate(calf[0], calf[1], calf[2])).toBeLessThan(0);
+    expect(shoes.evaluate(calf[0], calf[1], calf[2])).toBeGreaterThan(0);
+  });
+
+  it('footwear follows the foot heading under leg twist (turnout)', () => {
+    // A turned-out foot points its toe outward; the toe of the shoe must move
+    // with it (the builder reads rig.dir.foot*, like F.feet).
+    const rig = buildRig({ pose: { legL: { twist: 40 } } });
+    const shoes = buildShoes(api, rig) as SdfNode;
+    const A = rig.joints.footL, fwd = rig.dir.footL;
+    const sz = A[2] - rig.r.foot;
+    const footLen = rig.r.foot * 2.4;
+    // A point out along the heading at sole height (under the toe) is shod.
+    const toe = [A[0] + fwd[0] * footLen * 0.5, A[1] + fwd[1] * footLen * 0.5, sz];
+    expect(shoes.evaluate(toe[0], toe[1], toe[2])).toBeLessThan(0);
+  });
+
+  it("boots' shaftZ projects onto a posed (lunge) shank bone", () => {
+    // Regression guard mirroring pants' cuffPoint: a world-Z shaft target must
+    // ride the diagonal shank, not a fixed world point off the leg.
+    const rig = buildRig({ pose: { legL: { raiseFwd: 45, bend: 45 } } });
+    const A = rig.joints.footL, K = rig.joints.lowerLegL;
+    const shaftZ = A[2] * 0.4 + K[2] * 0.6;
+    const boots = buildBoots(api, rig, { shaftZ }) as SdfNode;
+    // The shank-bone point at that height projection is inside the boot.
+    const frac = (shaftZ - A[2]) / (K[2] - A[2]);
+    const p = [A[0] + (K[0] - A[0]) * frac, A[1] + (K[1] - A[1]) * frac, A[2] + (K[2] - A[2]) * frac];
+    expect(boots.evaluate(p[0], p[1], p[2])).toBeLessThan(0);
+  });
+
+  it('rejects unknown footwear options', () => {
+    const rig = buildRig({});
+    expect(() => buildShoes(api, rig, { shaftZ: 5 })).toThrow(/shaftZ/);
+    expect(() => buildBoots(api, rig, { bogus: 1 })).toThrow(/bogus/);
   });
 });
 

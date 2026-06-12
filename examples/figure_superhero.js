@@ -106,24 +106,12 @@ const capePanel = sdf.roundedBox([capeW, capeDepth, capeH], r.chestY * 0.12)
 // Label directly.
 const capeAll = capePanel.label('cape');
 
-// 7. BOOTS — colored overlays following the shank bones, mid-shin cutoff.
-// For each leg: capsule from mid-shank to ankle, with a toe cap.
-// Mid-shin is roughly halfway between knee and ankle.
-function makeBoot(knee, ankle) {
-  const midShin = [
-    knee[0] * 0.35 + ankle[0] * 0.65,
-    knee[1] * 0.35 + ankle[1] * 0.65,
-    knee[2] * 0.35 + ankle[2] * 0.65,
-  ];
-  const soleZ = ankle[2] - r.foot * 0.95;
-  // Shank portion: capsule from mid-shin to ankle
-  const shank = sdf.capsule(midShin, ankle, r.lowerLeg * 1.22);
-  // Toe/foot cap: ellipsoid covering the foot
-  const toeCap = sdf.ellipsoid(r.foot * 1.08, r.foot * 1.65, r.foot * 1.0)
-    .translate([ankle[0], ankle[1] - r.foot * 0.5, soleZ + r.foot * 0.62]);
-  return shank.smoothUnion(toeCap, r.foot * 0.65);
-}
-const boots = makeBoot(j.lowerLegL, j.footL).union(makeBoot(j.lowerLegR, j.footR)).label('boots');
+// 7. BOOTS — first-class footwear builder. Anchored on the ankles and
+// following each foot's heading (so they track the popped knee's turnout),
+// with a shaft up to mid-shin. No more hand-rolled capsules.
+const boots = F.clothing.boots(rig, {
+  shaftZ: j.footL[2] * 0.35 + j.lowerLegL[2] * 0.65,  // shaft top ~mid-shin
+}).label('boots');
 
 // 8. GLOVES — colored overlays from mid-forearm to hand/fist.
 // Each glove: capsule from mid-forearm to wrist + a sphere over the fist.
