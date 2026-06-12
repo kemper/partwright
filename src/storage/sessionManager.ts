@@ -1832,7 +1832,7 @@ export async function importSession(
     await dbUpdateSession(session.id, { images: imagesArr });
   }
 
-  // Restore the pinned thumbnail camera (schema 1.11+). Validate both angles
+  // Restore the pinned thumbnail camera (schema 1.12+). Validate both angles
   // are finite numbers so a malformed export can't poison captureThumbnail.
   const cam = asThumbCamera(data.session.thumbCamera);
   if (cam) await dbUpdateSession(session.id, { thumbCamera: cam });
