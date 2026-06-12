@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildFeet, standOn, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -568,6 +568,27 @@ describe('figure footwear — shoes & boots', () => {
     // rounded capsule underside).
     expect(boots.evaluate(s.point[0], s.point[1], s.groundZ + 0.3)).toBeLessThan(0);
     expect(boots.evaluate(s.point[0], s.point[1], s.groundZ - 0.4)).toBeGreaterThan(0);
+  });
+
+  it('the boot sole reaches the foot underside (no bare-skin patch shows through)', () => {
+    // The skin foot's lowest point is the sole frame's groundZ; the boot must be
+    // solid there so the skin can't poke out the bottom.
+    const rig = buildRig({});
+    const boots = buildBoots(api, rig) as SdfNode;
+    const feet = buildFeet(api, rig) as SdfNode;
+    const s = rig.sole.L;
+    const z = s.groundZ + 0.05;                 // just above the ground plane
+    expect(feet.evaluate(s.point[0], s.point[1], z)).toBeLessThan(0);   // skin present
+    expect(boots.evaluate(s.point[0], s.point[1], z)).toBeLessThan(0);  // boot covers it
+  });
+
+  it('the base descends to contain a posed/shod sole (no poke-through)', () => {
+    const rig = buildRig({ pose: { legR: { raiseFwd: 12, bend: 28 }, legL: { raiseSide: 6 } } });
+    const base = buildBase(api, rig) as SdfNode;
+    const boots = buildBoots(api, rig) as SdfNode;
+    // the base bottom is at or below the lowest boot sole, so the boot can't
+    // hang below the disc and punch through its underside.
+    expect(base.bounds().min[2]).toBeLessThanOrEqual(boots.bounds().min[2] + 1e-6);
   });
 });
 
