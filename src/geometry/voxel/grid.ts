@@ -42,7 +42,7 @@ const MAX_GRID_CELLS = 0x7fffffff; // 2^31 - 1
 /** Which smoothing algorithm a bare `.smooth()` (no `algorithm` arg) selects.
  *  `taubin` is the original mesh-relaxation smoother; `surfaceNets` is the
  *  newer native-resolution smoother. Flip this to change the product default. */
-const DEFAULT_SMOOTH_ALGORITHM: 'taubin' | 'surfaceNets' = 'surfaceNets';
+export const DEFAULT_SMOOTH_ALGORITHM: 'taubin' | 'surfaceNets' = 'surfaceNets';
 
 function assertCoord(v: number, name: string): number {
   const n = assertNumber(v, name, { integer: true, min: COORD_MIN, max: COORD_MAX })!;

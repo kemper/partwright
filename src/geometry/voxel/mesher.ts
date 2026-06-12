@@ -16,7 +16,7 @@
 // Pure logic (no DOM/WASM): unit-tested in the vitest tier.
 
 import type { MeshData } from '../types';
-import { VoxelGrid, colorComponents, type Surfacing } from './grid';
+import { VoxelGrid, colorComponents, DEFAULT_SMOOTH_ALGORITHM, type Surfacing } from './grid';
 import { taubinSmooth, scaleMeshPositions, type SmoothPins } from './smooth';
 import { surfaceNetsMesh } from './surfaceNets';
 
@@ -245,11 +245,13 @@ function emitGreedyQuad(
   triColors.push(r, g, b, r, g, b);
 }
 
-/** Which smoothing algorithm a `smooth()` grid uses. Falls back to the legacy
- *  `taubin` for Surfacing objects that predate the `algorithm` field; `smooth()`
- *  itself stamps the current default (see grid.ts) onto every new call. */
+/** Which smoothing algorithm a `smooth()` grid uses. Falls back to the shared
+ *  product default for Surfacing objects that predate the `algorithm` field (or
+ *  arrive via clone/direct construction); `smooth()` itself stamps that same
+ *  default onto every new call. Mesher and UI must agree on this fallback, so
+ *  both read DEFAULT_SMOOTH_ALGORITHM rather than hardcoding a value. */
 function smoothAlgorithm(surf: Surfacing): 'taubin' | 'surfaceNets' {
-  return surf.algorithm ?? 'taubin';
+  return surf.algorithm ?? DEFAULT_SMOOTH_ALGORITHM;
 }
 
 /** Mesh a grid according to its surfacing setting. `blocks` (default) returns
