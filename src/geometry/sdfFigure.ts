@@ -791,19 +791,24 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // a sphere CONCENTRIC with the eyeball but a hair larger (`capR`), so the plug's
   // front face exactly follows the eyeball's curvature and wins the hard-union
   // over its disc with no perceptible bump — the iris/pupil read as painted on a
-  // round eye. The plug is deep (it spans the eyeball), so it always meshes; only
-  // its flush front cap survives the union (the rest is interior), carrying the
-  // label. `capR` increases sclera < iris < pupil so each disc reliably wins the
-  // union over the one beneath it; the increments are <3% of `rad` — sub-visual,
-  // so the silhouette stays round.
+  // round eye. The plug reaches from the front pole back to ~the eyeball centre
+  // (deep enough to always mesh, even on a coarse grid, while keeping the buried
+  // barrel — and the fine triangles spent meshing it — modest); only its flush
+  // front cap survives the union (the rest is interior), carrying the label.
+  // `capR` increases sclera < iris < pupil so each disc reliably wins the union
+  // over the one beneath it; the increments are <3% of `rad` — sub-visual, so the
+  // silhouette stays round.
   //
-  // The cylinder is built along +Z then rotated 90° about X so its axis points
-  // along the (canonical −Y) head-forward before `orientToHeadPose` carries it
-  // into the posed head frame, so the disc always faces out of the face.
-  // (`rotate` is in DEGREES.)
+  // The cylinder is built along +Z then translated forward and rotated 90° about
+  // X so its axis points along the (canonical −Y) head-forward before
+  // `orientToHeadPose` carries it into the posed head frame — its front end sits
+  // at the eyeball's front pole and it reaches back to the centre. (`rotate` is
+  // in DEGREES; `translate` before `rotate` so +Z→−Y places the plug at the
+  // front.)
   const disc = (capR: number, discR: number): Node => {
+    const depth = capR; // front pole back to ~the eyeball centre
     const plug = sdf.sphere(capR).intersect(
-      sdf.cylinder(discR, capR * 3).rotate([90, 0, 0]),
+      sdf.cylinder(discR, depth).translate([0, 0, capR - depth / 2]).rotate([90, 0, 0]),
     );
     const one = (c: Vec3): Node => orientToHeadPose(plug, rig).translate(c);
     return one(cL).union(one(cR));
@@ -1126,7 +1131,7 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   // smooth as the local mesh — at the head grid (~r.head·0.045) a disc that
   // small reads as a faceted polygon. Give each eyeball front its own extra-fine
   // sphere (like the mouth groove) so the iris/pupil circles tessellate round.
-  const eyeEdgeLength = num(o.eyeEdgeLength, Math.max(r.head * 0.008, 0.025), 'faceDetail.eyeEdgeLength', 1e-4);
+  const eyeEdgeLength = num(o.eyeEdgeLength, Math.max(r.head * 0.013, 0.035), 'faceDetail.eyeEdgeLength', 1e-4);
   const f = rig.dir.headForward;
   const eyeFront = (anchor: Vec3): Vec3 => add3(anchor, scale3(f, r.head * 0.22));
   return [

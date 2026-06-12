@@ -90,3 +90,22 @@ finely and their circles tessellate round. Default `eyeEdgeLength` ≈ r.head·0
 (overridable). Cost on the full waving-kid figure: +~14k triangles → 177k, under
 the 200k catalog budget, no warnings. Added a `faceDetail` unit test for the two
 eye spheres and re-rebaked `waving_kid`.
+
+## Round 4 — rebake all figures + bound the triangle cost
+
+Human: "Make sure the other catalog figures are fixed and rebaked."
+
+The figure *code* needed no change — every figure calls `F.face.eyes`, so all
+three eye improvements apply automatically on load; only the cached
+thumbnails/stats were stale. Before rebaking all 11, an audit of the round-3
+cost showed the fine eye detail had ballooned some figures (flexing_strongman
++62k → 232k, over the ~200k advisory budget): small-headed (tall) figures got a
+very fine *absolute* eye edge, and the deep iris/pupil plugs were fully
+fine-marched. Fixed both: shallowed the plug to reach from the front pole to ~the
+eyeball centre (half the buried barrel) and relaxed `eyeEdgeLength` to
+r.head·0.013 (still clean at full zoom; 0.018 visibly facets). Strongman dropped
+to 186k; per-figure deltas are now +5k…+23k. Rebaked all 11 figure entries in a
+real browser (xvfb + per-figure palette) — all manifold, all three eye labels
+resolve. (chibi_wizard 303k and staff_mage 206k sit just over the advisory
+budget — chibi was already 280k pre-change; the budget is advisory, not a CI
+gate.)
