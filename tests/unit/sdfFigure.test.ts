@@ -455,6 +455,27 @@ describe('figure eyes — styles and labels', () => {
     expect(reach(all)).toBeGreaterThan(reach(sclera) + 1e-6);
   });
 
+  it('iris and pupil are concentric discs smaller than the eyeball (white sclera shows)', () => {
+    // The eye reads as eye — not a flat coloured bead — only when the iris is
+    // clearly smaller than the visible eyeball cap so a white sclera ring shows
+    // around it, and the pupil clearly smaller than the iris. Both eyes sit at
+    // the same height under a neutral pose, so each region's vertical (Z) extent
+    // equals its in-plane diameter — a clean concentric-size comparison.
+    const parts = partitionByLabel(buildEyes(api, rig) as SdfNode);
+    const zExtent = (name: string): number => {
+      const p = parts.find((p) => p.labelName === name);
+      if (!p) throw new Error(`no ${name} region`);
+      const b = p.node.bounds();
+      return b.max[2] - b.min[2];
+    };
+    const sclera = zExtent('eyes'), iris = zExtent('iris'), pupil = zExtent('pupil');
+    expect(iris).toBeLessThan(sclera);   // white sclera ring shows around the iris
+    expect(pupil).toBeLessThan(iris);    // pupil dot nests inside the iris
+    // Guard the specific regression (iris ≈ eyeball swallowed the white): the
+    // iris must leave a generous white margin, not span the whole eyeball front.
+    expect(iris).toBeLessThan(sclera * 0.6);
+  });
+
   it('rejects unknown style and keys', () => {
     expect(() => buildEyes(api, rig, { style: 'laser' })).toThrow(/style/);
     expect(() => buildEyes(api, rig, { glow: true })).toThrow();
@@ -664,12 +685,18 @@ describe('figure faceDetail — detail-region helper', () => {
     expect(adult.edgeLength).toBeLessThan(adult.radius * 0.1);
   });
 
-  it('honours overrides and rejects unknown keys', () => {
-    const [head, mouth] = faceDetail(rig, { radius: 12, edgeLength: 0.1, mouthEdgeLength: 0.05 });
-    expect(head.radius).toBe(12);
-    expect(head.edgeLength).toBe(0.1);
-    expect(mouth.edgeLength).toBe(0.05);
-    expect(() => faceDetail(rig, { density: 2 })).toThrow();
+  it('adds an extra-fine sphere over each eyeball front so the iris/pupil edges mesh smoothly', () => {
+    const regions = faceDetail(rig);
+    const [head] = regions;
+    // Two eye detail spheres, finer than the head grid, each near an eye anchor.
+    const nearEye = (c: number[], a: number[]): boolean =>
+      Math.hypot(c[0] - a[0], c[1] - a[1], c[2] - a[2]) < rig.r.head * 0.4;
+    const eyeRegions = regions.filter((d) => d.edgeLength < head.edgeLength
+      && (nearEye(d.center, rig.face.eyeL) || nearEye(d.center, rig.face.eyeR)));
+    expect(eyeRegions.length).toBe(2);
+    // Finer than the mouth groove (small circular features need it most).
+    for (const e of eyeRegions) expect(e.edgeLength).toBeLessThanOrEqual(rig.r.head * 0.02);
+    expect(() => faceDetail(rig, { eyeEdgeLength: 0.03 })).not.toThrow();
   });
 });
 

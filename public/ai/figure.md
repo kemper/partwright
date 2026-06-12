@@ -366,30 +366,39 @@ disc and black pupil dot, pre-labelled `'eyes'` / `'iris'` / `'pupil'` — do
 **not** wrap it in `.label()` (the outer label wins and flattens the eye to
 one colour). `'solid'` returns plain spheres for you to label.
 
+The eyeball stays a **perfectly round white dome**; the iris (≈ 0.55·eyeRadius)
+and pupil (≈ 0.27·eyeRadius) are **painted on as flush concentric discs**, not
+raised lenses — so they read as recognizable centred eyes from the front
+without protruding as beads. (Each disc is a deep plug clipped to a sphere a
+hair larger than the eyeball, so its face follows the eyeball's curvature and
+wins the union over its disc with no visible bump.) Colour them by their labels
+(white sclera, mid iris, black pupil). Give the build `detail: F.faceDetail(rig)`
+so the iris/pupil disc edges mesh crisply.
+
 Either way, keep eyes OUT of the skin weld (`eyes: false` in `assemble`) and
 hard-union them at the top level — smooth-welded features can't carry paint
 labels, and an eye buried under the cheek welds resolves to a label with zero
-paintable triangles. The eyeballs are pushed forward half their radius so the
-domes always protrude. (Brows can use the same top-level pattern if you want
-them painted.)
+paintable triangles. The eyeballs are pushed forward so the domes always
+protrude. (Brows can use the same top-level pattern if you want them painted.)
 
 ## Face detail — `F.faceDetail(rig)` (use it on every figure with a face)
 
 Face features are far smaller than the body, so at the recommended figure grid
 (`edgeLength 0.4–0.6`) they mesh as angular slabs. `F.faceDetail(rig)` returns
-a `{ center, radius, edgeLength }` sphere covering the head, sized off
-`rig.r.head`, for `.build()`'s `detail` option (see
-`/ai/sdf.md#detail-regions`):
+`{ center, radius, edgeLength }` spheres — one covering the head, a finer one
+over the mouth groove, and an extra-fine one over each eyeball front — for
+`.build()`'s `detail` option (see `/ai/sdf.md#detail-regions`):
 
 ```js
 return sdf.union(skin, eyes, hair, base)
   .build({ edgeLength: 0.5, detail: F.faceDetail(rig) });
 ```
 
-The head meshes ~3× finer (smooth smile groove, round eye domes) while the
-body keeps the cheap global grid — typically +30–60k triangles instead of the
-~10× a globally fine grid would cost. For a final extra-fine pass, halve it:
-`F.faceDetail(rig, { edgeLength: rig.r.head * 0.02 })`.
+The head meshes ~3× finer (smooth smile groove) and the eyes finer still, so the
+iris/pupil circles tessellate round instead of faceting into polygons — while
+the body keeps the cheap global grid. Typically +30–60k triangles instead of the
+~10× a globally fine grid would cost. Override per region:
+`F.faceDetail(rig, { edgeLength: rig.r.head * 0.02, eyeEdgeLength: rig.r.head * 0.006 })`.
 
 ## Hair & clothing — derived from the rig, so they always fit
 
