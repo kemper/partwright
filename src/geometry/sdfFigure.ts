@@ -198,6 +198,25 @@ export interface GripFrame {
   reach: Vec3;
 }
 
+/** The two-anchor analog of {@link GripFrame}: the geometry of the line spanning
+ *  TWO grips (or any two points). Returned by `figure.spanGrips(a, b)` for
+ *  building props that run between both hands — a guitar neck, a barbell, a
+ *  bow stave, a broom, a rifle. `holdAt` only orients to one hand; this gives
+ *  the inter-grip axis the prop should lie along plus the endpoints and length
+ *  so a `sdf.capsule(span.a, span.b, r)` is a one-liner. */
+export interface SpanFrame {
+  /** World point of the first grip (the `a` end). */
+  a: Vec3;
+  /** World point of the second grip (the `b` end). */
+  b: Vec3;
+  /** Unit direction from `a` toward `b` — the axis a spanning bar lies along. */
+  axis: Vec3;
+  /** Distance between `a` and `b` — the length a spanning bar must reach. */
+  length: number;
+  /** Midpoint of `a` and `b` — centre a symmetric prop here. */
+  mid: Vec3;
+}
+
 export interface Rig {
   joints: Record<string, Vec3>;
   /** Canonical radii / half-extents, in world units. */
@@ -1393,6 +1412,14 @@ export interface FigureNamespace {
    *  Aligns the prop's local long axis (`opts.along`, default 'z') to the grip
    *  axis and drops its origin on the grip point. `opts.flip` reverses it. */
   holdAt(node: Node, grip: GripFrame, opts?: object): Node;
+  /** The line spanning TWO grips (or two points) for a prop held in both hands
+   *  — guitar, barbell, bow, broom. Returns the {@link SpanFrame} (endpoints,
+   *  unit axis, length, midpoint) so `sdf.capsule(s.a, s.b, r)` is one line. */
+  spanGrips(a: GripFrame | Vec3, b: GripFrame | Vec3): SpanFrame;
+  /** Deterministic world-coordinate dump of the rig's joints, grip frames, and
+   *  directions (rounded) plus a `.text` summary — use instead of hand-rolled
+   *  JSON scratch probes when authoring a pose. */
+  poseProbe(rig: Rig): { height: number; headsTall: number; build: string; sex: string; joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame }; dir: Record<string, Vec3>; text: string };
   /** The face's detail-region spheres (head + finer mouth) for
    *  `build({ detail: F.faceDetail(rig) })`. */
   faceDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
@@ -1467,6 +1494,76 @@ function holdAt(node: Node, grip: unknown, opts?: unknown): Node {
   return n.rotate(eulerAlignZ(axis)).translate(point);
 }
 
+/** Coerce a grip frame ({@link GripFrame}, uses `.point`) or a raw `[x,y,z]`
+ *  point into a world Vec3 — so `spanGrips` accepts both `rig.grip.L` and any
+ *  joint like `rig.joints.handR`. */
+function asPoint3(v: unknown, name: string): Vec3 {
+  if (v && typeof v === 'object' && !Array.isArray(v) && 'point' in (v as object)) {
+    return assertNumberTuple((v as { point: unknown }).point, 3, `${name}.point`) as Vec3;
+  }
+  return assertNumberTuple(v, 3, name) as Vec3;
+}
+
+/** The two-anchor place helper: the line spanning two grips (or two points).
+ *  `holdAt` orients a prop to ONE hand; a guitar / barbell / bow / broom runs
+ *  between BOTH, which until now meant hand-deriving the axis and length from
+ *  `grip.L.point` / `grip.R.point`. `spanGrips(a, b)` returns that {@link
+ *  SpanFrame} — endpoints, unit axis, length, midpoint — so the spanning bar is
+ *  `sdf.capsule(span.a, span.b, r)` and anything growing off an end (a guitar
+ *  body at `a`, a headstock past `b`) keys off the same frame. Accepts grip
+ *  frames or raw `[x,y,z]` points on either side. */
+function spanGrips(a: unknown, b: unknown): SpanFrame {
+  const pa = asPoint3(a, 'spanGrips(a)');
+  const pb = asPoint3(b, 'spanGrips(b)');
+  const d = sub3(pb, pa);
+  const length = len3(d);
+  return {
+    a: pa,
+    b: pb,
+    axis: length > 0 ? scale3(d, 1 / length) : [0, 0, 1],
+    length,
+    mid: scale3(add3(pa, pb), 0.5),
+  };
+}
+
+/** Round a Vec3 to `p` decimals for a readable probe dump. */
+function round3(v: Vec3, p = 2): Vec3 {
+  const m = 10 ** p;
+  return [Math.round(v[0] * m) / m, Math.round(v[1] * m) / m, Math.round(v[2] * m) / m];
+}
+
+/** Deterministic world-coordinate dump of a rig's joints, grip frames, and key
+ *  directions — the first-class replacement for hand-rolled
+ *  `throw new Error(JSON.stringify(...))` scratch probes when authoring a pose.
+ *  Returns a structured object (rounded for readability) plus a `.text`
+ *  multi-line summary; `throw new Error(F.poseProbe(rig).text)` (or
+ *  `console.log`) surfaces every joint + grip without forgetting one. */
+function poseProbe(rig: Rig): {
+  height: number; headsTall: number; build: string; sex: string;
+  joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame };
+  dir: Record<string, Vec3>; text: string;
+} {
+  const joints: Record<string, Vec3> = {};
+  for (const k of Object.keys(rig.joints)) joints[k] = round3(rig.joints[k]);
+  const dir: Record<string, Vec3> = {};
+  for (const k of Object.keys(rig.dir)) dir[k] = round3(rig.dir[k]);
+  const grip = (g: GripFrame): GripFrame => ({
+    point: round3(g.point), palmNormal: round3(g.palmNormal),
+    gripAxis: round3(g.gripAxis), reach: round3(g.reach),
+  });
+  const grips = { L: grip(rig.grip.L), R: grip(rig.grip.R) };
+  const o = rig.opts;
+  const lines: string[] = [
+    `figure poseProbe — height ${o.height}, headsTall ${o.headsTall}, build ${o.build}, sex ${o.sex}`,
+    'joints:',
+    ...Object.keys(joints).map(k => `  ${k}: [${joints[k].join(', ')}]`),
+    'grips:',
+    `  L.point [${grips.L.point.join(', ')}]  gripAxis [${grips.L.gripAxis.join(', ')}]`,
+    `  R.point [${grips.R.point.join(', ')}]  gripAxis [${grips.R.gripAxis.join(', ')}]`,
+  ];
+  return { height: o.height, headsTall: o.headsTall, build: o.build, sex: o.sex, joints, grips, dir, text: lines.join('\n') };
+}
+
 function assertRig(rig: unknown, name: string): Rig {
   if (!rig || typeof rig !== 'object' || !('joints' in rig) || !('face' in rig)) {
     throw new ValidationError(`${name} must be a rig from api.sdf.figure.rig(...). See /ai/figure.md`);
@@ -1490,6 +1587,8 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     weld: (rig, parts, opts) => weldBody(assertRig(rig, 'weld(rig)'), parts, opts),
     placeAt: (node, joint, opts) => placeAt(node as Node, joint, opts),
     holdAt: (node, grip, opts) => holdAt(node as Node, grip, opts),
+    spanGrips: (a, b) => spanGrips(a, b),
+    poseProbe: (rig) => poseProbe(assertRig(rig, 'poseProbe(rig)')),
     faceDetail: (rig, opts) => faceDetail(assertRig(rig, 'faceDetail(rig)'), opts),
     handDetail: (rig, opts) => handDetail(assertRig(rig, 'handDetail(rig)'), opts),
     face: {

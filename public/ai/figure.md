@@ -256,12 +256,32 @@ const held = F.holdAt(wand, rig.grip.R);        // axis → gripAxis, origin →
 ```
 
 `opts.along` (`'x'|'y'|'z'`, default `'z'`) says which local axis is the prop's
-length; `opts.flip: true` reverses it. **For a two-handed prop** (a guitar, a
-bow, a rifle) don't fight a single `holdAt` — build it from BOTH grip points:
-run the neck/barrel from one anchor to `rig.grip.L.point` (the fretting cup) and
-seat the body under `rig.grip.R.point`, so the prop's axis is derived from the
-hands and can't read crooked. Aiming at `point` (not `handL/R`) is what stops a
-neck passing through the fretting hand.
+length; `opts.flip: true` reverses it.
+
+**Two-handed props — `F.spanGrips(a, b)`.** A guitar, barbell, bow, broom, or
+rifle runs BETWEEN both hands, so a single `holdAt` can't orient it. `spanGrips`
+is the two-anchor frame: pass two grips (or any two points) and it returns the
+geometry of the line spanning them, so the bar is a one-liner and anything
+growing off an end keys off the same axis:
+
+```js
+const s = F.spanGrips(rig.grip.L, rig.grip.R);   // {a, b, axis, length, mid}
+const bar = sdf.capsule(s.a, s.b, 0.5);          // runs cup-to-cup, no crooked tilt
+// plates/headstock past an end: s.b + s.axis*ext  ·  centre a prop on s.mid
+```
+
+`a`/`b` are the endpoints (each grip's `point`, or a raw `[x,y,z]`), `axis` is
+the unit direction `a→b`, `length` the distance, `mid` the midpoint. Aiming at
+the grip `point` (not `handL/R`) is what stops the bar passing through a hand.
+`figure_rocker.js` builds its guitar neck + headstock on `spanGrips`;
+`figure_staff_mage.js` seats a single-hand staff with `holdAt`.
+
+**Reading a pose — `F.poseProbe(rig)`.** Returns a deterministic, rounded dump
+of every world joint position, both grip frames, and the key directions, plus a
+`.text` summary — use it instead of hand-rolled `JSON.stringify` probes when
+tuning a pose. `throw new Error(F.poseProbe(rig).text)` (or `console.log` it)
+prints the whole readout so you can read where a hand/grip actually landed
+before aiming a prop at it.
 
 ## Face — reads `rig.face` anchors
 

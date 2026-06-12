@@ -841,6 +841,13 @@
       "description": "A stocky hero launching skyward with one fist punched up — sweeping cape, chest emblem, gloves and boots over a two-tone suit."
     },
     {
+      "id": "staff-mage",
+      "name": "Staff Mage",
+      "file": "staff_mage.partwright.json",
+      "language": "manifold-js",
+      "description": "A robed mage raising a quarterstaff in one hand — the staff seated into the grip with the figure API's holdAt helper so it follows the hand instead of impaling it."
+    },
+    {
       "id": "parametric-enclosure",
       "name": "Project Box / Enclosure",
       "file": "parametric_enclosure.partwright.json",
