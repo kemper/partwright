@@ -109,3 +109,19 @@ real browser (xvfb + per-figure palette) — all manifold, all three eye labels
 resolve. (chibi_wizard 303k and staff_mage 206k sit just over the advisory
 budget — chibi was already 280k pre-change; the budget is advisory, not a CI
 gate.)
+
+## Round 5 — go to the smoothest eyes (user choice)
+
+Human: "I'd like them all more rounded/smooth. Unless this adds a lot of render
+time — is there a much more performant alternative?"
+
+Clarified the cost model: GPU **render** time is not a factor (180k vs 220k tris
+render identically); the cost is **build/mesh** time + triangle count (print
+slicing / file size). There is no much-more-performant alternative within the
+per-triangle paint model — texture mapping would decouple colour smoothness from
+mesh density but doesn't apply to 3D printing (STL is colourless; single-material
+prints get smoothness from geometry) and isn't in Partwright's model, so mesh
+density is the only lever. Measured the smoothness/cost curve; the user chose the
+**smoothest** setting (`eyeEdgeLength` r.head·0.009), accepting that the heaviest
+figures cross the advisory 200k budget (strongman ~222k, chibi ~312k). Re-rebaked
+all 11; all manifold with eye labels resolving.

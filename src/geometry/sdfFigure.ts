@@ -1131,7 +1131,7 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   // smooth as the local mesh — at the head grid (~r.head·0.045) a disc that
   // small reads as a faceted polygon. Give each eyeball front its own extra-fine
   // sphere (like the mouth groove) so the iris/pupil circles tessellate round.
-  const eyeEdgeLength = num(o.eyeEdgeLength, Math.max(r.head * 0.013, 0.035), 'faceDetail.eyeEdgeLength', 1e-4);
+  const eyeEdgeLength = num(o.eyeEdgeLength, Math.max(r.head * 0.009, 0.025), 'faceDetail.eyeEdgeLength', 1e-4);
   const f = rig.dir.headForward;
   const eyeFront = (anchor: Vec3): Vec3 => add3(anchor, scale3(f, r.head * 0.22));
   return [
