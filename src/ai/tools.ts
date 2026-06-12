@@ -1927,7 +1927,7 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.setReliefPreviewMode(input.mode);
     case 'applySurfaceTexture':
       return api.applySurfaceTexture(
-        input.id as 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'smooth',
+        input.id as 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'smooth',
         input.opts as Record<string, number | boolean | string> | undefined,
         input.mode as 'auto' | 'code' | 'bake' | undefined,
       );

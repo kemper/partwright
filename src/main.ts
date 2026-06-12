@@ -127,7 +127,7 @@ import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampH
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, isNoopScale, placementLabel, rotationLabel, mirrorLabel, scaleLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap, remapTriangleSets, selectTrianglesNearSeeds } from './surface/colorTransfer';
 import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, meshContentKey, cancelSurfaceCompute, surfaceComputeInFlight, SurfaceComputeCancelled, type SurfaceOp } from './surface/surfaceOps';
-import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, parseSurfaceOpts, isSurfaceOpId, type SurfaceOpId, type PersistedSurfaceTexture, type ResolvedScope } from './surface/surfaceOpSpec';
+import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, SURFACE_SCOPE_KEYS, parseSurfaceOpts, isSurfaceOpId, type SurfaceOpId, type PersistedSurfaceTexture, type ResolvedScope } from './surface/surfaceOpSpec';
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
@@ -7744,6 +7744,7 @@ async function main() {
         cellWidth: (opts?.cellWidth as number) ?? base.cellWidth,
         cellHeight: (opts?.cellHeight as number) ?? base.cellHeight,
         style: (opts?.style as 'diamond' | 'straight' | 'ribs') ?? base.style,
+        profile: (opts?.profile as 'round' | 'pyramid') ?? base.profile,
         sharpness: (opts?.sharpness as number) ?? base.sharpness,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         seed: (opts?.seed as number) ?? base.seed,
@@ -7928,7 +7929,7 @@ async function main() {
     },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
-     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize'. */
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize'. */
     async previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): Promise<{ ok: true } | { error: string }> {
       try {
         const scopedOpts = resolvePreviewScope(id, opts);
@@ -8021,7 +8022,7 @@ async function main() {
      *  Returns the underlying result plus `path: 'code' | 'bake'`. */
     async applySurfaceTexture(
       id: SurfaceOpId,
-      opts?: Record<string, number | boolean | string>,
+      opts?: Record<string, unknown>,
       mode: 'auto' | 'code' | 'bake' = 'auto',
     ) {
       const check = guard(() => {
@@ -8029,18 +8030,29 @@ async function main() {
         assertEnum(mode, ['auto', 'code', 'bake'], 'applySurfaceTexture(_, _, mode)');
         if (opts !== undefined) {
           const o = assertObject(opts, 'applySurfaceTexture(_, opts)')!;
-          assertNoUnknownKeys(o, [...(SURFACE_OP_FIELDS[id as SurfaceOpId] ?? []), 'preserveColor'], 'applySurfaceTexture(_, opts)');
+          assertNoUnknownKeys(o, [...(SURFACE_OP_FIELDS[id as SurfaceOpId] ?? []), 'preserveColor', ...SURFACE_SCOPE_KEYS], 'applySurfaceTexture(_, opts)');
         }
         return true;
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      const { preserveColor, ...opOpts } = (opts ?? {}) as Record<string, number | boolean | string> & { preserveColor?: boolean };
+      const { preserveColor, label, region, ...opOpts } = (opts ?? {}) as Record<string, unknown> & { preserveColor?: boolean };
+      const scoped = label !== undefined || region !== undefined;
+      const scopeOpts = {
+        ...(label !== undefined ? { label } : {}),
+        ...(region !== undefined ? { region } : {}),
+      };
       const asCode = mode === 'code' || (mode === 'auto' && getActiveLanguage() === 'manifold-js');
       if (asCode) {
-        const r = await partwrightAPI.applySurfaceTextureAsCode(id, opOpts);
+        // The code path resolves label/region scopes via parseSurfaceOpts.
+        const r = await partwrightAPI.applySurfaceTextureAsCode(id, { ...opOpts, ...scopeOpts });
         return { path: 'code' as const, ...r };
       }
-      const bakeOpts = { ...opOpts, ...(preserveColor !== undefined ? { preserveColor } : {}) };
+      // Bake methods are whole-model only — they can't honor a label/region
+      // scope, so reject rather than silently texture the entire mesh.
+      if (scoped) {
+        return { error: `applySurfaceTexture: scoping (label/region) is only supported on the code path (a manifold-js session). The current session bakes whole-model; switch to manifold-js or drop the scope.` };
+      }
+      const bakeOpts = { ...opOpts, ...(preserveColor !== undefined ? { preserveColor } : {}) } as Record<string, number | boolean | string> & { preserveColor?: boolean };
       const r = id === 'fuzzy' ? await partwrightAPI.applyFuzzySkin(bakeOpts)
         : id === 'knit' ? await partwrightAPI.applyKnitTexture(bakeOpts)
         : id === 'cable' ? await partwrightAPI.applyCableKnit(bakeOpts)
@@ -8239,6 +8251,7 @@ async function main() {
       cellWidth?: number;
       cellHeight?: number;
       style?: 'diamond' | 'straight' | 'ribs';
+      profile?: 'round' | 'pyramid';
       sharpness?: number;
       grainAngleDeg?: number;
       seed?: number;
@@ -13706,7 +13719,7 @@ async function main() {
         // api.surface.* alternative keeps the texture parametric instead)
         'modelHasColor':   { signature: 'modelHasColor() -- Whether the model carries any color (user paint or code-declared)', docs: '/ai/colors.md' },
         'ensureSurfaceTexturesApplied': { signature: 'await ensureSurfaceTexturesApplied() -- Apply any pending (cancelled/failed) api.surface.* chain so the live mesh is textured -> {ok}', docs: '/ai/textures.md' },
-        'previewSurfaceModifier': { signature: "previewSurfaceModifier(id, opts?, preserveColor?) -- Non-destructive viewport preview of a modifier; id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize' -> {ok} or {error}", docs: '/ai/textures.md' },
+        'previewSurfaceModifier': { signature: "previewSurfaceModifier(id, opts?, preserveColor?) -- Non-destructive viewport preview of a modifier; id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize' -> {ok} or {error}", docs: '/ai/textures.md' },
         'clearSurfacePreview': { signature: 'clearSurfacePreview() -- Discard a live surface preview and restore the current mesh', docs: '/ai/textures.md' },
         'applySurfaceTexture': { signature: "await applySurfaceTexture(id, opts?, mode?) -- Texture by the best path: mode 'auto' (default) writes api.surface.<id> as code on manifold-js, bakes elsewhere; 'code'/'bake' force a path. opts may scope the code path with label:'name' or region:{point,radius}. Returns the result plus path: 'code'|'bake'", docs: '/ai/textures.md' },
         'applySurfaceTextureAsCode': { signature: "await applySurfaceTextureAsCode(id, opts?) -- Write api.surface.<id>({…}) into the code (insert before the final return, or update the existing call) instead of baking; re-runs and saves a version. manifold-js only. opts may add a scope: label:'name' (an api.label region) or region:{point:[x,y,z],radius}. id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'smooth'", docs: '/ai/textures.md' },
@@ -13716,7 +13729,7 @@ async function main() {
         'applyWaffleStitch': { signature: 'await applyWaffleStitch({amplitude?, cellWidth?, cellHeight?, sharpness?, rowOffset?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE waffle grid; saves a new version. In-code alternative: api.surface.waffle', docs: '/ai/textures.md' },
         'applyFurVelvet':  { signature: 'await applyFurVelvet({amplitude?, fiberSpacing?, fiberLength?, octaves?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE fur/velvet fibers; saves a new version. In-code alternative: api.surface.fur', docs: '/ai/textures.md' },
         'applyWovenFabric':{ signature: 'await applyWovenFabric({amplitude?, threadSpacing?, threadWidth?, underDepth?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE woven threads; saves a new version. In-code alternative: api.surface.woven', docs: '/ai/textures.md' },
-        'applyKnurlTexture':{ signature: 'await applyKnurlTexture({amplitude?, cellWidth?, cellHeight?, style?, sharpness?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE knurl grip (style: diamond|straight|ribs); saves a new version. In-code alternative: api.surface.knurl', docs: '/ai/textures.md' },
+        'applyKnurlTexture':{ signature: 'await applyKnurlTexture({amplitude?, cellWidth?, cellHeight?, style?, profile?, sharpness?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE knurl grip (style: diamond|straight|ribs; profile: round|pyramid); saves a new version. In-code alternative: api.surface.knurl', docs: '/ai/textures.md' },
         'applyVoronoiShell': { signature: 'await applyVoronoiShell({amplitude?, cellSize?, wallWidth?, raised?, jitter?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE Voronoi cell relief; saves a new version. In-code alternative: api.surface.voronoi', docs: '/ai/textures.md' },
         'applyVoronoiLamp':{ signature: 'await applyVoronoiLamp({cellSize?, wallThickness?, strutWidth?, resolution?, jitter?, grainAngleDeg?, seed?, preserveColor?}) -- Convert the model into a perforated Voronoi lamp shell (bake only — no api.surface twin)', docs: '/ai/textures.md' },
         'engraveModel':    { signature: "await engraveModel({text | imageUrl, raised?, through?, depth?, size?, color?, axis?, side?, posU?, posV?, rotationDeg?, curveAxis?, curveAngleDeg?, font?, resolution?, watertight?, preserveColor?}) -- Carve text/image as recessed channels (engrave), holes (through), or a raised relief (raised = emboss); color paints the letters ('#rrggbb' or [r,g,b] 0–1). Saves a new version.", docs: '/ai/textures.md#engravemodel' },
