@@ -634,16 +634,28 @@ export function emitOperationScad(op: BooleanOpKind, operands: string[], resultN
 export function scanPartsJs(code: string): PartRef[] {
   const out: PartRef[] = [];
   const seen = new Set<string>();
-  const push = (name: string) => {
-    if (seen.has(name)) return;
-    seen.add(name);
-    out.push({ name });
+  const push = (ref: PartRef) => {
+    if (seen.has(ref.name)) return;
+    seen.add(ref.name);
+    out.push(ref);
   };
-  // 1) Plain `const name =` / `let name =` at the start of a (possibly
-  //    indented) line.
-  const re = /^[ \t]*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/gm;
+  // 1) Plain `const name = …;` — capture the full RHS up to the line-ending
+  //    `;` (allowing the statement to span multiple lines as long as the
+  //    semicolon is the first one at column 0..N after the head). The optional
+  //    statement text lets parseStatement (used by arrange mode to seed
+  //    registry entries for hand-written parts) read the construction call.
+  const re = /^[ \t]*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^\n;]*(?:\n[^\n;]*)*);/gm;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(code)) !== null) push(m[1]);
+  while ((m = re.exec(code)) !== null) {
+    const from = m.index;
+    const to = m.index + m[0].length;
+    push({ name: m[1], statement: m[0], range: { from, to } });
+  }
+  // 1b) Header-only fallback for declarations whose RHS the greedy match above
+  //     didn't span (e.g. embedded `;` inside a string literal — rare). Picks
+  //     up just the name so the operand list isn't ever wrong.
+  const head = /^[ \t]*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/gm;
+  while ((m = head.exec(code)) !== null) push({ name: m[1] });
   // 2) Object-destructure binders — `const { base, lid } = enclosure.box(…)`.
   //    Each bound name is a part. Skip `… = api` (that's the sandbox
   //    destructure: `const { Manifold, CrossSection } = api`), whose names are
@@ -657,7 +669,7 @@ export function scanPartsJs(code: string): PartRef[] {
       // Handle `a: b` aliasing — the *binding* name is after the colon.
       const part = raw.includes(':') ? raw.split(':')[1] : raw;
       const name = part.trim().replace(/^\.\.\./, '');
-      if (/^[A-Za-z_$][\w$]*$/.test(name)) push(name);
+      if (/^[A-Za-z_$][\w$]*$/.test(name)) push({ name });
     }
   }
   return out;
