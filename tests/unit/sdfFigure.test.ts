@@ -570,16 +570,19 @@ describe('figure footwear — shoes & boots', () => {
     expect(boots.evaluate(s.point[0], s.point[1], s.groundZ - 0.4)).toBeGreaterThan(0);
   });
 
-  it('the boot sole reaches the foot underside (no bare-skin patch shows through)', () => {
-    // The skin foot's lowest point is the sole frame's groundZ; the boot must be
-    // solid there so the skin can't poke out the bottom.
+  it('the boot encloses the foot underside (no bare-skin patch shows through)', () => {
     const rig = buildRig({});
     const boots = buildBoots(api, rig) as SdfNode;
     const feet = buildFeet(api, rig) as SdfNode;
     const s = rig.sole.L;
-    const z = s.groundZ + 0.05;                 // just above the ground plane
-    expect(feet.evaluate(s.point[0], s.point[1], z)).toBeLessThan(0);   // skin present
-    expect(boots.evaluate(s.point[0], s.point[1], z)).toBeLessThan(0);  // boot covers it
+    // The boot extends BELOW the skin: at the ground plane the boot is solid but
+    // the bare foot is not, so the boot (not skin) forms the underside.
+    expect(boots.evaluate(s.point[0], s.point[1], s.groundZ + 0.05)).toBeLessThan(0);
+    expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + 0.05)).toBeGreaterThan(0);
+    // Higher up, where the skin sole is solid, the boot is solid too (covers it).
+    const z = s.groundZ + rig.r.foot * 0.4;
+    expect(feet.evaluate(s.point[0], s.point[1], z)).toBeLessThan(0);
+    expect(boots.evaluate(s.point[0], s.point[1], z)).toBeLessThan(0);
   });
 
   it('the base descends to contain a posed/shod sole (no poke-through)', () => {
@@ -611,12 +614,14 @@ describe('figure sole frames — the ground-contact anchor (foot analog of grips
     expect(rig.sole.L.heading).toEqual(rig.dir.footL);
   });
 
-  it('the sole frame plane matches the bare foot underside', () => {
+  it('the sole frame plane sits at/below the bare foot underside', () => {
     const rig = buildRig({});
     const feet = buildFeet(api, rig) as SdfNode;
     const s = rig.sole.L;
-    // just above the ground plane at the footprint centre is inside the foot.
-    expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + 0.2)).toBeLessThan(0);
+    // groundZ is below the whole foot (footwear clips here to enclose the skin)…
+    expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + 0.05)).toBeGreaterThan(0);
+    // …and rising into the foot reaches solid skin.
+    expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + rig.r.foot * 0.6)).toBeLessThan(0);
   });
 
   it('poseProbe reports the sole frames', () => {

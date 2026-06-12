@@ -732,11 +732,12 @@ function footSoleZ(rig: Rig, ankle: Vec3): number {
 function makeSoleFrame(ankle: Vec3, heading: Vec3, r: Record<string, number>): SoleFrame {
   const footLen = r.foot * 2.4;
   const soleCenterZ = ankle[2] - r.foot;          // == footSoleZ
-  // The instep ellipsoid (bottom at soleCenterZ − 0.65·foot) is the LOWEST part
-  // of the bare foot — lower than the sole capsule — so the ground plane keys off
-  // it. Footwear clips flat here, so the sole fully covers the skin (a higher
-  // plane left the instep poking through as a bare-skin patch).
-  const groundZ = soleCenterZ - r.foot * 0.65;
+  // The bare foot's real underside sits ~0.79·foot below the sole centre (the
+  // sole⊔instep⊔ankle smoothUnion bulges well past the analytic instep). groundZ
+  // sits clearly below THAT (− 0.95·foot, measured empirically), so footwear —
+  // which clips flat at groundZ — extends past the whole skin foot and fully
+  // encloses it: no bare-skin patch can poke through the sole. A base rests below.
+  const groundZ = soleCenterZ - r.foot * 0.95;
   // Footprint centre: the ankle sits ~40% from the heel, so the centre is a
   // little forward of the ankle along the heading.
   const cx = ankle[0] + heading[0] * footLen * 0.12;
@@ -756,7 +757,7 @@ function buildFeet(sdf: SdfApi, rig: Rig): Node {
   function foot(A: Vec3, s: SoleFrame, side: number): Node {
     const footLen = s.length;
     const fwd = s.heading;
-    const sz = s.groundZ + r.foot * 0.65;        // sole capsule centre (== footSoleZ)
+    const sz = footSoleZ(rig, A);                 // sole capsule centre
     // Toe forward along the foot heading (default −Y, yawed by hip turnout),
     // heel back, ankle ~40% from the heel so the foot sits UNDER the body
     // instead of jutting forward (which reads as leaning back). The toe gets a
@@ -815,7 +816,7 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     const footLen = sole0.length * size;
     const fwd = sole0.heading;
     const groundZ = sole0.groundZ;
-    const sz = groundZ + r.foot * 0.65;            // sole capsule centre (== footSoleZ)
+    const sz = footSoleZ(rig, A);                  // sole capsule centre
     const lat: Vec3 = [-fwd[1], fwd[0], 0];        // heading yawed +90° in XY
     const onGround = (p: Vec3): Vec3 => [p[0], p[1], sz];
     const toe = onGround(add3(A, add3(scale3(fwd, footLen * 0.62), scale3(lat, side * r.foot * 0.12))));
@@ -832,7 +833,7 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     // reads as a shoe sole and fully covers the skin underside (no bare-skin
     // patch poking through). Same label as the boot — it paints as one piece.
     const yaw = Math.atan2(fwd[0], fwd[1]) / DEG;  // local +Y → heading
-    const soleThick = r.foot * 0.5;
+    const soleThick = r.foot * 0.75;               // bridges groundZ up into the foot
     const soleC: Vec3 = [sole0.point[0], sole0.point[1], groundZ + soleThick / 2];
     const soleSlab = sdf.roundedBox(
       [(sole0.width * size + 2 * t) * 1.05, footLen * 0.96, soleThick],
@@ -907,14 +908,18 @@ function buildBase(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const reach = Math.max(Math.abs(aL[0]), Math.abs(aR[0])) + footLen * 0.6
     + Math.max(Math.abs(aL[1]), Math.abs(aR[1]));
   const radius = num(o.radius, Math.max(H * 0.22, reach), 'base.radius', 1);
-  // Rest the disc bottom on the LOWEST sole's ground plane (so a posed/shod foot
-  // sits ON the base instead of punching through its underside) and rise to weld
-  // the lowest foot (so at least one foot always merges — one component).
+  // A pedestal the figure stands ON: its TOP rises just into the lowest foot to
+  // weld it (the whole figure is one component through the body, so welding one
+  // foot anchors the base), and it extends DOWN by `thickness`. Crucially the
+  // disc BOTTOM sits below the lowest sole, so no foot/boot hangs through the
+  // underside. The lowest foot is embedded a little; a lifted foot stays free.
   const lowestGroundZ = Math.min(rig.sole.L.groundZ, rig.sole.R.groundZ);
-  const weldTopZ = Math.min(footSoleZ(rig, aL), footSoleZ(rig, aR)) + r.foot * 0.55;
-  const thickness = num(o.thickness, Math.max(H * 0.035, weldTopZ - lowestGroundZ), 'base.thickness', 0.1);
-  return sdf.roundedCylinder(radius, thickness, Math.min(thickness * 0.35, r.foot * 0.5))
-    .translate([0, 0, lowestGroundZ + thickness / 2]);
+  const topZ = lowestGroundZ + r.foot * 0.7;          // weld lip into the lowest foot
+  const thickness = num(o.thickness, Math.max(H * 0.03, r.foot * 0.9), 'base.thickness', 0.1);
+  const botZ = Math.min(topZ - thickness, lowestGroundZ - r.foot * 0.12); // always below the soles
+  const h = topZ - botZ;
+  return sdf.roundedCylinder(radius, h, Math.min(h * 0.35, r.foot * 0.5))
+    .translate([0, 0, (topZ + botZ) / 2]);
 }
 
 // --- Face features (read rig.face anchors) --------------------------------
