@@ -272,6 +272,8 @@ partwright.mirrorSelection('x')           // Mirror across axis
 partwright.deleteSelection()              // Remove selected parts from the code
 partwright.undo() / partwright.redo()     // Coarse-grained: one Tinkercad action = one step
 partwright.canUndo() / partwright.canRedo()
+partwright.setAutoCombine(false)          // Insert without auto-union (managed engines)
+partwright.getAutoCombine()               // -> boolean
 await partwright.exportGLB()   // Download GLB (browser file dialog -- prefer exportGLBData() in agent flows)
 partwright.exportSTL()         // Download STL ("                                       exportSTLData() ")
 partwright.exportOBJ()         // Download OBJ ("                                       exportOBJData() ")
@@ -1050,6 +1052,8 @@ partwright.exitArrange();
 ```
 
 A successful action returns `{ ok: true }`; rejected ones return `{ ok: false, reason: <why> }` (e.g. `'no selection'`, `'need 2+ parts'`, `'voxel grids union implicitly'`). The selection set, registry, and undo stack are the **same** instances the panel buttons use — alternating UI clicks and `partwright.*` calls is supported.
+
+**`enterArrange()` opens the Insert panel as a side effect** so the chip strip, Size/Align inputs, and Undo/Redo buttons are visible — matching what a user sees when they enable arrange by hand. Headless flows that just want the canvas pointer hook should still call it; the panel doesn't steal focus from `partwright.*` calls.
 
 **Caveats.** Hand-written parts the regex parser can't decode (chained `.rotate()`, computed args, custom expressions) stay out of the registry and are skipped silently. The current Z-axis drag is locked to a horizontal plane through the pickup point. Voxel grids union implicitly, so `groupSelection` / `subtractSelection` / `intersectSelection` are no-ops in a voxel session.
 

@@ -1344,5 +1344,22 @@ test.describe('scanPartsJs now also returns statement text for single-line const
     const ball = refs.find(r => r.name === 'ball');
     expect(ball?.statement).toContain('Manifold.sphere');
   });
+
+  test('semicolons inside string literals do not truncate the captured statement', () => {
+    // A naive `/[^;]*;/` regex would stop after `"hi;"`, leaving a
+    // malformed RHS. The skip-aware walker keeps going past the string.
+    const code = 'const greeting = "hi;bye";\nconst box = Manifold.cube([1,2,3]);';
+    const refs = scanPartsJs(code);
+    const greeting = refs.find(r => r.name === 'greeting');
+    expect(greeting?.statement).toContain('"hi;bye"');
+    expect(greeting?.statement?.trim().endsWith(';')).toBe(true);
+  });
+
+  test('multi-line statements are captured in full', () => {
+    const code = 'const box = Manifold\n  .cube([1,2,3], true)\n  .translate([5,0,0]);';
+    const refs = scanPartsJs(code);
+    const box = refs.find(r => r.name === 'box');
+    expect(box?.statement).toContain('.translate');
+  });
 });
 

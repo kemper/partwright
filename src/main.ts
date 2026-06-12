@@ -226,6 +226,8 @@ import {
   apiDuplicateSelection,
   apiMirrorSelection,
   apiListParts,
+  apiSetAutoCombine,
+  apiGetAutoCombine,
 } from './ui/insertPalette';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
@@ -9188,6 +9190,20 @@ async function main() {
       return apiMirrorSelection(axis);
     },
 
+    /** Toggle the "Auto-combine new shapes" checkbox programmatically. When
+     *  on (default), each inserted shape folds into the managed-return
+     *  engine's visible union so it appears immediately; when off, the part
+     *  is added to the code + registered for arrange/pick but not unioned
+     *  until you call `groupSelection`. Only meaningful for manifold-js /
+     *  replicad — voxel + scad union implicitly. */
+    setAutoCombine(on: boolean): void {
+      assertBoolean(on, 'setAutoCombine(on)');
+      apiSetAutoCombine(on);
+    },
+
+    /** Read the current Auto-combine flag. */
+    getAutoCombine(): boolean { return apiGetAutoCombine(); },
+
     // === View rendering API ===
 
     /** Render a single view from any camera angle. Returns a data URL (PNG).
@@ -13524,8 +13540,8 @@ async function main() {
         'listArrangeParts':     { signature: 'listArrangeParts() -- Names + bboxes of every part arrange mode can act on -> [{name, box:{min,max}, center}]', docs: '/ai.md#arrange-mode' },
         'undo':                 { signature: 'undo() -- Reverse the last palette operation (insert/move/resize/align/boolean/etc) -> label or null', docs: '/ai.md#arrange-mode' },
         'redo':                 { signature: 'redo() -- Reapply the last undone palette operation -> label or null', docs: '/ai.md#arrange-mode' },
-        'canUndo':               { signature: 'canUndo() -- Whether undo() would do anything', docs: '/ai.md#arrange-mode' },
-        'canRedo':               { signature: 'canRedo() -- Whether redo() would do anything', docs: '/ai.md#arrange-mode' },
+        'canUndo':              { signature: 'canUndo() -- Whether undo() would do anything', docs: '/ai.md#arrange-mode' },
+        'canRedo':              { signature: 'canRedo() -- Whether redo() would do anything', docs: '/ai.md#arrange-mode' },
         'resizeSelection':      { signature: 'resizeSelection([sx,sy,sz]) -- Scale selected parts per-axis (or uniform [s,s,s]) -> {ok}', docs: '/ai.md#arrange-mode' },
         'alignSelection':       { signature: 'alignSelection(axis, mode) -- axis: "x"|"y"|"z", mode: "min"|"center"|"max" -> {ok}', docs: '/ai.md#arrange-mode' },
         'groupSelection':       { signature: 'groupSelection() -- Union selected parts in code (∪) -> {ok}', docs: '/ai.md#arrange-mode' },
@@ -13534,6 +13550,8 @@ async function main() {
         'deleteSelection':      { signature: 'deleteSelection() -- Remove selected parts from the code -> {ok}', docs: '/ai.md#arrange-mode' },
         'duplicateSelection':   { signature: 'duplicateSelection() -- Clone selected parts, offset along +X -> {ok}', docs: '/ai.md#arrange-mode' },
         'mirrorSelection':      { signature: 'mirrorSelection("x"|"y"|"z") -- Mirror selected parts in place across axis -> {ok}', docs: '/ai.md#arrange-mode' },
+        'setAutoCombine':       { signature: 'setAutoCombine(on) -- Toggle "Auto-combine new shapes" (managed-return engines only)', docs: '/ai.md#arrange-mode' },
+        'getAutoCombine':       { signature: 'getAutoCombine() -- Whether Auto-combine is currently on', docs: '/ai.md#arrange-mode' },
         // View
         'setView':         { signature: 'setView(tab) -- Switch tab: "interactive", "gallery", "images", "diff", "notes"', docs: '/ai.md#how-to-use-this-tool' },
         'getViewState':    { signature: 'getViewState() -- Current tab and camera state', docs: '/ai.md#how-to-use-this-tool' },

@@ -141,6 +141,8 @@ let quickActionsEl: HTMLElement | null = null;
 // explicitly Union it. Only meaningful for the single-return engines
 // (manifold-js / replicad) — scad & voxel union implicitly.
 let autoCombine = true;
+// Cached checkbox element so the public API can flip the toggle from a script.
+let autoCombineCheckbox: HTMLInputElement | null = null;
 
 // Refs to the sections that show/hide per active engine, repainted by
 // refreshForLanguage() on open + on language change.
@@ -422,9 +424,14 @@ export function setInsertPaletteAvailable(available: boolean): void {
 // from CLAUDE.md: anything you can click here should also be callable in code.
 // ---------------------------------------------------------------------------
 
-/** Programmatic equivalent of clicking the ✥ Arrange toggle ON. Opens the
- *  palette panel if needed so chip-strip / Undo / Size / Align UI is visible
- *  for whatever follow-up calls hit. Idempotent. */
+/** Programmatic equivalent of clicking the ✥ Arrange toggle ON.
+ *
+ *  **Side effect:** opens the Insert palette panel if it wasn't already open
+ *  so the chip strip / Undo / Size / Align controls are visible to whatever
+ *  drives the API next — matching what a user sees when they enable arrange
+ *  by hand. Headless / scripted flows that just want the canvas pointer hook
+ *  without the panel mounted should still call this (the panel never steals
+ *  focus from `window.partwright.*`); it does occupy viewport real estate. */
 export function apiEnterArrange(): { ok: boolean; reason?: string } {
   if (!cb) return { ok: false, reason: 'insert palette not initialized' };
   if (!isInsertPaletteOpen()) openInsertPalette();
@@ -434,6 +441,18 @@ export function apiEnterArrange(): { ok: boolean; reason?: string } {
   }
   return { ok: isArrangeActive() };
 }
+
+/** Toggle the "Auto-combine new shapes" checkbox programmatically. When off,
+ *  inserted shapes are added to the code but not folded into the visible
+ *  union (managed-return engines only). Keeps the panel's checkbox state in
+ *  sync so the user sees the new value if they then open the panel. */
+export function apiSetAutoCombine(on: boolean): void {
+  autoCombine = on;
+  if (autoCombineCheckbox) autoCombineCheckbox.checked = on;
+  updateCombineHint();
+}
+
+export function apiGetAutoCombine(): boolean { return autoCombine; }
 
 /** Programmatic equivalent of clicking the toggle OFF. */
 export function apiExitArrange(): void {
@@ -713,6 +732,7 @@ function buildPanel(): HTMLElement {
     autoCombine = autoCb.checked;
     updateCombineHint();
   });
+  autoCombineCheckbox = autoCb;
   const autoCbLabel = document.createElement('span');
   autoCbLabel.textContent = 'Auto-combine new shapes';
   autoCombineRowEl.append(autoCb, autoCbLabel);

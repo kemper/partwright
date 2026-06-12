@@ -633,29 +633,25 @@ export function emitOperationScad(op: BooleanOpKind, operands: string[], resultN
  *  re-derives from the live code each call so renames/deletes self-correct. */
 export function scanPartsJs(code: string): PartRef[] {
   const out: PartRef[] = [];
-  const seen = new Set<string>();
+  const byName = new Map<string, number>(); // name → index in `out`
   const push = (ref: PartRef) => {
-    if (seen.has(ref.name)) return;
-    seen.add(ref.name);
+    if (byName.has(ref.name)) return;
+    byName.set(ref.name, out.length);
     out.push(ref);
   };
-  // 1) Plain `const name = …;` — capture the full RHS up to the line-ending
-  //    `;` (allowing the statement to span multiple lines as long as the
-  //    semicolon is the first one at column 0..N after the head). The optional
-  //    statement text lets parseStatement (used by arrange mode to seed
-  //    registry entries for hand-written parts) read the construction call.
-  const re = /^[ \t]*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^\n;]*(?:\n[^\n;]*)*);/gm;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(code)) !== null) {
-    const from = m.index;
-    const to = m.index + m[0].length;
-    push({ name: m[1], statement: m[0], range: { from, to } });
-  }
-  // 1b) Header-only fallback for declarations whose RHS the greedy match above
-  //     didn't span (e.g. embedded `;` inside a string literal — rare). Picks
-  //     up just the name so the operand list isn't ever wrong.
+  // 1) Plain `const name = expr;` — extract names + the statement text. The
+  //    optional `statement`/`range` fields let parseStatement (used by arrange
+  //    mode to seed registry entries for hand-written parts) read the
+  //    construction call. We anchor on the bare head so a stray semicolon
+  //    inside a string literal can't truncate the captured statement, and
+  //    then walk forward to the real end-of-statement.
   const head = /^[ \t]*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/gm;
-  while ((m = head.exec(code)) !== null) push({ name: m[1] });
+  let m: RegExpExecArray | null;
+  while ((m = head.exec(code)) !== null) {
+    const end = findStatementEnd(code, m.index + m[0].length);
+    if (end < 0) { push({ name: m[1] }); continue; }
+    push({ name: m[1], statement: code.slice(m.index, end), range: { from: m.index, to: end } });
+  }
   // 2) Object-destructure binders — `const { base, lid } = enclosure.box(…)`.
   //    Each bound name is a part. Skip `… = api` (that's the sandbox
   //    destructure: `const { Manifold, CrossSection } = api`), whose names are
@@ -673,6 +669,43 @@ export function scanPartsJs(code: string): PartRef[] {
     }
   }
   return out;
+}
+
+/** Walk forward from `start` until the statement-terminating `;`, skipping
+ *  past string/template/comment content and balanced (), [], {}. Returns the
+ *  exclusive end index (one past the `;`) or -1 if no terminator was found. */
+function findStatementEnd(code: string, start: number): number {
+  let depth = 0;
+  let i = start;
+  const n = code.length;
+  while (i < n) {
+    const c = code[i];
+    if (c === '/' && code[i + 1] === '/') {
+      const nl = code.indexOf('\n', i);
+      i = nl < 0 ? n : nl + 1;
+      continue;
+    }
+    if (c === '/' && code[i + 1] === '*') {
+      const e = code.indexOf('*/', i + 2);
+      i = e < 0 ? n : e + 2;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      i++;
+      while (i < n && code[i] !== quote) {
+        if (code[i] === '\\') i += 2;
+        else i++;
+      }
+      i++;
+      continue;
+    }
+    if (c === '(' || c === '[' || c === '{') { depth++; i++; continue; }
+    if (c === ')' || c === ']' || c === '}') { depth--; i++; continue; }
+    if (c === ';' && depth === 0) return i + 1;
+    i++;
+  }
+  return -1;
 }
 
 /** Voxel: each `v.<method>(…); // part: <name>` line is a part. Returns the
