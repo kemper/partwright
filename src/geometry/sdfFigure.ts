@@ -1156,6 +1156,10 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     : assertEnum(o.texture, ['none', 'strands', 'curls', 'wavy'] as const, 'hair.texture');
   const lenMul = length === 'short' ? 0.62 : length === 'long' ? 1.5 : 1;
   const tv = t * volume;
+  // Face-window size multipliers — a few styles (afro) open it wider so the
+  // hair frames an exposed oval face instead of swallowing it. 1 = the classic
+  // window, so every other style is unchanged.
+  let winXMul = 1, winZMul = 1;
   // Skull cap: a slightly enlarged ellipsoid pushed back, covering all but
   // the face front. (volume puffs the offset; 1 = the classic cap.)
   let cap = sdf.ellipsoid(r.headX + tv, r.head + tv, r.headZ + tv)
@@ -1199,11 +1203,16 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       .smoothUnion(sdf.capsule(mid, tip, r.head * 0.2 * volume), r.head * 0.22);
     cap = cap.smoothUnion(tail, r.head * 0.25);
   } else if (style === 'afro') {
-    // A puffy near-sphere wrapping the whole skull — sized off the cap offset
-    // so `volume` drives the silhouette. Default 'curls' relief gives the
-    // recognizable texture below.
-    const afro = sdf.sphere((r.head + tv) * 1.32).translate(add3(c, scale3(u, r.head * 0.22)));
-    cap = cap.smoothUnion(afro, r.head * 0.5);
+    // A rounded puff that rises ABOVE and wraps BEHIND the skull — lifted up
+    // and pushed back, taller than it is deep, so it frames the face rather
+    // than ballooning forward over it. `volume` drives the silhouette and the
+    // face window opens wider (below) to expose an oval face. Default 'curls'
+    // relief gives the recognizable texture.
+    const afroR = (r.head + tv) * 1.18;
+    const afro = orientToHeadPose(sdf.ellipsoid(afroR, afroR * 0.9, afroR * 1.12), rig)
+      .translate(add3(c, add3(scale3(u, r.head * 0.42), scale3(f, -r.head * 0.38))));
+    cap = cap.smoothUnion(afro, r.head * 0.45);
+    winXMul = 1.34; winZMul = 1.16;
   } else if (style === 'braids') {
     // Two plaits falling from behind the ears. Default 'wavy' relief segments
     // them into the braided look. Each plait is one welded capsule chain.
@@ -1284,7 +1293,7 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const drop = hairline === 'low' ? -r.headZ * 0.25 : hairline === 'high' ? r.headZ * 0.15 : 0;
   const windowC = add3(c, add3(scale3(f, r.headZ * 0.9), scale3(u, -r.headZ * 0.2 + drop)));
   const faceWindow = orientToHeadPose(
-    sdf.ellipsoid(r.headX * 0.72, r.headZ * 0.75, r.headZ * 0.85), rig,
+    sdf.ellipsoid(r.headX * 0.72 * winXMul, r.headZ * 0.75, r.headZ * 0.85 * winZMul), rig,
   ).translate(windowC);
   return cap.subtract(faceWindow);
 }

@@ -75,7 +75,7 @@ const shirt = F.clothing.top(rig, {
 }).label('shirt');
 
 // 5. HAIR — longish kid hair
-const hair = F.hair(rig, { style: 'long' }).label('hair');
+const hair = F.hair(rig, { style: 'afro', volume: 1.3 }).label('hair');
 
 // 6. BASE — flat disc so it stands upright on a shelf
 const base = F.base(rig, {

@@ -62,7 +62,7 @@ const gown = F.clothing.top(rig, {
 }).label('gown');
 
 // 5. HAIR — ponytail (gathered back, swinging down behind the head).
-const hair = F.hair(rig, { style: 'ponytail' }).label('hair');
+const hair = F.hair(rig, { style: 'long', part: 'center', texture: 'wavy' }).label('hair');
 
 // 6. CROWN — gold ring + 5 upward spikes resting on the skull.
 // The ring is sunk into the skull (ringZ below crownJ apex) for one-piece welding.
