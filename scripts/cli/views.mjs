@@ -21,15 +21,23 @@ export const DEFAULT_VIEWS = ['front', 'right', 'top', 'iso'].map((name) => ({ n
  *  Returns `{ views: null }` when neither is set (caller uses DEFAULT_VIEWS),
  *  `{ views }` on success, or `{ error }` on a bad spec. `--view` wins if both
  *  are passed.
- *  - `--view "az,el"`  → one custom-angle tile (e.g. peek behind a feature).
- *  - `--views a,b,c`   → named angles, in order: front,back,right,left,top,bottom,iso. */
+ *  - `--view "az,el"`            → one custom-angle tile (e.g. peek behind a feature).
+ *  - `--view "az,el;az,el;…"`    → SEVERAL custom angles in one call (';'-separated
+ *                                   pairs), tiled together — e.g. iso + underside.
+ *  - `--views a,b,c`             → named angles, in order: front,back,right,left,top,bottom,iso. */
 export function resolveViews(view, views) {
   if (view !== undefined && view !== null && view !== '') {
-    const parts = String(view).split(',').map((s) => Number(s.trim()));
-    if (parts.length !== 2 || parts.some((n) => !Number.isFinite(n))) {
-      return { error: `--view expects "az,el" (two numbers in degrees), got "${view}".` };
+    const segs = String(view).split(';').map((s) => s.trim()).filter(Boolean);
+    const out = [];
+    for (const seg of segs) {
+      const parts = seg.split(',').map((s) => Number(s.trim()));
+      if (parts.length !== 2 || parts.some((n) => !Number.isFinite(n))) {
+        return { error: `--view expects "az,el" pairs (two numbers in degrees, ';'-separated for multiple), got "${seg}".` };
+      }
+      out.push({ name: `${parts[0]},${parts[1]}`, az: parts[0], el: parts[1] });
     }
-    return { views: [{ name: `${parts[0]},${parts[1]}`, az: parts[0], el: parts[1] }] };
+    if (!out.length) return { error: '--view needs at least one "az,el" pair.' };
+    return { views: out };
   }
   if (views !== undefined && views !== null && views !== '') {
     const names = String(views).split(',').map((s) => s.trim()).filter(Boolean);
