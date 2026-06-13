@@ -37,7 +37,7 @@ import './renderer/viewportSubsystems';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
+import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
@@ -49,7 +49,8 @@ import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { confirmDialog, promptDialog } from './ui/dialogs';
 import { updateAppHistory, currentURLPathAndSearch } from './ui/appHistory';
-import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive } from './ui/aiPanel';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive, closeAiPanel, isAiTurnInFlight, onAiTurnEnd } from './ui/aiPanel';
+import { onViewportPanelOpen } from './ui/viewportPanelRegistry';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
@@ -344,16 +345,37 @@ let paramsPanel: ParamsPanelController | null = null;
 /** Reconcile the Customizer panel + override state with the parameter schema a
  *  model declared on its latest run. Pass `undefined` when the model declared
  *  none (hides the panel and clears overrides). */
+// Set while an AI turn deferred the Customizer reveal (see syncParamsPanel); the
+// onAiTurnEnd flush below consumes it.
+let paramsRevealDeferred = false;
+
 function syncParamsPanel(schema: ParamSpec[] | undefined): void {
   if (schema && schema.length > 0) {
     currentParamSchema = schema;
     // Keep only overrides the model still declares (drops stale keys from a
     // previously-run model) and store the minimal non-default set.
     currentParamValues = pruneParamValues(schema, currentParamValues);
-    paramsPanel?.update(schema, resolveParamValues(schema, currentParamValues));
   } else {
     currentParamSchema = null;
     currentParamValues = {};
+  }
+  // While the AI is mid-turn (e.g. a runAndSave during a chat response), don't
+  // pop the Customizer over the chat or yank the AI panel aside — the user is
+  // still reading the model think. Record the schema now but defer the reveal
+  // until the turn ends, then reveal it *silently* so the AI panel stays open.
+  if (isAiTurnInFlight()) {
+    paramsRevealDeferred = true;
+    return;
+  }
+  refreshParamsPanelUI(false);
+}
+
+/** Push the current schema/values into the Customizer panel. `silentReveal`
+ *  opens it without hiding the AI panel — used for the post-AI-turn flush. */
+function refreshParamsPanelUI(silentReveal: boolean): void {
+  if (currentParamSchema && currentParamSchema.length > 0) {
+    paramsPanel?.update(currentParamSchema, resolveParamValues(currentParamSchema, currentParamValues), { silentReveal });
+  } else {
     paramsPanel?.update(undefined, {});
   }
 }
@@ -2004,11 +2026,18 @@ async function main() {
     // finishes, so no manual restore is needed here.
     const session = await importSession(data, async (code, importedMeshes) => {
       setActiveImports(importedMeshes ?? []);
-      await runCodeSync(code);
+      // Skip surface texture computation during thumbnail generation — the
+      // heavy surface Worker run would hang the import for complex models.
+      // The textures will apply on first interactive load instead.
+      await runCodeSync(code, { skipSurface: true });
       return captureThumbnail();
     });
     const version = await openSession(session.id);
-    if (version) await loadVersionIntoEditor(version);
+    // Skip surface texture computation during catalog import — the surface
+    // Worker (voronoi/knurl/woven) can take 30–120s on complex catalog models
+    // and blocks the entire import. Textures apply on the first user-triggered
+    // run (edit code, or click Re-apply if the pill appears).
+    if (version) await loadVersionIntoEditor(version, { skipSurface: true });
     return { sessionId: session.id };
   }
 
@@ -4352,7 +4381,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
+  const { editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, lineNumbersToggle, fontSizeDecBtn, fontSizeIncBtn, fontSizeValueEl, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
@@ -4468,21 +4497,56 @@ async function main() {
   syncEditorTitle(getState());
   onStateChange(syncEditorTitle);
 
-  // Format button and auto-format toggle
-  const AUTO_FORMAT_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40';
-  const AUTO_FORMAT_OFF_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-zinc-500 border-zinc-700 hover:text-zinc-300';
-  function syncAutoFormatToggleUI(): void {
-    const on = getAutoFormat();
-    autoFormatToggle.textContent = on ? 'Auto ✓' : 'Auto';
-    autoFormatToggle.title = on ? 'Auto-format on — click to disable' : 'Auto-format off — click to enable';
-    autoFormatToggle.className = on ? AUTO_FORMAT_ON_CLASS : AUTO_FORMAT_OFF_CLASS;
+  // Editor settings menu (⚙) — Format / Auto-format / Word wrap / Line numbers /
+  // Font size. Each toggle renders as a compact On/Off pill via a shared helper.
+  const TOGGLE_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-[11px] leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40 min-w-[2.75rem] text-center';
+  const TOGGLE_OFF_CLASS = 'shrink-0 px-2 py-0.5 rounded text-[11px] leading-none border text-zinc-400 border-zinc-700 hover:text-zinc-200 min-w-[2.75rem] text-center';
+  function syncTogglePill(btn: HTMLButtonElement, on: boolean, name: string): void {
+    btn.textContent = on ? 'On' : 'Off';
+    btn.title = `${name}: ${on ? 'on' : 'off'} — click to toggle`;
+    btn.setAttribute('aria-pressed', String(on));
+    btn.className = on ? TOGGLE_ON_CLASS : TOGGLE_OFF_CLASS;
+  }
+  const syncAutoFormatToggleUI = (): void => syncTogglePill(autoFormatToggle, getAutoFormat(), 'Auto-format on load');
+  const syncLineWrapToggleUI = (): void => syncTogglePill(lineWrapToggle, getLineWrap(), 'Word wrap');
+  const syncLineNumbersToggleUI = (): void => syncTogglePill(lineNumbersToggle, getLineNumbers(), 'Line numbers');
+  function syncFontSizeUI(): void {
+    const px = getFontSize();
+    const { min, max } = getFontSizeBounds();
+    fontSizeValueEl.textContent = `${px}px`;
+    fontSizeDecBtn.disabled = px <= min;
+    fontSizeIncBtn.disabled = px >= max;
+    fontSizeDecBtn.classList.toggle('opacity-40', fontSizeDecBtn.disabled);
+    fontSizeDecBtn.classList.toggle('cursor-not-allowed', fontSizeDecBtn.disabled);
+    fontSizeIncBtn.classList.toggle('opacity-40', fontSizeIncBtn.disabled);
+    fontSizeIncBtn.classList.toggle('cursor-not-allowed', fontSizeIncBtn.disabled);
   }
   syncAutoFormatToggleUI();
+  syncLineWrapToggleUI();
+  syncLineNumbersToggleUI();
+  syncFontSizeUI();
+
   findReplaceBtn.addEventListener('click', () => openFindReplace());
   formatBtn.addEventListener('click', () => formatCode());
   autoFormatToggle.addEventListener('click', () => {
     setAutoFormat(!getAutoFormat());
     syncAutoFormatToggleUI();
+  });
+  lineWrapToggle.addEventListener('click', () => {
+    setLineWrap(!getLineWrap());
+    syncLineWrapToggleUI();
+  });
+  lineNumbersToggle.addEventListener('click', () => {
+    setLineNumbers(!getLineNumbers());
+    syncLineNumbersToggleUI();
+  });
+  fontSizeDecBtn.addEventListener('click', () => {
+    setFontSize(getFontSize() - 1);
+    syncFontSizeUI();
+  });
+  fontSizeIncBtn.addEventListener('click', () => {
+    setFontSize(getFontSize() + 1);
+    syncFontSizeUI();
   });
   document.addEventListener('keydown', (e) => {
     // Use e.code (physical key) — on macOS, Option+Shift+F composes a dead-key
@@ -4756,7 +4820,7 @@ async function main() {
     void ensureEngineStarted();
   }
 
-  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
+  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean; skipSurface?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
     // Cancel any active voxel paint before loading a different version — its
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
     // after navigation would write the wrong session's voxels into the new
@@ -4873,7 +4937,7 @@ async function main() {
         seedSurfaceCache(persistedTexture.key, persistedTexture.mesh as MeshData);
       }
       const meshBeforeRun = currentMeshData;
-      const applied = await runCodeSync(version.code, { preserveCamera: true });
+      const applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
       if (!applied) return;
@@ -6919,6 +6983,23 @@ async function main() {
     }
   }
 
+  // Opening a hands-on viewport tool (Paint, Customize, Surface, Resize, …)
+  // steps the AI panel out of the way: once the user is driving a tool by hand
+  // they're not chatting, and the docked AI column would otherwise sit beneath
+  // the freshly-opened tool panel and be easy to miss. Wired here (not in the
+  // registry) so the registry stays a dependency-free leaf.
+  onViewportPanelOpen(() => closeAiPanel());
+
+  // When a chat turn produced a customizable model, the Customizer reveal was
+  // deferred (see syncParamsPanel) so it didn't pop over the live chat. Flush it
+  // now that the turn has ended — silently, so the AI panel stays open and the
+  // user sees the result and its knobs side by side.
+  onAiTurnEnd(() => {
+    if (!paramsRevealDeferred) return;
+    paramsRevealDeferred = false;
+    refreshParamsPanelUI(true);
+  });
+
   // Initialize the AI chat side drawer once the editor UI is mounted.
   // Wraps initAiPanel + setAiToolbarState; tolerated if it fails (e.g.
   // network blocks /ai.md) — toolbar still shows the Connect button.
@@ -7464,7 +7545,10 @@ async function main() {
       };
       setActiveImports([comp]);
       setValue(result.code);
-      const ok = await runCodeSync(result.code);
+      // A surface modifier decorates the existing model in place (same bounds),
+      // so keep the user's camera angle instead of snapping back to the default
+      // framing when the baked result renders.
+      const ok = await runCodeSync(result.code, { preserveCamera: true });
       if (!ok) return { error: `Failed to apply ${result.label}` };
       let geoData = getGeometryDataObj();
       let carried = 0;
@@ -7508,7 +7592,9 @@ async function main() {
     if (getActiveLanguage() !== 'voxel') await switchLanguage('voxel');
     setActiveImports([]);
     setValue(result.code);
-    const ok = await runCodeSync(result.code);
+    // Same in-place decoration: a voxelize/voronoi-lamp bake keeps the model's
+    // bounds, so preserve the user's camera angle across the render.
+    const ok = await runCodeSync(result.code, { preserveCamera: true });
     if (!ok) return { error: `Failed to apply ${result.label}` };
     const thumbnail = await captureThumbnail();
     await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
@@ -8622,7 +8708,11 @@ async function main() {
         return { error: 'The current model declares no parameters. Add an api.params({...}) call to the model code (and run it) first.' };
       }
       currentParamValues = { ...currentParamValues, ...(values as Record<string, ParamValue>) };
-      const applied = await runCodeSync(getValue());
+      // Tweaking a parameter re-renders the same model, so keep the user's (or
+      // AI's) current camera angle rather than snapping to the default framing —
+      // matching the Customizer panel's onChange path (runCode preserves by
+      // default). captureCameraToPreserve still auto-frames a session's first run.
+      const applied = await runCodeSync(getValue(), { preserveCamera: true });
       if (!applied) return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
       const geometry = JSON.parse(geometryDataEl.textContent || '{}');
       return {
@@ -14871,7 +14961,7 @@ async function main() {
     cancelInlineBtn.classList.add('hidden');
   }
 
-  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean } = {}): Promise<boolean> {
+  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean; skipSurface?: boolean } = {}): Promise<boolean> {
     // Hard refusal in shared-preview mode: this is the single execution
     // chokepoint that the console API (partwright.run / runAndSave) also routes
     // through, so guarding it here keeps the sharer's untrusted code from ever
@@ -14891,13 +14981,25 @@ async function main() {
     const t0 = performance.now();
     startRunTimer(t0);
 
+    // Snapshot the camera to restore *before* the engine runs, not after, when
+    // this is a re-render of an already-framed session (opts.preserveCamera:
+    // version switch, live edit, Customizer change, quality change). The SCAD
+    // path renders progressively — onScadPreview below calls updateMesh mid-run,
+    // which auto-frames; capturing afterwards would record that reset pose and
+    // "preserve" the default framing instead of the user's angle (the Customizer
+    // reset bug on parametric SCAD models). captureCameraToPreserve returns null
+    // on a session's first render, so a genuinely new model still auto-frames.
+    const preservedCameraPose = opts.preserveCamera ? captureCameraToPreserve() : null;
+
     // SCAD preview callback: receives the fast Phase 1 mesh and updates the
-    // viewport immediately so the user sees geometry while Phase 2 renders.
+    // viewport immediately so the user sees geometry while Phase 2 renders. Skip
+    // its auto-frame while preserving the camera, so the mid-run preview doesn't
+    // momentarily snap to the default view before the final restore lands.
     const onScadPreview = getActiveLanguage() === 'scad'
       ? (previewResult: MeshResult) => {
           if (myGen !== _runGeneration || !previewResult.mesh) return;
           currentMeshData = previewResult.mesh;
-          updateMesh(previewResult.mesh);
+          updateMesh(previewResult.mesh, { skipAutoFrame: preservedCameraPose !== null });
         }
       : undefined;
 
@@ -14995,7 +15097,9 @@ async function main() {
       // behind an inline "Applying texture… Xs" timer + Cancel. The textured
       // mesh is swapped in so all the downstream wiring (manifold
       // reconstruction, paint resolution, stats) sees final geometry.
-      await applySurfaceTextures(result, src);
+      // skipSurface: skip during thumbnail-regeneration imports so the
+      // heavy surface computation doesn't hang the import flow.
+      if (!opts.skipSurface) await applySurfaceTextures(result, src);
       // A compute can take seconds; if a newer run started meanwhile, abandon
       // this one rather than stamping a stale mesh over the new render.
       if (myGen !== _runGeneration) return false;
@@ -15088,12 +15192,9 @@ async function main() {
       // strokes) so slab/box smooth regions rebuild too, exactly as the
       // visibility-toggle path does via reconcilePaintedGeometry.
       //
-      // Snapshot the camera before the auto-framing updateMesh runs when this
-      // run is a version switch (opts.preserveCamera) within an already-framed
-      // session: keep the user's interactive angle instead of snapping to the
-      // default 3/4 view. Genuine new-code runs (pw.run, live edits) leave this
-      // null so the new model auto-frames as before.
-      const preservedCameraPose = opts.preserveCamera ? captureCameraToPreserve() : null;
+      // preservedCameraPose was snapshotted at the top of runCodeSync (before
+      // the engine ran), so the auto-framing updateMesh calls below — and the
+      // SCAD progressive preview — don't poison the pose we restore at the end.
       if (hasColorRegions() && hasRefineDescriptors()) {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();

@@ -1126,30 +1126,45 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     return sdf.sphere(r).translate(add3(cL, off)).union(sdf.sphere(r).translate(add3(cR, off)));
   };
   if (style === 'solid') return pair(rad, 0);
-  // 'iris' (default): white eyeball + coloured iris LENS + black pupil LENS,
-  // each its own pre-labelled hard-union region so paintByLabels can colour
-  // them independently. Don't wrap the result in another .label() — the
-  // outer label would win and flatten the eye back to one colour.
+  // 'iris' (default): a perfectly ROUND white eyeball with the coloured iris and
+  // black pupil PAINTED ON as flush concentric discs — each its own pre-labelled
+  // hard-union region so paintByLabels can colour them independently. Don't wrap
+  // the result in another .label() — the outer label would win and flatten the
+  // eye back to one colour.
   //
-  // The lenses are flat ellipsoid caps proud of the eyeball by only a few
-  // hundredths of the eye radius — they read as painted-on circles rather
-  // than stacked beads. (Thin reliefs survive the union because booleans are
-  // exact on the meshed surfaces; only each region's own march needs to
-  // resolve its solid, and a lens is a chunky ellipsoid.)
-  const lensPair = (rxz: number, ry: number, frontAt: number): Node => {
-    const d = scale3(f, frontAt - ry); // lens centre so its front face sits at `frontAt`
-    const one = (c: Vec3): Node =>
-      orientToHeadPose(sdf.ellipsoid(rxz, ry, rxz), rig).translate(add3(c, d));
+  // The discs are NOT raised lenses (those protruded forward as beads — a pupil
+  // bump read as a "nipple"). Instead each is a thick cylindrical plug clipped to
+  // a sphere CONCENTRIC with the eyeball but a hair larger (`capR`), so the plug's
+  // front face exactly follows the eyeball's curvature and wins the hard-union
+  // over its disc with no perceptible bump — the iris/pupil read as painted on a
+  // round eye. The plug reaches from the front pole back to ~the eyeball centre
+  // (deep enough to always mesh, even on a coarse grid, while keeping the buried
+  // barrel — and the fine triangles spent meshing it — modest); only its flush
+  // front cap survives the union (the rest is interior), carrying the label.
+  // `capR` increases sclera < iris < pupil so each disc reliably wins the union
+  // over the one beneath it; the increments are <3% of `rad` — sub-visual, so the
+  // silhouette stays round.
+  //
+  // The cylinder is built along +Z then translated forward and rotated 90° about
+  // X so its axis points along the (canonical −Y) head-forward before
+  // `orientToHeadPose` carries it into the posed head frame — its front end sits
+  // at the eyeball's front pole and it reaches back to the centre. (`rotate` is
+  // in DEGREES; `translate` before `rotate` so +Z→−Y places the plug at the
+  // front.)
+  const disc = (capR: number, discR: number): Node => {
+    const depth = capR; // front pole back to ~the eyeball centre
+    const plug = sdf.sphere(capR).intersect(
+      sdf.cylinder(discR, depth).translate([0, 0, capR - depth / 2]).rotate([90, 0, 0]),
+    );
+    const one = (c: Vec3): Node => orientToHeadPose(plug, rig).translate(c);
     return one(cL).union(one(cR));
   };
-  // Lens depth (the `ry` term) is set ≥ ~1.5 cells thick so each lens resolves
-  // even when the build forgets the recommended `detail: F.faceDetail(rig)` and
-  // marches the whole figure on the coarse global grid — a thinner cap aliased
-  // the pupil away to 0 triangles there. It only deepens the lens INTO the
-  // eyeball; the front face (and thus the painted-on-circle read) is unchanged.
+  // discR sets how much white shows: the iris spans a bit over half the eyeball
+  // width (a generous coloured disc, the look that read best) leaving a clear
+  // white margin; the pupil is half the iris.
   const sclera = pair(rad, 0).label('eyes');
-  const iris = lensPair(rad * 0.52, rad * 0.24, rad * 1.08).label('iris');
-  const pupil = lensPair(rad * 0.3, rad * 0.18, rad * 1.15).label('pupil');
+  const iris = disc(rad * 1.012, rad * 0.55).label('iris');
+  const pupil = disc(rad * 1.024, rad * 0.27).label('pupil');
   return sclera.union(iris).union(pupil);
 }
 
@@ -1450,7 +1465,7 @@ function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
  *  grid either way. */
 function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
   const o = obj(opts, 'faceDetail(opts)');
-  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength'], 'faceDetail(opts)');
+  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength', 'eyeEdgeLength'], 'faceDetail(opts)');
   const r = rig.r;
   const radius = num(o.radius, Math.max(r.headX, r.head, r.headZ) * 1.5, 'faceDetail.radius', 1e-3);
   // ~4.5% of the head radius ≈ one subdivision round below the recommended
@@ -1458,9 +1473,18 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   // count. Halve it (e.g. r.head * 0.02) for a final extra-fine pass.
   const edgeLength = num(o.edgeLength, Math.max(r.head * 0.045, 0.05), 'faceDetail.edgeLength', 1e-4);
   const mouthEdgeLength = num(o.mouthEdgeLength, Math.max(r.head * 0.02, 0.03), 'faceDetail.mouthEdgeLength', 1e-4);
+  // The iris/pupil are small painted-on discs whose *circular edge* is only as
+  // smooth as the local mesh — at the head grid (~r.head·0.045) a disc that
+  // small reads as a faceted polygon. Give each eyeball front its own extra-fine
+  // sphere (like the mouth groove) so the iris/pupil circles tessellate round.
+  const eyeEdgeLength = num(o.eyeEdgeLength, Math.max(r.head * 0.009, 0.025), 'faceDetail.eyeEdgeLength', 1e-4);
+  const f = rig.dir.headForward;
+  const eyeFront = (anchor: Vec3): Vec3 => add3(anchor, scale3(f, r.head * 0.22));
   return [
     { center: [...(rig.joints.head as Vec3)] as Vec3, radius, edgeLength },
     { center: [...(rig.face.mouth as Vec3)] as Vec3, radius: r.head * 0.55, edgeLength: mouthEdgeLength },
+    { center: eyeFront(rig.face.eyeL), radius: r.head * 0.26, edgeLength: eyeEdgeLength },
+    { center: eyeFront(rig.face.eyeR), radius: r.head * 0.26, edgeLength: eyeEdgeLength },
   ];
 }
 
