@@ -265,7 +265,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     slowToolMs: 250,
     diagnosticsRingSize: 50,
     maxAttachments: 20,
-    toolCallTimeoutMs: 60_000,
+    toolCallTimeoutMs: 300_000,
     thinkingBudgetAnthropicLow: 2048,
     thinkingBudgetAnthropicMedium: 8192,
     thinkingBudgetAnthropicHigh: 16384,

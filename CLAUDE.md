@@ -241,6 +241,7 @@ The AI chat input supports `/command` shortcuts (`src/ai/slashCommands.ts`). A l
 |---|---|
 | `/compact` | Summarize older turns and promote insights to session notes |
 | `/clear` | Delete this chat (saved versions & notes are kept) |
+| `/repair` (alias `/fix`) | Repair corrupted tool history (orphaned tool calls) so a chat wedged on a provider 400 can send again |
 | `/review` | Open the cross-provider review modal |
 | `/export` | Download the conversation as Markdown |
 | `/models` (alias `/settings`) | Open AI settings modal |

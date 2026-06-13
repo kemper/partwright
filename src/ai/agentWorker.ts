@@ -70,6 +70,13 @@ async function executeToolViaMessage(
     const ms = activeToolCallTimeoutMs;
     const timer = setTimeout(() => {
       pendingToolCalls.delete(callId);
+      // Tell the main thread to cancel the in-flight execution. The tool runs
+      // on the main thread (window.partwright → engine Worker); abandoning our
+      // wait here does NOT stop that work, so without this a runaway render
+      // keeps chewing CPU and freezing the page, then resolves into a result
+      // nobody is listening for. cancel_tool terminates the engine Worker so
+      // the execution rejects promptly.
+      self.postMessage({ type: 'cancel_tool', callId, name });
       reject(new Error(`Tool call "${name}" (${callId}) timed out after ${ms / 1000}s`));
     }, ms);
     pendingToolCalls.set(callId, (result) => {
