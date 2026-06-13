@@ -50,8 +50,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.ver.outputs.tag }}"
-          if [ -z "${{ steps.ver.outputs.version }}" ] || [ "${{ steps.ver.outputs.version }}" = "0.0.0" ]; then
-            echo "::error::package.json version is empty or the 0.0.0 placeholder — bump it before releasing."
+          VERSION="${{ steps.ver.outputs.version }}"
+          # Reject the 0.0.0 placeholder and anything that isn't a plain X.Y.Z
+          # semver (catches an empty value or node's literal "undefined" if the
+          # version field ever goes missing).
+          if [ "$VERSION" = "0.0.0" ] || ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.+-].+)?$'; then
+            echo "::error::package.json version '$VERSION' is not a releasable semver — bump it before releasing."
             exit 1
           fi
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
@@ -62,5 +66,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
-          gh release create "$TAG" --title "$TAG" --generate-notes --target "$GITHUB_SHA"
+          # No --target: the annotated tag we just pushed is the source of
+          # truth, and the release resolves to its commit automatically.
+          gh release create "$TAG" --title "$TAG" --generate-notes
           echo "Released $TAG"

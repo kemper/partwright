@@ -94,9 +94,10 @@ function AboutBody() {
       </p>
       <div class="rounded-lg border border-zinc-700 bg-zinc-900/40 px-3 divide-y divide-zinc-800">
         <Row label="Version">
-          {buildInfo.version && buildInfo.version !== 'unknown'
-            ? <PlainValue text={`v${buildInfo.version}`} mono={true} />
-            : <PlainValue text="unknown" mono={true} />}
+          <PlainValue
+            text={buildInfo.version !== 'unknown' ? `v${buildInfo.version}` : 'unknown'}
+            mono={true}
+          />
         </Row>
         <Row label="Environment">
           <span class={`font-medium text-right text-sm min-w-0 ${env.cls}`}>{env.label}</span>

@@ -61,3 +61,11 @@ Verified: `npm run build` (tsc + vite) clean, `npm run test:unit` 1343/1343
 pass, and a throwaway Playwright spec confirmed the About dialog renders
 "Version v1.0.0" in a real browser (screenshot posted in chat, scratch spec
 deleted before commit).
+
+Follow-up after a work-reviewer pass (0 blocking): dropped the redundant
+`--target "$GITHUB_SHA"` from `gh release create` so the release resolves to
+the annotated tag's commit (single source of truth, no divergence risk);
+hardened the version guard to reject anything that isn't a plain X.Y.Z semver
+(catches node's literal "undefined" if the field ever goes missing); and
+simplified the now-redundant About-modal version conditional to a single
+`!== 'unknown'` check.
