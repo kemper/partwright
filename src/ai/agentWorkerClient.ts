@@ -16,6 +16,7 @@ import type { ChatBlock, ChatMessage, PersistedToolResult } from './types';
 import type { AgentWorkerInput } from './agentWorker';
 import { getConfig } from '../config/appConfig';
 import { registerWorker, markWorkerStarted, markWorkerRestarted } from '../diagnostics/workerStats';
+import { cancelCurrentExecution } from '../geometry/engine';
 
 let worker: Worker | null = null;
 let currentCallbacks: RunTurnCallbacks | null = null;
@@ -86,6 +87,15 @@ async function handleMessage(event: MessageEvent): Promise<void> {
     }
     const result = await executeTool(name, input);
     getWorker().postMessage({ type: 'tool_result', callId, result });
+    return;
+  }
+
+  // ── cancel_tool: the Worker's tool-call timeout fired. Cancel the in-flight
+  //    engine execution so a runaway render stops immediately instead of
+  //    finishing into a result nobody is waiting for. Harmless when nothing is
+  //    running (the engine Worker simply restarts on the next call). ──
+  if (msg.type === 'cancel_tool') {
+    cancelCurrentExecution();
     return;
   }
 

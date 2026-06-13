@@ -34,6 +34,8 @@ import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
+import { repairToolHistory, hasOrphanedToolCalls } from '../ai/historyRepair';
+import { cancelCurrentExecution } from '../geometry/engine';
 import { errorLog } from '../diagnostics/errorLog';
 import { showToast } from './toast';
 import { createVoiceController, isVoiceInputSupported, type VoiceController } from './voiceInput';
@@ -736,6 +738,14 @@ function stopActiveTurn(): void {
   // Anthropic stops via AbortSignal through the SDK; local (WebLLM) ignores the
   // signal, so interruptLocal() is what halts it mid-token.
   state.inFlightController?.abort();
+  // A tool call (runAndSave / a render) may be executing in the engine Worker
+  // right now. The abort signal is only checked BETWEEN tool calls — never
+  // mid-render — so without this, an in-flight heavy render keeps running and
+  // Stop appears to do nothing (the symptom that forced a page reload).
+  // Terminate the engine Worker so the current execution rejects immediately;
+  // the tool returns an error result and the loop's between-calls signal check
+  // then ends the turn.
+  cancelCurrentExecution();
   void interruptLocal();
 }
 
@@ -1868,6 +1878,42 @@ async function clearCurrentChat(): Promise<void> {
   setTransientStatus('Chat cleared.');
 }
 
+/** Repair corrupted tool history: pair every orphaned assistant `tool_use`
+ *  with a synthetic error `tool_result` and persist the fix, so a chat that
+ *  was wedged on a provider 400 ("tool_use ids were found without tool_result
+ *  blocks") becomes sendable again without deleting the whole conversation.
+ *  Explicit, user-triggered only (the error-bubble button + the /repair
+ *  command) — never run silently on load. Refuses mid-turn so it can't race
+ *  the agent's own writes. */
+async function repairCurrentChat(): Promise<void> {
+  if (state.inFlight) {
+    setTransientStatus('Wait for the current turn to finish before repairing.');
+    return;
+  }
+  if (!writeOwner) {
+    setTransientStatus('Take control of this session in this tab before repairing its chat.');
+    return;
+  }
+  const result = repairToolHistory(state.history);
+  if (!result.changed) {
+    setTransientStatus('No corrupted tool history found — nothing to repair.');
+    return;
+  }
+  try {
+    await putMessages(result.toPersist);
+  } catch (err) {
+    setTransientStatus(`Couldn't repair chat: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  // Keep the repaired (persisted) messages; drop any in-memory error bubble so
+  // the user can continue immediately.
+  state.history = result.messages.filter(m => !m.errored);
+  broadcastChatChanged();
+  renderTranscript();
+  updateRewindButtons();
+  showToast(`Repaired tool history — ${result.toPersist.length} message(s) fixed. You can continue now.`, { variant: 'success', source: 'ai' });
+}
+
 function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
@@ -2218,6 +2264,19 @@ function renderErrorBubble(msg: ChatMessage): HTMLElement {
   retryBtn.title = 'Resume the agent from where it failed — all completed work above is kept, nothing is replayed.';
   retryBtn.addEventListener('click', () => { void retryFailedTurn(msg.id); });
   actions.appendChild(retryBtn);
+
+  // When the failure is a wedged tool-history invariant (an orphaned tool_use
+  // with no matching tool_result — the unrecoverable provider 400 that even a
+  // rewind couldn't escape), offer a one-click repair right where the user is
+  // stuck. The button only appears when there's actually something to fix.
+  if (hasOrphanedToolCalls(state.history)) {
+    const repairBtn = document.createElement('button');
+    repairBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+    repairBtn.textContent = '🛠 Repair history';
+    repairBtn.title = 'Fix orphaned tool calls left by an interrupted turn so this chat can send again. Nothing is deleted — the incomplete calls are just marked as failed.';
+    repairBtn.addEventListener('click', () => { void repairCurrentChat(); });
+    actions.appendChild(repairBtn);
+  }
 
   const dismissBtn = document.createElement('button');
   dismissBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800';
@@ -2865,6 +2924,16 @@ async function rewindTurn(): Promise<void> {
   const removed = state.history.splice(cutIndex);
   state.rewindStack.push(removed);
   await deleteMessages(removed.map(m => m.id));
+  // Cutting at the last *typed* user message can expose an earlier orphaned
+  // tool_use (mid-history tool calls whose results lived in the messages we
+  // just removed), which would 400 the very next send — so a rewind meant to
+  // "step back and start over" wouldn't actually recover. Repair the exposed
+  // history and persist it so the post-rewind state is always sendable.
+  const repair = repairToolHistory(state.history);
+  if (repair.changed) {
+    await putMessages(repair.toPersist);
+    state.history = repair.messages;
+  }
   renderTranscript();
   updateRewindButtons();
 }
@@ -2988,6 +3057,7 @@ async function preflightTurn(
 const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
   compact: () => { void runCompact(); },
   clear: () => { void clearCurrentChat(); },
+  repair: () => { void repairCurrentChat(); },
   review: () => { void launchReview(); },
   export: () => { exportCurrentChat(); },
   models: () => { void showAiSettingsModal({ onChange: afterAiSettingsChange }); },
@@ -3367,6 +3437,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
     let liveThinkingEl: HTMLElement | null = null;
     const blocksForThisAttempt = attempt === 1 ? userBlocks : [];
 
+    try {
     await runTurn({
       apiKey,
       toggles,
@@ -3534,6 +3605,35 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         lastTurnOutcome = info;
       },
     });
+    } catch (err) {
+      // Backstop: the turn promise rejected outright (Worker crash, an
+      // undeserializable message, or any tool execution that still threw
+      // despite chatLoop's per-tool catch). chatLoop's own `onError` resolves
+      // normally rather than rejecting, so this only fires for genuinely
+      // unexpected rejections — but without it the cleanup below is skipped and
+      // the panel is left permanently "in-flight" (Send disabled, Stop dead),
+      // recoverable only by a page reload. Surface it as an error bubble and
+      // fall through to the shared teardown.
+      const e = err instanceof Error ? err : new Error(String(err));
+      errorLog.capture({ level: 'error', source: 'ai', message: e.message, detail: e.stack });
+      if (!state.history.some(m => m.errored)) {
+        const idx = activeAssistantId ? state.history.findIndex(m => m.id === activeAssistantId) : -1;
+        const errorMsg: ChatMessage = {
+          id: activeAssistantId ?? generateId(),
+          sessionId: state.sessionId,
+          role: 'assistant',
+          blocks: [{ type: 'text', text: e.message }],
+          createdAt: Date.now(),
+          seq: idx >= 0 ? state.history[idx].seq : (state.history[state.history.length - 1]?.seq ?? 0) + 1,
+          errored: true,
+        };
+        if (idx >= 0) state.history[idx] = errorMsg;
+        else state.history.push(errorMsg);
+        renderTranscript();
+      }
+      setTransientStatus(`Error: ${e.message}`);
+      lastTurnOutcome = { totalCostUsd: 0, toolCalls: 0, reason: 'error', detail: e.message, iterations: 0 };
+    }
 
     state.inFlight = false;
     state.inFlightController = null;
@@ -3738,7 +3838,7 @@ function renderProgress(): void {
   const label =
     progressState.phase === 'thinking' ? `🧠 thinking…${silentSuffix}` :
     progressState.phase === 'streaming' ? `✎ streaming response…${silentSuffix}` :
-    progressState.phase === 'tool' ? `🔧 ${progressState.detail ?? 'running tool'}…` :
+    progressState.phase === 'tool' ? `🔧 ${progressState.detail ?? 'running tool'}…${elapsedSec > 1 ? ` ${elapsedSec}s` : ''}` :
     progressState.phase === 'final' ? (progressState.detail ?? '✓ done') :
     '';
   progressEl.replaceChildren();

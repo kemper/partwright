@@ -239,8 +239,8 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="Tool-call timeout (Worker)"
           unit="ms"
-          hint="If the main thread doesn't reply to a tool call within this time, the Worker aborts it."
-          tooltip="The AI agent runs in a background Worker and calls tools (geometry execution, rendering, etc.) on the main thread. If the main thread doesn't respond within this timeout — e.g. because WASM initialization is still in progress or the browser is paused — the Worker treats the call as failed and surfaces an error. Increase for very slow machines or complex BREP/SCAD evaluations."
+          hint="If a tool call (e.g. a render) hasn't finished within this time, it's cancelled and reported back to the agent as a failed step — the turn keeps going."
+          tooltip="The AI agent runs in a background Worker and calls tools (geometry execution, rendering, etc.) on the main thread. If a tool doesn't finish within this timeout — e.g. a very heavy boolean/BREP/SCAD evaluation, or WASM still initializing — the in-flight execution is cancelled and the agent receives an error result for that step, so it can react (simplify, retry) without the chat getting stuck. Increase for very slow machines or genuinely heavy models."
           defaultValue={APP_CONFIG_DEFAULTS.ai.toolCallTimeoutMs}
           value={c.ai.toolCallTimeoutMs}
           min={5_000} max={600_000} integer
