@@ -792,6 +792,13 @@
       "description": "A funk dancer mid-groove with a big curly afro — showing off the figure rig's hair system, where the 'afro' style and its curl relief are real printable geometry that tracks the cocked head."
     },
     {
+      "id": "body-type-lineup",
+      "name": "Body-Type Lineup",
+      "file": "body_lineup.partwright.json",
+      "language": "manifold-js",
+      "description": "Five figures off one rig — a child, a lean woman, an average adult, a heavyset man, and an older adult — sharing a base bar, showing the figure API's anthropometric sex / age / weight axes mined from MakeHuman CC0 data."
+    },
+    {
       "id": "flexing-strongman",
       "name": "Flexing Strongman",
       "file": "flexing_strongman.partwright.json",
