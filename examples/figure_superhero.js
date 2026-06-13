@@ -143,7 +143,7 @@ const gloves = makeGlove(j.lowerArmL, j.wristL, j.handL)
   .label('gloves');
 
 // 9. HAIR — short heroic cut.
-const hair = F.hair(rig, { style: 'short' }).label('hair');
+const hair = F.hair(rig, { style: 'spiked' }).label('hair');
 
 // 10. BASE — wide disc to support the off-balance pose.
 const base = F.base(rig, { radius: rig.opts.height * 0.24 }).label('base');

@@ -634,10 +634,77 @@ describe('figure hair — styles and hairline', () => {
     expect(tail.evaluate(p[0], p[1], p[2])).toBeLessThan(0);
   });
 
-  it('rejects unknown style / hairline / keys', () => {
+  it('rejects unknown style / hairline / texture / part / keys', () => {
     expect(() => buildHair(api, rig, { style: 'mohawk' })).toThrow(/style/);
     expect(() => buildHair(api, rig, { hairline: 'widow' })).toThrow(/hairline/);
-    expect(() => buildHair(api, rig, { volume: 2 })).toThrow();
+    expect(() => buildHair(api, rig, { texture: 'glitter' })).toThrow(/texture/);
+    expect(() => buildHair(api, rig, { part: 'mullet' })).toThrow(/part/);
+    expect(() => buildHair(api, rig, { volume: 9 })).toThrow(/volume/);   // out of 0.3..4
+    expect(() => buildHair(api, rig, { frizz: 2 })).toThrow();            // unknown key
+  });
+
+  it('accepts the new styles and the length/volume/part/texture options', () => {
+    for (const style of ['bob', 'afro', 'braids', 'spiked'] as const) {
+      expect(buildHair(api, rig, { style }).bounds).toBeTypeOf('function');
+    }
+    expect(() => buildHair(api, rig, { style: 'long', length: 'long', volume: 1.6 })).not.toThrow();
+    expect(() => buildHair(api, rig, { style: 'afro', texture: 'curls', part: 'left' })).not.toThrow();
+  });
+
+  it('new options are neutral at their defaults — classic styles are byte-identical', () => {
+    // length:'mid', volume:1, texture:'none', part:'none' must reproduce the
+    // pre-existing geometry exactly, so existing catalog bakes never drift.
+    const probes = [
+      [0, 0, rig.joints.head[2]],
+      [rig.r.headX * 0.5, -rig.r.head, rig.joints.head[2] + rig.r.headZ * 0.4],
+      [0, rig.r.head, rig.joints.head[2] - rig.r.head * 1.5],
+    ];
+    for (const style of ['short', 'long', 'bun', 'bangs', 'ponytail'] as const) {
+      const bare = buildHair(api, rig, { style }) as SdfNode;
+      const explicit = buildHair(api, rig, { style, length: 'mid', volume: 1, texture: 'none', part: 'none' }) as SdfNode;
+      for (const p of probes) {
+        expect(explicit.evaluate(p[0], p[1], p[2])).toBeCloseTo(bare.evaluate(p[0], p[1], p[2]), 9);
+      }
+    }
+  });
+
+  it('length:long drops a ponytail lower than the default', () => {
+    const mid = buildHair(api, rig, { style: 'ponytail' }) as SdfNode;
+    const long = buildHair(api, rig, { style: 'ponytail', length: 'long' }) as SdfNode;
+    // A longer tail reaches farther below the head along −Z.
+    expect(long.bounds().min[2]).toBeLessThan(mid.bounds().min[2]);
+  });
+});
+
+describe('figure placeOnHead — seat headwear on the hair', () => {
+  const F = createFigureNamespace(api);
+  const rig = buildRig({ height: 60, headsTall: 6 });
+  const hat = (): SdfNode => api.box([2, 2, 2]) as unknown as SdfNode;
+
+  it('rests an accessory bottom on the hair TOP, centred on the head', () => {
+    const hair = F.hair(rig, { style: 'short' }) as unknown as SdfNode;
+    const hairTop = hair.bounds().max[2];
+    const placed = F.placeOnHead(hat() as object, rig, { rest: hair }) as unknown as SdfNode;
+    const b = placed.bounds();
+    expect(b.min[2]).toBeCloseTo(hairTop, 5);                               // bottom on hair top
+    expect((b.min[0] + b.max[0]) / 2).toBeCloseTo(rig.joints.head[0], 5);   // centred X
+    expect((b.min[1] + b.max[1]) / 2).toBeCloseTo(rig.joints.head[1], 5);   // centred Y
+  });
+
+  it('embed sinks it into the hair; clearance lifts it off', () => {
+    const hair = F.hair(rig, { style: 'short' }) as unknown as SdfNode;
+    const top = hair.bounds().max[2];
+    const sunk = F.placeOnHead(hat() as object, rig, { rest: hair, embed: 1 }) as unknown as SdfNode;
+    const lifted = F.placeOnHead(hat() as object, rig, { rest: hair, clearance: 1 }) as unknown as SdfNode;
+    expect(sunk.bounds().min[2]).toBeCloseTo(top - 1, 5);
+    expect(lifted.bounds().min[2]).toBeCloseTo(top + 1, 5);
+  });
+
+  it('falls back to the crown joint without rest, and validates inputs', () => {
+    const placed = F.placeOnHead(hat() as object, rig) as unknown as SdfNode;
+    expect(placed.bounds().min[2]).toBeCloseTo(rig.joints.crown[2], 5);
+    expect(() => F.placeOnHead(hat() as object, rig, { rest: 5 })).toThrow(/rest/);
+    expect(() => F.placeOnHead(hat() as object, rig, { wig: true })).toThrow();
   });
 });
 

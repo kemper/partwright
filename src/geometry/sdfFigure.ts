@@ -52,6 +52,7 @@ export interface Node {
   shell(thickness: number): Node;
   round(r: number): Node;
   taper(rate: number, axis?: 'x' | 'y' | 'z'): Node;
+  displace(amount: number, field: (x: number, y: number, z: number) => number): Node;
   label(name: string): Node;
   bounds(): { min: Vec3; max: Vec3 };
 }
@@ -1146,9 +1147,9 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
 
 function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hair(opts)');
-  assertNoUnknownKeys(o, ['style', 'thickness', 'hairline'], 'hair(opts)');
+  assertNoUnknownKeys(o, ['style', 'thickness', 'hairline', 'length', 'volume', 'part', 'texture'], 'hair(opts)');
   const style = o.style === undefined ? 'short'
-    : assertEnum(o.style, ['short', 'long', 'bun', 'bald', 'bangs', 'ponytail'] as const, 'hair.style');
+    : assertEnum(o.style, ['short', 'long', 'bob', 'bun', 'bald', 'bangs', 'ponytail', 'afro', 'braids', 'spiked'] as const, 'hair.style');
   // bald = no hair. Return a sub-cell sphere AT the head centre (not parked at
   // z ≈ −1e6): it meshes to nothing on any real grid and is swallowed inside
   // the skull in a figure union, but its `bounds()` stays at the head — so
@@ -1162,16 +1163,50 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const r = rig.r, c = rig.joints.head as Vec3;
   const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
   const t = num(o.thickness, r.head * 0.12, 'hair.thickness', 0.01);
+  // `length` scales how far tails / manes fall; `volume` puffs the cap and
+  // tail girth (afro = high volume). Both default to the neutral 1, so the
+  // pre-existing styles render byte-identical when these are omitted.
+  const length = o.length === undefined ? 'mid'
+    : assertEnum(o.length, ['short', 'mid', 'long'] as const, 'hair.length');
+  const volume = num(o.volume, 1, 'hair.volume', 0.3, 4);
+  const part = o.part === undefined ? 'none'
+    : assertEnum(o.part, ['none', 'left', 'right', 'center'] as const, 'hair.part');
+  // Physical strand/curl relief, displaced along the cap surface — the
+  // print-native analog of a hair texture map (real geometry an FDM/resin
+  // printer reproduces). New styles default to a fitting texture; classic
+  // styles stay smooth so their bakes don't drift.
+  const texDefault = style === 'afro' ? 'curls' : style === 'braids' ? 'wavy' : 'none';
+  const texture = o.texture === undefined ? texDefault
+    : assertEnum(o.texture, ['none', 'strands', 'curls', 'wavy'] as const, 'hair.texture');
+  const lenMul = length === 'short' ? 0.62 : length === 'long' ? 1.5 : 1;
+  const tv = t * volume;
+  // Face-window size multipliers — a few styles (afro) open it wider so the
+  // hair frames an exposed oval face instead of swallowing it. 1 = the classic
+  // window, so every other style is unchanged.
+  let winXMul = 1, winZMul = 1;
   // Skull cap: a slightly enlarged ellipsoid pushed back, covering all but
-  // the face front.
-  let cap = sdf.ellipsoid(r.headX + t, r.head + t, r.headZ + t)
-    .translate(add3(c, add3(scale3(f, -t * 0.6), scale3(u, t * 0.4))));
+  // the face front. (volume puffs the offset; 1 = the classic cap.)
+  let cap = sdf.ellipsoid(r.headX + tv, r.head + tv, r.headZ + tv)
+    .translate(add3(c, add3(scale3(f, -tv * 0.6), scale3(u, tv * 0.4))));
   if (style === 'long') {
-    const back = add3(c, add3(scale3(f, -r.headZ * 0.4), scale3(u, -r.head * 1.6)));
-    const mane = sdf.ellipsoid(r.headX * 1.05, r.head * 0.7, r.head * 1.7).translate(back);
+    // Drop the mane farther as `length` grows; centre stays at the classic
+    // −1.6·head when length:'mid' (lenMul 1) so the existing bake is unchanged.
+    const maneZ = r.head * 1.7 * lenMul;
+    const backU = -r.head * 1.6 - (maneZ - r.head * 1.7) * 0.5;
+    const back = add3(c, add3(scale3(f, -r.headZ * 0.4), scale3(u, backU)));
+    const mane = sdf.ellipsoid(r.headX * 1.05 * volume, r.head * 0.7, maneZ).translate(back);
     cap = cap.smoothUnion(mane, r.head * 0.5);
+  } else if (style === 'bob') {
+    // Chin-length helmet that frames the face: two side wings down past the
+    // jaw plus a rounded back mass. `length` sets how far it falls.
+    const drop = r.head * 1.15 * lenMul;
+    const wing = (s: number) => sdf.ellipsoid(r.headX * 0.46, r.head * 0.5, drop)
+      .translate(add3(c, add3(add3(scale3(right, s * r.headX * 0.92), scale3(f, r.headZ * 0.1)), scale3(u, -drop * 0.45))));
+    const backMass = sdf.ellipsoid(r.headX * 0.95 * volume, r.head * 0.62, drop * 0.95)
+      .translate(add3(c, add3(scale3(f, -r.headZ * 0.3), scale3(u, -drop * 0.4))));
+    cap = cap.smoothUnion(wing(1), r.head * 0.35).smoothUnion(wing(-1), r.head * 0.35).smoothUnion(backMass, r.head * 0.4);
   } else if (style === 'bun') {
-    const bun = sdf.sphere(r.head * 0.55).translate(add3(c, add3(scale3(f, -r.headZ * 0.7), scale3(u, r.head * 0.9))));
+    const bun = sdf.sphere(r.head * 0.55 * volume).translate(add3(c, add3(scale3(f, -r.headZ * 0.7), scale3(u, r.head * 0.9))));
     cap = cap.smoothUnion(bun, r.head * 0.3);
   } else if (style === 'bangs') {
     // A straight fringe: a wide slab rooted in the cap, hanging over the
@@ -1185,14 +1220,103 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     // down. Segments chain anchor→mid→tip so the tail curves, and each
     // segment shares its joint point — always one welded piece.
     const anchor = add3(c, add3(scale3(f, -r.headZ * 0.7), scale3(u, r.headZ * 0.55)));
-    const mid = add3(anchor, add3(scale3(f, -r.head * 0.28), scale3(u, -r.head * 0.85)));
-    const tip = add3(mid, add3(scale3(f, r.head * 0.08), scale3(u, -r.head * 0.95)));
-    const tail = sdf.sphere(r.head * 0.4).translate(anchor)
-      .smoothUnion(sdf.capsule(anchor, mid, r.head * 0.3), r.head * 0.25)
-      .smoothUnion(sdf.capsule(mid, tip, r.head * 0.2), r.head * 0.22);
+    const mid = add3(anchor, add3(scale3(f, -r.head * 0.28), scale3(u, -r.head * 0.85 * lenMul)));
+    const tip = add3(mid, add3(scale3(f, r.head * 0.08), scale3(u, -r.head * 0.95 * lenMul)));
+    const tail = sdf.sphere(r.head * 0.4 * volume).translate(anchor)
+      .smoothUnion(sdf.capsule(anchor, mid, r.head * 0.3 * volume), r.head * 0.25)
+      .smoothUnion(sdf.capsule(mid, tip, r.head * 0.2 * volume), r.head * 0.22);
     cap = cap.smoothUnion(tail, r.head * 0.25);
+  } else if (style === 'afro') {
+    // A rounded puff that rises ABOVE and wraps BEHIND the skull — lifted up
+    // and pushed back, taller than it is deep, so it frames the face rather
+    // than ballooning forward over it. `volume` drives the silhouette and the
+    // face window opens wider (below) to expose an oval face. Default 'curls'
+    // relief gives the recognizable texture.
+    const afroR = (r.head + tv) * 1.18;
+    const afro = orientToHeadPose(sdf.ellipsoid(afroR, afroR * 0.9, afroR * 1.12), rig)
+      .translate(add3(c, add3(scale3(u, r.head * 0.42), scale3(f, -r.head * 0.38))));
+    cap = cap.smoothUnion(afro, r.head * 0.45);
+    winXMul = 1.34; winZMul = 1.16;
+  } else if (style === 'braids') {
+    // Two plaits falling from behind the ears. Default 'wavy' relief segments
+    // them into the braided look. Each plait is one welded capsule chain.
+    const braid = (s: number): Node => {
+      const top = add3(c, add3(add3(scale3(right, s * r.headX * 0.85), scale3(f, -r.headZ * 0.25)), scale3(u, -r.head * 0.15)));
+      const reach = r.head * 2.4 * lenMul;
+      const mid = add3(top, add3(scale3(u, -reach * 0.5), scale3(f, -r.head * 0.15)));
+      const bot = add3(top, add3(scale3(u, -reach), scale3(f, r.head * 0.05)));
+      return sdf.capsule(top, mid, r.head * 0.22 * volume).smoothUnion(sdf.capsule(mid, bot, r.head * 0.15 * volume), r.head * 0.12);
+    };
+    cap = cap.smoothUnion(braid(1), r.head * 0.25).smoothUnion(braid(-1), r.head * 0.25);
+  } else if (style === 'spiked') {
+    // Bart-Simpson spiky crown: a ring of chunky triangular spikes around the
+    // top, each a fat cone (tapered cylinder) pointing up and splaying outward.
+    // The wide bases smooth-union into the cap so it reads as one spiky hairdo,
+    // not a sparse ring of antennae. Regular + clean, hair-coloured by .label().
+    const N = 9;
+    const baseR = r.head * 0.23 * volume;
+    const len = r.head * 1.45 * lenMul;
+    for (let i = 0; i < N; i++) {
+      const ang = (2 * Math.PI * i) / N;
+      const radial = norm3(add3(scale3(right, Math.cos(ang)), scale3(f, Math.sin(ang))));
+      const dir = norm3(add3(scale3(u, 2.3), radial));   // steep — tall up, slight splay
+      // Roots ring the crown close in (bases overlap into a continuous spiky
+      // mass) and the tall tips dominate the silhouette like Bart's hair.
+      const root = add3(c, add3(scale3(u, r.headZ * 0.55), scale3(radial, r.headX * 0.42)));
+      // Cone: a cylinder tapered to a small tip at +z (base ≈ 1.9·baseR at −z,
+      // tip ≈ 0.1·baseR — a near-point that stays above the print min-feature).
+      const cone = sdf.cylinder(baseR, len).taper(-1.8 / len, 'z')
+        .rotate(eulerAlignZ(dir)).translate(add3(root, scale3(dir, len / 2)));
+      cap = cap.smoothUnion(cone, r.head * 0.16);
+    }
+    // A center spike fills the crown so there's no smooth bald dome between the
+    // ring tips — the whole top reads as hair.
+    cap = cap.smoothUnion(
+      sdf.cylinder(baseR, len).taper(-1.8 / len, 'z').rotate(eulerAlignZ(u))
+        .translate(add3(c, scale3(u, r.headZ * 0.55 + len / 2))), r.head * 0.16);
   }
-  void right;
+  // Strand/curl relief: a directional displacement field in the head's own
+  // frame. Amplitude is floored so the relief survives meshing at the figure
+  // grid rather than aliasing away (the sub-cell-feature lesson). Mesh tails
+  // that fall outside the faceDetail sphere at a fine enough edgeLength to keep
+  // the texture crisp; see /ai/figure.md.
+  if (texture !== 'none') {
+    const dot = (p: Vec3, q: Vec3): number => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+    const amp = Math.max(r.head * 0.06, 0.18);
+    const cell = r.head * (texture === 'wavy' ? 0.8 : 0.34);
+    const w = (2 * Math.PI) / cell;
+    let field: (x: number, y: number, z: number) => number;
+    if (texture === 'strands') {
+      const n = 16;   // vertical strand grooves combed around the head
+      field = (x, y, z) => {
+        const p: Vec3 = [x - c[0], y - c[1], z - c[2]];
+        return Math.cos(Math.atan2(dot(p, right), dot(p, f)) * n);
+      };
+    } else if (texture === 'wavy') {
+      field = (x, y, z) => {
+        const p: Vec3 = [x - c[0], y - c[1], z - c[2]];
+        return Math.sin(dot(p, u) * w) * 0.7 + Math.sin(dot(p, right) * w * 0.6) * 0.3;
+      };
+    } else {   // curls — isotropic 3-axis bumps
+      field = (x, y, z) => {
+        const p: Vec3 = [x - c[0], y - c[1], z - c[2]];
+        return Math.sin(dot(p, f) * w) * Math.sin(dot(p, right) * w) * Math.sin(dot(p, u) * w);
+      };
+    }
+    cap = cap.displace(amp, field);
+  }
+  // Parting groove: a shallow channel skimmed off the TOP of the cap along the
+  // front-back axis, offset to one side for a side part. Its bottom stays above
+  // the scalp (only the top fraction of the cap shell is removed) so the part
+  // never cuts through to expose skin underneath.
+  if (part !== 'none') {
+    const off = part === 'left' ? -r.headX * 0.35 : part === 'right' ? r.headX * 0.35 : 0;
+    const big = r.head * 2;
+    const bottomZ = r.headZ + tv * 0.45;   // above the skull surface (z = r.headZ)
+    const groove = orientToHeadPose(sdf.roundedBox([r.head * 0.12, r.head * 1.3, big], r.head * 0.05), rig)
+      .translate(add3(c, add3(scale3(right, off), scale3(u, bottomZ + big / 2))));
+    cap = cap.subtract(groove);
+  }
   // Face window: the cap overlaps the face INTERIOR, and since hair is its
   // own labelled region it survives the skin's mouth/feature carves — a
   // carved smile then exposes pale hair volume inside its corners ("nub
@@ -1203,7 +1327,7 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const drop = hairline === 'low' ? -r.headZ * 0.25 : hairline === 'high' ? r.headZ * 0.15 : 0;
   const windowC = add3(c, add3(scale3(f, r.headZ * 0.9), scale3(u, -r.headZ * 0.2 + drop)));
   const faceWindow = orientToHeadPose(
-    sdf.ellipsoid(r.headX * 0.72, r.headZ * 0.75, r.headZ * 0.85), rig,
+    sdf.ellipsoid(r.headX * 0.72 * winXMul, r.headZ * 0.75, r.headZ * 0.85 * winZMul), rig,
   ).translate(windowC);
   return cap.subtract(faceWindow);
 }
@@ -1429,6 +1553,10 @@ export interface FigureNamespace {
   /** Snap an accessory node to a rig joint by its bbox anchor (no offset math).
    *  `joint` is a Vec3 like `rig.joints.crown`; `opts.anchor` ∈ center|bottom|top. */
   placeAt(node: Node, joint: Vec3, opts?: object): Node;
+  /** Seat headwear (hat/crown/headband) on TOP of the hair instead of the bare
+   *  skull — the headwear analog of the hand grip frame. Pass the hair as
+   *  `opts.rest`; `clearance` floats it, `embed` sinks it for a welded print. */
+  placeOnHead(node: Node, rig: Rig, opts?: object): Node;
   /** Seat + orient a held prop into a hand grip frame (`rig.grip.L`/`.R`).
    *  Aligns the prop's local long axis (`opts.along`, default 'z') to the grip
    *  axis and drops its origin on the grip point. `opts.flip` reverses it. */
@@ -1480,6 +1608,35 @@ function placeAt(node: Node, joint: Vec3, opts?: unknown): Node {
   const cy = (b.min[1] + b.max[1]) / 2;
   const cz = anchor === 'bottom' ? b.min[2] : anchor === 'top' ? b.max[2] : (b.min[2] + b.max[2]) / 2;
   return node.translate([j[0] - cx, j[1] - cy, j[2] - cz]);
+}
+
+/** Seat headwear (hat, crown, headband, halo) ON TOP of the hair instead of the
+ *  bare skull, so it rests on the hairstyle rather than embedding in it — the
+ *  headwear analog of the hand `grip` frame. Pass the **hair** node (or any head
+ *  node) as `rest`: the accessory's bbox `anchor` (default 'bottom') is moved to
+ *  the TOP of that node along +Z, and its X/Y is centred on the head joint.
+ *  Without `rest` it falls back to the skull crown joint (`rig.joints.crown`).
+ *  `clearance` floats it above the hair; `embed` sinks it in a little so it
+ *  welds into one printable piece (a deep embed is what made hand-placed crowns
+ *  disappear into the hair). Build the accessory centred on the origin, then
+ *  `F.placeOnHead(crown, rig, { rest: hair, embed: 0.2 })`. */
+function placeOnHead(node: Node, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'placeOnHead(opts)');
+  assertNoUnknownKeys(o, ['rest', 'clearance', 'embed', 'anchor'], 'placeOnHead(opts)');
+  const clearance = num(o.clearance, 0, 'placeOnHead.clearance', 0);
+  const embed = num(o.embed, 0, 'placeOnHead.embed', 0);
+  const anchor = o.anchor === undefined ? 'bottom'
+    : assertEnum(o.anchor, ['center', 'bottom', 'top'] as const, 'placeOnHead.anchor');
+  const head = rig.joints.head as Vec3;
+  let restZ = (rig.joints.crown as Vec3)[2];
+  if (o.rest !== undefined) {
+    const rn = o.rest as Node;
+    if (!rn || typeof rn.bounds !== 'function') {
+      throw new ValidationError('placeOnHead.rest must be an SDF node (e.g. the hair) whose top defines the rest height. See /ai/figure.md');
+    }
+    restZ = rn.bounds().max[2];
+  }
+  return placeAt(node, [head[0], head[1], restZ + clearance - embed], { anchor });
 }
 
 /** Euler [rx, ry, 0] (degrees) that rotates the local +Z axis onto unit `t`,
@@ -1607,6 +1764,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     hair: (rig, opts) => buildHair(sdf, assertRig(rig, 'hair(rig)'), opts),
     weld: (rig, parts, opts) => weldBody(assertRig(rig, 'weld(rig)'), parts, opts),
     placeAt: (node, joint, opts) => placeAt(node as Node, joint, opts),
+    placeOnHead: (node, rig, opts) => placeOnHead(node as Node, assertRig(rig, 'placeOnHead(rig)'), opts),
     holdAt: (node, grip, opts) => holdAt(node as Node, grip, opts),
     spanGrips: (a, b) => spanGrips(a, b),
     poseProbe: (rig) => poseProbe(assertRig(rig, 'poseProbe(rig)')),

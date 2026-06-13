@@ -778,6 +778,13 @@
       "description": "A cheerful stylized child waving hello — one arm raised high, chunky cargo pants, long hair, built with the SDF figure rig."
     },
     {
+      "id": "afro-funk-dancer",
+      "name": "Afro Funk Dancer",
+      "file": "afro_funk.partwright.json",
+      "language": "manifold-js",
+      "description": "A funk dancer mid-groove with a big curly afro — showing off the figure rig's hair system, where the 'afro' style and its curl relief are real printable geometry that tracks the cocked head."
+    },
+    {
       "id": "flexing-strongman",
       "name": "Flexing Strongman",
       "file": "flexing_strongman.partwright.json",

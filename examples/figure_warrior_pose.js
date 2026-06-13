@@ -56,7 +56,7 @@ const top   = F.clothing.top(rig, { sleeve: 'short' }).label('top');
 const pants = F.clothing.pants(rig, { leg: 'slim', rise: 'high' }).label('pants');
 
 // 5. HAIR — bun
-const hair = F.hair(rig, { style: 'bun' }).label('hair');
+const hair = F.hair(rig, { style: 'braids' }).label('hair');
 
 // 6. BASE — in a lunge both ankles sit higher than a standing pose (the bent
 // bones shorten the legs' vertical reach), so the body is lowered until the
