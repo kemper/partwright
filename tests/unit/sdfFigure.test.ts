@@ -884,11 +884,25 @@ describe('figure hair — styles and hairline', () => {
   });
 
   it('accepts the new styles and the length/volume/part/texture options', () => {
-    for (const style of ['bob', 'afro', 'braids', 'spiked'] as const) {
+    for (const style of ['bob', 'afro', 'braids', 'spiked', 'locs', 'cornrows', 'boxBraids'] as const) {
       expect(buildHair(api, rig, { style }).bounds).toBeTypeOf('function');
     }
     expect(() => buildHair(api, rig, { style: 'long', length: 'long', volume: 1.6 })).not.toThrow();
     expect(() => buildHair(api, rig, { style: 'afro', texture: 'curls', part: 'left' })).not.toThrow();
+    // 'coils' is the new 4c texture — usable on any style.
+    expect(() => buildHair(api, rig, { style: 'short', texture: 'coils' })).not.toThrow();
+  });
+
+  it('locs / boxBraids hang strands below the head; cornrows lay tight to the scalp', () => {
+    const head = buildHair(api, rig, { style: 'short' }) as SdfNode;
+    const locs = buildHair(api, rig, { style: 'locs' }) as SdfNode;
+    const box = buildHair(api, rig, { style: 'boxBraids' }) as SdfNode;
+    const corn = buildHair(api, rig, { style: 'cornrows' }) as SdfNode;
+    // Hanging styles reach well below a plain short cap.
+    expect(locs.bounds().min[2]).toBeLessThan(head.bounds().min[2]);
+    expect(box.bounds().min[2]).toBeLessThan(head.bounds().min[2]);
+    // Cornrows stay near the head — they don't hang past the short cap's nape.
+    expect(corn.bounds().min[2]).toBeGreaterThan(locs.bounds().min[2]);
   });
 
   it('new options are neutral at their defaults — classic styles are byte-identical', () => {
@@ -913,6 +927,100 @@ describe('figure hair — styles and hairline', () => {
     const long = buildHair(api, rig, { style: 'ponytail', length: 'long' }) as SdfNode;
     // A longer tail reaches farther below the head along −Z.
     expect(long.bounds().min[2]).toBeLessThan(mid.bounds().min[2]);
+  });
+});
+
+describe('figure skin palette — F.skin', () => {
+  const F = createFigureNamespace(api);
+  const lum = (hex: string): number =>
+    parseInt(hex.slice(1, 3), 16) + parseInt(hex.slice(3, 5), 16) + parseInt(hex.slice(5, 7), 16);
+
+  it('returns a hex string for a known tone', () => {
+    expect(F.skin('umber')).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(F.skin('porcelain')).not.toBe(F.skin('ebony'));
+  });
+
+  it('returns the full {name: hex} map with no argument, spanning light → deep', () => {
+    const all = F.skin() as Record<string, string>;
+    expect(Object.keys(all).length).toBeGreaterThanOrEqual(12);
+    for (const hex of Object.values(all)) expect(hex).toMatch(/^#[0-9a-f]{6}$/i);
+    // The ramp must actually cover the range AND be strictly monotonic light →
+    // deep (insertion order = the documented porcelain…ebony order), so a future
+    // mis-ordered palette edit is caught rather than passing on the endpoints.
+    const lums = Object.values(all).map(lum);
+    for (let i = 1; i < lums.length; i++) expect(lums[i]).toBeLessThan(lums[i - 1]);
+  });
+
+  it('throws naming the option on an unknown tone', () => {
+    expect(() => F.skin('beige2')).toThrow(/skin/);
+  });
+});
+
+describe('figure head — face shape & jaw/chin/cheek axes', () => {
+  const F = createFigureNamespace(api);
+  const rig = buildRig({ height: 60, headsTall: 6 });
+  const span = (n: SdfNode, ax: number): number => n.bounds().max[ax] - n.bounds().min[ax];
+
+  it('default (no opts) is byte-identical to faceShape:oval at default knobs', () => {
+    const bare = F.head(rig) as unknown as SdfNode;
+    const oval = F.head(rig, { faceShape: 'oval', jaw: 1, chin: 1, cheek: 1 }) as unknown as SdfNode;
+    const probes = [
+      [0, -rig.r.head, rig.joints.head[2]],
+      [rig.r.headX, 0, rig.joints.head[2]],
+      [0, 0, rig.joints.head[2] - rig.r.headZ],
+    ];
+    for (const p of probes) {
+      expect(oval.evaluate(p[0], p[1], p[2])).toBeCloseTo(bare.evaluate(p[0], p[1], p[2]), 9);
+    }
+  });
+
+  it('a wider jaw widens the head laterally', () => {
+    const narrow = F.head(rig, { jaw: 0.6 }) as unknown as SdfNode;
+    const wide = F.head(rig, { jaw: 1.5 }) as unknown as SdfNode;
+    expect(span(wide, 0)).toBeGreaterThan(span(narrow, 0));
+  });
+
+  it('a longer chin extends the head downward', () => {
+    const shortChin = F.head(rig, { chin: 0.6 }) as unknown as SdfNode;
+    const longChin = F.head(rig, { chin: 1.5 }) as unknown as SdfNode;
+    expect(longChin.bounds().min[2]).toBeLessThan(shortChin.bounds().min[2]);
+  });
+
+  it('rejects unknown faceShape, out-of-range knobs, and unknown keys', () => {
+    expect(() => F.head(rig, { faceShape: 'potato' })).toThrow(/faceShape/);
+    expect(() => F.head(rig, { jaw: 9 })).toThrow(/jaw/);
+    expect(() => F.head(rig, { wat: 1 })).toThrow();
+  });
+});
+
+describe('figure nose & lips — variation axes', () => {
+  const F = createFigureNamespace(api);
+  const rig = buildRig({ height: 60, headsTall: 6 });
+  const span = (n: SdfNode, ax: number): number => n.bounds().max[ax] - n.bounds().min[ax];
+
+  it('default nose (width:1, flare:0) matches the bare nose', () => {
+    const bare = F.face.nose(rig) as unknown as SdfNode;
+    const def = F.face.nose(rig, { width: 1, flare: 0, bridge: 1, length: 1 }) as unknown as SdfNode;
+    const p = rig.face.nose;
+    expect(def.evaluate(p[0], p[1], p[2])).toBeCloseTo(bare.evaluate(p[0], p[1], p[2]), 9);
+  });
+
+  it('a wider, flared nose has a larger lateral extent than a narrow one', () => {
+    const narrow = F.face.nose(rig, { width: 0.6, flare: 0 }) as unknown as SdfNode;
+    const wide = F.face.nose(rig, { width: 2.0, flare: 1.2 }) as unknown as SdfNode;
+    expect(span(wide, 0)).toBeGreaterThan(span(narrow, 0));
+  });
+
+  it('fuller lips thicken the lip ridge', () => {
+    const thin = F.face.mouth(rig, { style: 'lips', fullness: 0.5 }) as unknown as SdfNode;
+    const full = F.face.mouth(rig, { style: 'lips', fullness: 2.0 }) as unknown as SdfNode;
+    expect(span(full, 2)).toBeGreaterThan(span(thin, 2));
+  });
+
+  it('rejects out-of-range nose params and bad mouth fullness', () => {
+    expect(() => F.face.nose(rig, { bridge: 5 })).toThrow(/bridge/);
+    expect(() => F.face.nose(rig, { width: 9 })).toThrow(/width/);
+    expect(() => F.face.mouth(rig, { style: 'lips', fullness: 9 })).toThrow(/fullness/);
   });
 });
 
