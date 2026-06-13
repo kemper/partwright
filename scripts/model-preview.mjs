@@ -15,7 +15,12 @@ import { resolve } from 'node:path';
 import { runPreview, composePng, explainComponents, checkExpectComponents, resolveViews, defaultPreviewPng } from './cli/preview.mjs';
 
 function parseArgs(argv) {
-  const a = { params: {}, size: 480, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null };
+  // Per-tile pixel size. Defaults high (768) for quality-control inspection —
+  // defects like a jagged opening, an interpenetration, or paint/colour bleed
+  // are invisible at small sizes. Bump higher (--size 1200+) when scrutinising
+  // fine features (faces, eyes, lettering) and crop the PNG natively rather than
+  // upscaling a small crop (which only blurs).
+  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--json') a.json = true;

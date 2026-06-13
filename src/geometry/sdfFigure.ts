@@ -1161,23 +1161,24 @@ function groundRig(rig: Rig, opts?: unknown): Rig {
 
 // --- Face features (read rig.face anchors) --------------------------------
 
-// Eyelid styles. Each drapes a thin skin cap over part of the eyeball,
-// concentric with it but a hair larger so it wins the union and reads as a
-// fold of skin sitting ON the eye. `cu`/`cl` are the fraction of the eye
-// covered from the TOP (upper lid) and BOTTOM (lower lid); `cx` covers each
-// LATERAL corner, pinching the opening to points for an almond eye. `scale`
-// thickens the cap (a heavier hood needs more skin). Labelled `'lids'` so the
-// caller can paint them (skin tone, or eyeshadow). 'none' is the backward-
-// compatible default — no lids, the bare round eyeball.
+// Eyelid styles. A skin dome (a hair larger than the eyeball) covers the eye
+// front; a smooth ELLIPTICAL hole is cut through it where the eye shows. Each
+// style is the size + vertical placement of that opening: `wx`/`hz` are its
+// half-width / half-height (× eye radius) and `cz` its vertical centre (× radius,
+// −down). A SMOOTH ellipse — not the union of box half-spaces — so the opening
+// edge is a clean curve, never the jagged rectangle box cuts produced. `scale`
+// sizes the dome (how far the lid sits proud of the eyeball). The dome is
+// labelled `'lids'` so the caller paints it (skin tone, or eyeshadow); 'closed'
+// leaves no opening. 'none' is the backward-compatible default — no lids.
 const LID_STYLES = ['none', 'upper', 'hooded', 'half', 'closed', 'almond', 'tapered'] as const;
 type LidStyle = typeof LID_STYLES[number];
-const LID_SPEC: Record<Exclude<LidStyle, 'none'>, { cu: number; cl: number; cx: number; scale: number }> = {
-  upper: { cu: 0.30, cl: 0, cx: 0, scale: 1.22 },     // crisp upper lid on an open, alert eye
-  hooded: { cu: 0.46, cl: 0, cx: 0, scale: 1.40 },    // heavier brow-ward hood
-  half: { cu: 0.56, cl: 0.16, cx: 0, scale: 1.24 },   // sleepy / half-closed, faint lower rim
-  closed: { cu: 0.58, cl: 0.54, cx: 0, scale: 1.22 }, // upper + lower meet at the midline
-  almond: { cu: 0.30, cl: 0.14, cx: 0.18, scale: 1.20 }, // balanced almond — corners pinched to points
-  tapered: { cu: 0.24, cl: 0.10, cx: 0.30, scale: 1.20 }, // elongated, sharper corners (drawn-out eye)
+const LID_SPEC: Record<Exclude<LidStyle, 'none'>, { wx: number; hz: number; cz: number; scale: number }> = {
+  upper: { wx: 0.96, hz: 0.70, cz: -0.10, scale: 1.07 },   // wide open eye, just an upper lid
+  hooded: { wx: 0.94, hz: 0.52, cz: -0.26, scale: 1.10 },  // heavier brow-ward hood
+  half: { wx: 0.92, hz: 0.36, cz: -0.02, scale: 1.07 },    // sleepy / half-closed slit
+  closed: { wx: 0, hz: 0, cz: 0, scale: 1.07 },            // no opening — fully shut
+  almond: { wx: 0.78, hz: 0.54, cz: 0.00, scale: 1.07 },   // balanced almond eye
+  tapered: { wx: 0.62, hz: 0.44, cz: 0.02, scale: 1.07 },  // elongated, narrower almond
 };
 
 function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
@@ -1206,54 +1207,53 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   };
 
   // --- Eyelids -----------------------------------------------------------
-  // Built in the CANONICAL head frame (forward −Y, up +Z, lateral ±X) then
-  // oriented into the posed head and translated onto each eye centre — the same
-  // canonical→pose→translate path the iris/pupil `disc` plug uses. A lid is the
-  // slice of a slightly-larger concentric sphere beyond a cut PLANE, clipped to
-  // the FRONT so the buried back half costs no triangles. The plane offset
-  // encodes coverage along its axis: covering the fraction `c` from one side
-  // keeps the region beyond (1 − 2·c)·rad on that side. Upper/lower lids cut on
-  // Z; the lateral corner caps that pinch an almond eye to points cut on X
-  // (symmetric, so one node still mirrors onto both eyes). Returns the UNLABELLED
-  // lid solid (both eyes) — the caller labels it AND subtracts it from the
-  // eyeball/iris/pupil so the eye exists only in the OPENING (see below).
-  const buildLidSolid = (): Node | null => {
-    if (lids === 'none') return null;
-    const spec = LID_SPEC[lids];
+  // A skin DOME covers the eyeball front; a smooth ELLIPTICAL hole is cut where
+  // the eye shows. Everything is built in the CANONICAL head frame (forward −Y,
+  // up +Z, lateral ±X) then oriented into the posed head and translated onto
+  // each eye centre — the same canonical→pose→translate path the iris/pupil
+  // `disc` plug uses.
+  //
+  //   • dome    = sphere(lidR) ∩ front half-space — a skin cap over the eye.
+  //   • opening = an ellipsoid stretched into a tube along the view axis (−Y),
+  //               so it carves a clean elliptical window (no jagged box-cut
+  //               rectangle). 'closed' has no opening.
+  //   • lid     = dome − opening  (labelled 'lids')
+  //   • the eyeball / iris / pupil are CLIPPED to the opening (intersect), so no
+  //     eye geometry survives under the lid — nothing to bleed colour onto the
+  //     lid or poke through, and 'closed' hides the eye entirely.
+  const spec = lids === 'none' ? null : LID_SPEC[lids];
+  let lidNode: Node | null = null;
+  let clipBall = (n: Node): Node => n;   // the eyeball (sclera) — kept whole when open
+  let clipDisc = (n: Node): Node => n;   // iris / pupil — confined to the opening
+  if (spec) {
     const lidR = rad * spec.scale;
-    const big = lidR * 4;                       // half-space box, comfortably larger than the cap
-    const frontBox = sdf.box([big, big, big]).translate([0, -big / 2 + rad * 0.2, 0]); // keep front (y ≲ 0)
-    // One spherical cap clipped to the `sign` side of a plane ⟂ the given axis.
-    const cap = (coverage: number, axis: 0 | 2, sign: 1 | -1): Node | null => {
-      if (coverage <= 0) return null;
-      const plane = sign * (1 - 2 * coverage) * rad;
-      const t: Vec3 = [0, 0, 0];
-      t[axis] = plane + sign * big / 2;
-      const slab = sdf.box([big, big, big]).translate(t);
-      // Round the crease edge a touch so the lid rim reads soft, not machined.
-      return sdf.sphere(lidR).intersect(slab).intersect(frontBox).round(rad * 0.03);
-    };
-    const caps = [
-      cap(spec.cu, 2, 1),   // upper lid (top, Z+)
-      cap(spec.cl, 2, -1),  // lower lid (bottom, Z−)
-      cap(spec.cx, 0, 1),   // outer corner (X+)
-      cap(spec.cx, 0, -1),  // inner corner (X−)
-    ].filter((n): n is Node => n !== null);
-    if (caps.length === 0) return null;
-    const lid = caps.reduce((acc, n) => acc.union(n));
-    const place = (c: Vec3): Node => orientToHeadPose(lid, rig).translate(c);
-    return place(cL).union(place(cR));
-  };
-  const lidSolid = buildLidSolid();
-  const lidNode = lidSolid ? lidSolid.label('lids') : null;
-  // CLIP the eye parts to the opening: subtract the lid solid so no eyeball /
-  // iris / pupil geometry survives UNDER the lid. Without this the discs extend
-  // beneath the lid and merely rely on the union to bury them — fragile: the
-  // covered iris/pupil bleed their colour onto the lid surface (the label sits
-  // a hair behind the lid) and a posed head can poke them through. Removing the
-  // geometry outright makes the lid an opaque skin fold and lets `closed` fully
-  // hide the eye, with nothing left to bleed.
-  const clip = (n: Node): Node => (lidSolid ? n.subtract(lidSolid) : n);
+    const big = lidR * 4;
+    const frontBox = sdf.box([big, big, big]).translate([0, -big / 2 + rad * 0.25, 0]); // keep front (y ≲ 0)
+    const dome = sdf.sphere(lidR).intersect(frontBox);
+    const opening = spec.wx > 0 && spec.hz > 0
+      ? sdf.ellipsoid(rad * spec.wx, rad * 3, rad * spec.hz).translate([0, 0, rad * spec.cz])
+      : null;
+    const lidLocal = opening ? dome.subtract(opening) : dome;
+    const placeBoth = (node: Node): Node =>
+      orientToHeadPose(node, rig).translate(cL).union(orientToHeadPose(node, rig).translate(cR));
+    lidNode = placeBoth(lidLocal).label('lids');
+    if (opening) {
+      // The EYEBALL stays a WHOLE sphere — it fills behind the dome's hole, so
+      // the dome+eyeball is one solid mass (no nested tube walls → no genus
+      // blow-up; clipping the ball to a lens shared the opening's tube wall with
+      // the lid and produced dozens of handles). Only the IRIS/PUPIL discs are
+      // clipped to the opening, so their colour can't extend under the lid and
+      // bleed onto it.
+      const openSolid = placeBoth(opening);
+      clipBall = (n) => n;
+      clipDisc = (n) => n.intersect(openSolid);
+    } else {
+      // 'closed' — no opening; remove the eye entirely under the full dome.
+      const domeSolid = placeBoth(dome);
+      clipBall = (n) => n.subtract(domeSolid);
+      clipDisc = (n) => n.subtract(domeSolid);
+    }
+  }
 
   // 'solid': plain spheres for the caller to `.label()` — UNCHANGED when there
   // are no lids. With lids, the eyeball must carry its own 'eyes' label (so the
@@ -1261,7 +1261,7 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // the caller must NOT wrap it in another `.label()`.
   if (style === 'solid') {
     if (!lidNode) return pair(rad, 0);
-    return clip(pair(rad, 0)).label('eyes').union(lidNode);
+    return clipBall(pair(rad, 0)).label('eyes').union(lidNode);
   }
   // 'iris' (default): a perfectly ROUND white eyeball with the coloured iris and
   // black pupil PAINTED ON as flush concentric discs — each its own pre-labelled
@@ -1299,9 +1299,9 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // discR sets how much white shows: the iris spans a bit over half the eyeball
   // width (a generous coloured disc, the look that read best) leaving a clear
   // white margin; the pupil is half the iris.
-  const sclera = clip(pair(rad, 0)).label('eyes');
-  const iris = clip(disc(rad * 1.012, rad * 0.55)).label('iris');
-  const pupil = clip(disc(rad * 1.024, rad * 0.27)).label('pupil');
+  const sclera = clipBall(pair(rad, 0)).label('eyes');
+  const iris = clipDisc(disc(rad * 1.012, rad * 0.55)).label('iris');
+  const pupil = clipDisc(disc(rad * 1.024, rad * 0.27)).label('pupil');
   const eyes = sclera.union(iris).union(pupil);
   return lidNode ? eyes.union(lidNode) : eyes;
 }

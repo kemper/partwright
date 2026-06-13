@@ -462,13 +462,13 @@ protrude. (Brows can use the same top-level pattern if you want them painted.)
 
 #### Eyelids — `lids` (off by default)
 
-Add a skin fold over the eye with `lids`. It drapes a thin cap (slightly larger
-than the eyeball, so it sits ON it as skin) and is pre-labelled **`'lids'`** so
+Add a skin fold over the eye with `lids`. A skin dome covers the eyeball with a
+smooth elliptical opening where the eye shows; it is pre-labelled **`'lids'`** so
 you paint it — match the skin tone for a natural lid, or tint it for eyeshadow.
 
 ```js
 F.face.eyes(rig, { lids: 'upper' })           // iris eyes + an upper lid
-F.face.eyes(rig, { lids: 'almond' })          // pinched-corner almond eye
+F.face.eyes(rig, { lids: 'almond' })          // almond-shaped eye opening
 ```
 
 | `lids` | Look |
