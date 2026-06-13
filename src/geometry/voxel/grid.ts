@@ -642,6 +642,99 @@ export class VoxelGrid {
     return this;
   }
 
+  /** Merge all voxels from `other` into this grid. Existing voxels in `this`
+   *  keep their color; only empty positions are filled from `other`. Chainable. */
+  weld(other: VoxelGrid): this {
+    other.forEach((x, y, z, rgb) => {
+      const k = packKey(x, y, z);
+      if (!this.cells.has(k)) this.cells.set(k, rgb);
+    });
+    return this;
+  }
+
+  /** Add the minimum bridging voxels to turn diagonal-only contacts (edge or
+   *  corner adjacency in any axis-plane slice) into face contacts, so the model
+   *  fuses into a single piece on an FDM printer.
+   *
+   *  Algorithm: for each of the three axis-plane families (XY, XZ, YZ), and for
+   *  each occupied voxel A, check its 4 diagonal neighbours in that plane. When
+   *  diagonal neighbour B is occupied but neither of the two shared face-
+   *  neighbours between A and B is occupied, insert one bridging voxel at A's
+   *  first face-neighbour toward B (arbitrary but deterministic). Repeats until
+   *  stable (at most a few iterations). Chainable. */
+  solidifyDiagonals(): this {
+    // Each plane is encoded as two unit direction vectors (da, db).
+    // da = primary axis direction, db = secondary axis direction.
+    // The diagonal offsets are (±da ± db); bridging goes at (±da, 0) first.
+    type PlaneAxes = readonly [dax: number, day: number, daz: number, dbx: number, dby: number, dbz: number];
+    const planes: PlaneAxes[] = [
+      // XY-plane: da=(1,0,0), db=(0,1,0)
+      [1, 0, 0,  0, 1, 0],
+      // XZ-plane: da=(1,0,0), db=(0,0,1)
+      [1, 0, 0,  0, 0, 1],
+      // YZ-plane: da=(0,1,0), db=(0,0,1)
+      [0, 1, 0,  0, 0, 1],
+    ];
+
+    let changed = true;
+    while (changed) {
+      changed = false;
+      // Snapshot current cells so iteration is over a stable set.
+      const snapshot = [...this.cells.entries()];
+
+      const toAdd: Array<[number, number, number, number]> = [];
+
+      for (const [key, rgb] of snapshot) {
+        const az = (key % DIM) - HALF;
+        const ay = (Math.floor(key / DIM) % DIM) - HALF;
+        const ax = Math.floor(key / (DIM * DIM)) - HALF;
+
+        for (const [dax, day, daz, dbx, dby, dbz] of planes) {
+          // 4 diagonal offsets in this plane: (±da ± db)
+          for (const sa of [1, -1] as const) {
+            for (const sb of [1, -1] as const) {
+              const bx = ax + sa * dax + sb * dbx;
+              const by = ay + sa * day + sb * dby;
+              const bz = az + sa * daz + sb * dbz;
+              if (!inRange(bx, by, bz)) continue;
+              if (!this.cells.has(packKey(bx, by, bz))) continue;
+
+              // B is diagonally occupied. Check the two face-neighbours that
+              // bridge A to B: face1 = A + sa*da, face2 = A + sb*db.
+              const f1x = ax + sa * dax;
+              const f1y = ay + sa * day;
+              const f1z = az + sa * daz;
+              const f2x = ax + sb * dbx;
+              const f2y = ay + sb * dby;
+              const f2z = az + sb * dbz;
+
+              const f1exists = inRange(f1x, f1y, f1z) && this.cells.has(packKey(f1x, f1y, f1z));
+              const f2exists = inRange(f2x, f2y, f2z) && this.cells.has(packKey(f2x, f2y, f2z));
+
+              if (!f1exists && !f2exists) {
+                // Neither bridging face is occupied — insert at face1 (the da
+                // direction; arbitrary but deterministic).
+                if (inRange(f1x, f1y, f1z)) {
+                  toAdd.push([f1x, f1y, f1z, rgb]);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      for (const [x, y, z, rgb] of toAdd) {
+        const k = packKey(x, y, z);
+        if (!this.cells.has(k)) {
+          this.cells.set(k, rgb);
+          changed = true;
+        }
+      }
+    }
+
+    return this;
+  }
+
   // ---- Surfacing (how the grid is meshed) -------------------------------
 
   /** Select rounded-edge surfacing. Accepts an iteration count or
