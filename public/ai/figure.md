@@ -92,6 +92,8 @@ F.rig({
   headsTall,   // 2..12, head-count proportion (default 6). LOWER = bigger head.
   build,       // 'slim' | 'average' | 'stocky' — limb/torso thickness
   sex,         // 'neutral' (default) | 'male' | 'female' — silhouette balance
+  age,         // years, 1..90 (default 25). Shifts torso girth (baby/child/old).
+  weight,      // 0..1 (default 0.5 = average; 0 = lean, 1 = heavy)
   pose: {      // all optional; neutral standing defaults
     arms, legs, // SYMMETRIC shorthand — seeds BOTH sides at once (see below)
     armL, armR, // { raiseSide, raiseFwd, bend, twist }   degrees — override per side
@@ -108,11 +110,32 @@ F.rig({
 > chibi and a high one a lean, small-headed adult — automatically, at any value.
 > `headsTall` 6 is the calibrated default; ≈3 chibi, ≈7.5 adult.
 
-> **`sex` shifts the silhouette along the same canon, independent of `build`.**
-> `'male'` widens the shoulders and narrows the waist/hips; `'female'` narrows the
-> shoulders and widens the hips with a smaller waist-to-hip ratio (the hourglass).
-> `'neutral'` (default) sits between them. `build` (overall thickness) composes on
-> top, so e.g. `{ sex: 'female', build: 'stocky' }` is a sturdy hourglass.
+> **`sex`, `age`, and `weight` reshape the torso girth — and compose.** They
+> multiply per-region multipliers (shoulder / chest / waist / hip) onto the
+> head-unit widths, on top of `build` (overall thickness). At the defaults
+> (`sex:'neutral'`, `age:25`, `weight:0.5`) every multiplier is exactly 1, so an
+> un-set figure is unchanged.
+> - **`sex`** — `'male'` widens the shoulders and narrows the waist/hips;
+>   `'female'` narrows the shoulders, widens the hips (smaller waist-to-hip ratio
+>   = the hourglass), and adds a bust; `'neutral'` sits between.
+> - **`age`** (years) shifts torso girth toward the baby/child/old proportions.
+>   It does **not** change `headsTall` (the head-to-body ratio) — for a full
+>   baby/child look, lower `headsTall` too (≈3–4).
+> - **`weight`** (0..1) widens or narrows the waist, hips, and chest **and their
+>   front-back depth**, so a heavy figure reads as 3D bulk, not just wider.
+>
+> So `{ sex: 'female', weight: 0.7, age: 60 }` is a fuller, older woman, and
+> `{ sex: 'male', build: 'stocky', weight: 0.8 }` a heavyset man.
+>
+> **Provenance.** The `age` and `weight` ratios are **mined from MakeHuman's CC0
+> macrodetail morph targets** (github.com/makehumancommunity/makehuman, released
+> CC0 2020) — see `scripts/mine-makehuman-anthropometry.mjs`, which applies each
+> target to MakeHuman's base mesh and measures torso circumference at landmark
+> heights. MakeHuman's *macro gender* delta turned out to be <1% (the gendered
+> look there comes from its muscle/proportion sliders, not gender alone), too
+> subtle to read on a stylized figurine, so the `sex` breadth values are
+> anthropometry-informed stylization; the one strong CC0 sex signal — the
+> female breast target — is reflected in the female chest.
 
 **Symmetric shorthand:** `pose.arms` / `pose.legs` set BOTH sides at once;
 `armL`/`armR` (`legL`/`legR`) override a single side. Use it for any symmetric
