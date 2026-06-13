@@ -45,6 +45,10 @@ export const WHATS_NEW_WEEKS: WeekEntry[] = [
             body: 'Figure eyes now read as a recognizable layered iris and pupil painted onto a smooth eyeball, instead of raised beads, with smoother eye meshing across all the figures.',
           },
           {
+            title: 'Eyelids',
+            body: 'Eyes gained a lids option — upper, hooded, half-closed, closed, almond, and tapered styles — that drapes a paintable skin fold over the eye for expression. The catalog figures now wear lids suited to each character.',
+          },
+          {
             title: 'Headwear and richer hair',
             body: 'F.placeOnHead positions headwear, and the hair system expanded with new styles — a tousled mop, a face-framing afro, and Bart-style spikes — plus a printable relief texture.',
           },

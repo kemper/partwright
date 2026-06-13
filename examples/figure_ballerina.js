@@ -53,7 +53,7 @@ const skin = F.weld(rig, [
 
 // 3b. EYES — hard-unioned at the top level with their own label so they can be
 // painted white/black separately from the skin.
-const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.14 }); // iris style: labels eyes/iris/pupil itself
+const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.14, lids: 'almond' }); // iris style: labels eyes/iris/pupil itself
 // Delicate painted lips ('lips' label) — an additive ridge, so assemble gets mouth: false.
 const lips = F.face.mouthAccents(rig, { style: 'lips', width: rig.r.head * 0.3, smirk: 0.12 });
 
