@@ -37,16 +37,20 @@ const rig = F.rig({
 });
 const r = rig.r;
 
-// 2. HEAD + FACE — serene expression
+// 2. HEAD + FACE — serene expression. Use additive LIPS (mouthAccents) rather
+// than a carved mouth: at this small head (headsTall 7.5) the carved-mouth
+// groove meshes into degenerate slivers (a torn-looking mouth), whereas the
+// additive lip ridge stays clean.
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
   eyes: false,
   nose:  { tipRadius: r.head * 0.09 },
-  mouth: { smirk: 0.15 },
+  mouth: false,
   ears:  { size: r.head * 0.20 },
   brows: {},
 });
 const eyes = F.face.eyes(rig, { radius: r.head * 0.13 });
+const lips = F.face.mouthAccents(rig, { style: 'lips', smirk: 0.1 });
 
 // 3. SKIN — relaxed hands (palms-together overhead)
 const skin = F.weld(rig, [
@@ -88,5 +92,5 @@ const base = F.base(rig, {
 }).label('base');
 
 // 8. Hard-union all labelled regions and build.
-return sdf.union(skin, eyes, top, leggings, hair, base)
+return sdf.union(skin, eyes, lips, top, leggings, hair, base)
   .build({ edgeLength: 0.5, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] });
