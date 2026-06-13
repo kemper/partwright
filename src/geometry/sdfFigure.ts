@@ -1214,8 +1214,10 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // encodes coverage along its axis: covering the fraction `c` from one side
   // keeps the region beyond (1 − 2·c)·rad on that side. Upper/lower lids cut on
   // Z; the lateral corner caps that pinch an almond eye to points cut on X
-  // (symmetric, so one node still mirrors onto both eyes).
-  const buildLids = (): Node | null => {
+  // (symmetric, so one node still mirrors onto both eyes). Returns the UNLABELLED
+  // lid solid (both eyes) — the caller labels it AND subtracts it from the
+  // eyeball/iris/pupil so the eye exists only in the OPENING (see below).
+  const buildLidSolid = (): Node | null => {
     if (lids === 'none') return null;
     const spec = LID_SPEC[lids];
     const lidR = rad * spec.scale;
@@ -1240,9 +1242,18 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     if (caps.length === 0) return null;
     const lid = caps.reduce((acc, n) => acc.union(n));
     const place = (c: Vec3): Node => orientToHeadPose(lid, rig).translate(c);
-    return place(cL).union(place(cR)).label('lids');
+    return place(cL).union(place(cR));
   };
-  const lidNode = buildLids();
+  const lidSolid = buildLidSolid();
+  const lidNode = lidSolid ? lidSolid.label('lids') : null;
+  // CLIP the eye parts to the opening: subtract the lid solid so no eyeball /
+  // iris / pupil geometry survives UNDER the lid. Without this the discs extend
+  // beneath the lid and merely rely on the union to bury them — fragile: the
+  // covered iris/pupil bleed their colour onto the lid surface (the label sits
+  // a hair behind the lid) and a posed head can poke them through. Removing the
+  // geometry outright makes the lid an opaque skin fold and lets `closed` fully
+  // hide the eye, with nothing left to bleed.
+  const clip = (n: Node): Node => (lidSolid ? n.subtract(lidSolid) : n);
 
   // 'solid': plain spheres for the caller to `.label()` — UNCHANGED when there
   // are no lids. With lids, the eyeball must carry its own 'eyes' label (so the
@@ -1250,7 +1261,7 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // the caller must NOT wrap it in another `.label()`.
   if (style === 'solid') {
     if (!lidNode) return pair(rad, 0);
-    return pair(rad, 0).label('eyes').union(lidNode);
+    return clip(pair(rad, 0)).label('eyes').union(lidNode);
   }
   // 'iris' (default): a perfectly ROUND white eyeball with the coloured iris and
   // black pupil PAINTED ON as flush concentric discs — each its own pre-labelled
@@ -1288,9 +1299,9 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // discR sets how much white shows: the iris spans a bit over half the eyeball
   // width (a generous coloured disc, the look that read best) leaving a clear
   // white margin; the pupil is half the iris.
-  const sclera = pair(rad, 0).label('eyes');
-  const iris = disc(rad * 1.012, rad * 0.55).label('iris');
-  const pupil = disc(rad * 1.024, rad * 0.27).label('pupil');
+  const sclera = clip(pair(rad, 0)).label('eyes');
+  const iris = clip(disc(rad * 1.012, rad * 0.55)).label('iris');
+  const pupil = clip(disc(rad * 1.024, rad * 0.27)).label('pupil');
   const eyes = sclera.union(iris).union(pupil);
   return lidNode ? eyes.union(lidNode) : eyes;
 }
