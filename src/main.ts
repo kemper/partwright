@@ -7545,7 +7545,10 @@ async function main() {
       };
       setActiveImports([comp]);
       setValue(result.code);
-      const ok = await runCodeSync(result.code);
+      // A surface modifier decorates the existing model in place (same bounds),
+      // so keep the user's camera angle instead of snapping back to the default
+      // framing when the baked result renders.
+      const ok = await runCodeSync(result.code, { preserveCamera: true });
       if (!ok) return { error: `Failed to apply ${result.label}` };
       let geoData = getGeometryDataObj();
       let carried = 0;
@@ -7589,7 +7592,9 @@ async function main() {
     if (getActiveLanguage() !== 'voxel') await switchLanguage('voxel');
     setActiveImports([]);
     setValue(result.code);
-    const ok = await runCodeSync(result.code);
+    // Same in-place decoration: a voxelize/voronoi-lamp bake keeps the model's
+    // bounds, so preserve the user's camera angle across the render.
+    const ok = await runCodeSync(result.code, { preserveCamera: true });
     if (!ok) return { error: `Failed to apply ${result.label}` };
     const thumbnail = await captureThumbnail();
     await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
@@ -8703,7 +8708,11 @@ async function main() {
         return { error: 'The current model declares no parameters. Add an api.params({...}) call to the model code (and run it) first.' };
       }
       currentParamValues = { ...currentParamValues, ...(values as Record<string, ParamValue>) };
-      const applied = await runCodeSync(getValue());
+      // Tweaking a parameter re-renders the same model, so keep the user's (or
+      // AI's) current camera angle rather than snapping to the default framing —
+      // matching the Customizer panel's onChange path (runCode preserves by
+      // default). captureCameraToPreserve still auto-frames a session's first run.
+      const applied = await runCodeSync(getValue(), { preserveCamera: true });
       if (!applied) return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
       const geometry = JSON.parse(geometryDataEl.textContent || '{}');
       return {
@@ -14972,13 +14981,25 @@ async function main() {
     const t0 = performance.now();
     startRunTimer(t0);
 
+    // Snapshot the camera to restore *before* the engine runs, not after, when
+    // this is a re-render of an already-framed session (opts.preserveCamera:
+    // version switch, live edit, Customizer change, quality change). The SCAD
+    // path renders progressively — onScadPreview below calls updateMesh mid-run,
+    // which auto-frames; capturing afterwards would record that reset pose and
+    // "preserve" the default framing instead of the user's angle (the Customizer
+    // reset bug on parametric SCAD models). captureCameraToPreserve returns null
+    // on a session's first render, so a genuinely new model still auto-frames.
+    const preservedCameraPose = opts.preserveCamera ? captureCameraToPreserve() : null;
+
     // SCAD preview callback: receives the fast Phase 1 mesh and updates the
-    // viewport immediately so the user sees geometry while Phase 2 renders.
+    // viewport immediately so the user sees geometry while Phase 2 renders. Skip
+    // its auto-frame while preserving the camera, so the mid-run preview doesn't
+    // momentarily snap to the default view before the final restore lands.
     const onScadPreview = getActiveLanguage() === 'scad'
       ? (previewResult: MeshResult) => {
           if (myGen !== _runGeneration || !previewResult.mesh) return;
           currentMeshData = previewResult.mesh;
-          updateMesh(previewResult.mesh);
+          updateMesh(previewResult.mesh, { skipAutoFrame: preservedCameraPose !== null });
         }
       : undefined;
 
@@ -15171,12 +15192,9 @@ async function main() {
       // strokes) so slab/box smooth regions rebuild too, exactly as the
       // visibility-toggle path does via reconcilePaintedGeometry.
       //
-      // Snapshot the camera before the auto-framing updateMesh runs when this
-      // run is a version switch (opts.preserveCamera) within an already-framed
-      // session: keep the user's interactive angle instead of snapping to the
-      // default 3/4 view. Genuine new-code runs (pw.run, live edits) leave this
-      // null so the new model auto-frames as before.
-      const preservedCameraPose = opts.preserveCamera ? captureCameraToPreserve() : null;
+      // preservedCameraPose was snapshotted at the top of runCodeSync (before
+      // the engine ran), so the auto-framing updateMesh calls below — and the
+      // SCAD progressive preview — don't poison the pose we restore at the end.
       if (hasColorRegions() && hasRefineDescriptors()) {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();
