@@ -785,6 +785,13 @@
       "description": "A casual figure in chunky sneakers — showcasing the figure footwear builder: F.clothing.shoes paints a separate contrasting sole and F.ground plants both feet level on the base so the soles sit flush."
     },
     {
+      "id": "afro-funk-dancer",
+      "name": "Afro Funk Dancer",
+      "file": "afro_funk.partwright.json",
+      "language": "manifold-js",
+      "description": "A funk dancer mid-groove with a big curly afro — showing off the figure rig's hair system, where the 'afro' style and its curl relief are real printable geometry that tracks the cocked head."
+    },
+    {
       "id": "flexing-strongman",
       "name": "Flexing Strongman",
       "file": "flexing_strongman.partwright.json",

@@ -258,6 +258,27 @@ const staffPlaced = F.placeAt(staff, rig.joints.handR);                   // cen
 so they stay one printable piece — a staff floating next to the hand is a
 second component.
 
+**Seating headwear ON the hair — `F.placeOnHead(node, rig, opts?)`.** `placeAt`
+snaps to the *skull* crown joint, so a hat/crown placed there **embeds in the
+hair** (the hair adds volume above the skull). `placeOnHead` is the headwear
+analog of the hand grip frame: pass the **hair** as `opts.rest` and it rests the
+accessory's bbox `anchor` (default `'bottom'`) on the TOP of the hair, centred on
+the head. `clearance` floats it above; `embed` sinks it in a little so it welds
+into one printable piece. Build the accessory **centred on the origin** (ring in
+the z=0 plane, spikes up), then place it:
+
+```js
+const hair = F.hair(rig, { style: 'long' }).label('hair');
+// coronet built at the origin; size the ring near the hair radius so it welds
+const crown = F.placeOnHead(coronet, rig, { rest: hair, embed: rig.r.head * 0.4 }).label('crown');
+```
+
+Without `rest` it falls back to `rig.joints.crown` (the bare skull apex). A ring
+sized to the skull sits *inside* the larger hair volume — keep the ring small
+(a coronet on top) or grow it toward the hair radius so the band straddles the
+hair surface and welds (a band tangent to the surface prints as a second
+component).
+
 **Putting a prop INTO a hand — `F.holdAt(prop, rig.grip.L|R, opts?)`.** `placeAt`
 only positions; `holdAt` also **orients** a prop to the grip and seats it in the
 finger cup. Build the prop centred at the origin with its long axis along local
@@ -429,11 +450,21 @@ the body keeps the cheap global grid. Typically +30–60k triangles instead of t
 ## Hair & clothing — derived from the rig, so they always fit
 
 ```js
-F.hair(rig, { style, hairline })
-//   style: 'short' | 'long' | 'bun' | 'bald' | 'bangs' | 'ponytail'
+F.hair(rig, { style, hairline, length, volume, part, texture })
+//   style: 'short' | 'long' | 'bob' | 'bun' | 'bald' | 'bangs' | 'ponytail'
+//          | 'afro' | 'braids' | 'spiked'
 //   hairline: 'high' | 'mid' | 'low' — where the face window's top edge sits.
 //   'bangs' adds a straight fringe and defaults to 'low' (hair to the brows);
-//   'ponytail' adds a gathered tail swinging down the back of the skull.
+//   'ponytail'/'braids' add tails down the back; 'bob' frames the jaw; 'afro'
+//   puffs a textured sphere around the skull; 'spiked' radiates anime spikes.
+//   length: 'short' | 'mid' (default) | 'long' — how far tails/manes fall.
+//   volume: 0.3..4 (default 1) — puffs the cap + tail girth (afro wants 1.5+).
+//   part: 'none' (default) | 'left' | 'right' | 'center' — a shallow part groove.
+//   texture: 'none' | 'strands' | 'curls' | 'wavy' — physical strand/curl
+//     relief displaced into the surface (the print-native hair-texture analog;
+//     real geometry, not a screen shader). 'afro' defaults to 'curls',
+//     'braids' to 'wavy'; the classic styles stay smooth. Mesh fine enough
+//     (edgeLength ≤ ~0.4, faceDetail on the head) or the relief aliases away.
 F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
 //   rise: low|mid|high · leg: slim|cargo · length: 'full' (default) | 'briefs'
 //   'briefs' = seat + gusset + hip coverage only (leotard bottoms, swimwear,

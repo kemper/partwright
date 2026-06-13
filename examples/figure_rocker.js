@@ -71,7 +71,7 @@ const jeans = F.clothing.pants(rig, {
 }).label('jeans');
 
 // 5. HAIR — bangs (fringe).
-const hair = F.hair(rig, { style: 'bangs' }).label('hair');
+const hair = F.hair(rig, { style: 'spiked' }).label('hair');
 
 // 6. BASE.
 const base = F.base(rig, { radius: rig.opts.height * 0.27 }).label('base');
