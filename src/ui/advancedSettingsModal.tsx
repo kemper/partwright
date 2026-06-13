@@ -805,6 +805,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'toastDurationMs', v)}
         />
         <Field
+          label="Pane slide"
+          unit="ms"
+          hint="How long the side panes (AI panel, code editor) take to slide open/closed."
+          tooltip="The docked AI panel and code editor pane animate their layout so the viewport grows/shrinks smoothly instead of snapping. Lower for a snappier toggle, 0 for instant. Ignored when your OS is set to reduce motion."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paneSlideMs}
+          value={c.ui.paneSlideMs}
+          min={0} max={600} integer
+          onChange={v => set('ui', 'paneSlideMs', v)}
+        />
+        <Field
           label="Default palette capacity"
           hint="How many filament slots the paint panel assumes your printer has."
           tooltip="The default number of colour slots (e.g. 4 for one Bambu AMS). Drives the paint panel's over-budget warning when a model uses more colours than your printer can load. Never blocks painting or export — it's just a heads-up."
@@ -831,6 +841,36 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.tooltipDelayMs}
           min={0} max={2000} integer
           onChange={v => set('ui', 'tooltipDelayMs', v)}
+        />
+        <Field
+          label="Default editor font size"
+          unit="px"
+          hint="Seeds a fresh tab; change the live size from the editor's ⚙ menu (−/+)."
+          tooltip="The code editor's starting font size. The active size is remembered per browser tab via the ⚙ Editor menu's −/+ stepper; this default applies to a fresh tab and is the value the stepper returns to. Must sit within the min/max bounds below."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.editorFontSizeDefault}
+          value={c.ui.editorFontSizeDefault}
+          min={6} max={48} integer
+          onChange={v => set('ui', 'editorFontSizeDefault', v)}
+        />
+        <Field
+          label="Min editor font size"
+          unit="px"
+          hint="Lower bound for the editor's −/+ font stepper."
+          tooltip="The smallest font size the editor's ⚙ menu −/+ stepper will go down to."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.editorFontSizeMin}
+          value={c.ui.editorFontSizeMin}
+          min={6} max={24} integer
+          onChange={v => set('ui', 'editorFontSizeMin', v)}
+        />
+        <Field
+          label="Max editor font size"
+          unit="px"
+          hint="Upper bound for the editor's −/+ font stepper."
+          tooltip="The largest font size the editor's ⚙ menu −/+ stepper will go up to."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.editorFontSizeMax}
+          value={c.ui.editorFontSizeMax}
+          min={12} max={64} integer
+          onChange={v => set('ui', 'editorFontSizeMax', v)}
         />
         <Field
           label="Code editor error idle delay"

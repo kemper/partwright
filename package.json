@@ -27,6 +27,7 @@
     "lint:catalog": "node scripts/lint-catalog.mjs",
     "audit:catalog": "node scripts/catalog-audit.cjs",
     "model:preview": "node scripts/model-preview.mjs",
+    "new:modifier": "node scripts/new-modifier.mjs",
     "cli": "node bin/partwright.mjs"
   },
   "devDependencies": {
