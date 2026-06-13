@@ -704,9 +704,11 @@ describe('figure skin palette — F.skin', () => {
     const all = F.skin() as Record<string, string>;
     expect(Object.keys(all).length).toBeGreaterThanOrEqual(12);
     for (const hex of Object.values(all)) expect(hex).toMatch(/^#[0-9a-f]{6}$/i);
-    // The ramp must actually cover the range, not cluster at the light end.
-    expect(lum(all.porcelain)).toBeGreaterThan(lum(all.ebony));
-    expect(lum(all.ebony)).toBeLessThan(lum(all.tan));
+    // The ramp must actually cover the range AND be strictly monotonic light →
+    // deep (insertion order = the documented porcelain…ebony order), so a future
+    // mis-ordered palette edit is caught rather than passing on the endpoints.
+    const lums = Object.values(all).map(lum);
+    for (let i = 1; i < lums.length; i++) expect(lums[i]).toBeLessThan(lums[i - 1]);
   });
 
   it('throws naming the option on an unknown tone', () => {

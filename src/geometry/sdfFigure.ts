@@ -1437,47 +1437,53 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     // read as distinct cords with channels (partings) showing skin, not a
     // smooth coily cap. Each ridge is a beaded capsule chain over a meridian of
     // the head, offset laterally; the rows converge at a gathered nape puff.
-    const rows = 7;
-    const ridgeR = r.head * 0.085 * volume;
+    const rows = 6;
+    const ridgeR = r.head * 0.09 * volume;
     // Start from a SHRUNKEN cap so the base hair hugs the skull (cornrows lie
-    // flat); the ridges then stand proud of it and the channels carve to scalp.
-    cap = sdf.ellipsoid(r.headX + tv * 0.25, r.head + tv * 0.25, r.headZ + tv * 0.25)
-      .translate(add3(c, add3(scale3(f, -tv * 0.3), scale3(u, tv * 0.2))));
-    const rrBase = (r.headX + r.headZ) / 2;
-    const ridgePt = (t: number, lat: number, lift: number): Vec3 => {
-      // Sweep from just ahead of the crown (front hairline) back over the top
-      // to the nape; lateral offset narrows toward the poles so rows fan from a
-      // central crown and gather again at the nape.
-      const ang = mix(-30, 198, t);
-      const dir = norm3(add3(scale3(f, Math.cos(ang * DEG)), scale3(u, Math.sin(ang * DEG))));
-      const latAmt = Math.sin(Math.max(0, Math.min(1, t)) * Math.PI);
-      const radial = add3(c, scale3(dir, rrBase + lift));
-      return add3(radial, scale3(right, lat * r.headX * 0.78 * latAmt));
+    // flat); the ridges then stand proud of it and shallow channels groove the
+    // partings. The base stays a hair THICKER than the skull so the grooves cut
+    // the cap surface only (a visible parting) without slicing the shell down to
+    // a knife-edge — the thin-wall handles that fragmented the bake.
+    const capC = add3(c, add3(scale3(f, -tv * 0.3), scale3(u, tv * 0.2)));
+    const ax = r.headX + tv * 0.3, ay = r.head + tv * 0.3, az = r.headZ + tv * 0.3;
+    cap = sdf.ellipsoid(ax, ay, az).translate(capC);
+    // Project a direction-ish vector onto the cap ELLIPSOID surface (pushed out
+    // by `out`). Placing each cord centreline ON the surface (out = 0) leaves it
+    // half-embedded in EVERY direction — the cords can't float off the narrow
+    // (lateral) sides the way a fixed average radius let them, which is what
+    // detached them into separate components in the browser mesher.
+    const onCap = (pRel: Vec3, out: number): Vec3 => {
+      const d = norm3(pRel);
+      const er = 1 / Math.sqrt((d[0] / ax) ** 2 + (d[1] / ay) ** 2 + (d[2] / az) ** 2);
+      return add3(capC, scale3(d, er + out));
     };
-    const SEG = 9;
-    // Carve the parting channels FIRST (cutters between each pair of ridges),
-    // then add the raised cords on top.
-    for (let g = 0; g < rows - 1; g++) {
-      const lat = ((g + 0.5) / (rows - 1)) * 2 - 1;       // midway between rows
-      for (let i = 0; i < SEG; i++) {
-        const cutter = sdf.capsule(ridgePt(i / SEG, lat, ridgeR * 0.3), ridgePt((i + 1) / SEG, lat, ridgeR * 0.3), ridgeR * 0.62);
-        cap = cap.smoothSubtract(cutter, ridgeR * 0.35);
-      }
-    }
+    const ridgePt = (t: number, lat: number, out: number): Vec3 => {
+      // Sweep from just ahead of the crown (front hairline) back over the top to
+      // the nape; the lateral tilt fans the rows from a central crown and
+      // gathers them again at the nape, then project onto the cap surface.
+      const ang = mix(-30, 198, t);
+      const mdir = add3(scale3(f, Math.cos(ang * DEG)), scale3(u, Math.sin(ang * DEG)));
+      const latAmt = Math.sin(Math.max(0, Math.min(1, t)) * Math.PI);
+      return onCap(add3(mdir, scale3(right, lat * 0.62 * latAmt)), out);
+    };
+    const SEG = 7;
+    // Raised cords half-embedded in the cap, spaced so the VALLEYS between them
+    // read as the partings — no groove-carving. (Carving shallow channels
+    // between close cords pinched the shell into thousands of tiny handles;
+    // half-embedded proud cords leave a clean parting valley, keep the genus
+    // near zero, AND always overlap the cap so none detaches.)
     for (let rw = 0; rw < rows; rw++) {
       const lat = (rw / (rows - 1)) * 2 - 1;             // −1 .. 1
       let ridge: Node | undefined;
       for (let i = 0; i < SEG; i++) {
-        // Bead the cord slightly (alternating radius) for the braided look.
-        const rad = ridgeR * (i % 2 === 0 ? 1 : 0.82);
-        const seg = sdf.capsule(ridgePt(i / SEG, lat, ridgeR), ridgePt((i + 1) / SEG, lat, ridgeR), rad);
-        ridge = ridge === undefined ? seg : ridge.smoothUnion(seg, ridgeR * 0.4);
+        const seg = sdf.capsule(ridgePt(i / SEG, lat, 0), ridgePt((i + 1) / SEG, lat, 0), ridgeR);
+        ridge = ridge === undefined ? seg : ridge.smoothUnion(seg, ridgeR * 0.7);
       }
       cap = cap.smoothUnion(ridge!, ridgeR * 0.5);
     }
     // Gathered puff where the rows meet at the nape.
     const nape = add3(c, add3(scale3(f, -r.headZ * 0.55), scale3(u, -r.head * 0.55)));
-    cap = cap.smoothUnion(sdf.sphere(r.head * 0.4 * volume).translate(nape), r.head * 0.28);
+    cap = cap.smoothUnion(sdf.sphere(r.head * 0.4 * volume).translate(nape), r.head * 0.32);
   }
   // Strand/curl relief: a directional displacement field in the head's own
   // frame. Amplitude is floored so the relief survives meshing at the figure
