@@ -789,7 +789,10 @@ function buildFeet(sdf: SdfApi, rig: Rig): Node {
  *  (and, for boots, the lower-leg shank) offset outward by `t` and clipped to the
  *  footwear zone, unioned UNDER the overlay so it only ADDS coverage and the skin
  *  can never poke through. Footwear overlaps the foot/shank skin, so the
- *  top-level union keeps the figure one component in any pose. */
+ *  top-level union keeps the figure one component in any pose.
+ *
+ *  Usage: see `examples/figure_sneakers.js` (shoes + contrasting sole, feet
+ *  grounded level) and `examples/figure_superhero.js` (boots). */
 function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'boots'): Node {
   const name = `clothing.${kind}(opts)`;
   const o = obj(opts, name);
