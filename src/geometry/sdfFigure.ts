@@ -137,7 +137,7 @@ const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const LEG_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const HEAD_FIELDS = ['yaw', 'pitch', 'roll'];
 const SPINE_FIELDS = ['lean', 'turn', 'side'];
-const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'pose'];
+const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'age', 'weight', 'pose'];
 const POSE_FIELDS = ['arms', 'legs', 'armL', 'armR', 'legL', 'legR', 'head', 'spine'];
 
 function parseArm(v: unknown, name: string, defRaiseSide: number): JointPose {
@@ -170,6 +170,15 @@ export interface RigOptions {
    *  widens the shoulders and narrows the waist/hips; 'female' does the
    *  reverse. Independent of `build` (overall thickness). */
   sex?: 'neutral' | 'male' | 'female';
+  /** Age in years (1..90, default 25 = young adult). Shifts torso girth toward
+   *  the mined MakeHuman baby/child/old proportions; it does NOT change
+   *  `headsTall` (the head-to-body ratio) — lower `headsTall` too for a full
+   *  child/chibi look. */
+  age?: number;
+  /** Body weight as a 0..1 slider (default 0.5 = average; 0 = lean, 1 = heavy).
+   *  Widens/narrows the waist, hips, and chest (and their depth) per the mined
+   *  MakeHuman weight morph. */
+  weight?: number;
   pose?: {
     armL?: object; armR?: object; legL?: object; legR?: object;
     head?: object; spine?: object;
@@ -254,10 +263,77 @@ export interface Rig {
   sole: { L: SoleFrame; R: SoleFrame };
   /** Facial landmark world positions (derived; never hand-typed). */
   face: FaceAnchors;
-  opts: { height: number; headsTall: number; build: string; sex: string; pose: ResolvedPose };
+  opts: { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; pose: ResolvedPose };
 }
 
 const BUILD_MUL: Record<string, number> = { slim: 0.82, average: 1, stocky: 1.22 };
+
+// --- Anthropometric girth model (sex / age / weight) ---------------------
+// Per-region torso-girth multipliers applied to the head-unit widths, all
+// normalized so the calibration anchor — sex 'neutral', age 25 (young adult),
+// weight 0.5 (average) — is exactly 1.0 in every region, leaving existing
+// figures byte-identical.
+//
+// AGE and WEIGHT are MINED from MakeHuman's CC0 macrodetail morph targets
+// (github.com/makehumancommunity/makehuman, targets released CC0 2020) by
+// scripts/mine-makehuman-anthropometry.mjs: each corner target is applied to
+// MakeHuman's base mesh and the torso cross-section circumference is measured
+// at shoulder/chest/waist/hip landmarks (heights taken from the mesh's own
+// joint helpers), then normalized to the young/average point.
+//
+// SEX breadth is anthropometry-informed *stylization*. The mine confirmed that
+// MakeHuman's macro gender delta is sub-1% at these landmarks — the gendered
+// look there comes from the muscle/proportion sliders, not gender alone — too
+// subtle to read on a stylized figurine. So the breadth values below are tuned
+// for a recognizable silhouette (male: wider shoulders, narrower waist/hips;
+// female: the hourglass), while the one strong CC0 sex signal — the female-only
+// breast target (≈ chest ×1.04 at a moderate cup) — is reflected in `chest`.
+// See public/ai/figure.md and the mining-script header for full provenance.
+type Girth = { shoulder: number; chest: number; waist: number; hip: number };
+const GIRTH_REGIONS = ['shoulder', 'chest', 'waist', 'hip'] as const;
+const SEX_MUL: Record<string, Girth> = {
+  neutral: { shoulder: 1, chest: 1, waist: 1, hip: 1 },
+  male: { shoulder: 1.16, chest: 1.06, waist: 0.94, hip: 0.9 },
+  female: { shoulder: 0.9, chest: 1.06, waist: 0.84, hip: 1.14 },
+};
+// MakeHuman-mined anchors (.plans/mh/anthro.json). `age` interpolates by years,
+// `weight` by a 0..1 slider (0 = lean/minweight, 0.5 = average, 1 = heavy/maxweight).
+const AGE_ANCHORS: { x: number; g: Girth }[] = [
+  { x: 1,  g: { shoulder: 1.006, chest: 0.981, waist: 0.959, hip: 0.969 } }, // baby
+  { x: 7,  g: { shoulder: 1.003, chest: 0.997, waist: 0.995, hip: 0.999 } }, // child
+  { x: 25, g: { shoulder: 1, chest: 1, waist: 1, hip: 1 } },                 // young (anchor)
+  { x: 70, g: { shoulder: 0.998, chest: 0.996, waist: 0.976, hip: 1 } },     // old
+];
+const WEIGHT_ANCHORS: { x: number; g: Girth }[] = [
+  { x: 0,   g: { shoulder: 0.979, chest: 1.008, waist: 0.949, hip: 0.993 } },  // minweight
+  { x: 0.5, g: { shoulder: 1, chest: 1, waist: 1, hip: 1 } },                  // average (anchor)
+  { x: 1,   g: { shoulder: 1.027, chest: 1.039, waist: 1.096, hip: 1.058 } },  // maxweight
+];
+
+/** Piecewise-linear interpolation of a per-region anchor table at `x` (clamped
+ *  to the anchor range). */
+function interpGirth(anchors: { x: number; g: Girth }[], x: number): Girth {
+  let i = 0;
+  while (i < anchors.length - 1 && x > anchors[i + 1].x) i++;
+  const j = Math.min(i + 1, anchors.length - 1);
+  const x0 = anchors[i].x, x1 = anchors[j].x;
+  const t = x1 > x0 ? Math.max(0, Math.min(1, (x - x0) / (x1 - x0))) : 0;
+  const a = anchors[i].g, b = anchors[j].g;
+  const out = {} as Girth;
+  for (const r of GIRTH_REGIONS) out[r] = a[r] + (b[r] - a[r]) * t;
+  return out;
+}
+
+/** Combined per-region girth multiplier from sex × age(years) × weight(0..1).
+ *  Neutral/young(25)/average(0.5) yields 1.0 in every region. */
+function anthroGirth(sex: string, ageYears: number, weight: number): Girth {
+  const s = SEX_MUL[sex] || SEX_MUL.neutral;
+  const ag = interpGirth(AGE_ANCHORS, ageYears);
+  const wt = interpGirth(WEIGHT_ANCHORS, weight);
+  const out = {} as Girth;
+  for (const r of GIRTH_REGIONS) out[r] = s[r] * ag[r] * wt[r];
+  return out;
+}
 
 function buildRig(rawOpts: unknown): Rig {
   const o = obj(rawOpts, 'rig(opts)');
@@ -270,6 +346,8 @@ function buildRig(rawOpts: unknown): Rig {
   const bw = BUILD_MUL[build];
   const sex = o.sex === undefined ? 'neutral'
     : assertEnum(o.sex, ['neutral', 'male', 'female'] as const, 'rig.sex');
+  const age = num(o.age, 25, 'rig.age', 1, 90);
+  const weight = num(o.weight, 0.5, 'rig.weight', 0, 1);
 
   const poseRaw = obj(o.pose, 'rig.pose');
   assertNoUnknownKeys(poseRaw, POSE_FIELDS, 'rig.pose');
@@ -335,28 +413,24 @@ function buildRig(rawOpts: unknown): Rig {
   // default headsTall:6 silhouette is unchanged, but now every headsTall stays
   // proportionally coherent — chibis get chunky, heroes get lean, automatically.
   //
-  // `sex` shifts the shoulder/chest/waist/hip balance along the same canon
-  // (male: wider shoulders + narrower waist/hips; female: the reverse). These
-  // are the anthropometric shape deltas MakeHuman's CC0 targets encode, written
-  // as head-unit ratio multipliers rather than mesh morphs. `build` (overall
-  // thickness) multiplies on top, so the two axes compose.
-  const SEX_MUL: Record<string, { shoulder: number; chest: number; waist: number; hip: number }> = {
-    neutral: { shoulder: 1, chest: 1, waist: 1, hip: 1 },
-    male: { shoulder: 1.16, chest: 1.06, waist: 0.92, hip: 0.9 },
-    female: { shoulder: 0.9, chest: 0.98, waist: 0.86, hip: 1.14 },
-  };
-  const sm = SEX_MUL[sex];
+  // `sex`, `age`, and `weight` shift the shoulder/chest/waist/hip balance via
+  // `anthroGirth` (the MakeHuman-CC0-mined model defined at module scope —
+  // weight/age mined, sex breadth anthropometry-informed). `build` (overall
+  // thickness) multiplies on top, so the axes compose. At the calibration
+  // anchor (neutral / age 25 / weight 0.5) every multiplier is 1.
+  const gm = anthroGirth(sex, age, weight);
+  const wt = interpGirth(WEIGHT_ANCHORS, weight);   // weight also adds torso DEPTH (3D bulk)
   const hu = (ratio: number) => headH * ratio * bw;   // head-unit girth (× build)
-  const shoulderHalfX = hu(0.648) * sm.shoulder;
-  const hipHalfX = hu(0.432) * sm.hip;
+  const shoulderHalfX = hu(0.648) * gm.shoulder;
+  const hipHalfX = hu(0.432) * gm.hip;
   const r = {
     head: ryHead, headX: rxHead, headZ: rzHead,
     neck: hu(0.204),
-    chestX: hu(0.630) * sm.chest, chestY: hu(0.396),
-    hipsX: hu(0.516) * sm.hip, hipsY: hu(0.360),
+    chestX: hu(0.630) * gm.chest, chestY: hu(0.396) * wt.chest,
+    hipsX: hu(0.516) * gm.hip, hipsY: hu(0.360) * wt.hip,
     // The garment-fitting radius at the natural waist (rig.joints.spine) — use
     // this, not hipsX (a leg-insertion radius), to size belts/skirts/tutus.
-    waist: hu(0.492) * sm.waist,
+    waist: hu(0.492) * gm.waist,
     upperArm: hu(0.204), lowerArm: hu(0.168), hand: hu(0.252),
     upperLeg: hu(0.288), lowerLeg: hu(0.216), foot: hu(0.240),
   };
@@ -540,7 +614,7 @@ function buildRig(rawOpts: unknown): Rig {
     grip: { L: gripFrame(aL), R: gripFrame(aR) },
     sole: { L: makeSoleFrame(lL.A, lL.footFwd, r), R: makeSoleFrame(lR.A, lR.footFwd, r) },
     face: sFace,
-    opts: { height: H, headsTall: N, build, sex, pose },
+    opts: { height: H, headsTall: N, build, sex, age, weight, pose },
   };
 }
 
@@ -1911,7 +1985,7 @@ export interface FigureNamespace {
   /** Deterministic world-coordinate dump of the rig's joints, grip frames, and
    *  directions (rounded) plus a `.text` summary — use instead of hand-rolled
    *  JSON scratch probes when authoring a pose. */
-  poseProbe(rig: Rig): { height: number; headsTall: number; build: string; sex: string; joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame }; soles: { L: SoleFrame; R: SoleFrame }; dir: Record<string, Vec3>; text: string };
+  poseProbe(rig: Rig): { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame }; soles: { L: SoleFrame; R: SoleFrame }; dir: Record<string, Vec3>; text: string };
   /** The face's detail-region spheres (head + finer mouth) for
    *  `build({ detail: F.faceDetail(rig) })`. */
   faceDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
@@ -2081,7 +2155,7 @@ function round3(v: Vec3, p = 2): Vec3 {
  *  multi-line summary; `throw new Error(F.poseProbe(rig).text)` (or
  *  `console.log`) surfaces every joint + grip without forgetting one. */
 function poseProbe(rig: Rig): {
-  height: number; headsTall: number; build: string; sex: string;
+  height: number; headsTall: number; build: string; sex: string; age: number; weight: number;
   joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame };
   soles: { L: SoleFrame; R: SoleFrame }; dir: Record<string, Vec3>; text: string;
 } {
@@ -2102,7 +2176,7 @@ function poseProbe(rig: Rig): {
   const soles = { L: soleR(rig.sole.L), R: soleR(rig.sole.R) };
   const o = rig.opts;
   const lines: string[] = [
-    `figure poseProbe — height ${o.height}, headsTall ${o.headsTall}, build ${o.build}, sex ${o.sex}`,
+    `figure poseProbe — height ${o.height}, headsTall ${o.headsTall}, build ${o.build}, sex ${o.sex}, age ${o.age}, weight ${o.weight}`,
     'joints:',
     ...Object.keys(joints).map(k => `  ${k}: [${joints[k].join(', ')}]`),
     'grips:',
@@ -2112,7 +2186,7 @@ function poseProbe(rig: Rig): {
     `  L.point [${soles.L.point.join(', ')}]  heading [${soles.L.heading.join(', ')}]  groundZ ${soles.L.groundZ}`,
     `  R.point [${soles.R.point.join(', ')}]  heading [${soles.R.heading.join(', ')}]  groundZ ${soles.R.groundZ}`,
   ];
-  return { height: o.height, headsTall: o.headsTall, build: o.build, sex: o.sex, joints, grips, soles, dir, text: lines.join('\n') };
+  return { height: o.height, headsTall: o.headsTall, build: o.build, sex: o.sex, age: o.age, weight: o.weight, joints, grips, soles, dir, text: lines.join('\n') };
 }
 
 function assertRig(rig: unknown, name: string): Rig {
