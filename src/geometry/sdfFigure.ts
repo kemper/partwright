@@ -1225,24 +1225,31 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     };
     cap = cap.smoothUnion(braid(1), r.head * 0.25).smoothUnion(braid(-1), r.head * 0.25);
   } else if (style === 'spiked') {
-    // A tousled mop of upward spikes: roots are spread across the whole crown
-    // and each spike points mostly UP with a varied lateral/fore-aft tilt and
-    // length — so it reads as messy anime/punk hair, not an evenly-radiating
-    // ring (which looked like a crown). Deterministic pseudo-random keeps the
-    // bake stable. Base radii stay above the print min-feature.
-    const N = 13;
+    // Bart-Simpson spiky crown: a ring of chunky triangular spikes around the
+    // top, each a fat cone (tapered cylinder) pointing up and splaying outward.
+    // The wide bases smooth-union into the cap so it reads as one spiky hairdo,
+    // not a sparse ring of antennae. Regular + clean, hair-coloured by .label().
+    const N = 9;
+    const baseR = r.head * 0.23 * volume;
+    const len = r.head * 1.45 * lenMul;
     for (let i = 0; i < N; i++) {
-      const ha = Math.sin(i * 12.9898) * 43758.5453; const a = ha - Math.floor(ha);
-      const hb = Math.sin(i * 78.233) * 24634.6345; const b = hb - Math.floor(hb);
-      const hc = Math.sin(i * 39.425) * 11853.113;  const cc = hc - Math.floor(hc);
-      // Direction: dominated by +up, with a modest sideways + fore/aft tilt.
-      const dir = norm3(add3(scale3(u, 1.3), add3(scale3(right, (a - 0.5) * 1.05), scale3(f, (b - 0.5) * 0.95))));
-      // Roots spread over the crown so spikes sprout from the whole top.
-      const root = add3(c, add3(scale3(u, r.headZ * 0.5),
-        add3(scale3(right, (a - 0.5) * r.headX * 1.15), scale3(f, (b - 0.5) * r.headZ * 1.0))));
-      const len = r.head * (0.65 + cc * 0.75) * lenMul;
-      cap = cap.smoothUnion(sdf.capsule(root, add3(root, scale3(dir, len)), r.head * 0.15 * volume), r.head * 0.16);
+      const ang = (2 * Math.PI * i) / N;
+      const radial = norm3(add3(scale3(right, Math.cos(ang)), scale3(f, Math.sin(ang))));
+      const dir = norm3(add3(scale3(u, 2.3), radial));   // steep — tall up, slight splay
+      // Roots ring the crown close in (bases overlap into a continuous spiky
+      // mass) and the tall tips dominate the silhouette like Bart's hair.
+      const root = add3(c, add3(scale3(u, r.headZ * 0.55), scale3(radial, r.headX * 0.42)));
+      // Cone: a cylinder tapered to a small tip at +z (base ≈ 1.9·baseR at −z,
+      // tip ≈ 0.1·baseR — a near-point that stays above the print min-feature).
+      const cone = sdf.cylinder(baseR, len).taper(-1.8 / len, 'z')
+        .rotate(eulerAlignZ(dir)).translate(add3(root, scale3(dir, len / 2)));
+      cap = cap.smoothUnion(cone, r.head * 0.16);
     }
+    // A center spike fills the crown so there's no smooth bald dome between the
+    // ring tips — the whole top reads as hair.
+    cap = cap.smoothUnion(
+      sdf.cylinder(baseR, len).taper(-1.8 / len, 'z').rotate(eulerAlignZ(u))
+        .translate(add3(c, scale3(u, r.headZ * 0.55 + len / 2))), r.head * 0.16);
   }
   // Strand/curl relief: a directional displacement field in the head's own
   // frame. Amplitude is floored so the relief survives meshing at the figure
@@ -1522,6 +1529,10 @@ export interface FigureNamespace {
   /** Snap an accessory node to a rig joint by its bbox anchor (no offset math).
    *  `joint` is a Vec3 like `rig.joints.crown`; `opts.anchor` ∈ center|bottom|top. */
   placeAt(node: Node, joint: Vec3, opts?: object): Node;
+  /** Seat headwear (hat/crown/headband) on TOP of the hair instead of the bare
+   *  skull — the headwear analog of the hand grip frame. Pass the hair as
+   *  `opts.rest`; `clearance` floats it, `embed` sinks it for a welded print. */
+  placeOnHead(node: Node, rig: Rig, opts?: object): Node;
   /** Seat + orient a held prop into a hand grip frame (`rig.grip.L`/`.R`).
    *  Aligns the prop's local long axis (`opts.along`, default 'z') to the grip
    *  axis and drops its origin on the grip point. `opts.flip` reverses it. */
@@ -1573,6 +1584,35 @@ function placeAt(node: Node, joint: Vec3, opts?: unknown): Node {
   const cy = (b.min[1] + b.max[1]) / 2;
   const cz = anchor === 'bottom' ? b.min[2] : anchor === 'top' ? b.max[2] : (b.min[2] + b.max[2]) / 2;
   return node.translate([j[0] - cx, j[1] - cy, j[2] - cz]);
+}
+
+/** Seat headwear (hat, crown, headband, halo) ON TOP of the hair instead of the
+ *  bare skull, so it rests on the hairstyle rather than embedding in it — the
+ *  headwear analog of the hand `grip` frame. Pass the **hair** node (or any head
+ *  node) as `rest`: the accessory's bbox `anchor` (default 'bottom') is moved to
+ *  the TOP of that node along +Z, and its X/Y is centred on the head joint.
+ *  Without `rest` it falls back to the skull crown joint (`rig.joints.crown`).
+ *  `clearance` floats it above the hair; `embed` sinks it in a little so it
+ *  welds into one printable piece (a deep embed is what made hand-placed crowns
+ *  disappear into the hair). Build the accessory centred on the origin, then
+ *  `F.placeOnHead(crown, rig, { rest: hair, embed: 0.2 })`. */
+function placeOnHead(node: Node, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'placeOnHead(opts)');
+  assertNoUnknownKeys(o, ['rest', 'clearance', 'embed', 'anchor'], 'placeOnHead(opts)');
+  const clearance = num(o.clearance, 0, 'placeOnHead.clearance', 0);
+  const embed = num(o.embed, 0, 'placeOnHead.embed', 0);
+  const anchor = o.anchor === undefined ? 'bottom'
+    : assertEnum(o.anchor, ['center', 'bottom', 'top'] as const, 'placeOnHead.anchor');
+  const head = rig.joints.head as Vec3;
+  let restZ = (rig.joints.crown as Vec3)[2];
+  if (o.rest !== undefined) {
+    const rn = o.rest as Node;
+    if (!rn || typeof rn.bounds !== 'function') {
+      throw new ValidationError('placeOnHead.rest must be an SDF node (e.g. the hair) whose top defines the rest height. See /ai/figure.md');
+    }
+    restZ = rn.bounds().max[2];
+  }
+  return placeAt(node, [head[0], head[1], restZ + clearance - embed], { anchor });
 }
 
 /** Euler [rx, ry, 0] (degrees) that rotates the local +Z axis onto unit `t`,
@@ -1700,6 +1740,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     hair: (rig, opts) => buildHair(sdf, assertRig(rig, 'hair(rig)'), opts),
     weld: (rig, parts, opts) => weldBody(assertRig(rig, 'weld(rig)'), parts, opts),
     placeAt: (node, joint, opts) => placeAt(node as Node, joint, opts),
+    placeOnHead: (node, rig, opts) => placeOnHead(node as Node, assertRig(rig, 'placeOnHead(rig)'), opts),
     holdAt: (node, grip, opts) => holdAt(node as Node, grip, opts),
     spanGrips: (a, b) => spanGrips(a, b),
     poseProbe: (rig) => poseProbe(assertRig(rig, 'poseProbe(rig)')),

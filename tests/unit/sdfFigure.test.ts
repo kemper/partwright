@@ -655,6 +655,38 @@ describe('figure hair — styles and hairline', () => {
   });
 });
 
+describe('figure placeOnHead — seat headwear on the hair', () => {
+  const F = createFigureNamespace(api);
+  const rig = buildRig({ height: 60, headsTall: 6 });
+  const hat = (): SdfNode => api.box([2, 2, 2]) as unknown as SdfNode;
+
+  it('rests an accessory bottom on the hair TOP, centred on the head', () => {
+    const hair = F.hair(rig, { style: 'short' }) as unknown as SdfNode;
+    const hairTop = hair.bounds().max[2];
+    const placed = F.placeOnHead(hat() as object, rig, { rest: hair }) as unknown as SdfNode;
+    const b = placed.bounds();
+    expect(b.min[2]).toBeCloseTo(hairTop, 5);                               // bottom on hair top
+    expect((b.min[0] + b.max[0]) / 2).toBeCloseTo(rig.joints.head[0], 5);   // centred X
+    expect((b.min[1] + b.max[1]) / 2).toBeCloseTo(rig.joints.head[1], 5);   // centred Y
+  });
+
+  it('embed sinks it into the hair; clearance lifts it off', () => {
+    const hair = F.hair(rig, { style: 'short' }) as unknown as SdfNode;
+    const top = hair.bounds().max[2];
+    const sunk = F.placeOnHead(hat() as object, rig, { rest: hair, embed: 1 }) as unknown as SdfNode;
+    const lifted = F.placeOnHead(hat() as object, rig, { rest: hair, clearance: 1 }) as unknown as SdfNode;
+    expect(sunk.bounds().min[2]).toBeCloseTo(top - 1, 5);
+    expect(lifted.bounds().min[2]).toBeCloseTo(top + 1, 5);
+  });
+
+  it('falls back to the crown joint without rest, and validates inputs', () => {
+    const placed = F.placeOnHead(hat() as object, rig) as unknown as SdfNode;
+    expect(placed.bounds().min[2]).toBeCloseTo(rig.joints.crown[2], 5);
+    expect(() => F.placeOnHead(hat() as object, rig, { rest: 5 })).toThrow(/rest/);
+    expect(() => F.placeOnHead(hat() as object, rig, { wig: true })).toThrow();
+  });
+});
+
 describe('figure handDetail — detail-region helper', () => {
   const rig = buildRig({ height: 60, headsTall: 6 });
 

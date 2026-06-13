@@ -249,6 +249,27 @@ const staffPlaced = F.placeAt(staff, rig.joints.handR);                   // cen
 so they stay one printable piece — a staff floating next to the hand is a
 second component.
 
+**Seating headwear ON the hair — `F.placeOnHead(node, rig, opts?)`.** `placeAt`
+snaps to the *skull* crown joint, so a hat/crown placed there **embeds in the
+hair** (the hair adds volume above the skull). `placeOnHead` is the headwear
+analog of the hand grip frame: pass the **hair** as `opts.rest` and it rests the
+accessory's bbox `anchor` (default `'bottom'`) on the TOP of the hair, centred on
+the head. `clearance` floats it above; `embed` sinks it in a little so it welds
+into one printable piece. Build the accessory **centred on the origin** (ring in
+the z=0 plane, spikes up), then place it:
+
+```js
+const hair = F.hair(rig, { style: 'long' }).label('hair');
+// coronet built at the origin; size the ring near the hair radius so it welds
+const crown = F.placeOnHead(coronet, rig, { rest: hair, embed: rig.r.head * 0.4 }).label('crown');
+```
+
+Without `rest` it falls back to `rig.joints.crown` (the bare skull apex). A ring
+sized to the skull sits *inside* the larger hair volume — keep the ring small
+(a coronet on top) or grow it toward the hair radius so the band straddles the
+hair surface and welds (a band tangent to the surface prints as a second
+component).
+
 **Putting a prop INTO a hand — `F.holdAt(prop, rig.grip.L|R, opts?)`.** `placeAt`
 only positions; `holdAt` also **orients** a prop to the grip and seats it in the
 finger cup. Build the prop centred at the origin with its long axis along local
