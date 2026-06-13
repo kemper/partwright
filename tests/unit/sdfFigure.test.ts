@@ -482,6 +482,37 @@ describe('figure eyes — styles and labels', () => {
   });
 });
 
+describe('figure eyes — eyelids', () => {
+  const rig = buildRig({ height: 60, headsTall: 5 });
+  const labelsOf = (node: unknown): string[] =>
+    partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n).sort();
+
+  it("no lids by default — bare eyeball, no 'lids' region", () => {
+    expect(labelsOf(buildEyes(api, rig))).not.toContain('lids');
+  });
+
+  it("iris + lids adds a paintable 'lids' region alongside the eye", () => {
+    expect(labelsOf(buildEyes(api, rig, { lids: 'upper' }))).toEqual(['eyes', 'iris', 'lids', 'pupil']);
+  });
+
+  for (const lids of ['upper', 'hooded', 'half', 'closed', 'almond', 'tapered'] as const) {
+    it(`lids: '${lids}' builds a labelled 'lids' fold`, () => {
+      expect(labelsOf(buildEyes(api, rig, { lids }))).toContain('lids');
+    });
+  }
+
+  it("solid + lids self-labels ('eyes' + 'lids'), unlike bare solid", () => {
+    // bare solid is unlabelled; adding lids forces self-labelling so the two
+    // regions stay paintable independently.
+    expect(labelsOf(buildEyes(api, rig, { style: 'solid' }))).toEqual([]);
+    expect(labelsOf(buildEyes(api, rig, { style: 'solid', lids: 'upper' }))).toEqual(['eyes', 'lids']);
+  });
+
+  it('rejects an unknown lids style', () => {
+    expect(() => buildEyes(api, rig, { lids: 'winged' })).toThrow(/lids/);
+  });
+});
+
 describe('figure pants — posed-leg coverage', () => {
   it('pant cuffs stay ON the bone for a posed (lunge) leg', () => {
     // Regression: a fixed world-Z cuff endpoint pulled the pant shank off a

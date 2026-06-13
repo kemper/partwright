@@ -1161,12 +1161,33 @@ function groundRig(rig: Rig, opts?: unknown): Rig {
 
 // --- Face features (read rig.face anchors) --------------------------------
 
+// Eyelid styles. Each drapes a thin skin cap over part of the eyeball,
+// concentric with it but a hair larger so it wins the union and reads as a
+// fold of skin sitting ON the eye. `cu`/`cl` are the fraction of the eye
+// covered from the TOP (upper lid) and BOTTOM (lower lid); `cx` covers each
+// LATERAL corner, pinching the opening to points for an almond eye. `scale`
+// thickens the cap (a heavier hood needs more skin). Labelled `'lids'` so the
+// caller can paint them (skin tone, or eyeshadow). 'none' is the backward-
+// compatible default — no lids, the bare round eyeball.
+const LID_STYLES = ['none', 'upper', 'hooded', 'half', 'closed', 'almond', 'tapered'] as const;
+type LidStyle = typeof LID_STYLES[number];
+const LID_SPEC: Record<Exclude<LidStyle, 'none'>, { cu: number; cl: number; cx: number; scale: number }> = {
+  upper: { cu: 0.30, cl: 0, cx: 0, scale: 1.22 },     // crisp upper lid on an open, alert eye
+  hooded: { cu: 0.46, cl: 0, cx: 0, scale: 1.40 },    // heavier brow-ward hood
+  half: { cu: 0.56, cl: 0.16, cx: 0, scale: 1.24 },   // sleepy / half-closed, faint lower rim
+  closed: { cu: 0.58, cl: 0.54, cx: 0, scale: 1.22 }, // upper + lower meet at the midline
+  almond: { cu: 0.30, cl: 0.14, cx: 0.18, scale: 1.20 }, // balanced almond — corners pinched to points
+  tapered: { cu: 0.24, cl: 0.10, cx: 0.30, scale: 1.20 }, // elongated, sharper corners (drawn-out eye)
+};
+
 function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'eyes(opts)');
-  assertNoUnknownKeys(o, ['radius', 'style'], 'eyes(opts)');
+  assertNoUnknownKeys(o, ['radius', 'style', 'lids'], 'eyes(opts)');
   const rad = num(o.radius, rig.r.head * 0.16, 'eyes.radius', 0.01);
   const style = o.style === undefined ? 'iris'
     : assertEnum(o.style, ['solid', 'iris'] as const, 'eyes.style');
+  const lids: LidStyle = o.lids === undefined ? 'none'
+    : assertEnum(o.lids, LID_STYLES, 'eyes.lids');
   const f = rig.dir.headForward;
   // Push the eyeballs out so a dome reliably protrudes past the cheek welds —
   // an eye centred ON the anchor can be fully swallowed, leaving a paintable
@@ -1183,7 +1204,54 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     const off = scale3(f, forwardOff);
     return sdf.sphere(r).translate(add3(cL, off)).union(sdf.sphere(r).translate(add3(cR, off)));
   };
-  if (style === 'solid') return pair(rad, 0);
+
+  // --- Eyelids -----------------------------------------------------------
+  // Built in the CANONICAL head frame (forward −Y, up +Z, lateral ±X) then
+  // oriented into the posed head and translated onto each eye centre — the same
+  // canonical→pose→translate path the iris/pupil `disc` plug uses. A lid is the
+  // slice of a slightly-larger concentric sphere beyond a cut PLANE, clipped to
+  // the FRONT so the buried back half costs no triangles. The plane offset
+  // encodes coverage along its axis: covering the fraction `c` from one side
+  // keeps the region beyond (1 − 2·c)·rad on that side. Upper/lower lids cut on
+  // Z; the lateral corner caps that pinch an almond eye to points cut on X
+  // (symmetric, so one node still mirrors onto both eyes).
+  const buildLids = (): Node | null => {
+    if (lids === 'none') return null;
+    const spec = LID_SPEC[lids];
+    const lidR = rad * spec.scale;
+    const big = lidR * 4;                       // half-space box, comfortably larger than the cap
+    const frontBox = sdf.box([big, big, big]).translate([0, -big / 2 + rad * 0.2, 0]); // keep front (y ≲ 0)
+    // One spherical cap clipped to the `sign` side of a plane ⟂ the given axis.
+    const cap = (coverage: number, axis: 0 | 2, sign: 1 | -1): Node | null => {
+      if (coverage <= 0) return null;
+      const plane = sign * (1 - 2 * coverage) * rad;
+      const t: Vec3 = [0, 0, 0];
+      t[axis] = plane + sign * big / 2;
+      const slab = sdf.box([big, big, big]).translate(t);
+      // Round the crease edge a touch so the lid rim reads soft, not machined.
+      return sdf.sphere(lidR).intersect(slab).intersect(frontBox).round(rad * 0.03);
+    };
+    const caps = [
+      cap(spec.cu, 2, 1),   // upper lid (top, Z+)
+      cap(spec.cl, 2, -1),  // lower lid (bottom, Z−)
+      cap(spec.cx, 0, 1),   // outer corner (X+)
+      cap(spec.cx, 0, -1),  // inner corner (X−)
+    ].filter((n): n is Node => n !== null);
+    if (caps.length === 0) return null;
+    const lid = caps.reduce((acc, n) => acc.union(n));
+    const place = (c: Vec3): Node => orientToHeadPose(lid, rig).translate(c);
+    return place(cL).union(place(cR)).label('lids');
+  };
+  const lidNode = buildLids();
+
+  // 'solid': plain spheres for the caller to `.label()` — UNCHANGED when there
+  // are no lids. With lids, the eyeball must carry its own 'eyes' label (so the
+  // 'lids' region stays distinct), so the result is self-labelled like 'iris';
+  // the caller must NOT wrap it in another `.label()`.
+  if (style === 'solid') {
+    if (!lidNode) return pair(rad, 0);
+    return pair(rad, 0).label('eyes').union(lidNode);
+  }
   // 'iris' (default): a perfectly ROUND white eyeball with the coloured iris and
   // black pupil PAINTED ON as flush concentric discs — each its own pre-labelled
   // hard-union region so paintByLabels can colour them independently. Don't wrap
@@ -1223,7 +1291,8 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const sclera = pair(rad, 0).label('eyes');
   const iris = disc(rad * 1.012, rad * 0.55).label('iris');
   const pupil = disc(rad * 1.024, rad * 0.27).label('pupil');
-  return sclera.union(iris).union(pupil);
+  const eyes = sclera.union(iris).union(pupil);
+  return lidNode ? eyes.union(lidNode) : eyes;
 }
 
 function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
@@ -2137,6 +2206,10 @@ export interface FigureNamespace {
    *  `build({ detail: [...F.faceDetail(rig), ...F.handDetail(rig)] })`. */
   handDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
   face: {
+    /** Eyeballs (self-labelled `eyes`/`iris`/`pupil` for the default `'iris'`
+     *  style, or plain spheres for `'solid'`). Pass `lids` to drape a paintable
+     *  `'lids'` skin fold — `'upper' | 'hooded' | 'half' | 'closed' | 'almond' |
+     *  'tapered'` (default `'none'`). See public/ai/figure.md. */
     eyes(rig: Rig, opts?: object): Node;
     nose(rig: Rig, opts?: object): Node;
     mouth(rig: Rig, opts?: object): Node;

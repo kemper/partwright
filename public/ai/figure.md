@@ -460,6 +460,33 @@ labels, and an eye buried under the cheek welds resolves to a label with zero
 paintable triangles. The eyeballs are pushed forward so the domes always
 protrude. (Brows can use the same top-level pattern if you want them painted.)
 
+#### Eyelids — `lids` (off by default)
+
+Add a skin fold over the eye with `lids`. It drapes a thin cap (slightly larger
+than the eyeball, so it sits ON it as skin) and is pre-labelled **`'lids'`** so
+you paint it — match the skin tone for a natural lid, or tint it for eyeshadow.
+
+```js
+F.face.eyes(rig, { lids: 'upper' })           // iris eyes + an upper lid
+F.face.eyes(rig, { lids: 'almond' })          // pinched-corner almond eye
+```
+
+| `lids` | Look |
+|---|---|
+| `'none'` (default) | bare round eyeball — unchanged |
+| `'upper'` | crisp upper lid on an open, alert eye |
+| `'hooded'` | heavier brow-ward hood overhanging the eye |
+| `'half'` | sleepy / half-closed, with a faint lower rim |
+| `'closed'` | upper + lower lids meet → smooth shut eyes |
+| `'almond'` | corners pinched to points (balanced almond) |
+| `'tapered'` | elongated, sharper corners (a drawn-out eye) |
+
+Paint the new region alongside the eyes — e.g. `{ label: 'lids', color: skinRgb }`.
+With `style: 'solid'`, adding `lids` makes the result **self-labelled** (`'eyes'` +
+`'lids'`), so don't wrap it in `.label()`. Lids follow the head pose like the
+iris/pupil and need no extra `detail` beyond `F.faceDetail(rig)`.
+
+
 ## Face detail — `F.faceDetail(rig)` (use it on every figure with a face)
 
 Face features are far smaller than the body, so at the recommended figure grid
