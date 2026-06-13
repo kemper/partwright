@@ -20,6 +20,7 @@ export interface SlashCommandSpec {
 export const SLASH_COMMANDS = [
   { name: 'compact', summary: 'Summarize older turns and promote insights to session notes' },
   { name: 'clear', summary: 'Delete this chat from your browser (saved versions & notes are kept)' },
+  { name: 'repair', summary: 'Fix corrupted tool history (orphaned tool calls) so the chat can send again', aliases: ['fix'] },
   { name: 'review', summary: 'Have a different provider/model review the current session' },
   { name: 'export', summary: 'Download the conversation as a Markdown file' },
   { name: 'models', summary: 'Open AI settings — provider, model, and API key', aliases: ['model', 'settings'] },

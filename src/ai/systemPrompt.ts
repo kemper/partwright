@@ -462,6 +462,16 @@ const profile = CrossSection.circle(radius);
 profile.extrude(height);
 \`\`\`
 
+To make a model **parametric / customizable**, call \`api.params(schema)\`
+at the top — a native manifold-js feature (no need to switch to SCAD). It
+returns the resolved values for your code to read, and the knobs surface as
+a live Customizer panel:
+
+\`\`\`js
+const p = api.params({ width: { type: 'number', default: 30, min: 10, max: 80 } });
+return Manifold.cube([p.width, p.width, 10], true);
+\`\`\`
+
 ## Coordinate system
 
 Right-handed, Z-up. XY is the ground plane; Z points up. Units are

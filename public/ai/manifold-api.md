@@ -22,6 +22,15 @@ meshOps (flat on api): intersects, contains, pointInside, bbox,
                        linearPattern, circularPattern, spiralPattern,
                        expectUnion, expectDifference, expectComponents,
                        heal
+params (flat on api):  api.params(schema) -> resolved values. NATIVE
+                       manifold-js feature for parametric / customizable
+                       models (also works in voxel + replicad sessions; NOT
+                       scad, which uses its own `// [min:max]` customizer
+                       comments). Declare knobs at the top, read the returned
+                       values in code, and they ALSO surface as a live
+                       Customizer panel. You do NOT need SCAD to make a model
+                       parametric. Schema types: number/int/boolean/select/
+                       text/color. See ai.md "Customizer parameters".
 ```
 
 ## Manifold instance methods

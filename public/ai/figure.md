@@ -200,6 +200,15 @@ The rig exposes (read-only, for custom parts):
     A guitar neck / staff / sword grip runs parallel to this.
   - `palmNormal` — unit normal the palm faces (fingers curl toward it).
   - `reach` — unit forearm/finger direction.
+- `rig.sole.{L,R}` — **a full sole frame per foot, for connecting things UNDER
+  the feet** (footwear, skates, skis, snowshoes, a platform/base). The foot analog
+  of `rig.grip`. Each has `{ point, normal, heading, length, width, groundZ }`:
+  - `point` — the footprint **centre on the ground-contact plane**. Drop anything
+    that attaches under the foot here (see `F.standOn`) instead of guessing a sole Z.
+  - `groundZ` — the Z of the ground-contact plane (underside of the bare sole).
+    The **lower** of `sole.L.groundZ` / `sole.R.groundZ` is where a floor/base sits.
+  - `heading` — toe direction (== `dir.footL/R`), so attachments track turnout.
+  - `length` / `width` — footprint extents. `normal` is ground-up `[0,0,1]`.
 - `rig.face.{eyeL, eyeR, browL, browR, nose, mouth, earL, earR, chinTip}`.
 
 **`build` scales every width:** `slim` ×0.82, `average` ×1.0, `stocky` ×1.22 —
@@ -310,9 +319,26 @@ the grip `point` (not `handL/R`) is what stops the bar passing through a hand.
 `figure_rocker.js` builds its guitar neck + headstock on `spanGrips`;
 `figure_staff_mage.js` seats a single-hand staff with `holdAt`.
 
+**Putting something UNDER a foot — `F.standOn(node, rig.sole.L|R, opts?)`.** The
+foot analog of `holdAt`: it drops a node onto a foot's sole frame so you never
+guess the sole Z — for a skate, ski, snowshoe, platform, or a per-foot base.
+`opts.anchor` ∈ `top` (default — the node's top meets the sole, hanging it below
+the foot) | `bottom` (rests the node ON the sole point) | `center`.
+
+```js
+// A flat platform flush under each foot (tracks turnout via the sole heading):
+const plat = () => sdf.roundedBox([rig.r.foot * 2.8, rig.r.foot * 3.4, rig.r.foot * 0.8], rig.r.foot * 0.2);
+const skates = sdf.union(F.standOn(plat(), rig.sole.L), F.standOn(plat(), rig.sole.R)).label('skates');
+```
+
+`F.clothing.shoes`/`boots` already key off the sole frame, so their soles come
+out **flat** on the ground plane (they sit flush on `F.base` and print flat) and
+track turnout — you don't hand-roll footwear. `F.base` rises to meet the lower of
+the two `groundZ`, so at least one foot always welds to it (one component).
+
 **Reading a pose — `F.poseProbe(rig)`.** Returns a deterministic, rounded dump
-of every world joint position, both grip frames, and the key directions, plus a
-`.text` summary — use it instead of hand-rolled `JSON.stringify` probes when
+of every world joint position, both grip frames, both sole frames, and the key
+directions, plus a `.text` summary — use it instead of hand-rolled `JSON.stringify` probes when
 tuning a pose. `throw new Error(F.poseProbe(rig).text)` (or `console.log` it)
 prints the whole readout so you can read where a hand/grip actually landed
 before aiming a prop at it.
@@ -483,6 +509,40 @@ F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
 F.clothing.top(rig, { sleeve, hemZ, thickness })        // sleeve: none|short|long
 //   hemZ below the pelvis turns the top into a robe/dress: a flared skirt
 //   cone is added down to the hem so legs stay covered all round.
+F.clothing.shoes(rig, { size, thickness, label, sole })  // sole + upper over each foot
+F.clothing.boots(rig, { size, shaftZ, thickness, label, sole })  // + a shaft up the lower leg
+//   Footwear keys off rig.sole.{L,R}, so it tracks leg*.twist turnout like
+//   F.feet AND comes out with a FLAT-bottomed sole that fully encloses the skin.
+//   The sole is a horizontal SLICE of the shoe's own shape, so it follows the
+//   foot's curvature (not a cuboid welded on). It OWNS its paint regions (like
+//   F.face.eyes): the upper is labeled `label` (default 'boots'/'shoes') and the
+//   sole is its OWN region (default label 'sole') — so DON'T add .label() on top
+//   (an outer label would swallow the sole). `sole` defaults ON; pass sole:false
+//   to fold it into the upper, or tune it:
+//     sole: { style, thickness, lip, label }
+//       style: 'welt' (default — sole sits proud of the upper, like a real shoe)
+//              | 'flush' (sole hugs the upper's outline, no overhang)
+//       lip:   how far a welt sole is proud (alias: overhang); ignored for flush
+//       label: 'boots' = same colour as the boot.
+//   `size` scales the footprint, `thickness` the shell. For boots, `shaftZ` is a
+//   world-Z target projected onto each leg's own ankle→knee bone.
+```
+
+**Standing on a surface — `F.ground(rig, { mode, surface?|z?, tolerance? })`.** Feet
+posed at different heights end up with soles at different Z. `F.ground` returns a
+**new rig** whose feet share one ground plane; build feet/footwear/base from it and
+the soles come out coplanar with the base meeting them. The plane is `z`, else the
+top of `surface` (an SDF node), else the lowest foot. Two modes:
+- `'plant'` (default) — feet within `tolerance` of the plane are leveled onto it
+  (their footwear sole thickens to reach it); feet beyond tolerance stay **lifted**
+  (off the ground — natural for a takeoff/walk pose).
+- `'drop'` — re-poses each leg (2-bone IK, hips fixed) so **every** foot lands on
+  the plane. Use it to make a figure stand flat-footed regardless of the pose.
+
+```js
+const rig = F.ground(F.rig({ pose: {...} }), { mode: 'drop' });   // both feet on the floor
+const boots = F.clothing.boots(rig, { label: 'boots' });          // sole region paints separately
+const base  = F.base(rig);                                        // meets the shared plane
 ```
 
 Clothing is the body region **inflated and trimmed**, and **coverage is
