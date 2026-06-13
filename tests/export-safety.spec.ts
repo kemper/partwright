@@ -79,6 +79,39 @@ test.describe('Export safety confirmation', () => {
     await expect(dialog).toContainText('disconnected components');
   });
 
+  test('unitless modal lets the user set units inline', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await runManifold(page, CUBE);
+
+    await page.locator('#btn-export').click();
+    await page.locator('#export-dropdown').getByText('STL', { exact: true }).click();
+
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('No units set');
+    // Inline selector is present, defaulting to unitless; button warns.
+    const select = dialog.locator('#export-confirm-units-select');
+    await expect(select).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Export anyway' })).toBeVisible();
+
+    // Pick millimeters right in the modal — warning clears to a confirmation,
+    // dims re-format in mm, and the button relaxes to "Export".
+    await select.selectOption('mm');
+    await expect(dialog).toContainText('Units set to mm');
+    await expect(dialog).toContainText('10.00 mm × 10.00 mm × 10.00 mm');
+    await expect(dialog.getByRole('button', { name: 'Export', exact: true })).toBeVisible();
+
+    // The choice persists to the toolbar selector and proceeds with the export.
+    await dialog.getByRole('button', { name: 'Export', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(
+      page.locator('div[role="status"]').filter({ hasText: /Exported/ }),
+    ).toBeVisible({ timeout: 5_000 });
+    await page.locator('#btn-export').click();
+    await expect(page.locator('#export-units-select')).toHaveValue('mm');
+  });
+
   test('setting a unit suppresses the unitless modal', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
