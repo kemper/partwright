@@ -486,7 +486,6 @@ With `style: 'solid'`, adding `lids` makes the result **self-labelled** (`'eyes'
 `'lids'`), so don't wrap it in `.label()`. Lids follow the head pose like the
 iris/pupil and need no extra `detail` beyond `F.faceDetail(rig)`.
 
-
 ## Face detail — `F.faceDetail(rig)` (use it on every figure with a face)
 
 Face features are far smaller than the body, so at the recommended figure grid
