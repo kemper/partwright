@@ -9,17 +9,17 @@
     },
     {
       "id": "pacman-ghost",
-      "name": "Pac-Man & Ghost",
+      "name": "Pac-Man Ghost",
       "file": "pacman_ghost.partwright.json",
       "language": "manifold-js",
-      "description": "The iconic arcade duo — a clean yellow wedge Pac-Man chasing a red ghost with a scalloped skirt and blue-pupiled eyes, with a trail of pellets between them."
+      "description": "Blinky — the classic red Pac-Man ghost — as a standalone 3D figurine. Smooth revolve profile gives the iconic teardrop silhouette, with white 3D oval eyes, blue pupils looking left, and four scalloped hem teeth."
     },
     {
       "id": "castle-tower",
       "name": "Castle Tower",
       "file": "castle_tower.partwright.json",
       "language": "manifold-js",
-      "description": "Round stone tower with crenellated battlements, a blue conical roof, and arched door and windows."
+      "description": "A grand medieval castle tower with a battered base, 8-merlon battlements, gothic arched door, arrow-slit windows, and a deep blue conical roof — voronoi stone texture applied in-browser for a carved-stone look."
     },
     {
       "id": "heraldic-shield",
@@ -33,7 +33,7 @@
       "name": "Treasure Chest",
       "file": "treasure_chest.partwright.json",
       "language": "manifold-js",
-      "description": "Pirate treasure chest with a rounded lid, gold trim straps, and a gold lock plate."
+      "description": "A pirate treasure chest with a dark walnut dome lid, bold brass strap hardware, gold corner caps and ball feet, and a raised lock plate with keyhole — woven wood-grain texture applied in-browser."
     },
     {
       "id": "chess-king",
@@ -47,7 +47,7 @@
       "name": "Royal Crown",
       "file": "royal_crown.partwright.json",
       "language": "manifold-js",
-      "description": "A regal gold crown with finial-tipped points, a beaded band, bezel-set ruby/sapphire/emerald/amethyst jewels, and a deep-red velvet inner band."
+      "description": "A regal crown with tall two-section gold spires, deep crimson velvet inner band, ruby/sapphire/emerald/amethyst cabochon gems in gold bezels, accent beads, and a hammered-metal knurl texture on the band."
     },
     {
       "id": "arcade-cabinet",
@@ -103,7 +103,7 @@
       "name": "D20 Die",
       "file": "d20_die.partwright.json",
       "language": "manifold-js",
-      "description": "A 20-sided polyhedral die (icosahedron) built via hull, with a gold face marking the 20."
+      "description": "A 20-sided polyhedral die built via icosahedron hull, with raised gold 7-segment numerals on all 20 faces (opposite faces sum to 21) on a deep midnight-blue body."
     },
     {
       "id": "toadstool-mushroom",
@@ -152,14 +152,14 @@
       "name": "Spiral Staircase",
       "file": "spiral_staircase.partwright.json",
       "language": "manifold-js",
-      "description": "A 16-step helical staircase around a central column, topped by a circular platform and balusters. Built with the spiralPattern helper for the steps and railing posts."
+      "description": "A 16-step helical staircase with a dark stone column, alternating walnut treads, brass railing posts, a top landing, and a circular baluster ring — voronoi stone, woven wood-grain, and knurl brass textures applied in-browser."
     },
     {
       "id": "geodesic-lantern",
       "name": "Geodesic Lantern",
       "file": "geodesic_lantern.partwright.json",
       "language": "manifold-js",
-      "description": "A faceted dome lantern with two rings of cylindrical window cutouts and a small spire finial. Showcases circularPattern, placeOn, and the expectUnion safety net."
+      "description": "A tall antique dome lantern with a 16-segment faceted geodesic shell, two rings of six amber-glowing circular windows, a raised bronze banding ring, a hexagonal base, and a gold finial spire."
     },
     {
       "id": "clock-face",
@@ -622,7 +622,7 @@
       "name": "Ringed Planet",
       "file": "ringed_planet.partwright.json",
       "language": "manifold-js",
-      "description": "A banded gas giant encircled by a tilted, multi-band ring system. Latitude color bands are cut from the sphere with overlapping slabs; the concentric ring disk welds into the planet's equator so it prints as one self-colored piece. Parametric planet radius, ring span, band count, and axial tilt."
+      "description": "A gas giant with eight vivid Jupiter-style latitude bands, a five-band Saturn-inspired ring system with Cassini gap, a raised Great Red Spot, and a 22° axial tilt."
     },
     {
       "id": "print-fit-knob",
@@ -776,6 +776,34 @@
       "file": "waving_kid.partwright.json",
       "language": "manifold-js",
       "description": "A cheerful stylized child waving hello — one arm raised high, chunky cargo pants, long hair, built with the SDF figure rig."
+    },
+    {
+      "id": "sneakers-character",
+      "name": "Sneakers Character",
+      "file": "figure_sneakers.partwright.json",
+      "language": "manifold-js",
+      "description": "A casual figure in chunky sneakers — showcasing the figure footwear builder: F.clothing.shoes paints a separate contrasting sole and F.ground plants both feet level on the base so the soles sit flush."
+    },
+    {
+      "id": "afro-funk-dancer",
+      "name": "Afro Funk Dancer",
+      "file": "afro_funk.partwright.json",
+      "language": "manifold-js",
+      "description": "A funk dancer mid-groove with a big curly afro — showing off the figure rig's hair system, where the 'afro' style and its curl relief are real printable geometry that tracks the cocked head."
+    },
+    {
+      "id": "cornrows-runner",
+      "name": "Cornrows Runner",
+      "file": "cornrows_runner.partwright.json",
+      "language": "manifold-js",
+      "description": "A sprinter set at the blocks — cornrows laid tight to the scalp with carved partings, a round face with a broad nose and full lips, deep skin. Shows the figure rig's face-shape, nose, and hair-texture axes."
+    },
+    {
+      "id": "locs-musician",
+      "name": "Locs Musician",
+      "file": "locs_musician.partwright.json",
+      "language": "manifold-js",
+      "description": "A relaxed musician with shoulder-length locs and an easy contrapposto stance — a long face and narrower nose under the locs, medium-deep skin. Mixes the diversity axes so each figure reads as an individual."
     },
     {
       "id": "flexing-strongman",

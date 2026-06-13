@@ -37,7 +37,7 @@ import './renderer/viewportSubsystems';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
+import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
@@ -49,7 +49,8 @@ import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { confirmDialog, promptDialog } from './ui/dialogs';
 import { updateAppHistory, currentURLPathAndSearch } from './ui/appHistory';
-import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive } from './ui/aiPanel';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive, closeAiPanel, isAiTurnInFlight, onAiTurnEnd } from './ui/aiPanel';
+import { onViewportPanelOpen } from './ui/viewportPanelRegistry';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
@@ -59,7 +60,7 @@ import { showExportOptionsDialog } from './ui/exportOptionsDialog';
 import { showExportConfirm, hasExportWarning, type ExportWarningInfo } from './ui/exportConfirmModal';
 import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
 import { createIdeasPage } from './ui/ideasPage';
-import type { Idea } from './ideas/ideas';
+import { IDEAS, type Idea } from './ideas/ideas';
 import { createWhatsNewPage } from './ui/whatsNew';
 import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
@@ -344,16 +345,37 @@ let paramsPanel: ParamsPanelController | null = null;
 /** Reconcile the Customizer panel + override state with the parameter schema a
  *  model declared on its latest run. Pass `undefined` when the model declared
  *  none (hides the panel and clears overrides). */
+// Set while an AI turn deferred the Customizer reveal (see syncParamsPanel); the
+// onAiTurnEnd flush below consumes it.
+let paramsRevealDeferred = false;
+
 function syncParamsPanel(schema: ParamSpec[] | undefined): void {
   if (schema && schema.length > 0) {
     currentParamSchema = schema;
     // Keep only overrides the model still declares (drops stale keys from a
     // previously-run model) and store the minimal non-default set.
     currentParamValues = pruneParamValues(schema, currentParamValues);
-    paramsPanel?.update(schema, resolveParamValues(schema, currentParamValues));
   } else {
     currentParamSchema = null;
     currentParamValues = {};
+  }
+  // While the AI is mid-turn (e.g. a runAndSave during a chat response), don't
+  // pop the Customizer over the chat or yank the AI panel aside — the user is
+  // still reading the model think. Record the schema now but defer the reveal
+  // until the turn ends, then reveal it *silently* so the AI panel stays open.
+  if (isAiTurnInFlight()) {
+    paramsRevealDeferred = true;
+    return;
+  }
+  refreshParamsPanelUI(false);
+}
+
+/** Push the current schema/values into the Customizer panel. `silentReveal`
+ *  opens it without hiding the AI panel — used for the post-AI-turn flush. */
+function refreshParamsPanelUI(silentReveal: boolean): void {
+  if (currentParamSchema && currentParamSchema.length > 0) {
+    paramsPanel?.update(currentParamSchema, resolveParamValues(currentParamSchema, currentParamValues), { silentReveal });
+  } else {
     paramsPanel?.update(undefined, {});
   }
 }
@@ -1950,17 +1972,10 @@ async function main() {
     if (keyed.some(Boolean)) void requestPersistentStorage();
   })();
 
-  // Remove loading overlays as soon as JS takes over — EXCEPT on /ideas, the
-  // one app-rendered overlay page. It boots the whole app before painting any
-  // content, so dropping the spinner here would leave a blank screen until the
-  // page renders; instead showIdeasPage() removes it once the content is up
-  // (with a timeout fallback so it can never get stuck).
-  const onIdeasRoute = window.location.pathname === '/ideas';
-  if (!onIdeasRoute) {
-    document.getElementById('loading-splash')?.remove();
-  } else {
-    setTimeout(() => document.getElementById('loading-splash')?.remove(), 12000);
-  }
+  // Remove loading overlays as soon as JS takes over. (/ideas is served as a
+  // static, app-free page now, so there's no boot-spinner special-case here —
+  // a soft-nav to the in-app ideas overlay happens after boot.)
+  document.getElementById('loading-splash')?.remove();
   if (!shouldShowLanding()) {
     document.getElementById('landing-inline')?.remove();
   }
@@ -2011,11 +2026,18 @@ async function main() {
     // finishes, so no manual restore is needed here.
     const session = await importSession(data, async (code, importedMeshes) => {
       setActiveImports(importedMeshes ?? []);
-      await runCodeSync(code);
+      // Skip surface texture computation during thumbnail generation — the
+      // heavy surface Worker run would hang the import for complex models.
+      // The textures will apply on first interactive load instead.
+      await runCodeSync(code, { skipSurface: true });
       return captureThumbnail();
     });
     const version = await openSession(session.id);
-    if (version) await loadVersionIntoEditor(version);
+    // Skip surface texture computation during catalog import — the surface
+    // Worker (voronoi/knurl/woven) can take 30–120s on complex catalog models
+    // and blocks the entire import. Textures apply on the first user-triggered
+    // run (edit code, or click Re-apply if the pill appears).
+    if (version) await loadVersionIntoEditor(version, { skipSurface: true });
     return { sessionId: session.id };
   }
 
@@ -4359,7 +4381,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
+  const { editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, lineNumbersToggle, fontSizeDecBtn, fontSizeIncBtn, fontSizeValueEl, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
@@ -4475,21 +4497,56 @@ async function main() {
   syncEditorTitle(getState());
   onStateChange(syncEditorTitle);
 
-  // Format button and auto-format toggle
-  const AUTO_FORMAT_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40';
-  const AUTO_FORMAT_OFF_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-zinc-500 border-zinc-700 hover:text-zinc-300';
-  function syncAutoFormatToggleUI(): void {
-    const on = getAutoFormat();
-    autoFormatToggle.textContent = on ? 'Auto ✓' : 'Auto';
-    autoFormatToggle.title = on ? 'Auto-format on — click to disable' : 'Auto-format off — click to enable';
-    autoFormatToggle.className = on ? AUTO_FORMAT_ON_CLASS : AUTO_FORMAT_OFF_CLASS;
+  // Editor settings menu (⚙) — Format / Auto-format / Word wrap / Line numbers /
+  // Font size. Each toggle renders as a compact On/Off pill via a shared helper.
+  const TOGGLE_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-[11px] leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40 min-w-[2.75rem] text-center';
+  const TOGGLE_OFF_CLASS = 'shrink-0 px-2 py-0.5 rounded text-[11px] leading-none border text-zinc-400 border-zinc-700 hover:text-zinc-200 min-w-[2.75rem] text-center';
+  function syncTogglePill(btn: HTMLButtonElement, on: boolean, name: string): void {
+    btn.textContent = on ? 'On' : 'Off';
+    btn.title = `${name}: ${on ? 'on' : 'off'} — click to toggle`;
+    btn.setAttribute('aria-pressed', String(on));
+    btn.className = on ? TOGGLE_ON_CLASS : TOGGLE_OFF_CLASS;
+  }
+  const syncAutoFormatToggleUI = (): void => syncTogglePill(autoFormatToggle, getAutoFormat(), 'Auto-format on load');
+  const syncLineWrapToggleUI = (): void => syncTogglePill(lineWrapToggle, getLineWrap(), 'Word wrap');
+  const syncLineNumbersToggleUI = (): void => syncTogglePill(lineNumbersToggle, getLineNumbers(), 'Line numbers');
+  function syncFontSizeUI(): void {
+    const px = getFontSize();
+    const { min, max } = getFontSizeBounds();
+    fontSizeValueEl.textContent = `${px}px`;
+    fontSizeDecBtn.disabled = px <= min;
+    fontSizeIncBtn.disabled = px >= max;
+    fontSizeDecBtn.classList.toggle('opacity-40', fontSizeDecBtn.disabled);
+    fontSizeDecBtn.classList.toggle('cursor-not-allowed', fontSizeDecBtn.disabled);
+    fontSizeIncBtn.classList.toggle('opacity-40', fontSizeIncBtn.disabled);
+    fontSizeIncBtn.classList.toggle('cursor-not-allowed', fontSizeIncBtn.disabled);
   }
   syncAutoFormatToggleUI();
+  syncLineWrapToggleUI();
+  syncLineNumbersToggleUI();
+  syncFontSizeUI();
+
   findReplaceBtn.addEventListener('click', () => openFindReplace());
   formatBtn.addEventListener('click', () => formatCode());
   autoFormatToggle.addEventListener('click', () => {
     setAutoFormat(!getAutoFormat());
     syncAutoFormatToggleUI();
+  });
+  lineWrapToggle.addEventListener('click', () => {
+    setLineWrap(!getLineWrap());
+    syncLineWrapToggleUI();
+  });
+  lineNumbersToggle.addEventListener('click', () => {
+    setLineNumbers(!getLineNumbers());
+    syncLineNumbersToggleUI();
+  });
+  fontSizeDecBtn.addEventListener('click', () => {
+    setFontSize(getFontSize() - 1);
+    syncFontSizeUI();
+  });
+  fontSizeIncBtn.addEventListener('click', () => {
+    setFontSize(getFontSize() + 1);
+    syncFontSizeUI();
   });
   document.addEventListener('keydown', (e) => {
     // Use e.code (physical key) — on macOS, Option+Shift+F composes a dead-key
@@ -4763,7 +4820,7 @@ async function main() {
     void ensureEngineStarted();
   }
 
-  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
+  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean; skipSurface?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
     // Cancel any active voxel paint before loading a different version — its
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
     // after navigation would write the wrong session's voxels into the new
@@ -4880,7 +4937,7 @@ async function main() {
         seedSurfaceCache(persistedTexture.key, persistedTexture.mesh as MeshData);
       }
       const meshBeforeRun = currentMeshData;
-      const applied = await runCodeSync(version.code, { preserveCamera: true });
+      const applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
       if (!applied) return;
@@ -5194,18 +5251,81 @@ async function main() {
     updateDocumentTitle({ page: 'editor' });
   }
 
+  // Open the Relief import wizard in 'luminance' (tonal) mode — the "smooth
+  // relief / lithophane" idea promises a non-blocky result, unlike the global
+  // 'quantized' default (flat blocky colour clusters). Shared by the in-app
+  // tile and the /editor?idea= deep-link. Clone the defaults so we only
+  // override the mode.
+  function openReliefForIdea(file: File): void {
+    const initialOptions: ReliefOptions = { ...structuredClone(DEFAULT_RELIEF_OPTIONS), mode: 'luminance' };
+    openReliefImportFlow(file, initialOptions);
+  }
+
   // An interactive idea: emboss the user's photo as a smooth relief tile
   // (reuses the existing Relief import wizard).
   async function handleIdeaPhotoToRelief(file: File): Promise<void> {
     await enterEditorForIdea();
     if (window.location.pathname !== '/editor') return;
-    // The "smooth relief / lithophane" idea tile promises a non-blocky, tonal
-    // result, so open the wizard in 'luminance' mode rather than the global
-    // default ('quantized' — flat blocky colour clusters). Clone the defaults
-    // so we only override the mode.
-    const initialOptions: ReliefOptions = { ...structuredClone(DEFAULT_RELIEF_OPTIONS), mode: 'luminance' };
-    openReliefImportFlow(file, initialOptions);
+    openReliefForIdea(file);
     updateDocumentTitle({ page: 'editor' });
+  }
+
+  // Deep-link from the static /ideas page: /editor?idea=<id>. The static page
+  // can't hand an in-memory tile click across a real navigation, so it links
+  // here and we resolve the id against the IDEAS dataset. A prompt idea
+  // prefills the AI panel; an interactive idea opens a photo picker, then runs
+  // the same flow the in-app tile would. The editor is already entered (this
+  // runs inside syncEditorFromURL), so there's no history push — we just strip
+  // the one-shot ?idea= param for a clean URL.
+  async function loadIdeaIntoEditor(id: string): Promise<void> {
+    const clearIdeaParam = () => {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('idea')) {
+        url.searchParams.delete('idea');
+        history.replaceState(history.state, '', url.pathname + url.search);
+      }
+    };
+    const idea = IDEAS.find((i) => i.id === id);
+    // Ensure a live session exists either way (mirrors handleIdeaUsePrompt).
+    if (!getState().session) {
+      await createSession();
+      setStatus(statusBar, 'ready', 'Ready');
+      void seedStarter('manifold-js');
+    }
+    clearIdeaParam();
+    updateDocumentTitle({ page: 'editor' });
+    if (!idea) return; // unknown id — just land in a fresh editor session
+    if (idea.category === 'interactive' && idea.action) {
+      const action = idea.action;
+      // No file came across the navigation — pick one here, then run the flow.
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.style.display = 'none';
+      document.body.appendChild(input);
+      input.addEventListener(
+        'change',
+        () => {
+          const file = input.files?.[0];
+          input.remove();
+          if (!file) return;
+          if (action === 'photoToVoxel') void handleImageImport(file);
+          else openReliefForIdea(file);
+        },
+        { once: true },
+      );
+      input.click();
+      // Cancelling the native picker fires no 'change' — reclaim the orphaned
+      // input once focus returns (deferred so a real selection's change runs
+      // first and removes it).
+      window.addEventListener(
+        'focus',
+        () => setTimeout(() => { if (input.isConnected && !input.files?.length) input.remove(); }, 0),
+        { once: true },
+      );
+    } else {
+      prefillAiInput(idea.prompt ?? '');
+    }
   }
 
   let ideasEl: HTMLElement | null = null;
@@ -5448,6 +5568,13 @@ async function main() {
     const catalogFile = new URLSearchParams(window.location.search).get('catalog');
     if (catalogFile) {
       await loadCatalogFileIntoEditor(catalogFile);
+      return;
+    }
+
+    // Ideas deep-link: /editor?idea=<id> hands off from the static /ideas page.
+    const ideaId = new URLSearchParams(window.location.search).get('idea');
+    if (ideaId) {
+      await loadIdeaIntoEditor(ideaId);
       return;
     }
 
@@ -6856,6 +6983,23 @@ async function main() {
     }
   }
 
+  // Opening a hands-on viewport tool (Paint, Customize, Surface, Resize, …)
+  // steps the AI panel out of the way: once the user is driving a tool by hand
+  // they're not chatting, and the docked AI column would otherwise sit beneath
+  // the freshly-opened tool panel and be easy to miss. Wired here (not in the
+  // registry) so the registry stays a dependency-free leaf.
+  onViewportPanelOpen(() => closeAiPanel());
+
+  // When a chat turn produced a customizable model, the Customizer reveal was
+  // deferred (see syncParamsPanel) so it didn't pop over the live chat. Flush it
+  // now that the turn has ended — silently, so the AI panel stays open and the
+  // user sees the result and its knobs side by side.
+  onAiTurnEnd(() => {
+    if (!paramsRevealDeferred) return;
+    paramsRevealDeferred = false;
+    refreshParamsPanelUI(true);
+  });
+
   // Initialize the AI chat side drawer once the editor UI is mounted.
   // Wraps initAiPanel + setAiToolbarState; tolerated if it fails (e.g.
   // network blocks /ai.md) — toolbar still shows the Connect button.
@@ -7401,7 +7545,10 @@ async function main() {
       };
       setActiveImports([comp]);
       setValue(result.code);
-      const ok = await runCodeSync(result.code);
+      // A surface modifier decorates the existing model in place (same bounds),
+      // so keep the user's camera angle instead of snapping back to the default
+      // framing when the baked result renders.
+      const ok = await runCodeSync(result.code, { preserveCamera: true });
       if (!ok) return { error: `Failed to apply ${result.label}` };
       let geoData = getGeometryDataObj();
       let carried = 0;
@@ -7445,7 +7592,9 @@ async function main() {
     if (getActiveLanguage() !== 'voxel') await switchLanguage('voxel');
     setActiveImports([]);
     setValue(result.code);
-    const ok = await runCodeSync(result.code);
+    // Same in-place decoration: a voxelize/voronoi-lamp bake keeps the model's
+    // bounds, so preserve the user's camera angle across the render.
+    const ok = await runCodeSync(result.code, { preserveCamera: true });
     if (!ok) return { error: `Failed to apply ${result.label}` };
     const thumbnail = await captureThumbnail();
     await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
@@ -8559,7 +8708,11 @@ async function main() {
         return { error: 'The current model declares no parameters. Add an api.params({...}) call to the model code (and run it) first.' };
       }
       currentParamValues = { ...currentParamValues, ...(values as Record<string, ParamValue>) };
-      const applied = await runCodeSync(getValue());
+      // Tweaking a parameter re-renders the same model, so keep the user's (or
+      // AI's) current camera angle rather than snapping to the default framing —
+      // matching the Customizer panel's onChange path (runCode preserves by
+      // default). captureCameraToPreserve still auto-frames a session's first run.
+      const applied = await runCodeSync(getValue(), { preserveCamera: true });
       if (!applied) return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
       const geometry = JSON.parse(geometryDataEl.textContent || '{}');
       return {
@@ -13235,6 +13388,54 @@ async function main() {
       return { axis };
     },
 
+    /** Set the active grid's surfacing (corner rounding) — the programmatic twin
+     *  of the Voxel Studio Rounding panel. Pass `null` for hard blocks, or
+     *  `{ algorithm?: 'taubin'|'surfaceNets', strength?: 0..1, iterations?: 1..8,
+     *  flatBottom?: bool, baseLayers?: int (0 = no flat base) }` to smooth.
+     *  Requires `activateVoxelPaint()` first. Returns `{ surfacing }` (the
+     *  resolved surfacing, or `null` when blocky) or `{ error }`. */
+    setVoxelRounding(opts: import('./color/voxelPaint').RoundingOpts | null) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      if (opts === null) {
+        voxelPaint.setRounding(null);
+        syncVoxelPaintUI();
+        return { surfacing: voxelPaint.getSurfacing() };
+      }
+      if (typeof opts !== 'object' || Array.isArray(opts)) return { error: 'setVoxelRounding.opts must be an object or null' };
+      const clean: import('./color/voxelPaint').RoundingOpts = {};
+      if (opts.algorithm !== undefined) {
+        if (opts.algorithm !== 'taubin' && opts.algorithm !== 'surfaceNets') return { error: "setVoxelRounding.algorithm must be 'taubin' or 'surfaceNets'" };
+        clean.algorithm = opts.algorithm;
+      }
+      if (opts.strength !== undefined) {
+        if (typeof opts.strength !== 'number' || opts.strength < 0 || opts.strength > 1) return { error: 'setVoxelRounding.strength must be a number 0..1' };
+        clean.strength = opts.strength;
+      }
+      if (opts.iterations !== undefined) {
+        if (typeof opts.iterations !== 'number' || !Number.isInteger(opts.iterations) || opts.iterations < 1 || opts.iterations > 8) return { error: 'setVoxelRounding.iterations must be an integer 1..8' };
+        clean.iterations = opts.iterations;
+      }
+      if (opts.flatBottom !== undefined) {
+        if (typeof opts.flatBottom !== 'boolean') return { error: 'setVoxelRounding.flatBottom must be a boolean' };
+        clean.flatBottom = opts.flatBottom;
+      }
+      if (opts.baseLayers !== undefined) {
+        if (typeof opts.baseLayers !== 'number' || !Number.isInteger(opts.baseLayers) || opts.baseLayers < 0 || opts.baseLayers > 1024) return { error: 'setVoxelRounding.baseLayers must be an integer 0..1024' };
+        if (opts.baseLayers > 0) clean.baseLayers = opts.baseLayers; // 0 = no flat base
+      }
+      voxelPaint.setRounding(clean);
+      syncVoxelPaintUI();
+      return { surfacing: voxelPaint.getSurfacing() };
+    },
+
+    /** Read the active grid's current surfacing (corner rounding) settings.
+     *  Returns `{ surfacing }` (the Surfacing object, or `null` when blocky) or
+     *  `{ error }` when Voxel Studio is not active. */
+    getVoxelRounding() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      return { surfacing: voxelPaint.getSurfacing() };
+    },
+
     /** Begin a brush stroke: subsequent `voxelStudioApply` calls collapse into a
      *  single undo step until `voxelStudioEndStroke()`. This is the programmatic
      *  equivalent of a click-drag. Returns `{ ok }` or `{ error }`. */
@@ -13736,6 +13937,8 @@ async function main() {
         'buildEngraveStamp': { signature: 'await buildEngraveStamp({text?, font?, imageUrl?, invert?}) -- Rasterize an ink mask for engraveModel/the Surface panel -> {mask, width, height}', docs: '/ai/textures.md#engravemodel' },
         'smoothModel':     { signature: 'await smoothModel({iterations?, subdivide?, preserveColor?}) -- BAKE a Taubin smoothing pass; saves a new version. In-code alternative: api.surface.smooth', docs: '/ai/textures.md' },
         'voxelizeModel':   { signature: 'await voxelizeModel({resolution?, smooth?, preserveColor?}) -- Convert the mesh to a voxel-language session (engine change — bake only)', docs: '/ai/voxel.md' },
+        'setVoxelRounding': { signature: "setVoxelRounding(opts | null) -- Voxel Studio corner rounding: null = hard blocks; {algorithm?: 'taubin'|'surfaceNets', strength?: 0..1, iterations?: 1..8, flatBottom?: bool, baseLayers?: int} = smooth. Requires activateVoxelPaint(). Returns {surfacing} or {error}", docs: '/ai/voxel.md' },
+        'getVoxelRounding': { signature: 'getVoxelRounding() -- Read the active grid surfacing -> {surfacing} (null when blocky) or {error}', docs: '/ai/voxel.md' },
         // Transform / placement (mode 'parametric' wraps the code; 'bake' rewrites the mesh; 'auto' picks)
         'canPlaceParametric': { signature: 'canPlaceParametric() -- Whether transforms can be written into the code parametrically (manifold-js sessions)', docs: '/ai/printing.md' },
         'previewScale':    { signature: 'previewScale(sx, sy, sz, {preserveColor?}?) -- Non-destructive viewport preview of a resize -> {ok} or {error}', docs: '/ai/printing.md' },
@@ -14758,7 +14961,7 @@ async function main() {
     cancelInlineBtn.classList.add('hidden');
   }
 
-  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean } = {}): Promise<boolean> {
+  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean; skipSurface?: boolean } = {}): Promise<boolean> {
     // Hard refusal in shared-preview mode: this is the single execution
     // chokepoint that the console API (partwright.run / runAndSave) also routes
     // through, so guarding it here keeps the sharer's untrusted code from ever
@@ -14778,13 +14981,25 @@ async function main() {
     const t0 = performance.now();
     startRunTimer(t0);
 
+    // Snapshot the camera to restore *before* the engine runs, not after, when
+    // this is a re-render of an already-framed session (opts.preserveCamera:
+    // version switch, live edit, Customizer change, quality change). The SCAD
+    // path renders progressively — onScadPreview below calls updateMesh mid-run,
+    // which auto-frames; capturing afterwards would record that reset pose and
+    // "preserve" the default framing instead of the user's angle (the Customizer
+    // reset bug on parametric SCAD models). captureCameraToPreserve returns null
+    // on a session's first render, so a genuinely new model still auto-frames.
+    const preservedCameraPose = opts.preserveCamera ? captureCameraToPreserve() : null;
+
     // SCAD preview callback: receives the fast Phase 1 mesh and updates the
-    // viewport immediately so the user sees geometry while Phase 2 renders.
+    // viewport immediately so the user sees geometry while Phase 2 renders. Skip
+    // its auto-frame while preserving the camera, so the mid-run preview doesn't
+    // momentarily snap to the default view before the final restore lands.
     const onScadPreview = getActiveLanguage() === 'scad'
       ? (previewResult: MeshResult) => {
           if (myGen !== _runGeneration || !previewResult.mesh) return;
           currentMeshData = previewResult.mesh;
-          updateMesh(previewResult.mesh);
+          updateMesh(previewResult.mesh, { skipAutoFrame: preservedCameraPose !== null });
         }
       : undefined;
 
@@ -14882,7 +15097,9 @@ async function main() {
       // behind an inline "Applying texture… Xs" timer + Cancel. The textured
       // mesh is swapped in so all the downstream wiring (manifold
       // reconstruction, paint resolution, stats) sees final geometry.
-      await applySurfaceTextures(result, src);
+      // skipSurface: skip during thumbnail-regeneration imports so the
+      // heavy surface computation doesn't hang the import flow.
+      if (!opts.skipSurface) await applySurfaceTextures(result, src);
       // A compute can take seconds; if a newer run started meanwhile, abandon
       // this one rather than stamping a stale mesh over the new render.
       if (myGen !== _runGeneration) return false;
@@ -14975,12 +15192,9 @@ async function main() {
       // strokes) so slab/box smooth regions rebuild too, exactly as the
       // visibility-toggle path does via reconcilePaintedGeometry.
       //
-      // Snapshot the camera before the auto-framing updateMesh runs when this
-      // run is a version switch (opts.preserveCamera) within an already-framed
-      // session: keep the user's interactive angle instead of snapping to the
-      // default 3/4 view. Genuine new-code runs (pw.run, live edits) leave this
-      // null so the new model auto-frames as before.
-      const preservedCameraPose = opts.preserveCamera ? captureCameraToPreserve() : null;
+      // preservedCameraPose was snapshotted at the top of runCodeSync (before
+      // the engine ran), so the auto-framing updateMesh calls below — and the
+      // SCAD progressive preview — don't poison the pose we restore at the end.
       if (hasColorRegions() && hasRefineDescriptors()) {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();

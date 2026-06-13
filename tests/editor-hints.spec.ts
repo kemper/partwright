@@ -82,6 +82,32 @@ test.describe('editor hints ticker', () => {
     expect(await rowsAtWidth(430)).toBe('two');
   });
 
+  test('keeps its grown height instead of snapping back (no pane stutter)', async ({ page }) => {
+    await page.goto('/editor');
+    const strip = page.locator('#editor-hints');
+    await expect(strip).toBeVisible({ timeout: 15_000 });
+
+    const setWidth = async (w: number) => {
+      await page.evaluate((px) => {
+        const host = document.getElementById('editor-hints-host')!;
+        host.style.flex = `0 0 ${px}px`;
+        host.style.maxWidth = `${px}px`;
+      }, w);
+      await page.waitForTimeout(350);
+    };
+    const height = async () => (await strip.boundingBox())!.height;
+
+    // Tight → the card grows to the taller two-row arrangement.
+    await setWidth(430);
+    const tall = await height();
+
+    // Roomy again → the single-row layout would normally be shorter, which would
+    // shove the panes below up and down. The high-water-mark min-height pins it,
+    // so it must NOT shrink back below the height it already reached.
+    await setWidth(1100);
+    expect(await height()).toBeGreaterThanOrEqual(tall);
+  });
+
   test('a coach CTA pulses an arrow at the target control', async ({ page }) => {
     await page.goto('/editor');
     const strip = page.locator('#editor-hints');

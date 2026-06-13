@@ -58,7 +58,7 @@ const pants = F.clothing.pants(rig, {
 }).label('pants');
 
 // 5. HAIR — bangs style: straight fringe to the brows.
-const hair = F.hair(rig, { style: 'bangs' }).label('hair');
+const hair = F.hair(rig, { style: 'bob' }).label('hair');
 
 // 6. OPEN STORYBOOK — chunky board-book held at chest level, tilted for reading.
 // Hand joints (raiseSide 16, raiseFwd 28, bend 82):

@@ -74,15 +74,22 @@ Then paint by label from a follow-up tool call:
 
 ```js
 partwright.paintByLabels([
-  { label: 'skin',  color: [0.95, 0.78, 0.66] },
+  { label: 'skin',  color: [0.58, 0.34, 0.20] },   // pick from the FULL range — see Diversity below
   { label: 'eyes',  color: [0.97, 0.96, 0.94] },   // white of the eye
-  { label: 'iris',  color: [0.29, 0.49, 0.66] },
+  { label: 'iris',  color: [0.29, 0.20, 0.13] },
   { label: 'pupil', color: [0.11, 0.11, 0.11] },
   { label: 'pants', color: [0.15, 0.18, 0.35] },
-  { label: 'hair',  color: [0.45, 0.26, 0.13] },
+  { label: 'hair',  color: [0.10, 0.08, 0.07] },
   { label: 'base',  color: [0.3, 0.3, 0.3] },
 ]);
 ```
+
+> **Skin tone is a deliberate choice, not a default.** The geometry is colourless
+> until you paint it, so there is **no** default skin colour — *you* pick one, and
+> the whole human range is equally valid. Don't reflexively reach for a light
+> peach. `F.skin(name)` gives a curated ramp to choose from (`'porcelain'` →
+> `'ebony'`, twelve stops): `api.paint.label('skin', F.skin('umber'))`, or
+> `F.skin()` for the whole `{name: hex}` map. See [Diversity](#diversity--vary-the-whole-figure).
 
 ## `figure.rig(opts)` — the rig
 
@@ -193,6 +200,15 @@ The rig exposes (read-only, for custom parts):
     A guitar neck / staff / sword grip runs parallel to this.
   - `palmNormal` — unit normal the palm faces (fingers curl toward it).
   - `reach` — unit forearm/finger direction.
+- `rig.sole.{L,R}` — **a full sole frame per foot, for connecting things UNDER
+  the feet** (footwear, skates, skis, snowshoes, a platform/base). The foot analog
+  of `rig.grip`. Each has `{ point, normal, heading, length, width, groundZ }`:
+  - `point` — the footprint **centre on the ground-contact plane**. Drop anything
+    that attaches under the foot here (see `F.standOn`) instead of guessing a sole Z.
+  - `groundZ` — the Z of the ground-contact plane (underside of the bare sole).
+    The **lower** of `sole.L.groundZ` / `sole.R.groundZ` is where a floor/base sits.
+  - `heading` — toe direction (== `dir.footL/R`), so attachments track turnout.
+  - `length` / `width` — footprint extents. `normal` is ground-up `[0,0,1]`.
 - `rig.face.{eyeL, eyeR, browL, browR, nose, mouth, earL, earR, chinTip}`.
 
 **`build` scales every width:** `slim` ×0.82, `average` ×1.0, `stocky` ×1.22 —
@@ -208,7 +224,7 @@ F.arms(rig)                   // both arms: tapered limbs + deltoid caps
 F.hands(rig, { grip })        // grip: 'fist' | 'open' | 'relaxed' — sculpted 3-finger+thumb
 F.legs(rig)
 F.feet(rig)
-F.head(rig)                   // skull + jaw + cheeks (no features yet)
+F.head(rig, { faceShape, jaw, chin, cheek })  // skull + jaw + cheeks (no features yet)
 F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
 ```
 
@@ -249,6 +265,27 @@ const staffPlaced = F.placeAt(staff, rig.joints.handR);                   // cen
 so they stay one printable piece — a staff floating next to the hand is a
 second component.
 
+**Seating headwear ON the hair — `F.placeOnHead(node, rig, opts?)`.** `placeAt`
+snaps to the *skull* crown joint, so a hat/crown placed there **embeds in the
+hair** (the hair adds volume above the skull). `placeOnHead` is the headwear
+analog of the hand grip frame: pass the **hair** as `opts.rest` and it rests the
+accessory's bbox `anchor` (default `'bottom'`) on the TOP of the hair, centred on
+the head. `clearance` floats it above; `embed` sinks it in a little so it welds
+into one printable piece. Build the accessory **centred on the origin** (ring in
+the z=0 plane, spikes up), then place it:
+
+```js
+const hair = F.hair(rig, { style: 'long' }).label('hair');
+// coronet built at the origin; size the ring near the hair radius so it welds
+const crown = F.placeOnHead(coronet, rig, { rest: hair, embed: rig.r.head * 0.4 }).label('crown');
+```
+
+Without `rest` it falls back to `rig.joints.crown` (the bare skull apex). A ring
+sized to the skull sits *inside* the larger hair volume — keep the ring small
+(a coronet on top) or grow it toward the hair radius so the band straddles the
+hair surface and welds (a band tangent to the surface prints as a second
+component).
+
 **Putting a prop INTO a hand — `F.holdAt(prop, rig.grip.L|R, opts?)`.** `placeAt`
 only positions; `holdAt` also **orients** a prop to the grip and seats it in the
 finger cup. Build the prop centred at the origin with its long axis along local
@@ -282,9 +319,26 @@ the grip `point` (not `handL/R`) is what stops the bar passing through a hand.
 `figure_rocker.js` builds its guitar neck + headstock on `spanGrips`;
 `figure_staff_mage.js` seats a single-hand staff with `holdAt`.
 
+**Putting something UNDER a foot — `F.standOn(node, rig.sole.L|R, opts?)`.** The
+foot analog of `holdAt`: it drops a node onto a foot's sole frame so you never
+guess the sole Z — for a skate, ski, snowshoe, platform, or a per-foot base.
+`opts.anchor` ∈ `top` (default — the node's top meets the sole, hanging it below
+the foot) | `bottom` (rests the node ON the sole point) | `center`.
+
+```js
+// A flat platform flush under each foot (tracks turnout via the sole heading):
+const plat = () => sdf.roundedBox([rig.r.foot * 2.8, rig.r.foot * 3.4, rig.r.foot * 0.8], rig.r.foot * 0.2);
+const skates = sdf.union(F.standOn(plat(), rig.sole.L), F.standOn(plat(), rig.sole.R)).label('skates');
+```
+
+`F.clothing.shoes`/`boots` already key off the sole frame, so their soles come
+out **flat** on the ground plane (they sit flush on `F.base` and print flat) and
+track turnout — you don't hand-roll footwear. `F.base` rises to meet the lower of
+the two `groundZ`, so at least one foot always welds to it (one component).
+
 **Reading a pose — `F.poseProbe(rig)`.** Returns a deterministic, rounded dump
-of every world joint position, both grip frames, and the key directions, plus a
-`.text` summary — use it instead of hand-rolled `JSON.stringify` probes when
+of every world joint position, both grip frames, both sole frames, and the key
+directions, plus a `.text` summary — use it instead of hand-rolled `JSON.stringify` probes when
 tuning a pose. `throw new Error(F.poseProbe(rig).text)` (or `console.log` it)
 prints the whole readout so you can read where a hand/grip actually landed
 before aiming a prop at it.
@@ -294,12 +348,37 @@ before aiming a prop at it.
 ```js
 F.face.assemble(head, rig, {
   eyes:  true | { radius } | false,   // OFF by default — see note below
-  nose:  true | { tipRadius, length } | false,
-  mouth: true | { style, width, smirk, open } | false,
+  nose:  true | { tipRadius, length, width, bridge, flare } | false,
+  mouth: true | { style, width, smirk, open, fullness } | false,
   ears:  true | { size } | false,
   brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
 })
 ```
+
+### Head shape — `F.head(rig, { faceShape, jaw, chin, cheek })`
+
+The skull/jaw/cheekbones are the **first** axis of facial variety — vary them
+before the features. `F.head` takes an options object (omit it for the neutral
+oval head — existing figures are unchanged):
+
+| Key | Effect |
+|---|---|
+| `faceShape` | `'oval'` (default) · `'round'` · `'square'` · `'long'` · `'heart'` · `'diamond'` — preset skull/jaw/cheek proportions |
+| `jaw` | 0.5–1.6 jaw **width** (narrow tapered ↔ strong square jaw) |
+| `chin` | 0.5–1.6 chin **length / projection** (soft receded ↔ long prominent) |
+| `cheek` | 0.3–1.8 **cheekbone** prominence (flat ↔ high sculpted) |
+
+The explicit knobs multiply **on top of** the preset, so `{ faceShape: 'square', jaw: 1.1 }` stacks.
+
+### Nose & lips — strong variation axes
+
+- **`nose.width`** (0.4–2.2) widens the tip + alae; **`nose.bridge`** (0.3–1.5)
+  is the nasal-bridge projection — a **low** value (~0.5) reads broad and flat, a
+  **high** value (~1.4) thin and prominent; **`nose.flare`** (0–1.5) adds nostril
+  wings. (`tipRadius`/`length` unchanged.) These three vary the nose far more than
+  size alone — e.g. `{ width: 1.4, bridge: 0.6, flare: 1.0 }` vs `{ width: 0.8, bridge: 1.3 }`.
+- **`mouth.fullness`** (0.4–2.2) scales lip thickness independently of `width`
+  (works on the `'lips'` ridge and the open-mouth lip ring).
 
 > **Eyes default to OFF in `assemble`.** The recommended flow welds the face into
 > the body and `.label('skin')`s it — which would flatten any in-face eyes into
@@ -366,39 +445,63 @@ disc and black pupil dot, pre-labelled `'eyes'` / `'iris'` / `'pupil'` — do
 **not** wrap it in `.label()` (the outer label wins and flattens the eye to
 one colour). `'solid'` returns plain spheres for you to label.
 
+The eyeball stays a **perfectly round white dome**; the iris (≈ 0.55·eyeRadius)
+and pupil (≈ 0.27·eyeRadius) are **painted on as flush concentric discs**, not
+raised lenses — so they read as recognizable centred eyes from the front
+without protruding as beads. (Each disc is a deep plug clipped to a sphere a
+hair larger than the eyeball, so its face follows the eyeball's curvature and
+wins the union over its disc with no visible bump.) Colour them by their labels
+(white sclera, mid iris, black pupil). Give the build `detail: F.faceDetail(rig)`
+so the iris/pupil disc edges mesh crisply.
+
 Either way, keep eyes OUT of the skin weld (`eyes: false` in `assemble`) and
 hard-union them at the top level — smooth-welded features can't carry paint
 labels, and an eye buried under the cheek welds resolves to a label with zero
-paintable triangles. The eyeballs are pushed forward half their radius so the
-domes always protrude. (Brows can use the same top-level pattern if you want
-them painted.)
+paintable triangles. The eyeballs are pushed forward so the domes always
+protrude. (Brows can use the same top-level pattern if you want them painted.)
 
 ## Face detail — `F.faceDetail(rig)` (use it on every figure with a face)
 
 Face features are far smaller than the body, so at the recommended figure grid
 (`edgeLength 0.4–0.6`) they mesh as angular slabs. `F.faceDetail(rig)` returns
-a `{ center, radius, edgeLength }` sphere covering the head, sized off
-`rig.r.head`, for `.build()`'s `detail` option (see
-`/ai/sdf.md#detail-regions`):
+`{ center, radius, edgeLength }` spheres — one covering the head, a finer one
+over the mouth groove, and an extra-fine one over each eyeball front — for
+`.build()`'s `detail` option (see `/ai/sdf.md#detail-regions`):
 
 ```js
 return sdf.union(skin, eyes, hair, base)
   .build({ edgeLength: 0.5, detail: F.faceDetail(rig) });
 ```
 
-The head meshes ~3× finer (smooth smile groove, round eye domes) while the
-body keeps the cheap global grid — typically +30–60k triangles instead of the
-~10× a globally fine grid would cost. For a final extra-fine pass, halve it:
-`F.faceDetail(rig, { edgeLength: rig.r.head * 0.02 })`.
+The head meshes ~3× finer (smooth smile groove) and the eyes finer still, so the
+iris/pupil circles tessellate round instead of faceting into polygons — while
+the body keeps the cheap global grid. Typically +30–60k triangles instead of the
+~10× a globally fine grid would cost. Override per region:
+`F.faceDetail(rig, { edgeLength: rig.r.head * 0.02, eyeEdgeLength: rig.r.head * 0.006 })`.
 
 ## Hair & clothing — derived from the rig, so they always fit
 
 ```js
-F.hair(rig, { style, hairline })
-//   style: 'short' | 'long' | 'bun' | 'bald' | 'bangs' | 'ponytail'
+F.hair(rig, { style, hairline, length, volume, part, texture })
+//   style: 'short' | 'long' | 'bob' | 'bun' | 'bald' | 'bangs' | 'ponytail'
+//          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids'
 //   hairline: 'high' | 'mid' | 'low' — where the face window's top edge sits.
 //   'bangs' adds a straight fringe and defaults to 'low' (hair to the brows);
-//   'ponytail' adds a gathered tail swinging down the back of the skull.
+//   'ponytail'/'braids' add tails down the back; 'bob' frames the jaw; 'afro'
+//   puffs a textured sphere around the skull; 'spiked' radiates anime spikes;
+//   'locs' hangs rope strands all round (thicker, fewer); 'boxBraids' hangs
+//   many thin braids; 'cornrows' lays raised braided rows tight to the scalp
+//   with carved partings between them (front hairline → crown → nape puff).
+//   length: 'short' | 'mid' (default) | 'long' — how far tails/manes/locs fall.
+//   volume: 0.3..4 (default 1) — puffs the cap + tail girth (afro wants 1.5+).
+//   part: 'none' (default) | 'left' | 'right' | 'center' — a shallow part groove.
+//   texture: 'none' | 'strands' | 'curls' | 'coils' | 'wavy' — physical relief
+//     displaced into the surface (the print-native hair-texture analog; real
+//     geometry, not a screen shader). 'coils' is the tight springy 4c look —
+//     usable on ANY style (e.g. a coily 'short' crop or 'afro'). 'afro'/'locs'
+//     default to a fitting relief, the classic styles stay smooth. Mesh fine
+//     enough (edgeLength ≤ ~0.4, faceDetail on the head) or the relief aliases
+//     away; thin 'boxBraids' want edgeLength ≤ ~0.35 so the strands don't break.
 F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
 //   rise: low|mid|high · leg: slim|cargo · length: 'full' (default) | 'briefs'
 //   'briefs' = seat + gusset + hip coverage only (leotard bottoms, swimwear,
@@ -406,6 +509,40 @@ F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
 F.clothing.top(rig, { sleeve, hemZ, thickness })        // sleeve: none|short|long
 //   hemZ below the pelvis turns the top into a robe/dress: a flared skirt
 //   cone is added down to the hem so legs stay covered all round.
+F.clothing.shoes(rig, { size, thickness, label, sole })  // sole + upper over each foot
+F.clothing.boots(rig, { size, shaftZ, thickness, label, sole })  // + a shaft up the lower leg
+//   Footwear keys off rig.sole.{L,R}, so it tracks leg*.twist turnout like
+//   F.feet AND comes out with a FLAT-bottomed sole that fully encloses the skin.
+//   The sole is a horizontal SLICE of the shoe's own shape, so it follows the
+//   foot's curvature (not a cuboid welded on). It OWNS its paint regions (like
+//   F.face.eyes): the upper is labeled `label` (default 'boots'/'shoes') and the
+//   sole is its OWN region (default label 'sole') — so DON'T add .label() on top
+//   (an outer label would swallow the sole). `sole` defaults ON; pass sole:false
+//   to fold it into the upper, or tune it:
+//     sole: { style, thickness, lip, label }
+//       style: 'welt' (default — sole sits proud of the upper, like a real shoe)
+//              | 'flush' (sole hugs the upper's outline, no overhang)
+//       lip:   how far a welt sole is proud (alias: overhang); ignored for flush
+//       label: 'boots' = same colour as the boot.
+//   `size` scales the footprint, `thickness` the shell. For boots, `shaftZ` is a
+//   world-Z target projected onto each leg's own ankle→knee bone.
+```
+
+**Standing on a surface — `F.ground(rig, { mode, surface?|z?, tolerance? })`.** Feet
+posed at different heights end up with soles at different Z. `F.ground` returns a
+**new rig** whose feet share one ground plane; build feet/footwear/base from it and
+the soles come out coplanar with the base meeting them. The plane is `z`, else the
+top of `surface` (an SDF node), else the lowest foot. Two modes:
+- `'plant'` (default) — feet within `tolerance` of the plane are leveled onto it
+  (their footwear sole thickens to reach it); feet beyond tolerance stay **lifted**
+  (off the ground — natural for a takeoff/walk pose).
+- `'drop'` — re-poses each leg (2-bone IK, hips fixed) so **every** foot lands on
+  the plane. Use it to make a figure stand flat-footed regardless of the pose.
+
+```js
+const rig = F.ground(F.rig({ pose: {...} }), { mode: 'drop' });   // both feet on the floor
+const boots = F.clothing.boots(rig, { label: 'boots' });          // sole region paints separately
+const base  = F.base(rig);                                        // meets the shared plane
 ```
 
 Clothing is the body region **inflated and trimmed**, and **coverage is
@@ -453,6 +590,31 @@ hard seams (see `/ai/sdf.md` paint-by-label).
 5. **Judge against the reference**, not just `isManifold`. Resemblance is the
    success criterion; `componentCount === 1` + manifold is necessary, not
    sufficient.
+
+## Diversity — vary the whole figure
+
+People are not one default body with a tinted skin swatch. When you build a
+person — and *especially* when you build several — vary the axes **together and
+independently**, so the set looks like a real crowd rather than one model
+recoloured:
+
+- **Skin tone** spans the full range. There is no default; choose deliberately
+  from `F.skin('porcelain' … 'ebony')` (or any RGB). Don't default to peach.
+- **Face shape** — `F.head(rig, { faceShape })` across oval / round / square /
+  long / heart / diamond, plus `jaw` / `chin` / `cheek`.
+- **Nose** — `width` / `bridge` / `flare`. A broad low-bridge nose and a narrow
+  high-bridge nose are different *people*, not the same face shaded darker.
+- **Lips** — `mouth.fullness`.
+- **Hair** — match texture and style to the person: `coils`/`afro`/`locs`/
+  `cornrows`/`boxBraids` are first-class, not edge cases. Any hair texture works
+  on any skin tone.
+- **Body** — `build` (slim/average/stocky), `sex`, `headsTall`.
+
+> **Vary the axes independently — don't bundle them into a stereotype.** A dark
+> skin tone does not imply a particular nose, hair, or build, and vice versa.
+> The point is *range*: mix the axes freely (a light-skinned figure with coily
+> hair, a deep-skinned figure with a narrow nose and straight hair, etc.). Treat
+> every combination as ordinary.
 
 ## Gotchas
 

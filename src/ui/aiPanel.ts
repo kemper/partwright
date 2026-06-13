@@ -5,6 +5,7 @@
 
 import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
+import { getConfig } from '../config/appConfig';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
@@ -33,6 +34,8 @@ import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
+import { repairToolHistory, hasOrphanedToolCalls } from '../ai/historyRepair';
+import { cancelCurrentExecution } from '../geometry/engine';
 import { errorLog } from '../diagnostics/errorLog';
 import { showToast } from './toast';
 import { createVoiceController, isVoiceInputSupported, type VoiceController } from './voiceInput';
@@ -162,6 +165,10 @@ let forwardBtnRef: HTMLButtonElement | null = null;
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let inputEl: HTMLTextAreaElement | null = null;
+// A prefill requested before the drawer was built (e.g. the /editor?idea=
+// deep-link runs during boot, ahead of initAiPanel). initAiPanel flushes it
+// once the input exists. See prefillAiInput.
+let pendingPrefill: string | null = null;
 let voiceController: VoiceController | null = null;
 let planApprovalBarEl: HTMLElement | null = null;
 
@@ -298,6 +305,14 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
     // later. The drawer element already starts with the `hidden` class.
     state.open = false;
   } else hideDrawer();
+  // Apply any prefill that arrived before the drawer existed (e.g. a boot-time
+  // /editor?idea= deep-link). Done last so the input is fully built; this also
+  // opens the drawer so the user sees the queued prompt.
+  if (pendingPrefill !== null) {
+    const text = pendingPrefill;
+    pendingPrefill = null;
+    prefillAiInput(text);
+  }
 }
 
 /** Called by main.ts whenever the active session changes (open / close).
@@ -340,12 +355,40 @@ export function toggleAiPanel(): void {
   else showDrawer();
 }
 
+/** Close the AI drawer if it's open; no-op when already closed. Used when the
+ *  user opens a hands-on viewport tool (Paint, Customize, Surface, …) — at that
+ *  point they're working by hand, so the AI column steps out of the way instead
+ *  of sitting underneath the tool panel. */
+export function closeAiPanel(): void {
+  if (state.open) hideDrawer();
+}
+
+/** Whether a chat turn is currently running. The host uses this to hold back
+ *  side effects that would disrupt a live turn — e.g. popping the Customizer
+ *  over the chat while the AI is mid-runAndSave (see syncParamsPanel). */
+export function isAiTurnInFlight(): boolean {
+  return state.inFlight;
+}
+
+const turnEndListeners: Array<() => void> = [];
+/** Subscribe to "a chat turn just finished" (the true end — retries and queued
+ *  follow-ups don't fire it). Lets the host flush work it deferred during the
+ *  turn, like the Customizer auto-reveal. */
+export function onAiTurnEnd(fn: () => void): void {
+  turnEndListeners.push(fn);
+}
+
 /** Open the AI panel (if closed) and drop `text` into the chat input without
  *  sending it — the user reads/tweaks it and hits send themselves. Used by the
  *  prompt library and the /ideas page so picking a prompt lands here. */
 export function prefillAiInput(text: string): void {
+  if (!inputEl) {
+    // Drawer not built yet — queue it; initAiPanel applies it once the input
+    // exists (covers the /editor?idea= deep-link that runs during boot).
+    pendingPrefill = text;
+    return;
+  }
   if (!state.open) showDrawer(false);
-  if (!inputEl) return;
   inputEl.value = text;
   inputEl.focus();
   const end = text.length;
@@ -401,6 +444,50 @@ function applyDockLayout(): void {
   }
 }
 
+// Pending "add the `hidden` class once the close slide finishes" timer.
+let drawerHideTimer: number | null = null;
+// The first show/hide (the boot-time restore of the remembered open state) is
+// instant — only user/auto toggles after mount slide.
+let drawerBooted = false;
+
+/** Slide duration (ms) for the *next* toggle, honoring reduced-motion and
+ *  suppressing the animation on the initial boot restore (0 = instant). */
+function effectiveSlideMs(): number {
+  if (!drawerBooted) { drawerBooted = true; return 0; }
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0;
+  return getConfig().ui.paneSlideMs;
+}
+
+function setDrawerTransition(ms: number): void {
+  if (!drawerEl) return;
+  // Only margin-right + transform animate — never width, so live panel-resize
+  // dragging stays snappy.
+  drawerEl.style.transition = ms > 0
+    ? `margin-right ${ms}ms ease, transform ${ms}ms ease`
+    : '';
+}
+
+/** Position the drawer for its open or closed state. Closing slides it off the
+ *  right edge: on desktop the docked column collapses its layout footprint
+ *  (negative margin-right) so the viewport grows into the space as it goes; on
+ *  the mobile full-screen overlay it just translates out. `body` is
+ *  `overflow-hidden`, so the off-screen panel is clipped (no scrollbar). */
+function setDrawerSlidePos(open: boolean): void {
+  if (!drawerEl) return;
+  if (open) {
+    drawerEl.style.marginRight = '';
+    drawerEl.style.transform = '';
+    return;
+  }
+  if (window.matchMedia('(min-width: 768px)').matches) {
+    drawerEl.style.marginRight = `-${panelWidth}px`;
+    drawerEl.style.transform = '';
+  } else {
+    drawerEl.style.transform = 'translateX(100%)';
+    drawerEl.style.marginRight = '';
+  }
+}
+
 /** Show the drawer. `focusInput` moves the caret into the chat box, which is
  *  what you want when the user *explicitly* opens the panel — but not when it's
  *  shown automatically on a default-open page load, where stealing focus from
@@ -408,8 +495,28 @@ function applyDockLayout(): void {
 function showDrawer(focusInput = true): void {
   if (!drawerEl) return;
   state.open = true;
-  drawerEl.classList.toggle('hidden', !routeActive);
-  applyDockLayout();
+  if (drawerHideTimer !== null) { clearTimeout(drawerHideTimer); drawerHideTimer = null; }
+  if (routeActive) {
+    const wasHidden = drawerEl.classList.contains('hidden');
+    drawerEl.classList.remove('hidden');
+    applyDockLayout();
+    const ms = effectiveSlideMs();
+    if (wasHidden && ms > 0) {
+      // Jump to the off-screen position without animating, then slide in on the
+      // next frame so the transition has a start state to animate *from*.
+      setDrawerTransition(0);
+      setDrawerSlidePos(false);
+      void drawerEl.offsetWidth; // force reflow
+      setDrawerTransition(ms);
+      requestAnimationFrame(() => setDrawerSlidePos(true));
+    } else {
+      // Already visible (e.g. reopening mid-close) — just animate back to open.
+      setDrawerTransition(ms);
+      setDrawerSlidePos(true);
+    }
+  } else {
+    drawerEl.classList.add('hidden');
+  }
   window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: routeActive } }));
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: true });
@@ -422,7 +529,19 @@ function hideDrawer(): void {
   // Stop dictation when the panel closes — otherwise the mic keeps recording
   // into the now-hidden textarea with no visible stop affordance.
   voiceController?.stop();
-  drawerEl.classList.add('hidden');
+  if (drawerHideTimer !== null) { clearTimeout(drawerHideTimer); drawerHideTimer = null; }
+  const ms = effectiveSlideMs();
+  if (ms > 0 && routeActive && !drawerEl.classList.contains('hidden')) {
+    // Slide out, then take it out of layout/focus once the animation lands.
+    setDrawerTransition(ms);
+    setDrawerSlidePos(false);
+    drawerHideTimer = window.setTimeout(() => {
+      drawerEl?.classList.add('hidden');
+      drawerHideTimer = null;
+    }, ms);
+  } else {
+    drawerEl.classList.add('hidden');
+  }
   window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: false } }));
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: false });
@@ -619,6 +738,14 @@ function stopActiveTurn(): void {
   // Anthropic stops via AbortSignal through the SDK; local (WebLLM) ignores the
   // signal, so interruptLocal() is what halts it mid-token.
   state.inFlightController?.abort();
+  // A tool call (runAndSave / a render) may be executing in the engine Worker
+  // right now. The abort signal is only checked BETWEEN tool calls — never
+  // mid-render — so without this, an in-flight heavy render keeps running and
+  // Stop appears to do nothing (the symptom that forced a page reload).
+  // Terminate the engine Worker so the current execution rejects immediately;
+  // the tool returns an error result and the loop's between-calls signal check
+  // then ends the turn.
+  cancelCurrentExecution();
   void interruptLocal();
 }
 
@@ -1751,6 +1878,42 @@ async function clearCurrentChat(): Promise<void> {
   setTransientStatus('Chat cleared.');
 }
 
+/** Repair corrupted tool history: pair every orphaned assistant `tool_use`
+ *  with a synthetic error `tool_result` and persist the fix, so a chat that
+ *  was wedged on a provider 400 ("tool_use ids were found without tool_result
+ *  blocks") becomes sendable again without deleting the whole conversation.
+ *  Explicit, user-triggered only (the error-bubble button + the /repair
+ *  command) — never run silently on load. Refuses mid-turn so it can't race
+ *  the agent's own writes. */
+async function repairCurrentChat(): Promise<void> {
+  if (state.inFlight) {
+    setTransientStatus('Wait for the current turn to finish before repairing.');
+    return;
+  }
+  if (!writeOwner) {
+    setTransientStatus('Take control of this session in this tab before repairing its chat.');
+    return;
+  }
+  const result = repairToolHistory(state.history);
+  if (!result.changed) {
+    setTransientStatus('No corrupted tool history found — nothing to repair.');
+    return;
+  }
+  try {
+    await putMessages(result.toPersist);
+  } catch (err) {
+    setTransientStatus(`Couldn't repair chat: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  // Keep the repaired (persisted) messages; drop any in-memory error bubble so
+  // the user can continue immediately.
+  state.history = result.messages.filter(m => !m.errored);
+  broadcastChatChanged();
+  renderTranscript();
+  updateRewindButtons();
+  showToast(`Repaired tool history — ${result.toPersist.length} message(s) fixed. You can continue now.`, { variant: 'success', source: 'ai' });
+}
+
 function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
@@ -2101,6 +2264,19 @@ function renderErrorBubble(msg: ChatMessage): HTMLElement {
   retryBtn.title = 'Resume the agent from where it failed — all completed work above is kept, nothing is replayed.';
   retryBtn.addEventListener('click', () => { void retryFailedTurn(msg.id); });
   actions.appendChild(retryBtn);
+
+  // When the failure is a wedged tool-history invariant (an orphaned tool_use
+  // with no matching tool_result — the unrecoverable provider 400 that even a
+  // rewind couldn't escape), offer a one-click repair right where the user is
+  // stuck. The button only appears when there's actually something to fix.
+  if (hasOrphanedToolCalls(state.history)) {
+    const repairBtn = document.createElement('button');
+    repairBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+    repairBtn.textContent = '🛠 Repair history';
+    repairBtn.title = 'Fix orphaned tool calls left by an interrupted turn so this chat can send again. Nothing is deleted — the incomplete calls are just marked as failed.';
+    repairBtn.addEventListener('click', () => { void repairCurrentChat(); });
+    actions.appendChild(repairBtn);
+  }
 
   const dismissBtn = document.createElement('button');
   dismissBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800';
@@ -2748,6 +2924,16 @@ async function rewindTurn(): Promise<void> {
   const removed = state.history.splice(cutIndex);
   state.rewindStack.push(removed);
   await deleteMessages(removed.map(m => m.id));
+  // Cutting at the last *typed* user message can expose an earlier orphaned
+  // tool_use (mid-history tool calls whose results lived in the messages we
+  // just removed), which would 400 the very next send — so a rewind meant to
+  // "step back and start over" wouldn't actually recover. Repair the exposed
+  // history and persist it so the post-rewind state is always sendable.
+  const repair = repairToolHistory(state.history);
+  if (repair.changed) {
+    await putMessages(repair.toPersist);
+    state.history = repair.messages;
+  }
   renderTranscript();
   updateRewindButtons();
 }
@@ -2871,6 +3057,7 @@ async function preflightTurn(
 const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
   compact: () => { void runCompact(); },
   clear: () => { void clearCurrentChat(); },
+  repair: () => { void repairCurrentChat(); },
   review: () => { void launchReview(); },
   export: () => { exportCurrentChat(); },
   models: () => { void showAiSettingsModal({ onChange: afterAiSettingsChange }); },
@@ -3250,6 +3437,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
     let liveThinkingEl: HTMLElement | null = null;
     const blocksForThisAttempt = attempt === 1 ? userBlocks : [];
 
+    try {
     await runTurn({
       apiKey,
       toggles,
@@ -3417,6 +3605,35 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         lastTurnOutcome = info;
       },
     });
+    } catch (err) {
+      // Backstop: the turn promise rejected outright (Worker crash, an
+      // undeserializable message, or any tool execution that still threw
+      // despite chatLoop's per-tool catch). chatLoop's own `onError` resolves
+      // normally rather than rejecting, so this only fires for genuinely
+      // unexpected rejections — but without it the cleanup below is skipped and
+      // the panel is left permanently "in-flight" (Send disabled, Stop dead),
+      // recoverable only by a page reload. Surface it as an error bubble and
+      // fall through to the shared teardown.
+      const e = err instanceof Error ? err : new Error(String(err));
+      errorLog.capture({ level: 'error', source: 'ai', message: e.message, detail: e.stack });
+      if (!state.history.some(m => m.errored)) {
+        const idx = activeAssistantId ? state.history.findIndex(m => m.id === activeAssistantId) : -1;
+        const errorMsg: ChatMessage = {
+          id: activeAssistantId ?? generateId(),
+          sessionId: state.sessionId,
+          role: 'assistant',
+          blocks: [{ type: 'text', text: e.message }],
+          createdAt: Date.now(),
+          seq: idx >= 0 ? state.history[idx].seq : (state.history[state.history.length - 1]?.seq ?? 0) + 1,
+          errored: true,
+        };
+        if (idx >= 0) state.history[idx] = errorMsg;
+        else state.history.push(errorMsg);
+        renderTranscript();
+      }
+      setTransientStatus(`Error: ${e.message}`);
+      lastTurnOutcome = { totalCostUsd: 0, toolCalls: 0, reason: 'error', detail: e.message, iterations: 0 };
+    }
 
     state.inFlight = false;
     state.inFlightController = null;
@@ -3489,6 +3706,10 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       pushStopNotice(finalOutcome);
     }
     broadcastChatChanged();
+    // The turn truly ended (retries/queued follow-ups `continue` above and never
+    // reach here) — let the host flush anything it held back during the turn,
+    // e.g. the deferred Customizer reveal.
+    for (const fn of turnEndListeners) fn();
     return;
   }
 }
@@ -3617,7 +3838,7 @@ function renderProgress(): void {
   const label =
     progressState.phase === 'thinking' ? `🧠 thinking…${silentSuffix}` :
     progressState.phase === 'streaming' ? `✎ streaming response…${silentSuffix}` :
-    progressState.phase === 'tool' ? `🔧 ${progressState.detail ?? 'running tool'}…` :
+    progressState.phase === 'tool' ? `🔧 ${progressState.detail ?? 'running tool'}…${elapsedSec > 1 ? ` ${elapsedSec}s` : ''}` :
     progressState.phase === 'final' ? (progressState.detail ?? '✓ done') :
     '';
   progressEl.replaceChildren();

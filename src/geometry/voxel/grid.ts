@@ -16,6 +16,13 @@ export type Vec3 = [number, number, number];
  *  packed `0xRRGGBB` number. Normalized to a 24-bit integer internally. */
 export type ColorInput = Vec3 | string | number;
 
+/** The 6 face-neighbour offsets (±X, ±Y, ±Z). The single source of truth for
+ *  face-connectivity across the voxel modules: `faceComponentCount` below and
+ *  the flood-fill / "add" tools in `edits.ts` both consume it. */
+export const FACE_NEIGHBORS: Vec3[] = [
+  [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+];
+
 // Coordinates are packed into a single JS integer key for fast Map lookups.
 // 11 bits per axis (offset by HALF) gives a usable range of [-1024, 1023] per
 // axis; the largest key (~8.59e9) stays well under Number.MAX_SAFE_INTEGER.
@@ -208,7 +215,6 @@ export class VoxelGrid {
   faceComponentCount(): number {
     if (this.cells.size === 0) return 0;
     const visited = new Set<number>();
-    const NEIGHBORS: Vec3[] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
     let components = 0;
     for (const startKey of this.cells.keys()) {
       if (visited.has(startKey)) continue;
@@ -221,7 +227,7 @@ export class VoxelGrid {
         const z = (key % DIM) - HALF;
         const y = (Math.floor(key / DIM) % DIM) - HALF;
         const x = Math.floor(key / (DIM * DIM)) - HALF;
-        for (const [dx, dy, dz] of NEIGHBORS) {
+        for (const [dx, dy, dz] of FACE_NEIGHBORS) {
           const nx = x + dx, ny = y + dy, nz = z + dz;
           if (!inRange(nx, ny, nz)) continue;
           const nKey = packKey(nx, ny, nz);
@@ -633,6 +639,99 @@ export class VoxelGrid {
     for (const [key, id] of comp) {
       if (!keep.has(id)) this.cells.delete(key);
     }
+    return this;
+  }
+
+  /** Merge all voxels from `other` into this grid. Existing voxels in `this`
+   *  keep their color; only empty positions are filled from `other`. Chainable. */
+  weld(other: VoxelGrid): this {
+    other.forEach((x, y, z, rgb) => {
+      const k = packKey(x, y, z);
+      if (!this.cells.has(k)) this.cells.set(k, rgb);
+    });
+    return this;
+  }
+
+  /** Add the minimum bridging voxels to turn diagonal-only contacts (edge or
+   *  corner adjacency in any axis-plane slice) into face contacts, so the model
+   *  fuses into a single piece on an FDM printer.
+   *
+   *  Algorithm: for each of the three axis-plane families (XY, XZ, YZ), and for
+   *  each occupied voxel A, check its 4 diagonal neighbours in that plane. When
+   *  diagonal neighbour B is occupied but neither of the two shared face-
+   *  neighbours between A and B is occupied, insert one bridging voxel at A's
+   *  first face-neighbour toward B (arbitrary but deterministic). Repeats until
+   *  stable (at most a few iterations). Chainable. */
+  solidifyDiagonals(): this {
+    // Each plane is encoded as two unit direction vectors (da, db).
+    // da = primary axis direction, db = secondary axis direction.
+    // The diagonal offsets are (±da ± db); bridging goes at (±da, 0) first.
+    type PlaneAxes = readonly [dax: number, day: number, daz: number, dbx: number, dby: number, dbz: number];
+    const planes: PlaneAxes[] = [
+      // XY-plane: da=(1,0,0), db=(0,1,0)
+      [1, 0, 0,  0, 1, 0],
+      // XZ-plane: da=(1,0,0), db=(0,0,1)
+      [1, 0, 0,  0, 0, 1],
+      // YZ-plane: da=(0,1,0), db=(0,0,1)
+      [0, 1, 0,  0, 0, 1],
+    ];
+
+    let changed = true;
+    while (changed) {
+      changed = false;
+      // Snapshot current cells so iteration is over a stable set.
+      const snapshot = [...this.cells.entries()];
+
+      const toAdd: Array<[number, number, number, number]> = [];
+
+      for (const [key, rgb] of snapshot) {
+        const az = (key % DIM) - HALF;
+        const ay = (Math.floor(key / DIM) % DIM) - HALF;
+        const ax = Math.floor(key / (DIM * DIM)) - HALF;
+
+        for (const [dax, day, daz, dbx, dby, dbz] of planes) {
+          // 4 diagonal offsets in this plane: (±da ± db)
+          for (const sa of [1, -1] as const) {
+            for (const sb of [1, -1] as const) {
+              const bx = ax + sa * dax + sb * dbx;
+              const by = ay + sa * day + sb * dby;
+              const bz = az + sa * daz + sb * dbz;
+              if (!inRange(bx, by, bz)) continue;
+              if (!this.cells.has(packKey(bx, by, bz))) continue;
+
+              // B is diagonally occupied. Check the two face-neighbours that
+              // bridge A to B: face1 = A + sa*da, face2 = A + sb*db.
+              const f1x = ax + sa * dax;
+              const f1y = ay + sa * day;
+              const f1z = az + sa * daz;
+              const f2x = ax + sb * dbx;
+              const f2y = ay + sb * dby;
+              const f2z = az + sb * dbz;
+
+              const f1exists = inRange(f1x, f1y, f1z) && this.cells.has(packKey(f1x, f1y, f1z));
+              const f2exists = inRange(f2x, f2y, f2z) && this.cells.has(packKey(f2x, f2y, f2z));
+
+              if (!f1exists && !f2exists) {
+                // Neither bridging face is occupied — insert at face1 (the da
+                // direction; arbitrary but deterministic).
+                if (inRange(f1x, f1y, f1z)) {
+                  toAdd.push([f1x, f1y, f1z, rgb]);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      for (const [x, y, z, rgb] of toAdd) {
+        const k = packKey(x, y, z);
+        if (!this.cells.has(k)) {
+          this.cells.set(k, rgb);
+          changed = true;
+        }
+      }
+    }
+
     return this;
   }
 

@@ -49,6 +49,11 @@ let desktopMqCleanup: (() => void) | null = null;
  *  Set while a strip is mounted (closure over its elements), cleared on
  *  teardown. Called on resize, breakpoint change, and each text rotation. */
 let relayoutFn: (() => void) | null = null;
+/** High-water mark for the strip's height (px), reset on each fresh mount.
+ *  Once the card grows — switching to the two-row layout, wrapping to more
+ *  lines, a longer hint — we pin this as a min-height so it can never shrink
+ *  back and shove the panes below it up and down (the "stutter" on rotation). */
+let maxStripHeight = 0;
 /** Last session id seen, so we only restore hints on a real session transition
  *  (new / opened / switched session) — not on intra-session changes like
  *  version navigation, which also fire 'session-changed'. */
@@ -191,6 +196,7 @@ function renderStrip(): void {
 
   order = buildOrder();
   idx = 0;
+  maxStripHeight = 0;   // fresh card starts at its natural height
 
   // Centered, self-contained card in the toolbar's middle: a subtle bordered
   // box. It adapts between two arrangements (see relayout below):
@@ -307,8 +313,20 @@ function renderStrip(): void {
     // rows only when it would overflow the available width.
     setLayout('single');
     if (measureSingleNeeded() > w) setLayout('two');
+    lockMinHeight();
   };
   relayoutFn = relayout;
+
+  /** Pin the strip's height to its running maximum so it never shrinks back.
+   *  offsetHeight already includes any min-height we've set, so the measured
+   *  value is monotonic — it only ever reflects genuine growth, and a shorter
+   *  hint or the single-row layout keeps the taller height instead of snapping
+   *  the panes below up and down. */
+  const lockMinHeight = (): void => {
+    const h = stripEl.offsetHeight;
+    if (h > maxStripHeight) maxStripHeight = h;
+    stripEl.style.minHeight = maxStripHeight ? `${maxStripHeight}px` : '';
+  };
 
   resizeObs?.disconnect();
   resizeObs = new ResizeObserver(() => {

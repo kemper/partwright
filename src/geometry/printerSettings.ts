@@ -2,7 +2,7 @@
 // 3D printer the user is targeting so the print-aware tools (printability
 // checks, scale-to-fit, split-for-printing) all read one shared source of
 // truth. Persisted to localStorage as one JSON blob, mirroring the
-// qualitySettings.ts pattern (cache + listeners + merge-with-defaults).
+// qualitySettings.ts pattern (cache + merge-with-defaults).
 //
 // Units follow the app convention: "arbitrary, but treat as millimetres for
 // printing." The defaults match a common 256 mm bed (e.g. Bambu X1/P1).
@@ -46,7 +46,6 @@ const MIN_NOZZLE = 0.05;
 const MAX_NOZZLE = 2;
 
 let cached: PrinterSettings | null = null;
-const listeners = new Set<(s: PrinterSettings) => void>();
 
 function clampBedAxis(n: unknown, fallback: number): number {
   if (typeof n !== 'number' || !Number.isFinite(n)) return fallback;
@@ -101,13 +100,7 @@ export function savePrinterSettings(next: Partial<PrinterSettings>): PrinterSett
     // localStorage may be full or disabled (private browsing). Settings
     // remain applied for this session; we don't surface the failure.
   }
-  for (const fn of listeners) fn(merged);
   return merged;
-}
-
-export function onPrinterSettingsChange(fn: (s: PrinterSettings) => void): () => void {
-  listeners.add(fn);
-  return () => { listeners.delete(fn); };
 }
 
 /** Convenience: the build volume as a plain tuple. */

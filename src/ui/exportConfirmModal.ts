@@ -5,6 +5,9 @@
 // Surfaces up to two warnings in a single modal:
 //   1. Unitless geometry — most slicers assume millimeters, so the printed
 //      part will be the wrong size if the model was authored at another scale.
+//      This block carries an inline units selector so the user can set (or
+//      deliberately leave unset) the unit right here instead of cancelling and
+//      reopening the Export menu; picking a unit clears the warning live.
 //   2. Printability — the geometry is non-manifold (not watertight) and/or
 //      has multiple disconnected components, which many slicers choke on.
 //
@@ -12,7 +15,8 @@
 
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
-import { formatDimension } from '../geometry/units';
+import { formatDimension, getUnits, setUnits, type UnitSystem } from '../geometry/units';
+import { escapeHtml } from './htmlUtils';
 
 export interface ExportWarningInfo {
   /** True when the active unit system is 'unitless'. */
@@ -60,18 +64,83 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<boolean> {
       },
     });
 
+    // When the unit is satisfied (a concrete unit was picked, or it wasn't
+    // unitless to begin with), the export button reads "Export"; while any
+    // warning is still live it reads "Export anyway". `syncUnitsBlock` keeps
+    // both the unit warning copy and the button label in sync as the user
+    // picks a unit right here in the modal.
+    const otherWarning = !info.isManifold || info.componentCount > 1
+      || info.colorOverBudget != null || info.colorDropped === true
+      || info.surfaceStale === true;
+    let unitsResolved = !info.unitless;
+
     if (info.unitless) {
       const block = document.createElement('div');
-      block.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
+      const message = document.createElement('div');
       const dims = info.dimensions;
       const dimText = dims
         ? `${formatDimension(dims[0])} × ${formatDimension(dims[1])} × ${formatDimension(dims[2])}`
         : null;
-      block.innerHTML =
-        '<strong>No units set.</strong> Most slicers assume <strong>millimeters</strong>. ' +
-        'If you modeled at another scale, the printed part will be the wrong size. ' +
-        (dimText ? `This model\'s bounding box is <span class="font-mono">${dimText}</span>. ` : '') +
-        'Set units in the Export menu to silence this check.';
+
+      // Inline units control — lets the user fix the warning right here instead
+      // of cancelling, opening the Export menu, and starting over.
+      const controlRow = document.createElement('div');
+      controlRow.className = 'mt-2 flex items-center gap-2';
+      const selectLabel = document.createElement('label');
+      selectLabel.className = 'text-xs font-medium';
+      selectLabel.textContent = 'Set units:';
+      selectLabel.htmlFor = 'export-confirm-units-select';
+      const unitsSelect = document.createElement('select');
+      unitsSelect.id = 'export-confirm-units-select';
+      unitsSelect.className = 'text-xs bg-zinc-900 border border-zinc-600 rounded px-2 py-1 text-zinc-200 focus:outline-none focus:border-blue-500';
+      const UNIT_LABELS: Record<UnitSystem, string> = {
+        unitless: 'Leave unitless',
+        mm: 'Millimeters (mm)',
+        cm: 'Centimeters (cm)',
+        in: 'Inches (in)',
+      };
+      for (const u of ['unitless', 'mm', 'cm', 'in'] as const) {
+        const opt = document.createElement('option');
+        opt.value = u;
+        opt.textContent = UNIT_LABELS[u];
+        unitsSelect.appendChild(opt);
+      }
+      unitsSelect.value = getUnits();
+      selectLabel.appendChild(unitsSelect);
+      controlRow.append(selectLabel);
+
+      // Re-render the warning copy + restyle the block for the current unit.
+      // Dimensions re-format through `formatDimension`, which reflects the unit
+      // we just set, so the bounding box reads in the chosen unit.
+      const syncUnitsBlock = () => {
+        const unit = getUnits();
+        unitsResolved = unit !== 'unitless';
+        const liveDimText = dims
+          ? `${formatDimension(dims[0])} × ${formatDimension(dims[1])} × ${formatDimension(dims[2])}`
+          : null;
+        if (unitsResolved) {
+          block.className = 'rounded border border-emerald-700/50 bg-emerald-900/20 px-3 py-2 text-xs text-emerald-200 leading-snug';
+          message.innerHTML =
+            `<strong>Units set to ${escapeHtml(unit)}.</strong> The exported model will declare this unit. ` +
+            (liveDimText ? `Bounding box: <span class="font-mono">${escapeHtml(liveDimText)}</span>.` : '');
+        } else {
+          block.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
+          message.innerHTML =
+            '<strong>No units set.</strong> Most slicers assume <strong>millimeters</strong>. ' +
+            'If you modeled at another scale, the printed part will be the wrong size. ' +
+            (dimText ? `This model\'s bounding box is <span class="font-mono">${escapeHtml(dimText)}</span>. ` : '') +
+            'Choose a unit below to silence this check.';
+        }
+      };
+
+      unitsSelect.addEventListener('change', () => {
+        setUnits(unitsSelect.value as UnitSystem);
+        syncUnitsBlock();
+        updateExportLabel();
+      });
+
+      block.append(message, controlRow);
+      syncUnitsBlock();
       shell.body.appendChild(block);
     }
 
@@ -83,7 +152,7 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<boolean> {
         lines.push('the geometry is <strong>not manifold</strong> (not watertight)');
       }
       if (info.componentCount > 1) {
-        lines.push(`it has <strong>${info.componentCount} disconnected components</strong>`);
+        lines.push(`it has <strong>${escapeHtml(String(info.componentCount))} disconnected components</strong>`);
       }
       block.innerHTML =
         '<strong>Printability warning:</strong> ' + lines.join(' and ') +
@@ -128,9 +197,15 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<boolean> {
 
     const exportBtn = document.createElement('button');
     exportBtn.className = BUTTON_PRIMARY;
-    exportBtn.textContent = `Export anyway`;
     exportBtn.addEventListener('click', () => { result = true; shell.close(); });
     shell.footer.appendChild(exportBtn);
+
+    // "Export anyway" while any warning is still live; once every warning is
+    // cleared (e.g. the user picked a unit inline) it relaxes to "Export".
+    function updateExportLabel() {
+      exportBtn.textContent = (otherWarning || !unitsResolved) ? 'Export anyway' : 'Export';
+    }
+    updateExportLabel();
 
     function onEnter(e: KeyboardEvent) {
       if (e.key === 'Enter') { e.preventDefault(); result = true; shell.close(); }

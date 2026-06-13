@@ -158,7 +158,7 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 520,
     rollupOptions: {
-      // Multi-page: the editor SPA (index.html) plus the four pre-rendered,
+      // Multi-page: the editor SPA (index.html) plus the five pre-rendered,
       // app-free content pages. Each content page ships only the shared
       // Tailwind CSS — no app JS — so it paints instantly for users + crawlers.
       input: {
@@ -167,6 +167,7 @@ export default defineConfig({
         help: resolve(__dirname, 'help.html'),
         legal: resolve(__dirname, 'legal.html'),
         'whats-new': resolve(__dirname, 'whats-new.html'),
+        ideas: resolve(__dirname, 'ideas.html'),
       },
       output: {
         // Function form (not the object map) so we can isolate Vite's
