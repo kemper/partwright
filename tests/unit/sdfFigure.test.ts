@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -522,6 +522,246 @@ describe('figure pants — posed-leg coverage', () => {
   it('rejects unknown length values', () => {
     const rig = buildRig({});
     expect(() => buildPants(api, rig, { length: 'capri' })).toThrow(/length/);
+  });
+});
+
+describe('figure footwear — shoes & boots', () => {
+  it('shoes wrap each foot (sole point is inside)', () => {
+    const rig = buildRig({});
+    const shoes = buildShoes(api, rig) as SdfNode;
+    for (const side of ['L', 'R'] as const) {
+      const A = rig.joints[`foot${side}`];
+      // The sole sits one foot-radius below the ankle; a point there is shod.
+      const sole = [A[0], A[1], A[2] - rig.r.foot];
+      expect(shoes.evaluate(sole[0], sole[1], sole[2])).toBeLessThan(0);
+    }
+  });
+
+  it("boots add a shaft up the shank that shoes leave bare", () => {
+    const rig = buildRig({});
+    const shoes = buildShoes(api, rig) as SdfNode;
+    const boots = buildBoots(api, rig) as SdfNode;
+    const A = rig.joints.footL, K = rig.joints.lowerLegL;
+    // A point ~mid-calf along the ankle→knee bone: covered by the boot shaft,
+    // bare on a low shoe.
+    const calf = [A[0] * 0.5 + K[0] * 0.5, A[1] * 0.5 + K[1] * 0.5, A[2] * 0.5 + K[2] * 0.5];
+    expect(boots.evaluate(calf[0], calf[1], calf[2])).toBeLessThan(0);
+    expect(shoes.evaluate(calf[0], calf[1], calf[2])).toBeGreaterThan(0);
+  });
+
+  it('footwear follows the foot heading under leg twist (turnout)', () => {
+    // A turned-out foot points its toe outward; the toe of the shoe must move
+    // with it (the builder reads rig.dir.foot*, like F.feet).
+    const rig = buildRig({ pose: { legL: { twist: 40 } } });
+    const shoes = buildShoes(api, rig) as SdfNode;
+    const A = rig.joints.footL, fwd = rig.dir.footL;
+    const sz = A[2] - rig.r.foot;
+    const footLen = rig.r.foot * 2.4;
+    // A point out along the heading at sole height (under the toe) is shod.
+    const toe = [A[0] + fwd[0] * footLen * 0.5, A[1] + fwd[1] * footLen * 0.5, sz];
+    expect(shoes.evaluate(toe[0], toe[1], toe[2])).toBeLessThan(0);
+  });
+
+  it("boots' shaftZ projects onto a posed (lunge) shank bone", () => {
+    // Regression guard mirroring pants' cuffPoint: a world-Z shaft target must
+    // ride the diagonal shank, not a fixed world point off the leg.
+    const rig = buildRig({ pose: { legL: { raiseFwd: 45, bend: 45 } } });
+    const A = rig.joints.footL, K = rig.joints.lowerLegL;
+    const shaftZ = A[2] * 0.4 + K[2] * 0.6;
+    const boots = buildBoots(api, rig, { shaftZ }) as SdfNode;
+    // The shank-bone point at that height projection is inside the boot.
+    const frac = (shaftZ - A[2]) / (K[2] - A[2]);
+    const p = [A[0] + (K[0] - A[0]) * frac, A[1] + (K[1] - A[1]) * frac, A[2] + (K[2] - A[2]) * frac];
+    expect(boots.evaluate(p[0], p[1], p[2])).toBeLessThan(0);
+  });
+
+  it('rejects unknown footwear options', () => {
+    const rig = buildRig({});
+    expect(() => buildShoes(api, rig, { shaftZ: 5 })).toThrow(/shaftZ/);
+    expect(() => buildBoots(api, rig, { bogus: 1 })).toThrow(/bogus/);
+  });
+
+  it('boots have a flat bottom clipped at the ground plane', () => {
+    const rig = buildRig({});
+    const boots = buildBoots(api, rig) as SdfNode;
+    const s = rig.sole.L;
+    // inside just above the ground plane, empty just below it (flat cut, not a
+    // rounded capsule underside).
+    expect(boots.evaluate(s.point[0], s.point[1], s.groundZ + 0.3)).toBeLessThan(0);
+    expect(boots.evaluate(s.point[0], s.point[1], s.groundZ - 0.4)).toBeGreaterThan(0);
+  });
+
+  it('the boot encloses the foot underside (no bare-skin patch shows through)', () => {
+    const rig = buildRig({});
+    const boots = buildBoots(api, rig) as SdfNode;
+    const feet = buildFeet(api, rig) as SdfNode;
+    const s = rig.sole.L;
+    // The boot extends BELOW the skin: at the ground plane the boot is solid but
+    // the bare foot is not, so the boot (not skin) forms the underside.
+    expect(boots.evaluate(s.point[0], s.point[1], s.groundZ + 0.05)).toBeLessThan(0);
+    expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + 0.05)).toBeGreaterThan(0);
+    // Higher up, where the skin sole is solid, the boot is solid too (covers it).
+    const z = s.groundZ + rig.r.foot * 0.4;
+    expect(feet.evaluate(s.point[0], s.point[1], z)).toBeLessThan(0);
+    expect(boots.evaluate(s.point[0], s.point[1], z)).toBeLessThan(0);
+  });
+
+  it('the base descends to contain a posed/shod sole (no poke-through)', () => {
+    const rig = buildRig({ pose: { legR: { raiseFwd: 12, bend: 28 }, legL: { raiseSide: 6 } } });
+    const base = buildBase(api, rig) as SdfNode;
+    const boots = buildBoots(api, rig) as SdfNode;
+    // the base bottom is at or below the lowest boot sole, so the boot can't
+    // hang below the disc and punch through its underside.
+    expect(base.bounds().min[2]).toBeLessThanOrEqual(boots.bounds().min[2] + 1e-6);
+  });
+});
+
+describe('figure sole frames — the ground-contact anchor (foot analog of grips)', () => {
+  it('exposes a sole frame per foot derived from the ankle', () => {
+    const rig = buildRig({});
+    for (const side of ['L', 'R'] as const) {
+      const s = rig.sole[side];
+      const A = rig.joints[`foot${side}`];
+      expect(s.groundZ).toBeLessThan(A[2]);          // ground is below the ankle
+      expect(s.point[2]).toBeCloseTo(s.groundZ);     // footprint point sits on the plane
+      expect(s.length).toBeGreaterThan(0);
+      expect(s.width).toBeGreaterThan(0);
+      expect(s.normal).toEqual([0, 0, 1]);
+    }
+  });
+
+  it('sole heading equals dir.foot, so it tracks turnout', () => {
+    const rig = buildRig({ pose: { legL: { twist: 40 } } });
+    expect(rig.sole.L.heading).toEqual(rig.dir.footL);
+  });
+
+  it('the sole frame plane sits at/below the bare foot underside', () => {
+    const rig = buildRig({});
+    const feet = buildFeet(api, rig) as SdfNode;
+    const s = rig.sole.L;
+    // groundZ is below the whole foot (footwear clips here to enclose the skin)…
+    expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + 0.05)).toBeGreaterThan(0);
+    // …and rising into the foot reaches solid skin.
+    expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + rig.r.foot * 0.6)).toBeLessThan(0);
+  });
+
+  it('poseProbe reports the sole frames', () => {
+    const rig = buildRig({});
+    const probe = createFigureNamespace(api).poseProbe(rig);
+    expect(probe.soles.L.groundZ).toBeCloseTo(rig.sole.L.groundZ);
+    expect(probe.text).toMatch(/soles:/);
+  });
+});
+
+describe('figure standOn — seat a prop under a foot', () => {
+  const boxN = () => sdfT.primBox([4, 4, 4]) as unknown as SdfNode;
+
+  it("drops a node's top onto the sole point by default", () => {
+    const rig = buildRig({});
+    const s = rig.sole.L;
+    const placed = standOn(boxN(), s) as SdfNode;
+    const b = placed.bounds();
+    expect(b.max[2]).toBeCloseTo(s.point[2]);                  // top meets the sole
+    expect((b.min[0] + b.max[0]) / 2).toBeCloseTo(s.point[0]); // centred under the foot
+    expect((b.min[1] + b.max[1]) / 2).toBeCloseTo(s.point[1]);
+  });
+
+  it("anchor 'bottom' rests the node ON the sole point", () => {
+    const rig = buildRig({});
+    const s = rig.sole.L;
+    const placed = standOn(boxN(), s, { anchor: 'bottom' }) as SdfNode;
+    expect(placed.bounds().min[2]).toBeCloseTo(s.point[2]);
+  });
+
+  it('accepts a raw point and rejects unknown options', () => {
+    const rig = buildRig({});
+    expect(() => (standOn(boxN(), [0, 0, 0]) as SdfNode).bounds()).not.toThrow();
+    expect(() => standOn(boxN(), rig.sole.L, { foo: 1 })).toThrow();
+  });
+});
+
+describe('figure footwear — separate sole region', () => {
+  it('emits a distinct sole region plus the upper, by default', () => {
+    const rig = buildRig({});
+    const names = partitionByLabel(buildBoots(api, rig) as SdfNode).map(r => r.labelName);
+    expect(names).toContain('boots');
+    expect(names).toContain('sole');
+  });
+
+  it("sole: false folds the sole into the upper (one region name)", () => {
+    const rig = buildRig({});
+    const names = partitionByLabel(buildBoots(api, rig, { sole: false }) as SdfNode).map(r => r.labelName);
+    expect(names).toContain('boots');
+    expect(names).not.toContain('sole');
+  });
+
+  it('custom upper + sole labels', () => {
+    const rig = buildRig({});
+    const names = partitionByLabel(buildBoots(api, rig, { label: 'kicks', sole: { label: 'tread' } }) as SdfNode).map(r => r.labelName);
+    expect(names).toContain('kicks');
+    expect(names).toContain('tread');
+  });
+
+  it('shoes default their upper label to "shoes"', () => {
+    const rig = buildRig({});
+    const names = partitionByLabel(buildShoes(api, rig) as SdfNode).map(r => r.labelName);
+    expect(names).toContain('shoes');
+  });
+
+  it("sole style 'welt' (default) overhangs 'flush' laterally", () => {
+    const rig = buildRig({});
+    const r = rig.r, s = rig.sole.L;
+    const welt = buildBoots(api, rig, { sole: { style: 'welt', lip: r.foot * 0.2 } }) as SdfNode;
+    const flush = buildBoots(api, rig, { sole: { style: 'flush' } }) as SdfNode;
+    // A point just outside the flush sole edge, at sole height, is empty for flush
+    // but inside the welt (its lip is proud of the upper).
+    const x = s.point[0] + r.foot * 1.08, y = s.point[1], z = s.groundZ + 0.1;
+    expect(flush.evaluate(x, y, z)).toBeGreaterThan(0);
+    expect(welt.evaluate(x, y, z)).toBeLessThan(0);
+  });
+
+  it('rejects an unknown sole style', () => {
+    expect(() => buildBoots(api, buildRig({}), { sole: { style: 'platform' } })).toThrow(/style/);
+  });
+});
+
+describe('figure ground — stand feet on one plane', () => {
+  it('plant levels near-plane feet to a common groundZ', () => {
+    const rig = buildRig({ pose: { legR: { bend: 28, raiseFwd: 10 } } });
+    const g = groundRig(rig, { mode: 'plant' });
+    expect(g.sole.L.groundZ).toBeCloseTo(g.sole.R.groundZ);
+  });
+
+  it('plant lifts a foot that is beyond tolerance', () => {
+    const rig = buildRig({ pose: { legR: { raiseFwd: 80, bend: 80 } } });
+    const g = groundRig(rig, { mode: 'plant', tolerance: 0.5 });
+    expect(Math.abs(g.sole.L.groundZ - g.sole.R.groundZ)).toBeGreaterThan(0.5);
+  });
+
+  it('drop re-poses the legs so both feet reach the plane, preserving bone lengths', () => {
+    const rig = buildRig({ pose: { legR: { bend: 28, raiseFwd: 10 } } });
+    const g = groundRig(rig, { mode: 'drop' });
+    expect(g.sole.L.groundZ).toBeCloseTo(g.sole.R.groundZ);
+    // thigh + shank lengths are preserved by the 2-bone IK.
+    for (const side of ['L', 'R'] as const) {
+      const t0 = dist(rig.joints[`upperLeg${side}`], rig.joints[`lowerLeg${side}`]);
+      const t1 = dist(g.joints[`upperLeg${side}`], g.joints[`lowerLeg${side}`]);
+      const s0 = dist(rig.joints[`lowerLeg${side}`], rig.joints[`foot${side}`]);
+      const s1 = dist(g.joints[`lowerLeg${side}`], g.joints[`foot${side}`]);
+      expect(t1).toBeCloseTo(t0, 2);
+      expect(s1).toBeCloseTo(s0, 2);
+    }
+  });
+
+  it('grounds to an explicit z', () => {
+    const g = groundRig(buildRig({}), { mode: 'plant', z: -5 });
+    expect(g.sole.L.groundZ).toBeCloseTo(-5);
+    expect(g.sole.R.groundZ).toBeCloseTo(-5);
+  });
+
+  it('rejects unknown options and bad modes', () => {
+    expect(() => groundRig(buildRig({}), { foo: 1 })).toThrow();
+    expect(() => groundRig(buildRig({}), { mode: 'hover' })).toThrow(/mode/);
   });
 });
 
