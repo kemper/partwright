@@ -811,11 +811,15 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
   // — a real shoe/boot sole). `sole: false` folds it into the upper (one colour).
   const soleOn = o.sole !== false;
   const so = soleOn && typeof o.sole === 'object' && o.sole !== null ? o.sole as Record<string, unknown> : {};
-  assertNoUnknownKeys(so, ['label', 'thickness', 'overhang'], `${kind}.sole`);
+  assertNoUnknownKeys(so, ['label', 'thickness', 'lip', 'overhang', 'style'], `${kind}.sole`);
   if (so.label !== undefined && typeof so.label !== 'string') throw new ValidationError(`${kind}.sole.label must be a string`);
   const soleLabel = (so.label as string | undefined) ?? 'sole';
-  const soleThick = num(so.thickness, r.foot * 0.5, `${kind}.sole.thickness`, 0.001);
-  const overhang = num(so.overhang, r.foot * 0.12, `${kind}.sole.overhang`, 0);
+  const soleStyle = so.style === undefined ? 'welt' : assertEnum(so.style, ['welt', 'flush'] as const, `${kind}.sole.style`);
+  const soleThick = num(so.thickness, r.foot * 0.42, `${kind}.sole.thickness`, 0.001);
+  // `lip` (alias `overhang`) — how far the welt sole sits proud of the upper.
+  // Ignored for the flush style.
+  const lipRaw = num(so.lip ?? so.overhang, r.foot * 0.1, `${kind}.sole.lip`, 0);
+  const lip = soleStyle === 'welt' ? lipRaw : 0;
 
   const shaftZ = o.shaftZ === undefined ? undefined : num(o.shaftZ, 0, `${kind}.shaftZ`);
   function shaftTop(A: Vec3, K: Vec3): Vec3 {
@@ -848,11 +852,12 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     //  and round into the HEEL at the back, a low heel fill, an ANKLE COLLAR rise
     //  at the opening — and (boots) a shaft — over a wide flat two-tier SOLE.
     const soleTopZ = soleOn ? groundZ + soleThick : groundZ;
-    const lift = soleTopZ - groundZ;               // upper's local floor
     const wallT = t;                               // upper-wall thickness over skin
     const hw = r.foot * 0.78 * size + wallT;        // upper half-width (foot + wall)
     const heelY = -footLen * 0.72;                  // heel back (local −Y)
-    const bodyLow = lift;                           // body floor sits on the sole top
+    // The last reaches the GROUND (local Z 0); the sole is later sliced off its
+    // bottom so it follows the foot's own curvature (not a separate cuboid).
+    const bodyLow = 0;
     // Foot landmarks in local Z (relative to groundZ): foot capsule top ≈ instep.
     const footTopZ = (sz - groundZ) + r.foot * 0.62;   // top of the bare-foot mass
     const instepZ = footTopZ + wallT;                  // crown over the instep
@@ -918,46 +923,26 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     const big = Math.max(footLen, r.lowerLeg) * 8;
     const topZ = kind === 'boots' ? shaftTop(A, K)[2] : sz + r.foot * 1.2 + t;
     const zone = sdf.box([big, big, big]).translate([A[0], A[1], topZ - big / 2]); // z ≤ topZ
-    let upperFull = upper.union(footMass.intersect(zone));
+    // The complete shoe solid, flat-clipped at the ground plane (nothing below it).
+    const shoeFloor = sdf.box([big, big, big]).translate([A[0], A[1], groundZ + big / 2]); // z ≥ groundZ
+    const shoe = upper.union(footMass.intersect(zone)).intersect(shoeFloor);
 
-    // The upper sits ON the sole: clip it to z ≥ (soleTopZ − small weld overlap)
-    // when there's a sole, else flat at the ground plane. This is the only thing
-    // forming the flat bottom, so the footwear contains nothing below groundZ.
-    const clipZ = soleOn ? soleTopZ - r.foot * 0.18 : groundZ;
-    const upperFloor = sdf.box([big, big, big]).translate([A[0], A[1], clipZ + big / 2]); // z ≥ clipZ
-    upperFull = upperFull.intersect(upperFloor);
+    if (!soleOn) return { upper: shoe, sole: null };
 
-    let soleNode: Node | null = null;
-    if (soleOn) {
-      // A WIDE, FLAT sole following the whole footprint outline, yawed to the
-      // heading, flat bottom exactly at groundZ, proud of the upper all around (the
-      // overhang lip). Two clean rounded tiers — a wide flat OUTSOLE tread on the
-      // ground and a slightly-inset MIDSOLE rising past soleTopZ to wrap up the
-      // lower upper — read as a real shoe/boot sole without the serrated rim a
-      // thin-shell lip would mesh into. Both span the full footprint, heel→toe.
-      const slabHW = hw + overhang;                 // sole half-width (proud of upper)
-      const slabHL = footLen * 0.78 + overhang;     // sole half-length: full footprint, heel→toe
-      const weld = r.foot * 0.2;                     // overlap up into the upper
-      // Lower tread tier — the wide flat outsole touching the ground.
-      const treadH = lift * 0.55;
-      const tread = sdf.roundedBox(
-        [2 * slabHW, 2 * slabHL, treadH],
-        Math.min(r.foot * 0.14, treadH * 0.45, slabHW * 0.4),
-      ).translate([0, 0, treadH / 2]);
-      // Upper midsole tier — slightly inset, rising past soleTopZ to wrap the
-      // lower upper. Two clean rounded tiers read as a real outsole + midsole
-      // without thin shells (which mesh into a serrated rim).
-      const midHW = slabHW - overhang * 0.45;
-      const midHL = slabHL - overhang * 0.45;
-      const midH = lift + weld - treadH * 0.5;       // overlaps the tread, welds up
-      const midsole = sdf.roundedBox(
-        [2 * midHW, 2 * midHL, midH],
-        Math.min(r.foot * 0.16, midH * 0.45, midHW * 0.4),
-      ).translate([0, 0, treadH * 0.5 + midH / 2]);
-      const sole = tread.smoothUnion(midsole, r.foot * 0.18);
-      soleNode = sole.rotate([0, 0, yaw]).translate([sole0.point[0], sole0.point[1], groundZ]);
-    }
-    return { upper: upperFull, sole: soleNode };
+    // SOLE = a horizontal SLICE off the bottom of the shoe's OWN shape, so it
+    // follows the foot's curvature exactly (no cuboid welded onto rounded feet).
+    // 'welt' inflates that slice outward by `lip` so it sits proud of the upper
+    // (classic shoe sole); 'flush' keeps the upper's own outline. The bottom
+    // stays flat at groundZ (the slab clip). UPPER = the rest of the shoe; they
+    // overlap by `weld` so the union is one component.
+    const weld = r.foot * 0.18;
+    const soleBand = sdf.box([big, big, soleThick]).translate([A[0], A[1], groundZ + soleThick / 2]);
+    const upperHalf = sdf.box([big, big, big]).translate([A[0], A[1], (soleTopZ - weld) + big / 2]); // z ≥ soleTopZ−weld
+    const soleSolid = lip > 0 ? shoe.round(lip) : shoe;
+    return {
+      upper: shoe.intersect(upperHalf),
+      sole: soleSolid.intersect(soleBand),
+    };
   }
 
   const L = foot(j.footL as Vec3, j.lowerLegL as Vec3, rig.sole.L, +1);

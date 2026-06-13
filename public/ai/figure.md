@@ -444,14 +444,20 @@ F.clothing.top(rig, { sleeve, hemZ, thickness })        // sleeve: none|short|lo
 F.clothing.shoes(rig, { size, thickness, label, sole })  // sole + upper over each foot
 F.clothing.boots(rig, { size, shaftZ, thickness, label, sole })  // + a shaft up the lower leg
 //   Footwear keys off rig.sole.{L,R}, so it tracks leg*.twist turnout like
-//   F.feet AND comes out with a FLAT sole that fully encloses the skin.
-//   It OWNS its paint regions (like F.face.eyes): the upper is labeled `label`
-//   (default 'boots'/'shoes') and the sole is its OWN region (default label
-//   'sole') — so DON'T add .label() on top (an outer label would swallow the
-//   sole). `sole` defaults ON; pass sole:false to fold it into the upper, or
-//   sole:{ label, thickness, overhang } to tune it (label:'boots' = same colour
-//   as the boot). `size` scales the footprint, `thickness` the shell. For boots,
-//   `shaftZ` is a world-Z target projected onto each leg's own ankle→knee bone.
+//   F.feet AND comes out with a FLAT-bottomed sole that fully encloses the skin.
+//   The sole is a horizontal SLICE of the shoe's own shape, so it follows the
+//   foot's curvature (not a cuboid welded on). It OWNS its paint regions (like
+//   F.face.eyes): the upper is labeled `label` (default 'boots'/'shoes') and the
+//   sole is its OWN region (default label 'sole') — so DON'T add .label() on top
+//   (an outer label would swallow the sole). `sole` defaults ON; pass sole:false
+//   to fold it into the upper, or tune it:
+//     sole: { style, thickness, lip, label }
+//       style: 'welt' (default — sole sits proud of the upper, like a real shoe)
+//              | 'flush' (sole hugs the upper's outline, no overhang)
+//       lip:   how far a welt sole is proud (alias: overhang); ignored for flush
+//       label: 'boots' = same colour as the boot.
+//   `size` scales the footprint, `thickness` the shell. For boots, `shaftZ` is a
+//   world-Z target projected onto each leg's own ankle→knee bone.
 ```
 
 **Standing on a surface — `F.ground(rig, { mode, surface?|z?, tolerance? })`.** Feet

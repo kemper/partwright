@@ -46,7 +46,7 @@ const shirt = F.clothing.top(rig, { sleeve: 'short' }).label('shirt');
 // 'sole'); a chunky overhang sole reads as a trainer. Don't add .label() on top.
 const shoes = F.clothing.shoes(rig, {
   label: 'sneaker',
-  sole: { overhang: r.foot * 0.16, thickness: r.foot * 0.5 },
+  sole: { style: 'welt', lip: r.foot * 0.14, thickness: r.foot * 0.46 },
 });
 
 // 6. HAIR + BASE

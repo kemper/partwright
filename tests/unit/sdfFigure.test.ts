@@ -707,6 +707,22 @@ describe('figure footwear — separate sole region', () => {
     const names = partitionByLabel(buildShoes(api, rig) as SdfNode).map(r => r.labelName);
     expect(names).toContain('shoes');
   });
+
+  it("sole style 'welt' (default) overhangs 'flush' laterally", () => {
+    const rig = buildRig({});
+    const r = rig.r, s = rig.sole.L;
+    const welt = buildBoots(api, rig, { sole: { style: 'welt', lip: r.foot * 0.2 } }) as SdfNode;
+    const flush = buildBoots(api, rig, { sole: { style: 'flush' } }) as SdfNode;
+    // A point just outside the flush sole edge, at sole height, is empty for flush
+    // but inside the welt (its lip is proud of the upper).
+    const x = s.point[0] + r.foot * 1.08, y = s.point[1], z = s.groundZ + 0.1;
+    expect(flush.evaluate(x, y, z)).toBeGreaterThan(0);
+    expect(welt.evaluate(x, y, z)).toBeLessThan(0);
+  });
+
+  it('rejects an unknown sole style', () => {
+    expect(() => buildBoots(api, buildRig({}), { sole: { style: 'platform' } })).toThrow(/style/);
+  });
 });
 
 describe('figure ground — stand feet on one plane', () => {
