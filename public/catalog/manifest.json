@@ -778,6 +778,13 @@
       "description": "A cheerful stylized child waving hello — one arm raised high, chunky cargo pants, long hair, built with the SDF figure rig."
     },
     {
+      "id": "sneakers-character",
+      "name": "Sneakers Character",
+      "file": "figure_sneakers.partwright.json",
+      "language": "manifold-js",
+      "description": "A casual figure in chunky sneakers — showcasing the figure footwear builder: F.clothing.shoes paints a separate contrasting sole and F.ground plants both feet level on the base so the soles sit flush."
+    },
+    {
       "id": "flexing-strongman",
       "name": "Flexing Strongman",
       "file": "flexing_strongman.partwright.json",
