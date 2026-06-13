@@ -1398,8 +1398,8 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     // pose like braids) with a gentle outward kick, and shares each joint so it
     // welds into one piece. The default 'wavy' relief (above) segments them.
     const thin = style === 'boxBraids';
-    const N = thin ? 15 : 12;
-    const strandR = r.head * (thin ? 0.092 : 0.13) * volume;
+    const N = thin ? 15 : 11;
+    const strandR = r.head * (thin ? 0.092 : 0.155) * volume;
     const reach = r.head * (thin ? 3.0 : 2.4) * lenMul;
     // Root each strand from a point safely INSIDE the scalp (a fraction of the
     // SMALLEST head half-axis, so it's inside the cap ellipsoid in every
