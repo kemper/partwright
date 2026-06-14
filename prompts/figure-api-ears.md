@@ -59,3 +59,18 @@ hold the catalog tri budget. All three bake clean (1 component, manifold,
 Verified: typecheck, 1398 unit tests, lint:deps/deadcode, lint:catalog, build,
 and headless `model:preview` renders of each ear type, the cover/behind
 contrast, and the three figures.
+
+## Assistant — revision after review
+
+The user reviewed the previews and pushed back: the ears read as flat "keyhole
+swirls" and the hair `'behind'` pocket carved too wide a crater. Prototyped a
+spread of redesigns and had the user pick from rendered comparisons.
+
+Reworked the ear geometry to a THIN, ear-shaped PLATE (laterally flat) with a
+shallow concha *scoop* offset down+front — leaving a natural rim and an
+open-front bowl instead of a punched round hole. Three types kept: `'round'`
+(clean cup), `'detailed'` (cup + tragus + antitragus — now the DEFAULT, reads
+most like a real ear), `'pointed'` (upper pinna sweeps to an elf point).
+Tightened the hair pocket from `r.head*0.6` → `r.head*0.38` (outboard
+`headX*0.12`) so the hair hugs the ear. Re-baked all three catalog figures.
+User picked 'detailed' default + the tight pocket from the comparison renders.

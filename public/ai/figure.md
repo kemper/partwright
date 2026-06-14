@@ -373,7 +373,7 @@ F.face.assemble(head, rig, {
   eyes:  true | { radius, style, lids, gaze, gazeL, gazeR } | false,  // OFF by default — see note below
   nose:  true | { tipRadius, length, width, bridge, flare } | false,
   mouth: true | { style, width, smirk, open, fullness } | false,
-  ears:  true | { size, type } | false,   // type: 'round'(default) | 'pointed' | 'detailed'
+  ears:  true | { size, type } | false,   // type: 'detailed'(default) | 'round' | 'pointed'
   brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
 })
 ```
@@ -459,13 +459,15 @@ return sdf.union(skin, eyes, mouthParts, hair, base).build({ ... });
 ### Ears & the hair⇄ear relationship
 
 `F.face.ears(rig, { size, type })` welds ears at the `rig.face.earL/earR`
-anchors (pose-tracked). Three **types**:
+anchors (pose-tracked). Each is a thin, ear-shaped plate that stands proud of
+the skull with a **shallow concha scoop** (a real rim + bowl, never a punched
+"keyhole" hole). Three **types**:
 
 | `type` | Shape | Use for |
 |---|---|---|
-| `'round'` (default) | a cupped disc with a shallow concha bowl — clean, printable | most figures |
-| `'pointed'` | an ellipsoid base tapering up-and-back into a point | elves, fae, fantasy |
-| `'detailed'` | pinna + concha bowl + a **helix rim** arc + an **earlobe** | realistic busts |
+| `'detailed'` (default) | the cupped ear plus a **tragus + antitragus** — reads as a real ear | most figures, realistic busts |
+| `'round'` | a clean cupped ear: comma plate + shallow concha + earlobe, no inner detail | simpler / cartoon figures |
+| `'pointed'` | the upper pinna sweeps up-and-back into a point | elves, fae, fantasy |
 
 ```js
 ears: { type: 'pointed', size: rig.r.head * 0.4 }   // elf ears, a touch larger

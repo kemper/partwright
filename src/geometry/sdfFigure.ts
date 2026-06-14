@@ -1689,11 +1689,12 @@ function buildMouthAccents(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   return parts.length === 1 ? parts[0] : parts[0].union(parts[1]);
 }
 
-// `type` shapes the pinna:
-//   'round'    — cupped disc with a shallow concha bowl (default; the clean,
-//                printable upgrade over the old flat blob).
-//   'pointed'  — elf/fantasy: a base that tapers UP and back into a point.
-//   'detailed' — anatomical: pinna + concha + a helix rim arc + an earlobe.
+// `type` shapes the pinna. Each is a THIN, ear-shaped plate (laterally flat) so
+// it reads as an ear from the front and 3/4, with a SHALLOW concha scooped from
+// the outer face — leaving a natural rim, never a punched "keyhole" hole:
+//   'round'    — a clean cupped ear: comma plate + shallow scoop + lobe.
+//   'detailed' — anatomical (DEFAULT): adds a tragus + antitragus to the cup.
+//   'pointed'  — elf/fantasy: the upper pinna pulls UP and back into a point.
 const EAR_TYPES = ['round', 'pointed', 'detailed'] as const;
 type EarType = typeof EAR_TYPES[number];
 
@@ -1703,48 +1704,46 @@ type EarType = typeof EAR_TYPES[number];
  *  to the head pose and drops it on `rig.face.earL/earR`; the right ear is the
  *  same node mirrored across X. */
 function earLocal(sdf: SdfApi, type: EarType, s: number): Node {
-  const OUT = s * 0.38;   // outboard offset so the ear protrudes past the skull
+  const OUT = s * 0.34;   // outboard offset so the ear stands proud of the skull
+  const tx = s * 0.2;     // lateral half-thickness — a thin plate, not a blob
+
   if (type === 'pointed') {
-    const base = sdf.ellipsoid(s * 0.34, s * 0.62, s * 0.72).translate([OUT, -s * 0.04, -s * 0.05]);
-    const pt = sdf.capsule([OUT, -s * 0.05, s * 0.22], [OUT + s * 0.18, -s * 0.3, s * 1.5], s * 0.17);
-    const bowl = sdf.sphere(s * 0.4).translate([OUT + s * 0.24, -s * 0.18, s * 0.08]);
-    return base.smoothUnion(pt, s * 0.3).smoothSubtract(bowl, s * 0.12);
+    // Elf: the upper pinna sweeps UP and back into a tapered point.
+    const pinna = sdf.ellipsoid(tx, s * 0.46, s * 0.6).translate([OUT, -s * 0.02, 0]);
+    const tip = sdf.capsule([OUT, -s * 0.08, s * 0.4], [OUT - s * 0.02, -s * 0.5, s * 1.45], tx * 0.85);
+    const lobe = sdf.ellipsoid(tx * 0.9, s * 0.26, s * 0.26).translate([OUT, s * 0.02, -s * 0.6]);
+    const n = pinna.smoothUnion(tip, s * 0.2).smoothUnion(lobe, s * 0.2);
+    const scoop = sdf.ellipsoid(tx * 1.15, s * 0.3, s * 0.4).translate([OUT + tx * 0.95, -s * 0.1, s * 0.06]);
+    return n.smoothSubtract(scoop, s * 0.11);
   }
+
+  // round + detailed share the comma plate + shallow scoop + lobe base.
+  const pinna = sdf.ellipsoid(tx, s * 0.52, s * 0.8).translate([OUT, -s * 0.02, s * 0.06]);
+  const lobe = sdf.ellipsoid(tx * 0.92, s * 0.3, s * 0.32).translate([OUT, s * 0.03, -s * 0.66]);
+  let n = pinna.smoothUnion(lobe, s * 0.22);
+  // Scoop the OUTER face from just outside, offset down+front so the top-back
+  // rim stays thick (the helix) and the bowl (concha) opens toward the front.
+  const scoop = sdf.ellipsoid(tx * 1.15, s * 0.32, s * 0.44).translate([OUT + tx * 0.95, -s * 0.08, s * 0.04]);
+  n = n.smoothSubtract(scoop, s * 0.11);
   if (type === 'detailed') {
-    const pinna = sdf.ellipsoid(s * 0.34, s * 0.64, s * 0.92).translate([OUT, -s * 0.04, 0]);
-    const bowl = sdf.sphere(s * 0.46).translate([OUT + s * 0.3, -s * 0.14, s * 0.08]);
-    let n = pinna.smoothSubtract(bowl, s * 0.12);
-    // Helix rim: an arc of capsules sweeping the back-top edge of the pinna.
-    const rimR = s * 0.14;
-    let rim: Node | undefined;
-    let prev: Vec3 | undefined;
-    for (let i = 0; i <= 7; i++) {
-      const a = (75 - i * 27) * DEG;
-      const p: Vec3 = [OUT + s * 0.14, -Math.cos(a) * s * 0.52 - s * 0.02, Math.sin(a) * s * 0.82];
-      if (prev) {
-        const seg = sdf.capsule(prev, p, rimR);
-        rim = rim === undefined ? seg : rim.smoothUnion(seg, rimR * 0.7);
-      }
-      prev = p;
-    }
-    n = n.smoothUnion(rim!, s * 0.09);
-    // Earlobe at the bottom front.
-    const lobe = sdf.sphere(s * 0.22).translate([OUT + s * 0.04, s * 0.06, -s * 0.82]);
-    return n.smoothUnion(lobe, s * 0.13);
+    // Tragus flap at the front of the bowl + an antitragus bump opposite it —
+    // the cues that make it read as a real ear rather than a smooth cup.
+    const tragus = sdf.ellipsoid(tx * 0.7, s * 0.12, s * 0.16).translate([OUT + tx * 0.3, -s * 0.34, -s * 0.16]);
+    const anti = sdf.ellipsoid(tx * 0.7, s * 0.1, s * 0.12).translate([OUT + tx * 0.3, -s * 0.06, -s * 0.44]);
+    n = n.smoothUnion(tragus, s * 0.07).smoothUnion(anti, s * 0.07);
   }
-  // round
-  const pinna = sdf.ellipsoid(s * 0.36, s * 0.66, s * 0.95).translate([OUT, -s * 0.05, 0]);
-  const bowl = sdf.sphere(s * 0.5).translate([OUT + s * 0.28, -s * 0.16, s * 0.04]);
-  return pinna.smoothSubtract(bowl, s * 0.14);
+  return n;
 }
 
 function buildEars(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'ears(opts)');
   assertNoUnknownKeys(o, ['size', 'type'], 'ears(opts)');
-  const type = o.type === undefined ? 'round' : assertEnum(o.type, EAR_TYPES, 'ears.type');
-  // Default sized to the head; the new pinna stands proud of the skull (vs the
-  // old near-flush blob) so it reads from the front as well as the side.
-  const s = num(o.size, rig.r.head * 0.34, 'ears.size', 0.01);
+  // Default to the anatomical 'detailed' ear — it reads most convincingly as an
+  // ear; 'round' is the cleaner/simpler cup, 'pointed' the elf shape.
+  const type = o.type === undefined ? 'detailed' : assertEnum(o.type, EAR_TYPES, 'ears.type');
+  // Default sized to the head; the thin pinna plate stands proud of the skull so
+  // it reads from the front as well as the side.
+  const s = num(o.size, rig.r.head * 0.4, 'ears.size', 0.01);
   const earL = orientToHeadPose(earLocal(sdf, type, s), rig).translate(rig.face.earL);
   const earR = orientToHeadPose(earLocal(sdf, type, s).mirror('x'), rig).translate(rig.face.earR);
   return earL.union(earR);
@@ -2149,8 +2148,10 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // height — the crown and nape mass are untouched. 'cover' skips this entirely
   // (byte-identical default).
   if (ears === 'behind') {
-    const pocketR = r.head * 0.6;
-    const outboard = r.headX * 0.18;
+    // A snug pocket so the hair HUGS the ear rather than carving a wide crater
+    // around it — just enough to clear the protruding pinna at the ear anchor.
+    const pocketR = r.head * 0.38;
+    const outboard = r.headX * 0.12;
     for (const [anchor, lat] of [[rig.face.earL, right], [rig.face.earR, scale3(right, -1)]] as const) {
       const pc = add3(anchor, scale3(lat, outboard));
       cap = cap.subtract(sdf.sphere(pocketR).translate(pc));
@@ -2448,9 +2449,10 @@ export interface FigureNamespace {
     /** Pre-labelled paintable mouth parts (teeth band, lip ring / ridge)
      *  to hard-union at the figure's top level. */
     mouthAccents(rig: Rig, opts?: object): Node;
-    /** Ears welded at `rig.face.earL/earR`. `type`: `'round'` (default, cupped
-     *  disc), `'pointed'` (elf/fantasy point), or `'detailed'` (helix rim +
-     *  concha + earlobe). `size` scales them. Pair with `F.hair(rig, { ears:
+    /** Ears welded at `rig.face.earL/earR` — a thin ear-shaped plate with a
+     *  shallow concha scoop. `type`: `'detailed'` (default — cup + tragus +
+     *  antitragus), `'round'` (clean cup, no inner detail), or `'pointed'`
+     *  (elf/fantasy point). `size` scales them. Pair with `F.hair(rig, { ears:
      *  'behind' })` to expose them in front of the hair. */
     ears(rig: Rig, opts?: object): Node;
     brows(rig: Rig, opts?: object): Node;

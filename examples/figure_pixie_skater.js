@@ -30,7 +30,7 @@ const face = F.face.assemble(head, rig, {
   eyes: false,
   nose: { tipRadius: r.head * 0.1, width: 1.0 },
   mouth: mouthOpts,
-  ears: { type: 'round', size: r.head * 0.36 },   // ← clean default ears
+  ears: { type: 'round', size: r.head * 0.36 },   // ← clean cup ear
   brows: { lift: 0.8 },
 });
 // Seat the eyeballs proud of the face so the eye paint regions stay resolvable.

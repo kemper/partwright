@@ -1142,7 +1142,7 @@ describe('figure hair — styles and hairline', () => {
 describe('figure ears — types', () => {
   const rig = buildRig({ height: 60, headsTall: 5 });
 
-  it('defaults to round and rejects an unknown type / key', () => {
+  it('builds a default ear and rejects an unknown type / key', () => {
     expect(buildEars(api, rig).bounds).toBeTypeOf('function');
     expect(() => buildEars(api, rig, { type: 'goblin' })).toThrow(/type/);
     expect(() => buildEars(api, rig, { wiggle: 1 })).toThrow();
