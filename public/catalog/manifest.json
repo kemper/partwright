@@ -1203,6 +1203,16 @@
       ]
     },
     {
+      "id": "pool-swimmer",
+      "name": "Pool Swimmer",
+      "file": "swimmer.partwright.json",
+      "language": "manifold-js",
+      "description": "A lean swimmer in low-rise trunks, standing relaxed — shows the figure rig's bare-torso anatomy: subtly placed nipples on the chest and a navel on the midriff, both derived from the rig's surface landmarks.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
       "id": "chibi-wizard",
       "name": "Chibi Wizard",
       "file": "chibi_wizard.partwright.json",
