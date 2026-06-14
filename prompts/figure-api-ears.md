@@ -96,3 +96,14 @@ User zoomed in and flagged three issues, two of them regressions I introduced:
    underlying auto-seat/warn gap as a tracked issue.
 
 Re-baked all three figures (1 component, manifold, <200k tris, eyes paint).
+
+## Assistant — ear-showcase busts
+
+User asked for catalog models with full facial features where the ears are
+clearly visible. Added three character **busts** (`examples/faces/bust_*.js`,
+head+shoulders cut flat below the chest), one per ear type, each with a full
+face (iris eyes, nose, mouth, brows) and hair worn `ears: 'behind'` so the ear
+reads: `bust_elf` (pointed), `bust_listener` (detailed), `bust_pixie` (round).
+They use inline `api.paint.label` (no palette file) and default-head eyes (no
+forward nudge needed — the bust face doesn't bulk past the eye anchor). Baked
+and wired into both catalog manifests (tags: figures).

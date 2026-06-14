@@ -15,6 +15,39 @@
         "requiredLabels": []
       }
     },
+    "bust-elf": {
+      "source": "examples/faces/bust_elf.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "eyes",
+          "hair"
+        ]
+      }
+    },
+    "bust-listener": {
+      "source": "examples/faces/bust_listener.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "eyes",
+          "hair"
+        ]
+      }
+    },
+    "bust-pixie": {
+      "source": "examples/faces/bust_pixie.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "eyes",
+          "hair"
+        ]
+      }
+    },
     "chess-rook": {
       "source": "examples/chess_rook.js",
       "gates": {
@@ -160,6 +193,22 @@
       "gates": {
         "maxGenus": null,
         "requiredLabels": []
+      }
+    },
+    "pool-swimmer": {
+      "source": "examples/figure_swimmer.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "eyes",
+          "iris",
+          "pupil",
+          "areola",
+          "trunks",
+          "hair",
+          "base"
+        ]
       }
     },
     "print-fit-dovetail-system": {
@@ -384,13 +433,6 @@
       "gates": {
         "maxGenus": null,
         "requiredLabels": []
-      }
-    },
-    "pool-swimmer": {
-      "source": "examples/figure_swimmer.js",
-      "gates": {
-        "maxGenus": null,
-        "requiredLabels": ["skin", "eyes", "iris", "pupil", "areola", "trunks", "hair", "base"]
       }
     },
     "topknot-sensei": {
