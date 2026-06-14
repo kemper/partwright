@@ -1331,6 +1331,26 @@
       "tags": [
         "mechanical"
       ]
+    },
+    {
+      "id": "muscular-hero",
+      "name": "Muscular Hero",
+      "file": "bodybuilder.partwright.json",
+      "language": "manifold-js",
+      "description": "A bodybuilder in a relaxed front stance — defined pectorals, abs, lats, biceps and quads from the figure rig's muscle axis (muscle: 0.85), with high-cut competition trunks.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "athletic-sprinter",
+      "name": "Athletic Sprinter",
+      "file": "athlete.partwright.json",
+      "language": "manifold-js",
+      "description": "A lean, toned sprinter in a ready stance — the muscle axis (0.55) composed with a slim female silhouette gives athletic definition without bulk, in a crop top, track briefs and running shoes.",
+      "tags": [
+        "figures"
+      ]
     }
   ]
 }

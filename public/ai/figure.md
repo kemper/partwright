@@ -101,6 +101,7 @@ F.rig({
   sex,         // 'neutral' (default) | 'male' | 'female' — silhouette balance
   age,         // years, 1..90 (default 25). Shifts torso girth (baby/child/old).
   weight,      // 0..1 (default 0.5 = average; 0 = lean, 1 = heavy)
+  muscle,      // 0..1 (default 0 = smooth; ~0.5 athletic, 1 = bodybuilder)
   pose: {      // all optional; neutral standing defaults
     arms, legs, // SYMMETRIC shorthand — seeds BOTH sides at once (see below)
     armL, armR, // { raiseSide, raiseFwd, bend, twist }   degrees — override per side
@@ -133,6 +134,23 @@ F.rig({
 >
 > So `{ sex: 'female', weight: 0.7, age: 60 }` is a fuller, older woman, and
 > `{ sex: 'male', build: 'stocky', weight: 0.8 }` a heavyset man.
+
+> **`muscle` (0..1) adds anatomical muscle definition** — and is **orthogonal to
+> `weight`** (muscle vs fat). At `0` (default) no muscle masses are added, so
+> every existing figure is unchanged; raise it for tone. It welds
+> anatomically-anchored bellies onto the body, all derived from the rig so they
+> track the pose:
+> - **torso** — pectorals, a tight abdominal panel, lats (the V-taper) and traps.
+> - **arms** — a capped deltoid, biceps + triceps, and a forearm flexor swell.
+>   The biceps sit on the flexor side, so a raised/flexing arm bulges correctly.
+> - **legs** — quadriceps (front), hamstrings + calves (back), and glutes.
+>
+> Combine with the other axes for any physique: `{ muscle: 0.55, weight: 0.35 }`
+> is a lean, toned athlete; `{ sex: 'male', muscle: 0.9 }` a bodybuilder;
+> `{ build: 'stocky', muscle: 0.6, weight: 0.7 }` a powerlifter (big AND soft).
+> Useful values: ~0.3 trim, ~0.5 athletic, ~0.7 very fit, 1 heroic/competition.
+> This is the first-class replacement for hand-rolling chest/bicep/trap masses
+> onto a figure (as `figure_strongman.js` used to) — reach for `muscle` instead.
 >
 > **Provenance.** The `age` and `weight` ratios are **mined from MakeHuman's CC0
 > macrodetail morph targets** (github.com/makehumancommunity/makehuman, released
@@ -211,7 +229,8 @@ The rig exposes (read-only, for custom parts):
   **`waist`** (the garment-fitting radius at the natural waist — use this, not
   `hipsX`, to size belts/skirts/tutus).
 - `rig.dir.{headForward, headUp, headLeft, upperArmL/R, lowerArmL/R, elbowHingeL/R,
-  upperLegL/R, lowerLegL/R, footL/R}` — unit directions for orienting parts (`footL/R`
+  upperLegL/R, lowerLegL/R, kneeHingeL/R, footL/R}` — unit directions for orienting
+  parts (`elbowHingeL/R` and `kneeHingeL/R` are the limb bend axes; `footL/R`
   is the foot heading, yawed by `leg*.twist` turnout).
 - `rig.grip.{L,R}` — **a full grip frame per hand, for connecting HELD props**
   (guitar neck, sword, staff, mug). Each has `{ point, palmNormal, gripAxis, reach }`:
@@ -699,7 +718,8 @@ recoloured:
 - **Hair** — match texture and style to the person: `coils`/`afro`/`locs`/
   `cornrows`/`boxBraids` are first-class, not edge cases. Any hair texture works
   on any skin tone.
-- **Body** — `build` (slim/average/stocky), `sex`, `headsTall`.
+- **Body** — `build` (slim/average/stocky), `sex`, `headsTall`, plus `weight`
+  (fat) and `muscle` (tone) as independent axes.
 
 > **Vary the axes independently — don't bundle them into a stereotype.** A dark
 > skin tone does not imply a particular nose, hair, or build, and vice versa.
