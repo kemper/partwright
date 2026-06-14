@@ -36,7 +36,11 @@ export function parseAppMajor(version: string | null | undefined): number | null
 }
 
 /** Compare two semver-ish strings. Returns >0 if a is newer, <0 if older, 0 if
- *  equal/incomparable. Missing components count as 0 (so "1.2" === "1.2.0"). */
+ *  equal/incomparable. Missing components count as 0 (so "1.2" === "1.2.0").
+ *  Assumes plain numeric `X.Y.Z` (this project's release scheme); a pre-release
+ *  tag like "1.2.0-rc1" would coerce its tagged component to 0 — only the major
+ *  ultimately drives any decision (via parseAppMajor), so that's harmless, but
+ *  revisit here if pre-release versions ever ship. */
 function compareSemver(a: string, b: string): number {
   const pa = a.split('.').map(n => parseInt(n, 10) || 0);
   const pb = b.split('.').map(n => parseInt(n, 10) || 0);

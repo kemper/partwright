@@ -69,3 +69,8 @@ Verified: typecheck clean; full unit tier 1364 pass (incl. 11 new
 `chat-export` e2e green with a new `appVersion` round-trip assertion; and a
 throwaway browser probe confirmed both the top-level and per-version stamps come
 through the real runAndSave→export path as "1.0.0" (deleted before commit).
+
+Follow-up after a work-reviewer pass (0 blocking, 0 should-fix): added a
+clarifying comment on `compareSemver` noting it assumes plain numeric X.Y.Z
+(a pre-release tag would coerce to 0 — harmless since only the major drives
+decisions, but flagged for if pre-release versions ever ship).
