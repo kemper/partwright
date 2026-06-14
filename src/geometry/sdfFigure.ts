@@ -472,11 +472,24 @@ function buildRig(rawOpts: unknown): Rig {
   const hu = (ratio: number) => headH * ratio * bw;   // head-unit girth (× build)
   const shoulderHalfX = hu(0.648) * gm.shoulder;
   const hipHalfX = hu(0.432) * gm.hip;
+  // Minimum front-back torso DEPTH floor. The torso's thin dimension is its
+  // depth (chestY/hipsY); a slim × lean × narrow-sex combination can drive it
+  // low enough that surface masses (muscle bellies, garment offsets) pinch the
+  // wall into holes/voids. Floor it at a fraction of the head so the core always
+  // has a printable, non-self-intersecting depth — leanness can make a figure
+  // trim, never paper-thin. The floor is **muscle-aware**: muscle bellies need
+  // core depth to seat into, so each unit of `muscle` raises the minimum depth
+  // (you can't be both maximally lean AND maximally muscled — the masses would
+  // have nothing to merge into). At `muscle: 0` the floor (0.26/0.24·headH)
+  // sits BELOW every real build's depth (slim chestY ≈ 0.33·headH), so existing
+  // figures are byte-identical; it only lifts the very thinnest muscled combos.
+  const depthFloor = (v: number, minRatio: number): number =>
+    Math.max(v, headH * (minRatio + 0.14 * muscle));
   const r = {
     head: ryHead, headX: rxHead, headZ: rzHead,
     neck: hu(0.204),
-    chestX: hu(0.630) * gm.chest, chestY: hu(0.396) * wt.chest,
-    hipsX: hu(0.516) * gm.hip, hipsY: hu(0.360) * wt.hip,
+    chestX: hu(0.630) * gm.chest, chestY: depthFloor(hu(0.396) * wt.chest, 0.26),
+    hipsX: hu(0.516) * gm.hip, hipsY: depthFloor(hu(0.360) * wt.hip, 0.24),
     // The garment-fitting radius at the natural waist (rig.joints.spine) — use
     // this, not hipsX (a leg-insertion radius), to size belts/skirts/tutus.
     waist: hu(0.492) * gm.waist,
@@ -742,11 +755,15 @@ function buildTorso(sdf: SdfApi, rig: Rig): Node {
       r.upperArm * (0.9 + 0.4 * m), r.upperArm * 0.7, r.upperArm * (0.8 + 0.4 * m),
     ).translate([sx * j.upperArmL[0] * 0.6, -r.chestY * 0.15, j.upperArmL[2] + r.upperArm * 0.1]);
     const traps = trap(1).union(trap(-1));
-    // Lats — flare the sides under the arms toward a V-taper waist.
-    const latZ = mix(j.chest[2], j.spine[2], 0.45);
-    const lat = (sx: number): Node => sdf.ellipsoid(
-      r.chestX * (0.22 + 0.1 * m), r.chestY * (0.5 + 0.1 * m), (j.chest[2] - j.spine[2]) * 0.6,
-    ).translate([sx * r.chestX * (0.9 + 0.06 * m), 0, latZ]);
+    // Lats — tapering "wings" from under the arms down into the waist (the
+    // V-taper). A side ellipsoid offset off a tapering waist forms a TUNNEL
+    // (it overlaps the core only at top and bottom, looping a handle); a
+    // tapered capsule running high-and-wide → low-and-inward instead overlaps
+    // the core along its whole length, so it can never pinch a hole.
+    const latTop = (sx: number): Vec3 => [sx * r.chestX * 0.8, r.chestY * 0.08, mix(j.chest[2], j.upperArmL[2], 0.05)];
+    const latBot = (sx: number): Vec3 => [sx * r.chestX * 0.34, r.chestY * 0.12, j.spine[2]];
+    const lat = (sx: number): Node => tapered(sdf, latTop(sx), latBot(sx),
+      r.chestX * (0.26 + 0.08 * m), r.chestX * (0.16 + 0.05 * m), r.chestX * 0.22);
     const lats = lat(1).union(lat(-1));
     // Abdominal panel — a tight forward core on the lower belly.
     const abs = sdf.ellipsoid(

@@ -175,6 +175,29 @@ describe('figure rig — muscle axis', () => {
     expect(() => buildRig({ muscle: 1.5 })).toThrow(/muscle/);
   });
 
+  it('muscle raises the minimum torso DEPTH so a lean+muscled torso never goes paper-thin', () => {
+    // A maximally lean/slim/narrow torso: at muscle 0 the depth is its natural
+    // (un-floored) value; muscle lifts the floor so the muscled core is deeper.
+    const opts = { height: 60, headsTall: 7.5, sex: 'female' as const, build: 'slim' as const, weight: 0 };
+    const lean = buildRig({ ...opts, muscle: 0 });
+    const buff = buildRig({ ...opts, muscle: 1 });
+    expect(buff.r.chestY).toBeGreaterThan(lean.r.chestY);
+    expect(buff.r.hipsY).toBeGreaterThan(lean.r.hipsY);
+    // The floor scales with the head (headH = height/headsTall = 8 here).
+    const headH = 60 / 7.5;
+    expect(buff.r.chestY).toBeCloseTo(headH * (0.26 + 0.14), 6); // floored
+    expect(buff.r.hipsY).toBeCloseTo(headH * (0.24 + 0.14), 6);
+  });
+
+  it('the depth floor does NOT trigger for normal builds (muscle 0 unchanged)', () => {
+    // A neutral and even a slim muscle-0 figure sits above the floor, so the
+    // floor is a no-op there — pinning the byte-identical guarantee.
+    const slim0 = buildRig({ build: 'slim', muscle: 0 });
+    const headH = slim0.opts.height / slim0.opts.headsTall;
+    expect(slim0.r.chestY).toBeGreaterThan(headH * 0.26);
+    expect(slim0.r.hipsY).toBeGreaterThan(headH * 0.24);
+  });
+
   it('exposes the knee-hinge direction (the leg analog of elbowHinge)', () => {
     const rig = buildRig({ pose: { legL: { bend: 60 } } });
     expect(rig.dir.kneeHingeL).toBeDefined();

@@ -152,6 +152,14 @@ F.rig({
 > This is the first-class replacement for hand-rolling chest/bicep/trap masses
 > onto a figure (as `figure_strongman.js` used to) — reach for `muscle` instead.
 >
+> **Muscle raises the minimum torso depth.** Muscle bellies need core to seat
+> into, so `muscle` lifts a floor on the front-back torso depth — you can't be
+> both maximally lean *and* maximally muscled (the masses would have nothing to
+> merge into, pinching holes). A lean athlete stays trim; the floor only keeps
+> the very thinnest muscled combos from going paper-thin. At `muscle: 0` the
+> floor sits below every build's natural depth, so non-muscled figures are
+> unchanged.
+>
 > **Provenance.** The `age` and `weight` ratios are **mined from MakeHuman's CC0
 > macrodetail morph targets** (github.com/makehumancommunity/makehuman, released
 > CC0 2020) — see `scripts/mine-makehuman-anthropometry.mjs`, which applies each
