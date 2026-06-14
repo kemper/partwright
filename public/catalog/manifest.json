@@ -1203,6 +1203,16 @@
       ]
     },
     {
+      "id": "pool-swimmer",
+      "name": "Pool Swimmer",
+      "file": "swimmer.partwright.json",
+      "language": "manifold-js",
+      "description": "A lean swimmer in low-rise trunks, standing relaxed — shows the figure rig's bare-torso anatomy: subtly placed nipples on the chest and a navel on the midriff, both derived from the rig's surface landmarks.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
       "id": "chibi-wizard",
       "name": "Chibi Wizard",
       "file": "chibi_wizard.partwright.json",
@@ -1330,6 +1340,26 @@
       "description": "A customizable control knob with a functional knurled grip built with api.knurl — switch between a diamond cross-hatch, straight splines, or finger ribs, and mount it on a plain shaft, a D-shaft, or a heat-set threaded insert. Pointer notch optional.",
       "tags": [
         "mechanical"
+      ]
+    },
+    {
+      "id": "muscular-hero",
+      "name": "Muscular Hero",
+      "file": "bodybuilder.partwright.json",
+      "language": "manifold-js",
+      "description": "A bodybuilder in a relaxed front stance — defined pectorals, abs, lats, biceps and quads from the figure rig's muscle axis (muscle: 0.85), with high-cut competition trunks.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "athletic-sprinter",
+      "name": "Athletic Sprinter",
+      "file": "athlete.partwright.json",
+      "language": "manifold-js",
+      "description": "A lean, toned sprinter in a ready stance — the muscle axis (0.55) composed with a slim female silhouette gives athletic definition without bulk, in a crop top, track briefs and running shoes.",
+      "tags": [
+        "figures"
       ]
     }
   ]
