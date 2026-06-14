@@ -33,7 +33,8 @@ const face = F.face.assemble(head, rig, {
   brows: {},
 });
 // Eyes labelled separately: iris style gives eyes / iris / pupil labels.
-const eyes = F.face.eyes(rig, { radius: r.head * 0.17, lids: 'half' });
+// gaze 'down' casts the irises to the page (on top of the nodded-down head).
+const eyes = F.face.eyes(rig, { radius: r.head * 0.17, lids: 'half', gaze: 'down' });
 
 // 3. SKIN — open grip: palms supporting the book's sides.
 const skin = F.weld(rig, [

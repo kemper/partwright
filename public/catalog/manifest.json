@@ -775,7 +775,7 @@
       "name": "Waving Kid",
       "file": "waving_kid.partwright.json",
       "language": "manifold-js",
-      "description": "A cheerful stylized child waving hello — one arm raised high, chunky cargo pants, long hair, built with the SDF figure rig."
+      "description": "A cheerful stylized child waving hello — one arm raised high, eyes glancing up at the person they're greeting, chunky cargo pants, long hair, built with the SDF figure rig."
     },
     {
       "id": "sneakers-character",
@@ -873,7 +873,7 @@
       "name": "Storytime Reader",
       "file": "sitting_reader.partwright.json",
       "language": "manifold-js",
-      "description": "A child sitting on a stool absorbed in a chunky storybook — chair-sit pose, bangs, and sculpted hands cradling the open book."
+      "description": "A child sitting on a stool absorbed in a chunky storybook — chair-sit pose, bangs, eyes cast down to the page, and sculpted hands cradling the open book."
     },
     {
       "id": "karate-master",
@@ -887,7 +887,7 @@
       "name": "Waving Princess",
       "file": "princess.partwright.json",
       "language": "manifold-js",
-      "description": "A princess in a floor-length gown giving a royal wave — gold five-point crown, ponytail, painted lips, open-fingered hand."
+      "description": "A princess in a floor-length gown giving a royal wave — gold five-point crown, ponytail, painted lips, a demure sidelong glance, open-fingered hand."
     },
     {
       "id": "rock-guitarist",
@@ -909,6 +909,20 @@
       "file": "staff_mage.partwright.json",
       "language": "manifold-js",
       "description": "A robed mage raising a quarterstaff in one hand — the staff seated into the grip with the figure API's holdAt helper so it follows the hand instead of impaling it."
+    },
+    {
+      "id": "cross-eyed-bust",
+      "name": "Cross-Eyed Goofball",
+      "file": "cross_eyed_bust.partwright.json",
+      "language": "manifold-js",
+      "description": "A goofy cross-eyed bust — each eyeball aimed independently at the nose with the figure rig's per-eye gaze (gazeL/gazeR), under a big grin and high comedic brows."
+    },
+    {
+      "id": "stargazer-bust",
+      "name": "Stargazer",
+      "file": "stargazer_bust.partwright.json",
+      "language": "manifold-js",
+      "description": "A dreamy bust gazing skyward — chin lifted and both irises cast up with the eyes' gaze:'up' preset, set off by almond lids and soft lips."
     },
     {
       "id": "parametric-enclosure",

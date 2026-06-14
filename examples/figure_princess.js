@@ -38,7 +38,7 @@ const face = F.face.assemble(head, rig, {
   ears: false,      // hair + crown cover the sides
   brows: {},
 });
-const eyes = F.face.eyes(rig, { radius: r.head * 0.145, lids: 'almond' }); // iris style: labels eyes/iris/pupil itself
+const eyes = F.face.eyes(rig, { radius: r.head * 0.145, lids: 'almond', gaze: 'left' }); // iris + a demure glance to her left
 const lips = F.face.mouthAccents(rig, { style: 'lips', width: r.head * 0.32, smirk: 0.08 });
 
 // 3. SKIN — both hands open (right reads as waving palm, left natural).
