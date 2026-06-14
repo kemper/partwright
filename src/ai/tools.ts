@@ -18,6 +18,7 @@ import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
 import { RENDER_VIEW_MODES, EDGE_MODES } from '../renderer/multiview';
 import { getRenderBudget } from './settings';
+import { assetPath } from '../deployment';
 import { applyLiteralPatch, applyPatches } from './patch';
 
 export interface ToolDefinition {
@@ -1584,7 +1585,7 @@ async function readSubdoc(name: string): Promise<{ content: string; isError: boo
     return { content: `Unknown subdoc "${name}". Valid names: ${Array.from(SUBDOC_NAMES).join(', ')}.`, isError: true };
   }
   try {
-    const res = await fetch(`/ai/${name}.md`, { cache: 'force-cache' });
+    const res = await fetch(assetPath(`/ai/${name}.md`), { cache: 'force-cache' });
     if (!res.ok) return { content: `Failed to fetch /ai/${name}.md: ${res.status} ${res.statusText}`, isError: true };
     const text = await res.text();
     return { content: text, isError: false };

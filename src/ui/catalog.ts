@@ -3,6 +3,7 @@
 // embedded thumbnail (when present) and imports the session on click.
 
 import type { ExportedSession } from '../storage/sessionManager';
+import { assetPath } from '../deployment';
 import { partwrightMarkSvg } from './brand';
 import { languageBadge } from './languageBadge';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
@@ -134,7 +135,7 @@ export async function createCatalogPage(
   // shows a placeholder tile rather than blocking the whole page.
   let manifest: CatalogManifest;
   try {
-    const res = await fetch('/catalog/manifest.json', { cache: 'no-cache' });
+    const res = await fetch(assetPath('/catalog/manifest.json'), { cache: 'no-cache' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     manifest = await res.json() as CatalogManifest;
   } catch (e) {

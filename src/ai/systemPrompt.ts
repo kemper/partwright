@@ -7,6 +7,7 @@
 import { MAX_ITERATIONS, MAX_SPEND, activeModel, type ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
 import { loadQualitySettings, getDefaultCircularSegments, QUALITY_OPTIONS } from '../geometry/qualitySettings';
+import { assetPath } from '../deployment';
 
 let aiMdCache: string | null = null;
 let aiMdPromise: Promise<string> | null = null;
@@ -106,7 +107,7 @@ Current Partwright API surface and conventions follow.
 export function loadAiMd(): Promise<string> {
   if (aiMdCache !== null) return Promise.resolve(aiMdCache);
   if (aiMdPromise) return aiMdPromise;
-  aiMdPromise = fetch('/ai.md')
+  aiMdPromise = fetch(assetPath('/ai.md'))
     .then(r => {
       if (!r.ok) throw new Error(`/ai.md HTTP ${r.status}`);
       return r.text();
