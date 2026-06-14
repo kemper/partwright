@@ -524,6 +524,14 @@ function buildRig(rawOpts: unknown): Rig {
     waist: hu(0.492) * gm.waist,
     upperArm: hu(0.204), lowerArm: hu(0.168), hand: hu(0.252),
     upperLeg: hu(0.288), lowerLeg: hu(0.216), foot: hu(0.240),
+    // Foot LENGTH is a stature proportion — like the limb lengths (`H * …`)
+    // below, NOT a head-unit girth: anthropometric foot length ≈ 0.15·stature
+    // and is fairly stable across builds, so it scales with H, not the head.
+    // (The mined anthropometry covers girth by sex/age/weight, not segment
+    // length, so there is no per-demographic foot table — this is the canon.)
+    // `r.foot` (above) still drives foot WIDTH/HEIGHT; this drives heel→toe,
+    // weighted into the forefoot (buildFeet keeps the heel a shallow bump).
+    footLen: H * 0.15,
   };
 
   // --- Arm FK ------------------------------------------------------------
@@ -1182,7 +1190,7 @@ function footSoleZ(rig: Rig, ankle: Vec3): number {
  *  Single source of truth for the footprint + ground plane that `buildFeet`,
  *  `buildFootwear` and `buildBase` (and `figure.standOn`) all read. */
 function makeSoleFrame(ankle: Vec3, heading: Vec3, r: Record<string, number>): SoleFrame {
-  const footLen = r.foot * 2.4;
+  const footLen = r.footLen;                      // stature-based heel→toe length
   const soleCenterZ = ankle[2] - r.foot;          // == footSoleZ
   // The bare foot's real underside sits ~0.79·foot below the sole centre (the
   // sole⊔instep⊔ankle smoothUnion bulges well past the analytic instep). groundZ
@@ -1204,31 +1212,126 @@ function makeSoleFrame(ankle: Vec3, heading: Vec3, r: Record<string, number>): S
   };
 }
 
-function buildFeet(sdf: SdfApi, rig: Rig): Node {
+function buildFeet(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'feet(opts)');
+  assertNoUnknownKeys(o, ['toes'], 'feet(opts)');
+  if (o.toes !== undefined && typeof o.toes !== 'boolean') throw new ValidationError('feet.toes must be a boolean');
+  // Toes are opt-in (default: a smooth, realistic toe-box). When on, five toes
+  // form a scalloped toe row across the forefoot, big toe on the medial side
+  // tapering to the pinky — mirroring sculpted hands. The toes are finer than
+  // the recommended 0.4–0.6 figure grid, so pair `toes: true` with
+  // `detail: F.footDetail(rig)` or they alias away (exactly like handDetail).
+  const toesOn = o.toes === true;
   const j = rig.joints, r = rig.r;
+
   function foot(A: Vec3, s: SoleFrame, side: number): Node {
     const footLen = s.length;
     const fwd = s.heading;
-    const sz = footSoleZ(rig, A);                 // sole capsule centre
-    // Toe forward along the foot heading (default −Y, yawed by hip turnout),
-    // heel back, ankle ~40% from the heel so the foot sits UNDER the body
-    // instead of jutting forward (which reads as leaning back). The toe gets a
-    // small outward (`side`·lateral) splay across the heading.
-    const lat: Vec3 = [-fwd[1], fwd[0], 0];        // heading yawed +90° in XY
-    const onGround = (p: Vec3): Vec3 => [p[0], p[1], sz];
-    const toe = onGround(add3(A, add3(scale3(fwd, footLen * 0.62), scale3(lat, side * r.foot * 0.12))));
-    const heel = onGround(add3(A, scale3(fwd, -footLen * 0.38)));
-    const instepC = onGround(add3(A, scale3(fwd, footLen * 0.35)));
-    const sole = sdf.capsule(heel, toe, r.foot * 0.62);
-    const instep = sdf.ellipsoid(r.foot * 0.8, footLen * 0.5, r.foot * 0.8)
-      .translate([instepC[0], instepC[1], sz + r.foot * 0.15]);
-    // A short ankle column bridges the (possibly elevated) ankle to the sole so
-    // the foot stays welded to the leg in any pose.
-    const ankleCol = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.lowerLeg * 0.8);
-    return sole.smoothUnion(instep, r.foot * 0.6).smoothUnion(ankleCol, r.foot * 0.6);
+    const groundZ = s.groundZ;
+    // Flat sole underside, a hair above the shared ground plane so a base or
+    // footwear (both clip flat at groundZ) still fully encloses the bare foot.
+    const bottomZ = groundZ + r.foot * 0.14;
+    const yaw = Math.atan2(fwd[0], fwd[1]) / DEG;     // maps local +Y → heading
+    const hw = r.foot * 0.6;                          // sole half-width
+
+    // ── Foot mass in a LOCAL frame: origin = footprint centre on the sole,
+    //    +Y = toe, +X = lateral, +Z = up. The ankle sits at local Y −0.12·footLen
+    //    (the footprint centre is 0.12·footLen ahead of it). Each mass is built
+    //    crossing z = 0 and the whole foot is flat-clipped there, so the sole is
+    //    genuinely FLAT (heel-to-toe) instead of the old rounded club bottom.
+    //    The foot's stature-scaled LENGTH lives in the FOREFOOT/TOES, ahead of
+    //    the ankle; the heel behind the ankle stays a short, shallow bump (sized
+    //    off the foot WIDTH, not footLen) so lengthening never grows the heel.
+    const ankleY = -footLen * 0.12;                  // ankle's local Y
+    const instepH = r.foot * 0.74;                   // instep crown height
+    // Instep/arch dome — the high midfoot, seated over the ankle and reaching
+    // FORWARD to the ball. Its rear is pinned near the ankle (so no long heel);
+    // its forward span carries the length.
+    const arch = sdf.ellipsoid(hw, footLen * 0.3, instepH)
+      .translate([0, ankleY + footLen * 0.16, instepH * 0.12]);
+    // Forefoot / ball of the foot: a flat, lower rounded pad. When toes are on
+    // it stops at the ball (≈0.4·footLen) and the toes complete the length; when
+    // off it runs out to a smooth, rounded toe box (≈0.49·footLen).
+    const foreH = r.foot * 0.42;
+    const foreFront = toesOn ? footLen * 0.4 : footLen * 0.49;
+    const foreCY = (foreFront + footLen * 0.06) / 2; // back of pad ≈ arch front
+    const foreLY = foreFront - footLen * 0.06;
+    const fore = sdf.roundedBox([hw * 1.92, foreLY, foreH * 1.8], Math.min(hw * 0.5, foreH * 0.85))
+      .translate([0, foreCY, foreH * 0.55]);
+    // Heel: a SHALLOW rounded bump just behind the ankle — sized off the foot
+    // WIDTH (r.foot), NOT footLen, so a longer foot keeps the same short heel
+    // and puts its extra length forward. (Per direct feedback: shallow heel,
+    // extend the front.)
+    const heelH = r.foot * 0.54;
+    const heel = sdf.ellipsoid(hw * 0.9, r.foot * 0.9, heelH)
+      .translate([0, ankleY - r.foot * 0.05, heelH * 0.1]);
+    let local = arch.smoothUnion(fore, r.foot * 0.5).smoothUnion(heel, r.foot * 0.5);
+
+    if (toesOn) {
+      // Five toes forming a SCALLOPED toe row — stylised figurine look.
+      // Big toe on the MEDIAL side (−X for left foot, +X for right).
+      //
+      // Each toe capsule lies roughly FLAT along the foot's plane — emerging
+      // from the front of the forefoot pad and pointing forward (and a hair
+      // DOWN toward the tip, the way real toes rest toward the ground), NOT
+      // upturned. Base and tip sit at a similar height (the lower-middle of the
+      // pad) so the toe row continues the foot's surface instead of curling up.
+      //
+      // k = tr × 0.42: bridges the base-to-forefoot seam while inter-toe
+      // valleys (adjacent centres ~1.75× mean radius apart) remain visible.
+      const toeRootY = foreFront * 0.72;             // base: inside forefoot, well back
+      const toeTipY  = foreFront * 1.10;             // tip: 10% past ball front
+      const toeBaseZ = foreH * 0.6;                  // base: lower-middle of the pad
+      const toeTipZ  = foreH * 0.46;                 // tip: a hair lower → rests toward ground
+      const medialX = -side;
+      const rads = [0.192, 0.174, 0.158, 0.143, 0.124];                        // × r.foot
+      const xs = [0.88, 0.44, 0.0, -0.44, -0.88].map((f) => medialX * hw * f);
+      const yArc = [0.94, 0.98, 1.0, 0.98, 0.93];
+      rads.forEach((rad, i) => {
+        const tr = r.foot * rad;
+        const base: Vec3 = [xs[i], toeRootY * yArc[i], toeBaseZ];
+        const tip: Vec3  = [xs[i] + medialX * tr * 0.04, toeTipY * yArc[i], toeTipZ];
+        local = local.smoothUnion(sdf.capsule(base, tip, tr), tr * 0.42);
+      });
+    }
+
+    // Place the local foot into the world: yaw to the heading, drop the sole on
+    // the ground.
+    const world = local.rotate([0, 0, yaw]).translate([s.point[0], s.point[1], bottomZ]);
+    // A short ankle column bridges the (possibly elevated) ankle to the foot so
+    // it stays welded to the leg in any pose.
+    const ankleCol = sdf.capsule(A, [A[0], A[1], bottomZ + instepH * 0.9], r.lowerLeg * 0.8);
+    const welded = world.smoothUnion(ankleCol, r.foot * 0.5);
+    // Flat-clip the bottom LAST so the sole is a true ground plane with no
+    // smoothUnion blend-halo dipping below it (which would breach groundZ).
+    const big = footLen * 8;
+    const floor = sdf.box([big, big, big])
+      .translate([s.point[0], s.point[1], bottomZ + big / 2]);   // keep z ≥ bottomZ
+    return welded.intersect(floor);
   }
   return foot(j.footL as Vec3, rig.sole.L, +1)
     .union(foot(j.footR as Vec3, rig.sole.R, -1));
+}
+
+/** Detail-region spheres over both feet — required when `F.feet(rig, { toes:
+ *  true })` is used, since the toes are finer than the figure grid (mirrors
+ *  {@link handDetail}): `build({ detail: [...F.faceDetail(rig), ...F.footDetail(rig)] })`. */
+function footDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
+  const o = obj(opts, 'footDetail(opts)');
+  assertNoUnknownKeys(o, ['radius', 'edgeLength'], 'footDetail(opts)');
+  const r = rig.r;
+  const radius = num(o.radius, r.foot * 2.2, 'footDetail.radius', 1e-3);
+  const edgeLength = num(o.edgeLength, Math.max(r.foot * 0.07, 0.08), 'footDetail.edgeLength', 1e-4);
+  // Centre on the forefoot (where the toes live), forward of the ankle.
+  const center = (ankle: Vec3, sole: SoleFrame): Vec3 => [
+    ankle[0] + sole.heading[0] * sole.length * 0.42,
+    ankle[1] + sole.heading[1] * sole.length * 0.42,
+    sole.groundZ + r.foot * 0.4,
+  ];
+  return [
+    { center: center(rig.joints.footL as Vec3, rig.sole.L), radius, edgeLength },
+    { center: center(rig.joints.footR as Vec3, rig.sole.R), radius, edgeLength },
+  ];
 }
 
 /** Shoes and boots — footwear that wraps each foot, following the foot heading
@@ -2829,6 +2932,10 @@ export interface FigureNamespace {
   /** Detail spheres over both hands — required for sculpted fingers:
    *  `build({ detail: [...F.faceDetail(rig), ...F.handDetail(rig)] })`. */
   handDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
+  /** Detail spheres over both feet — required for sculpted toes
+   *  (`F.feet(rig, { toes: true })`):
+   *  `build({ detail: [...F.faceDetail(rig), ...F.footDetail(rig)] })`. */
+  footDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
   face: {
     /** Eyeballs (self-labelled `eyes`/`iris`/`pupil` for the default `'iris'`
      *  style, or plain spheres for `'solid'`). Pass `lids` to add two wrapping
@@ -3051,7 +3158,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     arms: (rig) => buildArms(sdf, assertRig(rig, 'arms(rig)')),
     hands: (rig, opts) => buildHands(sdf, assertRig(rig, 'hands(rig)'), opts),
     legs: (rig) => buildLegs(sdf, assertRig(rig, 'legs(rig)')),
-    feet: (rig) => buildFeet(sdf, assertRig(rig, 'feet(rig)')),
+    feet: (rig, opts) => buildFeet(sdf, assertRig(rig, 'feet(rig)'), opts),
     head: (rig, opts) => buildHead(sdf, assertRig(rig, 'head(rig)'), opts),
     base: (rig, opts) => buildBase(sdf, assertRig(rig, 'base(rig)'), opts),
     ground: (rig, opts) => groundRig(assertRig(rig, 'ground(rig)'), opts),
@@ -3065,6 +3172,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     poseProbe: (rig) => poseProbe(assertRig(rig, 'poseProbe(rig)')),
     faceDetail: (rig, opts) => faceDetail(assertRig(rig, 'faceDetail(rig)'), opts),
     handDetail: (rig, opts) => handDetail(assertRig(rig, 'handDetail(rig)'), opts),
+    footDetail: (rig, opts) => footDetail(assertRig(rig, 'footDetail(rig)'), opts),
     face: {
       eyes: (rig, opts) => buildEyes(sdf, assertRig(rig, 'face.eyes(rig)'), opts),
       nose: (rig, opts) => buildNose(sdf, assertRig(rig, 'face.nose(rig)'), opts),
@@ -3084,4 +3192,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };

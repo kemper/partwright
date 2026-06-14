@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildTorso, buildNipples, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildNipples, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -1526,6 +1526,83 @@ describe('figure handDetail — detail-region helper', () => {
     expect(o.radius).toBe(9);
     expect(o.edgeLength).toBe(0.11);
     expect(() => handDetail(rig, { density: 1 })).toThrow();
+  });
+});
+
+describe('figure feet — flat sole and optional toes', () => {
+  const rig = buildRig({ height: 60, headsTall: 6 });
+
+  it('welds to both ankle joints (smooth and toed)', () => {
+    for (const opts of [undefined, { toes: true }]) {
+      const feet = buildFeet(api, rig, opts) as SdfNode;
+      for (const side of ['L', 'R'] as const) {
+        const A = rig.joints[`foot${side}`];
+        expect(feet.evaluate(A[0], A[1], A[2])).toBeLessThan(0); // ankle inside the foot mass
+      }
+    }
+  });
+
+  it('has a flat sole: air just below the underside, solid skin above (smooth and toed)', () => {
+    const s = rig.sole.L;
+    for (const opts of [undefined, { toes: true }]) {
+      const feet = buildFeet(api, rig, opts) as SdfNode;
+      expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + 0.02)).toBeGreaterThan(0); // below the flat sole
+      expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + rig.r.foot * 0.5)).toBeLessThan(0); // inside the foot
+    }
+  });
+
+  it('keeps toes within the footprint envelope (footwear coverage stays valid)', () => {
+    // Footwear sizes its coverage to the sole-frame footprint. The true toe-tip
+    // surface must stay inside that envelope so a worn shoe still covers it.
+    // bounds() is a loose conservative AABB here, so probe the real surface with
+    // evaluate: well past the footprint toe (0.6·footLen forward of the centre,
+    // at toe height) the bare foot must be AIR — a runaway toe would read solid.
+    const s = rig.sole.L;
+    const footLen = s.length;
+    const toed = buildFeet(api, rig, { toes: true }) as SdfNode;
+    const px = s.point[0] + s.heading[0] * footLen * 0.6;
+    const py = s.point[1] + s.heading[1] * footLen * 0.6;
+    expect(toed.evaluate(px, py, s.groundZ + rig.r.foot * 0.4)).toBeGreaterThan(0); // outside the envelope
+    // …and the toes don't push the foot materially past the smooth toe box.
+    const smooth = (buildFeet(api, rig) as SdfNode).bounds();
+    expect(toed.bounds().min[1]).toBeGreaterThan(smooth.min[1] - rig.r.foot * 0.4);
+  });
+
+  it('rejects unknown keys and non-boolean toes', () => {
+    expect(() => buildFeet(api, rig, { toe: true })).toThrow();      // typo'd key
+    expect(() => buildFeet(api, rig, { toes: 'yes' })).toThrow(/toes/); // must be a boolean
+    expect(() => buildFeet(api, rig, { toes: false })).not.toThrow();
+  });
+
+  it('foot length is a realistic stature proportion (≈0.15·height), long not stubby', () => {
+    // Foot length is a SEGMENT length → scales with stature (like the limbs),
+    // not head-unit girth. Anthropometric foot length ≈ 0.15·stature. The old
+    // foot was r.foot·2.4 ≈ 0.08–0.10·stature — about half real and looked short.
+    const r2 = buildRig({ height: 60, headsTall: 7.5 });
+    expect(r2.sole.L.length).toBeCloseTo(r2.opts.height * 0.15, 5);
+    expect(r2.sole.R.length).toBeCloseTo(r2.opts.height * 0.15, 5);
+    // The foot reads as a real foot: clearly longer than it is wide.
+    expect(r2.sole.L.length).toBeGreaterThan(r2.sole.L.width * 2.5);
+  });
+});
+
+describe('figure footDetail — detail-region helper', () => {
+  const rig = buildRig({ height: 60, headsTall: 6 });
+
+  it('returns one sphere per foot over the forefoot, finer than the figure grid', () => {
+    const [L, R] = footDetail(rig);
+    expect(L.edgeLength).toBeLessThan(0.4);            // finer than the 0.4–0.6 figure grid
+    expect(L.radius).toBeGreaterThan(rig.r.foot);      // covers the toe row
+    expect(L.center[2]).toBeLessThan(rig.joints.footL[2]); // below the ankle, near the ground
+    expect(R.center[2]).toBeLessThan(rig.joints.footR[2]);
+    expect(L.center[0]).toBeCloseTo(-R.center[0], 5);  // symmetric L/R
+  });
+
+  it('honours overrides and rejects unknown keys', () => {
+    const [o] = footDetail(rig, { radius: 7, edgeLength: 0.1 });
+    expect(o.radius).toBe(7);
+    expect(o.edgeLength).toBe(0.1);
+    expect(() => footDetail(rig, { density: 1 })).toThrow();
   });
 });
 

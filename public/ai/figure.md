@@ -288,7 +288,7 @@ F.neck(rig)
 F.arms(rig)                   // both arms: tapered limbs + deltoid caps
 F.hands(rig, { grip })        // grip: 'fist' | 'open' | 'relaxed' — sculpted 3-finger+thumb
 F.legs(rig)
-F.feet(rig)
+F.feet(rig, { toes })         // flat, real-foot sole; toes: true adds a sculpted toe row
 F.head(rig, { faceShape, jaw, chin, cheek })  // skull + jaw + cheeks (no features yet)
 F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
 ```
@@ -358,6 +358,26 @@ Pass `fingers: false` for the legacy mitten/paddle hands (no detail region
 needed). The hand frame derives from the rig (fingers extend along the
 forearm, palm faces the elbow-curl direction), so posed arms keep correct
 hands automatically.
+
+**Feet are flat and real-foot shaped, with optional toes.** `F.feet(rig)`
+builds a low, flat-soled foot (instep crown, ball, rounded heel) that sits flat
+on the ground in any pose — not the old rounded blob. Foot **length** is a
+realistic stature proportion (≈0.15·height, like the limb lengths), so feet read
+long and natural rather than stubby; footwear tracks the same footprint. Pass `{ toes: true }` to
+add a sculpted toe row (big toe on the medial side tapering to the pinky). Toes
+are finer than the figure grid, so — exactly like sculpted hands — pair them
+with the foot detail region or they alias away:
+
+```js
+F.feet(rig, { toes: true })
+// …then in the build:
+.build({ edgeLength: 0.5, detail: [...F.faceDetail(rig), ...F.footDetail(rig)] })
+```
+
+Toes are a barefoot detail: omit them (the smooth default) when the figure wears
+`F.clothing.shoes`/`boots`, which wrap the foot with their own coverage. The
+foot heading follows `leg*.twist` turnout, so posed/turned-out legs keep their
+feet pointed correctly.
 
 **`F.base` auto-sizes to the pose.** It widens to cover the stance footprint and
 rises to meet the *lowest* foot, so a wide or lunging stance still lands one
