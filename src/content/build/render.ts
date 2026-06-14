@@ -16,6 +16,8 @@ import {
   deriveCharacteristics,
   printTestedBadge,
   CATALOG_LANGUAGE_ORDER,
+  CATALOG_THEMES,
+  themeCounts,
   type CategoryId,
   type CatalogLanguage,
   type CatalogManifestEntry,
@@ -268,7 +270,8 @@ function catalogTileHtml(tile: BuiltTile): string {
   const versions = tile.versionCount > 0
     ? `<span>${tile.versionCount} version${tile.versionCount !== 1 ? 's' : ''}</span>`
     : '';
-  const haystack = [tile.entry.name, tile.entry.description ?? '', tile.entry.id, badge.label, print.search].join(' ').toLowerCase();
+  const tags = tile.entry.tags ?? [];
+  const haystack = [tile.entry.name, tile.entry.description ?? '', tile.entry.id, badge.label, print.search, ...tags].join(' ').toLowerCase();
   // Thumbnail src is a content-hashed PNG emitted at build time (see
   // prepareCatalogThumbnails); the browser lazy-loads it natively. Tiles with no
   // thumbnail keep just the placeholder glyph.
@@ -276,7 +279,7 @@ function catalogTileHtml(tile: BuiltTile): string {
   const thumbImg = thumbSrc
     ? `<img src="${escAttr(thumbSrc)}" alt="${escAttr(tile.entry.name)}" loading="lazy" decoding="async" class="absolute inset-0 w-full h-full object-contain" />`
     : '';
-  return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-catalog-tile data-language="${escAttr(tile.language)}" data-search="${escAttr(haystack)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
+  return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-catalog-tile data-language="${escAttr(tile.language)}" data-themes="${escAttr(tags.join(' '))}" data-search="${escAttr(haystack)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
   <div class="relative w-full aspect-square bg-zinc-900 flex items-center justify-center overflow-hidden">
     <span class="text-3xl text-zinc-700">&#11041;</span>
     ${thumbImg}
@@ -337,24 +340,38 @@ function catalogBody(): string {
   return `<div>${intro}${catalogControlsHtml(tiles)}${sections}${empty}${jsonLd}</div>`;
 }
 
-/** Search box + language filter pills for the static page, tagged with the
- *  shared `data-catalog-*` hooks. catalogEntry.ts wires the behavior. */
+/** Search box + language and theme filter pills for the static page, tagged
+ *  with the shared `data-catalog-*` hooks. catalogEntry.ts wires the behavior.
+ *  Pills are unselected by default — an empty selection means "show all". */
 function catalogControlsHtml(tiles: BuiltTile[]): string {
   const langCounts = new Map<CatalogLanguage, number>();
   for (const t of tiles) langCounts.set(t.language, (langCounts.get(t.language) ?? 0) + 1);
   const present = CATALOG_LANGUAGE_ORDER.filter((l) => langCounts.has(l));
-  const pills = present.length > 1
+  const langPills = present.length > 1
     ? `<div class="flex items-center gap-2 flex-wrap">
     <span class="text-xs text-zinc-500 mr-1">Language:</span>
     ${present.map((l) => {
       const b = languageBadge(l);
-      return `<button type="button" data-catalog-pill="${escAttr(l)}" aria-pressed="true" class="px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 ${b.classes}" title="Hide ${escAttr(b.label)} models">${esc(b.label)} ${langCounts.get(l) ?? 0}</button>`;
+      return `<button type="button" data-catalog-pill="${escAttr(l)}" aria-pressed="false" class="px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 opacity-60 ${b.classes}" title="Filter to ${escAttr(b.label)} models">${esc(b.label)} ${langCounts.get(l) ?? 0}</button>`;
     }).join('')}
   </div>`
     : '';
+
+  const tCounts = themeCounts(tiles.map((t) => t.entry));
+  const presentThemes = CATALOG_THEMES.filter((th) => tCounts.has(th.id));
+  const themePills = presentThemes.length > 0
+    ? `<div class="flex items-center gap-2 flex-wrap">
+    <span class="text-xs text-zinc-500 mr-1">Type:</span>
+    ${presentThemes.map((th) =>
+      `<button type="button" data-catalog-theme="${escAttr(th.id)}" aria-pressed="false" class="px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 border-zinc-600 text-zinc-300 opacity-60" title="Filter to ${escAttr(th.label)}">${esc(th.label)} ${tCounts.get(th.id) ?? 0}</button>`,
+    ).join('')}
+  </div>`
+    : '';
+
   return `<div class="mb-8 flex flex-col gap-3">
   <input type="search" data-catalog-search placeholder="Search the catalog…" aria-label="Search the catalog" class="w-full max-w-md bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-zinc-500 transition-colors" />
-  ${pills}
+  ${langPills}
+  ${themePills}
 </div>`;
 }
 
