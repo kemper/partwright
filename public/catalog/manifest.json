@@ -792,6 +792,41 @@
       "description": "A funk dancer mid-groove with a big curly afro — showing off the figure rig's hair system, where the 'afro' style and its curl relief are real printable geometry that tracks the cocked head."
     },
     {
+      "id": "sumo-wrestler",
+      "name": "Sumo Wrestler",
+      "file": "sumo.partwright.json",
+      "language": "manifold-js",
+      "description": "A sumo wrestler in a wide pre-bout crouch, arms spread — the figure rig's weight axis (maxed) plus a stocky male build give the heavy belly and bulk, finished with a navy mawashi and a topknot."
+    },
+    {
+      "id": "toddler-teddy",
+      "name": "Toddler with Teddy",
+      "file": "toddler.partwright.json",
+      "language": "manifold-js",
+      "description": "A chubby, big-headed toddler in a red romper cradling a teddy bear — the figure rig's young age axis (and a low headsTall) for the adorable baby proportions."
+    },
+    {
+      "id": "grandfather-cane",
+      "name": "Grandfather with Cane",
+      "file": "grandpa.partwright.json",
+      "language": "manifold-js",
+      "description": "An older man in a long cardigan leaning on a cane, with a gentle stoop — the figure rig's old age axis plus a lean build, the cane fused to the base as one printable piece."
+    },
+    {
+      "id": "yoga-tree-pose",
+      "name": "Yoga Tree Pose",
+      "file": "yoga.partwright.json",
+      "language": "manifold-js",
+      "description": "A woman balancing in vrikshasana (tree pose) — one foot tucked to the standing thigh, palms together overhead — in a sports bra and leggings, showing the figure rig's female silhouette."
+    },
+    {
+      "id": "opera-diva",
+      "name": "Opera Diva",
+      "file": "diva.partwright.json",
+      "language": "manifold-js",
+      "description": "A glamorous opera singer mid-aria in a floor-length gown, one arm flung overhead — the figure rig's female axis with added weight for a fuller figure, plus painted lips and an updo."
+    },
+    {
       "id": "cornrows-runner",
       "name": "Cornrows Runner",
       "file": "cornrows_runner.partwright.json",
