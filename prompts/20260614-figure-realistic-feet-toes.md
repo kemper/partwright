@@ -50,3 +50,12 @@ Redesigned `buildFeet` and added opt-in toes, mirroring the sculpted-hands path.
 Verified each step headlessly against the real engine with `model:preview`
 (top-down + 3/4 + underside angles, high-res crops). Tests: new feet/footDetail
 unit coverage; existing sole-frame and footwear-enclosure invariants still pass.
+
+## Follow-up (review hardening)
+
+work-reviewer (clean: 0 blocking, 0 should-fix) raised two test nits. Applied both:
+- The flat-sole test now exercises BOTH the smooth default and the toed foot
+  (the default flat sole is the headline feature).
+- The footprint-envelope test now probes the true toe-tip SURFACE via `evaluate`
+  (air at 0.6·footLen forward) instead of relying only on the loose conservative
+  `bounds()` AABB, pinning the absolute envelope the footwear coverage depends on.

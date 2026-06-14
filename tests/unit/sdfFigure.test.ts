@@ -1276,20 +1276,30 @@ describe('figure feet — flat sole and optional toes', () => {
     }
   });
 
-  it('has a flat sole: air just below the underside, solid skin above', () => {
-    const feet = buildFeet(api, rig, { toes: true }) as SdfNode;
+  it('has a flat sole: air just below the underside, solid skin above (smooth and toed)', () => {
     const s = rig.sole.L;
-    expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + 0.02)).toBeGreaterThan(0); // below the flat sole
-    expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + rig.r.foot * 0.5)).toBeLessThan(0); // inside the foot
+    for (const opts of [undefined, { toes: true }]) {
+      const feet = buildFeet(api, rig, opts) as SdfNode;
+      expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + 0.02)).toBeGreaterThan(0); // below the flat sole
+      expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + rig.r.foot * 0.5)).toBeLessThan(0); // inside the foot
+    }
   });
 
   it('keeps toes within the footprint envelope (footwear coverage stays valid)', () => {
-    // Toes must not push the foot materially past the smooth toe box, so a worn
-    // shoe (sized to the same footprint) still covers it. Default heading is −Y,
-    // so the toe direction is the foot's min-Y extent.
+    // Footwear sizes its coverage to the sole-frame footprint. The true toe-tip
+    // surface must stay inside that envelope so a worn shoe still covers it.
+    // bounds() is a loose conservative AABB here, so probe the real surface with
+    // evaluate: well past the footprint toe (0.6·footLen forward of the centre,
+    // at toe height) the bare foot must be AIR — a runaway toe would read solid.
+    const s = rig.sole.L;
+    const footLen = s.length;
+    const toed = buildFeet(api, rig, { toes: true }) as SdfNode;
+    const px = s.point[0] + s.heading[0] * footLen * 0.6;
+    const py = s.point[1] + s.heading[1] * footLen * 0.6;
+    expect(toed.evaluate(px, py, s.groundZ + rig.r.foot * 0.4)).toBeGreaterThan(0); // outside the envelope
+    // …and the toes don't push the foot materially past the smooth toe box.
     const smooth = (buildFeet(api, rig) as SdfNode).bounds();
-    const toed = (buildFeet(api, rig, { toes: true }) as SdfNode).bounds();
-    expect(toed.min[1]).toBeGreaterThan(smooth.min[1] - rig.r.foot * 0.4);
+    expect(toed.bounds().min[1]).toBeGreaterThan(smooth.min[1] - rig.r.foot * 0.4);
   });
 
   it('rejects unknown keys and non-boolean toes', () => {
