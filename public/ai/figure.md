@@ -484,7 +484,7 @@ and squints, not just the presets.
 | `'none'` (default) | — | bare round eyeball — unchanged |
 | `'upper'` | `{0.30, 0.06}` | alert, open eye with a defined upper lid |
 | `'hooded'` | `{0.46, 0.06}` | heavier upper hood |
-| `'half'` | `{0.50, 0.20}` | sleepy / half-closed |
+| `'half'` | `{0.40, 0.12}` | sleepy / half-closed |
 | `'closed'` | `{0.56, 0.50}` | lids meet → shut |
 | `'almond'` | `{0.30, 0.20}` | both lids visible, almond opening |
 | `'tapered'` | `{0.38, 0.28}` | narrower, more drawn-out |
