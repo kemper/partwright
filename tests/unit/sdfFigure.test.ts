@@ -433,7 +433,7 @@ describe('figure mouth — styles', () => {
 describe('figure eyes — styles and labels', () => {
   const rig = buildRig({ height: 60, headsTall: 5 });
   const labelsOf = (node: unknown): string[] =>
-    partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n).sort();
+    [...new Set(partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n))].sort();
 
   it("iris style (the default) pre-labels eyes / iris / pupil regions", () => {
     expect(labelsOf(buildEyes(api, rig))).toEqual(['eyes', 'iris', 'pupil']);
@@ -485,7 +485,7 @@ describe('figure eyes — styles and labels', () => {
 describe('figure eyes — eyelids', () => {
   const rig = buildRig({ height: 60, headsTall: 5 });
   const labelsOf = (node: unknown): string[] =>
-    partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n).sort();
+    [...new Set(partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n))].sort();
 
   it("no lids by default — bare eyeball, no 'lids' region", () => {
     expect(labelsOf(buildEyes(api, rig))).not.toContain('lids');
@@ -813,7 +813,7 @@ describe('figure ground — stand feet on one plane', () => {
 describe('figure mouthAccents — paintable teeth and lips', () => {
   const rig = buildRig({ height: 60, headsTall: 5 });
   const labelsOf = (node: unknown): string[] =>
-    partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n).sort();
+    [...new Set(partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n))].sort();
 
   it('open style yields teeth + lips regions by default', () => {
     expect(labelsOf(buildMouthAccents(api, rig, { style: 'open', open: 0.6 })))
@@ -1145,18 +1145,21 @@ describe('figure faceDetail — detail-region helper', () => {
     expect(adult.edgeLength).toBeLessThan(adult.radius * 0.1);
   });
 
-  it('adds an extra-fine sphere over each eyeball front so the iris/pupil edges mesh smoothly', () => {
+  it('adds nested eye detail spheres (eyelid + finer iris/pupil) so the eye meshes smoothly', () => {
     const regions = faceDetail(rig);
     const [head] = regions;
-    // Two eye detail spheres, finer than the head grid, each near an eye anchor.
+    // Two spheres PER eye (a medium eyelid/eyeball one + a finer iris/pupil one),
+    // all finer than the head grid and near an eye anchor → four in total.
     const nearEye = (c: number[], a: number[]): boolean =>
       Math.hypot(c[0] - a[0], c[1] - a[1], c[2] - a[2]) < rig.r.head * 0.4;
     const eyeRegions = regions.filter((d) => d.edgeLength < head.edgeLength
       && (nearEye(d.center, rig.face.eyeL) || nearEye(d.center, rig.face.eyeR)));
-    expect(eyeRegions.length).toBe(2);
-    // Finer than the mouth groove (small circular features need it most).
-    for (const e of eyeRegions) expect(e.edgeLength).toBeLessThanOrEqual(rig.r.head * 0.02);
-    expect(() => faceDetail(rig, { eyeEdgeLength: 0.03 })).not.toThrow();
+    expect(eyeRegions.length).toBe(4);
+    // All finer than the head grid; the finest (iris/pupil) is finer still.
+    for (const e of eyeRegions) expect(e.edgeLength).toBeLessThanOrEqual(rig.r.head * 0.05 + 0.03);
+    const finest = Math.min(...eyeRegions.map((e) => e.edgeLength));
+    expect(finest).toBeLessThanOrEqual(rig.r.head * 0.02);
+    expect(() => faceDetail(rig, { eyeEdgeLength: 0.03, irisEdgeLength: 0.015 })).not.toThrow();
   });
 });
 
@@ -1246,7 +1249,7 @@ describe('figure face.assemble — eyes default OFF', () => {
   const F = createFigureNamespace(api);
   const rig = buildRig({ height: 60, headsTall: 5 });
   const labelsOf = (node: unknown): string[] =>
-    partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n).sort();
+    [...new Set(partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n))].sort();
 
   it('omits eyes by default (so a later .label("skin") cannot flatten them)', () => {
     const face = F.face.assemble(F.head(rig), rig);
