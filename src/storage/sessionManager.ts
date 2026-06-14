@@ -64,6 +64,7 @@ import { getActiveLanguage } from '../geometry/engine';
 import { effectiveVersionLanguage, asLanguage } from './languageFallback';
 import { buildInfo } from '../buildInfo';
 import { appVersionCompatibility } from './appVersionCompat';
+import { appPath } from '../deployment';
 
 /**
  * Current schema version for `.partwright.json` exports.
@@ -539,7 +540,7 @@ export function getState(): SessionState {
 
 function updateURL() {
   const params = new URLSearchParams(window.location.search);
-  const basePath = '/editor';
+  const basePath = appPath('/editor');
   if (currentState.session) {
     params.set('session', currentState.session.id);
     // Only pin the part in the URL when the session has more than one — a
@@ -1356,13 +1357,13 @@ export async function renameVersion(versionId: string, label: string): Promise<V
 
 export function getSessionUrl(): string {
   if (!currentState.session) return window.location.href;
-  const base = window.location.origin + '/editor';
+  const base = window.location.origin + appPath('/editor');
   return `${base}?session=${currentState.session.id}`;
 }
 
 export function getGalleryUrl(): string {
   if (!currentState.session) return window.location.href;
-  const base = window.location.origin + '/editor';
+  const base = window.location.origin + appPath('/editor');
   return `${base}?session=${currentState.session.id}&gallery`;
 }
 

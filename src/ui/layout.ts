@@ -1,4 +1,5 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
+import { appPath } from '../deployment';
 import { showAdvancedSettingsModal } from './advancedSettingsModal';
 import { showAboutModal } from './aboutModal';
 import { loadSettings, saveSettings } from '../ai/settings';
@@ -722,7 +723,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     // tapped rail item actually surfaces its content.
     if (!mqDesktop.matches) setMobilePane('viewport');
 
-    const basePath = '/editor';
+    const basePath = appPath('/editor');
     const params = new URLSearchParams(window.location.search);
     // Clear every tab-owned param, then set the one this tab owns. Unrelated
     // params (e.g. `session`, `v`) are preserved. `view` is a legacy param
