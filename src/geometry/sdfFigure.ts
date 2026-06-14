@@ -933,19 +933,18 @@ function buildFeet(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       // Five toes forming a SCALLOPED toe row — stylised figurine look.
       // Big toe on the MEDIAL side (−X for left foot, +X for right).
       //
-      // Each toe capsule is oriented to emerge from the TOP-FRONT of the
-      // forefoot pad: the base sits near the forefoot centroid (Z low, Y mid)
-      // and the tip points forward AND upward (to Z = foreH × 1.10, which is
-      // above the forefoot crown so toes visibly protrude from the top surface).
-      // This avoids the "toes on the side wall" look by making them emerge
-      // from the same surface the toenails face on a real foot.
+      // Each toe capsule lies roughly FLAT along the foot's plane — emerging
+      // from the front of the forefoot pad and pointing forward (and a hair
+      // DOWN toward the tip, the way real toes rest toward the ground), NOT
+      // upturned. Base and tip sit at a similar height (the lower-middle of the
+      // pad) so the toe row continues the foot's surface instead of curling up.
       //
       // k = tr × 0.42: bridges the base-to-forefoot seam while inter-toe
       // valleys (adjacent centres ~1.75× mean radius apart) remain visible.
       const toeRootY = foreFront * 0.72;             // base: inside forefoot, well back
       const toeTipY  = foreFront * 1.10;             // tip: 10% past ball front
-      const toeBaseZ = foreH * 0.30;                 // base low: inside pad body
-      const toeTipZ  = foreH * 1.45;                 // tip AT forefoot crown height
+      const toeBaseZ = foreH * 0.6;                  // base: lower-middle of the pad
+      const toeTipZ  = foreH * 0.46;                 // tip: a hair lower → rests toward ground
       const medialX = -side;
       const rads = [0.192, 0.174, 0.158, 0.143, 0.124];                        // × r.foot
       const xs = [0.88, 0.44, 0.0, -0.44, -0.88].map((f) => medialX * hw * f);

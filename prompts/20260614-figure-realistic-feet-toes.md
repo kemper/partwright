@@ -96,3 +96,11 @@ the footwear-enclosure tests still pass):
 Verified the side profile: short heel under the ankle, long flat forefoot, toes
 at the front. Footwear coverage unaffected (bare foot now strictly inside the
 shoe envelope).
+
+## Follow-up 4 (toes were upturned)
+
+User: the toes curled UP off the foot plane. The toe capsules pointed from a low
+base (foreH·0.30) up to a tip above the forefoot crown (foreH·1.45) — a strong
+upward tilt. Flattened them: base foreH·0.6, tip foreH·0.46 (a hair lower), so
+the toe row lies roughly flat along the foot's plane, pointing forward and
+resting slightly toward the ground like real toes — not curling up.
