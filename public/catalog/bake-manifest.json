@@ -376,7 +376,7 @@
       "source": "examples/figure_swimmer.js",
       "gates": {
         "maxGenus": null,
-        "requiredLabels": ["skin", "eyes", "iris", "pupil", "trunks", "hair", "base"]
+        "requiredLabels": ["skin", "eyes", "iris", "pupil", "areola", "trunks", "hair", "base"]
       }
     },
     "twisted-vase": {

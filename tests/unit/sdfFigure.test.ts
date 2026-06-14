@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildTorso, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildNipples, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -111,15 +111,70 @@ describe('figure torso — nipple + navel surface landmarks', () => {
     expect(b.torso.navel[2]).toBeCloseTo(a.torso.navel[2] * 2, 5);
   });
 
-  it('builds a torso with relief (opt-in) and rejects unknown options', () => {
+  it('builds a torso (navel opt-in) and rejects unknown options', () => {
     const rig = buildRig({ height: 60 });
-    expect(() => buildTorso(api, rig)).not.toThrow();                       // default: no relief
-    expect(() => buildTorso(api, rig, { nipples: true, navel: true })).not.toThrow();
+    expect(() => buildTorso(api, rig)).not.toThrow();                       // default: no navel
+    expect(() => buildTorso(api, rig, { navel: true })).not.toThrow();
     expect(() => buildTorso(api, rig, { navel: { depth: 1.2 } })).not.toThrow();
-    expect(() => buildTorso(api, rig, { nipples: { size: 0.3 } })).not.toThrow();
-    // Unknown keys throw (the figure naming policy).
-    expect(() => buildTorso(api, rig, { abs: true } as object)).toThrow();
+    // Unknown keys throw (the figure naming policy) — `nipples` is its own builder now.
+    expect(() => buildTorso(api, rig, { nipples: true } as object)).toThrow();
     expect(() => buildTorso(api, rig, { navel: { radius: 1 } } as object)).toThrow();
+  });
+});
+
+describe('figure — bust mounds + areola', () => {
+  it('bust defaults to 0 (flat) and is pre-filled for sex:female, overridable', () => {
+    expect(buildRig({}).opts.bust).toBe(0);
+    expect(buildRig({ sex: 'male' }).opts.bust).toBe(0);
+    expect(buildRig({ sex: 'female' }).opts.bust).toBeCloseTo(0.35, 6);
+    // Explicit bust overrides the sex default — works on ANY figure.
+    expect(buildRig({ sex: 'female', bust: 0 }).opts.bust).toBe(0);
+    expect(buildRig({ sex: 'male', bust: 0.8 }).opts.bust).toBeCloseTo(0.8, 6);
+    expect(buildRig({ bust: 1.2 }).opts.bust).toBeCloseTo(1.2, 6);
+    expect(() => buildRig({ bust: 3 })).toThrow();   // out of range
+  });
+
+  it('breastMounds: null when flat, present and apex-forward when bust > 0', () => {
+    const flat = buildRig({ height: 60, bust: 0 });
+    expect(breastMounds(flat.joints, flat.r, flat.opts.bust)).toBeNull();
+    const busty = buildRig({ height: 60, bust: 0.7 });
+    const m = breastMounds(busty.joints, busty.r, busty.opts.bust)!;
+    expect(m).not.toBeNull();
+    // Apexes mirror across the sagittal plane and sit in FRONT of the chest centre.
+    expect(m.apexL[0]).toBeGreaterThan(0);
+    expect(m.apexR[0]).toBeCloseTo(-m.apexL[0], 6);
+    expect(m.apexL[1]).toBeLessThan(busty.joints.chest[1]);
+    // The nipple anchors ride the mound apex when there's a bust.
+    expect(busty.torso.nippleL).toEqual(m.apexL);
+  });
+
+  it('a larger bust projects the nipples further forward', () => {
+    const small = buildRig({ height: 60, bust: 0.3 });
+    const full = buildRig({ height: 60, bust: 1.1 });
+    expect(full.torso.nippleL[1]).toBeLessThan(small.torso.nippleL[1]);
+  });
+
+  it('buildNipples returns a single areola-labelled region', () => {
+    const rig = buildRig({ height: 60, bust: 0.5 });
+    const node = buildNipples(api, rig) as unknown as SdfNode;
+    expect(node.labelName).toBe('areola');
+    expect(() => buildNipples(api, rig, { size: 0.4, nipple: 0.1 })).not.toThrow();
+    expect(() => buildNipples(api, rig, { areola: 1 } as object)).toThrow();   // unknown key
+  });
+
+  it('areolaColor darkens a skin hex or named tone, and is overridable in strength', () => {
+    const darker = areolaColor('#cf9163');
+    expect(darker).toMatch(/^#[0-9a-f]{6}$/);
+    // Every channel is darker than the source.
+    expect(parseInt(darker.slice(1, 3), 16)).toBeLessThan(0xcf);
+    expect(parseInt(darker.slice(3, 5), 16)).toBeLessThan(0x91);
+    expect(parseInt(darker.slice(5, 7), 16)).toBeLessThan(0x63);
+    // Accepts a curated skin name.
+    expect(areolaColor('sand')).toMatch(/^#[0-9a-f]{6}$/);
+    // A smaller factor is darker than a larger one.
+    expect(parseInt(areolaColor('#cf9163', 0.5).slice(1, 3), 16))
+      .toBeLessThan(parseInt(areolaColor('#cf9163', 0.9).slice(1, 3), 16));
+    expect(() => areolaColor('not-a-color')).toThrow();
   });
 });
 

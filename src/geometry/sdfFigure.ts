@@ -137,7 +137,7 @@ const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const LEG_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const HEAD_FIELDS = ['yaw', 'pitch', 'roll'];
 const SPINE_FIELDS = ['lean', 'turn', 'side'];
-const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'age', 'weight', 'pose'];
+const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'age', 'weight', 'bust', 'pose'];
 const POSE_FIELDS = ['arms', 'legs', 'armL', 'armR', 'legL', 'legR', 'head', 'spine'];
 
 function parseArm(v: unknown, name: string, defRaiseSide: number): JointPose {
@@ -179,6 +179,13 @@ export interface RigOptions {
    *  Widens/narrows the waist, hips, and chest (and their depth) per the mined
    *  MakeHuman weight morph. */
   weight?: number;
+  /** Bust / chest mound size, a continuous 0..2 knob (0 = flat, ~0.35 subtle,
+   *  ~0.7 medium, ~1.1 full). It is **independent of `sex`** — any figure can
+   *  carry any value. `sex:'female'` only *pre-fills* a sensible default
+   *  (≈0.35) when `bust` is omitted; pass an explicit `bust` to override on any
+   *  figure. The mound blends into the chest and the nipple/areola landmarks
+   *  ride its apex. */
+  bust?: number;
   pose?: {
     armL?: object; armR?: object; legL?: object; legR?: object;
     head?: object; spine?: object;
@@ -281,7 +288,7 @@ export interface Rig {
   face: FaceAnchors;
   /** Front-of-torso surface landmarks (nipples + navel) — see {@link TorsoAnchors}. */
   torso: TorsoAnchors;
-  opts: { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; pose: ResolvedPose };
+  opts: { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; bust: number; pose: ResolvedPose };
 }
 
 const BUILD_MUL: Record<string, number> = { slim: 0.82, average: 1, stocky: 1.22 };
@@ -406,6 +413,9 @@ function buildRig(rawOpts: unknown): Rig {
     : assertEnum(o.sex, ['neutral', 'male', 'female'] as const, 'rig.sex');
   const age = num(o.age, 25, 'rig.age', 1, 90);
   const weight = num(o.weight, 0.5, 'rig.weight', 0, 1);
+  // Bust is independent of sex; `sex:'female'` only pre-fills a default when the
+  // caller didn't set `bust`. Any figure can carry any value.
+  const bust = o.bust === undefined ? (sex === 'female' ? 0.35 : 0) : num(o.bust, 0, 'rig.bust', 0, 2);
 
   const poseRaw = obj(o.pose, 'rig.pose');
   assertNoUnknownKeys(poseRaw, POSE_FIELDS, 'rig.pose');
@@ -657,18 +667,19 @@ function buildRig(rawOpts: unknown): Rig {
   };
 
   // --- Front-of-torso surface landmarks (nipples + navel) ----------------
-  // Project them onto the FRONT (−Y) surface of the chest / belly masses so
-  // they track every proportion knob (sex/age/weight widen the chest → the
-  // nipples move out and apart; a heavy belly bulges → the navel moves out).
-  // The masses are computed by the SAME helper buildTorso uses, so the anchor
-  // and the relief can never drift. The chest centre is spine-transformed, so
-  // a leaning figure carries its nipples with the chest.
+  // Project them onto the FRONT (−Y) surface of the torso so they track every
+  // proportion knob (sex/age/weight widen the chest; a heavy belly bulges the
+  // navel out). When `bust > 0` the nipples ride the breast-mound APEX instead
+  // of the bare chest. The masses are computed by the SAME helpers buildTorso
+  // uses, so the anchor and the geometry can never drift. The chest centre is
+  // spine-transformed, so a leaning figure carries its nipples with the chest.
   const tm = torsoMasses(joints, r);
+  const mounds = breastMounds(joints, r, bust);
   const nippleZ = tm.chest.c[2] - tm.chest.cz * 0.16;   // a touch below chest centre
   const nippleDX = r.chestX * 0.42;                      // half the inter-nipple span
   const torsoAnchors: TorsoAnchors = {
-    nippleL: ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, nippleDX, nippleZ),
-    nippleR: ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, -nippleDX, nippleZ),
+    nippleL: mounds ? mounds.apexL : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, nippleDX, nippleZ),
+    nippleR: mounds ? mounds.apexR : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, -nippleDX, nippleZ),
     navel: ellipsoidFront(tm.belly.c, tm.belly.a, tm.belly.b, tm.belly.cz, 0, navelZ),
   };
 
@@ -691,7 +702,7 @@ function buildRig(rawOpts: unknown): Rig {
     sole: { L: makeSoleFrame(lL.A, lL.footFwd, r), R: makeSoleFrame(lR.A, lR.footFwd, r) },
     face: sFace,
     torso: torsoAnchors,
-    opts: { height: H, headsTall: N, build, sex, age, weight, pose },
+    opts: { height: H, headsTall: N, build, sex, age, weight, bust, pose },
   };
 }
 
@@ -734,13 +745,36 @@ function ellipsoidFront(c: Vec3, a: number, b: number, cz: number, dx: number, z
   return [c[0] + dx, c[1] - b * Math.sqrt(inside), z];
 }
 
-/** A subtle nipple/areola relief — a shallow ellipsoid mound flattened along
- *  the front (−Y) axis so it reads as anatomical relief, not a stuck-on ball.
- *  Centred a little INTO the body from the surface anchor so it always welds
- *  and only a small cap protrudes. */
-function nippleBump(sdf: SdfApi, anchor: Vec3, size: number): Node {
-  const c: Vec3 = [anchor[0], anchor[1] + size * 0.45, anchor[2]];
-  return sdf.ellipsoid(size, size * 0.7, size).translate(c);
+/** Per-side breast-mound ellipsoids + their apex landmarks, derived from the
+ *  chest mass and a continuous `bust` size (0 ⇒ `null`, no mound). Shared by
+ *  `buildRig` (to ride the nipple anchors on the apex) and `buildTorso` (to
+ *  build the mounds), so they can never drift. A teardrop is approximated by a
+ *  near-sphere dropped a little below the nipple line and pulled back into the
+ *  chest so the base melds and only the apex projects. */
+function breastMounds(j: Record<string, Vec3>, r: Record<string, number>, bust: number): {
+  L: { c: Vec3; a: number; b: number; cz: number };
+  R: { c: Vec3; a: number; b: number; cz: number };
+  apexL: Vec3; apexR: Vec3; radius: number;
+} | null {
+  if (bust <= 0) return null;
+  const tm = torsoMasses(j, r);
+  const cc = tm.chest.c, a = tm.chest.a, b = tm.chest.b, cz = tm.chest.cz;
+  const dx = r.chestX * 0.42;
+  const moundZ = cc[2] - cz * 0.16 - r.chestX * 0.06;     // a touch below the nipple line
+  const R = r.chestX * (0.34 + 0.46 * bust);              // mound radius grows with bust
+  const proj = R * (0.5 + 0.35 * bust);                   // forward projection
+  const side = (s: 1 | -1): { mound: { c: Vec3; a: number; b: number; cz: number }; apex: Vec3 } => {
+    const cx = s * dx;
+    const u = cx / a, w = (moundZ - cc[2]) / cz;
+    const fy = cc[1] - b * Math.sqrt(Math.max(0, 1 - u * u - w * w));   // chest front at the mound
+    const center: Vec3 = [cx, fy + (R - proj), moundZ];                 // pulled back so apex protrudes
+    return {
+      mound: { c: center, a: R, b: R * 0.9, cz: R * 1.05 },
+      apex: [center[0], center[1] - R * 0.9, center[2] - R * 0.12],     // forward-most, nudged down
+    };
+  };
+  const L = side(+1), Rr = side(-1);
+  return { L: L.mound, R: Rr.mound, apexL: L.apex, apexR: Rr.apex, radius: R };
 }
 
 /** A shallow navel dimple — a sphere centred just OUTSIDE the belly surface so
@@ -753,7 +787,7 @@ function navelPit(sdf: SdfApi, anchor: Vec3, size: number, depth: number): Node 
 
 function buildTorso(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'torso(opts)');
-  assertNoUnknownKeys(o, ['nipples', 'navel'], 'torso(opts)');
+  assertNoUnknownKeys(o, ['navel'], 'torso(opts)');
   const j = rig.joints, r = rig.r;
   const tm = torsoMasses(j, r);
   const chest = sdf.ellipsoid(tm.chest.a, tm.chest.b, tm.chest.cz).translate(tm.chest.c);
@@ -762,20 +796,20 @@ function buildTorso(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const k = r.chestY * 0.6;
   let body = chest.smoothUnion(belly, k).smoothUnion(pelvis, k);
 
-  // Anatomical relief — opt-in (default OFF, so every existing figure is
-  // byte-identical). Welded/carved with a SMALL local k onto the torso BEFORE
-  // the soft body weld, exactly like the face features go on the head: a tight
-  // k keeps the nipple a crisp nub and the navel a defined dimple instead of
-  // melting them into the chest/belly. The features sit in the middle of the
-  // torso, far from any limb weld seam, so the soft body weld never fills them.
-  if (o.nipples !== undefined && o.nipples !== false) {
-    const no = o.nipples === true ? {} : obj(o.nipples, 'torso.nipples');
-    assertNoUnknownKeys(no, ['size'], 'torso.nipples');
-    const size = num(no.size, r.chestX * 0.13, 'torso.nipples.size', 1e-3);
+  // Breast mounds — driven by `rig.bust` (like sex/age/weight, a rig-level
+  // proportion), so `F.torso(rig)` shapes them automatically; `bust === 0`
+  // (every non-female default) leaves the torso byte-identical. Blended into
+  // the chest with a bust-scaled k so the base melds and only the apex projects.
+  const mounds = breastMounds(j, r, rig.opts.bust);
+  if (mounds) {
+    const mk = r.chestX * (0.3 + 0.2 * rig.opts.bust);
     body = body
-      .smoothUnion(nippleBump(sdf, rig.torso.nippleL, size), size * 0.7)
-      .smoothUnion(nippleBump(sdf, rig.torso.nippleR, size), size * 0.7);
+      .smoothUnion(sdf.ellipsoid(mounds.L.a, mounds.L.b, mounds.L.cz).translate(mounds.L.c), mk)
+      .smoothUnion(sdf.ellipsoid(mounds.R.a, mounds.R.b, mounds.R.cz).translate(mounds.R.c), mk);
   }
+
+  // Navel — opt-in (default OFF, so an unset torso is byte-identical). Carved
+  // with a small local k so the soft body weld can't fill the dimple.
   if (o.navel !== undefined && o.navel !== false) {
     const no = o.navel === true ? {} : obj(o.navel, 'torso.navel');
     assertNoUnknownKeys(no, ['size', 'depth'], 'torso.navel');
@@ -784,6 +818,57 @@ function buildTorso(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     body = body.smoothSubtract(navelPit(sdf, rig.torso.navel, size, depth), size * 0.55);
   }
   return body;
+}
+
+/** Flush, paintable areola discs + a tiny nipple nub, for hard-unioning at the
+ *  figure's TOP level (like `F.face.eyes`) so the `'areola'` paint label
+ *  survives — a smooth body weld would flatten it. Each areola is a coin clipped
+ *  from a sphere a hair larger than the local surface (the iris-disc trick), so
+ *  it sits flush and follows the chest/mound curvature instead of bulging. The
+ *  nipple is a deliberately TINY nub at the centre. Riding the `rig.torso`
+ *  anchors, they track the bust automatically. Colour the `'areola'` label a
+ *  slightly darker shade of the skin (see `F.areolaColor`). */
+function buildNipples(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'nipples(opts)');
+  assertNoUnknownKeys(o, ['size', 'nipple'], 'nipples(opts)');
+  const r = rig.r;
+  const size = num(o.size, r.chestX * 0.16, 'nipples.size', 1e-3);     // areola radius
+  const nipR = num(o.nipple, r.chestX * 0.05, 'nipples.nipple', 0);    // tiny nipple nub
+  const mounds = breastMounds(rig.joints, r, rig.opts.bust);
+  // Local radius of curvature for the flush clip: the mound radius if there is a
+  // mound, else a broad radius approximating the gently-curved bare chest.
+  const surfR = mounds ? mounds.radius : r.chestX * 1.4;
+  const eps = Math.max(r.chestX * 0.03, 0.06);                         // proud enough to win the union
+  const at = (anchor: Vec3): Node => {
+    const sc: Vec3 = [anchor[0], anchor[1] + surfR, anchor[2]];        // clip sphere behind the anchor
+    const coin = sdf.sphere(surfR + eps).translate(sc).intersect(
+      sdf.cylinder(size, (surfR + eps) * 2.2).rotate([90, 0, 0]).translate(anchor),
+    );
+    return nipR > 0
+      ? coin.union(sdf.sphere(nipR).translate([anchor[0], anchor[1] - nipR * 0.5, anchor[2]]))
+      : coin;
+  };
+  return at(rig.torso.nippleL).union(at(rig.torso.nippleR)).label('areola');
+}
+
+/** A sensible default areola colour: a slightly darker shade of the given skin
+ *  tone (a hex like `'#cf9163'` or a curated `F.skin` name). Use it in the paint
+ *  step — `paintByLabels([…, { label: 'areola', color: F.areolaColor(skin) }])`
+ *  — or bake it into a catalog palette. Overridable: paint `'areola'` any colour. */
+function areolaColor(skin: unknown, factor?: unknown): string {
+  const f = num(factor, 0.72, 'areolaColor(factor)', 0.1, 1);
+  if (typeof skin !== 'string' || skin.length === 0) {
+    throw new Error('areolaColor(skin): expected a #rrggbb hex or a skin name');
+  }
+  const raw = skin;
+  // Accept a curated skin name (resolve via the ramp) or a literal hex.
+  const hex = raw.startsWith('#') ? raw : (figureSkin(raw) as string);
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) throw new Error(`areolaColor(skin): expected a #rrggbb hex or a skin name, got "${raw}"`);
+  const n = parseInt(m[1], 16);
+  const ch = (shift: number): string =>
+    Math.max(0, Math.min(255, Math.round(((n >> shift) & 255) * f))).toString(16).padStart(2, '0');
+  return `#${ch(16)}${ch(8)}${ch(0)}`;
 }
 
 function buildNeck(sdf: SdfApi, rig: Rig): Node {
@@ -2418,6 +2503,16 @@ export interface FigureNamespace {
    *  not ethnicity. */
   skin(name?: string): string | Record<string, string>;
   torso(rig: Rig, opts?: object): Node;
+  /** Flush, paintable areola discs + a tiny nipple nub — hard-union at the TOP
+   *  level (like `face.eyes`) so the self-applied `'areola'` paint label
+   *  survives the body weld. Rides the `rig.torso` nipple anchors (so it tracks
+   *  the bust). `opts`: `{ size, nipple }`. Colour the `'areola'` label — see
+   *  `areolaColor`. */
+  nipples(rig: Rig, opts?: object): Node;
+  /** A default areola colour: a slightly darker shade of `skin` (a `#rrggbb` hex
+   *  or a curated `skin` name); optional `factor` (0.1..1, default 0.72) sets how
+   *  much darker. For the paint step / a catalog palette. */
+  areolaColor(skin: string, factor?: number): string;
   neck(rig: Rig, opts?: object): Node;
   arms(rig: Rig, opts?: object): Node;
   hands(rig: Rig, opts?: object): Node;
@@ -2680,6 +2775,8 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     rig: (opts) => buildRig(opts),
     skin: (name) => figureSkin(name),
     torso: (rig, opts) => buildTorso(sdf, assertRig(rig, 'torso(rig)'), opts),
+    nipples: (rig, opts) => buildNipples(sdf, assertRig(rig, 'nipples(rig)'), opts),
+    areolaColor: (skin, factor) => areolaColor(skin, factor),
     neck: (rig) => buildNeck(sdf, assertRig(rig, 'neck(rig)')),
     arms: (rig) => buildArms(sdf, assertRig(rig, 'arms(rig)')),
     hands: (rig, opts) => buildHands(sdf, assertRig(rig, 'hands(rig)'), opts),
@@ -2717,4 +2814,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, torsoMasses, ellipsoidFront, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildTorso, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair };

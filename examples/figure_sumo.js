@@ -42,12 +42,15 @@ const face = F.face.assemble(head, rig, {
 // Paintable eyes — hard-unioned at top level with their own label
 const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.16 });
 
+// Areolae — flush paintable discs + tiny nipples, hard-unioned at top level.
+const nipples = F.nipples(rig);
+
 // 3. SKIN — weld all body masses
 // Use relaxed hands — palms ready for the slap
 const skin = F.weld(rig, [
-  // Shirtless — relief the nipples + navel so the bare chest/belly read as
-  // anatomy. They track the wide weight:1 belly and broad male chest.
-  F.torso(rig, { nipples: true, navel: true }),
+  // Shirtless — relief the navel so the bare belly reads as anatomy (it tracks
+  // the wide weight:1 belly). The areolae are a separate paint region (below).
+  F.torso(rig, { navel: true }),
   F.neck(rig),
   F.arms(rig),
   F.hands(rig, { grip: 'relaxed' }),
@@ -80,5 +83,5 @@ const base = F.base(rig, {
 
 // 7. Hard-union all labelled regions and build.
 // Face detail for smooth features; relaxed hands don't need hand detail.
-return sdf.union(skin, eyes, mawashi, hair, base)
+return sdf.union(skin, eyes, nipples, mawashi, hair, base)
   .build({ edgeLength: 0.5, detail: F.faceDetail(rig) });

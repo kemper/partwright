@@ -41,10 +41,10 @@ const face = F.face.assemble(head, rig, {
 // Paintable eyes — hard-unioned at top level with their own labels.
 const eyes = F.face.eyes(rig, { radius: r.head * 0.16, lids: 'upper' });
 
-// 3. SKIN — weld the body masses. The bare torso opts into the anatomical
-//    relief: nipples on the chest, a navel on the midriff.
+// 3. SKIN — weld the body masses. The bare torso carries a navel; the areolae
+//    are a SEPARATE paint region added at the top level (step 4b), like the eyes.
 const skin = F.weld(rig, [
-  F.torso(rig, { nipples: true, navel: true }),
+  F.torso(rig, { navel: true }),
   F.neck(rig),
   F.arms(rig),
   F.hands(rig, { grip: 'relaxed' }),
@@ -52,6 +52,10 @@ const skin = F.weld(rig, [
   F.feet(rig),
   face,
 ]).label('skin');
+
+// 4b. AREOLAE — flush paintable discs + tiny nipples, hard-unioned at the top
+//     level so the 'areola' paint region survives the body weld.
+const nipples = F.nipples(rig);
 
 // 4. SWIM TRUNKS — low rise + briefs length so the whole midriff stays bare and
 //    the navel reads. Sits on the hips like swimwear.
@@ -70,5 +74,5 @@ const base = F.base(rig, { radius: rig.opts.height * 0.24 }).label('base');
 
 // 7. Hard-union all labelled regions and build with face + hand detail so the
 //    features (and the subtle nipple/navel relief) mesh cleanly.
-return sdf.union(skin, eyes, trunks, hair, base)
+return sdf.union(skin, eyes, nipples, trunks, hair, base)
   .build({ edgeLength: 0.42, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] });
