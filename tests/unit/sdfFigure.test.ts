@@ -529,12 +529,20 @@ describe('figure mouth — styles', () => {
     expect(buildMouthPart(api, rig, { render: 'carved' }).mode).toBe('carve');
   });
 
-  it('auto-render falls back to additive on a small head, carves on a large one', () => {
-    // Yoga-class proportions (#652): tiny head → carve would tear, so paint.
+  it('auto-render falls back to additive only on genuinely small heads', () => {
+    // Yoga-class proportions (#652): tiny head (r.head≈2.82) → carve would tear,
+    // so paint.
     const tiny = buildRig({ height: 46, headsTall: 7.5, build: 'slim' });
     expect(buildMouthPart(api, tiny, { smirk: 0.15 }).mode).toBe('add');
     // A normal figure still carves the smile groove (back-compat).
     expect(buildMouthPart(api, rig).mode).toBe('carve');
+    // Mainstream adult proportions (60-unit, headsTall 8, r.head≈3.45) must
+    // STAY carved — the floor sits below them, not above (regression guard).
+    expect(buildMouthPart(api, buildRig({ height: 60, headsTall: 8 })).mode).toBe('carve');
+  });
+
+  it('rejects a non-boolean `divided`', () => {
+    expect(() => buildMouthPart(api, rig, { style: 'lips', divided: 'yes' })).toThrow(/divided/);
   });
 });
 

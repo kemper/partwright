@@ -72,3 +72,13 @@ not introduced here. 175 figure unit tests + full unit tier green; preflight exi
 Issue hygiene: this resolves #652 (additive auto-fallback) and chips at #589's
 lips/mouth gaps; the deferred **deep carved-cavity teeth with upper/lower gum
 separation** is filed as a follow-up rather than forced into this print-safe pass.
+
+**Review follow-up (work-reviewer):** two should-fix items addressed. (1) The
+`auto` carve floor was `r.head ≥ 3.5`, which flipped mainstream 60-unit
+`headsTall:8` adults (`r.head ≈ 3.45`) from carved to additive — not just the
+Yoga-class edge. Re-calibrated empirically to `grooveR ≥ 0.21` (`r.head ≥ 3.0`):
+the documented #652 Yoga repro (2.82) and very-lanky `headsTall:10` (2.76) still
+flip to the clean additive mouth, while every height-60 figure (`headsTall` 5–8)
+keeps carving exactly as before. Added a regression test pinning the adult case
+to `'carve'`. (2) `divided` was coerced (`=== true`) instead of validated; now
+uses `assertBoolean` and rejects non-booleans, matching the other mouth fields.

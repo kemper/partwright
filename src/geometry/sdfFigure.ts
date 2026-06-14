@@ -23,6 +23,7 @@ import {
   assertNumber,
   assertNumberTuple,
   assertEnum,
+  assertBoolean,
   assertObject,
   assertNoUnknownKeys,
   ValidationError,
@@ -1517,16 +1518,25 @@ function resolveMouthCurve(o: Record<string, unknown>, name: string): number | u
 }
 
 /** Is a CARVED mouth safe to mesh at this head size? The subtractive carve
- *  tears into degenerate sub-cell slivers when the absolute groove/cavity
- *  feature gets small (issue #652 — torn mouth on small / high-`headsTall`
- *  heads; the Yoga repro sits at `r.head ≈ 2.8`). Above the floor we carve as
- *  before; below it the default `render: 'auto'` falls back to a clean ADDITIVE
- *  mouth (the documented Yoga workaround, now automatic). The floor is an
- *  ABSOLUTE world size, not a cell ratio: the groove-to-march-edge ratio is
- *  scale-invariant (≈3.5 at any head), so only an absolute floor distinguishes
- *  a clean carve from a torn one. `grooveR = r.head·0.07`, so this is `r.head ≥ 3.5`. */
+ *  tears into degenerate, visibly-spiky sub-cell geometry when the absolute
+ *  groove feature gets small (issue #652 — torn mouth on small / high-`headsTall`
+ *  heads). The floor is an ABSOLUTE world size, not a cell ratio: the
+ *  groove-to-march-edge ratio is scale-invariant (≈3.5 at any head), so only an
+ *  absolute floor distinguishes a clean carve from a torn one. Above it we carve
+ *  as before; below it the default `render: 'auto'` falls back to a clean
+ *  ADDITIVE mouth (the documented Yoga workaround, now automatic).
+ *
+ *  Calibrated empirically (`grooveR = r.head·0.07`):
+ *    - #652 Yoga repro `r.head ≈ 2.82` (grooveR 0.197) — VISIBLY TORN → paint.
+ *    - 60-unit `headsTall:8` adult `r.head ≈ 3.45` (grooveR 0.242) — carves
+ *      clean → must stay carved (back-compat for mainstream figures).
+ *  The floor sits between them at `grooveR ≥ 0.21` (`r.head ≥ 3.0`): it catches
+ *  the documented torn cases (Yoga, very-lanky `headsTall:10`) while leaving
+ *  every height-60 figure (`headsTall` 5–8) carving exactly as before. A
+ *  figure in the narrow torn band below 3.0 changes from a TORN carve to a
+ *  clean painted mouth — the #652 fix, not a regression of good output. */
 function carveIsSafe(rig: Rig): boolean {
-  return rig.r.head * 0.07 >= 0.245;
+  return rig.r.head * 0.07 >= 0.21;
 }
 
 /** Orient an origin-built node into the posed head frame, so axis-aligned
@@ -1569,7 +1579,7 @@ function buildMouthPart(sdf: SdfApi, rig: Rig, opts?: unknown): MouthPart {
   const fullness = num(o.fullness, 1, 'mouth.fullness', 0.4, 2.2);
   // `divided` splits the lip ridge into a distinct upper + lower lip (the
   // natural two-lip look) — only meaningful for style 'lips'.
-  const divided = o.divided === true;
+  const divided = assertBoolean(o.divided, 'mouth.divided', { optional: true }) ?? false;
   const render = assertEnum(o.render ?? 'auto', ['auto', 'carved', 'painted'] as const, 'mouth.render') as MouthRender;
   // Signed expression curve, or undefined → each style keeps its historical bend.
   const curveOpt = resolveMouthCurve(o, 'mouth');
