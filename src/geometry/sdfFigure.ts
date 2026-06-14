@@ -1827,7 +1827,7 @@ function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
  *  grid either way. */
 function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
   const o = obj(opts, 'faceDetail(opts)');
-  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength', 'eyeEdgeLength', 'irisEdgeLength'], 'faceDetail(opts)');
+  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength', 'eyeEdgeLength', 'irisEdgeLength', 'earEdgeLength'], 'faceDetail(opts)');
   const r = rig.r;
   const radius = num(o.radius, Math.max(r.headX, r.head, r.headZ) * 1.5, 'faceDetail.radius', 1e-3);
   // ~4.5% of the head radius ≈ one subdivision round below the recommended
@@ -1845,8 +1845,14 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   //    sphere stays small enough that only the small iris/pupil regions pick it.
   const eyeEdgeLength = num(o.eyeEdgeLength, Math.max(r.head * 0.009, 0.03), 'faceDetail.eyeEdgeLength', 1e-4);
   const irisEdgeLength = num(o.irisEdgeLength, Math.max(r.head * 0.0045, 0.018), 'faceDetail.irisEdgeLength', 1e-4);
-  const f = rig.dir.headForward;
+  // The ear is a thin plate with a fine rim/concha/tragus — it facets badly at
+  // the head grid (and so does the hair pocket carved around it when hair is
+  // worn 'behind'). A sphere over each ear, pushed outboard to cover the
+  // protruding pinna, keeps both crisp.
+  const earEdgeLength = num(o.earEdgeLength, Math.max(r.head * 0.02, 0.025), 'faceDetail.earEdgeLength', 1e-4);
+  const f = rig.dir.headForward, hl = rig.dir.headLeft;
   const eyeFront = (anchor: Vec3): Vec3 => add3(anchor, scale3(f, r.head * 0.22));
+  const earOut = (anchor: Vec3, side: number): Vec3 => add3(anchor, scale3(hl, side * r.head * 0.12));
   return [
     { center: [...(rig.joints.head as Vec3)] as Vec3, radius, edgeLength },
     { center: [...(rig.face.mouth as Vec3)] as Vec3, radius: r.head * 0.55, edgeLength: mouthEdgeLength },
@@ -1854,6 +1860,8 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
     { center: eyeFront(rig.face.eyeR), radius: r.head * 0.26, edgeLength: eyeEdgeLength },
     { center: eyeFront(rig.face.eyeL), radius: r.head * 0.13, edgeLength: irisEdgeLength },
     { center: eyeFront(rig.face.eyeR), radius: r.head * 0.13, edgeLength: irisEdgeLength },
+    { center: earOut(rig.face.earL, +1), radius: r.head * 0.72, edgeLength: earEdgeLength },
+    { center: earOut(rig.face.earR, -1), radius: r.head * 0.72, edgeLength: earEdgeLength },
   ];
 }
 
@@ -2150,11 +2158,14 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   if (ears === 'behind') {
     // A snug pocket so the hair HUGS the ear rather than carving a wide crater
     // around it — just enough to clear the protruding pinna at the ear anchor.
-    const pocketR = r.head * 0.38;
-    const outboard = r.headX * 0.12;
+    const pocketR = r.head * 0.3;
+    const outboard = r.headX * 0.06;
     for (const [anchor, lat] of [[rig.face.earL, right], [rig.face.earR, scale3(right, -1)]] as const) {
       const pc = add3(anchor, scale3(lat, outboard));
-      cap = cap.subtract(sdf.sphere(pocketR).translate(pc));
+      // smoothSubtract (not a hard cut) so the pocket rim is a rounded fillet
+      // that blends into the hair — a sharp cut here slivers against the nearby
+      // ear surface and meshes as speckle.
+      cap = cap.smoothSubtract(sdf.sphere(pocketR).translate(pc), r.head * 0.22);
     }
   }
   // Face window: the cap overlaps the face INTERIOR, and since hair is its

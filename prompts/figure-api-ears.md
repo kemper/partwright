@@ -74,3 +74,25 @@ most like a real ear), `'pointed'` (upper pinna sweeps to an elf point).
 Tightened the hair pocket from `r.head*0.6` → `r.head*0.38` (outboard
 `headX*0.12`) so the hair hugs the ear. Re-baked all three catalog figures.
 User picked 'detailed' default + the tight pocket from the comparison renders.
+
+## Assistant — quality fixes after close inspection
+
+User zoomed in and flagged three issues, two of them regressions I introduced:
+
+1. **Coarse/jagged ear meshing** — the thin ear plate facets at the head grid.
+   Fix: `faceDetail` now emits a fine sphere over each ear (`earEdgeLength`,
+   default `r.head*0.02`), pushed outboard to cover the protruding pinna. The
+   ear alone meshes smoothly now.
+2. **Speckled ring where hair meets the ear** — a *hard* sphere subtract for the
+   'behind' pocket left a sharp rim that slivered against the nearby ear. Fix:
+   `smoothSubtract` (k `r.head*0.22`) so the pocket is a rounded bezel that
+   blends into the hair. Also tightened the pocket (`0.38→0.3`, outboard
+   `0.12→0.06`) so the hair hugs the ear closer, per the user.
+3. **Googly eyes** (regression) — my earlier eye-forward nudge of `r.head*0.2`
+   made the eyeballs sit ~0.46 units proud (a ball stuck on the face). Measured
+   with an `evaluate()` sign-flip probe that the face surface sits ~`0.25*r.head`
+   ahead of the eye anchor; reduced the nudge to `r.head*0.12` so the eyeball
+   center stays embedded with only a ~0.13-unit cap showing. Filed the
+   underlying auto-seat/warn gap as a tracked issue.
+
+Re-baked all three figures (1 component, manifold, <200k tris, eyes paint).

@@ -34,7 +34,7 @@ const face = F.face.assemble(head, rig, {
   brows: { lift: 0.8 },
 });
 // Seat the eyeballs proud of the face so the eye paint regions stay resolvable.
-const fwd = rig.dir.headForward, ep = r.head * 0.2;
+const fwd = rig.dir.headForward, ep = r.head * 0.12;
 const eyes = F.face.eyes(rig, { radius: r.head * 0.17, lids: 'upper', gaze: 'left' })
   .translate([fwd[0] * ep, fwd[1] * ep, fwd[2] * ep]);
 

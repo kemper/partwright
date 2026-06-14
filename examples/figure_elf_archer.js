@@ -39,7 +39,7 @@ const face = F.face.assemble(head, rig, {
 });
 // Seat the eyeballs proud of the face surface (the assembled brow/nose push the
 // front forward of the eye anchor) so the eyes/iris/pupil regions stay paintable.
-const fwd = rig.dir.headForward, ep = r.head * 0.2;
+const fwd = rig.dir.headForward, ep = r.head * 0.12;
 const eyes = F.face.eyes(rig, { radius: r.head * 0.16, lids: 'upper', gaze: 'left' })
   .translate([fwd[0] * ep, fwd[1] * ep, fwd[2] * ep]);
 
@@ -101,4 +101,4 @@ const longbow = bow.smoothUnion(string, r.hand * 0.06).smoothUnion(riser, r.hand
 
 // 8. Union + build.
 return sdf.union(skin, eyes, tunic, leggings, boots, hair, longbow, base)
-  .build({ edgeLength: 0.72, detail: [...F.faceDetail(rig, { edgeLength: r.head * 0.06, eyeEdgeLength: r.head * 0.016, irisEdgeLength: r.head * 0.009 }), ...F.handDetail(rig)] });
+  .build({ edgeLength: 0.78, detail: [...F.faceDetail(rig, { edgeLength: r.head * 0.06, eyeEdgeLength: r.head * 0.016, irisEdgeLength: r.head * 0.009 }), ...F.handDetail(rig)] });
