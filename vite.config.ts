@@ -64,15 +64,19 @@ function absoluteUrls(): Plugin {
 // which is why public/sitemap.xml has been removed (it would clobber this).
 function dynamicSitemap(): Plugin {
   let outDir = 'dist';
+  let base = '/';
   return {
     name: 'partwright-dynamic-sitemap',
     apply: 'build',
     configResolved(config) {
       outDir = config.build.outDir;
+      // Deployment base (`/`, `/v2/`, …) so each <loc> sits under this major's
+      // mount. No-op while base is `/`.
+      base = config.base;
     },
     closeBundle() {
       const siteUrl = (process.env.SITE_URL || process.env.CF_PAGES_URL || '').replace(/\/$/, '');
-      const xml = buildSitemapXml(siteUrl);
+      const xml = buildSitemapXml(siteUrl, undefined, base);
       writeFileSync(resolve(outDir, 'sitemap.xml'), xml, 'utf8');
     },
   };
