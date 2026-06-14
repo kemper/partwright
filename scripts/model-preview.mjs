@@ -40,7 +40,7 @@ function coerce(s) { if (s === 'true') return true; if (s === 'false') return fa
 
 async function main() {
   const a = parseArgs(process.argv.slice(2));
-  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view az,el] [--views front,iso,…] [--explain-components] [--expect-components N] [-p k=v]'); process.exit(2); }
+  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view "az,el[;az,el…]"] [--views front,iso,…] [--explain-components] [--expect-components N] [-p k=v]'); process.exit(2); }
   const file = resolve(a.file);
   const { views, error: viewErr } = resolveViews(a.view, a.views);
   if (viewErr) { console.error(viewErr); process.exit(2); }
