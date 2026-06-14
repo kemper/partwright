@@ -50,6 +50,13 @@
         "requiredLabels": []
       }
     },
+    "elf-archer": {
+      "source": "examples/figure_elf_archer.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
     "flexing-strongman": {
       "source": "examples/figure_strongman.js",
       "gates": {
@@ -143,6 +150,13 @@
     },
     "pipe-tee-fitting": {
       "source": "examples/pipe_tee_fitting.scad",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "pixie-skater": {
+      "source": "examples/figure_pixie_skater.js",
       "gates": {
         "maxGenus": null,
         "requiredLabels": []
@@ -367,6 +381,13 @@
     },
     "superhero-takeoff": {
       "source": "examples/figure_superhero.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "topknot-sensei": {
+      "source": "examples/figure_topknot_sensei.js",
       "gates": {
         "maxGenus": null,
         "requiredLabels": []

@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, buildEars, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -1100,7 +1100,7 @@ describe('figure hair — styles and hairline', () => {
     ];
     for (const style of ['short', 'long', 'bun', 'bangs', 'ponytail'] as const) {
       const bare = buildHair(api, rig, { style }) as SdfNode;
-      const explicit = buildHair(api, rig, { style, length: 'mid', volume: 1, texture: 'none', part: 'none' }) as SdfNode;
+      const explicit = buildHair(api, rig, { style, length: 'mid', volume: 1, texture: 'none', part: 'none', ears: 'cover' }) as SdfNode;
       for (const p of probes) {
         expect(explicit.evaluate(p[0], p[1], p[2])).toBeCloseTo(bare.evaluate(p[0], p[1], p[2]), 9);
       }
@@ -1112,6 +1112,63 @@ describe('figure hair — styles and hairline', () => {
     const long = buildHair(api, rig, { style: 'ponytail', length: 'long' }) as SdfNode;
     // A longer tail reaches farther below the head along −Z.
     expect(long.bounds().min[2]).toBeLessThan(mid.bounds().min[2]);
+  });
+
+  it("ears:'behind' carves an ear-clearance pocket that 'cover' leaves filled", () => {
+    // A point just outboard of the ear anchor, where the bob's side wing sits:
+    // 'cover' keeps hair there (inside the cap), 'behind' scoops it away so the
+    // skin ear protrudes in front of the hair.
+    const ear = rig.face.earL;
+    const p = [ear[0] + rig.r.headX * 0.12, ear[1], ear[2]];
+    const cover = buildHair(api, rig, { style: 'bob', ears: 'cover' }) as SdfNode;
+    const behind = buildHair(api, rig, { style: 'bob', ears: 'behind' }) as SdfNode;
+    expect(cover.evaluate(p[0], p[1], p[2])).toBeLessThan(0);    // hair covers the ear zone
+    expect(behind.evaluate(p[0], p[1], p[2])).toBeGreaterThan(0); // pocket carved → ear exposed
+  });
+
+  it("ears:'behind' leaves the crown untouched (localized pocket)", () => {
+    const c = rig.joints.head;
+    const top = [c[0], c[1], c[2] + rig.r.headZ * 0.9];   // crown of the cap
+    const cover = buildHair(api, rig, { style: 'short', ears: 'cover' }) as SdfNode;
+    const behind = buildHair(api, rig, { style: 'short', ears: 'behind' }) as SdfNode;
+    expect(behind.evaluate(top[0], top[1], top[2])).toBeCloseTo(cover.evaluate(top[0], top[1], top[2]), 9);
+  });
+
+  it('rejects an unknown hair.ears value', () => {
+    expect(() => buildHair(api, rig, { ears: 'tuck' })).toThrow(/ears/);
+  });
+});
+
+describe('figure ears — types', () => {
+  const rig = buildRig({ height: 60, headsTall: 5 });
+
+  it('defaults to round and rejects an unknown type / key', () => {
+    expect(buildEars(api, rig).bounds).toBeTypeOf('function');
+    expect(() => buildEars(api, rig, { type: 'goblin' })).toThrow(/type/);
+    expect(() => buildEars(api, rig, { wiggle: 1 })).toThrow();
+  });
+
+  it('builds all three types as valid nodes spanning both ear anchors', () => {
+    for (const type of ['round', 'pointed', 'detailed'] as const) {
+      const ears = buildEars(api, rig, { type }) as SdfNode;
+      const b = ears.bounds();
+      // Spans from the −X (right) anchor to the +X (left) anchor.
+      expect(b.min[0]).toBeLessThan(0);
+      expect(b.max[0]).toBeGreaterThan(0);
+    }
+  });
+
+  it('pointed ears reach higher than round ears (the elf point)', () => {
+    const round = buildEars(api, rig, { type: 'round' }) as SdfNode;
+    const pointed = buildEars(api, rig, { type: 'pointed' }) as SdfNode;
+    expect(pointed.bounds().max[2]).toBeGreaterThan(round.bounds().max[2]);
+  });
+
+  it('ears stand proud of the skull (extend past the lateral radius)', () => {
+    // The ear's outer edge must reach beyond the bare skull's lateral half-width
+    // (r.headX), so it protrudes instead of sitting flush like the old blob.
+    const ears = buildEars(api, rig, { type: 'round' }) as SdfNode;
+    expect(ears.bounds().max[0]).toBeGreaterThan(rig.r.headX);
   });
 });
 
