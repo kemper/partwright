@@ -33,3 +33,33 @@
   so a source edit doesn't require remembering the full build-catalog-entry
   invocation per entry. The palette/gates are already declared; only the
   --palette-file path and require-labels had to be retyped each time.
+
+---
+
+## Round 2 (areola colour + bust, after user feedback)
+
+### Liked
+- `api.paint.label('skin', hex)` in a model snippet IS resolved + shown by
+  `model:preview` (it shades by normal otherwise). So colour decisions —
+  areola-darker-than-skin, palette choices — can be verified headlessly without
+  the full xvfb catalog bake. Big speedup for any colour-sensitive figure work.
+- Prototype-then-AskUserQuestion was the right call for the aesthetic asks: built
+  throwaway areola + bust-sweep montages, got 4 crisp decisions, then wired once.
+  Far cheaper than implementing one interpretation and iterating.
+
+### Learned
+- The eyes' "iris-disc trick" (coin clipped from a sphere a hair larger than the
+  surface) is the reusable primitive for ANY flush, paintable, curvature-following
+  decal on a figure — areola here, could be tattoos/emblems next. Worth promoting
+  to a shared `F.decal`/helper if a third use appears.
+- Paint labels MUST be top-level hard-unions, never inside `F.weld` — a smooth
+  weld flattens the label to 0 paintable triangles. The areola had to move out of
+  `F.torso` into its own `F.nipples` part for exactly this reason (same lesson the
+  eyes already encode). A torso *option* that needs its own colour is a smell.
+
+### Longed for
+- A `model:preview --palette <file>` flag that applies a label→colour palette to
+  an SDF-`.label()` figure for a coloured headless render, so you don't have to
+  hand-write `api.paint.label(...)` lines in a scratch snippet to preview catalog
+  colours. (Today colour preview needs either scratch api.paint calls or the slow
+  xvfb bake.)
