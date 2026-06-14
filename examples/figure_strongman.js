@@ -133,7 +133,7 @@ const face = F.face.assemble(head, rig, {
 });
 
 // Paintable eyes — hard-union at top level with their own label
-const eyes = F.face.eyes(rig, { radius: r.head * 0.17 }); // iris style: labels eyes/iris/pupil itself
+const eyes = F.face.eyes(rig, { radius: r.head * 0.17, lids: 'hooded' }); // iris style: labels eyes/iris/pupil itself
 // Clenched teeth filling the open carve ('teeth' label; no lip ring under the mustache).
 const mouthParts = F.face.mouthAccents(rig, mouthOpts);
 

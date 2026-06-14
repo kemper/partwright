@@ -30,7 +30,7 @@ const face = F.face.assemble(head, rig, {
   mouth: { style: 'lips', fullness: 1.4, smirk: 0.15 },
   brows: {},
 });
-const eyes = F.face.eyes(rig, { radius: r.head * 0.15 });
+const eyes = F.face.eyes(rig, { radius: r.head * 0.15, lids: 'upper' });
 
 // 3. SKIN — both hands in loose fists, ready.
 const skin = F.weld(rig, [
