@@ -138,7 +138,7 @@ const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const LEG_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const HEAD_FIELDS = ['yaw', 'pitch', 'roll'];
 const SPINE_FIELDS = ['lean', 'turn', 'side'];
-const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'age', 'weight', 'bust', 'pose'];
+const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'age', 'weight', 'muscle', 'bust', 'pose'];
 const POSE_FIELDS = ['arms', 'legs', 'armL', 'armR', 'legL', 'legR', 'head', 'spine'];
 
 function parseArm(v: unknown, name: string, defRaiseSide: number): JointPose {
@@ -180,6 +180,14 @@ export interface RigOptions {
    *  Widens/narrows the waist, hips, and chest (and their depth) per the mined
    *  MakeHuman weight morph. */
   weight?: number;
+  /** Muscle definition as a 0..1 slider (default 0 = smooth/undefined; 1 =
+   *  heavily muscled). Adds anatomically-anchored muscle masses — pectorals,
+   *  abdominals, lats and traps on the torso; deltoids, biceps, triceps and a
+   *  forearm swell on the arms; quadriceps, calves and glutes on the legs — that
+   *  track the pose via the rig frames. Orthogonal to `weight` (fat vs muscle):
+   *  a lean athlete is high `muscle`, low `weight`; a soft build is the reverse.
+   *  At `muscle: 0` no masses are added, so existing figures are unchanged. */
+  muscle?: number;
   /** Bust / chest mound size, a continuous 0..2 knob (0 = flat, ~0.35 subtle,
    *  ~0.7 medium, ~1.1 full). It is **independent of `sex`** — any figure can
    *  carry any value. `sex:'female'` only *pre-fills* a sensible default
@@ -289,7 +297,7 @@ export interface Rig {
   face: FaceAnchors;
   /** Front-of-torso surface landmarks (nipples + navel) — see {@link TorsoAnchors}. */
   torso: TorsoAnchors;
-  opts: { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; bust: number; pose: ResolvedPose };
+  opts: { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; muscle: number; bust: number; pose: ResolvedPose };
 }
 
 const BUILD_MUL: Record<string, number> = { slim: 0.82, average: 1, stocky: 1.22 };
@@ -414,6 +422,7 @@ function buildRig(rawOpts: unknown): Rig {
     : assertEnum(o.sex, ['neutral', 'male', 'female'] as const, 'rig.sex');
   const age = num(o.age, 25, 'rig.age', 1, 90);
   const weight = num(o.weight, 0.5, 'rig.weight', 0, 1);
+  const muscle = num(o.muscle, 0, 'rig.muscle', 0, 1);
   // Bust is independent of sex; `sex:'female'` only pre-fills a default when the
   // caller didn't set `bust`. Any figure can carry any value.
   const bust = o.bust === undefined ? (sex === 'female' ? 0.35 : 0) : num(o.bust, 0, 'rig.bust', 0, 2);
@@ -492,11 +501,24 @@ function buildRig(rawOpts: unknown): Rig {
   const hu = (ratio: number) => headH * ratio * bw;   // head-unit girth (× build)
   const shoulderHalfX = hu(0.648) * gm.shoulder;
   const hipHalfX = hu(0.432) * gm.hip;
+  // Minimum front-back torso DEPTH floor. The torso's thin dimension is its
+  // depth (chestY/hipsY); a slim × lean × narrow-sex combination can drive it
+  // low enough that surface masses (muscle bellies, garment offsets) pinch the
+  // wall into holes/voids. Floor it at a fraction of the head so the core always
+  // has a printable, non-self-intersecting depth — leanness can make a figure
+  // trim, never paper-thin. The floor is **muscle-aware**: muscle bellies need
+  // core depth to seat into, so each unit of `muscle` raises the minimum depth
+  // (you can't be both maximally lean AND maximally muscled — the masses would
+  // have nothing to merge into). At `muscle: 0` the floor (0.26/0.24·headH)
+  // sits BELOW every real build's depth (slim chestY ≈ 0.33·headH), so existing
+  // figures are byte-identical; it only lifts the very thinnest muscled combos.
+  const depthFloor = (v: number, minRatio: number): number =>
+    Math.max(v, headH * (minRatio + 0.14 * muscle));
   const r = {
     head: ryHead, headX: rxHead, headZ: rzHead,
     neck: hu(0.204),
-    chestX: hu(0.630) * gm.chest, chestY: hu(0.396) * wt.chest,
-    hipsX: hu(0.516) * gm.hip, hipsY: hu(0.360) * wt.hip,
+    chestX: hu(0.630) * gm.chest, chestY: depthFloor(hu(0.396) * wt.chest, 0.26),
+    hipsX: hu(0.516) * gm.hip, hipsY: depthFloor(hu(0.360) * wt.hip, 0.24),
     // The garment-fitting radius at the natural waist (rig.joints.spine) — use
     // this, not hipsX (a leg-insertion radius), to size belts/skirts/tutus.
     waist: hu(0.492) * gm.waist,
@@ -571,7 +593,7 @@ function buildRig(rawOpts: unknown): Rig {
     // (knee 0 — ballet first/fifth) shows the turnout only here, since the
     // shank stays vertical; buildFeet orients the foot along this.
     const footFwd = norm3(rotZ([0, -1, 0], side * p.twist));
-    return { Hj, K, A, dir, shankDir, footFwd };
+    return { Hj, K, A, dir, shankDir, footFwd, hinge };
   }
   const lL = legChain(+1, pose.legL);
   const lR = legChain(-1, pose.legR);
@@ -694,6 +716,10 @@ function buildRig(rawOpts: unknown): Rig {
       // faces hinge × lowerArm (the curl direction).
       elbowHingeL: sDir(aL.hinge), elbowHingeR: sDir(aR.hinge),
       upperLegL: lL.dir, lowerLegL: lL.shankDir, upperLegR: lR.dir, lowerLegR: lR.shankDir,
+      // The knee-hinge axis (post-twist) — ⟂ to the shank-curl plane, the leg
+      // analog of elbowHinge. The anterior (quad) / posterior (hamstring/calf)
+      // muscle directions derive from it; legs stay planted so no spine xform.
+      kneeHingeL: lL.hinge, kneeHingeR: lR.hinge,
       // Foot heading per side (front −Y yawed by hip turnout) — buildFeet
       // orients toe/heel along it, so leg twist turns the feet out.
       footL: lL.footFwd, footR: lR.footFwd,
@@ -703,8 +729,38 @@ function buildRig(rawOpts: unknown): Rig {
     sole: { L: makeSoleFrame(lL.A, lL.footFwd, r), R: makeSoleFrame(lR.A, lR.footFwd, r) },
     face: sFace,
     torso: torsoAnchors,
-    opts: { height: H, headsTall: N, build, sex, age, weight, bust, pose },
+    opts: { height: H, headsTall: N, build, sex, age, weight, muscle, bust, pose },
   };
+}
+
+// --- Muscle masses (the `muscle` 0..1 axis) -------------------------------
+// Anatomically-anchored bulges welded onto the bare limb/torso capsules when
+// rig.opts.muscle > 0. Each belly is a capsule (orientation-free, never a
+// degenerate cross) running along its bone, offset to the correct flexor/
+// extensor side and welded with a generous k so it reads as integrated muscle,
+// not a bolted-on ball. Everything is sized off rig.r.* (tracks build/size) and
+// scaled by the muscle knob. At muscle:0 the helpers are skipped entirely, so
+// the parts stay byte-identical (pinned by the unit tests).
+
+/** Unit vector ⟂ to a bone, on its flexor side — the way the joint curls. The
+ *  rig builds a bend as a rotation about `hinge`, whose derivative is
+ *  `hinge × boneDir`; that is the direction the limb curls toward, i.e. the
+ *  biceps (upper arm) / hamstring (thigh) side. `hinge` is ⟂ to the bone by
+ *  construction, so the cross is always well-defined (magnitude 1). */
+function flexorDir(hinge: Vec3, boneDir: Vec3): Vec3 {
+  return norm3(cross3(hinge, boneDir));
+}
+
+/** A muscle belly: two overlapping capsules along `a`→`b`, offset toward `side`
+ *  by `off`, welded so it reads as a tapered fusiform mass rather than a tube.
+ *  `ra`/`rb` are the belly radii at the `a`/`b` ends (thick belly, thin
+ *  insertion). */
+function muscleBelly(sdf: SdfApi, a: Vec3, b: Vec3, side: Vec3, off: number, ra: number, rb: number): Node {
+  const a2 = add3(a, scale3(side, off));
+  const b2 = add3(b, scale3(side, off));
+  const thick = sdf.capsule(a2, lerp3(a2, b2, 0.6), ra);
+  const thin = sdf.capsule(lerp3(a2, b2, 0.4), b2, rb);
+  return thick.smoothUnion(thin, Math.min(ra, rb) * 1.2);
 }
 
 // --- Part builders --------------------------------------------------------
@@ -797,10 +853,52 @@ function buildTorso(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const k = r.chestY * 0.6;
   let body = chest.smoothUnion(belly, k).smoothUnion(pelvis, k);
 
+  // Muscle masses (only when the `muscle` axis is engaged). Pectorals + traps
+  // + lats + a tight abdominal panel, all on the body front (−Y) / sides, kept
+  // BELOW the shoulder line so they never climb into the lower face. Mirrors —
+  // and supersedes — the chest/trap masses figures used to hand-roll.
+  const m = rig.opts.muscle;
+  if (m > 0) {
+    const wk = r.chestY * 0.7;
+    // Pectorals — two forward masses on the upper chest.
+    const pecZ = mix(j.chest[2], j.upperArmL[2], 0.18);
+    const pecY = -r.chestY * (0.5 + 0.18 * m);
+    const pec = (sx: number): Node => sdf.ellipsoid(
+      r.chestX * (0.42 + 0.05 * m), r.chestY * (0.45 + 0.18 * m), r.chestY * (0.52 + 0.12 * m),
+    ).translate([sx * r.chestX * 0.4, pecY, pecZ]);
+    const pecs = pec(1).smoothUnion(pec(-1), r.chestX * 0.3);
+    // Trapezius — neck-to-shoulder ramps (the strongman's hand-rolled traps).
+    const trap = (sx: number): Node => sdf.ellipsoid(
+      r.upperArm * (0.9 + 0.4 * m), r.upperArm * 0.7, r.upperArm * (0.8 + 0.4 * m),
+    ).translate([sx * j.upperArmL[0] * 0.6, -r.chestY * 0.15, j.upperArmL[2] + r.upperArm * 0.1]);
+    const traps = trap(1).union(trap(-1));
+    // Lats — tapering "wings" from under the arms down into the waist (the
+    // V-taper). A side ellipsoid offset off a tapering waist forms a TUNNEL
+    // (it overlaps the core only at top and bottom, looping a handle); a
+    // tapered capsule running high-and-wide → low-and-inward instead overlaps
+    // the core along its whole length, so it can never pinch a hole.
+    const latTop = (sx: number): Vec3 => [sx * r.chestX * 0.8, r.chestY * 0.08, mix(j.chest[2], j.upperArmL[2], 0.05)];
+    const latBot = (sx: number): Vec3 => [sx * r.chestX * 0.34, r.chestY * 0.12, j.spine[2]];
+    const lat = (sx: number): Node => tapered(sdf, latTop(sx), latBot(sx),
+      r.chestX * (0.26 + 0.08 * m), r.chestX * (0.16 + 0.05 * m), r.chestX * 0.22);
+    const lats = lat(1).union(lat(-1));
+    // Abdominal panel — a tight forward core on the lower belly.
+    const abs = sdf.ellipsoid(
+      r.chestX * (0.34 + 0.05 * m), r.chestY * (0.32 + 0.12 * m), (j.spine[2] - j.hips[2]) * 0.62,
+    ).translate([0, -r.chestY * (0.55 + 0.12 * m), mix(j.spine[2], j.hips[2], 0.42)]);
+    body = body
+      .smoothUnion(pecs, wk)
+      .smoothUnion(traps, r.upperArm * 0.8)
+      .smoothUnion(lats, wk)
+      .smoothUnion(abs, wk);
+  }
+
   // Breast mounds — driven by `rig.bust` (like sex/age/weight, a rig-level
   // proportion), so `F.torso(rig)` shapes them automatically; `bust === 0`
   // (every non-female default) leaves the torso byte-identical. Blended into
   // the chest with a bust-scaled k so the base melds and only the apex projects.
+  // Applied AFTER the muscle pecs so a female muscular figure reads as a bust
+  // riding the chest rather than the pec swallowing it.
   const mounds = breastMounds(j, r, rig.opts.bust);
   if (mounds) {
     const mk = r.chestX * (0.3 + 0.2 * rig.opts.bust);
@@ -887,17 +985,36 @@ function tapered(sdf: SdfApi, a: Vec3, b: Vec3, ra: number, rb: number, k: numbe
 }
 
 function buildArms(sdf: SdfApi, rig: Rig): Node {
-  const j = rig.joints, r = rig.r;
+  const j = rig.joints, r = rig.r, d = rig.dir;
+  const m = rig.opts.muscle;
   const k = r.lowerArm * 1.3;             // elbow weld — soft, no kink
-  function arm(S: Vec3, E: Vec3, W: Vec3): Node {
+  function arm(S: Vec3, E: Vec3, W: Vec3, upDir: Vec3, foreDir: Vec3, hinge: Vec3): Node {
     const upper = tapered(sdf, S, E, r.upperArm, r.lowerArm * 1.05, k);
     const fore = tapered(sdf, E, W, r.lowerArm * 1.02, r.lowerArm * 0.8, k);
-    // Deltoid cap so the shoulder reads as a rounded mass, not a tube stub.
-    const deltoid = sdf.sphere(r.upperArm * 1.15).translate(S);
-    return upper.smoothUnion(fore, k).smoothUnion(deltoid, r.upperArm * 0.9);
+    // Deltoid cap so the shoulder reads as a rounded mass, not a tube stub —
+    // grows with muscle into a capped delt.
+    const deltoid = sdf.sphere(r.upperArm * (1.15 + 0.3 * m)).translate(S);
+    let out = upper.smoothUnion(fore, k).smoothUnion(deltoid, r.upperArm * 0.9);
+    if (m > 0) {
+      const flex = flexorDir(hinge, upDir);             // biceps (anterior) side
+      const wk = r.upperArm * 0.9;
+      const biceps = muscleBelly(sdf, lerp3(S, E, 0.30), lerp3(S, E, 0.68),
+        flex, r.upperArm * (0.25 + 0.3 * m),
+        r.upperArm * (0.4 + 0.5 * m), r.upperArm * (0.3 + 0.35 * m));
+      const triceps = muscleBelly(sdf, lerp3(S, E, 0.18), lerp3(S, E, 0.66),
+        scale3(flex, -1), r.upperArm * (0.2 + 0.28 * m),
+        r.upperArm * (0.38 + 0.42 * m), r.upperArm * (0.3 + 0.3 * m));
+      // Forearm flexor swell near the elbow (brachioradialis/flexor mass).
+      const fflex = flexorDir(hinge, foreDir);
+      const foreSwell = muscleBelly(sdf, lerp3(E, W, 0.12), lerp3(E, W, 0.52),
+        fflex, r.lowerArm * (0.15 + 0.2 * m),
+        r.lowerArm * (0.3 + 0.45 * m), r.lowerArm * (0.25 + 0.3 * m));
+      out = out.smoothUnion(biceps, wk).smoothUnion(triceps, wk).smoothUnion(foreSwell, r.lowerArm * 0.8);
+    }
+    return out;
   }
-  const armL = arm(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3);
-  const armR = arm(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3);
+  const armL = arm(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3, d.upperArmL, d.lowerArmL, d.elbowHingeL);
+  const armR = arm(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3, d.upperArmR, d.lowerArmR, d.elbowHingeR);
   return armL.union(armR);
 }
 
@@ -1011,15 +1128,44 @@ function handDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
 }
 
 function buildLegs(sdf: SdfApi, rig: Rig): Node {
-  const j = rig.joints, r = rig.r;
+  const j = rig.joints, r = rig.r, d = rig.dir;
+  const m = rig.opts.muscle;
   const k = r.lowerLeg * 1.3;               // knee weld — soft, no kink
-  function leg(Hj: Vec3, K: Vec3, A: Vec3): Node {
+  function leg(Hj: Vec3, K: Vec3, A: Vec3, thighDir: Vec3, shankDir: Vec3, hinge: Vec3, glute: Vec3): Node {
     const thigh = tapered(sdf, Hj, K, r.upperLeg, r.lowerLeg * 1.1, k);
     const shank = tapered(sdf, K, A, r.lowerLeg * 1.05, r.lowerLeg * 0.78, k);
-    return thigh.smoothUnion(shank, k);
+    let out = thigh.smoothUnion(shank, k);
+    if (m > 0) {
+      const wk = r.upperLeg * 0.9;
+      const ant = flexorDir(hinge, thighDir);          // quad (anterior) side
+      const post = scale3(ant, -1);                     // hamstring (posterior)
+      const quad = muscleBelly(sdf, lerp3(Hj, K, 0.25), lerp3(Hj, K, 0.8),
+        ant, r.upperLeg * (0.18 + 0.22 * m),
+        r.upperLeg * (0.32 + 0.4 * m), r.upperLeg * (0.26 + 0.3 * m));
+      const ham = muscleBelly(sdf, lerp3(Hj, K, 0.2), lerp3(Hj, K, 0.72),
+        post, r.upperLeg * (0.15 + 0.18 * m),
+        r.upperLeg * (0.28 + 0.3 * m), r.upperLeg * (0.24 + 0.25 * m));
+      // Calf (gastrocnemius) — posterior of the upper shank.
+      const calfPost = scale3(flexorDir(hinge, shankDir), -1);
+      const calf = muscleBelly(sdf, lerp3(K, A, 0.06), lerp3(K, A, 0.5),
+        calfPost, r.lowerLeg * (0.2 + 0.25 * m),
+        r.lowerLeg * (0.32 + 0.45 * m), r.lowerLeg * (0.18 + 0.25 * m));
+      // Glute — a forward-of-hamstring mass at the seat (posterior of the hip).
+      const gluteNode = sdf.ellipsoid(
+        r.upperLeg * (0.7 + 0.2 * m), r.upperLeg * (0.55 + 0.2 * m), r.upperLeg * (0.6 + 0.15 * m),
+      ).translate(glute);
+      out = out
+        .smoothUnion(quad, wk)
+        .smoothUnion(ham, wk)
+        .smoothUnion(calf, r.lowerLeg * 0.9)
+        .smoothUnion(gluteNode, wk);
+    }
+    return out;
   }
-  return leg(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3)
-    .union(leg(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3));
+  // Glute centre: just behind (+Y) and below the hip joint, between hip and knee start.
+  const glutePt = (Hj: Vec3): Vec3 => [Hj[0], r.hipsY * (0.6 + 0.2 * m), mix(Hj[2], j.hips[2], 0.25)];
+  return leg(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3, d.upperLegL, d.lowerLegL, d.kneeHingeL, glutePt(j.upperLegL as Vec3))
+    .union(leg(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3, d.upperLegR, d.lowerLegR, d.kneeHingeR, glutePt(j.upperLegR as Vec3)));
 }
 
 /** The sole-plane Z of a foot (centre of the sole capsule), derived from its
@@ -3039,4 +3185,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair };

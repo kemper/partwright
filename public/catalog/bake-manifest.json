@@ -1,6 +1,17 @@
 {
   "version": 1,
   "entries": {
+    "athletic-sprinter": {
+      "source": "examples/figure_athlete.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "top",
+          "shorts"
+        ]
+      }
+    },
     "ball-socket-mount": {
       "source": "examples/ball_socket_mount.js",
       "gates": {
@@ -125,6 +136,17 @@
       "gates": {
         "maxGenus": null,
         "requiredLabels": []
+      }
+    },
+    "muscular-hero": {
+      "source": "examples/figure_bodybuilder.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "trunks",
+          "eyes"
+        ]
       }
     },
     "openscad-twisted": {
