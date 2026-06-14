@@ -1263,10 +1263,54 @@ const LID_PRESET: Record<Exclude<LidStyle, 'none'>, LidFrac> = {
 const LID_SCALE = 1.06;
 const LID_TILT_DEG = 18;
 
+// --- Gaze: where the iris/pupil point --------------------------------------
+// A gaze rotates the iris/pupil plug away from straight-ahead, ABOUT THE
+// EYEBALL CENTRE, in the CANONICAL head frame (so it follows the head pose).
+// `yaw` > 0 turns the gaze toward the FIGURE'S OWN LEFT (+headLeft); `pitch` >
+// 0 turns it UP (+headUp) — both in DEGREES. Supply a named preset (the nine
+// cardinal/intercardinal looks below), a { yaw, pitch } pair for an exact
+// angle, or 'middle'/'center' for straight ahead. Modest angles keep the iris
+// within the eye opening; at the extremes the discs clip cleanly to the lid
+// band (a far look tucks partly behind the lid, as a real eye does).
+interface Gaze { yaw: number; pitch: number }
+const GAZE_CARDINAL = 22;   // degrees for a pure left / right / up / down look
+const GAZE_DIAGONAL = 15;   // per-axis degrees for the four corner looks
+const GAZE_PRESETS: Record<string, Gaze> = {
+  middle: { yaw: 0, pitch: 0 },
+  center: { yaw: 0, pitch: 0 },                                   // alias of 'middle'
+  left: { yaw: GAZE_CARDINAL, pitch: 0 },                         // figure's own left
+  right: { yaw: -GAZE_CARDINAL, pitch: 0 },
+  up: { yaw: 0, pitch: GAZE_CARDINAL },
+  down: { yaw: 0, pitch: -GAZE_CARDINAL },
+  'upper-left': { yaw: GAZE_DIAGONAL, pitch: GAZE_DIAGONAL },
+  'upper-right': { yaw: -GAZE_DIAGONAL, pitch: GAZE_DIAGONAL },
+  'lower-left': { yaw: GAZE_DIAGONAL, pitch: -GAZE_DIAGONAL },
+  'lower-right': { yaw: -GAZE_DIAGONAL, pitch: -GAZE_DIAGONAL },
+};
+const GAZE_NAMES = Object.keys(GAZE_PRESETS) as [string, ...string[]];
+
+/** Parse a gaze value: a preset name, a { yaw, pitch } pair (degrees, figure's
+ *  left / up positive), or undefined → straight ahead ({ yaw: 0, pitch: 0 }). */
+function parseGaze(v: unknown, name: string): Gaze {
+  if (v === undefined) return { yaw: 0, pitch: 0 };
+  if (typeof v === 'string') return GAZE_PRESETS[assertEnum(v, GAZE_NAMES, name)];
+  const o = assertObject(v, name) as Record<string, unknown>;
+  assertNoUnknownKeys(o, ['yaw', 'pitch'], name);
+  return {
+    yaw: num(o.yaw, 0, `${name}.yaw`, -45, 45),
+    pitch: num(o.pitch, 0, `${name}.pitch`, -45, 45),
+  };
+}
+
 function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'eyes(opts)');
-  assertNoUnknownKeys(o, ['radius', 'style', 'lids'], 'eyes(opts)');
+  assertNoUnknownKeys(o, ['radius', 'style', 'lids', 'gaze', 'gazeL', 'gazeR'], 'eyes(opts)');
   const rad = num(o.radius, rig.r.head * 0.16, 'eyes.radius', 0.01);
+  // `gaze` aims BOTH irises/pupils; `gazeL` / `gazeR` override one eye (the
+  // figure's own left / right) for cross-eyed or independent looks.
+  const gazeBase = parseGaze(o.gaze, 'eyes.gaze');
+  const gazeLeft = o.gazeL === undefined ? gazeBase : parseGaze(o.gazeL, 'eyes.gazeL');
+  const gazeRight = o.gazeR === undefined ? gazeBase : parseGaze(o.gazeR, 'eyes.gazeR');
   const style = o.style === undefined ? 'iris'
     : assertEnum(o.style, ['solid', 'iris'] as const, 'eyes.style');
   // `lids`: a named preset string, or a { upper, lower } pair (each 0..1), or
@@ -1365,11 +1409,16 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // no bead/bump — the disc reads as painted on a round eye. (`capR` grows
   // sclera < iris < pupil so each wins over the one beneath; <3% of rad, sub-
   // visual.) Built along +Z then rotated +Z→−Y to the canonical front.
-  const discAt = (c: Vec3, capR: number, discR: number): Node => {
+  const discAt = (c: Vec3, capR: number, discR: number, g: Gaze): Node => {
     const depth = capR;
-    const plug = sdf.sphere(capR).intersect(
+    let plug = sdf.sphere(capR).intersect(
       sdf.cylinder(discR, depth).translate([0, 0, capR - depth / 2]).rotate([90, 0, 0]),
     );
+    // Aim the plug about the eyeball centre (the origin, since the cap sphere is
+    // origin-centred): pitch about X (−pitch so +pitch looks UP), then yaw about
+    // Z (+yaw toward the figure's left). The cap stays concentric with the
+    // eyeball (rotation about its centre), so only the disc re-aims — no bump.
+    if (g.yaw !== 0 || g.pitch !== 0) plug = plug.rotate([-g.pitch, 0, 0]).rotate([0, 0, g.yaw]);
     return orientToHeadPose(plug, rig).translate(c);
   };
 
@@ -1382,12 +1431,12 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // a generous white margin) are clipped out from under the lids so their colour
   // can't bleed onto the lid.
   const parts: Node[] = [];
-  for (const c of [cL, cR]) {
+  for (const [c, g] of [[cL, gazeLeft], [cR, gazeRight]] as [Vec3, Gaze][]) {
     parts.push(sdf.sphere(rad).translate(c).label('eyes'));
     if (lidLocal) parts.push(lidAt(c).label('lids'));
     if (style === 'iris') {
-      parts.push(clipDiscAt(discAt(c, rad * 1.012, rad * 0.55), c).label('iris'));
-      parts.push(clipDiscAt(discAt(c, rad * 1.024, rad * 0.27), c).label('pupil'));
+      parts.push(clipDiscAt(discAt(c, rad * 1.012, rad * 0.55, g), c).label('iris'));
+      parts.push(clipDiscAt(discAt(c, rad * 1.024, rad * 0.27, g), c).label('pupil'));
     }
   }
   return parts.reduce((acc, n) => acc.union(n));

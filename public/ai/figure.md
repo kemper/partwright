@@ -370,7 +370,7 @@ before aiming a prop at it.
 
 ```js
 F.face.assemble(head, rig, {
-  eyes:  true | { radius } | false,   // OFF by default — see note below
+  eyes:  true | { radius, style, lids, gaze, gazeL, gazeR } | false,  // OFF by default — see note below
   nose:  true | { tipRadius, length, width, bridge, flare } | false,
   mouth: true | { style, width, smirk, open, fullness } | false,
   ears:  true | { size } | false,
@@ -482,6 +482,40 @@ hard-union them at the top level — smooth-welded features can't carry paint
 labels, and an eye buried under the cheek welds resolves to a label with zero
 paintable triangles. The eyeballs are pushed forward so the domes always
 protrude. (Brows can use the same top-level pattern if you want them painted.)
+
+#### Gaze — `gaze`, `gazeL`, `gazeR` (where the eyes point)
+
+By default the irises/pupils look straight ahead. Aim them with `gaze` — a
+named preset, or a `{ yaw, pitch }` pair in **degrees** (`yaw` > 0 = the
+**figure's own left**, `pitch` > 0 = **up**; both follow the head pose). The
+nine presets are the cardinal + corner directions:
+
+```js
+F.face.eyes(rig, { gaze: 'up' })                   // both eyes look up
+F.face.eyes(rig, { gaze: 'lower-right' })           // both look down-and-right
+F.face.eyes(rig, { gaze: { yaw: -12, pitch: 8 } })  // exact angle: right + up
+```
+
+| `gaze` preset | Look |
+|---|---|
+| `'middle'` (default) / `'center'` | straight ahead |
+| `'left'` / `'right'` | toward the figure's own left / right |
+| `'up'` / `'down'` | up / down |
+| `'upper-left'` · `'upper-right'` · `'lower-left'` · `'lower-right'` | the four corners |
+
+`gaze` sets **both** eyes. To aim each eye separately — cross-eyed, wall-eyed,
+or one lazy eye — override a single side with **`gazeL`** (the figure's left
+eye) and/or **`gazeR`** (its right). Each takes the same preset-or-`{yaw,pitch}`
+value, and falls back to `gaze` when omitted:
+
+```js
+F.face.eyes(rig, { gazeL: 'right', gazeR: 'left' })    // cross-eyed (both toward the nose)
+F.face.eyes(rig, { gaze: 'down', gazeR: 'lower-left' }) // both down; right eye drifts in
+```
+
+Gaze only steers the iris/pupil (`style: 'iris'`); a `'solid'` bead has nothing
+to aim. Keep angles modest so the iris stays within the eye opening — under
+`lids`, a far look correctly tucks partly behind the lid.
 
 #### Eyelids — `lids` (off by default)
 

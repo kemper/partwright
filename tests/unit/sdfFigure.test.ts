@@ -583,6 +583,90 @@ describe('figure eyes — eyelids', () => {
   });
 });
 
+describe('figure eyes — gaze (where the iris/pupil point)', () => {
+  const rig = buildRig({ height: 60, headsTall: 5 });
+  const labelsOf = (node: unknown): string[] =>
+    [...new Set(partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n))].sort();
+  // partitionByLabel keeps the two eyes' iris regions separate (one per eye, in
+  // build order [left eye = +X, right eye = −X]); resolveLabelMap merges them by
+  // name later. So we read each eye's iris-disc centroid (its AABB centre)
+  // independently — exactly what per-eye gaze needs to verify.
+  const irises = (opts?: unknown): { L: { x: number; z: number }; R: { x: number; z: number } } => {
+    const ps = partitionByLabel(buildEyes(api, rig, opts) as SdfNode).filter(p => p.labelName === 'iris');
+    if (ps.length !== 2) throw new Error(`expected 2 iris regions, got ${ps.length}`);
+    const ctr = (i: number): { x: number; z: number } => {
+      const b = ps[i].node.bounds();
+      return { x: (b.min[0] + b.max[0]) / 2, z: (b.min[2] + b.max[2]) / 2 };
+    };
+    return { L: ctr(0), R: ctr(1) };
+  };
+  const gap = (e: { L: { x: number }; R: { x: number } }): number => e.L.x - e.R.x;  // L is +X, R is −X
+
+  it("default ('middle'/'center') gaze is symmetric, with the usual labels", () => {
+    expect(labelsOf(buildEyes(api, rig, { gaze: 'middle' }))).toEqual(['eyes', 'iris', 'pupil']);
+    expect(labelsOf(buildEyes(api, rig, { gaze: 'center' }))).toEqual(['eyes', 'iris', 'pupil']);
+    const d = irises(), m = irises({ gaze: 'middle' });
+    expect(d.L.x).toBeGreaterThan(0);          // left eye sits on +X
+    expect(d.R.x).toBeLessThan(0);             // right eye on −X
+    expect(d.L.x + d.R.x).toBeCloseTo(0, 1);   // mirror-symmetric ⇒ no net X bias
+    expect(m.L.x).toBeCloseTo(d.L.x, 5);       // 'middle' === default
+  });
+
+  it("'left' turns BOTH irises toward the figure's own left (+X); 'right' the other way", () => {
+    const d = irises();
+    const l = irises({ gaze: 'left' });
+    expect(l.L.x).toBeGreaterThan(d.L.x + 0.1);
+    expect(l.R.x).toBeGreaterThan(d.R.x + 0.1);
+    const r = irises({ gaze: 'right' });
+    expect(r.L.x).toBeLessThan(d.L.x - 0.1);
+    expect(r.R.x).toBeLessThan(d.R.x - 0.1);
+  });
+
+  it("'up' raises both irises, 'down' lowers them", () => {
+    const d = irises();
+    expect(irises({ gaze: 'up' }).L.z).toBeGreaterThan(d.L.z + 0.1);
+    expect(irises({ gaze: 'down' }).L.z).toBeLessThan(d.L.z - 0.1);
+  });
+
+  it('the corner presets move on both axes', () => {
+    const d = irises();
+    const ul = irises({ gaze: 'upper-left' });
+    expect(ul.L.x).toBeGreaterThan(d.L.x + 0.05);
+    expect(ul.L.z).toBeGreaterThan(d.L.z + 0.05);
+    const lr = irises({ gaze: 'lower-right' });
+    expect(lr.L.x).toBeLessThan(d.L.x - 0.05);
+    expect(lr.L.z).toBeLessThan(d.L.z - 0.05);
+  });
+
+  it('a { yaw, pitch } pair aims at an explicit angle (figure-left / up positive)', () => {
+    const d = irises();
+    expect(irises({ gaze: { yaw: 20 } }).L.x).toBeGreaterThan(d.L.x + 0.1);
+    expect(irises({ gaze: { pitch: 20 } }).L.z).toBeGreaterThan(d.L.z + 0.1);
+  });
+
+  it('per-eye gazeL/gazeR aim eyes independently — cross-eyed converges, wall-eyed diverges', () => {
+    const d = gap(irises());
+    expect(gap(irises({ gazeL: 'right', gazeR: 'left' }))).toBeLessThan(d - 0.1);    // turn inward
+    expect(gap(irises({ gazeL: 'left', gazeR: 'right' }))).toBeGreaterThan(d + 0.1); // turn outward
+  });
+
+  it('gazeL overrides only the left eye; gaze seeds both', () => {
+    const d = irises();
+    const one = irises({ gazeL: 'left' });
+    expect(one.L.x).toBeGreaterThan(d.L.x + 0.1);  // left eye turned
+    expect(one.R.x).toBeCloseTo(d.R.x, 5);         // right eye untouched
+    const both = irises({ gaze: 'left' });
+    expect(both.R.x).toBeGreaterThan(d.R.x + 0.1); // gaze moves the right eye too
+  });
+
+  it('rejects an unknown preset, out-of-range angles, and unknown keys', () => {
+    expect(() => buildEyes(api, rig, { gaze: 'sideways' })).toThrow(/gaze/);
+    expect(() => buildEyes(api, rig, { gaze: { yaw: 90 } })).toThrow();
+    expect(() => buildEyes(api, rig, { gaze: { roll: 10 } })).toThrow();
+    expect(() => buildEyes(api, rig, { gazeR: 'nope' })).toThrow(/gazeR/);
+  });
+});
+
 describe('figure pants — posed-leg coverage', () => {
   it('pant cuffs stay ON the bone for a posed (lunge) leg', () => {
     // Regression: a fixed world-Z cuff endpoint pulled the pant shank off a
