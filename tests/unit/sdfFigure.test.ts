@@ -659,6 +659,27 @@ describe('figure mouth — styles', () => {
     expect(() => buildMouthPart(api, rig, { style: 'lips', lipShape: 'duckbill' })).toThrow(/lipShape/);
   });
 
+  it('bare style:lips is the historical straight ridge (byte-identical)', () => {
+    // Lock the back-compat default: bare lips (no lipShape/divided/curve) must
+    // stay the exact historical capsule that catalog bakes were built against.
+    const node = buildMouthPart(api, rig, { style: 'lips' }).node;
+    const m = rig.face.mouth, u = rig.dir.headUp, right = rig.dir.headLeft, f = rig.dir.headForward;
+    const R = rig.r.head, lipR = R * 0.085, halfW = R * 0.25; // default width R*0.5
+    const fwd: [number, number, number] = [f[0] * lipR * 0.6, f[1] * lipR * 0.6, f[2] * lipR * 0.6];
+    const a: [number, number, number] = [m[0] + fwd[0] + right[0] * halfW, m[1] + fwd[1] + right[1] * halfW, m[2] + fwd[2] + right[2] * halfW];
+    const b: [number, number, number] = [m[0] + fwd[0] - right[0] * halfW, m[1] + fwd[1] - right[1] * halfW, m[2] + fwd[2] - right[2] * halfW];
+    const ref = api.capsule(a, b, lipR) as SdfNode;
+    // Two SDFs equal at enough independent points ⇒ identical capsule.
+    const samples: Array<[number, number, number]> = [
+      m, [m[0] + fwd[0], m[1] + fwd[1], m[2] + fwd[2]], a, b,
+      [m[0] + u[0] * lipR, m[1] + u[1] * lipR, m[2] + u[2] * lipR],
+      [m[0] + f[0] * R, m[1] + f[1] * R, m[2] + f[2] * R],
+    ];
+    for (const [x, y, z] of samples) {
+      expect((node as SdfNode).evaluate(x, y, z)).toBeCloseTo(ref.evaluate(x, y, z), 9);
+    }
+  });
+
   it('render: painted makes the smile line additive (the #652-class fallback)', () => {
     expect(buildMouthPart(api, rig, { render: 'painted' }).mode).toBe('add');
     expect(buildMouthPart(api, rig, { render: 'carved' }).mode).toBe('carve');

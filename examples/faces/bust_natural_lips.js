@@ -1,8 +1,9 @@
-// FACE LAB — natural two-lip mouth: a distinct UPPER and LOWER lip (the
-// `divided` lip style) instead of a single flat line. Additive + painted, so it
-// prints clean. `expression` / `curve` bows the lips (here a gentle smile);
-// `fullness` sets lip thickness. Pass `mouth: false` to assemble so the labelled
-// ridge from mouthAccents IS the mouth (a welded copy would swallow the label).
+// FACE LAB — natural two-lip mouth via `lipShape: 'natural'`: a refined
+// cupid's-bow upper + fuller lower + parting groove, instead of a single flat
+// line. Additive + painted, so it prints clean. `expression` / `curve` bows the
+// lips (here a gentle smile); `fullness` sets lip thickness. Pass `mouth: false`
+// to assemble so the labelled lips from mouthAccents ARE the mouth (a welded
+// copy would swallow the label).
 // Quick review:  npm run model:preview -- examples/faces/bust_natural_lips.js --view 270,-2
 const { sdf } = api;
 const F = sdf.figure;
