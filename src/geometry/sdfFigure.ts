@@ -1235,25 +1235,33 @@ function groundRig(rig: Rig, opts?: unknown): Rig {
 
 // --- Face features (read rig.face anchors) --------------------------------
 
-// Eyelid styles. A skin dome (a hair larger than the eyeball) covers the eye
-// front; a smooth ELLIPTICAL hole is cut through it where the eye shows. Each
-// style is the size + vertical placement of that opening: `wx`/`hz` are its
-// half-width / half-height (× eye radius) and `cz` its vertical centre (× radius,
-// −down). A SMOOTH ellipse — not the union of box half-spaces — so the opening
-// edge is a clean curve, never the jagged rectangle box cuts produced. `scale`
-// sizes the dome (how far the lid sits proud of the eyeball). The dome is
-// labelled `'lids'` so the caller paints it (skin tone, or eyeshadow); 'closed'
-// leaves no opening. 'none' is the backward-compatible default — no lids.
+// Eyelid styles. The lid is modelled as TWO independent lids — an upper and a
+// lower — each a thin skin shell that hugs (wraps) the eyeball and sweeps in
+// from its pole to a margin. `upper`/`lower` are how far each lid has closed,
+// 0 (fully retracted, eye wide) … 1 (fully drawn across). The eye is OPEN
+// between the two margins; when `upper + lower ≥ 1` the margins meet and the
+// eye is CLOSED. So {upper:0.75, lower:0.25} and {0.5,0.5} both read closed,
+// {0.25,0.25} is a slit, {0.3,0.05} is an alert eye with just an upper lid.
+//
+// `lids` accepts a `{ upper, lower }` pair for full control, OR one of the
+// named presets below as shorthand (mapped to a pair). 'none' / undefined =
+// no lids (the bare eyeball — backward compatible).
 const LID_STYLES = ['none', 'upper', 'hooded', 'half', 'closed', 'almond', 'tapered'] as const;
 type LidStyle = typeof LID_STYLES[number];
-const LID_SPEC: Record<Exclude<LidStyle, 'none'>, { wx: number; hz: number; cz: number; scale: number }> = {
-  upper: { wx: 0.96, hz: 0.70, cz: -0.10, scale: 1.07 },   // wide open eye, just an upper lid
-  hooded: { wx: 0.94, hz: 0.52, cz: -0.26, scale: 1.10 },  // heavier brow-ward hood
-  half: { wx: 0.92, hz: 0.36, cz: -0.02, scale: 1.07 },    // sleepy / half-closed slit
-  closed: { wx: 0, hz: 0, cz: 0, scale: 1.07 },            // no opening — fully shut
-  almond: { wx: 0.78, hz: 0.54, cz: 0.00, scale: 1.07 },   // balanced almond eye
-  tapered: { wx: 0.62, hz: 0.44, cz: 0.02, scale: 1.07 },  // elongated, narrower almond
+interface LidFrac { upper: number; lower: number }
+const LID_PRESET: Record<Exclude<LidStyle, 'none'>, LidFrac> = {
+  upper: { upper: 0.30, lower: 0.06 },    // alert, open eye with a defined upper lid
+  hooded: { upper: 0.46, lower: 0.06 },   // heavier upper hood
+  half: { upper: 0.40, lower: 0.12 },     // sleepy / half-closed (pupil still visible)
+  closed: { upper: 0.56, lower: 0.50 },   // lids meet — shut
+  almond: { upper: 0.30, lower: 0.20 },   // both lids visible, almond opening
+  tapered: { upper: 0.38, lower: 0.28 },  // narrower, more drawn-out
 };
+// The lid sits this fraction proud of the eyeball (a thin shell that wraps it),
+// and the margins tilt forward by this much so they arc naturally over a round
+// eye instead of cutting a flat chord.
+const LID_SCALE = 1.06;
+const LID_TILT_DEG = 18;
 
 function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'eyes(opts)');
@@ -1261,8 +1269,23 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const rad = num(o.radius, rig.r.head * 0.16, 'eyes.radius', 0.01);
   const style = o.style === undefined ? 'iris'
     : assertEnum(o.style, ['solid', 'iris'] as const, 'eyes.style');
-  const lids: LidStyle = o.lids === undefined ? 'none'
-    : assertEnum(o.lids, LID_STYLES, 'eyes.lids');
+  // `lids`: a named preset string, or a { upper, lower } pair (each 0..1), or
+  // 'none'/undefined for the bare eyeball.
+  let lidFrac: LidFrac | null;
+  if (o.lids === undefined) {
+    lidFrac = null;
+  } else if (typeof o.lids === 'string') {
+    const preset = assertEnum(o.lids, LID_STYLES, 'eyes.lids');
+    lidFrac = preset === 'none' ? null : LID_PRESET[preset];
+  } else {
+    const lo = assertObject(o.lids, 'eyes.lids') as Record<string, unknown>;
+    assertNoUnknownKeys(lo, ['upper', 'lower'], 'eyes.lids');
+    lidFrac = {
+      upper: num(lo.upper, 0, 'eyes.lids.upper', 0, 1),
+      lower: num(lo.lower, 0, 'eyes.lids.lower', 0, 1),
+    };
+    if (lidFrac.upper === 0 && lidFrac.lower === 0) lidFrac = null;
+  }
   const f = rig.dir.headForward;
   // Push the eyeballs out so a dome reliably protrudes past the cheek welds —
   // an eye centred ON the anchor can be fully swallowed, leaving a paintable
@@ -1281,103 +1304,93 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   };
 
   // --- Eyelids -----------------------------------------------------------
-  // A skin DOME covers the eyeball front; a smooth ELLIPTICAL hole is cut where
-  // the eye shows. Everything is built in the CANONICAL head frame (forward −Y,
-  // up +Z, lateral ±X) then oriented into the posed head and translated onto
-  // each eye centre — the same canonical→pose→translate path the iris/pupil
-  // `disc` plug uses.
+  // TWO independent lids, each a thin skin shell that WRAPS the eyeball: a cap
+  // of a slightly-larger concentric sphere (`dome`) sliced to the band the lid
+  // covers. The slicing plane is TILTED forward (about X) so the lid margin
+  // arcs over the round eye like a real lid instead of cutting a flat chord —
+  // and because the cut is a circle on the sphere, the margin wraps. Built in
+  // the CANONICAL head frame (forward −Y, up +Z, lateral ±X) then oriented into
+  // the posed head and translated onto each eye centre.
   //
-  //   • dome    = sphere(lidR) ∩ front half-space — a skin cap over the eye.
-  //   • opening = an ellipsoid stretched into a tube along the view axis (−Y),
-  //               so it carves a clean elliptical window (no jagged box-cut
-  //               rectangle). 'closed' has no opening.
-  //   • lid     = dome − opening  (labelled 'lids')
-  //   • the eyeball / iris / pupil are CLIPPED to the opening (intersect), so no
-  //     eye geometry survives under the lid — nothing to bleed colour onto the
-  //     lid or poke through, and 'closed' hides the eye entirely.
-  const spec = lids === 'none' ? null : LID_SPEC[lids];
-  let lidNode: Node | null = null;
-  let clipBall = (n: Node): Node => n;   // the eyeball (sclera) — kept whole when open
-  let clipDisc = (n: Node): Node => n;   // iris / pupil — confined to the opening
-  if (spec) {
-    const lidR = rad * spec.scale;
+  //   • upper lid covers z ≥ +(1−2·upper)·rad  (margin descends as `upper` → 1)
+  //   • lower lid covers z ≤ −(1−2·lower)·rad  (margin rises as `lower` → 1)
+  //   • lids = (upper ∪ lower) caps of the dome, labelled 'lids'
+  //   • the eyeball stays a WHOLE sphere (fills behind the lids → genus-clean,
+  //     no tunnels); only the iris/pupil are clipped out from under the lids so
+  //     their colour can't bleed onto the lid. When the margins meet (upper +
+  //     lower ≥ 1) the lids cover the whole eye → shut.
+  let lidLocal: Node | null = null;   // the two-lid SKIN shell of ONE eye, canonical frame
+  let bandLocal: Node | null = null;  // the OPENING band between the margins (half-spaces)
+  if (lidFrac) {
+    const lidR = rad * LID_SCALE;
     const big = lidR * 4;
-    const frontBox = sdf.box([big, big, big]).translate([0, -big / 2 + rad * 0.25, 0]); // keep front (y ≲ 0)
-    const dome = sdf.sphere(lidR).intersect(frontBox);
-    const opening = spec.wx > 0 && spec.hz > 0
-      ? sdf.ellipsoid(rad * spec.wx, rad * 3, rad * spec.hz).translate([0, 0, rad * spec.cz])
-      : null;
-    const lidLocal = opening ? dome.subtract(opening) : dome;
-    const placeBoth = (node: Node): Node =>
-      orientToHeadPose(node, rig).translate(cL).union(orientToHeadPose(node, rig).translate(cR));
-    lidNode = placeBoth(lidLocal).label('lids');
-    if (opening) {
-      // The EYEBALL stays a WHOLE sphere — it fills behind the dome's hole, so
-      // the dome+eyeball is one solid mass (no nested tube walls → no genus
-      // blow-up; clipping the ball to a lens shared the opening's tube wall with
-      // the lid and produced dozens of handles). Only the IRIS/PUPIL discs are
-      // clipped to the opening, so their colour can't extend under the lid and
-      // bleed onto it.
-      const openSolid = placeBoth(opening);
-      clipBall = (n) => n;
-      clipDisc = (n) => n.intersect(openSolid);
-    } else {
-      // 'closed' — no opening; remove the eye entirely under the full dome.
-      const domeSolid = placeBoth(dome);
-      clipBall = (n) => n.subtract(domeSolid);
-      clipDisc = (n) => n.subtract(domeSolid);
+    // A margin plane at height `mz` tilted forward (about X) so the lid rim arcs
+    // over the round eye. `coverBox` is the solid half the lid fills (z·dir ≥ 0);
+    // `openBox` is the opposite half — the eye opening on that side.
+    const halfSpace = (mz: number, dir: 1 | -1, side: 1 | -1): Node =>
+      sdf.box([big, big, big])
+        .translate([0, 0, side * dir * big / 2])
+        .rotate([dir * LID_TILT_DEG, 0, 0])
+        .translate([0, 0, mz]);
+    const caps: Node[] = [];
+    const opens: Node[] = [];
+    const addLid = (frac: number, dir: 1 | -1): void => {
+      if (frac <= 0) return;
+      const mz = dir * (1 - 2 * frac) * rad;
+      caps.push(sdf.sphere(lidR).intersect(halfSpace(mz, dir, 1)));  // the skin cap
+      opens.push(halfSpace(mz, dir, -1));                            // the opening on this side
+    };
+    addLid(lidFrac.upper, 1);
+    addLid(lidFrac.lower, -1);
+    if (caps.length > 0) {
+      lidLocal = caps.reduce((acc, n) => acc.union(n));
+      // The opening is the intersection of the per-margin opening half-spaces.
+      // Clipping iris/pupil with these flat half-spaces (true box SDFs) keeps a
+      // CLEAN field — subtracting the lid solid (sphere ∩ tilted box) is a
+      // non-metric field that makes levelSet mesh the disc coarsely/jaggedly.
+      bandLocal = opens.reduce((acc, n) => acc.intersect(n));
     }
   }
+  const lidAt = (c: Vec3): Node => orientToHeadPose(lidLocal as Node, rig).translate(c);
+  // Clip iris/pupil to the opening band so their colour stays off the lid.
+  const clipDiscAt = (n: Node, c: Vec3): Node =>
+    (bandLocal ? n.intersect(orientToHeadPose(bandLocal, rig).translate(c)) : n);
 
-  // 'solid': plain spheres for the caller to `.label()` — UNCHANGED when there
-  // are no lids. With lids, the eyeball must carry its own 'eyes' label (so the
-  // 'lids' region stays distinct), so the result is self-labelled like 'iris';
-  // the caller must NOT wrap it in another `.label()`.
-  if (style === 'solid') {
-    if (!lidNode) return pair(rad, 0);
-    return clipBall(pair(rad, 0)).label('eyes').union(lidNode);
-  }
-  // 'iris' (default): a perfectly ROUND white eyeball with the coloured iris and
-  // black pupil PAINTED ON as flush concentric discs — each its own pre-labelled
-  // hard-union region so paintByLabels can colour them independently. Don't wrap
-  // the result in another .label() — the outer label would win and flatten the
-  // eye back to one colour.
-  //
-  // The discs are NOT raised lenses (those protruded forward as beads — a pupil
-  // bump read as a "nipple"). Instead each is a thick cylindrical plug clipped to
-  // a sphere CONCENTRIC with the eyeball but a hair larger (`capR`), so the plug's
-  // front face exactly follows the eyeball's curvature and wins the hard-union
-  // over its disc with no perceptible bump — the iris/pupil read as painted on a
-  // round eye. The plug reaches from the front pole back to ~the eyeball centre
-  // (deep enough to always mesh, even on a coarse grid, while keeping the buried
-  // barrel — and the fine triangles spent meshing it — modest); only its flush
-  // front cap survives the union (the rest is interior), carrying the label.
-  // `capR` increases sclera < iris < pupil so each disc reliably wins the union
-  // over the one beneath it; the increments are <3% of `rad` — sub-visual, so the
-  // silhouette stays round.
-  //
-  // The cylinder is built along +Z then translated forward and rotated 90° about
-  // X so its axis points along the (canonical −Y) head-forward before
-  // `orientToHeadPose` carries it into the posed head frame — its front end sits
-  // at the eyeball's front pole and it reaches back to the centre. (`rotate` is
-  // in DEGREES; `translate` before `rotate` so +Z→−Y places the plug at the
-  // front.)
-  const disc = (capR: number, discR: number): Node => {
-    const depth = capR; // front pole back to ~the eyeball centre
+  // 'solid' with no lids: the original unlabelled pair for the caller to label.
+  if (style === 'solid' && !lidLocal) return pair(rad, 0);
+
+  // One iris/pupil plug, oriented into the posed head and placed at eye `c`. A
+  // thick cylinder clipped to a sphere a hair larger than the eyeball (`capR`),
+  // so its flush front cap follows the eye's curvature and wins the union with
+  // no bead/bump — the disc reads as painted on a round eye. (`capR` grows
+  // sclera < iris < pupil so each wins over the one beneath; <3% of rad, sub-
+  // visual.) Built along +Z then rotated +Z→−Y to the canonical front.
+  const discAt = (c: Vec3, capR: number, discR: number): Node => {
+    const depth = capR;
     const plug = sdf.sphere(capR).intersect(
       sdf.cylinder(discR, depth).translate([0, 0, capR - depth / 2]).rotate([90, 0, 0]),
     );
-    const one = (c: Vec3): Node => orientToHeadPose(plug, rig).translate(c);
-    return one(cL).union(one(cR));
+    return orientToHeadPose(plug, rig).translate(c);
   };
-  // discR sets how much white shows: the iris spans a bit over half the eyeball
-  // width (a generous coloured disc, the look that read best) leaving a clear
-  // white margin; the pupil is half the iris.
-  const sclera = clipBall(pair(rad, 0)).label('eyes');
-  const iris = clipDisc(disc(rad * 1.012, rad * 0.55)).label('iris');
-  const pupil = clipDisc(disc(rad * 1.024, rad * 0.27)).label('pupil');
-  const eyes = sclera.union(iris).union(pupil);
-  return lidNode ? eyes.union(lidNode) : eyes;
+
+  // Assemble PER EYE and label each part per eye. A region spanning BOTH eyes is
+  // too wide to march at the fine eye grid within the direct-fine cell budget,
+  // so it falls back to the coarse path and the small iris/pupil facet badly.
+  // Per-eye regions are each small enough to march fine; resolveLabelMap merges
+  // the two same-named partitions back into one label. The eyeball stays a WHOLE
+  // sphere (genus-clean, fills behind the lids); iris/pupil (≈0.55 / 0.27 · rad,
+  // a generous white margin) are clipped out from under the lids so their colour
+  // can't bleed onto the lid.
+  const parts: Node[] = [];
+  for (const c of [cL, cR]) {
+    parts.push(sdf.sphere(rad).translate(c).label('eyes'));
+    if (lidLocal) parts.push(lidAt(c).label('lids'));
+    if (style === 'iris') {
+      parts.push(clipDiscAt(discAt(c, rad * 1.012, rad * 0.55), c).label('iris'));
+      parts.push(clipDiscAt(discAt(c, rad * 1.024, rad * 0.27), c).label('pupil'));
+    }
+  }
+  return parts.reduce((acc, n) => acc.union(n));
 }
 
 function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
@@ -1714,7 +1727,7 @@ function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
  *  grid either way. */
 function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
   const o = obj(opts, 'faceDetail(opts)');
-  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength', 'eyeEdgeLength'], 'faceDetail(opts)');
+  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength', 'eyeEdgeLength', 'irisEdgeLength'], 'faceDetail(opts)');
   const r = rig.r;
   const radius = num(o.radius, Math.max(r.headX, r.head, r.headZ) * 1.5, 'faceDetail.radius', 1e-3);
   // ~4.5% of the head radius ≈ one subdivision round below the recommended
@@ -1722,11 +1735,16 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   // count. Halve it (e.g. r.head * 0.02) for a final extra-fine pass.
   const edgeLength = num(o.edgeLength, Math.max(r.head * 0.045, 0.05), 'faceDetail.edgeLength', 1e-4);
   const mouthEdgeLength = num(o.mouthEdgeLength, Math.max(r.head * 0.02, 0.03), 'faceDetail.mouthEdgeLength', 1e-4);
-  // The iris/pupil are small painted-on discs whose *circular edge* is only as
-  // smooth as the local mesh — at the head grid (~r.head·0.045) a disc that
-  // small reads as a faceted polygon. Give each eyeball front its own extra-fine
-  // sphere (like the mouth groove) so the iris/pupil circles tessellate round.
-  const eyeEdgeLength = num(o.eyeEdgeLength, Math.max(r.head * 0.009, 0.025), 'faceDetail.eyeEdgeLength', 1e-4);
+  // The eye area gets TWO nested detail spheres per eye:
+  //  • a MEDIUM one over the whole eye (sclera + eyelid skin) — the eyelid margin
+  //    is a curved rim that facets badly at the head grid; this keeps it smooth.
+  //  • a FINE, smaller one over the iris/pupil — those tiny discs need ~14+ cells
+  //    across to read round, finer than the lid needs. Splitting them matters
+  //    because the large lid cap can't march at the fine iris edge within the
+  //    per-region cell budget (it would fall back to a coarse grid), so the iris
+  //    sphere stays small enough that only the small iris/pupil regions pick it.
+  const eyeEdgeLength = num(o.eyeEdgeLength, Math.max(r.head * 0.009, 0.03), 'faceDetail.eyeEdgeLength', 1e-4);
+  const irisEdgeLength = num(o.irisEdgeLength, Math.max(r.head * 0.0045, 0.018), 'faceDetail.irisEdgeLength', 1e-4);
   const f = rig.dir.headForward;
   const eyeFront = (anchor: Vec3): Vec3 => add3(anchor, scale3(f, r.head * 0.22));
   return [
@@ -1734,6 +1752,8 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
     { center: [...(rig.face.mouth as Vec3)] as Vec3, radius: r.head * 0.55, edgeLength: mouthEdgeLength },
     { center: eyeFront(rig.face.eyeL), radius: r.head * 0.26, edgeLength: eyeEdgeLength },
     { center: eyeFront(rig.face.eyeR), radius: r.head * 0.26, edgeLength: eyeEdgeLength },
+    { center: eyeFront(rig.face.eyeL), radius: r.head * 0.13, edgeLength: irisEdgeLength },
+    { center: eyeFront(rig.face.eyeR), radius: r.head * 0.13, edgeLength: irisEdgeLength },
   ];
 }
 
@@ -2292,9 +2312,11 @@ export interface FigureNamespace {
   handDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
   face: {
     /** Eyeballs (self-labelled `eyes`/`iris`/`pupil` for the default `'iris'`
-     *  style, or plain spheres for `'solid'`). Pass `lids` to drape a paintable
-     *  `'lids'` skin fold — `'upper' | 'hooded' | 'half' | 'closed' | 'almond' |
-     *  'tapered'` (default `'none'`). See public/ai/figure.md. */
+     *  style, or plain spheres for `'solid'`). Pass `lids` to add two wrapping
+     *  skin eyelids (paintable `'lids'` region): either `{ upper, lower }` (each
+     *  0..1 — closed when their sum ≥ 1) or a named preset (`'upper' | 'hooded' |
+     *  'half' | 'closed' | 'almond' | 'tapered'`; default `'none'`). See
+     *  public/ai/figure.md. */
     eyes(rig: Rig, opts?: object): Node;
     nose(rig: Rig, opts?: object): Node;
     mouth(rig: Rig, opts?: object): Node;
