@@ -21,7 +21,7 @@
 
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
-import { assetPath } from './deployment';
+import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
 import { formatEngineMemory } from './geometry/engineMemory';
@@ -1880,43 +1880,51 @@ function resolvePartTarget(target: unknown, caller: string): Part | { error: str
   return part;
 }
 
+// The app-relative route for the current URL, with the deployment base
+// (`/`, `/v2/`, …) stripped — so route predicates compare against bare routes
+// ('/editor', '/help') regardless of where this major is mounted. A no-op at
+// base `/`. See src/deployment.ts.
+function currentRoute(): string {
+  return appRoute(window.location.pathname);
+}
+
 // Determine which page to show based on URL path and query params
 function shouldShowLanding(): boolean {
-  const path = window.location.pathname;
+  const path = currentRoute();
   const params = new URLSearchParams(window.location.search);
   // Landing if at root path AND no query params that indicate a specific view
   // AND no share-link hash (a bare `/#share=…` must open the shared preview, not
   // the landing page).
-  const isRootPath = path === '/' || path === '';
+  const isRootPath = path === '/';
   return isRootPath && !hasShareHash() && !params.has('view') && !params.has('session') && !params.has('gallery') && !params.has('versions') && !params.has('images') && !params.has('diff') && !params.has('notes') && !params.has('data');
 }
 
 function shouldShowHelp(): boolean {
   // A `/help#share=…` link must open the shared preview (editor), not Help —
   // mirrors shouldShowLanding's share-hash exclusion.
-  return window.location.pathname === '/help' && !hasShareHash();
+  return currentRoute() === '/help' && !hasShareHash();
 }
 
 function shouldShowCatalog(): boolean {
-  return window.location.pathname === '/catalog' && !hasShareHash();
+  return currentRoute() === '/catalog' && !hasShareHash();
 }
 
 function shouldShowIdeas(): boolean {
-  return window.location.pathname === '/ideas' && !hasShareHash();
+  return currentRoute() === '/ideas' && !hasShareHash();
 }
 
 function shouldShowWhatsNew(): boolean {
-  return window.location.pathname === '/whats-new';
+  return currentRoute() === '/whats-new';
 }
 
 function shouldShowLegal(): boolean {
-  return window.location.pathname === '/legal';
+  return currentRoute() === '/legal';
 }
 
 function shouldShow404(): boolean {
   if (hasShareHash()) return false;
-  const path = window.location.pathname;
-  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/ideas' && path !== '/legal' && path !== '/whats-new';
+  const path = currentRoute();
+  return path !== '/' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/ideas' && path !== '/legal' && path !== '/whats-new';
 }
 
 /** True when the editor view is the active page. Editor-scoped command-palette
@@ -1925,7 +1933,7 @@ function shouldShow404(): boolean {
  *  `/editor?…` and toggle hidden panes without ever transitioning into the
  *  editor. A `#share=…` link also lands in the editor, so it counts too. */
 function isEditorActive(): boolean {
-  return window.location.pathname === '/editor' || hasShareHash();
+  return currentRoute() === '/editor' || hasShareHash();
 }
 
 function getTabFromURL(): TabName {
@@ -4238,7 +4246,7 @@ async function main() {
     onGoHome: () => {
       // The landing page is a separate static document that does NOT load this
       // app bundle, so going home is a real navigation, not an in-app render.
-      window.location.assign('/');
+      window.location.assign(appPath('/'));
     },
     onRun: () => runCode(),
     onExportGLB: actionExportGLB,
@@ -4981,10 +4989,10 @@ async function main() {
   }
 
   async function openEditorFromLanding() {
-    updateAppHistory('/editor', 'push');
+    updateAppHistory(appPath('/editor'), 'push');
     transitionToEditor();
     await ensureEditorReady();
-    if (window.location.pathname !== '/editor') return;
+    if (currentRoute() !== '/editor') return;
     await ensureEngineStarted();
     if (!engineOk) return;
     await createSession();
@@ -4997,7 +5005,7 @@ async function main() {
   // CTA or the help page button): the tour spotlights editor chrome, so make
   // sure we're in the editor with a live session before it starts.
   async function takeGuidedTour() {
-    updateAppHistory('/editor', 'push');
+    updateAppHistory(appPath('/editor'), 'push');
     transitionToEditor();
     await ensureEditorReady();
     await ensureEngineStarted();
@@ -5016,14 +5024,14 @@ async function main() {
   // the lightweight landing entry instead of this bundle. (Callers: the boot
   // router and syncRouteFromURL's popstate handler.)
   function showLandingPage() {
-    window.location.assign('/');
+    window.location.assign(appPath('/'));
   }
 
   function showNotFoundPage() {
     if (!notFoundEl) {
       notFoundEl = createNotFoundPage(overlayContainer, {
         onGoHome: () => {
-          updateAppHistory('/', 'push');
+          updateAppHistory(appPath('/'), 'push');
           void syncRouteFromURL();
         },
       });
@@ -5046,7 +5054,7 @@ async function main() {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
       helpHasAppBackTarget = currentURLPathAndSearch() !== '/help';
-      updateAppHistory('/help', historyMode);
+      updateAppHistory(appPath('/help'), historyMode);
     }
     if (!helpEl) {
       helpEl = createHelpPage(overlayContainer, {
@@ -5054,7 +5062,7 @@ async function main() {
           if (helpHasAppBackTarget) {
             window.history.back();
           } else {
-            updateAppHistory('/editor', 'replace');
+            updateAppHistory(appPath('/editor'), 'replace');
             void syncEditorFromURL();
           }
         },
@@ -5079,7 +5087,7 @@ async function main() {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
       legalHasAppBackTarget = currentURLPathAndSearch() !== '/legal';
-      updateAppHistory('/legal', historyMode);
+      updateAppHistory(appPath('/legal'), historyMode);
     }
     if (!legalEl) {
       legalEl = createLegalPage(overlayContainer, {
@@ -5087,7 +5095,7 @@ async function main() {
           if (legalHasAppBackTarget) {
             window.history.back();
           } else {
-            updateAppHistory('/editor', 'replace');
+            updateAppHistory(appPath('/editor'), 'replace');
             void syncEditorFromURL();
           }
         },
@@ -5111,7 +5119,7 @@ async function main() {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
       catalogHasAppBackTarget = currentURLPathAndSearch() !== '/catalog';
-      updateAppHistory('/catalog', historyMode);
+      updateAppHistory(appPath('/catalog'), historyMode);
     }
     if (!catalogEl) {
       catalogEl = await createCatalogPage(overlayContainer, {
@@ -5119,7 +5127,7 @@ async function main() {
           if (catalogHasAppBackTarget) {
             window.history.back();
           } else {
-            updateAppHistory('/', 'replace');
+            updateAppHistory(appPath('/'), 'replace');
             void syncRouteFromURL();
           }
         },
@@ -5146,7 +5154,7 @@ async function main() {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
       whatsNewHasAppBackTarget = currentURLPathAndSearch() !== '/whats-new';
-      updateAppHistory('/whats-new', historyMode);
+      updateAppHistory(appPath('/whats-new'), historyMode);
     }
     if (!whatsNewEl) {
       whatsNewEl = createWhatsNewPage(overlayContainer, {
@@ -5154,7 +5162,7 @@ async function main() {
           if (whatsNewHasAppBackTarget) {
             window.history.back();
           } else {
-            updateAppHistory('/', 'replace');
+            updateAppHistory(appPath('/'), 'replace');
             void syncRouteFromURL();
           }
         },
@@ -5180,7 +5188,7 @@ async function main() {
     // sessionManager.updateURL). Without an earlier push, that replaceState
     // would clobber whatever page we came from (e.g. /catalog) and break the
     // browser back button.
-    updateAppHistory('/editor', 'push');
+    updateAppHistory(appPath('/editor'), 'push');
     transitionToEditor();
     await ensureEditorReady();
     await ensureEngineStarted();
@@ -5225,7 +5233,7 @@ async function main() {
    *  (pushing the history entry BEFORE any session mutation, same reason as
    *  handleCatalogEntryLoad). */
   async function enterEditorForIdea(): Promise<void> {
-    updateAppHistory('/editor', 'push');
+    updateAppHistory(appPath('/editor'), 'push');
     transitionToEditor();
     await ensureEditorReady();
   }
@@ -5233,7 +5241,7 @@ async function main() {
   // A starter/technique idea — drop its prompt into the AI panel (don't send).
   async function handleIdeaUsePrompt(idea: Idea): Promise<void> {
     await enterEditorForIdea();
-    if (window.location.pathname !== '/editor') return;
+    if (currentRoute() !== '/editor') return;
     if (!getState().session) {
       await createSession();
       setStatus(statusBar, 'ready', 'Ready');
@@ -5247,7 +5255,7 @@ async function main() {
   // (reuses the existing image→voxel import flow, modal and all).
   async function handleIdeaPhotoToVoxel(file: File): Promise<void> {
     await enterEditorForIdea();
-    if (window.location.pathname !== '/editor') return;
+    if (currentRoute() !== '/editor') return;
     await handleImageImport(file);
     updateDocumentTitle({ page: 'editor' });
   }
@@ -5266,7 +5274,7 @@ async function main() {
   // (reuses the existing Relief import wizard).
   async function handleIdeaPhotoToRelief(file: File): Promise<void> {
     await enterEditorForIdea();
-    if (window.location.pathname !== '/editor') return;
+    if (currentRoute() !== '/editor') return;
     openReliefForIdea(file);
     updateDocumentTitle({ page: 'editor' });
   }
@@ -5335,7 +5343,7 @@ async function main() {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
       ideasHasAppBackTarget = currentURLPathAndSearch() !== '/ideas';
-      updateAppHistory('/ideas', historyMode);
+      updateAppHistory(appPath('/ideas'), historyMode);
     }
     if (!ideasEl) {
       ideasEl = createIdeasPage(overlayContainer, {
@@ -5343,7 +5351,7 @@ async function main() {
           if (ideasHasAppBackTarget) {
             window.history.back();
           } else {
-            updateAppHistory('/', 'replace');
+            updateAppHistory(appPath('/'), 'replace');
             void syncRouteFromURL();
           }
         },
@@ -5434,7 +5442,7 @@ async function main() {
     // to /editor — otherwise pasting #share=… onto /catalog or /help would
     // leave the URL claiming a non-editor page while the editor is on screen.
     // App-generated links already use /editor#share=, so this is a no-op there.
-    window.history.replaceState(null, '', '/editor' + window.location.search);
+    window.history.replaceState(null, '', appPath('/editor') + window.location.search);
   }
 
   /** Open a `#share=…` link as a read-only preview. Decodes + validates the
@@ -5515,7 +5523,7 @@ async function main() {
     // execution guard.
     exitSharedMode();
     pendingSharedPayload = null;
-    updateAppHistory('/editor', 'push');
+    updateAppHistory(appPath('/editor'), 'push');
     transitionToEditor();
     await ensureEditorReady();
     await importSessionPayload(payload);
@@ -6899,7 +6907,7 @@ async function main() {
   // the now-clean editor URL.
   if (new URLSearchParams(window.location.search).get('tour') === '1') {
     resetTour();
-    history.replaceState(history.state, '', '/editor');
+    history.replaceState(history.state, '', appPath('/editor'));
   }
 
   if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404 && !hasShareHash()) {
@@ -7008,7 +7016,7 @@ async function main() {
     try {
       await initAiPanel({
         onNavigateToEditor: async () => {
-          updateAppHistory('/editor', 'push');
+          updateAppHistory(appPath('/editor'), 'push');
           await syncRouteFromURL();
         },
         mountInto: appRow,
