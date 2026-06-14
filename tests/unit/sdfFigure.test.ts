@@ -274,6 +274,87 @@ describe('figure rig — age & weight axes (MakeHuman CC0 mined)', () => {
   });
 });
 
+describe('figure rig — muscle axis', () => {
+  const { buildTorso, buildArms, buildLegs } = __figureTestables__;
+  const ext = (b: { min: number[]; max: number[] }, i: number): number => b.max[i] - b.min[i];
+
+  it('defaults to muscle 0 and records it on rig.opts', () => {
+    expect(buildRig({}).opts.muscle).toBe(0);
+    expect(buildRig({ muscle: 0.6 }).opts.muscle).toBe(0.6);
+  });
+
+  it('validates the muscle range (0..1)', () => {
+    expect(() => buildRig({ muscle: -0.1 })).toThrow(/muscle/);
+    expect(() => buildRig({ muscle: 1.5 })).toThrow(/muscle/);
+  });
+
+  it('muscle raises the minimum torso DEPTH so a lean+muscled torso never goes paper-thin', () => {
+    // A maximally lean/slim/narrow torso: at muscle 0 the depth is its natural
+    // (un-floored) value; muscle lifts the floor so the muscled core is deeper.
+    const opts = { height: 60, headsTall: 7.5, sex: 'female' as const, build: 'slim' as const, weight: 0 };
+    const lean = buildRig({ ...opts, muscle: 0 });
+    const buff = buildRig({ ...opts, muscle: 1 });
+    expect(buff.r.chestY).toBeGreaterThan(lean.r.chestY);
+    expect(buff.r.hipsY).toBeGreaterThan(lean.r.hipsY);
+    // The floor scales with the head (headH = height/headsTall = 8 here).
+    const headH = 60 / 7.5;
+    expect(buff.r.chestY).toBeCloseTo(headH * (0.26 + 0.14), 6); // floored
+    expect(buff.r.hipsY).toBeCloseTo(headH * (0.24 + 0.14), 6);
+  });
+
+  it('the depth floor does NOT trigger for normal builds (muscle 0 unchanged)', () => {
+    // A neutral and even a slim muscle-0 figure sits above the floor, so the
+    // floor is a no-op there — pinning the byte-identical guarantee.
+    const slim0 = buildRig({ build: 'slim', muscle: 0 });
+    const headH = slim0.opts.height / slim0.opts.headsTall;
+    expect(slim0.r.chestY).toBeGreaterThan(headH * 0.26);
+    expect(slim0.r.hipsY).toBeGreaterThan(headH * 0.24);
+  });
+
+  it('exposes the knee-hinge direction (the leg analog of elbowHinge)', () => {
+    const rig = buildRig({ pose: { legL: { bend: 60 } } });
+    expect(rig.dir.kneeHingeL).toBeDefined();
+    expect(rig.dir.kneeHingeR).toBeDefined();
+    // unit-length
+    const h = rig.dir.kneeHingeL;
+    expect(Math.hypot(h[0], h[1], h[2])).toBeCloseTo(1, 6);
+  });
+
+  it('muscle 0 leaves the torso/arms/legs geometry byte-identical to a bare rig', () => {
+    const plain = buildRig({ height: 60, headsTall: 7 });
+    const m0 = buildRig({ height: 60, headsTall: 7, muscle: 0 });
+    for (const build of [buildTorso, buildArms, buildLegs]) {
+      const a = build(api, plain).bounds();
+      const b = build(api, m0).bounds();
+      for (let i = 0; i < 3; i++) {
+        expect(b.min[i]).toBeCloseTo(a.min[i], 9);
+        expect(b.max[i]).toBeCloseTo(a.max[i], 9);
+      }
+    }
+  });
+
+  it('muscle adds anterior chest depth and widens the torso (pecs/abs/lats)', () => {
+    const lean = buildTorso(api, buildRig({ height: 60, headsTall: 7, muscle: 0 })).bounds();
+    const buff = buildTorso(api, buildRig({ height: 60, headsTall: 7, muscle: 1 })).bounds();
+    // pecs/abs bulge forward (−Y) → the front extent grows more negative.
+    expect(buff.min[1]).toBeLessThan(lean.min[1]);
+    // lats flare the sides → wider in X.
+    expect(ext(buff, 0)).toBeGreaterThan(ext(lean, 0));
+  });
+
+  it('muscle thickens the arms and legs, monotonically', () => {
+    // Bounding-box volume grows with muscle (bellies add girth everywhere the
+    // bare capsule chain didn't reach), independent of which axis dominates.
+    const vol = (b: { min: number[]; max: number[] }): number => ext(b, 0) * ext(b, 1) * ext(b, 2);
+    const armVol = (m: number): number => vol(buildArms(api, buildRig({ muscle: m })).bounds());
+    expect(armVol(0.5)).toBeGreaterThan(armVol(0));
+    expect(armVol(1)).toBeGreaterThan(armVol(0));
+    const legVol = (m: number): number => vol(buildLegs(api, buildRig({ muscle: m })).bounds());
+    expect(legVol(0.5)).toBeGreaterThan(legVol(0));
+    expect(legVol(1)).toBeGreaterThan(legVol(0));
+  });
+});
+
 describe('figure rig — canonical pose & joint vocabulary', () => {
   it('drives arm & leg DOFs with raiseSide/raiseFwd/bend/twist', () => {
     const a = buildRig({ pose: { armL: { raiseSide: 90, raiseFwd: 20, bend: 100, twist: 30 } } });
