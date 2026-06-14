@@ -1540,6 +1540,10 @@ function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       for (let d = 0.3; d <= 2.6; d += 0.07) {
         if (evalAt(add3(col, scale3(u, -d * tipR))) > 0) return d;
       }
+      // Should-never-happen guard: the underside surface always lies within
+      // 2.6·tipR for every preset/flare/width (verified empirically). If a
+      // future extreme combo never crosses, fall back to a mid-depth so the
+      // cavity still places sanely rather than off the model.
       return 1.4;
     };
     const cavity = (s: number): Node => {
