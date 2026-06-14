@@ -26,6 +26,7 @@ function cloneConfig(c: AppConfig): AppConfig {
     import: { ...c.import },
     ui: { ...c.ui },
     geometry: { ...c.geometry },
+    export: { ...c.export },
   };
 }
 
@@ -773,6 +774,19 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.geometry.aspectRatioWarn}
           min={2} max={100} step={1}
           onChange={v => set('geometry', 'aspectRatioWarn', v)}
+        />
+      </Section>
+
+      <Section title="Export">
+        <Field
+          label="Multi-part 3MF plate centre"
+          unit="mm"
+          hint="Where each part is placed on its own plate in a multi-part 3MF."
+          tooltip="When exporting several parts to one 3MF (one part per build plate), each part is centred at this X/Y position on its plate and rests on z=0. Match it to your printer's bed centre — 128 for a 256 mm bed (X1/P1), 90 for a 180 mm bed (A1 mini). Bambu/Orca auto-drop parts to the bed, so a small mismatch is corrected on import."
+          defaultValue={APP_CONFIG_DEFAULTS.export.platePositionMm}
+          value={c.export.platePositionMm}
+          min={0} max={500} step={1}
+          onChange={v => set('export', 'platePositionMm', v)}
         />
       </Section>
 

@@ -254,6 +254,13 @@ export interface AppConfig {
      *  which a sliver/thin-model warning fires. Mirrors model:preview. */
     aspectRatioWarn: number;
   };
+  export: {
+    /** Nominal build-plate centre (mm) where each part is positioned in a
+     *  multi-part 3MF export. Each part is centred here on its own plate and
+     *  rests on z=0; Bambu/Orca auto-drop to the bed. Match this to your
+     *  printer's bed centre (e.g. 128 for a 256 mm bed, 90 for a 180 mm bed). */
+    platePositionMm: number;
+  };
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
@@ -351,6 +358,9 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     triCountWarnBudget: 200_000,
     minEdgeLengthWarn: 0.4,
     aspectRatioWarn: 12,
+  },
+  export: {
+    platePositionMm: 128,
   },
 };
 

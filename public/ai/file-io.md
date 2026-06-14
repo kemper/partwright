@@ -32,6 +32,21 @@ const src = await partwright.exportCodeData()
 
 Each call also adds the export to the Recent Exports inbox so the user can re-download it from the toolbar's Export → Recent Exports list.
 
+## Multi-part 3MF — one part per build plate
+
+`export3MFParts(partIds?, filename?)` bundles several Session Parts into **one** 3MF, placing each part on its **own build plate** (a Bambu Studio / OrcaSlicer "project" 3MF) with painted colours bound to filaments. This is the console/AI twin of the part-picker the UI shows when you export 3MF in a multi-part session.
+
+```js
+// Every part in the session, one per plate:
+await partwright.export3MFParts()
+// -> { ok: true, filename: "...3mf", parts: 3 }
+
+// Just specific parts (ids from listParts()):
+await partwright.export3MFParts(["part_abc", "part_def"], "assembly")
+```
+
+Each part's **latest version** is re-baked with its colours (both code-declared `api.label`/`api.paint.*` and saved manual paint). The file is also a valid generic multi-object 3MF, so non-Bambu slicers/viewers still open it and see every part + colour (they just won't split it onto separate plates). A single selected part falls back to the ordinary single-object 3MF. This triggers a browser download — there is no `*Data()` byte-returning variant yet.
+
 ## Import — supply the payload directly
 ```js
 // Import a parsed .partwright.json (object or string) as a new active session
