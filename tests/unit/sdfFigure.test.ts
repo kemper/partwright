@@ -1250,6 +1250,11 @@ describe('figure nose & lips — variation axes', () => {
     expect(() => F.face.nose(rig, { upturn: 3 })).toThrow(/upturn/);
     expect(() => F.face.nose(rig, { type: 'schnozz' })).toThrow(/type/);
     expect(() => F.face.nose(rig, { nostrils: 'yes' })).toThrow(/nostrils/);
+    expect(() => F.face.nose(rig, { tipShape: 'banana' })).toThrow(/tipShape/);
+    expect(() => F.face.nose(rig, { profile: 4 })).toThrow(/profile/);
+    expect(() => F.face.nose(rig, { projection: 5 })).toThrow(/projection/);
+    // `bump` is validated even when `profile` (which wins) is also passed.
+    expect(() => F.face.nose(rig, { profile: 0.3, bump: 9 })).toThrow(/bump/);
     expect(() => F.face.mouth(rig, { style: 'lips', fullness: 9 })).toThrow(/fullness/);
   });
 });

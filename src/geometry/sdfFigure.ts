@@ -1456,7 +1456,8 @@ interface NosePreset {
   profile: number; tip: number; tipSize: number; shape: TipShape;
   flare: number; upturn: number; nostril: number;
 }
-type TipShape = 'round' | 'pointed' | 'bulbous' | 'cleft';
+const TIP_SHAPES = ['round', 'pointed', 'bulbous', 'cleft'] as const;
+type TipShape = typeof TIP_SHAPES[number];
 const NOSE_TYPE: Record<string, NosePreset> = {
   straight: { proj: 1.15, len: 1,    width: 1,    bridge: 1,    bw: 1,    profile: 0,     tip: 1,    tipSize: 1,    shape: 'round',   flare: 0.6,  upturn: 0,     nostril: 1 },
   button:   { proj: 0.95, len: 0.7,  width: 0.95, bridge: 0.7,  bw: 1.05, profile: -0.2,  tip: 1.05, tipSize: 1.12, shape: 'round',   flare: 0.55, upturn: 0.6,   nostril: 0.95 },
@@ -1487,12 +1488,15 @@ function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const bridge = num(o.bridge, P.bridge, 'nose.bridge', 0.3, 1.5);
   const bridgeWidth = num(o.bridgeWidth, P.bw, 'nose.bridgeWidth', 0.4, 1.8);
   // profile: −1 concave/scooped (ski-jump) … 0 straight … +1 convex (roman
-  // hump). Legacy `bump` (0..1) is accepted as the positive-only alias.
+  // hump). Legacy `bump` (0..1) is accepted as the positive-only alias —
+  // validate it whenever it's present (even if `profile` wins) so a bad value
+  // can't slip through unchecked.
+  const bump = o.bump !== undefined ? num(o.bump, 0, 'nose.bump', 0, 1) : undefined;
   const profile = o.profile !== undefined ? num(o.profile, P.profile, 'nose.profile', -1, 1)
-    : o.bump !== undefined ? num(o.bump, 0, 'nose.bump', 0, 1) : P.profile;
+    : bump !== undefined ? bump : P.profile;
   const tipSize = num(o.tipSize, P.tipSize, 'nose.tipSize', 0.4, 2);
   const tipShape = o.tipShape === undefined ? P.shape
-    : assertEnum(o.tipShape, ['round', 'pointed', 'bulbous', 'cleft'] as const, 'nose.tipShape');
+    : assertEnum(o.tipShape, TIP_SHAPES, 'nose.tipShape');
   const flare = num(o.flare, P.flare, 'nose.flare', 0, 1.5);
   const upturn = num(o.upturn, P.upturn, 'nose.upturn', -1, 1);
   const nostrilSize = num(o.nostrilSize, P.nostril, 'nose.nostrilSize', 0, 1.5);
