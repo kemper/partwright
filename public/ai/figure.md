@@ -438,7 +438,7 @@ before aiming a prop at it.
 F.face.assemble(head, rig, {
   eyes:  true | { radius, style, lids, gaze, gazeL, gazeR } | false,  // OFF by default — see note below
   nose:  true | { tipRadius, length, width, bridge, flare } | false,
-  mouth: true | { style, width, smirk, open, fullness } | false,
+  mouth: true | { style, expression, curve, width, smirk, open, fullness, divided, render, teeth } | false,
   ears:  true | { size } | false,
   brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
 })
@@ -468,6 +468,12 @@ The explicit knobs multiply **on top of** the preset, so `{ faceShape: 'square',
   size alone — e.g. `{ width: 1.4, bridge: 0.6, flare: 1.0 }` vs `{ width: 0.8, bridge: 1.3 }`.
 - **`mouth.fullness`** (0.4–2.2) scales lip thickness independently of `width`
   (works on the `'lips'` ridge and the open-mouth lip ring).
+- **`mouth.expression`** picks the emotion *level*: `'bigSmile'` · `'smile'` ·
+  `'slightSmile'` · `'neutral'` · `'slightFrown'` · `'frown'` · `'deepFrown'`.
+  Or set **`mouth.curve`** directly (−1 deep frown … 0 neutral … +1 big smile;
+  the numeric `curve` overrides the preset). It bows EVERY style — the carved
+  line, the lip ridge, and the open mouth's opening all smile or frown. Un-set,
+  each style keeps its historical bend (smile bows up, lips/open stay straight).
 
 > **Eyes default to OFF in `assemble`.** The recommended flow welds the face into
 > the body and `.label('skin')`s it — which would flatten any in-face eyes into
@@ -485,17 +491,30 @@ exposed if you want to place a feature yourself.
 
 ### Mouth styles
 
+`style` is the *representation*; `expression`/`curve` is the *emotion* (it bows
+any style — see above). `render` chooses how the mouth meets the head.
+
 | `style` | What you get | Add or carve |
 |---|---|---|
-| `'smile'` (default) | a curved smile **line** carved into the face — the classic cartoon mouth. `smirk` (−1..1) skews it. | carve |
-| `'open'` | an open mouth cavity (laughing / talking / singing). `open` (0..1) sets the gape; passing `open > 0` without a style selects this. Pair it with `mouthAccents` for teeth + lips. | carve |
-| `'lips'` | a protruding lip ridge. | add |
+| `'smile'` (default) | a smile/frown **line** through the face — the classic cartoon mouth. Carved as a groove when the head is big enough, else raised as a clean ridge (`render` overrides). `smirk` (−1..1) skews it; `expression`/`curve` bows it. | carve / add |
+| `'open'` | an open mouth (laughing / talking / singing). `open` (0..1) sets the gape; passing `open > 0` without a style selects this. Pair it with `mouthAccents` for teeth + lips. | carve / add |
+| `'lips'` | a protruding lip ridge. `divided: true` splits it into a natural **upper + lower lip**. | add |
 
 ```js
-mouth: { smirk: 0.4 }                       // happy carved smile (default style)
-mouth: { open: 0.7, width: rig.r.head*0.6 } // big laughing mouth
-mouth: { style: 'lips', smirk: -0.3 }       // pouty sculpted lips
+mouth: { expression: 'bigSmile' }                      // super-smiley
+mouth: { expression: 'deepFrown' }                     // sad
+mouth: { curve: -0.4, smirk: 0.2 }                     // mild frown, skewed
+mouth: { style: 'lips', divided: true, fullness: 1.4 } // natural full upper+lower lips
+mouth: { open: 0.5, expression: 'smile', render: 'painted', teeth: 'both' } // toothy grin
 ```
+
+**`render`** — `'auto'` (default) carves the mouth into the head when the head
+is big enough for a clean carve, and otherwise paints it additively; `'carved'`
+forces the groove/cavity; `'painted'` forces a flat, additive, **print-safe**
+mouth (no carved-out cavity, so no support material lands inside the mouth).
+*Small / high-`headsTall` heads auto-fall-back to painted* — that's the fix for
+the carved-mouth tearing on tiny heads. Use `render: 'painted'` whenever you
+want a clean print of a toothy or open mouth.
 
 `F.face.mouth(rig, opts)` returns the mouth **geometry node**: for the carved
 styles that's the *cutter* — `smoothSubtract` it from the head yourself, or
@@ -504,23 +523,28 @@ just let `assemble` handle the bookkeeping.
 ### Teeth & painted lips — `F.face.mouthAccents(rig, mouthOpts)`
 
 Pre-labelled solid parts that complement the mouth. Build them from the **same
-options object** you passed as `mouth:` so they always agree with the carve,
-and hard-union them at the figure's TOP level (next to the eyes):
+options object** you passed as `mouth:` so they always agree, and hard-union
+them at the figure's TOP level (next to the eyes). For a clean print of a toothy
+smile use `render: 'painted'` and pass `mouth: false` to `assemble` (so the skin
+doesn't also weld a lip ring that buries the painted parts):
 
 ```js
-const mouthOpts = { style: 'open', open: 0.65, width: rig.r.head * 0.6 };
-const face = F.face.assemble(head, rig, { eyes: false, mouth: mouthOpts });
+const mouthOpts = { style: 'open', open: 0.5, expression: 'bigSmile', render: 'painted', teeth: 'both' };
+const face = F.face.assemble(head, rig, { eyes: false, mouth: false });
 const mouthParts = F.face.mouthAccents(rig, mouthOpts);  // 'teeth' + 'lips'
 return sdf.union(skin, eyes, mouthParts, hair, base).build({ ... });
 ```
 
-- `'open'` style: a **`'teeth'`** band hanging from the cavity ceiling and a
-  **`'lips'`** capsule ring around the opening (disable with `teeth: false` /
-  `lips: false`).
-- `'lips'` style: the ridge labelled `'lips'` — in this case pass
-  `mouth: false` to `assemble` (a smooth-welded copy would swallow the
-  labelled one).
-- `'smile'` has no accents — the carved line needs no paint.
+- `'open'` style: a **`'teeth'`** band (`teeth: 'upper'` (default) · `'lower'` ·
+  `'both'` · `false`) and a **`'lips'`** ring around the opening (skip with
+  `lips: false`), both bowed by the expression so a grin's opening smiles. Under
+  `render: 'painted'` the teeth sit as a flat plate flush in the opening (no
+  cavity, prints support-free); carved, they recess behind the rim.
+- `'lips'` style: the ridge labelled `'lips'` (honours `divided`) — pass
+  `mouth: false` to `assemble` (a smooth-welded copy would swallow the label).
+- `'smile'` style: a paintable lip **line** labelled `'lips'` — the additive
+  form of the groove, for a coloured expressive mouth line (frown → smile). Pass
+  `mouth: false` to `assemble` if you want *only* the painted line.
 
 ### Eyes — `style: 'iris'` (default) or `'solid'`
 

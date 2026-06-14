@@ -23,6 +23,7 @@ import {
   assertNumber,
   assertNumberTuple,
   assertEnum,
+  assertBoolean,
   assertObject,
   assertNoUnknownKeys,
   ValidationError,
@@ -1675,13 +1676,58 @@ function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
 }
 
 type MouthStyle = 'smile' | 'lips' | 'open';
+type MouthRender = 'auto' | 'carved' | 'painted';
 
-/** How the mouth combines with the head: protruding lips are ADDED
- *  (smoothUnion), while smile lines and open mouths are CARVED
- *  (smoothSubtract). assembleFace dispatches on this. */
+/** How the mouth combines with the head: protruding lips (and the print-safe
+ *  additive fallbacks) are ADDED (smoothUnion), while carved smile lines and
+ *  open cavities are CARVED (smoothSubtract). assembleFace dispatches on this. */
 interface MouthPart { node: Node; mode: 'add' | 'carve' }
 
-const MOUTH_FIELDS = ['width', 'smirk', 'open', 'style', 'teeth', 'lips', 'fullness'];
+const MOUTH_FIELDS = ['width', 'smirk', 'open', 'style', 'teeth', 'lips', 'fullness', 'expression', 'curve', 'divided', 'render'];
+
+/** Named expression presets → a signed mouth curve (−1 deep frown … 0 neutral
+ *  … +1 big smile). The curve bows the mouth line: positive lifts the corners
+ *  (happy), zero is a straight line (neutral), negative drops them (sad). These
+ *  are the artist-facing "levels" — super-smiley through deep-frown. */
+const MOUTH_EXPRESSIONS = ['bigSmile', 'smile', 'slightSmile', 'neutral', 'slightFrown', 'frown', 'deepFrown'] as const;
+type MouthExpression = (typeof MOUTH_EXPRESSIONS)[number];
+const EXPRESSION_CURVE: Record<MouthExpression, number> = {
+  bigSmile: 1, smile: 0.7, slightSmile: 0.35, neutral: 0,
+  slightFrown: -0.35, frown: -0.7, deepFrown: -1,
+};
+
+/** Resolve the signed expression curve (−1..+1) from `curve` / `expression`, or
+ *  `undefined` when the caller set neither — in which case each style keeps its
+ *  HISTORICAL default bend (smile bows up, lips/open stay straight), so an
+ *  un-set mouth is byte-identical to before. An explicit numeric `curve` wins
+ *  over the `expression` preset. */
+function resolveMouthCurve(o: Record<string, unknown>, name: string): number | undefined {
+  if (o.curve !== undefined) return num(o.curve, 0, `${name}.curve`, -1, 1);
+  if (o.expression !== undefined) return EXPRESSION_CURVE[assertEnum(o.expression, MOUTH_EXPRESSIONS, `${name}.expression`)];
+  return undefined;
+}
+
+/** Is a CARVED mouth safe to mesh at this head size? The subtractive carve
+ *  tears into degenerate, visibly-spiky sub-cell geometry when the absolute
+ *  groove feature gets small (issue #652 — torn mouth on small / high-`headsTall`
+ *  heads). The floor is an ABSOLUTE world size, not a cell ratio: the
+ *  groove-to-march-edge ratio is scale-invariant (≈3.5 at any head), so only an
+ *  absolute floor distinguishes a clean carve from a torn one. Above it we carve
+ *  as before; below it the default `render: 'auto'` falls back to a clean
+ *  ADDITIVE mouth (the documented Yoga workaround, now automatic).
+ *
+ *  Calibrated empirically (`grooveR = r.head·0.07`):
+ *    - #652 Yoga repro `r.head ≈ 2.82` (grooveR 0.197) — VISIBLY TORN → paint.
+ *    - 60-unit `headsTall:8` adult `r.head ≈ 3.45` (grooveR 0.242) — carves
+ *      clean → must stay carved (back-compat for mainstream figures).
+ *  The floor sits between them at `grooveR ≥ 0.21` (`r.head ≥ 3.0`): it catches
+ *  the documented torn cases (Yoga, very-lanky `headsTall:10`) while leaving
+ *  every height-60 figure (`headsTall` 5–8) carving exactly as before. A
+ *  figure in the narrow torn band below 3.0 changes from a TORN carve to a
+ *  clean painted mouth — the #652 fix, not a regression of good output. */
+function carveIsSafe(rig: Rig): boolean {
+  return rig.r.head * 0.07 >= 0.21;
+}
 
 /** Orient an origin-built node into the posed head frame, so axis-aligned
  *  mouth/eye parts follow the head pose. `tilt` is a ROLL about the (canonical)
@@ -1721,54 +1767,124 @@ function buildMouthPart(sdf: SdfApi, rig: Rig, opts?: unknown): MouthPart {
   // ring). 1 = the default; >1 for fuller lips, <1 for thinner — another real
   // axis of facial variation that decouples lip volume from mouth width.
   const fullness = num(o.fullness, 1, 'mouth.fullness', 0.4, 2.2);
+  // `divided` splits the lip ridge into a distinct upper + lower lip (the
+  // natural two-lip look) — only meaningful for style 'lips'.
+  const divided = assertBoolean(o.divided, 'mouth.divided', { optional: true }) ?? false;
+  const render = assertEnum(o.render ?? 'auto', ['auto', 'carved', 'painted'] as const, 'mouth.render') as MouthRender;
+  // Signed expression curve, or undefined → each style keeps its historical bend.
+  const curveOpt = resolveMouthCurve(o, 'mouth');
   // `open > 0` implies the open style unless the caller said otherwise.
   const style: MouthStyle = o.style !== undefined
     ? assertEnum(o.style, ['smile', 'lips', 'open'] as const, 'mouth.style')
     : open > 0 ? 'open' : 'smile';
-  const u = rig.dir.headUp, right = rig.dir.headLeft;
+  const u = rig.dir.headUp, right = rig.dir.headLeft, fwd = rig.dir.headForward;
   const m = rig.face.mouth;
   const halfW = width * 0.5;
+  // Carve when explicitly asked, or under 'auto' only when the head is big
+  // enough for a clean carve; otherwise paint the mouth additively (#652).
+  const wantCarve = render === 'carved' || (render === 'auto' && carveIsSafe(rig));
+
+  // Vertical profile of the mouth LINE across t∈[−1,1], scaled by the signed
+  // `bend` (−1 frown … +1 smile). bend=1 reproduces the historical smile
+  // (corners +0.7·curl, centre −0.3·curl); bend=0 is straight; bend<0 frowns.
+  // `smirk` skews the whole line asymmetrically.
+  const grooveCurl = rig.r.head * 0.14;
+  const arcVert = (t: number, bend: number): number =>
+    grooveCurl * bend * (t * t - 0.3) + smirk * halfW * 0.35 * t;
 
   if (style === 'lips') {
-    // A protruding lip ridge, pushed forward of the anchor so it clearly
-    // stands proud of the face (an on-surface capsule reads as nothing when
-    // it isn't smooth-welded). Smirk tips one corner up.
     const lipR = rig.r.head * 0.085 * fullness;
-    const fwd = scale3(rig.dir.headForward, lipR * 0.6);
-    const a = add3(add3(add3(m, fwd), scale3(right, halfW)), scale3(u, smirk * width * 0.25));
-    const b = add3(add3(add3(m, fwd), scale3(right, -halfW)), scale3(u, -smirk * width * 0.25));
-    return { node: sdf.capsule(a, b, lipR), mode: 'add' };
+    const fwdPush = scale3(fwd, lipR * 0.6);
+    if (!divided && curveOpt === undefined) {
+      // Historical single straight ridge (byte-identical) — smirk tips a corner.
+      const a = add3(add3(add3(m, fwdPush), scale3(right, halfW)), scale3(u, smirk * width * 0.25));
+      const b = add3(add3(add3(m, fwdPush), scale3(right, -halfW)), scale3(u, -smirk * width * 0.25));
+      return { node: sdf.capsule(a, b, lipR), mode: 'add' };
+    }
+    // Bowed lip ridge(s) — a 6-segment arc so the lips follow the expression.
+    const bend = curveOpt ?? 0;
+    const ridge = (zOff: number, rad: number): Node => {
+      const pt = (t: number): Vec3 => add3(add3(add3(m, fwdPush),
+        scale3(right, halfW * t)), scale3(u, arcVert(t, bend) + zOff));
+      let arc: Node | undefined;
+      for (let i = 0; i < 6; i++) {
+        const seg = sdf.capsule(pt(-1 + (2 * i) / 6), pt(-1 + (2 * (i + 1)) / 6), rad);
+        arc = arc === undefined ? seg : arc.union(seg);
+      }
+      return arc!;
+    };
+    if (divided) {
+      // Upper + lower lip separated by a thin seam — the natural two-lip look.
+      const gap = lipR * 0.55;
+      return { node: ridge(gap, lipR * 0.9).union(ridge(-gap, lipR * 1.05)), mode: 'add' };
+    }
+    return { node: ridge(0, lipR), mode: 'add' };
   }
 
   if (style === 'open') {
-    // A carved mouth cavity — the cartoon "laughing / talking" mouth. The
-    // ellipsoid straddles the surface and reaches inward so the opening reads
-    // as a dark interior, not a shallow dent.
-    const { halfW: hw, cavH, center } = mouthCavityFrame(rig, width, open);
-    const cavity = orientToHeadPose(sdf.ellipsoid(hw, rig.r.head * 0.38, cavH), rig)
-      .translate(center);
-    return { node: cavity, mode: 'carve' };
+    if (wantCarve) {
+      // A carved mouth cavity — the cartoon "laughing / talking" mouth. The
+      // ellipsoid straddles the surface and reaches inward so the opening reads
+      // as a dark interior, not a shallow dent.
+      const { halfW: hw, cavH, center } = mouthCavityFrame(rig, width, open);
+      const cavity = orientToHeadPose(sdf.ellipsoid(hw, rig.r.head * 0.38, cavH), rig)
+        .translate(center);
+      return { node: cavity, mode: 'carve' };
+    }
+    // Print-safe / small-head fallback: an ADDITIVE lip ring bowed by the
+    // expression instead of a deep carved cavity (which tears at small head
+    // sizes — #652 — and needs internal print supports). Colored teeth + lips
+    // come from mouthAccents; this is the skin-welded mouth presence.
+    return { node: buildLipRing(sdf, rig, width, open, fullness, curveOpt ?? 0), mode: 'add' };
   }
 
-  // 'smile' (default): a carved smile LINE — an arc of capsules through the
-  // mouth anchor, corners curling up, carved into the face as a groove.
-  // Cartoon faces read a carved line far better than a protruding ridge.
-  const curl = rig.r.head * 0.14;          // corner lift at t = ±1
+  // 'smile' (default): the cartoon mouth LINE through the anchor, bowed by the
+  // expression (default bend=1 = the historical happy smile). Carved as a
+  // groove when safe; otherwise raised as a clean additive ridge (#652 fix) —
+  // a carved line tears into slivers below ~r.head 3.5.
+  const bend = curveOpt === undefined ? 1 : curveOpt;
   const grooveR = rig.r.head * 0.07;
-  const SEGS = 6;
+  const lineFwd = wantCarve ? ([0, 0, 0] as Vec3) : scale3(fwd, grooveR * 0.6);
   const pt = (t: number): Vec3 => add3(
-    add3(m, scale3(right, halfW * t)),
-    // t² curl dips the middle 30% of `curl` below the anchor and lifts the
-    // corners 70% above it; smirk skews the whole line.
-    scale3(u, curl * (t * t - 0.3) + smirk * halfW * 0.35 * t),
+    add3(add3(m, lineFwd), scale3(right, halfW * t)),
+    scale3(u, arcVert(t, bend)),
   );
   let arc: Node | undefined;
-  for (let i = 0; i < SEGS; i++) {
-    const t0 = -1 + (2 * i) / SEGS, t1 = -1 + (2 * (i + 1)) / SEGS;
+  for (let i = 0; i < 6; i++) {
+    const t0 = -1 + (2 * i) / 6, t1 = -1 + (2 * (i + 1)) / 6;
     const seg = sdf.capsule(pt(t0), pt(t1), grooveR);
     arc = arc === undefined ? seg : arc.union(seg);
   }
-  return { node: arc!, mode: 'carve' };
+  return { node: arc!, mode: wantCarve ? 'carve' : 'add' };
+}
+
+/** The open-mouth lip ring: a chain of capsules around the opening ellipse,
+ *  bowed by the expression `bend`. Shared by the additive open-mouth fallback
+ *  (skin-welded mouth presence) and `mouthAccents` (the painted 'lips' region).
+ *  A thin ellipsoid-minus-tunnel shell fragments into shards when marched —
+ *  capsule chains are unconditionally robust. */
+function buildLipRing(sdf: SdfApi, rig: Rig, width: number, open: number, fullness: number, bend: number): Node {
+  const { halfW, cavH } = mouthCavityFrame(rig, width, open);
+  const u = rig.dir.headUp, right = rig.dir.headLeft, R = rig.r.head;
+  const lipR = Math.min(R * 0.10, cavH * 0.55) * fullness;
+  // Ring centre: the cavity opening projected onto the face. Centred ON the
+  // surface — half the capsule is buried, so the lips read as part of the face.
+  const cc = add3(rig.face.mouth, scale3(u, -cavH * 0.25));
+  const SEGS = 14;
+  const ringPt = (theta: number): Vec3 => add3(cc, add3(
+    scale3(right, halfW * 1.02 * Math.cos(theta)),
+    // sin → the ellipse height; the bend term lifts the corners (|cos| large)
+    // and dips the centre, so a positive bend gives a smiling opening. Vanishes
+    // at bend=0, keeping an un-set ring byte-identical.
+    scale3(u, cavH * 1.08 * Math.sin(theta) + bend * halfW * 0.4 * (Math.cos(theta) ** 2 - 0.3)),
+  ));
+  let ring: Node | undefined;
+  for (let i = 0; i < SEGS; i++) {
+    const t0 = (2 * Math.PI * i) / SEGS, t1 = (2 * Math.PI * (i + 1)) / SEGS;
+    const seg = sdf.capsule(ringPt(t0), ringPt(t1), lipR);
+    ring = ring === undefined ? seg : ring.union(seg);
+  }
+  return ring!;
 }
 
 /** Public `F.face.mouth(rig, opts)` — returns the mouth geometry node. For
@@ -1782,13 +1898,15 @@ function buildMouth(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
  *  TOP level of the figure (next to the eyes), complementing the carve that
  *  `face.assemble` applies. Pass the SAME options object you gave `mouth`.
  *
- *  - style 'open': a 'teeth' band hanging from the cavity ceiling (skip with
- *    `teeth: false`) and a 'lips' ring around the opening (skip with
- *    `lips: false`).
- *  - style 'lips': the lip ridge labelled 'lips' — pass `mouth: false` to
- *    `face.assemble` in this case so the ridge isn't ALSO smooth-welded
+ *  - style 'open': a 'teeth' band (`teeth: 'upper'` (default) | 'lower' | 'both'
+ *    | false) and a 'lips' ring around the opening (skip with `lips: false`),
+ *    both bowed by the expression so a grin's opening smiles.
+ *  - style 'lips': the lip ridge labelled 'lips' (honours `divided`) — pass
+ *    `mouth: false` to `face.assemble` so the ridge isn't ALSO smooth-welded
  *    (a welded copy would swallow the labelled one).
- *  - style 'smile' has no accents (the carved line needs no paint). */
+ *  - style 'smile': a paintable lip LINE labelled 'lips' — the additive form of
+ *    the carved groove, for a coloured expressive mouth line. Pass `mouth: false`
+ *    to `assemble` if you want ONLY the painted line (no carved groove too). */
 function buildMouthAccents(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'mouthAccents(opts)');
   assertNoUnknownKeys(o, MOUTH_FIELDS, 'mouthAccents(opts)');
@@ -1803,80 +1921,86 @@ function buildMouthAccents(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   if (style === 'lips') {
     return buildMouthPart(sdf, rig, { ...o, style: 'lips' }).node.label('lips');
   }
-  if (style !== 'open') {
-    throw new ValidationError(
-      "face.mouthAccents: only the 'open' and 'lips' mouth styles have paintable accents — "
-      + "the carved 'smile' line is shading, not a part. See /ai/figure.md#mouth-styles.",
-    );
+  if (style === 'smile') {
+    // A paintable lip LINE — the additive form of the smile/frown groove, so a
+    // coloured (e.g. pink) EXPRESSIVE mouth line can be painted on. Bowed by
+    // the expression like the carve. (The carved groove `assemble` makes is
+    // shading, not paintable; pass `mouth: false` to assemble for ONLY this.)
+    return buildMouthPart(sdf, rig, { ...o, style: 'smile', render: 'painted' }).node.label('lips');
   }
 
   const { halfW, cavH, center } = mouthCavityFrame(rig, width, open);
+  const fineEdge = Math.max(R * 0.02, 0.03);
+  // Painted (print-safe, no cavity) when render says so or `auto` on a small
+  // head — mirrors buildMouthPart's carve/paint split so teeth and the carve
+  // agree on the same mouth.
+  const render = assertEnum(o.render ?? 'auto', ['auto', 'carved', 'painted'] as const, 'mouthAccents.render') as MouthRender;
+  const painted = render === 'painted' || (render === 'auto' && !carveIsSafe(rig));
+  const fullness = num(o.fullness, 1, 'mouthAccents.fullness', 0.4, 2.2);
+  const lipR = Math.min(R * 0.10, cavH * 0.55) * fullness;
+  const cc = add3(rig.face.mouth, scale3(u, -cavH * 0.25));
   const parts: Node[] = [];
-  if (o.teeth !== false) {
-    // A white band hanging from the cavity ceiling: top edge buried in the
-    // head above the opening (fuses into one component), front face recessed
-    // just behind the face surface. The recess scales with the cavity so a
-    // slim gritted-teeth mouth (small `open`) still shows the band — a fixed
-    // recess deeper than the opening buries it entirely.
-    // Slightly NARROWER than the opening with a cavity-proportional recess:
-    // a band wider than the opening (or flush with the rim) grazes the
-    // carved skin and sheds zero-volume boolean slivers, while a recess
-    // deeper than the cavity buries the band entirely (body welds can
-    // inflate the face surface past any fixed offset).
-    const td = R * 0.5;
-    // Every face of the band must clear (or decisively cross) the cavity
-    // surfaces by a couple of MARCH CELLS, not by a proportion of cavH — on
-    // a slim gritted mouth the proportional margins drop below one cell and
-    // the near-tangent surfaces shred into dozens of micro-handles (genus
-    // explosion). fineEdge mirrors faceDetail's mouth-region march edge.
-    const fineEdge = Math.max(R * 0.02, 0.03);
-    // Front face: recessed behind the carved rim by at least ~1.5 cells.
-    const recess = Math.max(cavH * 0.18, fineEdge * 1.5);
-    // roundedBox takes FULL sizes (not half-extents). Width spans most of
-    // the opening but stays NARROWER than it, so the flat front face lies
-    // inside the aperture and meets only air — a band wider than the slot
-    // grazes the curved rim at a shallow angle all around it (a ring of
-    // near-tangent boolean crossings → micro-handles).
-    const bandW = halfW * 1.7;
-    // Height: hang the band above the floor (dark gap under the teeth — the
-    // open-laugh look); when that gap would be sub-cell, close it instead:
-    // run the band through the floor into the jaw — a transversal weld, and
-    // the right look for gritted teeth.
-    const hangGap = cavH * 0.7; // bottom edge at 0.45·cavH − 0.75·cavH
-    const bandH = hangGap < fineEdge * 2.5 ? cavH * 2.9 + fineEdge * 3 : cavH * 1.5;
-    const teeth = orientToHeadPose(
-      sdf.roundedBox([bandW, td, bandH], Math.min(cavH, halfW) * 0.18), rig,
-    ).translate(add3(center, add3(scale3(u, cavH * 0.45), scale3(f, -recess - td * 0.5))));
-    parts.push(teeth.label('teeth'));
-  }
-  if (o.lips !== false) {
-    // A lip ring: a chain of capsules around the opening ellipse. (A thin
-    // ellipsoid-minus-tunnel shell fragments into dozens of shards when
-    // marched — capsule chains are unconditionally robust.)
-    const right = rig.dir.headLeft;
-    const fullness = num(o.fullness, 1, 'mouthAccents.fullness', 0.4, 2.2);
-    const lipR = Math.min(R * 0.10, cavH * 0.55) * fullness;
-    // Ring centre: the cavity opening projected onto the face. Centred ON
-    // the surface — half the capsule is buried, so the lips read as part of
-    // the face instead of a donut stuck onto it.
-    const cc = add3(rig.face.mouth, scale3(u, -cavH * 0.25));
-    const SEGS = 14;
-    const ringPt = (theta: number): Vec3 => add3(cc, add3(
-      scale3(right, halfW * 1.02 * Math.cos(theta)),
-      scale3(u, cavH * 1.08 * Math.sin(theta)),
-    ));
-    let ring: Node | undefined;
-    for (let i = 0; i < SEGS; i++) {
-      const t0 = (2 * Math.PI * i) / SEGS, t1 = (2 * Math.PI * (i + 1)) / SEGS;
-      const seg = sdf.capsule(ringPt(t0), ringPt(t1), lipR);
-      ring = ring === undefined ? seg : ring.union(seg);
+  // A white teeth band, mirrorable to upper (sign +1) or lower (sign −1).
+  // CARVED mouths recess the band behind the rim so it shows through the
+  // cavity; PAINTED mouths (no cavity) sit a flat plate PROUD in the lip-ring
+  // opening so the teeth read on the surface (and print without internal
+  // supports). `teeth: 'both'` builds both, leaving a thin mouth line between.
+  const teethBand = (sign: 1 | -1): Node => {
+    if (painted) {
+      const td = R * 0.45;                      // depth into head (fused); front proud
+      const plateW = halfW * 1.45;              // inside the lip-ring opening
+      const plateH = cavH * 0.85;
+      // The mouth anchor sits ~lipR behind the skin surface, so the plate's
+      // front face must reach past that (just shy of the lip-ring front) to
+      // show on the surface instead of staying buried in solid skin.
+      const front = lipR * 1.05;
+      return orientToHeadPose(sdf.roundedBox([plateW, td, plateH], Math.min(cavH, halfW) * 0.18), rig)
+        .translate(add3(cc, add3(scale3(u, sign * cavH * 0.5), scale3(f, front - td * 0.5))));
     }
-    parts.push(ring!.label('lips'));
+    // Slightly NARROWER than the opening with a cavity-proportional recess: a
+    // band wider than the opening (or flush with the rim) grazes the carved
+    // skin and sheds zero-volume slivers; a recess deeper than the cavity
+    // buries the band (body welds can inflate the face past any fixed offset).
+    const td = R * 0.5;
+    // Every face must clear (or decisively cross) the cavity surfaces by a
+    // couple of MARCH CELLS, not a proportion of cavH — on a slim gritted
+    // mouth the proportional margins drop below one cell and near-tangent
+    // surfaces shred into micro-handles. fineEdge mirrors faceDetail's edge.
+    const recess = Math.max(cavH * 0.18, fineEdge * 1.5);
+    const bandW = halfW * 1.7;
+    // Hang the band off the rim (dark gap behind the teeth — the open-laugh
+    // look); when that gap would be sub-cell, close it by running the band
+    // into the jaw (a transversal weld — the gritted-teeth look).
+    const hangGap = cavH * 0.7;
+    const bandH = hangGap < fineEdge * 2.5 ? cavH * 2.9 + fineEdge * 3 : cavH * 1.5;
+    return orientToHeadPose(
+      sdf.roundedBox([bandW, td, bandH], Math.min(cavH, halfW) * 0.18), rig,
+    ).translate(add3(center, add3(scale3(u, sign * cavH * 0.45), scale3(f, -recess - td * 0.5))));
+  };
+  let teeth: Node | undefined;
+  for (const side of resolveTeeth(o.teeth)) {
+    const band = teethBand(side === 'upper' ? 1 : -1);
+    teeth = teeth === undefined ? band : teeth.union(band);
+  }
+  if (teeth !== undefined) parts.push(teeth.label('teeth'));
+  if (o.lips !== false) {
+    const ring = buildLipRing(sdf, rig, width, open, fullness, resolveMouthCurve(o, 'mouthAccents') ?? 0);
+    parts.push(ring.label('lips'));
   }
   if (parts.length === 0) {
     throw new ValidationError('face.mouthAccents: both teeth and lips are disabled — nothing to build.');
   }
   return parts.length === 1 ? parts[0] : parts[0].union(parts[1]);
+}
+
+/** Resolve the `teeth` option to the set of bands to build: `false` → none;
+ *  `true`/unset → the historical upper band; `'upper'` / `'lower'` / `'both'`
+ *  pick explicitly. (Upper-only stays byte-identical to the old behaviour.) */
+function resolveTeeth(v: unknown): Array<'upper' | 'lower'> {
+  if (v === false) return [];
+  if (v === undefined || v === true) return ['upper'];
+  const sel = assertEnum(v, ['upper', 'lower', 'both'] as const, 'mouthAccents.teeth');
+  return sel === 'both' ? ['upper', 'lower'] : [sel];
 }
 
 function buildEars(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
