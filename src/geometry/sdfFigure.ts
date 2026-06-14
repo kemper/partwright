@@ -478,7 +478,8 @@ function buildRig(rawOpts: unknown): Rig {
     // and is fairly stable across builds, so it scales with H, not the head.
     // (The mined anthropometry covers girth by sex/age/weight, not segment
     // length, so there is no per-demographic foot table — this is the canon.)
-    // `r.foot` (above) still drives foot WIDTH/HEIGHT; this drives heel→toe.
+    // `r.foot` (above) still drives foot WIDTH/HEIGHT; this drives heel→toe,
+    // weighted into the forefoot (buildFeet keeps the heel a shallow bump).
     footLen: H * 0.15,
   };
 
