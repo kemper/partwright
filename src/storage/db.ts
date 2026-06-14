@@ -149,6 +149,12 @@ export interface Version {
   /** The operation that produced this version. Set alongside
    *  {@link parentVersionId} when the version is derived from another. */
   operation?: VersionOperation | null;
+  /** App semver (package.json `version`, from `buildInfo.version`) that authored
+   *  this version — the "last known good" app version for this snapshot. Stamped
+   *  at save time. Absent on versions saved before this field existed, and in
+   *  dev/test builds where the version resolves to 'unknown' (we store nothing
+   *  rather than the placeholder). Read by the cross-major migration seam. */
+  appVersion?: string;
 }
 
 /** Editor working buffer scoped to (session, part, language). One slot per
@@ -790,6 +796,10 @@ export interface SaveVersionOptions {
   operation?: VersionOperation | null;
   /** Computed `api.surface.*` texture (key + mesh) — see {@link Version.surfaceTexture}. */
   surfaceTexture?: unknown;
+  /** App semver that authored this version — see {@link Version.appVersion}.
+   *  Caller passes `buildInfo.version` (omit/undefined in dev where it's
+   *  'unknown'); the db layer just stores it opaquely. */
+  appVersion?: string;
 }
 
 export async function saveVersion(
@@ -812,6 +822,7 @@ export async function saveVersion(
     parentVersionId,
     operation,
     surfaceTexture,
+    appVersion,
   } = options ?? {};
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
@@ -853,6 +864,7 @@ export async function saveVersion(
         ...(parentVersionId ? { parentVersionId } : {}),
         ...(operation ? { operation } : {}),
         ...(surfaceTexture ? { surfaceTexture } : {}),
+        ...(appVersion ? { appVersion } : {}),
       };
       const putReq = store.put(v);
       putReq.onsuccess = () => resolve(v);
