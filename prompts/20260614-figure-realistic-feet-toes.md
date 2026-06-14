@@ -77,3 +77,22 @@ width/height, so the foot got longer and more slender (less blobby), and footwea
 `sole.length ≈ 0.15·height` and length > 2.5×width. Verified visually (side
 profile + iso): the foot now extends forward like a real foot, balanced, not
 leaning back.
+
+## Follow-up 3 (length goes to the forefoot, heel stays shallow)
+
+User feedback on the lengthened feet: don't lengthen the heel — the heel bump
+should be shallow, and the added length should go into the FRONT of the foot.
+The first length pass extended the foot symmetrically about the footprint centre
+(and the heel/arch masses scaled with footLen), so both ends grew.
+
+Fix (buildFeet only — footwear/SoleFrame untouched, so coverage is unchanged and
+the footwear-enclosure tests still pass):
+- The heel is now a SHALLOW rounded bump seated just behind the ankle, sized off
+  the foot WIDTH (`r.foot`), NOT `footLen` — so a longer (stature-scaled) foot
+  keeps the same short heel.
+- The instep/arch dome is pinned near the ankle at the rear and reaches FORWARD
+  to the ball, so the stature length is carried by the forefoot + toes ahead of
+  the ankle (ankle ≈ 28% from the heel — anatomically right).
+Verified the side profile: short heel under the ankle, long flat forefoot, toes
+at the front. Footwear coverage unaffected (bare foot now strictly inside the
+shoe envelope).

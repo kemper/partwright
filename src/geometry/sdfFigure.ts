@@ -897,15 +897,20 @@ function buildFeet(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     const hw = r.foot * 0.6;                          // sole half-width
 
     // ── Foot mass in a LOCAL frame: origin = footprint centre on the sole,
-    //    +Y = toe, +X = lateral, +Z = up. The footprint centre sits midway
-    //    between heel (−0.5·footLen) and toe (+0.5·footLen). Each mass is built
+    //    +Y = toe, +X = lateral, +Z = up. The ankle sits at local Y −0.12·footLen
+    //    (the footprint centre is 0.12·footLen ahead of it). Each mass is built
     //    crossing z = 0 and the whole foot is flat-clipped there, so the sole is
     //    genuinely FLAT (heel-to-toe) instead of the old rounded club bottom.
-    //    Low and long: the instep is the high point, the forefoot a thin pad,
-    //    the heel a rounded block — a recognisably flatter, real-foot profile.
+    //    The foot's stature-scaled LENGTH lives in the FOREFOOT/TOES, ahead of
+    //    the ankle; the heel behind the ankle stays a short, shallow bump (sized
+    //    off the foot WIDTH, not footLen) so lengthening never grows the heel.
+    const ankleY = -footLen * 0.12;                  // ankle's local Y
     const instepH = r.foot * 0.74;                   // instep crown height
-    const arch = sdf.ellipsoid(hw, footLen * 0.32, instepH)
-      .translate([0, -footLen * 0.04, instepH * 0.12]);
+    // Instep/arch dome — the high midfoot, seated over the ankle and reaching
+    // FORWARD to the ball. Its rear is pinned near the ankle (so no long heel);
+    // its forward span carries the length.
+    const arch = sdf.ellipsoid(hw, footLen * 0.3, instepH)
+      .translate([0, ankleY + footLen * 0.16, instepH * 0.12]);
     // Forefoot / ball of the foot: a flat, lower rounded pad. When toes are on
     // it stops at the ball (≈0.4·footLen) and the toes complete the length; when
     // off it runs out to a smooth, rounded toe box (≈0.49·footLen).
@@ -915,10 +920,13 @@ function buildFeet(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     const foreLY = foreFront - footLen * 0.06;
     const fore = sdf.roundedBox([hw * 1.92, foreLY, foreH * 1.8], Math.min(hw * 0.5, foreH * 0.85))
       .translate([0, foreCY, foreH * 0.55]);
-    // Heel: a rounded block at the back, a touch taller than the toe box.
-    const heelH = r.foot * 0.6;
-    const heel = sdf.ellipsoid(hw * 0.94, footLen * 0.2, heelH)
-      .translate([0, -footLen * 0.34, heelH * 0.12]);
+    // Heel: a SHALLOW rounded bump just behind the ankle — sized off the foot
+    // WIDTH (r.foot), NOT footLen, so a longer foot keeps the same short heel
+    // and puts its extra length forward. (Per direct feedback: shallow heel,
+    // extend the front.)
+    const heelH = r.foot * 0.54;
+    const heel = sdf.ellipsoid(hw * 0.9, r.foot * 0.9, heelH)
+      .translate([0, ankleY - r.foot * 0.05, heelH * 0.1]);
     let local = arch.smoothUnion(fore, r.foot * 0.5).smoothUnion(heel, r.foot * 0.5);
 
     if (toesOn) {
