@@ -5,217 +5,311 @@
       "name": "Portal Companion Cube",
       "file": "companion_cube.partwright.json",
       "language": "manifold-js",
-      "description": "Portal Weighted Companion Cube — light-gray cube with pink hearts on each face and steel edge bars."
+      "description": "Portal Weighted Companion Cube — light-gray cube with pink hearts on each face and steel edge bars.",
+      "tags": [
+        "games"
+      ]
     },
     {
       "id": "pacman-ghost",
       "name": "Pac-Man Ghost",
       "file": "pacman_ghost.partwright.json",
       "language": "manifold-js",
-      "description": "Blinky — the classic red Pac-Man ghost — as a standalone 3D figurine. Smooth revolve profile gives the iconic teardrop silhouette, with white 3D oval eyes, blue pupils looking left, and four scalloped hem teeth."
+      "description": "Blinky — the classic red Pac-Man ghost — as a standalone 3D figurine. Smooth revolve profile gives the iconic teardrop silhouette, with white 3D oval eyes, blue pupils looking left, and four scalloped hem teeth.",
+      "tags": [
+        "figures",
+        "games"
+      ]
     },
     {
       "id": "castle-tower",
       "name": "Castle Tower",
       "file": "castle_tower.partwright.json",
       "language": "manifold-js",
-      "description": "A grand medieval castle tower with a battered base, 8-merlon battlements, gothic arched door, arrow-slit windows, and a deep blue conical roof — voronoi stone texture applied in-browser for a carved-stone look."
+      "description": "A grand medieval castle tower with a battered base, 8-merlon battlements, gothic arched door, arrow-slit windows, and a deep blue conical roof — voronoi stone texture applied in-browser for a carved-stone look.",
+      "tags": [
+        "buildings"
+      ]
     },
     {
       "id": "heraldic-shield",
       "name": "Heraldic Shield",
       "file": "heraldic_shield.partwright.json",
       "language": "manifold-js",
-      "description": "A knight's shield quartered in red, blue, gold, and silver with a central gold boss."
+      "description": "A knight's shield quartered in red, blue, gold, and silver with a central gold boss.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "treasure-chest",
       "name": "Treasure Chest",
       "file": "treasure_chest.partwright.json",
       "language": "manifold-js",
-      "description": "A pirate treasure chest with a dark walnut dome lid, bold brass strap hardware, gold corner caps and ball feet, and a raised lock plate with keyhole — woven wood-grain texture applied in-browser."
+      "description": "A pirate treasure chest with a dark walnut dome lid, bold brass strap hardware, gold corner caps and ball feet, and a raised lock plate with keyhole — woven wood-grain texture applied in-browser.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "chess-king",
       "name": "Chess King",
       "file": "chess_king.partwright.json",
       "language": "manifold-js",
-      "description": "Turned ivory chess king with a tiered base, crown collar, and cross finial."
+      "description": "Turned ivory chess king with a tiered base, crown collar, and cross finial.",
+      "tags": [
+        "games"
+      ]
     },
     {
       "id": "royal-crown",
       "name": "Royal Crown",
       "file": "royal_crown.partwright.json",
       "language": "manifold-js",
-      "description": "A regal crown with tall two-section gold spires, deep crimson velvet inner band, ruby/sapphire/emerald/amethyst cabochon gems in gold bezels, accent beads, and a hammered-metal knurl texture on the band."
+      "description": "A regal crown with tall two-section gold spires, deep crimson velvet inner band, ruby/sapphire/emerald/amethyst cabochon gems in gold bezels, accent beads, and a hammered-metal knurl texture on the band.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "arcade-cabinet",
       "name": "Arcade Cabinet",
       "file": "arcade_cabinet.partwright.json",
       "language": "manifold-js",
-      "description": "A vibrant upright arcade cabinet — deep-blue body with a red side panel, a gold marquee, a pixel-art space invader glowing on the screen, a joystick, and colorful buttons."
+      "description": "A vibrant upright arcade cabinet — deep-blue body with a red side panel, a gold marquee, a pixel-art space invader glowing on the screen, a joystick, and colorful buttons.",
+      "tags": [
+        "games"
+      ]
     },
     {
       "id": "cassette-tape",
       "name": "Cassette Tape",
       "file": "cassette_tape.partwright.json",
       "language": "manifold-js",
-      "description": "Retro audio cassette with reel windows and a cream label strip."
+      "description": "Retro audio cassette with reel windows and a cream label strip.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "handheld-console",
       "name": "Handheld Console",
       "file": "handheld_console.partwright.json",
       "language": "manifold-js",
-      "description": "Game Boy-style handheld with a green screen, D-pad, action buttons, and speaker grille."
+      "description": "Game Boy-style handheld with a green screen, D-pad, action buttons, and speaker grille.",
+      "tags": [
+        "games"
+      ]
     },
     {
       "id": "boombox",
       "name": "Boombox",
       "file": "boombox.partwright.json",
       "language": "manifold-js",
-      "description": "80s boombox with twin speaker grilles, a cassette deck, control buttons, and a carry handle."
+      "description": "80s boombox with twin speaker grilles, a cassette deck, control buttons, and a carry handle.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "lowpoly-fox",
       "name": "Low-Poly Fox",
       "file": "lowpoly_fox.partwright.json",
       "language": "manifold-js",
-      "description": "A stylized low-poly fox with a pointed snout, triangular ears, bushy tail, and dark leg socks."
+      "description": "A stylized low-poly fox with a pointed snout, triangular ears, bushy tail, and dark leg socks.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "lighthouse",
       "name": "Lighthouse",
       "file": "lighthouse.partwright.json",
       "language": "manifold-js",
-      "description": "A striped lighthouse with red and white bands, a glass lamp room, and a black dome cap."
+      "description": "A striped lighthouse with red and white bands, a glass lamp room, and a black dome cap.",
+      "tags": [
+        "buildings"
+      ]
     },
     {
       "id": "hot-air-balloon",
       "name": "Hot Air Balloon",
       "file": "hot_air_balloon.partwright.json",
       "language": "manifold-js",
-      "description": "A colorful balloon with alternating red, yellow, and blue gores and a basket hanging below."
+      "description": "A colorful balloon with alternating red, yellow, and blue gores and a basket hanging below.",
+      "tags": [
+        "vehicles"
+      ]
     },
     {
       "id": "d20-die",
       "name": "D20 Die",
       "file": "d20_die.partwright.json",
       "language": "manifold-js",
-      "description": "A 20-sided polyhedral die built via icosahedron hull, with raised gold 7-segment numerals on all 20 faces (opposite faces sum to 21) on a deep midnight-blue body."
+      "description": "A 20-sided polyhedral die built via icosahedron hull, with raised gold 7-segment numerals on all 20 faces (opposite faces sum to 21) on a deep midnight-blue body.",
+      "tags": [
+        "games"
+      ]
     },
     {
       "id": "toadstool-mushroom",
       "name": "Toadstool Mushroom",
       "file": "toadstool_mushroom.partwright.json",
       "language": "manifold-js",
-      "description": "A red toadstool with white polka-dot spots painted as smooth rounded patches using the paintStroke brush."
+      "description": "A red toadstool with white polka-dot spots painted as smooth rounded patches using the paintStroke brush.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "twisted-vase",
       "name": "Twisted Vase",
       "file": "twisted_vase.partwright.json",
       "language": "manifold-js",
-      "description": "Stacked rotated rings forming a hex-faceted twisted profile."
+      "description": "Stacked rotated rings forming a hex-faceted twisted profile.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "christmas-tree",
       "name": "Christmas Tree",
       "file": "christmas_tree.partwright.json",
       "language": "manifold-js",
-      "description": "Low-poly tiered tree with a stellated octahedron star on top."
+      "description": "Low-poly tiered tree with a stellated octahedron star on top.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "chess-rook",
       "name": "Chess Rook",
       "file": "chess_rook.partwright.json",
       "language": "manifold-js",
-      "description": "Hollow chess rook with crenellations cut from the parapet."
+      "description": "Hollow chess rook with crenellations cut from the parapet.",
+      "tags": [
+        "games"
+      ]
     },
     {
       "id": "openscad-twisted",
       "name": "OpenSCAD: Twisted",
       "file": "openscad_twisted.partwright.json",
       "language": "scad",
-      "description": "Twisted star column via OpenSCAD's linear_extrude."
+      "description": "Twisted star column via OpenSCAD's linear_extrude.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "retro-rocket",
       "name": "Retro Rocket",
       "file": "retro_rocket.partwright.json",
       "language": "manifold-js",
-      "description": "Classic retro rocket with ogive nose cone, fins, porthole window, and thrust nozzle."
+      "description": "Classic retro rocket with ogive nose cone, fins, porthole window, and thrust nozzle.",
+      "tags": [
+        "vehicles"
+      ]
     },
     {
       "id": "spiral-staircase",
       "name": "Spiral Staircase",
       "file": "spiral_staircase.partwright.json",
       "language": "manifold-js",
-      "description": "A 16-step helical staircase with a dark stone column, alternating walnut treads, brass railing posts, a top landing, and a circular baluster ring — voronoi stone, woven wood-grain, and knurl brass textures applied in-browser."
+      "description": "A 16-step helical staircase with a dark stone column, alternating walnut treads, brass railing posts, a top landing, and a circular baluster ring — voronoi stone, woven wood-grain, and knurl brass textures applied in-browser.",
+      "tags": [
+        "buildings"
+      ]
     },
     {
       "id": "geodesic-lantern",
       "name": "Geodesic Lantern",
       "file": "geodesic_lantern.partwright.json",
       "language": "manifold-js",
-      "description": "A tall antique dome lantern with a 16-segment faceted geodesic shell, two rings of six amber-glowing circular windows, a raised bronze banding ring, a hexagonal base, and a gold finial spire."
+      "description": "A tall antique dome lantern with a 16-segment faceted geodesic shell, two rings of six amber-glowing circular windows, a raised bronze banding ring, a hexagonal base, and a gold finial spire.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "clock-face",
       "name": "Wall Clock Face",
       "file": "clock_face.partwright.json",
       "language": "manifold-js",
-      "description": "100mm-diameter clock face with 12 hour markers, 60 minute ticks, and tapered hour + minute hands posed at 10:10. Built with the circularPattern radius shortcut."
+      "description": "100mm-diameter clock face with 12 hour markers, 60 minute ticks, and tapered hour + minute hands posed at 10:10. Built with the circularPattern radius shortcut.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "honeycomb-planter",
       "name": "Honeycomb Planter",
       "file": "honeycomb_planter.partwright.json",
       "language": "manifold-js",
-      "description": "A cylindrical planter pot with a staggered honeycomb pattern carved through its wall. Built with nested linearPattern + circularPattern and the expectUnion connectivity check."
+      "description": "A cylindrical planter pot with a staggered honeycomb pattern carved through its wall. Built with nested linearPattern + circularPattern and the expectUnion connectivity check.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "wind-turbine",
       "name": "Wind Turbine",
       "file": "wind_turbine.partwright.json",
       "language": "manifold-js",
-      "description": "A tapered tower with a nacelle, hub, and 3 swept blades — plus a service ladder up the tower face. Showcases placeOn for the nacelle and circularPattern with a non-Z axis for the rotor."
+      "description": "A tapered tower with a nacelle, hub, and 3 swept blades — plus a service ladder up the tower face. Showcases placeOn for the nacelle and circularPattern with a non-Z axis for the rotor.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "hex-bolt-and-nut",
       "name": "Hex Bolt & Nut Set",
       "file": "hex_bolt_and_nut.partwright.json",
       "language": "scad",
-      "description": "M16x3 hex bolt, matching nut, and washer laid out side-by-side. Showcases BOSL2's screw() and nut() — real threaded geometry that manifold-js can't easily reproduce."
+      "description": "M16x3 hex bolt, matching nut, and washer laid out side-by-side. Showcases BOSL2's screw() and nut() — real threaded geometry that manifold-js can't easily reproduce.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "spur-gear-pair",
       "name": "Spur Gear Pair",
       "file": "spur_gear_pair.partwright.json",
       "language": "scad",
-      "description": "Two meshing involute spur gears on a rounded base plate, with tooth offset so they interlock correctly. Built with BOSL2's spur_gear() and gear_dist()."
+      "description": "Two meshing involute spur gears on a rounded base plate, with tooth offset so they interlock correctly. Built with BOSL2's spur_gear() and gear_dist().",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "pipe-tee-fitting",
       "name": "Pipe Tee Fitting",
       "file": "pipe_tee_fitting.partwright.json",
       "language": "scad",
-      "description": "A 3-way plumbing tee fitting with flared collars and a connected interior cavity. Built with BOSL2's xcyl()/zcyl() axis-aligned cylinders and cyl(chamfer1=) for the flared collar edges."
+      "description": "A 3-way plumbing tee fitting with flared collars and a connected interior cavity. Built with BOSL2's xcyl()/zcyl() axis-aligned cylinders and cyl(chamfer1=) for the flared collar edges.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "modular-drawer-bin",
       "name": "Modular Drawer Bin",
       "file": "modular_drawer_bin.partwright.json",
       "language": "scad",
-      "description": "A stackable storage bin with two compartments, rounded corners, and stacking lugs. Built with BOSL2's cuboid(rounding=) for filleted edges, plus translate-and-anchor cyl() placement for the lugs."
+      "description": "A stackable storage bin with two compartments, rounded corners, and stacking lugs. Built with BOSL2's cuboid(rounding=) for filleted edges, plus translate-and-anchor cyl() placement for the lugs.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "sdf-organic-creature",
       "name": "SDF Organic Creature",
       "file": "sdf_organic_creature.partwright.json",
       "language": "manifold-js",
-      "description": "A smooth-blended creature built entirely from SDF primitives — showcases smoothUnion for organic body welds and paint-by-label colourisation of an SDF model."
+      "description": "A smooth-blended creature built entirely from SDF primitives — showcases smoothUnion for organic body welds and paint-by-label colourisation of an SDF model.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "sdf-gyroid-chamber",
@@ -229,119 +323,170 @@
       "name": "SDF Twisted Vessel",
       "file": "sdf_twisted_vessel.partwright.json",
       "language": "manifold-js",
-      "description": "A hollow twisted ceramic vase with a fluted, spiralled belly, a pinched neck, an open mouth, and a warm gold rim band over a deep-teal glaze."
+      "description": "A hollow twisted ceramic vase with a fluted, spiralled belly, a pinched neck, an open mouth, and a warm gold rim band over a deep-teal glaze.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "sdf-mixed-mechanical",
       "name": "SDF + Manifold Mechanical Part",
       "file": "sdf_mixed_mechanical.partwright.json",
       "language": "manifold-js",
-      "description": "A mechanical part that mixes smooth-blended SDF features (grip, fillets) with crisp Manifold CSG (mounting plate, drilled holes) — shows how the two engines compose."
+      "description": "A mechanical part that mixes smooth-blended SDF features (grip, fillets) with crisp Manifold CSG (mounting plate, drilled holes) — shows how the two engines compose.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "sdf-bloom",
       "name": "SDF Bloom",
       "file": "sdf_bloom.partwright.json",
       "language": "manifold-js",
-      "description": "A stylised flower showcasing the SDF combinators — ellipsoid petals fanned out with polarArray (no hand-written coordinates), a flattened pollen centre, and a taper-narrowed stem. Three painted regions."
+      "description": "A stylised flower showcasing the SDF combinators — ellipsoid petals fanned out with polarArray (no hand-written coordinates), a flattened pollen centre, and a taper-narrowed stem. Three painted regions.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "smiley-cactus",
       "name": "Smiley Cactus",
       "file": "smiley_cactus.partwright.json",
       "language": "scad",
-      "description": "A cheerful potted saguaro with two upraised arms, a big grinning face, and a pink flower bud on its crown — sitting in a terracotta pot."
+      "description": "A cheerful potted saguaro with two upraised arms, a big grinning face, and a pink flower bud on its crown — sitting in a terracotta pot.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "studio-microphone",
       "name": "Studio Microphone",
       "file": "studio_microphone.partwright.json",
       "language": "scad",
-      "description": "Classic large-diaphragm studio condenser microphone cradled in a U-shaped shock-mount yoke on a weighted desktop stand, with a coiled cable looping back to the base."
+      "description": "Classic large-diaphragm studio condenser microphone cradled in a U-shaped shock-mount yoke on a weighted desktop stand, with a coiled cable looping back to the base.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "vintage-biplane",
       "name": "Vintage Biplane",
       "file": "vintage_biplane.partwright.json",
       "language": "scad",
-      "description": "A WW1-era biplane with stacked canvas wings, a tapered fuselage, a yellow engine cowling, a two-blade wooden propeller, and a swept tail fin."
+      "description": "A WW1-era biplane with stacked canvas wings, a tapered fuselage, a yellow engine cowling, a two-blade wooden propeller, and a swept tail fin.",
+      "tags": [
+        "vehicles"
+      ]
     },
     {
       "id": "pipe-flange",
       "name": "Pipe Flange",
       "file": "pipe_flange.partwright.json",
       "language": "replicad",
-      "description": "An ANSI-style pipe flange with a 6-bolt circle, central bore, chamfered face, and beveled neck — showcasing BREP's exact selective edge filleting on a mechanically realistic part."
+      "description": "An ANSI-style pipe flange with a 6-bolt circle, central bore, chamfered face, and beveled neck — showcasing BREP's exact selective edge filleting on a mechanically realistic part.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "machine-knob",
       "name": "Machine Tool Knob",
       "file": "machine_knob.partwright.json",
       "language": "replicad",
-      "description": "A precision machine-tool grip knob with a finger-grip skirt, chamfered top, domed crown, and a shaft bore — showcasing BREP's exact chamfers and fillets on rotational geometry."
+      "description": "A precision machine-tool grip knob with a finger-grip skirt, chamfered top, domed crown, and a shaft bore — showcasing BREP's exact chamfers and fillets on rotational geometry.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "butt-hinge",
       "name": "Butt Hinge",
       "file": "butt_hinge.partwright.json",
       "language": "replicad",
-      "description": "A classic interlocking butt hinge: two flat leaves, three knuckles, and a continuous pin — showcasing BREP's exact cylindrical surfaces and clean selective fillets."
+      "description": "A classic interlocking butt hinge: two flat leaves, three knuckles, and a continuous pin — showcasing BREP's exact cylindrical surfaces and clean selective fillets.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "v-pulley",
       "name": "V-Groove Pulley",
       "file": "v_pulley.partwright.json",
       "language": "replicad",
-      "description": "A precision V-belt pulley wheel with a beveled drive groove around its circumference, a central hub bore, and chamfered side rims — showcasing BREP's exact rotational geometry and angled surfaces."
+      "description": "A precision V-belt pulley wheel with a beveled drive groove around its circumference, a central hub bore, and chamfered side rims — showcasing BREP's exact rotational geometry and angled surfaces.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "l-bracket",
       "name": "Precision L-Bracket",
       "file": "l_bracket.partwright.json",
       "language": "replicad",
-      "description": "A right-angle steel bracket with a large concave fillet on the inside web, rounded outer tip edges, and four mounting holes — showcasing BREP's exact selective edge rounding."
+      "description": "A right-angle steel bracket with a large concave fillet on the inside web, rounded outer tip edges, and four mounting holes — showcasing BREP's exact selective edge rounding.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "enclosure-shell",
       "name": "Project Enclosure",
       "file": "enclosure_shell.partwright.json",
       "language": "replicad",
-      "description": "A rectangular electronics-project enclosure shell with rounded outer corners, an inset lid lip, PCB mounting bosses, and side ventilation slots — showcasing BREP's exact filleted shells."
+      "description": "A rectangular electronics-project enclosure shell with rounded outer corners, an inset lid lip, PCB mounting bosses, and side ventilation slots — showcasing BREP's exact filleted shells.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "robot-buddy",
       "name": "Robot Buddy",
       "file": "robot_buddy.partwright.json",
       "language": "replicad",
-      "description": "A friendly retro robot with a rounded head, two big cyan eyes, a bobble antenna, a chest panel, and stubby arms — a colorful filleted BREP showcase."
+      "description": "A friendly retro robot with a rounded head, two big cyan eyes, a bobble antenna, a chest panel, and stubby arms — a colorful filleted BREP showcase.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "bird-feeder",
       "name": "Bird Feeder",
       "file": "bird_feeder.partwright.json",
       "language": "replicad",
-      "description": "A gazebo-style hanging bird feeder with conical wood roof, revolved seed reservoir, lipped dish, and circular perches — showcasing revolve + circularPattern + paint."
+      "description": "A gazebo-style hanging bird feeder with conical wood roof, revolved seed reservoir, lipped dish, and circular perches — showcasing revolve + circularPattern + paint.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "vintage-camera",
       "name": "Vintage Camera",
       "file": "vintage_camera.partwright.json",
       "language": "replicad",
-      "description": "A vintage rangefinder camera with a tapered lens barrel, viewfinder, shutter button, and film advance — colorful BREP showcase with paint."
+      "description": "A vintage rangefinder camera with a tapered lens barrel, viewfinder, shutter button, and film advance — colorful BREP showcase with paint.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "lighthouse-brep",
       "name": "Coastal Lighthouse",
       "file": "lighthouse_brep.partwright.json",
       "language": "replicad",
-      "description": "A tall round lighthouse with red-and-white tower stripes, balcony railing, domed lantern, and conical cap — colorful BREP showcase with paint."
+      "description": "A tall round lighthouse with red-and-white tower stripes, balcony railing, domed lantern, and conical cap — colorful BREP showcase with paint.",
+      "tags": [
+        "buildings"
+      ]
     },
     {
       "id": "coffee-mug",
       "name": "Coffee Mug",
       "file": "coffee_mug.partwright.json",
       "language": "replicad",
-      "description": "A white ceramic coffee mug with a colored rim band, painted coffee inside, and a curved torus handle — showcasing BREP's shell op + paint."
+      "description": "A white ceramic coffee mug with a colored rim band, painted coffee inside, and a curved torus handle — showcasing BREP's shell op + paint.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "sdf-tpms-study",
@@ -355,28 +500,40 @@
       "name": "SDF Aetherjelly",
       "file": "sdf_radial_creature.partwright.json",
       "language": "manifold-js",
-      "description": "An ethereal bioluminescent jellyfish — a cyan-to-violet gradient bell with a ruffled rim, seven flowing tentacles tipped with glowing pods, and a ring of luminous ocelli. An SDF combinator showcase."
+      "description": "An ethereal bioluminescent jellyfish — a cyan-to-violet gradient bell with a ruffled rim, seven flowing tentacles tipped with glowing pods, and a ring of luminous ocelli. An SDF combinator showcase.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "sdf-helix-lamp",
       "name": "SDF Helix Lamp Standard",
       "file": "sdf_helix_lamp_standard.partwright.json",
       "language": "manifold-js",
-      "description": "A warm helix lamp — a four-turn amber coil spiralling up from a dark base to a glowing bulb finial, built from a chain of SDF capsules along a helical path."
+      "description": "A warm helix lamp — a four-turn amber coil spiralling up from a dark base to a glowing bulb finial, built from a chain of SDF capsules along a helical path.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "sdf-spur-wheel",
       "name": "SDF 28-Tooth Spur Wheel",
       "file": "sdf_polarrepeat_showcase.partwright.json",
       "language": "manifold-js",
-      "description": "A spur/turbine wheel — single tooth (roundedBox + taper) folded 28-fold via polarRepeat, plus a 6-hole polarArray lightening web and a bored central hub. The canonical \"polarArray for low counts, polarRepeat for high\" showcase, in three painted regions."
+      "description": "A spur/turbine wheel — single tooth (roundedBox + taper) folded 28-fold via polarRepeat, plus a 6-hole polarArray lightening web and a bored central hub. The canonical \"polarArray for low counts, polarRepeat for high\" showcase, in three painted regions.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "sdf-perforated-faceplate",
       "name": "SDF Perforated Faceplate",
       "file": "sdf_repeatn_showcase.partwright.json",
       "language": "manifold-js",
-      "description": "A speaker-style faceplate built on the finite-count repeatN combinator — a 7×5 grid of through-holes subtracted from a rounded slab, a recessed bezel, and a 4×1 row of LED-indicator bumps. The textbook \"no intersect needed\" case in three painted regions."
+      "description": "A speaker-style faceplate built on the finite-count repeatN combinator — a 7×5 grid of through-holes subtracted from a rounded slab, a recessed bezel, and a 4×1 row of LED-indicator bumps. The textbook \"no intersect needed\" case in three painted regions.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "sdf-graded-tpms-study",
@@ -390,210 +547,302 @@
       "name": "SDF Running-Bond Brick Wall",
       "file": "sdf_brick_wall.partwright.json",
       "language": "manifold-js",
-      "description": "A classic running-bond brick wall — bricks tiled via repeatN({stagger: {along: x, by: y}}), the new option for brick/honeycomb patterns. Every other course shifts by half a brick. Two painted regions on a recessed mortar slab."
+      "description": "A classic running-bond brick wall — bricks tiled via repeatN({stagger: {along: x, by: y}}), the new option for brick/honeycomb patterns. Every other course shifts by half a brick. Two painted regions on a recessed mortar slab.",
+      "tags": [
+        "buildings"
+      ]
     },
     {
       "id": "striped-lighthouse",
       "name": "Striped Lighthouse",
       "file": "striped_lighthouse.partwright.json",
       "language": "manifold-js",
-      "description": "A parametric tapered lighthouse with alternating red/white bands, a railed gallery, and a domed lantern room glowing around a central light."
+      "description": "A parametric tapered lighthouse with alternating red/white bands, a railed gallery, and a domed lantern room glowing around a central light.",
+      "tags": [
+        "buildings"
+      ]
     },
     {
       "id": "parametric-tray",
       "name": "Parametric Storage Tray",
       "file": "parametric_tray.partwright.json",
       "language": "manifold-js",
-      "description": "Customizable rounded storage tray — adjust size, wall/floor thickness, corner style, and internal dividers via the Parameters panel."
+      "description": "Customizable rounded storage tray — adjust size, wall/floor thickness, corner style, and internal dividers via the Parameters panel.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "parametric-knob",
       "name": "Parametric Control Knob",
       "file": "parametric_knob.partwright.json",
       "language": "manifold-js",
-      "description": "Customizable control knob/dial — set diameter, height, grip count and style (knurled/fluted/smooth), center bore, and pointer via the Parameters panel."
+      "description": "Customizable control knob/dial — set diameter, height, grip count and style (knurled/fluted/smooth), center bore, and pointer via the Parameters panel.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "parametric-vent-panel",
       "name": "Parametric Vent Panel",
       "file": "parametric_vent_panel.partwright.json",
       "language": "manifold-js",
-      "description": "Customizable perforated honeycomb/vent panel — set size, thickness, cell size/shape (hex/square/round), wall, and an optional border frame via the Parameters panel."
+      "description": "Customizable perforated honeycomb/vent panel — set size, thickness, cell size/shape (hex/square/round), wall, and an optional border frame via the Parameters panel.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "daisy-flower",
       "name": "Daisy Flower",
       "file": "daisy_flower.partwright.json",
       "language": "manifold-js",
-      "description": "A cheerful parametric daisy with a domed pollen center, a fan of radial petals, a tapering stem, and a pair of leaves."
+      "description": "A cheerful parametric daisy with a domed pollen center, a fan of radial petals, a tapering stem, and a pair of leaves.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "rainbow-ring-stacker",
       "name": "Rainbow Ring Stacker",
       "file": "rainbow_ring_stacker.partwright.json",
       "language": "manifold-js",
-      "description": "A parametric take on the classic children's stacking toy: a domed base, a tapered center post, and a free-sliding stack of rainbow donut rings of decreasing size."
+      "description": "A parametric take on the classic children's stacking toy: a domed base, a tapered center post, and a free-sliding stack of rainbow donut rings of decreasing size.",
+      "tags": [
+        "fidgets"
+      ]
     },
     {
       "id": "rocket-ship",
       "name": "Rocket Ship",
       "file": "rocket_ship.partwright.json",
       "language": "manifold-js",
-      "description": "A retro toy rocket with a parametric body, nose cone, ring of tail fins, a round porthole window, and a flared exhaust nozzle."
+      "description": "A retro toy rocket with a parametric body, nose cone, ring of tail fins, a round porthole window, and a flared exhaust nozzle.",
+      "tags": [
+        "vehicles"
+      ]
     },
     {
       "id": "toadstool",
       "name": "Toadstool Mushroom",
       "file": "toadstool.partwright.json",
       "language": "manifold-js",
-      "description": "A storybook Amanita toadstool with a flared, spotted red cap on a rounded cream stem, fully parametric from cap size to spot count."
+      "description": "A storybook Amanita toadstool with a flared, spotted red cap on a rounded cream stem, fully parametric from cap size to spot count.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "traffic-light",
       "name": "Traffic Light",
       "file": "traffic_light.partwright.json",
       "language": "manifold-js",
-      "description": "A parametric three-lamp traffic signal with red, amber, and green lenses recessed into a rounded housing, plus optional sun visors and a mounting post."
+      "description": "A parametric three-lamp traffic signal with red, amber, and green lenses recessed into a rounded housing, plus optional sun visors and a mounting post.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "layer-cake",
       "name": "Layer Cake",
       "file": "layer_cake.partwright.json",
       "language": "manifold-js",
-      "description": "A self-coloring parametric layer cake: colors live in the model code via api.label(shape, name, { color }), so it renders painted with no paint step and the editor stays editable. Set the frosting color and tier count in the Parameters panel."
+      "description": "A self-coloring parametric layer cake: colors live in the model code via api.label(shape, name, { color }), so it renders painted with no paint step and the editor stays editable. Set the frosting color and tier count in the Parameters panel.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "country-manor-estate",
       "name": "Country Manor Estate",
       "file": "country_manor_estate.partwright.json",
       "language": "manifold-js",
-      "description": "A symmetric Palladian-style country manor with projecting end wings, a columned entrance portico, grand pediment and crest, hipped roofs ringed by balustrades, dormer windows, clustered chimneys with clay pots, and a central rooftop cupola — self-colored via labeled regions for multi-color prints."
+      "description": "A symmetric Palladian-style country manor with projecting end wings, a columned entrance portico, grand pediment and crest, hipped roofs ringed by balustrades, dormer windows, clustered chimneys with clay pots, and a central rooftop cupola — self-colored via labeled regions for multi-color prints.",
+      "tags": [
+        "buildings"
+      ]
     },
     {
       "id": "parameterized-chain",
       "name": "Parameterized Chain",
       "file": "parameterized_chain.partwright.json",
       "language": "manifold-js",
-      "description": "A print-in-place interlocking chain swept with Curves.sweep — a 5-link straight run and a 30-link Archimedean spiral laid flat on the bed. Set link count, scale, wire diameter, and clearance in the Parameters panel."
+      "description": "A print-in-place interlocking chain swept with Curves.sweep — a 5-link straight run and a 30-link Archimedean spiral laid flat on the bed. Set link count, scale, wire diameter, and clearance in the Parameters panel.",
+      "tags": [
+        "fidgets",
+        "mechanical"
+      ]
     },
     {
       "id": "hot-dog",
       "name": "Hot Dog",
       "file": "hot_dog.partwright.json",
       "language": "manifold-js",
-      "description": "A cartoon hot dog — a hull-formed sausage nestled in a hollowed bun with a wavy mustard squiggle draped on top. Fully parametric, with color knobs for bun, sausage, and mustard."
+      "description": "A cartoon hot dog — a hull-formed sausage nestled in a hollowed bun with a wavy mustard squiggle draped on top. Fully parametric, with color knobs for bun, sausage, and mustard.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "voxel-castle",
       "name": "Voxel Castle",
       "file": "voxel_castle.partwright.json",
       "language": "voxel",
-      "description": "A grand royal castle built on a voxel grid — concentric curtain walls, corner turrets with blue conical roofs, a moat, gardens, and golden banners. Painted block-by-block, then baked to a watertight mesh."
+      "description": "A grand royal castle built on a voxel grid — concentric curtain walls, corner turrets with blue conical roofs, a moat, gardens, and golden banners. Painted block-by-block, then baked to a watertight mesh.",
+      "tags": [
+        "buildings"
+      ]
     },
     {
       "id": "voxel-robot",
       "name": "Voxel Robot",
       "file": "voxel_robot.partwright.json",
       "language": "voxel",
-      "description": "A boxy retro voxel robot with glowing cyan eyes, a button-panel chest, blocky arms, and a bobble antenna."
+      "description": "A boxy retro voxel robot with glowing cyan eyes, a button-panel chest, blocky arms, and a bobble antenna.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "voxel-dragon",
       "name": "Voxel Dragon",
       "file": "voxel_dragon.partwright.json",
       "language": "voxel",
-      "description": "A cute seated voxel dragon with emerald scales, a cream belly, bone horns, a row of dorsal spikes, and a curling tail."
+      "description": "A cute seated voxel dragon with emerald scales, a cream belly, bone horns, a row of dorsal spikes, and a curling tail.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "voxel-cat",
       "name": "Voxel Cat",
       "file": "voxel_cat.partwright.json",
       "language": "voxel",
-      "description": "A charming voxel tabby sitting up — rounded head with pointy ears, green eyes, a pink nose, white paws, and a curling tail."
+      "description": "A charming voxel tabby sitting up — rounded head with pointy ears, green eyes, a pink nose, white paws, and a curling tail.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "voxel-slime",
       "name": "Voxel Slime",
       "file": "voxel_slime.partwright.json",
       "language": "voxel",
-      "description": "A classic RPG-style voxel slime — a glossy aqua blob with a sheen highlight and a big happy face."
+      "description": "A classic RPG-style voxel slime — a glossy aqua blob with a sheen highlight and a big happy face.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "voxel-knight",
       "name": "Voxel Knight",
       "file": "voxel_knight.partwright.json",
       "language": "voxel",
-      "description": "A chibi voxel knight in steel plate with gold trim, a red plume, a cross-emblem shield, and a raised sword."
+      "description": "A chibi voxel knight in steel plate with gold trim, a red plume, a cross-emblem shield, and a raised sword.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "medieval-watchtower",
       "name": "Medieval Watchtower",
       "file": "medieval_watchtower.partwright.json",
       "language": "manifold-js",
-      "description": "A detailed stone watchtower with buttresses, corbels, open battlements, an arched wooden door, and a conical roof — self-colored via labeled regions for multi-color prints."
+      "description": "A detailed stone watchtower with buttresses, corbels, open battlements, an arched wooden door, and a conical roof — self-colored via labeled regions for multi-color prints.",
+      "tags": [
+        "buildings"
+      ]
     },
     {
       "id": "retro-tv",
       "name": "Retro TV",
       "file": "retro_tv.partwright.json",
       "language": "manifold-js",
-      "description": "A retro CRT television with a lofted tapered housing, a curved-glass screen, a swept carry handle, round control knobs, and rabbit-ear antennas."
+      "description": "A retro CRT television with a lofted tapered housing, a curved-glass screen, a swept carry handle, round control knobs, and rabbit-ear antennas.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "japanese-pagoda",
       "name": "Japanese Pagoda",
       "file": "japanese_pagoda.partwright.json",
       "language": "manifold-js",
-      "description": "A five-story vermilion-and-white temple pagoda whose dark tiled roofs sweep up into graceful upturned eaves, crowned by a gilt-bronze sōrin spire atop a stepped stone base."
+      "description": "A five-story vermilion-and-white temple pagoda whose dark tiled roofs sweep up into graceful upturned eaves, crowned by a gilt-bronze sōrin spire atop a stepped stone base.",
+      "tags": [
+        "buildings"
+      ]
     },
     {
       "id": "steampunk-airship",
       "name": "Steampunk Airship",
       "file": "steampunk_airship.partwright.json",
       "language": "manifold-js",
-      "description": "A crimson-silk dirigible with a brass-ribbed envelope, a wooden gondola lined with brass portholes, a verdigris-copper wheelhouse, cruciform tail fins, and an outrigger propeller."
+      "description": "A crimson-silk dirigible with a brass-ribbed envelope, a wooden gondola lined with brass portholes, a verdigris-copper wheelhouse, cruciform tail fins, and an outrigger propeller.",
+      "tags": [
+        "vehicles"
+      ]
     },
     {
       "id": "mechanical-orrery",
       "name": "Mechanical Orrery",
       "file": "mechanical_orrery.partwright.json",
       "language": "scad",
-      "description": "A brass tabletop orrery whose meshing involute gear train drives a gilded sun, with red, blue, and ringed teal planets swinging out on graceful arms at staggered orbits."
+      "description": "A brass tabletop orrery whose meshing involute gear train drives a gilded sun, with red, blue, and ringed teal planets swinging out on graceful arms at staggered orbits.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "pocket-watch",
       "name": "Pocket Watch Movement",
       "file": "pocket_watch.partwright.json",
       "language": "scad",
-      "description": "An open-face skeleton pocket watch laid bare — a stepped brass bezel with a fluted crown and suspension bow framing an exposed train of involute spur gears down to a blued balance, jeweled with red rubies at every pivot."
+      "description": "An open-face skeleton pocket watch laid bare — a stepped brass bezel with a fluted crown and suspension bow framing an exposed train of involute spur gears down to a blued balance, jeweled with red rubies at every pivot.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "turbofan-engine",
       "name": "Turbofan Jet Engine",
       "file": "turbofan_engine.partwright.json",
       "language": "replicad",
-      "description": "The front of a high-bypass airliner turbofan: a smoothly swept nacelle cowl with a chamfered intake lip, a dark spinner cone, and a full ring of fan blades — an exact-surface BREP showcase."
+      "description": "The front of a high-bypass airliner turbofan: a smoothly swept nacelle cowl with a chamfered intake lip, a dark spinner cone, and a full ring of fan blades — an exact-surface BREP showcase.",
+      "tags": [
+        "mechanical",
+        "vehicles"
+      ]
     },
     {
       "id": "kitchen-faucet",
       "name": "Kitchen Faucet",
       "file": "kitchen_faucet.partwright.json",
       "language": "replicad",
-      "description": "A sleek brushed-metal gooseneck mixer tap, its tall toroidal spout arching from a flared deck column down to a flush aerator, with a single blue lever handle at the bend — a smooth-surface BREP showcase."
+      "description": "A sleek brushed-metal gooseneck mixer tap, its tall toroidal spout arching from a flared deck column down to a flush aerator, with a single blue lever handle at the bend — a smooth-surface BREP showcase.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "voxel-pirate-ship",
       "name": "Voxel Pirate Ship",
       "file": "voxel_pirate_ship.partwright.json",
       "language": "voxel",
-      "description": "A blocky pirate galleon — a curved wooden hull with a red gold-windowed stern castle, three masts of billowing cream sails, a crow's nest, iron cannons, a gilded figurehead, and a skull-and-crossbones flag."
+      "description": "A blocky pirate galleon — a curved wooden hull with a red gold-windowed stern castle, three masts of billowing cream sails, a crow's nest, iron cannons, a gilded figurehead, and a skull-and-crossbones flag.",
+      "tags": [
+        "vehicles"
+      ]
     },
     {
       "id": "voxel-locomotive",
       "name": "Voxel Steam Locomotive",
       "file": "voxel_locomotive.partwright.json",
       "language": "voxel",
-      "description": "A cute blocky 4-4-0 steam engine — a green brass-banded boiler, a flared funnel trailing a white smoke puff, twin steam domes, a windowed wood cab, big red driving wheels linked by silver rods, and a cowcatcher."
+      "description": "A cute blocky 4-4-0 steam engine — a green brass-banded boiler, a flared funnel trailing a white smoke puff, twin steam domes, a windowed wood cab, big red driving wheels linked by silver rods, and a cowcatcher.",
+      "tags": [
+        "vehicles"
+      ]
     },
     {
       "id": "spiral-fidget-cone",
@@ -601,28 +850,41 @@
       "file": "spiral_fidget_cone.partwright.json",
       "language": "manifold-js",
       "description": "Print-in-place bolt & nut — a 5-start helical screw captive inside a matching spiral-cage cone. Twist and it rides the threads; prints in one piece and unscrews apart.",
-      "group": "fidget-toys"
+      "group": "fidget-toys",
+      "tags": [
+        "fidgets",
+        "mechanical"
+      ]
     },
     {
       "id": "dna-helix",
       "name": "DNA Double Helix",
       "file": "dna_helix.partwright.json",
       "language": "manifold-js",
-      "description": "A double-helix model of DNA — two antiparallel sugar-phosphate backbones (orange and teal beads) spiralling around a shared axis, joined by colored base-pair rungs in the four nucleotide colors. Self-colored via labeled regions; parametric turns, radius, pitch, and bead density."
+      "description": "A double-helix model of DNA — two antiparallel sugar-phosphate backbones (orange and teal beads) spiralling around a shared axis, joined by colored base-pair rungs in the four nucleotide colors. Self-colored via labeled regions; parametric turns, radius, pitch, and bead density.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "fountain-pen",
       "name": "Fountain Pen",
       "file": "fountain_pen.partwright.json",
       "language": "manifold-js",
-      "description": "A capped-and-posted fountain pen — gold nib, black grip, burgundy barrel with gold trim bands, a posted cap with finial, and a sprung pocket clip. A turned object composed from stacked tapered cylinders along one axis, self-colored via labeled regions. Color and length are parametric."
+      "description": "A capped-and-posted fountain pen — gold nib, black grip, burgundy barrel with gold trim bands, a posted cap with finial, and a sprung pocket clip. A turned object composed from stacked tapered cylinders along one axis, self-colored via labeled regions. Color and length are parametric.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "ringed-planet",
       "name": "Ringed Planet",
       "file": "ringed_planet.partwright.json",
       "language": "manifold-js",
-      "description": "A gas giant with eight vivid Jupiter-style latitude bands, a five-band Saturn-inspired ring system with Cassini gap, a raised Great Red Spot, and a 22° axial tilt."
+      "description": "A gas giant with eight vivid Jupiter-style latitude bands, a five-band Saturn-inspired ring system with Cassini gap, a raised Great Red Spot, and a 22° axial tilt.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "print-fit-knob",
@@ -630,7 +892,10 @@
       "file": "print_fit_knob.partwright.json",
       "language": "manifold-js",
       "description": "A knurled hand knob with a captive M4 hex-nut pocket and a clearance bore — trap a nut and turn it onto any M4 bolt or rod. Useful for jigs, clamps, and adjustable feet. Built with api.fasteners.",
-      "group": "print-fit"
+      "group": "print-fit",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "print-fit-project-box",
@@ -638,7 +903,10 @@
       "file": "print_fit_project_box.partwright.json",
       "language": "manifold-js",
       "description": "A parametric base tray with lid-mount bosses, a matching countersunk-screwed lid, and vent slots to keep electronics cool. Pick the mounting style: heat-set insert bosses or thread-forming pilot bores the screws bite into directly. Built with api.fasteners.",
-      "group": "print-fit"
+      "group": "print-fit",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "print-fit-dovetail-system",
@@ -646,7 +914,10 @@
       "file": "print_fit_dovetail_system.partwright.json",
       "language": "manifold-js",
       "description": "A wall-mount plate with a full-length dovetail rail and a matching hook that slides on and locks — lift to remove. Print one plate, print as many hooks as you need. Both parts parameterizable. Built with api.joints and api.fasteners.",
-      "group": "print-fit"
+      "group": "print-fit",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "print-in-place-hinge",
@@ -654,7 +925,10 @@
       "file": "print_in_place_hinge.partwright.json",
       "language": "manifold-js",
       "description": "A barrel hinge that prints lying open flat and works straight off the bed — one leaf carries an integral captive pin, the other's bored knuckles wrap it. Knuckle count, pin size, and clearance are parametric. Built with api.joints.hinge.",
-      "group": "print-fit"
+      "group": "print-fit",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "ball-socket-mount",
@@ -662,7 +936,10 @@
       "file": "ball_socket_mount.partwright.json",
       "language": "manifold-js",
       "description": "An articulating ball-and-socket mount that holds the angle you set it to — pick a retention mode: friction (default; springy fingers grip the ball), clamp (a screw-tightened pinch), or snap (free-swivel). Both halves stand on screw-down plates and ball size, grip, and slots are parametric. Built with api.joints.ballSocket.",
-      "group": "print-fit"
+      "group": "print-fit",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "snap-lid-box",
@@ -670,273 +947,390 @@
       "file": "snap_lid_box.partwright.json",
       "language": "manifold-js",
       "description": "A round container whose press-on lid clicks shut — a bead ring on the lid skirt snaps into a groove inside the box mouth, both from one api.joints.snapRim call so they share the exact interface diameter.",
-      "group": "print-fit"
+      "group": "print-fit",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "sdf-asteroid",
       "name": "SDF Asteroid",
       "file": "sdf_asteroid.partwright.json",
       "language": "manifold-js",
-      "description": "A craggy asteroid — a sphere pushed in and out by an fBm noise field via the new sdf.noise() + node.displace(). One watertight rock; smooth (non-ridged) noise keeps it a single piece."
+      "description": "A craggy asteroid — a sphere pushed in and out by an fBm noise field via the new sdf.noise() + node.displace(). One watertight rock; smooth (non-ridged) noise keeps it a single piece.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "sdf-bark-vase",
       "name": "SDF Bark Vase",
       "file": "sdf_bark_vase.partwright.json",
       "language": "manifold-js",
-      "description": "A hollow vase textured with vertical bark grooves — ridged noise carved inward-only with node.displace() so the thin wall stays one piece. Shows shaping a noise field to one side to avoid floating islands."
+      "description": "A hollow vase textured with vertical bark grooves — ridged noise carved inward-only with node.displace() so the thin wall stays one piece. Shows shaping a noise field to one side to avoid floating islands.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "sdf-brain-coral",
       "name": "SDF Brain Coral",
       "file": "sdf_brain_coral.partwright.json",
       "language": "manifold-js",
-      "description": "A boulder scored with winding labyrinthine grooves — inward-only ridged-noise displacement gives the brain-coral pattern in one watertight solid."
+      "description": "A boulder scored with winding labyrinthine grooves — inward-only ridged-noise displacement gives the brain-coral pattern in one watertight solid.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "sdf-lsystem-fern",
       "name": "L-System Fern",
       "file": "sdf_lsystem_fern.partwright.json",
       "language": "manifold-js",
-      "description": "The textbook Lindenmayer plant grammar grown into printable 3D geometry via the new api.sdf.lsystem() — a flat fractal fern of welded capsules."
+      "description": "The textbook Lindenmayer plant grammar grown into printable 3D geometry via the new api.sdf.lsystem() — a flat fractal fern of welded capsules.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "sdf-lsystem-coral",
       "name": "L-System Coral",
       "file": "sdf_lsystem_coral.partwright.json",
       "language": "manifold-js",
-      "description": "A chunky branching coral grown from an L-system — four-way radial splits with smooth-blended (fleshy) joints via api.sdf.lsystem({ blend })."
+      "description": "A chunky branching coral grown from an L-system — four-way radial splits with smooth-blended (fleshy) joints via api.sdf.lsystem({ blend }).",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "sdf-lsystem-tree",
       "name": "L-System Tree",
       "file": "sdf_lsystem_tree.partwright.json",
       "language": "manifold-js",
-      "description": "A stylized tree grown from an L-system: a trunk with a radial branch crown and a canopy of leaf spheres, in two painted regions (wood + leaves) from one call."
+      "description": "A stylized tree grown from an L-system: a trunk with a radial branch crown and a canopy of leaf spheres, in two painted regions (wood + leaves) from one call.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "voxel-sdf-gyroid-vase",
       "name": "Voxel SDF Gyroid Vase",
       "file": "voxel_sdf_gyroid_vase.partwright.json",
       "language": "voxel",
-      "description": "A desktop pen & brush holder with an open gyroid-lattice wall welded between a solid base and rim — one SDF expression (gyroid intersected with a tube) rasterized into voxels with v.sdf. Two-tone teal body and gold trim."
+      "description": "A desktop pen & brush holder with an open gyroid-lattice wall welded between a solid base and rim — one SDF expression (gyroid intersected with a tube) rasterized into voxels with v.sdf. Two-tone teal body and gold trim.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "voxel-sdf-coral",
       "name": "Voxel SDF Coral",
       "file": "voxel_sdf_coral.partwright.json",
       "language": "voxel",
-      "description": "A porous brain-coral on a sandy rock base — a smooth-blended SDF blob (smoothUnion of ellipsoids) made knobby and holey by a diamond TPMS, then rasterized into voxels with v.sdf. The organic SDF-to-voxel showcase."
+      "description": "A porous brain-coral on a sandy rock base — a smooth-blended SDF blob (smoothUnion of ellipsoids) made knobby and holey by a diamond TPMS, then rasterized into voxels with v.sdf. The organic SDF-to-voxel showcase.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "voxel-sdf-blob",
       "name": "Voxel SDF Blob Mascot",
       "file": "voxel_sdf_blob.partwright.json",
       "language": "voxel",
-      "description": "A cute mint-green blob mascot built entirely from SDF smooth-blends (smoothUnion of ellipsoids, flat-bottomed by a half-space clip) and rasterized into voxels with v.sdf — organic character modeling in the blocky voxel world."
+      "description": "A cute mint-green blob mascot built entirely from SDF smooth-blends (smoothUnion of ellipsoids, flat-bottomed by a half-space clip) and rasterized into voxels with v.sdf — organic character modeling in the blocky voxel world.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "voxel-sdf-lattice-cube",
       "name": "Voxel SDF Lattice Cube",
       "file": "voxel_sdf_lattice_cube.partwright.json",
       "language": "voxel",
-      "description": "A graphite desk paperweight whose four windows reveal a glowing-cyan Schwarz-P TPMS lattice core — frame, window cuts, and lattice are one SDF expression rasterized into voxels with v.sdf."
+      "description": "A graphite desk paperweight whose four windows reveal a glowing-cyan Schwarz-P TPMS lattice core — frame, window cuts, and lattice are one SDF expression rasterized into voxels with v.sdf.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "voxel-sdf-twist-tower",
       "name": "Voxel SDF Twist Tower",
       "file": "voxel_sdf_twist_tower.partwright.json",
       "language": "voxel",
-      "description": "A twisted pen & utensil holder — a hollow rounded-square wall punched with a grid of windows and twisted on its axis, then rasterized into voxels with v.sdf. Solid flat base, lavender rim, violet body."
+      "description": "A twisted pen & utensil holder — a hollow rounded-square wall punched with a grid of windows and twisted on its axis, then rasterized into voxels with v.sdf. Solid flat base, lavender rim, violet body.",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "gear-pair",
       "name": "Parametric Gear Pair",
       "file": "gear_pair.partwright.json",
       "language": "manifold-js",
-      "description": "Meshing involute spur-gear pair with adjustable module, tooth counts (ratio), thickness, and shaft bore."
+      "description": "Meshing involute spur-gear pair with adjustable module, tooth counts (ratio), thickness, and shaft bore.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "screw-top-jar",
       "name": "Screw-Top Jar",
       "file": "screw_top_jar.partwright.json",
       "language": "manifold-js",
-      "description": "Watertight container with a matching threaded screw-on lid — real external + internal threads, fully parametric (diameter, height, pitch, fit)."
+      "description": "Watertight container with a matching threaded screw-on lid — real external + internal threads, fully parametric (diameter, height, pitch, fit).",
+      "tags": [
+        "decor"
+      ]
     },
     {
       "id": "rack-and-pinion",
       "name": "Rack & Pinion",
       "file": "rack_and_pinion.partwright.json",
       "language": "manifold-js",
-      "description": "Involute pinion meshing a straight rack to turn rotation into linear motion — adjustable module, teeth, and length."
+      "description": "Involute pinion meshing a straight rack to turn rotation into linear motion — adjustable module, teeth, and length.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "waving-kid",
       "name": "Waving Kid",
       "file": "waving_kid.partwright.json",
       "language": "manifold-js",
-      "description": "A cheerful stylized child waving hello — one arm raised high, eyes glancing up at the person they're greeting, chunky cargo pants, long hair, built with the SDF figure rig."
+      "description": "A cheerful stylized child waving hello — one arm raised high, eyes glancing up at the person they're greeting, chunky cargo pants, long hair, built with the SDF figure rig.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "sneakers-character",
       "name": "Sneakers Character",
       "file": "figure_sneakers.partwright.json",
       "language": "manifold-js",
-      "description": "A casual figure in chunky sneakers — showcasing the figure footwear builder: F.clothing.shoes paints a separate contrasting sole and F.ground plants both feet level on the base so the soles sit flush."
+      "description": "A casual figure in chunky sneakers — showcasing the figure footwear builder: F.clothing.shoes paints a separate contrasting sole and F.ground plants both feet level on the base so the soles sit flush.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "afro-funk-dancer",
       "name": "Afro Funk Dancer",
       "file": "afro_funk.partwright.json",
       "language": "manifold-js",
-      "description": "A funk dancer mid-groove with a big curly afro — showing off the figure rig's hair system, where the 'afro' style and its curl relief are real printable geometry that tracks the cocked head."
+      "description": "A funk dancer mid-groove with a big curly afro — showing off the figure rig's hair system, where the 'afro' style and its curl relief are real printable geometry that tracks the cocked head.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "sumo-wrestler",
       "name": "Sumo Wrestler",
       "file": "sumo.partwright.json",
       "language": "manifold-js",
-      "description": "A sumo wrestler in a wide pre-bout crouch, arms spread — the figure rig's weight axis (maxed) plus a stocky male build give the heavy belly and bulk, finished with a navy mawashi and a topknot."
+      "description": "A sumo wrestler in a wide pre-bout crouch, arms spread — the figure rig's weight axis (maxed) plus a stocky male build give the heavy belly and bulk, finished with a navy mawashi and a topknot.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "toddler-teddy",
       "name": "Toddler with Teddy",
       "file": "toddler.partwright.json",
       "language": "manifold-js",
-      "description": "A chubby, big-headed toddler in a red romper cradling a teddy bear — the figure rig's young age axis (and a low headsTall) for the adorable baby proportions."
+      "description": "A chubby, big-headed toddler in a red romper cradling a teddy bear — the figure rig's young age axis (and a low headsTall) for the adorable baby proportions.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "grandfather-cane",
       "name": "Grandfather with Cane",
       "file": "grandpa.partwright.json",
       "language": "manifold-js",
-      "description": "An older man in a long cardigan leaning on a cane, with a gentle stoop — the figure rig's old age axis plus a lean build, the cane fused to the base as one printable piece."
+      "description": "An older man in a long cardigan leaning on a cane, with a gentle stoop — the figure rig's old age axis plus a lean build, the cane fused to the base as one printable piece.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "yoga-tree-pose",
       "name": "Yoga Tree Pose",
       "file": "yoga.partwright.json",
       "language": "manifold-js",
-      "description": "A woman balancing in vrikshasana (tree pose) — one foot tucked to the standing thigh, palms together overhead — in a sports bra and leggings, showing the figure rig's female silhouette."
+      "description": "A woman balancing in vrikshasana (tree pose) — one foot tucked to the standing thigh, palms together overhead — in a sports bra and leggings, showing the figure rig's female silhouette.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "opera-diva",
       "name": "Opera Diva",
       "file": "diva.partwright.json",
       "language": "manifold-js",
-      "description": "A glamorous opera singer mid-aria in a floor-length gown, one arm flung overhead — the figure rig's female axis with added weight for a fuller figure, plus painted lips and an updo."
+      "description": "A glamorous opera singer mid-aria in a floor-length gown, one arm flung overhead — the figure rig's female axis with added weight for a fuller figure, plus painted lips and an updo.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "cornrows-runner",
       "name": "Cornrows Runner",
       "file": "cornrows_runner.partwright.json",
       "language": "manifold-js",
-      "description": "A sprinter set at the blocks — cornrows laid tight to the scalp with carved partings, a round face with a broad nose and full lips, deep skin. Shows the figure rig's face-shape, nose, and hair-texture axes."
+      "description": "A sprinter set at the blocks — cornrows laid tight to the scalp with carved partings, a round face with a broad nose and full lips, deep skin. Shows the figure rig's face-shape, nose, and hair-texture axes.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "locs-musician",
       "name": "Locs Musician",
       "file": "locs_musician.partwright.json",
       "language": "manifold-js",
-      "description": "A relaxed musician with shoulder-length locs and an easy contrapposto stance — a long face and narrower nose under the locs, medium-deep skin. Mixes the diversity axes so each figure reads as an individual."
+      "description": "A relaxed musician with shoulder-length locs and an easy contrapposto stance — a long face and narrower nose under the locs, medium-deep skin. Mixes the diversity axes so each figure reads as an individual.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "flexing-strongman",
       "name": "Flexing Strongman",
       "file": "flexing_strongman.partwright.json",
       "language": "manifold-js",
-      "description": "A vintage-circus strongman hitting a double-biceps pose — stocky build, both fists raised, short trunks and a handlebar mustache."
+      "description": "A vintage-circus strongman hitting a double-biceps pose — stocky build, both fists raised, short trunks and a handlebar mustache.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "chibi-wizard",
       "name": "Chibi Wizard",
       "file": "chibi_wizard.partwright.json",
       "language": "manifold-js",
-      "description": "An adorable chibi wizard with an oversized pointed hat, a magic staff topped by a glowing orb, and a long beard — extreme cute proportions."
+      "description": "An adorable chibi wizard with an oversized pointed hat, a magic staff topped by a glowing orb, and a long beard — extreme cute proportions.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "warrior-pose",
       "name": "Warrior Pose",
       "file": "warrior_pose.partwright.json",
       "language": "manifold-js",
-      "description": "A figure in a yoga warrior lunge — front knee bent, back leg straight, arms outstretched in a T — showing off the figure rig's leg posing."
+      "description": "A figure in a yoga warrior lunge — front knee bent, back leg straight, arms outstretched in a T — showing off the figure rig's leg posing.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "ballerina",
       "name": "Ballerina",
       "file": "ballerina.partwright.json",
       "language": "manifold-js",
-      "description": "An elegant ballerina with arms raised overhead and a layered tutu, balanced on a base — a graceful figure-rig pose."
+      "description": "An elegant ballerina with arms raised overhead and a layered tutu, balanced on a base — a graceful figure-rig pose.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "storytime-reader",
       "name": "Storytime Reader",
       "file": "sitting_reader.partwright.json",
       "language": "manifold-js",
-      "description": "A child sitting on a stool absorbed in a chunky storybook — chair-sit pose, bangs, eyes cast down to the page, and sculpted hands cradling the open book."
+      "description": "A child sitting on a stool absorbed in a chunky storybook — chair-sit pose, bangs, eyes cast down to the page, and sculpted hands cradling the open book.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "karate-master",
       "name": "Karate Master",
       "file": "karate.partwright.json",
       "language": "manifold-js",
-      "description": "A martial artist mid-punch in a white gi with a knotted black belt and red headband — front stance, chambered fist, gritted teeth."
+      "description": "A martial artist mid-punch in a white gi with a knotted black belt and red headband — front stance, chambered fist, gritted teeth.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "waving-princess",
       "name": "Waving Princess",
       "file": "princess.partwright.json",
       "language": "manifold-js",
-      "description": "A princess in a floor-length gown giving a royal wave — gold five-point crown, ponytail, painted lips, a demure sidelong glance, open-fingered hand."
+      "description": "A princess in a floor-length gown giving a royal wave — gold five-point crown, ponytail, painted lips, a demure sidelong glance, open-fingered hand.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "rock-guitarist",
       "name": "Rock Guitarist",
       "file": "rocker.partwright.json",
       "language": "manifold-js",
-      "description": "A guitarist mid-solo with an electric guitar slung low — fretting and strumming hands on the instrument, bangs, mouth open singing."
+      "description": "A guitarist mid-solo with an electric guitar slung low — fretting and strumming hands on the instrument, bangs, mouth open singing.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "superhero-takeoff",
       "name": "Superhero Takeoff",
       "file": "superhero.partwright.json",
       "language": "manifold-js",
-      "description": "A stocky hero launching skyward with one fist punched up — sweeping cape, chest emblem, gloves and boots over a two-tone suit."
+      "description": "A stocky hero launching skyward with one fist punched up — sweeping cape, chest emblem, gloves and boots over a two-tone suit.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "staff-mage",
       "name": "Staff Mage",
       "file": "staff_mage.partwright.json",
       "language": "manifold-js",
-      "description": "A robed mage raising a quarterstaff in one hand — the staff seated into the grip with the figure API's holdAt helper so it follows the hand instead of impaling it."
+      "description": "A robed mage raising a quarterstaff in one hand — the staff seated into the grip with the figure API's holdAt helper so it follows the hand instead of impaling it.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "cross-eyed-bust",
       "name": "Cross-Eyed Goofball",
       "file": "cross_eyed_bust.partwright.json",
       "language": "manifold-js",
-      "description": "A goofy cross-eyed bust — each eyeball aimed independently at the nose with the figure rig's per-eye gaze (gazeL/gazeR), under a big grin and high comedic brows."
+      "description": "A goofy cross-eyed bust — each eyeball aimed independently at the nose with the figure rig's per-eye gaze (gazeL/gazeR), under a big grin and high comedic brows.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "stargazer-bust",
       "name": "Stargazer",
       "file": "stargazer_bust.partwright.json",
       "language": "manifold-js",
-      "description": "A dreamy bust gazing skyward — chin lifted and both irises cast up with the eyes' gaze:'up' preset, set off by almond lids and soft lips."
+      "description": "A dreamy bust gazing skyward — chin lifted and both irises cast up with the eyes' gaze:'up' preset, set off by almond lids and soft lips.",
+      "tags": [
+        "figures"
+      ]
     },
     {
       "id": "parametric-enclosure",
       "name": "Project Box / Enclosure",
       "file": "parametric_enclosure.partwright.json",
       "language": "manifold-js",
-      "description": "A fully parametric two-part project box built with api.enclosure — choose a lip-nesting or screw-down lid, then tune size, wall, corner radius, fit, and screw size in the Customizer. The screw lid composes api.fasteners for its tapped corner bosses and countersunk holes."
+      "description": "A fully parametric two-part project box built with api.enclosure — choose a lip-nesting or screw-down lid, then tune size, wall, corner radius, fit, and screw size in the Customizer. The screw lid composes api.fasteners for its tapped corner bosses and countersunk holes.",
+      "tags": [
+        "mechanical"
+      ]
     },
     {
       "id": "knurled-control-knob",
       "name": "Knurled Control Knob",
       "file": "knurled_control_knob.partwright.json",
       "language": "manifold-js",
-      "description": "A customizable control knob with a functional knurled grip built with api.knurl — switch between a diamond cross-hatch, straight splines, or finger ribs, and mount it on a plain shaft, a D-shaft, or a heat-set threaded insert. Pointer notch optional."
+      "description": "A customizable control knob with a functional knurled grip built with api.knurl — switch between a diamond cross-hatch, straight splines, or finger ribs, and mount it on a plain shaft, a D-shaft, or a heat-set threaded insert. Pointer notch optional.",
+      "tags": [
+        "mechanical"
+      ]
     }
   ]
 }
