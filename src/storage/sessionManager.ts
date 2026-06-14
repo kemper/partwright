@@ -62,6 +62,8 @@ import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
 import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
 import { effectiveVersionLanguage, asLanguage } from './languageFallback';
+import { buildInfo } from '../buildInfo';
+import { appVersionCompatibility } from './appVersionCompat';
 
 /**
  * Current schema version for `.partwright.json` exports.
@@ -155,10 +157,24 @@ import { effectiveVersionLanguage, asLanguage } from './languageFallback';
  *           texture's appearance is pinned at save time. Self-validating via
  *           the key (a stale key just recomputes); absent ⇒ recompute on
  *           demand. Older readers ignore the field.
+ *  - `1.15` — app-version provenance. Records the Partwright **app** semver
+ *           (package.json `version`, e.g. "1.0.0") that authored the file: a
+ *           top-level `appVersion` (the exporting build) and per-version
+ *           `versions[].appVersion` (the build that saved each snapshot — its
+ *           "last known good" version). This is a *different axis* from this
+ *           schema number; it's the signal the cross-major migration flow keys
+ *           off (see appVersionCompat.ts). Absent on pre-1.15 files and on
+ *           dev/test builds (version 'unknown'); older readers ignore it.
  */
-export const SCHEMA_VERSION = '1.14';
+export const SCHEMA_VERSION = '1.15';
 
 const CURRENT_MAJOR = 1;
+
+/** The running build's app semver (package.json `version`). 'unknown' in
+ *  dev/test, where we stamp nothing rather than persist the placeholder. */
+const APP_VERSION = buildInfo.version;
+const stampedAppVersion: string | undefined =
+  APP_VERSION && APP_VERSION !== 'unknown' ? APP_VERSION : undefined;
 
 /** Name given to the implicit first part of every session. */
 const DEFAULT_PART_NAME = 'Part 1';
@@ -176,6 +192,15 @@ export interface ExportedSession {
   partwright?: string;
   /** Legacy alias from the pre-rebrand era. Read as a fallback only. */
   mainifold?: string;
+  /**
+   * The Partwright **app** semver (package.json `version`, e.g. "1.0.0") of the
+   * build that exported this file — distinct from the `partwright` schema
+   * version above. The file-level "authored with" signal the cross-major
+   * migration flow reads (see {@link appVersionCompatibility}). Absent on
+   * pre-1.15 files and dev/test builds.
+   * @since 1.15
+   */
+  appVersion?: string;
   /** Images may be the array form or the legacy object map ({front, right, ...}).
    * Both also exist under `referenceImages` for pre-rename exports. */
   session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number }; workCamera?: { position: [number, number, number]; target: [number, number, number] } };
@@ -256,6 +281,15 @@ export interface ExportedSession {
      * @since 1.14
      */
     surfaceTexture?: ExportedSurfaceTexture;
+    /**
+     * App semver (package.json `version`) of the build that saved this version —
+     * its "last known good" app version. Absent on versions saved before this
+     * field existed and on dev/test builds. Preserved verbatim on import (the
+     * provenance follows the geometry; it is NOT re-stamped to the importing
+     * build).
+     * @since 1.15
+     */
+    appVersion?: string;
   }[];
   notes?: { text: string; timestamp: number }[];
   /**
@@ -1135,6 +1169,9 @@ export async function saveVersion(
       parentVersionId: options?.parentVersionId ?? null,
       operation: options?.operation ?? null,
       surfaceTexture: options?.surfaceTexture,
+      // Stamp the app version that authored this snapshot — its "last known
+      // good" version (undefined in dev where it's 'unknown').
+      appVersion: stampedAppVersion,
     }
   );
 
@@ -1757,6 +1794,7 @@ export async function exportSession(
 
   return {
     partwright: SCHEMA_VERSION,
+    ...(stampedAppVersion ? { appVersion: stampedAppVersion } : {}),
     session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}) },
     parts: parts.map(p => ({ name: p.name, order: p.order })),
     versions: flat.map(({ v, partOrder }, i) => {
@@ -1782,6 +1820,7 @@ export async function exportSession(
         ...(surfaceTexture ? { surfaceTexture } : {}),
         ...(v.paramValues && Object.keys(v.paramValues).length > 0 ? { paramValues: v.paramValues } : {}),
         ...(v.companionFiles && Object.keys(v.companionFiles).length > 0 ? { companionFiles: v.companionFiles } : {}),
+        ...(v.appVersion ? { appVersion: v.appVersion } : {}),
       };
     }),
     ...(notes.length > 0 ? { notes: notes.map(n => ({ text: n.text, timestamp: n.timestamp })) } : {}),
@@ -1799,6 +1838,11 @@ export async function importSession(
 ): Promise<Session> {
   const warning = getSchemaCompatibilityWarning(data);
   if (warning && onWarning) onWarning(warning);
+  // App-version provenance check — distinct axis from the schema warning above.
+  // Newer-major files warn; older-major is silent and is where a future major
+  // will hook its forward-migration codemod (see appVersionCompat.ts).
+  const appCompat = appVersionCompatibility(data);
+  if (appCompat.warning && onWarning) onWarning(appCompat.warning);
 
   // Validate before creating anything: a file with no `versions` array would
   // otherwise throw partway through (data.versions.reduce/for-of) and strand an
@@ -1945,6 +1989,10 @@ export async function importSession(
           // Persisted surface texture (schema 1.14+). Pre-1.14 files omit it;
           // the texture chain then recomputes on the version's first load.
           surfaceTexture: deserializeSurfaceTexture(v.surfaceTexture),
+          // App-version provenance (schema 1.15+). Preserved verbatim — the
+          // "last known good" version follows the geometry, so it is NOT
+          // re-stamped to the importing build.
+          appVersion: typeof v.appVersion === 'string' ? v.appVersion : undefined,
         }
       );
     }
@@ -2132,6 +2180,8 @@ export async function importSessionPartsIntoActive(
           operation: null,
           // Persisted surface texture (schema 1.14+); absent ⇒ recompute on load.
           surfaceTexture: deserializeSurfaceTexture(v.surfaceTexture),
+          // App-version provenance (schema 1.15+) — preserved, not re-stamped.
+          appVersion: typeof v.appVersion === 'string' ? v.appVersion : undefined,
         }
       );
       copiedVersions++;

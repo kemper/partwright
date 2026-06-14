@@ -102,6 +102,62 @@ describe('figure rig — head-unit proportions & sex (Loomis canon)', () => {
     expect(female.r.hipsX).toBeGreaterThan(male.r.hipsX);
     // female: smaller waist-to-hip ratio (the hourglass signal).
     expect(female.r.waist / female.r.hipsX).toBeLessThan(male.r.waist / male.r.hipsX);
+    // female bust: chest girth above neutral.
+    expect(female.r.chestX).toBeGreaterThan(neutral.r.chestX);
+  });
+});
+
+describe('figure rig — age & weight axes (MakeHuman CC0 mined)', () => {
+  it('defaults (age 25, weight 0.5) leave the calibration anchor untouched', () => {
+    const def = buildRig({ height: 60, headsTall: 6 });
+    const explicit = buildRig({ height: 60, headsTall: 6, sex: 'neutral', age: 25, weight: 0.5 });
+    expect(explicit.r.chestX).toBeCloseTo(def.r.chestX, 9);
+    expect(explicit.r.waist).toBeCloseTo(def.r.waist, 9);
+    expect(explicit.r.hipsX).toBeCloseTo(def.r.hipsX, 9);
+    expect(explicit.r.hipsY).toBeCloseTo(def.r.hipsY, 9);
+    // and equal to the historical fractions-of-height calibration values
+    expect(def.r.chestX).toBeCloseTo(60 * 0.105, 4);
+  });
+
+  it('weight widens the waist and hips and adds torso depth, monotonically', () => {
+    const lean = buildRig({ weight: 0 });
+    const avg = buildRig({ weight: 0.5 });
+    const heavy = buildRig({ weight: 1 });
+    expect(heavy.r.waist).toBeGreaterThan(avg.r.waist);
+    expect(avg.r.waist).toBeGreaterThan(lean.r.waist);
+    expect(heavy.r.hipsX).toBeGreaterThan(lean.r.hipsX);
+    // weight adds 3D bulk, not just width — torso DEPTH grows too.
+    expect(heavy.r.hipsY).toBeGreaterThan(avg.r.hipsY);
+    expect(avg.r.hipsY).toBeCloseTo(buildRig({}).r.hipsY, 9); // average = baseline depth
+  });
+
+  it('age shifts torso girth (baby narrower waist/hip than young) without touching headsTall', () => {
+    const baby = buildRig({ age: 1 });
+    const young = buildRig({ age: 25 });
+    expect(baby.r.waist).toBeLessThan(young.r.waist);
+    expect(baby.r.hipsX).toBeLessThan(young.r.hipsX);
+    // age is a girth axis only — the head-to-body ratio (headsTall) is unchanged.
+    expect(baby.r.head).toBeCloseTo(young.r.head, 9);
+  });
+
+  it('age & weight compose with sex multiplicatively', () => {
+    const base = buildRig({ sex: 'female' });
+    const heavy = buildRig({ sex: 'female', weight: 1 });
+    expect(heavy.r.waist).toBeGreaterThan(base.r.waist);
+  });
+
+  it('validates age (1..90) and weight (0..1) ranges', () => {
+    expect(() => buildRig({ age: 0 })).toThrow(/age/);
+    expect(() => buildRig({ age: 200 })).toThrow(/age/);
+    expect(() => buildRig({ weight: -0.1 })).toThrow(/weight/);
+    expect(() => buildRig({ weight: 1.5 })).toThrow(/weight/);
+    expect(() => buildRig({ girth: 2 } as never)).toThrow();
+  });
+
+  it('records age & weight on rig.opts', () => {
+    const rig = buildRig({ age: 40, weight: 0.7 });
+    expect(rig.opts.age).toBe(40);
+    expect(rig.opts.weight).toBe(0.7);
   });
 });
 
