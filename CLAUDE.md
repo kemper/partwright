@@ -469,13 +469,20 @@ When you add a feature that would otherwise import "sideways" or "down into" a l
 
 ### Issue hygiene — don't lose work or discoveries at a boundary
 
-GitHub issues are the durable memory; a chat session is not. Insights, defects, and half-finished scope that live only in chat replies vanish when the session ends. You do **not** need to open an issue before starting ad-hoc work (that friction would kill the fast chat-driven flow) — but you **must reconcile issues at every completion boundary** (a PR opened/merged, or a task declared done). Before you say "done":
+GitHub issues are the durable memory; a chat session is not. Insights, defects, and half-finished scope that live only in chat replies vanish when the session ends. You do **not** need to open an issue before starting ad-hoc work (that friction would kill the fast chat-driven flow) — but you **must reconcile issues at every completion boundary** (a PR opened/merged, or a task declared done).
+
+**Multi-deliverable sessions are the #1 way work leaks.** A dynamic session often fans out into 3–4 intended deliverables, but only the first becomes a PR — and the rest, which lived only in the chat, evaporate when the session ends or its context compacts. Every other durable mechanism here (prompt logs, retros, this close-out nudge) writes at the *end* of work; nothing records the *plan*. So when work is multi-part, capture the **full set** the moment you recognize it, in a place that outlives the conversation:
+
+- **Open one tracking issue per multi-deliverable session** — not one per item; keep the granularity low. Title it `[tracking] <session intent>` with a task-list checklist of the deliverables. **Run `/scope`** to do this. Each deliverable's PR refs the issue and ticks its box; the issue closes only when every box is ticked, so unfinished items survive as the next session's pickup list.
+- **Every multi-part PR carries a scope manifest in its body** — the "Part X of N" sibling checklist (see [Commit & PR Conventions](#commit--pr-conventions)). It rides on the artifact you're looking at when you merge, so leftovers are visible at the exact moment of loss and the weekly `/issue-reconcile` can find them.
+
+Before you say "done":
 
 1. **Discoveries get filed.** Any defect, gap, or "we should also…" you find *while implementing* — something out of scope for the current change — becomes a GitHub issue **before you move on**, not just a sentence in chat. (Example: the carved-mouth-at-small-head defect found while adding figures → filed as its own bug.)
-2. **Partial implementation never closes silently.** If a PR merges but doesn't fully satisfy its originating issue, that issue stays **open** with a checklist of what's left — or you file an explicit follow-up issue. Only close a source issue when **every** acceptance criterion is actually met; a merged PR is not automatically a completed issue.
-3. **Close-out reconciliation.** When you finish a task (and again after a merge), state in chat: *did this fully satisfy the source issue? what was deferred, and where is it tracked? what did I discover, and did I file it?* Resolve each — done, or tracked in an issue — before ending the turn.
+2. **Partial implementation never closes silently.** If a PR merges but doesn't fully satisfy its originating issue, that issue stays **open** with a checklist of what's left — or you file an explicit follow-up issue (tick the matching box on the tracking issue / scope manifest rather than closing the umbrella). Only close a source issue when **every** acceptance criterion is actually met; a merged PR is not automatically a completed issue.
+3. **Close-out reconciliation.** When you finish a task (and again after a merge), state in chat: *did this fully satisfy the source issue? what was deferred, and where is it tracked? is the tracking issue's checklist current? what did I discover, and did I file it?* Resolve each — done, or tracked in an issue — before ending the turn.
 
-This is boundary hygiene, not bureaucracy: the test is "could the next session pick up everything important without reading this chat?" The `Stop` hook nudges you toward this reconciliation when the tree has changed; the call on *what* warrants an issue is yours, but "nothing tracked it" is the failure mode to avoid.
+This is boundary hygiene, not bureaucracy: the test is "could the next session pick up everything important without reading this chat?" The `Stop` hook nudges you toward this reconciliation whenever the working tree is dirty **or your branch has unmerged commits** (so it fires even after a clean commit-and-push); the weekly **`/issue-reconcile`** skill is the backstop that walks merged PRs and tracking issues to re-file anything that slipped. The call on *what* warrants an issue is yours, but "nothing tracked it" is the failure mode to avoid.
 
 ### Retros — continuous improvement loop
 
@@ -543,6 +550,17 @@ Subject is imperative and lowercase after the prefix: `feat: add light/dark mode
 - `ignore-for-release` — suppress from release notes (use for `chore:`/`refactor:` housekeeping that shouldn't appear in user-facing notes)
 
 Anything unlabeled lands in "Other Changes." That's fine for occasional internal cleanup, but features and fixes should always be labeled.
+
+**Scope manifest — multi-part PRs declare their siblings.** When a PR is one slice of a larger intent, put a checklist at the top of the body so the full scope is visible at merge time (the moment leftover work is most easily lost):
+
+```
+Part 1 of 3 of "<session intent>" (tracking: #N):
+- [x] this PR — <what it does>
+- [ ] <sibling 2> — <tracked: #M, or "not yet filed">
+- [ ] <sibling 3> — …
+```
+
+Tie it to the session's `[tracking]` issue (`#N`) when one exists (see [Issue hygiene](#issue-hygiene--dont-lose-work-or-discoveries-at-a-boundary) / `/scope`). The weekly `/issue-reconcile` greps merged PR bodies for unchecked sibling boxes, so the manifest is what lets a leftover get re-filed instead of forgotten.
 
 ### Agent working discipline (git, PRs, tool output)
 
