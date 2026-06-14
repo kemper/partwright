@@ -335,6 +335,46 @@ function anthroGirth(sex: string, ageYears: number, weight: number): Girth {
   return out;
 }
 
+// --- Skin-tone palette ----------------------------------------------------
+// A curated, evenly-spaced ramp of realistic skin hexes spanning the full
+// human range — light to deep, with the warm/olive undertone shifts that keep
+// each tone reading as skin rather than a tinted grey. Names are descriptive
+// of the COLOUR (porcelain → deep), never of ethnicity. The figure builder
+// never paints anything itself (geometry is colourless until the caller paints
+// by label), so this is purely a convenience so callers reach for a varied,
+// well-judged tone instead of re-inventing a single light-peach triple. Use it
+// directly with in-code paint — `api.paint.label('skin', F.skin('umber'))` —
+// or feed the hex into a catalog palette file.
+const SKIN_TONE_NAMES = [
+  'porcelain', 'ivory', 'fair', 'beige', 'sand', 'tan',
+  'honey', 'amber', 'almond', 'umber', 'espresso', 'ebony',
+] as const;
+type SkinToneName = typeof SKIN_TONE_NAMES[number];
+const SKIN_TONES: Record<SkinToneName, string> = {
+  porcelain: '#f5d8c6', // very light, cool pink undertone
+  ivory: '#f1c9a8',     // light, neutral
+  fair: '#e8b48c',      // light, warm
+  beige: '#dba37a',     // light-medium, warm
+  sand: '#cf9163',      // medium, golden
+  tan: '#bd7c4f',       // medium, warm tan
+  honey: '#aa6b3d',     // medium-deep, golden
+  amber: '#945634',     // deep, warm
+  almond: '#7c472b',    // deep, neutral-warm
+  umber: '#643622',     // deep brown
+  espresso: '#4a281b',  // very deep
+  ebony: '#34201a',     // deepest, cool undertone
+};
+
+/** Look up a curated skin-tone hex by name (see {@link SKIN_TONE_NAMES}).
+ *  Returns a `#rrggbb` string usable directly with `api.paint.label('skin', …)`
+ *  or droppable into a catalog palette file. An unknown name throws listing the
+ *  valid ramp. Call `F.skin()` with no argument for the full `{name: hex}` map. */
+function figureSkin(name?: unknown): string | Record<SkinToneName, string> {
+  if (name === undefined) return { ...SKIN_TONES };
+  const key = assertEnum(name, SKIN_TONE_NAMES, 'skin(name)');
+  return SKIN_TONES[key];
+}
+
 function buildRig(rawOpts: unknown): Rig {
   const o = obj(rawOpts, 'rig(opts)');
   assertNoUnknownKeys(o, RIG_FIELDS, 'rig(opts)');
@@ -1035,18 +1075,50 @@ function buildBoots(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   return buildFootwear(sdf, rig, opts, 'boots');
 }
 
-function buildHead(sdf: SdfApi, rig: Rig): Node {
+// Face-shape presets, as multipliers on (skull width, skull height, jaw width,
+// chin projection/length, cheekbone). 'oval' is the neutral original; the rest
+// shift the silhouette along the everyday descriptive axes. Composed on top of
+// the explicit jaw/chin/cheek knobs, so `{ faceShape: 'square', jaw: 1.1 }`
+// stacks. These keep the head stylized — they vary proportion, not realism.
+const FACE_SHAPE: Record<string, { skullX: number; skullZ: number; jaw: number; chin: number; cheek: number }> = {
+  oval: { skullX: 1, skullZ: 1, jaw: 1, chin: 1, cheek: 1 },
+  round: { skullX: 1.09, skullZ: 0.95, jaw: 1.06, chin: 0.82, cheek: 1.12 },
+  square: { skullX: 1.05, skullZ: 1, jaw: 1.2, chin: 1.04, cheek: 1.05 },
+  long: { skullX: 0.93, skullZ: 1.09, jaw: 0.9, chin: 1.16, cheek: 0.95 },
+  heart: { skullX: 1.05, skullZ: 1, jaw: 0.76, chin: 1.12, cheek: 1.14 },
+  diamond: { skullX: 0.95, skullZ: 1.03, jaw: 0.84, chin: 1.06, cheek: 1.2 },
+};
+
+function buildHead(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'head(opts)');
+  assertNoUnknownKeys(o, ['faceShape', 'jaw', 'chin', 'cheek'], 'head(opts)');
+  const shape = o.faceShape === undefined ? 'oval'
+    : assertEnum(o.faceShape, ['oval', 'round', 'square', 'long', 'heart', 'diamond'] as const, 'head.faceShape');
+  const fs = FACE_SHAPE[shape];
+  // Explicit knobs multiply on top of the preset (default 1 → preset alone;
+  // with faceShape:'oval' that's the original head exactly).
+  const jawMul = num(o.jaw, 1, 'head.jaw', 0.5, 1.6) * fs.jaw;
+  const chinMul = num(o.chin, 1, 'head.chin', 0.5, 1.6) * fs.chin;
+  const cheekMul = num(o.cheek, 1, 'head.cheek', 0.3, 1.8) * fs.cheek;
   const r = rig.r, c = rig.joints.head as Vec3;
   const f = rig.dir.headForward, u = rig.dir.headUp;
-  const skull = sdf.ellipsoid(r.headX, r.head, r.headZ).translate(c);
+  const skull = sdf.ellipsoid(r.headX * fs.skullX, r.head, r.headZ * fs.skullZ).translate(c);
   // Jaw: a smaller ellipsoid pulled down + forward, welded for a soft chin.
-  const jawC = add3(c, add3(scale3(f, r.headZ * 0.28), scale3(u, -r.headZ * 0.42)));
-  const jaw = sdf.ellipsoid(r.headX * 0.74, r.head * 0.66, r.headZ * 0.5).translate(jawC);
-  // Cheek fullness for the stylized look.
-  const cheekL = sdf.sphere(r.headX * 0.5).translate(add3(c, add3(scale3(f, r.headZ * 0.55), scale3(rig.dir.headLeft, r.headX * 0.45))));
-  const cheekR = sdf.sphere(r.headX * 0.5).translate(add3(c, add3(scale3(f, r.headZ * 0.55), scale3(rig.dir.headLeft, -r.headX * 0.45))));
+  // `chin` slides it down/forward and lengthens it (longer, more projected
+  // chin); `jaw` widens it (a strong square jaw vs a narrow tapered one).
+  const jawC = add3(c, add3(scale3(f, r.headZ * 0.28 * chinMul), scale3(u, -r.headZ * 0.42 * chinMul)));
+  const jaw = sdf.ellipsoid(r.headX * 0.74 * jawMul, r.head * 0.66, r.headZ * 0.5 * chinMul).translate(jawC);
+  // Cheek fullness / cheekbone prominence: `cheek` scales the spheres and pushes
+  // them out laterally so a high value reads as strong cheekbones.
+  const cheekR = r.headX * 0.5 * cheekMul;
+  // (0.7 + 0.3·cheek) keeps the lateral offset at the original 0.45·headX when
+  // cheek = 1 (so the default head is byte-identical), pushing out for higher
+  // values to read as prominent cheekbones.
+  const cheekX = r.headX * 0.45 * (0.7 + 0.3 * cheekMul);
+  const cheekL = sdf.sphere(cheekR).translate(add3(c, add3(scale3(f, r.headZ * 0.55), scale3(rig.dir.headLeft, cheekX))));
+  const cheekRt = sdf.sphere(cheekR).translate(add3(c, add3(scale3(f, r.headZ * 0.55), scale3(rig.dir.headLeft, -cheekX))));
   const kk = r.headZ * 0.5;
-  return skull.smoothUnion(jaw, kk).smoothUnion(cheekL, kk).smoothUnion(cheekR, kk);
+  return skull.smoothUnion(jaw, kk).smoothUnion(cheekL, kk).smoothUnion(cheekRt, kk);
 }
 
 function buildBase(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
@@ -1163,12 +1235,34 @@ function groundRig(rig: Rig, opts?: unknown): Rig {
 
 // --- Face features (read rig.face anchors) --------------------------------
 
+// Eyelid styles. A skin dome (a hair larger than the eyeball) covers the eye
+// front; a smooth ELLIPTICAL hole is cut through it where the eye shows. Each
+// style is the size + vertical placement of that opening: `wx`/`hz` are its
+// half-width / half-height (× eye radius) and `cz` its vertical centre (× radius,
+// −down). A SMOOTH ellipse — not the union of box half-spaces — so the opening
+// edge is a clean curve, never the jagged rectangle box cuts produced. `scale`
+// sizes the dome (how far the lid sits proud of the eyeball). The dome is
+// labelled `'lids'` so the caller paints it (skin tone, or eyeshadow); 'closed'
+// leaves no opening. 'none' is the backward-compatible default — no lids.
+const LID_STYLES = ['none', 'upper', 'hooded', 'half', 'closed', 'almond', 'tapered'] as const;
+type LidStyle = typeof LID_STYLES[number];
+const LID_SPEC: Record<Exclude<LidStyle, 'none'>, { wx: number; hz: number; cz: number; scale: number }> = {
+  upper: { wx: 0.96, hz: 0.70, cz: -0.10, scale: 1.07 },   // wide open eye, just an upper lid
+  hooded: { wx: 0.94, hz: 0.52, cz: -0.26, scale: 1.10 },  // heavier brow-ward hood
+  half: { wx: 0.92, hz: 0.36, cz: -0.02, scale: 1.07 },    // sleepy / half-closed slit
+  closed: { wx: 0, hz: 0, cz: 0, scale: 1.07 },            // no opening — fully shut
+  almond: { wx: 0.78, hz: 0.54, cz: 0.00, scale: 1.07 },   // balanced almond eye
+  tapered: { wx: 0.62, hz: 0.44, cz: 0.02, scale: 1.07 },  // elongated, narrower almond
+};
+
 function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'eyes(opts)');
-  assertNoUnknownKeys(o, ['radius', 'style'], 'eyes(opts)');
+  assertNoUnknownKeys(o, ['radius', 'style', 'lids'], 'eyes(opts)');
   const rad = num(o.radius, rig.r.head * 0.16, 'eyes.radius', 0.01);
   const style = o.style === undefined ? 'iris'
     : assertEnum(o.style, ['solid', 'iris'] as const, 'eyes.style');
+  const lids: LidStyle = o.lids === undefined ? 'none'
+    : assertEnum(o.lids, LID_STYLES, 'eyes.lids');
   const f = rig.dir.headForward;
   // Push the eyeballs out so a dome reliably protrudes past the cheek welds —
   // an eye centred ON the anchor can be fully swallowed, leaving a paintable
@@ -1185,7 +1279,64 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     const off = scale3(f, forwardOff);
     return sdf.sphere(r).translate(add3(cL, off)).union(sdf.sphere(r).translate(add3(cR, off)));
   };
-  if (style === 'solid') return pair(rad, 0);
+
+  // --- Eyelids -----------------------------------------------------------
+  // A skin DOME covers the eyeball front; a smooth ELLIPTICAL hole is cut where
+  // the eye shows. Everything is built in the CANONICAL head frame (forward −Y,
+  // up +Z, lateral ±X) then oriented into the posed head and translated onto
+  // each eye centre — the same canonical→pose→translate path the iris/pupil
+  // `disc` plug uses.
+  //
+  //   • dome    = sphere(lidR) ∩ front half-space — a skin cap over the eye.
+  //   • opening = an ellipsoid stretched into a tube along the view axis (−Y),
+  //               so it carves a clean elliptical window (no jagged box-cut
+  //               rectangle). 'closed' has no opening.
+  //   • lid     = dome − opening  (labelled 'lids')
+  //   • the eyeball / iris / pupil are CLIPPED to the opening (intersect), so no
+  //     eye geometry survives under the lid — nothing to bleed colour onto the
+  //     lid or poke through, and 'closed' hides the eye entirely.
+  const spec = lids === 'none' ? null : LID_SPEC[lids];
+  let lidNode: Node | null = null;
+  let clipBall = (n: Node): Node => n;   // the eyeball (sclera) — kept whole when open
+  let clipDisc = (n: Node): Node => n;   // iris / pupil — confined to the opening
+  if (spec) {
+    const lidR = rad * spec.scale;
+    const big = lidR * 4;
+    const frontBox = sdf.box([big, big, big]).translate([0, -big / 2 + rad * 0.25, 0]); // keep front (y ≲ 0)
+    const dome = sdf.sphere(lidR).intersect(frontBox);
+    const opening = spec.wx > 0 && spec.hz > 0
+      ? sdf.ellipsoid(rad * spec.wx, rad * 3, rad * spec.hz).translate([0, 0, rad * spec.cz])
+      : null;
+    const lidLocal = opening ? dome.subtract(opening) : dome;
+    const placeBoth = (node: Node): Node =>
+      orientToHeadPose(node, rig).translate(cL).union(orientToHeadPose(node, rig).translate(cR));
+    lidNode = placeBoth(lidLocal).label('lids');
+    if (opening) {
+      // The EYEBALL stays a WHOLE sphere — it fills behind the dome's hole, so
+      // the dome+eyeball is one solid mass (no nested tube walls → no genus
+      // blow-up; clipping the ball to a lens shared the opening's tube wall with
+      // the lid and produced dozens of handles). Only the IRIS/PUPIL discs are
+      // clipped to the opening, so their colour can't extend under the lid and
+      // bleed onto it.
+      const openSolid = placeBoth(opening);
+      clipBall = (n) => n;
+      clipDisc = (n) => n.intersect(openSolid);
+    } else {
+      // 'closed' — no opening; remove the eye entirely under the full dome.
+      const domeSolid = placeBoth(dome);
+      clipBall = (n) => n.subtract(domeSolid);
+      clipDisc = (n) => n.subtract(domeSolid);
+    }
+  }
+
+  // 'solid': plain spheres for the caller to `.label()` — UNCHANGED when there
+  // are no lids. With lids, the eyeball must carry its own 'eyes' label (so the
+  // 'lids' region stays distinct), so the result is self-labelled like 'iris';
+  // the caller must NOT wrap it in another `.label()`.
+  if (style === 'solid') {
+    if (!lidNode) return pair(rad, 0);
+    return clipBall(pair(rad, 0)).label('eyes').union(lidNode);
+  }
   // 'iris' (default): a perfectly ROUND white eyeball with the coloured iris and
   // black pupil PAINTED ON as flush concentric discs — each its own pre-labelled
   // hard-union region so paintByLabels can colour them independently. Don't wrap
@@ -1222,20 +1373,53 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // discR sets how much white shows: the iris spans a bit over half the eyeball
   // width (a generous coloured disc, the look that read best) leaving a clear
   // white margin; the pupil is half the iris.
-  const sclera = pair(rad, 0).label('eyes');
-  const iris = disc(rad * 1.012, rad * 0.55).label('iris');
-  const pupil = disc(rad * 1.024, rad * 0.27).label('pupil');
-  return sclera.union(iris).union(pupil);
+  const sclera = clipBall(pair(rad, 0)).label('eyes');
+  const iris = clipDisc(disc(rad * 1.012, rad * 0.55)).label('iris');
+  const pupil = clipDisc(disc(rad * 1.024, rad * 0.27)).label('pupil');
+  const eyes = sclera.union(iris).union(pupil);
+  return lidNode ? eyes.union(lidNode) : eyes;
 }
 
 function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'nose(opts)');
-  assertNoUnknownKeys(o, ['tipRadius', 'length'], 'nose(opts)');
-  const tipR = num(o.tipRadius, rig.r.head * 0.12, 'nose.tipRadius', 0.01);
-  const f = rig.dir.headForward, u = rig.dir.headUp;
+  assertNoUnknownKeys(o, ['tipRadius', 'length', 'width', 'bridge', 'flare'], 'nose(opts)');
+  const R = rig.r.head;
+  const tipR = num(o.tipRadius, R * 0.12, 'nose.tipRadius', 0.01);
+  // length: how far the dorsum runs from the tip up to the bridge root (a
+  // multiplier on the default span). width: lateral fullness of the tip + alae.
+  // bridge: nasal-bridge projection/height — a LOW bridge (≈0.4) reads broad and
+  // flat, a HIGH bridge (≈1.4) thin and prominent; this is one of the strongest
+  // axes of real facial variation. flare: alar (nostril-wing) size, 0 = none
+  // (the smooth default), up to 1.5 for a broad base. Defaults reproduce the
+  // original slim tapered nose so existing figures are unchanged.
+  const length = num(o.length, 1, 'nose.length', 0.3, 2);
+  const width = num(o.width, 1, 'nose.width', 0.4, 2.2);
+  const bridge = num(o.bridge, 1, 'nose.bridge', 0.3, 1.5);
+  const flare = num(o.flare, 0, 'nose.flare', 0, 1.5);
+  const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
   const tip = rig.face.nose;
-  const bridge = add3(tip, add3(scale3(u, rig.r.head * 0.34), scale3(f, -rig.r.head * 0.18)));
-  return tapered(sdf, bridge, tip, tipR * 0.7, tipR, tipR * 0.6);
+  // Bridge root: up the forehead by `length`, set back by `bridge` (a high
+  // bridge tucks the root back and up for a straight prominent dorsum; a low
+  // bridge keeps it forward and shallow for a flatter profile).
+  const root = add3(tip, add3(scale3(u, R * 0.34 * length), scale3(f, -R * 0.18 * bridge)));
+  // The dorsum: a tapered ridge, thinner at the root, swelling to the tip.
+  const dorsum = tapered(sdf, root, tip, tipR * 0.7 * bridge, tipR, tipR * 0.6);
+  if (width === 1 && flare === 0) return dorsum;
+  // A tip bulb widened laterally by `width` (oriented into the posed head
+  // frame so it stays put on a turned head), plus optional alar wings whose
+  // spread tracks both width and flare.
+  let nose = dorsum.smoothUnion(
+    orientToHeadPose(sdf.ellipsoid(tipR * width, tipR * 0.9, tipR * 0.85), rig).translate(tip),
+    tipR * 0.6,
+  );
+  if (flare > 0) {
+    const spread = tipR * (0.65 + 0.5 * width);
+    const wingR = tipR * 0.6 * flare;
+    const wingC = add3(tip, scale3(u, -tipR * 0.25));
+    const wing = (s: number): Node => sdf.sphere(wingR).translate(add3(wingC, scale3(right, s * spread)));
+    nose = nose.smoothUnion(wing(1), tipR * 0.4).smoothUnion(wing(-1), tipR * 0.4);
+  }
+  return nose;
 }
 
 type MouthStyle = 'smile' | 'lips' | 'open';
@@ -1245,7 +1429,7 @@ type MouthStyle = 'smile' | 'lips' | 'open';
  *  (smoothSubtract). assembleFace dispatches on this. */
 interface MouthPart { node: Node; mode: 'add' | 'carve' }
 
-const MOUTH_FIELDS = ['width', 'smirk', 'open', 'style', 'teeth', 'lips'];
+const MOUTH_FIELDS = ['width', 'smirk', 'open', 'style', 'teeth', 'lips', 'fullness'];
 
 /** Orient an origin-built node into the posed head frame, so axis-aligned
  *  mouth/eye parts follow the head pose. `tilt` is a ROLL about the (canonical)
@@ -1281,6 +1465,10 @@ function buildMouthPart(sdf: SdfApi, rig: Rig, opts?: unknown): MouthPart {
   const width = num(o.width, rig.r.head * 0.5, 'mouth.width', 0.01);
   const smirk = num(o.smirk, 0, 'mouth.smirk', -1, 1);
   const open = num(o.open, 0, 'mouth.open', 0, 1);
+  // `fullness` scales lip thickness (the 'lips' ridge and the open-mouth lip
+  // ring). 1 = the default; >1 for fuller lips, <1 for thinner — another real
+  // axis of facial variation that decouples lip volume from mouth width.
+  const fullness = num(o.fullness, 1, 'mouth.fullness', 0.4, 2.2);
   // `open > 0` implies the open style unless the caller said otherwise.
   const style: MouthStyle = o.style !== undefined
     ? assertEnum(o.style, ['smile', 'lips', 'open'] as const, 'mouth.style')
@@ -1293,7 +1481,7 @@ function buildMouthPart(sdf: SdfApi, rig: Rig, opts?: unknown): MouthPart {
     // A protruding lip ridge, pushed forward of the anchor so it clearly
     // stands proud of the face (an on-surface capsule reads as nothing when
     // it isn't smooth-welded). Smirk tips one corner up.
-    const lipR = rig.r.head * 0.085;
+    const lipR = rig.r.head * 0.085 * fullness;
     const fwd = scale3(rig.dir.headForward, lipR * 0.6);
     const a = add3(add3(add3(m, fwd), scale3(right, halfW)), scale3(u, smirk * width * 0.25));
     const b = add3(add3(add3(m, fwd), scale3(right, -halfW)), scale3(u, -smirk * width * 0.25));
@@ -1414,7 +1602,8 @@ function buildMouthAccents(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     // ellipsoid-minus-tunnel shell fragments into dozens of shards when
     // marched — capsule chains are unconditionally robust.)
     const right = rig.dir.headLeft;
-    const lipR = Math.min(R * 0.10, cavH * 0.55);
+    const fullness = num(o.fullness, 1, 'mouthAccents.fullness', 0.4, 2.2);
+    const lipR = Math.min(R * 0.10, cavH * 0.55) * fullness;
     // Ring centre: the cavity opening projected onto the face. Centred ON
     // the surface — half the capsule is buried, so the lips read as part of
     // the face instead of a donut stuck onto it.
@@ -1554,7 +1743,7 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hair(opts)');
   assertNoUnknownKeys(o, ['style', 'thickness', 'hairline', 'length', 'volume', 'part', 'texture'], 'hair(opts)');
   const style = o.style === undefined ? 'short'
-    : assertEnum(o.style, ['short', 'long', 'bob', 'bun', 'bald', 'bangs', 'ponytail', 'afro', 'braids', 'spiked'] as const, 'hair.style');
+    : assertEnum(o.style, ['short', 'long', 'bob', 'bun', 'bald', 'bangs', 'ponytail', 'afro', 'braids', 'spiked', 'locs', 'cornrows', 'boxBraids'] as const, 'hair.style');
   // bald = no hair. Return a sub-cell sphere AT the head centre (not parked at
   // z ≈ −1e6): it meshes to nothing on any real grid and is swallowed inside
   // the skull in a figure union, but its `bounds()` stays at the head — so
@@ -1580,9 +1769,17 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // print-native analog of a hair texture map (real geometry an FDM/resin
   // printer reproduces). New styles default to a fitting texture; classic
   // styles stay smooth so their bakes don't drift.
-  const texDefault = style === 'afro' ? 'curls' : style === 'braids' ? 'wavy' : 'none';
+  const texDefault = style === 'afro' ? 'curls'
+    : style === 'braids' ? 'wavy'
+    : style === 'locs' ? 'wavy'
+    // box braids are many thin strands — a displacement amp near the strand
+    // radius necks them in two, so they stay smooth by default.
+    : 'none';
+  // 'coils' is the tight, springy 4c relief — higher frequency and amplitude
+  // than 'curls' — available on any style (e.g. a coily afro or coily short
+  // crop). The classic styles still default to 'none' so their bakes don't drift.
   const texture = o.texture === undefined ? texDefault
-    : assertEnum(o.texture, ['none', 'strands', 'curls', 'wavy'] as const, 'hair.texture');
+    : assertEnum(o.texture, ['none', 'strands', 'curls', 'coils', 'wavy'] as const, 'hair.texture');
   const lenMul = length === 'short' ? 0.62 : length === 'long' ? 1.5 : 1;
   const tv = t * volume;
   // Face-window size multipliers — a few styles (afro) open it wider so the
@@ -1679,6 +1876,99 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     cap = cap.smoothUnion(
       sdf.cylinder(baseR, len).taper(-1.8 / len, 'z').rotate(eulerAlignZ(u))
         .translate(add3(c, scale3(u, r.headZ * 0.55 + len / 2))), r.head * 0.16);
+  } else if (style === 'locs' || style === 'boxBraids') {
+    // Rope-like strands hanging from the scalp all round (everything but the
+    // face front): locs are fewer + thicker, boxBraids many + thin. Each strand
+    // is a tapered capsule chain that hangs DOWN (−headUp, so it tracks the head
+    // pose like braids) with a gentle outward kick, and shares each joint so it
+    // welds into one piece. The default 'wavy' relief (above) segments them.
+    const thin = style === 'boxBraids';
+    const N = thin ? 15 : 11;
+    const strandR = r.head * (thin ? 0.092 : 0.155) * volume;
+    const reach = r.head * (thin ? 3.0 : 2.4) * lenMul;
+    // Root each strand from a point safely INSIDE the scalp (a fraction of the
+    // SMALLEST head half-axis, so it's inside the cap ellipsoid in every
+    // direction) and let the first capsule punch out through the surface — that
+    // guarantees the strand welds to the cap instead of floating off as its own
+    // component (thin braids rooted right on the varying ellipsoid surface
+    // detach on the wide/narrow axes).
+    const innerR = (Math.min(r.headX, r.head, r.headZ) + tv) * 0.82;
+    // Two elevation rings of roots over the back/side dome; az = 0 is the face
+    // front, so we sweep the non-face arc (≈ 50°..310°).
+    const rings = thin ? [22, 52] : [20, 55];
+    for (const el of rings) {
+      for (let i = 0; i < N; i++) {
+        const az = 50 + (260 * i) / (N - 1);            // degrees, around the head
+        const ce = Math.cos(el * DEG), se = Math.sin(el * DEG);
+        const ca = Math.cos(az * DEG), sa = Math.sin(az * DEG);
+        const radial = norm3(add3(add3(scale3(f, ce * ca), scale3(right, ce * sa)), scale3(u, se)));
+        const root = add3(c, scale3(radial, innerR));
+        // Hang: mostly down, with the radial direction's horizontal component
+        // giving a slight outward fall. The exit point sits just past the
+        // surface so the visible strand starts at the scalp.
+        const outward = norm3([radial[0], radial[1], 0] as Vec3);
+        const exit = add3(c, scale3(radial, innerR + reach * 0.18));
+        const mid = add3(exit, add3(scale3(u, -reach * 0.5), scale3(outward, strandR * 1.4)));
+        const tip = add3(mid, add3(scale3(u, -reach * 0.5), scale3(outward, strandR * 0.8)));
+        const strand = sdf.capsule(root, exit, strandR)
+          .smoothUnion(sdf.capsule(exit, mid, strandR), strandR * 0.6)
+          .smoothUnion(sdf.capsule(mid, tip, strandR * 0.78), strandR * 0.6);
+        cap = cap.smoothUnion(strand, strandR * 1.1);
+      }
+    }
+  } else if (style === 'cornrows') {
+    // Cornrows: raised braided ridges running front-hairline → crown → nape,
+    // tight to the skull, with the SCALP CARVED DOWN between them so the rows
+    // read as distinct cords with channels (partings) showing skin, not a
+    // smooth coily cap. Each ridge is a beaded capsule chain over a meridian of
+    // the head, offset laterally; the rows converge at a gathered nape puff.
+    const rows = 6;
+    const ridgeR = r.head * 0.09 * volume;
+    // Start from a SHRUNKEN cap so the base hair hugs the skull (cornrows lie
+    // flat); the ridges then stand proud of it and shallow channels groove the
+    // partings. The base stays a hair THICKER than the skull so the grooves cut
+    // the cap surface only (a visible parting) without slicing the shell down to
+    // a knife-edge — the thin-wall handles that fragmented the bake.
+    const capC = add3(c, add3(scale3(f, -tv * 0.3), scale3(u, tv * 0.2)));
+    const ax = r.headX + tv * 0.3, ay = r.head + tv * 0.3, az = r.headZ + tv * 0.3;
+    cap = sdf.ellipsoid(ax, ay, az).translate(capC);
+    // Project a direction-ish vector onto the cap ELLIPSOID surface (pushed out
+    // by `out`). Placing each cord centreline ON the surface (out = 0) leaves it
+    // half-embedded in EVERY direction — the cords can't float off the narrow
+    // (lateral) sides the way a fixed average radius let them, which is what
+    // detached them into separate components in the browser mesher.
+    const onCap = (pRel: Vec3, out: number): Vec3 => {
+      const d = norm3(pRel);
+      const er = 1 / Math.sqrt((d[0] / ax) ** 2 + (d[1] / ay) ** 2 + (d[2] / az) ** 2);
+      return add3(capC, scale3(d, er + out));
+    };
+    const ridgePt = (t: number, lat: number, out: number): Vec3 => {
+      // Sweep from just ahead of the crown (front hairline) back over the top to
+      // the nape; the lateral tilt fans the rows from a central crown and
+      // gathers them again at the nape, then project onto the cap surface.
+      const ang = mix(-30, 198, t);
+      const mdir = add3(scale3(f, Math.cos(ang * DEG)), scale3(u, Math.sin(ang * DEG)));
+      const latAmt = Math.sin(Math.max(0, Math.min(1, t)) * Math.PI);
+      return onCap(add3(mdir, scale3(right, lat * 0.62 * latAmt)), out);
+    };
+    const SEG = 7;
+    // Raised cords half-embedded in the cap, spaced so the VALLEYS between them
+    // read as the partings — no groove-carving. (Carving shallow channels
+    // between close cords pinched the shell into thousands of tiny handles;
+    // half-embedded proud cords leave a clean parting valley, keep the genus
+    // near zero, AND always overlap the cap so none detaches.)
+    for (let rw = 0; rw < rows; rw++) {
+      const lat = (rw / (rows - 1)) * 2 - 1;             // −1 .. 1
+      let ridge: Node | undefined;
+      for (let i = 0; i < SEG; i++) {
+        const seg = sdf.capsule(ridgePt(i / SEG, lat, 0), ridgePt((i + 1) / SEG, lat, 0), ridgeR);
+        ridge = ridge === undefined ? seg : ridge.smoothUnion(seg, ridgeR * 0.7);
+      }
+      cap = cap.smoothUnion(ridge!, ridgeR * 0.5);
+    }
+    // Gathered puff where the rows meet at the nape.
+    const nape = add3(c, add3(scale3(f, -r.headZ * 0.55), scale3(u, -r.head * 0.55)));
+    cap = cap.smoothUnion(sdf.sphere(r.head * 0.4 * volume).translate(nape), r.head * 0.32);
   }
   // Strand/curl relief: a directional displacement field in the head's own
   // frame. Amplitude is floored so the relief survives meshing at the figure
@@ -1687,8 +1977,11 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // the texture crisp; see /ai/figure.md.
   if (texture !== 'none') {
     const dot = (p: Vec3, q: Vec3): number => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
-    const amp = Math.max(r.head * 0.06, 0.18);
-    const cell = r.head * (texture === 'wavy' ? 0.8 : 0.34);
+    // 'coils' is springier than 'curls' (a touch more amplitude, a tighter
+    // cell) but NOT so aggressive that the inward troughs pinch a thin cap shell
+    // into separate components — keep amp well under cell·0.5.
+    const amp = Math.max(r.head * (texture === 'coils' ? 0.07 : 0.06), 0.18);
+    const cell = r.head * (texture === 'wavy' ? 0.8 : texture === 'coils' ? 0.26 : 0.34);
     const w = (2 * Math.PI) / cell;
     let field: (x: number, y: number, z: number) => number;
     if (texture === 'strands') {
@@ -1702,7 +1995,7 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
         const p: Vec3 = [x - c[0], y - c[1], z - c[2]];
         return Math.sin(dot(p, u) * w) * 0.7 + Math.sin(dot(p, right) * w * 0.6) * 0.3;
       };
-    } else {   // curls — isotropic 3-axis bumps
+    } else {   // curls / coils — isotropic 3-axis bumps (coils = tighter cell)
       field = (x, y, z) => {
         const p: Vec3 = [x - c[0], y - c[1], z - c[2]];
         return Math.sin(dot(p, f) * w) * Math.sin(dot(p, right) * w) * Math.sin(dot(p, u) * w);
@@ -1945,6 +2238,11 @@ function weldBody(rig: Rig, parts: unknown, opts?: unknown): Node {
 
 export interface FigureNamespace {
   rig(opts?: RigOptions): Rig;
+  /** A curated skin-tone hex by name (porcelain → ebony, a full light-to-deep
+   *  ramp). `F.skin('umber')` → `'#643622'`; `F.skin()` → the whole map. Use
+   *  with `api.paint.label('skin', F.skin(name))`. Names describe the colour,
+   *  not ethnicity. */
+  skin(name?: string): string | Record<string, string>;
   torso(rig: Rig, opts?: object): Node;
   neck(rig: Rig, opts?: object): Node;
   arms(rig: Rig, opts?: object): Node;
@@ -1993,6 +2291,10 @@ export interface FigureNamespace {
    *  `build({ detail: [...F.faceDetail(rig), ...F.handDetail(rig)] })`. */
   handDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
   face: {
+    /** Eyeballs (self-labelled `eyes`/`iris`/`pupil` for the default `'iris'`
+     *  style, or plain spheres for `'solid'`). Pass `lids` to drape a paintable
+     *  `'lids'` skin fold — `'upper' | 'hooded' | 'half' | 'closed' | 'almond' |
+     *  'tapered'` (default `'none'`). See public/ai/figure.md. */
     eyes(rig: Rig, opts?: object): Node;
     nose(rig: Rig, opts?: object): Node;
     mouth(rig: Rig, opts?: object): Node;
@@ -2200,13 +2502,14 @@ function assertRig(rig: unknown, name: string): Rig {
 export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
   return {
     rig: (opts) => buildRig(opts),
+    skin: (name) => figureSkin(name),
     torso: (rig) => buildTorso(sdf, assertRig(rig, 'torso(rig)')),
     neck: (rig) => buildNeck(sdf, assertRig(rig, 'neck(rig)')),
     arms: (rig) => buildArms(sdf, assertRig(rig, 'arms(rig)')),
     hands: (rig, opts) => buildHands(sdf, assertRig(rig, 'hands(rig)'), opts),
     legs: (rig) => buildLegs(sdf, assertRig(rig, 'legs(rig)')),
     feet: (rig) => buildFeet(sdf, assertRig(rig, 'feet(rig)')),
-    head: (rig) => buildHead(sdf, assertRig(rig, 'head(rig)')),
+    head: (rig, opts) => buildHead(sdf, assertRig(rig, 'head(rig)'), opts),
     base: (rig, opts) => buildBase(sdf, assertRig(rig, 'base(rig)'), opts),
     ground: (rig, opts) => groundRig(assertRig(rig, 'ground(rig)'), opts),
     hair: (rig, opts) => buildHair(sdf, assertRig(rig, 'hair(rig)'), opts),

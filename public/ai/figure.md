@@ -74,15 +74,22 @@ Then paint by label from a follow-up tool call:
 
 ```js
 partwright.paintByLabels([
-  { label: 'skin',  color: [0.95, 0.78, 0.66] },
+  { label: 'skin',  color: [0.58, 0.34, 0.20] },   // pick from the FULL range — see Diversity below
   { label: 'eyes',  color: [0.97, 0.96, 0.94] },   // white of the eye
-  { label: 'iris',  color: [0.29, 0.49, 0.66] },
+  { label: 'iris',  color: [0.29, 0.20, 0.13] },
   { label: 'pupil', color: [0.11, 0.11, 0.11] },
   { label: 'pants', color: [0.15, 0.18, 0.35] },
-  { label: 'hair',  color: [0.45, 0.26, 0.13] },
+  { label: 'hair',  color: [0.10, 0.08, 0.07] },
   { label: 'base',  color: [0.3, 0.3, 0.3] },
 ]);
 ```
+
+> **Skin tone is a deliberate choice, not a default.** The geometry is colourless
+> until you paint it, so there is **no** default skin colour — *you* pick one, and
+> the whole human range is equally valid. Don't reflexively reach for a light
+> peach. `F.skin(name)` gives a curated ramp to choose from (`'porcelain'` →
+> `'ebony'`, twelve stops): `api.paint.label('skin', F.skin('umber'))`, or
+> `F.skin()` for the whole `{name: hex}` map. See [Diversity](#diversity--vary-the-whole-figure).
 
 ## `figure.rig(opts)` — the rig
 
@@ -240,7 +247,7 @@ F.arms(rig)                   // both arms: tapered limbs + deltoid caps
 F.hands(rig, { grip })        // grip: 'fist' | 'open' | 'relaxed' — sculpted 3-finger+thumb
 F.legs(rig)
 F.feet(rig)
-F.head(rig)                   // skull + jaw + cheeks (no features yet)
+F.head(rig, { faceShape, jaw, chin, cheek })  // skull + jaw + cheeks (no features yet)
 F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
 ```
 
@@ -364,12 +371,37 @@ before aiming a prop at it.
 ```js
 F.face.assemble(head, rig, {
   eyes:  true | { radius } | false,   // OFF by default — see note below
-  nose:  true | { tipRadius, length } | false,
-  mouth: true | { style, width, smirk, open } | false,
+  nose:  true | { tipRadius, length, width, bridge, flare } | false,
+  mouth: true | { style, width, smirk, open, fullness } | false,
   ears:  true | { size } | false,
   brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
 })
 ```
+
+### Head shape — `F.head(rig, { faceShape, jaw, chin, cheek })`
+
+The skull/jaw/cheekbones are the **first** axis of facial variety — vary them
+before the features. `F.head` takes an options object (omit it for the neutral
+oval head — existing figures are unchanged):
+
+| Key | Effect |
+|---|---|
+| `faceShape` | `'oval'` (default) · `'round'` · `'square'` · `'long'` · `'heart'` · `'diamond'` — preset skull/jaw/cheek proportions |
+| `jaw` | 0.5–1.6 jaw **width** (narrow tapered ↔ strong square jaw) |
+| `chin` | 0.5–1.6 chin **length / projection** (soft receded ↔ long prominent) |
+| `cheek` | 0.3–1.8 **cheekbone** prominence (flat ↔ high sculpted) |
+
+The explicit knobs multiply **on top of** the preset, so `{ faceShape: 'square', jaw: 1.1 }` stacks.
+
+### Nose & lips — strong variation axes
+
+- **`nose.width`** (0.4–2.2) widens the tip + alae; **`nose.bridge`** (0.3–1.5)
+  is the nasal-bridge projection — a **low** value (~0.5) reads broad and flat, a
+  **high** value (~1.4) thin and prominent; **`nose.flare`** (0–1.5) adds nostril
+  wings. (`tipRadius`/`length` unchanged.) These three vary the nose far more than
+  size alone — e.g. `{ width: 1.4, bridge: 0.6, flare: 1.0 }` vs `{ width: 0.8, bridge: 1.3 }`.
+- **`mouth.fullness`** (0.4–2.2) scales lip thickness independently of `width`
+  (works on the `'lips'` ridge and the open-mouth lip ring).
 
 > **Eyes default to OFF in `assemble`.** The recommended flow welds the face into
 > the body and `.label('skin')`s it — which would flatten any in-face eyes into
@@ -451,6 +483,32 @@ labels, and an eye buried under the cheek welds resolves to a label with zero
 paintable triangles. The eyeballs are pushed forward so the domes always
 protrude. (Brows can use the same top-level pattern if you want them painted.)
 
+#### Eyelids — `lids` (off by default)
+
+Add a skin fold over the eye with `lids`. A skin dome covers the eyeball with a
+smooth elliptical opening where the eye shows; it is pre-labelled **`'lids'`** so
+you paint it — match the skin tone for a natural lid, or tint it for eyeshadow.
+
+```js
+F.face.eyes(rig, { lids: 'upper' })           // iris eyes + an upper lid
+F.face.eyes(rig, { lids: 'almond' })          // almond-shaped eye opening
+```
+
+| `lids` | Look |
+|---|---|
+| `'none'` (default) | bare round eyeball — unchanged |
+| `'upper'` | crisp upper lid on an open, alert eye |
+| `'hooded'` | heavier brow-ward hood overhanging the eye |
+| `'half'` | sleepy / half-closed, with a faint lower rim |
+| `'closed'` | upper + lower lids meet → smooth shut eyes |
+| `'almond'` | corners pinched to points (balanced almond) |
+| `'tapered'` | elongated, sharper corners (a drawn-out eye) |
+
+Paint the new region alongside the eyes — e.g. `{ label: 'lids', color: skinRgb }`.
+With `style: 'solid'`, adding `lids` makes the result **self-labelled** (`'eyes'` +
+`'lids'`), so don't wrap it in `.label()`. Lids follow the head pose like the
+iris/pupil and need no extra `detail` beyond `F.faceDetail(rig)`.
+
 ## Face detail — `F.faceDetail(rig)` (use it on every figure with a face)
 
 Face features are far smaller than the body, so at the recommended figure grid
@@ -475,19 +533,24 @@ the body keeps the cheap global grid. Typically +30–60k triangles instead of t
 ```js
 F.hair(rig, { style, hairline, length, volume, part, texture })
 //   style: 'short' | 'long' | 'bob' | 'bun' | 'bald' | 'bangs' | 'ponytail'
-//          | 'afro' | 'braids' | 'spiked'
+//          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids'
 //   hairline: 'high' | 'mid' | 'low' — where the face window's top edge sits.
 //   'bangs' adds a straight fringe and defaults to 'low' (hair to the brows);
 //   'ponytail'/'braids' add tails down the back; 'bob' frames the jaw; 'afro'
-//   puffs a textured sphere around the skull; 'spiked' radiates anime spikes.
-//   length: 'short' | 'mid' (default) | 'long' — how far tails/manes fall.
+//   puffs a textured sphere around the skull; 'spiked' radiates anime spikes;
+//   'locs' hangs rope strands all round (thicker, fewer); 'boxBraids' hangs
+//   many thin braids; 'cornrows' lays raised braided rows tight to the scalp
+//   with carved partings between them (front hairline → crown → nape puff).
+//   length: 'short' | 'mid' (default) | 'long' — how far tails/manes/locs fall.
 //   volume: 0.3..4 (default 1) — puffs the cap + tail girth (afro wants 1.5+).
 //   part: 'none' (default) | 'left' | 'right' | 'center' — a shallow part groove.
-//   texture: 'none' | 'strands' | 'curls' | 'wavy' — physical strand/curl
-//     relief displaced into the surface (the print-native hair-texture analog;
-//     real geometry, not a screen shader). 'afro' defaults to 'curls',
-//     'braids' to 'wavy'; the classic styles stay smooth. Mesh fine enough
-//     (edgeLength ≤ ~0.4, faceDetail on the head) or the relief aliases away.
+//   texture: 'none' | 'strands' | 'curls' | 'coils' | 'wavy' — physical relief
+//     displaced into the surface (the print-native hair-texture analog; real
+//     geometry, not a screen shader). 'coils' is the tight springy 4c look —
+//     usable on ANY style (e.g. a coily 'short' crop or 'afro'). 'afro'/'locs'
+//     default to a fitting relief, the classic styles stay smooth. Mesh fine
+//     enough (edgeLength ≤ ~0.4, faceDetail on the head) or the relief aliases
+//     away; thin 'boxBraids' want edgeLength ≤ ~0.35 so the strands don't break.
 F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
 //   rise: low|mid|high · leg: slim|cargo · length: 'full' (default) | 'briefs'
 //   'briefs' = seat + gusset + hip coverage only (leotard bottoms, swimwear,
@@ -576,6 +639,31 @@ hard seams (see `/ai/sdf.md` paint-by-label).
 5. **Judge against the reference**, not just `isManifold`. Resemblance is the
    success criterion; `componentCount === 1` + manifold is necessary, not
    sufficient.
+
+## Diversity — vary the whole figure
+
+People are not one default body with a tinted skin swatch. When you build a
+person — and *especially* when you build several — vary the axes **together and
+independently**, so the set looks like a real crowd rather than one model
+recoloured:
+
+- **Skin tone** spans the full range. There is no default; choose deliberately
+  from `F.skin('porcelain' … 'ebony')` (or any RGB). Don't default to peach.
+- **Face shape** — `F.head(rig, { faceShape })` across oval / round / square /
+  long / heart / diamond, plus `jaw` / `chin` / `cheek`.
+- **Nose** — `width` / `bridge` / `flare`. A broad low-bridge nose and a narrow
+  high-bridge nose are different *people*, not the same face shaded darker.
+- **Lips** — `mouth.fullness`.
+- **Hair** — match texture and style to the person: `coils`/`afro`/`locs`/
+  `cornrows`/`boxBraids` are first-class, not edge cases. Any hair texture works
+  on any skin tone.
+- **Body** — `build` (slim/average/stocky), `sex`, `headsTall`.
+
+> **Vary the axes independently — don't bundle them into a stereotype.** A dark
+> skin tone does not imply a particular nose, hair, or build, and vice versa.
+> The point is *range*: mix the axes freely (a light-skinned figure with coily
+> hair, a deep-skinned figure with a narrow nose and straight hair, etc.). Treat
+> every combination as ordinary.
 
 ## Gotchas
 

@@ -1,7 +1,7 @@
 import { defineConfig, type Plugin, type Connect } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
 import { execSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { buildSitemapXml } from './src/seo/sitemap';
 import { prerenderContentPages } from './src/content/build/prerenderPlugin';
@@ -107,7 +107,15 @@ function resolveBuildInfo() {
   // "dirty" only means something for a local working tree; a fresh CI / CF
   // clone is always clean, so skip the (possibly slow) status call there.
   const dirty = !onCloudflare && git('git status --porcelain') !== '';
-  return { commit, branch, buildTime: new Date().toISOString(), repo, dirty };
+  // The released semantic version — the X.Y.Z a user pins/migrates against, and
+  // the value the release-tag Action stamps onto the git tag on production.
+  let version = 'unknown';
+  try {
+    version = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')).version || 'unknown';
+  } catch {
+    /* keep 'unknown' */
+  }
+  return { commit, branch, buildTime: new Date().toISOString(), repo, dirty, version };
 }
 
 export default defineConfig({

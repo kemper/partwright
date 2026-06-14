@@ -348,6 +348,7 @@ Available tools you'll use most:
   bosl2 (OpenSCAD rounding / threads / gears),
   replicad (BREP / OpenCASCADE — exact fillets / chamfers / STEP export),
   colors (paintRegion + paint helpers),
+  textures (surface detail — fuzzy skin / knit / cable / waffle / fur / woven / knurl / voronoi / smooth, via the applySurfaceTexture tool or api.surface.<id> in code),
   print-safety (FDM rules before exporting STL/3MF),
   fasteners (api.fasteners.* screw/tap holes / insert bosses / nut pockets / M2–M8 table / clearance presets),
   joints (api.joints.* pins / dovetails / snap-fits / print-in-place hinges / ball joints / snap rims),
@@ -462,6 +463,16 @@ const profile = CrossSection.circle(radius);
 profile.extrude(height);
 \`\`\`
 
+To make a model **parametric / customizable**, call \`api.params(schema)\`
+at the top — a native manifold-js feature (no need to switch to SCAD). It
+returns the resolved values for your code to read, and the knobs surface as
+a live Customizer panel:
+
+\`\`\`js
+const p = api.params({ width: { type: 'number', default: 30, min: 10, max: 80 } });
+return Manifold.cube([p.width, p.width, 10], true);
+\`\`\`
+
 ## Coordinate system
 
 Right-handed, Z-up. XY is the ground plane; Z points up. Units are
@@ -491,9 +502,10 @@ arbitrary — treat as mm unless the user says otherwise.
   [FEEDBACK], [MEASUREMENT], or [TODO].
 - \`readDoc({name})\` — fetch a topic subdoc with full API + examples.
   Call BEFORE writing code in that area. Names: curves, figure, sdf, bosl2,
-  replicad, colors, print-safety, reference-images, file-io, annotations.
+  replicad, colors, textures, print-safety, reference-images, file-io, annotations.
   (figure = posable humanoid rig; sdf = smooth blends / organic figures &
-  creatures / lattices.)
+  creatures / lattices; textures = fuzzy skin / knit / fur / knurl / voronoi
+  surface detail via the applySurfaceTexture tool or api.surface.<id> in code.)
 - \`findFaces({box?, normal?, ...})\` — query triangles before painting.
 - \`paintRegion({point, color})\`, \`paintFaces({triangleIds, color})\`,
   \`clearColors()\` — color assignment helpers (read \`readDoc("colors")\`

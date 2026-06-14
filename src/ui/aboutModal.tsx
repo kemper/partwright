@@ -35,6 +35,7 @@ function formatBuildTime(iso: string): { text: string; title: string } {
 function buildInfoText(): string {
   return [
     'Partwright build',
+    `version: ${buildInfo.version}`,
     `branch:  ${buildInfo.branch}`,
     `commit:  ${buildInfo.commit}${buildInfo.dirty ? ' (uncommitted changes)' : ''}`,
     `built:   ${buildInfo.buildTime}`,
@@ -92,6 +93,12 @@ function AboutBody() {
         Which build this page is running. Use it to confirm a Cloudflare branch or PR preview is serving the commit you expect.
       </p>
       <div class="rounded-lg border border-zinc-700 bg-zinc-900/40 px-3 divide-y divide-zinc-800">
+        <Row label="Version">
+          <PlainValue
+            text={buildInfo.version !== 'unknown' ? `v${buildInfo.version}` : 'unknown'}
+            mono={true}
+          />
+        </Row>
         <Row label="Environment">
           <span class={`font-medium text-right text-sm min-w-0 ${env.cls}`}>{env.label}</span>
         </Row>

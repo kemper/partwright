@@ -26,6 +26,91 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'June 12 – 13, 2026',
+    headline: 'Diverse figures, footwear and expressive faces, plus editor and viewport polish',
+    groups: [
+      {
+        label: 'Figures',
+        items: [
+          {
+            title: 'Diverse figures — skin tones, faces, and hair',
+            body: 'The figure builder gained diversity axes: a range of skin tones, face shapes, and hair styles (including cornrows and locs). Ready-made catalog figures were diversified to match, and each bakes as one clean printable piece.',
+          },
+          {
+            title: 'Footwear — shoes and boots',
+            body: 'A clothing.shoes / clothing.boots builder gives figures real footwear, with soles that follow the foot’s curvature (welt or flush styles), a paintable sole, and an F.standOn / F.ground helper to stand a figure level on a surface. A new “Sneakers Character” joins the catalog.',
+          },
+          {
+            title: 'Expressive eyes',
+            body: 'Figure eyes now read as a recognizable layered iris and pupil painted onto a smooth eyeball, instead of raised beads, with smoother eye meshing across all the figures.',
+          },
+          {
+            title: 'Eyelids',
+            body: 'Eyes gained a lids option — upper, hooded, half-closed, closed, almond, and tapered styles — that drapes a paintable skin fold over the eye for expression. The catalog figures now wear lids suited to each character.',
+          },
+          {
+            title: 'Headwear and richer hair',
+            body: 'F.placeOnHead positions headwear, and the hair system expanded with new styles — a tousled mop, a face-framing afro, and Bart-style spikes — plus a printable relief texture.',
+          },
+        ],
+      },
+      {
+        label: 'Editor',
+        items: [
+          {
+            title: 'Editor settings menu',
+            body: 'A ⚙ settings menu adds font-size and line-number controls, and a line-wrap toggle landed in the editor header.',
+          },
+        ],
+      },
+      {
+        label: 'Viewport & UX',
+        items: [
+          {
+            title: 'Smoother panels and steadier camera',
+            body: 'The AI panel and code pane now slide open and closed instead of snapping, and the AI panel steps aside when you open a viewport tool. Opening the Customizer or applying a surface modifier now keeps your current camera angle instead of resetting the view.',
+          },
+        ],
+      },
+      {
+        label: 'Export',
+        items: [
+          {
+            title: 'Set units inline on export',
+            body: 'The export warning modal now lets you set the model’s units right there, instead of cancelling out to change them first.',
+          },
+        ],
+      },
+      {
+        label: 'Catalog',
+        items: [
+          {
+            title: 'Catalog refresh',
+            body: 'Eight catalog models were redone with richer colors, paint, and surface textures.',
+          },
+        ],
+      },
+      {
+        label: 'Voxel & API',
+        items: [
+          {
+            title: 'Voxel rounding from the console API',
+            body: 'setVoxelRounding / getVoxelRounding were added to the window.partwright console API, so agents can drive voxel edge rounding the way the UI does.',
+          },
+        ],
+      },
+      {
+        label: 'Reliability',
+        items: [
+          {
+            title: 'Recover from stale deploys and stuck AI turns',
+            body: 'The app now recovers from stale-deploy chunk-load failures instead of spinning forever, and the AI assistant recovers from tool-call timeouts and orphaned tool history rather than wedging the chat.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'June 8 – 12, 2026',
     headline: 'Pose-able figures, Tinkercad-style Arrange mode, scoped textures, and engraving',
     groups: [

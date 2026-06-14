@@ -1,5 +1,5 @@
 {
-  "skin": "#edb891",
+  "skin": "#a9683f",
   "eyes": "#f6f4ef",
   "hair": "#291a12",
   "trunks": "#a62129",
@@ -7,5 +7,6 @@
   "mustache": "#291a12",
   "iris": "#5a4632",
   "pupil": "#1c1c1c",
-  "teeth": "#f3f1ea"
+  "teeth": "#f3f1ea",
+  "lids": "#a9683f"
 }

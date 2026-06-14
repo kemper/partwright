@@ -1,5 +1,5 @@
 {
-  "skin": "#d4956a",
+  "skin": "#945634",
   "eyes": "#f7f4ee",
   "iris": "#5b3e28",
   "pupil": "#1a1008",
@@ -9,5 +9,6 @@
   "belt": "#1a1a1a",
   "hair": "#2a1e12",
   "headband": "#c0251a",
-  "base": "#4a4a4a"
+  "base": "#4a4a4a",
+  "lids": "#945634"
 }

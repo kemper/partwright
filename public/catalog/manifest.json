@@ -827,6 +827,20 @@
       "description": "A glamorous opera singer mid-aria in a floor-length gown, one arm flung overhead — the figure rig's female axis with added weight for a fuller figure, plus painted lips and an updo."
     },
     {
+      "id": "cornrows-runner",
+      "name": "Cornrows Runner",
+      "file": "cornrows_runner.partwright.json",
+      "language": "manifold-js",
+      "description": "A sprinter set at the blocks — cornrows laid tight to the scalp with carved partings, a round face with a broad nose and full lips, deep skin. Shows the figure rig's face-shape, nose, and hair-texture axes."
+    },
+    {
+      "id": "locs-musician",
+      "name": "Locs Musician",
+      "file": "locs_musician.partwright.json",
+      "language": "manifold-js",
+      "description": "A relaxed musician with shoulder-length locs and an easy contrapposto stance — a long face and narrower nose under the locs, medium-deep skin. Mixes the diversity axes so each figure reads as an individual."
+    },
+    {
       "id": "flexing-strongman",
       "name": "Flexing Strongman",
       "file": "flexing_strongman.partwright.json",

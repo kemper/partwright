@@ -17,7 +17,7 @@ import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCal
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, RETRY_SAFE_TOOLS } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, RETRY_SAFE_TOOLS, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
@@ -765,9 +765,24 @@ async function timedExecuteTool(
   name: string,
   input: Record<string, unknown>,
   fn: RunTurnInput['executeToolFn'] = executeTool,
-) {
+): Promise<ToolExecResult> {
   const t0 = performance.now();
-  const result = await (fn ?? executeTool)(name, input);
+  let result: ToolExecResult;
+  try {
+    result = await (fn ?? executeTool)(name, input);
+  } catch (err) {
+    // A *thrown* tool execution — most commonly the Worker-side tool-call
+    // timeout (executeToolViaMessage rejects), but also a crashed main-thread
+    // handler — must NOT tear the whole turn down. Before this catch the
+    // rejection propagated uncaught out of runTurn, the agent Worker posted a
+    // fatal `error`, and the panel's runTurn promise rejected with no cleanup —
+    // leaving the chat permanently "in-flight" until a page reload. Convert it
+    // into an error tool_result instead: the loop continues, the model sees the
+    // failure and can react (e.g. simplify the model or retry), and a slow
+    // render that blew the timeout no longer bricks the session.
+    const message = err instanceof Error ? err.message : String(err);
+    return { content: `Tool execution failed: ${message}`, isError: true };
+  }
   const elapsed = performance.now() - t0;
   const slowMs = getSlowToolMs();
   if (elapsed > slowMs) {

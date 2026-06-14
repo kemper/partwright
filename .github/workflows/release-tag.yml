@@ -1,0 +1,72 @@
+name: Tag release on production
+
+# Stamps a semantic-version git tag (vX.Y.Z) on every production release and
+# publishes a GitHub Release with auto-generated notes (grouped per
+# .github/release.yml). production is written only by the manual
+# staging → production promotion PR, so every push here IS a release.
+#
+# package.json's `version` is the single source of truth: you bump it on a
+# feature branch into main (a feat!: commit for a breaking major, feat: for a
+# minor, fix: for a patch), the gate advances staging, and the release PR
+# promotes it to production untouched — keeping the "no edits on the release
+# branch" rule intact. This Action just reflects whatever version landed.
+#
+# Idempotent: if the tag for the current version already exists (e.g. a
+# production push that didn't bump the version), it no-ops. Cut a new release
+# by bumping the version through the pipeline, not by retagging.
+
+on:
+  push:
+    branches: [production]
+
+# Tags are created from the default GITHUB_TOKEN, so contents:write is required.
+permissions:
+  contents: write
+
+# A tag is permanent; never let two production pushes race the same tag.
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full history + tags so the existence check and release-note
+          # generation (diff against the previous tag) work.
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: ver
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag + release if new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          VERSION="${{ steps.ver.outputs.version }}"
+          # Reject the 0.0.0 placeholder and anything that isn't a plain X.Y.Z
+          # semver (catches an empty value or node's literal "undefined" if the
+          # version field ever goes missing).
+          if [ "$VERSION" = "0.0.0" ] || ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.+-].+)?$'; then
+            echo "::error::package.json version '$VERSION' is not a releasable semver — bump it before releasing."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists — nothing to release. (Bump package.json to cut a new version.)"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          # No --target: the annotated tag we just pushed is the source of
+          # truth, and the release resolves to its commit automatically.
+          gh release create "$TAG" --title "$TAG" --generate-notes
+          echo "Released $TAG"
