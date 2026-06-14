@@ -45,7 +45,7 @@ const face = F.face.assemble(head, rig, {
 });
 
 // Paintable eyes: hard-unioned at the top level with their own label.
-const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.17, lids: 'upper' }); // iris style: labels eyes/iris/pupil itself
+const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.17, lids: 'upper', gaze: 'up' }); // iris eyes glancing up at the person they're waving to
 // Teeth band + lip ring inside/around the open mouth ('teeth' / 'lips' labels).
 const mouthParts = F.face.mouthAccents(rig, mouthOpts);
 
