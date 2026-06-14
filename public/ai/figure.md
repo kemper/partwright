@@ -371,7 +371,7 @@ before aiming a prop at it.
 ```js
 F.face.assemble(head, rig, {
   eyes:  true | { radius, style, lids, gaze, gazeL, gazeR } | false,  // OFF by default — see note below
-  nose:  true | { tipRadius, length, width, bridge, flare } | false,
+  nose:  true | { type, tipRadius, length, width, bridge, flare, upturn, bump, nostrils } | false,
   mouth: true | { style, width, smirk, open, fullness } | false,
   ears:  true | { size } | false,
   brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
@@ -395,11 +395,31 @@ The explicit knobs multiply **on top of** the preset, so `{ faceShape: 'square',
 
 ### Nose & lips — strong variation axes
 
+Every nose now has a defined **tip bulb**, fleshy **alae** (nostril wings), and
+two **carved nostril cavities** with a columella/septum between them — a real
+nose read from below, not a smooth bump. Reach for a **preset** first, then tune
+with the axes:
+
+- **`nose.type`** — `'straight'` (default · neutral) · `'button'` (small, short,
+  upturned) · `'snub'` (short, strongly upturned) · `'roman'` (long, high bridge,
+  convex hump) · `'aquiline'` (long, hooked, prominent hump) · `'broad'` (wide,
+  low bridge, big flare) · `'pointed'` (narrow, sharp tip) · `'bulbous'` (big
+  round tip). Each preset is a full set of axis values; the explicit keys below
+  **override** the preset (they don't multiply), so `{ type: 'broad', flare: 0.5 }`
+  is the broad nose with a tamer flare.
 - **`nose.width`** (0.4–2.2) widens the tip + alae; **`nose.bridge`** (0.3–1.5)
   is the nasal-bridge projection — a **low** value (~0.5) reads broad and flat, a
-  **high** value (~1.4) thin and prominent; **`nose.flare`** (0–1.5) adds nostril
-  wings. (`tipRadius`/`length` unchanged.) These three vary the nose far more than
-  size alone — e.g. `{ width: 1.4, bridge: 0.6, flare: 1.0 }` vs `{ width: 0.8, bridge: 1.3 }`.
+  **high** value (~1.4) thin and prominent; **`nose.flare`** (0–1.5) sizes the
+  alar wings; **`nose.length`** (0.3–2) runs the dorsum longer/shorter.
+- **`nose.upturn`** (−1..1) rotates the tip: **+** snub/upturned (shows the
+  nostrils from the front), **−** droopy/hooked. **`nose.bump`** (0..1) is a
+  convex dorsal hump (the roman/aquiline profile). **`nose.tipRadius`** sets the
+  absolute tip size; **`nose.nostrils: false`** skips the carved cavities (e.g.
+  for a tiny chibi nose where they'd alias).
+- These vary the nose far more than size alone — e.g. `{ type: 'broad' }` vs
+  `{ type: 'aquiline' }` are different *people*. **Pair `F.faceDetail(rig)`** with
+  `build({ detail })` so the nostril rims and septum mesh crisply (it now includes
+  a fine nose sphere; tune via `faceDetail({ noseEdgeLength })`).
 - **`mouth.fullness`** (0.4–2.2) scales lip thickness independently of `width`
   (works on the `'lips'` ridge and the open-mouth lip ring).
 
@@ -693,8 +713,10 @@ recoloured:
   from `F.skin('porcelain' … 'ebony')` (or any RGB). Don't default to peach.
 - **Face shape** — `F.head(rig, { faceShape })` across oval / round / square /
   long / heart / diamond, plus `jaw` / `chin` / `cheek`.
-- **Nose** — `width` / `bridge` / `flare`. A broad low-bridge nose and a narrow
-  high-bridge nose are different *people*, not the same face shaded darker.
+- **Nose** — `type` (`straight`/`button`/`snub`/`roman`/`aquiline`/`broad`/
+  `pointed`/`bulbous`), then `width` / `bridge` / `flare` / `upturn` / `bump`. A
+  broad low-bridge nose and a narrow high-bridge hooked nose are different
+  *people*, not the same face shaded darker.
 - **Lips** — `mouth.fullness`.
 - **Hair** — match texture and style to the person: `coils`/`afro`/`locs`/
   `cornrows`/`boxBraids` are first-class, not edge cases. Any hair texture works

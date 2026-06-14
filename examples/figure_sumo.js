@@ -33,7 +33,7 @@ const rig = F.rig({
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
   eyes: false,
-  nose: { tipRadius: rig.r.head * 0.15, length: rig.r.head * 0.20 },
+  nose: { type: 'bulbous', tipRadius: rig.r.head * 0.14 },
   mouth: { smirk: -0.15 },   // slight downward set — focused intensity
   ears: { size: rig.r.head * 0.25 },
   brows: { lift: 0 },        // flat brows — concentration/intensity

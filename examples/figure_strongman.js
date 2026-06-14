@@ -126,7 +126,7 @@ const mouthOpts = { style: 'open', open: 0.26, width: r.head * 0.56, lips: false
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
   eyes:  false,
-  nose:  { tipRadius: r.head * 0.14, length: r.head * 0.22 },
+  nose:  { type: 'broad', tipRadius: r.head * 0.13 },
   mouth: mouthOpts,
   ears:  { size: r.head * 0.28 },
   brows: {},

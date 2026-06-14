@@ -1183,11 +1183,13 @@ describe('figure nose & lips — variation axes', () => {
   const rig = buildRig({ height: 60, headsTall: 6 });
   const span = (n: SdfNode, ax: number): number => n.bounds().max[ax] - n.bounds().min[ax];
 
-  it('default nose (width:1, flare:0) matches the bare nose', () => {
+  it('the no-arg nose equals the explicit "straight" preset defaults', () => {
     const bare = F.face.nose(rig) as unknown as SdfNode;
-    const def = F.face.nose(rig, { width: 1, flare: 0, bridge: 1, length: 1 }) as unknown as SdfNode;
+    const def = F.face.nose(rig, { type: 'straight' }) as unknown as SdfNode;
     const p = rig.face.nose;
+    const q: [number, number, number] = [p[0] + 0.3, p[1] - 0.4, p[2] - 0.6];
     expect(def.evaluate(p[0], p[1], p[2])).toBeCloseTo(bare.evaluate(p[0], p[1], p[2]), 9);
+    expect(def.evaluate(q[0], q[1], q[2])).toBeCloseTo(bare.evaluate(q[0], q[1], q[2]), 9);
   });
 
   it('a wider, flared nose has a larger lateral extent than a narrow one', () => {
@@ -1196,15 +1198,48 @@ describe('figure nose & lips — variation axes', () => {
     expect(span(wide, 0)).toBeGreaterThan(span(narrow, 0));
   });
 
+  it('carves nostril cavities — a point in the underside cavity is OUTSIDE the carved nose but INSIDE the un-carved one', () => {
+    const o = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
+    const tip = rig.face.nose;
+    const tipR = rig.r.head * 0.12;
+    const withNostrils = F.face.nose(rig, { type: 'broad' }) as unknown as SdfNode;
+    const without = F.face.nose(rig, { type: 'broad', nostrils: false }) as unknown as SdfNode;
+    // A point under the tip, offset to one nostril, up inside the cavity.
+    const nostrilSpread = tipR * (0.32 + 0.32 * 1.55); // broad width
+    const p: [number, number, number] = [
+      tip[0] + u[0] * -tipR * 0.85 + right[0] * nostrilSpread + o[0] * -tipR * 0.12,
+      tip[1] + u[1] * -tipR * 0.85 + right[1] * nostrilSpread + o[1] * -tipR * 0.12,
+      tip[2] + u[2] * -tipR * 0.85 + right[2] * nostrilSpread + o[2] * -tipR * 0.12,
+    ];
+    expect(without.evaluate(p[0], p[1], p[2])).toBeLessThan(0);   // solid without nostrils
+    expect(withNostrils.evaluate(p[0], p[1], p[2])).toBeGreaterThan(0); // carved away
+  });
+
+  it('presets give distinct silhouettes — bulbous tip is wider than pointed', () => {
+    const pointed = F.face.nose(rig, { type: 'pointed' }) as unknown as SdfNode;
+    const bulbous = F.face.nose(rig, { type: 'bulbous' }) as unknown as SdfNode;
+    expect(span(bulbous, 0)).toBeGreaterThan(span(pointed, 0));
+  });
+
+  it('upturn raises the nose underside (snub) vs a hooked tip', () => {
+    const snub = F.face.nose(rig, { upturn: 1, nostrils: false }) as unknown as SdfNode;
+    const hooked = F.face.nose(rig, { upturn: -1, nostrils: false }) as unknown as SdfNode;
+    // The hooked tip projects/drops further: lower minimum on the up axis.
+    expect(hooked.bounds().min[2]).toBeLessThan(snub.bounds().min[2]);
+  });
+
   it('fuller lips thicken the lip ridge', () => {
     const thin = F.face.mouth(rig, { style: 'lips', fullness: 0.5 }) as unknown as SdfNode;
     const full = F.face.mouth(rig, { style: 'lips', fullness: 2.0 }) as unknown as SdfNode;
     expect(span(full, 2)).toBeGreaterThan(span(thin, 2));
   });
 
-  it('rejects out-of-range nose params and bad mouth fullness', () => {
+  it('rejects out-of-range / unknown nose params and bad mouth fullness', () => {
     expect(() => F.face.nose(rig, { bridge: 5 })).toThrow(/bridge/);
     expect(() => F.face.nose(rig, { width: 9 })).toThrow(/width/);
+    expect(() => F.face.nose(rig, { upturn: 3 })).toThrow(/upturn/);
+    expect(() => F.face.nose(rig, { type: 'schnozz' })).toThrow(/type/);
+    expect(() => F.face.nose(rig, { nostrils: 'yes' })).toThrow(/nostrils/);
     expect(() => F.face.mouth(rig, { style: 'lips', fullness: 9 })).toThrow(/fullness/);
   });
 });
