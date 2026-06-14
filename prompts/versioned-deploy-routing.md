@@ -6,6 +6,8 @@ files_changed:
   - src/storage/sessionManager.ts
   - src/ui/layout.ts
   - src/ui/uninstallModal.tsx
+  - src/ui/sessionList.ts
+  - src/ui/appHistory.ts
 ---
 
 ## Human
@@ -51,3 +53,18 @@ navigation, tab switching, the back button, catalog-into-editor, and share-hash
 handling are unchanged; and a browser snapshot of /editor shows the engine boots
 and renders. Swept `src/` (NUL-safe) for any remaining route literals in
 nav/history writers — none outside the deferred content/SEO layer.
+
+Follow-up after a work-reviewer pass:
+- **Blocking fix** — three `updateAppHistory('/editor', 'push')` writers in
+  `src/ui/sessionList.ts` (import/open-session paths) had escaped the main.ts
+  sweep; wrapped them in `appPath()`. Under `/vN/` these would have escaped the
+  base (and `updateAppHistory`'s self-guard wouldn't suppress them, since it
+  compares against the base-prefixed real URL).
+- **Completeness fix** — five content-page "back-target" predicates in `main.ts`
+  (`helpHasAppBackTarget = currentURLPathAndSearch() !== '/help'`, + legal /
+  catalog / whats-new / ideas) compared the base-prefixed raw URL against bare
+  literals → always-true under `/vN/`. Added a base-stripped
+  `currentRouteAndSearch()` helper and routed all five through it. This removed
+  the last `currentURLPathAndSearch` consumer in main.ts, so I un-exported that
+  helper in `appHistory.ts` (now internal-only) per the no-dead-exports rule.
+- Re-ran content-pages + smoke + landing-static (30/30) — still a clean no-op.

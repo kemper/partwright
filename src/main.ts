@@ -49,7 +49,7 @@ import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { confirmDialog, promptDialog } from './ui/dialogs';
-import { updateAppHistory, currentURLPathAndSearch } from './ui/appHistory';
+import { updateAppHistory } from './ui/appHistory';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive, closeAiPanel, isAiTurnInFlight, onAiTurnEnd } from './ui/aiPanel';
 import { onViewportPanelOpen } from './ui/viewportPanelRegistry';
 import { getKey, mergeChatBucket } from './ai/db';
@@ -1886,6 +1886,14 @@ function resolvePartTarget(target: unknown, caller: string): Part | { error: str
 // base `/`. See src/deployment.ts.
 function currentRoute(): string {
   return appRoute(window.location.pathname);
+}
+
+// Like appHistory's currentURLPathAndSearch(), but with the deployment base
+// stripped — so "did we arrive here from elsewhere in the app" back-target
+// checks compare against bare routes ('/help') regardless of the /vN/ mount.
+// A no-op at base `/`.
+function currentRouteAndSearch(): string {
+  return `${currentRoute()}${window.location.search}`;
 }
 
 // Determine which page to show based on URL path and query params
@@ -5053,7 +5061,7 @@ async function main() {
   function showHelp(options: { history?: 'push' | 'replace' | 'none' } = {}) {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
-      helpHasAppBackTarget = currentURLPathAndSearch() !== '/help';
+      helpHasAppBackTarget = currentRouteAndSearch() !== '/help';
       updateAppHistory(appPath('/help'), historyMode);
     }
     if (!helpEl) {
@@ -5086,7 +5094,7 @@ async function main() {
   function showLegal(options: { history?: 'push' | 'replace' | 'none' } = {}) {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
-      legalHasAppBackTarget = currentURLPathAndSearch() !== '/legal';
+      legalHasAppBackTarget = currentRouteAndSearch() !== '/legal';
       updateAppHistory(appPath('/legal'), historyMode);
     }
     if (!legalEl) {
@@ -5118,7 +5126,7 @@ async function main() {
   async function showCatalogPage(options: { history?: 'push' | 'replace' | 'none' } = {}) {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
-      catalogHasAppBackTarget = currentURLPathAndSearch() !== '/catalog';
+      catalogHasAppBackTarget = currentRouteAndSearch() !== '/catalog';
       updateAppHistory(appPath('/catalog'), historyMode);
     }
     if (!catalogEl) {
@@ -5153,7 +5161,7 @@ async function main() {
   function showWhatsNewPage(options: { history?: 'push' | 'replace' | 'none' } = {}) {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
-      whatsNewHasAppBackTarget = currentURLPathAndSearch() !== '/whats-new';
+      whatsNewHasAppBackTarget = currentRouteAndSearch() !== '/whats-new';
       updateAppHistory(appPath('/whats-new'), historyMode);
     }
     if (!whatsNewEl) {
@@ -5342,7 +5350,7 @@ async function main() {
   function showIdeasPage(options: { history?: 'push' | 'replace' | 'none' } = {}) {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
-      ideasHasAppBackTarget = currentURLPathAndSearch() !== '/ideas';
+      ideasHasAppBackTarget = currentRouteAndSearch() !== '/ideas';
       updateAppHistory(appPath('/ideas'), historyMode);
     }
     if (!ideasEl) {
