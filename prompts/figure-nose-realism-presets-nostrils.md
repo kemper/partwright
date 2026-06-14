@@ -56,3 +56,28 @@ cornrows_runner→broad) all `isManifold`, `componentCount 1`. Updated unit test
 browser bake pipeline (dev server + Playwright) and touches every face figure —
 filed as a follow-up rather than bloating this PR. The example sources and the
 API are updated; the gallery thumbnails regenerate separately.
+
+## Follow-up iteration (same PR) — "too generic/smooth/bland"
+
+The user reviewed v1 in fully-featured colored busts (the key ask: *don't judge
+the nose in isolation — render real faces with eyes/lids/brows/mouth/hair/skin*)
+and found the noses bland, shallow, and the nostrils "turning inward."
+
+**Expanded the dimension set** (user-approved): added `projection` (face→tip
+stand-off — the main "not flat" lever), `bridgeWidth` (pinched↔broad),
+`profile` (signed −scoop..+hump, with `bump` kept as the positive alias),
+`tipSize`, `tipShape` (round/pointed/bulbous/cleft), and `nostrilSize`
+(independent of `flare`). Rebuilt the dorsum as a chain of head-oriented
+ellipsoids — **taller than wide** with sidewalls (a real nasal ridge, not a
+round tube) — and projected the whole tip assembly off the face.
+
+**Reshaped the nostrils** from thin vertical inward slits to larger, rounded,
+**outward-splayed** openings (22° yaw) with a defined columella; tightened the
+tip-bulb weld and halved `noseEdgeLength` for crisper, less-hazy definition.
+
+**Verification was in COLOR full busts** via `model:preview` (which DOES resolve
+`api.paint.label`), four diverse characters (straight/broad/aquiline/button ×
+varied skin/hair/eyes/lips) shown front + 3/4 + grayscale underside close-ups.
+The unit nostril-carve test was made geometry-robust (a 3D grid scan asserting
+the carve removed material, replacing a brittle hardcoded sample point that the
+projection broke).

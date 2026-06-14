@@ -371,7 +371,7 @@ before aiming a prop at it.
 ```js
 F.face.assemble(head, rig, {
   eyes:  true | { radius, style, lids, gaze, gazeL, gazeR } | false,  // OFF by default — see note below
-  nose:  true | { type, tipRadius, length, width, bridge, flare, upturn, bump, nostrils } | false,
+  nose:  true | { type, projection, length, width, bridge, bridgeWidth, profile, tipSize, tipShape, flare, upturn, nostrilSize, nostrils, tipRadius } | false,
   mouth: true | { style, width, smirk, open, fullness } | false,
   ears:  true | { size } | false,
   brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
@@ -395,10 +395,11 @@ The explicit knobs multiply **on top of** the preset, so `{ faceShape: 'square',
 
 ### Nose & lips — strong variation axes
 
-Every nose now has a defined **tip bulb**, fleshy **alae** (nostril wings), and
-two **carved nostril cavities** with a columella/septum between them — a real
-nose read from below, not a smooth bump. Reach for a **preset** first, then tune
-with the axes:
+Every nose is a sculpted form — a recessed bridge **root**, a defined ridge
+(taller than wide, with sidewalls), a distinct **tip bulb**, fleshy **alae**
+(nostril wings), and two **carved nostril cavities** (rounded, outward-splayed,
+with a columella/septum between them) — that **projects off the face**, not a
+smooth bump. Reach for a **preset** first, then tune with the axes:
 
 - **`nose.type`** — `'straight'` (default · neutral) · `'button'` (small, short,
   upturned) · `'snub'` (short, strongly upturned) · `'roman'` (long, high bridge,
@@ -407,19 +408,26 @@ with the axes:
   round tip). Each preset is a full set of axis values; the explicit keys below
   **override** the preset (they don't multiply), so `{ type: 'broad', flare: 0.5 }`
   is the broad nose with a tamer flare.
-- **`nose.width`** (0.4–2.2) widens the tip + alae; **`nose.bridge`** (0.3–1.5)
-  is the nasal-bridge projection — a **low** value (~0.5) reads broad and flat, a
-  **high** value (~1.4) thin and prominent; **`nose.flare`** (0–1.5) sizes the
-  alar wings; **`nose.length`** (0.3–2) runs the dorsum longer/shorter.
-- **`nose.upturn`** (−1..1) rotates the tip: **+** snub/upturned (shows the
-  nostrils from the front), **−** droopy/hooked. **`nose.bump`** (0..1) is a
-  convex dorsal hump (the roman/aquiline profile). **`nose.tipRadius`** sets the
-  absolute tip size; **`nose.nostrils: false`** skips the carved cavities (e.g.
-  for a tiny chibi nose where they'd alias).
-- These vary the nose far more than size alone — e.g. `{ type: 'broad' }` vs
+- **Bridge** — **`nose.length`** (0.3–2) dorsum length; **`nose.bridge`**
+  (0.3–1.5) bridge height/prominence (low ≈ flat, high ≈ thin prominent);
+  **`nose.bridgeWidth`** (0.4–1.8) pinched ↔ broad bridge; **`nose.profile`**
+  (−1..1) the dorsal slope — **−** concave/scooped (ski-jump), **0** straight,
+  **+** convex roman hump. (Legacy **`nose.bump`** 0..1 is the positive-only
+  alias for `profile`.)
+- **Tip** — **`nose.projection`** (0.4–2) how far the tip stands **off the
+  face**; **`nose.tipSize`** (0.4–2) the end-bulb scale; **`nose.tipShape`**
+  (`'round'` · `'pointed'` · `'bulbous'` · `'cleft'`) the silhouette;
+  **`nose.width`** (0.4–2.2) overall tip+alae width; **`nose.upturn`** (−1..1)
+  rotates the tip (**+** snub/upturned shows the nostrils, **−** droopy/hooked);
+  **`nose.tipRadius`** sets the absolute base tip size.
+- **Nostrils** — **`nose.flare`** (0–1.5) sizes the alar wings;
+  **`nose.nostrilSize`** (0–1.5) scales the carved openings independently;
+  **`nose.nostrils: false`** skips the carve (e.g. a tiny chibi nose where it'd
+  alias).
+- These vary the nose far more than size alone — `{ type: 'broad' }` vs
   `{ type: 'aquiline' }` are different *people*. **Pair `F.faceDetail(rig)`** with
-  `build({ detail })` so the nostril rims and septum mesh crisply (it now includes
-  a fine nose sphere; tune via `faceDetail({ noseEdgeLength })`).
+  `build({ detail })` so the nostril rims and septum mesh crisply (it includes a
+  fine nose sphere; tune via `faceDetail({ noseEdgeLength })`).
 - **`mouth.fullness`** (0.4–2.2) scales lip thickness independently of `width`
   (works on the `'lips'` ridge and the open-mouth lip ring).
 

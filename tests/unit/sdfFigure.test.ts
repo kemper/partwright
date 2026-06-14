@@ -1198,21 +1198,31 @@ describe('figure nose & lips — variation axes', () => {
     expect(span(wide, 0)).toBeGreaterThan(span(narrow, 0));
   });
 
-  it('carves nostril cavities — a point in the underside cavity is OUTSIDE the carved nose but INSIDE the un-carved one', () => {
-    const o = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
-    const tip = rig.face.nose;
+  it('carves nostril cavities — the underside cavity is OUTSIDE the carved nose where the un-carved one is solid', () => {
+    const fwd = rig.dir.headForward, up = rig.dir.headUp, right = rig.dir.headLeft;
+    const anchor = rig.face.nose;
     const tipR = rig.r.head * 0.12;
     const withNostrils = F.face.nose(rig, { type: 'broad' }) as unknown as SdfNode;
     const without = F.face.nose(rig, { type: 'broad', nostrils: false }) as unknown as SdfNode;
-    // A point under the tip, offset to one nostril, up inside the cavity.
-    const nostrilSpread = tipR * (0.32 + 0.32 * 1.55); // broad width
-    const p: [number, number, number] = [
-      tip[0] + u[0] * -tipR * 0.85 + right[0] * nostrilSpread + o[0] * -tipR * 0.12,
-      tip[1] + u[1] * -tipR * 0.85 + right[1] * nostrilSpread + o[1] * -tipR * 0.12,
-      tip[2] + u[2] * -tipR * 0.85 + right[2] * nostrilSpread + o[2] * -tipR * 0.12,
+    // Scan a small grid through the nose underside: at least one point must be
+    // solid in the un-carved nose (sdf < 0) yet open in the carved one
+    // (sdf > 0). Robust to tip projection / spread tuning — it asserts the
+    // carve removed real material, not a hardcoded sample point.
+    const at = (a: number, b: number, c: number): [number, number, number] => [
+      anchor[0] + fwd[0] * a + up[0] * b + right[0] * c,
+      anchor[1] + fwd[1] * a + up[1] * b + right[1] * c,
+      anchor[2] + fwd[2] * a + up[2] * b + right[2] * c,
     ];
-    expect(without.evaluate(p[0], p[1], p[2])).toBeLessThan(0);   // solid without nostrils
-    expect(withNostrils.evaluate(p[0], p[1], p[2])).toBeGreaterThan(0); // carved away
+    let carved = 0;
+    for (let a = 0; a <= tipR * 2.5; a += tipR * 0.25) {           // forward (projection)
+      for (let b = -tipR * 2; b <= tipR * 0.5; b += tipR * 0.25) { // down the underside
+        for (let c = -tipR * 1.6; c <= tipR * 1.6; c += tipR * 0.25) { // lateral
+          const p = at(a, b, c);
+          if (without.evaluate(...p) < 0 && withNostrils.evaluate(...p) > 0) carved++;
+        }
+      }
+    }
+    expect(carved).toBeGreaterThan(0);
   });
 
   it('presets give distinct silhouettes — bulbous tip is wider than pointed', () => {

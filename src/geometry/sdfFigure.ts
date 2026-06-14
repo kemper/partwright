@@ -1443,83 +1443,117 @@ function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   return parts.reduce((acc, n) => acc.union(n));
 }
 
-// Nose presets — everyday descriptive shapes (big / small / long / short /
-// wide / narrow / hooked / upturned) bundled as starting points. Each is a full
-// set of axis values; explicit `nose.*` keys OVERRIDE the preset value (they do
-// NOT multiply), so `{ type: 'broad', flare: 0.5 }` is the broad nose with a
-// tamer alar flare. `tip` scales the default tipRadius; `upturn` rotates the tip
-// (+ snub / − hooked); `bump` is a dorsal hump; `nostril` scales the carved
-// nostril cavity. 'straight' is the neutral all-purpose nose.
-const NOSE_TYPE: Record<string, {
-  length: number; width: number; bridge: number; flare: number;
-  tip: number; upturn: number; bump: number; nostril: number;
-}> = {
-  straight: { length: 1,    width: 1,    bridge: 1,    flare: 0.55, tip: 1,    upturn: 0,     bump: 0,    nostril: 1 },
-  button:   { length: 0.72, width: 0.95, bridge: 0.7,  flare: 0.5,  tip: 1.1,  upturn: 0.6,   bump: 0,    nostril: 0.9 },
-  snub:     { length: 0.78, width: 1.05, bridge: 0.72, flare: 0.75, tip: 1.02, upturn: 0.9,   bump: 0,    nostril: 1.05 },
-  roman:    { length: 1.22, width: 1,    bridge: 1.25, flare: 0.45, tip: 0.92, upturn: -0.25, bump: 0.5,  nostril: 0.9 },
-  aquiline: { length: 1.35, width: 0.92, bridge: 1.3,  flare: 0.4,  tip: 0.86, upturn: -0.55, bump: 0.75, nostril: 0.85 },
-  broad:    { length: 0.95, width: 1.55, bridge: 0.6,  flare: 1.1,  tip: 1.2,  upturn: 0.1,   bump: 0,    nostril: 1.35 },
-  pointed:  { length: 1.2,  width: 0.8,  bridge: 1.12, flare: 0.35, tip: 0.72, upturn: 0,     bump: 0,    nostril: 0.78 },
-  bulbous:  { length: 1,    width: 1.3,  bridge: 0.85, flare: 0.95, tip: 1.45, upturn: 0,     bump: 0.12, nostril: 1.15 },
+// Nose presets — everyday descriptive shapes bundled as starting points. Each
+// is a full set of axis values; explicit `nose.*` keys OVERRIDE the preset
+// value (they do NOT multiply), so `{ type: 'broad', flare: 0.5 }` is the broad
+// nose with a tamer alar flare. Fields: proj (face→tip projection), len (dorsum
+// length), width (tip+alae), bridge (height/prominence), bw (bridge width,
+// pinched↔broad), profile (−scooped..+roman hump), tip (tipRadius mult), tipSize
+// (end-bulb scale), shape (tip silhouette), flare (alar wings), upturn (tip
+// rotation), nostril (cavity size). 'straight' is the neutral all-purpose nose.
+interface NosePreset {
+  proj: number; len: number; width: number; bridge: number; bw: number;
+  profile: number; tip: number; tipSize: number; shape: TipShape;
+  flare: number; upturn: number; nostril: number;
+}
+type TipShape = 'round' | 'pointed' | 'bulbous' | 'cleft';
+const NOSE_TYPE: Record<string, NosePreset> = {
+  straight: { proj: 1.15, len: 1,    width: 1,    bridge: 1,    bw: 1,    profile: 0,     tip: 1,    tipSize: 1,    shape: 'round',   flare: 0.6,  upturn: 0,     nostril: 1 },
+  button:   { proj: 0.95, len: 0.7,  width: 0.95, bridge: 0.7,  bw: 1.05, profile: -0.2,  tip: 1.05, tipSize: 1.12, shape: 'round',   flare: 0.55, upturn: 0.6,   nostril: 0.95 },
+  snub:     { proj: 0.9,  len: 0.75, width: 1.05, bridge: 0.7,  bw: 1.05, profile: -0.45, tip: 1,    tipSize: 1.05, shape: 'round',   flare: 0.8,  upturn: 0.95,  nostril: 1.1 },
+  roman:    { proj: 1.32, len: 1.2,  width: 1,    bridge: 1.25, bw: 0.9,  profile: 0.6,   tip: 0.95, tipSize: 0.95, shape: 'pointed', flare: 0.5,  upturn: -0.2,  nostril: 0.95 },
+  aquiline: { proj: 1.45, len: 1.35, width: 0.92, bridge: 1.3,  bw: 0.82, profile: 0.85,  tip: 0.88, tipSize: 0.9,  shape: 'pointed', flare: 0.42, upturn: -0.55, nostril: 0.85 },
+  broad:    { proj: 1.05, len: 0.95, width: 1.55, bridge: 0.6,  bw: 1.4,  profile: -0.1,  tip: 1.15, tipSize: 1.22, shape: 'round',   flare: 1.15, upturn: 0.1,   nostril: 1.4 },
+  pointed:  { proj: 1.28, len: 1.2,  width: 0.8,  bridge: 1.12, bw: 0.78, profile: 0,     tip: 0.78, tipSize: 0.8,  shape: 'pointed', flare: 0.38, upturn: 0,     nostril: 0.8 },
+  bulbous:  { proj: 1.1,  len: 1,    width: 1.3,  bridge: 0.85, bw: 1.15, profile: 0.1,   tip: 1.4,  tipSize: 1.5,  shape: 'bulbous', flare: 1,    upturn: 0,     nostril: 1.2 },
 };
+const NOSE_TYPES = Object.keys(NOSE_TYPE) as Array<keyof typeof NOSE_TYPE>;
 
-const NOSE_FIELDS = ['type', 'tipRadius', 'length', 'width', 'bridge', 'flare', 'upturn', 'bump', 'nostrils'];
+const NOSE_FIELDS = ['type', 'tipRadius', 'projection', 'length', 'width', 'bridge', 'bridgeWidth', 'profile', 'bump', 'tipSize', 'tipShape', 'flare', 'upturn', 'nostrils', 'nostrilSize'];
 
 function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'nose(opts)');
   assertNoUnknownKeys(o, NOSE_FIELDS, 'nose(opts)');
   const type = o.type === undefined ? 'straight'
-    : assertEnum(o.type, ['straight', 'button', 'snub', 'roman', 'aquiline', 'broad', 'pointed', 'bulbous'] as const, 'nose.type');
+    : assertEnum(o.type, NOSE_TYPES as unknown as readonly string[], 'nose.type');
   const P = NOSE_TYPE[type];
   const R = rig.r.head;
   const tipR = num(o.tipRadius, R * 0.12 * P.tip, 'nose.tipRadius', 0.01);
-  // length: how far the dorsum runs from the tip up to the bridge root.
-  // width: lateral fullness of the tip + alae. bridge: nasal-bridge projection
-  // — a LOW bridge (≈0.5) reads broad and flat, a HIGH bridge (≈1.4) thin and
-  // prominent. flare: alar (nostril-wing) size. upturn (−1..1): tip rotation, +
-  // snub/upturned (shows the nostrils), − droopy/hooked. bump (0..1): a convex
-  // dorsal hump (roman/aquiline profile). nostrils: carve the two nostril
-  // cavities (on by default). Each defaults to the chosen preset's value.
-  const length = num(o.length, P.length, 'nose.length', 0.3, 2);
+  // See the preset comment + public/ai/figure.md for the axis semantics. Every
+  // axis defaults to the chosen preset's value; explicit keys override it.
+  const projection = num(o.projection, P.proj, 'nose.projection', 0.4, 2);
+  const length = num(o.length, P.len, 'nose.length', 0.3, 2);
   const width = num(o.width, P.width, 'nose.width', 0.4, 2.2);
   const bridge = num(o.bridge, P.bridge, 'nose.bridge', 0.3, 1.5);
+  const bridgeWidth = num(o.bridgeWidth, P.bw, 'nose.bridgeWidth', 0.4, 1.8);
+  // profile: −1 concave/scooped (ski-jump) … 0 straight … +1 convex (roman
+  // hump). Legacy `bump` (0..1) is accepted as the positive-only alias.
+  const profile = o.profile !== undefined ? num(o.profile, P.profile, 'nose.profile', -1, 1)
+    : o.bump !== undefined ? num(o.bump, 0, 'nose.bump', 0, 1) : P.profile;
+  const tipSize = num(o.tipSize, P.tipSize, 'nose.tipSize', 0.4, 2);
+  const tipShape = o.tipShape === undefined ? P.shape
+    : assertEnum(o.tipShape, ['round', 'pointed', 'bulbous', 'cleft'] as const, 'nose.tipShape');
   const flare = num(o.flare, P.flare, 'nose.flare', 0, 1.5);
   const upturn = num(o.upturn, P.upturn, 'nose.upturn', -1, 1);
-  const bump = num(o.bump, P.bump, 'nose.bump', 0, 1);
+  const nostrilSize = num(o.nostrilSize, P.nostril, 'nose.nostrilSize', 0, 1.5);
   const nostrils = o.nostrils === undefined ? true : assertBoolean(o.nostrils, 'nose.nostrils') as boolean;
 
   const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
   const anchor = rig.face.nose;
-  // `upturn` slides the whole tip assembly: + lifts it up and pokes it forward
-  // (snub, nostrils visible from the front); − drops + projects it (hooked).
+  // Project the tip OFF the face by `projection`, then slide it with `upturn`:
+  // + lifts it up and pokes it forward (snub, nostrils show from the front), −
+  // drops + projects it (hooked). The bridge root stays recessed on the face.
+  const proj = scale3(f, R * 0.14 * projection);
   const tipShift = add3(
-    scale3(u, tipR * 0.24 * upturn),
-    scale3(f, tipR * (0.12 * Math.max(0, upturn) + 0.2 * Math.max(0, -upturn))),
+    scale3(u, tipR * 0.28 * upturn),
+    scale3(f, tipR * (0.14 * Math.max(0, upturn) + 0.24 * Math.max(0, -upturn))),
   );
-  const tip = add3(anchor, tipShift);
-  // Bridge root: up the forehead by `length`, set back by `bridge` (a high
-  // bridge tucks the root back and up for a straight prominent dorsum; a low
-  // bridge keeps it forward and shallow for a flatter profile).
-  const root = add3(anchor, add3(scale3(u, R * 0.34 * length), scale3(f, -R * 0.18 * bridge)));
-  // The dorsum: a tapered ridge, thinner at the root, swelling to the tip.
-  let nose = tapered(sdf, root, tip, tipR * 0.7 * bridge, tipR, tipR * 0.6);
-  // Dorsal hump — a forward bulge mid-dorsum for a convex (roman) profile.
-  if (bump > 0) {
-    const humpC = add3(lerp3(root, tip, 0.5), scale3(f, tipR * 0.55 * bump));
-    nose = nose.smoothUnion(sdf.sphere(tipR * 0.62).translate(humpC), tipR * 0.95);
+  const tip = add3(add3(anchor, proj), tipShift);
+  const root = add3(anchor, add3(scale3(u, R * 0.34 * length), scale3(f, -R * 0.13 * bridge)));
+  // Dorsum: a chain of head-oriented ellipsoids from the recessed root to a
+  // supratip point just above the tip — TALLER than wide (a defined nasal ridge
+  // with sidewalls, not a round tube). `bridgeWidth` pinches/broadens it,
+  // `profile` bows the mid-span forward (hump) or back (scoop).
+  const supratip = add3(lerp3(root, tip, 0.82), scale3(u, tipR * 0.12));
+  const baseW = tipR * 0.8 * bridge;
+  const SEGS = 5;
+  let nose: Node | undefined;
+  for (let i = 0; i <= SEGS; i++) {
+    const t = i / SEGS;
+    const bow = Math.sin(t * Math.PI) * R * 0.055 * profile;
+    const c = add3(lerp3(root, supratip, t), scale3(f, bow));
+    const grow = 0.5 + 0.55 * t;                 // thin at root → full at supratip
+    const rw = baseW * grow * bridgeWidth;       // lateral (pinch/broaden)
+    const rh = baseW * (0.78 + 0.5 * t);         // vertical — taller than wide
+    const rd = baseW * (0.66 + 0.4 * t);         // forward depth
+    const seg = orientToHeadPose(sdf.ellipsoid(rw, rd, rh), rig).translate(c);
+    nose = nose === undefined ? seg : nose.smoothUnion(seg, baseW * 0.55);
   }
-  // Tip bulb — a laterally-widened ellipsoid, oriented into the posed head
-  // frame so it stays put on a turned head.
-  const tipBulb = orientToHeadPose(sdf.ellipsoid(tipR * width, tipR * 0.95, tipR * 0.9), rig).translate(tip);
-  nose = nose.smoothUnion(tipBulb, tipR * 0.6);
+  // Tip bulb — a defined ball at the projected tip. A SMALL weld k to the
+  // dorsum leaves a subtle supratip break (the real crease above the tip)
+  // instead of melting into the bridge. `tipShape` sets the silhouette.
+  const rT = tipR * tipSize;
+  const latW = 0.85 + 0.18 * width;
+  let bulb: Node;
+  if (tipShape === 'pointed') {
+    bulb = orientToHeadPose(sdf.ellipsoid(rT * 0.8 * latW, rT * 1.12, rT * 0.86), rig).translate(add3(tip, scale3(f, rT * 0.12)));
+  } else if (tipShape === 'bulbous') {
+    bulb = orientToHeadPose(sdf.ellipsoid(rT * 1.08 * latW, rT * 1.04, rT * 1.02), rig).translate(tip);
+  } else if (tipShape === 'cleft') {
+    const lobe = (s: number): Node => orientToHeadPose(sdf.ellipsoid(rT * 0.66 * latW, rT * 0.98, rT * 0.92), rig).translate(add3(tip, scale3(right, s * rT * 0.42)));
+    bulb = lobe(1).smoothUnion(lobe(-1), rT * 0.5);
+  } else {
+    bulb = orientToHeadPose(sdf.ellipsoid(rT * latW, rT * 1.0, rT * 0.92), rig).translate(tip);
+  }
+  nose = nose!.smoothUnion(bulb, rT * 0.32);
   // Alae — the fleshy nostril wings flanking the tip on the underside. Always
   // present (so the tip has walls for the nostrils to sit inside); `flare`
-  // swells them outward for a broad base.
-  const alaR = tipR * (0.42 + 0.34 * flare);
-  const noseBase = add3(tip, add3(scale3(u, -tipR * 0.42), scale3(f, -tipR * 0.12)));
-  const alaSpread = tipR * (0.5 + 0.42 * width);
-  const ala = (s: number): Node => sdf.sphere(alaR).translate(add3(noseBase, scale3(right, s * alaSpread)));
+  // swells them outward and forward for a broad base.
+  const alaR = tipR * (0.46 + 0.4 * flare);
+  const noseBase = add3(tip, add3(scale3(u, -tipR * 0.5), scale3(f, -tipR * 0.16)));
+  const alaSpread = tipR * (0.52 + 0.46 * width);
+  const ala = (s: number): Node => orientToHeadPose(sdf.ellipsoid(alaR, alaR * 1.18, alaR * 0.96), rig)
+    .translate(add3(noseBase, scale3(right, s * alaSpread)));
   nose = nose.smoothUnion(ala(1), tipR * 0.5).smoothUnion(ala(-1), tipR * 0.5);
   // Nostrils — two forward-oval cavities carved into the underside, opening
   // down and slightly forward, with the columella/septum surviving between
@@ -1528,20 +1562,23 @@ function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // sampling the lower surface along each nostril column rather than guessed:
   // the cavity straddles that surface and tunnels UP into the tip, giving a
   // real opening that reads from below, not a buried bubble or a flat dimple.
-  if (nostrils) {
-    const nRad = tipR * 0.34 * P.nostril;
-    const nostrilSpread = tipR * (0.32 + 0.32 * width);
-    const nostrilBack = scale3(f, -tipR * 0.12);
+  if (nostrils && nostrilSize > 0) {
+    const nRad = tipR * 0.4 * nostrilSize;
+    const nostrilSpread = tipR * (0.36 + 0.34 * width);
+    const nostrilBack = scale3(f, -tipR * 0.14);
+    // Each nostril splays outward like a real teardrop opening (narrow end
+    // forward-medial, wider back-lateral) instead of two parallel inward slits.
+    const splay = 22;
     const evalAt = (p: Vec3): number =>
       (nose as unknown as { evaluate(x: number, y: number, z: number): number }).evaluate(p[0], p[1], p[2]);
     // Walk down −u to the first outside crossing = the underside surface depth.
     const surfaceDrop = (lat: number): number => {
       const col = add3(add3(tip, scale3(right, lat)), nostrilBack);
-      for (let d = 0.3; d <= 2.6; d += 0.07) {
+      for (let d = 0.3; d <= 2.8; d += 0.07) {
         if (evalAt(add3(col, scale3(u, -d * tipR))) > 0) return d;
       }
       // Should-never-happen guard: the underside surface always lies within
-      // 2.6·tipR for every preset/flare/width (verified empirically). If a
+      // 2.8·tipR for every preset/flare/width (verified empirically). If a
       // future extreme combo never crosses, fall back to a mid-depth so the
       // cavity still places sanely rather than off the model.
       return 1.4;
@@ -1549,11 +1586,16 @@ function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     const cavity = (s: number): Node => {
       const lat = s * nostrilSpread;
       // Opening at the measured surface; centre lifted so the bulk tunnels up.
-      const drop = surfaceDrop(lat) - 0.3;
+      const drop = surfaceDrop(lat) - 0.26;
       const c = add3(add3(tip, add3(scale3(u, -drop * tipR), scale3(right, lat))), nostrilBack);
-      return orientToHeadPose(sdf.ellipsoid(nRad * 0.85, nRad * 1.3, nRad * 1.55), rig).translate(c);
+      // Rounded-oval opening (lateral × forward) that tunnels UP (tall Z),
+      // yaw-splayed about the vertical so it opens down-and-outward.
+      return orientToHeadPose(
+        sdf.ellipsoid(nRad * 1.0, nRad * 1.18, nRad * 1.5).rotate([0, 0, -s * splay]),
+        rig,
+      ).translate(c);
     };
-    nose = nose.smoothSubtract(cavity(1), tipR * 0.07).smoothSubtract(cavity(-1), tipR * 0.07);
+    nose = nose.smoothSubtract(cavity(1), tipR * 0.045).smoothSubtract(cavity(-1), tipR * 0.045);
   }
   return nose;
 }
@@ -1873,7 +1915,7 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   // sealed pockets at the head grid. ~1.4% of the head radius keeps the nostril
   // rims and septum crisp. Centred at the nose anchor, nudged down+forward to
   // sit over the alae/nostril underside.
-  const noseEdgeLength = num(o.noseEdgeLength, Math.max(r.head * 0.014, 0.025), 'faceDetail.noseEdgeLength', 1e-4);
+  const noseEdgeLength = num(o.noseEdgeLength, Math.max(r.head * 0.011, 0.02), 'faceDetail.noseEdgeLength', 1e-4);
   const f = rig.dir.headForward, u = rig.dir.headUp;
   const eyeFront = (anchor: Vec3): Vec3 => add3(anchor, scale3(f, r.head * 0.22));
   const noseCenter = add3(rig.face.nose, add3(scale3(f, r.head * 0.05), scale3(u, -r.head * 0.05)));
@@ -2449,13 +2491,16 @@ export interface FigureNamespace {
      *  'half' | 'closed' | 'almond' | 'tapered'`; default `'none'`). See
      *  public/ai/figure.md. */
     eyes(rig: Rig, opts?: object): Node;
-    /** A defined nose with a tip bulb, alae, and two carved nostril cavities
-     *  (columella between them). `type` picks a preset (`'straight' | 'button' |
-     *  'snub' | 'roman' | 'aquiline' | 'broad' | 'pointed' | 'bulbous'`); the
-     *  explicit axes OVERRIDE the preset: `tipRadius`, `length`, `width`,
-     *  `bridge`, `flare`, `upturn` (−1..1 snub↔hooked), `bump` (0..1 dorsal
-     *  hump), `nostrils` (default true). Pair with `faceDetail` so the nostril
-     *  rims mesh crisply. See public/ai/figure.md. */
+    /** A sculpted, projecting nose: a recessed bridge root, a defined ridge, a
+     *  tip bulb, alae, and two carved nostril cavities (columella between them).
+     *  `type` picks a preset (`'straight' | 'button' | 'snub' | 'roman' |
+     *  'aquiline' | 'broad' | 'pointed' | 'bulbous'`); the explicit axes OVERRIDE
+     *  the preset: `projection` (face→tip stand-off), `length`, `width`,
+     *  `bridge`, `bridgeWidth`, `profile` (−1 scoop … +1 roman hump; `bump` is
+     *  the positive alias), `tipSize`, `tipShape` (`'round'|'pointed'|'bulbous'|
+     *  'cleft'`), `flare`, `upturn` (−1..1 snub↔hooked), `nostrilSize`,
+     *  `nostrils` (default true), `tipRadius`. Pair with `faceDetail` so the
+     *  nostril rims mesh crisply. See public/ai/figure.md. */
     nose(rig: Rig, opts?: object): Node;
     mouth(rig: Rig, opts?: object): Node;
     /** Pre-labelled paintable mouth parts (teeth band, lip ring / ridge)
