@@ -631,10 +631,32 @@ describe('figure mouth — styles', () => {
     expect(() => buildMouthPart(api, rig, { expression: 'grimace' })).toThrow(/expression/);
   });
 
-  it("divided lips build a taller two-ridge stack than a single ridge", () => {
+  it("divided lips build the refined two-lip shape (taller than a single ridge)", () => {
     const single = buildMouthPart(api, rig, { style: 'lips' }).node.bounds();
-    const two = buildMouthPart(api, rig, { style: 'lips', divided: true }).node.bounds();
-    expect(two.max[2] - two.min[2]).toBeGreaterThan(single.max[2] - single.min[2]);
+    const two = buildMouthPart(api, rig, { style: 'lips', divided: true });
+    expect(two.mode).toBe('add');
+    const tb = two.node.bounds();
+    expect(tb.max[2] - tb.min[2]).toBeGreaterThan(single.max[2] - single.min[2]);
+  });
+
+  it('lipShape presets are additive and differ in width', () => {
+    for (const shape of ['natural', 'full', 'thin', 'wide', 'rosebud', 'flat']) {
+      expect(buildMouthPart(api, rig, { style: 'lips', lipShape: shape }).mode).toBe('add');
+    }
+    const wide = buildMouthPart(api, rig, { style: 'lips', lipShape: 'wide' }).node.bounds();
+    const rosebud = buildMouthPart(api, rig, { style: 'lips', lipShape: 'rosebud' }).node.bounds();
+    // 'wide' spans clearly more laterally than the petite 'rosebud'.
+    expect(wide.max[0] - wide.min[0]).toBeGreaterThan(rosebud.max[0] - rosebud.min[0]);
+  });
+
+  it('an explicit width overrides the lipShape preset width', () => {
+    const preset = buildMouthPart(api, rig, { style: 'lips', lipShape: 'rosebud' }).node.bounds();
+    const wider = buildMouthPart(api, rig, { style: 'lips', lipShape: 'rosebud', width: rig.r.head * 0.9 }).node.bounds();
+    expect(wider.max[0] - wider.min[0]).toBeGreaterThan(preset.max[0] - preset.min[0]);
+  });
+
+  it('rejects an unknown lipShape', () => {
+    expect(() => buildMouthPart(api, rig, { style: 'lips', lipShape: 'duckbill' })).toThrow(/lipShape/);
   });
 
   it('render: painted makes the smile line additive (the #652-class fallback)', () => {

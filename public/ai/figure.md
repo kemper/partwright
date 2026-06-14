@@ -438,7 +438,7 @@ before aiming a prop at it.
 F.face.assemble(head, rig, {
   eyes:  true | { radius, style, lids, gaze, gazeL, gazeR } | false,  // OFF by default — see note below
   nose:  true | { tipRadius, length, width, bridge, flare } | false,
-  mouth: true | { style, expression, curve, width, smirk, open, fullness, divided, render, teeth } | false,
+  mouth: true | { style, expression, curve, width, smirk, open, fullness, lipShape, divided, render, teeth } | false,
   ears:  true | { size } | false,
   brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
 })
@@ -498,13 +498,28 @@ any style — see above). `render` chooses how the mouth meets the head.
 |---|---|---|
 | `'smile'` (default) | a smile/frown **line** through the face — the classic cartoon mouth. Carved as a groove when the head is big enough, else raised as a clean ridge (`render` overrides). `smirk` (−1..1) skews it; `expression`/`curve` bows it. | carve / add |
 | `'open'` | an open mouth (laughing / talking / singing). `open` (0..1) sets the gape; passing `open > 0` without a style selects this. Pair it with `mouthAccents` for teeth + lips. | carve / add |
-| `'lips'` | a protruding lip ridge. `divided: true` splits it into a natural **upper + lower lip**. | add |
+| `'lips'` | sculpted lips. Pick a **`lipShape`** preset for a refined cupid's-bow upper + fuller lower + parting groove; `divided: true` is shorthand for `lipShape: 'natural'`. Bare `'lips'` (no shape) is a plain ridge. | add |
+
+**`lipShape`** (with `style: 'lips'`) — the lip silhouette, independent of size
+(`width`/`fullness`) and mood (`expression`/`smirk`), so any shape can smile,
+frown, be wider, or fuller:
+
+| `lipShape` | Look |
+|---|---|
+| `'natural'` | thin upper + full lower — the everyday balance (also what `divided: true` gives) |
+| `'full'` | plump both lips, sharp defined cupid's bow |
+| `'thin'` | slim, elegant, sharp bow set into the face |
+| `'wide'` | wide, medium fullness, moderate bow |
+| `'rosebud'` | narrow, small, soft rounded bow — petite |
+| `'flat'` | wide, thin, near-flat upper (no bow) — the masculine/neutral mouth; pair with `expression: 'slightFrown'` for a stern set |
 
 ```js
 mouth: { expression: 'bigSmile' }                      // super-smiley
 mouth: { expression: 'deepFrown' }                     // sad
 mouth: { curve: -0.4, smirk: 0.2 }                     // mild frown, skewed
-mouth: { style: 'lips', divided: true, fullness: 1.4 } // natural full upper+lower lips
+mouth: { style: 'lips', lipShape: 'full', fullness: 1.3 }            // glamorous full lips
+mouth: { style: 'lips', lipShape: 'natural', expression: 'slightSmile' } // natural, gently smiling
+mouth: { style: 'lips', lipShape: 'flat', expression: 'slightFrown' }    // masculine, stern
 mouth: { open: 0.5, expression: 'smile', render: 'painted', teeth: 'both' } // toothy grin
 ```
 
@@ -540,8 +555,8 @@ return sdf.union(skin, eyes, mouthParts, hair, base).build({ ... });
   `lips: false`), both bowed by the expression so a grin's opening smiles. Under
   `render: 'painted'` the teeth sit as a flat plate flush in the opening (no
   cavity, prints support-free); carved, they recess behind the rim.
-- `'lips'` style: the ridge labelled `'lips'` (honours `divided`) — pass
-  `mouth: false` to `assemble` (a smooth-welded copy would swallow the label).
+- `'lips'` style: the lips labelled `'lips'` (honours `lipShape` / `divided`) —
+  pass `mouth: false` to `assemble` (a smooth-welded copy would swallow the label).
 - `'smile'` style: a paintable lip **line** labelled `'lips'` — the additive
   form of the groove, for a coloured expressive mouth line (frown → smile). Pass
   `mouth: false` to `assemble` if you want *only* the painted line.

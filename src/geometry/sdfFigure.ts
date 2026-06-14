@@ -1683,7 +1683,7 @@ type MouthRender = 'auto' | 'carved' | 'painted';
  *  open cavities are CARVED (smoothSubtract). assembleFace dispatches on this. */
 interface MouthPart { node: Node; mode: 'add' | 'carve' }
 
-const MOUTH_FIELDS = ['width', 'smirk', 'open', 'style', 'teeth', 'lips', 'fullness', 'expression', 'curve', 'divided', 'render'];
+const MOUTH_FIELDS = ['width', 'smirk', 'open', 'style', 'teeth', 'lips', 'fullness', 'expression', 'curve', 'divided', 'render', 'lipShape'];
 
 /** Named expression presets → a signed mouth curve (−1 deep frown … 0 neutral
  *  … +1 big smile). The curve bows the mouth line: positive lifts the corners
@@ -1757,6 +1757,103 @@ function mouthCavityFrame(rig: Rig, width: number, open: number): { halfW: numbe
   return { halfW, cavH, center };
 }
 
+/** A named lip SHAPE — a bundle of geometry ratios (all ×`r.head`, except the
+ *  *Mul/*Amt unitless multipliers) for the refined cupid's-bow lip builder.
+ *  `fullness` scales the radii and `width`/`expression`/`smirk` ride on top, so
+ *  a shape is the silhouette, not the size or mood. Ported from the reviewed
+ *  mockups (feminine natural/full/thin/wide/rosebud, masculine flat). */
+interface LipShape {
+  hw: number;          // half-width
+  baseR: number;       // base lip radius
+  fwd: number;         // forward bias off the anchor (so lips sit ON the surface)
+  archH: number;       // gentle upper arch (flat lips); 0 when a cupid's bow is used
+  peakH: number;       // cupid's-bow peak height (0 = no bow)
+  dipH: number;        // central philtrum dip
+  upperRMul: number;   // upper-lip thickness vs baseR
+  bowFullAmt: number;  // 0 = uniform upper, 1 = volume concentrated at the bow peaks
+  lowerShift: number;  // how far the lower lip sits below the line
+  lowerRMul: number;   // lower-lip thickness vs baseR (>1 = fuller lower)
+  lowerWidth: number;  // lower width vs upper (×hw)
+  lowerBow: number;    // lower-lip belly droop
+  bellyAmt: number;    // lower-lip taper toward the corners
+  seamR: number;       // parting-groove cutter radius
+  seamK: number;       // parting-groove smoothSubtract blend
+}
+
+const LIP_SHAPE_NAMES = ['natural', 'full', 'thin', 'wide', 'rosebud', 'flat'] as const;
+type LipShapeName = (typeof LIP_SHAPE_NAMES)[number];
+
+const LIP_SHAPES: Record<LipShapeName, LipShape> = {
+  // Thin upper + very full lower — the everyday natural balance.
+  natural: { hw: 0.238, baseR: 0.060, fwd: 0.094, archH: 0, peakH: 0.026, dipH: 0.014, upperRMul: 0.80, bowFullAmt: 0.30, lowerShift: 0.040, lowerRMul: 1.50, lowerWidth: 1.12, lowerBow: 0.028, bellyAmt: 0.16, seamR: 0.016, seamK: 0.008 },
+  // Plump both lips with a sharp, defined cupid's bow — glamorous/full.
+  full:    { hw: 0.250, baseR: 0.083, fwd: 0.092, archH: 0, peakH: 0.036, dipH: 0.018, upperRMul: 0.93, bowFullAmt: 0.45, lowerShift: 0.038, lowerRMul: 1.26, lowerWidth: 1.10, lowerBow: 0.024, bellyAmt: 0.18, seamR: 0.021, seamK: 0.010 },
+  // Slim, elegant, sharp bow set into the face — delicate.
+  thin:    { hw: 0.210, baseR: 0.055, fwd: 0.075, archH: 0, peakH: 0.032, dipH: 0.016, upperRMul: 0.88, bowFullAmt: 0.60, lowerShift: 0.026, lowerRMul: 1.05, lowerWidth: 1.06, lowerBow: 0.013, bellyAmt: 0.20, seamR: 0.013, seamK: 0.006 },
+  // Wide, medium fullness, moderate bow.
+  wide:    { hw: 0.295, baseR: 0.066, fwd: 0.090, archH: 0, peakH: 0.024, dipH: 0.013, upperRMul: 0.82, bowFullAmt: 0.30, lowerShift: 0.038, lowerRMul: 1.30, lowerWidth: 1.06, lowerBow: 0.020, bellyAmt: 0.20, seamR: 0.020, seamK: 0.009 },
+  // Narrow, small, soft rounded bow, fairly even — petite.
+  rosebud: { hw: 0.185, baseR: 0.062, fwd: 0.085, archH: 0, peakH: 0.016, dipH: 0.010, upperRMul: 0.95, bowFullAmt: 0.15, lowerShift: 0.030, lowerRMul: 1.15, lowerWidth: 1.00, lowerBow: 0.016, bellyAmt: 0.18, seamR: 0.013, seamK: 0.006 },
+  // Wide, thin, near-flat upper (no cupid's bow), controlled fuller lower — the
+  // masculine/neutral look. Pair with `expression:'slightFrown'` for a stern set.
+  flat:    { hw: 0.300, baseR: 0.068, fwd: 0.100, archH: 0.010, peakH: 0, dipH: 0, upperRMul: 0.75, bowFullAmt: 0, lowerShift: 0.040, lowerRMul: 1.40, lowerWidth: 1.04, lowerBow: 0.016, bellyAmt: 0.22, seamR: 0.022, seamK: 0.009 },
+};
+
+/** Build one lip (a tapered capsule chain) from a per-`t` centre + radius. */
+function lipChain(sdf: SdfApi, R: number, pt: (t: number) => Vec3, rad: (t: number) => number, kMul: number): Node {
+  const N = 14;
+  let node: Node | undefined;
+  for (let i = 0; i < N; i++) {
+    const t0 = -1 + (2 * i) / N, t1 = -1 + (2 * (i + 1)) / N;
+    const r = (rad(t0) + rad(t1)) * 0.5;
+    if (r < R * 0.0008) continue;        // skip the tapered-to-nothing corner caps
+    const seg = sdf.capsule(pt(t0), pt(t1), r);
+    node = node === undefined ? seg : node.smoothUnion(seg, r * kMul);
+  }
+  return node!;
+}
+
+/** The refined cupid's-bow lips: a tapered upper lip (optional M-shaped bow), a
+ *  fuller lower lip, and a parting groove, all sitting on the face surface and
+ *  bowed by `bend` (expression) / skewed by `smirk`. `hw` is the world-space
+ *  half-width (preset default or an explicit `width`); `fullness` scales radii. */
+function buildLipShape(sdf: SdfApi, rig: Rig, p: LipShape, fullness: number, hw: number, bend: number, smirk: number): Node {
+  const m = rig.face.mouth, f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft, R = rig.r.head;
+  const anchor = add3(m, scale3(f, R * p.fwd));
+  const baseR = R * p.baseR * fullness;
+  // Shared expression/smirk offset: bend lifts (smile) or drops (frown) the
+  // corners about a parabola; smirk skews the whole mouth.
+  const vbend = (t: number): number => R * 0.06 * bend * (t * t - 0.3) + smirk * hw * 0.3 * t;
+  const upperPt = (t: number): Vec3 => {
+    const peaks = R * p.peakH * Math.exp(-(((Math.abs(t) - 0.39) / 0.19) ** 2));
+    const dip = R * p.dipH * Math.exp(-t * t * 24);
+    const arch = R * p.archH * (1 - t * t);
+    return add3(add3(anchor, scale3(right, hw * t)), scale3(u, peaks - dip + arch + vbend(t)));
+  };
+  const upperR = (t: number): number => {
+    const cornerFade = Math.max(0, 1 - (Math.abs(t) / 0.94) ** 2);
+    const peakProx = Math.max(0, 1 - (((Math.abs(t) - 0.39) / 0.37) ** 2));
+    return baseR * p.upperRMul * cornerFade * (1 - p.bowFullAmt + p.bowFullAmt * peakProx);
+  };
+  const lowerCtr = add3(anchor, scale3(u, -R * p.lowerShift));
+  const lowerPt = (t: number): Vec3 => {
+    const droop = R * p.lowerBow * (1 - t * t * 0.8);
+    return add3(add3(lowerCtr, scale3(right, hw * p.lowerWidth * t)), scale3(u, -droop + vbend(t)));
+  };
+  const lowerR = (t: number): number => {
+    const belly = 1 - p.bellyAmt * t * t;
+    const cornerFade = Math.max(0, 1 - (Math.abs(t) / 0.98) ** 2);
+    return baseR * p.lowerRMul * belly * cornerFade;
+  };
+  const upper = lipChain(sdf, R, upperPt, upperR, 0.4);
+  const lower = lipChain(sdf, R, lowerPt, lowerR, 0.35);
+  // Parting groove between the lips (carries the bend so the seam follows a
+  // smile/frown), carved with a small blend for a soft philtrum shadow.
+  const seamPt = (s: number): Vec3 => add3(add3(anchor, scale3(right, hw * 0.84 * s)), scale3(u, vbend(0.84 * s)));
+  const seam = sdf.capsule(seamPt(-1), seamPt(1), R * p.seamR);
+  return upper.union(lower).smoothSubtract(seam, R * p.seamK);
+}
+
 function buildMouthPart(sdf: SdfApi, rig: Rig, opts?: unknown): MouthPart {
   const o = obj(opts, 'mouth(opts)');
   assertNoUnknownKeys(o, MOUTH_FIELDS, 'mouth(opts)');
@@ -1793,32 +1890,36 @@ function buildMouthPart(sdf: SdfApi, rig: Rig, opts?: unknown): MouthPart {
     grooveCurl * bend * (t * t - 0.3) + smirk * halfW * 0.35 * t;
 
   if (style === 'lips') {
+    // A named refined SHAPE (cupid's-bow upper + fuller lower + parting groove):
+    // an explicit `lipShape`, or `divided: true` → the 'natural' two-lip shape.
+    const shapeName: LipShapeName | undefined = o.lipShape !== undefined
+      ? assertEnum(o.lipShape, LIP_SHAPE_NAMES, 'mouth.lipShape')
+      : divided ? 'natural' : undefined;
+    if (shapeName !== undefined) {
+      const shape = LIP_SHAPES[shapeName];
+      // Preset half-width unless the caller set an explicit `width`.
+      const hw = o.width !== undefined ? width * 0.5 : shape.hw * rig.r.head;
+      return { node: buildLipShape(sdf, rig, shape, fullness, hw, curveOpt ?? 0, smirk), mode: 'add' };
+    }
+    // No shape requested: the simple lip ridge (byte-identical default).
     const lipR = rig.r.head * 0.085 * fullness;
     const fwdPush = scale3(fwd, lipR * 0.6);
-    if (!divided && curveOpt === undefined) {
-      // Historical single straight ridge (byte-identical) — smirk tips a corner.
+    if (curveOpt === undefined) {
+      // Historical single straight ridge — smirk tips a corner.
       const a = add3(add3(add3(m, fwdPush), scale3(right, halfW)), scale3(u, smirk * width * 0.25));
       const b = add3(add3(add3(m, fwdPush), scale3(right, -halfW)), scale3(u, -smirk * width * 0.25));
       return { node: sdf.capsule(a, b, lipR), mode: 'add' };
     }
-    // Bowed lip ridge(s) — a 6-segment arc so the lips follow the expression.
-    const bend = curveOpt ?? 0;
-    const ridge = (zOff: number, rad: number): Node => {
-      const pt = (t: number): Vec3 => add3(add3(add3(m, fwdPush),
-        scale3(right, halfW * t)), scale3(u, arcVert(t, bend) + zOff));
-      let arc: Node | undefined;
-      for (let i = 0; i < 6; i++) {
-        const seg = sdf.capsule(pt(-1 + (2 * i) / 6), pt(-1 + (2 * (i + 1)) / 6), rad);
-        arc = arc === undefined ? seg : arc.union(seg);
-      }
-      return arc!;
-    };
-    if (divided) {
-      // Upper + lower lip separated by a thin seam — the natural two-lip look.
-      const gap = lipR * 0.55;
-      return { node: ridge(gap, lipR * 0.9).union(ridge(-gap, lipR * 1.05)), mode: 'add' };
+    // Bowed single ridge — a 6-segment arc so the ridge follows the expression.
+    const bend = curveOpt;
+    const pt = (t: number): Vec3 => add3(add3(add3(m, fwdPush),
+      scale3(right, halfW * t)), scale3(u, arcVert(t, bend)));
+    let arc: Node | undefined;
+    for (let i = 0; i < 6; i++) {
+      const seg = sdf.capsule(pt(-1 + (2 * i) / 6), pt(-1 + (2 * (i + 1)) / 6), lipR);
+      arc = arc === undefined ? seg : arc.union(seg);
     }
-    return { node: ridge(0, lipR), mode: 'add' };
+    return { node: arc!, mode: 'add' };
   }
 
   if (style === 'open') {

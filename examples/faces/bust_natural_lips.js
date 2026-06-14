@@ -10,7 +10,7 @@ const F = sdf.figure;
 const rig = F.rig({ height: 60, headsTall: 5 });
 const head = F.head(rig);
 
-const mouthOpts = { style: 'lips', divided: true, fullness: 1.4, expression: 'slightSmile', width: rig.r.head * 0.5 };
+const mouthOpts = { style: 'lips', lipShape: 'natural', fullness: 1.1, expression: 'slightSmile' };
 const face = F.face.assemble(head, rig, { eyes: false, mouth: false, brows: {} });
 
 const cutZ = rig.joints.chest[2] - rig.r.chestY;
