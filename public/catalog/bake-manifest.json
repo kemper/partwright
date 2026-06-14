@@ -386,6 +386,13 @@
         "requiredLabels": []
       }
     },
+    "pool-swimmer": {
+      "source": "examples/figure_swimmer.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": ["skin", "eyes", "iris", "pupil", "areola", "trunks", "hair", "base"]
+      }
+    },
     "topknot-sensei": {
       "source": "examples/figure_topknot_sensei.js",
       "gates": {
