@@ -462,24 +462,32 @@ protrude. (Brows can use the same top-level pattern if you want them painted.)
 
 #### Eyelids — `lids` (off by default)
 
-Add a skin fold over the eye with `lids`. A skin dome covers the eyeball with a
-smooth elliptical opening where the eye shows; it is pre-labelled **`'lids'`** so
-you paint it — match the skin tone for a natural lid, or tint it for eyeshadow.
+Add eyelids with `lids`. There are TWO independent lids — an upper and a lower —
+each a thin skin shell that wraps the eyeball and sweeps in from its pole. Give
+either a `{ upper, lower }` pair (each `0`…`1`, how far that lid has closed) or a
+named preset. The region is pre-labelled **`'lids'`** so you paint it (skin tone,
+or tint for eyeshadow).
 
 ```js
-F.face.eyes(rig, { lids: 'upper' })           // iris eyes + an upper lid
-F.face.eyes(rig, { lids: 'almond' })          // almond-shaped eye opening
+F.face.eyes(rig, { lids: { upper: 0.3, lower: 0.1 } })  // alert eye, defined upper lid
+F.face.eyes(rig, { lids: { upper: 0.25, lower: 0.25 } })// a squinted slit
+F.face.eyes(rig, { lids: 'almond' })                    // a named preset (shorthand)
 ```
 
-| `lids` | Look |
-|---|---|
-| `'none'` (default) | bare round eyeball — unchanged |
-| `'upper'` | crisp upper lid on an open, alert eye |
-| `'hooded'` | heavier brow-ward hood overhanging the eye |
-| `'half'` | sleepy / half-closed, with a faint lower rim |
-| `'closed'` | upper + lower lids meet → smooth shut eyes |
-| `'almond'` | corners pinched to points (balanced almond) |
-| `'tapered'` | elongated, sharper corners (a drawn-out eye) |
+The eye is **open between the two margins**; when `upper + lower ≥ 1` the lids
+meet and the eye is **closed** — so `{0.75, 0.25}` and `{0.5, 0.5}` both read
+shut, while `{0.25, 0.25}` is a slit. This lets you do blinks, winks, sleepy,
+and squints, not just the presets.
+
+| preset | `{ upper, lower }` | Look |
+|---|---|---|
+| `'none'` (default) | — | bare round eyeball — unchanged |
+| `'upper'` | `{0.30, 0.06}` | alert, open eye with a defined upper lid |
+| `'hooded'` | `{0.46, 0.06}` | heavier upper hood |
+| `'half'` | `{0.50, 0.20}` | sleepy / half-closed |
+| `'closed'` | `{0.56, 0.50}` | lids meet → shut |
+| `'almond'` | `{0.30, 0.20}` | both lids visible, almond opening |
+| `'tapered'` | `{0.38, 0.28}` | narrower, more drawn-out |
 
 Paint the new region alongside the eyes — e.g. `{ label: 'lids', color: skinRgb }`.
 With `style: 'solid'`, adding `lids` makes the result **self-labelled** (`'eyes'` +

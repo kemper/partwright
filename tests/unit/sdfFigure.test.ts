@@ -508,8 +508,22 @@ describe('figure eyes — eyelids', () => {
     expect(labelsOf(buildEyes(api, rig, { style: 'solid', lids: 'upper' }))).toEqual(['eyes', 'lids']);
   });
 
-  it('rejects an unknown lids style', () => {
+  it('accepts an explicit { upper, lower } pair', () => {
+    expect(labelsOf(buildEyes(api, rig, { lids: { upper: 0.3, lower: 0.1 } }))).toContain('lids');
+    // a single lid (only upper, or only lower) still builds a 'lids' region
+    expect(labelsOf(buildEyes(api, rig, { lids: { upper: 0.4 } }))).toContain('lids');
+    expect(labelsOf(buildEyes(api, rig, { lids: { lower: 0.4 } }))).toContain('lids');
+  });
+
+  it("{ upper: 0, lower: 0 } is the same as no lids", () => {
+    expect(labelsOf(buildEyes(api, rig, { lids: { upper: 0, lower: 0 } }))).not.toContain('lids');
+  });
+
+  it('rejects an unknown lids style, out-of-range fractions, and unknown keys', () => {
     expect(() => buildEyes(api, rig, { lids: 'winged' })).toThrow(/lids/);
+    expect(() => buildEyes(api, rig, { lids: { upper: 1.5 } })).toThrow();
+    expect(() => buildEyes(api, rig, { lids: { upper: -0.2 } })).toThrow();
+    expect(() => buildEyes(api, rig, { lids: { top: 0.3 } })).toThrow();
   });
 });
 

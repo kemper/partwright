@@ -46,7 +46,7 @@ export const WHATS_NEW_WEEKS: WeekEntry[] = [
           },
           {
             title: 'Eyelids',
-            body: 'Eyes gained a lids option — upper, hooded, half-closed, closed, almond, and tapered styles — that drapes a paintable skin fold over the eye for expression. The catalog figures now wear lids suited to each character.',
+            body: 'Eyes gained paintable eyelids that wrap the eyeball — two independent lids (upper and lower) you can dial from open to a slit to fully closed, plus named presets (upper, hooded, half, closed, almond, tapered). The catalog figures now wear lids suited to each character.',
           },
           {
             title: 'Headwear and richer hair',
