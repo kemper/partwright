@@ -1307,6 +1307,17 @@ describe('figure feet — flat sole and optional toes', () => {
     expect(() => buildFeet(api, rig, { toes: 'yes' })).toThrow(/toes/); // must be a boolean
     expect(() => buildFeet(api, rig, { toes: false })).not.toThrow();
   });
+
+  it('foot length is a realistic stature proportion (≈0.15·height), long not stubby', () => {
+    // Foot length is a SEGMENT length → scales with stature (like the limbs),
+    // not head-unit girth. Anthropometric foot length ≈ 0.15·stature. The old
+    // foot was r.foot·2.4 ≈ 0.08–0.10·stature — about half real and looked short.
+    const r2 = buildRig({ height: 60, headsTall: 7.5 });
+    expect(r2.sole.L.length).toBeCloseTo(r2.opts.height * 0.15, 5);
+    expect(r2.sole.R.length).toBeCloseTo(r2.opts.height * 0.15, 5);
+    // The foot reads as a real foot: clearly longer than it is wide.
+    expect(r2.sole.L.length).toBeGreaterThan(r2.sole.L.width * 2.5);
+  });
 });
 
 describe('figure footDetail — detail-region helper', () => {

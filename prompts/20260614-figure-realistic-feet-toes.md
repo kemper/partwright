@@ -59,3 +59,21 @@ work-reviewer (clean: 0 blocking, 0 should-fix) raised two test nits. Applied bo
 - The footprint-envelope test now probes the true toe-tip SURFACE via `evaluate`
   (air at 0.6·footLen forward) instead of relying only on the loose conservative
   `bounds()` AABB, pinning the absolute envelope the footwear coverage depends on.
+
+## Follow-up 2 (feet were too short)
+
+User feedback: the first-pass feet looked short, and asked whether the mined
+anthropometric data carried per-demographic foot length. Investigated: the mined
+model (`anthroGirth`, MakeHuman-CC0) covers **girth/breadth** by sex/age/weight
+only — there is **no** mined segment-length or foot-length table. Foot length was
+a hardcoded `r.foot × 2.4` ≈ 0.08–0.10·stature — about half the real ~0.15·stature
+(foot ≈ one head-length), which is why it read short.
+
+Fix: foot length is a SEGMENT length, so it now scales with **stature** (`H * 0.15`)
+like the arm/leg lengths — not with head-unit girth (girth scales with the head;
+lengths scale with height, per the existing canon). `r.foot` still drives foot
+width/height, so the foot got longer and more slender (less blobby), and footwear
+(which reads `sole.length`) lengthened in step. Added a unit test pinning
+`sole.length ≈ 0.15·height` and length > 2.5×width. Verified visually (side
+profile + iso): the foot now extends forward like a real foot, balanced, not
+leaning back.

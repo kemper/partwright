@@ -268,7 +268,9 @@ hands automatically.
 
 **Feet are flat and real-foot shaped, with optional toes.** `F.feet(rig)`
 builds a low, flat-soled foot (instep crown, ball, rounded heel) that sits flat
-on the ground in any pose — not the old rounded blob. Pass `{ toes: true }` to
+on the ground in any pose — not the old rounded blob. Foot **length** is a
+realistic stature proportion (≈0.15·height, like the limb lengths), so feet read
+long and natural rather than stubby; footwear tracks the same footprint. Pass `{ toes: true }` to
 add a sculpted toe row (big toe on the medial side tapering to the pinky). Toes
 are finer than the figure grid, so — exactly like sculpted hands — pair them
 with the foot detail region or they alias away:

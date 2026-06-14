@@ -473,6 +473,13 @@ function buildRig(rawOpts: unknown): Rig {
     waist: hu(0.492) * gm.waist,
     upperArm: hu(0.204), lowerArm: hu(0.168), hand: hu(0.252),
     upperLeg: hu(0.288), lowerLeg: hu(0.216), foot: hu(0.240),
+    // Foot LENGTH is a stature proportion — like the limb lengths (`H * …`)
+    // below, NOT a head-unit girth: anthropometric foot length ≈ 0.15·stature
+    // and is fairly stable across builds, so it scales with H, not the head.
+    // (The mined anthropometry covers girth by sex/age/weight, not segment
+    // length, so there is no per-demographic foot table — this is the canon.)
+    // `r.foot` (above) still drives foot WIDTH/HEIGHT; this drives heel→toe.
+    footLen: H * 0.15,
   };
 
   // --- Arm FK ------------------------------------------------------------
@@ -845,7 +852,7 @@ function footSoleZ(rig: Rig, ankle: Vec3): number {
  *  Single source of truth for the footprint + ground plane that `buildFeet`,
  *  `buildFootwear` and `buildBase` (and `figure.standOn`) all read. */
 function makeSoleFrame(ankle: Vec3, heading: Vec3, r: Record<string, number>): SoleFrame {
-  const footLen = r.foot * 2.4;
+  const footLen = r.footLen;                      // stature-based heel→toe length
   const soleCenterZ = ankle[2] - r.foot;          // == footSoleZ
   // The bare foot's real underside sits ~0.79·foot below the sole centre (the
   // sole⊔instep⊔ankle smoothUnion bulges well past the analytic instep). groundZ
