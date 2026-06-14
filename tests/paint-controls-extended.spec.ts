@@ -10,6 +10,16 @@
 import { test, expect } from 'playwright/test';
 
 async function openEditor(page: import('playwright/test').Page) {
+  // Mark the first-run guided tour as already completed BEFORE any page script
+  // runs. Otherwise tour.ts fires `setTimeout(startTour, 800)` and its
+  // full-screen `.tour-backdrop` swallows the real page.mouse pointer events the
+  // brush/bucket flows below rely on — the press lands on the backdrop, not the
+  // canvas, so no region commits (the intermittent 0-/1-region flake). Setting
+  // the flag here makes `maybeStartTour()` return early, so the backdrop never
+  // appears and the synthetic mouse events always reach the viewport.
+  await page.addInitScript(() => {
+    try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+  });
   await page.goto('/editor');
   await page.waitForSelector('text=Ready', { timeout: 15000 });
   // Run a tiny model so paint operations have a real mesh to operate on.
@@ -335,11 +345,15 @@ test.describe('extended paint controls', () => {
     await page.mouse.down();
     for (let i = -40; i <= 40; i += 8) await page.mouse.move(cx + i, cy + Math.sin(i / 10) * 8);
     await page.mouse.up();
-    await page.waitForTimeout(700);
 
-    const afterBrush = await page.evaluate(() => {
+    // The interactive brush commits through the async worker-backed pipeline, so
+    // wait for the subdivision job to settle (deterministic) rather than a fixed
+    // timeout that can expire mid-reconcile on a loaded CI shard.
+    const afterBrush = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (window as any).partwright.listRegions().map((r: any) => r.triangles);
+      const pw = (window as any).partwright;
+      await pw.waitForPaint();
+      return pw.listRegions().map((r: any) => r.triangles);
     });
     expect(afterBrush.length).toBe(1);
     expect(afterBrush[0]).toBeGreaterThan(50); // the refined red blob
@@ -357,11 +371,13 @@ test.describe('extended paint controls', () => {
     await page.mouse.move(cx - 4, cy); await page.mouse.move(cx, cy);
     await page.waitForTimeout(250);
     await page.mouse.down(); await page.waitForTimeout(40); await page.mouse.up();
-    await page.waitForTimeout(700); // let the async reconcile re-resolve regions
 
-    const afterBucket = await page.evaluate(() => {
+    // Wait for the async reconcile to re-resolve the regions before reading them.
+    const afterBucket = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (window as any).partwright.listRegions().map((r: any) => ({ tris: r.triangles, color: r.color }));
+      const pw = (window as any).partwright;
+      await pw.waitForPaint();
+      return pw.listRegions().map((r: any) => ({ tris: r.triangles, color: r.color }));
     });
     // Two regions; the bucket region must NOT collapse to zero after reconcile,
     // and it carries the new (yellow) color over the blob it matched.
