@@ -233,6 +233,12 @@ The rig exposes (read-only, for custom parts):
   - `heading` — toe direction (== `dir.footL/R`), so attachments track turnout.
   - `length` / `width` — footprint extents. `normal` is ground-up `[0,0,1]`.
 - `rig.face.{eyeL, eyeR, browL, browR, nose, mouth, earL, earR, chinTip}`.
+- `rig.torso.{nippleL, nippleR, navel}` — **front-of-torso surface landmarks**,
+  the torso analog of `rig.face`. Each is a world `Vec3` projected onto the
+  chest/belly front (`−Y`) surface, tracking the build/sex/weight proportions.
+  `F.torso(rig, { nipples, navel })` reliefs them, but they're also the anchors
+  for attaching your own detail there — a pendant on the chest, a navel gem, a
+  superhero emblem, body-paint discs.
 
 **`build` scales every width:** `slim` ×0.82, `average` ×1.0, `stocky` ×1.22 —
 so a `stocky` figure's `rig.r.upperArm` is 1.22× the average; size custom
@@ -241,7 +247,7 @@ accessories off `rig.r.*` and they track the build automatically.
 ## Parts — every builder takes `rig` first
 
 ```js
-F.torso(rig)                  // chest + belly + pelvis masses, internally smooth
+F.torso(rig, { nipples, navel })  // chest + belly + pelvis masses, internally smooth
 F.neck(rig)
 F.arms(rig)                   // both arms: tapered limbs + deltoid caps
 F.hands(rig, { grip })        // grip: 'fist' | 'open' | 'relaxed' — sculpted 3-finger+thumb
@@ -250,6 +256,37 @@ F.feet(rig)
 F.head(rig, { faceShape, jaw, chin, cheek })  // skull + jaw + cheeks (no features yet)
 F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
 ```
+
+**Bare-torso anatomy — `F.torso(rig, { nipples, navel })` (opt-in).** A shirtless
+figure (swimmer, wrestler, strongman, baby) reads as bare skin only once the
+chest and midriff carry their landmarks. Both are **off by default** (a clothed
+figure is unchanged), so turn them on for any exposed torso:
+
+```js
+F.torso(rig, { nipples: true, navel: true })           // both, default size
+F.torso(rig, { nipples: { size: rig.r.chestX * 0.1 } }) // smaller nipples
+F.torso(rig, { navel: { depth: 0.8 } })                 // a deeper navel dimple
+```
+
+- **`nipples`** — `true` | `{ size }`. Two subtle areola mounds welded onto the
+  chest front. `size` is the areola radius (default ≈ `chestX·0.13`).
+- **`navel`** — `true` | `{ size, depth }`. A shallow dimple carved into the
+  belly front. `size` is the navel radius (default ≈ `chestX·0.16`); `depth`
+  (0–1.5, default 0.5) is how far it carves in.
+
+The positions are **calculated, not guessed** — they're projected onto the
+chest/belly surface from the rig (see `rig.torso` below), so they track every
+proportion knob automatically: a `sex:'female'` or heavier chest pushes the
+nipples out and apart; a `weight:1` belly bulges the navel forward. Weld/carve
+with a tight local `k` (like the face features), so they survive the soft body
+weld instead of melting flat. Mesh at the figure grid (`edgeLength ≤ ~0.5` with
+`F.faceDetail`) or the shallow relief aliases away.
+
+> **Custom torso geometry?** If you sculpt your own pecs/chest on top of
+> `F.torso` (extra muscle ellipsoids, a barrel chest), the `{ nipples }` option
+> reliefs the *base* chest — which then sits behind your added mass. In that
+> case place the nipples on your own surface (project onto your ellipsoid front
+> and `smoothUnion` a small flattened ellipsoid), as `figure_strongman.js` does.
 
 **Hands are sculpted by default — pair them with `detail: F.handDetail(rig)`.**
 Every grip builds a stylized three-finger + thumb hand (`open` splays straight

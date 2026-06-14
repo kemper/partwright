@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -62,6 +62,64 @@ describe('figure rig — proportions', () => {
       expect(rig.joints.upperLegL[2]).toBeLessThan(rig.joints.upperArmL[2]);
       expect(rig.joints.lowerLegL[2]).toBeLessThan(rig.joints.upperLegL[2]);
     }
+  });
+});
+
+describe('figure torso — nipple + navel surface landmarks', () => {
+  it('places nipples symmetrically on the chest front, below its centre', () => {
+    const rig = buildRig({ height: 60, sex: 'male' });
+    const { nippleL, nippleR, navel } = rig.torso;
+    const chest = rig.joints.chest;
+    // Figure left = +X, right = −X — mirror-symmetric across the sagittal plane.
+    expect(nippleL[0]).toBeGreaterThan(0);
+    expect(nippleR[0]).toBeCloseTo(-nippleL[0], 6);
+    expect(nippleL[1]).toBeCloseTo(nippleR[1], 6);
+    expect(nippleL[2]).toBeCloseTo(nippleR[2], 6);
+    // On the FRONT (−Y) surface, in front of the chest mass centre.
+    expect(nippleL[1]).toBeLessThan(chest[1]);
+    // A touch below the chest centre, and well above the navel.
+    expect(nippleL[2]).toBeLessThan(chest[2]);
+    expect(nippleL[2]).toBeGreaterThan(navel[2]);
+  });
+
+  it('places the navel centred on the belly front, between hips and chest', () => {
+    const rig = buildRig({ height: 60 });
+    const { navel } = rig.torso;
+    expect(navel[0]).toBeCloseTo(0, 6);
+    expect(navel[1]).toBeLessThan(0);                 // front of the body
+    expect(navel[2]).toBeGreaterThan(rig.joints.hips[2]);
+    expect(navel[2]).toBeLessThan(rig.joints.chest[2]);
+  });
+
+  it('tracks proportions: a fuller/heavier torso pushes the landmarks out', () => {
+    const lean = buildRig({ height: 60, sex: 'neutral', weight: 0.2 });
+    const heavy = buildRig({ height: 60, sex: 'male', weight: 0.9 });
+    // A heavier chest depth bulges the nipples further forward (more −Y).
+    expect(heavy.torso.nippleL[1]).toBeLessThan(lean.torso.nippleL[1]);
+    // A heavier belly bulges the navel further forward too.
+    expect(heavy.torso.navel[1]).toBeLessThan(lean.torso.navel[1]);
+    // A female bust widens the inter-nipple span vs neutral.
+    const female = buildRig({ height: 60, sex: 'female' });
+    const neutral = buildRig({ height: 60, sex: 'neutral' });
+    expect(female.torso.nippleL[0]).toBeGreaterThan(neutral.torso.nippleL[0]);
+  });
+
+  it('scales the landmarks linearly with height', () => {
+    const a = buildRig({ height: 60 });
+    const b = buildRig({ height: 120 });
+    expect(b.torso.nippleL[0]).toBeCloseTo(a.torso.nippleL[0] * 2, 5);
+    expect(b.torso.navel[2]).toBeCloseTo(a.torso.navel[2] * 2, 5);
+  });
+
+  it('builds a torso with relief (opt-in) and rejects unknown options', () => {
+    const rig = buildRig({ height: 60 });
+    expect(() => buildTorso(api, rig)).not.toThrow();                       // default: no relief
+    expect(() => buildTorso(api, rig, { nipples: true, navel: true })).not.toThrow();
+    expect(() => buildTorso(api, rig, { navel: { depth: 1.2 } })).not.toThrow();
+    expect(() => buildTorso(api, rig, { nipples: { size: 0.3 } })).not.toThrow();
+    // Unknown keys throw (the figure naming policy).
+    expect(() => buildTorso(api, rig, { abs: true } as object)).toThrow();
+    expect(() => buildTorso(api, rig, { navel: { radius: 1 } } as object)).toThrow();
   });
 });
 

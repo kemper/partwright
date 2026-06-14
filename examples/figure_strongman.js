@@ -140,9 +140,24 @@ const mouthParts = F.face.mouthAccents(rig, mouthOpts);
 // 3. EXTRA MUSCLE MASSES — puffed chest, big traps
 // Keep the puffed chest BELOW the chin — taller/higher masses bury the
 // lower face inside the torso (the mouth carve lands inside solid chest).
-const chestPuff = sdf.ellipsoid(
-  r.chestX * 1.25, r.chestY * 1.2, r.chestY * 1.6,
-).translate([0, -r.chestY * 0.35, j.chest[2] - r.chestY * 0.1]);
+const puffC = [0, -r.chestY * 0.35, j.chest[2] - r.chestY * 0.1];
+const puffR = [r.chestX * 1.25, r.chestY * 1.2, r.chestY * 1.6];
+const chestPuff = sdf.ellipsoid(puffR[0], puffR[1], puffR[2]).translate(puffC);
+
+// Nipples on the PUFFED pec surface. rig.torso lands them on the un-puffed
+// base chest, which sits behind chestPuff — so for this custom muscle build we
+// project onto the puff front (−Y) ourselves and weld them on with a small k
+// (the soft body weld would otherwise melt them flat).
+const nipZ = puffC[2] - puffR[2] * 0.16;
+const nipDX = r.chestX * 0.5;
+const puffFrontY = (x, z) => puffC[1] - puffR[1] * Math.sqrt(
+  Math.max(0, 1 - (x / puffR[0]) ** 2 - ((z - puffC[2]) / puffR[2]) ** 2));
+const nipR = r.chestX * 0.12;
+const nipple = (x) => sdf.ellipsoid(nipR, nipR * 0.7, nipR)
+  .translate([x, puffFrontY(x, nipZ) + nipR * 0.45, nipZ]);
+const pecs = chestPuff
+  .smoothUnion(nipple(nipDX), nipR * 0.7)
+  .smoothUnion(nipple(-nipDX), nipR * 0.7);
 
 const trapL = sdf.ellipsoid(
   r.upperArm * 1.2, r.upperArm * 0.75, r.upperArm * 1.0,
@@ -154,12 +169,14 @@ const trapR = sdf.ellipsoid(
 // 4. WELDED SKIN — note: F.arms and F.hands are NOT included here; we use
 //    our manual arm geometry above instead.
 const skin = F.weld(rig, [
-  F.torso(rig),
+  // navel relief on the bare midriff; nipples ride on `pecs` (the puffed chest)
+  // since the base-chest nipples would sit behind the muscle mass.
+  F.torso(rig, { navel: true }),
   F.neck(rig),
   F.legs(rig),
   F.feet(rig),
   face,
-  chestPuff,
+  pecs,
   trapL,
   trapR,
   armL,

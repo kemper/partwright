@@ -190,6 +190,22 @@ export interface FaceAnchors {
   nose: Vec3; mouth: Vec3; earL: Vec3; earR: Vec3; chinTip: Vec3;
 }
 
+/** Front-of-torso surface landmarks — the torso analog of {@link FaceAnchors}.
+ *  The two chest nipple points and the navel, each projected onto the body's
+ *  FRONT (−Y) surface and tracking `sex`/`age`/`weight`/`build` automatically
+ *  (a fuller chest pushes the nipples out, a heavier belly pushes the navel
+ *  out). `figure.torso(rig, { nipples, navel })` reliefs them, but they're also
+ *  the canonical anchors for attaching your own detail there — pasties, a navel
+ *  gem, body-paint discs, a chest emblem. Derived; never hand-typed. */
+export interface TorsoAnchors {
+  /** Figure-LEFT (+X) nipple, on the chest front surface. */
+  nippleL: Vec3;
+  /** Figure-RIGHT (−X) nipple, on the chest front surface. */
+  nippleR: Vec3;
+  /** Navel, on the belly front surface at the natural navel height. */
+  navel: Vec3;
+}
+
 /** A hand's grip as a full coordinate frame — the missing piece for connecting
  *  held props (guitar neck, sword, staff, mug) to a hand. Unlike `joints.handL`
  *  (the hand's *centre*), `point` is the grip *cup* where a held cylinder's axis
@@ -263,6 +279,8 @@ export interface Rig {
   sole: { L: SoleFrame; R: SoleFrame };
   /** Facial landmark world positions (derived; never hand-typed). */
   face: FaceAnchors;
+  /** Front-of-torso surface landmarks (nipples + navel) — see {@link TorsoAnchors}. */
+  torso: TorsoAnchors;
   opts: { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; pose: ResolvedPose };
 }
 
@@ -625,19 +643,37 @@ function buildRig(rawOpts: unknown): Rig {
     };
   };
 
+  // Joint POINTS named in the VRM/Unity humanoid scheme (the single canonical
+  // vocabulary — see public/ai/figure.md). A joint is the bone's ROOT point:
+  // `upperArmL` is the glenohumeral joint where the upper-arm bone starts (NOT
+  // the clavicle, which VRM confusingly calls the "shoulder" bone). `wristL`
+  // is the forearm end; `handL` is the hand-mass centre (the prop/grip point).
+  const joints: Record<string, Vec3> = {
+    hips: [0, 0, pelvisZ], spine: [0, -r.chestY * 0.4, navelZ], chest: sPt([0, -r.chestY * 0.2, chestZ]),
+    neck: sPt([0, 0, shoulderZ + neckLen * 0.2]), head: sPt(headCenter), crown: sPt([headCenter[0], headCenter[1], H]), chin: sPt([0, 0, chinZ]),
+    upperArmL: sPt(aL.S), lowerArmL: sPt(aL.E), wristL: sPt(aL.W), handL: sPt(aL.handC),
+    upperArmR: sPt(aR.S), lowerArmR: sPt(aR.E), wristR: sPt(aR.W), handR: sPt(aR.handC),
+    upperLegL: lL.Hj, lowerLegL: lL.K, footL: lL.A, upperLegR: lR.Hj, lowerLegR: lR.K, footR: lR.A,
+  };
+
+  // --- Front-of-torso surface landmarks (nipples + navel) ----------------
+  // Project them onto the FRONT (−Y) surface of the chest / belly masses so
+  // they track every proportion knob (sex/age/weight widen the chest → the
+  // nipples move out and apart; a heavy belly bulges → the navel moves out).
+  // The masses are computed by the SAME helper buildTorso uses, so the anchor
+  // and the relief can never drift. The chest centre is spine-transformed, so
+  // a leaning figure carries its nipples with the chest.
+  const tm = torsoMasses(joints, r);
+  const nippleZ = tm.chest.c[2] - tm.chest.cz * 0.16;   // a touch below chest centre
+  const nippleDX = r.chestX * 0.42;                      // half the inter-nipple span
+  const torsoAnchors: TorsoAnchors = {
+    nippleL: ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, nippleDX, nippleZ),
+    nippleR: ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, -nippleDX, nippleZ),
+    navel: ellipsoidFront(tm.belly.c, tm.belly.a, tm.belly.b, tm.belly.cz, 0, navelZ),
+  };
+
   return {
-    // Joint POINTS named in the VRM/Unity humanoid scheme (the single canonical
-    // vocabulary — see public/ai/figure.md). A joint is the bone's ROOT point:
-    // `upperArmL` is the glenohumeral joint where the upper-arm bone starts (NOT
-    // the clavicle, which VRM confusingly calls the "shoulder" bone). `wristL`
-    // is the forearm end; `handL` is the hand-mass centre (the prop/grip point).
-    joints: {
-      hips: [0, 0, pelvisZ], spine: [0, -r.chestY * 0.4, navelZ], chest: sPt([0, -r.chestY * 0.2, chestZ]),
-      neck: sPt([0, 0, shoulderZ + neckLen * 0.2]), head: sPt(headCenter), crown: sPt([headCenter[0], headCenter[1], H]), chin: sPt([0, 0, chinZ]),
-      upperArmL: sPt(aL.S), lowerArmL: sPt(aL.E), wristL: sPt(aL.W), handL: sPt(aL.handC),
-      upperArmR: sPt(aR.S), lowerArmR: sPt(aR.E), wristR: sPt(aR.W), handR: sPt(aR.handC),
-      upperLegL: lL.Hj, lowerLegL: lL.K, footL: lL.A, upperLegR: lR.Hj, lowerLegR: lR.K, footR: lR.A,
-    },
+    joints,
     r,
     dir: {
       upperArmL: sDir(aL.dir), lowerArmL: sDir(aL.foreDir), upperArmR: sDir(aR.dir), lowerArmR: sDir(aR.foreDir),
@@ -654,6 +690,7 @@ function buildRig(rawOpts: unknown): Rig {
     grip: { L: gripFrame(aL), R: gripFrame(aR) },
     sole: { L: makeSoleFrame(lL.A, lL.footFwd, r), R: makeSoleFrame(lR.A, lR.footFwd, r) },
     face: sFace,
+    torso: torsoAnchors,
     opts: { height: H, headsTall: N, build, sex, age, weight, pose },
   };
 }
@@ -662,8 +699,14 @@ function buildRig(rawOpts: unknown): Rig {
 // Each takes the rig first and returns an unlabeled Node (the caller composes
 // regions and labels the result, matching the paintByLabel flow).
 
-function buildTorso(sdf: SdfApi, rig: Rig): Node {
-  const j = rig.joints, r = rig.r;
+/** The chest + belly ellipsoid parameters of the torso — the single source
+ *  shared by `buildTorso` (which builds the masses) and `buildRig` (which
+ *  projects the nipple/navel surface landmarks onto them), so the geometry and
+ *  the anchors can never drift apart. Pure: reads only the joints + radii. */
+function torsoMasses(j: Record<string, Vec3>, r: Record<string, number>): {
+  chest: { c: Vec3; a: number; b: number; cz: number };
+  belly: { c: Vec3; a: number; b: number; cz: number };
+} {
   // Cap the chest mass at the shoulder line — the neck capsule provides the
   // neck. An uncapped tall ellipsoid climbs past the chin on stocky / few-
   // heads-tall rigs and buries the lower face inside the torso (the carved
@@ -672,13 +715,75 @@ function buildTorso(sdf: SdfApi, rig: Rig): Node {
     (j.chest[2] - j.spine[2]) * 1.15 + r.chestY,
     j.upperArmL[2] + r.neck * 0.8 - j.chest[2],
   );
-  const chest = sdf.ellipsoid(r.chestX, r.chestY, chestSemiZ)
-    .translate(j.chest);
-  const belly = sdf.ellipsoid(r.chestX * 0.92, r.chestY * 0.94, (j.spine[2] - j.hips[2]) * 0.9 + r.chestY * 0.6)
-    .translate([0, -r.chestY * 0.1, mix(j.spine[2], j.hips[2], 0.4)]);
+  return {
+    chest: { c: j.chest as Vec3, a: r.chestX, b: r.chestY, cz: chestSemiZ },
+    belly: {
+      c: [0, -r.chestY * 0.1, mix(j.spine[2], j.hips[2], 0.4)],
+      a: r.chestX * 0.92, b: r.chestY * 0.94, cz: (j.spine[2] - j.hips[2]) * 0.9 + r.chestY * 0.6,
+    },
+  };
+}
+
+/** Project a point at lateral offset `dx` and height `z` onto the FRONT (−Y)
+ *  surface of an axis-aligned ellipsoid {centre `c`, semi-axes (`a`,`b`,`cz`)}.
+ *  Points outside the ellipse footprint clamp to the rim (front Y = centre Y),
+ *  so the result is always a sensible body-front landmark. */
+function ellipsoidFront(c: Vec3, a: number, b: number, cz: number, dx: number, z: number): Vec3 {
+  const u = dx / a, w = (z - c[2]) / cz;
+  const inside = Math.max(0, 1 - u * u - w * w);
+  return [c[0] + dx, c[1] - b * Math.sqrt(inside), z];
+}
+
+/** A subtle nipple/areola relief — a shallow ellipsoid mound flattened along
+ *  the front (−Y) axis so it reads as anatomical relief, not a stuck-on ball.
+ *  Centred a little INTO the body from the surface anchor so it always welds
+ *  and only a small cap protrudes. */
+function nippleBump(sdf: SdfApi, anchor: Vec3, size: number): Node {
+  const c: Vec3 = [anchor[0], anchor[1] + size * 0.45, anchor[2]];
+  return sdf.ellipsoid(size, size * 0.7, size).translate(c);
+}
+
+/** A shallow navel dimple — a sphere centred just OUTSIDE the belly surface so
+ *  `smoothSubtract` carves only a cap-deep crater. `depth` (0..1.5) slides the
+ *  centre inward to deepen it. */
+function navelPit(sdf: SdfApi, anchor: Vec3, size: number, depth: number): Node {
+  const c: Vec3 = [anchor[0], anchor[1] - size * (1 - depth), anchor[2]];
+  return sdf.sphere(size).translate(c);
+}
+
+function buildTorso(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'torso(opts)');
+  assertNoUnknownKeys(o, ['nipples', 'navel'], 'torso(opts)');
+  const j = rig.joints, r = rig.r;
+  const tm = torsoMasses(j, r);
+  const chest = sdf.ellipsoid(tm.chest.a, tm.chest.b, tm.chest.cz).translate(tm.chest.c);
+  const belly = sdf.ellipsoid(tm.belly.a, tm.belly.b, tm.belly.cz).translate(tm.belly.c);
   const pelvis = sdf.ellipsoid(r.hipsX, r.hipsY, r.hipsY * 1.25).translate(j.hips);
   const k = r.chestY * 0.6;
-  return chest.smoothUnion(belly, k).smoothUnion(pelvis, k);
+  let body = chest.smoothUnion(belly, k).smoothUnion(pelvis, k);
+
+  // Anatomical relief — opt-in (default OFF, so every existing figure is
+  // byte-identical). Welded/carved with a SMALL local k onto the torso BEFORE
+  // the soft body weld, exactly like the face features go on the head: a tight
+  // k keeps the nipple a crisp nub and the navel a defined dimple instead of
+  // melting them into the chest/belly. The features sit in the middle of the
+  // torso, far from any limb weld seam, so the soft body weld never fills them.
+  if (o.nipples !== undefined && o.nipples !== false) {
+    const no = o.nipples === true ? {} : obj(o.nipples, 'torso.nipples');
+    assertNoUnknownKeys(no, ['size'], 'torso.nipples');
+    const size = num(no.size, r.chestX * 0.13, 'torso.nipples.size', 1e-3);
+    body = body
+      .smoothUnion(nippleBump(sdf, rig.torso.nippleL, size), size * 0.7)
+      .smoothUnion(nippleBump(sdf, rig.torso.nippleR, size), size * 0.7);
+  }
+  if (o.navel !== undefined && o.navel !== false) {
+    const no = o.navel === true ? {} : obj(o.navel, 'torso.navel');
+    assertNoUnknownKeys(no, ['size', 'depth'], 'torso.navel');
+    const size = num(no.size, r.chestX * 0.16, 'torso.navel.size', 1e-3);
+    const depth = num(no.depth, 0.5, 'torso.navel.depth', 0, 1.5);
+    body = body.smoothSubtract(navelPit(sdf, rig.torso.navel, size, depth), size * 0.55);
+  }
+  return body;
 }
 
 function buildNeck(sdf: SdfApi, rig: Rig): Node {
@@ -2574,7 +2679,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
   return {
     rig: (opts) => buildRig(opts),
     skin: (name) => figureSkin(name),
-    torso: (rig) => buildTorso(sdf, assertRig(rig, 'torso(rig)')),
+    torso: (rig, opts) => buildTorso(sdf, assertRig(rig, 'torso(rig)'), opts),
     neck: (rig) => buildNeck(sdf, assertRig(rig, 'neck(rig)')),
     arms: (rig) => buildArms(sdf, assertRig(rig, 'arms(rig)')),
     hands: (rig, opts) => buildHands(sdf, assertRig(rig, 'hands(rig)'), opts),
@@ -2612,4 +2717,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildTorso, torsoMasses, ellipsoidFront, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair };

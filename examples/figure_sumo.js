@@ -45,7 +45,9 @@ const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.16 });
 // 3. SKIN — weld all body masses
 // Use relaxed hands — palms ready for the slap
 const skin = F.weld(rig, [
-  F.torso(rig),
+  // Shirtless — relief the nipples + navel so the bare chest/belly read as
+  // anatomy. They track the wide weight:1 belly and broad male chest.
+  F.torso(rig, { nipples: true, navel: true }),
   F.neck(rig),
   F.arms(rig),
   F.hands(rig, { grip: 'relaxed' }),
