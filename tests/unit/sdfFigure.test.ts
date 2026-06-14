@@ -484,6 +484,58 @@ describe('figure mouth — styles', () => {
     expect(() => buildMouthPart(api, rig, { open: 2 })).toThrow();
     expect(() => buildMouthPart(api, rig, { fangs: true })).toThrow();
   });
+
+  // The arc corner height vs centre height tells smile (corners up) from frown
+  // (corners down). Sample the cutter just below each corner and the centre.
+  const cornerVsCentre = (opts: Record<string, unknown>): number => {
+    const node = buildMouthPart(api, rig, opts).node;
+    const m = rig.face.mouth, u = rig.dir.headUp, right = rig.dir.headLeft;
+    const hw = rig.r.head * 0.25;
+    // Walk up from the anchor until outside the cutter, at the corner vs centre.
+    const topOf = (lat: number): number => {
+      const base = [m[0] + right[0] * lat, m[1] + right[1] * lat, m[2] + right[2] * lat];
+      let z = -rig.r.head;
+      for (let s = -rig.r.head; s <= rig.r.head; s += rig.r.head * 0.02) {
+        const p = [base[0] + u[0] * s, base[1] + u[1] * s, base[2] + u[2] * s];
+        if (node.evaluate(p[0], p[1], p[2]) < 0) z = s;
+      }
+      return z;
+    };
+    return topOf(hw) - topOf(0); // corner-top minus centre-top
+  };
+
+  it('expression bends the mouth: smile lifts corners, frown drops them', () => {
+    expect(cornerVsCentre({ expression: 'bigSmile' })).toBeGreaterThan(0);
+    expect(cornerVsCentre({ expression: 'deepFrown' })).toBeLessThan(0);
+    // A bigger smile lifts the corners more than a slight one.
+    expect(cornerVsCentre({ expression: 'bigSmile' }))
+      .toBeGreaterThan(cornerVsCentre({ expression: 'slightSmile' }));
+  });
+
+  it('numeric curve overrides the preset and rejects out-of-range', () => {
+    expect(cornerVsCentre({ curve: -1 })).toBeLessThan(0);
+    expect(() => buildMouthPart(api, rig, { curve: 2 })).toThrow(/curve/);
+    expect(() => buildMouthPart(api, rig, { expression: 'grimace' })).toThrow(/expression/);
+  });
+
+  it("divided lips build a taller two-ridge stack than a single ridge", () => {
+    const single = buildMouthPart(api, rig, { style: 'lips' }).node.bounds();
+    const two = buildMouthPart(api, rig, { style: 'lips', divided: true }).node.bounds();
+    expect(two.max[2] - two.min[2]).toBeGreaterThan(single.max[2] - single.min[2]);
+  });
+
+  it('render: painted makes the smile line additive (the #652-class fallback)', () => {
+    expect(buildMouthPart(api, rig, { render: 'painted' }).mode).toBe('add');
+    expect(buildMouthPart(api, rig, { render: 'carved' }).mode).toBe('carve');
+  });
+
+  it('auto-render falls back to additive on a small head, carves on a large one', () => {
+    // Yoga-class proportions (#652): tiny head → carve would tear, so paint.
+    const tiny = buildRig({ height: 46, headsTall: 7.5, build: 'slim' });
+    expect(buildMouthPart(api, tiny, { smirk: 0.15 }).mode).toBe('add');
+    // A normal figure still carves the smile groove (back-compat).
+    expect(buildMouthPart(api, rig).mode).toBe('carve');
+  });
 });
 
 describe('figure eyes — styles and labels', () => {
@@ -969,9 +1021,21 @@ describe('figure mouthAccents — paintable teeth and lips', () => {
     expect(labelsOf(buildMouthAccents(api, rig, { style: 'lips' }))).toEqual(['lips']);
   });
 
-  it("smile style and fully-disabled accents throw with guidance", () => {
-    expect(() => buildMouthAccents(api, rig, { style: 'smile' })).toThrow(/smile/);
+  it('smile style yields a paintable lip line labelled lips', () => {
+    expect(labelsOf(buildMouthAccents(api, rig, { style: 'smile' }))).toEqual(['lips']);
+  });
+
+  it('fully-disabled open accents throw with guidance', () => {
     expect(() => buildMouthAccents(api, rig, { open: 0.6, teeth: false, lips: false })).toThrow(/nothing/);
+  });
+
+  it("teeth: 'lower'/'both' add a lower band (more vertical teeth extent)", () => {
+    const upper = (buildMouthAccents(api, rig, { open: 0.6, lips: false }) as SdfNode).bounds();
+    const both = (buildMouthAccents(api, rig, { open: 0.6, lips: false, teeth: 'both' }) as SdfNode).bounds();
+    // 'both' grows the band set downward past the upper-only band.
+    expect(both.min[2]).toBeLessThan(upper.min[2] - 1e-6);
+    // 'lower' alone is still a single 'teeth' region.
+    expect(labelsOf(buildMouthAccents(api, rig, { open: 0.6, teeth: 'lower' }))).toEqual(['lips', 'teeth']);
   });
 
   it('accents straddle the mouth anchor (they will fuse into the face)', () => {
