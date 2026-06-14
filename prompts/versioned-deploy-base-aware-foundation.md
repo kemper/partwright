@@ -62,3 +62,12 @@ cases covering the `/v2/` parsing + a joinBase/routeFromPath round-trip);
 `lint:deps` acyclic; `npm run build` clean; and a browser snapshot of /catalog
 confirmed the manifest still loads (tiles + language counts render) — i.e. the
 conversion is a true no-op at base `/`.
+
+Follow-up after a work-reviewer pass: it caught three MISSED per-entry catalog
+payload fetches (`/catalog/${file}`) — the manifest fetch beside each was
+converted but the entry-payload fetch was not, so catalog tile clicks /
+thumbnails / `?catalog=` deep-links would 404 under a real `/vN/` mount (a gap
+the base-`/` no-op checks can't surface). Routed all three through `assetPath()`
+(`src/ui/catalog.ts`, `src/landing/landingEntry.ts`, and the deep-link loader in
+`src/main.ts`, which also gained the import). Swept for any other root-absolute
+public-asset fetches — none remain.

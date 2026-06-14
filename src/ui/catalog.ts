@@ -159,7 +159,7 @@ export async function createCatalogPage(
   const loaded: LoadedEntry[] = await Promise.all(
     manifest.entries.map(async (entry): Promise<LoadedEntry> => {
       try {
-        const res = await fetch(`/catalog/${entry.file}`, { cache: 'no-cache' });
+        const res = await fetch(assetPath(`/catalog/${entry.file}`), { cache: 'no-cache' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const payload = await res.json() as ExportedSession;
         // Latest version is the highest index; pull thumbnail from it.

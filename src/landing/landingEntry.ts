@@ -141,7 +141,7 @@ async function fillCatalog(): Promise<void> {
     const picked = shuffle(manifest.entries).slice(0, FEATURED_CATALOG_COUNT);
     entries = await Promise.all(picked.map(async (m) => {
       try {
-        const r = await fetch(`/catalog/${m.file}`, { cache: 'no-cache' });
+        const r = await fetch(assetPath(`/catalog/${m.file}`), { cache: 'no-cache' });
         if (!r.ok) return { manifest: m, thumbnailUrl: null };
         const payload = await r.json() as { versions?: { thumbnail?: string | null }[] };
         const versions = payload.versions ?? [];

@@ -21,6 +21,7 @@
 
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
+import { assetPath } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
 import { formatEngineMemory } from './geometry/engineMemory';
@@ -5196,7 +5197,7 @@ async function main() {
   // rewrites the URL to /editor?session=<id>.
   async function loadCatalogFileIntoEditor(file: string): Promise<void> {
     try {
-      const res = await fetch(`/catalog/${file}`, { cache: 'no-cache' });
+      const res = await fetch(assetPath(`/catalog/${file}`), { cache: 'no-cache' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const payload = await res.json() as ExportedSession;
       await importSessionPayload(payload);
