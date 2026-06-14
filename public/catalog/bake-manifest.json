@@ -394,6 +394,13 @@
         "requiredLabels": []
       }
     },
+    "pool-swimmer": {
+      "source": "examples/figure_swimmer.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": ["skin", "eyes", "iris", "pupil", "areola", "trunks", "hair", "base"]
+      }
+    },
     "twisted-vase": {
       "source": "examples/twisted_vase.js",
       "gates": {
