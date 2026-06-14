@@ -464,6 +464,16 @@ The module graph is **cycle-free** and CI gates on it (`lint:deps`). To keep it 
 
 When you add a feature that would otherwise import "sideways" or "down into" a lower layer, reach for one of these leaf patterns rather than adding the back-edge. Run `npm run lint:deps` before pushing.
 
+### Issue hygiene — don't lose work or discoveries at a boundary
+
+GitHub issues are the durable memory; a chat session is not. Insights, defects, and half-finished scope that live only in chat replies vanish when the session ends. You do **not** need to open an issue before starting ad-hoc work (that friction would kill the fast chat-driven flow) — but you **must reconcile issues at every completion boundary** (a PR opened/merged, or a task declared done). Before you say "done":
+
+1. **Discoveries get filed.** Any defect, gap, or "we should also…" you find *while implementing* — something out of scope for the current change — becomes a GitHub issue **before you move on**, not just a sentence in chat. (Example: the carved-mouth-at-small-head defect found while adding figures → filed as its own bug.)
+2. **Partial implementation never closes silently.** If a PR merges but doesn't fully satisfy its originating issue, that issue stays **open** with a checklist of what's left — or you file an explicit follow-up issue. Only close a source issue when **every** acceptance criterion is actually met; a merged PR is not automatically a completed issue.
+3. **Close-out reconciliation.** When you finish a task (and again after a merge), state in chat: *did this fully satisfy the source issue? what was deferred, and where is it tracked? what did I discover, and did I file it?* Resolve each — done, or tracked in an issue — before ending the turn.
+
+This is boundary hygiene, not bureaucracy: the test is "could the next session pick up everything important without reading this chat?" The `Stop` hook nudges you toward this reconciliation when the tree has changed; the call on *what* warrants an issue is yours, but "nothing tracked it" is the failure mode to avoid.
+
 ### Retros — continuous improvement loop
 
 This repo runs a lightweight self-improving loop so agents make the *next* agent faster and more reliable. See `retros/README.md` for the full picture.
