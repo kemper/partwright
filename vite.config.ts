@@ -124,6 +124,43 @@ function dynamicSitemap(): Plugin {
   };
 }
 
+// Rewrite the copied dist/manifest.json so its `start_url` and icon `src`s sit
+// under the deployment base — a `/vN/`-mounted PWA install then launches at the
+// version and pulls its own icons, instead of the origin root. Vite copies
+// public/manifest.json verbatim (no base rewrite), so like dynamicSitemap this
+// runs in closeBundle (after the copy) and overwrites it. No-op at base `/`.
+function baseAwareManifest(): Plugin {
+  let outDir = 'dist';
+  let base = '/';
+  return {
+    name: 'partwright-base-aware-manifest',
+    apply: 'build',
+    configResolved(config) {
+      outDir = config.build.outDir;
+      base = config.base;
+    },
+    closeBundle() {
+      const prefix = basePrefix(base);
+      if (prefix === '') return; // base '/' — copied manifest is already correct
+      const manifestPath = resolve(outDir, 'manifest.json');
+      let raw: string;
+      try {
+        raw = readFileSync(manifestPath, 'utf8');
+      } catch {
+        return; // no manifest emitted — nothing to do
+      }
+      const m = JSON.parse(raw) as { start_url?: string; icons?: { src?: string }[] };
+      const withBase = (p: string | undefined): string | undefined =>
+        typeof p === 'string' && p.startsWith('/') && !p.startsWith('//') ? prefix + p : p;
+      if (m.start_url) m.start_url = withBase(m.start_url);
+      if (Array.isArray(m.icons)) {
+        for (const icon of m.icons) if (icon && icon.src) icon.src = withBase(icon.src);
+      }
+      writeFileSync(manifestPath, JSON.stringify(m, null, 2) + '\n', 'utf8');
+    },
+  };
+}
+
 // Build/version metadata surfaced by the in-app About dialog so a given deploy
 // can be traced back to an exact commit/branch — handy for Cloudflare branch &
 // PR preview deploys, which otherwise look identical. Cloudflare sets CF_PAGES_*
@@ -182,7 +219,7 @@ export default defineConfig({
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), basePaths(), markdownCharset(), dynamicSitemap()],
+  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), basePaths(), markdownCharset(), dynamicSitemap(), baseAwareManifest()],
   esbuild: {
     // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
     // Preact without pulling in React. Vanilla .ts files in the rest of
