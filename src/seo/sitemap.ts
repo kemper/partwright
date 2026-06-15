@@ -32,13 +32,25 @@ export const SITEMAP_ROUTES: SitemapRoute[] = [
 /** Build the sitemap.xml text for the given site origin + routes. `siteUrl`
  *  may be empty — the fallback origin is substituted so every <loc> is a
  *  fully-qualified absolute URL. Any trailing slash on `siteUrl` is stripped
- *  so joining with the leading-slash path never double-slashes. */
-export function buildSitemapXml(siteUrl: string, routes: SitemapRoute[] = SITEMAP_ROUTES): string {
+ *  so joining with the leading-slash path never double-slashes.
+ *
+ *  `base` is the deployment base path this build is mounted under (`/`, `/v2/`,
+ *  …, from Vite's resolved `config.base`) so every <loc> sits under the right
+ *  major. A no-op at base `/` (kept dependency-free, so the join is inlined
+ *  rather than importing src/deployment — vite.config imports this in Node). */
+export function buildSitemapXml(
+  siteUrl: string,
+  routes: SitemapRoute[] = SITEMAP_ROUTES,
+  base = '/',
+): string {
   const origin = (siteUrl || SITEMAP_FALLBACK_URL).replace(/\/$/, '');
+  // Trailing slash off the base so `${basePrefix}${r.path}` never double-slashes;
+  // base '/' (or '') collapses to '' → byte-identical to the unversioned output.
+  const basePrefix = base.endsWith('/') ? base.slice(0, -1) : base;
   const entries = routes
     .map((r) => {
       // Root path '/' keeps its trailing slash; others are appended as-is.
-      const loc = `${origin}${r.path}`;
+      const loc = `${origin}${basePrefix}${r.path}`;
       const parts = [`    <loc>${loc}</loc>`];
       if (r.changefreq) parts.push(`    <changefreq>${r.changefreq}</changefreq>`);
       if (typeof r.priority === 'number') parts.push(`    <priority>${r.priority.toFixed(1)}</priority>`);

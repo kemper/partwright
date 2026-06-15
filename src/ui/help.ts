@@ -2,6 +2,7 @@
 
 import { getShortcutDocs, IS_MAC, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './shortcutDefs';
 import { HELP_INTRO, HELP_STATIC_SECTIONS, helpDynamicSections } from '../content/data/help';
+import { appPath, assetPath } from '../deployment';
 
 export interface HelpCallbacks {
   onBack: () => void;
@@ -52,7 +53,7 @@ export function createHelpPage(
 
   // "What's new" callout — points at the recently-shipped-features changelog.
   const whatsNewCallout = document.createElement('a');
-  whatsNewCallout.href = '/whats-new';
+  whatsNewCallout.href = appPath('/whats-new');
   whatsNewCallout.className = 'inline-flex items-center gap-2 mb-8 text-sm text-blue-400 hover:text-blue-300 transition-colors';
   whatsNewCallout.innerHTML = '<span class="text-[10px] font-semibold uppercase tracking-wider rounded bg-blue-500/15 text-blue-300 px-1.5 py-0.5">New</span> See what’s shipped recently →';
   content.appendChild(whatsNewCallout);
@@ -120,7 +121,7 @@ export function createHelpPage(
   // Footer with agent link
   const footer = document.createElement('div');
   footer.className = 'mt-12 pt-6 border-t border-zinc-800 text-xs text-zinc-600';
-  footer.innerHTML = 'Full AI agent documentation: <a href="/ai.md" class="text-zinc-500 hover:text-zinc-300 transition-colors">/ai.md</a>';
+  footer.innerHTML = `Full AI agent documentation: <a href="${assetPath('/ai.md')}" class="text-zinc-500 hover:text-zinc-300 transition-colors">/ai.md</a>`;
   content.appendChild(footer);
 
   page.appendChild(content);
