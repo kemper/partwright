@@ -67,4 +67,18 @@ Verified:
   `/v1/editor` hides the landing and mounts `#app` at pathname `/v1/editor` —
   i.e. the `route-init.js` currentScript base-derivation + `entry.ts` routing
   work at runtime.
-- No-op at base `/` confirmed by the content/SEO + smoke + landing e2e.
+- No-op at base `/` confirmed by the content/SEO + smoke + landing e2e (34/34).
+
+Follow-up after a work-reviewer pass (0 blocking):
+- **route-init.js** — hardened the base derivation with a
+  `querySelector('script[src$="route-init.js"]')` fallback for the rare null
+  `document.currentScript`, so a `/vN/` deploy can't misderive `base='/'` and
+  flash the spinner on the landing page.
+- **vite.config** — documented that `absoluteUrls`'s `withBase` guard relies on
+  Vite's asset/canonical basing running before the transform (the
+  double-base-free invariant the `/v1/` build verifies).
+- Renamed the rebasePaths "double-base" test to state the apply-exactly-once
+  contract and assert the double-on-second-pass behavior explicitly.
+- **`public/manifest.json`** (`start_url`/icon srcs root-absolute) flagged as a
+  `/vN/` PWA-install gap — a static file Vite doesn't process; tracked in #680
+  for the cutover (same bucket as `_redirects`).

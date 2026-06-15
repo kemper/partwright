@@ -14,7 +14,11 @@
   var h=window.location.hash;
   var base='/';
   try{
-    var s=document.currentScript&&document.currentScript.src;
+    // currentScript is reliable for a classic sync <script src> like this one,
+    // but fall back to a src-suffix lookup if it's ever null (defensive) so a
+    // /vN/ deploy never misderives base='/' and flashes the spinner on landing.
+    var sc=document.currentScript||document.querySelector('script[src$="route-init.js"]');
+    var s=sc&&sc.src;
     if(s){var bp=new URL(s).pathname.replace(/route-init\.js$/,'');if(bp)base=bp;}
   }catch(e){/* keep base="/" */}
   // Base-stripped route (mirrors appRoute): the base itself maps to "/".

@@ -53,11 +53,12 @@ describe('rebaseHtmlPaths', () => {
       .toBe('<a href="/v2/editor">e</a><a href="/v2/help">h</a><a href="/v2/ai.md">m</a>');
   });
 
-  it('does not double-base an already-based path on a second pass', () => {
+  it('applies exactly once (re-running would double — callers must rebase once)', () => {
     const once = rebaseHtmlPaths('<a href="/editor">', '/v2/');
-    // A path that already starts with the base prefix still begins with a single
-    // slash, so a naive re-run WOULD double it — callers must rebase exactly
-    // once. This test documents that contract (single application).
     expect(once).toBe('<a href="/v2/editor">');
+    // Documenting the contract: a naive second pass on already-based HTML WOULD
+    // double it (the path still begins with a single slash), so each HTML string
+    // must be rebased exactly once.
+    expect(rebaseHtmlPaths(once, '/v2/')).toBe('<a href="/v2/v2/editor">');
   });
 });

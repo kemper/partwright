@@ -38,6 +38,11 @@ function absoluteUrls(): Plugin {
   // canonical link itself, while leaving route-like meta (og:url) and inline
   // JSON-LD `url` alone, so this guard makes the rewrite correct for both
   // without double-basing. No-op at base `/` (prefix === '').
+  // NOTE: correctness relies on Vite's own asset/link basing running BEFORE this
+  // transformIndexHtml — so canonical/og:image already carry the base (and this
+  // guard no-ops them) while og:url/JSON-LD arrive unbased (and get prefixed).
+  // The DEPLOY_BASE=/v1/ build is verified double-base-free; keep that check if
+  // this ordering is ever revisited.
   const withBase = (path: string): string => {
     const prefix = basePrefix(base);
     if (prefix === '' || path === prefix || path.startsWith(prefix + '/')) return path;
