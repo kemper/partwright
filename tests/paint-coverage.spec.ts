@@ -10,6 +10,11 @@ test.describe('paint coverage filters', () => {
   test('coverageMode and area stats defang fan-topology bleed', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('text=Ready', { timeout: 15000 });
+    // "Ready" can paint before window.partwright is assigned (wired up near the
+    // end of main()); wait for the API itself before driving it.
+    await page.waitForFunction(
+      () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
+    );
 
     // Build a 12-segment cylinder of radius 10 centered at origin. The top
     // face at z=2 is a fan of 12 triangles, each one a thin wedge from

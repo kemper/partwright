@@ -9,6 +9,11 @@ test.describe('Multi-tab single-writer leader', () => {
     const page1 = await context.newPage();
     await page1.goto('/editor');
     await page1.waitForSelector('text=Ready', { timeout: 15000 });
+    // "Ready" can paint before window.partwright is assigned (wired up near the
+    // end of main()); wait for the API itself before driving it.
+    await page1.waitForFunction(
+      () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
+    );
 
     const sessionId = await page1.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -38,6 +43,9 @@ test.describe('Multi-tab single-writer leader', () => {
 
     // page2 (leader) saves a new version; page1 (read-only viewer) should mirror
     // to it rather than freezing on the version it had.
+    await page2.waitForFunction(
+      () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
+    );
     await page2.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
