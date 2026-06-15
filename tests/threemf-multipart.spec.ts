@@ -93,9 +93,9 @@ test.describe('multi-part 3MF export', () => {
     expect(partCount).toBeGreaterThan(1);
     await page.waitForTimeout(1500);
 
-    // Trigger the 3MF export. The toolbar Export dropdown → 3MF.
+    // Trigger the Bambu/Orca multi-plate export (distinct from the generic 3MF).
     await page.locator('#btn-export').click();
-    await page.locator('#export-dropdown').getByText('3MF', { exact: true }).click();
+    await page.locator('#export-dropdown').getByText('3MF — Bambu/Orca', { exact: true }).click();
 
     // The part picker should appear for a multi-part session.
     const modal = page.getByRole('dialog');

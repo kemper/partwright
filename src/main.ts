@@ -4142,8 +4142,6 @@ async function main() {
     const selected = await showExportPartsModal(choices, activeId);
     if (!selected || selected.length === 0) return;
 
-    // A single selected part doesn't need the plate/project layer — fall back to
-    // the plain single-object 3MF (active part = current mesh; otherwise bake it).
     const byId = new Map(parts.map(p => [p.id, p]));
     const job = startProgress({ title: 'Preparing 3MF', indeterminate: false, message: 'Baking parts…' });
     try {
@@ -4158,9 +4156,7 @@ async function main() {
       updateProgress(job, 1, 'Writing 3MF…');
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
 
-      const built = baked.length === 1
-        ? build3MF(baked[0].mesh)
-        : build3MFProject(baked);
+      const built = build3MFProject(baked);
       downloadBlob(built.blob, built.filename, '3MF');
       const skipped = selected.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
@@ -4198,7 +4194,7 @@ async function main() {
     }
     if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
     try {
-      const built = baked.length === 1 ? build3MF(baked[0].mesh, filename) : build3MFProject(baked, { customName: filename });
+      const built = build3MFProject(baked, { customName: filename });
       downloadBlob(built.blob, built.filename, '3MF');
       return { ok: true as const, filename: built.filename, parts: baked.length };
     } catch (e) {
@@ -4211,11 +4207,20 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
     warnIfNotPrintable('3MF');
-    // Multi-part session → offer the part picker + per-plate bundle. Single-part
-    // session keeps the original single-object export untouched.
-    if (getState().parts.length > 1) { await export3MFMultiPartFlow(); return; }
+    notifyMultiPartExport();
     try { showToast(`Exported ${export3MF(fileExportMesh(true)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+  };
+  // Bambu/Orca multi-plate 3MF — a SEPARATE export from the generic 3MF above.
+  // Opens the part picker and bundles the chosen parts into one Bambu project
+  // (one part per build plate, colours bound to AMS filaments). Available for any
+  // session (single-part too); it always emits the Bambu project layer.
+  const actionExport3MFBambu = async () => {
+    if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
+    if (!currentMeshData) { noGeometryToast(); return; }
+    if (!(await confirmExportOrProceed('3MF'))) return;
+    warnIfNotPrintable('3MF');
+    await export3MFMultiPartFlow();
   };
   // The integer VoxelGrid behind a voxel session. The engine meshes in the
   // Worker, so the grid isn't on the main thread after a normal run — re-run the
@@ -4400,6 +4405,7 @@ async function main() {
     onExportSTL: actionExportSTL,
     onExportOBJ: actionExportOBJ,
     onExport3MF: actionExport3MF,
+    onExport3MFBambu: actionExport3MFBambu,
     onExportVOX: actionExportVOX,
     onExportSTEP: actionExportSTEP,
     onExportSessionJSON: async () => {
@@ -4777,6 +4783,7 @@ async function main() {
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
+    { id: 'export-3mf-bambu', title: 'Export 3MF — Bambu/Orca (multi-plate)', hint: 'Export', keywords: 'download print color bambu orca plate parts multi-part filament ams', run: actionExport3MFBambu, enabled: () => currentMeshData !== null },
     // VOX exports the voxel grid (getCurrentVoxelGrid), not currentMeshData, so
     // gate on the active language — the grid is re-derived on demand inside the
     // action, which also toasts if there's nothing to export. (Re-running the
