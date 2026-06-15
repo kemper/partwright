@@ -42,6 +42,12 @@ export interface Build3MFProjectOptions {
   platePositionMm?: number;
 }
 
+// Bambu/Orca tile build plates in one shared world space with a gap of 20% of
+// the bed size between plate origins (OrcaSlicer `LOGICAL_PART_PLATE_GAP = 1/5`,
+// PartPlate.cpp), so the centre-to-centre stride is `bed × 1.2`. Structural
+// constant from the slicer source, not a user-tunable knob.
+const PLATE_GAP_FACTOR = 1.2;
+
 function escapeXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -153,10 +159,17 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
       }
     }
 
-    // Centre the part on its plate, resting on z=0.
+    // Place the part on ITS OWN plate, resting on z=0. Bambu/Orca assign an
+    // object to a plate by WORLD POSITION (bounding-box overlap with the plate's
+    // box), NOT by the model_settings.config <model_instance> grouping — so each
+    // part must be offset into a distinct plate region or they all stack on plate
+    // 1. Plates tile in one shared world space, single row, stride = bed × 1.2
+    // (OrcaSlicer's fixed LOGICAL_PART_PLATE_GAP = 0.2). `platePos` is the bed
+    // centre (half-extent), so bed = 2·platePos and the stride is platePos·2.4.
+    const plateCenterX = platePos + i * (platePos * 2 * PLATE_GAP_FACTOR);
     const cx = Number.isFinite(minX) ? (minX + maxX) / 2 : 0;
     const cy = Number.isFinite(minY) ? (minY + maxY) / 2 : 0;
-    const tx = platePos - cx, ty = platePos - cy, tz = Number.isFinite(minZ) ? -minZ : 0;
+    const tx = plateCenterX - cx, ty = platePos - cy, tz = Number.isFinite(minZ) ? -minZ : 0;
     const transform = `1 0 0 0 1 0 0 0 1 ${tx.toFixed(6)} ${ty.toFixed(6)} ${tz.toFixed(6)}`;
 
     return { name: part.name, objectId: i + 1, vertices, triangles, faceCount: validTris.length, extruder, transform };
@@ -255,12 +268,17 @@ ${configPlates}
   files.push({ name: 'Metadata/model_settings.config', data: enc.encode(modelSettingsXml) });
 
   if (anyColour && materialColors.length > 0) {
+    // Pin the AMS swatch colours via `filament_colour` ONLY. We deliberately omit
+    // `filament_settings_id` / `printer_settings_id` / `inherits_group`: Bambu's
+    // PresetBundle::validate_presets pops the "customized filament or printer
+    // presets … confirm the G-code is safe" dialog when those name a preset it
+    // can't resolve to a system/bundled one (e.g. a bare "Generic PLA"). Empty /
+    // absent preset ids skip validation, so colours still pre-bind with no
+    // warning. `filament_type` is never validated, so it's safe to include.
     const upper = materialColors.map(h => h.toUpperCase());
     const projectSettings = {
       filament_colour: upper,
       filament_type: upper.map(() => 'PLA'),
-      filament_settings_id: upper.map(() => 'Generic PLA'),
-      filament_ids: upper.map(() => ''),
       version: '1',
       from: 'Partwright',
     };

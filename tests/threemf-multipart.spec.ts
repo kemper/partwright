@@ -70,9 +70,19 @@ test.describe('multi-part 3MF export', () => {
     expect(report.text).toContain('key="plater_id" value="1"');
     expect(report.text).toContain('key="plater_id" value="2"');
     expect(report.text).toContain('key="extruder"');
-    // project_settings.config with the filament colour list.
+    // project_settings.config pins filament colours WITHOUT preset-id keys (those
+    // trigger Bambu's "customized presets / unsafe G-code" warning).
     expect(report.text).toContain('Metadata/project_settings.config');
     expect(report.text).toContain('filament_colour');
+    expect(report.text).not.toContain('filament_settings_id');
+    expect(report.text).not.toContain('printer_settings_id');
+    // Each part must sit on its OWN plate: Bambu assigns by world position, so the
+    // two <item> transforms must have DISTINCT X translations (else both stack on
+    // plate 1). Transform is "1 0 0 0 1 0 0 0 1 TX TY TZ".
+    const txs = [...report.text.matchAll(/<item objectid="\d+" transform="([^"]+)"/g)]
+      .map(m => m[1].trim().split(/\s+/)[9]); // 12-value row-major matrix; index 9 = TX
+    expect(txs.length).toBe(2);
+    expect(txs[0]).not.toBe(txs[1]);
   });
 
   test('part picker lets you choose parts and export a multi-plate 3MF', async ({ page }) => {
