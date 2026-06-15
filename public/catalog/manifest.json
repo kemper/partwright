@@ -1361,6 +1361,206 @@
       "tags": [
         "figures"
       ]
+    },
+    {
+      "id": "jump-shot",
+      "name": "Jump Shot",
+      "file": "figure_jumpshot.partwright.json",
+      "language": "manifold-js",
+      "description": "A male basketball player at the apex of a jump shot — arms raised to release, one knee tucked airborne, eyes up at the hoop. Shows the muscle axis, upward eye gaze, and footwear.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "soccer-striker",
+      "name": "Soccer Striker",
+      "file": "figure_striker.partwright.json",
+      "language": "manifold-js",
+      "description": "A soccer player mid-kick — striking leg swung high forward, arms thrown wide for balance, gaze down at the ball. Shows downward gaze, extreme forward leg-swing mechanics, and cleats.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "olympic-lifter",
+      "name": "Olympic Lifter",
+      "file": "figure_weightlifter.partwright.json",
+      "language": "manifold-js",
+      "description": "A stocky weightlifter at the overhead lockout of a clean & jerk — the muscle axis maxed, a two-handed barbell with weight plates built via F.spanGrips, and a wide power stance.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "boxers-guard",
+      "name": "Boxer's Guard",
+      "file": "figure_boxer.partwright.json",
+      "language": "manifold-js",
+      "description": "A boxer in a tight defensive guard — gloved fists up by the chin, slight crouch, bare chest showing nipple and navel anatomy, with a broad nose and square jaw.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "arabesque",
+      "name": "Arabesque",
+      "file": "figure_arabesque.partwright.json",
+      "language": "manifold-js",
+      "description": "A ballet dancer balanced on one leg in an arabesque — rear leg swept high behind, front arm reaching forward, soft eyelids, tight bun, and a short tutu at the waist.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "layback-spin",
+      "name": "Layback Spin",
+      "file": "figure_ice_skater.partwright.json",
+      "language": "manifold-js",
+      "description": "A figure skater in a layback spin — balanced on one skate with the rear leg lifted, head tilted back, arms arched, in a flared dress, with a thin blade welded under each boot via F.standOn.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "warrior-two",
+      "name": "Warrior II",
+      "file": "figure_warrior_two.partwright.json",
+      "language": "manifold-js",
+      "description": "A yoga practitioner in Warrior II — a wide lunge with both arms straight out and the head turned to gaze over the front hand. Shows head-yaw and eye gaze together, plus a bare-midriff navel and coily hair.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "capoeira-ginga",
+      "name": "Capoeira Ginga",
+      "file": "figure_capoeira.partwright.json",
+      "language": "manifold-js",
+      "description": "A capoeirista low in the ginga — a deep wide-kneed crouch, one hand reaching toward the ground, the other raised in guard. Shows dynamic crouch mechanics, coily hair, and bare-torso anatomy.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "crawling-baby",
+      "name": "Crawling Baby",
+      "file": "figure_crawling_baby.partwright.json",
+      "language": "manifold-js",
+      "description": "A chubby big-headed baby crawling on all fours with the head lifted and big round eyes gazing up. Shows the young-age proportions, an all-fours pose, a bare-belly navel, and tiny sculpted toes.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "elderly-gardener",
+      "name": "Elderly Gardener",
+      "file": "figure_gardener.partwright.json",
+      "language": "manifold-js",
+      "description": "An elderly woman kneeling to tend a potted plant — a wide-brim sun hat seated via F.placeOnHead, hooded eyelids and a long face from the age axis, gazing down at the soil.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "expecting-mother",
+      "name": "Expecting",
+      "file": "figure_expecting.partwright.json",
+      "language": "manifold-js",
+      "description": "An expectant mother standing serenely with hands at her belly and an exposed midriff. Shows the weight axis as true 3D belly bulk, a bust, the navel landmark on the bulge, and soft half-closed eyelids.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "power-stance",
+      "name": "Power Stance",
+      "file": "figure_body_positive.partwright.json",
+      "language": "manifold-js",
+      "description": "A confident full-figured woman in a wide power stance with hands on hips and a joyful smile. Shows a fuller body as believable 3D bulk, a bust, a bare-midriff navel, and a coily afro.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "meditating-monk",
+      "name": "Meditating Monk",
+      "file": "figure_monk.partwright.json",
+      "language": "manifold-js",
+      "description": "A serene monk meditating cross-legged on the ground — bald head with prominent ears, eyes closed via the eyelid system, bare chest with navel, and a saffron waist robe.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "the-thinker",
+      "name": "The Thinker",
+      "file": "figure_thinker.partwright.json",
+      "language": "manifold-js",
+      "description": "A contemplative nude seated on a low stone plinth in the classic Thinker pose — fist to the chin, head bowed, with a square jaw, roman nose, and bare-torso anatomy.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "skater-kid",
+      "name": "Skater Kid",
+      "file": "figure_skater_kid.partwright.json",
+      "language": "manifold-js",
+      "description": "A cheeky teen skateboarder with a playful sidelong look — hooded lids, a corner gaze and a smirk for a knowing-wink attitude, a raised finger-gun, and a skateboard held at his side.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "bedtime-toddler",
+      "name": "Bedtime",
+      "file": "figure_sleepy_tot.partwright.json",
+      "language": "manifold-js",
+      "description": "A sleepy toddler mid-yawn, rubbing one eye with a fist while hugging a stuffed bunny. Shows sleepy half-closed eyelids, an open yawning mouth, toddler proportions, and footed pajamas.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "hiphop-freeze",
+      "name": "Hip-Hop Freeze",
+      "file": "figure_boxbraids_dancer.partwright.json",
+      "language": "manifold-js",
+      "description": "A street dancer holding a hip-hop freeze — a tilted body supported on one arm, a tucked knee, the free arm extended for line — with mid-length box braids and a bare-midriff navel.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "surfer",
+      "name": "Surfer",
+      "file": "figure_surfer.partwright.json",
+      "language": "manifold-js",
+      "description": "A surfer in a crouched riding stance balanced on a custom surfboard base, with long sun-bleached locs, board shorts, a bare chest with navel, and bare feet with sculpted toes.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "flamenco-dancer",
+      "name": "Flamenco Dancer",
+      "file": "figure_flamenco.partwright.json",
+      "language": "manifold-js",
+      "description": "A flamenco dancer mid-pose with a dramatically arched back, one arm swept overhead, head turned with an intense side gaze, full lips, a flower in a low bun, and a tiered ruffled dress.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "quarterback",
+      "name": "Quarterback",
+      "file": "figure_quarterback.partwright.json",
+      "language": "manifold-js",
+      "description": "An American-football quarterback in the throwing motion — rear arm cocked back with the ball, lead arm pointing downfield, a wide stride and a twisting torso via spine.turn, looking downfield.",
+      "tags": [
+        "figures"
+      ]
     }
   ]
 }
