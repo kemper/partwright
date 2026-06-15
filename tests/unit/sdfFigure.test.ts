@@ -712,10 +712,53 @@ describe('figure mouth — styles', () => {
     expect(() => buildMouthPart(api, rig, { expression: 'grimace' })).toThrow(/expression/);
   });
 
-  it("divided lips build a taller two-ridge stack than a single ridge", () => {
+  it("divided lips build the refined two-lip shape (taller than a single ridge)", () => {
     const single = buildMouthPart(api, rig, { style: 'lips' }).node.bounds();
-    const two = buildMouthPart(api, rig, { style: 'lips', divided: true }).node.bounds();
-    expect(two.max[2] - two.min[2]).toBeGreaterThan(single.max[2] - single.min[2]);
+    const two = buildMouthPart(api, rig, { style: 'lips', divided: true });
+    expect(two.mode).toBe('add');
+    const tb = two.node.bounds();
+    expect(tb.max[2] - tb.min[2]).toBeGreaterThan(single.max[2] - single.min[2]);
+  });
+
+  it('lipShape presets are additive and differ in width', () => {
+    for (const shape of ['natural', 'full', 'thin', 'wide', 'rosebud', 'flat']) {
+      expect(buildMouthPart(api, rig, { style: 'lips', lipShape: shape }).mode).toBe('add');
+    }
+    const wide = buildMouthPart(api, rig, { style: 'lips', lipShape: 'wide' }).node.bounds();
+    const rosebud = buildMouthPart(api, rig, { style: 'lips', lipShape: 'rosebud' }).node.bounds();
+    // 'wide' spans clearly more laterally than the petite 'rosebud'.
+    expect(wide.max[0] - wide.min[0]).toBeGreaterThan(rosebud.max[0] - rosebud.min[0]);
+  });
+
+  it('an explicit width overrides the lipShape preset width', () => {
+    const preset = buildMouthPart(api, rig, { style: 'lips', lipShape: 'rosebud' }).node.bounds();
+    const wider = buildMouthPart(api, rig, { style: 'lips', lipShape: 'rosebud', width: rig.r.head * 0.9 }).node.bounds();
+    expect(wider.max[0] - wider.min[0]).toBeGreaterThan(preset.max[0] - preset.min[0]);
+  });
+
+  it('rejects an unknown lipShape', () => {
+    expect(() => buildMouthPart(api, rig, { style: 'lips', lipShape: 'duckbill' })).toThrow(/lipShape/);
+  });
+
+  it('bare style:lips is the historical straight ridge (byte-identical)', () => {
+    // Lock the back-compat default: bare lips (no lipShape/divided/curve) must
+    // stay the exact historical capsule that catalog bakes were built against.
+    const node = buildMouthPart(api, rig, { style: 'lips' }).node;
+    const m = rig.face.mouth, u = rig.dir.headUp, right = rig.dir.headLeft, f = rig.dir.headForward;
+    const R = rig.r.head, lipR = R * 0.085, halfW = R * 0.25; // default width R*0.5
+    const fwd: [number, number, number] = [f[0] * lipR * 0.6, f[1] * lipR * 0.6, f[2] * lipR * 0.6];
+    const a: [number, number, number] = [m[0] + fwd[0] + right[0] * halfW, m[1] + fwd[1] + right[1] * halfW, m[2] + fwd[2] + right[2] * halfW];
+    const b: [number, number, number] = [m[0] + fwd[0] - right[0] * halfW, m[1] + fwd[1] - right[1] * halfW, m[2] + fwd[2] - right[2] * halfW];
+    const ref = api.capsule(a, b, lipR) as SdfNode;
+    // Two SDFs equal at enough independent points ⇒ identical capsule.
+    const samples: Array<[number, number, number]> = [
+      m, [m[0] + fwd[0], m[1] + fwd[1], m[2] + fwd[2]], a, b,
+      [m[0] + u[0] * lipR, m[1] + u[1] * lipR, m[2] + u[2] * lipR],
+      [m[0] + f[0] * R, m[1] + f[1] * R, m[2] + f[2] * R],
+    ];
+    for (const [x, y, z] of samples) {
+      expect((node as SdfNode).evaluate(x, y, z)).toBeCloseTo(ref.evaluate(x, y, z), 9);
+    }
   });
 
   it('render: painted makes the smile line additive (the #652-class fallback)', () => {
