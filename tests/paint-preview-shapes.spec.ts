@@ -10,6 +10,11 @@ test.describe('paintPreview analytic shapes', () => {
   test('cylinder and slab previews select triangles and match the paint op', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('text=Ready', { timeout: 15000 });
+    // "Ready" can paint before window.partwright is assigned (wired up near the
+    // end of main()); wait for the API itself before driving it.
+    await page.waitForFunction(
+      () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
+    );
 
     // A hollow tube: outer R=10, inner R=6, height 20. Its inner wall is the
     // canonical paintInCylinder target.
