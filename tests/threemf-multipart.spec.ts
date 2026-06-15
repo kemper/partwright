@@ -40,49 +40,66 @@ test.describe('multi-part 3MF export', () => {
         };
       };
 
-      const built = build3MFProject([
-        // A two-colour part → the non-dominant colour gets a paint_color.
+      const parts = [
+        // A two-colour part → the non-dominant colour gets a paint_color (Bambu).
         makePart('Body', [[255, 0, 0], [0, 0, 255]]),
         makePart('Lid', [[0, 0, 255]]),
-      ]);
-      const buf = new Uint8Array(await built.blob.arrayBuffer());
+      ];
+      const decode = (b: Blob) => b.arrayBuffer().then(a => new TextDecoder('utf-8').decode(new Uint8Array(a)));
       // ZIP is STORE (uncompressed) so file contents appear verbatim in the bytes.
-      const text = new TextDecoder('utf-8').decode(buf);
-      return { filename: built.filename, text, size: buf.length };
+      const bambu = build3MFProject(parts, { bambu: true, bedSize: [256, 256] });
+      const generic = build3MFProject(parts, { bambu: false });
+      return { filename: bambu.filename, bambu: await decode(bambu.blob), generic: await decode(generic.blob) };
     });
 
     expect(report.filename).toMatch(/\.3mf$/);
-    // Two objects + two build items.
-    expect(report.text).toContain('<object id="1" type="model">');
-    expect(report.text).toContain('<object id="2" type="model">');
-    expect((report.text.match(/<item objectid=/g) ?? []).length).toBe(2);
-    // Bambu project marker (flips Bambu into multi-plate / filament-binding mode).
-    expect(report.text).toContain('<metadata name="Application">BambuStudio-');
-    // Generic material colours (read by non-Bambu slicers).
-    expect(report.text).toContain('<m:colorgroup');
-    expect(report.text).toContain('#FF0000FF');
-    expect(report.text).toContain('#0000FFFF');
-    // Bambu per-triangle paint_color (the non-dominant colour gets one).
-    expect(report.text).toContain('paint_color=');
+
+    // ── Bambu/Orca project mode ──
+    const b = report.bambu;
+    expect(b).toContain('<object id="1" type="model">');
+    expect(b).toContain('<object id="2" type="model">');
+    expect((b.match(/<item objectid=/g) ?? []).length).toBe(2);
+    // Project marker (flips Bambu into multi-plate / filament-binding mode).
+    expect(b).toContain('<metadata name="Application">BambuStudio-');
+    // Generic material colours (read by non-Bambu slicers) + Bambu per-triangle paint.
+    expect(b).toContain('<m:colorgroup');
+    expect(b).toContain('#FF0000FF');
+    expect(b).toContain('#0000FFFF');
+    expect(b).toContain('paint_color=');
     // model_settings.config with one plate per part.
-    expect(report.text).toContain('Metadata/model_settings.config');
-    expect((report.text.match(/<plate>/g) ?? []).length).toBe(2);
-    expect(report.text).toContain('key="plater_id" value="1"');
-    expect(report.text).toContain('key="plater_id" value="2"');
-    expect(report.text).toContain('key="extruder"');
-    // project_settings.config pins filament colours WITHOUT preset-id keys (those
-    // trigger Bambu's "customized presets / unsafe G-code" warning).
-    expect(report.text).toContain('Metadata/project_settings.config');
-    expect(report.text).toContain('filament_colour');
-    expect(report.text).not.toContain('filament_settings_id');
-    expect(report.text).not.toContain('printer_settings_id');
-    // Each part must sit on its OWN plate: Bambu assigns by world position, so the
-    // two <item> transforms must have DISTINCT X translations (else both stack on
-    // plate 1). Transform is "1 0 0 0 1 0 0 0 1 TX TY TZ".
-    const txs = [...report.text.matchAll(/<item objectid="\d+" transform="([^"]+)"/g)]
-      .map(m => m[1].trim().split(/\s+/)[9]); // 12-value row-major matrix; index 9 = TX
-    expect(txs.length).toBe(2);
-    expect(txs[0]).not.toBe(txs[1]);
+    expect(b).toContain('Metadata/model_settings.config');
+    expect((b.match(/<plate>/g) ?? []).length).toBe(2);
+    expect(b).toContain('key="plater_id" value="1"');
+    expect(b).toContain('key="plater_id" value="2"');
+    expect(b).toContain('key="extruder"');
+    // NO project_settings.config / preset ids — those trip Bambu's "customized
+    // presets / unsafe G-code" warning. Colours come via colorgroup + extruder.
+    expect(b).not.toContain('Metadata/project_settings.config');
+    expect(b).not.toContain('filament_settings_id');
+    expect(b).not.toContain('printer_settings_id');
+    // Each part on its OWN plate: Bambu assigns by world position, so the two
+    // <item> X translations must differ AND match the plate stride (bed × 1.2 =
+    // 307.2 for a 256 bed). Transform = "1 0 0 0 1 0 0 0 1 TX TY TZ".
+    const bTxs = [...b.matchAll(/<item objectid="\d+" transform="([^"]+)"/g)]
+      .map(m => parseFloat(m[1].trim().split(/\s+/)[9]));
+    expect(bTxs.length).toBe(2);
+    expect(Math.abs((bTxs[1] - bTxs[0]) - 256 * 1.2)).toBeLessThan(5); // plate stride
+
+    // ── Generic multi-object mode ──
+    const g = report.generic;
+    expect(g).toContain('<object id="1" type="model">');
+    expect(g).toContain('<object id="2" type="model">');
+    expect((g.match(/<item objectid=/g) ?? []).length).toBe(2);
+    expect(g).toContain('<m:colorgroup'); // colours still present for any slicer
+    // No Bambu-specific metadata at all.
+    expect(g).not.toContain('BambuStudio-');
+    expect(g).not.toContain('Metadata/model_settings.config');
+    expect(g).not.toContain('paint_color=');
+    // Grid-arranged → the two parts have distinct X positions (no overlap).
+    const gTxs = [...g.matchAll(/<item objectid="\d+" transform="([^"]+)"/g)]
+      .map(m => m[1].trim().split(/\s+/)[9]);
+    expect(gTxs.length).toBe(2);
+    expect(gTxs[0]).not.toBe(gTxs[1]);
   });
 
   test('part picker lets you choose parts and export a multi-plate 3MF', async ({ page }) => {

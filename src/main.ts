@@ -4129,8 +4129,9 @@ async function main() {
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
   };
   /** Multi-part 3MF: pick parts (with previews), bake each part's coloured mesh
-   *  off-editor, and bundle them into one 3MF with one part per build plate. */
-  async function export3MFMultiPartFlow(): Promise<void> {
+   *  off-editor, and bundle them into one 3MF. `bambu` true → one part per build
+   *  plate (Bambu/Orca project); false → a generic multi-object 3MF (grid). */
+  async function export3MFMultiPartFlow(bambu: boolean): Promise<void> {
     const parts = getState().parts;
     const activeId = getState().currentPart?.id ?? null;
     // Pull each part's latest thumbnail for the picker (cheap — pre-baked Blobs).
@@ -4139,7 +4140,7 @@ async function main() {
       const v = await getLatestVersion(p.id);
       choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null });
     }
-    const selected = await showExportPartsModal(choices, activeId);
+    const selected = await showExportPartsModal(choices, activeId, bambu);
     if (!selected || selected.length === 0) return;
 
     const byId = new Map(parts.map(p => [p.id, p]));
@@ -4156,7 +4157,8 @@ async function main() {
       updateProgress(job, 1, 'Writing 3MF…');
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
 
-      const built = build3MFProject(baked);
+      const bed = loadPrinterSettings().bed;
+      const built = build3MFProject(baked, { bambu, bedSize: [bed[0], bed[1]] });
       downloadBlob(built.blob, built.filename, '3MF');
       const skipped = selected.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
@@ -4169,11 +4171,13 @@ async function main() {
   }
 
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
-   *  (default: all) and downloads one 3MF, one part per plate. Returns a result
-   *  object (no UI modal). Kept as a standalone function so the `partwrightAPI`
-   *  object literal stays thin. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
+   *  (default: all) and downloads one 3MF. `opts.bambu` (default true) → one part
+   *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF.
+   *  Returns a result object (no UI modal). Kept as a standalone function so the
+   *  `partwrightAPI` object literal stays thin. */
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
     assertString(filename, 'export3MFParts(partIds, filename)', { optional: true });
+    const bambu = opts?.bambu ?? true;
     const allParts = getState().parts;
     if (allParts.length === 0) return { error: 'No parts in this session.' };
     let ids = partIds;
@@ -4194,7 +4198,8 @@ async function main() {
     }
     if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
     try {
-      const built = build3MFProject(baked, { customName: filename });
+      const bed = loadPrinterSettings().bed;
+      const built = build3MFProject(baked, { customName: filename, bambu, bedSize: [bed[0], bed[1]] });
       downloadBlob(built.blob, built.filename, '3MF');
       return { ok: true as const, filename: built.filename, parts: baked.length };
     } catch (e) {
@@ -4207,7 +4212,10 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
     warnIfNotPrintable('3MF');
-    notifyMultiPartExport();
+    // Multi-part session → offer the part picker and emit a GENERIC multi-object
+    // 3MF (grid-arranged, no Bambu metadata). Single-part keeps the original
+    // single-object export.
+    if (getState().parts.length > 1) { await export3MFMultiPartFlow(false); return; }
     try { showToast(`Exported ${export3MF(fileExportMesh(true)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
   };
@@ -4220,7 +4228,7 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
     warnIfNotPrintable('3MF');
-    await export3MFMultiPartFlow();
+    await export3MFMultiPartFlow(true);
   };
   // The integer VoxelGrid behind a voxel session. The engine meshes in the
   // Worker, so the grid isn't on the main thread after a normal run — re-run the
@@ -8940,14 +8948,16 @@ async function main() {
       export3MF(fileExportMesh(true)!, filename);
     },
 
-    /** Bundle several Session Parts into ONE 3MF, each part on its own build
-     *  plate (Bambu Studio / OrcaSlicer), with painted colours bound to
-     *  filaments. The UI equivalent is the part-picker shown when you export 3MF
-     *  in a multi-part session. Pass an array of part ids (default: every part
-     *  in the session); each part's latest version is baked WITH its colours.
-     *  Returns `{ ok, filename, parts }` or `{ error }`. */
-    export3MFParts(partIds?: string[], filename?: string) {
-      return export3MFPartsApi(partIds, filename);
+    /** Bundle several Session Parts into ONE 3MF. With `{ bambu: true }` (the
+     *  default) each part lands on its own Bambu Studio / OrcaSlicer build plate
+     *  with colours bound to filaments; `{ bambu: false }` emits a generic
+     *  multi-object 3MF (grid-arranged, opens in any slicer). The UI equivalents
+     *  are the "3MF — Bambu/Orca" menu item and the generic "3MF" export in a
+     *  multi-part session. Pass an array of part ids (default: every part); each
+     *  part's latest version is baked WITH its colours. `{ ok, filename, parts }`
+     *  or `{ error }`. */
+    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
+      return export3MFPartsApi(partIds, filename, opts);
     },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
@@ -14020,7 +14030,7 @@ async function main() {
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
-        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?) -- Bundle parts into one 3MF, one part per build plate (Bambu/Orca) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate, false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
         'exportVOX':       { signature: 'exportVOX() -- Download MagicaVoxel .vox (voxel sessions)', docs: '/ai/voxel.md' },
         // AI-friendly export — return bytes over the API instead of triggering a download
         'exportGLBData':   { signature: 'await exportGLBData() -- Return GLB as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },

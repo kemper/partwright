@@ -32,20 +32,23 @@ const src = await partwright.exportCodeData()
 
 Each call also adds the export to the Recent Exports inbox so the user can re-download it from the toolbar's Export → Recent Exports list.
 
-## Multi-part 3MF — one part per build plate
+## Multi-part 3MF — bundle several parts into one file
 
-`export3MFParts(partIds?, filename?)` bundles several Session Parts into **one** 3MF, placing each part on its **own build plate** (a Bambu Studio / OrcaSlicer "project" 3MF) with painted colours bound to filaments. This is the console/AI twin of the part-picker the UI shows when you export 3MF in a multi-part session.
+`export3MFParts(partIds?, filename?, { bambu? })` bundles several Session Parts into **one** 3MF. Two modes:
+
+- **`{ bambu: true }`** (default) — a Bambu Studio / OrcaSlicer **project**: each part on its **own build plate**, painted colours bound to filaments. The console/AI twin of the **"3MF — Bambu/Orca"** menu item.
+- **`{ bambu: false }`** — a **generic** multi-object 3MF: parts grid-arranged (no overlap), opens in any slicer, no Bambu metadata. The console/AI twin of the generic **"3MF"** export in a multi-part session.
 
 ```js
-// Every part in the session, one per plate:
+// Every part in the session, one per Bambu plate (default):
 await partwright.export3MFParts()
 // -> { ok: true, filename: "...3mf", parts: 3 }
 
-// Just specific parts (ids from listParts()):
-await partwright.export3MFParts(["part_abc", "part_def"], "assembly")
+// Specific parts as a generic multi-object 3MF (ids from listParts()):
+await partwright.export3MFParts(["part_abc", "part_def"], "assembly", { bambu: false })
 ```
 
-Each part's **latest version** is re-baked with its colours (both code-declared `api.label`/`api.paint.*` and saved manual paint). The file is also a valid generic multi-object 3MF, so non-Bambu slicers/viewers still open it and see every part + colour (they just won't split it onto separate plates). A single selected part falls back to the ordinary single-object 3MF. This triggers a browser download — there is no `*Data()` byte-returning variant yet.
+Each part's **latest version** is re-baked with its colours (both code-declared `api.label`/`api.paint.*` and saved manual paint). Bambu mode places each part on its plate using your configured **bed size** (printer settings) for the plate stride. Both modes carry colours via `m:colorgroup`, so any slicer sees them. This triggers a browser download — there is no `*Data()` byte-returning variant yet.
 
 ## Import — supply the payload directly
 ```js

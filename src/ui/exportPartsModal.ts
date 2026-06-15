@@ -18,12 +18,14 @@ export interface ExportPartChoice {
 }
 
 /**
- * Show the multi-part 3MF part picker. `activePartId` is preselected.
+ * Show the multi-part 3MF part picker. `activePartId` is preselected. `bambu`
+ * tailors the title/help text (per-plate Bambu project vs generic multi-object).
  * Returns the selected part ids, or null on cancel.
  */
 export function showExportPartsModal(
   parts: ExportPartChoice[],
   activePartId: string | null,
+  bambu = true,
 ): Promise<string[] | null> {
   return new Promise((resolve) => {
     let result: string[] | null = null;
@@ -31,7 +33,7 @@ export function showExportPartsModal(
     const objectUrls: string[] = [];
 
     const shell = createModalShell({
-      title: 'Export parts to 3MF',
+      title: bambu ? 'Export parts to 3MF (Bambu/Orca)' : 'Export parts to 3MF',
       scrollable: true,
       onClose: () => {
         document.removeEventListener('keydown', onEnter);
@@ -42,7 +44,9 @@ export function showExportPartsModal(
 
     const sub = document.createElement('p');
     sub.className = 'text-[11px] text-zinc-400 leading-relaxed';
-    sub.textContent = 'Choose which parts to include. Each selected part is placed on its own build plate, and painted colours are bound to filaments for Bambu Studio / OrcaSlicer.';
+    sub.textContent = bambu
+      ? 'Choose which parts to include. Each selected part is placed on its own build plate, and painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
+      : 'Choose which parts to include. Each selected part is added as a separate object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.';
     shell.body.appendChild(sub);
 
     // Header row with the count + select-all toggle.
