@@ -1492,11 +1492,13 @@ describe('figure nose & lips — variation axes', () => {
   const rig = buildRig({ height: 60, headsTall: 6 });
   const span = (n: SdfNode, ax: number): number => n.bounds().max[ax] - n.bounds().min[ax];
 
-  it('default nose (width:1, flare:0) matches the bare nose', () => {
+  it('the no-arg nose equals the explicit "straight" preset defaults', () => {
     const bare = F.face.nose(rig) as unknown as SdfNode;
-    const def = F.face.nose(rig, { width: 1, flare: 0, bridge: 1, length: 1 }) as unknown as SdfNode;
+    const def = F.face.nose(rig, { type: 'straight' }) as unknown as SdfNode;
     const p = rig.face.nose;
+    const q: [number, number, number] = [p[0] + 0.3, p[1] - 0.4, p[2] - 0.6];
     expect(def.evaluate(p[0], p[1], p[2])).toBeCloseTo(bare.evaluate(p[0], p[1], p[2]), 9);
+    expect(def.evaluate(q[0], q[1], q[2])).toBeCloseTo(bare.evaluate(q[0], q[1], q[2]), 9);
   });
 
   it('a wider, flared nose has a larger lateral extent than a narrow one', () => {
@@ -1505,15 +1507,63 @@ describe('figure nose & lips — variation axes', () => {
     expect(span(wide, 0)).toBeGreaterThan(span(narrow, 0));
   });
 
+  it('carves nostril cavities — the underside cavity is OUTSIDE the carved nose where the un-carved one is solid', () => {
+    const fwd = rig.dir.headForward, up = rig.dir.headUp, right = rig.dir.headLeft;
+    const anchor = rig.face.nose;
+    const tipR = rig.r.head * 0.12;
+    const withNostrils = F.face.nose(rig, { type: 'broad' }) as unknown as SdfNode;
+    const without = F.face.nose(rig, { type: 'broad', nostrils: false }) as unknown as SdfNode;
+    // Scan a small grid through the nose underside: at least one point must be
+    // solid in the un-carved nose (sdf < 0) yet open in the carved one
+    // (sdf > 0). Robust to tip projection / spread tuning — it asserts the
+    // carve removed real material, not a hardcoded sample point.
+    const at = (a: number, b: number, c: number): [number, number, number] => [
+      anchor[0] + fwd[0] * a + up[0] * b + right[0] * c,
+      anchor[1] + fwd[1] * a + up[1] * b + right[1] * c,
+      anchor[2] + fwd[2] * a + up[2] * b + right[2] * c,
+    ];
+    let carved = 0;
+    for (let a = 0; a <= tipR * 2.5; a += tipR * 0.25) {           // forward (projection)
+      for (let b = -tipR * 2; b <= tipR * 0.5; b += tipR * 0.25) { // down the underside
+        for (let c = -tipR * 1.6; c <= tipR * 1.6; c += tipR * 0.25) { // lateral
+          const p = at(a, b, c);
+          if (without.evaluate(...p) < 0 && withNostrils.evaluate(...p) > 0) carved++;
+        }
+      }
+    }
+    expect(carved).toBeGreaterThan(0);
+  });
+
+  it('presets give distinct silhouettes — bulbous tip is wider than pointed', () => {
+    const pointed = F.face.nose(rig, { type: 'pointed' }) as unknown as SdfNode;
+    const bulbous = F.face.nose(rig, { type: 'bulbous' }) as unknown as SdfNode;
+    expect(span(bulbous, 0)).toBeGreaterThan(span(pointed, 0));
+  });
+
+  it('upturn raises the nose underside (snub) vs a hooked tip', () => {
+    const snub = F.face.nose(rig, { upturn: 1, nostrils: false }) as unknown as SdfNode;
+    const hooked = F.face.nose(rig, { upturn: -1, nostrils: false }) as unknown as SdfNode;
+    // The hooked tip projects/drops further: lower minimum on the up axis.
+    expect(hooked.bounds().min[2]).toBeLessThan(snub.bounds().min[2]);
+  });
+
   it('fuller lips thicken the lip ridge', () => {
     const thin = F.face.mouth(rig, { style: 'lips', fullness: 0.5 }) as unknown as SdfNode;
     const full = F.face.mouth(rig, { style: 'lips', fullness: 2.0 }) as unknown as SdfNode;
     expect(span(full, 2)).toBeGreaterThan(span(thin, 2));
   });
 
-  it('rejects out-of-range nose params and bad mouth fullness', () => {
+  it('rejects out-of-range / unknown nose params and bad mouth fullness', () => {
     expect(() => F.face.nose(rig, { bridge: 5 })).toThrow(/bridge/);
     expect(() => F.face.nose(rig, { width: 9 })).toThrow(/width/);
+    expect(() => F.face.nose(rig, { upturn: 3 })).toThrow(/upturn/);
+    expect(() => F.face.nose(rig, { type: 'schnozz' })).toThrow(/type/);
+    expect(() => F.face.nose(rig, { nostrils: 'yes' })).toThrow(/nostrils/);
+    expect(() => F.face.nose(rig, { tipShape: 'banana' })).toThrow(/tipShape/);
+    expect(() => F.face.nose(rig, { profile: 4 })).toThrow(/profile/);
+    expect(() => F.face.nose(rig, { projection: 5 })).toThrow(/projection/);
+    // `bump` is validated even when `profile` (which wins) is also passed.
+    expect(() => F.face.nose(rig, { profile: 0.3, bump: 9 })).toThrow(/bump/);
     expect(() => F.face.mouth(rig, { style: 'lips', fullness: 9 })).toThrow(/fullness/);
   });
 });

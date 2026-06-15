@@ -26,7 +26,7 @@ const r = rig.r;
 const head = F.head(rig, { faceShape: 'round' });
 const face = F.face.assemble(head, rig, {
   eyes: false,
-  nose: { width: 1.4, bridge: 0.7, flare: 0.9 },
+  nose: { type: 'broad' },
   mouth: { style: 'lips', fullness: 1.4, smirk: 0.15 },
   brows: {},
 });
