@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildNipples, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -62,6 +62,119 @@ describe('figure rig — proportions', () => {
       expect(rig.joints.upperLegL[2]).toBeLessThan(rig.joints.upperArmL[2]);
       expect(rig.joints.lowerLegL[2]).toBeLessThan(rig.joints.upperLegL[2]);
     }
+  });
+});
+
+describe('figure torso — nipple + navel surface landmarks', () => {
+  it('places nipples symmetrically on the chest front, below its centre', () => {
+    const rig = buildRig({ height: 60, sex: 'male' });
+    const { nippleL, nippleR, navel } = rig.torso;
+    const chest = rig.joints.chest;
+    // Figure left = +X, right = −X — mirror-symmetric across the sagittal plane.
+    expect(nippleL[0]).toBeGreaterThan(0);
+    expect(nippleR[0]).toBeCloseTo(-nippleL[0], 6);
+    expect(nippleL[1]).toBeCloseTo(nippleR[1], 6);
+    expect(nippleL[2]).toBeCloseTo(nippleR[2], 6);
+    // On the FRONT (−Y) surface, in front of the chest mass centre.
+    expect(nippleL[1]).toBeLessThan(chest[1]);
+    // A touch below the chest centre, and well above the navel.
+    expect(nippleL[2]).toBeLessThan(chest[2]);
+    expect(nippleL[2]).toBeGreaterThan(navel[2]);
+  });
+
+  it('places the navel centred on the belly front, between hips and chest', () => {
+    const rig = buildRig({ height: 60 });
+    const { navel } = rig.torso;
+    expect(navel[0]).toBeCloseTo(0, 6);
+    expect(navel[1]).toBeLessThan(0);                 // front of the body
+    expect(navel[2]).toBeGreaterThan(rig.joints.hips[2]);
+    expect(navel[2]).toBeLessThan(rig.joints.chest[2]);
+  });
+
+  it('tracks proportions: a fuller/heavier torso pushes the landmarks out', () => {
+    const lean = buildRig({ height: 60, sex: 'neutral', weight: 0.2 });
+    const heavy = buildRig({ height: 60, sex: 'male', weight: 0.9 });
+    // A heavier chest depth bulges the nipples further forward (more −Y).
+    expect(heavy.torso.nippleL[1]).toBeLessThan(lean.torso.nippleL[1]);
+    // A heavier belly bulges the navel further forward too.
+    expect(heavy.torso.navel[1]).toBeLessThan(lean.torso.navel[1]);
+    // A female bust widens the inter-nipple span vs neutral.
+    const female = buildRig({ height: 60, sex: 'female' });
+    const neutral = buildRig({ height: 60, sex: 'neutral' });
+    expect(female.torso.nippleL[0]).toBeGreaterThan(neutral.torso.nippleL[0]);
+  });
+
+  it('scales the landmarks linearly with height', () => {
+    const a = buildRig({ height: 60 });
+    const b = buildRig({ height: 120 });
+    expect(b.torso.nippleL[0]).toBeCloseTo(a.torso.nippleL[0] * 2, 5);
+    expect(b.torso.navel[2]).toBeCloseTo(a.torso.navel[2] * 2, 5);
+  });
+
+  it('builds a torso (navel opt-in) and rejects unknown options', () => {
+    const rig = buildRig({ height: 60 });
+    expect(() => buildTorso(api, rig)).not.toThrow();                       // default: no navel
+    expect(() => buildTorso(api, rig, { navel: true })).not.toThrow();
+    expect(() => buildTorso(api, rig, { navel: { depth: 1.2 } })).not.toThrow();
+    // Unknown keys throw (the figure naming policy) — `nipples` is its own builder now.
+    expect(() => buildTorso(api, rig, { nipples: true } as object)).toThrow();
+    expect(() => buildTorso(api, rig, { navel: { radius: 1 } } as object)).toThrow();
+  });
+});
+
+describe('figure — bust mounds + areola', () => {
+  it('bust defaults to 0 (flat) and is pre-filled for sex:female, overridable', () => {
+    expect(buildRig({}).opts.bust).toBe(0);
+    expect(buildRig({ sex: 'male' }).opts.bust).toBe(0);
+    expect(buildRig({ sex: 'female' }).opts.bust).toBeCloseTo(0.35, 6);
+    // Explicit bust overrides the sex default — works on ANY figure.
+    expect(buildRig({ sex: 'female', bust: 0 }).opts.bust).toBe(0);
+    expect(buildRig({ sex: 'male', bust: 0.8 }).opts.bust).toBeCloseTo(0.8, 6);
+    expect(buildRig({ bust: 1.2 }).opts.bust).toBeCloseTo(1.2, 6);
+    expect(() => buildRig({ bust: 3 })).toThrow();   // out of range
+  });
+
+  it('breastMounds: null when flat, present and apex-forward when bust > 0', () => {
+    const flat = buildRig({ height: 60, bust: 0 });
+    expect(breastMounds(flat.joints, flat.r, flat.opts.bust)).toBeNull();
+    const busty = buildRig({ height: 60, bust: 0.7 });
+    const m = breastMounds(busty.joints, busty.r, busty.opts.bust)!;
+    expect(m).not.toBeNull();
+    // Apexes mirror across the sagittal plane and sit in FRONT of the chest centre.
+    expect(m.apexL[0]).toBeGreaterThan(0);
+    expect(m.apexR[0]).toBeCloseTo(-m.apexL[0], 6);
+    expect(m.apexL[1]).toBeLessThan(busty.joints.chest[1]);
+    // The nipple anchors ride the mound apex when there's a bust.
+    expect(busty.torso.nippleL).toEqual(m.apexL);
+  });
+
+  it('a larger bust projects the nipples further forward', () => {
+    const small = buildRig({ height: 60, bust: 0.3 });
+    const full = buildRig({ height: 60, bust: 1.1 });
+    expect(full.torso.nippleL[1]).toBeLessThan(small.torso.nippleL[1]);
+  });
+
+  it('buildNipples returns a single areola-labelled region', () => {
+    const rig = buildRig({ height: 60, bust: 0.5 });
+    const node = buildNipples(api, rig) as unknown as SdfNode;
+    expect(node.labelName).toBe('areola');
+    expect(() => buildNipples(api, rig, { size: 0.4, nipple: 0.1 })).not.toThrow();
+    expect(() => buildNipples(api, rig, { areola: 1 } as object)).toThrow();   // unknown key
+  });
+
+  it('areolaColor darkens a skin hex or named tone, and is overridable in strength', () => {
+    const darker = areolaColor('#cf9163');
+    expect(darker).toMatch(/^#[0-9a-f]{6}$/);
+    // Every channel is darker than the source.
+    expect(parseInt(darker.slice(1, 3), 16)).toBeLessThan(0xcf);
+    expect(parseInt(darker.slice(3, 5), 16)).toBeLessThan(0x91);
+    expect(parseInt(darker.slice(5, 7), 16)).toBeLessThan(0x63);
+    // Accepts a curated skin name.
+    expect(areolaColor('sand')).toMatch(/^#[0-9a-f]{6}$/);
+    // A smaller factor is darker than a larger one.
+    expect(parseInt(areolaColor('#cf9163', 0.5).slice(1, 3), 16))
+      .toBeLessThan(parseInt(areolaColor('#cf9163', 0.9).slice(1, 3), 16));
+    expect(() => areolaColor('not-a-color')).toThrow();
   });
 });
 
@@ -158,6 +271,87 @@ describe('figure rig — age & weight axes (MakeHuman CC0 mined)', () => {
     const rig = buildRig({ age: 40, weight: 0.7 });
     expect(rig.opts.age).toBe(40);
     expect(rig.opts.weight).toBe(0.7);
+  });
+});
+
+describe('figure rig — muscle axis', () => {
+  const { buildTorso, buildArms, buildLegs } = __figureTestables__;
+  const ext = (b: { min: number[]; max: number[] }, i: number): number => b.max[i] - b.min[i];
+
+  it('defaults to muscle 0 and records it on rig.opts', () => {
+    expect(buildRig({}).opts.muscle).toBe(0);
+    expect(buildRig({ muscle: 0.6 }).opts.muscle).toBe(0.6);
+  });
+
+  it('validates the muscle range (0..1)', () => {
+    expect(() => buildRig({ muscle: -0.1 })).toThrow(/muscle/);
+    expect(() => buildRig({ muscle: 1.5 })).toThrow(/muscle/);
+  });
+
+  it('muscle raises the minimum torso DEPTH so a lean+muscled torso never goes paper-thin', () => {
+    // A maximally lean/slim/narrow torso: at muscle 0 the depth is its natural
+    // (un-floored) value; muscle lifts the floor so the muscled core is deeper.
+    const opts = { height: 60, headsTall: 7.5, sex: 'female' as const, build: 'slim' as const, weight: 0 };
+    const lean = buildRig({ ...opts, muscle: 0 });
+    const buff = buildRig({ ...opts, muscle: 1 });
+    expect(buff.r.chestY).toBeGreaterThan(lean.r.chestY);
+    expect(buff.r.hipsY).toBeGreaterThan(lean.r.hipsY);
+    // The floor scales with the head (headH = height/headsTall = 8 here).
+    const headH = 60 / 7.5;
+    expect(buff.r.chestY).toBeCloseTo(headH * (0.26 + 0.14), 6); // floored
+    expect(buff.r.hipsY).toBeCloseTo(headH * (0.24 + 0.14), 6);
+  });
+
+  it('the depth floor does NOT trigger for normal builds (muscle 0 unchanged)', () => {
+    // A neutral and even a slim muscle-0 figure sits above the floor, so the
+    // floor is a no-op there — pinning the byte-identical guarantee.
+    const slim0 = buildRig({ build: 'slim', muscle: 0 });
+    const headH = slim0.opts.height / slim0.opts.headsTall;
+    expect(slim0.r.chestY).toBeGreaterThan(headH * 0.26);
+    expect(slim0.r.hipsY).toBeGreaterThan(headH * 0.24);
+  });
+
+  it('exposes the knee-hinge direction (the leg analog of elbowHinge)', () => {
+    const rig = buildRig({ pose: { legL: { bend: 60 } } });
+    expect(rig.dir.kneeHingeL).toBeDefined();
+    expect(rig.dir.kneeHingeR).toBeDefined();
+    // unit-length
+    const h = rig.dir.kneeHingeL;
+    expect(Math.hypot(h[0], h[1], h[2])).toBeCloseTo(1, 6);
+  });
+
+  it('muscle 0 leaves the torso/arms/legs geometry byte-identical to a bare rig', () => {
+    const plain = buildRig({ height: 60, headsTall: 7 });
+    const m0 = buildRig({ height: 60, headsTall: 7, muscle: 0 });
+    for (const build of [buildTorso, buildArms, buildLegs]) {
+      const a = build(api, plain).bounds();
+      const b = build(api, m0).bounds();
+      for (let i = 0; i < 3; i++) {
+        expect(b.min[i]).toBeCloseTo(a.min[i], 9);
+        expect(b.max[i]).toBeCloseTo(a.max[i], 9);
+      }
+    }
+  });
+
+  it('muscle adds anterior chest depth and widens the torso (pecs/abs/lats)', () => {
+    const lean = buildTorso(api, buildRig({ height: 60, headsTall: 7, muscle: 0 })).bounds();
+    const buff = buildTorso(api, buildRig({ height: 60, headsTall: 7, muscle: 1 })).bounds();
+    // pecs/abs bulge forward (−Y) → the front extent grows more negative.
+    expect(buff.min[1]).toBeLessThan(lean.min[1]);
+    // lats flare the sides → wider in X.
+    expect(ext(buff, 0)).toBeGreaterThan(ext(lean, 0));
+  });
+
+  it('muscle thickens the arms and legs, monotonically', () => {
+    // Bounding-box volume grows with muscle (bellies add girth everywhere the
+    // bare capsule chain didn't reach), independent of which axis dominates.
+    const vol = (b: { min: number[]; max: number[] }): number => ext(b, 0) * ext(b, 1) * ext(b, 2);
+    const armVol = (m: number): number => vol(buildArms(api, buildRig({ muscle: m })).bounds());
+    expect(armVol(0.5)).toBeGreaterThan(armVol(0));
+    expect(armVol(1)).toBeGreaterThan(armVol(0));
+    const legVol = (m: number): number => vol(buildLegs(api, buildRig({ muscle: m })).bounds());
+    expect(legVol(0.5)).toBeGreaterThan(legVol(0));
+    expect(legVol(1)).toBeGreaterThan(legVol(0));
   });
 });
 
@@ -483,6 +677,109 @@ describe('figure mouth — styles', () => {
     expect(() => buildMouthPart(api, rig, { style: 'frown' })).toThrow(/style/);
     expect(() => buildMouthPart(api, rig, { open: 2 })).toThrow();
     expect(() => buildMouthPart(api, rig, { fangs: true })).toThrow();
+  });
+
+  // The arc corner height vs centre height tells smile (corners up) from frown
+  // (corners down). Sample the cutter just below each corner and the centre.
+  const cornerVsCentre = (opts: Record<string, unknown>): number => {
+    const node = buildMouthPart(api, rig, opts).node;
+    const m = rig.face.mouth, u = rig.dir.headUp, right = rig.dir.headLeft;
+    const hw = rig.r.head * 0.25;
+    // Walk up from the anchor until outside the cutter, at the corner vs centre.
+    const topOf = (lat: number): number => {
+      const base = [m[0] + right[0] * lat, m[1] + right[1] * lat, m[2] + right[2] * lat];
+      let z = -rig.r.head;
+      for (let s = -rig.r.head; s <= rig.r.head; s += rig.r.head * 0.02) {
+        const p = [base[0] + u[0] * s, base[1] + u[1] * s, base[2] + u[2] * s];
+        if (node.evaluate(p[0], p[1], p[2]) < 0) z = s;
+      }
+      return z;
+    };
+    return topOf(hw) - topOf(0); // corner-top minus centre-top
+  };
+
+  it('expression bends the mouth: smile lifts corners, frown drops them', () => {
+    expect(cornerVsCentre({ expression: 'bigSmile' })).toBeGreaterThan(0);
+    expect(cornerVsCentre({ expression: 'deepFrown' })).toBeLessThan(0);
+    // A bigger smile lifts the corners more than a slight one.
+    expect(cornerVsCentre({ expression: 'bigSmile' }))
+      .toBeGreaterThan(cornerVsCentre({ expression: 'slightSmile' }));
+  });
+
+  it('numeric curve overrides the preset and rejects out-of-range', () => {
+    expect(cornerVsCentre({ curve: -1 })).toBeLessThan(0);
+    expect(() => buildMouthPart(api, rig, { curve: 2 })).toThrow(/curve/);
+    expect(() => buildMouthPart(api, rig, { expression: 'grimace' })).toThrow(/expression/);
+  });
+
+  it("divided lips build the refined two-lip shape (taller than a single ridge)", () => {
+    const single = buildMouthPart(api, rig, { style: 'lips' }).node.bounds();
+    const two = buildMouthPart(api, rig, { style: 'lips', divided: true });
+    expect(two.mode).toBe('add');
+    const tb = two.node.bounds();
+    expect(tb.max[2] - tb.min[2]).toBeGreaterThan(single.max[2] - single.min[2]);
+  });
+
+  it('lipShape presets are additive and differ in width', () => {
+    for (const shape of ['natural', 'full', 'thin', 'wide', 'rosebud', 'flat']) {
+      expect(buildMouthPart(api, rig, { style: 'lips', lipShape: shape }).mode).toBe('add');
+    }
+    const wide = buildMouthPart(api, rig, { style: 'lips', lipShape: 'wide' }).node.bounds();
+    const rosebud = buildMouthPart(api, rig, { style: 'lips', lipShape: 'rosebud' }).node.bounds();
+    // 'wide' spans clearly more laterally than the petite 'rosebud'.
+    expect(wide.max[0] - wide.min[0]).toBeGreaterThan(rosebud.max[0] - rosebud.min[0]);
+  });
+
+  it('an explicit width overrides the lipShape preset width', () => {
+    const preset = buildMouthPart(api, rig, { style: 'lips', lipShape: 'rosebud' }).node.bounds();
+    const wider = buildMouthPart(api, rig, { style: 'lips', lipShape: 'rosebud', width: rig.r.head * 0.9 }).node.bounds();
+    expect(wider.max[0] - wider.min[0]).toBeGreaterThan(preset.max[0] - preset.min[0]);
+  });
+
+  it('rejects an unknown lipShape', () => {
+    expect(() => buildMouthPart(api, rig, { style: 'lips', lipShape: 'duckbill' })).toThrow(/lipShape/);
+  });
+
+  it('bare style:lips is the historical straight ridge (byte-identical)', () => {
+    // Lock the back-compat default: bare lips (no lipShape/divided/curve) must
+    // stay the exact historical capsule that catalog bakes were built against.
+    const node = buildMouthPart(api, rig, { style: 'lips' }).node;
+    const m = rig.face.mouth, u = rig.dir.headUp, right = rig.dir.headLeft, f = rig.dir.headForward;
+    const R = rig.r.head, lipR = R * 0.085, halfW = R * 0.25; // default width R*0.5
+    const fwd: [number, number, number] = [f[0] * lipR * 0.6, f[1] * lipR * 0.6, f[2] * lipR * 0.6];
+    const a: [number, number, number] = [m[0] + fwd[0] + right[0] * halfW, m[1] + fwd[1] + right[1] * halfW, m[2] + fwd[2] + right[2] * halfW];
+    const b: [number, number, number] = [m[0] + fwd[0] - right[0] * halfW, m[1] + fwd[1] - right[1] * halfW, m[2] + fwd[2] - right[2] * halfW];
+    const ref = api.capsule(a, b, lipR) as SdfNode;
+    // Two SDFs equal at enough independent points ⇒ identical capsule.
+    const samples: Array<[number, number, number]> = [
+      m, [m[0] + fwd[0], m[1] + fwd[1], m[2] + fwd[2]], a, b,
+      [m[0] + u[0] * lipR, m[1] + u[1] * lipR, m[2] + u[2] * lipR],
+      [m[0] + f[0] * R, m[1] + f[1] * R, m[2] + f[2] * R],
+    ];
+    for (const [x, y, z] of samples) {
+      expect((node as SdfNode).evaluate(x, y, z)).toBeCloseTo(ref.evaluate(x, y, z), 9);
+    }
+  });
+
+  it('render: painted makes the smile line additive (the #652-class fallback)', () => {
+    expect(buildMouthPart(api, rig, { render: 'painted' }).mode).toBe('add');
+    expect(buildMouthPart(api, rig, { render: 'carved' }).mode).toBe('carve');
+  });
+
+  it('auto-render falls back to additive only on genuinely small heads', () => {
+    // Yoga-class proportions (#652): tiny head (r.head≈2.82) → carve would tear,
+    // so paint.
+    const tiny = buildRig({ height: 46, headsTall: 7.5, build: 'slim' });
+    expect(buildMouthPart(api, tiny, { smirk: 0.15 }).mode).toBe('add');
+    // A normal figure still carves the smile groove (back-compat).
+    expect(buildMouthPart(api, rig).mode).toBe('carve');
+    // Mainstream adult proportions (60-unit, headsTall 8, r.head≈3.45) must
+    // STAY carved — the floor sits below them, not above (regression guard).
+    expect(buildMouthPart(api, buildRig({ height: 60, headsTall: 8 })).mode).toBe('carve');
+  });
+
+  it('rejects a non-boolean `divided`', () => {
+    expect(() => buildMouthPart(api, rig, { style: 'lips', divided: 'yes' })).toThrow(/divided/);
   });
 });
 
@@ -969,9 +1266,21 @@ describe('figure mouthAccents — paintable teeth and lips', () => {
     expect(labelsOf(buildMouthAccents(api, rig, { style: 'lips' }))).toEqual(['lips']);
   });
 
-  it("smile style and fully-disabled accents throw with guidance", () => {
-    expect(() => buildMouthAccents(api, rig, { style: 'smile' })).toThrow(/smile/);
+  it('smile style yields a paintable lip line labelled lips', () => {
+    expect(labelsOf(buildMouthAccents(api, rig, { style: 'smile' }))).toEqual(['lips']);
+  });
+
+  it('fully-disabled open accents throw with guidance', () => {
     expect(() => buildMouthAccents(api, rig, { open: 0.6, teeth: false, lips: false })).toThrow(/nothing/);
+  });
+
+  it("teeth: 'lower'/'both' add a lower band (more vertical teeth extent)", () => {
+    const upper = (buildMouthAccents(api, rig, { open: 0.6, lips: false }) as SdfNode).bounds();
+    const both = (buildMouthAccents(api, rig, { open: 0.6, lips: false, teeth: 'both' }) as SdfNode).bounds();
+    // 'both' grows the band set downward past the upper-only band.
+    expect(both.min[2]).toBeLessThan(upper.min[2] - 1e-6);
+    // 'lower' alone is still a single 'teeth' region.
+    expect(labelsOf(buildMouthAccents(api, rig, { open: 0.6, teeth: 'lower' }))).toEqual(['lips', 'teeth']);
   });
 
   it('accents straddle the mouth anchor (they will fuse into the face)', () => {
@@ -1310,6 +1619,83 @@ describe('figure handDetail — detail-region helper', () => {
     expect(o.radius).toBe(9);
     expect(o.edgeLength).toBe(0.11);
     expect(() => handDetail(rig, { density: 1 })).toThrow();
+  });
+});
+
+describe('figure feet — flat sole and optional toes', () => {
+  const rig = buildRig({ height: 60, headsTall: 6 });
+
+  it('welds to both ankle joints (smooth and toed)', () => {
+    for (const opts of [undefined, { toes: true }]) {
+      const feet = buildFeet(api, rig, opts) as SdfNode;
+      for (const side of ['L', 'R'] as const) {
+        const A = rig.joints[`foot${side}`];
+        expect(feet.evaluate(A[0], A[1], A[2])).toBeLessThan(0); // ankle inside the foot mass
+      }
+    }
+  });
+
+  it('has a flat sole: air just below the underside, solid skin above (smooth and toed)', () => {
+    const s = rig.sole.L;
+    for (const opts of [undefined, { toes: true }]) {
+      const feet = buildFeet(api, rig, opts) as SdfNode;
+      expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + 0.02)).toBeGreaterThan(0); // below the flat sole
+      expect(feet.evaluate(s.point[0], s.point[1], s.groundZ + rig.r.foot * 0.5)).toBeLessThan(0); // inside the foot
+    }
+  });
+
+  it('keeps toes within the footprint envelope (footwear coverage stays valid)', () => {
+    // Footwear sizes its coverage to the sole-frame footprint. The true toe-tip
+    // surface must stay inside that envelope so a worn shoe still covers it.
+    // bounds() is a loose conservative AABB here, so probe the real surface with
+    // evaluate: well past the footprint toe (0.6·footLen forward of the centre,
+    // at toe height) the bare foot must be AIR — a runaway toe would read solid.
+    const s = rig.sole.L;
+    const footLen = s.length;
+    const toed = buildFeet(api, rig, { toes: true }) as SdfNode;
+    const px = s.point[0] + s.heading[0] * footLen * 0.6;
+    const py = s.point[1] + s.heading[1] * footLen * 0.6;
+    expect(toed.evaluate(px, py, s.groundZ + rig.r.foot * 0.4)).toBeGreaterThan(0); // outside the envelope
+    // …and the toes don't push the foot materially past the smooth toe box.
+    const smooth = (buildFeet(api, rig) as SdfNode).bounds();
+    expect(toed.bounds().min[1]).toBeGreaterThan(smooth.min[1] - rig.r.foot * 0.4);
+  });
+
+  it('rejects unknown keys and non-boolean toes', () => {
+    expect(() => buildFeet(api, rig, { toe: true })).toThrow();      // typo'd key
+    expect(() => buildFeet(api, rig, { toes: 'yes' })).toThrow(/toes/); // must be a boolean
+    expect(() => buildFeet(api, rig, { toes: false })).not.toThrow();
+  });
+
+  it('foot length is a realistic stature proportion (≈0.15·height), long not stubby', () => {
+    // Foot length is a SEGMENT length → scales with stature (like the limbs),
+    // not head-unit girth. Anthropometric foot length ≈ 0.15·stature. The old
+    // foot was r.foot·2.4 ≈ 0.08–0.10·stature — about half real and looked short.
+    const r2 = buildRig({ height: 60, headsTall: 7.5 });
+    expect(r2.sole.L.length).toBeCloseTo(r2.opts.height * 0.15, 5);
+    expect(r2.sole.R.length).toBeCloseTo(r2.opts.height * 0.15, 5);
+    // The foot reads as a real foot: clearly longer than it is wide.
+    expect(r2.sole.L.length).toBeGreaterThan(r2.sole.L.width * 2.5);
+  });
+});
+
+describe('figure footDetail — detail-region helper', () => {
+  const rig = buildRig({ height: 60, headsTall: 6 });
+
+  it('returns one sphere per foot over the forefoot, finer than the figure grid', () => {
+    const [L, R] = footDetail(rig);
+    expect(L.edgeLength).toBeLessThan(0.4);            // finer than the 0.4–0.6 figure grid
+    expect(L.radius).toBeGreaterThan(rig.r.foot);      // covers the toe row
+    expect(L.center[2]).toBeLessThan(rig.joints.footL[2]); // below the ankle, near the ground
+    expect(R.center[2]).toBeLessThan(rig.joints.footR[2]);
+    expect(L.center[0]).toBeCloseTo(-R.center[0], 5);  // symmetric L/R
+  });
+
+  it('honours overrides and rejects unknown keys', () => {
+    const [o] = footDetail(rig, { radius: 7, edgeLength: 0.1 });
+    expect(o.radius).toBe(7);
+    expect(o.edgeLength).toBe(0.1);
+    expect(() => footDetail(rig, { density: 1 })).toThrow();
   });
 });
 

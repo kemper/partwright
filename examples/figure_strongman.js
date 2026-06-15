@@ -140,9 +140,32 @@ const mouthParts = F.face.mouthAccents(rig, mouthOpts);
 // 3. EXTRA MUSCLE MASSES — puffed chest, big traps
 // Keep the puffed chest BELOW the chin — taller/higher masses bury the
 // lower face inside the torso (the mouth carve lands inside solid chest).
-const chestPuff = sdf.ellipsoid(
-  r.chestX * 1.25, r.chestY * 1.2, r.chestY * 1.6,
-).translate([0, -r.chestY * 0.35, j.chest[2] - r.chestY * 0.1]);
+const puffC = [0, -r.chestY * 0.35, j.chest[2] - r.chestY * 0.1];
+const puffR = [r.chestX * 1.25, r.chestY * 1.2, r.chestY * 1.6];
+const pecs = sdf.ellipsoid(puffR[0], puffR[1], puffR[2]).translate(puffC);
+
+// Flush areolae on the PUFFED pec surface. F.nipples rides rig.torso, which
+// lands on the un-puffed base chest (behind chestPuff) — so for this custom
+// muscle build we place the areola coins on the puff front ourselves, using the
+// SAME flush iris-disc trick F.nipples uses: a coin clipped from a sphere a hair
+// larger than the local surface, plus a tiny nipple nub. Self-label 'areola' and
+// hard-union at the top level so the paint region survives the weld.
+const nipZ = puffC[2] - puffR[2] * 0.16;
+const nipDX = r.chestX * 0.5;
+const puffFrontY = (x, z) => puffC[1] - puffR[1] * Math.sqrt(
+  Math.max(0, 1 - (x / puffR[0]) ** 2 - ((z - puffC[2]) / puffR[2]) ** 2));
+const areolaR = r.chestX * 0.16;
+const tinyNip = r.chestX * 0.05;
+const surfR = puffR[1];                         // local curvature ~ the puff's depth radius
+const eps = r.chestX * 0.03;
+const areola = (x) => {
+  const anc = [x, puffFrontY(x, nipZ), nipZ];
+  const coin = sdf.sphere(surfR + eps).translate([anc[0], anc[1] + surfR, anc[2]]).intersect(
+    sdf.cylinder(areolaR, (surfR + eps) * 2.2).rotate([90, 0, 0]).translate(anc),
+  );
+  return coin.union(sdf.sphere(tinyNip).translate([anc[0], anc[1] - tinyNip * 0.5, anc[2]]));
+};
+const areolae = sdf.union(areola(nipDX), areola(-nipDX)).label('areola');
 
 const trapL = sdf.ellipsoid(
   r.upperArm * 1.2, r.upperArm * 0.75, r.upperArm * 1.0,
@@ -154,12 +177,14 @@ const trapR = sdf.ellipsoid(
 // 4. WELDED SKIN — note: F.arms and F.hands are NOT included here; we use
 //    our manual arm geometry above instead.
 const skin = F.weld(rig, [
-  F.torso(rig),
+  // navel relief on the bare midriff; the puffed `pecs` mass is welded in, and
+  // the flush areolae (above) hard-union at the top level for their own paint.
+  F.torso(rig, { navel: true }),
   F.neck(rig),
   F.legs(rig),
   F.feet(rig),
   face,
-  chestPuff,
+  pecs,
   trapL,
   trapR,
   armL,
@@ -212,5 +237,5 @@ const base = F.base(rig, { radius: rig.opts.height * 0.28 }).label('base');
 // eyes are at the top level (not inside skin weld) so they carry their own paint label.
 // F.faceDetail(rig) refines the head mesh locally — smooth smile groove, round eye domes —
 // without raising the global edgeLength (which would balloon triangle count).
-return sdf.union(skin, eyes, mouthParts, trunks, hair, mustache, base)
+return sdf.union(skin, eyes, areolae, mouthParts, trunks, hair, mustache, base)
   .build({ edgeLength: 0.5, detail: F.faceDetail(rig) });

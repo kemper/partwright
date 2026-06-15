@@ -8,7 +8,7 @@
 // and the Back button skips the previous session. See
 // CLAUDE.md › "Browser History (Back Button) Preservation".
 
-export function currentURLPathAndSearch(): string {
+function currentURLPathAndSearch(): string {
   return `${window.location.pathname}${window.location.search}`;
 }
 

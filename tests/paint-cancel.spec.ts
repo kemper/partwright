@@ -15,6 +15,12 @@ import { test, expect } from 'playwright/test';
 async function openEditor(page: import('playwright/test').Page) {
   await page.goto('/editor');
   await page.waitForSelector('text=Ready', { timeout: 15000 });
+  // The "Ready" status can paint a frame before window.partwright is assigned
+  // (it's wired up near the end of main()), so wait for the API itself before
+  // driving it — otherwise a loaded CI shard reads `run` off undefined.
+  await page.waitForFunction(
+    () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
+  );
   await page.evaluate(async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pw = (window as any).partwright;
