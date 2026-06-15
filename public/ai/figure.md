@@ -101,6 +101,7 @@ F.rig({
   sex,         // 'neutral' (default) | 'male' | 'female' — silhouette balance
   age,         // years, 1..90 (default 25). Shifts torso girth (baby/child/old).
   weight,      // 0..1 (default 0.5 = average; 0 = lean, 1 = heavy)
+  muscle,      // 0..1 (default 0 = smooth; ~0.5 athletic, 1 = bodybuilder)
   bust,        // 0..2 chest mound (default 0; sex:'female' pre-fills ~0.35). Independent of sex.
   pose: {      // all optional; neutral standing defaults
     arms, legs, // SYMMETRIC shorthand — seeds BOTH sides at once (see below)
@@ -140,6 +141,31 @@ F.rig({
 >
 > So `{ sex: 'female', weight: 0.7, age: 60 }` is a fuller, older woman, and
 > `{ sex: 'male', build: 'stocky', weight: 0.8 }` a heavyset man.
+
+> **`muscle` (0..1) adds anatomical muscle definition** — and is **orthogonal to
+> `weight`** (muscle vs fat). At `0` (default) no muscle masses are added, so
+> every existing figure is unchanged; raise it for tone. It welds
+> anatomically-anchored bellies onto the body, all derived from the rig so they
+> track the pose:
+> - **torso** — pectorals, a tight abdominal panel, lats (the V-taper) and traps.
+> - **arms** — a capped deltoid, biceps + triceps, and a forearm flexor swell.
+>   The biceps sit on the flexor side, so a raised/flexing arm bulges correctly.
+> - **legs** — quadriceps (front), hamstrings + calves (back), and glutes.
+>
+> Combine with the other axes for any physique: `{ muscle: 0.55, weight: 0.35 }`
+> is a lean, toned athlete; `{ sex: 'male', muscle: 0.9 }` a bodybuilder;
+> `{ build: 'stocky', muscle: 0.6, weight: 0.7 }` a powerlifter (big AND soft).
+> Useful values: ~0.3 trim, ~0.5 athletic, ~0.7 very fit, 1 heroic/competition.
+> This is the first-class replacement for hand-rolling chest/bicep/trap masses
+> onto a figure (as `figure_strongman.js` used to) — reach for `muscle` instead.
+>
+> **Muscle raises the minimum torso depth.** Muscle bellies need core to seat
+> into, so `muscle` lifts a floor on the front-back torso depth — you can't be
+> both maximally lean *and* maximally muscled (the masses would have nothing to
+> merge into, pinching holes). A lean athlete stays trim; the floor only keeps
+> the very thinnest muscled combos from going paper-thin. At `muscle: 0` the
+> floor sits below every build's natural depth, so non-muscled figures are
+> unchanged.
 >
 > **Provenance.** The `age` and `weight` ratios are **mined from MakeHuman's CC0
 > macrodetail morph targets** (github.com/makehumancommunity/makehuman, released
@@ -218,7 +244,8 @@ The rig exposes (read-only, for custom parts):
   **`waist`** (the garment-fitting radius at the natural waist — use this, not
   `hipsX`, to size belts/skirts/tutus).
 - `rig.dir.{headForward, headUp, headLeft, upperArmL/R, lowerArmL/R, elbowHingeL/R,
-  upperLegL/R, lowerLegL/R, footL/R}` — unit directions for orienting parts (`footL/R`
+  upperLegL/R, lowerLegL/R, kneeHingeL/R, footL/R}` — unit directions for orienting
+  parts (`elbowHingeL/R` and `kneeHingeL/R` are the limb bend axes; `footL/R`
   is the foot heading, yawed by `leg*.twist` turnout).
 - `rig.grip.{L,R}` — **a full grip frame per hand, for connecting HELD props**
   (guitar neck, sword, staff, mug). Each has `{ point, palmNormal, gripAxis, reach }`:
@@ -261,7 +288,7 @@ F.neck(rig)
 F.arms(rig)                   // both arms: tapered limbs + deltoid caps
 F.hands(rig, { grip })        // grip: 'fist' | 'open' | 'relaxed' — sculpted 3-finger+thumb
 F.legs(rig)
-F.feet(rig)
+F.feet(rig, { toes })         // flat, real-foot sole; toes: true adds a sculpted toe row
 F.head(rig, { faceShape, jaw, chin, cheek })  // skull + jaw + cheeks (no features yet)
 F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
 ```
@@ -331,6 +358,26 @@ Pass `fingers: false` for the legacy mitten/paddle hands (no detail region
 needed). The hand frame derives from the rig (fingers extend along the
 forearm, palm faces the elbow-curl direction), so posed arms keep correct
 hands automatically.
+
+**Feet are flat and real-foot shaped, with optional toes.** `F.feet(rig)`
+builds a low, flat-soled foot (instep crown, ball, rounded heel) that sits flat
+on the ground in any pose — not the old rounded blob. Foot **length** is a
+realistic stature proportion (≈0.15·height, like the limb lengths), so feet read
+long and natural rather than stubby; footwear tracks the same footprint. Pass `{ toes: true }` to
+add a sculpted toe row (big toe on the medial side tapering to the pinky). Toes
+are finer than the figure grid, so — exactly like sculpted hands — pair them
+with the foot detail region or they alias away:
+
+```js
+F.feet(rig, { toes: true })
+// …then in the build:
+.build({ edgeLength: 0.5, detail: [...F.faceDetail(rig), ...F.footDetail(rig)] })
+```
+
+Toes are a barefoot detail: omit them (the smooth default) when the figure wears
+`F.clothing.shoes`/`boots`, which wrap the foot with their own coverage. The
+foot heading follows `leg*.twist` turnout, so posed/turned-out legs keep their
+feet pointed correctly.
 
 **`F.base` auto-sizes to the pose.** It widens to cover the stance footprint and
 rises to meet the *lowest* foot, so a wide or lunging stance still lands one
@@ -438,7 +485,7 @@ before aiming a prop at it.
 F.face.assemble(head, rig, {
   eyes:  true | { radius, style, lids, gaze, gazeL, gazeR } | false,  // OFF by default — see note below
   nose:  true | { tipRadius, length, width, bridge, flare } | false,
-  mouth: true | { style, width, smirk, open, fullness } | false,
+  mouth: true | { style, expression, curve, width, smirk, open, fullness, lipShape, divided, render, teeth } | false,
   ears:  true | { size, type } | false,   // type: 'detailed'(default) | 'round' | 'pointed'
   brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
 })
@@ -468,6 +515,12 @@ The explicit knobs multiply **on top of** the preset, so `{ faceShape: 'square',
   size alone — e.g. `{ width: 1.4, bridge: 0.6, flare: 1.0 }` vs `{ width: 0.8, bridge: 1.3 }`.
 - **`mouth.fullness`** (0.4–2.2) scales lip thickness independently of `width`
   (works on the `'lips'` ridge and the open-mouth lip ring).
+- **`mouth.expression`** picks the emotion *level*: `'bigSmile'` · `'smile'` ·
+  `'slightSmile'` · `'neutral'` · `'slightFrown'` · `'frown'` · `'deepFrown'`.
+  Or set **`mouth.curve`** directly (−1 deep frown … 0 neutral … +1 big smile;
+  the numeric `curve` overrides the preset). It bows EVERY style — the carved
+  line, the lip ridge, and the open mouth's opening all smile or frown. Un-set,
+  each style keeps its historical bend (smile bows up, lips/open stay straight).
 
 > **Eyes default to OFF in `assemble`.** The recommended flow welds the face into
 > the body and `.label('skin')`s it — which would flatten any in-face eyes into
@@ -485,17 +538,45 @@ exposed if you want to place a feature yourself.
 
 ### Mouth styles
 
+`style` is the *representation*; `expression`/`curve` is the *emotion* (it bows
+any style — see above). `render` chooses how the mouth meets the head.
+
 | `style` | What you get | Add or carve |
 |---|---|---|
-| `'smile'` (default) | a curved smile **line** carved into the face — the classic cartoon mouth. `smirk` (−1..1) skews it. | carve |
-| `'open'` | an open mouth cavity (laughing / talking / singing). `open` (0..1) sets the gape; passing `open > 0` without a style selects this. Pair it with `mouthAccents` for teeth + lips. | carve |
-| `'lips'` | a protruding lip ridge. | add |
+| `'smile'` (default) | a smile/frown **line** through the face — the classic cartoon mouth. Carved as a groove when the head is big enough, else raised as a clean ridge (`render` overrides). `smirk` (−1..1) skews it; `expression`/`curve` bows it. | carve / add |
+| `'open'` | an open mouth (laughing / talking / singing). `open` (0..1) sets the gape; passing `open > 0` without a style selects this. Pair it with `mouthAccents` for teeth + lips. | carve / add |
+| `'lips'` | sculpted lips. Pick a **`lipShape`** preset for a refined cupid's-bow upper + fuller lower + parting groove; `divided: true` is shorthand for `lipShape: 'natural'`. Bare `'lips'` (no shape) is a plain ridge. | add |
+
+**`lipShape`** (with `style: 'lips'`) — the lip silhouette, independent of size
+(`width`/`fullness`) and mood (`expression`/`smirk`), so any shape can smile,
+frown, be wider, or fuller:
+
+| `lipShape` | Look |
+|---|---|
+| `'natural'` | thin upper + full lower — the everyday balance (also what `divided: true` gives) |
+| `'full'` | plump both lips, sharp defined cupid's bow |
+| `'thin'` | slim, elegant, sharp bow set into the face |
+| `'wide'` | wide, medium fullness, moderate bow |
+| `'rosebud'` | narrow, small, soft rounded bow — petite |
+| `'flat'` | wide, thin, near-flat upper (no bow) — the masculine/neutral mouth; pair with `expression: 'slightFrown'` for a stern set |
 
 ```js
-mouth: { smirk: 0.4 }                       // happy carved smile (default style)
-mouth: { open: 0.7, width: rig.r.head*0.6 } // big laughing mouth
-mouth: { style: 'lips', smirk: -0.3 }       // pouty sculpted lips
+mouth: { expression: 'bigSmile' }                      // super-smiley
+mouth: { expression: 'deepFrown' }                     // sad
+mouth: { curve: -0.4, smirk: 0.2 }                     // mild frown, skewed
+mouth: { style: 'lips', lipShape: 'full', fullness: 1.3 }            // glamorous full lips
+mouth: { style: 'lips', lipShape: 'natural', expression: 'slightSmile' } // natural, gently smiling
+mouth: { style: 'lips', lipShape: 'flat', expression: 'slightFrown' }    // masculine, stern
+mouth: { open: 0.5, expression: 'smile', render: 'painted', teeth: 'both' } // toothy grin
 ```
+
+**`render`** — `'auto'` (default) carves the mouth into the head when the head
+is big enough for a clean carve, and otherwise paints it additively; `'carved'`
+forces the groove/cavity; `'painted'` forces a flat, additive, **print-safe**
+mouth (no carved-out cavity, so no support material lands inside the mouth).
+*Small / high-`headsTall` heads auto-fall-back to painted* — that's the fix for
+the carved-mouth tearing on tiny heads. Use `render: 'painted'` whenever you
+want a clean print of a toothy or open mouth.
 
 `F.face.mouth(rig, opts)` returns the mouth **geometry node**: for the carved
 styles that's the *cutter* — `smoothSubtract` it from the head yourself, or
@@ -504,23 +585,28 @@ just let `assemble` handle the bookkeeping.
 ### Teeth & painted lips — `F.face.mouthAccents(rig, mouthOpts)`
 
 Pre-labelled solid parts that complement the mouth. Build them from the **same
-options object** you passed as `mouth:` so they always agree with the carve,
-and hard-union them at the figure's TOP level (next to the eyes):
+options object** you passed as `mouth:` so they always agree, and hard-union
+them at the figure's TOP level (next to the eyes). For a clean print of a toothy
+smile use `render: 'painted'` and pass `mouth: false` to `assemble` (so the skin
+doesn't also weld a lip ring that buries the painted parts):
 
 ```js
-const mouthOpts = { style: 'open', open: 0.65, width: rig.r.head * 0.6 };
-const face = F.face.assemble(head, rig, { eyes: false, mouth: mouthOpts });
+const mouthOpts = { style: 'open', open: 0.5, expression: 'bigSmile', render: 'painted', teeth: 'both' };
+const face = F.face.assemble(head, rig, { eyes: false, mouth: false });
 const mouthParts = F.face.mouthAccents(rig, mouthOpts);  // 'teeth' + 'lips'
 return sdf.union(skin, eyes, mouthParts, hair, base).build({ ... });
 ```
 
-- `'open'` style: a **`'teeth'`** band hanging from the cavity ceiling and a
-  **`'lips'`** capsule ring around the opening (disable with `teeth: false` /
-  `lips: false`).
-- `'lips'` style: the ridge labelled `'lips'` — in this case pass
-  `mouth: false` to `assemble` (a smooth-welded copy would swallow the
-  labelled one).
-- `'smile'` has no accents — the carved line needs no paint.
+- `'open'` style: a **`'teeth'`** band (`teeth: 'upper'` (default) · `'lower'` ·
+  `'both'` · `false`) and a **`'lips'`** ring around the opening (skip with
+  `lips: false`), both bowed by the expression so a grin's opening smiles. Under
+  `render: 'painted'` the teeth sit as a flat plate flush in the opening (no
+  cavity, prints support-free); carved, they recess behind the rim.
+- `'lips'` style: the lips labelled `'lips'` (honours `lipShape` / `divided`) —
+  pass `mouth: false` to `assemble` (a smooth-welded copy would swallow the label).
+- `'smile'` style: a paintable lip **line** labelled `'lips'` — the additive
+  form of the groove, for a coloured expressive mouth line (frown → smile). Pass
+  `mouth: false` to `assemble` if you want *only* the painted line.
 
 ### Ears & the hair⇄ear relationship
 
@@ -804,7 +890,8 @@ recoloured:
 - **Hair** — match texture and style to the person: `coils`/`afro`/`locs`/
   `cornrows`/`boxBraids` are first-class, not edge cases. Any hair texture works
   on any skin tone.
-- **Body** — `build` (slim/average/stocky), `sex`, `headsTall`.
+- **Body** — `build` (slim/average/stocky), `sex`, `headsTall`, plus `weight`
+  (fat) and `muscle` (tone) as independent axes.
 
 > **Vary the axes independently — don't bundle them into a stereotype.** A dark
 > skin tone does not imply a particular nose, hair, or build, and vice versa.

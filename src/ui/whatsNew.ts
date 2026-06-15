@@ -5,6 +5,7 @@
 // week's entry here (and to public/llms.txt / the help page if it warrants it).
 
 import { partwrightMarkSvg } from './brand';
+import { appPath, assetPath } from '../deployment';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
 import { WHATS_NEW_INTRO, WHATS_NEW_WEEKS, type WeekEntry } from '../content/data/whatsNew';
 
@@ -86,7 +87,7 @@ export function createWhatsNewPage(
   const footer = document.createElement('div');
   footer.className = 'mt-10 pt-6 border-t border-zinc-800 text-xs text-zinc-600';
   footer.innerHTML =
-    'More detail in the <a href="/help" class="text-zinc-500 hover:text-zinc-300 transition-colors">help guide</a> and the <a href="/ai.md" class="text-zinc-500 hover:text-zinc-300 transition-colors">AI agent docs</a>.';
+    `More detail in the <a href="${appPath('/help')}" class="text-zinc-500 hover:text-zinc-300 transition-colors">help guide</a> and the <a href="${assetPath('/ai.md')}" class="text-zinc-500 hover:text-zinc-300 transition-colors">AI agent docs</a>.`;
   content.appendChild(footer);
 
   page.appendChild(content);
