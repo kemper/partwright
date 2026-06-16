@@ -48,7 +48,7 @@ const face = F.face.assemble(head, rig, {
 });
 
 // Paintable eyes — defined upper lid, gaze off to the side (the focused look).
-const eyes = F.face.eyes(rig, { radius: r.head * 0.14, lids: 'upper', gaze: 'right' });
+const eyes = F.face.eyes(rig, { radius: r.head * 0.18, lids: 'upper', gaze: 'right' });
 // Serene flat-set lips ('lips' label) — additive ridge.
 const lips = F.face.mouthAccents(rig, { style: 'lips', lipShape: 'flat', expression: 'slightFrown' });
 
