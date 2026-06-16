@@ -1568,6 +1568,85 @@ describe('figure nose & lips — variation axes', () => {
   });
 });
 
+describe('figure nose — small-nose nostril auto-skip (#703)', () => {
+  const F = createFigureNamespace(api);
+  // A small head → small tip radius below the absolute nostril floor.
+  const smallRig = buildRig({ height: 20, headsTall: 4 });
+  const bigRig = buildRig({ height: 70, headsTall: 8 });
+
+  // Sample the nose underside and count how many points the carve opened up
+  // (solid in the `nostrils:false` reference, open in the candidate).
+  const countCarved = (candidate: SdfNode, reference: SdfNode, rig: ReturnType<typeof buildRig>): number => {
+    const fwd = rig.dir.headForward, up = rig.dir.headUp, right = rig.dir.headLeft;
+    const anchor = rig.face.nose;
+    const tipR = rig.r.head * 0.12;
+    const at = (a: number, b: number, c: number): [number, number, number] => [
+      anchor[0] + fwd[0] * a + up[0] * b + right[0] * c,
+      anchor[1] + fwd[1] * a + up[1] * b + right[1] * c,
+      anchor[2] + fwd[2] * a + up[2] * b + right[2] * c,
+    ];
+    let carved = 0;
+    for (let a = 0; a <= tipR * 2.5; a += tipR * 0.2) {
+      for (let b = -tipR * 2; b <= tipR * 0.5; b += tipR * 0.2) {
+        for (let c = -tipR * 1.6; c <= tipR * 1.6; c += tipR * 0.2) {
+          const p = at(a, b, c);
+          if (reference.evaluate(...p) < 0 && candidate.evaluate(...p) > 0) carved++;
+        }
+      }
+    }
+    return carved;
+  };
+
+  it('a small/button nose skips the nostril carve by default (clean bulb, no torn crater)', () => {
+    const button = F.face.nose(smallRig, { type: 'button' }) as unknown as SdfNode;
+    const ref = F.face.nose(smallRig, { type: 'button', nostrils: false }) as unknown as SdfNode;
+    // Default == the un-carved reference: nothing was carved.
+    expect(countCarved(button, ref, smallRig)).toBe(0);
+  });
+
+  it('an explicit nostrils:true still carves a small nose (caller opts into the risk)', () => {
+    const forced = F.face.nose(smallRig, { type: 'button', nostrils: true }) as unknown as SdfNode;
+    const ref = F.face.nose(smallRig, { type: 'button', nostrils: false }) as unknown as SdfNode;
+    expect(countCarved(forced, ref, smallRig)).toBeGreaterThan(0);
+  });
+
+  it('a normal-sized nose still carves nostrils by default (good faces unchanged)', () => {
+    const def = F.face.nose(bigRig, {}) as unknown as SdfNode;
+    const ref = F.face.nose(bigRig, { nostrils: false }) as unknown as SdfNode;
+    expect(countCarved(def, ref, bigRig)).toBeGreaterThan(0);
+  });
+});
+
+describe('figure faceDetail — chest areola detail (#703)', () => {
+  const rig = buildRig({ height: 60, headsTall: 6 });
+
+  it('adds two chest detail spheres over the areola anchors by default', () => {
+    const regions = faceDetail(rig);
+    const nearAnchor = (c: number[], a: number[]): boolean =>
+      Math.hypot(c[0] - a[0], c[1] - a[1], c[2] - a[2]) < 1e-6;
+    const chestRegions = regions.filter((d) =>
+      nearAnchor(d.center, rig.torso.nippleL) || nearAnchor(d.center, rig.torso.nippleR));
+    expect(chestRegions.length).toBe(2);
+    // Far finer than the global figure grid (0.4–0.6) so the disc rim meshes
+    // round instead of slivering at the coarse torso cell.
+    for (const c of chestRegions) expect(c.edgeLength).toBeLessThan(0.4);
+  });
+
+  it('chest:false drops the chest spheres; the head/mouth ordering is preserved', () => {
+    const regions = faceDetail(rig, { chest: false });
+    const onChest = regions.some((d) =>
+      Math.hypot(d.center[0] - rig.torso.nippleL[0], d.center[1] - rig.torso.nippleL[1], d.center[2] - rig.torso.nippleL[2]) < 1e-6);
+    expect(onChest).toBe(false);
+    expect(regions[0].center).toEqual(rig.joints.head);
+    expect(regions[1].center).toEqual(rig.face.mouth);
+  });
+
+  it('rejects unknown / bad chest keys', () => {
+    expect(() => faceDetail(rig, { chest: 'yes' } as object)).toThrow(/chest/);
+    expect(() => faceDetail(rig, { chestThickness: 1 } as object)).toThrow();
+  });
+});
+
 describe('figure placeOnHead — seat headwear on the hair', () => {
   const F = createFigureNamespace(api);
   const rig = buildRig({ height: 60, headsTall: 6 });
