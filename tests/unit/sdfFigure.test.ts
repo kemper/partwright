@@ -162,6 +162,25 @@ describe('figure — bust mounds + areola', () => {
     expect(() => buildNipples(api, rig, { areola: 1 } as object)).toThrow();   // unknown key
   });
 
+  it('areola coin is a SHALLOW flush disc, not a deep backward plug (#706)', () => {
+    // A bare (no-bust) chest used the gently-curved-chest curvature radius
+    // (1.4·chestX). The old clip cylinder spanned the whole sphere depth, so the
+    // areola intersected into a plug ~1.1·surfR (≈1.5·chestX) BEHIND the front
+    // anchor — which on a narrow/shallow torso punched a rod out the BACK. The
+    // coin must instead seat only a shallow depth into the body (+Y = into the
+    // chest), so its back extent stays near the front surface.
+    const rig = buildRig({ height: 60, headsTall: 7, sex: 'male', weight: 0.4, muscle: 0.2 });
+    const node = buildNipples(api, rig) as unknown as SdfNode;
+    const b = node.bounds();
+    const anchorY = rig.torso.nippleL[1];                  // front-of-chest landmark
+    const chestX = rig.r.chestX;
+    // Back face sits a fraction of the chest half-width behind the anchor — NOT
+    // the old ~1.5·chestX plug that exits a lean back.
+    expect(b.max[1] - anchorY).toBeLessThan(chestX * 0.4);
+    // Still pokes proud of the surface at the front (−Y), so it reads as a disc.
+    expect(b.min[1]).toBeLessThan(anchorY);
+  });
+
   it('areolaColor darkens a skin hex or named tone, and is overridable in strength', () => {
     const darker = areolaColor('#cf9163');
     expect(darker).toMatch(/^#[0-9a-f]{6}$/);

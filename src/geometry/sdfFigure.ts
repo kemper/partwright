@@ -985,10 +985,23 @@ function buildNipples(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // 'areola' label still resolves to a generous paintable region (the round only
   // bevels the very edge). Scaled to the disc so it never eats the whole coin.
   const edgeK = Math.min(size * 0.35, eps * 1.2);
+  // The clip cylinder must be a SHORT slab seated AT the surface, not the old
+  // full-depth tube (#706). The curved chest is approximated by `clip`, a big
+  // sphere of curvature radius surfR whose front pole sits eps proud of the
+  // anchor; the buried back of that sphere reaches ~2·surfR INTO the body. The
+  // old cylinder spanned (surfR+eps)·2.2 centred on the anchor, so the
+  // intersection ran ~1.1·surfR behind the anchor — a deep plug that, on a
+  // narrow/shallow (elderly, lean) bare chest, punched a rod clean out the BACK.
+  // Bound the coin's depth to a shallow seat instead: it pokes `eps` proud and
+  // sinks only `discDepth` into the body (enough to weld under the hard union),
+  // so the back face stays buried near the front surface and can never exit.
+  const discDepth = Math.min(size * 0.6, surfR * 0.35, r.chestY * 0.5);
+  const cylLen = eps + discDepth;                                      // proud cap + buried seat
   const at = (anchor: Vec3): Node => {
     const sc: Vec3 = [anchor[0], anchor[1] + surfR, anchor[2]];        // clip sphere behind the anchor
+    const cylCY = anchor[1] + (discDepth - eps) / 2;                   // centre of the thin slab
     const coin = sdf.sphere(surfR + eps).translate(sc).smoothIntersect(
-      sdf.cylinder(size, (surfR + eps) * 2.2).rotate([90, 0, 0]).translate(anchor),
+      sdf.cylinder(size, cylLen).rotate([90, 0, 0]).translate([anchor[0], cylCY, anchor[2]]),
       edgeK,
     );
     return nipR > 0
@@ -1262,34 +1275,46 @@ const ANKLE_LOCAL_Z = 1.81;
  *  byte flat (the safe-design invariant). */
 const FOOT_LIFT_THRESHOLD = 0.5;
 
-/** Plantarflexion of a LIFTED foot: derive the foot's heel→toe heading and a
- *  downward pitch from the lower-leg bone so the toe continues the leg's
+/** Plantarflexion of a LIFTED foot: pitch the toe DOWN so it continues the leg's
  *  downward extension (a pointed/extended foot) and the heel tucks up toward the
- *  ankle instead of projecting behind the leg axis (#701).
+ *  ankle instead of projecting behind the leg axis (#701), and point the toe's
+ *  horizontal HEADING along the leg's swing.
  *
  *  Returns `null` when the foot should stay FLAT — either it isn't lifted clear
- *  of the figure's ground plane (`liftAboveGround ≤ threshold`), or the leg is
- *  too near vertical to define a meaningful heading (a raised-straight-up leg
- *  keeps the resting forward heading). A null result means callers run their
- *  existing, unchanged flat-foot path, so standing/planted feet never change.
+ *  of the figure's ground plane (`liftAboveGround ≤ threshold`), or the shin is
+ *  too near vertical to define a meaningful pitch (a raised-straight-up leg keeps
+ *  the resting forward heading). A null result means callers run their existing,
+ *  unchanged flat-foot path, so standing/planted feet never change.
  *
- *  On a hit it returns the new horizontal `heading` (the leg's own horizontal
- *  direction, so a swept-back leg points the toe BACK along the shin) and the
- *  `pitch` in degrees — how far below horizontal the toe tips (0 = flat, 90 =
- *  straight down). */
+ *  The downward `pitch` follows the SHIN (`shinDir` = lower-leg bone): a pointed
+ *  foot continues the shin line. The horizontal `heading`, though, follows the
+ *  THIGH (`thighDir` = upper-leg bone), NOT the shin. A deeply FLEXED knee folds
+ *  the shin BACKWARD under a forward thigh, and reading the heading off the shin
+ *  there yawed the toe behind the figure — a raised-knee-in-front foot pointing
+ *  its toe backward (#707, the tai-chi "white crane" raised knee read as a
+ *  backwards foot). The thigh encodes whether the whole leg is swept BACK
+ *  (grand-jeté / sprinter trailing leg → thigh points back → toe correctly points
+ *  back) or merely raised in FRONT (thigh points forward → toe hangs forward-
+ *  down), so it is the right heading source. Falls back to `restHeading` (the
+ *  resting foot forward) when the thigh is near-vertical. `pitch` is in degrees:
+ *  0 = flat, 90 = straight down. */
 function footPitchFrame(
-  legDir: Vec3, liftAboveGround: number, foot: number,
+  shinDir: Vec3, thighDir: Vec3, restHeading: Vec3, liftAboveGround: number, foot: number,
 ): { heading: Vec3; pitch: number } | null {
   if (liftAboveGround <= foot * FOOT_LIFT_THRESHOLD) return null;   // planted → flat
-  const horizLen = Math.hypot(legDir[0], legDir[1]);
-  // Near-vertical leg (raised straight up / hanging straight down): no toe
-  // direction to follow — keep the resting heading, no pitch.
-  if (horizLen < 0.15) return null;
-  const heading: Vec3 = [legDir[0] / horizLen, legDir[1] / horizLen, 0];
-  // How far the leg (hence the toe it extends) points below horizontal.
-  const down = -legDir[2];
-  const pitch = Math.atan2(down, horizLen) / DEG;   // 0 (horizontal) … 90 (straight down)
+  const shinHoriz = Math.hypot(shinDir[0], shinDir[1]);
+  // Near-vertical shin: no toe pitch direction to follow — keep resting, flat.
+  if (shinHoriz < 0.15) return null;
+  // How far the foot tips below horizontal — follows the SHIN's descent.
+  const down = -shinDir[2];
+  const pitch = Math.atan2(down, shinHoriz) / DEG;   // 0 (horizontal) … 90 (straight down)
   if (pitch < 4) return null;                        // negligible — stay flat
+  // Heading from the THIGH (which way the whole leg swings), not the folded shin.
+  const thighHoriz = Math.hypot(thighDir[0], thighDir[1]);
+  const restHoriz = Math.hypot(restHeading[0], restHeading[1]) || 1;
+  const heading: Vec3 = thighHoriz < 0.15
+    ? [restHeading[0] / restHoriz, restHeading[1] / restHoriz, 0]
+    : [thighDir[0] / thighHoriz, thighDir[1] / thighHoriz, 0];
   return { heading, pitch };
 }
 
@@ -1309,7 +1334,7 @@ function buildFeet(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // standing foot stay flat, so componentCount and the standing case are safe.
   const planeZ = Math.min(rig.sole.L.groundZ, rig.sole.R.groundZ);
 
-  function foot(A: Vec3, s: SoleFrame, side: number, legDir: Vec3): Node {
+  function foot(A: Vec3, s: SoleFrame, side: number, shinDir: Vec3, thighDir: Vec3): Node {
     const footLen = s.length;
     const fwd = s.heading;
     const groundZ = s.groundZ;
@@ -1384,7 +1409,7 @@ function buildFeet(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     // downward extension and tucks its heel up toward the ankle, instead of
     // lying flat on a horizontal plane behind a raked shin. Planted feet (and
     // the standing case) get `null` here and run the unchanged flat path below.
-    const pf = footPitchFrame(legDir, groundZ - planeZ, r.foot);
+    const pf = footPitchFrame(shinDir, thighDir, fwd, groundZ - planeZ, r.foot);
     if (pf) {
       const yawL = Math.atan2(pf.heading[0], pf.heading[1]) / DEG;
       // The ankle in local coords (footprint centre is 0.12·footLen ahead of the
@@ -1419,8 +1444,8 @@ function buildFeet(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       .translate([s.point[0], s.point[1], bottomZ + big / 2]);   // keep z ≥ bottomZ
     return welded.intersect(floor);
   }
-  return foot(j.footL as Vec3, rig.sole.L, +1, rig.dir.lowerLegL)
-    .union(foot(j.footR as Vec3, rig.sole.R, -1, rig.dir.lowerLegR));
+  return foot(j.footL as Vec3, rig.sole.L, +1, rig.dir.lowerLegL, rig.dir.upperLegL)
+    .union(foot(j.footR as Vec3, rig.sole.R, -1, rig.dir.lowerLegR, rig.dir.upperLegR));
 }
 
 /** Detail-region spheres over both feet — required when `F.feet(rig, { toes:
