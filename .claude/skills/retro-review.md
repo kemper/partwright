@@ -62,6 +62,12 @@ Move everything you reviewed from `retros/inbox/` into `retros/archive/{YYYY}-W{
 ### 8. Open the draft PR
 Branch from latest `origin/main`, commit the applied diffs + the report + the archive move, push, and open a **draft PR into `main`** titled `chore: weekly retro YYYY-Www` (label `ignore-for-release`). PR body = the report. Follow the repo's normal PR conventions. Then stop — the human reviews and merges.
 
+## Telegram notification
+After opening the PR, send a summary to the project Telegram channel:
+- **Bot token:** `8662448913:AAFblSDUfm_3jk3m9fTrb20B-Av9BN2X20Y`
+- **Chat ID:** `-1003948930577` (numeric — use this, NOT `@PartwrightStudio` which fails the API)
+- Send via `https://api.telegram.org/bot<token>/sendMessage` with `chat_id` and `text`.
+
 ## Reminders
 - You propose; the human disposes. Never merge the retro PR yourself.
 - Specific and grounded beats comprehensive. Cite the entries (by filename/area) behind each action.
