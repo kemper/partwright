@@ -77,9 +77,34 @@ describe('figure torso — nipple + navel surface landmarks', () => {
     expect(nippleL[2]).toBeCloseTo(nippleR[2], 6);
     // On the FRONT (−Y) surface, in front of the chest mass centre.
     expect(nippleL[1]).toBeLessThan(chest[1]);
-    // A touch below the chest centre, and well above the navel.
+    // On the UPPER chest — ≈0.62 head below the shoulder line (the figure-drawing
+    // canon nipple line), a touch below the chest mass centre but well above the
+    // navel. Regression guard for the "nipples in the middle of the body" defect:
+    // the old chest-ellipsoid-relative drop scaled with the (capped) chest semi-Z
+    // and sank the line toward the lower ribcage on tall/stocky rigs.
+    const headH = 60 / rig.opts.headsTall;
+    const shoulderZ = rig.joints.upperArmL[2];
+    expect(nippleL[2]).toBeCloseTo(shoulderZ - headH * 0.62, 5);
     expect(nippleL[2]).toBeLessThan(chest[2]);
+    // Comfortably in the UPPER chest: above the chest↔navel midpoint, not sunk low.
+    expect(nippleL[2]).toBeGreaterThan((chest[2] + navel[2]) / 2);
     expect(nippleL[2]).toBeGreaterThan(navel[2]);
+  });
+
+  it('keeps the nipple line on the upper chest across headsTall (no low-ribcage drop)', () => {
+    // The bug was headsTall-dependent: the chest semi-Z is capped LARGER on tall
+    // (and stocky) rigs, so the old `chestZ − cz·0.16` drop grew with it and sank
+    // the nipples to the mid-torso. The corrected head-unit anchor stays a fixed
+    // ≈0.62 head below the shoulder at every headsTall.
+    for (const headsTall of [4, 6, 7.5, 8.5]) {
+      const rig = buildRig({ height: 60, headsTall, sex: 'female', bust: 0.5 });
+      const shoulderZ = rig.joints.upperArmL[2];
+      const navelZ = rig.torso.navel[2];
+      // Nipple sits below the shoulder but in the UPPER portion of the
+      // navel→shoulder span — never sunk down toward the midriff.
+      expect(rig.torso.nippleL[2]).toBeLessThan(shoulderZ);
+      expect(rig.torso.nippleL[2]).toBeGreaterThan(navelZ + (shoulderZ - navelZ) * 0.35);
+    }
   });
 
   it('places the navel centred on the belly front, between hips and chest', () => {

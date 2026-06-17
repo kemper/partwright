@@ -58,7 +58,7 @@ If the caller asks for replicad, say so and stop rather than burning passes.
    `isManifold`, `volume`, `genus`, `warnings`) and writes a 4-view PNG
    (front / right / top / iso).
 4. **Judge twice — objective then subjective.**
-   - *Objective (from the JSON, cheap):* tri-count under the ~200k catalog
+   - *Objective (from the JSON, cheap):* tri-count under the ~500k catalog
      budget; `bbox` proportions match the brief; the engine's one-piece check.
    - *Subjective (Read the PNG):* does it read as the subject? Check the iso and
      front views for the defining features and for floating/disconnected bits.
@@ -75,7 +75,7 @@ If the caller asks for replicad, say so and stop rather than burning passes.
   missed — fix the overlap, don't ship it.
 - Organic forms: `warp`, `levelSet`, `Manifold.smoothOut`, `Curves` helpers.
 - Gates: `isManifold === true`, `componentCount === 1` (unless intentionally
-  multi-part), tris < ~200k, no sub-0.4 mm detail (the preview `warnings` flag it).
+  multi-part), tris < ~500k, no sub-0.4 mm detail (the preview `warnings` flag it).
 
 ### voxel
 - `const v = api.voxels();` build, `return v`. Z is up. Colors from the caller's
@@ -92,7 +92,7 @@ If the caller asks for replicad, say so and stop rather than burning passes.
   for `threaded_rod`, `spur_gear`, `cuboid(rounding=)`, etc.
 - Build the whole part inside one top-level CSG tree (`union()`) so it renders as
   one solid; check `componentCount === 1` in the stats.
-- Gates: `isManifold === true`, `componentCount === 1`, tris < ~200k.
+- Gates: `isManifold === true`, `componentCount === 1`, tris < ~500k.
 
 ## Canonical voxel helpers — paste these into every voxel snippet
 
