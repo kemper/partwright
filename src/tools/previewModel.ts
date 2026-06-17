@@ -218,13 +218,23 @@ export async function previewModel(
 
   // --- stats from the live manifold ---
   let stats: PreviewStats;
-  const labels = r.labelColors
-    ? [...r.labelColors.keys()].map((name) => ({
-        name,
-        color: (r.labelColors!.get(name) || null) as number[] | null,
-        triangleCount: r.labelMap?.get(name)?.size ?? 0,
-      }))
-    : [];
+  // Every label that survived into the mesh (labelMap) UNIONED with any colored
+  // label (labelColors), keyed by name. triangleCount comes from labelMap (0 when
+  // the label's partition resolved to no surface — e.g. a figure eye buried under
+  // the skin); color from labelColors when one was declared, else null. Including
+  // UNCOLORED labels is what makes the headless `--require-labels` paint oracle
+  // work: figure features (eyes/iris/pupil) are labelled geometry whose colour is
+  // applied later, so they'd otherwise be invisible in the stats and a buried one
+  // would only surface at the slow xvfb bake.
+  const labelNames = new Set<string>([
+    ...(r.labelMap ? r.labelMap.keys() : []),
+    ...(r.labelColors ? r.labelColors.keys() : []),
+  ]);
+  const labels = [...labelNames].map((name) => ({
+    name,
+    color: (r.labelColors?.get(name) ?? null) as number[] | null,
+    triangleCount: r.labelMap?.get(name)?.size ?? 0,
+  }));
 
   // Voxel-engine extras: res-aware scale + per-label sdf fill counts. Spread
   // into both stat branches so render-only results carry them too.
@@ -342,9 +352,16 @@ function buildWarnings(s: PreviewStats): string[] {
   if (s.renderOnly) w.push('Render-only mesh (no Manifold): volume/genus/watertight not measured — isManifold is unverified, not failed.');
   if (s.empty) w.push('Result is EMPTY — the returned shape has no volume.');
   if (!s.renderOnly && !s.isManifold && !s.empty) w.push('Not watertight / not a valid 2-manifold — a boolean likely failed (check overlap ≥0.5 units).');
-  const distinctLabelColors = new Set(s.labels.filter((l) => l.color).map((l) => l.color!.join(','))).size;
-  if (s.labels.length >= 2 && s.componentCount === 1) {
-    w.push(`Declared ${s.labels.length} labels but componentCount=1 — for a print-in-place mechanism the parts are FUSED (increase the clearance gap, or check for collisions).`);
+  // FUSED-mechanism heuristic keys off COLORED labels only: `s.labels` now also
+  // carries uncolored structural labels (figure partitions like eyes/skin), which
+  // legitimately share one welded component, so counting them all would cry
+  // "fused" on every figure. A print-in-place mechanism's separate parts are
+  // colored, so colored-label count is the right signal (and matches the prior
+  // behavior, when `s.labels` held only colored labels).
+  const coloredLabels = s.labels.filter((l) => l.color);
+  const distinctLabelColors = new Set(coloredLabels.map((l) => l.color!.join(','))).size;
+  if (coloredLabels.length >= 2 && s.componentCount === 1) {
+    w.push(`Declared ${coloredLabels.length} colored labels but componentCount=1 — for a print-in-place mechanism the parts are FUSED (increase the clearance gap, or check for collisions).`);
   }
   if (distinctLabelColors >= 2 && s.componentCount === 1) {
     w.push('Multiple colors but a single component — separate moving parts should report componentCount ≥ 2.');
@@ -383,6 +400,14 @@ function buildWarnings(s: PreviewStats): string[] {
     for (const op of s.paintOps) {
       if (op.triangleCount === 0) w.push(`api.paint op "${op.name}" (${op.kind}) resolved to 0 triangles — the region doesn't intersect the surface${op.kind === 'byLabel' ? ' (or the label doesn\'t exist in this run)' : ''}; check its placement against the model bbox.`);
     }
+  }
+  // A declared label that resolved to 0 triangles bakes as nothing — the
+  // buried-feature trap that shipped eyeless figures (the colored xvfb bake was
+  // previously the only place it surfaced). Catch it here too; the
+  // `--require-labels` gate (figure:smoke / model:preview) turns it into a hard
+  // non-zero exit for the authoring loop.
+  for (const l of s.labels) {
+    if (l.triangleCount === 0) w.push(`label "${l.name}" resolved to 0 paintable triangles — it's buried under another surface or was unioned/smoothed away, so it will paint as nothing. (Common for figure eyes/iris/pupil on round/cheeky/tilted heads — seat the feature proud of the skin; a trailing smoothUnion also drops labels.)`);
   }
   if (s.voxelResMixed) w.push('v.sdf() calls mixed different `res` values — world scale is ambiguous, so no worldBBox is reported. Use one res per grid for a res-aware size echo.');
   if (s.triangleCount > 200000) w.push(`High triangle count (${Math.round(s.triangleCount / 1000)}k) — exceeds the ~200k catalog budget; lower circular segments / nDivisions or feature density.`);
