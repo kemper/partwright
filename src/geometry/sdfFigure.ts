@@ -706,7 +706,7 @@ function buildRig(rawOpts: unknown): Rig {
   // spine-transformed, so a leaning figure carries its nipples with the chest.
   const tm = torsoMasses(joints, r);
   const mounds = breastMounds(joints, r, bust);
-  const nippleZ = tm.chest.c[2] - tm.chest.cz * 0.16;   // a touch below chest centre
+  const nippleZ = nippleLineZ(joints.upperArmL[2], joints.hips[2], headH);   // upper chest, ≈0.62 head below the shoulder
   const nippleDX = r.chestX * 0.42;                      // half the inter-nipple span
   const torsoAnchors: TorsoAnchors = {
     nippleL: mounds ? mounds.apexL : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, nippleDX, nippleZ),
@@ -810,6 +810,28 @@ function ellipsoidFront(c: Vec3, a: number, b: number, cz: number, dx: number, z
   return [c[0] + dx, c[1] - b * Math.sqrt(inside), z];
 }
 
+/** The bust / nipple LINE — the vertical height the nipples sit at on the chest,
+ *  measured in HEAD-UNITS down from the shoulder line (≈0.62 head below it).
+ *  The figure-drawing canon places the nipples roughly two heads below the
+ *  crown — about a head below the clavicle/shoulder — so anchoring off the
+ *  shoulder in head-units (like every other girth/landmark here) keeps them on
+ *  the UPPER chest at every build and headsTall. The old `chestZ − cz·0.16`
+ *  drop instead rode the chest ellipsoid's own half-height, which is CAPPED
+ *  LARGE on tall (high-headsTall) and stocky rigs, so the "touch below centre"
+ *  became a big drop that sank the mounds to the lower ribcage / upper belly —
+ *  the "nipples in the middle of the body" defect, where the bust also poked
+ *  out below a garment's chest coverage. The drop is clamped against the torso
+ *  span for extreme chibis (below). Shared by `buildRig` (bare-chest anchor)
+ *  and `breastMounds` (mound centre) so the two can't drift. */
+function nippleLineZ(shoulderZ: number, hipZ: number, headH: number): number {
+  // Clamp the head-unit drop so it never falls more than ~42% of the way down
+  // to the pelvis: at an extreme LOW headsTall (chibi) the head dwarfs the
+  // torso, so a raw 0.62-head drop would push the line into the belly. For the
+  // realistic 6–8.5-head range the head-unit drop wins and the clamp is inert.
+  const drop = Math.min(headH * 0.62, (shoulderZ - hipZ) * 0.42);
+  return shoulderZ - drop;
+}
+
 /** Per-side breast-mound ellipsoids + their apex landmarks, derived from the
  *  chest mass and a continuous `bust` size (0 ⇒ `null`, no mound). Shared by
  *  `buildRig` (to ride the nipple anchors on the apex) and `buildTorso` (to
@@ -825,7 +847,9 @@ function breastMounds(j: Record<string, Vec3>, r: Record<string, number>, bust: 
   const tm = torsoMasses(j, r);
   const cc = tm.chest.c, a = tm.chest.a, b = tm.chest.b, cz = tm.chest.cz;
   const dx = r.chestX * 0.42;
-  const moundZ = cc[2] - cz * 0.16 - r.chestX * 0.06;     // a touch below the nipple line
+  // headH from r.head (= headH·0.46, the only un-built head radius) so the mound
+  // rides the same head-unit nipple line as the bare-chest anchor in buildRig.
+  const moundZ = nippleLineZ(j.upperArmL[2], j.hips[2], r.head / 0.46);   // nipple line on the upper chest
   const R = r.chestX * (0.34 + 0.46 * bust);              // mound radius grows with bust
   const proj = R * (0.5 + 0.35 * bust);                   // forward projection
   const side = (s: 1 | -1): { mound: { c: Vec3; a: number; b: number; cz: number }; apex: Vec3 } => {
