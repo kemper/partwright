@@ -1,13 +1,14 @@
-// Expectant Mother — a serene pregnant woman in a short-sleeve maternity
-// sundress, both hands resting on her belly, gently smiling. The dress drapes
-// over a rounded abdominal bump and flares to a mid-calf hem (fully clothed).
+// Expectant Mother — a serene pregnant woman in a long-sleeve maternity dress,
+// arms relaxed at her sides, gently smiling. The dress drapes over a rounded
+// abdominal bump and flares to a mid-calf hem; the sleeves are independent
+// garment tubes that follow the arms (fully clothed).
 // Front = −Y, Z up, figure's left = +X, right = −X.
 const { sdf } = api;
 const F = sdf.figure;
 
-// 1. RIG — adult female, average build, slight bust. Both hands rest on the
-// front of the belly: arms tucked in and bent so the relaxed hands meet over
-// the bump around navel height. Head slightly down with a soft gaze.
+// 1. RIG — adult female, average build, slight bust. Arms relaxed at the sides,
+// slightly abducted with a soft elbow bend so the hands hang at the hips clear
+// of the belly. Head slightly down with a soft gaze.
 const rig = F.rig({
   height: 56,
   headsTall: 7.5,
@@ -16,10 +17,10 @@ const rig = F.rig({
   weight: 0.5,
   bust: 0.55,
   pose: {
-    // Hands rest on the bump: raiseSide -10 tucks the arms in, raiseFwd -5
-    // drops the elbows back, bend 90 brings the forearms forward over the
-    // belly (hands land ≈ Z 33–35, Y −8 to −10, framing the front of the bump).
-    arms: { raiseSide: -10, raiseFwd: -5, bend: 90 },
+    // Arms relaxed at the sides, slightly abducted (raiseSide 10) so they stand
+    // off the body and the sleeves read as independent arms, with a soft elbow
+    // bend. Hands hang at the hips, clear of the belly.
+    arms: { raiseSide: 10, raiseFwd: 0, bend: 12 },
     // Relaxed stance, slight outward spread.
     legL: { raiseSide: 7 },
     legR: { raiseSide: 7 },
@@ -78,48 +79,61 @@ const bumpCenter = [
   navel[2] + 1.0,                          // centre just above the navel — abdominal
 ];
 
-// 5. MATERNITY DRESS — a short-sleeve sundress. F.clothing.top with a hem below
-// the pelvis auto-becomes a dress: shoulders + sleeves + a flared cone skirt to
-// the hem, with a guaranteed-coverage underlayer so no skin shows through. We
-// then smooth-union a belly drape (the bump ellipsoid grown by the garment
-// thickness) so the dress bulges out over the abdomen — the gravid silhouette.
+// 5. DRESS BODY — a SLEEVELESS dress (its own region). F.clothing.top with a
+// hem below the pelvis and sleeve:'none' gives a bodice + flared cone skirt +
+// a coverage underlayer, with NO sleeves (so the arm garment stays independent,
+// §6). We smooth-union a belly drape (the bump grown by the garment thickness)
+// so the dress bulges over the abdomen, plus a wider A-line skirt overlay so the
+// dress stands off the legs (otherwise the body reaches the dress surface at the
+// hip and those triangles take the skin colour).
 const t = r.chestY * 0.4;                             // garment thickness
 const dressHemZ = rig.opts.height * 0.18;             // ≈ 10 — lower-calf hem
-const dressBase = F.clothing.top(rig, {
-  sleeve: 'short',
+const bodice = F.clothing.top(rig, {
+  sleeve: 'none',
   hemZ: dressHemZ,
   thickness: t,
 });
-// Belly drape — the bump ellipsoid grown by the garment thickness, so the dress
-// bulges out over the abdomen (the gravid silhouette).
 const bellyDrape = sdf.ellipsoid(bumpW + t, bumpD + t, bumpH + t).translate(bumpCenter);
-// A-line skirt overlay — a generous flared cone from the waist to the hem,
-// clearly WIDER than the hips/thighs so the dress stands off the legs. Without
-// it the auto-skirt narrows at the hip and the body sits at the dress surface
-// there, flipping those triangles to the skin colour (a tan patch on the dress).
 const skirtTopZ = j.spine[2];                         // waist line ≈ 30.8
 const skirtH = skirtTopZ - dressHemZ;
 const skirtOverlay = sdf.cylinder(r.hipsX * 1.25 + t, skirtH)
   .taper(-0.03, 'z')                                  // gentle A-line flare to the hem
   .translate([0, 0, (skirtTopZ + dressHemZ) / 2]);
-const dress = dressBase
+const dress = bodice
   .smoothUnion(bellyDrape, t * 1.6)
   .smoothUnion(skirtOverlay, t * 1.2)
   .label('dress');
 
-// 6. HAIR — long.
+// 6. SLEEVES — INDEPENDENT garment tubes that follow each arm (shoulder → elbow
+// → wrist), their own labelled region so they read as sleeves rather than a blob
+// fused into the bodice. A shoulder cap sphere bridges the bare-shouldered bodice
+// to the sleeve top so no skin shows at the deltoid. Hands stay bare past the
+// wrist, hanging at the sides clear of the belly.
+const sleeveRad = r.upperArm + t * 0.7;
+function makeSleeve(S, E, W) {
+  return sdf.capsule(S, E, sleeveRad)
+    .smoothUnion(sdf.capsule(E, W, sleeveRad * 0.9), r.lowerArm * 0.7)
+    .smoothUnion(sdf.sphere(sleeveRad * 1.1).translate(S), r.upperArm * 0.6);
+}
+const sleeves = sdf.union(
+  makeSleeve(j.upperArmL, j.lowerArmL, j.wristL),
+  makeSleeve(j.upperArmR, j.lowerArmR, j.wristR),
+).label('sleeves');
+
+// 7. HAIR — long.
 const hair = F.hair(rig, { style: 'long' }).label('hair');
 
-// 7. BASE — disc under the feet.
+// 8. BASE — disc under the feet.
 const base = F.base(rig, {
   radius: rig.opts.height * 0.22,
   thickness: rig.opts.height * 0.035,
 }).label('base');
 
-// 8. Hard-union labelled regions and build.
-return sdf.union(skin, eyes, lips, dress, hair, base)
+// 9. Hard-union labelled regions and build.
+return sdf.union(skin, eyes, lips, dress, sleeves, hair, base)
   .build({
-    edgeLength: 0.72,
-    // Drop footDetail — feet are hidden under the long dress; save ~15-20k tris.
-    detail: [...F.faceDetail(rig), ...F.handDetail(rig)],
+    edgeLength: 0.78,
+    // Only faceDetail — feet are hidden under the long dress and the hands hang
+    // small at the sides, so footDetail/handDetail aren't worth the triangles.
+    detail: [...F.faceDetail(rig)],
   });
