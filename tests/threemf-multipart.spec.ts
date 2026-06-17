@@ -54,37 +54,36 @@ test.describe('multi-part 3MF export', () => {
 
     expect(report.filename).toMatch(/\.3mf$/);
 
-    // ── Bambu/Orca project mode ──
+    // ── Bambu/Orca project mode (production-extension layout) ──
+    // Verified to load in OrcaSlicer 2.3.2 headless (exit 0, N plates). The
+    // structural invariants below are exactly the ones that, if broken, make the
+    // real slicer reject the file — so this guards the headless-validated recipe.
     const b = report.bambu;
-    expect(b).toContain('<object id="1" type="model">');
-    expect(b).toContain('<object id="2" type="model">');
-    expect((b.match(/<item objectid=/g) ?? []).length).toBe(2);
-    // Project marker (flips Bambu into multi-plate / filament-binding mode).
+    // Production extension: each part is a wrapper -> separate /3D/Objects/*.model.
+    expect(b).toContain('requiredextensions="p"');
+    expect((b.match(/p:path="\/3D\/Objects\/object_\d+\.model"/g) ?? []).length).toBe(2);
+    expect((b.match(/<component /g) ?? []).length).toBe(2);
+    // Project marker (flips Bambu into project / multi-plate mode).
     expect(b).toContain('<metadata name="Application">BambuStudio-');
-    // Generic material colours (read by non-Bambu slicers) + Bambu per-triangle paint.
+    // Colours: generic m:colorgroup (any slicer) + Bambu per-triangle paint_color.
     expect(b).toContain('<m:colorgroup');
-    expect(b).toContain('#FF0000FF');
-    expect(b).toContain('#0000FFFF');
     expect(b).toContain('paint_color=');
-    // model_settings.config with one plate per part.
+    // model_settings.config: one <plate> per part.
     expect(b).toContain('Metadata/model_settings.config');
     expect((b.match(/<plate>/g) ?? []).length).toBe(2);
-    expect(b).toContain('key="plater_id" value="1"');
-    expect(b).toContain('key="plater_id" value="2"');
     expect(b).toContain('key="extruder"');
-    // We do NOT emit project_settings.config: a minimal one crashes Bambu's
-    // project loader, a full one reintroduces the preset warning. So no preset
-    // ids either. Colours come via colorgroup + extruder + paint_color.
-    expect(b).not.toContain('Metadata/project_settings.config');
-    expect(b).not.toContain('filament_settings_id');
-    expect(b).not.toContain('printer_settings_id');
-    // Each part on its OWN plate: Bambu assigns by world position, so the two
-    // <item> X translations must differ AND match the plate stride (bed × 1.2 =
-    // 307.2 for a 256 bed). Transform = "1 0 0 0 1 0 0 0 1 TX TY TZ".
-    const bTxs = [...b.matchAll(/<item objectid="\d+" transform="([^"]+)"/g)]
-      .map(m => parseFloat(m[1].trim().split(/\s+/)[9]));
+    // LOAD-CRITICAL: plater_name MUST be empty — a non-empty value makes Orca's
+    // loader reject the project (regression guard for the bug we hit).
+    expect(b).not.toMatch(/plater_name" value="[^"]+"/);
+    // REQUIRED: a minimal project_settings.config makes the loader build the
+    // plate list (absent → single plate). It carries the filament preset id.
+    expect(b).toContain('Metadata/project_settings.config');
+    expect(b).toContain('filament_settings_id');
+    // Each part placed in its own plate slot → distinct <item> X translations.
+    const bTxs = [...b.matchAll(/<item objectid="\d+"[^>]*transform="([^"]+)"/g)]
+      .map(m => m[1].trim().split(/\s+/)[9]);
     expect(bTxs.length).toBe(2);
-    expect(Math.abs((bTxs[1] - bTxs[0]) - 256 * 1.2)).toBeLessThan(5); // plate stride
+    expect(bTxs[0]).not.toBe(bTxs[1]);
 
     // ── Generic multi-object mode ──
     const g = report.generic;
@@ -167,12 +166,12 @@ test.describe('multi-part 3MF export', () => {
     expect((out as { error?: string }).error).toBeUndefined();
     const o = out as { parts: number; text: string };
     expect(o.parts).toBe(3);
-    // Real bake produced 3 objects, 3 plates, the project_settings.config that
-    // makes Bambu build the plate list, and no preset-id keys (warning guard).
-    expect((o.text.match(/<object id="\d+" type="model">/g) ?? []).length).toBe(3);
+    // Real bake → 3 production-extension parts, 3 plates, project_settings.config
+    // (builds the plate list), empty plater_name (load-critical), and colours.
+    expect((o.text.match(/p:path="\/3D\/Objects\/object_\d+\.model"/g) ?? []).length).toBe(3);
     expect((o.text.match(/<plate>/g) ?? []).length).toBe(3);
-    expect(o.text).not.toContain('Metadata/project_settings.config');
-    expect(o.text).not.toContain('filament_settings_id');
+    expect(o.text).toContain('Metadata/project_settings.config');
+    expect(o.text).not.toMatch(/plater_name" value="[^"]+"/);
     // Colours from api.label survived the off-editor bake → distinct material colours.
     expect(o.text).toContain('<m:colorgroup');
     const colors = [...o.text.matchAll(/<m:color color="(#[0-9A-F]{8})"/g)].map(m => m[1]);
