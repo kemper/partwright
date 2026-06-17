@@ -495,7 +495,7 @@ F.face.assemble(head, rig, {
 > brows into the face, but the usual `.label('skin')` weld flattens them to skin
 > tone. For **dark, painted-on brows**, leave them out of the assemble (`brows:
 > false`) and union `F.face.brows(rig, { … })` at the **top level**, exactly like
-> the eyes — see [Brows](#brows--flush-painted-on-shapestyle-presets) below.
+> the eyes — see [Brows](#brows--flush-painted-on-shape-presets) below.
 
 ### Head shape — `F.head(rig, { faceShape, jaw, chin, cheek })`
 
@@ -740,7 +740,7 @@ With `style: 'solid'`, adding `lids` makes the result **self-labelled** (`'eyes'
 `'lids'`), so don't wrap it in `.label()`. Lids follow the head pose like the
 iris/pupil and need no extra `detail` beyond `F.faceDetail(rig)`.
 
-### Brows — flush, painted-on, `shape`/`style` presets
+### Brows — flush, painted-on `shape` presets
 
 Eyebrows are **flush** strips that hug the forehead above the eyes — *not* a
 raised brow ridge. Like the iris/pupil, the colour does the work: the brow is

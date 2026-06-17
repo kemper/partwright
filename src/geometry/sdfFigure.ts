@@ -2798,7 +2798,7 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const lift = num(o.lift, 1, 'brows.lift', 0, 5);
   const widthMul = num(o.width, 1, 'brows.width', 0.3, 2);
   const taper = num(o.taper, P.taper, 'brows.taper', 0, 0.9);
-  const relief = num(o.relief, P.relief, 'brows.relief', 0, 1.5);
+  const relief = num(o.relief, P.relief, 'brows.relief', 0, 1);
   const halfSpan = R * P.width * widthMul;
   const band = R * P.band * thickness;
   const arch = R * P.arch * lift;
@@ -2807,7 +2807,7 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const SEGS = 16;
   // Sink the strip into the forehead so only a flush/whisper-proud cap reads:
   // relief 0 → sunk by the full band (dead flush); relief 1 → barely sunk (proud).
-  const backSink = band * (1 - Math.min(1, relief));
+  const backSink = band * (1 - relief);
   const browPt = (anchor: Vec3, sideSign: number, t: number): Vec3 => {
     const s = halfSpan * t;                                  // t<0 = medial (toward nose)
     const sagDrop = (s * s) / (2 * Math.max(rig.r.headX, 1e-3)); // follow skull curvature
