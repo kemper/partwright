@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildTorso, buildNipples, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildNipples, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildBrows, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -876,6 +876,61 @@ describe('figure eyes — styles and labels', () => {
   it('rejects unknown style and keys', () => {
     expect(() => buildEyes(api, rig, { style: 'laser' })).toThrow(/style/);
     expect(() => buildEyes(api, rig, { glow: true })).toThrow();
+  });
+});
+
+describe('figure brows — flush, labelled, preset-driven (#724)', () => {
+  // Neutral pose so headForward = −Y and headUp = +Z (clean axis assertions).
+  const rig = buildRig({ height: 60, headsTall: 5 });
+  const labelsOf = (node: unknown): string[] =>
+    [...new Set(partitionByLabel(node as SdfNode).map(p => p.labelName).filter((n): n is string => !!n))].sort();
+
+  it("self-labels the single 'brows' region (so a top-level union carries the colour)", () => {
+    expect(labelsOf(buildBrows(api, rig))).toEqual(['brows']);
+  });
+
+  it('all shape presets build without throwing', () => {
+    for (const shape of ['natural', 'thin', 'bushy', 'arched', 'flat', 'angled', 'rounded', 'straight']) {
+      expect(() => buildBrows(api, rig, { shape })).not.toThrow();
+    }
+  });
+
+  it("'bushy' is a thicker (taller) brow than 'thin'", () => {
+    // Vertical extent of the strip ≈ its band thickness (+arch); bushy's wider
+    // band dominates so the strip is clearly taller than the thin line.
+    const zSpan = (opts: object): number => { const b = buildBrows(api, rig, opts).bounds(); return b.max[2] - b.min[2]; };
+    expect(zSpan({ shape: 'bushy' })).toBeGreaterThan(zSpan({ shape: 'thin' }));
+  });
+
+  it('higher relief sits more PROUD (further forward) than a flush brow', () => {
+    // headForward = −Y, so the forward-most surface is the most-negative Y.
+    // relief 0 sinks the strip the full band back; relief 1 leaves it proud.
+    const frontY = (relief: number): number => buildBrows(api, rig, { relief }).bounds().min[1];
+    expect(frontY(1)).toBeLessThan(frontY(0) - 1e-6);
+  });
+
+  it('the width knob widens the lateral (X) span', () => {
+    const xSpan = (opts: object): number => { const b = buildBrows(api, rig, opts).bounds(); return b.max[0] - b.min[0]; };
+    expect(xSpan({ width: 1.6 })).toBeGreaterThan(xSpan({ width: 1 }));
+  });
+
+  it('back-compat: legacy { thickness, lift } multipliers still work', () => {
+    expect(() => buildBrows(api, rig, {})).not.toThrow();
+    expect(() => buildBrows(api, rig, { thickness: 1.3, lift: 0 })).not.toThrow();
+    // thickness scales the band → a thicker (taller) strip.
+    const zSpan = (opts: object): number => { const b = buildBrows(api, rig, opts).bounds(); return b.max[2] - b.min[2]; };
+    expect(zSpan({ thickness: 2 })).toBeGreaterThan(zSpan({ thickness: 1 }));
+  });
+
+  it('rejects an unknown shape and unknown keys', () => {
+    expect(() => buildBrows(api, rig, { shape: 'unibrow' })).toThrow(/shape/);
+    expect(() => buildBrows(api, rig, { bushiness: 2 })).toThrow();
+  });
+
+  it('faceDetail includes per-brow refinement spheres, droppable via brows:false', () => {
+    const withBrows = faceDetail(rig).length;
+    const without = faceDetail(rig, { brows: false }).length;
+    expect(withBrows - without).toBe(2); // one sphere per brow
   });
 });
 
@@ -1849,10 +1904,16 @@ describe('figure faceDetail — detail-region helper', () => {
     const [head] = regions;
     // Two spheres PER eye (a medium eyelid/eyeball one + a finer iris/pupil one),
     // all finer than the head grid and near an eye anchor → four in total.
-    const nearEye = (c: number[], a: number[]): boolean =>
+    const near = (c: number[], a: number[]): boolean =>
       Math.hypot(c[0] - a[0], c[1] - a[1], c[2] - a[2]) < rig.r.head * 0.4;
-    const eyeRegions = regions.filter((d) => d.edgeLength < head.edgeLength
-      && (nearEye(d.center, rig.face.eyeL) || nearEye(d.center, rig.face.eyeR)));
+    // The brow spheres also sit near the eye, but they're centred EXACTLY on the
+    // brow anchors (the eye spheres are pushed forward off the eye anchor), so
+    // exclude an exact brow-anchor match — this counts only the eyeball/iris pair.
+    const isAt = (c: number[], a: number[]): boolean =>
+      Math.hypot(c[0] - a[0], c[1] - a[1], c[2] - a[2]) < 1e-6;
+    const isBrow = (c: number[]): boolean => isAt(c, rig.face.browL) || isAt(c, rig.face.browR);
+    const eyeRegions = regions.filter((d) => d.edgeLength < head.edgeLength && !isBrow(d.center)
+      && (near(d.center, rig.face.eyeL) || near(d.center, rig.face.eyeR)));
     expect(eyeRegions.length).toBe(4);
     // All finer than the head grid; the finest (iris/pupil) is finer still.
     for (const e of eyeRegions) expect(e.edgeLength).toBeLessThanOrEqual(rig.r.head * 0.05 + 0.03);
