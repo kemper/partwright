@@ -10,6 +10,7 @@ import type { Language } from '../geometry/engines/types';
 import type { MeshResult } from '../geometry/engines/types';
 import { componentsOverlap } from './bboxOverlap';
 import { resolvePaintOps } from '../color/paintOpsResolve';
+import { APP_CONFIG_DEFAULTS } from '../config/appConfig';
 
 export interface PreviewComponent {
   index: number;
@@ -410,7 +411,8 @@ function buildWarnings(s: PreviewStats): string[] {
     if (l.triangleCount === 0) w.push(`label "${l.name}" resolved to 0 paintable triangles — it's buried under another surface or was unioned/smoothed away, so it will paint as nothing. (Common for figure eyes/iris/pupil on round/cheeky/tilted heads — seat the feature proud of the skin; a trailing smoothUnion also drops labels.)`);
   }
   if (s.voxelResMixed) w.push('v.sdf() calls mixed different `res` values — world scale is ambiguous, so no worldBBox is reported. Use one res per grid for a res-aware size echo.');
-  if (s.triangleCount > 200000) w.push(`High triangle count (${Math.round(s.triangleCount / 1000)}k) — exceeds the ~200k catalog budget; lower circular segments / nDivisions or feature density.`);
+  const triBudget = APP_CONFIG_DEFAULTS.geometry.triCountWarnBudget;
+  if (s.triangleCount > triBudget) w.push(`High triangle count (${Math.round(s.triangleCount / 1000)}k) — exceeds the ~${Math.round(triBudget / 1000)}k catalog budget; lower circular segments / nDivisions or feature density.`);
   if (s.aspectRatio > 12) w.push(`Extreme aspect ratio (${s.aspectRatio.toFixed(1)}:1) — tall/thin parts can be fragile or tip-droppy on FDM.`);
   if (s.minEdgeLength > 0 && s.minEdgeLength < 0.4) w.push(`Smallest edge ${s.minEdgeLength}mm (<0.4mm extrusion width) — sub-extrusion detail may vanish on the print.`);
   return w;
