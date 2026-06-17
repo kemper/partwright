@@ -158,10 +158,19 @@ const areolaR = r.chestX * 0.16;
 const tinyNip = r.chestX * 0.05;
 const surfR = puffR[1];                         // local curvature ~ the puff's depth radius
 const eps = r.chestX * 0.03;
+// Bound the clip cylinder to a SHORT slab seated at the puff surface (matches the
+// engine F.nipples #706 fix). The old `(surfR + eps) * 2.2` tube, centred on the
+// anchor, ran ~1.1·surfR BACK into the body — a deep plug that stayed buried in
+// this deep pec puff but is the same latent rod that punches out a shallow chest.
+// The coin pokes `eps` proud and sinks only `discDepth` in (enough to weld under
+// the hard union), so its back face can never exit the torso.
+const discDepth = Math.min(areolaR * 0.6, surfR * 0.35, r.chestY * 0.5);
+const cylLen = eps + discDepth;
 const areola = (x) => {
   const anc = [x, puffFrontY(x, nipZ), nipZ];
+  const cylCY = anc[1] + (discDepth - eps) / 2;   // centre of the thin slab
   const coin = sdf.sphere(surfR + eps).translate([anc[0], anc[1] + surfR, anc[2]]).intersect(
-    sdf.cylinder(areolaR, (surfR + eps) * 2.2).rotate([90, 0, 0]).translate(anc),
+    sdf.cylinder(areolaR, cylLen).rotate([90, 0, 0]).translate([anc[0], cylCY, anc[2]]),
   );
   return coin.union(sdf.sphere(tinyNip).translate([anc[0], anc[1] - tinyNip * 0.5, anc[2]]));
 };
