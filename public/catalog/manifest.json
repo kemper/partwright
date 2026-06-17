@@ -1283,6 +1283,36 @@
       ]
     },
     {
+      "id": "elf-archer",
+      "name": "Elf Archer",
+      "file": "elf_archer.partwright.json",
+      "language": "manifold-js",
+      "description": "A wood-elf archer holding a longbow upright — pointed elf ears left fully exposed by hair worn behind them, on a slim ranger build.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "topknot-sensei",
+      "name": "Topknot Sensei",
+      "file": "topknot_sensei.partwright.json",
+      "language": "manifold-js",
+      "description": "A calm tai-chi master with palms pressed at the chest — anatomical detailed ears (helix rim, concha, lobe) framed by a topknot bun worn behind them.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "pixie-skater",
+      "name": "Pixie Skater",
+      "file": "pixie_skater.partwright.json",
+      "language": "manifold-js",
+      "description": "A breezy skater, hands on hips, with a cropped pixie cut worn behind the ears showing clean round ears.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
       "id": "superhero-takeoff",
       "name": "Superhero Takeoff",
       "file": "superhero.partwright.json",
@@ -1318,6 +1348,36 @@
       "file": "stargazer_bust.partwright.json",
       "language": "manifold-js",
       "description": "A dreamy bust gazing skyward \u2014 chin lifted and both irises cast up with the eyes' gaze:'up' preset, set off by almond lids and soft lips.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "bust-elf",
+      "name": "Elf Bust",
+      "file": "bust_elf.partwright.json",
+      "language": "manifold-js",
+      "description": "A wood-elf bust — pointed ears left exposed by long hair worn behind them, with almond iris eyes, a fine nose and calm lips. A clean look at the figure API's pointed ear type on a full face.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "bust-listener",
+      "name": "Listener Bust",
+      "file": "bust_listener.partwright.json",
+      "language": "manifold-js",
+      "description": "An attentive adult bust — anatomical detailed ears (helix, concha, tragus, lobe) framed by short hair worn behind them, with iris eyes, a broad nose and an easy smile.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "bust-pixie",
+      "name": "Pixie Bust",
+      "file": "bust_pixie.partwright.json",
+      "language": "manifold-js",
+      "description": "A bright young bust — clean round ears exposed by a cropped pixie worn behind them, with big iris eyes, a button nose and a grin.",
       "tags": [
         "figures"
       ]
