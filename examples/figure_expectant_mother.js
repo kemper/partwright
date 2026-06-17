@@ -5,9 +5,9 @@
 const { sdf } = api;
 const F = sdf.figure;
 
-// 1. RIG — adult female, average build, slight bust. Both hands cradle UNDER
-// the belly: arms raised forward a little and bent ~85 so the relaxed hands
-// meet at the front of the bump. Head slightly down with a soft downward gaze.
+// 1. RIG — adult female, average build, slight bust. Both hands cradle the
+// belly: arms raised forward and bent so the relaxed hands rest on the bump
+// front/underside around navel height. Head slightly down, soft gaze.
 const rig = F.rig({
   height: 56,
   headsTall: 7.5,
@@ -16,12 +16,11 @@ const rig = F.rig({
   weight: 0.5,
   bust: 0.55,
   pose: {
-    // Both arms cradle the front of the belly: a slight inward tuck
-    // (raiseSide −6), gentle forward lift (raiseFwd 18) and a moderate elbow
-    // bend (75) bring the relaxed hands together low and forward
-    // (≈[±3.1, −12.9, 37.8]) so they meet at the front of the bump. (grip is a
-    // hands option, not a pose field — see F.hands below.)
-    arms: { raiseSide: -6, raiseFwd: 18, bend: 75 },
+    // Classic cradle: upper arm slightly back (raiseFwd -5 drops elbow back),
+    // raiseSide -10 tucks arms toward body, bend 90 brings forearms forward
+    // and slightly down. Hands should land at ~hip/belly height, Z~32-35,
+    // forward of the body at Y~-8 to -11, framing the front of the bump.
+    arms: { raiseSide: -10, raiseFwd: -5, bend: 90 },
     // Relaxed stance, slight outward spread.
     legL: { raiseSide: 7 },
     legR: { raiseSide: 7 },
@@ -53,19 +52,22 @@ const lips = F.face.mouthAccents(rig, {
   expression: 'slightSmile',
 });
 
-// 3. BELLY BUMP — a large, high rounded ellipsoid welded onto the front torso so
-// it becomes part of 'skin'. Centred above the navel and projected well forward
-// (−Y) so its lower-front face rises to meet the cradling hands (≈Z 36, Y −12).
-// Tuned so the relaxed hands rest on the underside/front of the bump without
-// interpenetrating; the navel (carved by F.torso) sits on its lower face.
+// 3. BELLY BUMP — a moderate rounded ellipsoid centred just below the navel,
+// projecting forward as a natural gravid belly. Sized so it reads as a low,
+// rounded bump rather than a mass on the chest:
+//   width  half-axis ≈ 4.5 (just under hipsX), depth ≈ 5.1 (the forward swell),
+//   height half-axis ≈ 4.7 → the bump spans ≈ Z 24.5–34, staying well below the
+//   chest joint (Z 40.5). The center is seated back into the torso so only the
+//   front half swells out; the front face lands ≈ Y −9.8, where the cradling
+//   hands rest. The navel carve (by F.torso) sits on the bump's front face.
 const navel = rig.torso.navel;            // front-surface landmark on the belly
-const bumpW = r.chestX * 1.12;            // half-width
-const bumpD = r.chestY * 1.95;            // forward projection (depth) so the front meets the hands
-const bumpH = r.chestX * 1.45;            // half-height
+const bumpW = r.hipsX * 1.02;             // half-width, just under the hips
+const bumpD = r.chestY * 1.72;            // forward projection (≈5.1) — the swell
+const bumpH = r.chestX * 0.95;            // half-height — low gravid bump, not a chest mass
 const bumpCenter = [
   navel[0],
-  navel[1] - bumpD * 0.32,                // seat the bulk into the torso, only the front swells out
-  navel[2] + r.chestX * 0.78,             // raise so the swell spans navel→lower-ribs
+  navel[1] - bumpD * 0.34,                // seat the bulk back; front face ≈ Y −9.8
+  navel[2] - 1.5,                          // centre just below the navel
 ];
 const bump = sdf.ellipsoid(bumpW, bumpD, bumpH).translate(bumpCenter);
 
@@ -118,6 +120,7 @@ const base = F.base(rig, {
 // 9. Hard-union labelled regions and build.
 return sdf.union(skin, eyes, lips, top, skirt, hair, base)
   .build({
-    edgeLength: 0.58,
-    detail: [...F.faceDetail(rig), ...F.handDetail(rig), ...F.footDetail(rig)],
+    edgeLength: 0.72,
+    // Drop footDetail — feet are hidden inside the long skirt; save ~15-20k tris.
+    detail: [...F.faceDetail(rig), ...F.handDetail(rig)],
   });
