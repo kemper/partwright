@@ -103,6 +103,7 @@ F.rig({
   weight,      // 0..1 (default 0.5 = average; 0 = lean, 1 = heavy)
   muscle,      // 0..1 (default 0 = smooth; ~0.5 athletic, 1 = bodybuilder)
   bust,        // 0..2 chest mound (default 0; sex:'female' pre-fills ~0.35). Independent of sex.
+  belly,       // 0..2 abdominal/pregnancy swell (default 0; ~0.5 tummy, ~0.7-1 pregnant). A dress/top drapes over it automatically.
   pose: {      // all optional; neutral standing defaults
     arms, legs, // SYMMETRIC shorthand — seeds BOTH sides at once (see below)
     armL, armR, // { raiseSide, raiseFwd, bend, twist }   degrees — override per side
@@ -133,6 +134,14 @@ F.rig({
 >   kept deliberately **independent of `sex`** (set it on any figure; `sex:'female'`
 >   only supplies a default when you omit it). The mound blends into the chest and
 >   the areola/nipple landmarks ride its apex. See the bare-torso section below.
+> - **`belly`** (0..2, default 0) — an abdominal swell for a **pregnant or
+>   soft-bellied** figure (~0.5 a tummy, ~0.7–1 a pronounced pregnant bump). It
+>   grows the abdomen **forward** (and modestly in girth/height) while raising its
+>   centre so the swell's bottom stays put — it reads as a belly and can never drop
+>   between the legs. Because the torso masses feed both the body **and** the
+>   coverage layer of `figure.clothing.top`, **a dress or top drapes over the bump
+>   automatically** — no hand-rolled bump or drape needed (just set `belly` and add
+>   the garment). The navel landmark rides the swell too.
 > - **`age`** (years) shifts torso girth toward the baby/child/old proportions.
 >   It does **not** change `headsTall` (the head-to-body ratio) — for a full
 >   baby/child look, lower `headsTall` too (≈3–4).
@@ -377,7 +386,10 @@ F.feet(rig, { toes: true })
 Toes are a barefoot detail: omit them (the smooth default) when the figure wears
 `F.clothing.shoes`/`boots`, which wrap the foot with their own coverage. The
 foot heading follows `leg*.twist` turnout, so posed/turned-out legs keep their
-feet pointed correctly.
+feet pointed correctly. Footwear also tracks a **lifted foot's plantarflexion**:
+when a foot is raised clear of the ground its toe points down along the leg
+(pointed foot), and the shoe/boot pivots with it, so a kicking, lunging, or
+tip-toe foot stays fully shod instead of poking out of a flat shoe.
 
 **`F.base` auto-sizes to the pose.** It widens to cover the stance footprint and
 rises to meet the *lowest* foot, so a wide or lunging stance still lands one
@@ -486,10 +498,16 @@ F.face.assemble(head, rig, {
   eyes:  true | { radius, style, lids, gaze, gazeL, gazeR } | false,  // OFF by default — see note below
   nose:  true | { type, projection, length, width, bridge, bridgeWidth, profile, tipSize, tipShape, flare, upturn, nostrilSize, nostrils, tipRadius } | false,
   mouth: true | { style, expression, curve, width, smirk, open, fullness, lipShape, divided, render, teeth } | false,
-  ears:  true | { size } | false,
-  brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
+  ears:  true | { size, type, tilt } | false,   // type: 'detailed'(default) | 'round' | 'pointed'; tilt deg (+back)
+  brows: { shape, thickness, lift, width, taper, relief, spacing } | false, // off by default; see "Brows" below
 })
 ```
+
+> **In-assemble brows are SKIN-COLOURED.** The `brows:` key above welds flush
+> brows into the face, but the usual `.label('skin')` weld flattens them to skin
+> tone. For **dark, painted-on brows**, leave them out of the assemble (`brows:
+> false`) and union `F.face.brows(rig, { … })` at the **top level**, exactly like
+> the eyes — see [Brows](#brows--flush-painted-on-shape-presets) below.
 
 ### Head shape — `F.head(rig, { faceShape, jaw, chin, cheek })`
 
@@ -639,6 +657,46 @@ return sdf.union(skin, eyes, mouthParts, hair, base).build({ ... });
   form of the groove, for a coloured expressive mouth line (frown → smile). Pass
   `mouth: false` to `assemble` if you want *only* the painted line.
 
+### Ears & the hair⇄ear relationship
+
+`F.face.ears(rig, { size, type })` welds ears at the `rig.face.earL/earR`
+anchors (pose-tracked). Each is a thin, ear-shaped plate that stands proud of
+the skull with a **shallow concha scoop** (a real rim + bowl, never a punched
+"keyhole" hole). Three **types**:
+
+| `type` | Shape | Use for |
+|---|---|---|
+| `'detailed'` (default) | the cupped ear plus a **tragus + antitragus** — reads as a real ear | most figures, realistic busts |
+| `'round'` | a clean cupped ear: comma plate + shallow concha + earlobe, no inner detail | simpler / cartoon figures |
+| `'pointed'` | a triangular pinna sloping up to a **rounded point** | elves, fae, fantasy |
+
+`size` scales the ears; **`tilt`** (degrees, −45..45, **+ = back**) angles the top
+toward the nape — most useful on `'pointed'` to sweep the elf point back.
+
+```js
+ears: { type: 'pointed', size: rig.r.head * 0.4, tilt: 22 }   // swept-back elf ears
+```
+
+**Whether hair covers or exposes the ears is a `F.hair` knob, not an ear knob** —
+the hair owns the silhouette. `F.hair(rig, { ears })`:
+
+- **`'cover'` (default)** — the hair cap flows over the ears (they hide under a
+  bob, long hair, etc.). Carves nothing, so existing bakes are byte-identical.
+- **`'behind'`** — the hair is worn *behind* the ears: an ear-clearance pocket is
+  scooped out of the cap at each ear anchor so the skin ears protrude in front.
+
+```js
+// elf ears left fully visible: pointed ears + hair worn behind them
+const face = F.face.assemble(head, rig, { ears: { type: 'pointed' }, eyes: false });
+const hair = F.hair(rig, { style: 'long', ears: 'behind' }).label('hair');
+```
+
+So the head (ear `type` + `size`), the ears, and the hair (`ears: cover|behind`)
+compose: pick the ear shape on the face, then choose on the hair whether it sits
+over or behind them. See `examples/figure_elf_archer.js` (pointed/behind),
+`figure_topknot_sensei.js` (detailed/behind), `figure_pixie_skater.js`
+(round/behind).
+
 ### Eyes — `style: 'iris'` (default) or `'solid'`
 
 ```js
@@ -734,15 +792,53 @@ With `style: 'solid'`, adding `lids` makes the result **self-labelled** (`'eyes'
 `'lids'`), so don't wrap it in `.label()`. Lids follow the head pose like the
 iris/pupil and need no extra `detail` beyond `F.faceDetail(rig)`.
 
+### Brows — flush, painted-on `shape` presets
+
+Eyebrows are **flush** strips that hug the forehead above the eyes — *not* a
+raised brow ridge. Like the iris/pupil, the colour does the work: the brow is
+geometry sunk almost flat into the skin and self-labelled **`'brows'`**, so you
+paint it dark. Build it at the **top level** and hard-union it (keep it out of
+the skin weld), exactly like the eyes — a brow welded into a `.label('skin')`
+mass loses its `'brows'` colour:
+
+```js
+const brows = F.face.brows(rig, { shape: 'natural' });   // self-labelled 'brows'
+return sdf.union(skin, eyes, brows, lips, hair, base)
+  .build({ edgeLength: 0.5, detail: F.faceDetail(rig) }); // detail keeps the strip crisp
+```
+
+Pick a **`shape`** preset (individual knobs override it):
+
+| `shape` | Look |
+|---|---|
+| `'natural'` (default) | soft, even brow with a gentle arch |
+| `'thin'` | fine, plucked line |
+| `'bushy'` | thick, fuller brow with a touch more relief |
+| `'arched'` | high, expressive curve |
+| `'flat'` | low, level brow (concentration/intensity) |
+| `'angled'` | apex shifted toward the tail — a raised/sharp angle |
+| `'rounded'` | soft semicircular brow, little taper |
+| `'straight'` | level, even-weight bar |
+
+Knobs (each overrides the preset): `width` (lateral span ×), `taper` (0–0.9, how
+much the tail thins), `relief` (0 = dead flush … up to a whisper-proud edge),
+`spacing` (multiplier on the **eye** spacing — default 1 sits each brow directly
+over its eyeball; >1 spreads the pair apart, <1 draws them in), plus the
+back-compat multipliers `thickness` (brow weight) and `lift` (arch). The
+old `F.face.assemble(…, { brows: {} })` path still works but paints the brow
+**skin-coloured** (it's inside the skin weld) — use the top-level union above for
+dark brows. Always give `.build()` `detail: F.faceDetail(rig)` so the thin strip
+and its colour edge mesh crisply (the detail set includes a per-brow sphere).
+
 ## Face detail — `F.faceDetail(rig)` (use it on every figure with a face)
 
 Face features are far smaller than the body, so at the recommended figure grid
 (`edgeLength 0.4–0.6`) they mesh as angular slabs. `F.faceDetail(rig)` returns
 `{ center, radius, edgeLength }` spheres — one covering the head, finer ones over
-the mouth groove, the nose (plus an extra-fine nostril sphere), and each eyeball
-front, plus two over the chest **areola discs** so the flush coin's rim doesn't
-sliver at the coarse torso grid — for `.build()`'s `detail` option (see
-`/ai/sdf.md#detail-regions`):
+the mouth groove, the nose (plus an extra-fine nostril sphere), each eyeball
+front, and each **brow** (so the flush brow strip doesn't fray), plus two over
+the chest **areola discs** so the flush coin's rim doesn't sliver at the coarse
+torso grid — for `.build()`'s `detail` option (see `/ai/sdf.md#detail-regions`):
 
 ```js
 return sdf.union(skin, eyes, hair, base)
@@ -755,12 +851,15 @@ the body keeps the cheap global grid. Typically +30–60k triangles instead of t
 ~10× a globally fine grid would cost. Override per region:
 `F.faceDetail(rig, { edgeLength: rig.r.head * 0.02, eyeEdgeLength: rig.r.head * 0.006 })`.
 Pass `chest: false` to drop the areola spheres on a figure with no bare chest, or
-`chestEdgeLength` / `nostrilEdgeLength` to tune those.
+`brows: false` to drop the brow spheres; `browEdgeLength` / `chestEdgeLength` /
+`nostrilEdgeLength` tune those.
 
 ## Hair & clothing — derived from the rig, so they always fit
 
 ```js
-F.hair(rig, { style, hairline, length, volume, part, texture })
+F.hair(rig, { style, hairline, length, volume, part, texture, ears })
+//   ears: 'cover' (default, hair over the ears) | 'behind' (tucked behind them,
+//         so ears protrude — see the hair⇄ear section under Face above).
 //   style: 'short' | 'long' | 'bob' | 'bun' | 'bald' | 'bangs' | 'ponytail'
 //          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids'
 //   hairline: 'high' | 'mid' | 'low' — where the face window's top edge sits.

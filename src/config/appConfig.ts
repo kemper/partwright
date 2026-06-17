@@ -244,7 +244,10 @@ export interface AppConfig {
   geometry: {
     /** Triangle count above which the live model warns it may be too heavy for
      *  the catalog budget / slow to slice. Mirrors the headless model:preview
-     *  tri-budget warning so the in-app AI sees the same signal. */
+     *  tri-budget warning so the in-app AI sees the same signal. Advisory only —
+     *  nothing blocks a denser model; raised to 500k because catalog figure
+     *  entries store re-runnable code (not a baked mesh), so a high triangle
+     *  count costs per-open render + slice time, not catalog file size. */
     triCountWarnBudget: number;
     /** Shortest mesh edge (world units) below which a fine-detail warning fires
      *  — features this small are dropped by FDM slicers (sub-extrusion-width).
@@ -348,7 +351,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     editorFontSizeMax: 28,
   },
   geometry: {
-    triCountWarnBudget: 200_000,
+    triCountWarnBudget: 500_000,
     minEdgeLengthWarn: 0.4,
     aspectRatioWarn: 12,
   },
