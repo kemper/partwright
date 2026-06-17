@@ -498,7 +498,7 @@ F.face.assemble(head, rig, {
   eyes:  true | { radius, style, lids, gaze, gazeL, gazeR } | false,  // OFF by default — see note below
   nose:  true | { type, projection, length, width, bridge, bridgeWidth, profile, tipSize, tipShape, flare, upturn, nostrilSize, nostrils, tipRadius } | false,
   mouth: true | { style, expression, curve, width, smirk, open, fullness, lipShape, divided, render, teeth } | false,
-  ears:  true | { size } | false,
+  ears:  true | { size, type, tilt } | false,   // type: 'detailed'(default) | 'round' | 'pointed'; tilt deg (+back)
   brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
 })
 ```
@@ -651,6 +651,46 @@ return sdf.union(skin, eyes, mouthParts, hair, base).build({ ... });
   form of the groove, for a coloured expressive mouth line (frown → smile). Pass
   `mouth: false` to `assemble` if you want *only* the painted line.
 
+### Ears & the hair⇄ear relationship
+
+`F.face.ears(rig, { size, type })` welds ears at the `rig.face.earL/earR`
+anchors (pose-tracked). Each is a thin, ear-shaped plate that stands proud of
+the skull with a **shallow concha scoop** (a real rim + bowl, never a punched
+"keyhole" hole). Three **types**:
+
+| `type` | Shape | Use for |
+|---|---|---|
+| `'detailed'` (default) | the cupped ear plus a **tragus + antitragus** — reads as a real ear | most figures, realistic busts |
+| `'round'` | a clean cupped ear: comma plate + shallow concha + earlobe, no inner detail | simpler / cartoon figures |
+| `'pointed'` | a triangular pinna sloping up to a **rounded point** | elves, fae, fantasy |
+
+`size` scales the ears; **`tilt`** (degrees, −45..45, **+ = back**) angles the top
+toward the nape — most useful on `'pointed'` to sweep the elf point back.
+
+```js
+ears: { type: 'pointed', size: rig.r.head * 0.4, tilt: 22 }   // swept-back elf ears
+```
+
+**Whether hair covers or exposes the ears is a `F.hair` knob, not an ear knob** —
+the hair owns the silhouette. `F.hair(rig, { ears })`:
+
+- **`'cover'` (default)** — the hair cap flows over the ears (they hide under a
+  bob, long hair, etc.). Carves nothing, so existing bakes are byte-identical.
+- **`'behind'`** — the hair is worn *behind* the ears: an ear-clearance pocket is
+  scooped out of the cap at each ear anchor so the skin ears protrude in front.
+
+```js
+// elf ears left fully visible: pointed ears + hair worn behind them
+const face = F.face.assemble(head, rig, { ears: { type: 'pointed' }, eyes: false });
+const hair = F.hair(rig, { style: 'long', ears: 'behind' }).label('hair');
+```
+
+So the head (ear `type` + `size`), the ears, and the hair (`ears: cover|behind`)
+compose: pick the ear shape on the face, then choose on the hair whether it sits
+over or behind them. See `examples/figure_elf_archer.js` (pointed/behind),
+`figure_topknot_sensei.js` (detailed/behind), `figure_pixie_skater.js`
+(round/behind).
+
 ### Eyes — `style: 'iris'` (default) or `'solid'`
 
 ```js
@@ -772,7 +812,9 @@ Pass `chest: false` to drop the areola spheres on a figure with no bare chest, o
 ## Hair & clothing — derived from the rig, so they always fit
 
 ```js
-F.hair(rig, { style, hairline, length, volume, part, texture })
+F.hair(rig, { style, hairline, length, volume, part, texture, ears })
+//   ears: 'cover' (default, hair over the ears) | 'behind' (tucked behind them,
+//         so ears protrude — see the hair⇄ear section under Face above).
 //   style: 'short' | 'long' | 'bob' | 'bun' | 'bald' | 'bangs' | 'ponytail'
 //          | 'afro' | 'braids' | 'spiked' | 'locs' | 'cornrows' | 'boxBraids'
 //   hairline: 'high' | 'mid' | 'low' — where the face window's top edge sits.

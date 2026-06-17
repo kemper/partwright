@@ -26,6 +26,39 @@
         "requiredLabels": []
       }
     },
+    "bust-elf": {
+      "source": "examples/faces/bust_elf.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "eyes",
+          "hair"
+        ]
+      }
+    },
+    "bust-listener": {
+      "source": "examples/faces/bust_listener.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "eyes",
+          "hair"
+        ]
+      }
+    },
+    "bust-pixie": {
+      "source": "examples/faces/bust_pixie.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "eyes",
+          "hair"
+        ]
+      }
+    },
     "chess-rook": {
       "source": "examples/chess_rook.js",
       "gates": {
@@ -56,6 +89,13 @@
     },
     "dna-helix": {
       "source": "examples/dna_helix.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "elf-archer": {
+      "source": "examples/figure_elf_archer.js",
       "gates": {
         "maxGenus": null,
         "requiredLabels": []
@@ -168,6 +208,29 @@
       "gates": {
         "maxGenus": null,
         "requiredLabels": []
+      }
+    },
+    "pixie-skater": {
+      "source": "examples/figure_pixie_skater.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "pool-swimmer": {
+      "source": "examples/figure_swimmer.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "eyes",
+          "iris",
+          "pupil",
+          "areola",
+          "trunks",
+          "hair",
+          "base"
+        ]
       }
     },
     "print-fit-dovetail-system": {
@@ -394,11 +457,11 @@
         "requiredLabels": []
       }
     },
-    "pool-swimmer": {
-      "source": "examples/figure_swimmer.js",
+    "topknot-sensei": {
+      "source": "examples/figure_topknot_sensei.js",
       "gates": {
         "maxGenus": null,
-        "requiredLabels": ["skin", "eyes", "iris", "pupil", "areola", "trunks", "hair", "base"]
+        "requiredLabels": []
       }
     },
     "twisted-vase": {
