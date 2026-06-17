@@ -55,9 +55,9 @@ test.describe('multi-part 3MF export', () => {
     expect(report.filename).toMatch(/\.3mf$/);
 
     // ── Bambu/Orca project mode (production-extension layout) ──
-    // Verified to load in OrcaSlicer 2.3.2 headless (exit 0, N plates). The
-    // structural invariants below are exactly the ones that, if broken, make the
-    // real slicer reject the file — so this guards the headless-validated recipe.
+    // Mirrors a real BambuStudio-02.05.00.66 project (USER-REF.3mf). The structural
+    // invariants below are exactly the ones that, if broken, make the real slicer
+    // reject the file or crash — so this guards the headless-validated recipe.
     const b = report.bambu;
     // Production extension: each part is a wrapper -> separate /3D/Objects/*.model.
     expect(b).toContain('requiredextensions="p"');
@@ -65,20 +65,36 @@ test.describe('multi-part 3MF export', () => {
     expect((b.match(/<component /g) ?? []).length).toBe(2);
     // Project marker (flips Bambu into project / multi-plate mode).
     expect(b).toContain('<metadata name="Application">BambuStudio-');
-    // Colours: generic m:colorgroup (any slicer) + Bambu per-triangle paint_color.
-    expect(b).toContain('<m:colorgroup');
-    expect(b).toContain('paint_color=');
+    // Bambu mode: colour is per-OBJECT via extruder, NOT per-triangle.
+    // Object files carry plain triangles — no colorgroup/pid/paint_color.
+    expect(b).not.toContain('paint_color=');
     // model_settings.config: one <plate> per part.
     expect(b).toContain('Metadata/model_settings.config');
     expect((b.match(/<plate>/g) ?? []).length).toBe(2);
     expect(b).toContain('key="extruder"');
+    // CRASH FIX: <part id=ODD subtype="normal_part"> + <mesh_stat> must be present
+    // (was missing before; caused Bambu GUI crash on project open).
+    expect(b).toContain('<part ');
+    expect(b).toContain('mesh_stat');
+    // identify_id must be present in each <model_instance>.
+    expect(b).toContain('identify_id');
     // LOAD-CRITICAL: plater_name MUST be empty — a non-empty value makes Orca's
     // loader reject the project (regression guard for the bug we hit).
     expect(b).not.toMatch(/plater_name" value="[^"]+"/);
-    // REQUIRED: a minimal project_settings.config makes the loader build the
-    // plate list (absent → single plate). It carries the filament preset id.
+    // REQUIRED: project_settings.config makes the loader build the plate list.
+    // NOTE: filament_colour must NOT appear in project_settings — OrcaSlicer 2.3.2
+    // segfaults on any N1-profile file that has a filament_colour key there.
+    // Colour information lives in model_settings.config per-object extruder field.
     expect(b).toContain('Metadata/project_settings.config');
     expect(b).toContain('filament_settings_id');
+    expect(b).not.toContain('"filament_colour"');
+    // ID scheme: wrapper ids are EVEN (2,4,…), mesh ids are ODD (1,3,…).
+    // Root model items reference the EVEN wrapper ids.
+    expect(b).toContain('objectid="2"');
+    expect(b).toContain('objectid="4"');
+    // Object files are named object_1.model / object_2.model (sequential).
+    expect(b).toContain('/3D/Objects/object_1.model');
+    expect(b).toContain('/3D/Objects/object_2.model');
     // Each part placed in its own plate slot → distinct <item> X translations.
     const bTxs = [...b.matchAll(/<item objectid="\d+"[^>]*transform="([^"]+)"/g)]
       .map(m => m[1].trim().split(/\s+/)[9]);
@@ -167,14 +183,23 @@ test.describe('multi-part 3MF export', () => {
     const o = out as { parts: number; text: string };
     expect(o.parts).toBe(3);
     // Real bake → 3 production-extension parts, 3 plates, project_settings.config
-    // (builds the plate list), empty plater_name (load-critical), and colours.
+    // (builds the plate list), empty plater_name (load-critical).
     expect((o.text.match(/p:path="\/3D\/Objects\/object_\d+\.model"/g) ?? []).length).toBe(3);
     expect((o.text.match(/<plate>/g) ?? []).length).toBe(3);
     expect(o.text).toContain('Metadata/project_settings.config');
     expect(o.text).not.toMatch(/plater_name" value="[^"]+"/);
-    // Colours from api.label survived the off-editor bake → distinct material colours.
-    expect(o.text).toContain('<m:colorgroup');
-    const colors = [...o.text.matchAll(/<m:color color="(#[0-9A-F]{8})"/g)].map(m => m[1]);
-    expect(new Set(colors).size).toBeGreaterThanOrEqual(3);
+    // CRASH FIX: <part id=ODD subtype="normal_part"> + <mesh_stat> present in model_settings.
+    expect(o.text).toContain('<part ');
+    expect(o.text).toContain('mesh_stat');
+    expect(o.text).toContain('identify_id');
+    // Bambu mode: colour is per-object via extruder (no per-triangle colorgroup/paint_color).
+    // NOTE: filament_colour must NOT appear in project_settings — OrcaSlicer 2.3.2
+    // segfaults on any N1-profile file that carries that key there.
+    expect(o.text).not.toContain('paint_color=');
+    expect(o.text).not.toContain('"filament_colour"');
+    // ID scheme: EVEN wrapper ids (2,4,6), SEQUENTIAL object files (object_1/2/3.model).
+    expect(o.text).toContain('/3D/Objects/object_1.model');
+    expect(o.text).toContain('/3D/Objects/object_2.model');
+    expect(o.text).toContain('/3D/Objects/object_3.model');
   });
 });

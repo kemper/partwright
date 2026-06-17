@@ -1,0 +1,17 @@
+{
+    "filament_settings_id": [
+        "Bambu PLA Basic @BBL P1P"
+    ],
+    "nozzle_diameter": [
+        "0.4"
+    ],
+    "print_settings_id": "0.20mm Standard @BBL N1",
+    "printable_area": [
+        "0x0",
+        "180x0",
+        "180x180",
+        "0x180"
+    ],
+    "printable_height": "180",
+    "printer_settings_id": "Bambu Lab N1 0.4 nozzle"
+}
