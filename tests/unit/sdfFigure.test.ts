@@ -914,6 +914,23 @@ describe('figure brows — flush, labelled, preset-driven (#724)', () => {
     expect(xSpan({ width: 1.6 })).toBeGreaterThan(xSpan({ width: 1 }));
   });
 
+  it('default spacing sits each brow over its eye, not wider than the pair of eyes', () => {
+    // Regression (#724 follow-up): the brow anchors sit a touch wider than the
+    // eyes and read as "spread apart". Default brows must not splay past the eyes
+    // by more than a natural margin — the brow centres track the eye spacing.
+    const eyeOuter = buildEyes(api, rig, { radius: rig.r.head * 0.13 }).bounds().max[0];
+    const browOuter = buildBrows(api, rig).bounds().max[0];
+    // A natural brow extends a little past the outer eye corner, but nowhere near
+    // the old ~37%-wider splay — keep it within ~25%.
+    expect(browOuter).toBeLessThan(eyeOuter * 1.25);
+  });
+
+  it('the spacing knob spreads the brows apart (>1) or draws them in (<1)', () => {
+    const xMax = (opts: object): number => buildBrows(api, rig, opts).bounds().max[0];
+    expect(xMax({ spacing: 1.5 })).toBeGreaterThan(xMax({ spacing: 1 }));
+    expect(xMax({ spacing: 0.5 })).toBeLessThan(xMax({ spacing: 1 }));
+  });
+
   it('back-compat: legacy { thickness, lift } multipliers still work', () => {
     expect(() => buildBrows(api, rig, {})).not.toThrow();
     expect(() => buildBrows(api, rig, { thickness: 1.3, lift: 0 })).not.toThrow();

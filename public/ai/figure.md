@@ -770,7 +770,9 @@ Pick a **`shape`** preset (individual knobs override it):
 
 Knobs (each overrides the preset): `width` (lateral span ×), `taper` (0–0.9, how
 much the tail thins), `relief` (0 = dead flush … up to a whisper-proud edge),
-plus the back-compat multipliers `thickness` (brow weight) and `lift` (arch). The
+`spacing` (multiplier on the **eye** spacing — default 1 sits each brow directly
+over its eyeball; >1 spreads the pair apart, <1 draws them in), plus the
+back-compat multipliers `thickness` (brow weight) and `lift` (arch). The
 old `F.face.assemble(…, { brows: {} })` path still works but paints the brow
 **skin-coloured** (it's inside the skin weld) — use the top-level union above for
 dark brows. Always give `.build()` `detail: F.faceDetail(rig)` so the thin strip

@@ -2751,7 +2751,8 @@ function buildEars(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
 // Brow shape presets, mirroring NOSE_TYPE / LIP_SHAPES: a named `shape` selects
 // a full bundle of axis values; explicit knobs OVERRIDE (see buildBrows). Fields
 // are all × head radius except `taper`/`relief`/`peak` (ratios):
-//   width  — lateral half-span of one brow
+//   width  — lateral half-span of one brow (sized to sit OVER the eyeball, not
+//            splay past it — the brow tracks the eye spacing, see buildBrows)
 //   band   — strip thickness (the brow "weight")
 //   arch   — mid-brow lift over the brow bone
 //   taper  — 0..1 how much the lateral tail thins vs the medial head
@@ -2765,14 +2766,14 @@ interface BrowPreset {
 const BROW_SHAPE_NAMES = ['natural', 'thin', 'bushy', 'arched', 'flat', 'angled', 'rounded', 'straight'] as const;
 type BrowShapeName = typeof BROW_SHAPE_NAMES[number];
 const BROW_SHAPE: Record<BrowShapeName, BrowPreset> = {
-  natural:  { width: 0.28, band: 0.050, arch: 0.025, taper: 0.35, relief: 0.08, peak: 0    },
-  thin:     { width: 0.27, band: 0.032, arch: 0.022, taper: 0.50, relief: 0.05, peak: 0    },
-  bushy:    { width: 0.30, band: 0.090, arch: 0.022, taper: 0.18, relief: 0.35, peak: 0    },
-  arched:   { width: 0.27, band: 0.048, arch: 0.060, taper: 0.40, relief: 0.08, peak: 0.12 },
-  flat:     { width: 0.29, band: 0.050, arch: 0.004, taper: 0.35, relief: 0.08, peak: 0    },
-  angled:   { width: 0.28, band: 0.050, arch: 0.040, taper: 0.45, relief: 0.10, peak: 0.45 },
-  rounded:  { width: 0.26, band: 0.058, arch: 0.038, taper: 0.22, relief: 0.10, peak: 0    },
-  straight: { width: 0.29, band: 0.052, arch: 0.010, taper: 0.18, relief: 0.08, peak: 0    },
+  natural:  { width: 0.20, band: 0.050, arch: 0.025, taper: 0.35, relief: 0.08, peak: 0    },
+  thin:     { width: 0.20, band: 0.032, arch: 0.022, taper: 0.50, relief: 0.05, peak: 0    },
+  bushy:    { width: 0.22, band: 0.090, arch: 0.022, taper: 0.18, relief: 0.35, peak: 0    },
+  arched:   { width: 0.19, band: 0.048, arch: 0.060, taper: 0.40, relief: 0.08, peak: 0.12 },
+  flat:     { width: 0.21, band: 0.050, arch: 0.004, taper: 0.35, relief: 0.08, peak: 0    },
+  angled:   { width: 0.20, band: 0.050, arch: 0.040, taper: 0.45, relief: 0.10, peak: 0.45 },
+  rounded:  { width: 0.18, band: 0.058, arch: 0.038, taper: 0.22, relief: 0.10, peak: 0    },
+  straight: { width: 0.21, band: 0.052, arch: 0.010, taper: 0.18, relief: 0.08, peak: 0    },
 };
 
 function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
@@ -2786,7 +2787,7 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // slightly lifted medial head. (Replaces the old raised capsule-tube ridge that
   // frayed into spiky slivers at the figure grid.)
   const o = obj(opts, 'brows(opts)');
-  assertNoUnknownKeys(o, ['shape', 'thickness', 'lift', 'width', 'taper', 'relief'], 'brows(opts)');
+  assertNoUnknownKeys(o, ['shape', 'thickness', 'lift', 'width', 'taper', 'relief', 'spacing'], 'brows(opts)');
   const shape = o.shape === undefined ? 'natural'
     : assertEnum(o.shape, BROW_SHAPE_NAMES as unknown as readonly string[], 'brows.shape') as BrowShapeName;
   const P = BROW_SHAPE[shape];
@@ -2799,40 +2800,56 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const widthMul = num(o.width, 1, 'brows.width', 0.3, 2);
   const taper = num(o.taper, P.taper, 'brows.taper', 0, 0.9);
   const relief = num(o.relief, P.relief, 'brows.relief', 0, 1);
+  // `spacing` is a multiplier on the EYE spacing (default 1): each brow centre sits
+  // directly over its eyeball, so the pair is never wider apart than the eyes.
+  // >1 spreads them, <1 draws them together. (#724 follow-up: the brow anchors sit
+  // a touch wider than the eyes, which read as "spread apart" — tie them to the
+  // eyes instead.) The brow keeps the anchors' forehead HEIGHT/DEPTH; only the
+  // lateral placement is re-derived from the eye spacing.
+  const spacing = num(o.spacing, 1, 'brows.spacing', 0, 3);
   const halfSpan = R * P.width * widthMul;
   const band = R * P.band * thickness;
   const arch = R * P.arch * lift;
   const peak = P.peak;
   const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
+  // Lateral half-distance of an eye centre from the face midline, along headLeft.
+  const eyeMid = scale3(add3(rig.face.eyeL, rig.face.eyeR), 0.5);
+  const eyeLatVec = add3(rig.face.eyeL, scale3(eyeMid, -1));
+  const eyeHalfDist = eyeLatVec[0] * right[0] + eyeLatVec[1] * right[1] + eyeLatVec[2] * right[2];
+  // Brow midline point (on the centreline, at the correct forehead height/depth).
+  const browMid = scale3(add3(rig.face.browL, rig.face.browR), 0.5);
+  const browCenter = (sideSign: number): Vec3 =>
+    add3(browMid, scale3(right, sideSign * eyeHalfDist * spacing));
   const SEGS = 16;
   // Sink the strip into the forehead so only a flush/whisper-proud cap reads:
   // relief 0 → sunk by the full band (dead flush); relief 1 → barely sunk (proud).
   const backSink = band * (1 - relief);
-  const browPt = (anchor: Vec3, sideSign: number, t: number): Vec3 => {
+  const browPt = (center: Vec3, sideSign: number, t: number): Vec3 => {
     const s = halfSpan * t;                                  // t<0 = medial (toward nose)
     const sagDrop = (s * s) / (2 * Math.max(rig.r.headX, 1e-3)); // follow skull curvature
     const td = t - peak;                                     // apex shifted toward the tail
     const arcFac = Math.max(0, 1 - td * td);
     const medialLift = t < 0 ? arch * 0.15 * (-t) : 0;       // lift the inner head a touch
-    return add3(anchor, add3(
+    return add3(center, add3(
       add3(scale3(right, sideSign * s), scale3(u, arch * arcFac + medialLift)),
       scale3(f, -(sagDrop + backSink)),
     ));
   };
-  const browArc = (anchor: Vec3, sideSign: number): Node => {
+  const browArc = (sideSign: number): Node => {
+    const center = browCenter(sideSign);
     let arc: Node | undefined;
     for (let i = 0; i < SEGS; i++) {
       const t0 = -1 + (2 * i) / SEGS, t1 = -1 + (2 * (i + 1)) / SEGS;
       const tm = (t0 + t1) / 2;
       const taperFactor = Math.max(0.4, 1 - taper * Math.abs(tm));
       const rad = band * taperFactor;
-      const seg = sdf.capsule(browPt(anchor, sideSign, t0), browPt(anchor, sideSign, t1), rad);
+      const seg = sdf.capsule(browPt(center, sideSign, t0), browPt(center, sideSign, t1), rad);
       arc = arc === undefined ? seg : arc.smoothUnion(seg, rad * 0.5);
     }
     return arc!;
   };
   // Self-labelled so a top-level hard-union carries the 'brows' paint region.
-  return browArc(rig.face.browL, +1).union(browArc(rig.face.browR, -1)).label('brows');
+  return browArc(+1).union(browArc(-1)).label('brows');
 }
 
 /** Weld nose/mouth/ears/brows onto a head with SHARP creases (small k), vs
