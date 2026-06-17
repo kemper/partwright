@@ -4,7 +4,7 @@ Manually verify the app after touching routing, Vite config, index.html, or init
 
 1. **Landing page**: Navigate to `http://localhost:5173/` — shows hero section ("Partwright", "AI-driven parametric CAD in your browser"), CTA buttons, Recent Sessions grid (or empty state).
 2. **Open Editor**: Click "Open Editor" — URL changes to `/editor`, status shows "Ready" (green), code editor on left with default example, 3D model renders on right.
-3. **WASM engine loads**: Status pill says "Ready" (green), NOT "Loading WASM…" or "WASM failed". If "WASM failed": check `coi-serviceworker.js` (no 404), `manifold.wasm` (no 403 — if 403, check `server.fs.strict` in vite.config.ts), COEP/COOP headers present on responses.
+3. **WASM engine loads**: Status pill says "Ready" (green), NOT "Loading WASM…" or "WASM failed". If "WASM failed": check `manifold.wasm` (no 403 — if 403, check `server.fs.strict` in vite.config.ts), and COEP/COOP headers present on responses (from the server — Vite `server.headers` in dev, `public/_headers` in prod; the offline service worker `src/sw.ts` re-applies them on cached documents offline).
 4. **Help page**: Click `?` in toolbar — navigates to `/help`, shows help content. "Back" returns to the editor.
 5. **AI agent bypass**: `http://localhost:5173/editor` goes straight to the editor. `window.partwright.renderViews({views:"box"})` returns a 6-face composite PNG data URL.
 6. **Session loading**: Click a session tile on the landing page — loads session code in editor, shows session name in session bar, URL updates to `/editor?session=<id>`.

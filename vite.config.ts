@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin, type Connect } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
+import { VitePWA } from 'vite-plugin-pwa';
 import { execSync } from 'node:child_process';
 import { writeFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -128,7 +129,51 @@ export default defineConfig({
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), markdownCharset(), dynamicSitemap()],
+  plugins: [
+    tailwindcss(),
+    prerenderContentPages(),
+    absoluteUrls(),
+    markdownCharset(),
+    dynamicSitemap(),
+    // Offline app-shell service worker. We own the SW source (src/sw.ts) so it
+    // can also re-stamp COOP/COEP on cached responses (cross-origin isolation
+    // offline); vite-plugin-pwa just injects the precache manifest. Registration
+    // lives in src/registerSW.ts (production-only), not the plugin's auto-inject.
+    VitePWA({
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
+      // We register manually (registerSW.ts) and ship our own public/manifest.json.
+      injectRegister: false,
+      manifest: false,
+      injectManifest: {
+        // Precache the core shell only. The main bundle is the largest single
+        // file we keep (~6 MB and growing); the cap is set well above it so a
+        // little growth can't silently drop it from the precache (vite-plugin-pwa
+        // only *warns* when a file exceeds the cap) and break the offline boot —
+        // the heavy lazy chunks excluded below stay out regardless via globIgnores.
+        maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
+        globPatterns: ['**/*.{js,css,html,wasm,svg,png,json,woff2,woff,ttf}'],
+        // Keep large/optional chunks out of the install precache; they're
+        // runtime-cached by sw.ts the first time they're actually used:
+        //  - the lazy engines: OpenSCAD (~11 MB) + its BOSL2 libs, replicad WASM (~10 MB)
+        //  - the ~6 MB WebLLM worker (only loads when a user opts into a local
+        //    model — and downloading the weights needs the network anyway)
+        //  - the catalog of premade sessions (~9 MB of JSON, browsed on demand)
+        globIgnores: [
+          '**/openscad-*',
+          '**/openscad-libs/**',
+          '**/replicad*',
+          '**/localEngineWorker-*',
+          '**/catalog/**',
+        ],
+      },
+      // Keep the SW out of dev entirely: it would fight Vite's module/HMR
+      // pipeline, and dev gets COOP/COEP straight from the server (see below),
+      // so isolation doesn't need it. The e2e suite runs against dev, SW-free.
+      devOptions: { enabled: false },
+    }),
+  ],
   esbuild: {
     // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
     // Preact without pulling in React. Vanilla .ts files in the rest of
@@ -165,6 +210,16 @@ export default defineConfig({
       // (required when running from a git worktree where node_modules
       // resolves to the original repo path outside the worktree root)
       strict: false,
+    },
+  },
+  preview: {
+    // `npm run preview` serves the production build; mirror the COOP/COEP
+    // headers Cloudflare sends in prod (public/_headers) so the preview is
+    // cross-origin isolated like the real deployment — needed to exercise the
+    // WASM engines and the offline service worker against a built bundle.
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },
   build: {
