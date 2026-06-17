@@ -534,13 +534,16 @@ smooth bump. Reach for a **preset** first, then tune with the axes:
   rotates the tip (**+** snub/upturned shows the nostrils, **−** droopy/hooked);
   **`nose.tipRadius`** sets the absolute base tip size.
 - **Nostrils** — **`nose.flare`** (0–1.5) sizes the alar wings;
-  **`nose.nostrilSize`** (0–1.5) scales the carved openings independently;
-  **`nose.nostrils: false`** skips the carve (e.g. a tiny chibi nose where it'd
-  alias).
+  **`nose.nostrilSize`** (0–1.5) scales the carved openings independently. Small
+  noses (tip radius below ~0.46, i.e. button/chibi) **auto-skip the carve by
+  default** — it would alias into a torn crater at that size, so they render a
+  clean smooth bulb instead. **`nose.nostrils: false`** force-skips at any size;
+  **`nose.nostrils: true`** force-carves even a small nose (accepting the risk).
 - These vary the nose far more than size alone — `{ type: 'broad' }` vs
   `{ type: 'aquiline' }` are different *people*. **Pair `F.faceDetail(rig)`** with
   `build({ detail })` so the nostril rims and septum mesh crisply (it includes a
-  fine nose sphere; tune via `faceDetail({ noseEdgeLength })`).
+  fine nose sphere + an extra-fine nostril sphere; tune via
+  `faceDetail({ noseEdgeLength, nostrilEdgeLength })`).
 - **`mouth.fullness`** (0.4–2.2) scales lip thickness independently of `width`
   (works on the `'lips'` ridge and the open-mouth lip ring).
 - **`mouth.expression`** picks the emotion *level*: `'bigSmile'` · `'smile'` ·
@@ -735,9 +738,11 @@ iris/pupil and need no extra `detail` beyond `F.faceDetail(rig)`.
 
 Face features are far smaller than the body, so at the recommended figure grid
 (`edgeLength 0.4–0.6`) they mesh as angular slabs. `F.faceDetail(rig)` returns
-`{ center, radius, edgeLength }` spheres — one covering the head, a finer one
-over the mouth groove, and an extra-fine one over each eyeball front — for
-`.build()`'s `detail` option (see `/ai/sdf.md#detail-regions`):
+`{ center, radius, edgeLength }` spheres — one covering the head, finer ones over
+the mouth groove, the nose (plus an extra-fine nostril sphere), and each eyeball
+front, plus two over the chest **areola discs** so the flush coin's rim doesn't
+sliver at the coarse torso grid — for `.build()`'s `detail` option (see
+`/ai/sdf.md#detail-regions`):
 
 ```js
 return sdf.union(skin, eyes, hair, base)
@@ -749,6 +754,8 @@ iris/pupil circles tessellate round instead of faceting into polygons — while
 the body keeps the cheap global grid. Typically +30–60k triangles instead of the
 ~10× a globally fine grid would cost. Override per region:
 `F.faceDetail(rig, { edgeLength: rig.r.head * 0.02, eyeEdgeLength: rig.r.head * 0.006 })`.
+Pass `chest: false` to drop the areola spheres on a figure with no bare chest, or
+`chestEdgeLength` / `nostrilEdgeLength` to tune those.
 
 ## Hair & clothing — derived from the rig, so they always fit
 
