@@ -719,11 +719,14 @@ function buildRig(rawOpts: unknown): Rig {
   // spine-transformed, so a leaning figure carries its nipples with the chest.
   const tm = torsoMasses(joints, r, belly);
   const mounds = breastMounds(joints, r, bust);
+  // Muscled chests bulge a pec mass forward of the bare chest; the areola rides
+  // its apex (like it rides the mound apex for bust) so it doesn't sink in.
+  const pecs = pecApex(joints, r, muscle, pose.spine);
   const nippleZ = nippleLineZ(joints.upperArmL[2], joints.hips[2], headH);   // upper chest, ≈0.62 head below the shoulder
   const nippleDX = r.chestX * 0.42;                      // half the inter-nipple span
   const torsoAnchors: TorsoAnchors = {
-    nippleL: mounds ? mounds.apexL : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, nippleDX, nippleZ),
-    nippleR: mounds ? mounds.apexR : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, -nippleDX, nippleZ),
+    nippleL: mounds ? mounds.apexL : pecs ? pecs.apexL : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, nippleDX, nippleZ),
+    nippleR: mounds ? mounds.apexR : pecs ? pecs.apexR : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, -nippleDX, nippleZ),
     navel: ellipsoidFront(tm.belly.c, tm.belly.a, tm.belly.b, tm.belly.cz, 0, navelZ),
   };
 
@@ -893,6 +896,51 @@ function breastMounds(j: Record<string, Vec3>, r: Record<string, number>, bust: 
   return { L: L.mound, R: Rr.mound, apexL: L.apex, apexR: Rr.apex, radius: R };
 }
 
+/** Per-side PECTORAL-mass front apex + curvature, for seating the nipple/areola
+ *  on a MUSCLED chest — the `muscle`-axis analog of {@link breastMounds} for
+ *  `bust`. The pec ellipsoids `buildTorso` welds bulge FORWARD of the base chest
+ *  ellipsoid the bare-chest anchor rides, so on a muscled figure the areola has
+ *  to ride the PEC apex or it sinks into the pec (only a partial rim pokes
+ *  through — the buried/stuck-on areola the old muscle-scaled `eps` push hacked
+ *  around). Geometry MUST match buildTorso's `pec(sx)` ellipsoid — built in the
+ *  REST frame then spine-leaned — or the anchor drifts off the surface. Returns
+ *  WORLD-frame apexes (the rest apex rotated by the spine lean) so the leaning
+ *  figure carries its nipples with the chest, exactly like the bare anchor.
+ *  `null` when muscle is 0 (no pec mass — ride the bare chest). */
+function pecApex(
+  j: Record<string, Vec3>, r: Record<string, number>, muscle: number,
+  sp: { lean: number; turn: number; side: number },
+): { apexL: Vec3; apexR: Vec3; radius: number } | null {
+  if (muscle <= 0) return null;
+  const m = muscle;
+  const pivot: Vec3 = [0, 0, j.spine[2]];
+  const leaned = sp.lean !== 0 || sp.turn !== 0 || sp.side !== 0;
+  // Rest-frame (un-leaned) chest/shoulder anchors — buildTorso's `restPt`.
+  const restPt = (p: Vec3): Vec3 =>
+    leaned ? add3(pivot, rotZ(rotX(rotY(sub3(p, pivot), -sp.side), -sp.lean), -sp.turn)) : p;
+  // Forward spine rotation of a single point (the inverse of restPt) — the
+  // point-wise form of buildTorso's `spineTx` so the apex lands on the leaned pec.
+  const spineRotPt = (p: Vec3): Vec3 =>
+    leaned ? add3(pivot, rotY(rotX(rotZ(sub3(p, pivot), sp.turn), sp.lean), sp.side)) : p;
+  const chestR = restPt(j.chest), armR = restPt(j.upperArmL);
+  // The pec ellipsoid — IDENTICAL to buildTorso's `pec(sx)`.
+  const pecZ = mix(chestR[2], armR[2], 0.18);
+  const pecY = -r.chestY * (0.5 + 0.18 * m);
+  const aPec = r.chestX * (0.42 + 0.05 * m);   // lateral semi-axis
+  const bPec = r.chestY * (0.45 + 0.18 * m);   // forward (depth) semi-axis
+  const czPec = r.chestY * (0.52 + 0.12 * m);  // vertical semi-axis
+  const cx = r.chestX * 0.4;                   // pec centre x (matches buildTorso)
+  // Seat the areola at the same head-unit nipple line the bare anchor uses, but
+  // projected onto the PEC front (rest frame), then lean it into world.
+  const nz = nippleLineZ(armR[2], j.hips[2], r.head / 0.46);
+  const apex = (sx: 1 | -1): Vec3 =>
+    spineRotPt(ellipsoidFront([sx * cx, pecY, pecZ], aPec, bPec, czPec, 0, nz));
+  // surfR rides the pec's TALL (vertical) semi-axis, not its shallow depth, so
+  // the flush coin matches the elongated pec curvature and its rim doesn't sink
+  // (the clipping seen when a depth-sized sphere curves away faster than the pec).
+  return { apexL: apex(1), apexR: apex(-1), radius: czPec };
+}
+
 /** A shallow navel dimple — a sphere centred just OUTSIDE the belly surface so
  *  `smoothSubtract` carves only a cap-deep crater. `depth` (0..1.5) slides the
  *  centre inward to deepen it. */
@@ -1024,17 +1072,18 @@ function buildNipples(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const size = num(o.size, r.chestX * 0.16, 'nipples.size', 1e-3);     // areola radius
   const nipR = num(o.nipple, r.chestX * 0.05, 'nipples.nipple', 0);    // tiny nipple nub
   const mounds = breastMounds(rig.joints, r, rig.opts.bust);
-  // Local radius of curvature for the flush clip: the mound radius if there is a
-  // mound, else a broad radius approximating the gently-curved bare chest.
-  const surfR = mounds ? mounds.radius : r.chestX * 1.4;
-  // Proud enough to win the union. On a BARE muscled chest the pectoral masses
-  // bulge FORWARD of the chest ellipsoid the anchor rides, so once the nipple
-  // line sits up on the chest (the raised, anatomically-correct height) the pec
-  // can swallow the flush disc — the 'areola' label then resolves to 0
-  // triangles. Add muscle-scaled proudness so the coin still pokes past the pec.
-  // Mound (bust) figures ride the already-proud mound apex, so they don't need
-  // it; at muscle 0 this is a no-op and the disc is byte-identical.
-  const eps = Math.max(r.chestX * 0.03, 0.06) + (mounds ? 0 : r.chestY * 0.35 * rig.opts.muscle);
+  const pecs = pecApex(rig.joints, r, rig.opts.muscle, rig.opts.pose.spine);
+  // Local radius of curvature for the flush clip, matched to whatever surface the
+  // anchor rides so the coin seats flush: the mound radius (bust), else the PEC
+  // vertical radius (muscle — the anchor now rides the pec apex, set in buildRig),
+  // else a broad radius approximating the gently-curved bare chest.
+  const surfR = mounds ? mounds.radius : pecs ? pecs.radius : r.chestX * 1.4;
+  // A small, uniform proudness — enough to win the hard union. The areola anchor
+  // now rides the ACTUAL surface it sits on (mound apex for bust, pec apex for
+  // muscle, bare-chest front otherwise — see buildRig), so the disc is already at
+  // the surface and no per-figure muscle-scaled push is needed (that old hack
+  // traded a buried disc for a stuck-on one; seating on the real apex fixes both).
+  const eps = Math.max(r.chestX * 0.03, 0.06);
   // Soften the flush-disc PERIMETER (#703). The hard cylinder∩sphere edge is a
   // knife rim — at the coarse chest grid (no detail region runs over the torso)
   // it slivered into a torn, faceted ring (the same flush-disc-edge problem as

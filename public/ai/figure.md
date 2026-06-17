@@ -323,8 +323,11 @@ F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
    Each areola is a **flush disc** that follows the chest/mound curvature (the
    iris-disc trick — a coin clipped from a sphere a hair larger than the surface,
    so it sits flush, not as a stuck-on bump) with a deliberately **tiny** nipple
-   nub. It rides the `rig.torso` anchors, so it lands on the **mound apex**
-   whenever `bust > 0`. `opts`: `{ size }` (areola radius, default ≈ `chestX·0.16`),
+   nub. It rides the `rig.torso` anchors, so it seats on the right surface
+   automatically: the **mound apex** when `bust > 0`, the **pectoral apex** when
+   `muscle > 0` (the pec masses bulge forward of the bare chest, so the areola
+   rides them instead of sinking in), and the bare-chest front otherwise — no
+   per-figure tuning. `opts`: `{ size }` (areola radius, default ≈ `chestX·0.16`),
    `{ nipple }` (nub radius, default ≈ `chestX·0.05`; `0` for none).
 3. **Navel — `F.torso(rig, { navel })`** (opt-in). A shallow dimple carved into
    the belly front. `navel: true` or `{ size, depth }` (`depth` 0–1.5, default
