@@ -377,7 +377,10 @@ F.feet(rig, { toes: true })
 Toes are a barefoot detail: omit them (the smooth default) when the figure wears
 `F.clothing.shoes`/`boots`, which wrap the foot with their own coverage. The
 foot heading follows `leg*.twist` turnout, so posed/turned-out legs keep their
-feet pointed correctly.
+feet pointed correctly. Footwear also tracks a **lifted foot's plantarflexion**:
+when a foot is raised clear of the ground its toe points down along the leg
+(pointed foot), and the shoe/boot pivots with it, so a kicking, lunging, or
+tip-toe foot stays fully shod instead of poking out of a flat shoe.
 
 **`F.base` auto-sizes to the pose.** It widens to cover the stance footprint and
 rises to meet the *lowest* foot, so a wide or lunging stance still lands one

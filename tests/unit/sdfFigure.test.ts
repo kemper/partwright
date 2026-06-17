@@ -1132,6 +1132,34 @@ describe('figure footwear — shoes & boots', () => {
     expect(boots.evaluate(s.point[0], s.point[1], z)).toBeLessThan(0);
   });
 
+  it('a plantarflexed (lifted) foot stays fully shod — the shoe pitches with the foot', () => {
+    // A strongly lifted foot plantarflexes in buildFeet (#701/#707): the toe
+    // points down along the leg's extension. The shoe MUST pivot with it, or the
+    // pointed foot pokes out of a flat shoe (the regression this guards). Probe a
+    // grid around the lifted foot: wherever the BARE foot is solid (below the
+    // ankle, off the bare shank the opening leaves), the shoe must be solid too.
+    const rig = buildRig({ pose: { legR: { raiseFwd: 65, bend: 14 }, legL: { raiseFwd: 5, bend: 20 } } });
+    const feet = buildFeet(api, rig) as SdfNode;
+    const shoes = buildShoes(api, rig) as SdfNode;
+    const A = rig.joints.footR as number[];
+    const rf = rig.r.foot;
+    let probed = 0, pokesThrough = 0;
+    for (let dx = -3; dx <= 3; dx++) {
+      for (let dy = -4; dy <= 4; dy++) {
+        for (let dz = -4; dz <= 2; dz++) {
+          const p = [A[0] + dx * rf * 0.5, A[1] + dy * rf * 0.5, A[2] + dz * rf * 0.5];
+          if (p[2] > A[2] - rf * 0.2) continue;          // stay below the ankle (off the bare shank)
+          if (feet.evaluate(p[0], p[1], p[2]) < -0.05) {  // solidly inside the bare foot
+            probed++;
+            if (shoes.evaluate(p[0], p[1], p[2]) > 0.05) pokesThrough++;
+          }
+        }
+      }
+    }
+    expect(probed).toBeGreaterThan(10);   // we actually hit the lifted foot's mass
+    expect(pokesThrough).toBe(0);          // …and the shoe encloses every bit of it
+  });
+
   it('the base descends to contain a posed/shod sole (no poke-through)', () => {
     const rig = buildRig({ pose: { legR: { raiseFwd: 12, bend: 28 }, legL: { raiseSide: 6 } } });
     const base = buildBase(api, rig) as SdfNode;
