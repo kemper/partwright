@@ -72,11 +72,15 @@ test.describe('multi-part 3MF export', () => {
     expect(b).toContain('key="plater_id" value="1"');
     expect(b).toContain('key="plater_id" value="2"');
     expect(b).toContain('key="extruder"');
-    // NO project_settings.config / preset ids — those trip Bambu's "customized
-    // presets / unsafe G-code" warning. Colours come via colorgroup + extruder.
-    expect(b).not.toContain('Metadata/project_settings.config');
+    // Minimal project_settings.config — REQUIRED so Bambu builds the plate list
+    // (load_config). It carries only `filament_diameter` (a recognized key); it
+    // must NOT carry preset ids, which trip the "customized presets / unsafe
+    // G-code" warning. Colours come via colorgroup + extruder + paint_color.
+    expect(b).toContain('Metadata/project_settings.config');
+    expect(b).toContain('filament_diameter');
     expect(b).not.toContain('filament_settings_id');
     expect(b).not.toContain('printer_settings_id');
+    expect(b).not.toContain('inherits_group');
     // Each part on its OWN plate: Bambu assigns by world position, so the two
     // <item> X translations must differ AND match the plate stride (bed × 1.2 =
     // 307.2 for a 256 bed). Transform = "1 0 0 0 1 0 0 0 1 TX TY TZ".
@@ -94,6 +98,7 @@ test.describe('multi-part 3MF export', () => {
     // No Bambu-specific metadata at all.
     expect(g).not.toContain('BambuStudio-');
     expect(g).not.toContain('Metadata/model_settings.config');
+    expect(g).not.toContain('Metadata/project_settings.config');
     expect(g).not.toContain('paint_color=');
     // Grid-arranged → the two parts have distinct X positions (no overlap).
     const gTxs = [...g.matchAll(/<item objectid="\d+" transform="([^"]+)"/g)]
@@ -136,5 +141,45 @@ test.describe('multi-part 3MF export', () => {
     const download = await downloadPromise;
     expect(download).not.toBeNull();
     expect(download!.suggestedFilename()).toMatch(/\.3mf$/);
+  });
+
+  test('export3MFPartsData bundles real parts through the full bake pipeline', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForTimeout(4000);
+
+    // Build 3 real coloured parts, then read the Bambu 3MF back via the
+    // bytes-returning API (no browser download) and inspect the actual output —
+    // this exercises the off-editor bake (bakeColoredMeshForPart) + the builder.
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      (await import('/src/geometry/units.ts')).setUnits('mm');
+      await pw.runAndSave('return api.label(api.Manifold.cube([20,20,20], true), "red", { color: [1,0,0] });', 'red');
+      await pw.createPart('Green');
+      await pw.runAndSave('return api.label(api.Manifold.sphere(12, 48), "green", { color: [0,1,0] });', 'green');
+      await pw.createPart('Blue');
+      await pw.runAndSave('return api.label(api.Manifold.cylinder(24, 10, 10, 48), "blue", { color: [0,0,1] });', 'blue');
+
+      const r = await pw.export3MFPartsData(undefined, 'probe', { bambu: true });
+      if (r.error) return { error: r.error };
+      const bin = atob(r.base64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return { parts: r.parts, text: new TextDecoder('latin1').decode(bytes) };
+    });
+
+    expect((out as { error?: string }).error).toBeUndefined();
+    const o = out as { parts: number; text: string };
+    expect(o.parts).toBe(3);
+    // Real bake produced 3 objects, 3 plates, the project_settings.config that
+    // makes Bambu build the plate list, and no preset-id keys (warning guard).
+    expect((o.text.match(/<object id="\d+" type="model">/g) ?? []).length).toBe(3);
+    expect((o.text.match(/<plate>/g) ?? []).length).toBe(3);
+    expect(o.text).toContain('Metadata/project_settings.config');
+    expect(o.text).toContain('filament_diameter');
+    expect(o.text).not.toContain('filament_settings_id');
+    // Colours from api.label survived the off-editor bake → distinct material colours.
+    expect(o.text).toContain('<m:colorgroup');
+    const colors = [...o.text.matchAll(/<m:color color="(#[0-9A-F]{8})"/g)].map(m => m[1]);
+    expect(new Set(colors).size).toBeGreaterThanOrEqual(3);
   });
 });
