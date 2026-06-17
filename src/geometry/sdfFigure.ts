@@ -2922,48 +2922,108 @@ function buildEars(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   return earL.union(earR);
 }
 
+// Brow shape presets, mirroring NOSE_TYPE / LIP_SHAPES: a named `shape` selects
+// a full bundle of axis values; explicit knobs OVERRIDE (see buildBrows). Fields
+// are all × head radius except `taper`/`relief`/`peak` (ratios):
+//   width  — lateral half-span of one brow (sized to sit OVER the eyeball, not
+//            splay past it — the brow tracks the eye spacing, see buildBrows)
+//   band   — strip thickness (the brow "weight")
+//   arch   — mid-brow lift over the brow bone
+//   taper  — 0..1 how much the lateral tail thins vs the medial head
+//   relief — 0..1 proud fraction of the band (0 = DEAD FLUSH; the brow reads from
+//            its 'brows' colour, not a 3D shelf — see buildBrows). Default look.
+//   peak   — apex position along the span (0 = centred arch; + shifts the peak
+//            toward the tail for an angled/raised brow)
+interface BrowPreset {
+  width: number; band: number; arch: number; taper: number; relief: number; peak: number;
+}
+const BROW_SHAPE_NAMES = ['natural', 'thin', 'bushy', 'arched', 'flat', 'angled', 'rounded', 'straight'] as const;
+type BrowShapeName = typeof BROW_SHAPE_NAMES[number];
+const BROW_SHAPE: Record<BrowShapeName, BrowPreset> = {
+  natural:  { width: 0.20, band: 0.050, arch: 0.025, taper: 0.35, relief: 0.08, peak: 0    },
+  thin:     { width: 0.20, band: 0.032, arch: 0.022, taper: 0.50, relief: 0.05, peak: 0    },
+  bushy:    { width: 0.22, band: 0.090, arch: 0.022, taper: 0.18, relief: 0.35, peak: 0    },
+  arched:   { width: 0.19, band: 0.048, arch: 0.060, taper: 0.40, relief: 0.08, peak: 0.12 },
+  flat:     { width: 0.21, band: 0.050, arch: 0.004, taper: 0.35, relief: 0.08, peak: 0    },
+  angled:   { width: 0.20, band: 0.050, arch: 0.040, taper: 0.45, relief: 0.10, peak: 0.45 },
+  rounded:  { width: 0.18, band: 0.058, arch: 0.038, taper: 0.22, relief: 0.10, peak: 0    },
+  straight: { width: 0.21, band: 0.052, arch: 0.010, taper: 0.18, relief: 0.08, peak: 0    },
+};
+
 function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
-  // Arched ridges that HUG the skull. A straight capsule chord between two
-  // points on a curved surface leaves its middle proud (the "shelf brow"
-  // look), so each brow is an arc whose points (a) curve up toward the
-  // middle and (b) pull BACK following the skull's lateral curvature, and
-  // the whole ridge is sunk by part of its radius.
+  // FLUSH, paintable brows (#703/#724) — NOT a raised ridge. Each brow is an arc
+  // of capsule segments smooth-welded into one strip, then SUNK into the forehead
+  // so only a flush (or, with `relief`, a whisper-proud) cap reads. The dark brow
+  // colour comes from the 'brows' label, not from 3D relief — so this is built to
+  // be hard-unioned at the TOP LEVEL and painted by its label, exactly like
+  // F.face.eyes (see assembleFace's docstring). The arc follows the skull (the
+  // circular sagitta pulls each point back) plus a gentle anatomical arch, with a
+  // slightly lifted medial head. (Replaces the old raised capsule-tube ridge that
+  // frayed into spiky slivers at the figure grid.)
   const o = obj(opts, 'brows(opts)');
-  assertNoUnknownKeys(o, ['thickness', 'lift'], 'brows(opts)');
-  const thickness = num(o.thickness, 1, 'brows.thickness', 0.1, 5); // ridge weight
-  const lift = num(o.lift, 1, 'brows.lift', 0, 5);                   // mid-brow arch
+  assertNoUnknownKeys(o, ['shape', 'thickness', 'lift', 'width', 'taper', 'relief', 'spacing'], 'brows(opts)');
+  const shape = o.shape === undefined ? 'natural'
+    : assertEnum(o.shape, BROW_SHAPE_NAMES as unknown as readonly string[], 'brows.shape') as BrowShapeName;
+  const P = BROW_SHAPE[shape];
+  const R = rig.r.head;
+  // `thickness`/`lift` are back-compat MULTIPLIERS on the preset (both default 1,
+  // so legacy `{}` / `{ lift, thickness }` callers keep working); `width` scales
+  // the lateral span; `taper`/`relief` override the preset absolutely.
+  const thickness = num(o.thickness, 1, 'brows.thickness', 0.1, 5);
+  const lift = num(o.lift, 1, 'brows.lift', 0, 5);
+  const widthMul = num(o.width, 1, 'brows.width', 0.3, 2);
+  const taper = num(o.taper, P.taper, 'brows.taper', 0, 0.9);
+  const relief = num(o.relief, P.relief, 'brows.relief', 0, 1);
+  // `spacing` is a multiplier on the EYE spacing (default 1): each brow centre sits
+  // directly over its eyeball, so the pair is never wider apart than the eyes.
+  // >1 spreads them, <1 draws them together. (#724 follow-up: the brow anchors sit
+  // a touch wider than the eyes, which read as "spread apart" — tie them to the
+  // eyes instead.) The brow keeps the anchors' forehead HEIGHT/DEPTH; only the
+  // lateral placement is re-derived from the eye spacing.
+  const spacing = num(o.spacing, 1, 'brows.spacing', 0, 3);
+  const halfSpan = R * P.width * widthMul;
+  const band = R * P.band * thickness;
+  const arch = R * P.arch * lift;
+  const peak = P.peak;
   const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
-  const w = rig.r.head * 0.24;                  // half-span of one brow
-  const browRad = rig.r.head * 0.045 * thickness;
-  const arch = rig.r.head * 0.06 * lift;        // mid-brow lift
-  const sink = browRad * 0.5;
-  // More segments + a smooth weld between them (#703). A 4-segment HARD union of
-  // straight capsules across the arc left faceted kinks at every joint, and the
-  // sharp chord corners aliased into a ragged/frayed strip at the figure grid.
-  // Doubling the segment count tightens the arc and a small smoothUnion blend
-  // (a fraction of the ridge radius) fuses the joints into one continuous ridge,
-  // so the brow reads as a smooth strip rather than a string of slivers.
-  const SEGS = 8;
-  const jointK = browRad * 0.6;
-  const browArc = (anchor: Vec3): Node => {
-    const pt = (t: number): Vec3 => {
-      const s = w * t;
-      // Pull back by the circular sagitta at lateral offset s so the arc
-      // follows the skull instead of chording across it.
-      const drop = (s * s) / (2 * Math.max(rig.r.headX, 1e-3)) + sink;
-      return add3(anchor, add3(
-        add3(scale3(right, s), scale3(u, arch * (1 - t * t))),
-        scale3(f, -drop),
-      ));
-    };
+  // Lateral half-distance of an eye centre from the face midline, along headLeft.
+  const eyeMid = scale3(add3(rig.face.eyeL, rig.face.eyeR), 0.5);
+  const eyeLatVec = add3(rig.face.eyeL, scale3(eyeMid, -1));
+  const eyeHalfDist = eyeLatVec[0] * right[0] + eyeLatVec[1] * right[1] + eyeLatVec[2] * right[2];
+  // Brow midline point (on the centreline, at the correct forehead height/depth).
+  const browMid = scale3(add3(rig.face.browL, rig.face.browR), 0.5);
+  const browCenter = (sideSign: number): Vec3 =>
+    add3(browMid, scale3(right, sideSign * eyeHalfDist * spacing));
+  const SEGS = 16;
+  // Sink the strip into the forehead so only a flush/whisper-proud cap reads:
+  // relief 0 → sunk by the full band (dead flush); relief 1 → barely sunk (proud).
+  const backSink = band * (1 - relief);
+  const browPt = (center: Vec3, sideSign: number, t: number): Vec3 => {
+    const s = halfSpan * t;                                  // t<0 = medial (toward nose)
+    const sagDrop = (s * s) / (2 * Math.max(rig.r.headX, 1e-3)); // follow skull curvature
+    const td = t - peak;                                     // apex shifted toward the tail
+    const arcFac = Math.max(0, 1 - td * td);
+    const medialLift = t < 0 ? arch * 0.15 * (-t) : 0;       // lift the inner head a touch
+    return add3(center, add3(
+      add3(scale3(right, sideSign * s), scale3(u, arch * arcFac + medialLift)),
+      scale3(f, -(sagDrop + backSink)),
+    ));
+  };
+  const browArc = (sideSign: number): Node => {
+    const center = browCenter(sideSign);
     let arc: Node | undefined;
     for (let i = 0; i < SEGS; i++) {
-      const seg = sdf.capsule(pt(-1 + (2 * i) / SEGS), pt(-1 + (2 * (i + 1)) / SEGS), browRad);
-      arc = arc === undefined ? seg : arc.smoothUnion(seg, jointK);
+      const t0 = -1 + (2 * i) / SEGS, t1 = -1 + (2 * (i + 1)) / SEGS;
+      const tm = (t0 + t1) / 2;
+      const taperFactor = Math.max(0.4, 1 - taper * Math.abs(tm));
+      const rad = band * taperFactor;
+      const seg = sdf.capsule(browPt(center, sideSign, t0), browPt(center, sideSign, t1), rad);
+      arc = arc === undefined ? seg : arc.smoothUnion(seg, rad * 0.5);
     }
     return arc!;
   };
-  return browArc(rig.face.browL).union(browArc(rig.face.browR));
+  // Self-labelled so a top-level hard-union carries the 'brows' paint region.
+  return browArc(+1).union(browArc(-1)).label('brows');
 }
 
 /** Weld nose/mouth/ears/brows onto a head with SHARP creases (small k), vs
@@ -2975,14 +3035,22 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
  *  in-face eyes into the skin region (their `eyes`/`iris`/`pupil` labels resolve
  *  to 0 paintable triangles). So build eyes at the top level instead:
  *  `sdf.union(skin, F.face.eyes(rig), …)`. Pass `eyes: true` (or an options
- *  object) only when you are NOT re-labelling the result. (See /ai/figure.md.) */
+ *  object) only when you are NOT re-labelling the result. (See /ai/figure.md.)
+ *
+ *  BROWS are now FLUSH, paintable strips labelled 'brows' (#724). In-assemble
+ *  brows are HARD-unioned (label-safe), but the `.label('skin')` weld flattens
+ *  them to skin colour — fine if you want plain skin-toned brows. For DARK
+ *  painted brows, do the eyes thing: leave them out of the skin weld and union
+ *  `F.face.brows(rig, { … })` at the top level so the 'brows' colour survives. */
 function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'face.assemble(opts)');
   assertNoUnknownKeys(o, ['eyes', 'nose', 'mouth', 'ears', 'brows'], 'face.assemble(opts)');
   const crease = rig.r.head * 0.12;
   let result = head;
   if (o.nose !== false) result = result.smoothUnion(buildNose(sdf, rig, o.nose === true ? undefined : o.nose), crease);
-  if (o.brows !== false && o.brows !== undefined) result = result.smoothUnion(buildBrows(sdf, rig, o.brows === true ? undefined : o.brows), crease);
+  // Flush brows are hard-unioned (a smoothUnion would wipe the 'brows' label, #698,
+  // and the sunk strip barely protrudes so the weld is near-invisible either way).
+  if (o.brows !== false && o.brows !== undefined) result = result.union(buildBrows(sdf, rig, o.brows === true ? undefined : o.brows));
   if (o.ears !== false) result = result.smoothUnion(buildEars(sdf, rig, o.ears === true ? undefined : o.ears), crease * 1.5);
   if (o.mouth !== false) {
     const mouth = buildMouthPart(sdf, rig, o.mouth === true ? undefined : o.mouth);
@@ -3009,10 +3077,13 @@ function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
  *  coarse global grid where the disc perimeter slivers; these refine just the
  *  two coins. They're harmless on a figure with no areola (a tiny refinement of
  *  flat chest skin). The body keeps the cheap global grid everywhere else.
- *  Pass `chest: false` to drop them, or `chestEdgeLength` to tune. */
+ *  Pass `chest: false` to drop them, or `chestEdgeLength` to tune. It also
+ *  returns two small BROW spheres (#724): the flush brow band is the thinnest
+ *  face feature after the iris and frays without a detail region; these refine
+ *  just the brows. Pass `brows: false` to drop them, or `browEdgeLength`. */
 function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
   const o = obj(opts, 'faceDetail(opts)');
-  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength', 'noseEdgeLength', 'nostrilEdgeLength', 'eyeEdgeLength', 'irisEdgeLength', 'earEdgeLength', 'chest', 'chestEdgeLength'], 'faceDetail(opts)');
+  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength', 'noseEdgeLength', 'nostrilEdgeLength', 'eyeEdgeLength', 'irisEdgeLength', 'earEdgeLength', 'brows', 'browEdgeLength', 'chest', 'chestEdgeLength'], 'faceDetail(opts)');
   const r = rig.r;
   const radius = num(o.radius, Math.max(r.headX, r.head, r.headZ) * 1.5, 'faceDetail.radius', 1e-3);
   // ~4.5% of the head radius ≈ one subdivision round below the recommended
@@ -3046,6 +3117,13 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   // so they aliased into torn craters. A small EXTRA-fine sphere over the tip
   // underside meshes the rim cleanly — local, so the global tri-count stays put.
   const nostrilEdgeLength = num(o.nostrilEdgeLength, Math.max(r.head * 0.009, 0.016), 'faceDetail.nostrilEdgeLength', 1e-4);
+  // Brow strips (#703/#724): the flush brow is a thin band (≈5% of head radius)
+  // that aliased into spiky slivers at the coarse body grid with no detail region
+  // of its own. A small fine sphere over each brow anchor meshes the strip + its
+  // arc-following 'brows' colour edge crisply. ~1.5% of the head radius ≈ 3 cells
+  // across the band. Local (small radius), so the global tri-count barely moves.
+  const showBrows = o.brows === undefined ? true : assertBoolean(o.brows, 'faceDetail.brows') as boolean;
+  const browEdgeLength = num(o.browEdgeLength, Math.max(r.head * 0.015, 0.022), 'faceDetail.browEdgeLength', 1e-4);
   // Chest areola discs (#703): the flush coins' perimeter slivers at the coarse
   // torso grid, so refine just the two coins. Centred at the nipple anchors with
   // a radius a hair past the default areola size (`r.chestX * 0.16`) so the disc
@@ -3074,6 +3152,11 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
     { center: earOut(rig.face.earL, +1), radius: r.head * 0.72, edgeLength: earEdgeLength },
     { center: earOut(rig.face.earR, -1), radius: r.head * 0.72, edgeLength: earEdgeLength },
   ];
+  if (showBrows) {
+    const browR2 = r.head * 0.32;
+    regions.push({ center: [...(rig.face.browL as Vec3)] as Vec3, radius: browR2, edgeLength: browEdgeLength });
+    regions.push({ center: [...(rig.face.browR as Vec3)] as Vec3, radius: browR2, edgeLength: browEdgeLength });
+  }
   if (chest) {
     const areolaR = r.chestX * 0.16 * 1.35;
     regions.push({ center: [...(rig.torso.nippleL as Vec3)] as Vec3, radius: areolaR, edgeLength: chestEdgeLength });
@@ -3977,4 +4060,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };

@@ -45,13 +45,17 @@ const face = F.face.assemble(head, rig, {
   nose: { type: 'straight', tipRadius: r.head * 0.09 },
   mouth: false,
   ears: { size: r.head * 0.20 },
-  brows: {},
+  brows: false,                           // built at top level so the 'brows' colour survives
 });
 const eyes = F.face.eyes(rig, {
   radius: r.head * 0.13,
   lids: 'half',
   gaze: 'down',                           // serene down-forward look toward the belly
 });
+// Flush, painted-on brows (labelled 'brows'). Kept OUT of the skin weld and
+// hard-unioned at the top level (like the eyes) so the dark brow colour isn't
+// flattened into skin. Soft 'natural' arch to match the serene expression.
+const brows = F.face.brows(rig, { shape: 'natural' });
 const lips = F.face.mouthAccents(rig, {
   style: 'lips',
   lipShape: 'natural',
@@ -111,7 +115,7 @@ const base = F.base(rig, {
 }).label('base');
 
 // 8. Hard-union labelled regions and build.
-return sdf.union(skin, eyes, lips, dress, sleeves, hair, base)
+return sdf.union(skin, eyes, brows, lips, dress, sleeves, hair, base)
   .build({
     edgeLength: 0.78,
     // Only faceDetail — feet are hidden under the long dress and the hands hang

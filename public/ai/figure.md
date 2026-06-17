@@ -499,9 +499,15 @@ F.face.assemble(head, rig, {
   nose:  true | { type, projection, length, width, bridge, bridgeWidth, profile, tipSize, tipShape, flare, upturn, nostrilSize, nostrils, tipRadius } | false,
   mouth: true | { style, expression, curve, width, smirk, open, fullness, lipShape, divided, render, teeth } | false,
   ears:  true | { size, type, tilt } | false,   // type: 'detailed'(default) | 'round' | 'pointed'; tilt deg (+back)
-  brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
+  brows: { shape, thickness, lift, width, taper, relief, spacing } | false, // off by default; see "Brows" below
 })
 ```
+
+> **In-assemble brows are SKIN-COLOURED.** The `brows:` key above welds flush
+> brows into the face, but the usual `.label('skin')` weld flattens them to skin
+> tone. For **dark, painted-on brows**, leave them out of the assemble (`brows:
+> false`) and union `F.face.brows(rig, { … })` at the **top level**, exactly like
+> the eyes — see [Brows](#brows--flush-painted-on-shape-presets) below.
 
 ### Head shape — `F.head(rig, { faceShape, jaw, chin, cheek })`
 
@@ -786,15 +792,53 @@ With `style: 'solid'`, adding `lids` makes the result **self-labelled** (`'eyes'
 `'lids'`), so don't wrap it in `.label()`. Lids follow the head pose like the
 iris/pupil and need no extra `detail` beyond `F.faceDetail(rig)`.
 
+### Brows — flush, painted-on `shape` presets
+
+Eyebrows are **flush** strips that hug the forehead above the eyes — *not* a
+raised brow ridge. Like the iris/pupil, the colour does the work: the brow is
+geometry sunk almost flat into the skin and self-labelled **`'brows'`**, so you
+paint it dark. Build it at the **top level** and hard-union it (keep it out of
+the skin weld), exactly like the eyes — a brow welded into a `.label('skin')`
+mass loses its `'brows'` colour:
+
+```js
+const brows = F.face.brows(rig, { shape: 'natural' });   // self-labelled 'brows'
+return sdf.union(skin, eyes, brows, lips, hair, base)
+  .build({ edgeLength: 0.5, detail: F.faceDetail(rig) }); // detail keeps the strip crisp
+```
+
+Pick a **`shape`** preset (individual knobs override it):
+
+| `shape` | Look |
+|---|---|
+| `'natural'` (default) | soft, even brow with a gentle arch |
+| `'thin'` | fine, plucked line |
+| `'bushy'` | thick, fuller brow with a touch more relief |
+| `'arched'` | high, expressive curve |
+| `'flat'` | low, level brow (concentration/intensity) |
+| `'angled'` | apex shifted toward the tail — a raised/sharp angle |
+| `'rounded'` | soft semicircular brow, little taper |
+| `'straight'` | level, even-weight bar |
+
+Knobs (each overrides the preset): `width` (lateral span ×), `taper` (0–0.9, how
+much the tail thins), `relief` (0 = dead flush … up to a whisper-proud edge),
+`spacing` (multiplier on the **eye** spacing — default 1 sits each brow directly
+over its eyeball; >1 spreads the pair apart, <1 draws them in), plus the
+back-compat multipliers `thickness` (brow weight) and `lift` (arch). The
+old `F.face.assemble(…, { brows: {} })` path still works but paints the brow
+**skin-coloured** (it's inside the skin weld) — use the top-level union above for
+dark brows. Always give `.build()` `detail: F.faceDetail(rig)` so the thin strip
+and its colour edge mesh crisply (the detail set includes a per-brow sphere).
+
 ## Face detail — `F.faceDetail(rig)` (use it on every figure with a face)
 
 Face features are far smaller than the body, so at the recommended figure grid
 (`edgeLength 0.4–0.6`) they mesh as angular slabs. `F.faceDetail(rig)` returns
 `{ center, radius, edgeLength }` spheres — one covering the head, finer ones over
-the mouth groove, the nose (plus an extra-fine nostril sphere), and each eyeball
-front, plus two over the chest **areola discs** so the flush coin's rim doesn't
-sliver at the coarse torso grid — for `.build()`'s `detail` option (see
-`/ai/sdf.md#detail-regions`):
+the mouth groove, the nose (plus an extra-fine nostril sphere), each eyeball
+front, and each **brow** (so the flush brow strip doesn't fray), plus two over
+the chest **areola discs** so the flush coin's rim doesn't sliver at the coarse
+torso grid — for `.build()`'s `detail` option (see `/ai/sdf.md#detail-regions`):
 
 ```js
 return sdf.union(skin, eyes, hair, base)
@@ -807,7 +851,8 @@ the body keeps the cheap global grid. Typically +30–60k triangles instead of t
 ~10× a globally fine grid would cost. Override per region:
 `F.faceDetail(rig, { edgeLength: rig.r.head * 0.02, eyeEdgeLength: rig.r.head * 0.006 })`.
 Pass `chest: false` to drop the areola spheres on a figure with no bare chest, or
-`chestEdgeLength` / `nostrilEdgeLength` to tune those.
+`brows: false` to drop the brow spheres; `browEdgeLength` / `chestEdgeLength` /
+`nostrilEdgeLength` tune those.
 
 ## Hair & clothing — derived from the rig, so they always fit
 
