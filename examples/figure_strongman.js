@@ -150,14 +150,19 @@ const pecs = sdf.ellipsoid(puffR[0], puffR[1], puffR[2]).translate(puffC);
 // SAME flush iris-disc trick F.nipples uses: a coin clipped from a sphere a hair
 // larger than the local surface, plus a tiny nipple nub. Self-label 'areola' and
 // hard-union at the top level so the paint region survives the weld.
-const nipZ = puffC[2] - puffR[2] * 0.16;
+const nipZ = puffC[2] - puffR[2] * 0.04;        // up on the pec, near the apex
 const nipDX = r.chestX * 0.5;
 const puffFrontY = (x, z) => puffC[1] - puffR[1] * Math.sqrt(
   Math.max(0, 1 - (x / puffR[0]) ** 2 - ((z - puffC[2]) / puffR[2]) ** 2));
 const areolaR = r.chestX * 0.16;
 const tinyNip = r.chestX * 0.05;
-const surfR = puffR[1];                         // local curvature ~ the puff's depth radius
-const eps = r.chestX * 0.03;
+// Flatten the coin to the pec's TALL (Z) curvature, not its shallower depth (Y)
+// radius. Sizing surfR off puffR[1] made a sphere that curves away faster than
+// the elongated pec surface, so the disc's top/bottom rim sank into the body
+// (the clipping). Use the larger Z radius so the coin sits flush across its
+// whole rim, and seat it a touch more proud on this heavily-muscled chest.
+const surfR = puffR[2] * 0.9;
+const eps = r.chestX * 0.06;
 // Bound the clip cylinder to a SHORT slab seated at the puff surface (matches the
 // engine F.nipples #706 fix). The old `(surfR + eps) * 2.2` tube, centred on the
 // anchor, ran ~1.1·surfR BACK into the body — a deep plug that stayed buried in
