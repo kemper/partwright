@@ -138,7 +138,7 @@ const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const LEG_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const HEAD_FIELDS = ['yaw', 'pitch', 'roll'];
 const SPINE_FIELDS = ['lean', 'turn', 'side'];
-const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'age', 'weight', 'muscle', 'bust', 'pose'];
+const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'age', 'weight', 'muscle', 'bust', 'belly', 'pose'];
 const POSE_FIELDS = ['arms', 'legs', 'armL', 'armR', 'legL', 'legR', 'head', 'spine'];
 
 function parseArm(v: unknown, name: string, defRaiseSide: number): JointPose {
@@ -195,6 +195,16 @@ export interface RigOptions {
    *  figure. The mound blends into the chest and the nipple/areola landmarks
    *  ride its apex. */
   bust?: number;
+  /** Belly / abdominal swell, a continuous 0..2 knob (default 0 = no swell;
+   *  ~0.5 a soft tummy, ~1 a pronounced pregnant/round belly). Grows the
+   *  abdomen ellipsoid FORWARD (and modestly in girth/height) while RAISING its
+   *  centre as it grows so the swell's bottom stays above the hip joint — it
+   *  reads as a belly, never a low mass dropping between the legs. Because the
+   *  torso masses feed both `F.torso` AND the coverage underlayer of
+   *  `F.clothing.top`, one knob makes the body swell, the navel ride it, and a
+   *  dress/top drape over it automatically — no hand-rolled bump needed. At
+   *  `belly: 0` the torso is byte-identical to before. */
+  belly?: number;
   pose?: {
     armL?: object; armR?: object; legL?: object; legR?: object;
     head?: object; spine?: object;
@@ -297,7 +307,7 @@ export interface Rig {
   face: FaceAnchors;
   /** Front-of-torso surface landmarks (nipples + navel) — see {@link TorsoAnchors}. */
   torso: TorsoAnchors;
-  opts: { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; muscle: number; bust: number; pose: ResolvedPose };
+  opts: { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; muscle: number; bust: number; belly: number; pose: ResolvedPose };
 }
 
 const BUILD_MUL: Record<string, number> = { slim: 0.82, average: 1, stocky: 1.22 };
@@ -426,6 +436,9 @@ function buildRig(rawOpts: unknown): Rig {
   // Bust is independent of sex; `sex:'female'` only pre-fills a default when the
   // caller didn't set `bust`. Any figure can carry any value.
   const bust = o.bust === undefined ? (sex === 'female' ? 0.35 : 0) : num(o.bust, 0, 'rig.bust', 0, 2);
+  // Abdominal swell (pregnancy / soft tummy). Default 0 = no swell, so every
+  // existing figure stays byte-identical. Independent of `weight`/`build`.
+  const belly = num(o.belly, 0, 'rig.belly', 0, 2);
 
   const poseRaw = obj(o.pose, 'rig.pose');
   assertNoUnknownKeys(poseRaw, POSE_FIELDS, 'rig.pose');
@@ -704,7 +717,7 @@ function buildRig(rawOpts: unknown): Rig {
   // of the bare chest. The masses are computed by the SAME helpers buildTorso
   // uses, so the anchor and the geometry can never drift. The chest centre is
   // spine-transformed, so a leaning figure carries its nipples with the chest.
-  const tm = torsoMasses(joints, r);
+  const tm = torsoMasses(joints, r, belly);
   const mounds = breastMounds(joints, r, bust);
   const nippleZ = nippleLineZ(joints.upperArmL[2], joints.hips[2], headH);   // upper chest, ≈0.62 head below the shoulder
   const nippleDX = r.chestX * 0.42;                      // half the inter-nipple span
@@ -737,7 +750,7 @@ function buildRig(rawOpts: unknown): Rig {
     sole: { L: makeSoleFrame(lL.A, lL.footFwd, r), R: makeSoleFrame(lR.A, lR.footFwd, r) },
     face: sFace,
     torso: torsoAnchors,
-    opts: { height: H, headsTall: N, build, sex, age, weight, muscle, bust, pose },
+    opts: { height: H, headsTall: N, build, sex, age, weight, muscle, bust, belly, pose },
   };
 }
 
@@ -779,7 +792,7 @@ function muscleBelly(sdf: SdfApi, a: Vec3, b: Vec3, side: Vec3, off: number, ra:
  *  shared by `buildTorso` (which builds the masses) and `buildRig` (which
  *  projects the nipple/navel surface landmarks onto them), so the geometry and
  *  the anchors can never drift apart. Pure: reads only the joints + radii. */
-function torsoMasses(j: Record<string, Vec3>, r: Record<string, number>): {
+function torsoMasses(j: Record<string, Vec3>, r: Record<string, number>, belly = 0): {
   chest: { c: Vec3; a: number; b: number; cz: number };
   belly: { c: Vec3; a: number; b: number; cz: number };
 } {
@@ -791,11 +804,25 @@ function torsoMasses(j: Record<string, Vec3>, r: Record<string, number>): {
     (j.chest[2] - j.spine[2]) * 1.15 + r.chestY,
     j.upperArmL[2] + r.neck * 0.8 - j.chest[2],
   );
+  // Abdomen ellipsoid. `belly` grows it FORWARD (−Y depth, the `b` semi-axis)
+  // strongly and its girth/height modestly, while RAISING the centre so the
+  // BOTTOM stays put above the hips — the swell reads as a belly, never a low
+  // mass dropping toward the crotch (the pendant-between-the-legs failure mode).
+  // At belly=0 every term is its original value, so the torso is byte-identical.
+  const b0 = { a: r.chestX * 0.92, b: r.chestY * 0.94, cz: (j.spine[2] - j.hips[2]) * 0.9 + r.chestY * 0.6 };
+  const bellyA = b0.a + r.chestX * 0.22 * belly;        // modest girth growth
+  const bellyB = b0.b + r.chestY * 1.7 * belly;         // strong forward projection
+  const bellyCz = b0.cz + r.chestX * 0.4 * belly;       // a little taller
+  // Raise the centre by the same amount the swell grew in half-height, plus a
+  // touch, so the bottom edge never descends; seat the bulk further forward.
+  const baseCz = mix(j.spine[2], j.hips[2], 0.4);
+  const bellyCenterZ = baseCz + (bellyCz - b0.cz) + r.chestX * 0.12 * belly;
+  const bellyCy = -r.chestY * (0.1 + 0.6 * belly);
   return {
     chest: { c: j.chest as Vec3, a: r.chestX, b: r.chestY, cz: chestSemiZ },
     belly: {
-      c: [0, -r.chestY * 0.1, mix(j.spine[2], j.hips[2], 0.4)],
-      a: r.chestX * 0.92, b: r.chestY * 0.94, cz: (j.spine[2] - j.hips[2]) * 0.9 + r.chestY * 0.6,
+      c: [0, bellyCy, bellyCenterZ],
+      a: bellyA, b: bellyB, cz: bellyCz,
     },
   };
 }
@@ -878,7 +905,7 @@ function buildTorso(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'torso(opts)');
   assertNoUnknownKeys(o, ['navel'], 'torso(opts)');
   const j = rig.joints, r = rig.r;
-  const tm = torsoMasses(j, r);
+  const tm = torsoMasses(j, r, rig.opts.belly);
   const chest = sdf.ellipsoid(tm.chest.a, tm.chest.b, tm.chest.cz).translate(tm.chest.c);
   const belly = sdf.ellipsoid(tm.belly.a, tm.belly.b, tm.belly.cz).translate(tm.belly.c);
   const pelvis = sdf.ellipsoid(r.hipsX, r.hipsY, r.hipsY * 1.25).translate(j.hips);
@@ -3402,7 +3429,7 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // centred at y=0 lets the chest bulge straight through its front).
   const chest = sdf.ellipsoid(r.chestX + t, (r.chestY + t) * 1.05, (j.chest[2] - hemZ) * 0.62 + r.chestY)
     .translate([0, j.chest[1], mix(hemZ, j.chest[2] + r.chestY, 0.5)]);
-  let top = chest;
+  let shell = chest;
   // A hem below the pelvis means a robe/dress — the chest ELLIPSOID recedes
   // toward its bottom tip, so legs poke out of its lower front. Add a flared
   // cone skirt from the waist down to the hem.
@@ -3412,29 +3439,7 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     const skirt = sdf.cylinder(r0, skirtH)
       .taper(-0.8 / skirtH)
       .translate([0, 0, hemZ + skirtH / 2]);
-    top = top.smoothUnion(skirt, r.chestY * 0.8);
-  }
-  if (sleeve !== 'none') {
-    // Sleeves FOLLOW the arm chain: a straight shoulder→forearm capsule cuts
-    // the corner on a bent elbow and the elbow pokes through the sleeve.
-    function sl(S: Vec3, E: Vec3, W: Vec3): Node {
-      const rad = (r.upperArm + t) * 1.05;
-      if (sleeve === 'short') {
-        return sdf.capsule(S, lerp3(S, E, 0.85), rad);
-      }
-      // long: upper-arm segment + forearm segment, welded at the elbow.
-      return sdf.capsule(S, E, rad)
-        .smoothUnion(sdf.capsule(E, lerp3(E, W, 0.9), rad * 0.95), r.lowerArm * 0.8);
-    }
-    // Shoulder yokes: spheres over the shoulder joints bridging the chest
-    // shell and the sleeve tops. Without them a wedge of skin shows at the
-    // armpit/collar where the shell's side ends inboard of the shoulder.
-    const yoke = (S: Vec3): Node => sdf.sphere((r.upperArm + t) * 1.2).translate(S);
-    top = top
-      .smoothUnion(sl(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3), r.upperArm * 0.7)
-      .smoothUnion(sl(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3), r.upperArm * 0.7)
-      .smoothUnion(yoke(j.upperArmL as Vec3), r.upperArm * 0.8)
-      .smoothUnion(yoke(j.upperArmR as Vec3), r.upperArm * 0.8);
+    shell = shell.smoothUnion(skirt, r.chestY * 0.8);
   }
   // Clavicle bar: the chest ellipsoid's front-top slopes away below the
   // collarbones, leaving a deep bare V at the sternum. A shoulder-to-shoulder
@@ -3478,7 +3483,33 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // hem. The round only lifts the very bottom edge by ≤ hemK, still well below a
   // mid-rise waistband, so it can't reopen the midriff strip the hem default closes.
   const hemPlane = sdf.box([big, big, big]).translate([0, 0, hemZ + big / 2]); // z ≥ hemZ
-  return top.smoothUnion(clav, r.neck * 0.9).union(body.intersect(zone).smoothIntersect(hemPlane, hemK));
+  // Clip the SHELL + clavicle + coverage to the hem so the chest ellipsoid's
+  // bottom tip can't dangle below the hemline as a central pendant between the
+  // legs (#nub), and every hem gets the same soft rolled edge. Sleeves are
+  // EXCLUDED from this clip (unioned in below): they follow the arms and
+  // legitimately hang below a high hem, so clipping them flat would amputate them.
+  let garment = shell.smoothUnion(clav, r.neck * 0.9)
+    .union(body.intersect(zone).smoothIntersect(hemPlane, hemK))
+    .smoothIntersect(hemPlane, hemK);
+  if (sleeve !== 'none') {
+    // Sleeves FOLLOW the arm chain: a straight shoulder→forearm capsule cuts the
+    // corner on a bent elbow and the elbow pokes through, so the long sleeve is
+    // welded at the elbow. Shoulder yokes (spheres over the shoulder joints)
+    // bridge the shell and the sleeve tops so no skin shows at the armpit/collar.
+    const sl = (S: Vec3, E: Vec3, W: Vec3): Node => {
+      const rad = (r.upperArm + t) * 1.05;
+      if (sleeve === 'short') return sdf.capsule(S, lerp3(S, E, 0.85), rad);
+      return sdf.capsule(S, E, rad)
+        .smoothUnion(sdf.capsule(E, lerp3(E, W, 0.9), rad * 0.95), r.lowerArm * 0.8);
+    };
+    const yoke = (S: Vec3): Node => sdf.sphere((r.upperArm + t) * 1.2).translate(S);
+    garment = garment
+      .smoothUnion(sl(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3), r.upperArm * 0.7)
+      .smoothUnion(sl(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3), r.upperArm * 0.7)
+      .smoothUnion(yoke(j.upperArmL as Vec3), r.upperArm * 0.8)
+      .smoothUnion(yoke(j.upperArmR as Vec3), r.upperArm * 0.8);
+  }
+  return garment;
 }
 
 // --- Body weld ------------------------------------------------------------

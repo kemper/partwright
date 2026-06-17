@@ -103,6 +103,7 @@ F.rig({
   weight,      // 0..1 (default 0.5 = average; 0 = lean, 1 = heavy)
   muscle,      // 0..1 (default 0 = smooth; ~0.5 athletic, 1 = bodybuilder)
   bust,        // 0..2 chest mound (default 0; sex:'female' pre-fills ~0.35). Independent of sex.
+  belly,       // 0..2 abdominal/pregnancy swell (default 0; ~0.5 tummy, ~0.7-1 pregnant). A dress/top drapes over it automatically.
   pose: {      // all optional; neutral standing defaults
     arms, legs, // SYMMETRIC shorthand — seeds BOTH sides at once (see below)
     armL, armR, // { raiseSide, raiseFwd, bend, twist }   degrees — override per side
@@ -133,6 +134,14 @@ F.rig({
 >   kept deliberately **independent of `sex`** (set it on any figure; `sex:'female'`
 >   only supplies a default when you omit it). The mound blends into the chest and
 >   the areola/nipple landmarks ride its apex. See the bare-torso section below.
+> - **`belly`** (0..2, default 0) — an abdominal swell for a **pregnant or
+>   soft-bellied** figure (~0.5 a tummy, ~0.7–1 a pronounced pregnant bump). It
+>   grows the abdomen **forward** (and modestly in girth/height) while raising its
+>   centre so the swell's bottom stays put — it reads as a belly and can never drop
+>   between the legs. Because the torso masses feed both the body **and** the
+>   coverage layer of `figure.clothing.top`, **a dress or top drapes over the bump
+>   automatically** — no hand-rolled bump or drape needed (just set `belly` and add
+>   the garment). The navel landmark rides the swell too.
 > - **`age`** (years) shifts torso girth toward the baby/child/old proportions.
 >   It does **not** change `headsTall` (the head-to-body ratio) — for a full
 >   baby/child look, lower `headsTall` too (≈3–4).

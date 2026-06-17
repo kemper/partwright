@@ -6,9 +6,14 @@
 const { sdf } = api;
 const F = sdf.figure;
 
-// 1. RIG — adult female, average build, slight bust. Arms relaxed at the sides,
-// slightly abducted with a soft elbow bend so the hands hang at the hips clear
-// of the belly. Head slightly down with a soft gaze.
+// 1. RIG — adult female, average build, slight bust, and a native pregnant
+// `belly` swell. `belly` grows the abdomen ellipsoid FORWARD (and modestly in
+// girth/height) while raising its centre so its bottom stays above the hips —
+// the swell reads as a belly and can never drop between the legs. Because the
+// torso masses feed both the body AND the coverage underlayer of
+// `F.clothing.top`, the dress drapes over the bump automatically (no hand-rolled
+// drape). Arms relaxed at the sides, slightly abducted with a soft elbow bend so
+// the hands hang at the hips clear of the belly. Head slightly down, soft gaze.
 const rig = F.rig({
   height: 56,
   headsTall: 7.5,
@@ -16,6 +21,7 @@ const rig = F.rig({
   build: 'average',
   weight: 0.5,
   bust: 0.55,
+  belly: 0.7,                               // pronounced third-trimester swell
   pose: {
     // Arms relaxed at the sides, slightly abducted (raiseSide 10) so they stand
     // off the body and the sleeves read as independent arms, with a soft elbow
@@ -52,9 +58,9 @@ const lips = F.face.mouthAccents(rig, {
   expression: 'slightSmile',
 });
 
-// 3. SKIN — plain body masses (no bare bump, no navel: the dress covers the
-// belly). The pregnant silhouette is carried by the dress drape (§5), so the
-// body underneath stays a normal abdomen the dress bulges over.
+// 3. SKIN — plain body masses (no navel: the dress covers the belly). The rig's
+// `belly` swell shapes the abdomen, so the pregnant silhouette is built into the
+// body itself; the dress (§4) simply drapes over it.
 const skin = F.weld(rig, [
   F.torso(rig, { navel: false }),
   F.neck(rig),
@@ -65,46 +71,21 @@ const skin = F.weld(rig, [
   face,
 ]).label('skin');
 
-// 4. BELLY BUMP shape — a rounded abdominal ellipsoid centred just ABOVE the
-// navel, with its bulk over the abdomen and its bottom kept above the hip joint
-// (Z 26.1) so the swell reads as a belly, not a low mass at the hips. The dress
-// drapes over this; the body itself stays plain.
-const navel = rig.torso.navel;            // front-surface landmark on the belly
-const bumpW = r.hipsX * 0.95;             // half-width, just under the hips
-const bumpD = r.chestY * 1.6;             // forward projection (≈4.7) — the swell
-const bumpH = r.chestX * 0.8;             // half-height — bump spans ≈ Z 28–36
-const bumpCenter = [
-  navel[0],
-  navel[1] - bumpD * 0.32,                // seat the bulk back; front face ≈ Y −9.2
-  navel[2] + 1.0,                          // centre just above the navel — abdominal
-];
-
-// 5. DRESS BODY — a SLEEVELESS dress (its own region). F.clothing.top with a
-// hem below the pelvis and sleeve:'none' gives a bodice + flared cone skirt +
-// a coverage underlayer, with NO sleeves (so the arm garment stays independent,
-// §6). We smooth-union a belly drape (the bump grown by the garment thickness)
-// so the dress bulges over the abdomen, plus a wider A-line skirt overlay so the
-// dress stands off the legs (otherwise the body reaches the dress surface at the
-// hip and those triangles take the skin colour).
+// 4. DRESS BODY — a SLEEVELESS maternity dress (its own region). F.clothing.top
+// with a hem below the pelvis and sleeve:'none' gives a bodice + flared cone
+// skirt + a coverage underlayer with NO sleeves (the arm garment stays
+// independent, §5). The coverage underlayer is offset from the rig's torso —
+// which now carries the `belly` swell — so the dress bulges over the abdomen for
+// free; no hand-rolled belly drape is needed.
 const t = r.chestY * 0.4;                             // garment thickness
 const dressHemZ = rig.opts.height * 0.18;             // ≈ 10 — lower-calf hem
-const bodice = F.clothing.top(rig, {
+const dress = F.clothing.top(rig, {
   sleeve: 'none',
   hemZ: dressHemZ,
   thickness: t,
-});
-const bellyDrape = sdf.ellipsoid(bumpW + t, bumpD + t, bumpH + t).translate(bumpCenter);
-const skirtTopZ = j.spine[2];                         // waist line ≈ 30.8
-const skirtH = skirtTopZ - dressHemZ;
-const skirtOverlay = sdf.cylinder(r.hipsX * 1.25 + t, skirtH)
-  .taper(-0.03, 'z')                                  // gentle A-line flare to the hem
-  .translate([0, 0, (skirtTopZ + dressHemZ) / 2]);
-const dress = bodice
-  .smoothUnion(bellyDrape, t * 1.6)
-  .smoothUnion(skirtOverlay, t * 1.2)
-  .label('dress');
+}).label('dress');
 
-// 6. SLEEVES — INDEPENDENT garment tubes that follow each arm (shoulder → elbow
+// 5. SLEEVES — INDEPENDENT garment tubes that follow each arm (shoulder → elbow
 // → wrist), their own labelled region so they read as sleeves rather than a blob
 // fused into the bodice. A shoulder cap sphere bridges the bare-shouldered bodice
 // to the sleeve top so no skin shows at the deltoid. Hands stay bare past the
@@ -120,16 +101,16 @@ const sleeves = sdf.union(
   makeSleeve(j.upperArmR, j.lowerArmR, j.wristR),
 ).label('sleeves');
 
-// 7. HAIR — long.
+// 6. HAIR — long.
 const hair = F.hair(rig, { style: 'long' }).label('hair');
 
-// 8. BASE — disc under the feet.
+// 7. BASE — disc under the feet.
 const base = F.base(rig, {
   radius: rig.opts.height * 0.22,
   thickness: rig.opts.height * 0.035,
 }).label('base');
 
-// 9. Hard-union labelled regions and build.
+// 8. Hard-union labelled regions and build.
 return sdf.union(skin, eyes, lips, dress, sleeves, hair, base)
   .build({
     edgeLength: 0.78,

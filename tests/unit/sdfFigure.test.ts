@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildTorso, buildNipples, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -219,6 +219,55 @@ describe('figure — bust mounds + areola', () => {
     expect(parseInt(areolaColor('#cf9163', 0.5).slice(1, 3), 16))
       .toBeLessThan(parseInt(areolaColor('#cf9163', 0.9).slice(1, 3), 16));
     expect(() => areolaColor('not-a-color')).toThrow();
+  });
+});
+
+describe('figure rig — belly (abdominal / pregnancy) swell', () => {
+  it('belly defaults to 0 and is range-checked', () => {
+    expect(buildRig({}).opts.belly).toBe(0);
+    expect(buildRig({ sex: 'female' }).opts.belly).toBe(0);   // not pre-filled by sex
+    expect(buildRig({ belly: 0.7 }).opts.belly).toBeCloseTo(0.7, 6);
+    expect(buildRig({ belly: 2 }).opts.belly).toBe(2);
+    expect(() => buildRig({ belly: -0.1 })).toThrow();         // out of range
+    expect(() => buildRig({ belly: 3 })).toThrow();            // out of range
+  });
+
+  it('torsoMasses: belly grows the abdomen FORWARD without dropping its bottom', () => {
+    const rig = buildRig({ height: 60 });
+    const flat = torsoMasses(rig.joints, rig.r, 0);
+    const round = torsoMasses(rig.joints, rig.r, 1);
+    // Forward projection (the −Y depth semi-axis) grows strongly.
+    expect(round.belly.b).toBeGreaterThan(flat.belly.b * 1.5);
+    // Centre is pushed forward (more −Y) so the swell sits proud of the body.
+    expect(round.belly.c[1]).toBeLessThan(flat.belly.c[1]);
+    // The swell's BOTTOM never descends below the flat baseline — it can't drop
+    // toward the crotch (the pendant-between-the-legs failure mode).
+    const flatBottom = flat.belly.c[2] - flat.belly.cz;
+    const roundBottom = round.belly.c[2] - round.belly.cz;
+    // Raising the centre in lock-step with the growth keeps the bottom from
+    // descending — it actually rises a touch, so the swell can never reach down
+    // toward the crotch as the belly grows.
+    expect(roundBottom).toBeGreaterThan(flatBottom);
+  });
+
+  it('belly === 0 leaves the abdomen ellipsoid byte-identical', () => {
+    const rig = buildRig({ height: 60, sex: 'female', bust: 0.4 });
+    const a = torsoMasses(rig.joints, rig.r, 0);
+    const b = torsoMasses(rig.joints, rig.r);   // default arg
+    expect(a.belly).toEqual(b.belly);
+  });
+
+  it('the navel landmark rides the swell forward as belly grows', () => {
+    const flat = buildRig({ height: 60, belly: 0 });
+    const round = buildRig({ height: 60, belly: 1 });
+    expect(round.torso.navel[1]).toBeLessThan(flat.torso.navel[1]);   // more −Y = further forward
+  });
+
+  it('buildTorso with a belly stays one solid mass and bulges forward', () => {
+    const flat = buildTorso(api, buildRig({ height: 60 })) as unknown as SdfNode;
+    const round = buildTorso(api, buildRig({ height: 60, belly: 1 })) as unknown as SdfNode;
+    // The pregnant torso reaches further forward (−Y) than the flat one.
+    expect(round.bounds().min[1]).toBeLessThan(flat.bounds().min[1]);
   });
 });
 
