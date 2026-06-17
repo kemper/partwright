@@ -1000,7 +1000,14 @@ function buildNipples(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // Local radius of curvature for the flush clip: the mound radius if there is a
   // mound, else a broad radius approximating the gently-curved bare chest.
   const surfR = mounds ? mounds.radius : r.chestX * 1.4;
-  const eps = Math.max(r.chestX * 0.03, 0.06);                         // proud enough to win the union
+  // Proud enough to win the union. On a BARE muscled chest the pectoral masses
+  // bulge FORWARD of the chest ellipsoid the anchor rides, so once the nipple
+  // line sits up on the chest (the raised, anatomically-correct height) the pec
+  // can swallow the flush disc — the 'areola' label then resolves to 0
+  // triangles. Add muscle-scaled proudness so the coin still pokes past the pec.
+  // Mound (bust) figures ride the already-proud mound apex, so they don't need
+  // it; at muscle 0 this is a no-op and the disc is byte-identical.
+  const eps = Math.max(r.chestX * 0.03, 0.06) + (mounds ? 0 : r.chestY * 0.35 * rig.opts.muscle);
   // Soften the flush-disc PERIMETER (#703). The hard cylinder∩sphere edge is a
   // knife rim — at the coarse chest grid (no detail region runs over the torso)
   // it slivered into a torn, faceted ring (the same flush-disc-edge problem as
