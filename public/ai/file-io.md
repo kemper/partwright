@@ -48,7 +48,14 @@ await partwright.export3MFParts()
 await partwright.export3MFParts(["part_abc", "part_def"], "assembly", { bambu: false })
 ```
 
-Each part's **latest version** is re-baked with its colours (both code-declared `api.label`/`api.paint.*` and saved manual paint). Bambu mode places each part on its plate using your configured **bed size** (printer settings) for the plate stride. Both modes carry colours via `m:colorgroup`, so any slicer sees them. This triggers a browser download — there is no `*Data()` byte-returning variant yet.
+Each part's **latest version** is re-baked with its colours (both code-declared `api.label`/`api.paint.*` and saved manual paint). Bambu mode places each part on its plate using your configured **bed size** (printer settings) for the plate stride. Both modes carry colours via `m:colorgroup`, so any slicer sees them.
+
+`export3MFParts` triggers a browser download; **`export3MFPartsData(partIds?, filename?, { bambu? })`** is the bytes-returning twin — it returns `{ filename, mimeType, base64, sizeBytes, parts }` so an agent can read the exported 3MF back (unzip the base64) without the download path.
+
+```js
+const r = await partwright.export3MFPartsData(undefined, 'assembly', { bambu: true })
+// -> { filename, mimeType, base64: "...", sizeBytes, parts: 3 }
+```
 
 ## Import — supply the payload directly
 ```js

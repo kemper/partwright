@@ -4170,13 +4170,12 @@ async function main() {
     }
   }
 
-  /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
-   *  (default: all) and downloads one 3MF. `opts.bambu` (default true) → one part
-   *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF.
-   *  Returns a result object (no UI modal). Kept as a standalone function so the
-   *  `partwrightAPI` object literal stays thin. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
-    assertString(filename, 'export3MFParts(partIds, filename)', { optional: true });
+  /** Shared core for the multi-part 3MF exports: validate the part ids, bake each
+   *  selected part's coloured mesh off-editor, and build the 3MF. Returns the
+   *  BuiltExport (no download, no base64) so callers can either trigger a
+   *  download or return the bytes. `opts.bambu` (default true) → one part per
+   *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     const allParts = getState().parts;
     if (allParts.length === 0) return { error: 'No parts in this session.' };
@@ -4200,11 +4199,37 @@ async function main() {
     try {
       const bed = loadPrinterSettings().bed;
       const built = build3MFProject(baked, { customName: filename, bambu, bedSize: [bed[0], bed[1]] });
-      downloadBlob(built.blob, built.filename, '3MF');
-      return { ok: true as const, filename: built.filename, parts: baked.length };
+      return { built, parts: baked.length };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
+  }
+
+  /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
+   *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
+   *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
+    assertString(filename, 'export3MFParts(partIds, filename)', { optional: true });
+    const r = await build3MFPartsExport(partIds, filename, opts);
+    if ('error' in r) return r;
+    downloadBlob(r.built.blob, r.built.filename, '3MF');
+    return { ok: true as const, filename: r.built.filename, parts: r.parts };
+  }
+
+  /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
+   *  downloading — the agent/test-friendly twin. Lets a caller read the exported
+   *  3MF back without the browser download path. */
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
+    assertString(filename, 'export3MFPartsData(partIds, filename)', { optional: true });
+    const r = await build3MFPartsExport(partIds, filename, opts);
+    if ('error' in r) return r;
+    return {
+      filename: r.built.filename,
+      mimeType: r.built.mimeType,
+      sizeBytes: r.built.blob.size,
+      base64: await blobToBase64(r.built.blob),
+      parts: r.parts,
+    };
   }
 
   const actionExport3MF = async () => {
@@ -8958,6 +8983,15 @@ async function main() {
      *  or `{ error }`. */
     export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
       return export3MFPartsApi(partIds, filename, opts);
+    },
+
+    /** Bytes-returning twin of {@link export3MFParts} — bundles parts into one
+     *  3MF and RETURNS `{ filename, mimeType, base64, sizeBytes, parts }` (or
+     *  `{ error }`) instead of downloading, so an agent/test can read the
+     *  exported file back without the browser download path. `{ bambu }` as in
+     *  export3MFParts (default true). */
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
+      return export3MFPartsDataApi(partIds, filename, opts);
     },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
@@ -14031,6 +14065,7 @@ async function main() {
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate, false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportVOX':       { signature: 'exportVOX() -- Download MagicaVoxel .vox (voxel sessions)', docs: '/ai/voxel.md' },
         // AI-friendly export — return bytes over the API instead of triggering a download
         'exportGLBData':   { signature: 'await exportGLBData() -- Return GLB as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
