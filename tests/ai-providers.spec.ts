@@ -544,6 +544,104 @@ test.describe('Multi-provider AI', () => {
     expect(toolIdx).toBeLessThan(userIdx);
   });
 
+  test('Anthropic strips an orphaned tool_result left behind by compaction', async ({ page }) => {
+    // The mirror of the dangling-tool_use case: compaction (or any edit that
+    // drops the assistant turn that made a call) can leave a kept tool_result
+    // whose `tool_use_id` no longer has a matching tool_use. The API 400s with
+    // "unexpected `tool_use_id`" unless the builder strips it. buildApiMessages
+    // is pure, so assert directly.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const out = await page.evaluate(async () => {
+      const a = await import('/src/ai/anthropic.ts');
+      const history = [
+        // A compaction summary replaced the assistant(tool_use) that made the
+        // call — only the orphaned tool_result carrier survived.
+        { id: 's0', sessionId: 's', role: 'assistant', blocks: [{ type: 'text', text: '[compacted summary]' }], createdAt: 0, seq: 0 },
+        { id: 'u1', sessionId: 's', role: 'user', blocks: [], toolResults: [{ toolUseId: 'tu_GONE', content: '{"ok":true}' }], createdAt: 0, seq: 1 },
+        { id: 'u2', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'now add a handle' }], createdAt: 0, seq: 2 },
+      ];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return a.buildApiMessages(history as any);
+    });
+    // The orphaned tool_result must not survive into the request.
+    const hasOrphan = out.some(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (m: any) => Array.isArray(m.content) && m.content.some((b: any) => b.type === 'tool_result' && b.tool_use_id === 'tu_GONE'),
+    );
+    expect(hasOrphan).toBe(false);
+    // The real user text is untouched.
+    const userText = out.some(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (m: any) => m.role === 'user' && Array.isArray(m.content) && m.content.some((b: any) => b.type === 'text' && b.text.includes('add a handle')),
+    );
+    expect(userText).toBe(true);
+  });
+
+  test('OpenAI (Responses) drops an orphaned function_call_output left behind by compaction', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const sentBody = await page.evaluate(async () => {
+      const openai = await import('/src/ai/openai.ts');
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (_input: unknown, init: { body?: string }) => {
+        captured = String(init?.body ?? '');
+        const body = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        const history = [
+          { id: 's0', sessionId: 's', role: 'assistant', blocks: [{ type: 'text', text: '[compacted summary]' }], createdAt: 0, seq: 0 },
+          { id: 'u1', sessionId: 's', role: 'user', blocks: [], toolResults: [{ toolUseId: 'call_GONE', content: 'ok' }], createdAt: 0, seq: 1 },
+          { id: 'u2', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'now add a handle' }], createdAt: 0, seq: 2 },
+        ];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await openai.streamTurn({ apiKey: 'k', model: 'gpt-5.5', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return captured;
+    });
+    const sent = JSON.parse(sentBody);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = sent.input as any[];
+    expect(items.some(it => it.type === 'function_call_output' && it.call_id === 'call_GONE')).toBe(false);
+  });
+
+  test('OpenAI (Chat Completions) drops an orphaned tool message left behind by compaction', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const sentBody = await page.evaluate(async () => {
+      const openai = await import('/src/ai/openai.ts');
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (_input: unknown, init: { body?: string }) => {
+        captured = String(init?.body ?? '');
+        const body = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        const history = [
+          { id: 's0', sessionId: 's', role: 'assistant', blocks: [{ type: 'text', text: '[compacted summary]' }], createdAt: 0, seq: 0 },
+          { id: 'u1', sessionId: 's', role: 'user', blocks: [], toolResults: [{ toolUseId: 'call_GONE', content: 'ok' }], createdAt: 0, seq: 1 },
+          { id: 'u2', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'now add a handle' }], createdAt: 0, seq: 2 },
+        ];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await openai.streamTurn({ apiKey: 'k', model: 'gpt-4o', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return captured;
+    });
+    const sent = JSON.parse(sentBody);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const msgs = sent.messages as any[];
+    expect(msgs.some(m => m.role === 'tool' && m.tool_call_id === 'call_GONE')).toBe(false);
+  });
+
   test('OpenAI (Chat Completions) keeps tool calls distinct when an OpenAI-compatible server omits tool_calls[].index', async ({ page }) => {
     // llama.cpp/vLLM/Ollama OpenAI-compat shims frequently stream tool calls
     // without the numeric `index`. Keying buffers on `index ?? 0` collapsed
