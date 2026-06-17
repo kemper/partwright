@@ -49,7 +49,7 @@ const caneY = handR[1] - r.hand * 0.2;   // slightly forward for visual clarity
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
   eyes: false,
-  nose:  { tipRadius: r.head * 0.10 },
+  nose:  { type: 'aquiline', tipRadius: r.head * 0.11 },
   mouth: { smirk: -0.08 },
   ears:  { size: r.head * 0.24 },
   brows: { lift: 0.3 },

@@ -484,7 +484,7 @@ before aiming a prop at it.
 ```js
 F.face.assemble(head, rig, {
   eyes:  true | { radius, style, lids, gaze, gazeL, gazeR } | false,  // OFF by default — see note below
-  nose:  true | { tipRadius, length, width, bridge, flare } | false,
+  nose:  true | { type, projection, length, width, bridge, bridgeWidth, profile, tipSize, tipShape, flare, upturn, nostrilSize, nostrils, tipRadius } | false,
   mouth: true | { style, expression, curve, width, smirk, open, fullness, lipShape, divided, render, teeth } | false,
   ears:  true | { size, type } | false,   // type: 'detailed'(default) | 'round' | 'pointed'
   brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
@@ -508,11 +508,42 @@ The explicit knobs multiply **on top of** the preset, so `{ faceShape: 'square',
 
 ### Nose & lips — strong variation axes
 
-- **`nose.width`** (0.4–2.2) widens the tip + alae; **`nose.bridge`** (0.3–1.5)
-  is the nasal-bridge projection — a **low** value (~0.5) reads broad and flat, a
-  **high** value (~1.4) thin and prominent; **`nose.flare`** (0–1.5) adds nostril
-  wings. (`tipRadius`/`length` unchanged.) These three vary the nose far more than
-  size alone — e.g. `{ width: 1.4, bridge: 0.6, flare: 1.0 }` vs `{ width: 0.8, bridge: 1.3 }`.
+Every nose is a sculpted form — a recessed bridge **root**, a defined ridge
+(taller than wide, with sidewalls), a distinct **tip bulb**, fleshy **alae**
+(nostril wings), and two **carved nostril cavities** (rounded, outward-splayed,
+with a columella/septum between them) — that **projects off the face**, not a
+smooth bump. Reach for a **preset** first, then tune with the axes:
+
+- **`nose.type`** — `'straight'` (default · neutral) · `'button'` (small, short,
+  upturned) · `'snub'` (short, strongly upturned) · `'roman'` (long, high bridge,
+  convex hump) · `'aquiline'` (long, hooked, prominent hump) · `'broad'` (wide,
+  low bridge, big flare) · `'pointed'` (narrow, sharp tip) · `'bulbous'` (big
+  round tip). Each preset is a full set of axis values; the explicit keys below
+  **override** the preset (they don't multiply), so `{ type: 'broad', flare: 0.5 }`
+  is the broad nose with a tamer flare.
+- **Bridge** — **`nose.length`** (0.3–2) dorsum length; **`nose.bridge`**
+  (0.3–1.5) bridge height/prominence (low ≈ flat, high ≈ thin prominent);
+  **`nose.bridgeWidth`** (0.4–1.8) pinched ↔ broad bridge; **`nose.profile`**
+  (−1..1) the dorsal slope — **−** concave/scooped (ski-jump), **0** straight,
+  **+** convex roman hump. (Legacy **`nose.bump`** 0..1 is the positive-only
+  alias for `profile`.)
+- **Tip** — **`nose.projection`** (0.4–2) how far the tip stands **off the
+  face**; **`nose.tipSize`** (0.4–2) the end-bulb scale; **`nose.tipShape`**
+  (`'round'` · `'pointed'` · `'bulbous'` · `'cleft'`) the silhouette;
+  **`nose.width`** (0.4–2.2) overall tip+alae width; **`nose.upturn`** (−1..1)
+  rotates the tip (**+** snub/upturned shows the nostrils, **−** droopy/hooked);
+  **`nose.tipRadius`** sets the absolute base tip size.
+- **Nostrils** — **`nose.flare`** (0–1.5) sizes the alar wings;
+  **`nose.nostrilSize`** (0–1.5) scales the carved openings independently. Small
+  noses (tip radius below ~0.46, i.e. button/chibi) **auto-skip the carve by
+  default** — it would alias into a torn crater at that size, so they render a
+  clean smooth bulb instead. **`nose.nostrils: false`** force-skips at any size;
+  **`nose.nostrils: true`** force-carves even a small nose (accepting the risk).
+- These vary the nose far more than size alone — `{ type: 'broad' }` vs
+  `{ type: 'aquiline' }` are different *people*. **Pair `F.faceDetail(rig)`** with
+  `build({ detail })` so the nostril rims and septum mesh crisply (it includes a
+  fine nose sphere + an extra-fine nostril sphere; tune via
+  `faceDetail({ noseEdgeLength, nostrilEdgeLength })`).
 - **`mouth.fullness`** (0.4–2.2) scales lip thickness independently of `width`
   (works on the `'lips'` ridge and the open-mouth lip ring).
 - **`mouth.expression`** picks the emotion *level*: `'bigSmile'` · `'smile'` ·
@@ -744,9 +775,11 @@ iris/pupil and need no extra `detail` beyond `F.faceDetail(rig)`.
 
 Face features are far smaller than the body, so at the recommended figure grid
 (`edgeLength 0.4–0.6`) they mesh as angular slabs. `F.faceDetail(rig)` returns
-`{ center, radius, edgeLength }` spheres — one covering the head, a finer one
-over the mouth groove, and an extra-fine one over each eyeball front — for
-`.build()`'s `detail` option (see `/ai/sdf.md#detail-regions`):
+`{ center, radius, edgeLength }` spheres — one covering the head, finer ones over
+the mouth groove, the nose (plus an extra-fine nostril sphere), and each eyeball
+front, plus two over the chest **areola discs** so the flush coin's rim doesn't
+sliver at the coarse torso grid — for `.build()`'s `detail` option (see
+`/ai/sdf.md#detail-regions`):
 
 ```js
 return sdf.union(skin, eyes, hair, base)
@@ -758,6 +791,8 @@ iris/pupil circles tessellate round instead of faceting into polygons — while
 the body keeps the cheap global grid. Typically +30–60k triangles instead of the
 ~10× a globally fine grid would cost. Override per region:
 `F.faceDetail(rig, { edgeLength: rig.r.head * 0.02, eyeEdgeLength: rig.r.head * 0.006 })`.
+Pass `chest: false` to drop the areola spheres on a figure with no bare chest, or
+`chestEdgeLength` / `nostrilEdgeLength` to tune those.
 
 ## Hair & clothing — derived from the rig, so they always fit
 
@@ -884,8 +919,10 @@ recoloured:
   from `F.skin('porcelain' … 'ebony')` (or any RGB). Don't default to peach.
 - **Face shape** — `F.head(rig, { faceShape })` across oval / round / square /
   long / heart / diamond, plus `jaw` / `chin` / `cheek`.
-- **Nose** — `width` / `bridge` / `flare`. A broad low-bridge nose and a narrow
-  high-bridge nose are different *people*, not the same face shaded darker.
+- **Nose** — `type` (`straight`/`button`/`snub`/`roman`/`aquiline`/`broad`/
+  `pointed`/`bulbous`), then `width` / `bridge` / `flare` / `upturn` / `bump`. A
+  broad low-bridge nose and a narrow high-bridge hooked nose are different
+  *people*, not the same face shaded darker.
 - **Lips** — `mouth.fullness`.
 - **Hair** — match texture and style to the person: `coils`/`afro`/`locs`/
   `cornrows`/`boxBraids` are first-class, not edge cases. Any hair texture works

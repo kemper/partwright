@@ -1857,14 +1857,31 @@ function resolvePartTarget(target: unknown, caller: string): Part | { error: str
     return { error: `${caller}: no active session. Call createSession() or openSession(id) first.` };
   }
   const parts = listCurrentParts();
+  // 0-based index into the parts as listParts() returns them (sorted by order).
+  // Lets a caller address "the second part" without first looking up its id.
+  if (typeof target === 'number') {
+    if (!Number.isInteger(target) || target < 0) {
+      return { error: `${caller}: index must be a non-negative integer.` };
+    }
+    const ordered = [...parts].sort((a, b) => a.order - b.order);
+    const part = ordered[target];
+    if (!part) return { error: `${caller}: no part at index ${target}. Use listParts() to see available parts.` };
+    return part;
+  }
+  // A bare string is ambiguous between an id and a human-facing name, so try
+  // both (id first — ids are unique). Object form keeps the field explicit.
+  if (typeof target === 'string') {
+    if (target.length === 0) return { error: `${caller}: part must be a non-empty string.` };
+    const part = parts.find(p => p.id === target) ?? parts.find(p => p.name === target);
+    if (!part) return { error: `${caller}: no part matching ${JSON.stringify(target)} (by id or name). Use listParts() to see available parts.` };
+    return part;
+  }
   let id: string | undefined;
   let name: string | undefined;
-  if (typeof target === 'string') {
-    id = target;
-  } else if (target && typeof target === 'object') {
+  if (target && typeof target === 'object') {
     ({ id, name } = target as { id?: string; name?: string });
   } else {
-    return { error: `${caller}(target): pass a part id string, or { id } / { name } from listParts().` };
+    return { error: `${caller}(target): pass a part name, id string, or 0-based index — or { id } / { name } from listParts().` };
   }
   let part: Part | undefined;
   if (id !== undefined) {
@@ -10047,9 +10064,10 @@ async function main() {
       return { id: part.id, name: part.name, order: part.order };
     },
 
-    /** Switch the active part. Pass a part id string, or { id } / { name } from
-     *  listParts(). Loads that part's latest version into the editor. */
-    async changePart(target: string | { id?: string; name?: string }) {
+    /** Switch the active part. Pass a part name, id string, or 0-based index —
+     *  or { id } / { name } from listParts(). Loads that part's latest version
+     *  into the editor. */
+    async changePart(target: string | number | { id?: string; name?: string }) {
       const part = resolvePartTarget(target, 'changePart');
       if ('error' in part) return part;
       const version = await changePart(part.id);
@@ -10061,8 +10079,8 @@ async function main() {
       };
     },
 
-    /** Rename a part. Pass a part id string, or { id } / { name }. */
-    async renamePart(target: string | { id?: string; name?: string }, newName: string) {
+    /** Rename a part. Pass a part name, id string, 0-based index, or { id } / { name }. */
+    async renamePart(target: string | number | { id?: string; name?: string }, newName: string) {
       const check = guard(() => assertString(newName, 'renamePart(newName)', { allowEmpty: false }));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const part = resolvePartTarget(target, 'renamePart');
@@ -10072,8 +10090,9 @@ async function main() {
     },
 
     /** Delete a part and its versions. Refuses to delete a session's last part.
-     *  Deleting the active part activates and loads an adjacent one. */
-    async deletePart(target: string | { id?: string; name?: string }) {
+     *  Deleting the active part activates and loads an adjacent one. Pass a part
+     *  name, id string, 0-based index, or { id } / { name }. */
+    async deletePart(target: string | number | { id?: string; name?: string }) {
       const part = resolvePartTarget(target, 'deletePart');
       if ('error' in part) return part;
       const wasCurrent = getCurrentPart()?.id === part.id;
@@ -13795,9 +13814,9 @@ async function main() {
         'listParts':       { signature: 'listParts() -- List parts in the session -> [{id, name, order, isCurrent}]', docs: '/ai.md#console-api--windowpartwright' },
         'getCurrentPart':  { signature: 'getCurrentPart() -- Active part -> {id, name, order} or null', docs: '/ai.md#console-api--windowpartwright' },
         'createPart':      { signature: 'await createPart(name?) -- New empty part + switch to it -> {id, name, order}', docs: '/ai.md#console-api--windowpartwright' },
-        'changePart':      { signature: 'await changePart(id) -- Switch active part (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
-        'renamePart':      { signature: 'await renamePart(id, name) -- Rename a part', docs: '/ai.md#console-api--windowpartwright' },
-        'deletePart':      { signature: 'await deletePart(id) -- Delete a part and its versions', docs: '/ai.md#console-api--windowpartwright' },
+        'changePart':      { signature: 'await changePart(name|id|index) -- Switch active part (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
+        'renamePart':      { signature: 'await renamePart(name|id|index, newName) -- Rename a part', docs: '/ai.md#console-api--windowpartwright' },
+        'deletePart':      { signature: 'await deletePart(name|id|index) -- Delete a part and its versions', docs: '/ai.md#console-api--windowpartwright' },
         'getShareLink':    { signature: 'await getShareLink() -- Read-only share link for the current version -> {url, encodedBytes} or {error}; the link to hand the user when done', docs: '/ai.md#console-api--windowpartwright' },
         'getGalleryUrl':   { signature: 'getGalleryUrl() -- URL for gallery view (local browser only)', docs: '/ai.md#console-api--windowpartwright' },
         // Notes

@@ -44,7 +44,7 @@ partwright run     <file.js> [-p k=v ...]            # stats JSON only, no PNG
 
 partwright preview <file.js> [--lang manifold-js|voxel|scad] [--png out] [--json] [--size N]
                    [--view az,el] [--views front,right,top,bottom,left,back,iso]
-                   [--explain-components] [--expect-components N] [-p k=v]
+                   [--explain-components] [--expect-components N] [--require-labels a,b,c] [-p k=v]
 partwright compare <a.js> <b.js> [more.js ...] [--png out] [--size N] [--view az,el] [-p k=v]  # one tile per model
 partwright photo <image> [--palette p.json] [--max N] [--mode billboard|heightmap] [--depth N] [--bg] [--crop x,y,w,h] [--out model.js] [--png out]
 partwright fetch <url> [--out file]                  # download a remote image to disk (for `photo`)
@@ -97,6 +97,17 @@ a feature the four defaults occlude) or `--views a,b,c` (pick/reorder named
 angles: front,back,right,left,top,bottom,iso). `--explain-components` prints a
 per-island vol/tris/size/center breakdown to stderr; `--expect-components N`
 exits non-zero on a count mismatch (a CI gate for "this must stay N parts").
+
+`stats.labels` lists **every** declared label as `{name, color, triangleCount}` —
+colored *and* uncolored. A label with `triangleCount: 0` is **buried/aliased away
+and paints nothing** (the trap that ships eyeless figures). `--require-labels
+a,b,c` exits non-zero if any listed label resolves to 0 paintable triangles — the
+fast (~2s, no browser) twin of `scripts/build-catalog-entry.cjs --require-labels`.
+`npm run figure:smoke -- <file> [--require-labels …]` is a focused wrapper that
+prints a per-label paint-QC report and applies the same gate. Pass only the labels
+a given figure must show (closed-lid eyes legitimately paint 0). `componentCount`
+is the Node SSR value and can under-report vs the browser bake for near-threshold
+thin features — trust the label gate for paint, verify component splits in-browser.
 
 The default PNG name is **stamped unique per run** (`<file>.preview-<stamp>.png`,
 older stamps for the same model are cleaned up) because the agent Read tool

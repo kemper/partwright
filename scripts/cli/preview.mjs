@@ -12,11 +12,12 @@ import { readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { dirname, basename, join } from 'node:path';
 import sharp from 'sharp';
 import { DEFAULT_VIEWS, resolveViews } from './views.mjs';
+import { checkRequireLabels } from './gates.mjs';
 
 // Re-export so existing importers (main.mjs, model-preview.mjs) can keep
-// pulling resolveViews from preview.mjs; the implementation lives in views.mjs
-// (pure, unit-testable).
-export { resolveViews };
+// pulling resolveViews / checkRequireLabels from preview.mjs; the
+// implementations live in the pure, unit-testable sibling modules.
+export { resolveViews, checkRequireLabels };
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 

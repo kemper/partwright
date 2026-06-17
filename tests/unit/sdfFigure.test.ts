@@ -77,9 +77,34 @@ describe('figure torso — nipple + navel surface landmarks', () => {
     expect(nippleL[2]).toBeCloseTo(nippleR[2], 6);
     // On the FRONT (−Y) surface, in front of the chest mass centre.
     expect(nippleL[1]).toBeLessThan(chest[1]);
-    // A touch below the chest centre, and well above the navel.
+    // On the UPPER chest — ≈0.62 head below the shoulder line (the figure-drawing
+    // canon nipple line), a touch below the chest mass centre but well above the
+    // navel. Regression guard for the "nipples in the middle of the body" defect:
+    // the old chest-ellipsoid-relative drop scaled with the (capped) chest semi-Z
+    // and sank the line toward the lower ribcage on tall/stocky rigs.
+    const headH = 60 / rig.opts.headsTall;
+    const shoulderZ = rig.joints.upperArmL[2];
+    expect(nippleL[2]).toBeCloseTo(shoulderZ - headH * 0.62, 5);
     expect(nippleL[2]).toBeLessThan(chest[2]);
+    // Comfortably in the UPPER chest: above the chest↔navel midpoint, not sunk low.
+    expect(nippleL[2]).toBeGreaterThan((chest[2] + navel[2]) / 2);
     expect(nippleL[2]).toBeGreaterThan(navel[2]);
+  });
+
+  it('keeps the nipple line on the upper chest across headsTall (no low-ribcage drop)', () => {
+    // The bug was headsTall-dependent: the chest semi-Z is capped LARGER on tall
+    // (and stocky) rigs, so the old `chestZ − cz·0.16` drop grew with it and sank
+    // the nipples to the mid-torso. The corrected head-unit anchor stays a fixed
+    // ≈0.62 head below the shoulder at every headsTall.
+    for (const headsTall of [4, 6, 7.5, 8.5]) {
+      const rig = buildRig({ height: 60, headsTall, sex: 'female', bust: 0.5 });
+      const shoulderZ = rig.joints.upperArmL[2];
+      const navelZ = rig.torso.navel[2];
+      // Nipple sits below the shoulder but in the UPPER portion of the
+      // navel→shoulder span — never sunk down toward the midriff.
+      expect(rig.torso.nippleL[2]).toBeLessThan(shoulderZ);
+      expect(rig.torso.nippleL[2]).toBeGreaterThan(navelZ + (shoulderZ - navelZ) * 0.35);
+    }
   });
 
   it('places the navel centred on the belly front, between hips and chest', () => {
@@ -160,6 +185,25 @@ describe('figure — bust mounds + areola', () => {
     expect(node.labelName).toBe('areola');
     expect(() => buildNipples(api, rig, { size: 0.4, nipple: 0.1 })).not.toThrow();
     expect(() => buildNipples(api, rig, { areola: 1 } as object)).toThrow();   // unknown key
+  });
+
+  it('areola coin is a SHALLOW flush disc, not a deep backward plug (#706)', () => {
+    // A bare (no-bust) chest used the gently-curved-chest curvature radius
+    // (1.4·chestX). The old clip cylinder spanned the whole sphere depth, so the
+    // areola intersected into a plug ~1.1·surfR (≈1.5·chestX) BEHIND the front
+    // anchor — which on a narrow/shallow torso punched a rod out the BACK. The
+    // coin must instead seat only a shallow depth into the body (+Y = into the
+    // chest), so its back extent stays near the front surface.
+    const rig = buildRig({ height: 60, headsTall: 7, sex: 'male', weight: 0.4, muscle: 0.2 });
+    const node = buildNipples(api, rig) as unknown as SdfNode;
+    const b = node.bounds();
+    const anchorY = rig.torso.nippleL[1];                  // front-of-chest landmark
+    const chestX = rig.r.chestX;
+    // Back face sits a fraction of the chest half-width behind the anchor — NOT
+    // the old ~1.5·chestX plug that exits a lean back.
+    expect(b.max[1] - anchorY).toBeLessThan(chestX * 0.4);
+    // Still pokes proud of the surface at the front (−Y), so it reads as a disc.
+    expect(b.min[1]).toBeLessThan(anchorY);
   });
 
   it('areolaColor darkens a skin hex or named tone, and is overridable in strength', () => {
@@ -1549,11 +1593,13 @@ describe('figure nose & lips — variation axes', () => {
   const rig = buildRig({ height: 60, headsTall: 6 });
   const span = (n: SdfNode, ax: number): number => n.bounds().max[ax] - n.bounds().min[ax];
 
-  it('default nose (width:1, flare:0) matches the bare nose', () => {
+  it('the no-arg nose equals the explicit "straight" preset defaults', () => {
     const bare = F.face.nose(rig) as unknown as SdfNode;
-    const def = F.face.nose(rig, { width: 1, flare: 0, bridge: 1, length: 1 }) as unknown as SdfNode;
+    const def = F.face.nose(rig, { type: 'straight' }) as unknown as SdfNode;
     const p = rig.face.nose;
+    const q: [number, number, number] = [p[0] + 0.3, p[1] - 0.4, p[2] - 0.6];
     expect(def.evaluate(p[0], p[1], p[2])).toBeCloseTo(bare.evaluate(p[0], p[1], p[2]), 9);
+    expect(def.evaluate(q[0], q[1], q[2])).toBeCloseTo(bare.evaluate(q[0], q[1], q[2]), 9);
   });
 
   it('a wider, flared nose has a larger lateral extent than a narrow one', () => {
@@ -1562,16 +1608,143 @@ describe('figure nose & lips — variation axes', () => {
     expect(span(wide, 0)).toBeGreaterThan(span(narrow, 0));
   });
 
+  it('carves nostril cavities — the underside cavity is OUTSIDE the carved nose where the un-carved one is solid', () => {
+    const fwd = rig.dir.headForward, up = rig.dir.headUp, right = rig.dir.headLeft;
+    const anchor = rig.face.nose;
+    const tipR = rig.r.head * 0.12;
+    const withNostrils = F.face.nose(rig, { type: 'broad' }) as unknown as SdfNode;
+    const without = F.face.nose(rig, { type: 'broad', nostrils: false }) as unknown as SdfNode;
+    // Scan a small grid through the nose underside: at least one point must be
+    // solid in the un-carved nose (sdf < 0) yet open in the carved one
+    // (sdf > 0). Robust to tip projection / spread tuning — it asserts the
+    // carve removed real material, not a hardcoded sample point.
+    const at = (a: number, b: number, c: number): [number, number, number] => [
+      anchor[0] + fwd[0] * a + up[0] * b + right[0] * c,
+      anchor[1] + fwd[1] * a + up[1] * b + right[1] * c,
+      anchor[2] + fwd[2] * a + up[2] * b + right[2] * c,
+    ];
+    let carved = 0;
+    for (let a = 0; a <= tipR * 2.5; a += tipR * 0.25) {           // forward (projection)
+      for (let b = -tipR * 2; b <= tipR * 0.5; b += tipR * 0.25) { // down the underside
+        for (let c = -tipR * 1.6; c <= tipR * 1.6; c += tipR * 0.25) { // lateral
+          const p = at(a, b, c);
+          if (without.evaluate(...p) < 0 && withNostrils.evaluate(...p) > 0) carved++;
+        }
+      }
+    }
+    expect(carved).toBeGreaterThan(0);
+  });
+
+  it('presets give distinct silhouettes — bulbous tip is wider than pointed', () => {
+    const pointed = F.face.nose(rig, { type: 'pointed' }) as unknown as SdfNode;
+    const bulbous = F.face.nose(rig, { type: 'bulbous' }) as unknown as SdfNode;
+    expect(span(bulbous, 0)).toBeGreaterThan(span(pointed, 0));
+  });
+
+  it('upturn raises the nose underside (snub) vs a hooked tip', () => {
+    const snub = F.face.nose(rig, { upturn: 1, nostrils: false }) as unknown as SdfNode;
+    const hooked = F.face.nose(rig, { upturn: -1, nostrils: false }) as unknown as SdfNode;
+    // The hooked tip projects/drops further: lower minimum on the up axis.
+    expect(hooked.bounds().min[2]).toBeLessThan(snub.bounds().min[2]);
+  });
+
   it('fuller lips thicken the lip ridge', () => {
     const thin = F.face.mouth(rig, { style: 'lips', fullness: 0.5 }) as unknown as SdfNode;
     const full = F.face.mouth(rig, { style: 'lips', fullness: 2.0 }) as unknown as SdfNode;
     expect(span(full, 2)).toBeGreaterThan(span(thin, 2));
   });
 
-  it('rejects out-of-range nose params and bad mouth fullness', () => {
+  it('rejects out-of-range / unknown nose params and bad mouth fullness', () => {
     expect(() => F.face.nose(rig, { bridge: 5 })).toThrow(/bridge/);
     expect(() => F.face.nose(rig, { width: 9 })).toThrow(/width/);
+    expect(() => F.face.nose(rig, { upturn: 3 })).toThrow(/upturn/);
+    expect(() => F.face.nose(rig, { type: 'schnozz' })).toThrow(/type/);
+    expect(() => F.face.nose(rig, { nostrils: 'yes' })).toThrow(/nostrils/);
+    expect(() => F.face.nose(rig, { tipShape: 'banana' })).toThrow(/tipShape/);
+    expect(() => F.face.nose(rig, { profile: 4 })).toThrow(/profile/);
+    expect(() => F.face.nose(rig, { projection: 5 })).toThrow(/projection/);
+    // `bump` is validated even when `profile` (which wins) is also passed.
+    expect(() => F.face.nose(rig, { profile: 0.3, bump: 9 })).toThrow(/bump/);
     expect(() => F.face.mouth(rig, { style: 'lips', fullness: 9 })).toThrow(/fullness/);
+  });
+});
+
+describe('figure nose — small-nose nostril auto-skip (#703)', () => {
+  const F = createFigureNamespace(api);
+  // A small head → small tip radius below the absolute nostril floor.
+  const smallRig = buildRig({ height: 20, headsTall: 4 });
+  const bigRig = buildRig({ height: 70, headsTall: 8 });
+
+  // Sample the nose underside and count how many points the carve opened up
+  // (solid in the `nostrils:false` reference, open in the candidate).
+  const countCarved = (candidate: SdfNode, reference: SdfNode, rig: ReturnType<typeof buildRig>): number => {
+    const fwd = rig.dir.headForward, up = rig.dir.headUp, right = rig.dir.headLeft;
+    const anchor = rig.face.nose;
+    const tipR = rig.r.head * 0.12;
+    const at = (a: number, b: number, c: number): [number, number, number] => [
+      anchor[0] + fwd[0] * a + up[0] * b + right[0] * c,
+      anchor[1] + fwd[1] * a + up[1] * b + right[1] * c,
+      anchor[2] + fwd[2] * a + up[2] * b + right[2] * c,
+    ];
+    let carved = 0;
+    for (let a = 0; a <= tipR * 2.5; a += tipR * 0.2) {
+      for (let b = -tipR * 2; b <= tipR * 0.5; b += tipR * 0.2) {
+        for (let c = -tipR * 1.6; c <= tipR * 1.6; c += tipR * 0.2) {
+          const p = at(a, b, c);
+          if (reference.evaluate(...p) < 0 && candidate.evaluate(...p) > 0) carved++;
+        }
+      }
+    }
+    return carved;
+  };
+
+  it('a small/button nose skips the nostril carve by default (clean bulb, no torn crater)', () => {
+    const button = F.face.nose(smallRig, { type: 'button' }) as unknown as SdfNode;
+    const ref = F.face.nose(smallRig, { type: 'button', nostrils: false }) as unknown as SdfNode;
+    // Default == the un-carved reference: nothing was carved.
+    expect(countCarved(button, ref, smallRig)).toBe(0);
+  });
+
+  it('an explicit nostrils:true still carves a small nose (caller opts into the risk)', () => {
+    const forced = F.face.nose(smallRig, { type: 'button', nostrils: true }) as unknown as SdfNode;
+    const ref = F.face.nose(smallRig, { type: 'button', nostrils: false }) as unknown as SdfNode;
+    expect(countCarved(forced, ref, smallRig)).toBeGreaterThan(0);
+  });
+
+  it('a normal-sized nose still carves nostrils by default (good faces unchanged)', () => {
+    const def = F.face.nose(bigRig, {}) as unknown as SdfNode;
+    const ref = F.face.nose(bigRig, { nostrils: false }) as unknown as SdfNode;
+    expect(countCarved(def, ref, bigRig)).toBeGreaterThan(0);
+  });
+});
+
+describe('figure faceDetail — chest areola detail (#703)', () => {
+  const rig = buildRig({ height: 60, headsTall: 6 });
+
+  it('adds two chest detail spheres over the areola anchors by default', () => {
+    const regions = faceDetail(rig);
+    const nearAnchor = (c: number[], a: number[]): boolean =>
+      Math.hypot(c[0] - a[0], c[1] - a[1], c[2] - a[2]) < 1e-6;
+    const chestRegions = regions.filter((d) =>
+      nearAnchor(d.center, rig.torso.nippleL) || nearAnchor(d.center, rig.torso.nippleR));
+    expect(chestRegions.length).toBe(2);
+    // Far finer than the global figure grid (0.4–0.6) so the disc rim meshes
+    // round instead of slivering at the coarse torso cell.
+    for (const c of chestRegions) expect(c.edgeLength).toBeLessThan(0.4);
+  });
+
+  it('chest:false drops the chest spheres; the head/mouth ordering is preserved', () => {
+    const regions = faceDetail(rig, { chest: false });
+    const onChest = regions.some((d) =>
+      Math.hypot(d.center[0] - rig.torso.nippleL[0], d.center[1] - rig.torso.nippleL[1], d.center[2] - rig.torso.nippleL[2]) < 1e-6);
+    expect(onChest).toBe(false);
+    expect(regions[0].center).toEqual(rig.joints.head);
+    expect(regions[1].center).toEqual(rig.face.mouth);
+  });
+
+  it('rejects unknown / bad chest keys', () => {
+    expect(() => faceDetail(rig, { chest: 'yes' } as object)).toThrow(/chest/);
+    expect(() => faceDetail(rig, { chestThickness: 1 } as object)).toThrow();
   });
 });
 

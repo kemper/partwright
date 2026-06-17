@@ -349,7 +349,40 @@ export function buildApiMessages(
       if (content.length > 0) out.push({ role: 'assistant', content });
     }
   }
-  return sanitizeToolUse(out);
+  return stripOrphanToolResults(sanitizeToolUse(out));
+}
+
+/** Drop tool_result blocks whose `tool_use_id` has no matching `tool_use`
+ *  anywhere in the request — the mirror of sanitizeToolUse. Compaction (or any
+ *  edit that severs a tool round) can leave a kept tool_result whose call was
+ *  dropped, and the API 400s with "unexpected `tool_use_id`". A user message
+ *  emptied by the strip is removed so the request stays well-formed. Runs
+ *  after sanitizeToolUse, whose synthetic results reference real ids and so
+ *  are never stripped here. */
+function stripOrphanToolResults(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  const knownIds = new Set<string>();
+  for (const m of messages) {
+    if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+    for (const b of m.content as Anthropic.ContentBlockParam[]) {
+      if (b.type === 'tool_use') knownIds.add((b as { type: 'tool_use'; id: string }).id);
+    }
+  }
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role !== 'user' || !Array.isArray(m.content)) continue;
+    const content = m.content as Anthropic.ContentBlockParam[];
+    const filtered = content.filter(
+      b => b.type !== 'tool_result' || knownIds.has((b as { type: 'tool_result'; tool_use_id: string }).tool_use_id),
+    );
+    if (filtered.length === content.length) continue;
+    if (filtered.length === 0) {
+      messages.splice(i, 1);
+      i--;
+      continue;
+    }
+    m.content = filtered;
+  }
+  return messages;
 }
 
 /** Repair dangling tool_use/tool_result invariant violations before the

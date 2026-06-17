@@ -422,8 +422,9 @@ const DETAIL_FIELDS = ['center', 'radius', 'edgeLength'] as const;
 /** Most detail spheres an AI would meaningfully place; guards quadratic
  *  edge-marking cost from a runaway list. */
 const MAX_DETAIL_REGIONS = 16;
-/** Per-region triangle cap for the refine pass — same order as the ~200k
- *  catalog budget, with headroom for multi-region models. */
+/** Per-region triangle cap for the refine pass — same order as the ~500k
+ *  catalog budget. A standalone safety guard against a runaway refine, not the
+ *  advisory budget itself. */
 const REFINE_MAX_TRIANGLES = 400_000;
 
 function assertBuildOpts(opts: unknown): SdfBuildOptions {

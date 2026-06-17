@@ -1900,7 +1900,8 @@ async function repairCurrentChat(): Promise<void> {
     return;
   }
   try {
-    await putMessages(result.toPersist);
+    if (result.toPersist.length > 0) await putMessages(result.toPersist);
+    if (result.toDelete.length > 0) await deleteMessages(result.toDelete.map(m => m.id));
   } catch (err) {
     setTransientStatus(`Couldn't repair chat: ${err instanceof Error ? err.message : String(err)}`);
     return;
@@ -1911,7 +1912,8 @@ async function repairCurrentChat(): Promise<void> {
   broadcastChatChanged();
   renderTranscript();
   updateRewindButtons();
-  showToast(`Repaired tool history — ${result.toPersist.length} message(s) fixed. You can continue now.`, { variant: 'success', source: 'ai' });
+  const fixed = result.toPersist.length + result.toDelete.length;
+  showToast(`Repaired tool history — ${fixed} message(s) fixed. You can continue now.`, { variant: 'success', source: 'ai' });
 }
 
 function formatDuration(ms: number): string {
@@ -2929,13 +2931,23 @@ async function rewindTurn(): Promise<void> {
   // just removed), which would 400 the very next send — so a rewind meant to
   // "step back and start over" wouldn't actually recover. Repair the exposed
   // history and persist it so the post-rewind state is always sendable.
-  const repair = repairToolHistory(state.history);
-  if (repair.changed) {
-    await putMessages(repair.toPersist);
-    state.history = repair.messages;
-  }
+  await persistToolHistoryRepair();
   renderTranscript();
   updateRewindButtons();
+}
+
+/** Persist any tool-history repair for the current `state.history` so the
+ *  post-edit conversation is always sendable: no orphaned tool_use (missing
+ *  result) and no orphaned tool_result (its tool_use was dropped — what a
+ *  compaction or rewind that severs a tool round leaves behind). Mirrors the
+ *  explicit "Repair history" action but runs silently after a structural edit.
+ *  No-op when the history is already clean. */
+async function persistToolHistoryRepair(): Promise<void> {
+  const repair = repairToolHistory(state.history);
+  if (!repair.changed) return;
+  if (repair.toPersist.length > 0) await putMessages(repair.toPersist);
+  if (repair.toDelete.length > 0) await deleteMessages(repair.toDelete.map(m => m.id));
+  state.history = repair.messages;
 }
 
 /** Restore the most recently rewound turn from the rewindStack back into
@@ -3970,8 +3982,12 @@ async function maybeAutoCompact(): Promise<void> {
   };
   await deleteMessages(proposal.drop.map(m => m.id));
   await putMessages([summaryMsg]);
-  broadcastChatChanged();
+  // Dropping the summarized tail can sever a tool round — leaving a kept
+  // tool_result whose originating tool_use is now gone. Clear that dangling
+  // reference so the very next turn doesn't 400 on an orphaned tool_use_id.
   await loadHistoryForCurrentSession();
+  await persistToolHistoryRepair();
+  broadcastChatChanged();
   renderTranscript();
   renderCostMeter();
 }
@@ -4048,8 +4064,12 @@ async function runCompact(): Promise<void> {
     };
     await deleteMessages(proposal.drop.map(m => m.id));
     await putMessages([summaryMsg]);
-    broadcastChatChanged();
+    // Dropping the summarized tail can sever a tool round — leaving a kept
+    // tool_result whose originating tool_use is now gone. Clear that dangling
+    // reference so the very next turn doesn't 400 on an orphaned tool_use_id.
     await loadHistoryForCurrentSession();
+    await persistToolHistoryRepair();
+    broadcastChatChanged();
     renderTranscript();
     renderCostMeter();
     setTransientStatus(`Compacted ${proposal.drop.length} turn(s); promoted ${notes.length} note(s).`);
