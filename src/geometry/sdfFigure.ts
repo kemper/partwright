@@ -1520,10 +1520,14 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     return lerp3(A, K, Math.min(0.95, Math.max(0.1, frac)));
   }
 
+  // Figure ground plane: the lowest sole (matches buildFeet). A foot clearly
+  // above it is LIFTED and plantarflexes, so its footwear must pitch with it.
+  const planeZ = Math.min(rig.sole.L.groundZ, rig.sole.R.groundZ);
+
   // Build one foot's two regions: the upper (boot body, clipped to sit ABOVE the
   // sole) and the sole slab (a wide flat footprint from groundZ up). They overlap
   // a little so the union welds into one component.
-  function foot(A: Vec3, K: Vec3, sole0: SoleFrame, side: number): { upper: Node; sole: Node | null } {
+  function foot(A: Vec3, K: Vec3, sole0: SoleFrame, side: number, shinDir: Vec3, thighDir: Vec3): { upper: Node; sole: Node | null } {
     const footLen = sole0.length * size;           // heel→toe, full length
     const fwd = sole0.heading;
     const groundZ = sole0.groundZ;
@@ -1573,6 +1577,80 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     const kBody = r.foot * 0.6;
     let local = last
       .smoothUnion(heel, kBody);
+
+    // ─── PLANTARFLEXED footwear (#701/#707 parity) ──────────────────────────
+    //  buildFeet pitches a LIFTED foot's toe down about the ankle so it follows
+    //  the leg's downward extension. The shoe MUST follow, or the pointed foot
+    //  pokes out of a flat shoe. We pivot the whole foot-wrapping shell (body +
+    //  sole + coverage) about the SAME world ankle, with the SAME pitch/heading
+    //  footPitchFrame gives buildFeet (identical inputs → identical rotation, so
+    //  shoe and foot stay concentric). The collar/shaft are leg-connectors and
+    //  stay in world (they follow the shank, not the foot). Planted/standing feet
+    //  get `null` here and run the unchanged flat path below — byte-for-byte.
+    const pf = footPitchFrame(shinDir, thighDir, fwd, groundZ - planeZ, r.foot);
+    if (pf) {
+      const yawL = Math.atan2(pf.heading[0], pf.heading[1]) / DEG;
+      // Pivot about the local ankle (footprint centre is 0.12·length ahead of the
+      // ankle along the heading; the ankle rides A.z above the local ground z=0).
+      const ankleLocal: Vec3 = [0, -sole0.length * 0.12, A[2] - groundZ];
+      const place = (n: Node): Node => n
+        .translate([-ankleLocal[0], -ankleLocal[1], -ankleLocal[2]])
+        .rotate([-pf.pitch, 0, 0])
+        .rotate([0, 0, yawL])
+        .translate([A[0], A[1], A[2]]);
+
+      // Body (last + heel) pivoted onto the pointed foot.
+      let pUpper = place(local);
+      // Collar welds the opening to the shank, and (boots) the shaft runs up the
+      // lower leg — both in WORLD, anchored at the ankle/shank like the flat path.
+      const collar = sdf.capsule(
+        [A[0], A[1], A[2] + r.foot * 0.1],
+        [A[0], A[1], sz - r.foot * 0.1],
+        r.lowerLeg * 0.92 + wallT,
+      );
+      pUpper = pUpper.smoothUnion(collar, r.foot * 0.55);
+      if (kind === 'boots') {
+        const shaft = sdf.capsule(A, shaftTop(A, K), r.lowerLeg + wallT);
+        pUpper = pUpper.smoothUnion(shaft, r.lowerLeg * 0.9);
+      }
+
+      // Guaranteed-coverage underlayer, built in the LOCAL frame then pivoted with
+      // the foot (its ankle column tracks the pivot; the boot shaft stays world).
+      const szL = sz - groundZ;                       // local Z of the sole-capsule centre
+      const ankleLY = -sole0.length * 0.12;
+      const sCap = sdf.capsule(
+        [0, ankleLY - footLen * 0.38, szL],
+        [side * r.foot * 0.12, ankleLY + footLen * 0.62, szL],
+        r.foot * 0.62,
+      );
+      const instE = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.5, r.foot * 0.8)
+        .translate([0, ankleLY + footLen * 0.35, szL + r.foot * 0.15]);
+      const colC = sdf.capsule([0, ankleLY, A[2] - groundZ], [0, ankleLY, szL + r.foot * 0.2], r.lowerLeg * 0.8);
+      let footMassP = place(sCap.smoothUnion(instE, r.foot * 0.6).smoothUnion(colC, r.foot * 0.6));
+      if (kind === 'boots') footMassP = footMassP.union(sdf.capsule(A, shaftTop(A, K), r.lowerLeg));
+      footMassP = footMassP.round(t);
+      // No ground floor clip — the pointed foot hangs in the air.
+      const pShoe = pUpper.union(footMassP);
+
+      if (!soleOn) return { upper: pShoe, sole: null };
+
+      // Contrasting sole region: a thin footprint slab at the shoe's underside,
+      // built local and pivoted with the shoe (same shaping as the flat sole).
+      const bigP = Math.max(footLen, r.lowerLeg) * 8;
+      const hwP = hw;
+      const lipCapP = Math.min(lip, hwP * 0.45);
+      const soleRP = hwP + lipCapP;
+      const soleHeelYP = -footLen * 0.70 + soleRP;
+      const soleToeYP = footLen * 0.70 - soleRP;
+      const soleBandLocal = sdf.box([bigP, bigP, soleThick]).translate([0, 0, soleThick / 2]);
+      const footprintLocal = sdf.capsule(
+        [0, soleHeelYP, soleThick / 2],
+        [0, Math.max(soleToeYP, soleHeelYP + soleRP * 0.2), soleThick / 2],
+        soleRP,
+      ).intersect(soleBandLocal);
+      const soleBoundsP = lipCapP > 0 ? pShoe.round(lipCapP) : pShoe;
+      return { upper: pShoe, sole: place(footprintLocal).intersect(soleBoundsP) };
+    }
 
     // Place the local shoe body into the world (yaw to heading, drop onto ground).
     let upper = local.rotate([0, 0, yaw]).translate([sole0.point[0], sole0.point[1], groundZ]);
@@ -1664,8 +1742,8 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     };
   }
 
-  const L = foot(j.footL as Vec3, j.lowerLegL as Vec3, rig.sole.L, +1);
-  const R = foot(j.footR as Vec3, j.lowerLegR as Vec3, rig.sole.R, -1);
+  const L = foot(j.footL as Vec3, j.lowerLegL as Vec3, rig.sole.L, +1, rig.dir.lowerLegL, rig.dir.upperLegL);
+  const R = foot(j.footR as Vec3, j.lowerLegR as Vec3, rig.sole.R, -1, rig.dir.lowerLegR, rig.dir.upperLegR);
   const parts: Node[] = [L.upper.label(upperLabel), R.upper.label(upperLabel)];
   if (L.sole && R.sole) parts.push(L.sole.label(soleLabel), R.sole.label(soleLabel));
   return parts.reduce((a, b) => a.union(b));
