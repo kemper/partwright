@@ -486,7 +486,7 @@ F.face.assemble(head, rig, {
   eyes:  true | { radius, style, lids, gaze, gazeL, gazeR } | false,  // OFF by default — see note below
   nose:  true | { type, projection, length, width, bridge, bridgeWidth, profile, tipSize, tipShape, flare, upturn, nostrilSize, nostrils, tipRadius } | false,
   mouth: true | { style, expression, curve, width, smirk, open, fullness, lipShape, divided, render, teeth } | false,
-  ears:  true | { size, type } | false,   // type: 'detailed'(default) | 'round' | 'pointed'
+  ears:  true | { size, type, tilt } | false,   // type: 'detailed'(default) | 'round' | 'pointed'; tilt deg (+back)
   brows: { thickness, lift } | false, // off by default; pass {} or a tuning object to add
 })
 ```
@@ -650,10 +650,13 @@ the skull with a **shallow concha scoop** (a real rim + bowl, never a punched
 |---|---|---|
 | `'detailed'` (default) | the cupped ear plus a **tragus + antitragus** — reads as a real ear | most figures, realistic busts |
 | `'round'` | a clean cupped ear: comma plate + shallow concha + earlobe, no inner detail | simpler / cartoon figures |
-| `'pointed'` | the upper pinna sweeps up-and-back into a point | elves, fae, fantasy |
+| `'pointed'` | a triangular pinna sloping up to a **rounded point** | elves, fae, fantasy |
+
+`size` scales the ears; **`tilt`** (degrees, −45..45, **+ = back**) angles the top
+toward the nape — most useful on `'pointed'` to sweep the elf point back.
 
 ```js
-ears: { type: 'pointed', size: rig.r.head * 0.4 }   // elf ears, a touch larger
+ears: { type: 'pointed', size: rig.r.head * 0.4, tilt: 22 }   // swept-back elf ears
 ```
 
 **Whether hair covers or exposes the ears is a `F.hair` knob, not an ear knob** —

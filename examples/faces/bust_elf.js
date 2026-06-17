@@ -12,7 +12,7 @@ const face = F.face.assemble(head, rig, {
   eyes: false,
   nose: { tipRadius: rig.r.head * 0.09, width: 0.85 },
   mouth: mouthOpts,
-  ears: { type: 'pointed' },
+  ears: { type: 'pointed', tilt: 22 },
   brows: { lift: 0.7 },
 });
 

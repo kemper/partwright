@@ -1523,6 +1523,15 @@ describe('figure ears — types', () => {
     const ears = buildEars(api, rig, { type: 'round' }) as SdfNode;
     expect(ears.bounds().max[0]).toBeGreaterThan(rig.r.headX);
   });
+
+  it("tilt sweeps the pointed ear back (top moves toward the nape) and rejects out-of-range", () => {
+    // The figure faces −Y (front); +Y is the back. A back tilt pushes the elf
+    // point's max-Y reach toward the nape vs the untilted ear.
+    const upright = buildEars(api, rig, { type: 'pointed' }) as SdfNode;
+    const swept = buildEars(api, rig, { type: 'pointed', tilt: 30 }) as SdfNode;
+    expect(swept.bounds().max[1]).toBeGreaterThan(upright.bounds().max[1]);
+    expect(() => buildEars(api, rig, { type: 'pointed', tilt: 90 })).toThrow(/tilt/);
+  });
 });
 
 describe('figure skin palette — F.skin', () => {

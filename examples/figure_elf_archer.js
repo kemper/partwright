@@ -34,7 +34,7 @@ const face = F.face.assemble(head, rig, {
   eyes: false,
   nose: { tipRadius: r.head * 0.09, bridge: 1.05, width: 0.85 },
   mouth: { style: 'lips', fullness: 0.85, width: r.head * 0.38 },
-  ears: { type: 'pointed', size: r.head * 0.4 },   // ← elf ears
+  ears: { type: 'pointed', size: r.head * 0.4, tilt: 20 },   // ← swept-back elf ears
   brows: { lift: 0.6 },
 });
 // Seat the eyeballs proud of the face surface (the assembled brow/nose push the

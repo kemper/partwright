@@ -2748,12 +2748,20 @@ function earLocal(sdf: SdfApi, type: EarType, s: number): Node {
   const tx = s * 0.2;     // lateral half-thickness — a thin plate, not a blob
 
   if (type === 'pointed') {
-    // Elf: the upper pinna sweeps UP and back into a tapered point.
-    const pinna = sdf.ellipsoid(tx, s * 0.46, s * 0.6).translate([OUT, -s * 0.02, 0]);
-    const tip = sdf.capsule([OUT, -s * 0.08, s * 0.4], [OUT - s * 0.02, -s * 0.5, s * 1.45], tx * 0.85);
-    const lobe = sdf.ellipsoid(tx * 0.9, s * 0.26, s * 0.26).translate([OUT, s * 0.02, -s * 0.6]);
-    const n = pinna.smoothUnion(tip, s * 0.2).smoothUnion(lobe, s * 0.2);
-    const scoop = sdf.ellipsoid(tx * 1.15, s * 0.3, s * 0.4).translate([OUT + tx * 0.95, -s * 0.1, s * 0.06]);
+    // Elf: a leaf/teardrop pinna — a stack of ellipsoids that NARROW (front-back)
+    // and shrink as they rise, drifting slightly BACK (+Y), so the silhouette is
+    // a broad TRIANGLE sloping up to a ROUNDED point (not a thin straight spike).
+    const seg = (ry: number, rz: number, y: number, z: number, w: number): Node =>
+      sdf.ellipsoid(tx * w, ry, rz).translate([OUT, y, z]);
+    let n = seg(s * 0.5, s * 0.46, -s * 0.02, s * 0.02, 1.0)                          // wide base
+      .smoothUnion(seg(s * 0.40, s * 0.34, s * 0.04, s * 0.48, 0.96), s * 0.16)       // lower-mid, drifts back
+      .smoothUnion(seg(s * 0.28, s * 0.26, s * 0.12, s * 0.86, 0.9), s * 0.14)        // upper-mid
+      .smoothUnion(seg(s * 0.17, s * 0.18, s * 0.20, s * 1.14, 0.84), s * 0.12)       // shoulder of the point
+      .smoothUnion(seg(s * 0.10, s * 0.11, s * 0.26, s * 1.34, 0.78), s * 0.10);      // rounded tip
+    const lobe = sdf.ellipsoid(tx * 0.9, s * 0.26, s * 0.26).translate([OUT, s * 0.02, -s * 0.58]);
+    n = n.smoothUnion(lobe, s * 0.2);
+    // Shallow concha scoop over the lower-mid (NOT up at the point).
+    const scoop = sdf.ellipsoid(tx * 1.15, s * 0.3, s * 0.4).translate([OUT + tx * 0.95, -s * 0.08, s * 0.06]);
     return n.smoothSubtract(scoop, s * 0.11);
   }
 
@@ -2787,15 +2795,25 @@ function resolveTeeth(v: unknown): Array<'upper' | 'lower'> {
 
 function buildEars(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'ears(opts)');
-  assertNoUnknownKeys(o, ['size', 'type'], 'ears(opts)');
+  assertNoUnknownKeys(o, ['size', 'type', 'tilt'], 'ears(opts)');
   // Default to the anatomical 'detailed' ear — it reads most convincingly as an
   // ear; 'round' is the cleaner/simpler cup, 'pointed' the elf shape.
   const type = o.type === undefined ? 'detailed' : assertEnum(o.type, EAR_TYPES, 'ears.type');
   // Default sized to the head; the thin pinna plate stands proud of the skull so
   // it reads from the front as well as the side.
   const s = num(o.size, rig.r.head * 0.4, 'ears.size', 0.01);
-  const earL = orientToHeadPose(earLocal(sdf, type, s), rig).translate(rig.face.earL);
-  const earR = orientToHeadPose(earLocal(sdf, type, s).mirror('x'), rig).translate(rig.face.earR);
+  // `tilt` (degrees, +back) angles the top of the ear toward the nape — most
+  // useful on 'pointed' to sweep the elf point back, but valid on any type.
+  const tilt = num(o.tilt, 0, 'ears.tilt', -45, 45);
+  // Tilt rotates the local ear about its lateral axis BEFORE the mirror/pose,
+  // so both ears sweep back symmetrically (the rotation is in the YZ plane,
+  // which the X-mirror leaves untouched).
+  const local = (): Node => {
+    const e = earLocal(sdf, type, s);
+    return tilt ? e.rotate([-tilt, 0, 0]) : e;
+  };
+  const earL = orientToHeadPose(local(), rig).translate(rig.face.earL);
+  const earR = orientToHeadPose(local().mirror('x'), rig).translate(rig.face.earR);
   return earL.union(earR);
 }
 
@@ -3603,8 +3621,10 @@ export interface FigureNamespace {
     /** Ears welded at `rig.face.earL/earR` — a thin ear-shaped plate with a
      *  shallow concha scoop. `type`: `'detailed'` (default — cup + tragus +
      *  antitragus), `'round'` (clean cup, no inner detail), or `'pointed'`
-     *  (elf/fantasy point). `size` scales them. Pair with `F.hair(rig, { ears:
-     *  'behind' })` to expose them in front of the hair. */
+     *  (elf/fantasy — a triangular pinna sloping to a rounded point). `size`
+     *  scales them; `tilt` (deg, −45..45, +back) angles the top toward the nape
+     *  (sweeps the elf point back). Pair with `F.hair(rig, { ears: 'behind' })`
+     *  to expose them in front of the hair. */
     ears(rig: Rig, opts?: object): Node;
     brows(rig: Rig, opts?: object): Node;
     assemble(head: Node, rig: Rig, opts?: object): Node;
