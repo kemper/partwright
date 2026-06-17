@@ -3,7 +3,7 @@
 // docs/headless-cli.md.
 import { resolve, dirname, basename, join } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { runPreview, composePng, composeContactSheet, explainComponents, checkExpectComponents, resolveViews, defaultPreviewPng } from './preview.mjs';
+import { runPreview, composePng, composeContactSheet, explainComponents, checkExpectComponents, checkRequireLabels, resolveViews, defaultPreviewPng } from './preview.mjs';
 import { runPhoto, meshToPng, loadPalette } from './photo.mjs';
 import { runDaemon } from './daemon.mjs';
 import { startDaemon, stopDaemon, statusDaemon, rpc, evalInPage, resetPage } from './client.mjs';
@@ -34,7 +34,7 @@ const json = (v) => JSON.stringify(v, (_k, val) => (ArrayBuffer.isView(val) ? un
 async function cmdPreview(argv, { pngDefault }) {
   const a = parse(argv, ['json', 'explain-components']);
   const file = a._[0];
-  if (!file) { console.error('usage: partwright preview <file.js> [--lang manifold-js|voxel] [--png out] [--json] [--size N] [--view az,el] [--views front,iso,…] [--explain-components] [--expect-components N] [-p k=v]'); process.exit(2); }
+  if (!file) { console.error('usage: partwright preview <file.js> [--lang manifold-js|voxel] [--png out] [--json] [--size N] [--view az,el] [--views front,iso,…] [--explain-components] [--expect-components N] [--require-labels a,b,c] [-p k=v]'); process.exit(2); }
   const abs = resolve(file);
   const { views, error: viewErr } = resolveViews(a.view, a.views);
   if (viewErr) { console.error(viewErr); process.exit(2); }
@@ -52,6 +52,8 @@ async function cmdPreview(argv, { pngDefault }) {
   if (a['explain-components']) console.error(explainComponents(result.stats));
   const expectErr = checkExpectComponents(result.stats, a['expect-components']);
   if (expectErr) { console.error(expectErr); process.exit(1); }
+  const reqErr = checkRequireLabels(result.stats, a['require-labels']);
+  if (reqErr) { console.error(reqErr); process.exit(1); }
 }
 
 // Contact sheet — run N model files and tile one iso view of each into a single

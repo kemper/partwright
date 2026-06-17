@@ -12,7 +12,7 @@
 // scripts/cli/preview.mjs and is also exposed as `partwright preview`
 // (bin/partwright.mjs). See docs/headless-cli.md.
 import { resolve } from 'node:path';
-import { runPreview, composePng, explainComponents, checkExpectComponents, resolveViews, defaultPreviewPng } from './cli/preview.mjs';
+import { runPreview, composePng, explainComponents, checkExpectComponents, checkRequireLabels, resolveViews, defaultPreviewPng } from './cli/preview.mjs';
 
 function parseArgs(argv) {
   // Per-tile pixel size. Defaults high (768) for quality-control inspection —
@@ -20,7 +20,7 @@ function parseArgs(argv) {
   // are invisible at small sizes. Bump higher (--size 1200+) when scrutinising
   // fine features (faces, eyes, lettering) and crop the PNG natively rather than
   // upscaling a small crop (which only blurs).
-  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null };
+  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null, requireLabels: null };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--json') a.json = true;
@@ -31,6 +31,7 @@ function parseArgs(argv) {
     else if (t === '--views') a.views = argv[++i];
     else if (t === '--explain-components') a.explain = true;
     else if (t === '--expect-components') a.expect = argv[++i];
+    else if (t === '--require-labels') a.requireLabels = argv[++i];
     else if (t === '-p' || t === '--param') { const [k, ...v] = argv[++i].split('='); a.params[k] = coerce(v.join('=')); }
     else if (!a.file && !t.startsWith('-')) a.file = t;
   }
@@ -40,7 +41,7 @@ function coerce(s) { if (s === 'true') return true; if (s === 'false') return fa
 
 async function main() {
   const a = parseArgs(process.argv.slice(2));
-  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view "az,el[;az,el…]"] [--views front,iso,…] [--explain-components] [--expect-components N] [-p k=v]'); process.exit(2); }
+  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view "az,el[;az,el…]"] [--views front,iso,…] [--explain-components] [--expect-components N] [--require-labels a,b,c] [-p k=v]'); process.exit(2); }
   const file = resolve(a.file);
   const { views, error: viewErr } = resolveViews(a.view, a.views);
   if (viewErr) { console.error(viewErr); process.exit(2); }
@@ -65,5 +66,7 @@ async function main() {
   if (a.explain) console.error(explainComponents(result.stats));
   const expectErr = checkExpectComponents(result.stats, a.expect);
   if (expectErr) { console.error(expectErr); process.exit(1); }
+  const reqErr = checkRequireLabels(result.stats, a.requireLabels);
+  if (reqErr) { console.error(reqErr); process.exit(1); }
 }
 main().catch((e) => { console.error('model:preview failed:', e?.stack || e?.message || e); process.exit(1); });
