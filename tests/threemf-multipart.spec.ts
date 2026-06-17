@@ -72,15 +72,12 @@ test.describe('multi-part 3MF export', () => {
     expect(b).toContain('key="plater_id" value="1"');
     expect(b).toContain('key="plater_id" value="2"');
     expect(b).toContain('key="extruder"');
-    // Minimal project_settings.config — REQUIRED so Bambu builds the plate list
-    // (load_config). It carries only `filament_diameter` (a recognized key); it
-    // must NOT carry preset ids, which trip the "customized presets / unsafe
-    // G-code" warning. Colours come via colorgroup + extruder + paint_color.
-    expect(b).toContain('Metadata/project_settings.config');
-    expect(b).toContain('filament_diameter');
+    // We do NOT emit project_settings.config: a minimal one crashes Bambu's
+    // project loader, a full one reintroduces the preset warning. So no preset
+    // ids either. Colours come via colorgroup + extruder + paint_color.
+    expect(b).not.toContain('Metadata/project_settings.config');
     expect(b).not.toContain('filament_settings_id');
     expect(b).not.toContain('printer_settings_id');
-    expect(b).not.toContain('inherits_group');
     // Each part on its OWN plate: Bambu assigns by world position, so the two
     // <item> X translations must differ AND match the plate stride (bed × 1.2 =
     // 307.2 for a 256 bed). Transform = "1 0 0 0 1 0 0 0 1 TX TY TZ".
@@ -174,8 +171,7 @@ test.describe('multi-part 3MF export', () => {
     // makes Bambu build the plate list, and no preset-id keys (warning guard).
     expect((o.text.match(/<object id="\d+" type="model">/g) ?? []).length).toBe(3);
     expect((o.text.match(/<plate>/g) ?? []).length).toBe(3);
-    expect(o.text).toContain('Metadata/project_settings.config');
-    expect(o.text).toContain('filament_diameter');
+    expect(o.text).not.toContain('Metadata/project_settings.config');
     expect(o.text).not.toContain('filament_settings_id');
     // Colours from api.label survived the off-editor bake → distinct material colours.
     expect(o.text).toContain('<m:colorgroup');

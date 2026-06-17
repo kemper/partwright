@@ -305,21 +305,12 @@ ${configObjects}
 ${configPlates}
 </config>`;
     files.push({ name: 'Metadata/model_settings.config', data: enc.encode(modelSettingsXml) });
-
-    // Metadata/project_settings.config — REQUIRED for Bambu to build the plate
-    // list. On import the Plater sets `load_config = false` (→ a single plate via
-    // reload_all_objects, NOT load_from_3mf_structure) whenever the project config
-    // loads ZERO recognized DynamicPrintConfig keys. So an absent/empty config
-    // collapses our N plates to one. We emit the MINIMAL config that flips
-    // load_config true WITHOUT tripping the "customized presets / confirm G-code"
-    // warning: `filament_diameter` is a recognized key (so the config isn't empty)
-    // AND is dereferenced without a default in PresetBundle::validate_presets (so
-    // omitting it would crash), while carrying NO `*_settings_id` / `inherits_group`
-    // means validate_presets finds nothing to validate → no warning. Colours still
-    // come from the model's m:colorgroup + extruder + paint_color, not from here.
-    const filamentCount = Math.max(1, materialColors.length);
-    const projectSettings = { filament_diameter: Array(filamentCount).fill('1.75') };
-    files.push({ name: 'Metadata/project_settings.config', data: enc.encode(JSON.stringify(projectSettings, null, 4)) });
+    // NOTE: we deliberately do NOT emit Metadata/project_settings.config. A
+    // minimal one (e.g. just filament_diameter) flips Bambu into its full
+    // project-load path, which then CRASHES on the rest of the config bundle it
+    // expects; a complete bundle would reintroduce the preset warning and is too
+    // version-fragile to synthesize. Without it Bambu opens the file safely but
+    // shows a single plate (see Known issue in the PR / discussion).
   }
 
   const zip = buildZip(files);
