@@ -61,3 +61,16 @@ regenerated catalog entry in the running app (renders the draped pregnant figure
 (defaults/range, forward growth + non-descending bottom, byte-identical at 0,
 navel rides the swell, torso bulges forward). All 1457 unit tests pass; typecheck
 clean. Documented `belly` in `public/ai/figure.md`.
+
+### Follow-up (work-reviewer catch)
+
+The first hem-clip applied `smoothIntersect(hemPlane)` to the WHOLE garment,
+which also amputated sleeves that hang below a high hem (a sleeved crop/high-hem
+top) — verified: a long-sleeve top at `hemZ:34` had its sleeve tubes sliced flat
+at z=34 instead of hanging to ~26.9. The catalog expectant_mother
+(`sleeve:'none'`) was unaffected, but it broke `buildTop`'s general contract.
+Fix: clip only the shell + clavicle + coverage to the hem, then union the
+sleeves in afterward (unclipped) — sleeves follow the arms and legitimately hang
+below a high hem. For `sleeve:'none'` the path is identical to before, so the
+committed catalog bake is unchanged. Re-verified: crop-top sleeves intact (floor
+26.9), dress pendant still gone (floor 9.7), all 221 figure tests pass.

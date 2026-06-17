@@ -3351,7 +3351,7 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // centred at y=0 lets the chest bulge straight through its front).
   const chest = sdf.ellipsoid(r.chestX + t, (r.chestY + t) * 1.05, (j.chest[2] - hemZ) * 0.62 + r.chestY)
     .translate([0, j.chest[1], mix(hemZ, j.chest[2] + r.chestY, 0.5)]);
-  let top = chest;
+  let shell = chest;
   // A hem below the pelvis means a robe/dress — the chest ELLIPSOID recedes
   // toward its bottom tip, so legs poke out of its lower front. Add a flared
   // cone skirt from the waist down to the hem.
@@ -3361,29 +3361,7 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     const skirt = sdf.cylinder(r0, skirtH)
       .taper(-0.8 / skirtH)
       .translate([0, 0, hemZ + skirtH / 2]);
-    top = top.smoothUnion(skirt, r.chestY * 0.8);
-  }
-  if (sleeve !== 'none') {
-    // Sleeves FOLLOW the arm chain: a straight shoulder→forearm capsule cuts
-    // the corner on a bent elbow and the elbow pokes through the sleeve.
-    function sl(S: Vec3, E: Vec3, W: Vec3): Node {
-      const rad = (r.upperArm + t) * 1.05;
-      if (sleeve === 'short') {
-        return sdf.capsule(S, lerp3(S, E, 0.85), rad);
-      }
-      // long: upper-arm segment + forearm segment, welded at the elbow.
-      return sdf.capsule(S, E, rad)
-        .smoothUnion(sdf.capsule(E, lerp3(E, W, 0.9), rad * 0.95), r.lowerArm * 0.8);
-    }
-    // Shoulder yokes: spheres over the shoulder joints bridging the chest
-    // shell and the sleeve tops. Without them a wedge of skin shows at the
-    // armpit/collar where the shell's side ends inboard of the shoulder.
-    const yoke = (S: Vec3): Node => sdf.sphere((r.upperArm + t) * 1.2).translate(S);
-    top = top
-      .smoothUnion(sl(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3), r.upperArm * 0.7)
-      .smoothUnion(sl(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3), r.upperArm * 0.7)
-      .smoothUnion(yoke(j.upperArmL as Vec3), r.upperArm * 0.8)
-      .smoothUnion(yoke(j.upperArmR as Vec3), r.upperArm * 0.8);
+    shell = shell.smoothUnion(skirt, r.chestY * 0.8);
   }
   // Clavicle bar: the chest ellipsoid's front-top slopes away below the
   // collarbones, leaving a deep bare V at the sternum. A shoulder-to-shoulder
@@ -3427,13 +3405,33 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // hem. The round only lifts the very bottom edge by ≤ hemK, still well below a
   // mid-rise waistband, so it can't reopen the midriff strip the hem default closes.
   const hemPlane = sdf.box([big, big, big]).translate([0, 0, hemZ + big / 2]); // z ≥ hemZ
-  // Clip the WHOLE garment (shell + coverage) to the hem, not just the coverage.
-  // For a low dress hem the chest ellipsoid grows tall and its rounded bottom tip
-  // dangles ~hemHeight below the hemline as a central pendant between the legs
-  // (#nub); trimming the shell at the hem plane removes it and gives every hem the
-  // same soft rolled edge.
-  const garment = top.smoothUnion(clav, r.neck * 0.9).union(body.intersect(zone).smoothIntersect(hemPlane, hemK));
-  return garment.smoothIntersect(hemPlane, hemK);
+  // Clip the SHELL + clavicle + coverage to the hem so the chest ellipsoid's
+  // bottom tip can't dangle below the hemline as a central pendant between the
+  // legs (#nub), and every hem gets the same soft rolled edge. Sleeves are
+  // EXCLUDED from this clip (unioned in below): they follow the arms and
+  // legitimately hang below a high hem, so clipping them flat would amputate them.
+  let garment = shell.smoothUnion(clav, r.neck * 0.9)
+    .union(body.intersect(zone).smoothIntersect(hemPlane, hemK))
+    .smoothIntersect(hemPlane, hemK);
+  if (sleeve !== 'none') {
+    // Sleeves FOLLOW the arm chain: a straight shoulder→forearm capsule cuts the
+    // corner on a bent elbow and the elbow pokes through, so the long sleeve is
+    // welded at the elbow. Shoulder yokes (spheres over the shoulder joints)
+    // bridge the shell and the sleeve tops so no skin shows at the armpit/collar.
+    const sl = (S: Vec3, E: Vec3, W: Vec3): Node => {
+      const rad = (r.upperArm + t) * 1.05;
+      if (sleeve === 'short') return sdf.capsule(S, lerp3(S, E, 0.85), rad);
+      return sdf.capsule(S, E, rad)
+        .smoothUnion(sdf.capsule(E, lerp3(E, W, 0.9), rad * 0.95), r.lowerArm * 0.8);
+    };
+    const yoke = (S: Vec3): Node => sdf.sphere((r.upperArm + t) * 1.2).translate(S);
+    garment = garment
+      .smoothUnion(sl(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3), r.upperArm * 0.7)
+      .smoothUnion(sl(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3), r.upperArm * 0.7)
+      .smoothUnion(yoke(j.upperArmL as Vec3), r.upperArm * 0.8)
+      .smoothUnion(yoke(j.upperArmR as Vec3), r.upperArm * 0.8);
+  }
+  return garment;
 }
 
 // --- Body weld ------------------------------------------------------------
