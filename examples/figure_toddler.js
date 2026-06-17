@@ -35,7 +35,7 @@ const head = F.head(rig);
 const mouthOpts = { style: 'smile', smirk: 0.2 };
 const face = F.face.assemble(head, rig, {
   eyes: false,
-  nose: { tipRadius: rig.r.head * 0.09, length: rig.r.head * 0.12 },
+  nose: { type: 'button', tipRadius: rig.r.head * 0.09 },
   mouth: mouthOpts,
   ears: { size: rig.r.head * 0.26 },
   brows: {},

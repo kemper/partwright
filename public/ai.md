@@ -362,12 +362,14 @@ await partwright.clearAllSessions()      // Delete all sessions & versions
 // (run, save, paint, export, listVersions, ...) acts on. Versions are scoped
 // per part. Use parts for several distinct objects in one session (e.g. a box
 // and its lid); save them as separate STLs/parts, or model each in isolation.
+// Address a part by its name, its id, or its 0-based index (changePart/
+// renamePart/deletePart all accept any of the three).
 partwright.listParts()                   // -> [{id, name, order, isCurrent}]
 partwright.getCurrentPart()              // -> {id, name, order} or null
 await partwright.createPart(name?)       // New empty part + switch to it -> {id, name, order}
-await partwright.changePart(id)          // Switch active part (loads its latest version)
-await partwright.renamePart(id, name)    // Rename a part
-await partwright.deletePart(id)          // Delete a part + its versions (refuses the last one)
+await partwright.changePart(name|id|index)   // Switch active part (loads its latest version)
+await partwright.renamePart(name|id|index, newName)  // Rename a part
+await partwright.deletePart(name|id|index)   // Delete a part + its versions (refuses the last one)
 
 // Color regions -- tag face regions with a color. Full API in /ai/colors.md.
 // Quick reference (~30 methods total):
@@ -451,7 +453,7 @@ Extra fields that appear conditionally:
 - **`containedComponents: N`** — present when N components are fully enclosed inside another solid (e.g. sealed interior voids in a voxel shell). These are excluded from `maxComponents` assertion checks and from the floater warning, since they can't detach in print. Use `runAndExplain(code)` to inspect them individually.
 - **`componentsInterpenetrate: true`** — present when two *separate* components' bounding boxes overlap: they interpenetrate rather than sit apart. If the model should be ONE solid, a boolean didn't fuse (operands must overlap by ≥ 0.5 units); if it's an intentional multi-part assembly, sanity-check the clearance gap.
 - **`stale: true`** — present when the editor code has changed since the last execution (e.g. `setCode` was called without a subsequent run). Stats reflect the *previous* run. Call `runAndSave`/`run` before relying on component counts or other metrics.
-- **`warnings: string[]`** — present when the geometry has issues worth acting on. Beyond the structural ones (non-manifold, free-floating components, empty paint regions) these now include the same cheap heuristics the headless `model:preview` emits: **over the ~200k triangle budget**, **extreme aspect ratio**, **sub-extrusion-width detail** (smallest edge < 0.4), and **interpenetrating components**. Treat every warning as a to-do before declaring done — they catch a whole class of defects from stats alone, no render needed.
+- **`warnings: string[]`** — present when the geometry has issues worth acting on. Beyond the structural ones (non-manifold, free-floating components, empty paint regions) these now include the same cheap heuristics the headless `model:preview` emits: **over the ~500k triangle budget**, **extreme aspect ratio**, **sub-extrusion-width detail** (smallest edge < 0.4), and **interpenetrating components**. Treat every warning as a to-do before declaring done — they catch a whole class of defects from stats alone, no render needed.
 
 On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}`
 
