@@ -1080,29 +1080,44 @@ function buildNipples(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // (below) traded between. `union(body, areola)` adds zero relief (the areola is
   // a subset of the body), and the 'areola' label resolves the surface disc.
   const body = o.on as Node | undefined;
+  // The areola is a CONFORMAL OFFSET of the torso — the "clothing" model. It is
+  // the body's own surface grown outward by a thin, uniform amount (`.round(t)`,
+  // i.e. SDF `f − t`, which pushes the iso-surface out along the TRUE normal
+  // everywhere), then clipped to the nipple region by a column. So it follows
+  // whatever chest is actually there — bare, pec, mound, belly — perfectly,
+  // standing proud by exactly `t` at every point. No analytic curvature guess
+  // (the failure mode of the old coin: a wrong guess jutted on one figure and
+  // sank on another), and no flat disc face that can only kiss a curved chest
+  // at its centre.
+  //
+  // Why `t` can't be zero: a perfectly-flush (coincident) layer can't PAINT.
+  // The bake assigns each final triangle to the nearest SOURCE shape, so a layer
+  // sitting exactly on the skin is a per-triangle coin-flip between 'areola' and
+  // 'skin' → the dithered/hatched, faded blob the flush attempt shipped. The
+  // offset must clear ~one detail-triangle (chest detail edge ≈ chestX·0.03) for
+  // the 'areola' label to own its triangles cleanly, so `t` is a small fixed
+  // fraction of the chest — the THICKNESS knob; the SHAPE is fully conformal.
+  // Kept just above the chest-detail triangle (`chestEdgeLength ≈ chestX·0.018`,
+  // ~1.7× it) — as flush as the local mesh allows without the paint dithering.
+  const t = Math.max(r.chestX * 0.03, 0.09);
   const at = (anchor: Vec3): Node => {
     if (body !== undefined) {
-      // Flush disc: intersect the body with a forward COLUMN at the nipple. The
-      // column's FRONT cap is the body's OWN surface — flush by construction,
-      // conforming to any chest depth (a proud pec OR a subsumed low-muscle pec
-      // whose analytic apex sits behind the welded surface — the lotus case).
-      // The column reaches well in front (empty space is harmless) and its back
-      // is bounded INSIDE the body so it can't cut a second disc on the back.
-      // Axis ≈ −Y (chest front); a mild spine lean only makes the disc slightly
-      // elliptical, not unflush. Radius `size` → a consistent areola size.
-      const fwd = r.chestY * 0.9;   // in front of the surface
-      const back = r.chestY * 0.55; // inside the body, short of the back
+      // Forward COLUMN scoping the offset to the nipple. Axis ≈ −Y (chest front);
+      // reaches well in front (empty space is trimmed by the body) and is bounded
+      // INSIDE the body at the back so it can't raise a second patch on the spine.
+      const fwd = r.chestY * 0.9;   // column reach in front of the surface
+      const back = r.chestY * 0.55; // column reach inside the body (< half-depth)
       const cylCY = anchor[1] + (back - fwd) / 2;
-      let coin = body.intersect(
-        sdf.cylinder(size, fwd + back).rotate([90, 0, 0]).translate([anchor[0], cylCY, anchor[2]]),
-      );
+      const col = (rad: number): Node =>
+        sdf.cylinder(rad, fwd + back).rotate([90, 0, 0]).translate([anchor[0], cylCY, anchor[2]]);
+      // Disc: torso grown by `t`, clipped to `size`. Ultra-thin, fully conformal.
+      let patch = body.round(t).intersect(col(size));
       if (nipR > 0) {
-        // A deliberately TINY nipple nub, the only relief — nudged a hair proud
-        // along the outward chest normal (anchor minus the chest centre).
-        const outward = norm3(sub3(anchor, rig.joints.chest as Vec3));
-        coin = coin.union(sdf.sphere(nipR).translate(add3(anchor, scale3(outward, nipR * 0.5))));
+        // Nipple: a narrower region grown a hair more, so it reads as a subtle
+        // central rise on the conformal disc (still the body's own surface).
+        patch = patch.union(body.round(t + nipR * 0.5).intersect(col(nipR)));
       }
-      return coin;
+      return patch;
     }
     return legacyCoin(anchor);
   };
@@ -3193,10 +3208,13 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   // a radius a hair past the default areola size (`r.chestX * 0.16`) so the disc
   // rim + a margin of surrounding skin are covered.
   const chest = o.chest === undefined ? true : assertBoolean(o.chest, 'faceDetail.chest') as boolean;
-  // ~3% of the chest half-width ≈ 10-12 cells across the default areola disc
-  // (radius ≈ chestX·0.16) — enough for a round, un-slivered rim while staying
-  // far coarser than the head/eye spheres (the disc has no sub-mm detail).
-  const chestEdgeLength = num(o.chestEdgeLength, Math.max(r.chestX * 0.03, 0.05), 'faceDetail.chestEdgeLength', 1e-4);
+  // ~1.8% of the chest half-width ≈ 18-20 cells across the default areola disc
+  // (radius ≈ chestX·0.16). Finer than a plain rim needs, deliberately: the
+  // conformal areola (`F.nipples`, body grown by `t`) paints cleanly only where
+  // its raised front clears ≳ one detail triangle, so a finer mesh in these two
+  // small nipple-local spheres (below) lets `t` shrink — a thinner, more flush
+  // areola that still owns its triangles. Stays local: ~+1% triangles total.
+  const chestEdgeLength = num(o.chestEdgeLength, Math.max(r.chestX * 0.018, 0.035), 'faceDetail.chestEdgeLength', 1e-4);
   const f = rig.dir.headForward, u = rig.dir.headUp, hl = rig.dir.headLeft;
   const eyeFront = (anchor: Vec3): Vec3 => add3(anchor, scale3(f, r.head * 0.22));
   const earOut = (anchor: Vec3, side: number): Vec3 => add3(anchor, scale3(hl, side * r.head * 0.12));

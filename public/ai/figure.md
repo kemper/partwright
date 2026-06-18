@@ -315,20 +315,26 @@ F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
    `F.face.eyes`), NOT a torso option — because it carries its own **paint
    label** (`'areola'`), and a label can't survive the smooth body weld. So
    hard-union it at the top level and **don't** wrap it in `.label()`. **Pass
-   `on: skin`** (the body weld) so the areolae seat flush on the real surface:
+   `on: skin`** (the body weld) so the areolae seat on the real surface:
    ```js
    const skin    = F.weld(rig, [ F.torso(rig, { navel: true }), … ]).label('skin');
-   const nipples = F.nipples(rig, { on: skin });    // self-labels 'areola', flush on `skin`
+   const nipples = F.nipples(rig, { on: skin });    // self-labels 'areola', seats on `skin`
    return sdf.union(skin, F.face.eyes(rig), nipples, …).build({ … });
    ```
-   With `on`, each areola is the **body's OWN front surface** within `size` of the
-   nipple anchor, relabelled — so it's **flush by construction** on any chest
-   (bare, pectoral, mound, fat): it can never sit proud as a stuck-on "patty" nor
-   sink its rim into the body. The only relief is a deliberately **tiny** nipple
-   nub. (Omit `on` and it falls back to an approximating clipped coin that rides
-   the bust/pec/bare anchor — finicky; prefer `on`.) `opts`: `{ size }` (areola
-   radius, default ≈ `chestX·0.16`), `{ nipple }` (nub radius, default ≈
-   `chestX·0.04`; `0` for none), `{ on }` (the body `Node` to seat flush on).
+   With `on`, each areola is a **conformal offset of the torso** — the body's own
+   surface grown outward by a thin, uniform amount (`.round(t)`) and clipped to
+   the nipple region, like a layer of clothing hugging the chest. So it follows
+   whatever chest is actually there (bare, pectoral, mound, fat) *perfectly* and
+   sits **near-flush** (≈2.5% of torso depth), with a subtle central nipple. The
+   thin offset is essential — a perfectly **flush** (coincident) layer can't
+   paint, because the bake assigns each triangle to the nearest source shape and
+   a coincident areola dithers between `'areola'` and `'skin'` (a hatched, faded
+   blob). The offset clears one nipple-local detail triangle so the `'areola'`
+   label cleanly owns its surface → a solid, round, paintable areola that's still
+   near-flush. (Omit `on` and it falls back to an approximating clipped coin that
+   rides the bust/pec/bare anchor — finicky; prefer `on`.) `opts`: `{ size }`
+   (areola radius, default ≈ `chestX·0.16`), `{ nipple }` (nub radius, default ≈
+   `chestX·0.04`; `0` for none), `{ on }` (the body `Node` to offset).
 3. **Navel — `F.torso(rig, { navel })`** (opt-in). A shallow dimple carved into
    the belly front. `navel: true` or `{ size, depth }` (`depth` 0–1.5, default
    0.5). Off by default so an unset torso is byte-identical.
