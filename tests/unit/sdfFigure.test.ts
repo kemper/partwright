@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildTorso, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -1169,6 +1169,41 @@ describe('figure pants — posed-leg coverage', () => {
   it('rejects unknown length values', () => {
     const rig = buildRig({});
     expect(() => buildPants(api, rig, { length: 'capri' })).toThrow(/length/);
+  });
+});
+
+describe('figure top — dress/gown coverage', () => {
+  it('a floor-length sleeveless gown still covers the chest on a tall figure', () => {
+    // Regression (#topless-runway-gown): the hem "half-space" was a fixed
+    // `big`-tall box, too short for a floor-length hem on a tall figure (chest
+    // sits high in Z, `chestX` — hence `big` — is small). Its TOP sliced through
+    // the chest/shoulders and amputated the whole bodice, leaving a bare torso
+    // over a cone skirt. Build a runway-like rig + floor-length gown and assert
+    // the bust and chest are INSIDE the garment.
+    const rig = buildRig({ height: 72, headsTall: 8.5, sex: 'female', build: 'slim', weight: 0.3, bust: 0.4 });
+    const hemZ = rig.opts.height * 0.06;             // near the ground
+    const gown = buildTop(api, rig, { sleeve: 'none', hemZ }) as SdfNode;
+    // The bust apexes sit on the skin surface; the garment offsets outward, so
+    // each must be strictly inside. Before the fix these evaluated > 0 (clipped).
+    const mounds = breastMounds(rig.joints, rig.r, rig.opts.bust);
+    expect(mounds).not.toBeNull();
+    if (mounds) {
+      expect(gown.evaluate(...(mounds.apexL as [number, number, number]))).toBeLessThan(0);
+      expect(gown.evaluate(...(mounds.apexR as [number, number, number]))).toBeLessThan(0);
+    }
+    // The chest-front surface (centre line, one chest-depth forward) is covered.
+    const C = rig.joints.chest;
+    expect(gown.evaluate(C[0], C[1] - rig.r.chestY, C[2])).toBeLessThan(0);
+  });
+
+  it('the gown hem stops the skirt: just below hemZ is outside, just above is inside', () => {
+    const rig = buildRig({ height: 72, headsTall: 8.5, sex: 'female', build: 'slim', weight: 0.3, bust: 0.4 });
+    const hemZ = rig.opts.height * 0.06;
+    const gown = buildTop(api, rig, { sleeve: 'none', hemZ }) as SdfNode;
+    // On the body centre line, a point above the hem is inside the skirt; a point
+    // well below the hem is outside (the hem still cuts the bottom edge).
+    expect(gown.evaluate(0, 0, hemZ + 4)).toBeLessThan(0);
+    expect(gown.evaluate(0, 0, hemZ - 4)).toBeGreaterThan(0);
   });
 });
 
