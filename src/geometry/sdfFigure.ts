@@ -3836,7 +3836,13 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // at `hemZ` (z ≥ hemZ), smooth-intersected, rolls the bottom rim into a soft
   // hem. The round only lifts the very bottom edge by ≤ hemK, still well below a
   // mid-rise waistband, so it can't reopen the midriff strip the hem default closes.
-  const hemPlane = sdf.box([big, big, big]).translate([0, 0, hemZ + big / 2]); // z ≥ hemZ
+  // The box must reach ABOVE the garment top (`zTop`): a fixed `big`-tall box is
+  // too short for a floor-length gown on a tall figure (chest sits high, `chestX`
+  // — hence `big` — is small), so its top would slice through the chest/shoulders
+  // and amputate the whole bodice, leaving a bare torso over a cone skirt (the
+  // "topless runway gown" bug). Size the height to span hem → past zTop instead.
+  const hemH = (zTop - hemZ) + big;
+  const hemPlane = sdf.box([big, big, hemH]).translate([0, 0, hemZ + hemH / 2]); // z ≥ hemZ
   // Clip the SHELL + clavicle + coverage to the hem so the chest ellipsoid's
   // bottom tip can't dangle below the hemline as a central pendant between the
   // legs (#nub), and every hem gets the same soft rolled edge. Sleeves are
@@ -4232,4 +4238,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };
