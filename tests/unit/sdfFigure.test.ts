@@ -1197,6 +1197,9 @@ describe('figure top — dress/gown coverage', () => {
   });
 
   it('the gown hem stops the skirt: just below hemZ is outside, just above is inside', () => {
+    // Guards the hem BOTTOM edge (so the coverage-clip fix above doesn't
+    // over-correct and regress the hemline) — NOT the #topless-runway-gown
+    // defect itself, which was the box TOP and is covered by the test above.
     const rig = buildRig({ height: 72, headsTall: 8.5, sex: 'female', build: 'slim', weight: 0.3, bust: 0.4 });
     const hemZ = rig.opts.height * 0.06;
     const gown = buildTop(api, rig, { sleeve: 'none', hemZ }) as SdfNode;
