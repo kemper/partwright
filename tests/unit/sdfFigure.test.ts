@@ -1184,6 +1184,22 @@ describe('figure footwear — shoes & boots', () => {
     }
   });
 
+  it('hugs the foot — the shoe is not grossly longer than the bare foot', () => {
+    // Guards the 2026-06 footwear/foot drift: the footwear last + heel + coverage
+    // were authored (2026-06-13) for a long-heeled foot the very next day's reshape
+    // (2026-06-14, "length in the forefoot, shallow heel") shrank — but the shoe was
+    // never resized, so it ran ~1.7× the foot (heel jutting behind, club toe). Both
+    // feet point the same way for a neutral stance, so the union's heel→toe (Y) span
+    // is one shoe's length; assert it stays within a natural shoe margin of the foot.
+    const rig = buildRig({});
+    const feet = buildFeet(api, rig) as SdfNode;
+    const shoes = buildShoes(api, rig) as SdfNode;
+    const fy = feet.bounds().max[1] - feet.bounds().min[1];
+    const sy = shoes.bounds().max[1] - shoes.bounds().min[1];
+    expect(sy).toBeGreaterThan(fy);          // a shoe is a touch longer than the foot
+    expect(sy / fy).toBeLessThan(1.4);       // …but not the old ~1.7× clown shoe
+  });
+
   it("boots add a shaft up the shank that shoes leave bare", () => {
     const rig = buildRig({});
     const shoes = buildShoes(api, rig) as SdfNode;
