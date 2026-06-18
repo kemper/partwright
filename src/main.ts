@@ -3363,7 +3363,14 @@ async function main() {
     const s = getState();
     if (!s.session || !s.currentPart) return;
     const code = getValue();
-    if (isStarterCode(code)) return;
+    // A freshly-created part the user never touched still holds starter code;
+    // don't pollute its history with a version for it. BUT interactive paint
+    // applied on top of the starter geometry is real work — bailing here would
+    // silently drop it on a part switch (the painted part returns completely
+    // uncolored). Let saveVersion run when paint exists; it persists the
+    // regions via enrichGeometryDataWithColors and rehydrateColorRegions
+    // restores them when the part is reopened.
+    if (isStarterCode(code) && !hasColorRegions()) return;
     // Previously bailed here when code was unchanged, silently discarding
     // unsaved paint, annotations, param overrides, and companion-file edits.
     // saveVersion already deduplicates on all five axes (code + annotations +
