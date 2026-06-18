@@ -55,7 +55,6 @@ const eyes = F.face.eyes(rig, {
 // Flush, painted-on brows (labelled 'brows'). Kept OUT of the skin weld and
 // hard-unioned at the top level (like the eyes) so the dark brow colour isn't
 // flattened into skin. Soft 'natural' arch to match the serene expression.
-const brows = F.face.brows(rig, { shape: 'natural' });
 const lips = F.face.mouthAccents(rig, {
   style: 'lips',
   lipShape: 'natural',
@@ -74,6 +73,13 @@ const skin = F.weld(rig, [
   F.feet(rig, { toes: true }),
   face,
 ]).label('skin');
+
+// Flush, painted-on brows (labelled 'brows'). Kept OUT of the skin weld and
+// hard-unioned at the top level (like the eyes) so the dark brow colour isn't
+// flattened into skin. Seated CONFORMALLY on the real forehead via `on: skin`
+// (a thin proud strip of the actual surface — no curvature guess). Soft
+// 'natural' arch to match the serene expression.
+const brows = F.face.brows(rig, { shape: 'natural', on: skin });
 
 // 4. DRESS BODY — a SLEEVELESS maternity dress (its own region). F.clothing.top
 // with a hem below the pelvis and sleeve:'none' gives a bodice + flared cone
