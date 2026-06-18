@@ -1352,6 +1352,21 @@ describe('figure footwear — shoes & boots', () => {
     expect(pokesThrough).toBe(0);          // …and the shoe encloses every bit of it
   });
 
+  it('a lifted shoe has a flat sole, not a bubble — it does not bulge far below the foot', () => {
+    // The shared `last` ellipsoid is centred on the sole plane, so its lower half
+    // hangs ~1.5·r.foot below the foot. The flat path slices it off at groundZ; the
+    // plantarflexed path must clip it too (in its pitched plane) or that lower half
+    // shows as a round BUBBLE under lifted shoes (rock-climber / sprinter). Guard it:
+    // the lifted shoe's lowest point must sit only a sole's-thickness below the bare
+    // foot's lowest point — not the ~1·r.foot bulge the unclipped ellipsoid gave.
+    const rig = buildRig({ pose: { legR: { raiseSide: 30, raiseFwd: 25, bend: 80 }, legL: { raiseSide: 12, bend: 25 } } });
+    const feet = buildFeet(api, rig) as SdfNode;
+    const shoes = buildShoes(api, rig) as SdfNode;
+    const dip = feet.bounds().min[2] - shoes.bounds().min[2];   // how far the shoe hangs below the foot
+    expect(dip).toBeGreaterThan(0);                  // the shoe is still UNDER the foot (sole present)
+    expect(dip).toBeLessThan(rig.r.foot * 0.6);      // …but no ~1·r.foot bubble (was 0.96·r.foot)
+  });
+
   it('the base descends to contain a posed/shod sole (no poke-through)', () => {
     const rig = buildRig({ pose: { legR: { raiseFwd: 12, bend: 28 }, legL: { raiseSide: 6 } } });
     const base = buildBase(api, rig) as SdfNode;
