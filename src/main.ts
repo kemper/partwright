@@ -1150,9 +1150,24 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   clearRegions();
 
   const report: { carried: string[]; dropped: string[] } = { carried: [], dropped: [] };
-  if (!geometryData || !currentMeshData) return report;
+  if (!geometryData || !currentMeshData) {
+    // Nothing to colour against yet; still finalize the model underlay so a
+    // bare-mesh restore doesn't strand code-declared colours unrendered.
+    renderModelColorUnderlay();
+    return report;
+  }
   const regions = geometryData.colorRegions as SerializedColorRegion[] | undefined;
-  if (!regions || regions.length === 0) return report;
+  if (!regions || regions.length === 0) {
+    // No user paint to restore — but the model-declared colour underlay
+    // (api.label / api.paint) still needs to be drawn. This function is the
+    // single authority that finalizes a restored part's colours for EVERY load
+    // path (cache hit, cache miss, loadVersion, navigateVersion), so neither
+    // branch needs its own colour stamp — the class of "a restore path forgot
+    // to apply colours" bug can't recur. A model-only part never subdivides, so
+    // currentMeshData and the model regions' triangle indices stay aligned.
+    renderModelColorUnderlay();
+    return report;
+  }
 
   // Partition: smooth imagePaint regions with a stored imageDataUrl are replayed
   // sequentially below (they drive their own subdivision pass each). All other
@@ -1235,13 +1250,27 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
 
   syncLockState();
 
-  // Re-render with colors if regions were rehydrated
-  if (hasColorRegions() && currentMeshData) {
+  // Re-render with colors if any region layer is present (user paint and/or the
+  // model-declared underlay — applyTriColorsIfVisible stamps both).
+  if ((hasColorRegions() || hasModelColorRegions()) && currentMeshData) {
     const colored = applyTriColorsIfVisible(currentMeshData);
     updateMesh(colored, { skipAutoFrame: true });
   }
 
   return report;
+}
+
+/** Draw `currentMeshData` with the model-declared colour underlay (api.label /
+ *  api.paint) applied — or the plain mesh when the model declares no colours.
+ *  The shared "show model colours" step for restore paths: a no-op for an
+ *  uncoloured model (applyTriColorsIfVisible returns the mesh unchanged when no
+ *  regions exist), so it's always safe to call. User paint is layered on top by
+ *  rehydrateColorRegions' main path. */
+function renderModelColorUnderlay(): void {
+  if (!currentMeshData) return;
+  if (hasModelColorRegions()) {
+    updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+  }
 }
 
 function paintedColorRefresh(): void {
@@ -5049,13 +5078,12 @@ async function main() {
       setPaintLabels(currentLabelMap);
       setModelColorRegions(cachedEntry.modelColorDecls);
       syncParamsPanel(cachedEntry.paramsSchema);
-      // Render with the model-declared colors (api.label / api.paint) applied.
-      // rehydrateColorRegions below re-renders for USER paint, but it returns
-      // early when there are no user regions — so a model-colored part with no
-      // hand paint (e.g. a catalog model) would otherwise restore from cache
-      // showing the uncolored base mesh until the next paint refresh. The paint
-      // mesh stays the uncolored base (it backs hit-testing).
-      updateMesh(hasModelColorRegions() ? applyTriColorsIfVisible(cachedEntry.meshData) : cachedEntry.meshData);
+      // Show the geometry; colours (model underlay + any user paint) are applied
+      // by the single rehydrateColorRegions pass below, which both load branches
+      // share — so this branch no longer hand-rolls its own colour stamp (the
+      // omission that shipped model-coloured parts restoring uncoloured). The
+      // paint mesh stays the uncoloured base (it backs hit-testing).
+      updateMesh(cachedEntry.meshData);
       updatePaintMesh(cachedEntry.meshData);
       geometryDataEl.textContent = version.geometryData
         ? JSON.stringify(version.geometryData, null, 2)
