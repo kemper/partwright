@@ -38,6 +38,13 @@ interface ProgressJob {
   fraction: number;
   message: string;
   onCancel: (() => void) | null;
+  /** Optional secondary informational line shown below the message — e.g. a
+   *  "did you know you can speed this up by…" tip. */
+  hint: string | null;
+  /** Optional extra button rendered to the left of Cancel. The canonical use
+   *  is "Stop & turn off <the thing that made this slow>" — it both aborts the
+   *  in-flight job (so it also acts as a Cancel) and applies the speed-up. */
+  secondaryAction: { label: string; onClick: () => void } | null;
 }
 
 let nextJobId = 1;
@@ -106,8 +113,22 @@ function ProgressOverlay() {
         <div style="height:6px;border-radius:3px;background:#3f3f46;overflow:hidden;margin-bottom:8px;">
           <div style={fillStyle} />
         </div>
-        <div style="font-size:12px;color:#a1a1aa;margin-bottom:14px;">{message}</div>
-        <div style="display:flex;justify-content:flex-end;">
+        <div style={`font-size:12px;color:#a1a1aa;${job.hint ? 'margin-bottom:8px;' : 'margin-bottom:14px;'}`}>{message}</div>
+        {job.hint && (
+          <div style="font-size:11px;color:#fbbf24;margin-bottom:14px;display:flex;gap:6px;align-items:flex-start;">
+            <span aria-hidden="true">💡</span>
+            <span>{job.hint}</span>
+          </div>
+        )}
+        <div style="display:flex;justify-content:flex-end;gap:8px;">
+          {job.secondaryAction && (
+            <button
+              type="button"
+              data-testid="progress-modal-secondary"
+              style="background:#1e3a8a;color:#dbeafe;border:0;border-radius:4px;padding:6px 14px;font-size:13px;cursor:pointer;"
+              onClick={() => job.secondaryAction?.onClick()}
+            >{job.secondaryAction.label}</button>
+          )}
           {job.onCancel && (
             <button
               type="button"
@@ -147,6 +168,10 @@ export function startProgress(opts: {
    *  updateProgress(). */
   indeterminate?: boolean;
   message?: string;
+  /** Optional tip line below the message (e.g. how to speed this up). */
+  hint?: string;
+  /** Optional extra button that both aborts the job and applies a speed-up. */
+  secondaryAction?: { label: string; onClick: () => void };
 }): number {
   const id = nextJobId++;
   currentJob = {
@@ -155,6 +180,8 @@ export function startProgress(opts: {
     fraction: opts.indeterminate ? -1 : 0,
     message: opts.message ?? '',
     onCancel: opts.onCancel ?? null,
+    hint: opts.hint ?? null,
+    secondaryAction: opts.secondaryAction ?? null,
   };
 
   // A fresh job clears any pending show-timer from the previous one.

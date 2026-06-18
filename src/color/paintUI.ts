@@ -26,6 +26,7 @@ import {
   getBrushShape,
   setBrushSmooth,
   isBrushSmooth,
+  onBrushSmoothChange,
   setBrushSmoothDivisor,
   getBrushSmoothDivisor,
   setBrushPaintDepth,
@@ -1156,6 +1157,9 @@ function createBrushControls(): HTMLElement {
     smoothHelp.classList.toggle('hidden', !on);
   };
   smoothToggle.addEventListener('click', () => { setBrushSmooth(!isBrushSmooth()); syncSmoothToggle(); });
+  // Keep the toggle in sync when smoothing is changed elsewhere (e.g. the paint
+  // progress modal's "turn off smoothing" action, or the console API).
+  onBrushSmoothChange(syncSmoothToggle);
 
   wrap.appendChild(smoothLabel);
   wrap.appendChild(smoothToggle);

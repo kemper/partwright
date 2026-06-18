@@ -215,4 +215,54 @@ test.describe('paint cancellation + waitForPaint', () => {
       expect(after.regions).toBe(1);
     }
   });
+
+  test('the refine modal offers a "turn off smoothing" tip + action that disables edge smoothing', async ({ page }) => {
+    await openEditor(page);
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      pw.__setProgressModalDelay(0);
+      // Heavy base + fine subdivision so the worker job lingers long enough for
+      // the secondary action to land before it finishes on its own.
+      await pw.run(`const { Manifold } = api; return Manifold.cube([60, 60, 60], true);`);
+      pw.setBrushSize(8);
+      pw.setBrushSmoothDivisor(512);
+    });
+
+    // Smoothing is on by default, so the tip + action should be offered.
+    expect(await page.evaluate(() =>
+      (window as unknown as { partwright: { getBrushSmooth(): { smooth: boolean } } }).partwright.getBrushSmooth().smooth
+    )).toBe(true);
+
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
+
+    await page.evaluate(() => {
+      const canvas = document.querySelector('canvas')!;
+      const r = canvas.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const fire = (t: string, x: number, y: number) =>
+        canvas.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      fire('pointermove', cx, cy);
+      fire('pointerdown', cx, cy);
+      for (let dx = 4; dx <= 40; dx += 4) fire('pointermove', cx + dx, cy);
+      fire('pointerup', cx + 40, cy);
+    });
+
+    const secondary = page.locator('[data-testid="progress-modal-secondary"]');
+    await expect(secondary).toBeVisible({ timeout: 5000 });
+    // Dispatch directly so the click fires even if the worker is about to finish.
+    await secondary.dispatchEvent('click');
+
+    await page.evaluate(() =>
+      (window as unknown as { partwright: { waitForPaint(): Promise<void> } }).partwright.waitForPaint()
+    );
+
+    // The action both ends the modal and turns edge smoothing off.
+    await expect(page.locator('#progress-modal')).toBeHidden();
+    expect(await page.evaluate(() =>
+      (window as unknown as { partwright: { getBrushSmooth(): { smooth: boolean } } }).partwright.getBrushSmooth().smooth
+    )).toBe(false);
+  });
 });

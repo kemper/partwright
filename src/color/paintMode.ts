@@ -289,10 +289,19 @@ export function getBrushShape(): BrushShape {
 
 export function setBrushSmooth(on: boolean): void {
   brushSmooth = on;
+  if (brushSmoothChangeListener) brushSmoothChangeListener();
 }
 
 export function isBrushSmooth(): boolean {
   return brushSmooth;
+}
+
+/** Notified whenever `brushSmooth` changes (incl. programmatic toggles like the
+ *  progress modal's "turn off smoothing" action), so the paint panel toggle can
+ *  re-sync. Single-slot, mirroring `onReplaceSourceColorChange`. */
+let brushSmoothChangeListener: (() => void) | null = null;
+export function onBrushSmoothChange(fn: () => void): void {
+  brushSmoothChangeListener = fn;
 }
 
 export function setBrushSmoothDivisor(n: number): void {

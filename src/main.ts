@@ -1511,6 +1511,31 @@ function isAbortError(err: unknown): boolean {
     || (err instanceof Error && err.name === 'AbortError');
 }
 
+/** The "did you know you can speed this up" extras for the paint-refine
+ *  progress modal: a tip line plus a one-click "Stop & turn off smoothing"
+ *  button. Only offered when brush edge smoothing is currently on — that
+ *  subdivision is the usual reason a stroke takes multiple seconds. The button
+ *  doubles as Cancel (it aborts the in-flight job) AND turns smoothing off so
+ *  the next stroke paints instantly. Returns `{}` when smoothing is already off
+ *  (e.g. a spray stroke is what's refining) so we never offer a no-op. */
+function paintRefineSmoothingExtras(abort: AbortController): {
+  hint?: string;
+  secondaryAction?: { label: string; onClick: () => void };
+} {
+  if (!isPaintBrushSmooth()) return {};
+  return {
+    hint: 'Edge smoothing refines the mesh under each stroke — turn it off for faster painting.',
+    secondaryAction: {
+      label: 'Stop & turn off smoothing',
+      onClick: () => {
+        abort.abort();
+        setPaintBrushSmooth(false);
+        showToast('Edge smoothing turned off — painting will be faster', { variant: 'neutral' });
+      },
+    },
+  };
+}
+
 /** Worker-backed incremental append. Mirrors the sync `appendStrokeRefine`
  *  but offloads `buildStrokeMesh` to a dedicated thread, so a heavy stroke
  *  doesn't freeze the viewport. The Cancel button on the progress badge
@@ -1533,6 +1558,7 @@ async function appendStrokeRefineAsync(
     // variable pass count — no natural fraction to report. The animated
     // indeterminate stripe still telegraphs "something's happening."
     indeterminate: true,
+    ...paintRefineSmoothingExtras(abort),
   });
   paintProgressId = progressId;
 
@@ -1610,6 +1636,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
     message: 'Rebuilding refined mesh…',
     onCancel: () => abort.abort(),
     indeterminate: true,
+    ...paintRefineSmoothingExtras(abort),
   });
   paintProgressId = progressId;
 
