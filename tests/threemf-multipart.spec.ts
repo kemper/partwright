@@ -212,4 +212,38 @@ test.describe('multi-part 3MF export', () => {
     expect(o.text).toContain('/3D/Objects/object_2.model');
     expect(o.text).toContain('/3D/Objects/object_3.model');
   });
+
+  test('Bambu plates use a ⌈√N⌉-column grid (matches Bambu plate layout)', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForTimeout(3000);
+
+    // 6 parts → Bambu lays plates out in ⌈√6⌉ = 3 columns × 2 rows. Each part's
+    // <item> must sit at the centre of a distinct cell or it lands off-plate (the
+    // bug where 2 of 6 parts fell off). Assert exactly 3 distinct X columns and 2
+    // distinct Y rows across the 6 build items — a regression guard for the grid.
+    const cols = await page.evaluate(async () => {
+      const { build3MFProject } = await import('/src/export/threemfProject.ts');
+      const makePart = (name: string) => {
+        const verts = [0, 0, 0, 10, 0, 0, 0, 10, 0];
+        return {
+          name,
+          mesh: {
+            vertProperties: new Float32Array(verts), triVerts: new Uint32Array([0, 1, 2]),
+            numVert: 3, numTri: 1, numProp: 3,
+          },
+        };
+      };
+      const parts = Array.from({ length: 6 }, (_, i) => makePart('part' + i));
+      const built = build3MFProject(parts, { bambu: true });
+      const text = await built.blob.arrayBuffer().then(a => new TextDecoder().decode(new Uint8Array(a)));
+      const items = [...text.matchAll(/<item objectid="\d+"[^>]*transform="([^"]+)"/g)]
+        .map(m => m[1].trim().split(/\s+/));
+      const xs = new Set(items.map(t => t[9]));
+      const ys = new Set(items.map(t => t[10]));
+      return { items: items.length, xCols: xs.size, yRows: ys.size };
+    });
+    expect(cols.items).toBe(6);
+    expect(cols.xCols).toBe(3); // ⌈√6⌉ columns
+    expect(cols.yRows).toBe(2); // 2 rows
+  });
 });

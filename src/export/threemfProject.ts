@@ -82,15 +82,16 @@ const REL_TYPE = 'http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel';
 
 // Bambu assigns each object to a plate by WORLD POSITION (which plate-grid cell the
 // object's footprint falls in), NOT by the model_instance binding. So each part's
-// <item> must sit at the CENTRE of a distinct plate cell, or the slicer reports
-// "Object … partly inside, can not be sliced" (when it straddles a cell boundary).
-// Plates tile in a 2-column grid: cell (col,row) origin = (col·STRIDE_X, −row·STRIDE_Y),
-// and we centre the part in its cell at (bedW/2, bedH/2) within that origin.
-// STRIDE must match BambuStudio's actual plate grid for the declared printer; the
-// real H2C reference export places its 3 plates ~410 mm apart. Derived empirically
-// (Bambu CLI catches mis-placement) and from the reference.
-const PLATE_GRID_COLS = 2;
+// <item> must sit at the CENTRE of the plate cell Bambu would lay out, or the part
+// lands off-plate (slicer: "no object is fully inside") and the whole file is
+// rejected. Two things must match Bambu's PartPlateList grid exactly:
+//   - COLUMN COUNT: Bambu tiles N plates in a ⌈√N⌉-column grid, numbered
+//     left→right, top→bottom (verified: a real 3-plate export uses 2 cols; a
+//     6-plate export uses 3 cols — plate 3 is the 3rd column, not a 2nd row).
+//   - STRIDE: ~410 mm between cell origins for the H2C bed (from the reference +
+//     Bambu-CLI validation). Cell (col,row) centre = (bedW/2 + col·S, bedH/2 − row·S).
 const PLATE_STRIDE = 410;        // mm between plate-cell origins (H2C grid)
+const plateGridCols = (n: number) => Math.max(1, Math.ceil(Math.sqrt(n)));
 
 /** Bed printable size [w, h] mm, parsed from the project template's printable_area
  *  (a list of "XxY" corner strings). Falls back to the H2C bed if unparseable. */
@@ -336,6 +337,7 @@ ${buildItems}
 function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[]): Uint8Array {
   const unit = get3MFUnitString();
   const [bedW, bedH] = bedSizeFromTemplate();
+  const gridCols = plateGridCols(prepared.length);  // ⌈√N⌉ to match Bambu's plate grid
 
   // Bambu mode: per-part colour via the per-object `extruder` field (1..3),
   // mapped to the 3 AMS filament slots whose colours go in project_settings'
@@ -401,7 +403,7 @@ ${p.trianglesPlain.join('\n')}
     // is -minZ: moves the part so its bottom (minZ) lands exactly at Z=0 (the bed).
     // Works for both centered meshes (minZ<0) and non-centered (minZ=0, e.g.
     // Manifold.cylinder). The USER-REF.3mf sets Z = -minZ for all parts.
-    const col = i % PLATE_GRID_COLS, row = Math.floor(i / PLATE_GRID_COLS);
+    const col = i % gridCols, row = Math.floor(i / gridCols);
     const tx = bedW / 2 + col * PLATE_STRIDE;
     const ty = bedH / 2 - row * PLATE_STRIDE;
     const tz = -p.minZ;  // lift bottom to Z=0
