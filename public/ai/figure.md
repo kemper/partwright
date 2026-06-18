@@ -326,6 +326,8 @@ F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
    the nipple region, like a layer of clothing hugging the chest. So it follows
    whatever chest is actually there (bare, pectoral, mound, fat) *perfectly* and
    sits **near-flush** (≈2.5% of torso depth), with a subtle central nipple. The
+   region is `smoothIntersect`-clipped so its rim rolls off as a **gentle dome**
+   (no hard disc edge) — it slopes back into the skin gradually. The
    thin offset is essential — a perfectly **flush** (coincident) layer can't
    paint, because the bake assigns each triangle to the nearest source shape and
    a coincident areola dithers between `'areola'` and `'skin'` (a hatched, faded

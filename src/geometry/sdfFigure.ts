@@ -1110,12 +1110,16 @@ function buildNipples(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       const cylCY = anchor[1] + (back - fwd) / 2;
       const col = (rad: number): Node =>
         sdf.cylinder(rad, fwd + back).rotate([90, 0, 0]).translate([anchor[0], cylCY, anchor[2]]);
-      // Disc: torso grown by `t`, clipped to `size`. Ultra-thin, fully conformal.
-      let patch = body.round(t).intersect(col(size));
+      // Disc: torso grown by `t`, clipped to `size`. A SMOOTH intersect rolls the
+      // rim off — instead of a hard cylinder wall (a `t`-tall step → a visible
+      // edge), the raised offset tapers gradually from its proud centre back down
+      // into the skin, so the areola reads as a gentle dome, not a stuck-on disc.
+      // The rim radius (≈ `size·0.7`) is large vs `t`, so it's mostly slope.
+      let patch = body.round(t).smoothIntersect(col(size), size * 0.7);
       if (nipR > 0) {
-        // Nipple: a narrower region grown a hair more, so it reads as a subtle
-        // central rise on the conformal disc (still the body's own surface).
-        patch = patch.union(body.round(t + nipR * 0.5).intersect(col(nipR)));
+        // Nipple: a narrower region grown a hair more, also softly clipped so it's
+        // a rounded rise, not a pin — a subtle central bump on the sloped disc.
+        patch = patch.union(body.round(t + nipR * 0.5).smoothIntersect(col(nipR), nipR));
       }
       return patch;
     }
