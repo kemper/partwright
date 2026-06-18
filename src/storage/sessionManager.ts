@@ -32,6 +32,7 @@ import {
   getDraft as dbGetDraft,
   setDraft as dbSetDraft,
   deleteDraft as dbDeleteDraft,
+  listDrafts as dbListDrafts,
   deletePartDrafts as dbDeletePartDrafts,
   legacyImagesObjectToArray,
   generateId,
@@ -61,6 +62,7 @@ import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
 import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
+import { isStarterCode } from '../editor/starters';
 import { effectiveVersionLanguage, asLanguage } from './languageFallback';
 import { buildInfo } from '../buildInfo';
 import { appVersionCompatibility } from './appVersionCompat';
@@ -930,7 +932,14 @@ export async function changePart(partId: string, versionIndex?: number): Promise
  */
 export async function partHasUnsavedDraft(part: Part): Promise<boolean> {
   const latest = await getLatestVersion(part.id);
-  if (!latest) return false;
+  if (!latest) {
+    // Never saved (e.g. built via the "+" button and not yet committed): it's
+    // unsaved if it has a non-starter draft in ANY language. (The "+" path
+    // stashes the outgoing buffer as a draft, so real work lands here.)
+    const drafts = await dbListDrafts(part.sessionId);
+    const prefix = `${part.sessionId}:${part.id}:`;
+    return drafts.some(d => d.id.startsWith(prefix) && !isStarterCode(d.code));
+  }
   const lang = effectiveVersionLanguage(latest, currentState.session);
   const draft = await readDraft(part.sessionId, lang, part.id);
   if (!draft) return false;
@@ -1156,8 +1165,11 @@ export function currentPartIsDirty(
     companionFiles?: Record<string, string>;
   },
 ): boolean {
-  if (!currentState.session || !currentState.currentPart || !currentState.currentVersion) {
-    return false;
+  if (!currentState.session || !currentState.currentPart) return false;
+  if (!currentState.currentVersion) {
+    // Never-saved current part: dirty when the live buffer holds real (non-
+    // starter) content the user would lose if it weren't saved.
+    return !isStarterCode(code);
   }
   const nextCompanions = opts?.companionFiles ?? currentState.currentVersion.companionFiles ?? {};
   return !versionMatchesCurrent(code, serializeAnnotations(), geometryData, opts?.paramValues, nextCompanions);

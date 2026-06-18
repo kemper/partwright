@@ -67,3 +67,16 @@ decision left for the user.
 Verified in-browser with a Playwright spec (modal contents, "Save all" → every
 part gains v2, "Save current part only" → only the current part does) and the
 scroll fix (scrollTop preserved across a save with a 25-part rail).
+
+**Follow-up after user feedback.** The user clarified their real workflow: they
+build parts with the **"+" (Add part) button**, which — unlike the rail-switch
+path — does NOT auto-save the outgoing part. So that's the genuine source of
+"multiple unsaved parts", reached via normal manual use. Two refinements:
+- `onCreatePart` now stashes the current part's buffer as a draft before
+  switching (but deliberately does NOT auto-save it as a version — leaving it
+  unsaved is what surfaces it in the modal).
+- Dirty detection now covers **never-saved** parts: `partHasUnsavedDraft` treats
+  a part with no committed version as unsaved when it has a non-starter draft in
+  any language; `currentPartIsDirty` treats a never-saved current part as dirty
+  when its live buffer is non-starter. Added an e2e test reproducing the exact
+  "+ button, no save" flow → all three parts detected and committed by "Save all".

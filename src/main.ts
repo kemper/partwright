@@ -4496,6 +4496,14 @@ async function main() {
       // Structural part edits are leader-only — a read-only viewer must not
       // write to the shared session (mirrors the run/save guard).
       if (isReadOnlyViewer()) return;
+      // Stash the current part's buffer as a draft before switching away so its
+      // unsaved work survives and is detectable by the multi-part save modal.
+      // Unlike the rail-switch path we deliberately DON'T auto-save it as a
+      // version — leaving it unsaved is exactly what surfaces it in that modal.
+      const { session, currentPart } = getState();
+      if (session && currentPart && !isStarterCode(getValue())) {
+        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles());
+      }
       await createPart();
       startNewPartInEditor();
     },
