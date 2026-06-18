@@ -1678,18 +1678,32 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
 
     // ─── Build the shoe body in a LOCAL frame ───────────────────────────────
     //  origin = footprint centre on the ground, +Y = toe, +X = lateral, +Z = up.
-    //  The bare foot spans ≈ ±0.78·footLen heel↔toe and ≈ ±0.8·r.foot laterally
-    //  about this origin, with its underside near +Z 0 (groundZ) — so everything
-    //  below is sized to swallow that. `soleTopZ` is where the upper sits on the
-    //  sole; we build the upper from there up and let the coverage underlayer
-    //  fill the gap down to groundZ. The silhouette reads as a real shoe: one
-    //  smooth ellipsoid LAST whose ends curve down into a toe-spring at the front
-    //  and round into the HEEL at the back, a low heel fill, an ANKLE COLLAR rise
-    //  at the opening — and (boots) a shaft — over a wide flat two-tier SOLE.
+    //  Sized to the bare foot `buildFeet` actually makes: a SHORT heel just behind
+    //  the ankle (ankle at local Y −0.12·footLen) and the length carried FORWARD
+    //  into the forefoot (toe ≈ +0.49·footLen). The foot was reshaped this way on
+    //  2026-06-14 but the footwear (authored 2026-06-13 for the old long-heeled
+    //  foot at ±0.86·footLen) was never resized — so the shoe ran ~2× the foot:
+    //  a heel jutting out behind the leg and a long club toe. We mirror the foot's
+    //  own landmarks here, plus a thin wall + small toe-spring, so the shoe hugs
+    //  the foot. Underside near +Z 0 (groundZ); everything below swallows the foot.
+    //  `soleTopZ` is where the upper sits on the sole; we build the upper from there
+    //  up and let the coverage underlayer fill the gap down to groundZ. The
+    //  silhouette reads as a real shoe: one smooth ellipsoid LAST whose ends curve
+    //  down into a toe-spring at the front and round into the HEEL at the back, a
+    //  low heel fill, an ANKLE COLLAR rise at the opening — and (boots) a shaft —
+    //  over a wide flat two-tier SOLE.
     const soleTopZ = soleOn ? groundZ + soleThick : groundZ;
     const wallT = t;                               // upper-wall thickness over skin
     const hw = r.foot * 0.78 * size + wallT;        // upper half-width (foot + wall)
-    const heelY = -footLen * 0.72;                  // heel back (local −Y)
+    // Bare-foot fore/aft landmarks (mirror buildFeet): ankle at −0.12·footLen, a
+    // short heel ≈0.95·r.foot behind it, the toe well forward at +0.49·footLen.
+    const ankleY = -footLen * 0.12;
+    const footHeelY = ankleY - r.foot * 0.95;       // bare-foot heel back (local −Y)
+    const footToeY = footLen * 0.49;                // bare-foot toe front (local +Y)
+    // Shoe = foot + a thin wall, plus a small toe-spring margin at the front.
+    const shoeHeelY = footHeelY - wallT;            // heel back (local −Y)
+    const shoeToeY = footToeY + wallT + footLen * 0.04;
+    const heelY = shoeHeelY;                        // heel back (local −Y)
     // The last reaches the GROUND (local Z 0); the sole is later sliced off its
     // bottom so it follows the foot's own curvature (not a separate cuboid).
     const bodyLow = 0;
@@ -1697,15 +1711,18 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     const footTopZ = (sz - groundZ) + r.foot * 0.62;   // top of the bare-foot mass
     const instepZ = footTopZ + wallT;                  // crown over the instep
 
-    // MAIN LAST — one long, smooth ellipsoid spanning the whole footprint (heel→
-    // toe). An ellipsoid tapers and rounds at BOTH ends, so the front naturally
-    // curves down to a toe-spring and the back rounds into the heel — a single
-    // continuous shoe-last form rather than separate blobs. Its flat bottom comes
-    // from the sole clip; the foot-mass underlayer guarantees the ends stay shod.
+    // MAIN LAST — one smooth ellipsoid spanning the foot heel→toe. An ellipsoid
+    // tapers and rounds at BOTH ends, so the front naturally curves down to a
+    // toe-spring and the back rounds into the heel — a single continuous shoe-last
+    // form rather than separate blobs. Its flat bottom comes from the sole clip;
+    // the foot-mass underlayer guarantees the ends stay shod. Its fore/aft span is
+    // the shoe heel↔toe (above), so the shoe hugs the foot instead of overhanging.
     const bodyTopZ = instepZ;                           // crown over the instep/arch
     const lastRZ = bodyTopZ - bodyLow;                  // last half-height at the crest
-    const last = sdf.ellipsoid(hw, footLen * 0.86, lastRZ)
-      .translate([0, -footLen * 0.04, bodyLow]);
+    const lastCY = (shoeToeY + shoeHeelY) / 2;          // last centre (heel↔toe midpoint)
+    const lastRY = (shoeToeY - shoeHeelY) / 2;          // last half-length
+    const last = sdf.ellipsoid(hw, lastRY, lastRZ)
+      .translate([0, lastCY, bodyLow]);
 
     // HEEL — a low rounded mass that fills out the back of the last to the heel
     // tip without rising above the instep (the tall rise to the ankle is the
@@ -1759,13 +1776,19 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
       // the foot (its ankle column tracks the pivot; the boot shaft stays world).
       const szL = sz - groundZ;                       // local Z of the sole-capsule centre
       const ankleLY = -sole0.length * 0.12;
+      // Coverage sized to the SHORT bare foot (heel ≈0.95·r.foot behind the ankle,
+      // toe forward) — not the old long heel — so it doesn't poke out behind the
+      // shoe. `heelBehind` is the capsule END offset BEHIND THE ANKLE: with the
+      // 0.62·r.foot cap, its rear cap lands ≈1.17·r.foot behind the ankle, just
+      // covering the bare-foot heel back (0.95·r.foot behind) without overrun.
+      const heelBehind = r.foot * 0.55;
       const sCap = sdf.capsule(
-        [0, ankleLY - footLen * 0.38, szL],
+        [0, ankleLY - heelBehind, szL],
         [side * r.foot * 0.12, ankleLY + footLen * 0.62, szL],
         r.foot * 0.62,
       );
-      const instE = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.5, r.foot * 0.8)
-        .translate([0, ankleLY + footLen * 0.35, szL + r.foot * 0.15]);
+      const instE = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.33, r.foot * 0.8)
+        .translate([0, ankleLY + footLen * 0.2, szL + r.foot * 0.15]);
       const colC = sdf.capsule([0, ankleLY, A[2] - groundZ], [0, ankleLY, szL + r.foot * 0.2], r.lowerLeg * 0.8);
       let footMassP = place(sCap.smoothUnion(instE, r.foot * 0.6).smoothUnion(colC, r.foot * 0.6));
       if (kind === 'boots') footMassP = footMassP.union(sdf.capsule(A, shaftTop(A, K), r.lowerLeg));
@@ -1781,8 +1804,8 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
       const hwP = hw;
       const lipCapP = Math.min(lip, hwP * 0.45);
       const soleRP = hwP + lipCapP;
-      const soleHeelYP = -footLen * 0.70 + soleRP;
-      const soleToeYP = footLen * 0.70 - soleRP;
+      const soleHeelYP = shoeHeelY + soleRP;
+      const soleToeYP = shoeToeY - soleRP;
       const soleBandLocal = sdf.box([bigP, bigP, soleThick]).translate([0, 0, soleThick / 2]);
       const footprintLocal = sdf.capsule(
         [0, soleHeelYP, soleThick / 2],
@@ -1818,11 +1841,16 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     const footMass = (() => {
       const lat: Vec3 = [-fwd[1], fwd[0], 0];
       const onG = (p: Vec3): Vec3 => [p[0], p[1], sz];
+      // Coverage sized to the SHORT bare foot — the capsule END sits 0.55·r.foot
+      // behind the ankle so its 0.62·r.foot cap lands ≈1.17·r.foot behind it (just
+      // covering the bare-foot heel back at 0.95·r.foot), NOT the old 0.38·footLen
+      // that poked a phantom heel out behind the resized shoe upper.
+      const heelBehind = r.foot * 0.55;
       const toe = onG(add3(A, add3(scale3(fwd, footLen * 0.62), scale3(lat, side * r.foot * 0.12))));
-      const hl = onG(add3(A, scale3(fwd, -footLen * 0.38)));
-      const instepC = onG(add3(A, scale3(fwd, footLen * 0.35)));
+      const hl = onG(add3(A, scale3(fwd, -heelBehind)));
+      const instepC = onG(add3(A, scale3(fwd, footLen * 0.2)));
       const s = sdf.capsule(hl, toe, r.foot * 0.62);
-      const inst = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.5, r.foot * 0.8)
+      const inst = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.33, r.foot * 0.8)
         .translate([instepC[0], instepC[1], sz + r.foot * 0.15]);
       const col = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.lowerLeg * 0.8);
       let m = s.smoothUnion(inst, r.foot * 0.6).smoothUnion(col, r.foot * 0.6);
@@ -1861,8 +1889,8 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     // End-points are pulled in by the full radius so the rounded caps land exactly
     // at the foot's heel/toe extent — the footprint sits UNDER the foot and tapers
     // smoothly at both ends (no nub poking past the toe).
-    const soleHeelY = -footLen * 0.70 + soleR;           // back of footprint, inside the heel
-    const soleToeY  =  footLen * 0.70 - soleR;           // front of footprint, inside the toe
+    const soleHeelY = shoeHeelY + soleR;                 // back of footprint, at the heel
+    const soleToeY  = shoeToeY - soleR;                  // front of footprint, at the toe
     const footprintLocal = sdf.capsule(
       [0, soleHeelY, soleThick / 2],
       [0, Math.max(soleToeY, soleHeelY + soleR * 0.2), soleThick / 2],
