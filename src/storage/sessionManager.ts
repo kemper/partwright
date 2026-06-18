@@ -921,34 +921,36 @@ export async function changePart(partId: string, versionIndex?: number): Promise
   return version;
 }
 
-/** True when a *non-current* part has unsaved edits — a stored per-part draft
- *  whose code (or, for SCAD, companion files) diverges from that part's latest
- *  saved version. This is how the multi-part save flow discovers parts the user
- *  edited and then switched away from (their draft is stashed on switch). The
- *  CURRENT part is NOT judged here — its live editor buffer (which also carries
- *  paint/param/annotation changes the draft doesn't) is the source of truth, so
- *  the caller checks it directly. Returns false for a part that has never been
- *  saved (no versions yet) — its starter buffer isn't "unsaved work" to surface.
+/** Save state of a NON-current part for the multi-part save flow:
+ *   - `'clean'`   — committed and its draft matches (nothing to save).
+ *   - `'empty'`   — never committed AND still the untouched starter ("no changes
+ *                   yet"): savable, but the modal notes it so the user can skip.
+ *   - `'unsaved'` — real work to save: either never committed but edited, or
+ *                   committed with a diverging draft (code / SCAD companions).
+ *  The CURRENT part is judged from the live editor buffer instead (its draft
+ *  doesn't carry paint/param/annotation changes) — see {@link currentPartIsDirty}.
  */
-export async function partHasUnsavedDraft(part: Part): Promise<boolean> {
+export type PartSaveState = 'clean' | 'empty' | 'unsaved';
+
+export async function partSaveState(part: Part): Promise<PartSaveState> {
   const latest = await getLatestVersion(part.id);
   if (!latest) {
-    // Never saved (e.g. built via the "+" button and not yet committed): it's
-    // unsaved if it has a non-starter draft in ANY language. (The "+" path
-    // stashes the outgoing buffer as a draft, so real work lands here.)
+    // Never committed: "unsaved" if any stashed draft holds real (non-starter)
+    // content; otherwise it's an untouched new part ("no changes yet").
     const drafts = await dbListDrafts(part.sessionId);
     const prefix = `${part.sessionId}:${part.id}:`;
-    return drafts.some(d => d.id.startsWith(prefix) && !isStarterCode(d.code));
+    const hasContent = drafts.some(d => d.id.startsWith(prefix) && !isStarterCode(d.code));
+    return hasContent ? 'unsaved' : 'empty';
   }
   const lang = effectiveVersionLanguage(latest, currentState.session);
   const draft = await readDraft(part.sessionId, lang, part.id);
-  if (!draft) return false;
-  if (draft.code !== latest.code) return true;
-  // SCAD drafts also stash unsaved companion-file edits; treat those as dirty.
-  if (lang === 'scad') {
-    return !companionFilesEqual(latest.companionFiles ?? {}, draft.companionFiles ?? {});
+  if (!draft) return 'clean';
+  if (draft.code !== latest.code) return 'unsaved';
+  // SCAD drafts also stash unsaved companion-file edits; treat those as unsaved.
+  if (lang === 'scad' && !companionFilesEqual(latest.companionFiles ?? {}, draft.companionFiles ?? {})) {
+    return 'unsaved';
   }
-  return false;
+  return 'clean';
 }
 
 export async function renamePart(partId: string, newName: string): Promise<void> {
@@ -1166,11 +1168,9 @@ export function currentPartIsDirty(
   },
 ): boolean {
   if (!currentState.session || !currentState.currentPart) return false;
-  if (!currentState.currentVersion) {
-    // Never-saved current part: dirty when the live buffer holds real (non-
-    // starter) content the user would lose if it weren't saved.
-    return !isStarterCode(code);
-  }
+  // Never committed → unsaved, even if the buffer is still the starter: a part
+  // the user created and hasn't saved should be offered in the multi-part save.
+  if (!currentState.currentVersion) return true;
   const nextCompanions = opts?.companionFiles ?? currentState.currentVersion.companionFiles ?? {};
   return !versionMatchesCurrent(code, serializeAnnotations(), geometryData, opts?.paramValues, nextCompanions);
 }

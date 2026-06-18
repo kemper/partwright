@@ -18,6 +18,9 @@ export interface UnsavedPartRow {
   name: string;
   /** The part currently loaded in the editor — called out in the list. */
   isCurrent: boolean;
+  /** `'empty'` = a never-saved part still on the starter ("no changes yet");
+   *  `'unsaved'` = has real unsaved work. Drives the per-row status note. */
+  status: 'empty' | 'unsaved';
 }
 
 export type SaveAllChoice =
@@ -76,6 +79,14 @@ export function showSaveAllModal(parts: UnsavedPartRow[]): Promise<SaveAllChoice
       name.className = 'text-zinc-100 truncate flex-1 min-w-0';
       name.textContent = part.name;
       row.appendChild(name);
+
+      // "no changes yet" note for freshly-created parts the user hasn't edited.
+      if (part.status === 'empty') {
+        const note = document.createElement('span');
+        note.className = 'shrink-0 text-[11px] italic text-zinc-500';
+        note.textContent = 'no changes yet';
+        row.appendChild(note);
+      }
 
       if (part.isCurrent) {
         const badge = document.createElement('span');

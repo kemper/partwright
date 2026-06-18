@@ -80,3 +80,13 @@ path — does NOT auto-save the outgoing part. So that's the genuine source of
   any language; `currentPartIsDirty` treats a never-saved current part as dirty
   when its live buffer is non-starter. Added an e2e test reproducing the exact
   "+ button, no save" flow → all three parts detected and committed by "Save all".
+
+**Second follow-up.** User then created several parts via "+" WITHOUT editing
+them and wanted those offered too, with the modal noting which "have no changes
+yet". So: any part with NO committed version now counts as unsaved (even an
+untouched starter), and the detection returns a 3-way `PartSaveState`
+(`clean` / `empty` / `unsaved`) instead of a boolean — `partHasUnsavedDraft`
+became `partSaveState`. The modal renders an italic "no changes yet" note on
+`empty` rows (never-saved + still the starter) so the user can uncheck them; rows
+stay pre-checked by default. Added an e2e test: 5 never-edited parts created via
+"+" all show "no changes yet" and "Save all" commits a v1 for each.

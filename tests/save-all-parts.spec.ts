@@ -164,6 +164,37 @@ test.describe('Multi-part save', () => {
     expect(counts).toEqual([1, 1, 1]);
   });
 
+  test('parts created via "+" with no edits show "no changes yet" and are saveable', async ({ page }) => {
+    await openEditor(page);
+    await page.evaluate(() => (window as any).partwright.createSession('EmptyParts'));
+    // Create 4 more parts via the "+" button without editing anything.
+    for (let i = 0; i < 4; i++) {
+      await page.locator('#btn-add-part').click();
+      await page.waitForTimeout(400);
+    }
+
+    await page.keyboard.press('ControlOrMeta+s');
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 5_000 });
+    // 5 parts (initial + 4), none ever committed → all offered.
+    await expect(dialog.locator('input[type="checkbox"]')).toHaveCount(5);
+    // …and every one is flagged "no changes yet".
+    await expect(dialog.getByText('no changes yet')).toHaveCount(5);
+
+    await dialog.getByRole('button', { name: 'Save all' }).click();
+    await page.waitForTimeout(3000);
+    const counts = await page.evaluate(async () => {
+      const pw = (window as any).partwright;
+      const out: number[] = [];
+      for (const p of pw.listParts()) {
+        await pw.changePart(p.id);
+        out.push((await pw.listVersions()).length);
+      }
+      return out;
+    });
+    expect(counts).toEqual([1, 1, 1, 1, 1]);
+  });
+
   test('"Save current part only" saves just the current part', async ({ page }) => {
     await openEditor(page);
     await setupThreeUnsavedParts(page);

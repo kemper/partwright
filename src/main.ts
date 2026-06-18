@@ -269,7 +269,7 @@ import {
   deletePart,
   deleteParts,
   reorderParts,
-  partHasUnsavedDraft,
+  partSaveState,
   currentPartIsDirty,
   getState,
   setSessionThumbCamera,
@@ -4658,14 +4658,20 @@ async function main() {
     const rows: UnsavedPartRow[] = [];
     for (const part of parts) {
       const isCurrent = part.id === currentPart?.id;
-      const dirty = isCurrent
-        ? currentPartIsDirty(
-            getValue(),
-            enrichGeometryDataWithColors(getGeometryDataObj()),
-            { paramValues: currentParamValues, companionFiles: getCompanionFiles() },
-          )
-        : await partHasUnsavedDraft(part);
-      if (dirty) rows.push({ id: part.id, name: part.name, isCurrent });
+      if (isCurrent) {
+        if (!currentPartIsDirty(
+          getValue(),
+          enrichGeometryDataWithColors(getGeometryDataObj()),
+          { paramValues: currentParamValues, companionFiles: getCompanionFiles() },
+        )) continue;
+        // No committed version + untouched starter buffer = "no changes yet".
+        const empty = !getState().currentVersion && isStarterCode(getValue());
+        rows.push({ id: part.id, name: part.name, isCurrent, status: empty ? 'empty' : 'unsaved' });
+      } else {
+        const state = await partSaveState(part);
+        if (state === 'clean') continue;
+        rows.push({ id: part.id, name: part.name, isCurrent, status: state });
+      }
     }
     return rows;
   };
