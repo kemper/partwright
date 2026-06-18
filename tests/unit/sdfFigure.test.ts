@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildTorso, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildLegs, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -1211,6 +1211,39 @@ describe('figure top — dress/gown coverage', () => {
     // The chest-front surface (centre line, one chest-depth forward) is covered.
     const C = rig.joints.chest;
     expect(gown.evaluate(C[0], C[1] - rig.r.chestY, C[2])).toBeLessThan(0);
+  });
+
+  it('a dress skirt covers the OUTER thigh (legs do not poke through the cone)', () => {
+    // Regression (#dress-outer-thigh): the skirt was a centered cone with NO leg
+    // coverage, so a spread leg poked through its side at mid-thigh as a bare-skin
+    // patch. The dress now folds the legs (offset by `t`) into the coverage, so the
+    // outer-thigh skin surface must be strictly inside the garment.
+    const rig = buildRig({ height: 56, headsTall: 7, sex: 'female', build: 'average', weight: 0.5,
+      pose: { legL: { raiseSide: 8 }, legR: { raiseSide: 8 } } });
+    const j = rig.joints, r = rig.r;
+    const legs = buildLegs(api, rig) as SdfNode;
+    const dress = buildTop(api, rig, { sleeve: 'none', hemZ: rig.opts.height * 0.18 }) as SdfNode;
+    // Walk between hip and knee; at each height march OUTWARD (+x) from the leg
+    // centre to the skin surface and assert the dress encloses it. Sample at y=0
+    // (the leg's coronal mid-slice): the bug is purely lateral — the leg's widest
+    // +x bulge punching through the cone's side — so y=0 is the worst case.
+    for (let f = 0.2; f <= 0.8; f += 0.2) {
+      const z = j.upperLegL[2] * (1 - f) + j.lowerLegL[2] * f;
+      const cx = j.upperLegL[0] * (1 - f) + j.lowerLegL[0] * f;
+      let xSkin = null as number | null;
+      for (let x = cx; x < cx + 10; x += 0.05) { if (legs.evaluate(x, 0, z) > 0) { xSkin = x - 0.05; break; } }
+      expect(xSkin).not.toBeNull();
+      if (xSkin !== null) expect(dress.evaluate(xSkin, 0, z)).toBeLessThan(0);
+    }
+  });
+
+  it('a non-dress top does NOT wrap the legs (a shirt is not pants)', () => {
+    // The leg coverage is gated on the dress branch (hem below the pelvis); a
+    // normal waist-length top must leave the thighs bare.
+    const rig = buildRig({ height: 60, headsTall: 7 });
+    const top = buildTop(api, rig, { sleeve: 'short' }) as SdfNode;
+    const K = rig.joints.lowerLegL;
+    expect(top.evaluate(K[0], K[1], K[2])).toBeGreaterThan(0);
   });
 
   it('the gown hem stops the skirt: just below hemZ is outside, just above is inside', () => {

@@ -3800,7 +3800,8 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // A hem below the pelvis means a robe/dress — the chest ELLIPSOID recedes
   // toward its bottom tip, so legs poke out of its lower front. Add a flared
   // cone skirt from the waist down to the hem.
-  if (hemZ < j.hips[2] - r.hipsY * 0.6) {
+  const isDress = hemZ < j.hips[2] - r.hipsY * 0.6;
+  if (isDress) {
     const skirtH = j.spine[2] - hemZ;
     const r0 = Math.max(r.hipsX, r.chestX) + t;
     const skirt = sdf.cylinder(r0, skirtH)
@@ -3823,9 +3824,16 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // zone, unioned UNDER the shaped shell. It fills the spots the shaped
   // ellipsoid/sleeves only approximate — the sternum V, the armpit wedge, and
   // belly/pelvis weld bulges on slim builds — with a body offset that can't be
-  // poked through. No legs in the masses, so a dress hem stays the cone skirt's
-  // job; a sleeveless top excludes the arms so it stays bare-shouldered.
-  const masses = sleeve === 'none' ? buildTorso(sdf, rig) : buildTorso(sdf, rig).union(buildArms(sdf, rig));
+  // poked through. A sleeveless top excludes the arms so it stays bare-shouldered.
+  // For a DRESS/ROBE the legs join the coverage too: a centered cone skirt is too
+  // narrow at the spread outer thigh/knee, so the leg pokes through its side as a
+  // bare-skin patch (#dress-outer-thigh). Offsetting the legs by `t` and clipping
+  // them to the skirt zone + hem (exactly as buildPants guarantees leg coverage)
+  // fills wherever the leg out-runs the cone, while the cone still gives the drape
+  // and stays solid BETWEEN the legs (no culotte split). Non-dress tops keep no
+  // legs, so a shirt never wraps the thighs.
+  let masses = sleeve === 'none' ? buildTorso(sdf, rig) : buildTorso(sdf, rig).union(buildArms(sdf, rig));
+  if (isDress) masses = masses.union(buildLegs(sdf, rig));
   const body = masses.round(t);
   const big = Math.max(r.chestX, r.upperArm) * 8;
   const torsoTop = j.upperArmL[2] + r.upperArm;
