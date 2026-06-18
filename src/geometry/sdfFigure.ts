@@ -1492,6 +1492,86 @@ function footPitchFrame(
   return { heading, pitch };
 }
 
+/** The bare-foot mass in its LOCAL frame: origin = footprint centre on the sole
+ *  design plane (local z 0), +Y = toe, +X = lateral, +Z = up. The single source
+ *  of foot shape, shared by {@link buildFeet} (the skin foot) and
+ *  {@link buildFootwear} (which offsets this exact shape outward into a shoe, so
+ *  a shoe can never drift from the foot again). Masses cross z = 0; the consumer
+ *  flat-clips at/below z 0. `instepH` is returned for the ankle-weld height. */
+function footMassLocal(
+  sdf: SdfApi, s: SoleFrame, r: Record<string, number>, side: number, toesOn: boolean,
+): { local: Node; instepH: number } {
+  const footLen = s.length;
+  const hw = r.foot * 0.6;                          // sole half-width
+  const ankleY = -footLen * 0.12;                  // ankle's local Y
+  const instepH = r.foot * 0.74;                   // instep crown height
+  // Instep/arch dome — the high midfoot over the ankle, reaching forward to the ball.
+  const arch = sdf.ellipsoid(hw, footLen * 0.3, instepH)
+    .translate([0, ankleY + footLen * 0.16, instepH * 0.12]);
+  // Forefoot / ball: a flat, lower rounded pad (smooth toe-box when toes are off).
+  const foreH = r.foot * 0.42;
+  const foreFront = toesOn ? footLen * 0.4 : footLen * 0.49;
+  const foreCY = (foreFront + footLen * 0.06) / 2;
+  const foreLY = foreFront - footLen * 0.06;
+  const fore = sdf.roundedBox([hw * 1.92, foreLY, foreH * 1.8], Math.min(hw * 0.5, foreH * 0.85))
+    .translate([0, foreCY, foreH * 0.55]);
+  // Heel: a SHALLOW rounded bump just behind the ankle — sized off foot WIDTH.
+  const heelH = r.foot * 0.54;
+  const heel = sdf.ellipsoid(hw * 0.9, r.foot * 0.9, heelH)
+    .translate([0, ankleY - r.foot * 0.05, heelH * 0.1]);
+  let local = arch.smoothUnion(fore, r.foot * 0.5).smoothUnion(heel, r.foot * 0.5);
+
+  if (toesOn) {
+    // Five toes forming a SCALLOPED toe row (stylised figurine look). Big toe on
+    // the MEDIAL side. Each capsule lies roughly flat along the foot plane.
+    const toeRootY = foreFront * 0.72;
+    const toeTipY = foreFront * 1.10;
+    const toeBaseZ = foreH * 0.6;
+    const toeTipZ = foreH * 0.46;
+    const medialX = -side;
+    const rads = [0.192, 0.174, 0.158, 0.143, 0.124];                        // × r.foot
+    const xs = [0.88, 0.44, 0.0, -0.44, -0.88].map((f) => medialX * hw * f);
+    const yArc = [0.94, 0.98, 1.0, 0.98, 0.93];
+    rads.forEach((rad, i) => {
+      const tr = r.foot * rad;
+      const base: Vec3 = [xs[i], toeRootY * yArc[i], toeBaseZ];
+      const tip: Vec3 = [xs[i] + medialX * tr * 0.04, toeTipY * yArc[i], toeTipZ];
+      local = local.smoothUnion(sdf.capsule(base, tip, tr), tr * 0.42);
+    });
+  }
+  return { local, instepH };
+}
+
+/** Place a LOCAL foot-frame node into the world — pitched (a LIFTED foot points
+ *  its toe down along the leg, {@link footPitchFrame}) or flat (a planted foot on
+ *  the ground). Shared by the skin foot and the shoe so they stay concentric. The
+ *  caller adds its own ankle weld and sole clip. `bottomZ` is the flat sole plane;
+ *  `flat` says which branch ran. */
+function footPlacement(
+  A: Vec3, s: SoleFrame, r: Record<string, number>, pf: { heading: Vec3; pitch: number } | null,
+): { place: (n: Node) => Node; flat: boolean; bottomZ: number } {
+  const bottomZ = s.groundZ + r.foot * 0.14;
+  if (pf) {
+    const yawL = Math.atan2(pf.heading[0], pf.heading[1]) / DEG;
+    const ankleLocal: Vec3 = [0, -s.length * 0.12, ANKLE_LOCAL_Z * r.foot];
+    return {
+      flat: false,
+      bottomZ,
+      place: (n: Node) => n
+        .translate([-ankleLocal[0], -ankleLocal[1], -ankleLocal[2]])
+        .rotate([-pf.pitch, 0, 0])
+        .rotate([0, 0, yawL])
+        .translate([A[0], A[1], A[2]]),
+    };
+  }
+  const yaw = Math.atan2(s.heading[0], s.heading[1]) / DEG;
+  return {
+    flat: true,
+    bottomZ,
+    place: (n: Node) => n.rotate([0, 0, yaw]).translate([s.point[0], s.point[1], bottomZ]),
+  };
+}
+
 function buildFeet(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'feet(opts)');
   assertNoUnknownKeys(o, ['toes'], 'feet(opts)');
@@ -1509,111 +1589,26 @@ function buildFeet(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const planeZ = Math.min(rig.sole.L.groundZ, rig.sole.R.groundZ);
 
   function foot(A: Vec3, s: SoleFrame, side: number, shinDir: Vec3, thighDir: Vec3): Node {
-    const footLen = s.length;
-    const fwd = s.heading;
-    const groundZ = s.groundZ;
-    // Flat sole underside, a hair above the shared ground plane so a base or
-    // footwear (both clip flat at groundZ) still fully encloses the bare foot.
-    const bottomZ = groundZ + r.foot * 0.14;
-    const yaw = Math.atan2(fwd[0], fwd[1]) / DEG;     // maps local +Y → heading
-    const hw = r.foot * 0.6;                          // sole half-width
-
-    // ── Foot mass in a LOCAL frame: origin = footprint centre on the sole,
-    //    +Y = toe, +X = lateral, +Z = up. The ankle sits at local Y −0.12·footLen
-    //    (the footprint centre is 0.12·footLen ahead of it). Each mass is built
-    //    crossing z = 0 and the whole foot is flat-clipped there, so the sole is
-    //    genuinely FLAT (heel-to-toe) instead of the old rounded club bottom.
-    //    The foot's stature-scaled LENGTH lives in the FOREFOOT/TOES, ahead of
-    //    the ankle; the heel behind the ankle stays a short, shallow bump (sized
-    //    off the foot WIDTH, not footLen) so lengthening never grows the heel.
-    const ankleY = -footLen * 0.12;                  // ankle's local Y
-    const instepH = r.foot * 0.74;                   // instep crown height
-    // Instep/arch dome — the high midfoot, seated over the ankle and reaching
-    // FORWARD to the ball. Its rear is pinned near the ankle (so no long heel);
-    // its forward span carries the length.
-    const arch = sdf.ellipsoid(hw, footLen * 0.3, instepH)
-      .translate([0, ankleY + footLen * 0.16, instepH * 0.12]);
-    // Forefoot / ball of the foot: a flat, lower rounded pad. When toes are on
-    // it stops at the ball (≈0.4·footLen) and the toes complete the length; when
-    // off it runs out to a smooth, rounded toe box (≈0.49·footLen).
-    const foreH = r.foot * 0.42;
-    const foreFront = toesOn ? footLen * 0.4 : footLen * 0.49;
-    const foreCY = (foreFront + footLen * 0.06) / 2; // back of pad ≈ arch front
-    const foreLY = foreFront - footLen * 0.06;
-    const fore = sdf.roundedBox([hw * 1.92, foreLY, foreH * 1.8], Math.min(hw * 0.5, foreH * 0.85))
-      .translate([0, foreCY, foreH * 0.55]);
-    // Heel: a SHALLOW rounded bump just behind the ankle — sized off the foot
-    // WIDTH (r.foot), NOT footLen, so a longer foot keeps the same short heel
-    // and puts its extra length forward. (Per direct feedback: shallow heel,
-    // extend the front.)
-    const heelH = r.foot * 0.54;
-    const heel = sdf.ellipsoid(hw * 0.9, r.foot * 0.9, heelH)
-      .translate([0, ankleY - r.foot * 0.05, heelH * 0.1]);
-    let local = arch.smoothUnion(fore, r.foot * 0.5).smoothUnion(heel, r.foot * 0.5);
-
-    if (toesOn) {
-      // Five toes forming a SCALLOPED toe row — stylised figurine look.
-      // Big toe on the MEDIAL side (−X for left foot, +X for right).
-      //
-      // Each toe capsule lies roughly FLAT along the foot's plane — emerging
-      // from the front of the forefoot pad and pointing forward (and a hair
-      // DOWN toward the tip, the way real toes rest toward the ground), NOT
-      // upturned. Base and tip sit at a similar height (the lower-middle of the
-      // pad) so the toe row continues the foot's surface instead of curling up.
-      //
-      // k = tr × 0.42: bridges the base-to-forefoot seam while inter-toe
-      // valleys (adjacent centres ~1.75× mean radius apart) remain visible.
-      const toeRootY = foreFront * 0.72;             // base: inside forefoot, well back
-      const toeTipY  = foreFront * 1.10;             // tip: 10% past ball front
-      const toeBaseZ = foreH * 0.6;                  // base: lower-middle of the pad
-      const toeTipZ  = foreH * 0.46;                 // tip: a hair lower → rests toward ground
-      const medialX = -side;
-      const rads = [0.192, 0.174, 0.158, 0.143, 0.124];                        // × r.foot
-      const xs = [0.88, 0.44, 0.0, -0.44, -0.88].map((f) => medialX * hw * f);
-      const yArc = [0.94, 0.98, 1.0, 0.98, 0.93];
-      rads.forEach((rad, i) => {
-        const tr = r.foot * rad;
-        const base: Vec3 = [xs[i], toeRootY * yArc[i], toeBaseZ];
-        const tip: Vec3  = [xs[i] + medialX * tr * 0.04, toeTipY * yArc[i], toeTipZ];
-        local = local.smoothUnion(sdf.capsule(base, tip, tr), tr * 0.42);
-      });
-    }
-
+    const { local, instepH } = footMassLocal(sdf, s, r, side, toesOn);
     // Plantarflexion (#701): a LIFTED foot points its toe along the leg's
-    // downward extension and tucks its heel up toward the ankle, instead of
-    // lying flat on a horizontal plane behind a raked shin. Planted feet (and
-    // the standing case) get `null` here and run the unchanged flat path below.
-    const pf = footPitchFrame(shinDir, thighDir, fwd, groundZ - planeZ, r.foot);
-    if (pf) {
-      const yawL = Math.atan2(pf.heading[0], pf.heading[1]) / DEG;
-      // The ankle in local coords (footprint centre is 0.12·footLen ahead of the
-      // ankle; the ankle rides ANKLE_LOCAL_Z·foot above the flat-clip plane).
-      const ankleLocal: Vec3 = [0, ankleY, ANKLE_LOCAL_Z * r.foot];
-      // Pivot about the local ankle: drop the ankle to the origin, pitch the toe
-      // DOWN about the lateral (local X) axis, yaw to the leg heading, then anchor
-      // the ankle back onto the world ankle A. The heel rotates up toward A and
-      // the toe swings down/back — no horizontal sole, no heel projecting behind.
-      const world = local
-        .translate([-ankleLocal[0], -ankleLocal[1], -ankleLocal[2]])
-        .rotate([-pf.pitch, 0, 0])
-        .rotate([0, 0, yawL])
-        .translate([A[0], A[1], A[2]]);
-      // Weld up the leg so the airborne foot stays attached (no flat clip — the
-      // foot hangs in the air, pointed).
+    // downward extension; planted/standing feet get `null` and run the flat path.
+    const pf = footPitchFrame(shinDir, thighDir, s.heading, s.groundZ - planeZ, r.foot);
+    const { place, flat, bottomZ } = footPlacement(A, s, r, pf);
+    const big = s.length * 8;
+    if (!flat) {
+      // Lifted: flat-clip the sole IN THE LOCAL frame (z ≥ 0) BEFORE pivoting, so a
+      // plantarflexed foot keeps a real flat sole that tilts with the foot — not a
+      // rounded nub. Then weld up the leg so the airborne foot stays attached.
+      const soleFloor = sdf.box([big, big, big]).translate([0, 0, big / 2]); // local z ≥ 0
+      const world = place(local.intersect(soleFloor));
       const ankleCol = sdf.capsule(A, [A[0], A[1], A[2] + r.lowerLeg * 0.5], r.lowerLeg * 0.8);
       return world.smoothUnion(ankleCol, r.foot * 0.5);
     }
-
-    // Place the local foot into the world: yaw to the heading, drop the sole on
-    // the ground.
-    const world = local.rotate([0, 0, yaw]).translate([s.point[0], s.point[1], bottomZ]);
-    // A short ankle column bridges the (possibly elevated) ankle to the foot so
-    // it stays welded to the leg in any pose.
+    // Planted: bridge the ankle to the foot, then flat-clip the bottom LAST so the
+    // sole is a true ground plane with no smoothUnion blend-halo dipping below it.
+    const world = place(local);
     const ankleCol = sdf.capsule(A, [A[0], A[1], bottomZ + instepH * 0.9], r.lowerLeg * 0.8);
     const welded = world.smoothUnion(ankleCol, r.foot * 0.5);
-    // Flat-clip the bottom LAST so the sole is a true ground plane with no
-    // smoothUnion blend-halo dipping below it (which would breach groundZ).
-    const big = footLen * 8;
     const floor = sdf.box([big, big, big])
       .translate([s.point[0], s.point[1], bottomZ + big / 2]);   // keep z ≥ bottomZ
     return welded.intersect(floor);
@@ -1643,17 +1638,21 @@ function footDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   ];
 }
 
-/** Shoes and boots — footwear that wraps each foot, following the foot heading
- *  (`rig.dir.footL/R`) so it tracks `leg*.twist` turnout exactly like
- *  {@link buildFeet}. A shoe is the foot's sole + upper inflated by `thickness`;
- *  a boot adds a shaft up the lower-leg bone. `kind` selects which.
+/** Shoes and boots — footwear DERIVED from the bare foot, not rebuilt. The shoe
+ *  upper is the exact {@link footMassLocal} bare-foot shape grown outward by the
+ *  wall `thickness` (`.round(t)` — the SDF parallel offset, the same primitive
+ *  behind `surfaceMarking`). Because it's an outward offset of the foot it:
+ *   • hugs the foot exactly (no heel-jut / club-toe drift — there is no separate
+ *     "last" to fall out of sync with the foot),
+ *   • inherits the foot's plantarflexion for free (it offsets the SAME pitched
+ *     foot {@link buildFeet} builds, via {@link footPlacement}) — no bubble,
+ *   • is a superset of the foot by construction, so the skin can NEVER poke
+ *     through (the old guaranteed-coverage underlayer is gone).
  *
- *  Coverage follows the {@link buildPants} pattern: a shaped overlay (the visible
- *  silhouette) plus a guaranteed-coverage underlayer — the body's own foot mass
- *  (and, for boots, the lower-leg shank) offset outward by `t` and clipped to the
- *  footwear zone, unioned UNDER the overlay so it only ADDS coverage and the skin
- *  can never poke through. Footwear overlaps the foot/shank skin, so the
- *  top-level union keeps the figure one component in any pose.
+ *  A boot adds a shaft up the lower-leg bone; `kind` selects which. The sole is
+ *  the lowest `sole.thickness` band of the shoe's own footprint (a distinct paint
+ *  region), clipped flat at the ground plane (grounded foot) or tilted with the
+ *  foot (lifted). Heading tracks `leg*.twist` turnout via the shared placement.
  *
  *  Usage: see `examples/figure_sneakers.js` (shoes + contrasting sole, feet
  *  grounded level) and `examples/figure_superhero.js` (boots). */
@@ -1698,263 +1697,66 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
   // above it is LIFTED and plantarflexes, so its footwear must pitch with it.
   const planeZ = Math.min(rig.sole.L.groundZ, rig.sole.R.groundZ);
 
-  // Build one foot's two regions: the upper (boot body, clipped to sit ABOVE the
-  // sole) and the sole slab (a wide flat footprint from groundZ up). They overlap
-  // a little so the union welds into one component.
+  // Build one foot's shoe as the bare foot OFFSET outward by the wall thickness,
+  // then split off the lowest band as the (paintable) sole. The upper carries the
+  // collar (and, for boots, the shaft); both weld into one component.
   function foot(A: Vec3, K: Vec3, sole0: SoleFrame, side: number, shinDir: Vec3, thighDir: Vec3): { upper: Node; sole: Node | null } {
-    const footLen = sole0.length * size;           // heel→toe, full length
-    const fwd = sole0.heading;
     const groundZ = sole0.groundZ;
     const sz = footSoleZ(rig, A);                   // sole-capsule centre (world Z)
-    // Yaw that maps the local +Y axis onto the foot heading.
-    const yaw = Math.atan2(fwd[0], fwd[1]) / DEG;
+    const big = Math.max(sole0.length, r.lowerLeg) * 8;
+    const weld = r.foot * 0.18;                      // upper↔sole band overlap (welds them)
+    const lipCap = Math.min(lip, r.foot * 0.45);    // welt sits proud, never balloons
 
-    // ─── Build the shoe body in a LOCAL frame ───────────────────────────────
-    //  origin = footprint centre on the ground, +Y = toe, +X = lateral, +Z = up.
-    //  Sized to the bare foot `buildFeet` actually makes: a SHORT heel just behind
-    //  the ankle (ankle at local Y −0.12·footLen) and the length carried FORWARD
-    //  into the forefoot (toe ≈ +0.49·footLen). The foot was reshaped this way on
-    //  2026-06-14 but the footwear (authored 2026-06-13 for the old long-heeled
-    //  foot at ±0.86·footLen) was never resized — so the shoe ran ~2× the foot:
-    //  a heel jutting out behind the leg and a long club toe. We mirror the foot's
-    //  own landmarks here, plus a thin wall + small toe-spring, so the shoe hugs
-    //  the foot. Underside near +Z 0 (groundZ); everything below swallows the foot.
-    //  `soleTopZ` is where the upper sits on the sole; we build the upper from there
-    //  up and let the coverage underlayer fill the gap down to groundZ. The
-    //  silhouette reads as a real shoe: one smooth ellipsoid LAST whose ends curve
-    //  down into a toe-spring at the front and round into the HEEL at the back, a
-    //  low heel fill, an ANKLE COLLAR rise at the opening — and (boots) a shaft —
-    //  over a wide flat two-tier SOLE.
-    const soleTopZ = soleOn ? groundZ + soleThick : groundZ;
-    const wallT = t;                               // upper-wall thickness over skin
-    const hw = r.foot * 0.78 * size + wallT;        // upper half-width (foot + wall)
-    // Bare-foot fore/aft landmarks (mirror buildFeet): ankle at −0.12·footLen, a
-    // short heel ≈0.95·r.foot behind it, the toe well forward at +0.49·footLen.
-    const ankleY = -footLen * 0.12;
-    const footHeelY = ankleY - r.foot * 0.95;       // bare-foot heel back (local −Y)
-    const footToeY = footLen * 0.49;                // bare-foot toe front (local +Y)
-    // Shoe = foot + a thin wall, plus a small toe-spring margin at the front.
-    const shoeHeelY = footHeelY - wallT;            // heel back (local −Y)
-    const shoeToeY = footToeY + wallT + footLen * 0.04;
-    const heelY = shoeHeelY;                        // heel back (local −Y)
-    // The last reaches the GROUND (local Z 0); the sole is later sliced off its
-    // bottom so it follows the foot's own curvature (not a separate cuboid).
-    const bodyLow = 0;
-    // Foot landmarks in local Z (relative to groundZ): foot capsule top ≈ instep.
-    const footTopZ = (sz - groundZ) + r.foot * 0.62;   // top of the bare-foot mass
-    const instepZ = footTopZ + wallT;                  // crown over the instep
+    // The bare foot (smooth toe-box — a shoe doesn't show toes), optionally scaled
+    // for chunkier/daintier footwear, then grown outward by the wall `t`.
+    const { local: rawFoot } = footMassLocal(sdf, sole0, r, side, false);
+    const footMass = size === 1 ? rawFoot : rawFoot.scale(size);
+    const offsetFoot = footMass.round(t);           // SDF parallel offset = the shoe shell
 
-    // MAIN LAST — one smooth ellipsoid spanning the foot heel→toe. An ellipsoid
-    // tapers and rounds at BOTH ends, so the front naturally curves down to a
-    // toe-spring and the back rounds into the heel — a single continuous shoe-last
-    // form rather than separate blobs. Its flat bottom comes from the sole clip;
-    // the foot-mass underlayer guarantees the ends stay shod. Its fore/aft span is
-    // the shoe heel↔toe (above), so the shoe hugs the foot instead of overhanging.
-    const bodyTopZ = instepZ;                           // crown over the instep/arch
-    const lastRZ = bodyTopZ - bodyLow;                  // last half-height at the crest
-    const lastCY = (shoeToeY + shoeHeelY) / 2;          // last centre (heel↔toe midpoint)
-    const lastRY = (shoeToeY - shoeHeelY) / 2;          // last half-length
-    const last = sdf.ellipsoid(hw, lastRY, lastRZ)
-      .translate([0, lastCY, bodyLow]);
+    // Same plantarflexion + placement the bare foot uses, so shoe and foot stay
+    // concentric in any pose (lifted foot → the shoe pitches with it).
+    const pf = footPitchFrame(shinDir, thighDir, sole0.heading, groundZ - planeZ, r.foot);
+    const { place } = footPlacement(A, sole0, r, pf);
 
-    // HEEL — a low rounded mass that fills out the back of the last to the heel
-    // tip without rising above the instep (the tall rise to the ankle is the
-    // collar's job). Overlaps the last so it reads as the same continuous form.
-    const heelTopZ = bodyLow + lastRZ * 0.92;
-    const heelR = r.foot * 0.6 * size + wallT;
-    const heel = sdf.roundedCylinder(heelR, (heelTopZ - bodyLow), Math.min(heelR * 0.55, (heelTopZ - bodyLow) * 0.45))
-      .translate([0, heelY + heelR * 0.85, bodyLow + (heelTopZ - bodyLow) / 2]);
-
-    const kBody = r.foot * 0.6;
-    let local = last
-      .smoothUnion(heel, kBody);
-
-    // ─── PLANTARFLEXED footwear (#701/#707 parity) ──────────────────────────
-    //  buildFeet pitches a LIFTED foot's toe down about the ankle so it follows
-    //  the leg's downward extension. The shoe MUST follow, or the pointed foot
-    //  pokes out of a flat shoe. We pivot the whole foot-wrapping shell (body +
-    //  sole + coverage) about the SAME world ankle, with the SAME pitch/heading
-    //  footPitchFrame gives buildFeet (identical inputs → identical rotation, so
-    //  shoe and foot stay concentric). The collar/shaft are leg-connectors and
-    //  stay in world (they follow the shank, not the foot). Planted/standing feet
-    //  get `null` here and run the unchanged flat path below — byte-for-byte.
-    const pf = footPitchFrame(shinDir, thighDir, fwd, groundZ - planeZ, r.foot);
-    if (pf) {
-      const yawL = Math.atan2(pf.heading[0], pf.heading[1]) / DEG;
-      // Pivot about the local ankle (footprint centre is 0.12·length ahead of the
-      // ankle along the heading; the ankle rides A.z above the local ground z=0).
-      const ankleLocal: Vec3 = [0, -sole0.length * 0.12, A[2] - groundZ];
-      const place = (n: Node): Node => n
-        .translate([-ankleLocal[0], -ankleLocal[1], -ankleLocal[2]])
-        .rotate([-pf.pitch, 0, 0])
-        .rotate([0, 0, yawL])
-        .translate([A[0], A[1], A[2]]);
-
-      const bigP = Math.max(footLen, r.lowerLeg) * 8;
-
-      // Collar welds the opening to the shank, and (boots) the shaft runs up the
-      // lower leg — both in WORLD, anchored at the ankle/shank like the flat path.
+    // Collar welds the opening to the shank; (boots) the shaft runs up the lower
+    // leg. Both WORLD-anchored (they follow the shank, not the foot).
+    const weldCollarShaft = (body: Node): Node => {
       const collar = sdf.capsule(
         [A[0], A[1], A[2] + r.foot * 0.1],
         [A[0], A[1], sz - r.foot * 0.1],
-        r.lowerLeg * 0.92 + wallT,
+        r.lowerLeg * 0.92 + t,
       );
-
-      // Guaranteed-coverage underlayer, built in the LOCAL frame then pivoted with
-      // the foot (its ankle column tracks the pivot; the boot shaft stays world).
-      const szL = sz - groundZ;                       // local Z of the sole-capsule centre
-      const ankleLY = -sole0.length * 0.12;
-      // Coverage sized to the SHORT bare foot (heel ≈0.95·r.foot behind the ankle,
-      // toe forward) — not the old long heel — so it doesn't poke out behind the
-      // shoe. `heelBehind` is the capsule END offset BEHIND THE ANKLE: with the
-      // 0.62·r.foot cap, its rear cap lands ≈1.17·r.foot behind the ankle, just
-      // covering the bare-foot heel back (0.95·r.foot behind) without overrun.
-      const heelBehind = r.foot * 0.55;
-      const sCap = sdf.capsule(
-        [0, ankleLY - heelBehind, szL],
-        [side * r.foot * 0.12, ankleLY + footLen * 0.62, szL],
-        r.foot * 0.62,
-      );
-      const instE = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.33, r.foot * 0.8)
-        .translate([0, ankleLY + footLen * 0.2, szL + r.foot * 0.15]);
-      const colC = sdf.capsule([0, ankleLY, A[2] - groundZ], [0, ankleLY, szL + r.foot * 0.2], r.lowerLeg * 0.8);
-      const coverageLocal = sCap.smoothUnion(instE, r.foot * 0.6).smoothUnion(colC, r.foot * 0.6).round(t);
-
-      // FLAT SOLE in the PITCHED frame. The shared `last` ellipsoid is centred on
-      // the sole plane (local z 0), so its lower half hangs ~1.5·r.foot below the
-      // foot. The flat path slices that off at groundZ; the plantarflexed path used
-      // to skip the clip ("the foot hangs in the air") — leaving that lower half as
-      // a round BUBBLE under lifted shoes (rock-climber / sprinter). Instead clip
-      // the foot-wrapping shell flat at `soleClipZ` (a hair below the bare foot's
-      // own underside, so it still fully encloses the foot) BEFORE pivoting, so the
-      // airborne shoe carries a real flat sole + toe-spring that tilts with the
-      // foot — a shoe, not a ball. `soleClipZ` is below the deepest bare-foot mass
-      // (the instep dome bottoms ~0.65·r.foot under the sole plane).
-      const soleClipZ = -r.foot * 0.75;
-      const localFloor = sdf.box([bigP, bigP, bigP]).translate([0, 0, bigP / 2 + soleClipZ]); // z ≥ soleClipZ
-      const shellLocal = local.union(coverageLocal).intersect(localFloor);
-      let pUpper = place(shellLocal);
-      pUpper = pUpper.smoothUnion(collar, r.foot * 0.55);
+      let out = body.smoothUnion(collar, r.foot * 0.55);
       if (kind === 'boots') {
-        const shaft = sdf.capsule(A, shaftTop(A, K), r.lowerLeg + wallT);
-        // shaft both shapes (outer) and guarantees coverage (inner, world).
-        pUpper = pUpper.smoothUnion(shaft, r.lowerLeg * 0.9).union(sdf.capsule(A, shaftTop(A, K), r.lowerLeg));
+        const shaft = sdf.capsule(A, shaftTop(A, K), r.lowerLeg + t);
+        out = out.smoothUnion(shaft, r.lowerLeg * 0.9);
       }
-      const pShoe = pUpper;
-
-      if (!soleOn) return { upper: pShoe, sole: null };
-
-      // Contrasting sole region: a thin footprint slab at the shoe's underside,
-      // sitting on the SAME pitched sole plane (`soleClipZ`) the shell is clipped
-      // to, built local and pivoted with the shoe (same shaping as the flat sole).
-      const hwP = hw;
-      const lipCapP = Math.min(lip, hwP * 0.45);
-      const soleRP = hwP + lipCapP;
-      const soleHeelYP = shoeHeelY + soleRP;
-      const soleToeYP = shoeToeY - soleRP;
-      const soleBandLocal = sdf.box([bigP, bigP, soleThick]).translate([0, 0, soleClipZ + soleThick / 2]);
-      const footprintLocal = sdf.capsule(
-        [0, soleHeelYP, soleClipZ + soleThick / 2],
-        [0, Math.max(soleToeYP, soleHeelYP + soleRP * 0.2), soleClipZ + soleThick / 2],
-        soleRP,
-      ).intersect(soleBandLocal);
-      const soleBoundsP = lipCapP > 0 ? pShoe.round(lipCapP) : pShoe;
-      return { upper: pShoe, sole: place(footprintLocal).intersect(soleBoundsP) };
-    }
-
-    // Place the local shoe body into the world (yaw to heading, drop onto ground).
-    let upper = local.rotate([0, 0, yaw]).translate([sole0.point[0], sole0.point[1], groundZ]);
-
-    // ─── ANKLE COLLAR + bridge to the leg (world coords) ────────────────────
-    //  A collar ring at the ankle opening welds the shoe to the shank and keeps
-    //  the figure one component; the bridge capsule reaches from the ankle down
-    //  into the body so a posed (lifted) ankle stays connected.
-    const collar = sdf.capsule(
-      [A[0], A[1], A[2] + r.foot * 0.1],
-      [A[0], A[1], sz - r.foot * 0.1],
-      r.lowerLeg * 0.92 + wallT,
-    );
-    upper = upper.smoothUnion(collar, r.foot * 0.55);
-    if (kind === 'boots') {
-      const shaft = sdf.capsule(A, shaftTop(A, K), r.lowerLeg + wallT);
-      upper = upper.smoothUnion(shaft, r.lowerLeg * 0.9);
-    }
-
-    // ─── Guaranteed-coverage underlayer ─────────────────────────────────────
-    //  The body's own foot/shank mass offset by `t` and clipped to the footwear
-    //  zone, unioned UNDER the shaped upper so the skin can NEVER poke through —
-    //  this is the same belt-and-braces pattern buildPants uses.
-    const footMass = (() => {
-      const lat: Vec3 = [-fwd[1], fwd[0], 0];
-      const onG = (p: Vec3): Vec3 => [p[0], p[1], sz];
-      // Coverage sized to the SHORT bare foot — the capsule END sits 0.55·r.foot
-      // behind the ankle so its 0.62·r.foot cap lands ≈1.17·r.foot behind it (just
-      // covering the bare-foot heel back at 0.95·r.foot), NOT the old 0.38·footLen
-      // that poked a phantom heel out behind the resized shoe upper.
-      const heelBehind = r.foot * 0.55;
-      const toe = onG(add3(A, add3(scale3(fwd, footLen * 0.62), scale3(lat, side * r.foot * 0.12))));
-      const hl = onG(add3(A, scale3(fwd, -heelBehind)));
-      const instepC = onG(add3(A, scale3(fwd, footLen * 0.2)));
-      const s = sdf.capsule(hl, toe, r.foot * 0.62);
-      const inst = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.33, r.foot * 0.8)
-        .translate([instepC[0], instepC[1], sz + r.foot * 0.15]);
-      const col = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.lowerLeg * 0.8);
-      let m = s.smoothUnion(inst, r.foot * 0.6).smoothUnion(col, r.foot * 0.6);
-      if (kind === 'boots') m = m.union(sdf.capsule(A, shaftTop(A, K), r.lowerLeg));
-      return m.round(t);
-    })();
-    const big = Math.max(footLen, r.lowerLeg) * 8;
-    const topZ = kind === 'boots' ? shaftTop(A, K)[2] : sz + r.foot * 1.2 + t;
-    const zone = sdf.box([big, big, big]).translate([A[0], A[1], topZ - big / 2]); // z ≤ topZ
-    // The complete shoe solid, flat-clipped at the ground plane (nothing below it).
-    const shoeFloor = sdf.box([big, big, big]).translate([A[0], A[1], groundZ + big / 2]); // z ≥ groundZ
-    const shoe = upper.union(footMass.intersect(zone)).intersect(shoeFloor);
-
-    if (!soleOn) return { upper: shoe, sole: null };
-
-    // SOLE = a footprint-SHAPED solid trimmed to the foot outline (#704), NOT a
-    // wide jagged slab. The old sole sliced the WHOLE shoe SDF (rounded by `lip`),
-    // which inflated the instep/collar/toe-spring outward and Z-sliced a faceted
-    // blob with a sawtooth perimeter that overhung fore/aft. Instead build a clean
-    // heel→toe footprint capsule in the LOCAL frame — a stadium with smooth rounded
-    // ends — sized to the foot, lipped sideways for the welt, and INTERSECTED with
-    // the shoe so it can never extend past where the foot actually is. The bottom
-    // stays flat at groundZ (the band clip); the upper sits ON it (welded by the
-    // band overlap). 'flush' keeps the upper outline (no lip), 'welt' sits proud.
-    const weld = r.foot * 0.18;
-    const soleBand = sdf.box([big, big, soleThick]).translate([A[0], A[1], groundZ + soleThick / 2]);
-    const upperHalf = sdf.box([big, big, big]).translate([A[0], A[1], (soleTopZ - weld) + big / 2]); // z ≥ soleTopZ−weld
-    // Footprint capsule along the heel→toe axis, in the LOCAL frame (+Y = toe).
-    //  A capsule is a stadium: perfectly smooth rounded ends + straight sides, so
-    //  the perimeter is clean all the way round (no faceted sawtooth). Heel/toe
-    //  end-points sit INSIDE the foot's fore/aft extent so the sole never projects
-    //  past the ankle or toe. The radius carries width + the welt lip; the lip is
-    //  capped so a big `overhang` can't balloon the footprint past the foot.
-    const lipCap = Math.min(lip, hw * 0.45);             // welt sits proud, never overhangs
-    const soleR = hw + lipCap;                           // half-width incl. capped lip
-    // End-points are pulled in by the full radius so the rounded caps land exactly
-    // at the foot's heel/toe extent — the footprint sits UNDER the foot and tapers
-    // smoothly at both ends (no nub poking past the toe).
-    const soleHeelY = shoeHeelY + soleR;                 // back of footprint, at the heel
-    const soleToeY  = shoeToeY - soleR;                  // front of footprint, at the toe
-    const footprintLocal = sdf.capsule(
-      [0, soleHeelY, soleThick / 2],
-      [0, Math.max(soleToeY, soleHeelY + soleR * 0.2), soleThick / 2],
-      soleR,
-    );
-    const footprint = footprintLocal
-      .rotate([0, 0, yaw])
-      .translate([sole0.point[0], sole0.point[1], groundZ]);
-    // Trim the clean footprint to the shoe's own outline so the heel/toe follow the
-    // shoe's taper (no stadium end poking past the narrowing toe). For a welt the
-    // shoe is inflated by the capped lip so the sole still sits a touch proud; flush
-    // uses the bare outline. The shoe SDF is smooth (ellipsoid last), so this trim
-    // keeps a clean rounded perimeter — unlike the old `round(lip)` blob slice.
-    const soleBounds = lipCap > 0 ? shoe.round(lipCap) : shoe;
-    return {
-      upper: shoe.intersect(upperHalf),
-      sole: footprint.intersect(soleBounds).intersect(soleBand),
+      return out;
     };
+
+    // Split the shoe body into upper (above soleTop−weld) and the sole band, in the
+    // foot's own frame so a lifted sole tilts WITH the foot. `clip` cuts the shoe
+    // flat at the sole plane; `soleTop` is the top of the sole band. For the welt
+    // style the sole grows outward by `lipCap` so it sits a touch proud.
+    function regions(bodyFrame: Node, soleZ: number): { upper: Node; sole: Node | null } {
+      const soleTop = soleZ + soleThick;
+      const floor = sdf.box([big, big, big]).translate([0, 0, big / 2 + soleZ]);      // z ≥ soleZ
+      const clipped = bodyFrame.intersect(floor);
+      const upperBox = sdf.box([big, big, big]).translate([0, 0, big / 2 + soleTop - weld]); // z ≥ soleTop−weld
+      const upper = weldCollarShaft(place(clipped.intersect(upperBox)));
+      if (!soleOn) return { upper: weldCollarShaft(place(clipped)), sole: null };
+      const band = sdf.box([big, big, soleThick]).translate([0, 0, soleZ + soleThick / 2]);
+      const proud = lipCap > 0 ? clipped.round(lipCap) : clipped;
+      const sole = place(proud.intersect(band));
+      return { upper, sole };
+    }
+
+    // Both the planted and the (now flat-soled) plantarflexed foot have their sole
+    // at local z 0, so the shoe clips the offset foot a hair below it — local
+    // z = −0.14·r.foot — in BOTH cases. Grounded: that plane is the world ground
+    // (footPlacement maps local 0 → world bottomZ = groundZ + 0.14·r.foot), so the
+    // sole plants flat on the base. Lifted: it tilts with the foot. Never a bubble.
+    return regions(offsetFoot, -r.foot * 0.14);
   }
 
   const L = foot(j.footL as Vec3, j.lowerLegL as Vec3, rig.sole.L, +1, rig.dir.lowerLegL, rig.dir.upperLegL);
