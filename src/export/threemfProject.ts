@@ -80,17 +80,19 @@ const PROD_NS = 'http://schemas.microsoft.com/3dmanufacturing/production/2015/06
 const BBS_NS = 'http://schemas.bambulab.com/package/2021';
 const REL_TYPE = 'http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel';
 
-// Bambu assigns each object to a plate by WORLD POSITION (which plate-grid cell the
-// object's footprint falls in), NOT by the model_instance binding. So each part's
-// <item> must sit at the CENTRE of the plate cell Bambu would lay out, or the part
-// lands off-plate (slicer: "no object is fully inside") and the whole file is
-// rejected. Two things must match Bambu's PartPlateList grid exactly:
-//   - COLUMN COUNT: Bambu tiles N plates in a ⌈√N⌉-column grid, numbered
-//     left→right, top→bottom (verified: a real 3-plate export uses 2 cols; a
-//     6-plate export uses 3 cols — plate 3 is the 3rd column, not a 2nd row).
-//   - STRIDE: ~410 mm between cell origins for the H2C bed (from the reference +
-//     Bambu-CLI validation). Cell (col,row) centre = (bedW/2 + col·S, bedH/2 − row·S).
-const PLATE_STRIDE = 410;        // mm between plate-cell origins (H2C grid)
+// Bambu assigns each object to a plate by WORLD POSITION (the plate-grid cell its
+// footprint falls in), NOT by the model_instance binding (verified: stacking all
+// parts at one point leaves the other plates empty → load rejected). So each part's
+// <item> must sit at the CENTRE of the plate cell BambuStudio lays out. The grid is
+// taken verbatim from BambuStudio's PartPlateList source (src/slic3r/GUI/PartPlate):
+//   - COLUMNS: compute_colum_count(N) == ⌈√N⌉.
+//   - STRIDE is PER-AXIS: plate_stride_x = width·(1+1/5), plate_stride_y = depth·(1+1/5)
+//     (LOGICAL_PART_PLATE_GAP = 1/5). For the 330×320 H2C bed that's 396 / 384 mm —
+//     NOT a single value, which is why a uniform 410 mm stride drifted parts right
+//     (410>396) and forward (410>384), worse at higher plate indices.
+//   - Plate origin is the cell CORNER (col·stride_x, −row·stride_y); the printable
+//     area starts there, so the cell centre is origin + (bedW/2, bedH/2).
+const PLATE_GAP_FACTOR = 1 + 1 / 5;   // BambuStudio LOGICAL_PART_PLATE_GAP
 const plateGridCols = (n: number) => Math.max(1, Math.ceil(Math.sqrt(n)));
 
 /** Bed printable size [w, h] mm, parsed from the project template's printable_area
@@ -338,6 +340,8 @@ function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[]): 
   const unit = get3MFUnitString();
   const [bedW, bedH] = bedSizeFromTemplate();
   const gridCols = plateGridCols(prepared.length);  // ⌈√N⌉ to match Bambu's plate grid
+  const strideX = bedW * PLATE_GAP_FACTOR;          // BambuStudio plate_stride_x (width·1.2)
+  const strideY = bedH * PLATE_GAP_FACTOR;          // BambuStudio plate_stride_y (depth·1.2)
 
   // Bambu mode: per-part colour via the per-object `extruder` field (1..3),
   // mapped to the 3 AMS filament slots whose colours go in project_settings'
@@ -397,15 +401,14 @@ ${p.trianglesPlain.join('\n')}
    </components>
   </object>`);
 
-    // Place each part at the CENTRE of its own plate cell (2-col grid). Centring
-    // (not corner-offsetting) keeps small parts well clear of cell boundaries so
-    // Bambu's per-plate "is this object inside?" check passes. The Z translation
-    // is -minZ: moves the part so its bottom (minZ) lands exactly at Z=0 (the bed).
-    // Works for both centered meshes (minZ<0) and non-centered (minZ=0, e.g.
-    // Manifold.cylinder). The USER-REF.3mf sets Z = -minZ for all parts.
+    // Place each part at the CENTRE of its plate cell: cell-corner origin
+    // (col·strideX, −row·strideY) plus half the bed, so the part sits dead-centre
+    // on the plate Bambu lays out for that index. The Z translation is -minZ:
+    // moves the part so its bottom (minZ) lands exactly at Z=0 (the bed). Works for
+    // both centered meshes (minZ<0) and non-centered (minZ=0, e.g. Manifold.cylinder).
     const col = i % gridCols, row = Math.floor(i / gridCols);
-    const tx = bedW / 2 + col * PLATE_STRIDE;
-    const ty = bedH / 2 - row * PLATE_STRIDE;
+    const tx = bedW / 2 + col * strideX;
+    const ty = bedH / 2 - row * strideY;
     const tz = -p.minZ;  // lift bottom to Z=0
     buildItems.push(`  <item objectid="${wrapperId}" p:UUID="${itemUuid}" transform="1 0 0 0 1 0 0 0 1 ${fmtCoord(tx - p.cx)} ${fmtCoord(ty - p.cy)} ${fmtCoord(tz)}" printable="1"/>`);
 
