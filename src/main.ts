@@ -4928,7 +4928,13 @@ async function main() {
       setPaintLabels(currentLabelMap);
       setModelColorRegions(cachedEntry.modelColorDecls);
       syncParamsPanel(cachedEntry.paramsSchema);
-      updateMesh(cachedEntry.meshData);
+      // Render with the model-declared colors (api.label / api.paint) applied.
+      // rehydrateColorRegions below re-renders for USER paint, but it returns
+      // early when there are no user regions — so a model-colored part with no
+      // hand paint (e.g. a catalog model) would otherwise restore from cache
+      // showing the uncolored base mesh until the next paint refresh. The paint
+      // mesh stays the uncolored base (it backs hit-testing).
+      updateMesh(hasModelColorRegions() ? applyTriColorsIfVisible(cachedEntry.meshData) : cachedEntry.meshData);
       updatePaintMesh(cachedEntry.meshData);
       geometryDataEl.textContent = version.geometryData
         ? JSON.stringify(version.geometryData, null, 2)
