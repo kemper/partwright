@@ -70,19 +70,11 @@ const pants = F.clothing.pants(rig, {
   leg: 'slim',
 }).label('pants');
 
-// 4b. APRON — a flat rounded front panel from chest down to the thigh, welded to
-// the front of the jacket/pants so it stays one component. Built off the torso
-// front depth (−Y face) and the spine/hip heights.
-const apronTopZ = j.chest[2] - r.chestY * 0.2;
-const apronBotZ = j.upperLegL[2] - r.upperLeg * 1.6;
-const apronCZ = (apronTopZ + apronBotZ) * 0.5;
-const apronH = (apronTopZ - apronBotZ);
-const apronW = r.hipsX * 1.7;            // a touch wider than the hips
-const apronDepth = r.chestY * 0.32;      // panel thickness (front-back)
-const apronFrontY = -(r.chestY * 1.02);  // just in front of the torso
-const apron = sdf.roundedBox([apronW * 2, apronDepth, apronH], apronDepth * 0.45)
-  .translate([0, apronFrontY, apronCZ])
-  .label('apron');
+// 4b. APRON — a CONFORMING front panel from chest down to the thigh. Derived
+// from the real body masses (offset + front-clipped, the same "clothing = body
+// region inflated and trimmed" rule as F.clothing.top/pants), so it drapes flush
+// over the curved belly instead of passing through it the way a flat slab did.
+const apron = F.clothing.apron(rig, { top: 'chest', bottom: 'thigh' });
 
 // 5. SHOES — own their 'shoes' upper + 'sole' regions.
 const shoes = F.clothing.shoes(rig, { label: 'shoes' });

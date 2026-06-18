@@ -3880,6 +3880,93 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   return garment;
 }
 
+// Resolve a coverage level (`top`/`bottom`) that may be a named landmark
+// (looked up in `table`) or a raw world-Z number. Shared by panel garments.
+function panelLevel(v: unknown, table: Record<string, number>, def: string, name: string): number {
+  if (v === undefined) return table[def];
+  if (typeof v === 'number') return num(v, table[def], name);
+  return table[assertEnum(v, Object.keys(table), name)];
+}
+
+// A conforming front/back-panel garment: aprons, bibs, tabards, loincloths,
+// capes. Built with the SAME "clothing = body region inflated + trimmed" rule
+// as buildTop/buildPants — the real torso+leg masses, offset OUTWARD by the
+// fabric thickness and clipped to a front (or back) slab + height window — so
+// the panel hugs the body's actual curved surface and can NEVER pass through
+// it the way a hand-rolled flat box does (the chef-apron pass-through, #apron).
+//
+// `side`  'front' (−Y, default) | 'back' (+Y) | 'both' (a front+back drape).
+// `top`/`bottom`  named coverage landmarks ('neck'/'chest'/'waist',
+//                 'hip'/'thigh'/'knee'/'shin'/'ankle') or a raw world Z.
+// `wrap`  half-width as a multiple of the hip half-width — how far the panel
+//         curls around the sides (1 ≈ hip-wide; >1 wraps toward the back).
+// `thickness`  fabric offset; defaults to sit PROUD of the default top+pants so
+//         the panel layers on TOP of them (too thin and it buries → paints
+//         nothing, exactly what model:preview's 0-triangle-label warning flags).
+// `label`  paint-region name applied to the result.
+function buildPanel(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'panel(opts)');
+  assertNoUnknownKeys(o, ['side', 'top', 'bottom', 'wrap', 'thickness', 'label'], 'panel(opts)');
+  const side = o.side === undefined ? 'front' : assertEnum(o.side, ['front', 'back', 'both'] as const, 'panel.side');
+  if (o.label !== undefined && typeof o.label !== 'string') throw new ValidationError('panel.label must be a string');
+  const j = rig.joints, r = rig.r;
+
+  // Named coverage heights → world Z. A taller bib reaches the collarbones; a
+  // waist apron / loincloth starts at the navel. Bottoms run hip → ankle.
+  const TOPS: Record<string, number> = {
+    neck: j.chest[2] + r.chestY * 0.6,
+    chest: j.chest[2] - r.chestY * 0.2,
+    waist: j.spine[2],
+  };
+  const BOTS: Record<string, number> = {
+    waist: j.spine[2],
+    hip: j.hips[2],
+    thigh: j.upperLegL[2] - r.upperLeg * 1.6,
+    knee: j.lowerLegL[2],
+    shin: mix(j.lowerLegL[2], j.footL[2], 0.5),
+    ankle: j.footL[2] + r.lowerLeg,
+  };
+  const topZ = panelLevel(o.top, TOPS, 'chest', 'panel.top');
+  const botZ = panelLevel(o.bottom, BOTS, 'thigh', 'panel.bottom');
+  const wrap = num(o.wrap, 1.15, 'panel.wrap', 0.1);
+  // Default thickness clears BOTH default under-garments (top ≈ chestY·0.3,
+  // pants ≈ upperLeg·0.3) with margin, so the panel sits proud and paints.
+  const t = num(o.thickness, Math.max(r.chestY, r.upperLeg) * 0.3 + r.chestY * 0.08, 'panel.thickness', 0.01);
+
+  // The body the panel lies on (torso + legs so a long panel still has a
+  // surface to hug below the hips), offset outward by the fabric thickness.
+  const body = buildTorso(sdf, rig).union(buildLegs(sdf, rig)).round(t);
+  const big = Math.max(r.chestX, r.hipsX, r.upperLeg) * 8;
+  const halfW = r.hipsX * wrap;
+  const zCenter = (topZ + botZ) / 2;
+  const zSpan = Math.max(topZ - botZ, t);
+  // Soft hem/edge radius — rounds the panel's outline instead of a hard box cut.
+  const k = t * 1.0;
+
+  // One slab per requested side: a width × depth × height box whose INNER face
+  // (toward the body centre) defines the wrap line; smoothIntersect with the
+  // offset body rounds every panel edge into a soft hem.
+  const cutY = r.chestY * 0.15;   // wrap line a hair off centre so it laps the side
+  const slab = (sign: number): Node => {
+    // sign −1 → front (keep y ≤ −cutY); +1 → back (keep y ≥ +cutY).
+    const zone = sdf.box([halfW * 2, big, zSpan]).translate([0, sign * (cutY + big / 2), zCenter]);
+    return body.smoothIntersect(zone, k);
+  };
+  let panel: Node;
+  if (side === 'both') panel = slab(-1).union(slab(+1));
+  else panel = slab(side === 'back' ? +1 : -1);
+
+  return o.label !== undefined ? panel.label(o.label as string) : panel;
+}
+
+// Apron preset: a front panel from chest to thigh, labelled 'apron' by default.
+// Thin wrapper over buildPanel so the common case is a one-liner and other
+// front/back garments (bib, tabard, loincloth, cape) are buildPanel recipes.
+function buildApron(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'apron(opts)');
+  return buildPanel(sdf, rig, { label: 'apron', ...o });
+}
+
 // --- Body weld ------------------------------------------------------------
 
 /** Smooth-weld the major body masses with one rig-derived soft k. Face
@@ -4012,6 +4099,16 @@ export interface FigureNamespace {
     top(rig: Rig, opts?: object): Node;
     shoes(rig: Rig, opts?: object): Node;
     boots(rig: Rig, opts?: object): Node;
+    /** A conforming front/back-panel garment — apron, bib, tabard, loincloth,
+     *  cape. Derived from the body masses (offset + clipped to a slab + height
+     *  window) so it hugs the curved torso and never passes through it.
+     *  `opts`: `{ side: 'front'|'back'|'both', top, bottom, wrap, thickness,
+     *  label }`. `top`/`bottom` accept a named landmark ('neck'/'chest'/'waist',
+     *  'hip'/'thigh'/'knee'/'shin'/'ankle') or a raw world Z. */
+    panel(rig: Rig, opts?: object): Node;
+    /** Front apron preset (chest → thigh, labelled 'apron'). A thin wrapper
+     *  over {@link panel}; pass any panel option to customise. */
+    apron(rig: Rig, opts?: object): Node;
   };
 }
 
@@ -4241,9 +4338,11 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
       top: (rig, opts) => buildTop(sdf, assertRig(rig, 'clothing.top(rig)'), opts),
       shoes: (rig, opts) => buildShoes(sdf, assertRig(rig, 'clothing.shoes(rig)'), opts),
       boots: (rig, opts) => buildBoots(sdf, assertRig(rig, 'clothing.boots(rig)'), opts),
+      panel: (rig, opts) => buildPanel(sdf, assertRig(rig, 'clothing.panel(rig)'), opts),
+      apron: (rig, opts) => buildApron(sdf, assertRig(rig, 'clothing.apron(rig)'), opts),
     },
   };
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };

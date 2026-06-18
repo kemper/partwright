@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildTorso, buildLegs, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildLegs, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -1186,6 +1186,68 @@ describe('figure pants — posed-leg coverage', () => {
   it('rejects unknown length values', () => {
     const rig = buildRig({});
     expect(() => buildPants(api, rig, { length: 'capri' })).toThrow(/length/);
+  });
+});
+
+describe('figure panel — conforming apron/bib/tabard/cape', () => {
+  const rig = buildRig({ build: 'stocky', weight: 0.6 });   // a belly that a flat box can't follow
+  const body = buildTorso(api, rig).union(buildLegs(api, rig)) as SdfNode;
+  // Walk along ±Y at height z to find the body's front (−Y) / back (+Y) surface.
+  const surfaceY = (z: number, dir: -1 | 1): number => {
+    let y = 0;
+    for (let i = 0; i < 400; i++) {
+      const next = y + dir * 0.15;
+      if (body.evaluate(0, next, z) > 0) return y;      // last point still inside
+      y = next;
+    }
+    return y;
+  };
+
+  it('drapes flush on the curved body at BOTH the top and bottom of its span (the flat-slab bug)', () => {
+    // The torso front sits at a different Y than the thigh front, so a single-Y
+    // flat box can never cover both. A conforming panel — body offset + clipped —
+    // covers the real front surface at every height in its range.
+    const apron = buildPanel(api, rig, { side: 'front', top: 'chest', bottom: 'thigh' }) as SdfNode;
+    const zHi = rig.joints.spine[2];                            // upper belly
+    const zLo = rig.joints.upperLegL[2] - rig.r.upperLeg * 0.5; // upper thigh
+    for (const z of [zHi, zLo]) {
+      const fy = surfaceY(z, -1);
+      expect(apron.evaluate(0, fy, z)).toBeLessThan(0);         // front surface covered
+    }
+  });
+
+  it('is a FRONT shell — it does not pass through to the back, nor fill the torso interior', () => {
+    const apron = buildPanel(api, rig, { side: 'front', top: 'chest', bottom: 'thigh' }) as SdfNode;
+    const z = rig.joints.spine[2];
+    expect(apron.evaluate(0, surfaceY(z, +1), z)).toBeGreaterThan(0);  // back surface bare
+    expect(apron.evaluate(0, 0, z)).toBeGreaterThan(0);               // body centre not filled
+  });
+
+  it("side: 'back' covers the back surface and leaves the front bare", () => {
+    const cape = buildPanel(api, rig, { side: 'back', top: 'chest', bottom: 'thigh' }) as SdfNode;
+    const z = rig.joints.spine[2];
+    expect(cape.evaluate(0, surfaceY(z, +1), z)).toBeLessThan(0);     // back covered
+    expect(cape.evaluate(0, surfaceY(z, -1), z)).toBeGreaterThan(0);  // front bare
+  });
+
+  it("side: 'both' covers front AND back", () => {
+    const tabard = buildPanel(api, rig, { side: 'both', top: 'chest', bottom: 'thigh' }) as SdfNode;
+    const z = rig.joints.spine[2];
+    expect(tabard.evaluate(0, surfaceY(z, -1), z)).toBeLessThan(0);
+    expect(tabard.evaluate(0, surfaceY(z, +1), z)).toBeLessThan(0);
+  });
+
+  it('the apron preset is a front panel and accepts panel options', () => {
+    const apron = buildApron(api, rig, { bottom: 'knee' }) as SdfNode;
+    const z = rig.joints.spine[2];
+    expect(apron.evaluate(0, surfaceY(z, -1), z)).toBeLessThan(0);
+  });
+
+  it('rejects unknown side, level, and keys', () => {
+    expect(() => buildPanel(api, rig, { side: 'left' })).toThrow(/side/);
+    expect(() => buildPanel(api, rig, { top: 'forehead' })).toThrow(/top/);
+    expect(() => buildPanel(api, rig, { bottom: 'toe' })).toThrow(/bottom/);
+    expect(() => buildPanel(api, rig, { wobble: 1 })).toThrow();
   });
 });
 
