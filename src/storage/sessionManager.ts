@@ -32,6 +32,7 @@ import {
   getDraft as dbGetDraft,
   setDraft as dbSetDraft,
   deleteDraft as dbDeleteDraft,
+  listDrafts as dbListDrafts,
   deletePartDrafts as dbDeletePartDrafts,
   legacyImagesObjectToArray,
   generateId,
@@ -61,6 +62,7 @@ import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
 import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
+import { isStarterCode } from '../editor/starters';
 import { effectiveVersionLanguage, asLanguage } from './languageFallback';
 import { buildInfo } from '../buildInfo';
 import { appVersionCompatibility } from './appVersionCompat';
@@ -919,6 +921,38 @@ export async function changePart(partId: string, versionIndex?: number): Promise
   return version;
 }
 
+/** Save state of a NON-current part for the multi-part save flow:
+ *   - `'clean'`   — committed and its draft matches (nothing to save).
+ *   - `'empty'`   — never committed AND still the untouched starter ("no changes
+ *                   yet"): savable, but the modal notes it so the user can skip.
+ *   - `'unsaved'` — real work to save: either never committed but edited, or
+ *                   committed with a diverging draft (code / SCAD companions).
+ *  The CURRENT part is judged from the live editor buffer instead (its draft
+ *  doesn't carry paint/param/annotation changes) — see {@link currentPartIsDirty}.
+ */
+export type PartSaveState = 'clean' | 'empty' | 'unsaved';
+
+export async function partSaveState(part: Part): Promise<PartSaveState> {
+  const latest = await getLatestVersion(part.id);
+  if (!latest) {
+    // Never committed: "unsaved" if any stashed draft holds real (non-starter)
+    // content; otherwise it's an untouched new part ("no changes yet").
+    const drafts = await dbListDrafts(part.sessionId);
+    const prefix = `${part.sessionId}:${part.id}:`;
+    const hasContent = drafts.some(d => d.id.startsWith(prefix) && !isStarterCode(d.code));
+    return hasContent ? 'unsaved' : 'empty';
+  }
+  const lang = effectiveVersionLanguage(latest, currentState.session);
+  const draft = await readDraft(part.sessionId, lang, part.id);
+  if (!draft) return 'clean';
+  if (draft.code !== latest.code) return 'unsaved';
+  // SCAD drafts also stash unsaved companion-file edits; treat those as unsaved.
+  if (lang === 'scad' && !companionFilesEqual(latest.companionFiles ?? {}, draft.companionFiles ?? {})) {
+    return 'unsaved';
+  }
+  return 'clean';
+}
+
 export async function renamePart(partId: string, newName: string): Promise<void> {
   await dbUpdatePart(partId, { name: newName, updated: Date.now() });
   const idx = currentState.parts.findIndex(p => p.id === partId);
@@ -1095,6 +1129,52 @@ function colorRegionsEqual(prev: Record<string, unknown> | null | undefined, nex
   return JSON.stringify(prevRegions) === JSON.stringify(nextRegions);
 }
 
+/** Shared dedup predicate: true when the given editor state is byte-identical
+ *  to the loaded version (code, annotations, color regions, params, companion
+ *  files), so saving it would be a no-op. `annotationSnapshot` is passed in so
+ *  callers don't re-serialize annotations twice. Used by both saveVersion (to
+ *  skip a redundant save) and {@link currentPartIsDirty} (to detect a dirty
+ *  current part for the multi-part save flow). */
+function versionMatchesCurrent(
+  code: string,
+  annotationSnapshot: ReturnType<typeof serializeAnnotations>,
+  geometryData: Record<string, unknown> | null,
+  paramValues: Record<string, number | boolean | string> | undefined,
+  nextCompanions: Record<string, string>,
+): boolean {
+  return (
+    !!currentState.currentVersion &&
+    currentState.currentVersion.code === code &&
+    annotationsEqual(currentState.currentVersion.annotations, annotationSnapshot) &&
+    colorRegionsEqual(currentState.currentVersion.geometryData as Record<string, unknown> | null, geometryData) &&
+    paramValuesEqual(currentState.currentVersion.paramValues, paramValues) &&
+    companionFilesEqual(currentState.currentVersion.companionFiles, nextCompanions)
+  );
+}
+
+/** Whether the CURRENT part has unsaved edits relative to its loaded version —
+ *  the live-editor counterpart to {@link partHasUnsavedDraft} (which judges the
+ *  other parts from their stashed drafts). Mirrors saveVersion's dedup so the
+ *  multi-part save flow can decide whether the current part belongs in the
+ *  unsaved set before committing anything. A part with no loaded version yet
+ *  (freshly created, never saved) is NOT reported dirty here — an untouched
+ *  starter buffer isn't unsaved work to nag about. */
+export function currentPartIsDirty(
+  code: string,
+  geometryData: Record<string, unknown> | null,
+  opts?: {
+    paramValues?: Record<string, number | boolean | string>;
+    companionFiles?: Record<string, string>;
+  },
+): boolean {
+  if (!currentState.session || !currentState.currentPart) return false;
+  // Never committed → unsaved, even if the buffer is still the starter: a part
+  // the user created and hasn't saved should be offered in the multi-part save.
+  if (!currentState.currentVersion) return true;
+  const nextCompanions = opts?.companionFiles ?? currentState.currentVersion.companionFiles ?? {};
+  return !versionMatchesCurrent(code, serializeAnnotations(), geometryData, opts?.paramValues, nextCompanions);
+}
+
 export async function saveVersion(
   code: string,
   geometryData: Record<string, unknown> | null,
@@ -1140,12 +1220,7 @@ export async function saveVersion(
   // identical to the current version (unless forced).
   if (
     !options?.force &&
-    currentState.currentVersion &&
-    currentState.currentVersion.code === code &&
-    annotationsEqual(currentState.currentVersion.annotations, annotationSnapshot) &&
-    colorRegionsEqual(currentState.currentVersion.geometryData as Record<string, unknown> | null, geometryData) &&
-    paramValuesEqual(currentState.currentVersion.paramValues, paramValues) &&
-    companionFilesEqual(currentState.currentVersion.companionFiles, nextCompanions)
+    versionMatchesCurrent(code, annotationSnapshot, geometryData, paramValues, nextCompanions)
   ) {
     return null;
   }
