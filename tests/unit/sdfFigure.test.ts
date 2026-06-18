@@ -1617,6 +1617,41 @@ describe('figure hands — sculpted fingers', () => {
     expect(b.max[0]).toBeCloseTo(-b.min[0], 1);
   });
 
+  it('open hand has four separated fingers', () => {
+    // Walk a line across the splay axis at a range of heights up the fingers
+    // and count distinct inside-runs; the fingers fully separate at some
+    // height, so the MAX run count is the finger count. Locks in four (was
+    // three) without hardcoding one fragile sampling height.
+    const hands = buildHands(api, rig, { grip: 'open' }) as SdfNode;
+    const c = rig.joints.handL as [number, number, number];
+    const dir = rig.dir.lowerArmL as [number, number, number];
+    const splay = rig.dir.elbowHingeL as [number, number, number];
+    const rh = rig.r.hand;
+    // palm normal = splay × dir (the builder's hand frame).
+    const palmN = [
+      splay[1] * dir[2] - splay[2] * dir[1],
+      splay[2] * dir[0] - splay[0] * dir[2],
+      splay[0] * dir[1] - splay[1] * dir[0],
+    ];
+    const pl = Math.hypot(...palmN) || 1;
+    const runsAtHeight = (h: number): number => {
+      let runs = 0, inside = false;
+      for (let u = -1.0; u <= 1.0; u += 0.005) {
+        const s = u * rh;
+        const x = c[0] + dir[0] * rh * h + splay[0] * s + (palmN[0] / pl) * rh * 0.02;
+        const y = c[1] + dir[1] * rh * h + splay[1] * s + (palmN[1] / pl) * rh * 0.02;
+        const z = c[2] + dir[2] * rh * h + splay[2] * s + (palmN[2] / pl) * rh * 0.02;
+        const hit = hands.evaluate(x, y, z) < 0;
+        if (hit && !inside) runs++;
+        inside = hit;
+      }
+      return runs;
+    };
+    let maxRuns = 0;
+    for (let h = 1.0; h <= 1.5; h += 0.05) maxRuns = Math.max(maxRuns, runsAtHeight(h));
+    expect(maxRuns).toBe(4);
+  });
+
   it('rejects unknown grips and keys', () => {
     expect(() => buildHands(api, rig, { grip: 'claw' })).toThrow(/grip/);
     expect(() => buildHands(api, rig, { claws: true })).toThrow();

@@ -295,7 +295,7 @@ F.torso(rig, { navel })       // chest + belly + pelvis masses (+ bust mound, fr
 F.nipples(rig, { size, nipple })  // flush paintable areolae + tiny nipples — TOP-LEVEL part
 F.neck(rig)
 F.arms(rig)                   // both arms: tapered limbs + deltoid caps
-F.hands(rig, { grip })        // grip: 'fist' | 'open' | 'relaxed' — sculpted 3-finger+thumb
+F.hands(rig, { grip })        // grip: 'fist' | 'open' | 'relaxed' — sculpted 4-finger+thumb
 F.legs(rig)
 F.feet(rig, { toes })         // flat, real-foot sole; toes: true adds a sculpted toe row
 F.head(rig, { faceShape, jaw, chin, cheek })  // skull + jaw + cheeks (no features yet)
@@ -365,9 +365,9 @@ the shallow relief aliases away.
 > your ellipsoid, label it `'areola'`), as `figure_strongman.js` does.
 
 **Hands are sculpted by default — pair them with `detail: F.handDetail(rig)`.**
-Every grip builds a stylized three-finger + thumb hand (`open` splays straight
-fingers, `relaxed` curls them toward the palm, `fist` is a ball with knuckle
-ridges and a folded thumb). The fingers are finer than the recommended 0.4–0.6
+Every grip builds a stylized four-finger + thumb hand with a flat palm pad
+(`open` splays straight fingers, `relaxed` curls them toward the palm, `fist`
+is a ball with four knuckle ridges and a folded thumb). The fingers are finer than the recommended 0.4–0.6
 figure grid, so add the hand detail spheres to the build or they alias away:
 
 ```js
