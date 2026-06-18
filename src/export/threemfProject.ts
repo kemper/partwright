@@ -9,8 +9,8 @@
 //     wrapper object referencing its mesh in a separate `/3D/Objects/object_N.model`
 //     file; one `<plate>` per part drives the plate count. The layout mirrors a
 //     real BambuStudio-02.05.00.66 project file (structurally equivalent, same
-//     element/field kinds). Application version is BambuStudio-2.3.2 so OrcaSlicer
-//     2.3.2 headless accepts the file (02.05.00.66 triggers its version gate):
+//     element/field kinds, same Application version) so Bambu Studio's GUI loader
+//     accepts it without crashing:
 //
 //       - Wrapper objects have EVEN ids (2, 4, 6, …), mesh objects have ODD ids
 //         (1, 3, 5, …). Object files are named object_1.model / object_2.model / …
@@ -25,12 +25,22 @@
 //         files carry plain <triangle v1 v2 v3/> (no pid/p1/paint_color in Bambu
 //         mode). This matches the reference exactly and avoids the triangle-color
 //         parsing path that segfaults on some Bambu builds.
-//       - project_settings.config is a minimal BambuStudio-compatible preset block
-//         (the template in bambuProjectTemplate.json): printer profile, print
-//         profile, filament_settings_id, nozzle_diameter, bed geometry.
-//         IMPORTANT: filament_colour must NOT appear in project_settings — OrcaSlicer
-//         2.3.2 segfaults on any N1-profile file that carries that key there. Part
-//         colour is communicated via the per-object extruder field in model_settings.
+//       - project_settings.config is a COMPLETE BambuStudio preset block (the
+//         template in bambuProjectTemplate.json — a full Bambu Lab H2C profile,
+//         536 keys). This is load-CRITICAL: Bambu's GUI `Plater::priv::load_files`
+//         indexes the per-filament arrays (filament_colour, filament_type,
+//         filament_ids, filament_map, …) when binding each object's extruder to a
+//         filament. A *partial* config (we previously shipped 6 keys, omitting the
+//         filament arrays) makes that lookup dereference null → SIGSEGV on project
+//         open. The crash is intermittent because load_files runs on a wxIdleEvent
+//         racing the background user-preset loader. (A macOS crash report pinned it:
+//         null read in load_files with the string "filament" live in a register.)
+//         The Bambu CLI's --slice path uses a DIFFERENT loader and never hit this,
+//         which is why headless slicing passed while the GUI crashed. The fix is to
+//         mirror a real, known-good H2C project's full config verbatim.
+//         NOTE: this targets Bambu Studio (the H2C profile is real and complete).
+//         OrcaSlicer 2.3.2 is NOT a valid proxy for Bambu's loader (the real
+//         reference itself fails to slice in Orca yet opens fine in Bambu).
 
 import type { MeshData } from '../geometry/types';
 import { get3MFUnitString } from '../geometry/units';
@@ -70,12 +80,33 @@ const PROD_NS = 'http://schemas.microsoft.com/3dmanufacturing/production/2015/06
 const BBS_NS = 'http://schemas.bambulab.com/package/2021';
 const REL_TYPE = 'http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel';
 
-// Bambu/Orca lay plates out in a 2-column grid; with the declared printer profile
-// the validated slot positions are a 240 mm stride with a 90 mm corner offset
-// (col → X = 90 + col·240, row → Y = 90 − row·240). Each part's <item> lands in a
-// distinct plate slot so plates aren't empty. Verified against OrcaSlicer 2.3.2.
-const PLATE_STRIDE = 240;
-const PLATE_OFFSET = 90;
+// Bambu assigns each object to a plate by WORLD POSITION (which plate-grid cell the
+// object's footprint falls in), NOT by the model_instance binding. So each part's
+// <item> must sit at the CENTRE of a distinct plate cell, or the slicer reports
+// "Object … partly inside, can not be sliced" (when it straddles a cell boundary).
+// Plates tile in a 2-column grid: cell (col,row) origin = (col·STRIDE_X, −row·STRIDE_Y),
+// and we centre the part in its cell at (bedW/2, bedH/2) within that origin.
+// STRIDE must match BambuStudio's actual plate grid for the declared printer; the
+// real H2C reference export places its 3 plates ~410 mm apart. Derived empirically
+// (Bambu CLI catches mis-placement) and from the reference.
+const PLATE_GRID_COLS = 2;
+const PLATE_STRIDE = 410;        // mm between plate-cell origins (H2C grid)
+
+/** Bed printable size [w, h] mm, parsed from the project template's printable_area
+ *  (a list of "XxY" corner strings). Falls back to the H2C bed if unparseable. */
+function bedSizeFromTemplate(): [number, number] {
+  const area = (BAMBU_TEMPLATE as { printable_area?: string[] }).printable_area;
+  if (Array.isArray(area)) {
+    let w = 0, h = 0;
+    for (const corner of area) {
+      const [x, y] = String(corner).split('x').map(Number);
+      if (Number.isFinite(x) && x > w) w = x;
+      if (Number.isFinite(y) && y > h) h = y;
+    }
+    if (w > 0 && h > 0) return [w, h];
+  }
+  return [330, 320];
+}
 
 function escXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
@@ -282,10 +313,14 @@ ${buildItems}
 //   - <assemble> block at the end
 function buildBambuPackage(prepared: PreparedPart[], _colorgroupXml: string, _anyColour: boolean, _cgid: number): Uint8Array {
   const unit = get3MFUnitString();
+  const [bedW, bedH] = bedSizeFromTemplate();
 
-  // Bambu mode: colour is per-object extruder=1 (single nozzle, AMS handles
-  // the rest). filament_colour is NOT written to project_settings — see the
-  // buildProjectSettings() comment for why (OrcaSlicer 2.3.2 segfault).
+  // Bambu mode: SINGLE-COLOUR crash-fix base. Every object is on extruder 1; the
+  // complete H2C project_settings.config defines 3 filaments so load_files can bind
+  // without null-derefing. Per-part colour (distinct extruder per part + matching
+  // filament_colour) is the tracked follow-up (#729) — it requires resizing the
+  // per-filament arrays, which can't be validated against Bambu's GUI loader
+  // headlessly, so it lands once this stable base is user-confirmed.
 
   const objectFiles: { name: string; data: Uint8Array }[] = [];
   const wrapperObjects: string[] = [];
@@ -300,9 +335,8 @@ function buildBambuPackage(prepared: PreparedPart[], _colorgroupXml: string, _an
     const meshId = 2 * partNum - 1; // ODD:  1, 3, 5, …
     const wrapperId = 2 * partNum;  // EVEN: 2, 4, 6, …
     const partFile = `3D/Objects/object_${partNum}.model`;
-    // extruder is always 1: the N1 has a single nozzle; filament colour is
-    // tracked at the AMS slot level (filament_maps), not the nozzle level.
-    // The reference file confirms all objects are extruder="1".
+    // extruder is always 1 for now (single-colour base). The reference file
+    // confirms all objects are extruder="1"; per-part extruder assignment is #729.
     const extruder = 1;
 
     // UUID patterns mirror the reference file.
@@ -338,14 +372,15 @@ ${p.trianglesPlain.join('\n')}
    </components>
   </object>`);
 
-    // Place each part in its own plate slot (2-col grid). The Z translation
-    // is -minZ: this moves the part so its bottom (minZ) lands exactly at Z=0
-    // (the bed). Works for both centered meshes (minZ<0) and non-centered ones
-    // (minZ=0, e.g. Manifold.cylinder). The USER-REF.3mf sets Z = -minZ = |minZ|
-    // for all three parts (verified against source_offset_z in model_settings).
-    const col = i % 2, row = i >> 1;
-    const tx = PLATE_OFFSET + col * PLATE_STRIDE;
-    const ty = PLATE_OFFSET - row * PLATE_STRIDE;
+    // Place each part at the CENTRE of its own plate cell (2-col grid). Centring
+    // (not corner-offsetting) keeps small parts well clear of cell boundaries so
+    // Bambu's per-plate "is this object inside?" check passes. The Z translation
+    // is -minZ: moves the part so its bottom (minZ) lands exactly at Z=0 (the bed).
+    // Works for both centered meshes (minZ<0) and non-centered (minZ=0, e.g.
+    // Manifold.cylinder). The USER-REF.3mf sets Z = -minZ for all parts.
+    const col = i % PLATE_GRID_COLS, row = Math.floor(i / PLATE_GRID_COLS);
+    const tx = bedW / 2 + col * PLATE_STRIDE;
+    const ty = bedH / 2 - row * PLATE_STRIDE;
     const tz = -p.minZ;  // lift bottom to Z=0
     buildItems.push(`  <item objectid="${wrapperId}" p:UUID="${itemUuid}" transform="1 0 0 0 1 0 0 0 1 ${fmtCoord(tx - p.cx)} ${fmtCoord(ty - p.cy)} ${fmtCoord(tz)}" printable="1"/>`);
 
@@ -379,12 +414,14 @@ ${p.trianglesPlain.join('\n')}
     // identify_id: stable integer per object instance (reference uses arbitrary values;
     // we use a simple deterministic value: 100 + wrapperId * 10 + i).
     const identifyId = 100 + wrapperId * 10 + i;
-    // filament_maps: must have exactly 1 entry to match the 1-filament project_settings.
-    // Using N entries (one per distinct colour) while project_settings only defines 1
-    // filament causes OrcaSlicer to segfault when <part> elements are present.
-    // Single "1" means "first filament → AMS slot 1"; the slicer remaps on slice.
-    const filamentMaps = '1';
-    const filamentVolMaps = '0';
+    // filament_maps / filament_volume_maps: one entry PER FILAMENT in
+    // project_settings.config (the H2C template defines 3), NOT per object. The
+    // reference uses "2 1 1" / "0 0 0" (filament→nozzle map for the dual-nozzle
+    // H2C); we mirror it so the plate's filament list stays consistent with the
+    // config — a length mismatch here is another way load_files indexes past the
+    // end of a filament array.
+    const filamentMaps = '2 1 1';
+    const filamentVolMaps = '0 0 0';
     // NOTE: plater_name MUST be empty — a non-empty value makes Bambu/Orca's
     // project loader reject the file (load fails, single plate).
     settingsPlates.push(`  <plate>
@@ -410,7 +447,7 @@ ${p.trianglesPlain.join('\n')}
   const title = escXml(getExportTitle());
   const rootModel = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="${unit}" xml:lang="en-US" xmlns="${CORE_NS}" xmlns:BambuStudio="${BBS_NS}" xmlns:p="${PROD_NS}" requiredextensions="p">
- <metadata name="Application">BambuStudio-2.3.2</metadata>
+ <metadata name="Application">BambuStudio-02.05.00.66</metadata>
  <metadata name="BambuStudio:3mfVersion">1</metadata>
  <metadata name="Copyright"></metadata>
  <metadata name="CreationDate">${today}</metadata>
@@ -446,9 +483,7 @@ ${assembleItems.join('\n')}
   </assemble>
 </config>`;
 
-  // project_settings.config: start from the full BambuStudio template and stamp
-  // per-filament arrays to length N so they're consistent with the actual filament
-  // count. A short filament_colour indexed by extruder is a known Bambu segfault.
+  // project_settings.config: the complete H2C template (see buildProjectSettings).
   const projectSettings = buildProjectSettings();
 
   // Content types: rels + model + png (for potential plate thumbnails) + gcode.
@@ -487,11 +522,12 @@ ${assembleItems.join('\n')}
 /**
  * Build the project_settings.config JSON from the BambuStudio template.
  *
- * The template is minimal: printer profile, print profile, filament_settings_id,
- * nozzle_diameter, and bed geometry. It intentionally OMITS filament_colour
- * because OrcaSlicer 2.3.2 segfaults on any N1-profile file that carries that
- * key in project_settings (verified by binary search against the extracted binary).
- * Part colour is communicated via the per-object extruder field in model_settings.
+ * The template is a COMPLETE Bambu Lab H2C profile (536 keys, copied verbatim from
+ * a real known-good project export, with filament_colour neutralized to greys for
+ * the single-colour base). Completeness is load-critical: Bambu's GUI
+ * `Plater::priv::load_files` indexes the per-filament arrays (filament_colour,
+ * filament_type, filament_ids, filament_map, …) when binding objects to filaments,
+ * and a partial config makes that index null-deref → SIGSEGV on project open.
  */
 function buildProjectSettings(): string {
   // Deep-copy the template so we don't mutate the module-level import.

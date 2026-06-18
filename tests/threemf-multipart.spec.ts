@@ -81,13 +81,15 @@ test.describe('multi-part 3MF export', () => {
     // LOAD-CRITICAL: plater_name MUST be empty — a non-empty value makes Orca's
     // loader reject the project (regression guard for the bug we hit).
     expect(b).not.toMatch(/plater_name" value="[^"]+"/);
-    // REQUIRED: project_settings.config makes the loader build the plate list.
-    // NOTE: filament_colour must NOT appear in project_settings — OrcaSlicer 2.3.2
-    // segfaults on any N1-profile file that has a filament_colour key there.
-    // Colour information lives in model_settings.config per-object extruder field.
+    // REQUIRED: project_settings.config makes the loader build the plate list AND
+    // carries the COMPLETE per-filament arrays. filament_colour MUST be present —
+    // its absence is what made Bambu's GUI load_files null-deref (SIGSEGV) on open
+    // (a partial config indexes past the end of the filament arrays). The config is
+    // a full Bambu Lab H2C profile copied from a known-good reference.
     expect(b).toContain('Metadata/project_settings.config');
     expect(b).toContain('filament_settings_id');
-    expect(b).not.toContain('"filament_colour"');
+    expect(b).toContain('"filament_colour"');
+    expect(b).toContain('Bambu Lab H2C');
     // ID scheme: wrapper ids are EVEN (2,4,…), mesh ids are ODD (1,3,…).
     // Root model items reference the EVEN wrapper ids.
     expect(b).toContain('objectid="2"');
@@ -192,11 +194,11 @@ test.describe('multi-part 3MF export', () => {
     expect(o.text).toContain('<part ');
     expect(o.text).toContain('mesh_stat');
     expect(o.text).toContain('identify_id');
-    // Bambu mode: colour is per-object via extruder (no per-triangle colorgroup/paint_color).
-    // NOTE: filament_colour must NOT appear in project_settings — OrcaSlicer 2.3.2
-    // segfaults on any N1-profile file that carries that key there.
+    // Bambu mode: mesh triangles are plain (no per-triangle colorgroup/paint_color);
+    // single-colour base puts every object on extruder 1.
     expect(o.text).not.toContain('paint_color=');
-    expect(o.text).not.toContain('"filament_colour"');
+    // project_settings carries the COMPLETE filament arrays (crash fix — see above).
+    expect(o.text).toContain('"filament_colour"');
     // ID scheme: EVEN wrapper ids (2,4,6), SEQUENTIAL object files (object_1/2/3.model).
     expect(o.text).toContain('/3D/Objects/object_1.model');
     expect(o.text).toContain('/3D/Objects/object_2.model');
