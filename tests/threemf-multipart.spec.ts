@@ -83,6 +83,18 @@ test.describe('multi-part 3MF export', () => {
     expect(b).toContain('key="extruder" value="2"');
     expect(b).toContain('"filament_colour": [');
     expect(b).toMatch(/#FF0000/i); // Body's red made it into the filament palette
+    // NO 3-COLOUR CAP: the config is resized to one filament per distinct colour.
+    // Body uses red+blue, Lid blue → 2 distinct → filament_colour length 2, and the
+    // per-filament arrays scale with it (nozzle_temperature is ×2 per extruder variant
+    // → length 4). upward_compatible_machine is NOT per-filament so it stays length 3.
+    // Guards the N-filament resize against regressing to a fixed 3.
+    const arrLen = (key: string) => {
+      const m = b.match(new RegExp(`"${key}":\\s*\\[([\\s\\S]*?)\\]`));
+      return m ? (m[1].match(/"[^"]*"/g) ?? []).length : -1;
+    };
+    expect(arrLen('filament_colour')).toBe(2);
+    expect(arrLen('nozzle_temperature')).toBe(4);
+    expect(arrLen('upward_compatible_machine')).toBe(3);
     // CRASH FIX: <part id=ODD subtype="normal_part"> + <mesh_stat> must be present
     // (was missing before; caused Bambu GUI crash on project open).
     expect(b).toContain('<part ');

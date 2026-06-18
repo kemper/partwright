@@ -96,6 +96,41 @@ const REL_TYPE = 'http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel';
 const PLATE_GAP_FACTOR = 1 + 1 / 5;   // BambuStudio LOGICAL_PART_PLATE_GAP
 const plateGridCols = (n: number) => Math.max(1, Math.ceil(Math.sqrt(n)));
 
+// Max distinct colours (= AMS filament slots) a Bambu export carries. Bambu's
+// practical multi-AMS ceiling; beyond this, least-used colours snap to a kept slot.
+const MAX_BAMBU_FILAMENTS = 16;
+
+// Number of filaments in the bundled H2C template (bambuProjectTemplate.json) — the
+// divisor for per-filament array lengths when resizing to N filaments.
+const TEMPLATE_FILAMENT_COUNT = 3;
+
+// Per-filament config keys that are NOT `filament_`-prefixed (the prefixed ones are
+// matched by name). Sourced verbatim from BambuStudio's `s_Preset_filament_options`
+// (src/libslic3r/Preset.cpp): every key here is indexed by filament, so its array
+// must be resized when the filament count changes. Keys absent from the template are
+// simply skipped. (Metadata-ish members of that list — compatible_printers, inherits,
+// bed_type — are absent from a project config, so they never false-positive here.)
+const NONPREFIXED_PER_FILAMENT_KEYS = new Set<string>([
+  'activate_air_filtration', 'additional_cooling_fan_speed', 'additional_fan_full_speed_layer',
+  'chamber_temperatures', 'circle_compensation_speed', 'close_additional_fan_first_x_layers',
+  'close_fan_the_first_x_layers', 'complete_print_exhaust_fan_speed', 'cool_plate_temp',
+  'cool_plate_temp_initial_layer', 'cooling_perimeter_transition_distance', 'cooling_slowdown_logic',
+  'counter_coef_1', 'counter_coef_2', 'counter_coef_3', 'counter_limit_max', 'counter_limit_min',
+  'default_filament_colour', 'diameter_limit', 'during_print_exhaust_fan_speed',
+  'enable_overhang_bridge_fan', 'enable_pressure_advance', 'eng_plate_temp', 'eng_plate_temp_initial_layer',
+  'fan_cooling_layer_time', 'fan_max_speed', 'fan_min_speed', 'first_x_layer_fan_speed',
+  'first_x_layer_part_fan_speed', 'full_fan_speed_layer', 'hole_coef_1', 'hole_coef_2', 'hole_coef_3',
+  'hole_limit_max', 'hole_limit_min', 'hot_plate_temp', 'hot_plate_temp_initial_layer', 'impact_strength_z',
+  'ironing_fan_speed', 'long_retractions_when_ec', 'no_slow_down_for_cooling_on_outwalls',
+  'nozzle_temperature', 'nozzle_temperature_initial_layer', 'nozzle_temperature_range_high',
+  'nozzle_temperature_range_low', 'overhang_fan_speed', 'overhang_fan_threshold',
+  'overhang_threshold_participating_cooling', 'override_process_overhang_speed', 'pre_start_fan_time',
+  'pressure_advance', 'reduce_fan_stop_start_freq', 'retraction_distances_when_ec',
+  'slow_down_for_layer_cooling', 'slow_down_layer_time', 'slow_down_min_speed', 'supertack_plate_temp',
+  'supertack_plate_temp_initial_layer', 'temperature_vitrification', 'textured_plate_temp',
+  'textured_plate_temp_initial_layer', 'volumetric_speed_coefficients',
+]);
+
 /** Bed printable size [w, h] mm, parsed from the project template's printable_area
  *  (a list of "XxY" corner strings). Falls back to the H2C bed if unparseable. */
 function bedSizeFromTemplate(): [number, number] {
@@ -184,27 +219,28 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
   // Bambu puts one object per file so a small const is safe.
   const colorGroupId = bambu ? 2 : parts.length + 1;
 
-  // ── Bambu AMS palette: ≤3 filament slots from the most-used colours ─────────
-  // Bambu colour is per-filament, and the H2C config defines exactly 3 filaments
-  // (see buildProjectSettings — we never resize that array). Map every triangle
-  // colour to one of 3 slots: the 3 most-frequent colours across all parts become
-  // the slots; any others snap to the nearest. Each object's base extruder is its
-  // dominant slot, and triangles whose slot differs carry a per-triangle
-  // paint_color — so hand-painted brush marks and api.label regions WITHIN a part
-  // survive in Bambu, not just the dominant colour. (>3 distinct colours collapse
-  // to the nearest of 3; lifting that cap needs a validated config resize — #729.)
-  const bambuSlotOf = new Map<string, number>();   // triColorHex → 0..2
-  let bambuFilamentColors = ['#D9D9D9', '#D9D9D9', '#D9D9D9'];
+  // ── Bambu AMS palette: one filament slot per distinct colour ────────────────
+  // Bambu colour is per-filament. We emit ONE filament per distinct colour used
+  // (across all parts), up to MAX_BAMBU_FILAMENTS; the project_settings per-filament
+  // arrays are resized to match (see buildProjectSettings). Each object's base
+  // extruder is its dominant slot, and triangles whose slot differs carry a
+  // per-triangle paint_color — so hand-paint and api.label regions survive in their
+  // ACTUAL colours. (If a model exceeds the max, the least-used colours snap to the
+  // nearest kept slot.) Slots are ordered by frequency so the most-used colour is
+  // filament 1.
+  const bambuSlotOf = new Map<string, number>();   // triColorHex → filament slot 0..N-1
+  let bambuFilamentColors = ['#D9D9D9'];
   if (bambu && anyColour) {
     const freq = new Map<string, number>();
     for (let i = 0; i < parts.length; i++) {
       const t = parts[i].mesh.triColors;
       if (t) for (const tr of cleaned[i].validTris) { const h = triColorHex(t, tr); freq.set(h, (freq.get(h) ?? 0) + 1); }
     }
-    const palette = [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]);
+    const ranked = [...freq.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
+    const palette = ranked.slice(0, MAX_BAMBU_FILAMENTS);
     palette.forEach((h, idx) => bambuSlotOf.set(h, idx));
-    for (const h of freq.keys()) if (!bambuSlotOf.has(h)) bambuSlotOf.set(h, nearestSlotIndex(h, palette));
-    while (palette.length < 3) palette.push(palette[palette.length - 1] ?? '#d9d9d9');
+    // Any colours beyond the max snap to the nearest kept slot.
+    for (const h of ranked) if (!bambuSlotOf.has(h)) bambuSlotOf.set(h, nearestSlotIndex(h, palette));
     bambuFilamentColors = palette.map(toBambuHex);
   }
 
@@ -369,6 +405,7 @@ function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[]): 
   const unit = get3MFUnitString();
   const [bedW, bedH] = bedSizeFromTemplate();
   const gridCols = plateGridCols(prepared.length);  // ⌈√N⌉ to match Bambu's plate grid
+  const filamentCount = filamentColors.length;       // AMS slots = distinct colours
   const strideX = bedW * PLATE_GAP_FACTOR;          // BambuStudio plate_stride_x (width·1.2)
   const strideY = bedH * PLATE_GAP_FACTOR;          // BambuStudio plate_stride_y (depth·1.2)
 
@@ -472,14 +509,12 @@ ${p.trianglesBambu.join('\n')}
     // identify_id: stable integer per object instance (reference uses arbitrary values;
     // we use a simple deterministic value: 100 + wrapperId * 10 + i).
     const identifyId = 100 + wrapperId * 10 + i;
-    // filament_maps / filament_volume_maps: one entry PER FILAMENT in
-    // project_settings.config (the H2C template defines 3), NOT per object. The
-    // reference uses "2 1 1" / "0 0 0" (filament→nozzle map for the dual-nozzle
-    // H2C); we mirror it so the plate's filament list stays consistent with the
-    // config — a length mismatch here is another way load_files indexes past the
-    // end of a filament array.
-    const filamentMaps = '2 1 1';
-    const filamentVolMaps = '0 0 0';
+    // filament_maps / filament_volume_maps: ONE entry per filament (= N), indexed by
+    // filament — a short array here is another way load_files reads past the end. The
+    // values are the filament→nozzle hint; with "Auto For Flush" Bambu recomputes the
+    // assignment, so we map all to nozzle 1 (valid) at length N.
+    const filamentMaps = Array(filamentCount).fill('1').join(' ');
+    const filamentVolMaps = Array(filamentCount).fill('0').join(' ');
     // NOTE: plater_name MUST be empty — a non-empty value makes Bambu/Orca's
     // project loader reject the file (load fails, single plate).
     settingsPlates.push(`  <plate>
@@ -578,24 +613,70 @@ ${assembleItems.join('\n')}
   ]);
 }
 
+/** True if `key` holds a per-filament array (so it must scale with filament count). */
+function isPerFilamentKey(key: string): boolean {
+  return key.startsWith('filament_') || NONPREFIXED_PER_FILAMENT_KEYS.has(key);
+}
+
 /**
- * Build the project_settings.config JSON from the BambuStudio template, stamping
- * the part-colour palette into filament_colour.
+ * Build the project_settings.config JSON from the BambuStudio template, RESIZED to
+ * `filamentColors.length` (N) filaments with those colours.
  *
- * The template is a COMPLETE Bambu Lab H2C profile (536 keys, copied verbatim from
- * a real known-good project export). Completeness is load-critical: Bambu's GUI
- * `Plater::priv::load_files` indexes the per-filament arrays (filament_colour,
- * filament_type, filament_ids, filament_map, …) when binding objects to filaments,
- * and a partial config makes that index null-deref → SIGSEGV on project open. We
- * therefore only overwrite filament_colour's VALUES (keeping its length at 3, the
- * template's filament count) — never resize any array.
+ * The template is a complete Bambu Lab H2C profile with 3 filaments. Every
+ * per-filament array (filament_colour, nozzle_temperature, the plate temps, …) is
+ * indexed by filament when Bambu's GUI `Plater::priv::load_files` binds objects to
+ * filaments — an array shorter than the max filament index null-derefs → SIGSEGV on
+ * open. So to support N colours we must resize EVERY per-filament array to N (or its
+ * multiple), consistently. Each such array has a multiplier m = len/3 (×1 per
+ * filament, ×2 per extruder-variant, ×4 …); since all template filaments share one
+ * preset, every m-tuple is identical, so we repeat filament-0's m-tuple N times.
+ * Non-per-filament arrays (machine limits, printable_area, compatible-machine list)
+ * are left untouched. `isPerFilamentKey` is the gate, derived from BambuStudio's
+ * `s_Preset_filament_options`. Structural arrays that don't follow the repeat rule
+ * (filament_colour, filament_self_index, the flush matrices) are set explicitly.
  */
 function buildProjectSettings(filamentColors: string[]): string {
   // Deep-copy the template so we don't mutate the module-level import.
   const cfg: Record<string, unknown> = JSON.parse(JSON.stringify(BAMBU_TEMPLATE));
-  const existing = cfg.filament_colour;
-  if (Array.isArray(existing) && filamentColors.length === existing.length) {
-    cfg.filament_colour = filamentColors;
+  const N = Math.max(1, filamentColors.length);
+  const T = TEMPLATE_FILAMENT_COUNT;
+
+  // Resize every per-filament array: repeat filament-0's m-tuple N times.
+  for (const key of Object.keys(cfg)) {
+    const v = cfg[key];
+    if (!Array.isArray(v) || v.length === 0 || v.length % T !== 0) continue;
+    if (!isPerFilamentKey(key)) continue;
+    const m = v.length / T;
+    const tuple = v.slice(0, m);
+    const out: unknown[] = [];
+    for (let i = 0; i < N; i++) out.push(...tuple);
+    cfg[key] = out;
   }
+
+  // Explicit structural overrides (don't follow the plain repeat rule):
+  cfg.filament_colour = filamentColors;                                  // N colours, one per filament
+  // filament_self_index is the 1-based filament index, doubled per extruder variant:
+  // [1,1,2,2,…,N,N].
+  if (Array.isArray(cfg.filament_self_index)) {
+    const si: string[] = [];
+    for (let i = 1; i <= N; i++) { si.push(String(i), String(i)); }
+    cfg.filament_self_index = si;
+  }
+  // flush_volumes_matrix is per-nozzle (2) × N×N: diagonal 0, off-diagonal a default
+  // purge volume. Bambu recomputes flush on slice ("Auto For Flush"); size is what
+  // matters for load.
+  if (Array.isArray(cfg.flush_volumes_matrix)) {
+    const FLUSH = '280';
+    const mat: string[] = [];
+    for (let nozzle = 0; nozzle < 2; nozzle++)
+      for (let i = 0; i < N; i++)
+        for (let j = 0; j < N; j++) mat.push(i === j ? '0' : FLUSH);
+    cfg.flush_volumes_matrix = mat;
+  }
+  // flush_volumes_vector is per-nozzle (2) × N (a per-filament purge volume).
+  if (Array.isArray(cfg.flush_volumes_vector)) {
+    cfg.flush_volumes_vector = Array(2 * N).fill('140');
+  }
+
   return JSON.stringify(cfg, null, 4);
 }
