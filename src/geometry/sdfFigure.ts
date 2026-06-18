@@ -1790,8 +1790,8 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
         .rotate([0, 0, yawL])
         .translate([A[0], A[1], A[2]]);
 
-      // Body (last + heel) pivoted onto the pointed foot.
-      let pUpper = place(local);
+      const bigP = Math.max(footLen, r.lowerLeg) * 8;
+
       // Collar welds the opening to the shank, and (boots) the shaft runs up the
       // lower leg — both in WORLD, anchored at the ankle/shank like the flat path.
       const collar = sdf.capsule(
@@ -1799,11 +1799,6 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
         [A[0], A[1], sz - r.foot * 0.1],
         r.lowerLeg * 0.92 + wallT,
       );
-      pUpper = pUpper.smoothUnion(collar, r.foot * 0.55);
-      if (kind === 'boots') {
-        const shaft = sdf.capsule(A, shaftTop(A, K), r.lowerLeg + wallT);
-        pUpper = pUpper.smoothUnion(shaft, r.lowerLeg * 0.9);
-      }
 
       // Guaranteed-coverage underlayer, built in the LOCAL frame then pivoted with
       // the foot (its ankle column tracks the pivot; the boot shaft stays world).
@@ -1823,26 +1818,44 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
       const instE = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.33, r.foot * 0.8)
         .translate([0, ankleLY + footLen * 0.2, szL + r.foot * 0.15]);
       const colC = sdf.capsule([0, ankleLY, A[2] - groundZ], [0, ankleLY, szL + r.foot * 0.2], r.lowerLeg * 0.8);
-      let footMassP = place(sCap.smoothUnion(instE, r.foot * 0.6).smoothUnion(colC, r.foot * 0.6));
-      if (kind === 'boots') footMassP = footMassP.union(sdf.capsule(A, shaftTop(A, K), r.lowerLeg));
-      footMassP = footMassP.round(t);
-      // No ground floor clip — the pointed foot hangs in the air.
-      const pShoe = pUpper.union(footMassP);
+      const coverageLocal = sCap.smoothUnion(instE, r.foot * 0.6).smoothUnion(colC, r.foot * 0.6).round(t);
+
+      // FLAT SOLE in the PITCHED frame. The shared `last` ellipsoid is centred on
+      // the sole plane (local z 0), so its lower half hangs ~1.5·r.foot below the
+      // foot. The flat path slices that off at groundZ; the plantarflexed path used
+      // to skip the clip ("the foot hangs in the air") — leaving that lower half as
+      // a round BUBBLE under lifted shoes (rock-climber / sprinter). Instead clip
+      // the foot-wrapping shell flat at `soleClipZ` (a hair below the bare foot's
+      // own underside, so it still fully encloses the foot) BEFORE pivoting, so the
+      // airborne shoe carries a real flat sole + toe-spring that tilts with the
+      // foot — a shoe, not a ball. `soleClipZ` is below the deepest bare-foot mass
+      // (the instep dome bottoms ~0.65·r.foot under the sole plane).
+      const soleClipZ = -r.foot * 0.75;
+      const localFloor = sdf.box([bigP, bigP, bigP]).translate([0, 0, bigP / 2 + soleClipZ]); // z ≥ soleClipZ
+      const shellLocal = local.union(coverageLocal).intersect(localFloor);
+      let pUpper = place(shellLocal);
+      pUpper = pUpper.smoothUnion(collar, r.foot * 0.55);
+      if (kind === 'boots') {
+        const shaft = sdf.capsule(A, shaftTop(A, K), r.lowerLeg + wallT);
+        // shaft both shapes (outer) and guarantees coverage (inner, world).
+        pUpper = pUpper.smoothUnion(shaft, r.lowerLeg * 0.9).union(sdf.capsule(A, shaftTop(A, K), r.lowerLeg));
+      }
+      const pShoe = pUpper;
 
       if (!soleOn) return { upper: pShoe, sole: null };
 
       // Contrasting sole region: a thin footprint slab at the shoe's underside,
-      // built local and pivoted with the shoe (same shaping as the flat sole).
-      const bigP = Math.max(footLen, r.lowerLeg) * 8;
+      // sitting on the SAME pitched sole plane (`soleClipZ`) the shell is clipped
+      // to, built local and pivoted with the shoe (same shaping as the flat sole).
       const hwP = hw;
       const lipCapP = Math.min(lip, hwP * 0.45);
       const soleRP = hwP + lipCapP;
       const soleHeelYP = shoeHeelY + soleRP;
       const soleToeYP = shoeToeY - soleRP;
-      const soleBandLocal = sdf.box([bigP, bigP, soleThick]).translate([0, 0, soleThick / 2]);
+      const soleBandLocal = sdf.box([bigP, bigP, soleThick]).translate([0, 0, soleClipZ + soleThick / 2]);
       const footprintLocal = sdf.capsule(
-        [0, soleHeelYP, soleThick / 2],
-        [0, Math.max(soleToeYP, soleHeelYP + soleRP * 0.2), soleThick / 2],
+        [0, soleHeelYP, soleClipZ + soleThick / 2],
+        [0, Math.max(soleToeYP, soleHeelYP + soleRP * 0.2), soleClipZ + soleThick / 2],
         soleRP,
       ).intersect(soleBandLocal);
       const soleBoundsP = lipCapP > 0 ? pShoe.round(lipCapP) : pShoe;
