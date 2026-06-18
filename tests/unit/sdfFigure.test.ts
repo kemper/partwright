@@ -1224,7 +1224,9 @@ describe('figure top — dress/gown coverage', () => {
     const legs = buildLegs(api, rig) as SdfNode;
     const dress = buildTop(api, rig, { sleeve: 'none', hemZ: rig.opts.height * 0.18 }) as SdfNode;
     // Walk between hip and knee; at each height march OUTWARD (+x) from the leg
-    // centre to the skin surface and assert the dress encloses it.
+    // centre to the skin surface and assert the dress encloses it. Sample at y=0
+    // (the leg's coronal mid-slice): the bug is purely lateral — the leg's widest
+    // +x bulge punching through the cone's side — so y=0 is the worst case.
     for (let f = 0.2; f <= 0.8; f += 0.2) {
       const z = j.upperLegL[2] * (1 - f) + j.lowerLegL[2] * f;
       const cx = j.upperLegL[0] * (1 - f) + j.lowerLegL[0] * f;
