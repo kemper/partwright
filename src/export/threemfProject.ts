@@ -21,10 +21,11 @@
 //       - Each <plate> carries identify_id (a stable integer) plus the filament_map*
 //         metadata Bambu needs to assign AMS slots.
 //       - An <assemble> block with one <assemble_item> per object closes the config.
-//       - Colour is per-OBJECT via the extruder field, NOT per-triangle. The mesh
-//         files carry plain <triangle v1 v2 v3/> (no pid/p1/paint_color in Bambu
-//         mode). This matches the reference exactly and avoids the triangle-color
-//         parsing path that segfaults on some Bambu builds.
+//       - Colour: each object has a base extruder (its dominant AMS slot), and
+//         triangles whose slot differs carry a per-triangle paint_color (Bambu's
+//         MMU segmentation attribute) so hand-paint / api.label regions show WITHIN
+//         a part. Colours map onto the 3 AMS slots the H2C config defines (no
+//         m:colorgroup/pid/p1 here — that's the generic mode's material extension).
 //       - project_settings.config is a COMPLETE BambuStudio preset block (the
 //         template in bambuProjectTemplate.json — a full Bambu Lab H2C profile,
 //         536 keys). This is load-CRITICAL: Bambu's GUI `Plater::priv::load_files`
@@ -121,16 +122,34 @@ function fmtCoord(v: number): string {
   return v.toFixed(6).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
 }
 
+/** "#rrggbb" (any case, optional #) → Bambu's "#RRGGBB" form. */
+function toBambuHex(hex: string): string { return '#' + hex.replace(/^#/, '').toUpperCase(); }
+function hexRgb(hex: string): [number, number, number] {
+  const h = hex.replace(/^#/, '');
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+/** Index of the palette colour nearest `hex` in RGB space (for >3-colour snap). */
+function nearestSlotIndex(hex: string, palette: string[]): number {
+  const [r, g, b] = hexRgb(hex);
+  let best = 0, bestD = Infinity;
+  palette.forEach((p, i) => {
+    const [pr, pg, pb] = hexRgb(p);
+    const d = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2;
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  return best;
+}
+
 const enc = (s: string) => new TextEncoder().encode(s);
 
 interface PreparedPart {
   name: string;
   vertices: string[];          // <vertex .../> lines
-  trianglesPlain: string[];    // plain <triangle v1 v2 v3/> for Bambu mode
-  trianglesColored: string[];  // <triangle .../> with pid/p1/paint_color for generic
+  trianglesBambu: string[];    // <triangle v1 v2 v3 [paint_color=…]/> for Bambu mode
+  trianglesColored: string[];  // <triangle .../> with pid/p1 for generic
   faceCount: number;
-  extruder: number;            // 1-based dominant filament (global index)
-  dominantHex: string;         // CSS hex of dominant colour (for filament_colour list)
+  extruder: number;            // 1-based base AMS slot (Bambu) / material index (generic)
+  dominantHex: string;         // CSS hex of dominant colour
   cx: number; cy: number; minZ: number; width: number; depth: number;
   halfHeight: number;          // half of Z extent (unused in current code, kept for possible future use)
 }
@@ -165,6 +184,30 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
   // Bambu puts one object per file so a small const is safe.
   const colorGroupId = bambu ? 2 : parts.length + 1;
 
+  // ── Bambu AMS palette: ≤3 filament slots from the most-used colours ─────────
+  // Bambu colour is per-filament, and the H2C config defines exactly 3 filaments
+  // (see buildProjectSettings — we never resize that array). Map every triangle
+  // colour to one of 3 slots: the 3 most-frequent colours across all parts become
+  // the slots; any others snap to the nearest. Each object's base extruder is its
+  // dominant slot, and triangles whose slot differs carry a per-triangle
+  // paint_color — so hand-painted brush marks and api.label regions WITHIN a part
+  // survive in Bambu, not just the dominant colour. (>3 distinct colours collapse
+  // to the nearest of 3; lifting that cap needs a validated config resize — #729.)
+  const bambuSlotOf = new Map<string, number>();   // triColorHex → 0..2
+  let bambuFilamentColors = ['#D9D9D9', '#D9D9D9', '#D9D9D9'];
+  if (bambu && anyColour) {
+    const freq = new Map<string, number>();
+    for (let i = 0; i < parts.length; i++) {
+      const t = parts[i].mesh.triColors;
+      if (t) for (const tr of cleaned[i].validTris) { const h = triColorHex(t, tr); freq.set(h, (freq.get(h) ?? 0) + 1); }
+    }
+    const palette = [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]);
+    palette.forEach((h, idx) => bambuSlotOf.set(h, idx));
+    for (const h of freq.keys()) if (!bambuSlotOf.has(h)) bambuSlotOf.set(h, nearestSlotIndex(h, palette));
+    while (palette.length < 3) palette.push(palette[palette.length - 1] ?? '#d9d9d9');
+    bambuFilamentColors = palette.map(toBambuHex);
+  }
+
   // ── Per-part geometry + colour ──────────────────────────────────────────
   const prepared: PreparedPart[] = parts.map((part, i) => {
     const { mesh } = part;
@@ -182,30 +225,38 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
       vertices.push(`     <vertex x="${fmtCoord(x)}" y="${fmtCoord(y)}" z="${fmtCoord(z)}"/>`);
     }
 
-    // Dominant colour → object extruder (global 1-based filament index).
+    // Dominant colour → object base extruder. Bambu uses the dominant AMS slot
+    // (1..3); generic uses the global material index.
     let extruder = 1;
     let dominantHex = materialColors[0] ?? '#ff0000';
     if (tc) {
       const counts = new Map<number, number>();
-      for (const t of validTris) { const idx = colorMap.get(triColorHex(tc, t)) ?? 0; counts.set(idx, (counts.get(idx) ?? 0) + 1); }
+      for (const t of validTris) {
+        const idx = bambu ? (bambuSlotOf.get(triColorHex(tc, t)) ?? 0) : (colorMap.get(triColorHex(tc, t)) ?? 0);
+        counts.set(idx, (counts.get(idx) ?? 0) + 1);
+      }
       let best = 0, bestN = -1;
       for (const [idx, n] of counts) if (n > bestN) { bestN = n; best = idx; }
       extruder = best + 1;
-      dominantHex = materialColors[best] ?? '#ff0000';
+      dominantHex = bambu ? (bambuFilamentColors[best] ?? '#ff0000') : (materialColors[best] ?? '#ff0000');
     }
 
-    // Bambu mode: plain triangles (no pid/p1 — colour is per-object via extruder).
-    const trianglesPlain: string[] = [];
-    // Generic/coloured mode: triangles with pid/p1/paint_color.
+    // Bambu mode: triangles carry a per-triangle paint_color when their AMS slot
+    // differs from the object's base extruder (this is what makes hand-paint and
+    // api.label regions show WITHIN a part); same-as-base triangles stay plain.
+    const trianglesBambu: string[] = [];
+    // Generic/coloured mode: triangles with pid/p1 (m:colorgroup material extension).
     const trianglesColored: string[] = [];
     for (const t of validTris) {
       const v1 = remap[mesh.triVerts[t * 3]], v2 = remap[mesh.triVerts[t * 3 + 1]], v3 = remap[mesh.triVerts[t * 3 + 2]];
-      trianglesPlain.push(`     <triangle v1="${v1}" v2="${v2}" v3="${v3}"/>`);
       if (tc) {
+        const slot = bambuSlotOf.get(triColorHex(tc, t)) ?? 0;
+        const paint = (slot + 1) !== extruder ? ` paint_color="${encodePaintColorState(slot + 1)}"` : '';
+        trianglesBambu.push(`     <triangle v1="${v1}" v2="${v2}" v3="${v3}"${paint}/>`);
         const matIdx = colorMap.get(triColorHex(tc, t)) ?? 0;
-        const paint = bambu && (matIdx + 1) !== extruder ? ` paint_color="${encodePaintColorState(matIdx + 1)}"` : '';
-        trianglesColored.push(`          <triangle v1="${v1}" v2="${v2}" v3="${v3}" pid="${colorGroupId}" p1="${matIdx}" p2="${matIdx}" p3="${matIdx}"${paint} />`);
+        trianglesColored.push(`          <triangle v1="${v1}" v2="${v2}" v3="${v3}" pid="${colorGroupId}" p1="${matIdx}" p2="${matIdx}" p3="${matIdx}" />`);
       } else {
+        trianglesBambu.push(`     <triangle v1="${v1}" v2="${v2}" v3="${v3}"/>`);
         trianglesColored.push(`          <triangle v1="${v1}" v2="${v2}" v3="${v3}" />`);
       }
     }
@@ -214,7 +265,7 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
     const cy = Number.isFinite(minY) ? (minY + maxY) / 2 : 0;
     const halfH = Number.isFinite(minZ) && Number.isFinite(maxZ) ? (maxZ - minZ) / 2 : 0;
     return {
-      name: part.name, vertices, trianglesPlain, trianglesColored,
+      name: part.name, vertices, trianglesBambu, trianglesColored,
       faceCount: validTris.length, extruder, dominantHex,
       cx, cy, minZ: Number.isFinite(minZ) ? minZ : 0,
       width: Number.isFinite(minX) ? maxX - minX : 0,
@@ -226,28 +277,6 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
   const colorgroupXml = anyColour
     ? `    <m:colorgroup id="${colorGroupId}">\n${materialColors.map(h => `      <m:color color="${h.toUpperCase()}FF" />`).join('\n')}\n    </m:colorgroup>`
     : '';
-
-  // Bambu per-part colour: map each part's dominant colour onto one of the THREE
-  // AMS filament slots the H2C template defines. We keep that filament count fixed
-  // at 3 — resizing the 130+ per-filament config arrays can't be validated against
-  // Bambu's GUI loader headlessly, and a too-short array is exactly what crashed it
-  // before. So colour is capped at 3 distinct part colours (the common AMS case);
-  // >3 reuses the closest slot. Per-part colour beyond 3 is the tracked follow-up.
-  let bambuFilamentColors: string[] = ['#D9D9D9', '#D9D9D9', '#D9D9D9'];
-  if (bambu && anyColour) {
-    const palette: string[] = [];
-    for (const p of prepared) {
-      const hex = p.dominantHex.toLowerCase();
-      if (!palette.includes(hex) && palette.length < 3) palette.push(hex);
-    }
-    // Reassign each part's extruder to its slot (1-based) in the capped palette.
-    for (const p of prepared) {
-      const idx = palette.indexOf(p.dominantHex.toLowerCase());
-      p.extruder = idx >= 0 ? idx + 1 : 1;
-    }
-    while (palette.length < 3) palette.push(palette[palette.length - 1] ?? '#d9d9d9');
-    bambuFilamentColors = palette.map(h => '#' + h.replace(/^#/, '').toUpperCase());
-  }
 
   const built = bambu
     ? buildBambuPackage(prepared, bambuFilamentColors)
@@ -326,9 +355,9 @@ ${buildItems}
 //   - Wrapper (component ref) object: EVEN id = 2*i    (2, 4, 6, …)
 //   - Object file: 3D/Objects/object_K.model where K = part index 1..N (sequential)
 //
-// Colour: per-OBJECT via extruder field in model_settings.config. Mesh files carry
-// plain triangles (no pid/p1/paint_color). This matches how the reference does
-// multicolor and avoids the per-triangle parsing path that segfaults.
+// Colour: object base extruder (dominant AMS slot) in model_settings.config, plus
+// per-triangle paint_color in the mesh for triangles whose slot differs from the
+// base — so painted regions within a part survive. Colours map onto 3 AMS slots.
 //
 // model_settings.config structural additions vs the old code (crash fix):
 //   - <part id=ODD subtype="normal_part"> inside each <object id=EVEN>
@@ -343,12 +372,12 @@ function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[]): 
   const strideX = bedW * PLATE_GAP_FACTOR;          // BambuStudio plate_stride_x (width·1.2)
   const strideY = bedH * PLATE_GAP_FACTOR;          // BambuStudio plate_stride_y (depth·1.2)
 
-  // Bambu mode: per-part colour via the per-object `extruder` field (1..3),
-  // mapped to the 3 AMS filament slots whose colours go in project_settings'
-  // filament_colour. The complete H2C config keeps all per-filament arrays sized
-  // to 3 so load_files binds without null-derefing (the prior crash). The mesh
-  // files still carry PLAIN triangles — whole-object colour, no per-triangle
-  // paint_color (in-part multicolour would need the unvalidated paint_color path).
+  // Bambu mode: each object's base colour is its `extruder` (dominant AMS slot,
+  // 1..3), and per-triangle paint_color (built in build3MFProject) colours regions
+  // within the part — so hand-paint and api.label survive, not just the dominant.
+  // Slot colours go in project_settings' filament_colour; the complete H2C config
+  // keeps all per-filament arrays sized to 3 so load_files binds without
+  // null-derefing (the prior crash). >3 distinct colours snap to the nearest slot.
 
   const objectFiles: { name: string; data: Uint8Array }[] = [];
   const wrapperObjects: string[] = [];
@@ -374,7 +403,8 @@ function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[]): 
     const compUuid = `${String(partNum).padStart(4, '0')}0000-b206-40ff-9872-83e8017abed1`;
     const itemUuid = `${String(wrapperId).padStart(8, '0')}-b1ec-4553-aec9-835e5b724bb4`;
 
-    // Per-part object file: plain triangles, no colorgroup (colour is per extruder).
+    // Per-part object file: triangles carry paint_color where the slot differs from
+    // the base extruder (per-triangle colour); no m:colorgroup (that's generic mode).
     const partModel = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="${unit}" xml:lang="en-US" xmlns="${CORE_NS}" xmlns:BambuStudio="${BBS_NS}" xmlns:p="${PROD_NS}" requiredextensions="p">
  <metadata name="BambuStudio:3mfVersion">1</metadata>
@@ -385,7 +415,7 @@ function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[]): 
 ${p.vertices.join('\n')}
     </vertices>
     <triangles>
-${p.trianglesPlain.join('\n')}
+${p.trianglesBambu.join('\n')}
     </triangles>
    </mesh>
   </object>

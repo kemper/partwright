@@ -65,9 +65,12 @@ test.describe('multi-part 3MF export', () => {
     expect((b.match(/<component /g) ?? []).length).toBe(2);
     // Project marker (flips Bambu into project / multi-plate mode).
     expect(b).toContain('<metadata name="Application">BambuStudio-');
-    // Bambu mode: colour is per-OBJECT via extruder, NOT per-triangle.
-    // Object files carry plain triangles — no colorgroup/pid/paint_color.
-    expect(b).not.toContain('paint_color=');
+    // IN-PART COLOUR: Body is two-colour (red + blue), so the triangles whose AMS
+    // slot differs from the object's base extruder carry a per-triangle paint_color
+    // (Bambu's MMU attribute). This is what makes hand-paint / api.label regions show
+    // WITHIN a part — no m:colorgroup/pid here (that's the generic material extension).
+    expect(b).toContain('paint_color=');
+    expect(b).not.toContain('<m:colorgroup');
     // model_settings.config: one <plate> per part.
     expect(b).toContain('Metadata/model_settings.config');
     expect((b.match(/<plate>/g) ?? []).length).toBe(2);
