@@ -919,6 +919,29 @@ export async function changePart(partId: string, versionIndex?: number): Promise
   return version;
 }
 
+/** True when a *non-current* part has unsaved edits — a stored per-part draft
+ *  whose code (or, for SCAD, companion files) diverges from that part's latest
+ *  saved version. This is how the multi-part save flow discovers parts the user
+ *  edited and then switched away from (their draft is stashed on switch). The
+ *  CURRENT part is NOT judged here — its live editor buffer (which also carries
+ *  paint/param/annotation changes the draft doesn't) is the source of truth, so
+ *  the caller checks it directly. Returns false for a part that has never been
+ *  saved (no versions yet) — its starter buffer isn't "unsaved work" to surface.
+ */
+export async function partHasUnsavedDraft(part: Part): Promise<boolean> {
+  const latest = await getLatestVersion(part.id);
+  if (!latest) return false;
+  const lang = effectiveVersionLanguage(latest, currentState.session);
+  const draft = await readDraft(part.sessionId, lang, part.id);
+  if (!draft) return false;
+  if (draft.code !== latest.code) return true;
+  // SCAD drafts also stash unsaved companion-file edits; treat those as dirty.
+  if (lang === 'scad') {
+    return !companionFilesEqual(latest.companionFiles ?? {}, draft.companionFiles ?? {});
+  }
+  return false;
+}
+
 export async function renamePart(partId: string, newName: string): Promise<void> {
   await dbUpdatePart(partId, { name: newName, updated: Date.now() });
   const idx = currentState.parts.findIndex(p => p.id === partId);
@@ -1095,6 +1118,51 @@ function colorRegionsEqual(prev: Record<string, unknown> | null | undefined, nex
   return JSON.stringify(prevRegions) === JSON.stringify(nextRegions);
 }
 
+/** Shared dedup predicate: true when the given editor state is byte-identical
+ *  to the loaded version (code, annotations, color regions, params, companion
+ *  files), so saving it would be a no-op. `annotationSnapshot` is passed in so
+ *  callers don't re-serialize annotations twice. Used by both saveVersion (to
+ *  skip a redundant save) and {@link currentPartIsDirty} (to detect a dirty
+ *  current part for the multi-part save flow). */
+function versionMatchesCurrent(
+  code: string,
+  annotationSnapshot: ReturnType<typeof serializeAnnotations>,
+  geometryData: Record<string, unknown> | null,
+  paramValues: Record<string, number | boolean | string> | undefined,
+  nextCompanions: Record<string, string>,
+): boolean {
+  return (
+    !!currentState.currentVersion &&
+    currentState.currentVersion.code === code &&
+    annotationsEqual(currentState.currentVersion.annotations, annotationSnapshot) &&
+    colorRegionsEqual(currentState.currentVersion.geometryData as Record<string, unknown> | null, geometryData) &&
+    paramValuesEqual(currentState.currentVersion.paramValues, paramValues) &&
+    companionFilesEqual(currentState.currentVersion.companionFiles, nextCompanions)
+  );
+}
+
+/** Whether the CURRENT part has unsaved edits relative to its loaded version —
+ *  the live-editor counterpart to {@link partHasUnsavedDraft} (which judges the
+ *  other parts from their stashed drafts). Mirrors saveVersion's dedup so the
+ *  multi-part save flow can decide whether the current part belongs in the
+ *  unsaved set before committing anything. A part with no loaded version yet
+ *  (freshly created, never saved) is NOT reported dirty here — an untouched
+ *  starter buffer isn't unsaved work to nag about. */
+export function currentPartIsDirty(
+  code: string,
+  geometryData: Record<string, unknown> | null,
+  opts?: {
+    paramValues?: Record<string, number | boolean | string>;
+    companionFiles?: Record<string, string>;
+  },
+): boolean {
+  if (!currentState.session || !currentState.currentPart || !currentState.currentVersion) {
+    return false;
+  }
+  const nextCompanions = opts?.companionFiles ?? currentState.currentVersion.companionFiles ?? {};
+  return !versionMatchesCurrent(code, serializeAnnotations(), geometryData, opts?.paramValues, nextCompanions);
+}
+
 export async function saveVersion(
   code: string,
   geometryData: Record<string, unknown> | null,
@@ -1140,12 +1208,7 @@ export async function saveVersion(
   // identical to the current version (unless forced).
   if (
     !options?.force &&
-    currentState.currentVersion &&
-    currentState.currentVersion.code === code &&
-    annotationsEqual(currentState.currentVersion.annotations, annotationSnapshot) &&
-    colorRegionsEqual(currentState.currentVersion.geometryData as Record<string, unknown> | null, geometryData) &&
-    paramValuesEqual(currentState.currentVersion.paramValues, paramValues) &&
-    companionFilesEqual(currentState.currentVersion.companionFiles, nextCompanions)
+    versionMatchesCurrent(code, annotationSnapshot, geometryData, paramValues, nextCompanions)
   ) {
     return null;
   }
