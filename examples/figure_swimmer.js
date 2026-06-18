@@ -55,7 +55,7 @@ const skin = F.weld(rig, [
 
 // 4b. AREOLAE — flush paintable discs + tiny nipples, hard-unioned at the top
 //     level so the 'areola' paint region survives the body weld.
-const nipples = F.nipples(rig);
+const nipples = F.nipples(rig, { on: skin });
 
 // 4. SWIM TRUNKS — low rise + briefs length so the whole midriff stays bare and
 //    the navel reads. Sits on the hips like swimwear.

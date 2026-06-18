@@ -314,21 +314,21 @@ F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
 2. **Areolae + nipple — `F.nipples(rig)`**, a **top-level part** (like
    `F.face.eyes`), NOT a torso option — because it carries its own **paint
    label** (`'areola'`), and a label can't survive the smooth body weld. So
-   hard-union it at the top level and **don't** wrap it in `.label()`:
+   hard-union it at the top level and **don't** wrap it in `.label()`. **Pass
+   `on: skin`** (the body weld) so the areolae seat flush on the real surface:
    ```js
    const skin    = F.weld(rig, [ F.torso(rig, { navel: true }), … ]).label('skin');
-   const nipples = F.nipples(rig);                 // self-labels 'areola'
+   const nipples = F.nipples(rig, { on: skin });    // self-labels 'areola', flush on `skin`
    return sdf.union(skin, F.face.eyes(rig), nipples, …).build({ … });
    ```
-   Each areola is a **flush disc** that follows the chest/mound curvature (the
-   iris-disc trick — a coin clipped from a sphere a hair larger than the surface,
-   so it sits flush, not as a stuck-on bump) with a deliberately **tiny** nipple
-   nub. It rides the `rig.torso` anchors, so it seats on the right surface
-   automatically: the **mound apex** when `bust > 0`, the **pectoral apex** when
-   `muscle > 0` (the pec masses bulge forward of the bare chest, so the areola
-   rides them instead of sinking in), and the bare-chest front otherwise — no
-   per-figure tuning. `opts`: `{ size }` (areola radius, default ≈ `chestX·0.16`),
-   `{ nipple }` (nub radius, default ≈ `chestX·0.05`; `0` for none).
+   With `on`, each areola is the **body's OWN front surface** within `size` of the
+   nipple anchor, relabelled — so it's **flush by construction** on any chest
+   (bare, pectoral, mound, fat): it can never sit proud as a stuck-on "patty" nor
+   sink its rim into the body. The only relief is a deliberately **tiny** nipple
+   nub. (Omit `on` and it falls back to an approximating clipped coin that rides
+   the bust/pec/bare anchor — finicky; prefer `on`.) `opts`: `{ size }` (areola
+   radius, default ≈ `chestX·0.16`), `{ nipple }` (nub radius, default ≈
+   `chestX·0.04`; `0` for none), `{ on }` (the body `Node` to seat flush on).
 3. **Navel — `F.torso(rig, { navel })`** (opt-in). A shallow dimple carved into
    the belly front. `navel: true` or `{ size, depth }` (`depth` 0–1.5, default
    0.5). Off by default so an unset torso is byte-identical.

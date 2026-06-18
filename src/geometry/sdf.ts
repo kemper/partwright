@@ -420,8 +420,12 @@ export interface SdfBuildOptions {
 const BUILD_FIELDS = ['edgeLength', 'bounds', 'level', 'tolerance', 'detail'] as const;
 const DETAIL_FIELDS = ['center', 'radius', 'edgeLength'] as const;
 /** Most detail spheres an AI would meaningfully place; guards quadratic
- *  edge-marking cost from a runaway list. */
-const MAX_DETAIL_REGIONS = 16;
+ *  edge-marking cost from a runaway list. A fully-detailed figure legitimately
+ *  needs ~18 — `F.faceDetail` alone is 14 (eyes/iris/pupil/nose/nostrils/mouth/
+ *  brows/ears/…), plus hands (2) and feet (2) — so the cap sits comfortably
+ *  above that. (Raised 16 → 24 when eyebrows/ears pushed faceDetail past 16 and
+ *  broke lotus_yogi / surfer / tai_chi_master at bake time — see #730.) */
+const MAX_DETAIL_REGIONS = 24;
 /** Per-region triangle cap for the refine pass — same order as the ~500k
  *  catalog budget. A standalone safety guard against a runaway refine, not the
  *  advisory budget itself. */

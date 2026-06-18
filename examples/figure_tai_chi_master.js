@@ -59,7 +59,7 @@ const skin = F.weld(rig, [
 ]).label('skin');
 
 // 4. NIPPLES — top-level part, self-labels 'areola'. Bare open-robe chest.
-const nipples = F.nipples(rig);
+const nipples = F.nipples(rig, { on: skin });
 
 // 5. TROUSERS — loose full-length pants.
 const pants = F.clothing.pants(rig, {

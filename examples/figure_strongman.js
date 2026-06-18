@@ -144,28 +144,7 @@ const puffC = [0, -r.chestY * 0.35, j.chest[2] - r.chestY * 0.1];
 const puffR = [r.chestX * 1.25, r.chestY * 1.2, r.chestY * 1.6];
 const pecs = sdf.ellipsoid(puffR[0], puffR[1], puffR[2]).translate(puffC);
 
-// Flush areolae on the PUFFED pec surface. F.nipples rides rig.torso, which
-// lands on the un-puffed base chest (behind chestPuff) — so for this custom
-// muscle build we place the areola coins on the puff front ourselves, using the
-// SAME flush iris-disc trick F.nipples uses: a coin clipped from a sphere a hair
-// larger than the local surface, plus a tiny nipple nub. Self-label 'areola' and
-// hard-union at the top level so the paint region survives the weld.
-const nipZ = puffC[2] - puffR[2] * 0.16;
-const nipDX = r.chestX * 0.5;
-const puffFrontY = (x, z) => puffC[1] - puffR[1] * Math.sqrt(
-  Math.max(0, 1 - (x / puffR[0]) ** 2 - ((z - puffC[2]) / puffR[2]) ** 2));
-const areolaR = r.chestX * 0.16;
-const tinyNip = r.chestX * 0.05;
-const surfR = puffR[1];                         // local curvature ~ the puff's depth radius
-const eps = r.chestX * 0.03;
-const areola = (x) => {
-  const anc = [x, puffFrontY(x, nipZ), nipZ];
-  const coin = sdf.sphere(surfR + eps).translate([anc[0], anc[1] + surfR, anc[2]]).intersect(
-    sdf.cylinder(areolaR, (surfR + eps) * 2.2).rotate([90, 0, 0]).translate(anc),
-  );
-  return coin.union(sdf.sphere(tinyNip).translate([anc[0], anc[1] - tinyNip * 0.5, anc[2]]));
-};
-const areolae = sdf.union(areola(nipDX), areola(-nipDX)).label('areola');
+// (Flush areolae are seated on the welded `skin` surface below, after it's built.)
 
 const trapL = sdf.ellipsoid(
   r.upperArm * 1.2, r.upperArm * 0.75, r.upperArm * 1.0,
@@ -190,6 +169,24 @@ const skin = F.weld(rig, [
   armL,
   armR,
 ], { k: r.lowerArm * 0.7 }).label('skin');
+
+// Flush areolae on the PUFFED pec surface. F.nipples rides rig.torso (the
+// un-puffed base chest, behind this custom puff), so seat them ourselves on the
+// real welded `skin`: each areola is the body's OWN front surface within
+// areolaR of the puff-front anchor — flush by construction (no proud coin, no
+// sunk rim) — plus a tiny nipple nub. Hard-union at top level for its paint.
+const nipZ = puffC[2] + puffR[2] * 0.04;        // high on the pec, above the puff centre
+const nipDX = r.chestX * 0.5;
+const puffFrontY = (x, z) => puffC[1] - puffR[1] * Math.sqrt(
+  Math.max(0, 1 - (x / puffR[0]) ** 2 - ((z - puffC[2]) / puffR[2]) ** 2));
+const areolaR = r.chestX * 0.16;
+const tinyNip = r.chestX * 0.04;
+const areola = (x) => {
+  const anc = [x, puffFrontY(x, nipZ), nipZ];
+  const disc = skin.intersect(sdf.sphere(areolaR).translate(anc));
+  return disc.union(sdf.sphere(tinyNip).translate([anc[0], anc[1] - tinyNip * 0.5, anc[2]]));
+};
+const areolae = sdf.union(areola(nipDX), areola(-nipDX)).label('areola');
 
 // 5. SHORT TRUNKS — high-cut bodybuilding shorts
 const trunkCuffZ = j.upperLegL[2] + r.upperLeg * 0.4;
