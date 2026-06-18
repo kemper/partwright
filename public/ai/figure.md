@@ -931,15 +931,17 @@ F.clothing.panel(rig, { side, top, bottom, wrap, thickness, label })
 //   side:   'front' (−Y, default) | 'back' (+Y) | 'both' (a front+back drape)
 //   top:    'neck' | 'chest' (default) | 'waist'         — or a raw world Z
 //   bottom: 'waist' | 'hip' | 'thigh' (default) | 'knee' | 'shin' | 'ankle' — or Z
-//   wrap:   half-width × the hip half-width (1 ≈ hip-wide; >1 curls toward the back)
+//   wrap:   half-width × the hip half-width (default 1.15; 1 ≈ hip-wide; >1 curls
+//           toward the back)
 //   thickness: fabric offset; defaults to sit PROUD of top+pants so it layers on
 //              TOP of them (too thin → it buries under them and paints nothing).
 //   Recipes:  bib       = panel({ side:'front', top:'neck',  bottom:'waist' })
 //             tabard    = panel({ side:'both',  top:'chest', bottom:'thigh' })
 //             loincloth = panel({ side:'front', top:'waist', bottom:'thigh', wrap:0.8 })
 //             cape      = panel({ side:'back',  top:'neck',  bottom:'knee', wrap:1.4 })
-F.clothing.apron(rig, { top, bottom, wrap, thickness, label })
-//   Front apron preset (chest → thigh, label 'apron') — a thin wrapper over panel.
+F.clothing.apron(rig, { side, top, bottom, wrap, thickness, label })
+//   Front apron preset (chest → thigh, label 'apron') — a thin wrapper that
+//   accepts EVERY panel option (incl. side), just with apron defaults.
 ```
 
 > **Aprons/bibs/capes — ALWAYS use `F.clothing.panel`/`apron`, never a hand-rolled

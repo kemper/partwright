@@ -1248,6 +1248,8 @@ describe('figure panel — conforming apron/bib/tabard/cape', () => {
     expect(() => buildPanel(api, rig, { top: 'forehead' })).toThrow(/top/);
     expect(() => buildPanel(api, rig, { bottom: 'toe' })).toThrow(/bottom/);
     expect(() => buildPanel(api, rig, { wobble: 1 })).toThrow();
+    // The apron preset surfaces its OWN name in validation errors, not panel's.
+    expect(() => buildApron(api, rig, { wobble: 1 })).toThrow(/apron/);
   });
 });
 

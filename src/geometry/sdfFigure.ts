@@ -3904,11 +3904,13 @@ function panelLevel(v: unknown, table: Record<string, number>, def: string, name
 //         the panel layers on TOP of them (too thin and it buries → paints
 //         nothing, exactly what model:preview's 0-triangle-label warning flags).
 // `label`  paint-region name applied to the result.
-function buildPanel(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
-  const o = obj(opts, 'panel(opts)');
-  assertNoUnknownKeys(o, ['side', 'top', 'bottom', 'wrap', 'thickness', 'label'], 'panel(opts)');
-  const side = o.side === undefined ? 'front' : assertEnum(o.side, ['front', 'back', 'both'] as const, 'panel.side');
-  if (o.label !== undefined && typeof o.label !== 'string') throw new ValidationError('panel.label must be a string');
+function buildPanel(sdf: SdfApi, rig: Rig, opts?: unknown, opName = 'panel'): Node {
+  // `opName` lets the apron preset surface its OWN name in validation errors
+  // (an unknown key on apron(...) shouldn't blame panel(...)).
+  const o = obj(opts, `${opName}(opts)`);
+  assertNoUnknownKeys(o, ['side', 'top', 'bottom', 'wrap', 'thickness', 'label'], `${opName}(opts)`);
+  const side = o.side === undefined ? 'front' : assertEnum(o.side, ['front', 'back', 'both'] as const, `${opName}.side`);
+  if (o.label !== undefined && typeof o.label !== 'string') throw new ValidationError(`${opName}.label must be a string`);
   const j = rig.joints, r = rig.r;
 
   // Named coverage heights → world Z. A taller bib reaches the collarbones; a
@@ -3926,12 +3928,12 @@ function buildPanel(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     shin: mix(j.lowerLegL[2], j.footL[2], 0.5),
     ankle: j.footL[2] + r.lowerLeg,
   };
-  const topZ = panelLevel(o.top, TOPS, 'chest', 'panel.top');
-  const botZ = panelLevel(o.bottom, BOTS, 'thigh', 'panel.bottom');
-  const wrap = num(o.wrap, 1.15, 'panel.wrap', 0.1);
+  const topZ = panelLevel(o.top, TOPS, 'chest', `${opName}.top`);
+  const botZ = panelLevel(o.bottom, BOTS, 'thigh', `${opName}.bottom`);
+  const wrap = num(o.wrap, 1.15, `${opName}.wrap`, 0.1);
   // Default thickness clears BOTH default under-garments (top ≈ chestY·0.3,
   // pants ≈ upperLeg·0.3) with margin, so the panel sits proud and paints.
-  const t = num(o.thickness, Math.max(r.chestY, r.upperLeg) * 0.3 + r.chestY * 0.08, 'panel.thickness', 0.01);
+  const t = num(o.thickness, Math.max(r.chestY, r.upperLeg) * 0.3 + r.chestY * 0.08, `${opName}.thickness`, 0.01);
 
   // The body the panel lies on (torso + legs so a long panel still has a
   // surface to hug below the hips), offset outward by the fabric thickness.
@@ -3964,7 +3966,9 @@ function buildPanel(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
 // front/back garments (bib, tabard, loincloth, cape) are buildPanel recipes.
 function buildApron(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'apron(opts)');
-  return buildPanel(sdf, rig, { label: 'apron', ...o });
+  // Accepts every panel option (incl. `side`); `opName: 'apron'` keeps
+  // validation errors named for the function the caller actually invoked.
+  return buildPanel(sdf, rig, { label: 'apron', ...o }, 'apron');
 }
 
 // --- Body weld ------------------------------------------------------------
@@ -4104,7 +4108,8 @@ export interface FigureNamespace {
      *  window) so it hugs the curved torso and never passes through it.
      *  `opts`: `{ side: 'front'|'back'|'both', top, bottom, wrap, thickness,
      *  label }`. `top`/`bottom` accept a named landmark ('neck'/'chest'/'waist',
-     *  'hip'/'thigh'/'knee'/'shin'/'ankle') or a raw world Z. */
+     *  'hip'/'thigh'/'knee'/'shin'/'ankle') or a raw world Z. `wrap` defaults to
+     *  1.15 (a little past hip-wide). */
     panel(rig: Rig, opts?: object): Node;
     /** Front apron preset (chest → thigh, labelled 'apron'). A thin wrapper
      *  over {@link panel}; pass any panel option to customise. */
