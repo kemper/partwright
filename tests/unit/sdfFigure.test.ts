@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildTorso, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildLegs, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -944,6 +944,23 @@ describe('figure brows — flush, labelled, preset-driven (#724)', () => {
     }
   });
 
+  it("conformal `on` path: still labels 'brows' and builds non-degenerate geometry", () => {
+    // `on` seats the brow as a conformal offset of the real surface (surfaceMarking)
+    // — surface.round(proud) ∩ arc — rather than the legacy sunk strip. A head-sized
+    // sphere stands in for the face surface; the offset must actually intersect the
+    // arc region (a zero proud or a missed region would yield an empty/degenerate
+    // patch), and the 'brows' label must survive the offset+clip.
+    const surf = api.sphere(rig.r.head * 1.4).translate(rig.joints.head as Vec3);
+    const brow = buildBrows(api, rig, { shape: 'natural', on: surf });
+    expect(labelsOf(brow)).toEqual(['brows']);
+    const b = brow.bounds();
+    expect(b.max[0] - b.min[0]).toBeGreaterThan(0);            // lateral span (the brow pair)
+    expect(b.max[2] - b.min[2]).toBeGreaterThan(0);            // vertical band
+    // Seated at the brow height, not adrift (within a head radius of the anchors).
+    const browZ = (rig.face.browL[2] + rig.face.browR[2]) / 2;
+    expect(Math.abs((b.max[2] + b.min[2]) / 2 - browZ)).toBeLessThan(rig.r.head);
+  });
+
   it("'bushy' is a thicker (taller) brow than 'thin'", () => {
     // Vertical extent of the strip ≈ its band thickness (+arch); bushy's wider
     // band dominates so the strip is clearly taller than the thin line.
@@ -1172,6 +1189,77 @@ describe('figure pants — posed-leg coverage', () => {
   });
 });
 
+describe('figure top — dress/gown coverage', () => {
+  it('a floor-length sleeveless gown still covers the chest on a tall figure', () => {
+    // Regression (#topless-runway-gown): the hem "half-space" was a fixed
+    // `big`-tall box, too short for a floor-length hem on a tall figure (chest
+    // sits high in Z, `chestX` — hence `big` — is small). Its TOP sliced through
+    // the chest/shoulders and amputated the whole bodice, leaving a bare torso
+    // over a cone skirt. Build a runway-like rig + floor-length gown and assert
+    // the bust and chest are INSIDE the garment.
+    const rig = buildRig({ height: 72, headsTall: 8.5, sex: 'female', build: 'slim', weight: 0.3, bust: 0.4 });
+    const hemZ = rig.opts.height * 0.06;             // near the ground
+    const gown = buildTop(api, rig, { sleeve: 'none', hemZ }) as SdfNode;
+    // The bust apexes sit on the skin surface; the garment offsets outward, so
+    // each must be strictly inside. Before the fix these evaluated > 0 (clipped).
+    const mounds = breastMounds(rig.joints, rig.r, rig.opts.bust);
+    expect(mounds).not.toBeNull();
+    if (mounds) {
+      expect(gown.evaluate(...(mounds.apexL as [number, number, number]))).toBeLessThan(0);
+      expect(gown.evaluate(...(mounds.apexR as [number, number, number]))).toBeLessThan(0);
+    }
+    // The chest-front surface (centre line, one chest-depth forward) is covered.
+    const C = rig.joints.chest;
+    expect(gown.evaluate(C[0], C[1] - rig.r.chestY, C[2])).toBeLessThan(0);
+  });
+
+  it('a dress skirt covers the OUTER thigh (legs do not poke through the cone)', () => {
+    // Regression (#dress-outer-thigh): the skirt was a centered cone with NO leg
+    // coverage, so a spread leg poked through its side at mid-thigh as a bare-skin
+    // patch. The dress now folds the legs (offset by `t`) into the coverage, so the
+    // outer-thigh skin surface must be strictly inside the garment.
+    const rig = buildRig({ height: 56, headsTall: 7, sex: 'female', build: 'average', weight: 0.5,
+      pose: { legL: { raiseSide: 8 }, legR: { raiseSide: 8 } } });
+    const j = rig.joints, r = rig.r;
+    const legs = buildLegs(api, rig) as SdfNode;
+    const dress = buildTop(api, rig, { sleeve: 'none', hemZ: rig.opts.height * 0.18 }) as SdfNode;
+    // Walk between hip and knee; at each height march OUTWARD (+x) from the leg
+    // centre to the skin surface and assert the dress encloses it. Sample at y=0
+    // (the leg's coronal mid-slice): the bug is purely lateral — the leg's widest
+    // +x bulge punching through the cone's side — so y=0 is the worst case.
+    for (let f = 0.2; f <= 0.8; f += 0.2) {
+      const z = j.upperLegL[2] * (1 - f) + j.lowerLegL[2] * f;
+      const cx = j.upperLegL[0] * (1 - f) + j.lowerLegL[0] * f;
+      let xSkin = null as number | null;
+      for (let x = cx; x < cx + 10; x += 0.05) { if (legs.evaluate(x, 0, z) > 0) { xSkin = x - 0.05; break; } }
+      expect(xSkin).not.toBeNull();
+      if (xSkin !== null) expect(dress.evaluate(xSkin, 0, z)).toBeLessThan(0);
+    }
+  });
+
+  it('a non-dress top does NOT wrap the legs (a shirt is not pants)', () => {
+    // The leg coverage is gated on the dress branch (hem below the pelvis); a
+    // normal waist-length top must leave the thighs bare.
+    const rig = buildRig({ height: 60, headsTall: 7 });
+    const top = buildTop(api, rig, { sleeve: 'short' }) as SdfNode;
+    const K = rig.joints.lowerLegL;
+    expect(top.evaluate(K[0], K[1], K[2])).toBeGreaterThan(0);
+  });
+
+  it('the gown hem stops the skirt: just below hemZ is outside, just above is inside', () => {
+    // Guards the hem BOTTOM edge (so the coverage-clip fix above doesn't
+    // over-correct and regress the hemline) — NOT the #topless-runway-gown
+    // defect itself, which was the box TOP and is covered by the test above.
+    const rig = buildRig({ height: 72, headsTall: 8.5, sex: 'female', build: 'slim', weight: 0.3, bust: 0.4 });
+    const hemZ = rig.opts.height * 0.06;
+    const gown = buildTop(api, rig, { sleeve: 'none', hemZ }) as SdfNode;
+    // On the body centre line, a point above the hem is inside the skirt; a point
+    // well below the hem is outside (the hem still cuts the bottom edge).
+    expect(gown.evaluate(0, 0, hemZ + 4)).toBeLessThan(0);
+    expect(gown.evaluate(0, 0, hemZ - 4)).toBeGreaterThan(0);
+  });
+});
+
 describe('figure footwear — shoes & boots', () => {
   it('shoes wrap each foot (sole point is inside)', () => {
     const rig = buildRig({});
@@ -1182,6 +1270,22 @@ describe('figure footwear — shoes & boots', () => {
       const sole = [A[0], A[1], A[2] - rig.r.foot];
       expect(shoes.evaluate(sole[0], sole[1], sole[2])).toBeLessThan(0);
     }
+  });
+
+  it('hugs the foot — the shoe is not grossly longer than the bare foot', () => {
+    // Guards the 2026-06 footwear/foot drift: the footwear last + heel + coverage
+    // were authored (2026-06-13) for a long-heeled foot the very next day's reshape
+    // (2026-06-14, "length in the forefoot, shallow heel") shrank — but the shoe was
+    // never resized, so it ran ~1.7× the foot (heel jutting behind, club toe). Both
+    // feet point the same way for a neutral stance, so the union's heel→toe (Y) span
+    // is one shoe's length; assert it stays within a natural shoe margin of the foot.
+    const rig = buildRig({});
+    const feet = buildFeet(api, rig) as SdfNode;
+    const shoes = buildShoes(api, rig) as SdfNode;
+    const fy = feet.bounds().max[1] - feet.bounds().min[1];
+    const sy = shoes.bounds().max[1] - shoes.bounds().min[1];
+    expect(sy).toBeGreaterThan(fy);          // a shoe is a touch longer than the foot
+    expect(sy / fy).toBeLessThan(1.4);       // …but not the old ~1.7× clown shoe
   });
 
   it("boots add a shaft up the shank that shoes leave bare", () => {

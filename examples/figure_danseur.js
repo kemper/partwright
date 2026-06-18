@@ -64,7 +64,7 @@ const skin = F.weld(rig, [
 ]).label('skin');
 
 // 3b. NIPPLES — top-level part, self-labels 'areola' (don't .label() it).
-const nipples = F.nipples(rig);
+const nipples = F.nipples(rig, { on: skin });
 
 // 4. TIGHTS — high-waisted slim ballet tights, full length.
 const tights = F.clothing.pants(rig, {

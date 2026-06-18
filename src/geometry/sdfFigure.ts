@@ -719,11 +719,14 @@ function buildRig(rawOpts: unknown): Rig {
   // spine-transformed, so a leaning figure carries its nipples with the chest.
   const tm = torsoMasses(joints, r, belly);
   const mounds = breastMounds(joints, r, bust);
+  // Muscled chests bulge a pec mass forward of the bare chest; the areola rides
+  // its apex (like it rides the mound apex for bust) so it doesn't sink in.
+  const pecs = pecApex(joints, r, muscle, pose.spine);
   const nippleZ = nippleLineZ(joints.upperArmL[2], joints.hips[2], headH);   // upper chest, ≈0.62 head below the shoulder
   const nippleDX = r.chestX * 0.42;                      // half the inter-nipple span
   const torsoAnchors: TorsoAnchors = {
-    nippleL: mounds ? mounds.apexL : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, nippleDX, nippleZ),
-    nippleR: mounds ? mounds.apexR : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, -nippleDX, nippleZ),
+    nippleL: mounds ? mounds.apexL : pecs ? pecs.apexL : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, nippleDX, nippleZ),
+    nippleR: mounds ? mounds.apexR : pecs ? pecs.apexR : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, -nippleDX, nippleZ),
     navel: ellipsoidFront(tm.belly.c, tm.belly.a, tm.belly.b, tm.belly.cz, 0, navelZ),
   };
 
@@ -893,6 +896,51 @@ function breastMounds(j: Record<string, Vec3>, r: Record<string, number>, bust: 
   return { L: L.mound, R: Rr.mound, apexL: L.apex, apexR: Rr.apex, radius: R };
 }
 
+/** Per-side PECTORAL-mass front apex + curvature, for seating the nipple/areola
+ *  on a MUSCLED chest — the `muscle`-axis analog of {@link breastMounds} for
+ *  `bust`. The pec ellipsoids `buildTorso` welds bulge FORWARD of the base chest
+ *  ellipsoid the bare-chest anchor rides, so on a muscled figure the areola has
+ *  to ride the PEC apex or it sinks into the pec (only a partial rim pokes
+ *  through — the buried/stuck-on areola the old muscle-scaled `eps` push hacked
+ *  around). Geometry MUST match buildTorso's `pec(sx)` ellipsoid — built in the
+ *  REST frame then spine-leaned — or the anchor drifts off the surface. Returns
+ *  WORLD-frame apexes (the rest apex rotated by the spine lean) so the leaning
+ *  figure carries its nipples with the chest, exactly like the bare anchor.
+ *  `null` when muscle is 0 (no pec mass — ride the bare chest). */
+function pecApex(
+  j: Record<string, Vec3>, r: Record<string, number>, muscle: number,
+  sp: { lean: number; turn: number; side: number },
+): { apexL: Vec3; apexR: Vec3; radius: number } | null {
+  if (muscle <= 0) return null;
+  const m = muscle;
+  const pivot: Vec3 = [0, 0, j.spine[2]];
+  const leaned = sp.lean !== 0 || sp.turn !== 0 || sp.side !== 0;
+  // Rest-frame (un-leaned) chest/shoulder anchors — buildTorso's `restPt`.
+  const restPt = (p: Vec3): Vec3 =>
+    leaned ? add3(pivot, rotZ(rotX(rotY(sub3(p, pivot), -sp.side), -sp.lean), -sp.turn)) : p;
+  // Forward spine rotation of a single point (the inverse of restPt) — the
+  // point-wise form of buildTorso's `spineTx` so the apex lands on the leaned pec.
+  const spineRotPt = (p: Vec3): Vec3 =>
+    leaned ? add3(pivot, rotY(rotX(rotZ(sub3(p, pivot), sp.turn), sp.lean), sp.side)) : p;
+  const chestR = restPt(j.chest), armR = restPt(j.upperArmL);
+  // The pec ellipsoid — IDENTICAL to buildTorso's `pec(sx)`.
+  const pecZ = mix(chestR[2], armR[2], 0.18);
+  const pecY = -r.chestY * (0.5 + 0.18 * m);
+  const aPec = r.chestX * (0.42 + 0.05 * m);   // lateral semi-axis
+  const bPec = r.chestY * (0.45 + 0.18 * m);   // forward (depth) semi-axis
+  const czPec = r.chestY * (0.52 + 0.12 * m);  // vertical semi-axis
+  const cx = r.chestX * 0.4;                   // pec centre x (matches buildTorso)
+  // Seat the areola at the same head-unit nipple line the bare anchor uses, but
+  // projected onto the PEC front (rest frame), then lean it into world.
+  const nz = nippleLineZ(armR[2], j.hips[2], r.head / 0.46);
+  const apex = (sx: 1 | -1): Vec3 =>
+    spineRotPt(ellipsoidFront([sx * cx, pecY, pecZ], aPec, bPec, czPec, 0, nz));
+  // surfR rides the pec's TALL (vertical) semi-axis, not its shallow depth, so
+  // the flush coin matches the elongated pec curvature and its rim doesn't sink
+  // (the clipping seen when a depth-sized sphere curves away faster than the pec).
+  return { apexL: apex(1), apexR: apex(-1), radius: czPec };
+}
+
 /** A shallow navel dimple — a sphere centred just OUTSIDE the belly surface so
  *  `smoothSubtract` carves only a cap-deep crater. `depth` (0..1.5) slides the
  *  centre inward to deepen it. */
@@ -1004,9 +1052,43 @@ function buildTorso(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     assertNoUnknownKeys(no, ['size', 'depth'], 'torso.navel');
     const size = num(no.size, r.chestX * 0.16, 'torso.navel.size', 1e-3);
     const depth = num(no.depth, 0.5, 'torso.navel.depth', 0, 1.5);
-    body = body.smoothSubtract(navelPit(sdf, rig.torso.navel, size, depth), size * 0.55);
+    body = surfaceRecess(body, navelPit(sdf, rig.torso.navel, size, depth), size * 0.55);
   }
   return body;
+}
+
+// ── Conformal surface features (issue #738) ────────────────────────────────
+// Two engine helpers for attaching a feature to a figure's REAL surface rather
+// than welding a separate primitive that APPROXIMATES it — the bug class behind
+// the areola/brow/eye fragility, where an analytic curvature guess jutted or
+// buried the feature and a coincident label dithered the paint. Both derive
+// their geometry from the actual body via `.round()` (SDF `f ∓ r`: an offset
+// along the TRUE normal everywhere), so they conform to whatever surface is
+// there with no guess. The two cases are deliberately separate ops because they
+// don't share a mechanism: a marking is ADDED (union) and carries a paint label;
+// a recess is REMOVED (subtract) and — being a void — cannot.
+
+/** A PROUD, paintable surface MARKING (areola, brow, …): `surface` grown outward
+ *  by `relief` along its true normal, clipped to `region`, with the rim softened
+ *  (`soften`) so it slopes back into the skin instead of ending in a hard wall.
+ *  Hard-union the result at the figure's TOP level and `.label()` it — standing
+ *  `relief` proud, the marking owns its own triangles so the label paints
+ *  cleanly (a flush/coincident marking dithers in the nearest-source label
+ *  transfer). `relief` must clear ~one local detail triangle, so the feature
+ *  also needs a matching `faceDetail` region; keep it small for a near-flush
+ *  look. The shape is fully conformal regardless of `relief`. */
+function surfaceMarking(surface: Node, region: Node, relief: number, soften: number): Node {
+  return surface.round(relief).smoothIntersect(region, soften);
+}
+
+/** A RECESS carved into `body` (navel, groove): subtracts `cutter` smoothly.
+ *  NOTE — a carved void CANNOT carry a paint label: colour rides positive,
+ *  unioned nodes (the nearest-source transfer has nothing to attach to on a
+ *  carved wall), so a recess paints as the surrounding skin. For a COLOURED
+ *  recess, pair this with a `surfaceMarking` shell seated inside the cavity (the
+ *  teeth-through-cavity pattern in `buildMouthAccents`). */
+function surfaceRecess(body: Node, cutter: Node, soften: number): Node {
+  return body.smoothSubtract(cutter, soften);
 }
 
 /** Flush, paintable areola discs + a tiny nipple nub, for hard-unioning at the
@@ -1019,45 +1101,78 @@ function buildTorso(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
  *  slightly darker shade of the skin (see `F.areolaColor`). */
 function buildNipples(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'nipples(opts)');
-  assertNoUnknownKeys(o, ['size', 'nipple'], 'nipples(opts)');
+  assertNoUnknownKeys(o, ['size', 'nipple', 'on'], 'nipples(opts)');
   const r = rig.r;
   const size = num(o.size, r.chestX * 0.16, 'nipples.size', 1e-3);     // areola radius
-  const nipR = num(o.nipple, r.chestX * 0.05, 'nipples.nipple', 0);    // tiny nipple nub
-  const mounds = breastMounds(rig.joints, r, rig.opts.bust);
-  // Local radius of curvature for the flush clip: the mound radius if there is a
-  // mound, else a broad radius approximating the gently-curved bare chest.
-  const surfR = mounds ? mounds.radius : r.chestX * 1.4;
-  // Proud enough to win the union. On a BARE muscled chest the pectoral masses
-  // bulge FORWARD of the chest ellipsoid the anchor rides, so once the nipple
-  // line sits up on the chest (the raised, anatomically-correct height) the pec
-  // can swallow the flush disc — the 'areola' label then resolves to 0
-  // triangles. Add muscle-scaled proudness so the coin still pokes past the pec.
-  // Mound (bust) figures ride the already-proud mound apex, so they don't need
-  // it; at muscle 0 this is a no-op and the disc is byte-identical.
-  const eps = Math.max(r.chestX * 0.03, 0.06) + (mounds ? 0 : r.chestY * 0.35 * rig.opts.muscle);
-  // Soften the flush-disc PERIMETER (#703). The hard cylinder∩sphere edge is a
-  // knife rim — at the coarse chest grid (no detail region runs over the torso)
-  // it slivered into a torn, faceted ring (the same flush-disc-edge problem as
-  // the iris). A small smoothIntersect rounds that rim into a gentle fillet that
-  // meshes cleanly without a finer grid; the disc face stays flat and the
-  // 'areola' label still resolves to a generous paintable region (the round only
-  // bevels the very edge). Scaled to the disc so it never eats the whole coin.
-  const edgeK = Math.min(size * 0.35, eps * 1.2);
-  // The clip cylinder must be a SHORT slab seated AT the surface, not the old
-  // full-depth tube (#706). The curved chest is approximated by `clip`, a big
-  // sphere of curvature radius surfR whose front pole sits eps proud of the
-  // anchor; the buried back of that sphere reaches ~2·surfR INTO the body. The
-  // old cylinder spanned (surfR+eps)·2.2 centred on the anchor, so the
-  // intersection ran ~1.1·surfR behind the anchor — a deep plug that, on a
-  // narrow/shallow (elderly, lean) bare chest, punched a rod clean out the BACK.
-  // Bound the coin's depth to a shallow seat instead: it pokes `eps` proud and
-  // sinks only `discDepth` into the body (enough to weld under the hard union),
-  // so the back face stays buried near the front surface and can never exit.
-  const discDepth = Math.min(size * 0.6, surfR * 0.35, r.chestY * 0.5);
-  const cylLen = eps + discDepth;                                      // proud cap + buried seat
+  const nipR = num(o.nipple, r.chestX * 0.04, 'nipples.nipple', 0);    // tiny nipple nub
+  // `on` — the body Node to seat the areolae FLUSH against. When supplied (the
+  // recommended path; pass the `skin` weld), each areola is the body's OWN front
+  // surface within `size` of the nipple anchor, relabelled — so it CONFORMS to
+  // whatever chest is actually there (bare, pectoral, mound, fat) and is flush by
+  // construction. No curvature guess, so it can never sit proud as a "patty" nor
+  // sink its rim into the body — the two failure modes the approximating coin
+  // (below) traded between. `union(body, areola)` adds zero relief (the areola is
+  // a subset of the body), and the 'areola' label resolves the surface disc.
+  const body = o.on as Node | undefined;
+  // The areola is a CONFORMAL OFFSET of the torso — the "clothing" model. It is
+  // the body's own surface grown outward by a thin, uniform amount (`.round(t)`,
+  // i.e. SDF `f − t`, which pushes the iso-surface out along the TRUE normal
+  // everywhere), then clipped to the nipple region by a column. So it follows
+  // whatever chest is actually there — bare, pec, mound, belly — perfectly,
+  // standing proud by exactly `t` at every point. No analytic curvature guess
+  // (the failure mode of the old coin: a wrong guess jutted on one figure and
+  // sank on another), and no flat disc face that can only kiss a curved chest
+  // at its centre.
+  //
+  // Why `t` can't be zero: a perfectly-flush (coincident) layer can't PAINT.
+  // The bake assigns each final triangle to the nearest SOURCE shape, so a layer
+  // sitting exactly on the skin is a per-triangle coin-flip between 'areola' and
+  // 'skin' → the dithered/hatched, faded blob the flush attempt shipped. The
+  // offset must clear ~one detail-triangle (chest detail edge ≈ chestX·0.03) for
+  // the 'areola' label to own its triangles cleanly, so `t` is a small fixed
+  // fraction of the chest — the THICKNESS knob; the SHAPE is fully conformal.
+  // Kept just above the chest-detail triangle (`chestEdgeLength ≈ chestX·0.018`,
+  // ~1.7× it) — as flush as the local mesh allows without the paint dithering.
+  const t = Math.max(r.chestX * 0.03, 0.09);
   const at = (anchor: Vec3): Node => {
-    const sc: Vec3 = [anchor[0], anchor[1] + surfR, anchor[2]];        // clip sphere behind the anchor
-    const cylCY = anchor[1] + (discDepth - eps) / 2;                   // centre of the thin slab
+    if (body !== undefined) {
+      // Forward COLUMN scoping the offset to the nipple. Axis ≈ −Y (chest front);
+      // reaches well in front (empty space is trimmed by the body) and is bounded
+      // INSIDE the body at the back so it can't raise a second patch on the spine.
+      const fwd = r.chestY * 0.9;   // column reach in front of the surface
+      const back = r.chestY * 0.55; // column reach inside the body (< half-depth)
+      const cylCY = anchor[1] + (back - fwd) / 2;
+      const col = (rad: number): Node =>
+        sdf.cylinder(rad, fwd + back).rotate([90, 0, 0]).translate([anchor[0], cylCY, anchor[2]]);
+      // Disc: torso grown by `t`, clipped to `size`. `surfaceMarking`'s soft clip
+      // rolls the rim off — instead of a hard cylinder wall (a `t`-tall step → a
+      // visible edge), the raised offset tapers gradually from its proud centre
+      // back into the skin, so the areola reads as a gentle dome, not a disc. The
+      // soften radius (≈ `size·0.7`) is large vs `t`, so it's mostly slope.
+      let patch = surfaceMarking(body, col(size), t, size * 0.7);
+      if (nipR > 0) {
+        // Nipple: a narrower region grown a hair more — a subtle central bump.
+        patch = patch.union(surfaceMarking(body, col(nipR), t + nipR * 0.5, nipR));
+      }
+      return patch;
+    }
+    return legacyCoin(anchor);
+  };
+
+  // --- Legacy approximating coin (only when `on` is omitted) ---------------
+  // A sphere-clipped disc that APPROXIMATES the local curvature. Kept for
+  // back-compat, but it's finicky: too flat a `surfR` sits proud (patty), too
+  // curved sinks the rim. Prefer the flush `on` path above.
+  const mounds = breastMounds(rig.joints, r, rig.opts.bust);
+  const pecs = pecApex(rig.joints, r, rig.opts.muscle, rig.opts.pose.spine);
+  const surfR = mounds ? mounds.radius : pecs ? pecs.radius : r.chestX * 1.4;
+  const eps = Math.max(r.chestX * 0.03, 0.06);
+  const edgeK = Math.min(size * 0.35, eps * 1.2);
+  const discDepth = Math.min(size * 0.6, surfR * 0.35, r.chestY * 0.5);
+  const cylLen = eps + discDepth;
+  function legacyCoin(anchor: Vec3): Node {
+    const sc: Vec3 = [anchor[0], anchor[1] + surfR, anchor[2]];
+    const cylCY = anchor[1] + (discDepth - eps) / 2;
     const coin = sdf.sphere(surfR + eps).translate(sc).smoothIntersect(
       sdf.cylinder(size, cylLen).rotate([90, 0, 0]).translate([anchor[0], cylCY, anchor[2]]),
       edgeK,
@@ -1065,7 +1180,8 @@ function buildNipples(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     return nipR > 0
       ? coin.union(sdf.sphere(nipR).translate([anchor[0], anchor[1] - nipR * 0.5, anchor[2]]))
       : coin;
-  };
+  }
+
   return at(rig.torso.nippleL).union(at(rig.torso.nippleR)).label('areola');
 }
 
@@ -1595,18 +1711,32 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
 
     // ─── Build the shoe body in a LOCAL frame ───────────────────────────────
     //  origin = footprint centre on the ground, +Y = toe, +X = lateral, +Z = up.
-    //  The bare foot spans ≈ ±0.78·footLen heel↔toe and ≈ ±0.8·r.foot laterally
-    //  about this origin, with its underside near +Z 0 (groundZ) — so everything
-    //  below is sized to swallow that. `soleTopZ` is where the upper sits on the
-    //  sole; we build the upper from there up and let the coverage underlayer
-    //  fill the gap down to groundZ. The silhouette reads as a real shoe: one
-    //  smooth ellipsoid LAST whose ends curve down into a toe-spring at the front
-    //  and round into the HEEL at the back, a low heel fill, an ANKLE COLLAR rise
-    //  at the opening — and (boots) a shaft — over a wide flat two-tier SOLE.
+    //  Sized to the bare foot `buildFeet` actually makes: a SHORT heel just behind
+    //  the ankle (ankle at local Y −0.12·footLen) and the length carried FORWARD
+    //  into the forefoot (toe ≈ +0.49·footLen). The foot was reshaped this way on
+    //  2026-06-14 but the footwear (authored 2026-06-13 for the old long-heeled
+    //  foot at ±0.86·footLen) was never resized — so the shoe ran ~2× the foot:
+    //  a heel jutting out behind the leg and a long club toe. We mirror the foot's
+    //  own landmarks here, plus a thin wall + small toe-spring, so the shoe hugs
+    //  the foot. Underside near +Z 0 (groundZ); everything below swallows the foot.
+    //  `soleTopZ` is where the upper sits on the sole; we build the upper from there
+    //  up and let the coverage underlayer fill the gap down to groundZ. The
+    //  silhouette reads as a real shoe: one smooth ellipsoid LAST whose ends curve
+    //  down into a toe-spring at the front and round into the HEEL at the back, a
+    //  low heel fill, an ANKLE COLLAR rise at the opening — and (boots) a shaft —
+    //  over a wide flat two-tier SOLE.
     const soleTopZ = soleOn ? groundZ + soleThick : groundZ;
     const wallT = t;                               // upper-wall thickness over skin
     const hw = r.foot * 0.78 * size + wallT;        // upper half-width (foot + wall)
-    const heelY = -footLen * 0.72;                  // heel back (local −Y)
+    // Bare-foot fore/aft landmarks (mirror buildFeet): ankle at −0.12·footLen, a
+    // short heel ≈0.95·r.foot behind it, the toe well forward at +0.49·footLen.
+    const ankleY = -footLen * 0.12;
+    const footHeelY = ankleY - r.foot * 0.95;       // bare-foot heel back (local −Y)
+    const footToeY = footLen * 0.49;                // bare-foot toe front (local +Y)
+    // Shoe = foot + a thin wall, plus a small toe-spring margin at the front.
+    const shoeHeelY = footHeelY - wallT;            // heel back (local −Y)
+    const shoeToeY = footToeY + wallT + footLen * 0.04;
+    const heelY = shoeHeelY;                        // heel back (local −Y)
     // The last reaches the GROUND (local Z 0); the sole is later sliced off its
     // bottom so it follows the foot's own curvature (not a separate cuboid).
     const bodyLow = 0;
@@ -1614,15 +1744,18 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     const footTopZ = (sz - groundZ) + r.foot * 0.62;   // top of the bare-foot mass
     const instepZ = footTopZ + wallT;                  // crown over the instep
 
-    // MAIN LAST — one long, smooth ellipsoid spanning the whole footprint (heel→
-    // toe). An ellipsoid tapers and rounds at BOTH ends, so the front naturally
-    // curves down to a toe-spring and the back rounds into the heel — a single
-    // continuous shoe-last form rather than separate blobs. Its flat bottom comes
-    // from the sole clip; the foot-mass underlayer guarantees the ends stay shod.
+    // MAIN LAST — one smooth ellipsoid spanning the foot heel→toe. An ellipsoid
+    // tapers and rounds at BOTH ends, so the front naturally curves down to a
+    // toe-spring and the back rounds into the heel — a single continuous shoe-last
+    // form rather than separate blobs. Its flat bottom comes from the sole clip;
+    // the foot-mass underlayer guarantees the ends stay shod. Its fore/aft span is
+    // the shoe heel↔toe (above), so the shoe hugs the foot instead of overhanging.
     const bodyTopZ = instepZ;                           // crown over the instep/arch
     const lastRZ = bodyTopZ - bodyLow;                  // last half-height at the crest
-    const last = sdf.ellipsoid(hw, footLen * 0.86, lastRZ)
-      .translate([0, -footLen * 0.04, bodyLow]);
+    const lastCY = (shoeToeY + shoeHeelY) / 2;          // last centre (heel↔toe midpoint)
+    const lastRY = (shoeToeY - shoeHeelY) / 2;          // last half-length
+    const last = sdf.ellipsoid(hw, lastRY, lastRZ)
+      .translate([0, lastCY, bodyLow]);
 
     // HEEL — a low rounded mass that fills out the back of the last to the heel
     // tip without rising above the instep (the tall rise to the ankle is the
@@ -1676,13 +1809,19 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
       // the foot (its ankle column tracks the pivot; the boot shaft stays world).
       const szL = sz - groundZ;                       // local Z of the sole-capsule centre
       const ankleLY = -sole0.length * 0.12;
+      // Coverage sized to the SHORT bare foot (heel ≈0.95·r.foot behind the ankle,
+      // toe forward) — not the old long heel — so it doesn't poke out behind the
+      // shoe. `heelBehind` is the capsule END offset BEHIND THE ANKLE: with the
+      // 0.62·r.foot cap, its rear cap lands ≈1.17·r.foot behind the ankle, just
+      // covering the bare-foot heel back (0.95·r.foot behind) without overrun.
+      const heelBehind = r.foot * 0.55;
       const sCap = sdf.capsule(
-        [0, ankleLY - footLen * 0.38, szL],
+        [0, ankleLY - heelBehind, szL],
         [side * r.foot * 0.12, ankleLY + footLen * 0.62, szL],
         r.foot * 0.62,
       );
-      const instE = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.5, r.foot * 0.8)
-        .translate([0, ankleLY + footLen * 0.35, szL + r.foot * 0.15]);
+      const instE = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.33, r.foot * 0.8)
+        .translate([0, ankleLY + footLen * 0.2, szL + r.foot * 0.15]);
       const colC = sdf.capsule([0, ankleLY, A[2] - groundZ], [0, ankleLY, szL + r.foot * 0.2], r.lowerLeg * 0.8);
       let footMassP = place(sCap.smoothUnion(instE, r.foot * 0.6).smoothUnion(colC, r.foot * 0.6));
       if (kind === 'boots') footMassP = footMassP.union(sdf.capsule(A, shaftTop(A, K), r.lowerLeg));
@@ -1698,8 +1837,8 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
       const hwP = hw;
       const lipCapP = Math.min(lip, hwP * 0.45);
       const soleRP = hwP + lipCapP;
-      const soleHeelYP = -footLen * 0.70 + soleRP;
-      const soleToeYP = footLen * 0.70 - soleRP;
+      const soleHeelYP = shoeHeelY + soleRP;
+      const soleToeYP = shoeToeY - soleRP;
       const soleBandLocal = sdf.box([bigP, bigP, soleThick]).translate([0, 0, soleThick / 2]);
       const footprintLocal = sdf.capsule(
         [0, soleHeelYP, soleThick / 2],
@@ -1735,11 +1874,16 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     const footMass = (() => {
       const lat: Vec3 = [-fwd[1], fwd[0], 0];
       const onG = (p: Vec3): Vec3 => [p[0], p[1], sz];
+      // Coverage sized to the SHORT bare foot — the capsule END sits 0.55·r.foot
+      // behind the ankle so its 0.62·r.foot cap lands ≈1.17·r.foot behind it (just
+      // covering the bare-foot heel back at 0.95·r.foot), NOT the old 0.38·footLen
+      // that poked a phantom heel out behind the resized shoe upper.
+      const heelBehind = r.foot * 0.55;
       const toe = onG(add3(A, add3(scale3(fwd, footLen * 0.62), scale3(lat, side * r.foot * 0.12))));
-      const hl = onG(add3(A, scale3(fwd, -footLen * 0.38)));
-      const instepC = onG(add3(A, scale3(fwd, footLen * 0.35)));
+      const hl = onG(add3(A, scale3(fwd, -heelBehind)));
+      const instepC = onG(add3(A, scale3(fwd, footLen * 0.2)));
       const s = sdf.capsule(hl, toe, r.foot * 0.62);
-      const inst = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.5, r.foot * 0.8)
+      const inst = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.33, r.foot * 0.8)
         .translate([instepC[0], instepC[1], sz + r.foot * 0.15]);
       const col = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.lowerLeg * 0.8);
       let m = s.smoothUnion(inst, r.foot * 0.6).smoothUnion(col, r.foot * 0.6);
@@ -1778,8 +1922,8 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     // End-points are pulled in by the full radius so the rounded caps land exactly
     // at the foot's heel/toe extent — the footprint sits UNDER the foot and tapers
     // smoothly at both ends (no nub poking past the toe).
-    const soleHeelY = -footLen * 0.70 + soleR;           // back of footprint, inside the heel
-    const soleToeY  =  footLen * 0.70 - soleR;           // front of footprint, inside the toe
+    const soleHeelY = shoeHeelY + soleR;                 // back of footprint, at the heel
+    const soleToeY  = shoeToeY - soleR;                  // front of footprint, at the toe
     const footprintLocal = sdf.capsule(
       [0, soleHeelY, soleThick / 2],
       [0, Math.max(soleToeY, soleHeelY + soleR * 0.2), soleThick / 2],
@@ -2961,7 +3105,7 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // slightly lifted medial head. (Replaces the old raised capsule-tube ridge that
   // frayed into spiky slivers at the figure grid.)
   const o = obj(opts, 'brows(opts)');
-  assertNoUnknownKeys(o, ['shape', 'thickness', 'lift', 'width', 'taper', 'relief', 'spacing'], 'brows(opts)');
+  assertNoUnknownKeys(o, ['shape', 'thickness', 'lift', 'width', 'taper', 'relief', 'spacing', 'on'], 'brows(opts)');
   const shape = o.shape === undefined ? 'natural'
     : assertEnum(o.shape, BROW_SHAPE_NAMES as unknown as readonly string[], 'brows.shape') as BrowShapeName;
   const P = BROW_SHAPE[shape];
@@ -2995,9 +3139,18 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const browCenter = (sideSign: number): Vec3 =>
     add3(browMid, scale3(right, sideSign * eyeHalfDist * spacing));
   const SEGS = 16;
-  // Sink the strip into the forehead so only a flush/whisper-proud cap reads:
-  // relief 0 → sunk by the full band (dead flush); relief 1 → barely sunk (proud).
-  const backSink = band * (1 - relief);
+  // `on` — the head/face surface to seat the brow CONFORMALLY on (the recommended
+  // path; pass the assembled face, or `skin` for top-level painted brows). With
+  // it, the swept arc below becomes a CLIP REGION and the brow itself is the real
+  // forehead offset outward a hair (`surfaceMarking`) — so it follows any skull
+  // with no sagitta curvature guess defining the geometry, and the 'brows' label
+  // paints cleanly. Without `on`, fall back to the legacy sunk-capsule strip
+  // (which IS the marking, positioned by the `sagDrop` guess).
+  const body = o.on as Node | undefined;
+  // Legacy sink (no `on`): sink the strip so only a flush/whisper-proud cap reads
+  // (relief 0 → dead flush, 1 → proud). Conformal (`on`): the arc straddles the
+  // surface as a clip region, so don't sink it — `surfaceMarking` sets the relief.
+  const backSink = body !== undefined ? 0 : band * (1 - relief);
   const browPt = (center: Vec3, sideSign: number, t: number): Vec3 => {
     const s = halfSpan * t;                                  // t<0 = medial (toward nose)
     const sagDrop = (s * s) / (2 * Math.max(rig.r.headX, 1e-3)); // follow skull curvature
@@ -3022,8 +3175,16 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     }
     return arc!;
   };
+  const arcs = browArc(+1).union(browArc(-1));
+  if (body !== undefined) {
+    // Conformal: the arc is the clip REGION; the brow is the real forehead grown
+    // a hair proud (near-flush, but enough to clear the brow detail triangle so
+    // the 'brows' label owns its surface). `relief` (0..1) nudges how proud.
+    const proud = Math.max(R * 0.02, band * 0.4) * (0.7 + 0.6 * relief);
+    return surfaceMarking(body, arcs, proud, band * 0.7).label('brows');
+  }
   // Self-labelled so a top-level hard-union carries the 'brows' paint region.
-  return browArc(+1).union(browArc(-1)).label('brows');
+  return arcs.label('brows');
 }
 
 /** Weld nose/mouth/ears/brows onto a head with SHARP creases (small k), vs
@@ -3050,6 +3211,11 @@ function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
   if (o.nose !== false) result = result.smoothUnion(buildNose(sdf, rig, o.nose === true ? undefined : o.nose), crease);
   // Flush brows are hard-unioned (a smoothUnion would wipe the 'brows' label, #698,
   // and the sunk strip barely protrudes so the weld is near-invisible either way).
+  // In-assemble brows stay on the legacy FLUSH path on purpose: the `.label('skin')`
+  // weld flattens them to skin, so they must read as flush skin, NOT a proud ridge.
+  // The conformal `surfaceMarking` brow (`buildBrows` with `on`) is a PROUD strip so
+  // its label can win the paint — wanted only for DARK painted brows, built at the
+  // top level via `F.face.brows(rig, { on: skin })` (see that function's `on` param).
   if (o.brows !== false && o.brows !== undefined) result = result.union(buildBrows(sdf, rig, o.brows === true ? undefined : o.brows));
   if (o.ears !== false) result = result.smoothUnion(buildEars(sdf, rig, o.ears === true ? undefined : o.ears), crease * 1.5);
   if (o.mouth !== false) {
@@ -3129,10 +3295,13 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   // a radius a hair past the default areola size (`r.chestX * 0.16`) so the disc
   // rim + a margin of surrounding skin are covered.
   const chest = o.chest === undefined ? true : assertBoolean(o.chest, 'faceDetail.chest') as boolean;
-  // ~3% of the chest half-width ≈ 10-12 cells across the default areola disc
-  // (radius ≈ chestX·0.16) — enough for a round, un-slivered rim while staying
-  // far coarser than the head/eye spheres (the disc has no sub-mm detail).
-  const chestEdgeLength = num(o.chestEdgeLength, Math.max(r.chestX * 0.03, 0.05), 'faceDetail.chestEdgeLength', 1e-4);
+  // ~1.8% of the chest half-width ≈ 18-20 cells across the default areola disc
+  // (radius ≈ chestX·0.16). Finer than a plain rim needs, deliberately: the
+  // conformal areola (`F.nipples`, body grown by `t`) paints cleanly only where
+  // its raised front clears ≳ one detail triangle, so a finer mesh in these two
+  // small nipple-local spheres (below) lets `t` shrink — a thinner, more flush
+  // areola that still owns its triangles. Stays local: ~+1% triangles total.
+  const chestEdgeLength = num(o.chestEdgeLength, Math.max(r.chestX * 0.018, 0.035), 'faceDetail.chestEdgeLength', 1e-4);
   const f = rig.dir.headForward, u = rig.dir.headUp, hl = rig.dir.headLeft;
   const eyeFront = (anchor: Vec3): Vec3 => add3(anchor, scale3(f, r.head * 0.22));
   const earOut = (anchor: Vec3, side: number): Vec3 => add3(anchor, scale3(hl, side * r.head * 0.12));
@@ -3618,7 +3787,8 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // A hem below the pelvis means a robe/dress — the chest ELLIPSOID recedes
   // toward its bottom tip, so legs poke out of its lower front. Add a flared
   // cone skirt from the waist down to the hem.
-  if (hemZ < j.hips[2] - r.hipsY * 0.6) {
+  const isDress = hemZ < j.hips[2] - r.hipsY * 0.6;
+  if (isDress) {
     const skirtH = j.spine[2] - hemZ;
     const r0 = Math.max(r.hipsX, r.chestX) + t;
     const skirt = sdf.cylinder(r0, skirtH)
@@ -3641,9 +3811,16 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // zone, unioned UNDER the shaped shell. It fills the spots the shaped
   // ellipsoid/sleeves only approximate — the sternum V, the armpit wedge, and
   // belly/pelvis weld bulges on slim builds — with a body offset that can't be
-  // poked through. No legs in the masses, so a dress hem stays the cone skirt's
-  // job; a sleeveless top excludes the arms so it stays bare-shouldered.
-  const masses = sleeve === 'none' ? buildTorso(sdf, rig) : buildTorso(sdf, rig).union(buildArms(sdf, rig));
+  // poked through. A sleeveless top excludes the arms so it stays bare-shouldered.
+  // For a DRESS/ROBE the legs join the coverage too: a centered cone skirt is too
+  // narrow at the spread outer thigh/knee, so the leg pokes through its side as a
+  // bare-skin patch (#dress-outer-thigh). Offsetting the legs by `t` and clipping
+  // them to the skirt zone + hem (exactly as buildPants guarantees leg coverage)
+  // fills wherever the leg out-runs the cone, while the cone still gives the drape
+  // and stays solid BETWEEN the legs (no culotte split). Non-dress tops keep no
+  // legs, so a shirt never wraps the thighs.
+  let masses = sleeve === 'none' ? buildTorso(sdf, rig) : buildTorso(sdf, rig).union(buildArms(sdf, rig));
+  if (isDress) masses = masses.union(buildLegs(sdf, rig));
   const body = masses.round(t);
   const big = Math.max(r.chestX, r.upperArm) * 8;
   const torsoTop = j.upperArmL[2] + r.upperArm;
@@ -3667,7 +3844,13 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // at `hemZ` (z ≥ hemZ), smooth-intersected, rolls the bottom rim into a soft
   // hem. The round only lifts the very bottom edge by ≤ hemK, still well below a
   // mid-rise waistband, so it can't reopen the midriff strip the hem default closes.
-  const hemPlane = sdf.box([big, big, big]).translate([0, 0, hemZ + big / 2]); // z ≥ hemZ
+  // The box must reach ABOVE the garment top (`zTop`): a fixed `big`-tall box is
+  // too short for a floor-length gown on a tall figure (chest sits high, `chestX`
+  // — hence `big` — is small), so its top would slice through the chest/shoulders
+  // and amputate the whole bodice, leaving a bare torso over a cone skirt (the
+  // "topless runway gown" bug). Size the height to span hem → past zTop instead.
+  const hemH = (zTop - hemZ) + big;
+  const hemPlane = sdf.box([big, big, hemH]).translate([0, 0, hemZ + hemH / 2]); // z ≥ hemZ
   // Clip the SHELL + clavicle + coverage to the hem so the chest ellipsoid's
   // bottom tip can't dangle below the hemline as a central pendant between the
   // legs (#nub), and every hem gets the same soft rolled edge. Sleeves are
@@ -3726,7 +3909,10 @@ export interface FigureNamespace {
   /** Flush, paintable areola discs + a tiny nipple nub — hard-union at the TOP
    *  level (like `face.eyes`) so the self-applied `'areola'` paint label
    *  survives the body weld. Rides the `rig.torso` nipple anchors (so it tracks
-   *  the bust). `opts`: `{ size, nipple }`. Colour the `'areola'` label — see
+   *  the bust/pec/bare chest). **Pass `on: skin`** (the body weld) so each areola
+   *  is the body's OWN front surface relabelled — flush by construction on any
+   *  chest (bare, pectoral, mound, fat), never a proud "patty" nor a sunk rim.
+   *  `opts`: `{ size, nipple, on }`. Colour the `'areola'` label — see
    *  `areolaColor`. */
   nipples(rig: Rig, opts?: object): Node;
   /** A default areola colour: a slightly darker shade of `skin` (a `#rrggbb` hex
@@ -4060,4 +4246,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };

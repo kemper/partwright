@@ -42,9 +42,6 @@ const face = F.face.assemble(head, rig, {
 // Paintable eyes — hard-unioned at top level with their own label
 const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.16 });
 
-// Areolae — flush paintable discs + tiny nipples, hard-unioned at top level.
-const nipples = F.nipples(rig);
-
 // 3. SKIN — weld all body masses
 // Use relaxed hands — palms ready for the slap
 const skin = F.weld(rig, [
@@ -58,6 +55,10 @@ const skin = F.weld(rig, [
   F.feet(rig),
   face,
 ], { k: rig.r.lowerArm * 1.0 }).label('skin');
+
+// Areolae — flush paintable discs on the real chest surface + tiny nipples,
+// hard-unioned at top level so the 'areola' region survives the body weld.
+const nipples = F.nipples(rig, { on: skin });
 
 // 4. MAWASHI — the sumo belt/loincloth: briefs-length pants, high rise
 // The weight:1 makes the waist/belly wide, so briefs here reads as a
