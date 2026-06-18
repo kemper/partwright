@@ -719,11 +719,14 @@ function buildRig(rawOpts: unknown): Rig {
   // spine-transformed, so a leaning figure carries its nipples with the chest.
   const tm = torsoMasses(joints, r, belly);
   const mounds = breastMounds(joints, r, bust);
+  // Muscled chests bulge a pec mass forward of the bare chest; the areola rides
+  // its apex (like it rides the mound apex for bust) so it doesn't sink in.
+  const pecs = pecApex(joints, r, muscle, pose.spine);
   const nippleZ = nippleLineZ(joints.upperArmL[2], joints.hips[2], headH);   // upper chest, ≈0.62 head below the shoulder
   const nippleDX = r.chestX * 0.42;                      // half the inter-nipple span
   const torsoAnchors: TorsoAnchors = {
-    nippleL: mounds ? mounds.apexL : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, nippleDX, nippleZ),
-    nippleR: mounds ? mounds.apexR : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, -nippleDX, nippleZ),
+    nippleL: mounds ? mounds.apexL : pecs ? pecs.apexL : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, nippleDX, nippleZ),
+    nippleR: mounds ? mounds.apexR : pecs ? pecs.apexR : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, -nippleDX, nippleZ),
     navel: ellipsoidFront(tm.belly.c, tm.belly.a, tm.belly.b, tm.belly.cz, 0, navelZ),
   };
 
@@ -893,6 +896,51 @@ function breastMounds(j: Record<string, Vec3>, r: Record<string, number>, bust: 
   return { L: L.mound, R: Rr.mound, apexL: L.apex, apexR: Rr.apex, radius: R };
 }
 
+/** Per-side PECTORAL-mass front apex + curvature, for seating the nipple/areola
+ *  on a MUSCLED chest — the `muscle`-axis analog of {@link breastMounds} for
+ *  `bust`. The pec ellipsoids `buildTorso` welds bulge FORWARD of the base chest
+ *  ellipsoid the bare-chest anchor rides, so on a muscled figure the areola has
+ *  to ride the PEC apex or it sinks into the pec (only a partial rim pokes
+ *  through — the buried/stuck-on areola the old muscle-scaled `eps` push hacked
+ *  around). Geometry MUST match buildTorso's `pec(sx)` ellipsoid — built in the
+ *  REST frame then spine-leaned — or the anchor drifts off the surface. Returns
+ *  WORLD-frame apexes (the rest apex rotated by the spine lean) so the leaning
+ *  figure carries its nipples with the chest, exactly like the bare anchor.
+ *  `null` when muscle is 0 (no pec mass — ride the bare chest). */
+function pecApex(
+  j: Record<string, Vec3>, r: Record<string, number>, muscle: number,
+  sp: { lean: number; turn: number; side: number },
+): { apexL: Vec3; apexR: Vec3; radius: number } | null {
+  if (muscle <= 0) return null;
+  const m = muscle;
+  const pivot: Vec3 = [0, 0, j.spine[2]];
+  const leaned = sp.lean !== 0 || sp.turn !== 0 || sp.side !== 0;
+  // Rest-frame (un-leaned) chest/shoulder anchors — buildTorso's `restPt`.
+  const restPt = (p: Vec3): Vec3 =>
+    leaned ? add3(pivot, rotZ(rotX(rotY(sub3(p, pivot), -sp.side), -sp.lean), -sp.turn)) : p;
+  // Forward spine rotation of a single point (the inverse of restPt) — the
+  // point-wise form of buildTorso's `spineTx` so the apex lands on the leaned pec.
+  const spineRotPt = (p: Vec3): Vec3 =>
+    leaned ? add3(pivot, rotY(rotX(rotZ(sub3(p, pivot), sp.turn), sp.lean), sp.side)) : p;
+  const chestR = restPt(j.chest), armR = restPt(j.upperArmL);
+  // The pec ellipsoid — IDENTICAL to buildTorso's `pec(sx)`.
+  const pecZ = mix(chestR[2], armR[2], 0.18);
+  const pecY = -r.chestY * (0.5 + 0.18 * m);
+  const aPec = r.chestX * (0.42 + 0.05 * m);   // lateral semi-axis
+  const bPec = r.chestY * (0.45 + 0.18 * m);   // forward (depth) semi-axis
+  const czPec = r.chestY * (0.52 + 0.12 * m);  // vertical semi-axis
+  const cx = r.chestX * 0.4;                   // pec centre x (matches buildTorso)
+  // Seat the areola at the same head-unit nipple line the bare anchor uses, but
+  // projected onto the PEC front (rest frame), then lean it into world.
+  const nz = nippleLineZ(armR[2], j.hips[2], r.head / 0.46);
+  const apex = (sx: 1 | -1): Vec3 =>
+    spineRotPt(ellipsoidFront([sx * cx, pecY, pecZ], aPec, bPec, czPec, 0, nz));
+  // surfR rides the pec's TALL (vertical) semi-axis, not its shallow depth, so
+  // the flush coin matches the elongated pec curvature and its rim doesn't sink
+  // (the clipping seen when a depth-sized sphere curves away faster than the pec).
+  return { apexL: apex(1), apexR: apex(-1), radius: czPec };
+}
+
 /** A shallow navel dimple — a sphere centred just OUTSIDE the belly surface so
  *  `smoothSubtract` carves only a cap-deep crater. `depth` (0..1.5) slides the
  *  centre inward to deepen it. */
@@ -1019,45 +1067,79 @@ function buildTorso(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
  *  slightly darker shade of the skin (see `F.areolaColor`). */
 function buildNipples(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'nipples(opts)');
-  assertNoUnknownKeys(o, ['size', 'nipple'], 'nipples(opts)');
+  assertNoUnknownKeys(o, ['size', 'nipple', 'on'], 'nipples(opts)');
   const r = rig.r;
   const size = num(o.size, r.chestX * 0.16, 'nipples.size', 1e-3);     // areola radius
-  const nipR = num(o.nipple, r.chestX * 0.05, 'nipples.nipple', 0);    // tiny nipple nub
-  const mounds = breastMounds(rig.joints, r, rig.opts.bust);
-  // Local radius of curvature for the flush clip: the mound radius if there is a
-  // mound, else a broad radius approximating the gently-curved bare chest.
-  const surfR = mounds ? mounds.radius : r.chestX * 1.4;
-  // Proud enough to win the union. On a BARE muscled chest the pectoral masses
-  // bulge FORWARD of the chest ellipsoid the anchor rides, so once the nipple
-  // line sits up on the chest (the raised, anatomically-correct height) the pec
-  // can swallow the flush disc — the 'areola' label then resolves to 0
-  // triangles. Add muscle-scaled proudness so the coin still pokes past the pec.
-  // Mound (bust) figures ride the already-proud mound apex, so they don't need
-  // it; at muscle 0 this is a no-op and the disc is byte-identical.
-  const eps = Math.max(r.chestX * 0.03, 0.06) + (mounds ? 0 : r.chestY * 0.35 * rig.opts.muscle);
-  // Soften the flush-disc PERIMETER (#703). The hard cylinder∩sphere edge is a
-  // knife rim — at the coarse chest grid (no detail region runs over the torso)
-  // it slivered into a torn, faceted ring (the same flush-disc-edge problem as
-  // the iris). A small smoothIntersect rounds that rim into a gentle fillet that
-  // meshes cleanly without a finer grid; the disc face stays flat and the
-  // 'areola' label still resolves to a generous paintable region (the round only
-  // bevels the very edge). Scaled to the disc so it never eats the whole coin.
-  const edgeK = Math.min(size * 0.35, eps * 1.2);
-  // The clip cylinder must be a SHORT slab seated AT the surface, not the old
-  // full-depth tube (#706). The curved chest is approximated by `clip`, a big
-  // sphere of curvature radius surfR whose front pole sits eps proud of the
-  // anchor; the buried back of that sphere reaches ~2·surfR INTO the body. The
-  // old cylinder spanned (surfR+eps)·2.2 centred on the anchor, so the
-  // intersection ran ~1.1·surfR behind the anchor — a deep plug that, on a
-  // narrow/shallow (elderly, lean) bare chest, punched a rod clean out the BACK.
-  // Bound the coin's depth to a shallow seat instead: it pokes `eps` proud and
-  // sinks only `discDepth` into the body (enough to weld under the hard union),
-  // so the back face stays buried near the front surface and can never exit.
-  const discDepth = Math.min(size * 0.6, surfR * 0.35, r.chestY * 0.5);
-  const cylLen = eps + discDepth;                                      // proud cap + buried seat
+  const nipR = num(o.nipple, r.chestX * 0.04, 'nipples.nipple', 0);    // tiny nipple nub
+  // `on` — the body Node to seat the areolae FLUSH against. When supplied (the
+  // recommended path; pass the `skin` weld), each areola is the body's OWN front
+  // surface within `size` of the nipple anchor, relabelled — so it CONFORMS to
+  // whatever chest is actually there (bare, pectoral, mound, fat) and is flush by
+  // construction. No curvature guess, so it can never sit proud as a "patty" nor
+  // sink its rim into the body — the two failure modes the approximating coin
+  // (below) traded between. `union(body, areola)` adds zero relief (the areola is
+  // a subset of the body), and the 'areola' label resolves the surface disc.
+  const body = o.on as Node | undefined;
+  // The areola is a CONFORMAL OFFSET of the torso — the "clothing" model. It is
+  // the body's own surface grown outward by a thin, uniform amount (`.round(t)`,
+  // i.e. SDF `f − t`, which pushes the iso-surface out along the TRUE normal
+  // everywhere), then clipped to the nipple region by a column. So it follows
+  // whatever chest is actually there — bare, pec, mound, belly — perfectly,
+  // standing proud by exactly `t` at every point. No analytic curvature guess
+  // (the failure mode of the old coin: a wrong guess jutted on one figure and
+  // sank on another), and no flat disc face that can only kiss a curved chest
+  // at its centre.
+  //
+  // Why `t` can't be zero: a perfectly-flush (coincident) layer can't PAINT.
+  // The bake assigns each final triangle to the nearest SOURCE shape, so a layer
+  // sitting exactly on the skin is a per-triangle coin-flip between 'areola' and
+  // 'skin' → the dithered/hatched, faded blob the flush attempt shipped. The
+  // offset must clear ~one detail-triangle (chest detail edge ≈ chestX·0.03) for
+  // the 'areola' label to own its triangles cleanly, so `t` is a small fixed
+  // fraction of the chest — the THICKNESS knob; the SHAPE is fully conformal.
+  // Kept just above the chest-detail triangle (`chestEdgeLength ≈ chestX·0.018`,
+  // ~1.7× it) — as flush as the local mesh allows without the paint dithering.
+  const t = Math.max(r.chestX * 0.03, 0.09);
   const at = (anchor: Vec3): Node => {
-    const sc: Vec3 = [anchor[0], anchor[1] + surfR, anchor[2]];        // clip sphere behind the anchor
-    const cylCY = anchor[1] + (discDepth - eps) / 2;                   // centre of the thin slab
+    if (body !== undefined) {
+      // Forward COLUMN scoping the offset to the nipple. Axis ≈ −Y (chest front);
+      // reaches well in front (empty space is trimmed by the body) and is bounded
+      // INSIDE the body at the back so it can't raise a second patch on the spine.
+      const fwd = r.chestY * 0.9;   // column reach in front of the surface
+      const back = r.chestY * 0.55; // column reach inside the body (< half-depth)
+      const cylCY = anchor[1] + (back - fwd) / 2;
+      const col = (rad: number): Node =>
+        sdf.cylinder(rad, fwd + back).rotate([90, 0, 0]).translate([anchor[0], cylCY, anchor[2]]);
+      // Disc: torso grown by `t`, clipped to `size`. A SMOOTH intersect rolls the
+      // rim off — instead of a hard cylinder wall (a `t`-tall step → a visible
+      // edge), the raised offset tapers gradually from its proud centre back down
+      // into the skin, so the areola reads as a gentle dome, not a stuck-on disc.
+      // The rim radius (≈ `size·0.7`) is large vs `t`, so it's mostly slope.
+      let patch = body.round(t).smoothIntersect(col(size), size * 0.7);
+      if (nipR > 0) {
+        // Nipple: a narrower region grown a hair more, also softly clipped so it's
+        // a rounded rise, not a pin — a subtle central bump on the sloped disc.
+        patch = patch.union(body.round(t + nipR * 0.5).smoothIntersect(col(nipR), nipR));
+      }
+      return patch;
+    }
+    return legacyCoin(anchor);
+  };
+
+  // --- Legacy approximating coin (only when `on` is omitted) ---------------
+  // A sphere-clipped disc that APPROXIMATES the local curvature. Kept for
+  // back-compat, but it's finicky: too flat a `surfR` sits proud (patty), too
+  // curved sinks the rim. Prefer the flush `on` path above.
+  const mounds = breastMounds(rig.joints, r, rig.opts.bust);
+  const pecs = pecApex(rig.joints, r, rig.opts.muscle, rig.opts.pose.spine);
+  const surfR = mounds ? mounds.radius : pecs ? pecs.radius : r.chestX * 1.4;
+  const eps = Math.max(r.chestX * 0.03, 0.06);
+  const edgeK = Math.min(size * 0.35, eps * 1.2);
+  const discDepth = Math.min(size * 0.6, surfR * 0.35, r.chestY * 0.5);
+  const cylLen = eps + discDepth;
+  function legacyCoin(anchor: Vec3): Node {
+    const sc: Vec3 = [anchor[0], anchor[1] + surfR, anchor[2]];
+    const cylCY = anchor[1] + (discDepth - eps) / 2;
     const coin = sdf.sphere(surfR + eps).translate(sc).smoothIntersect(
       sdf.cylinder(size, cylLen).rotate([90, 0, 0]).translate([anchor[0], cylCY, anchor[2]]),
       edgeK,
@@ -1065,7 +1147,8 @@ function buildNipples(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     return nipR > 0
       ? coin.union(sdf.sphere(nipR).translate([anchor[0], anchor[1] - nipR * 0.5, anchor[2]]))
       : coin;
-  };
+  }
+
   return at(rig.torso.nippleL).union(at(rig.torso.nippleR)).label('areola');
 }
 
@@ -3129,10 +3212,13 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   // a radius a hair past the default areola size (`r.chestX * 0.16`) so the disc
   // rim + a margin of surrounding skin are covered.
   const chest = o.chest === undefined ? true : assertBoolean(o.chest, 'faceDetail.chest') as boolean;
-  // ~3% of the chest half-width ≈ 10-12 cells across the default areola disc
-  // (radius ≈ chestX·0.16) — enough for a round, un-slivered rim while staying
-  // far coarser than the head/eye spheres (the disc has no sub-mm detail).
-  const chestEdgeLength = num(o.chestEdgeLength, Math.max(r.chestX * 0.03, 0.05), 'faceDetail.chestEdgeLength', 1e-4);
+  // ~1.8% of the chest half-width ≈ 18-20 cells across the default areola disc
+  // (radius ≈ chestX·0.16). Finer than a plain rim needs, deliberately: the
+  // conformal areola (`F.nipples`, body grown by `t`) paints cleanly only where
+  // its raised front clears ≳ one detail triangle, so a finer mesh in these two
+  // small nipple-local spheres (below) lets `t` shrink — a thinner, more flush
+  // areola that still owns its triangles. Stays local: ~+1% triangles total.
+  const chestEdgeLength = num(o.chestEdgeLength, Math.max(r.chestX * 0.018, 0.035), 'faceDetail.chestEdgeLength', 1e-4);
   const f = rig.dir.headForward, u = rig.dir.headUp, hl = rig.dir.headLeft;
   const eyeFront = (anchor: Vec3): Vec3 => add3(anchor, scale3(f, r.head * 0.22));
   const earOut = (anchor: Vec3, side: number): Vec3 => add3(anchor, scale3(hl, side * r.head * 0.12));
@@ -3726,7 +3812,10 @@ export interface FigureNamespace {
   /** Flush, paintable areola discs + a tiny nipple nub — hard-union at the TOP
    *  level (like `face.eyes`) so the self-applied `'areola'` paint label
    *  survives the body weld. Rides the `rig.torso` nipple anchors (so it tracks
-   *  the bust). `opts`: `{ size, nipple }`. Colour the `'areola'` label — see
+   *  the bust/pec/bare chest). **Pass `on: skin`** (the body weld) so each areola
+   *  is the body's OWN front surface relabelled — flush by construction on any
+   *  chest (bare, pectoral, mound, fat), never a proud "patty" nor a sunk rim.
+   *  `opts`: `{ size, nipple, on }`. Colour the `'areola'` label — see
    *  `areolaColor`. */
   nipples(rig: Rig, opts?: object): Node;
   /** A default areola colour: a slightly darker shade of `skin` (a `#rrggbb` hex

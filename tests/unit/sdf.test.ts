@@ -1089,7 +1089,7 @@ describe('sdf build options — detail regions', () => {
   });
 
   it('caps the region count', () => {
-    const many = Array.from({ length: 17 }, () => ({ center: [0, 0, 0], radius: 1, edgeLength: 0.1 }));
+    const many = Array.from({ length: 25 }, () => ({ center: [0, 0, 0], radius: 1, edgeLength: 0.1 }));
     expect(() => assertBuildOpts({ detail: many })).toThrow(/at most/);
   });
 });

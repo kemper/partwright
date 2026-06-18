@@ -71,7 +71,7 @@ const skin = F.weld(rig, [
 
 // 4b. AREOLAE — flush paintable discs + tiny nipples, hard-unioned at the top
 //     level so the 'areola' region survives the body weld.
-const nipples = F.nipples(rig);
+const nipples = F.nipples(rig, { on: skin });
 
 // 5. RUNNING SHORTS — high-cut briefs.
 const shorts = F.clothing.pants(rig, {
