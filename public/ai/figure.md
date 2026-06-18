@@ -813,10 +813,18 @@ the skin weld), exactly like the eyes — a brow welded into a `.label('skin')`
 mass loses its `'brows'` colour:
 
 ```js
-const brows = F.face.brows(rig, { shape: 'natural' });   // self-labelled 'brows'
+const skin  = F.weld(rig, [ … ]).label('skin');
+const brows = F.face.brows(rig, { shape: 'natural', on: skin }); // self-labelled 'brows'
 return sdf.union(skin, eyes, brows, lips, hair, base)
   .build({ edgeLength: 0.5, detail: F.faceDetail(rig) }); // detail keeps the strip crisp
 ```
+
+**Pass `on: skin`** (the body/face weld), exactly like `F.nipples(rig, { on: skin })`:
+each brow is then a thin **conformal offset of the real forehead** — a proud strip
+of the actual surface clipped to the brow arc — so it follows any skull with no
+curvature guess, and the `'brows'` label paints cleanly. (Omit `on` and it falls
+back to a sunk capsule strip positioned by an analytic skull approximation —
+fine for default heads, less robust on unusual proportions.)
 
 Pick a **`shape`** preset (individual knobs override it):
 
@@ -834,8 +842,9 @@ Pick a **`shape`** preset (individual knobs override it):
 Knobs (each overrides the preset): `width` (lateral span ×), `taper` (0–0.9, how
 much the tail thins), `relief` (0 = dead flush … up to a whisper-proud edge),
 `spacing` (multiplier on the **eye** spacing — default 1 sits each brow directly
-over its eyeball; >1 spreads the pair apart, <1 draws them in), plus the
-back-compat multipliers `thickness` (brow weight) and `lift` (arch). The
+over its eyeball; >1 spreads the pair apart, <1 draws them in), `on` (the body
+weld to seat the brow conformally on — see above), plus the back-compat
+multipliers `thickness` (brow weight) and `lift` (arch). The
 old `F.face.assemble(…, { brows: {} })` path still works but paints the brow
 **skin-coloured** (it's inside the skin weld) — use the top-level union above for
 dark brows. Always give `.build()` `detail: F.faceDetail(rig)` so the thin strip

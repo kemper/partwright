@@ -944,6 +944,23 @@ describe('figure brows — flush, labelled, preset-driven (#724)', () => {
     }
   });
 
+  it("conformal `on` path: still labels 'brows' and builds non-degenerate geometry", () => {
+    // `on` seats the brow as a conformal offset of the real surface (surfaceMarking)
+    // — surface.round(proud) ∩ arc — rather than the legacy sunk strip. A head-sized
+    // sphere stands in for the face surface; the offset must actually intersect the
+    // arc region (a zero proud or a missed region would yield an empty/degenerate
+    // patch), and the 'brows' label must survive the offset+clip.
+    const surf = api.sphere(rig.r.head * 1.4).translate(rig.joints.head as Vec3);
+    const brow = buildBrows(api, rig, { shape: 'natural', on: surf });
+    expect(labelsOf(brow)).toEqual(['brows']);
+    const b = brow.bounds();
+    expect(b.max[0] - b.min[0]).toBeGreaterThan(0);            // lateral span (the brow pair)
+    expect(b.max[2] - b.min[2]).toBeGreaterThan(0);            // vertical band
+    // Seated at the brow height, not adrift (within a head radius of the anchors).
+    const browZ = (rig.face.browL[2] + rig.face.browR[2]) / 2;
+    expect(Math.abs((b.max[2] + b.min[2]) / 2 - browZ)).toBeLessThan(rig.r.head);
+  });
+
   it("'bushy' is a thicker (taller) brow than 'thin'", () => {
     // Vertical extent of the strip ≈ its band thickness (+arch); bushy's wider
     // band dominates so the strip is clearly taller than the thin line.

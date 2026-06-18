@@ -3175,7 +3175,6 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     }
     return arc!;
   };
-  // Self-labelled so a top-level hard-union carries the 'brows' paint region.
   const arcs = browArc(+1).union(browArc(-1));
   if (body !== undefined) {
     // Conformal: the arc is the clip REGION; the brow is the real forehead grown
@@ -3212,14 +3211,12 @@ function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
   if (o.nose !== false) result = result.smoothUnion(buildNose(sdf, rig, o.nose === true ? undefined : o.nose), crease);
   // Flush brows are hard-unioned (a smoothUnion would wipe the 'brows' label, #698,
   // and the sunk strip barely protrudes so the weld is near-invisible either way).
-  if (o.brows !== false && o.brows !== undefined) {
-    // Seat the brow CONFORMALLY on the face built so far (`on: result`) — the
-    // real forehead, so no curvature guess. In-assemble brows still flatten to
-    // skin colour under a `.label('skin')` weld; for DARK painted brows, union
-    // `F.face.brows(rig, { on: skin })` at the top level instead.
-    const bo = o.brows === true ? {} : obj(o.brows, 'face.assemble.brows');
-    result = result.union(buildBrows(sdf, rig, { ...bo, on: result }));
-  }
+  // In-assemble brows stay on the legacy FLUSH path on purpose: the `.label('skin')`
+  // weld flattens them to skin, so they must read as flush skin, NOT a proud ridge.
+  // The conformal `surfaceMarking` brow (`buildBrows` with `on`) is a PROUD strip so
+  // its label can win the paint — wanted only for DARK painted brows, built at the
+  // top level via `F.face.brows(rig, { on: skin })` (see that function's `on` param).
+  if (o.brows !== false && o.brows !== undefined) result = result.union(buildBrows(sdf, rig, o.brows === true ? undefined : o.brows));
   if (o.ears !== false) result = result.smoothUnion(buildEars(sdf, rig, o.ears === true ? undefined : o.ears), crease * 1.5);
   if (o.mouth !== false) {
     const mouth = buildMouthPart(sdf, rig, o.mouth === true ? undefined : o.mouth);
