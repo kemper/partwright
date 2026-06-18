@@ -72,6 +72,14 @@ test.describe('multi-part 3MF export', () => {
     expect(b).toContain('Metadata/model_settings.config');
     expect((b.match(/<plate>/g) ?? []).length).toBe(2);
     expect(b).toContain('key="extruder"');
+    // PER-PART COLOUR: each part maps to its own AMS filament slot, so the two
+    // differently-coloured parts get DISTINCT extruders (Body→1 red, Lid→2 blue)
+    // and the part palette lands in filament_colour. Regression guard against the
+    // "all extruder 1 / grey filament_colour" single-colour base.
+    expect(b).toContain('key="extruder" value="1"');
+    expect(b).toContain('key="extruder" value="2"');
+    expect(b).toContain('"filament_colour": [');
+    expect(b).toMatch(/#FF0000/i); // Body's red made it into the filament palette
     // CRASH FIX: <part id=ODD subtype="normal_part"> + <mesh_stat> must be present
     // (was missing before; caused Bambu GUI crash on project open).
     expect(b).toContain('<part ');

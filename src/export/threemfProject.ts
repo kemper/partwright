@@ -224,8 +224,30 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
     ? `    <m:colorgroup id="${colorGroupId}">\n${materialColors.map(h => `      <m:color color="${h.toUpperCase()}FF" />`).join('\n')}\n    </m:colorgroup>`
     : '';
 
+  // Bambu per-part colour: map each part's dominant colour onto one of the THREE
+  // AMS filament slots the H2C template defines. We keep that filament count fixed
+  // at 3 — resizing the 130+ per-filament config arrays can't be validated against
+  // Bambu's GUI loader headlessly, and a too-short array is exactly what crashed it
+  // before. So colour is capped at 3 distinct part colours (the common AMS case);
+  // >3 reuses the closest slot. Per-part colour beyond 3 is the tracked follow-up.
+  let bambuFilamentColors: string[] = ['#D9D9D9', '#D9D9D9', '#D9D9D9'];
+  if (bambu && anyColour) {
+    const palette: string[] = [];
+    for (const p of prepared) {
+      const hex = p.dominantHex.toLowerCase();
+      if (!palette.includes(hex) && palette.length < 3) palette.push(hex);
+    }
+    // Reassign each part's extruder to its slot (1-based) in the capped palette.
+    for (const p of prepared) {
+      const idx = palette.indexOf(p.dominantHex.toLowerCase());
+      p.extruder = idx >= 0 ? idx + 1 : 1;
+    }
+    while (palette.length < 3) palette.push(palette[palette.length - 1] ?? '#d9d9d9');
+    bambuFilamentColors = palette.map(h => '#' + h.replace(/^#/, '').toUpperCase());
+  }
+
   const built = bambu
-    ? buildBambuPackage(prepared, colorgroupXml, anyColour, colorGroupId)
+    ? buildBambuPackage(prepared, bambuFilamentColors)
     : buildGenericPackage(prepared, colorgroupXml, anyColour, colorGroupId, gridGap);
 
   const mimeType = 'application/vnd.ms-package.3dmanufacturing';
@@ -311,16 +333,16 @@ ${buildItems}
 //   - identify_id in each <model_instance>
 //   - filament_map_mode / filament_maps / filament_volume_maps / thumbnail* in <plate>
 //   - <assemble> block at the end
-function buildBambuPackage(prepared: PreparedPart[], _colorgroupXml: string, _anyColour: boolean, _cgid: number): Uint8Array {
+function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[]): Uint8Array {
   const unit = get3MFUnitString();
   const [bedW, bedH] = bedSizeFromTemplate();
 
-  // Bambu mode: SINGLE-COLOUR crash-fix base. Every object is on extruder 1; the
-  // complete H2C project_settings.config defines 3 filaments so load_files can bind
-  // without null-derefing. Per-part colour (distinct extruder per part + matching
-  // filament_colour) is the tracked follow-up (#729) — it requires resizing the
-  // per-filament arrays, which can't be validated against Bambu's GUI loader
-  // headlessly, so it lands once this stable base is user-confirmed.
+  // Bambu mode: per-part colour via the per-object `extruder` field (1..3),
+  // mapped to the 3 AMS filament slots whose colours go in project_settings'
+  // filament_colour. The complete H2C config keeps all per-filament arrays sized
+  // to 3 so load_files binds without null-derefing (the prior crash). The mesh
+  // files still carry PLAIN triangles — whole-object colour, no per-triangle
+  // paint_color (in-part multicolour would need the unvalidated paint_color path).
 
   const objectFiles: { name: string; data: Uint8Array }[] = [];
   const wrapperObjects: string[] = [];
@@ -335,9 +357,10 @@ function buildBambuPackage(prepared: PreparedPart[], _colorgroupXml: string, _an
     const meshId = 2 * partNum - 1; // ODD:  1, 3, 5, …
     const wrapperId = 2 * partNum;  // EVEN: 2, 4, 6, …
     const partFile = `3D/Objects/object_${partNum}.model`;
-    // extruder is always 1 for now (single-colour base). The reference file
-    // confirms all objects are extruder="1"; per-part extruder assignment is #729.
-    const extruder = 1;
+    // Per-object extruder = the part's AMS slot (1..3), assigned in build3MFProject
+    // from its dominant colour. The reference confirms this field drives object
+    // colour in Bambu; values >1 are the minimal extension of its all-"1" layout.
+    const extruder = p.extruder;
 
     // UUID patterns mirror the reference file.
     const meshUuid = `${String(partNum).padStart(4, '0')}0000-81cb-4c03-9d28-80fed5dfa1dc`;
@@ -483,8 +506,9 @@ ${assembleItems.join('\n')}
   </assemble>
 </config>`;
 
-  // project_settings.config: the complete H2C template (see buildProjectSettings).
-  const projectSettings = buildProjectSettings();
+  // project_settings.config: the complete H2C template with filament_colour set to
+  // the part palette (see buildProjectSettings).
+  const projectSettings = buildProjectSettings(filamentColors);
 
   // Content types: rels + model + png (for potential plate thumbnails) + gcode.
   // Matches the reference [Content_Types].xml exactly.
@@ -520,17 +544,23 @@ ${assembleItems.join('\n')}
 }
 
 /**
- * Build the project_settings.config JSON from the BambuStudio template.
+ * Build the project_settings.config JSON from the BambuStudio template, stamping
+ * the part-colour palette into filament_colour.
  *
  * The template is a COMPLETE Bambu Lab H2C profile (536 keys, copied verbatim from
- * a real known-good project export, with filament_colour neutralized to greys for
- * the single-colour base). Completeness is load-critical: Bambu's GUI
+ * a real known-good project export). Completeness is load-critical: Bambu's GUI
  * `Plater::priv::load_files` indexes the per-filament arrays (filament_colour,
  * filament_type, filament_ids, filament_map, …) when binding objects to filaments,
- * and a partial config makes that index null-deref → SIGSEGV on project open.
+ * and a partial config makes that index null-deref → SIGSEGV on project open. We
+ * therefore only overwrite filament_colour's VALUES (keeping its length at 3, the
+ * template's filament count) — never resize any array.
  */
-function buildProjectSettings(): string {
+function buildProjectSettings(filamentColors: string[]): string {
   // Deep-copy the template so we don't mutate the module-level import.
   const cfg: Record<string, unknown> = JSON.parse(JSON.stringify(BAMBU_TEMPLATE));
+  const existing = cfg.filament_colour;
+  if (Array.isArray(existing) && filamentColors.length === existing.length) {
+    cfg.filament_colour = filamentColors;
+  }
   return JSON.stringify(cfg, null, 4);
 }
