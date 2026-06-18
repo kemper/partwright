@@ -1052,9 +1052,43 @@ function buildTorso(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     assertNoUnknownKeys(no, ['size', 'depth'], 'torso.navel');
     const size = num(no.size, r.chestX * 0.16, 'torso.navel.size', 1e-3);
     const depth = num(no.depth, 0.5, 'torso.navel.depth', 0, 1.5);
-    body = body.smoothSubtract(navelPit(sdf, rig.torso.navel, size, depth), size * 0.55);
+    body = surfaceRecess(body, navelPit(sdf, rig.torso.navel, size, depth), size * 0.55);
   }
   return body;
+}
+
+// ── Conformal surface features (issue #738) ────────────────────────────────
+// Two engine helpers for attaching a feature to a figure's REAL surface rather
+// than welding a separate primitive that APPROXIMATES it — the bug class behind
+// the areola/brow/eye fragility, where an analytic curvature guess jutted or
+// buried the feature and a coincident label dithered the paint. Both derive
+// their geometry from the actual body via `.round()` (SDF `f ∓ r`: an offset
+// along the TRUE normal everywhere), so they conform to whatever surface is
+// there with no guess. The two cases are deliberately separate ops because they
+// don't share a mechanism: a marking is ADDED (union) and carries a paint label;
+// a recess is REMOVED (subtract) and — being a void — cannot.
+
+/** A PROUD, paintable surface MARKING (areola, brow, …): `surface` grown outward
+ *  by `relief` along its true normal, clipped to `region`, with the rim softened
+ *  (`soften`) so it slopes back into the skin instead of ending in a hard wall.
+ *  Hard-union the result at the figure's TOP level and `.label()` it — standing
+ *  `relief` proud, the marking owns its own triangles so the label paints
+ *  cleanly (a flush/coincident marking dithers in the nearest-source label
+ *  transfer). `relief` must clear ~one local detail triangle, so the feature
+ *  also needs a matching `faceDetail` region; keep it small for a near-flush
+ *  look. The shape is fully conformal regardless of `relief`. */
+function surfaceMarking(surface: Node, region: Node, relief: number, soften: number): Node {
+  return surface.round(relief).smoothIntersect(region, soften);
+}
+
+/** A RECESS carved into `body` (navel, groove): subtracts `cutter` smoothly.
+ *  NOTE — a carved void CANNOT carry a paint label: colour rides positive,
+ *  unioned nodes (the nearest-source transfer has nothing to attach to on a
+ *  carved wall), so a recess paints as the surrounding skin. For a COLOURED
+ *  recess, pair this with a `surfaceMarking` shell seated inside the cavity (the
+ *  teeth-through-cavity pattern in `buildMouthAccents`). */
+function surfaceRecess(body: Node, cutter: Node, soften: number): Node {
+  return body.smoothSubtract(cutter, soften);
 }
 
 /** Flush, paintable areola discs + a tiny nipple nub, for hard-unioning at the
@@ -1110,16 +1144,15 @@ function buildNipples(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       const cylCY = anchor[1] + (back - fwd) / 2;
       const col = (rad: number): Node =>
         sdf.cylinder(rad, fwd + back).rotate([90, 0, 0]).translate([anchor[0], cylCY, anchor[2]]);
-      // Disc: torso grown by `t`, clipped to `size`. A SMOOTH intersect rolls the
-      // rim off — instead of a hard cylinder wall (a `t`-tall step → a visible
-      // edge), the raised offset tapers gradually from its proud centre back down
-      // into the skin, so the areola reads as a gentle dome, not a stuck-on disc.
-      // The rim radius (≈ `size·0.7`) is large vs `t`, so it's mostly slope.
-      let patch = body.round(t).smoothIntersect(col(size), size * 0.7);
+      // Disc: torso grown by `t`, clipped to `size`. `surfaceMarking`'s soft clip
+      // rolls the rim off — instead of a hard cylinder wall (a `t`-tall step → a
+      // visible edge), the raised offset tapers gradually from its proud centre
+      // back into the skin, so the areola reads as a gentle dome, not a disc. The
+      // soften radius (≈ `size·0.7`) is large vs `t`, so it's mostly slope.
+      let patch = surfaceMarking(body, col(size), t, size * 0.7);
       if (nipR > 0) {
-        // Nipple: a narrower region grown a hair more, also softly clipped so it's
-        // a rounded rise, not a pin — a subtle central bump on the sloped disc.
-        patch = patch.union(body.round(t + nipR * 0.5).smoothIntersect(col(nipR), nipR));
+        // Nipple: a narrower region grown a hair more — a subtle central bump.
+        patch = patch.union(surfaceMarking(body, col(nipR), t + nipR * 0.5, nipR));
       }
       return patch;
     }
@@ -3072,7 +3105,7 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // slightly lifted medial head. (Replaces the old raised capsule-tube ridge that
   // frayed into spiky slivers at the figure grid.)
   const o = obj(opts, 'brows(opts)');
-  assertNoUnknownKeys(o, ['shape', 'thickness', 'lift', 'width', 'taper', 'relief', 'spacing'], 'brows(opts)');
+  assertNoUnknownKeys(o, ['shape', 'thickness', 'lift', 'width', 'taper', 'relief', 'spacing', 'on'], 'brows(opts)');
   const shape = o.shape === undefined ? 'natural'
     : assertEnum(o.shape, BROW_SHAPE_NAMES as unknown as readonly string[], 'brows.shape') as BrowShapeName;
   const P = BROW_SHAPE[shape];
@@ -3106,9 +3139,18 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const browCenter = (sideSign: number): Vec3 =>
     add3(browMid, scale3(right, sideSign * eyeHalfDist * spacing));
   const SEGS = 16;
-  // Sink the strip into the forehead so only a flush/whisper-proud cap reads:
-  // relief 0 → sunk by the full band (dead flush); relief 1 → barely sunk (proud).
-  const backSink = band * (1 - relief);
+  // `on` — the head/face surface to seat the brow CONFORMALLY on (the recommended
+  // path; pass the assembled face, or `skin` for top-level painted brows). With
+  // it, the swept arc below becomes a CLIP REGION and the brow itself is the real
+  // forehead offset outward a hair (`surfaceMarking`) — so it follows any skull
+  // with no sagitta curvature guess defining the geometry, and the 'brows' label
+  // paints cleanly. Without `on`, fall back to the legacy sunk-capsule strip
+  // (which IS the marking, positioned by the `sagDrop` guess).
+  const body = o.on as Node | undefined;
+  // Legacy sink (no `on`): sink the strip so only a flush/whisper-proud cap reads
+  // (relief 0 → dead flush, 1 → proud). Conformal (`on`): the arc straddles the
+  // surface as a clip region, so don't sink it — `surfaceMarking` sets the relief.
+  const backSink = body !== undefined ? 0 : band * (1 - relief);
   const browPt = (center: Vec3, sideSign: number, t: number): Vec3 => {
     const s = halfSpan * t;                                  // t<0 = medial (toward nose)
     const sagDrop = (s * s) / (2 * Math.max(rig.r.headX, 1e-3)); // follow skull curvature
@@ -3133,8 +3175,16 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     }
     return arc!;
   };
+  const arcs = browArc(+1).union(browArc(-1));
+  if (body !== undefined) {
+    // Conformal: the arc is the clip REGION; the brow is the real forehead grown
+    // a hair proud (near-flush, but enough to clear the brow detail triangle so
+    // the 'brows' label owns its surface). `relief` (0..1) nudges how proud.
+    const proud = Math.max(R * 0.02, band * 0.4) * (0.7 + 0.6 * relief);
+    return surfaceMarking(body, arcs, proud, band * 0.7).label('brows');
+  }
   // Self-labelled so a top-level hard-union carries the 'brows' paint region.
-  return browArc(+1).union(browArc(-1)).label('brows');
+  return arcs.label('brows');
 }
 
 /** Weld nose/mouth/ears/brows onto a head with SHARP creases (small k), vs
@@ -3161,6 +3211,11 @@ function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
   if (o.nose !== false) result = result.smoothUnion(buildNose(sdf, rig, o.nose === true ? undefined : o.nose), crease);
   // Flush brows are hard-unioned (a smoothUnion would wipe the 'brows' label, #698,
   // and the sunk strip barely protrudes so the weld is near-invisible either way).
+  // In-assemble brows stay on the legacy FLUSH path on purpose: the `.label('skin')`
+  // weld flattens them to skin, so they must read as flush skin, NOT a proud ridge.
+  // The conformal `surfaceMarking` brow (`buildBrows` with `on`) is a PROUD strip so
+  // its label can win the paint — wanted only for DARK painted brows, built at the
+  // top level via `F.face.brows(rig, { on: skin })` (see that function's `on` param).
   if (o.brows !== false && o.brows !== undefined) result = result.union(buildBrows(sdf, rig, o.brows === true ? undefined : o.brows));
   if (o.ears !== false) result = result.smoothUnion(buildEars(sdf, rig, o.ears === true ? undefined : o.ears), crease * 1.5);
   if (o.mouth !== false) {
@@ -3781,7 +3836,13 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // at `hemZ` (z ≥ hemZ), smooth-intersected, rolls the bottom rim into a soft
   // hem. The round only lifts the very bottom edge by ≤ hemK, still well below a
   // mid-rise waistband, so it can't reopen the midriff strip the hem default closes.
-  const hemPlane = sdf.box([big, big, big]).translate([0, 0, hemZ + big / 2]); // z ≥ hemZ
+  // The box must reach ABOVE the garment top (`zTop`): a fixed `big`-tall box is
+  // too short for a floor-length gown on a tall figure (chest sits high, `chestX`
+  // — hence `big` — is small), so its top would slice through the chest/shoulders
+  // and amputate the whole bodice, leaving a bare torso over a cone skirt (the
+  // "topless runway gown" bug). Size the height to span hem → past zTop instead.
+  const hemH = (zTop - hemZ) + big;
+  const hemPlane = sdf.box([big, big, hemH]).translate([0, 0, hemZ + hemH / 2]); // z ≥ hemZ
   // Clip the SHELL + clavicle + coverage to the hem so the chest ellipsoid's
   // bottom tip can't dangle below the hemline as a central pendant between the
   // legs (#nub), and every hem gets the same soft rolled edge. Sleeves are
@@ -4177,4 +4238,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };

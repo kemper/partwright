@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildTorso, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -944,6 +944,23 @@ describe('figure brows — flush, labelled, preset-driven (#724)', () => {
     }
   });
 
+  it("conformal `on` path: still labels 'brows' and builds non-degenerate geometry", () => {
+    // `on` seats the brow as a conformal offset of the real surface (surfaceMarking)
+    // — surface.round(proud) ∩ arc — rather than the legacy sunk strip. A head-sized
+    // sphere stands in for the face surface; the offset must actually intersect the
+    // arc region (a zero proud or a missed region would yield an empty/degenerate
+    // patch), and the 'brows' label must survive the offset+clip.
+    const surf = api.sphere(rig.r.head * 1.4).translate(rig.joints.head as Vec3);
+    const brow = buildBrows(api, rig, { shape: 'natural', on: surf });
+    expect(labelsOf(brow)).toEqual(['brows']);
+    const b = brow.bounds();
+    expect(b.max[0] - b.min[0]).toBeGreaterThan(0);            // lateral span (the brow pair)
+    expect(b.max[2] - b.min[2]).toBeGreaterThan(0);            // vertical band
+    // Seated at the brow height, not adrift (within a head radius of the anchors).
+    const browZ = (rig.face.browL[2] + rig.face.browR[2]) / 2;
+    expect(Math.abs((b.max[2] + b.min[2]) / 2 - browZ)).toBeLessThan(rig.r.head);
+  });
+
   it("'bushy' is a thicker (taller) brow than 'thin'", () => {
     // Vertical extent of the strip ≈ its band thickness (+arch); bushy's wider
     // band dominates so the strip is clearly taller than the thin line.
@@ -1169,6 +1186,44 @@ describe('figure pants — posed-leg coverage', () => {
   it('rejects unknown length values', () => {
     const rig = buildRig({});
     expect(() => buildPants(api, rig, { length: 'capri' })).toThrow(/length/);
+  });
+});
+
+describe('figure top — dress/gown coverage', () => {
+  it('a floor-length sleeveless gown still covers the chest on a tall figure', () => {
+    // Regression (#topless-runway-gown): the hem "half-space" was a fixed
+    // `big`-tall box, too short for a floor-length hem on a tall figure (chest
+    // sits high in Z, `chestX` — hence `big` — is small). Its TOP sliced through
+    // the chest/shoulders and amputated the whole bodice, leaving a bare torso
+    // over a cone skirt. Build a runway-like rig + floor-length gown and assert
+    // the bust and chest are INSIDE the garment.
+    const rig = buildRig({ height: 72, headsTall: 8.5, sex: 'female', build: 'slim', weight: 0.3, bust: 0.4 });
+    const hemZ = rig.opts.height * 0.06;             // near the ground
+    const gown = buildTop(api, rig, { sleeve: 'none', hemZ }) as SdfNode;
+    // The bust apexes sit on the skin surface; the garment offsets outward, so
+    // each must be strictly inside. Before the fix these evaluated > 0 (clipped).
+    const mounds = breastMounds(rig.joints, rig.r, rig.opts.bust);
+    expect(mounds).not.toBeNull();
+    if (mounds) {
+      expect(gown.evaluate(...(mounds.apexL as [number, number, number]))).toBeLessThan(0);
+      expect(gown.evaluate(...(mounds.apexR as [number, number, number]))).toBeLessThan(0);
+    }
+    // The chest-front surface (centre line, one chest-depth forward) is covered.
+    const C = rig.joints.chest;
+    expect(gown.evaluate(C[0], C[1] - rig.r.chestY, C[2])).toBeLessThan(0);
+  });
+
+  it('the gown hem stops the skirt: just below hemZ is outside, just above is inside', () => {
+    // Guards the hem BOTTOM edge (so the coverage-clip fix above doesn't
+    // over-correct and regress the hemline) — NOT the #topless-runway-gown
+    // defect itself, which was the box TOP and is covered by the test above.
+    const rig = buildRig({ height: 72, headsTall: 8.5, sex: 'female', build: 'slim', weight: 0.3, bust: 0.4 });
+    const hemZ = rig.opts.height * 0.06;
+    const gown = buildTop(api, rig, { sleeve: 'none', hemZ }) as SdfNode;
+    // On the body centre line, a point above the hem is inside the skirt; a point
+    // well below the hem is outside (the hem still cuts the bottom edge).
+    expect(gown.evaluate(0, 0, hemZ + 4)).toBeLessThan(0);
+    expect(gown.evaluate(0, 0, hemZ - 4)).toBeGreaterThan(0);
   });
 });
 

@@ -49,6 +49,7 @@ import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { confirmDialog, promptDialog } from './ui/dialogs';
+import { showSaveAllModal, type UnsavedPartRow } from './ui/saveAllModal';
 import { updateAppHistory } from './ui/appHistory';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive, closeAiPanel, isAiTurnInFlight, onAiTurnEnd } from './ui/aiPanel';
 import { onViewportPanelOpen } from './ui/viewportPanelRegistry';
@@ -268,6 +269,8 @@ import {
   deletePart,
   deleteParts,
   reorderParts,
+  partSaveState,
+  currentPartIsDirty,
   getState,
   setSessionThumbCamera,
   setSessionWorkCamera,
@@ -4394,8 +4397,42 @@ async function main() {
     }
   }
 
-  // Create session bar
+  /** Switch the active part and load it (plus any stashed unsaved draft) into
+   *  the editor — the shared body behind the parts-rail click AND the
+   *  multi-part save flow's "visit each part to save it" loop. Stashes the
+   *  outgoing part's buffer as a draft first so nothing is lost on the switch. */
+  async function selectPart(partId: string): Promise<void> {
+    // Cancel any in-flight render so stale previews can't land on the viewport
+    // after we've switched away to a different part.
+    cancelCurrentExecution();
+    // Save any unsaved non-starter edits as a version (imported SCAD with
+    // errors, etc.) so they survive the switch and are loadable on return.
+    await preserveCurrentEditsIfNeeded();
+    // Also stash the raw editor buffer as a per-part draft BEFORE changePart
+    // runs — after that call currentPart is already the incoming part, so
+    // saving inside loadVersionIntoEditor would land under the wrong id.
+    const { session, currentPart } = getState();
+    if (session && currentPart) {
+      await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles());
+    }
+    const version = await changePart(partId);
+    // skipDraftSave: the outgoing draft was already saved above.
+    await loadPartIntoEditor(version, { skipDraftSave: true });
+    // Restore the incoming part's unsaved work (if any) on top of the saved
+    // version that loadPartIntoEditor just loaded.
+    await restoreDraftIfNewer();
+  }
+
+  // Assigned to the modal-aware save once it's defined below; the session bar's
+  // Save button reads it through this mutable handle so a click and Cmd/Ctrl+S
+  // run identical logic (including the multi-part save modal).
+  let saveVersionFromUI: (() => void | Promise<void>) | undefined;
+
+  // Create session bar. The 💾 Save button defers to `saveVersionFromUI` (the
+  // modal-aware save assigned below, once it's defined) so clicking Save and
+  // pressing Cmd/Ctrl+S share the exact same multi-part flow.
   createSessionBar(editorUI, {
+    onSave: () => { void saveVersionFromUI?.(); },
     onSaveVersion: async () => ({
       code: getValue(),
       geometryData: enrichGeometryDataWithColors(getGeometryDataObj()),
@@ -4454,31 +4491,19 @@ async function main() {
 
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
-    onSelectPart: async (partId: string) => {
-      // Cancel any in-flight render so stale Part N previews can't land on
-      // the viewport after we've switched away to a different part.
-      cancelCurrentExecution();
-      // Save any unsaved non-starter edits as a version (imported SCAD with
-      // errors, etc.) so they survive the switch and are loadable on return.
-      await preserveCurrentEditsIfNeeded();
-      // Also stash the raw editor buffer as a per-part draft BEFORE changePart
-      // runs — after that call currentPart is already the incoming part, so
-      // saving inside loadVersionIntoEditor would land under the wrong id.
-      const { session, currentPart } = getState();
-      if (session && currentPart) {
-        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles());
-      }
-      const version = await changePart(partId);
-      // skipDraftSave: the outgoing draft was already saved above.
-      await loadPartIntoEditor(version, { skipDraftSave: true });
-      // Restore the incoming part's unsaved work (if any) on top of the
-      // saved version that loadPartIntoEditor just loaded.
-      await restoreDraftIfNewer();
-    },
+    onSelectPart: (partId: string) => selectPart(partId),
     onCreatePart: async () => {
       // Structural part edits are leader-only — a read-only viewer must not
       // write to the shared session (mirrors the run/save guard).
       if (isReadOnlyViewer()) return;
+      // Stash the current part's buffer as a draft before switching away so its
+      // unsaved work survives and is detectable by the multi-part save modal.
+      // Unlike the rail-switch path we deliberately DON'T auto-save it as a
+      // version — leaving it unsaved is exactly what surfaces it in that modal.
+      const { session, currentPart } = getState();
+      if (session && currentPart && !isStarterCode(getValue())) {
+        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles());
+      }
       await createPart();
       startNewPartInEditor();
     },
@@ -4592,7 +4617,9 @@ async function main() {
   });
 
   // Global undo / redo / save shortcuts (OS-aware, focus/tool-routed).
-  const saveVersionWithToast = async () => {
+
+  // Save the CURRENT part and toast the outcome — the single-part save path.
+  const saveCurrentPartWithToast = async () => {
     let result;
     try {
       result = await saveCurrentVersion();
@@ -4621,6 +4648,100 @@ async function main() {
       showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}`, { variant: 'success' });
     }
   };
+
+  /** Parts in the active session with unsaved changes, in left-panel order.
+   *  The current part is judged from the live editor buffer; the others from
+   *  their stashed per-part drafts. */
+  const gatherUnsavedParts = async (): Promise<UnsavedPartRow[]> => {
+    const { session, parts, currentPart } = getState();
+    if (!session) return [];
+    const rows: UnsavedPartRow[] = [];
+    for (const part of parts) {
+      const isCurrent = part.id === currentPart?.id;
+      if (isCurrent) {
+        if (!currentPartIsDirty(
+          getValue(),
+          enrichGeometryDataWithColors(getGeometryDataObj()),
+          { paramValues: currentParamValues, companionFiles: getCompanionFiles() },
+        )) continue;
+        // No committed version + untouched starter buffer = "no changes yet".
+        const empty = !getState().currentVersion && isStarterCode(getValue());
+        rows.push({ id: part.id, name: part.name, isCurrent, status: empty ? 'empty' : 'unsaved' });
+      } else {
+        const state = await partSaveState(part);
+        if (state === 'clean') continue;
+        rows.push({ id: part.id, name: part.name, isCurrent, status: state });
+      }
+    }
+    return rows;
+  };
+
+  /** Save several parts in one action: each non-current part is loaded into the
+   *  editor (which restores its stashed draft and re-runs its code, so the saved
+   *  version carries the right geometry + thumbnail), saved, then the original
+   *  part is restored. The current part is saved in place first to avoid an
+   *  unnecessary round-trip. */
+  const saveSelectedParts = async (partIds: string[]): Promise<{ saved: number; failed: number }> => {
+    const wanted = new Set(partIds);
+    const originalPartId = getState().currentPart?.id ?? null;
+    // Preserve the rail's order; only touch parts the user kept checked.
+    const ordered = getState().parts.filter(p => wanted.has(p.id));
+    let saved = 0;
+    let failed = 0;
+    const tally = async () => {
+      try {
+        const result = await saveCurrentVersion();
+        if ('error' in result) failed++;
+        else if (!('skipped' in result)) saved++;
+        // 'skipped' = nothing actually changed (a race or already-saved); no-op.
+      } catch {
+        failed++;
+      }
+    };
+    try {
+      // Current part first, in place — no part switch needed.
+      if (originalPartId && wanted.has(originalPartId)) await tally();
+      for (const part of ordered) {
+        if (part.id === originalPartId) continue;
+        await selectPart(part.id);
+        await tally();
+      }
+    } finally {
+      // Always return to where the user was, even if a save threw.
+      if (originalPartId && getState().currentPart?.id !== originalPartId) {
+        await selectPart(originalPartId);
+      }
+    }
+    if (failed > 0) {
+      showToast(`Saved ${saved} part${saved === 1 ? '' : 's'}, ${failed} failed`, { variant: 'warn' });
+    } else {
+      showToast(`Saved ${saved} part${saved === 1 ? '' : 's'}`, { variant: 'success' });
+    }
+    return { saved, failed };
+  };
+
+  // Modal-aware save: when ≥2 parts have unsaved changes, let the user choose
+  // whether to save just the current part or a selected subset; otherwise this
+  // is the plain single-part save. Drives both Cmd/Ctrl+S and the 💾 button.
+  const saveVersionWithToast = async () => {
+    const unsaved = await gatherUnsavedParts();
+    if (unsaved.length >= 2) {
+      const choice = await showSaveAllModal(unsaved);
+      if (choice.action === 'cancel') return;
+      if (choice.action === 'selected') {
+        const onlyCurrent = choice.partIds.length === 1 && choice.partIds[0] === getState().currentPart?.id;
+        if (!onlyCurrent) {
+          await saveSelectedParts(choice.partIds);
+          return;
+        }
+      }
+      // 'current', or a "selected" set that's just the current part → fall
+      // through to the single-part save below (same toasts as a normal save).
+    }
+    await saveCurrentPartWithToast();
+  };
+  // Exposed so the session-bar 💾 button routes through the same modal flow.
+  saveVersionFromUI = saveVersionWithToast;
   installKeyboardShortcuts({ onSave: saveVersionWithToast });
 
   // Viewport tools need the editor active and a model on screen to act on.
@@ -10116,6 +10237,19 @@ async function main() {
       return saveCurrentVersion(label);
     },
 
+    /** Save every part in the active session that has unsaved changes, in one
+     *  call — the non-interactive twin of the 💾 button's multi-part save
+     *  modal. Each part is loaded, saved, and the originally-active part is
+     *  restored. Returns how many parts were saved (and how many failed). */
+    async saveAllParts() {
+      if (!getState().session) {
+        return { error: 'No active session. Call createSession() or openSession(id) first.' };
+      }
+      const unsaved = await gatherUnsavedParts();
+      if (unsaved.length === 0) return { saved: 0, failed: 0 };
+      return saveSelectedParts(unsaved.map(p => p.id));
+    },
+
     /** Commit the current state, routing between `runAndSave` and
      *  `saveVersion` automatically based on whether the code changed:
      *
@@ -13800,6 +13934,7 @@ async function main() {
         'createSession':   { signature: 'await createSession(name?) -- Create session -> {id, url, galleryUrl}', docs: '/ai.md#console-api--windowpartwright' },
         'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call', docs: '/ai.md#assert--save-in-one-call' },
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
+        'saveAllParts':    { signature: 'await saveAllParts() -- Save every part with unsaved changes', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
         'loadVersion':     { signature: 'await loadVersion({index} | {id}) -- Load version into editor -> {id, index, label, code, geometryData} or {error}', docs: '/ai.md#console-api--windowpartwright' },
         'renameVersion':   { signature: 'await renameVersion({index} | {id}, label) -- Relabel a version -> {ok, id, index, label} or {error}', docs: '/ai.md#console-api--windowpartwright' },
