@@ -159,8 +159,15 @@ interface NodeData {
   rewrap?: (child: SdfNode) => SdfNode;
   /** Engine binding for `.build()`. Threaded through chain methods and
    *  ops from the input node(s). Undefined for pure-logic unit-test
-   *  factories — only callers of `.build()` need it. */
+   *  factories — only callers of `.build()` require it. */
   ctx?: BuildContext;
+  /** Marks this node as a FINE-HANDS region (see `opFineHands`): at build
+   *  time it is pulled into its own region and meshed by a per-sphere uniform
+   *  fine march instead of the coarse global march, then hard-unioned. Carries
+   *  the per-feature spheres to march. The coarse march webs thin, closely-
+   *  spaced features (figure fingers) into topological handles the in-place
+   *  refine can't undo; this resolves them at the source. */
+  fineRegions?: DetailRegion[];
 }
 
 let nextId = 1;
@@ -178,6 +185,7 @@ export class SdfNode {
   /** @internal */ readonly _partitionable: boolean;
   /** @internal */ readonly _rewrap: ((child: SdfNode) => SdfNode) | undefined;
   /** @internal */ readonly _ctx: BuildContext | undefined;
+  /** @internal */ readonly _fineRegions: DetailRegion[] | undefined;
 
   constructor(data: NodeData) {
     this.id = `sdf_${nextId++}`;
@@ -188,6 +196,7 @@ export class SdfNode {
     this._partitionable = data.partitionable;
     this._rewrap = data.rewrap;
     this.labelName = data.labelName;
+    this._fineRegions = data.fineRegions;
     // Inherit ctx from data, else from the first child that has one.
     // Lets `union(a, b)` keep the engine binding from either operand.
     this._ctx = data.ctx ?? (data.children.find(c => c._ctx !== undefined)?._ctx);
@@ -535,6 +544,21 @@ function buildSdf(
     // standard SDF: positive=inside, negative=outside. Negate so user
     // code can keep writing distance functions the normal way.
     const negated: (p: Vec3) => number = (p) => -evalFn(p[0], p[1], p[2]);
+    // FINE-HANDS region: mesh each feature sphere on its OWN uniform fine grid
+    // (a hand's bbox is tiny, so a fine grid is cheap) and union the chunks.
+    // This resolves thin, closely-spaced fingers that the coarse global march
+    // would web into a topological handle — the in-place refine pass can't fix
+    // topology, so the feature must be marched fine at the source. The region's
+    // geometry overlaps the coarse body at the wrist, so the final hard-union
+    // (below) merges them as distinct shapes with no seam.
+    if (region.fineRegions !== undefined && region.fineRegions.length > 0) {
+      let m = meshFineRegions(negated, region.fineRegions, level, edgeLength, Manifold);
+      if (m !== null) {
+        if (region.labelName) m = label(m, region.labelName);
+        meshed.push(m);
+      }
+      continue;
+    }
     // Expand bounds slightly so the iso-surface closes cleanly; if the
     // SDF reaches the boundary, marching tetrahedra would emit egg-crate
     // closing faces. A margin of max(edgeLength, 1) is empirical — large
@@ -718,6 +742,43 @@ function refineManifoldNearRegions(
   }
 }
 
+/** Mesh a fine-hands region: march each feature sphere's bounding box on its
+ *  OWN uniform fine grid and hard-union the chunks. Each sphere is sized to
+ *  fully contain one feature (a hand), so its box captures that feature only
+ *  (the other hand lies outside it) and marches it at full topological fidelity
+ *  — no coarse-grid webbing. Returns null if every march was empty (so the
+ *  caller drops the region rather than pushing an empty mesh). */
+function meshFineRegions(
+  negated: (p: Vec3) => number,
+  regions: DetailRegion[],
+  level: number,
+  coarseEdge: number,
+  Manifold: ManifoldClass,
+): ManifoldInstance | null {
+  let acc: ManifoldInstance | null = null;
+  for (const r of regions) {
+    const [cx, cy, cz] = r.center;
+    const R = r.radius;
+    const pad = fineMargin(r.edgeLength);
+    const bbox: Box = {
+      min: [cx - R - pad, cy - R - pad, cz - R - pad],
+      max: [cx + R + pad, cy + R + pad, cz + R + pad],
+    };
+    let chunk: ManifoldInstance;
+    try {
+      chunk = Manifold.levelSet(negated, bbox, r.edgeLength, level);
+    } catch (err) {
+      console.warn('api.sdf.build(): fine-hands march failed for a region, skipping it.', err);
+      continue;
+    }
+    if ((chunk.numTri() as number) === 0) continue;
+    acc = acc === null ? chunk : acc.add(chunk);
+  }
+  // A fine march of two near-but-separate features can shed a sub-cell sliver
+  // where their grids meet; drop debris below a couple of COARSE cells.
+  return acc === null ? null : dropSubCellDebris(acc, Manifold, coarseEdge);
+}
+
 function expandedMeshBounds(nodeBounds: Box, userBounds: Box, edgeLength: number): Box {
   // The user-supplied bounds (if any) clip the region. The node's own
   // bounds (where the surface actually lives) cap the work. Take the
@@ -730,7 +791,33 @@ function expandedMeshBounds(nodeBounds: Box, userBounds: Box, edgeLength: number
 
 // --- Label partitioning -------------------------------------------------
 
-interface Partition { node: SdfNode; labelName?: string }
+interface Partition { node: SdfNode; labelName?: string; fineRegions?: DetailRegion[] }
+
+/** True if a fine-hands marker (`opFineHands`) sits anywhere in the subtree. */
+function containsFineHands(node: SdfNode): boolean {
+  if (node.kind === 'fineHands') return true;
+  for (const c of node._children) if (containsFineHands(c)) return true;
+  return false;
+}
+
+/** Split a subtree into the fine-hands markers and "the rest" (markers removed),
+ *  walking only the hard-`union` nodes that `weld` produces around the markers.
+ *  The rest's eval therefore EXCLUDES the hands, so the body meshes coarse with
+ *  no fingers to web; each marker becomes its own per-sphere-fine region. */
+function extractFineHands(node: SdfNode): { rest: SdfNode | null; hands: SdfNode[] } {
+  if (node.kind === 'fineHands') return { rest: null, hands: [node] };
+  if (node._partitionable && node.kind === 'union') {
+    let rest: SdfNode | null = null;
+    const hands: SdfNode[] = [];
+    for (const c of node._children) {
+      const r = extractFineHands(c);
+      if (r.rest !== null) rest = rest === null ? r.rest : opUnion(rest, r.rest);
+      hands.push(...r.hands);
+    }
+    return { rest, hands };
+  }
+  return { rest: node, hands: [] };
+}
 
 /** Walk the tree top-down. When we hit a labelled node, that whole
  *  subtree becomes one region (with the label). When we hit a
@@ -740,8 +827,25 @@ interface Partition { node: SdfNode; labelName?: string }
  *  the perspective of its surviving A side) in which case the inner
  *  label propagates up. */
 export function partitionByLabel(root: SdfNode): Partition[] {
-  // If the root itself is labelled, the whole tree is one region.
+  // A fine-hands marker reached directly is its own region (meshed per-sphere).
+  if (root.kind === 'fineHands') {
+    return [{ node: root._children[0], fineRegions: root._fineRegions }];
+  }
+  // If the root itself is labelled, the whole tree is one region — UNLESS the
+  // labelled subtree carries fine-hands markers, in which case split them out
+  // as sibling regions that still paint with this label (hands stay 'skin')
+  // but mesh per-sphere-fine while the rest meshes coarse.
   if (root.labelName !== undefined) {
+    const child = root._children[0];
+    if (child !== undefined && containsFineHands(child)) {
+      const { rest, hands } = extractFineHands(child);
+      const parts: Partition[] = [];
+      if (rest !== null) parts.push({ node: rest, labelName: root.labelName });
+      for (const h of hands) {
+        parts.push({ node: h._children[0], labelName: root.labelName, fineRegions: h._fineRegions });
+      }
+      return parts;
+    }
     return [{ node: root, labelName: root.labelName }];
   }
   // Rigid/similarity transforms distribute over union: partition the child
@@ -754,9 +858,9 @@ export function partitionByLabel(root: SdfNode): Partition[] {
       labelName: p.labelName,
     }));
   }
-  // If the root is a partitionable boolean (union/etc.) AND any
-  // descendant carries a label, walk into the children.
-  if (root._partitionable && hasLabelledDescendant(root)) {
+  // If the root is a partitionable boolean (union/etc.) AND any descendant
+  // carries a label OR a fine-hands marker, walk into the children.
+  if (root._partitionable && (hasLabelledDescendant(root) || containsFineHands(root))) {
     const parts: Partition[] = [];
     for (const child of root._children) {
       parts.push(...partitionByLabel(child));
@@ -1125,6 +1229,23 @@ function opUnion(a: SdfNode, b: SdfNode): SdfNode {
     bounds: bbUnion(a._bounds, b._bounds),
     children: [a, b],
     partitionable: true,
+  });
+}
+
+/** Tag `node` as a fine-hands region (internal — used by the figure's hands).
+ *  Transparent for eval/bounds (it IS its child geometrically); the build
+ *  partitions it into its own region and meshes it per-sphere at a uniform fine
+ *  grid, then hard-unions it with the coarse body. `regions` are the per-hand
+ *  spheres (centre = wrist, radius contains the hand, edgeLength = fine grid).
+ *  Not partitionable: the hand is one atomic region. */
+function opFineHands(node: SdfNode, regions: DetailRegion[]): SdfNode {
+  return new SdfNode({
+    kind: 'fineHands',
+    eval: (x, y, z) => node._eval(x, y, z),
+    bounds: node._bounds,
+    children: [node],
+    partitionable: false,
+    fineRegions: regions,
   });
 }
 
@@ -1903,6 +2024,10 @@ export interface SdfNamespace {
   /** Build the SDF tree into a Manifold via Manifold.levelSet, with
    *  optional explicit bounds / edgeLength / level / tolerance. */
   build(node: SdfNode, opts?: SdfBuildOptions): ManifoldInstance;
+  /** @internal Tag a subtree as a fine-hands region — meshed per-sphere at a
+   *  uniform fine grid and hard-unioned (used by the figure's hands so the
+   *  coarse body march never webs the fingers). Not a documented user API. */
+  __fineHands(node: SdfNode, regions: DetailRegion[]): SdfNode;
 }
 
 /** Construct a fresh SDF namespace for one engine run. Bound to the
@@ -1962,6 +2087,7 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     noise: (opts) => makeNoise(assertNoiseOpts(opts)),
     lsystem: (opts) => bound(buildLSystem(opts)),
     build: (node, opts) => assertSdfNode(node, 'build(node)').build(opts ?? {}),
+    __fineHands: (node, regions) => bound(opFineHands(assertSdfNode(node, '__fineHands(node)'), regions)),
     // Placeholder; replaced below once `namespace` exists (figure builds its
     // parts from these bound namespace methods).
     figure: undefined as unknown as FigureNamespace,
@@ -1993,6 +2119,7 @@ export const __testables__ = {
   primGradedDiamond,
   primGradedLidinoid,
   opUnion,
+  opFineHands,
   opSubtract,
   opIntersect,
   opSmoothUnion,

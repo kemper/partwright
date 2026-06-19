@@ -364,20 +364,28 @@ the shallow relief aliases away.
 > areolae on your own surface (clip a flush coin from a sphere a hair larger than
 > your ellipsoid, label it `'areola'`), as `figure_strongman.js` does.
 
-**Hands are sculpted by default — pair them with `detail: F.handDetail(rig)`.**
-Every grip builds a stylized three-finger + thumb hand (`open` splays straight
-fingers, `relaxed` curls them toward the palm, `fist` is a ball with knuckle
-ridges and a folded thumb). The fingers are finer than the recommended 0.4–0.6
-figure grid, so add the hand detail spheres to the build or they alias away:
+**Hands are sculpted by default with four fully-separated fingers + a thumb,
+and self-mesh — no detail spheres needed.** A `grip` picks a configuration:
+`open`/`spread`/`wave` splay the straight fingers, `relaxed`/`claw`/`clutch`
+curl them, `point`/`peace`/`thumbsup`/`fist`/`ok` fold the rest. The fingers are
+far finer than the 0.4–0.6 figure grid, so a single coarse march would web them
+together; `F.hands` tags each hand as a *fine-hands region* that the build
+meshes on its own uniform fine grid and hard-unions onto the forearm at the
+wrist (a clean overlap, no seam). That happens automatically — you do **not**
+add hand detail spheres:
 
 ```js
-.build({ edgeLength: 0.5, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] })
+const skin = F.weld(rig, [F.torso(rig), F.arms(rig), F.hands(rig, { grip: 'open' }), ...]).label('skin');
+// build needs only faceDetail; hands resolve themselves:
+.build({ edgeLength: 0.5, detail: [...F.faceDetail(rig)] })
 ```
 
-Pass `fingers: false` for the legacy mitten/paddle hands (no detail region
-needed). The hand frame derives from the rig (fingers extend along the
-forearm, palm faces the elbow-curl direction), so posed arms keep correct
-hands automatically.
+`F.handDetail(rig)` is now a deprecated no-op (it returns no spheres) — existing
+`detail: [...F.handDetail(rig)]` keeps working but contributes nothing. Optional
+`hands` knobs: `count` (finger count), `length` (finger length multiplier),
+`palmThickness`. Pass `fingers: false` for the legacy mitten/paddle hands. The
+hand frame derives from the rig (fingers extend along the forearm, palm faces
+the elbow-curl direction), so posed arms keep correct hands automatically.
 
 **Feet are flat and real-foot shaped, with optional toes.** `F.feet(rig)`
 builds a low, flat-soled foot (instep crown, ball, rounded heel) that sits flat
