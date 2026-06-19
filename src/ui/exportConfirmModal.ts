@@ -209,9 +209,9 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<ExportConfir
         ? `<span class="font-mono">${names.slice(0, 6).map(escapeHtml).join(', ')}${names.length > 6 ? ', …' : ''}</span>`
         : '';
       block.innerHTML =
-        `<strong>${count} part${count === 1 ? '' : 's'} ha${count === 1 ? 's' : 've'} unsaved changes.</strong> ${list ? list + '. ' : ''}` +
-        'A multi-part export bakes each non-current part from its <strong>last saved version</strong>, so unsaved edits (e.g. fresh paint) can be left out. ' +
-        'Click <strong>Save…</strong> to save first, or export anyway.';
+        `<strong>${count} part${count === 1 ? '' : 's'} ${count === 1 ? 'isn’t' : 'aren’t'} saved.</strong> ${list ? list + '. ' : ''}` +
+        'A multi-part export bakes each non-current part from its <strong>last saved version</strong>, so unsaved edits (e.g. fresh paint) can be left out and parts that were <strong>never saved are skipped entirely</strong>. ' +
+        'Click <strong>Save…</strong> to save them first, or export anyway.';
       shell.body.appendChild(block);
     }
 

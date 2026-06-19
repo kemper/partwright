@@ -4110,14 +4110,15 @@ async function main() {
    *  confirmed it. Only used by the UI export actions below. */
   async function confirmExportOrProceed(format: string): Promise<boolean> {
     const info = exportWarningInfo(format);
-    // Flag parts with unsaved changes so the export doesn't silently use stale
-    // data. A multi-part export bakes each NON-current part from its last SAVED
-    // version (the current part exports from its live mesh), so unsaved edits can
-    // drop out — but we warn for the current part too: the user asked to be
-    // alerted whenever they export without saving, and "I painted this part and
-    // exported" is the most common case. 'empty' (brand-new untouched) parts are
-    // excluded — there's nothing to lose.
-    const unsavedRows = (await gatherUnsavedParts()).filter(r => r.status === 'unsaved');
+    // Flag every part that isn't fully saved so the export doesn't silently use
+    // stale data. A multi-part export bakes each NON-current part from its last
+    // SAVED version (the current part exports from its live mesh), so unsaved
+    // edits drop out — and a part that was never saved at all (an untouched
+    // starter) has NO version, so it's skipped from the export entirely. Both
+    // 'unsaved' (edited, not saved) and 'empty' (brand-new, never saved) count;
+    // only 'clean' parts are omitted. We warn for the current part too: the user
+    // asked to be alerted whenever they export without saving.
+    const unsavedRows = (await gatherUnsavedParts()).filter(r => r.status === 'unsaved' || r.status === 'empty');
     if (unsavedRows.length > 0) {
       info.unsavedParts = { count: unsavedRows.length, names: unsavedRows.map(r => r.name) };
     }

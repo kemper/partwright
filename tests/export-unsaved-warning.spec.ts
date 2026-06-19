@@ -62,7 +62,7 @@ test('export with an unsaved non-current part warns and offers Save', async ({ p
   await openExportSTL(page);
   const dialog = page.locator('[role="dialog"]');
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText('unsaved changes');
+  await expect(dialog).toContainText('last saved version');
   await expect(dialog).toContainText('Widget');
   await expect(dialog.getByRole('button', { name: 'Save…' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Export anyway' })).toBeVisible();
@@ -127,6 +127,36 @@ test('export warns when the CURRENT part has unsaved paint', async ({ page }) =>
   await openExportSTL(page);
   const dialog = page.locator('[role="dialog"]');
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText('unsaved changes');
+  await expect(dialog).toContainText('last saved version');
+  await expect(dialog.getByRole('button', { name: 'Save…' })).toBeVisible();
+});
+
+// Untouched, never-saved "+" parts (status 'empty') are flagged too: a
+// multi-part export skips them entirely (they have no saved version), so the
+// user wants to be warned about them before exporting.
+test('export warns about untouched, never-saved parts', async ({ page }) => {
+  await openEditor(page);
+  await page.evaluate(async () => {
+    const pw = (window as any).partwright;
+    await pw.createSession('EmptyParts');
+    // Save the first part so there's at least one exportable part.
+    await pw.runAndSave('const {Manifold}=api; return Manifold.cube([10,10,10],true);', 'v1');
+  });
+  // Add 3 brand-new parts via the + button, no edits → untouched starters.
+  for (let i = 0; i < 3; i++) {
+    await page.locator('#btn-add-part').click();
+    await page.waitForTimeout(900);
+  }
+  // Switch back to the first (saved) part so the new ones are non-current empties.
+  await page.evaluate(async () => {
+    const pw = (window as any).partwright;
+    await pw.changePart(pw.listParts()[0].id);
+  });
+  await page.waitForTimeout(500);
+
+  await openExportSTL(page);
+  const dialog = page.locator('[role="dialog"]');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('never saved are skipped');
   await expect(dialog.getByRole('button', { name: 'Save…' })).toBeVisible();
 });
