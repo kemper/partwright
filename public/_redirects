@@ -12,11 +12,18 @@
 /current/* /:splat 302
 /current /editor 302
 
-# Pinned version mounts: each needs its OWN SPA fallback, listed BEFORE the root
-# one so a deep link like /v1/editor serves /v1/index.html (the pinned build),
-# not the root app. Real assets and the pre-rendered /v1/*.html content pages
-# resolve before this rule (same as the root fallback below).
-/v1/* /v1/index.html 200
+# SPA fallbacks for the app's only no-file route — the editor — at the root and
+# at each pinned mount. These MUST be explicit per-route rules, NOT splats:
+# Cloudflare REJECTS `/* /index.html 200` and `/v1/* /v1/index.html 200` as
+# infinite loops (the destination canonicalizes — /index.html → /, /v1/index.html
+# → /v1/ — and re-matches its own splat source), silently dropping them. An exact
+# source like `/editor` never canonicalizes back into itself, so it's accepted.
+# Everything else already has a file: /, /v1/ → their index via directory-index;
+# /catalog, /help, /v1/catalog, … → pre-rendered .html. The editor's ?session=…
+# states share the /editor path, so one rule each covers them. Add a line per new
+# top-level SPA route (and per pinned major).
+/editor /index.html 200
+/v1/editor /v1/index.html 200
 
 # Pre-rendered, app-free content pages (catalog.html / help.html / legal.html /
 # whats-new.html / ideas.html) are served by Cloudflare Pages at their CLEAN URLs
@@ -28,5 +35,8 @@
 # the prerenderContentPages middleware (src/content/build) instead.
 #
 # Specific assets (incl. the four content pages) resolve before this SPA
-# fallback, which only catches app routes like /editor.
+# fallback. NOTE: Cloudflare rejects this catch-all as an infinite loop
+# (/index.html → / → re-matches /*) and drops it — so the explicit `/editor` /
+# `/v1/editor` rules above are what actually serve the SPA. Kept as documented
+# intent + a harmless backstop (and the vite dev/preview server honors it).
 /* /index.html 200
