@@ -104,11 +104,13 @@ test('Export anyway proceeds despite unsaved non-current parts', async ({ page }
   await openExportSTL(page);
   const dialog = page.locator('[role="dialog"]');
   await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('last saved version');
   await dialog.getByRole('button', { name: 'Export anyway' }).click();
-  await expect(dialog).toBeHidden();
-  await expect(
-    page.locator('div[role="status"]').filter({ hasText: /Exported/ }),
-  ).toBeVisible({ timeout: 5_000 });
+
+  // The unsaved warning is dismissed and the export proceeds. With ≥2 parts an
+  // STL export opens the multi-part part picker ("Export parts to STL") rather
+  // than a direct download — its appearance proves we got past the warning.
+  await expect(page.getByRole('dialog').getByText(/Export parts to STL/i)).toBeVisible({ timeout: 10_000 });
 });
 
 // The reported case: paint the CURRENT part (saved earlier) and export without
