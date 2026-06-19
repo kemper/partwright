@@ -13,6 +13,7 @@ async function openEditor(page: Page) {
       localStorage.setItem('partwright-tour-completed', '1');
       localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false }));
       localStorage.setItem('partwright-units', 'mm'); // silence the unitless warning
+      localStorage.setItem('editor-auto-format', 'false'); // so runAndSave parts read clean (see #764)
     } catch { /* ignore */ }
   });
   await page.goto('/editor');

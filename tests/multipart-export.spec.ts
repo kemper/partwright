@@ -7,7 +7,7 @@ import { test, expect } from 'playwright/test';
 test.describe('multi-part OBJ / STL / GLB export', () => {
   test.beforeEach(async ({ page }) => {
     // Suppress the first-run guided tour — its backdrop intercepts clicks.
-    await page.addInitScript(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ } });
+    await page.addInitScript(() => { try { localStorage.setItem('partwright-tour-completed', '1'); localStorage.setItem('editor-auto-format', 'false'); } catch { /* ignore */ } });
   });
 
   test('builders emit named objects / per-part files / named nodes', async ({ page }) => {

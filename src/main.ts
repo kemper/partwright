@@ -11084,14 +11084,7 @@ async function main() {
       }
 
       const thumbnail = await captureThumbnail();
-      // Save the editor's buffer, not the raw `code` arg: setValue(code) above
-      // normalizes through auto-format, so getValue() is what the editor (and
-      // every subsequent dirty check) sees. Saving the unformatted arg here left
-      // the just-saved part reading as "unsaved" whenever auto-format reflowed
-      // the code (version.code !== getValue()) — a false positive that tripped
-      // the unsaved-parts export warning. Geometry is unaffected (it ran from
-      // `code`; formatting is whitespace-only).
-      const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+      const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
