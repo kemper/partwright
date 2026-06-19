@@ -79,6 +79,8 @@ import { exportGLB, buildGLB } from './export/gltf';
 import { exportSTL, buildSTL } from './export/stl';
 import { exportOBJ, buildOBJ } from './export/obj';
 import { export3MF, build3MF } from './export/threemf';
+import { build3MFProject } from './export/threemfProject';
+import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
 import { exportSessionJSON, exportRawCode, buildSessionJSON, buildRawCode } from './export/session';
@@ -196,12 +198,12 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
-import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
+import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
 import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
@@ -3474,6 +3476,79 @@ async function main() {
     }
   }
 
+  /** Bake a part's mesh WITH its colours, off the live editor, for multi-part
+   *  export. The active part is returned straight from `currentMeshData` (already
+   *  fully coloured, no re-run). Any other part is re-executed and BOTH colour
+   *  layers are resolved offline — code-declared colours (`api.label` /
+   *  `api.paint.*`, from the run result) and the part's saved manual paint
+   *  (`version.geometryData.colorRegions`) — using the same resolver + compositor
+   *  the live editor uses, so nothing is silently dropped. Returns null when the
+   *  part has no version or produced no usable mesh. */
+  async function bakeColoredMeshForPart(partId: string, name: string): Promise<{ name: string; mesh: MeshData } | null> {
+    if (partId === getState().currentPart?.id && currentMeshData) {
+      return { name, mesh: coloredMeshForExport(currentMeshData) };
+    }
+    const version = await getLatestVersion(partId);
+    if (!version) return null;
+    const lang = effectiveVersionLanguage(version, getState().session);
+    const saved = getActiveImports();
+    let result;
+    try {
+      setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
+      result = await executeCodeAsync(version.code, lang);
+    } finally {
+      setActiveImports(saved);
+    }
+    if (!result || result.error || !result.mesh) return null;
+    const mesh = result.mesh;
+
+    // Adjacency is only needed by a few descriptor kinds; build it lazily once.
+    let adjacency: AdjacencyGraph | null = null;
+    const needsAdjacency = (d: RegionDescriptor) =>
+      d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood';
+    const ensureAdjacency = () => (adjacency ??= buildAdjacency(mesh));
+
+    let order = 0;
+    const mkRegion = (color: [number, number, number], triangles: Set<number>, perTriColors?: Map<number, [number, number, number]>): ColorRegion => ({
+      id: ++order, name: '', color, source: 'model', descriptor: { kind: 'triangles', ids: [] },
+      order, visible: true, triangles, perTriColors,
+    });
+
+    // Layer B — code-declared colours (the model-colour underlay).
+    const modelLayer: ColorRegion[] = [];
+    if (result.labelColors && result.labelMap) {
+      for (const [labelName, color] of result.labelColors) {
+        const tris = result.labelMap.get(labelName);
+        if (tris && tris.size > 0) modelLayer.push(mkRegion(color, tris));
+      }
+    }
+    if (result.paintOps) {
+      for (const op of result.paintOps) {
+        const d = op.descriptor as RegionDescriptor;
+        if (needsAdjacency(d)) ensureAdjacency();
+        const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null);
+        if (triangles.size > 0) modelLayer.push(mkRegion(op.color, triangles, perTriColors));
+      }
+    }
+
+    // Layer A — the part's saved manual paint regions.
+    const manualLayer: ColorRegion[] = [];
+    for (const region of versionColorRegions(version)) {
+      const d = region.descriptor;
+      if (needsAdjacency(d)) ensureAdjacency();
+      const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null);
+      if (triangles.size > 0) {
+        manualLayer.push({
+          id: ++order, name: region.name, color: region.color, source: region.source,
+          descriptor: d, order: region.order, visible: true, triangles, perTriColors,
+        });
+      }
+    }
+
+    const triColors = composeTriColors(mesh.numTri, [modelLayer, manualLayer]);
+    return { name, mesh: triColors ? { ...mesh, triColors } : mesh };
+  }
+
   /** Add the imported mesh as a brand-new part (becomes current). Optional
    *  seedRegions (relief's per-colour bands) are painted onto the saved v1. */
   async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean, seedRegions?: SeedRegion[]): Promise<void> {
@@ -4125,14 +4200,132 @@ async function main() {
     try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
   };
+  /** Multi-part 3MF: pick parts (with previews), bake each part's coloured mesh
+   *  off-editor, and bundle them into one 3MF. `bambu` true → one part per build
+   *  plate (Bambu/Orca project); false → a generic multi-object 3MF (grid). */
+  async function export3MFMultiPartFlow(bambu: boolean): Promise<void> {
+    const parts = getState().parts;
+    const activeId = getState().currentPart?.id ?? null;
+    // Pull each part's latest thumbnail for the picker (cheap — pre-baked Blobs).
+    const choices: ExportPartChoice[] = [];
+    for (const p of parts) {
+      const v = await getLatestVersion(p.id);
+      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null });
+    }
+    const selected = await showExportPartsModal(choices, activeId, bambu);
+    if (!selected || selected.length === 0) return;
+
+    const byId = new Map(parts.map(p => [p.id, p]));
+    const job = startProgress({ title: 'Preparing 3MF', indeterminate: false, message: 'Baking parts…' });
+    try {
+      const baked: { name: string; mesh: MeshData }[] = [];
+      for (let i = 0; i < selected.length; i++) {
+        const part = byId.get(selected[i]);
+        if (!part) continue;
+        updateProgress(job, i / selected.length, `Baking "${part.name}" (${i + 1}/${selected.length})…`);
+        const result = await bakeColoredMeshForPart(part.id, part.name);
+        if (result) baked.push(result);
+      }
+      updateProgress(job, 1, 'Writing 3MF…');
+      if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+
+      const bed = loadPrinterSettings().bed;
+      const built = build3MFProject(baked, { bambu, bedSize: [bed[0], bed[1]] });
+      downloadBlob(built.blob, built.filename, '3MF');
+      const skipped = selected.length - baked.length;
+      const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
+      showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' });
+    } finally {
+      endProgress(job);
+    }
+  }
+
+  /** Shared core for the multi-part 3MF exports: validate the part ids, bake each
+   *  selected part's coloured mesh off-editor, and build the 3MF. Returns the
+   *  BuiltExport (no download, no base64) so callers can either trigger a
+   *  download or return the bytes. `opts.bambu` (default true) → one part per
+   *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
+    const bambu = opts?.bambu ?? true;
+    const allParts = getState().parts;
+    if (allParts.length === 0) return { error: 'No parts in this session.' };
+    let ids = partIds;
+    if (ids !== undefined) {
+      if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
+        return { error: 'export3MFParts(partIds): partIds must be an array of part-id strings.' };
+      }
+    } else {
+      ids = allParts.map(p => p.id);
+    }
+    const byId = new Map(allParts.map(p => [p.id, p]));
+    const baked: { name: string; mesh: MeshData }[] = [];
+    for (const id of ids) {
+      const part = byId.get(id);
+      if (!part) return { error: `export3MFParts: unknown part id "${id}".` };
+      const result = await bakeColoredMeshForPart(part.id, part.name);
+      if (result) baked.push(result);
+    }
+    if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
+    try {
+      const bed = loadPrinterSettings().bed;
+      const built = build3MFProject(baked, { customName: filename, bambu, bedSize: [bed[0], bed[1]] });
+      return { built, parts: baked.length };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
+   *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
+   *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
+    assertString(filename, 'export3MFParts(partIds, filename)', { optional: true });
+    const r = await build3MFPartsExport(partIds, filename, opts);
+    if ('error' in r) return r;
+    downloadBlob(r.built.blob, r.built.filename, '3MF');
+    return { ok: true as const, filename: r.built.filename, parts: r.parts };
+  }
+
+  /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
+   *  downloading — the agent/test-friendly twin. Lets a caller read the exported
+   *  3MF back without the browser download path. */
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
+    assertString(filename, 'export3MFPartsData(partIds, filename)', { optional: true });
+    const r = await build3MFPartsExport(partIds, filename, opts);
+    if ('error' in r) return r;
+    return {
+      filename: r.built.filename,
+      mimeType: r.built.mimeType,
+      sizeBytes: r.built.blob.size,
+      base64: await blobToBase64(r.built.blob),
+      parts: r.parts,
+    };
+  }
+
   const actionExport3MF = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
     warnIfNotPrintable('3MF');
-    notifyMultiPartExport();
+    // Multi-part session → offer the part picker and emit a GENERIC multi-object
+    // 3MF (grid-arranged, no Bambu metadata). Single-part keeps the original
+    // single-object export.
+    if (getState().parts.length > 1) { await export3MFMultiPartFlow(false); return; }
     try { showToast(`Exported ${export3MF(fileExportMesh(true)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+  };
+  // Bambu/Orca multi-plate 3MF — a SEPARATE export from the generic 3MF above.
+  // Opens the part picker and bundles the chosen parts into one Bambu project
+  // (one part per build plate, colours bound to AMS filaments). Available for any
+  // session (single-part too); it always emits the Bambu project layer.
+  const actionExport3MFBambu = async () => {
+    if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
+    if (!currentMeshData) { noGeometryToast(); return; }
+    if (!(await confirmExportOrProceed('3MF'))) return;
+    warnIfNotPrintable('3MF');
+    await export3MFMultiPartFlow(true);
   };
   // The integer VoxelGrid behind a voxel session. The engine meshes in the
   // Worker, so the grid isn't on the main thread after a normal run — re-run the
@@ -4317,6 +4510,7 @@ async function main() {
     onExportSTL: actionExportSTL,
     onExportOBJ: actionExportOBJ,
     onExport3MF: actionExport3MF,
+    onExport3MFBambu: actionExport3MFBambu,
     onExportVOX: actionExportVOX,
     onExportSTEP: actionExportSTEP,
     onExportSessionJSON: async () => {
@@ -4818,6 +5012,7 @@ async function main() {
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
+    { id: 'export-3mf-bambu', title: 'Export 3MF — Bambu/Orca (multi-plate)', hint: 'Export', keywords: 'download print color bambu orca plate parts multi-part filament ams', run: actionExport3MFBambu, enabled: () => currentMeshData !== null },
     // VOX exports the voxel grid (getCurrentVoxelGrid), not currentMeshData, so
     // gate on the active language — the grid is re-derived on demand inside the
     // action, which also toasts if there's nothing to export. (Re-running the
@@ -8977,6 +9172,27 @@ async function main() {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       warnIfSurfaceStale('3MF');
       export3MF(fileExportMesh(true)!, filename);
+    },
+
+    /** Bundle several Session Parts into ONE 3MF. With `{ bambu: true }` (the
+     *  default) each part lands on its own Bambu Studio / OrcaSlicer build plate
+     *  with colours bound to filaments; `{ bambu: false }` emits a generic
+     *  multi-object 3MF (grid-arranged, opens in any slicer). The UI equivalents
+     *  are the "3MF — Bambu/Orca" menu item and the generic "3MF" export in a
+     *  multi-part session. Pass an array of part ids (default: every part); each
+     *  part's latest version is baked WITH its colours. `{ ok, filename, parts }`
+     *  or `{ error }`. */
+    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
+      return export3MFPartsApi(partIds, filename, opts);
+    },
+
+    /** Bytes-returning twin of {@link export3MFParts} — bundles parts into one
+     *  3MF and RETURNS `{ filename, mimeType, base64, sizeBytes, parts }` (or
+     *  `{ error }`) instead of downloading, so an agent/test can read the
+     *  exported file back without the browser download path. `{ bambu }` as in
+     *  export3MFParts (default true). */
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
+      return export3MFPartsDataApi(partIds, filename, opts);
     },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
@@ -14065,6 +14281,8 @@ async function main() {
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
+        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate, false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportVOX':       { signature: 'exportVOX() -- Download MagicaVoxel .vox (voxel sessions)', docs: '/ai/voxel.md' },
         // AI-friendly export — return bytes over the API instead of triggering a download
         'exportGLBData':   { signature: 'await exportGLBData() -- Return GLB as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },

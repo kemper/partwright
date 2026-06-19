@@ -22,6 +22,10 @@ export interface ToolbarCallbacks {
   onExportSTL: () => void;
   onExportOBJ: () => void;
   onExport3MF: () => void;
+  /** Bambu/Orca multi-plate 3MF — opens the part picker and bundles the chosen
+   *  parts into one project (one part per plate, colours bound to AMS
+   *  filaments). Distinct from {@link onExport3MF}, which stays a generic 3MF. */
+  onExport3MFBambu: () => void;
   /** Voxel-only — silently hidden from the menu unless the active language is
    *  'voxel' (gated at menu-open time, like {@link onExportSTEP}). */
   onExportVOX: () => void;
@@ -572,6 +576,15 @@ export function createToolbar(
     callbacks.onExport3MF();
   });
 
+  const threemfBambuOpt = createDescribedItem(
+    '3MF — Bambu/Orca',
+    'Multi-plate project: pick parts, one per build plate, colors bound to AMS filaments. For Bambu Studio / OrcaSlicer (not a generic 3MF).',
+  );
+  threemfBambuOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onExport3MFBambu();
+  });
+
   const objOpt = createDescribedItem(
     'OBJ',
     'Geometry + color via MTL. Extract ZIP before importing into slicer.',
@@ -625,6 +638,7 @@ export function createToolbar(
   });
 
   dropdown.appendChild(threemfOpt);
+  dropdown.appendChild(threemfBambuOpt);
   dropdown.appendChild(objOpt);
   dropdown.appendChild(stlOpt);
   dropdown.appendChild(glbOpt);

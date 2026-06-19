@@ -32,6 +32,33 @@ const INTENTIONALLY_UNDOCUMENTED = new Set([
   'importImageAsVoxels',// documented in voxel subdoc, not main help table
   'mergeChatHistory',   // internal chat management, not an agent workflow
   'setThumbnailCamera', // internal UI helper, not a geometry/session operation
+  'help',               // the documenter itself — not a help() table key
+  '__setProgressModalDelay', // internal test hook
+]);
+
+// Pre-existing undocumented API methods — NOT intentional, a documentation
+// backlog to triage (add help() entries + ai-doc coverage). Surfaced once the
+// parity scan was widened to cover the WHOLE partwrightAPI object (it previously
+// only saw the first ~80 KB, hiding these). Tracked in GitHub issue #683; this
+// list is the work item, not a permanent exemption — shrink it as methods get
+// documented. They are excluded from the "missing from help()" gate but still
+// asserted to actually exist (no stale entries), so the list can't rot.
+const UNDOCUMENTED_BACKLOG = new Set([
+  'getThumbnailCamera', 'sliceAtZVisual', 'importImageAsRelief', 'importSvgAsRelief',
+  'getReliefSwapGuide', 'setReliefPreviewMode', 'setImages', 'addImage', 'removeImage',
+  'clearImages', 'getImages', 'closeSession', 'deleteSession', 'commitWithColors',
+  'navigateVersion', 'getSessionUrl', 'getSessionState', 'deleteSessionNote',
+  'updateSessionNote', 'exportSession', 'importSession', 'clearAllSessions', 'isRunning',
+  'getPrinterSettings', 'setPrinterSettings', 'checkPrintability', 'createSessionWithVersions',
+  'analyzeProfileIsolated', 'measureBetween', 'probeRay', 'checkContainment', 'renameSession',
+  'setReferenceGeometry', 'clearReferenceGeometry', 'hasReferenceGeometry', 'setUnits',
+  'getUnits', 'measureMode', 'getMeasurement', 'measurePoints', 'getBrushSurface',
+  'setBrushSurface', 'setBrushDepth', 'getBrushWrapAngle', 'setBrushWrapAngle',
+  'getBrushSmooth', 'setBrushSmooth', 'setBrushSmoothDivisor', 'paintStroke', 'paintAirbrush',
+  'waitForPaint', 'getLabelNames', 'activateVoxelPaint', 'deactivateVoxelPaint',
+  'paintVoxelFace', 'setVoxelTool', 'voxelStudioApply', 'voxelStudioUndo', 'voxelStudioRedo',
+  'setVoxelBrush', 'setVoxelLevelAxis', 'voxelStudioBeginStroke', 'voxelStudioEndStroke',
+  'bakeVoxelsToCode', 'updateVoxelCode',
 ]);
 
 /** Language keywords that appear at 4-space indent inside an object literal
@@ -47,8 +74,9 @@ function extractApiMembers(src: string): Set<string> {
   const apiStart = src.indexOf('const partwrightAPI = {');
   if (apiStart === -1) throw new Error('Could not find partwrightAPI in main.ts');
 
-  // Take a generous slice — the object is large.
-  const chunk = src.slice(apiStart, apiStart + 80_000);
+  // Scan the WHOLE object (it's ~300 KB and we stop at the `help(` member
+  // anyway); an earlier 80 KB window silently scanned only the first third.
+  const chunk = src.slice(apiStart, apiStart + 400_000);
   const lines = chunk.split('\n');
   const members = new Set<string>();
 
@@ -108,23 +136,23 @@ describe('partwrightAPI vs help() parity', () => {
     expect(helpKeys.size).toBeGreaterThan(100);
   });
 
-  it('every partwrightAPI member is either in help() or INTENTIONALLY_UNDOCUMENTED', () => {
+  it('every partwrightAPI member is in help(), INTENTIONALLY_UNDOCUMENTED, or the backlog', () => {
     const missing: string[] = [];
     for (const member of apiMembers) {
-      if (!helpKeys.has(member) && !INTENTIONALLY_UNDOCUMENTED.has(member)) {
+      if (!helpKeys.has(member) && !INTENTIONALLY_UNDOCUMENTED.has(member) && !UNDOCUMENTED_BACKLOG.has(member)) {
         missing.push(member);
       }
     }
+    // A NEW undocumented method must get a help() entry (or be added to a set
+    // with justification) — it can't silently join the backlog.
     expect(missing, `API members missing from help(): ${missing.join(', ')}`).toHaveLength(0);
   });
 
-  it('INTENTIONALLY_UNDOCUMENTED set has no stale entries (every entry is actually in partwrightAPI)', () => {
+  it('the undocumented sets have no stale entries (every name is actually in partwrightAPI)', () => {
     const stale: string[] = [];
-    for (const name of INTENTIONALLY_UNDOCUMENTED) {
-      if (!apiMembers.has(name)) {
-        stale.push(name);
-      }
+    for (const name of [...INTENTIONALLY_UNDOCUMENTED, ...UNDOCUMENTED_BACKLOG]) {
+      if (!apiMembers.has(name)) stale.push(name);
     }
-    expect(stale, `Stale INTENTIONALLY_UNDOCUMENTED entries (no longer in API): ${stale.join(', ')}`).toHaveLength(0);
+    expect(stale, `Stale undocumented entries (no longer in API): ${stale.join(', ')}`).toHaveLength(0);
   });
 });
