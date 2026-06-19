@@ -8,6 +8,8 @@
 
 import { IDEAS, IDEA_CATEGORIES, type Idea, type IdeaCategoryDef } from '../ideas/ideas';
 import { contentHeaderHtml } from '../content/chrome';
+import { rebaseHtmlPaths } from '../content/rebasePaths';
+import { BASE } from '../deployment';
 
 export interface IdeasCallbacks {
   onBack: () => void;
@@ -33,7 +35,8 @@ export function createIdeasPage(
   void callbacks.onBack;
   const headerHost = document.createElement('div');
   headerHost.className = 'w-full';
-  headerHost.innerHTML = contentHeaderHtml('/ideas');
+  // Shared header nav has root-relative hrefs; rebase under the mount (no-op at /).
+  headerHost.innerHTML = rebaseHtmlPaths(contentHeaderHtml('/ideas'), BASE);
   page.appendChild(headerHost);
 
   const titleWrap = document.createElement('div');

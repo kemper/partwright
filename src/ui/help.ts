@@ -2,7 +2,8 @@
 
 import { getShortcutDocs, IS_MAC, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './shortcutDefs';
 import { HELP_INTRO, HELP_STATIC_SECTIONS, helpDynamicSections } from '../content/data/help';
-import { appPath, assetPath } from '../deployment';
+import { appPath, assetPath, BASE } from '../deployment';
+import { rebaseHtmlPaths } from '../content/rebasePaths';
 
 export interface HelpCallbacks {
   onBack: () => void;
@@ -96,7 +97,9 @@ export function createHelpPage(
 
     const p = document.createElement('div');
     p.className = 'text-sm text-zinc-400 leading-relaxed';
-    p.innerHTML = section.body;
+    // Section bodies are shared content data with embedded nav links
+    // (e.g. /ideas, /ai.md); rebase them under the deployment mount. No-op at /.
+    p.innerHTML = rebaseHtmlPaths(section.body, BASE);
     content.appendChild(p);
   }
 
