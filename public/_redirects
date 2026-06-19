@@ -31,9 +31,10 @@
 # redirect loop. The dev/preview server reproduces the clean-URL serving via
 # the prerenderContentPages middleware (src/content/build) instead.
 #
-# Specific assets (incl. the four content pages) resolve before this SPA
-# fallback. NOTE: Cloudflare rejects this catch-all as an infinite loop
-# (/index.html → / → re-matches /*) and drops it — so the explicit `/editor` /
-# `/v1/editor` rules above are what actually serve the SPA. Kept as documented
-# intent + a harmless backstop (and the vite dev/preview server honors it).
+# Specific assets (incl. the content pages and editor.html) resolve before this
+# SPA fallback. NOTE: Cloudflare rejects this catch-all as an infinite loop
+# (/index.html → / → re-matches /*) and drops it — so the real static files
+# (/editor → editor.html, /v1/editor → /v1/editor.html, the content pages) are
+# what actually serve. Kept as documented intent + a harmless backstop (and the
+# vite dev/preview server honors it).
 /* /index.html 200
