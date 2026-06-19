@@ -171,6 +171,12 @@ test.describe('multi-part 3MF export', () => {
     await expect(modal.getByText(/Export parts to 3MF/i)).toBeVisible({ timeout: 10000 });
     await page.screenshot({ path: 'test-results/multipart-3mf-modal.png' });
 
+    // The Bambu export shows the printer/nozzle/filament dropdowns (not the generic).
+    await expect(modal.getByText(/Bambu Studio settings/i)).toBeVisible();
+    await expect(modal.locator('select')).toHaveCount(3);
+    // Pick a single-nozzle printer to exercise the override path through the modal.
+    await modal.locator('select').first().selectOption('p1s');
+
     // Select all and export; intercept the download.
     await modal.getByRole('button', { name: /select all/i }).click();
     const downloadPromise = page.waitForEvent('download', { timeout: 30000 }).catch(() => null);

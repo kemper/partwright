@@ -90,6 +90,32 @@ function resolvePrinter(id: string | undefined): BambuPrinterSpec {
   return BAMBU_PRINTERS.find(p => p.id === id) ?? BAMBU_PRINTERS.find(p => p.id === DEFAULT_BAMBU_PRINTER)!;
 }
 
+/** A selectable filament material. One material is applied to ALL colours (simple
+ *  multi-colour). `type` is Bambu's filament_type; temps are sensible defaults the
+ *  user can fine-tune in Bambu. `settingsId` uses Bambu's built-in Generic presets. */
+export interface BambuFilamentType {
+  id: string;
+  label: string;
+  type: string;
+  settingsId: string;
+  nozzleTemp: number;
+  bedTemp: number;
+}
+
+export const BAMBU_FILAMENT_TYPES: BambuFilamentType[] = [
+  { id: 'pla', label: 'PLA', type: 'PLA', settingsId: 'Generic PLA', nozzleTemp: 220, bedTemp: 55 },
+  { id: 'petg', label: 'PETG', type: 'PETG', settingsId: 'Generic PETG', nozzleTemp: 255, bedTemp: 70 },
+  { id: 'abs', label: 'ABS', type: 'ABS', settingsId: 'Generic ABS', nozzleTemp: 260, bedTemp: 90 },
+  { id: 'asa', label: 'ASA', type: 'ASA', settingsId: 'Generic ASA', nozzleTemp: 260, bedTemp: 90 },
+  { id: 'tpu', label: 'TPU', type: 'TPU', settingsId: 'Generic TPU', nozzleTemp: 230, bedTemp: 35 },
+  { id: 'pc', label: 'PC', type: 'PC', settingsId: 'Generic PC', nozzleTemp: 270, bedTemp: 100 },
+];
+export const DEFAULT_BAMBU_FILAMENT = 'pla';
+
+function resolveFilament(id: string | undefined): BambuFilamentType {
+  return BAMBU_FILAMENT_TYPES.find(f => f.id === id) ?? BAMBU_FILAMENT_TYPES.find(f => f.id === DEFAULT_BAMBU_FILAMENT)!;
+}
+
 /** One selected Session Part, with its baked (optionally coloured) mesh. */
 export interface PartExport {
   /** Display name — becomes the object/plate name in the 3MF. */
@@ -109,6 +135,9 @@ export interface Build3MFProjectOptions {
   printer?: string;
   /** Nozzle diameter (mm) as a string: "0.2" | "0.4" | "0.6" | "0.8". Default "0.4". */
   nozzle?: string;
+  /** Filament material id (see BAMBU_FILAMENT_TYPES) — one material for all colours.
+   *  Default "pla". Ignored in generic mode. */
+  filament?: string;
   /** Build-plate size `[x, y]` mm — reserved for future per-bed tuning of the
    *  generic grid. (Bambu plate placement uses the validated fixed grid below.) */
   bedSize?: [number, number];
@@ -336,7 +365,7 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
     : '';
 
   const built = bambu
-    ? buildBambuPackage(prepared, bambuFilamentColors, resolvePrinter(opts.printer), opts.nozzle ?? '0.4')
+    ? buildBambuPackage(prepared, bambuFilamentColors, resolvePrinter(opts.printer), opts.nozzle ?? '0.4', resolveFilament(opts.filament))
     : buildGenericPackage(prepared, colorgroupXml, anyColour, colorGroupId, gridGap);
 
   const mimeType = 'application/vnd.ms-package.3dmanufacturing';
@@ -422,7 +451,7 @@ ${buildItems}
 //   - identify_id in each <model_instance>
 //   - filament_map_mode / filament_maps / filament_volume_maps / thumbnail* in <plate>
 //   - <assemble> block at the end
-function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string): Uint8Array {
+function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType): Uint8Array {
   const unit = get3MFUnitString();
   const [bedW, bedH] = printer.bed;                  // selected printer's bed footprint
   const gridCols = plateGridCols(prepared.length);  // ⌈√N⌉ to match Bambu's plate grid
@@ -599,7 +628,7 @@ ${assembleItems.join('\n')}
 
   // project_settings.config: the complete H2C template with filament_colour set to
   // the part palette (see buildProjectSettings).
-  const projectSettings = buildProjectSettings(filamentColors, printer, nozzle);
+  const projectSettings = buildProjectSettings(filamentColors, printer, nozzle, filament);
 
   // Content types: rels + model + png (for potential plate thumbnails) + gcode.
   // Matches the reference [Content_Types].xml exactly.
@@ -658,7 +687,7 @@ function isPerFilamentKey(key: string): boolean {
  * matrices) are set explicitly. The flush matrix is `nozzleCount × N×N` — nozzleCount
  * comes from the base (H2C=2, P1S=1), validated against both real references.
  */
-function buildProjectSettings(filamentColors: string[], printer: BambuPrinterSpec, nozzle: string): string {
+function buildProjectSettings(filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType): string {
   const baseTemplate = printer.base === 'p1s' ? BAMBU_TEMPLATE_P1S : BAMBU_TEMPLATE_H2C;
   // Deep-copy the base so we don't mutate the module-level import.
   const cfg: Record<string, unknown> = JSON.parse(JSON.stringify(baseTemplate));
@@ -714,6 +743,25 @@ function buildProjectSettings(filamentColors: string[], printer: BambuPrinterSpe
   cfg.printable_area = [`0x0`, `${printer.bed[0]}x0`, `${printer.bed[0]}x${printer.bed[1]}`, `0x${printer.bed[1]}`];
   cfg.printable_height = String(printer.height);
   cfg.nozzle_diameter = Array(nozzleCount).fill(nozzle);
+
+  // ── Filament material (one material for all colours) ───────────────────────
+  // Stamp the chosen material's type + temps over the (already-resized) per-filament
+  // arrays. Bambu's built-in "Generic <TYPE>" preset id keeps the filament panel
+  // consistent. Fills each array to its current length (so it stays N or 2N).
+  const fillArr = (key: string, value: string) => {
+    const v = cfg[key];
+    if (Array.isArray(v)) cfg[key] = Array(v.length).fill(value);
+  };
+  fillArr('filament_type', filament.type);
+  fillArr('filament_settings_id', filament.settingsId);
+  fillArr('nozzle_temperature', String(filament.nozzleTemp));
+  fillArr('nozzle_temperature_initial_layer', String(filament.nozzleTemp));
+  // Bed temps across the plate types Bambu may use for this material.
+  for (const k of ['hot_plate_temp', 'hot_plate_temp_initial_layer', 'textured_plate_temp',
+    'textured_plate_temp_initial_layer', 'cool_plate_temp', 'cool_plate_temp_initial_layer',
+    'eng_plate_temp', 'eng_plate_temp_initial_layer', 'supertack_plate_temp', 'supertack_plate_temp_initial_layer']) {
+    fillArr(k, String(filament.bedTemp));
+  }
 
   return JSON.stringify(cfg, null, 4);
 }

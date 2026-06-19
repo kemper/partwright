@@ -79,7 +79,7 @@ import { exportGLB, buildGLB, buildGLBProject } from './export/gltf';
 import { exportSTL, buildSTL, buildSTLProject } from './export/stl';
 import { exportOBJ, buildOBJ, buildOBJProject } from './export/obj';
 import { export3MF, build3MF } from './export/threemf';
-import { build3MFProject } from './export/threemfProject';
+import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
@@ -4361,17 +4361,26 @@ async function main() {
       description: bambu
         ? 'Choose which parts to include. Each selected part is placed on its own build plate, and painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
         : 'Choose which parts to include. Each selected part is added as a separate object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.',
+      bambu: bambu ? {
+        printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label })),
+        defaultPrinter: DEFAULT_BAMBU_PRINTER,
+        nozzles: ['0.2', '0.4', '0.6', '0.8'],
+        defaultNozzle: '0.4',
+        filaments: BAMBU_FILAMENT_TYPES.map(f => ({ id: f.id, label: f.label })),
+        defaultFilament: DEFAULT_BAMBU_FILAMENT,
+      } : undefined,
     });
-    if (!selected || selected.length === 0) return;
+    if (!selected || selected.partIds.length === 0) return;
+    const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
     const job = startProgress({ title: 'Preparing 3MF', indeterminate: false, message: 'Baking parts…' });
     try {
       const baked: { name: string; mesh: MeshData }[] = [];
-      for (let i = 0; i < selected.length; i++) {
-        const part = byId.get(selected[i]);
+      for (let i = 0; i < selectedIds.length; i++) {
+        const part = byId.get(selectedIds[i]);
         if (!part) continue;
-        updateProgress(job, i / selected.length, `Baking "${part.name}" (${i + 1}/${selected.length})…`);
+        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
         const result = await bakeColoredMeshForPart(part.id, part.name);
         if (result) baked.push(result);
       }
@@ -4379,9 +4388,12 @@ async function main() {
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
 
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject(baked, { bambu, bedSize: [bed[0], bed[1]] });
+      const built = build3MFProject(baked, {
+        bambu, bedSize: [bed[0], bed[1]],
+        printer: selected.printer, nozzle: selected.nozzle, filament: selected.filament,
+      });
       downloadBlob(built.blob, built.filename, '3MF');
-      const skipped = selected.length - baked.length;
+      const skipped = selectedIds.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
       showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
@@ -4412,16 +4424,17 @@ async function main() {
       title: `Export parts to ${formatTag}`,
       description,
     });
-    if (!selected || selected.length === 0) return;
+    if (!selected || selected.partIds.length === 0) return;
+    const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
     const job = startProgress({ title: `Preparing ${formatTag}`, indeterminate: false, message: 'Baking parts…' });
     try {
       const baked: { name: string; mesh: MeshData }[] = [];
-      for (let i = 0; i < selected.length; i++) {
-        const part = byId.get(selected[i]);
+      for (let i = 0; i < selectedIds.length; i++) {
+        const part = byId.get(selectedIds[i]);
         if (!part) continue;
-        updateProgress(job, i / selected.length, `Baking "${part.name}" (${i + 1}/${selected.length})…`);
+        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
         const result = await bakeColoredMeshForPart(part.id, part.name);
         if (result) baked.push(result);
       }
@@ -4430,7 +4443,7 @@ async function main() {
 
       const built = await build(baked);
       downloadBlob(built.blob, built.filename, formatTag);
-      const skipped = selected.length - baked.length;
+      const skipped = selectedIds.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
       showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
@@ -4520,7 +4533,7 @@ async function main() {
    *  BuiltExport (no download, no base64) so callers can either trigger a
    *  download or return the bytes. `opts.bambu` (default true) → one part per
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     const allParts = getState().parts;
     if (allParts.length === 0) return { error: 'No parts in this session.' };
@@ -4543,7 +4556,10 @@ async function main() {
     if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
     try {
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject(baked, { customName: filename, bambu, bedSize: [bed[0], bed[1]] });
+      const built = build3MFProject(baked, {
+        customName: filename, bambu, bedSize: [bed[0], bed[1]],
+        printer: opts?.printer, nozzle: opts?.nozzle, filament: opts?.filament,
+      });
       return { built, parts: baked.length };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
@@ -4553,7 +4569,7 @@ async function main() {
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
     assertString(filename, 'export3MFParts(partIds, filename)', { optional: true });
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
@@ -4564,7 +4580,7 @@ async function main() {
   /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
-  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
     assertString(filename, 'export3MFPartsData(partIds, filename)', { optional: true });
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
@@ -9476,7 +9492,7 @@ async function main() {
      *  multi-part session. Pass an array of part ids (default: every part); each
      *  part's latest version is baked WITH its colours. `{ ok, filename, parts }`
      *  or `{ error }`. */
-    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
+    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }) {
       return export3MFPartsApi(partIds, filename, opts);
     },
 
@@ -9485,7 +9501,7 @@ async function main() {
      *  `{ error }`) instead of downloading, so an agent/test can read the
      *  exported file back without the browser download path. `{ bambu }` as in
      *  export3MFParts (default true). */
-    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }) {
       return export3MFPartsDataApi(partIds, filename, opts);
     },
 
@@ -14615,8 +14631,8 @@ async function main() {
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
-        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate, false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
-        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?, printer?, nozzle?, filament?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportOBJParts':  { signature: 'await exportOBJParts(partIds?, filename?) -- Bundle parts into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
         'exportOBJPartsData': { signature: 'await exportOBJPartsData(partIds?, filename?) -- Same as exportOBJParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportSTLParts':  { signature: 'await exportSTLParts(partIds?, filename?) -- Bundle parts into a .zip of one .stl per part -> {ok, filename, parts}', docs: '/ai/file-io.md' },
