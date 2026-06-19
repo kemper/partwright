@@ -265,4 +265,48 @@ test.describe('multi-part 3MF export', () => {
     expect(cols.xCols).toBe(3); // ⌈√6⌉ columns
     expect(cols.yRows).toBe(2); // 2 rows
   });
+
+  test('printer selection swaps the base + stamps identity/bed (H2C dual vs P1S single)', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForTimeout(3000);
+
+    const out = await page.evaluate(async () => {
+      const { build3MFProject } = await import('/src/export/threemfProject.ts');
+      const makePart = (name: string) => ({
+        name,
+        mesh: {
+          vertProperties: new Float32Array([0, 0, 0, 10, 0, 0, 0, 10, 0]),
+          triVerts: new Uint32Array([0, 1, 2]), numVert: 3, numTri: 1, numProp: 3,
+        },
+      });
+      const decode = (built: { blob: Blob }) =>
+        built.blob.arrayBuffer().then(a => new TextDecoder('latin1').decode(new Uint8Array(a)));
+      const arrLen = (text: string, key: string) => {
+        const m = text.match(new RegExp(`"${key}":\\s*\\[([\\s\\S]*?)\\]`));
+        return m ? (m[1].match(/"[^"]*"/g) ?? []).length : -1;
+      };
+      const parts = Array.from({ length: 4 }, (_, i) => makePart('p' + i));
+      const h2c = await decode(build3MFProject(parts, { bambu: true })); // default
+      const p1s = await decode(build3MFProject(parts, { bambu: true, printer: 'p1s', nozzle: '0.6' }));
+      return {
+        h2cModel: /"printer_model":\s*"([^"]*)"/.exec(h2c)?.[1],
+        h2cArea: /"printable_area":\s*\[([^\]]*)\]/.exec(h2c)?.[1].replace(/\s/g, ''),
+        h2cNozzles: arrLen(h2c, 'nozzle_diameter'),
+        p1sModel: /"printer_model":\s*"([^"]*)"/.exec(p1s)?.[1],
+        p1sSettings: /"printer_settings_id":\s*"([^"]*)"/.exec(p1s)?.[1],
+        p1sArea: /"printable_area":\s*\[([^\]]*)\]/.exec(p1s)?.[1].replace(/\s/g, ''),
+        p1sNozzles: arrLen(p1s, 'nozzle_diameter'),
+      };
+    });
+
+    // Default = H2C dual-nozzle, 330×320 bed.
+    expect(out.h2cModel).toBe('Bambu Lab H2C');
+    expect(out.h2cNozzles).toBe(2);
+    expect(out.h2cArea).toContain('330x320');
+    // P1S = single-nozzle base, identity + bed + nozzle stamped from the picker.
+    expect(out.p1sModel).toBe('Bambu Lab P1S');
+    expect(out.p1sSettings).toBe('Bambu Lab P1S 0.6 nozzle');
+    expect(out.p1sNozzles).toBe(1);
+    expect(out.p1sArea).toContain('256x256');
+  });
 });
