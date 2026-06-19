@@ -110,3 +110,23 @@ test('Export anyway proceeds despite unsaved non-current parts', async ({ page }
     page.locator('div[role="status"]').filter({ hasText: /Exported/ }),
   ).toBeVisible({ timeout: 5_000 });
 });
+
+// The reported case: paint the CURRENT part (saved earlier) and export without
+// saving. The current part exports from its live mesh, but the user still wants
+// to be alerted they have unsaved work — so the warning must fire for it too.
+test('export warns when the CURRENT part has unsaved paint', async ({ page }) => {
+  await openEditor(page);
+  await page.evaluate(async () => {
+    const pw = (window as any).partwright;
+    await pw.createSession('CurrentUnsaved');
+    await pw.runAndSave('const {Manifold}=api; return Manifold.cube([10,10,10],true);', 'v1');
+    // Paint the current part — now it has unsaved changes.
+    pw.paintFaces({ triangleIds: [0, 1, 2, 3], color: [1, 0, 0], name: 'red' });
+  });
+
+  await openExportSTL(page);
+  const dialog = page.locator('[role="dialog"]');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('unsaved changes');
+  await expect(dialog.getByRole('button', { name: 'Save…' })).toBeVisible();
+});

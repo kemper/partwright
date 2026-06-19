@@ -4110,25 +4110,24 @@ async function main() {
    *  confirmed it. Only used by the UI export actions below. */
   async function confirmExportOrProceed(format: string): Promise<boolean> {
     const info = exportWarningInfo(format);
-    // Flag unsaved NON-CURRENT parts: a multi-part export bakes each of those
-    // from its last SAVED version, so unsaved edits (fresh paint especially)
-    // silently drop out — the fix for "I exported several parts and some lost
-    // their colour". The current part is exported from its LIVE mesh, so its own
-    // unsaved edits are always included; warning about it would be a false alarm
-    // (and would fire on every run-but-not-saved single-part export).
-    const unsavedRows = (await gatherUnsavedParts()).filter(r => r.status === 'unsaved' && !r.isCurrent);
+    // Flag parts with unsaved changes so the export doesn't silently use stale
+    // data. A multi-part export bakes each NON-current part from its last SAVED
+    // version (the current part exports from its live mesh), so unsaved edits can
+    // drop out — but we warn for the current part too: the user asked to be
+    // alerted whenever they export without saving, and "I painted this part and
+    // exported" is the most common case. 'empty' (brand-new untouched) parts are
+    // excluded — there's nothing to lose.
+    const unsavedRows = (await gatherUnsavedParts()).filter(r => r.status === 'unsaved');
     if (unsavedRows.length > 0) {
       info.unsavedParts = { count: unsavedRows.length, names: unsavedRows.map(r => r.name) };
     }
     if (!hasExportWarning(info)) return true;
     const decision = await showExportConfirm(info);
     if (decision === 'save') {
-      // Save exactly the parts this export would otherwise bake from their stale
-      // saved version — the non-current unsaved parts we flagged above. (The
-      // current part exports from its live mesh, so it needs no save for the
-      // export's sake.) saveSelectedParts switches to each, commits a version,
-      // and returns to the original part. Don't auto-export — the user
-      // re-triggers it once the parts are saved.
+      // Save the flagged unsaved parts before exporting. saveSelectedParts saves
+      // the current part in place, then switches to each other flagged part to
+      // commit a version, and returns to the original part. Don't auto-export —
+      // the user re-triggers it once the parts are saved.
       await saveSelectedParts(unsavedRows.map(r => r.id));
       return false;
     }

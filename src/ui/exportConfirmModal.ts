@@ -210,8 +210,8 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<ExportConfir
         : '';
       block.innerHTML =
         `<strong>${count} part${count === 1 ? '' : 's'} ha${count === 1 ? 's' : 've'} unsaved changes.</strong> ${list ? list + '. ' : ''}` +
-        'A multi-part export bakes each part\'s <strong>last saved version</strong>, so unsaved edits (e.g. fresh paint) won\'t be included. ' +
-        'Click <strong>Save…</strong> to save first, or export anyway with the saved versions.';
+        'A multi-part export bakes each non-current part from its <strong>last saved version</strong>, so unsaved edits (e.g. fresh paint) can be left out. ' +
+        'Click <strong>Save…</strong> to save first, or export anyway.';
       shell.body.appendChild(block);
     }
 
