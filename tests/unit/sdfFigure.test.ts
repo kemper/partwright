@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildTorso, buildLegs, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildLegs, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -1186,6 +1186,84 @@ describe('figure pants — posed-leg coverage', () => {
   it('rejects unknown length values', () => {
     const rig = buildRig({});
     expect(() => buildPants(api, rig, { length: 'capri' })).toThrow(/length/);
+  });
+});
+
+describe('figure panel — draping apron/cape + hug fit', () => {
+  const rig = buildRig({ build: 'stocky', weight: 0.6 });   // a belly that a flat box can't follow
+  const r = rig.r, j = rig.joints;
+  const body = buildTorso(api, rig).union(buildLegs(api, rig)) as SdfNode;
+  const mid = (a: number, b: number, t: number): number => a + (b - a) * t;
+  const zc = (j.chest[2] + j.hips[2]) / 2;
+  // Walk ±Y at x=0 to find the body's front (−Y) / back (+Y) surface at height z.
+  const surfaceY = (z: number, dir: -1 | 1): number => {
+    let y = 0;
+    for (let i = 0; i < 400; i++) { const n = y + dir * 0.1; if (body.evaluate(0, n, z) > 0) return y; y = n; }
+    return y;
+  };
+  // The body's forward/rear-most point over the torso — the line a drape hangs from.
+  const apexOf = (side: 'front' | 'back'): number => {
+    const dir = side === 'back' ? 1 : -1;
+    let best = dir > 0 ? -Infinity : Infinity;
+    for (let z = j.hips[2]; z <= j.chest[2]; z += 0.5) {
+      let y = 0, last = 0, inside = false;
+      for (let i = 0; i < 200; i++) { if (body.evaluate(0, y, z) > 0) break; last = y; inside = true; y += dir * 0.1; }
+      if (inside) best = dir > 0 ? Math.max(best, last) : Math.min(best, last);
+    }
+    return Number.isFinite(best) ? best : 0;
+  };
+
+  it('drape hangs PROUD in front of the body and welds at the belly (no pass-through)', () => {
+    const apron = buildPanel(api, rig, { side: 'front', top: 'chest', bottom: 'thigh' }) as SdfNode;
+    const apex = apexOf('front');
+    expect(apron.evaluate(0, apex - r.chestY * 0.06, zc)).toBeLessThan(0);  // sheet sits in front
+    expect(apron.evaluate(0, apex + r.chestY * 0.02, zc)).toBeLessThan(0);  // back welds into the body
+    expect(apron.evaluate(0, apexOf('back') + r.chestY * 0.05, zc)).toBeGreaterThan(0); // nothing behind
+    expect(apron.evaluate(0, 0, zc)).toBeGreaterThan(0);                    // torso interior not filled
+  });
+
+  it("side: 'back' (cape) hangs behind the body, front bare", () => {
+    const cape = buildPanel(api, rig, { side: 'back', top: 'chest', bottom: 'thigh' }) as SdfNode;
+    expect(cape.evaluate(0, apexOf('back') + r.chestY * 0.02, zc)).toBeLessThan(0);     // sheet behind
+    expect(cape.evaluate(0, apexOf('front') - r.chestY * 0.06, zc)).toBeGreaterThan(0); // front bare
+  });
+
+  it("side: 'both' hangs front AND back", () => {
+    const both = buildPanel(api, rig, { side: 'both', top: 'chest', bottom: 'thigh' }) as SdfNode;
+    expect(both.evaluate(0, apexOf('front') - r.chestY * 0.06, zc)).toBeLessThan(0);
+    expect(both.evaluate(0, apexOf('back') + r.chestY * 0.02, zc)).toBeLessThan(0);
+  });
+
+  it("fit: 'hug' conforms to the body surface (skin-tight, not hanging)", () => {
+    const hug = buildPanel(api, rig, { side: 'front', top: 'chest', bottom: 'thigh', fit: 'hug' }) as SdfNode;
+    expect(hug.evaluate(0, surfaceY(zc, -1), zc)).toBeLessThan(0);   // lies ON the front surface
+  });
+
+  it('apron preset drapes to the shin with a neck halter and waist ties', () => {
+    const apron = buildApron(api, rig, {}) as SdfNode;
+    const apex = apexOf('front');
+    // Sample within the skirt (below the knee) — proves the drape hangs well past
+    // the waist, not exactly on the rounded hem edge.
+    const zLow = mid(j.lowerLegL[2], j.footL[2], 0.3);
+    expect(apron.evaluate(0, apex - r.chestY * 0.05, zLow)).toBeLessThan(0);  // hangs past the knee
+    const neckRest = [0, r.neck * 0.6, j.chest[2] + r.head * 0.55] as const;   // halter endpoint
+    expect(apron.evaluate(neckRest[0], neckRest[1], neckRest[2])).toBeLessThan(0);
+    // Waist ties: present by default at the back-side tie endpoint, gone with ties:false.
+    const tie = [r.hipsX * 0.35, r.hipsY * 1.15, j.spine[2]] as const;
+    expect(apron.evaluate(tie[0], tie[1], tie[2])).toBeLessThan(0);
+    const noTies = buildApron(api, rig, { ties: false }) as SdfNode;
+    expect(noTies.evaluate(tie[0], tie[1], tie[2])).toBeGreaterThan(0);
+  });
+
+  it('rejects unknown side, level, fit, keys, and tie type', () => {
+    expect(() => buildPanel(api, rig, { side: 'left' })).toThrow(/side/);
+    expect(() => buildPanel(api, rig, { top: 'forehead' })).toThrow(/top/);
+    expect(() => buildPanel(api, rig, { bottom: 'toe' })).toThrow(/bottom/);
+    expect(() => buildPanel(api, rig, { fit: 'loose' })).toThrow(/fit/);
+    expect(() => buildPanel(api, rig, { wobble: 1 })).toThrow();
+    // The apron preset surfaces its OWN name in validation errors, not panel's.
+    expect(() => buildApron(api, rig, { wobble: 1 })).toThrow(/apron/);
+    expect(() => buildApron(api, rig, { ties: 'yes' })).toThrow(/ties/);
   });
 });
 

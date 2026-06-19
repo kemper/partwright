@@ -1,11 +1,12 @@
-// Part-selection modal for multi-part 3MF export. Lets the user pick which
-// Session Parts to bundle into one 3MF (one part per build plate), with a
-// thumbnail preview of each. The currently-viewed part is preselected; a
-// Select-all / Select-none toggle handles assemblies with many parts.
+// Part-selection modal for multi-part exports (3MF / OBJ / STL / GLB). Lets the
+// user pick which Session Parts to bundle into one file, with a thumbnail preview
+// of each. The currently-viewed part is preselected; a Select-all / Select-none
+// toggle handles assemblies with many parts.
 //
 // Resolves with the chosen part ids (in list order) when the user confirms, or
 // null if they cancel / dismiss. Only the export caller decides what to do with
-// the selection — this modal is pure UI.
+// the selection — this modal is pure UI; the format-specific title/description
+// are passed in by the caller.
 
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
@@ -17,23 +18,32 @@ export interface ExportPartChoice {
   thumbnail: Blob | null;
 }
 
+export interface ExportPartsModalOptions {
+  /** Part preselected on open (typically the currently-viewed part). */
+  activePartId: string | null;
+  /** Modal title, e.g. "Export parts to OBJ". */
+  title: string;
+  /** One-line explanation of how this format bundles the parts. */
+  description: string;
+}
+
 /**
- * Show the multi-part 3MF part picker. `activePartId` is preselected. `bambu`
- * tailors the title/help text (per-plate Bambu project vs generic multi-object).
- * Returns the selected part ids, or null on cancel.
+ * Show the multi-part export part picker. Returns the selected part ids (in list
+ * order), or null on cancel. The caller supplies the format-specific title +
+ * description via `opts`.
  */
 export function showExportPartsModal(
   parts: ExportPartChoice[],
-  activePartId: string | null,
-  bambu = true,
+  opts: ExportPartsModalOptions,
 ): Promise<string[] | null> {
+  const { activePartId, title, description } = opts;
   return new Promise((resolve) => {
     let result: string[] | null = null;
     // Track object URLs so we can revoke them on teardown (no GPU/blob leak).
     const objectUrls: string[] = [];
 
     const shell = createModalShell({
-      title: bambu ? 'Export parts to 3MF (Bambu/Orca)' : 'Export parts to 3MF',
+      title,
       scrollable: true,
       onClose: () => {
         document.removeEventListener('keydown', onEnter);
@@ -44,9 +54,7 @@ export function showExportPartsModal(
 
     const sub = document.createElement('p');
     sub.className = 'text-[11px] text-zinc-400 leading-relaxed';
-    sub.textContent = bambu
-      ? 'Choose which parts to include. Each selected part is placed on its own build plate, and painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
-      : 'Choose which parts to include. Each selected part is added as a separate object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.';
+    sub.textContent = description;
     shell.body.appendChild(sub);
 
     // Header row with the count + select-all toggle.
