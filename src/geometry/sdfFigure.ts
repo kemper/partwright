@@ -1253,123 +1253,156 @@ function buildArms(sdf: SdfApi, rig: Rig): Node {
   return armL.union(armR);
 }
 
+/** Euler [rx, ry, rz] (degrees) for the engine's Rz·Ry·Rx convention that maps
+ *  the canonical axes X→cx, Y→cy, Z→cz, where (cx, cy, cz) is an orthonormal
+ *  right-handed world basis. Derived from the Rz·Ry·Rx matrix: col0 = cx =
+ *  [cβcγ, cβsγ, −sβ], and the third row gives sα·cβ = cy.z, cα·cβ = cz.z. Used
+ *  to orient a hand built in a canonical frame onto an arbitrary wrist frame. */
+function eulerFromBasis(cx: Vec3, cy: Vec3, cz: Vec3): Vec3 {
+  const D = 180 / Math.PI;
+  const ry = Math.atan2(-cx[2], Math.hypot(cx[0], cx[1]));
+  const rz = Math.atan2(cx[1], cx[0]);
+  const rx = Math.atan2(cy[2], cz[2]);
+  return [rx * D, ry * D, rz * D];
+}
+
 function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hands(opts)');
   assertNoUnknownKeys(o, ['grip', 'fingers', 'count', 'length', 'palmThickness'], 'hands(opts)');
   const grip = o.grip === undefined ? 'relaxed'
     : assertEnum(o.grip, ['fist', 'open', 'relaxed'] as const, 'hands.grip');
-  // Sculpted hands: an ORGANIC ROUND palm + ROUND fingers (robust at the coarse
-  // catalog march), with the palm/back-of-hand CLIPPED PERFECTLY FLAT by a thin
-  // rounded slab oriented along the palm normal. Width and finger separation are
-  // preserved; only the bubbly front-to-back depth is compressed. The fingers
-  // are left round (not clipped) so they keep their natural section and can curl
-  // for the `relaxed` grip without the slab slicing off the tips.
+  // Anatomical hands: a CLEAN FLAT tapered slab palm + FULLY-SEPARATED fingers,
+  // each finger a JOINTED 3-segment digit (knuckle→mid→tip) so the joints read
+  // and curl naturally. The hand is built in a canonical frame (fingers +Z,
+  // width +X, palm faces +Y) and oriented onto each wrist — that keeps the
+  // palm a real flat slab (no weld lump) and the fingers crisply separated.
   //   count         — number of fingers (default 4; 3..5)
   //   length        — finger-length multiplier (default 1)
-  //   palmThickness — flat front-to-back depth as a fraction of r.hand (default 0.46)
+  //   palmThickness — flat front-to-back depth as a fraction of r.hand (default 0.5)
   //   fingers:false — legacy puffy blob/paddle hands (the pre-sculpt preset)
+  //   grip          — 'open' (subtle knuckle bend) | 'relaxed' (curled joints) | 'fist'
   // Fingers are finer than the global figure grid — pair with
   // `detail: F.handDetail(rig)` so the march resolves them.
   const sculpted = o.fingers !== false;
   const count = Math.round(num(o.count, 4, 'hands.count', 1, 5));
   const lengthK = num(o.length, 1, 'hands.length', 0.2, 3);
-  const palmThicknessK = num(o.palmThickness, 0.46, 'hands.palmThickness', 0.1, 2);
+  const palmThicknessK = num(o.palmThickness, 0.5, 'hands.palmThickness', 0.1, 2);
   const j = rig.joints, r = rig.r;
+  const rh = r.hand;
+
+  // One jointed finger, built in the canonical frame along +Z, curling toward
+  // +Y (the palm) by `curlDeg` at each of the two finger joints. Three phalanges
+  // taper to the tip; the per-joint smoothUnion gives subtle knuckle bumps.
+  function digit(bx: number, len: number, fr: number, curlDeg: number, knuckleZ: number): Node {
+    const phal = [0.42, 0.33, 0.25].map((f) => f * len);
+    const rad = [fr, fr * 0.92, fr * 0.82, fr * 0.74];
+    let p: Vec3 = [bx, 0, knuckleZ - fr * 0.3];
+    let ang = 0;
+    let node: Node | null = null;
+    for (let k = 0; k < phal.length; k++) {
+      ang += curlDeg;
+      const a = ang * DEG;
+      const end: Vec3 = [p[0], p[1] + Math.sin(a) * phal[k], p[2] + Math.cos(a) * phal[k]];
+      const seg = sdf.capsule(p, end, (rad[k] + rad[k + 1]) / 2);
+      node = node ? node.smoothUnion(seg, fr * 0.6) : seg;
+      p = end;
+    }
+    return node as Node;
+  }
+
+  // The whole sculpted hand in canonical coords, mirrored across X by `side`.
+  function canonicalHand(side: number, curlDeg: number): Node {
+    const fr = rh * 0.18;
+    const thick = rh * palmThicknessK;
+    const rEdge = Math.min(thick * 0.48, rh * 0.22);
+    const palmW = rh * 1.7, palmL = rh * 1.1, palmTopZ = rh * 0.55;
+    // Flat tapered slab: wide knuckle block + narrower wrist block, blended.
+    const knuckleSlab = sdf.roundedBox([palmW, thick, palmL * 0.6], rEdge)
+      .translate([0, 0, palmTopZ - palmL * 0.3]);
+    const wristSlab = sdf.roundedBox([palmW * 0.72, thick, palmL * 0.6], rEdge)
+      .translate([0, 0, palmTopZ - palmL * 0.72]);
+    const palm = knuckleSlab.smoothUnion(wristSlab, rh * 0.45);
+
+    // Fully-separated fingers: union the digits (crisp gaps — they don't touch),
+    // then smooth-union the bundle to the palm for clean knuckle bases.
+    const span = count * 2 * fr + (count - 1) * rh * 0.12;
+    const lenProfile = (u: number): number => 1.05 - 0.26 * u * u + 0.05 * u;
+    let fingers: Node | null = null;
+    for (let i = 0; i < count; i++) {
+      const u = count > 1 ? (i / (count - 1)) * 2 - 1 : 0;
+      const bx = u * (span / 2 - fr) * side;
+      const d = digit(bx, rh * lengthK * lenProfile(u), fr, curlDeg, palmTopZ);
+      fingers = fingers ? fingers.union(d) : d;
+    }
+    let hand = fingers ? palm.smoothUnion(fingers, fr * 0.5) : palm;
+
+    // Thumb: a jointed digit off the radial side edge, angled out and forward.
+    let tp: Vec3 = [(palmW * 0.5 - fr) * side, 0, palmTopZ - palmL * 0.7];
+    let tang = 16;
+    let thumb: Node | null = null;
+    const tseg = [rh * 0.46, rh * 0.36];
+    for (let k = 0; k < tseg.length; k++) {
+      tang += 16;
+      const a = tang * DEG;
+      const d: Vec3 = [Math.cos(a) * side, 0.2 + 0.12 * k, Math.sin(a)];
+      const dl = Math.hypot(d[0], d[1], d[2]) || 1;
+      const end: Vec3 = [tp[0] + d[0] / dl * tseg[k], tp[1] + d[1] / dl * tseg[k], tp[2] + d[2] / dl * tseg[k]];
+      const seg = sdf.capsule(tp, end, fr * 1.05 - k * fr * 0.16);
+      thumb = thumb ? thumb.smoothUnion(seg, fr * 0.5) : seg;
+      tp = end;
+    }
+    return thumb ? hand.smoothUnion(thumb, fr * 0.6) : hand;
+  }
 
   function hand(c: Vec3, dir: Vec3, hinge: Vec3, side: number): Node {
     // Hand frame: fingers extend along the forearm `dir`, splay across the
-    // elbow-hinge axis, palm faces the curl direction (hinge × dir).
+    // elbow-hinge axis, palm faces palmN = dir × splay (right-handed).
     const splay = hinge;
     const palmN = norm3(cross3(splay, dir));
     const inner = scale3(splay, side);     // toward the body for a neutral pose
-    const fr = r.hand * 0.2;               // finger radius
+    const fr = rh * 0.2;                    // finger radius (fist path)
     const at = (base: Vec3, ...offs: Vec3[]): Vec3 => offs.reduce(add3, base);
 
     if (!sculpted) {
-      if (grip === 'fist') return sdf.sphere(r.hand * 1.05).translate(c);
+      if (grip === 'fist') return sdf.sphere(rh * 1.05).translate(c);
       if (grip === 'open') {
-        return sdf.ellipsoid(r.hand * 0.55, r.hand * 1.2, r.hand * 0.9).translate(c);
+        return sdf.ellipsoid(rh * 0.55, rh * 1.2, rh * 0.9).translate(c);
       }
-      const tip = add3(c, scale3(dir, r.hand * 1.1));
-      return tapered(sdf, c, tip, r.hand * 0.95, r.hand * 0.6, r.hand * 0.5);
+      const tip = add3(c, scale3(dir, rh * 1.1));
+      return tapered(sdf, c, tip, rh * 0.95, rh * 0.6, rh * 0.5);
     }
 
-    // Clip a node perfectly flat front-to-back: intersect with a rounded slab
-    // whose THIN axis is the palm normal. eulerAlignZ aligns the slab's local
-    // +Z to palmN (roll is irrelevant for a square slab). The rounded slab edge
-    // keeps the flattened perimeter organic rather than a hard deli-slice.
-    const flatten = (node: Node, thicknessK: number): Node => {
-      const flatT = r.hand * thicknessK;
-      const slab = sdf.roundedBox([r.hand * 6, r.hand * 6, flatT], flatT * 0.4)
-        .rotate(eulerAlignZ(palmN)).translate(c);
-      return node.intersect(slab);
-    };
-
     if (grip === 'fist') {
-      // Ball fist + `count` folded-finger ridges on the dir face + a thumb
-      // capsule folded across the palm side. A fist is naturally round, so it
-      // is only gently flattened (kept chunky), not clipped to the palm depth.
-      const ball = sdf.ellipsoid(r.hand * 0.92, r.hand * 0.92, r.hand * 0.84).translate(c);
+      // Ball fist + `count` folded-finger ridges + a thumb folded across. A fist
+      // is naturally round, so it keeps the simple chunky form (no slab clip).
+      const ball = sdf.ellipsoid(rh * 0.92, rh * 0.92, rh * 0.84).translate(c);
       let out = ball;
       for (let i = 0; i < count; i++) {
         const u = count === 1 ? 0 : (i / (count - 1)) * 2 - 1;   // -1..1
-        const kc = at(c, scale3(dir, r.hand * 0.6), scale3(splay, u * r.hand * 0.58));
+        const kc = at(c, scale3(dir, rh * 0.6), scale3(splay, u * rh * 0.58));
         const ridge = sdf.capsule(
-          at(kc, scale3(palmN, -r.hand * 0.22)),
-          at(kc, scale3(palmN, r.hand * 0.42)),
-          r.hand * 0.21,
+          at(kc, scale3(palmN, -rh * 0.22)),
+          at(kc, scale3(palmN, rh * 0.42)),
+          rh * 0.21,
         );
-        out = out.smoothUnion(ridge, r.hand * 0.12);
+        out = out.smoothUnion(ridge, rh * 0.12);
       }
       const thumb = sdf.capsule(
-        at(c, scale3(inner, r.hand * 0.8), scale3(palmN, r.hand * 0.35)),
-        at(c, scale3(palmN, r.hand * 0.95), scale3(dir, r.hand * 0.25)),
+        at(c, scale3(inner, rh * 0.8), scale3(palmN, rh * 0.35)),
+        at(c, scale3(palmN, rh * 0.95), scale3(dir, rh * 0.25)),
         fr * 1.35,
       );
-      return out.smoothUnion(thumb, r.hand * 0.16);
+      return out.smoothUnion(thumb, rh * 0.16);
     }
 
-    // Palm: a tapered organic wedge — narrow at the wrist, wide at the knuckles
-    // — built from FAT round capsules (robust at the coarse catalog march),
-    // then CLIPPED FLAT. The flat faces are the palm and back of the hand; the
-    // rounded slab edge keeps the silhouette organic.
-    const wrist = sdf.capsule(
-      at(c, scale3(dir, -r.hand * 0.62), scale3(splay, -r.hand * 0.16)),
-      at(c, scale3(dir, -r.hand * 0.62), scale3(splay, r.hand * 0.16)),
-      r.hand * 0.42,
-    );
-    const knuckles = sdf.capsule(
-      at(c, scale3(dir, r.hand * 0.14), scale3(splay, -r.hand * 0.54)),
-      at(c, scale3(dir, r.hand * 0.14), scale3(splay, r.hand * 0.54)),
-      r.hand * 0.46,
-    );
-    let out = flatten(wrist.smoothUnion(knuckles, r.hand * 0.55), palmThicknessK);
-
-    // Fingers: `count` of them, fanned, middle pair longest, ROUND (kept off the
-    // flatten clip so they keep their section and can curl). The splay offset is
-    // multiplied by `side` so the two hands are true mirror images. `relaxed`
-    // curls the fingers toward the palm; `open` keeps them straight.
-    const curl = grip === 'relaxed' ? 0.45 : 0;
-    const reach = norm3(add3(scale3(dir, 1 - curl * 0.45), scale3(palmN, curl)));
-    // Length profile: a gentle arch peaking just inside the middle, pinky
-    // shortest; `u` runs across the fan in [-1, 1].
-    const baseLen = (u: number): number => 1.22 - 0.32 * u * u + 0.06 * u;
-    const spanK = (count - 1) / 2;
-    for (let i = 0; i < count; i++) {
-      const u = count === 1 ? 0 : (i / (count - 1)) * 2 - 1;
-      const len = r.hand * lengthK * baseLen(u);
-      const baseS = u * spanK * r.hand * 0.30 * side;   // packed at the knuckles
-      const tipS = u * spanK * r.hand * 0.46 * side;    // fanned toward the tips
-      const base = at(c, scale3(dir, r.hand * 0.4), scale3(splay, baseS));
-      const tip = at(base, scale3(reach, len), scale3(splay, tipS - baseS));
-      out = out.smoothUnion(tapered(sdf, base, tip, fr * 1.05, fr * 0.8, fr * 0.8), fr * 0.9);
-    }
-    // Thumb: round, from the inner palm edge, angled out and slightly palm-ward.
-    const thumbBase = at(c, scale3(dir, -r.hand * 0.28), scale3(inner, r.hand * 0.5));
-    const thumbDir = norm3(add3(add3(scale3(inner, 0.82), scale3(dir, 0.5)), scale3(palmN, 0.3)));
-    const thumbTip = at(thumbBase, scale3(thumbDir, r.hand * 0.9));
-    const thumb = tapered(sdf, thumbBase, thumbTip, fr * 1.18, fr * 0.85, fr * 0.9);
-    return out.smoothUnion(thumb, fr * 1.05);
+    // open / relaxed: build the jointed hand in the canonical frame and orient
+    // it onto this wrist. Re-orthonormalize so the slab palm isn't skewed.
+    const dn = norm3(dir);
+    const dotSD = splay[0] * dn[0] + splay[1] * dn[1] + splay[2] * dn[2];
+    const sp = norm3(sub3(splay, scale3(dn, dotSD)));   // splay ⊥ dir
+    const pn = norm3(cross3(dn, sp));                    // palm normal (right-handed)
+    const curlDeg = grip === 'relaxed' ? 22 : 5;         // subtle knuckles when open
+    return canonicalHand(side, curlDeg).rotate(eulerFromBasis(sp, pn, dn)).translate(c);
   }
 
   return hand(j.handL as Vec3, rig.dir.lowerArmL, rig.dir.elbowHingeL, +1)
@@ -3950,12 +3983,12 @@ export interface FigureNamespace {
   areolaColor(skin: string, factor?: number): string;
   neck(rig: Rig, opts?: object): Node;
   arms(rig: Rig, opts?: object): Node;
-  /** Sculpted hands with a flat palm/back and round, separated fingers.
-   *  `opts`: `grip` ('fist'|'open'|'relaxed'), `count` (fingers, default 4),
-   *  `length` (finger-length multiplier, default 1), `palmThickness` (flat
-   *  front-to-back depth as a fraction of r.hand, default 0.46), or
-   *  `fingers: false` for the legacy puffy blob hands. Pair with
-   *  `detail: F.handDetail(rig)`. */
+  /** Sculpted hands with a flat slab palm and fully-separated, jointed fingers
+   *  (3-segment digits that articulate; curl set by `grip`). `opts`: `grip`
+   *  ('fist'|'open'|'relaxed'), `count` (fingers, default 4), `length`
+   *  (finger-length multiplier, default 1), `palmThickness` (flat front-to-back
+   *  depth as a fraction of r.hand, default 0.5), or `fingers: false` for the
+   *  legacy puffy blob hands. Pair with `detail: F.handDetail(rig)`. */
   hands(rig: Rig, opts?: object): Node;
   legs(rig: Rig, opts?: object): Node;
   feet(rig: Rig, opts?: object): Node;

@@ -365,12 +365,13 @@ the shallow relief aliases away.
 > your ellipsoid, label it `'areola'`), as `figure_strongman.js` does.
 
 **Hands are sculpted by default — pair them with `detail: F.handDetail(rig)`.**
-Every grip builds a four-finger + thumb hand with a **flat palm and back** (the
-palm is clipped perfectly flat front-to-back) and **round, separated fingers**
-(`open` splays straight fingers, `relaxed` curls them toward the palm, `fist`
-is a ball with knuckle ridges and a folded thumb). The fingers are finer than
-the recommended 0.4–0.6 figure grid, so add the hand detail spheres to the
-build or they alias away:
+Every grip builds a hand with a **flat slab palm** and **fully-separated,
+jointed fingers** — each finger is a 3-segment digit (knuckle → mid → tip) that
+articulates, so the joints read and curl naturally (`open` = subtle knuckle
+bend, `relaxed` = curled into a cup, `fist` = a ball with knuckle ridges and a
+folded thumb). The thumb comes off the side edge. The fingers are finer than the
+recommended 0.4–0.6 figure grid, so add the hand detail spheres to the build or
+they alias away:
 
 ```js
 .build({ edgeLength: 0.5, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] })
@@ -378,7 +379,7 @@ build or they alias away:
 
 Tune the hand with `count` (number of fingers, default 4), `length` (finger
 length multiplier, default 1), and `palmThickness` (flat front-to-back depth as
-a fraction of `r.hand`, default 0.46 — smaller is flatter). Pass `fingers: false`
+a fraction of `r.hand`, default 0.5 — smaller is flatter). Pass `fingers: false`
 for the legacy puffy mitten/paddle hands (no detail region needed). The hand frame derives from the rig (fingers extend along the
 forearm, palm faces the elbow-curl direction), so posed arms keep correct
 hands automatically.
