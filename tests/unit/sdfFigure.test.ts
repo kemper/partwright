@@ -1617,39 +1617,67 @@ describe('figure hands — sculpted fingers', () => {
     expect(b.max[0]).toBeCloseTo(-b.min[0], 1);
   });
 
-  it('open hand has four separated fingers', () => {
-    // Walk a line across the splay axis at a range of heights up the fingers
-    // and count distinct inside-runs; the fingers fully separate at some
-    // height, so the MAX run count is the finger count. Locks in four (was
-    // three) without hardcoding one fragile sampling height.
-    const hands = buildHands(api, rig, { grip: 'open' }) as SdfNode;
+  // Count protruding fingers on an `open` hand by measuring how far the surface
+  // reaches along the forearm `dir` across the splay fan, then counting the
+  // peaks (each finger is a reach hump) by topographic prominence. Robust to
+  // the fingers' differing lengths and the fan spread — a fixed-height line
+  // can't see all of them at once.
+  const openFingerCount = (opts: Record<string, unknown>): number => {
+    const hands = buildHands(api, rig, opts) as SdfNode;
     const c = rig.joints.handL as [number, number, number];
     const dir = rig.dir.lowerArmL as [number, number, number];
     const splay = rig.dir.elbowHingeL as [number, number, number];
     const rh = rig.r.hand;
-    // palm normal = splay × dir (the builder's hand frame).
-    const palmN = [
+    const pN = [
       splay[1] * dir[2] - splay[2] * dir[1],
       splay[2] * dir[0] - splay[0] * dir[2],
       splay[0] * dir[1] - splay[1] * dir[0],
     ];
-    const pl = Math.hypot(...palmN) || 1;
-    const runsAtHeight = (h: number): number => {
-      let runs = 0, inside = false;
-      for (let u = -1.0; u <= 1.0; u += 0.005) {
-        const s = u * rh;
-        const x = c[0] + dir[0] * rh * h + splay[0] * s + (palmN[0] / pl) * rh * 0.02;
-        const y = c[1] + dir[1] * rh * h + splay[1] * s + (palmN[1] / pl) * rh * 0.02;
-        const z = c[2] + dir[2] * rh * h + splay[2] * s + (palmN[2] / pl) * rh * 0.02;
-        const hit = hands.evaluate(x, y, z) < 0;
-        if (hit && !inside) runs++;
-        inside = hit;
+    const pl = Math.hypot(...pN) || 1;
+    const reachAt = (s: number): number => {
+      for (let d = 2.3 * rh; d > 0.3 * rh; d -= 0.01 * rh) {
+        const x = c[0] + dir[0] * d + splay[0] * s + (pN[0] / pl) * rh * 0.02;
+        const y = c[1] + dir[1] * d + splay[1] * s + (pN[1] / pl) * rh * 0.02;
+        const z = c[2] + dir[2] * d + splay[2] * s + (pN[2] / pl) * rh * 0.02;
+        if (hands.evaluate(x, y, z) < 0) return d / rh;
       }
-      return runs;
+      return 0;
     };
-    let maxRuns = 0;
-    for (let h = 1.0; h <= 1.5; h += 0.05) maxRuns = Math.max(maxRuns, runsAtHeight(h));
-    expect(maxRuns).toBe(4);
+    const r: number[] = [];
+    for (let u = -1.4; u <= 1.4; u += 0.01) r.push(reachAt(u * rh));
+    let count = 0;
+    for (let i = 1; i < r.length - 1; i++) {
+      if (!(r[i] > 1.05 && r[i] >= r[i - 1] && r[i] > r[i + 1])) continue;
+      let lmin = r[i]; for (let k = i - 1; k >= 0 && r[k] <= r[i]; k--) lmin = Math.min(lmin, r[k]);
+      let rmin = r[i]; for (let k = i + 1; k < r.length && r[k] <= r[i]; k++) rmin = Math.min(rmin, r[k]);
+      if (r[i] - Math.max(lmin, rmin) > 0.07) count++;  // prominence
+    }
+    return count;
+  };
+
+  it('open hand has four fingers by default', () => {
+    expect(openFingerCount({ grip: 'open' })).toBe(4);
+  });
+
+  it('finger count is configurable', () => {
+    expect(openFingerCount({ grip: 'open', count: 3 })).toBe(3);
+    expect(openFingerCount({ grip: 'open', count: 5 })).toBe(5);
+  });
+
+  it('finger length multiplier extends the fingers', () => {
+    const shortB = (buildHands(api, rig, { grip: 'open', length: 0.7 }) as SdfNode).bounds();
+    const longB = (buildHands(api, rig, { grip: 'open', length: 1.4 }) as SdfNode).bounds();
+    // hanging arms point the fingers down −Z, so longer fingers reach lower.
+    expect(longB.min[2]).toBeLessThan(shortB.min[2] - 0.5);
+  });
+
+  it('palmThickness controls the flat front-to-back depth', () => {
+    // palmN is ±Y for the neutral hanging pose, so the flatten clip bounds Y.
+    const thin = (buildHands(api, rig, { grip: 'open', palmThickness: 0.3 }) as SdfNode).bounds();
+    const thick = (buildHands(api, rig, { grip: 'open', palmThickness: 0.9 }) as SdfNode).bounds();
+    const yThin = thin.max[1] - thin.min[1];
+    const yThick = thick.max[1] - thick.min[1];
+    expect(yThick).toBeGreaterThan(yThin + 0.5);
   });
 
   it('rejects unknown grips and keys', () => {
