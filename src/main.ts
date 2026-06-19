@@ -4861,11 +4861,13 @@ async function main() {
   // callback. Title explains the swap so the rough→sharp transition isn't a
   // surprise.
   fastPreviewPillEl = document.createElement('span');
-  fastPreviewPillEl.className = 'absolute top-2 left-2 z-20 text-xs text-sky-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-sky-700/60 cursor-help';
-  fastPreviewPillEl.textContent = '⚡ Fast preview — rendering full quality…';
+  fastPreviewPillEl.className = 'text-xs text-sky-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-sky-700/60 cursor-help whitespace-nowrap';
+  fastPreviewPillEl.textContent = '⚡ Fast preview';
   fastPreviewPillEl.title = 'Showing a quick rough version of this model. The full-detail render is still computing and will replace it automatically. Wait for it before painting or editing the mesh.';
   fastPreviewPillEl.style.display = 'none';
-  viewportPane.appendChild(fastPreviewPillEl);
+  // Live inside the status row (next to the "Rendering… Xs" text + Cancel button)
+  // rather than as its own absolute overlay, so it never stacks on top of them.
+  (cancelInlineBtn.parentElement ?? viewportPane).appendChild(fastPreviewPillEl);
 
   // Surface "Re-apply" pill — a persistent status indicator (not a transient
   // toast) shown when the model declares `api.surface.*` textures whose result
@@ -16133,8 +16135,13 @@ function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'load
   el.title = text;
   // Keep the indicator click-transparent — `setStatus` overwrites the className
   // so the original `pointer-events-none` from layout.ts would otherwise be
-  // lost, letting it intercept clicks on the Insert button it overlaps.
-  el.className = 'text-xs font-mono max-w-[60%] truncate text-right pointer-events-none ';
+  // lost, letting it intercept clicks on what it overlaps. Restore the chip
+  // background/border too (also dropped on overwrite). The status row is an
+  // absolute, shrink-to-fit flex strip, so cap the width with a viewport-
+  // relative `max-w` (a percentage would resolve against this very element's
+  // shrink-to-fit parent and collapse "Ready" to "R…"); `truncate` still
+  // ellipsizes long error messages.
+  el.className = 'text-xs font-mono max-w-[55vw] truncate pointer-events-none bg-zinc-900/70 px-2 py-0.5 rounded border border-zinc-700 ';
   switch (state) {
     case 'ready':
       el.className += 'text-emerald-400';
