@@ -74,6 +74,41 @@ Skip the PR only when the user explicitly scoped you away from it — a request 
 - **Headers:** `public/_headers` (COEP, COOP, CSP) — Cloudflare Pages serves these automatically
 - **Environment variable:** Set `SITE_URL` in Cloudflare Pages dashboard (Settings > Environment variables) to the production URL (`https://www.partwrightstudio.com`). This is used at build time by the `absoluteUrls` Vite plugin to make Open Graph image URLs and canonical links absolute. If `SITE_URL` is not set, the plugin falls back to `CF_PAGES_URL` (provided automatically by Cloudflare Pages for each deployment).
 
+### Versioned deployments (path-mounted majors)
+
+The app supports serving each major version under its own path base on one
+origin, so a future breaking `v2` can coexist with `v1` instead of clobbering it.
+The model — **the site root is always the LATEST version, served versionlessly;
+each major is ALSO available as an immutable pinned mount under `/vN/`**:
+
+| URL | Serves |
+|-----|--------|
+| `/`, `/editor`, `/catalog`, … | the **latest** version (versionless — the default, unchanged) |
+| `/v1/`, `/v1/editor`, … | **pinned v1** (frozen; survives a later cutover to a newer root) |
+| `/current/…` | 302 → the versionless latest (stable "always newest" alias) |
+
+How it's wired:
+
+- **`DEPLOY_BASE`** env sets Vite's `base` (default `/`). `src/deployment.ts` is
+  the single source of truth (`appPath`/`appRoute`/`assetPath`/`currentMajor`);
+  asset fetches, the route layer, SEO (`meta.ts`/`sitemap.ts`), the prerendered
+  content nav (`rebaseHtmlPaths`), the pre-paint pair (`entry.ts` +
+  `public/route-init.js`, which derives its base from its own `<script src>`),
+  and `manifest.json` all follow it. Every piece is a **no-op at base `/`**.
+- **`npm run build:deploy`** produces the combined deploy: the versionless root
+  build in `dist/` plus a `DEPLOY_BASE=/v1/` build nested in `dist/v1/`. To go
+  live, point the **Cloudflare build command** at `npm run build:deploy` (the
+  default `npm run build` only emits the versionless root).
+- **`public/_redirects`** carries the per-mount SPA fallback (`/v1/* /v1/index.html 200`
+  before the root `/* /index.html 200` — first-match wins) and the `/current/`
+  alias. **Verify `/v1/editor` on a real Cloudflare preview** before flipping
+  production: `wrangler pages dev` emulation of nested-SPA `_redirects` is
+  unreliable; Cloudflare's documented first-match semantics are the ground truth.
+- **Pinned mounts should be built from their version's git tag** (immutable
+  snapshot), not rebuilt from latest `main`. While `main == v1` they're
+  identical; when `v2` lands, the pipeline must build `/v1/` from the `v1.x` tag
+  so it stays frozen. (Tracked in the versioned-deploy issue.)
+
 ## Tests — two tiers
 
 The suite is split into a fast unit tier and the browser e2e tier. Run the
