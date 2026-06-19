@@ -2316,16 +2316,18 @@ function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const ala = (s: number): Node => orientToHeadPose(sdf.ellipsoid(alaR, alaR * 1.18, alaR * 0.96), rig)
     .translate(add3(noseBase, scale3(right, s * alaSpread)));
   nose = nose.smoothUnion(ala(1), tipR * 0.5).smoothUnion(ala(-1), tipR * 0.5);
-  // Nostrils — two forward-oval cavities carved into the underside, opening
-  // down and slightly forward, with the columella/septum surviving between
-  // them. The flared alae bulge the underside well past the analytic tip, so
-  // the opening height is MEASURED (smoothUnion bulge — see /ai/figure.md) by
+  // Nostrils — two shallow rounded depressions on the underside, opening down
+  // and slightly forward, with a thick columella/septum surviving between them.
+  // The flared alae bulge the underside well past the analytic tip, so the
+  // opening height is MEASURED (smoothUnion bulge — see /ai/figure.md) by
   // sampling the lower surface along each nostril column rather than guessed:
-  // the cavity straddles that surface and tunnels UP into the tip, giving a
-  // real opening that reads from below, not a buried bubble or a flat dimple.
+  // each dish straddles that surface. A DEEP carved tunnel (the prior approach)
+  // eroded the small figure tip into sub-cell walls that shattered into a torn
+  // "triangular" crater on every normal-sized nose; a shallow, well-separated,
+  // large-blend dish reads as a nostril from below yet always meshes clean.
   if (nostrils && nostrilSize > 0) {
-    const nRad = tipR * 0.4 * nostrilSize;
-    const nostrilSpread = tipR * (0.36 + 0.34 * width);
+    const nRad = tipR * 0.3 * nostrilSize;
+    const nostrilSpread = tipR * (0.5 + 0.3 * width);
     const nostrilBack = scale3(f, -tipR * 0.14);
     // Each nostril splays outward like a real teardrop opening (narrow end
     // forward-medial, wider back-lateral) instead of two parallel inward slits.
@@ -2349,10 +2351,13 @@ function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       // Opening at the measured surface; centre lifted so the bulk tunnels up.
       const drop = surfaceDrop(lat) - 0.26;
       const c = add3(add3(tip, add3(scale3(u, -drop * tipR), scale3(right, lat))), nostrilBack);
-      // Rounded-oval opening (lateral × forward) that tunnels UP (tall Z),
-      // yaw-splayed about the vertical so it opens down-and-outward.
+      // Rounded-oval opening (lateral × forward) — a SHALLOW domed depression
+      // (Z ≈ the in-plane radius, not a deep tunnel) yaw-splayed about the
+      // vertical so it opens down-and-outward. A deep tunnel (#703) eroded the
+      // tip into sub-cell walls that shattered on every just-above-floor nose;
+      // a shallow bowl reads as a nostril from below yet leaves a thick septum.
       return orientToHeadPose(
-        sdf.ellipsoid(nRad * 1.0, nRad * 1.18, nRad * 1.5).rotate([0, 0, -s * splay]),
+        sdf.ellipsoid(nRad * 0.95, nRad * 1.12, nRad * 0.92).rotate([0, 0, -s * splay]),
         rig,
       ).translate(c);
     };
@@ -2365,7 +2370,7 @@ function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     // rounded crater, not a torn one. It stays a crease (small k) on big noses,
     // so good faces are essentially unchanged.
     const nearFloor = Math.max(0, Math.min(1, (tipR - NOSTRIL_TIP_FLOOR) / (NOSTRIL_TIP_FLOOR * 0.6)));
-    const carveK = Math.max(nRad * (0.42 + 0.28 * (1 - nearFloor)), 0.05);
+    const carveK = Math.max(nRad * (1.3 + 0.4 * (1 - nearFloor)), 0.18);
     nose = nose.smoothSubtract(cavity(1), carveK).smoothSubtract(cavity(-1), carveK);
   }
   return nose;
