@@ -4210,6 +4210,15 @@ async function main() {
       if (used > capacity) colorOverBudget = { used, capacity };
     }
     const colorDropped = format === 'STL' && (hasColorRegions() || hasModelColorRegions());
+    // Fold the design-for-print analysis (bed fit, overhangs, thin walls, small
+    // features, stability) into the confirm modal so the user reads it there
+    // rather than catching a fleeting toast. The watertight `manifold` check is
+    // dropped — it's already covered by the isManifold block above — and only
+    // blocker/warning levels are surfaced.
+    const report = exportPrintabilityReport();
+    const printabilityChecks = report
+      ? report.checks.filter(c => (c.level === 'fail' || c.level === 'warn') && c.id !== 'manifold')
+      : [];
     return {
       unitless: _getUnits() === 'unitless',
       dimensions,
@@ -4219,6 +4228,7 @@ async function main() {
       colorOverBudget,
       colorDropped,
       surfaceStale: pendingSurface !== null,
+      printabilityChecks,
     };
   }
 
@@ -4270,11 +4280,12 @@ async function main() {
     }
   };
 
-  // Run a quick printability check before each export so the user gets a
-  // heads-up about blockers (bed fit, watertight, …) and warnings (overhangs,
-  // thin walls). Non-blocking — the export still proceeds.
-  function warnIfNotPrintable(format: string): void {
-    if (!currentMeshData) return;
+  // Run a design-for-print analysis (bed fit, watertight, overhangs, thin walls,
+  // stability) over the live mesh so the export-confirm modal can surface the
+  // findings. Returns null when there's no mesh to analyze. The modal — not a
+  // toast — is where these now reach the user (see `exportWarningInfo`).
+  function exportPrintabilityReport(): PrintabilityReport | null {
+    if (!currentMeshData) return null;
     const settings = loadPrinterSettings();
     let isManifold = false;
     let renderOnly = false;
@@ -4283,29 +4294,19 @@ async function main() {
       isManifold = !!geo.isManifold;
       renderOnly = geo.manifoldStatus === 'render-only (not manifold)';
     } catch { /* default false */ }
-    const report: PrintabilityReport = analyzePrintability(currentMeshData, {
+    return analyzePrintability(currentMeshData, {
       bed: settings.bed,
       nozzleWidth: settings.nozzleWidth,
       overhangAngleDeg: settings.overhangAngleDeg,
       isManifold,
       renderOnly,
     });
-    const fails = report.checks.filter(c => c.level === 'fail');
-    const warns = report.checks.filter(c => c.level === 'warn');
-    if (fails.length === 0 && warns.length === 0) return;
-    const parts = [
-      fails.length > 0 ? `${fails.length} blocker${fails.length === 1 ? '' : 's'}` : null,
-      warns.length > 0 ? `${warns.length} warning${warns.length === 1 ? '' : 's'}` : null,
-    ].filter(Boolean).join(', ');
-    const first = (fails[0] ?? warns[0]).text;
-    showToast(`${format} export: printability check found ${parts}. ${first}`, { variant: 'warn', source: 'export' });
   }
 
   const actionExportGLB = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
-    warnIfNotPrintable('GLB');
     // Multi-part session → pick parts and bundle them as named nodes in one scene.
     if (getState().parts.length > 1) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob); return; }
     try {
@@ -4321,7 +4322,6 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
-    warnIfNotPrintable('STL');
     // Multi-part session → pick parts and bundle a .stl per part in one .zip.
     if (getState().parts.length > 1) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob); return; }
     notifyMultiPartExport();
@@ -4332,7 +4332,6 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
-    warnIfNotPrintable('OBJ');
     // Multi-part session → pick parts and emit named objects in one .obj.
     if (getState().parts.length > 1) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob); return; }
     notifyMultiPartExport();
@@ -4577,7 +4576,6 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
-    warnIfNotPrintable('3MF');
     // Multi-part session → offer the part picker and emit a GENERIC multi-object
     // 3MF (grid-arranged, no Bambu metadata). Single-part keeps the original
     // single-object export.
@@ -4593,7 +4591,6 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
-    warnIfNotPrintable('3MF');
     await export3MFMultiPartFlow(true);
   };
   // The integer VoxelGrid behind a voxel session. The engine meshes in the
