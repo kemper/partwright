@@ -9,7 +9,10 @@
 //      deliberately leave unset) the unit right here instead of cancelling and
 //      reopening the Export menu; picking a unit clears the warning live.
 //   2. Printability — the geometry is non-manifold (not watertight) and/or
-//      has multiple disconnected components, which many slicers choke on.
+//      has multiple disconnected components, which many slicers choke on, plus
+//      the design-for-print checks from analyzePrintability (bed fit, overhangs,
+//      thin walls, small features, tip-over stability) so the user reads them
+//      here instead of catching a fleeting toast.
 //
 // If neither applies, the caller skips the modal entirely and exports directly.
 
@@ -17,6 +20,7 @@ import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import { formatDimension, getUnits, setUnits, type UnitSystem } from '../geometry/units';
 import { escapeHtml } from './htmlUtils';
+import type { PrintabilityCheck } from '../geometry/printability';
 
 export interface ExportWarningInfo {
   /** True when the active unit system is 'unitless'. */
@@ -39,11 +43,23 @@ export interface ExportWarningInfo {
    *  applied to the current code (the Re-apply pill is up) — the export would
    *  carry the untextured base mesh. */
   surfaceStale?: boolean;
-  /** Set when one or more parts have unsaved edits. A multi-part export bakes
-   *  each part's LAST SAVED version, so unsaved work (e.g. fresh paint) is
-   *  silently left out — the #1 cause of "some parts exported without colour".
-   *  When present, the modal offers a Save action alongside Export anyway. */
+  /** Set when one or more parts have unsaved edits (or were never saved). A
+   *  multi-part export bakes each part's LAST SAVED version, so unsaved work
+   *  (e.g. fresh paint) is silently left out and never-saved parts are skipped
+   *  — the cause of "some parts exported without colour". When present, the
+   *  modal offers a Save action alongside Export anyway. */
   unsavedParts?: { count: number; names: string[] };
+  /** Design-for-print checks from `analyzePrintability` worth interrupting the
+   *  export for — only `fail` (blocker) and `warn` levels, with the watertight
+   *  `manifold` check excluded (it's already covered by `isManifold` above).
+   *  Surfaced as a list so the user reads them in the modal rather than as a
+   *  fleeting toast. */
+  printabilityChecks?: PrintabilityCheck[];
+}
+
+/** Whether the descriptor carries any actionable printability check. */
+function hasPrintabilityChecks(info: ExportWarningInfo): boolean {
+  return (info.printabilityChecks?.length ?? 0) > 0;
 }
 
 /** The user's choice from the export-confirm modal. `save` means "take me to
@@ -54,7 +70,7 @@ export type ExportConfirmResult = 'export' | 'cancel' | 'save';
 export function hasExportWarning(info: ExportWarningInfo): boolean {
   return info.unitless || !info.isManifold || info.componentCount > 1
     || info.colorOverBudget != null || info.colorDropped === true
-    || info.surfaceStale === true
+    || info.surfaceStale === true || hasPrintabilityChecks(info)
     || (info.unsavedParts != null && info.unsavedParts.count > 0);
 }
 
@@ -83,7 +99,7 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<ExportConfir
     // picks a unit right here in the modal.
     const otherWarning = !info.isManifold || info.componentCount > 1
       || info.colorOverBudget != null || info.colorDropped === true
-      || info.surfaceStale === true;
+      || info.surfaceStale === true || hasPrintabilityChecks(info);
     let unitsResolved = !info.unitless;
 
     if (info.unitless) {
@@ -169,6 +185,34 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<ExportConfir
       block.innerHTML =
         '<strong>Printability warning:</strong> ' + lines.join(' and ') +
         '. Many slicers may fail or produce a bad print. Consider fixing the model before exporting.';
+      shell.body.appendChild(block);
+    }
+
+    // Design-for-print checks (bed fit, overhangs, thin walls, small features,
+    // stability) — the detail that used to only flash by in a toast. Blockers
+    // (fail) are listed first and in red; advisory warnings follow in amber.
+    const checks = info.printabilityChecks ?? [];
+    if (checks.length > 0) {
+      const fails = checks.filter(c => c.level === 'fail');
+      const warns = checks.filter(c => c.level === 'warn');
+      const hasFail = fails.length > 0;
+      const block = document.createElement('div');
+      block.className = hasFail
+        ? 'rounded border border-red-700/50 bg-red-900/20 px-3 py-2 text-xs text-red-200 leading-snug'
+        : 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
+      const heading = document.createElement('div');
+      heading.innerHTML = hasFail
+        ? '<strong>Printability blockers.</strong> These will likely prevent a clean print:'
+        : '<strong>Printability warnings.</strong> The print may need attention:';
+      const list = document.createElement('ul');
+      list.className = 'mt-1 ml-4 list-disc space-y-0.5';
+      for (const c of [...fails, ...warns]) {
+        const li = document.createElement('li');
+        li.className = c.level === 'fail' ? 'text-red-200' : 'text-amber-200';
+        li.textContent = c.text;
+        list.appendChild(li);
+      }
+      block.append(heading, list);
       shell.body.appendChild(block);
     }
 

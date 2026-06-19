@@ -436,6 +436,22 @@ let paintBaseMesh: MeshData | null = null;
  *  stroke) and refine incrementally from the current mesh, instead of replaying
  *  every stroke from the base (which is O(strokes²) and made painting lag). */
 let lastStrokeList: RegionDescriptor[] = [];
+/** The refine-driving (subdivision) descriptors the current working mesh was
+ *  built against — every `brushStroke` plus any smooth slab/box/cylinder. When
+ *  a paint change leaves this set unchanged (a non-smooth stroke, a colour
+ *  edit, removing a non-refine region), the mesh topology is already correct,
+ *  so the reconcile re-resolves regions against it and recolours instead of
+ *  replaying the whole subdivision in the worker. Without this, one smooth
+ *  stroke made *every* later paint action trigger a full "Rebuilding refined
+ *  mesh…" pass — turning edge smoothing off didn't help, because the existing
+ *  smooth stroke still forced the rebuild. Kept in sync wherever the working
+ *  mesh is (re)built or reverted via `markMeshRefineState()`. */
+let meshRefineList: RegionDescriptor[] = [];
+/** The exact `currentMeshData` object `meshRefineList` was snapshotted for. The
+ *  fast path only fires while this still holds, so any external mesh swap (a
+ *  surface-modifier/scale bake, a model re-run, a version load) forces a real
+ *  rebuild instead of recolouring stale triangle indices. */
+let meshRefineForMesh: MeshData | null = null;
 /** Set while rehydration adds regions in bulk, so each addRegion doesn't kick
  *  off a reconcile mid-rebuild. */
 let suspendReconcile = false;
@@ -1249,6 +1265,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   }
 
   lastStrokeList = getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
+  markMeshRefineState();
 
   syncLockState();
 
@@ -1311,6 +1328,7 @@ function rebuildPaintedGeometry(): void {
   reresolveModelRegions(mesh, adjacency, parentToChildren);
   paintedColorRefresh();
   syncLockState();
+  markMeshRefineState();
 }
 
 /** Re-resolve the code-declared color underlay (`api.label({color})` /
@@ -1370,10 +1388,63 @@ function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brush
   reresolveModelRegions(mesh, adjacency, parentToChildren);
   paintedColorRefresh();
   syncLockState();
+  markMeshRefineState();
 }
 
 function strokeDescriptors(): RegionDescriptor[] {
   return getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
+}
+
+/** Subdivision-driving descriptors in region order (see `descriptorRefines`) —
+ *  the snapshot the cheap-reconcile fast path compares against `meshRefineList`. */
+function currentRefineList(): RegionDescriptor[] {
+  return getRegions().filter(r => descriptorRefines(r.descriptor)).map(r => r.descriptor);
+}
+
+/** True when `a` holds exactly the entries of `b` by reference (same refine
+ *  descriptors, same order) — i.e. nothing that affects subdivision changed. */
+function sameRefineList(a: RegionDescriptor[], b: RegionDescriptor[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** Snapshot the refine set the current working mesh now reflects. Call after
+ *  any path that (re)builds or reverts the working mesh. */
+function markMeshRefineState(): void {
+  meshRefineList = currentRefineList();
+  meshRefineForMesh = currentMeshData;
+}
+
+/** True when the working mesh still matches its refine snapshot — same mesh
+ *  object and the same refine-driving descriptors — so a change can be
+ *  reconciled by recolouring instead of re-subdividing. */
+function refineSetUnchanged(): boolean {
+  return currentMeshData === meshRefineForMesh && sameRefineList(currentRefineList(), meshRefineList);
+}
+
+/** Cheap reconcile for a change that doesn't alter the refine set: the working
+ *  mesh's topology is already correct, so resolve any not-yet-resolved regions
+ *  against it and recolour — no worker subdivision, no progress modal. This is
+ *  what keeps painting instant once smooth strokes exist (and makes turning
+ *  edge smoothing off actually speed subsequent strokes up). */
+function reresolveRegionsAgainstCurrentMesh(): void {
+  const mesh = currentMeshData;
+  if (!mesh) return;
+  let adjacency: AdjacencyGraph | null = null;
+  for (const region of getRegions()) {
+    const d = region.descriptor;
+    // Explicit/byLabel sets and already-resolved regions are valid in the
+    // current mesh's index space (topology unchanged) — only a freshly-added
+    // geometric/flood region with no triangles yet needs resolving.
+    if (d.kind === 'triangles' || d.kind === 'byLabel' || region.triangles.size > 0) continue;
+    if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) adjacency = buildAdjacency(mesh);
+    const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null, region.id);
+    setRegionTriangles(region.id, triangles, perTriColors);
+  }
+  reresolveModelRegions(mesh, adjacency, null);
+  paintedColorRefresh();
+  syncLockState();
 }
 
 /** Synchronous mirror of `reconcilePaintedGeometryAsync` — the agent paint
@@ -1391,10 +1462,18 @@ function reconcilePaintedGeometrySync(): void {
   const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
     lastStrokeList = [];
+    markMeshRefineState();
     // Mirror the async tick (see reconcilePaintedGeometryAsyncTick) — color
     // mutations from the Edit colors panel must refresh the mesh even when
     // the Paint UI is closed.
     paintedColorRefresh();
+    return;
+  }
+  // Refine set unchanged — re-resolve against the current mesh, skip the heavy
+  // rebuild (mirrors the async tick's fast path).
+  if (refineSetUnchanged()) {
+    reresolveRegionsAgainstCurrentMesh();
+    lastStrokeList = strokesNow;
     return;
   }
   if (strokesNow.length === lastStrokeList.length + 1 && prefixRefEqual(strokesNow, lastStrokeList)) {
@@ -1492,6 +1571,7 @@ async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
   const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
     lastStrokeList = [];
+    markMeshRefineState();
     // Re-bake per-triangle colours regardless of whether the Paint UI is
     // open — the Relief Studio's Edit colors panel also mutates regions
     // (updateRegionColor / removeRegion) and the user expects the model to
@@ -1502,9 +1582,29 @@ async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
     return;
   }
 
+  // Refine set unchanged → the working mesh's topology already reflects every
+  // subdivision-driving descriptor. A change that doesn't touch that set (a
+  // non-smooth stroke, a colour edit, removing a non-refine region) only needs
+  // regions re-resolved against the current mesh + a recolour — NOT a full
+  // worker re-subdivision (and no progress modal). This is what keeps painting
+  // instant once a smooth stroke exists, so turning edge smoothing off actually
+  // speeds the next strokes up instead of leaving every one to rebuild.
+  if (refineSetUnchanged()) {
+    reresolveRegionsAgainstCurrentMesh();
+    lastStrokeList = strokesNow;
+    return;
+  }
+
   // Pure append: one new stroke at the end, prior strokes unchanged.
   if (strokesNow.length === lastStrokeList.length + 1 && prefixRefEqual(strokesNow, lastStrokeList)) {
     const newDesc = strokesNow[strokesNow.length - 1] as Extract<RegionDescriptor, { kind: 'brushStroke' }>;
+    // Track this in-flight stroke's region so a user Cancel (or the modal's
+    // "turn off smoothing" action) drops exactly it. The agent paint path sets
+    // this itself via paintBrushStrokeSync; the UI brush path didn't, so a
+    // cancelled UI stroke used to leave a dead, empty brushStroke region that
+    // still forced re-subdivision on every later paint.
+    const newRegion = getRegions().find(r => r.descriptor === newDesc);
+    if (newRegion) pendingStrokeRegionId = newRegion.id;
     try {
       await appendStrokeRefineAsync(newDesc);
       // The stroke resolved successfully, so it's no longer a cancel orphan.
@@ -1545,6 +1645,31 @@ function isAbortError(err: unknown): boolean {
     || (err instanceof Error && err.name === 'AbortError');
 }
 
+/** The "did you know you can speed this up" extras for the paint-refine
+ *  progress modal: a tip line plus a one-click "Stop & turn off smoothing"
+ *  button. Only offered when brush edge smoothing is currently on — that
+ *  subdivision is the usual reason a stroke takes multiple seconds. The button
+ *  doubles as Cancel (it aborts the in-flight job) AND turns smoothing off so
+ *  the next stroke paints instantly. Returns `{}` when smoothing is already off
+ *  (e.g. a spray stroke is what's refining) so we never offer a no-op. */
+function paintRefineSmoothingExtras(abort: AbortController): {
+  hint?: string;
+  secondaryAction?: { label: string; onClick: () => void };
+} {
+  if (!isPaintBrushSmooth()) return {};
+  return {
+    hint: 'Edge smoothing refines the mesh under each stroke — turn it off for faster painting.',
+    secondaryAction: {
+      label: 'Stop & turn off smoothing',
+      onClick: () => {
+        abort.abort();
+        setPaintBrushSmooth(false);
+        showToast('Edge smoothing turned off — painting will be faster', { variant: 'neutral' });
+      },
+    },
+  };
+}
+
 /** Worker-backed incremental append. Mirrors the sync `appendStrokeRefine`
  *  but offloads `buildStrokeMesh` to a dedicated thread, so a heavy stroke
  *  doesn't freeze the viewport. The Cancel button on the progress badge
@@ -1567,6 +1692,7 @@ async function appendStrokeRefineAsync(
     // variable pass count — no natural fraction to report. The animated
     // indeterminate stripe still telegraphs "something's happening."
     indeterminate: true,
+    ...paintRefineSmoothingExtras(abort),
   });
   paintProgressId = progressId;
 
@@ -1614,6 +1740,7 @@ async function appendStrokeRefineAsync(
     reresolveModelRegions(mesh, adjacency, parentToChildren);
     paintedColorRefresh();
     syncLockState();
+    markMeshRefineState();
   } finally {
     endProgress(progressId);
     if (paintProgressId === progressId) paintProgressId = null;
@@ -1644,6 +1771,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
     message: 'Rebuilding refined mesh…',
     onCancel: () => abort.abort(),
     indeterminate: true,
+    ...paintRefineSmoothingExtras(abort),
   });
   paintProgressId = progressId;
 
@@ -1676,6 +1804,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
     reresolveModelRegions(mesh, adjacency, parentToChildren);
     paintedColorRefresh();
     syncLockState();
+    markMeshRefineState();
   } finally {
     endProgress(progressId);
     if (paintProgressId === progressId) paintProgressId = null;
@@ -1725,6 +1854,10 @@ function handlePaintCancel(): void {
     }
   }
   lastStrokeList = strokeDescriptors();
+  // The orphan stroke was dropped and the mesh reverted to its pre-stroke
+  // state, so the refine set the working mesh reflects has shrunk — resnapshot
+  // it (otherwise the next non-refine change would needlessly full-rebuild).
+  markMeshRefineState();
   paintedColorRefresh();
   syncLockState();
   showToast('Painting cancelled.', { variant: 'neutral' });
@@ -4077,6 +4210,15 @@ async function main() {
       if (used > capacity) colorOverBudget = { used, capacity };
     }
     const colorDropped = format === 'STL' && (hasColorRegions() || hasModelColorRegions());
+    // Fold the design-for-print analysis (bed fit, overhangs, thin walls, small
+    // features, stability) into the confirm modal so the user reads it there
+    // rather than catching a fleeting toast. The watertight `manifold` check is
+    // dropped — it's already covered by the isManifold block above — and only
+    // blocker/warning levels are surfaced.
+    const report = exportPrintabilityReport();
+    const printabilityChecks = report
+      ? report.checks.filter(c => (c.level === 'fail' || c.level === 'warn') && c.id !== 'manifold')
+      : [];
     return {
       unitless: _getUnits() === 'unitless',
       dimensions,
@@ -4086,6 +4228,7 @@ async function main() {
       colorOverBudget,
       colorDropped,
       surfaceStale: pendingSurface !== null,
+      printabilityChecks,
     };
   }
 
@@ -4158,11 +4301,12 @@ async function main() {
     }
   };
 
-  // Run a quick printability check before each export so the user gets a
-  // heads-up about blockers (bed fit, watertight, …) and warnings (overhangs,
-  // thin walls). Non-blocking — the export still proceeds.
-  function warnIfNotPrintable(format: string): void {
-    if (!currentMeshData) return;
+  // Run a design-for-print analysis (bed fit, watertight, overhangs, thin walls,
+  // stability) over the live mesh so the export-confirm modal can surface the
+  // findings. Returns null when there's no mesh to analyze. The modal — not a
+  // toast — is where these now reach the user (see `exportWarningInfo`).
+  function exportPrintabilityReport(): PrintabilityReport | null {
+    if (!currentMeshData) return null;
     const settings = loadPrinterSettings();
     let isManifold = false;
     let renderOnly = false;
@@ -4171,29 +4315,19 @@ async function main() {
       isManifold = !!geo.isManifold;
       renderOnly = geo.manifoldStatus === 'render-only (not manifold)';
     } catch { /* default false */ }
-    const report: PrintabilityReport = analyzePrintability(currentMeshData, {
+    return analyzePrintability(currentMeshData, {
       bed: settings.bed,
       nozzleWidth: settings.nozzleWidth,
       overhangAngleDeg: settings.overhangAngleDeg,
       isManifold,
       renderOnly,
     });
-    const fails = report.checks.filter(c => c.level === 'fail');
-    const warns = report.checks.filter(c => c.level === 'warn');
-    if (fails.length === 0 && warns.length === 0) return;
-    const parts = [
-      fails.length > 0 ? `${fails.length} blocker${fails.length === 1 ? '' : 's'}` : null,
-      warns.length > 0 ? `${warns.length} warning${warns.length === 1 ? '' : 's'}` : null,
-    ].filter(Boolean).join(', ');
-    const first = (fails[0] ?? warns[0]).text;
-    showToast(`${format} export: printability check found ${parts}. ${first}`, { variant: 'warn', source: 'export' });
   }
 
   const actionExportGLB = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
-    warnIfNotPrintable('GLB');
     // Multi-part session → pick parts and bundle them as named nodes in one scene.
     if (getState().parts.length > 1) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob); return; }
     try {
@@ -4209,7 +4343,6 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
-    warnIfNotPrintable('STL');
     // Multi-part session → pick parts and bundle a .stl per part in one .zip.
     if (getState().parts.length > 1) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob); return; }
     notifyMultiPartExport();
@@ -4220,7 +4353,6 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
-    warnIfNotPrintable('OBJ');
     // Multi-part session → pick parts and emit named objects in one .obj.
     if (getState().parts.length > 1) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob); return; }
     notifyMultiPartExport();
@@ -4465,7 +4597,6 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
-    warnIfNotPrintable('3MF');
     // Multi-part session → offer the part picker and emit a GENERIC multi-object
     // 3MF (grid-arranged, no Bambu metadata). Single-part keeps the original
     // single-object export.
@@ -4481,7 +4612,6 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
-    warnIfNotPrintable('3MF');
     await export3MFMultiPartFlow(true);
   };
   // The integer VoxelGrid behind a voxel session. The engine meshes in the
