@@ -4268,11 +4268,19 @@ async function main() {
     if (!hasExportWarning(info)) return true;
     const decision = await showExportConfirm(info);
     if (decision === 'save') {
-      // Save the flagged unsaved parts before exporting. saveSelectedParts saves
-      // the current part in place, then switches to each other flagged part to
-      // commit a version, and returns to the original part. Don't auto-export —
-      // the user re-triggers it once the parts are saved.
-      await saveSelectedParts(unsavedRows.map(r => r.id));
+      // Hand off to the multi-part save modal so the user picks which parts to
+      // save (or cancels) — the same chooser Cmd/Ctrl+S uses. The export is
+      // abandoned either way; the user re-clicks Export to resume once they've
+      // saved. Mirrors saveVersionWithToast's choice handling.
+      const choice = await showSaveAllModal(unsavedRows);
+      if (choice.action === 'selected') {
+        const onlyCurrent = choice.partIds.length === 1 && choice.partIds[0] === getState().currentPart?.id;
+        if (!onlyCurrent) await saveSelectedParts(choice.partIds);
+        else await saveCurrentPartWithToast();
+      } else if (choice.action === 'current') {
+        await saveCurrentPartWithToast();
+      }
+      // 'cancel' → save nothing; the user can re-open Export and decide again.
       return false;
     }
     return decision === 'export';

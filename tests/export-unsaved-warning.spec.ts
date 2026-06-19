@@ -77,17 +77,19 @@ test('export with an unsaved non-current part warns and offers Save', async ({ p
     return (db as any).getVersionCount(w.id);
   });
 
-  // Clicking Save… closes the export modal and routes to the save flow. With one
-  // unsaved (non-current) part it saves THAT part directly; the export does NOT
-  // fire (no "Exported" toast).
+  // Clicking Save… closes the export modal and opens the multi-part save modal
+  // (the part chooser) — the export does NOT fire (no "Exported" toast).
   await dialog.getByRole('button', { name: 'Save…' }).click();
-  await expect(dialog).toBeHidden();
+  const saveModal = page.getByRole('dialog');
+  await expect(saveModal.getByText('Save unsaved parts')).toBeVisible({ timeout: 10_000 });
+  // All parts pre-checked → the primary button reads "Save all". Commit.
+  await saveModal.getByRole('button', { name: /Save all|Save selected/ }).click();
   await page.waitForTimeout(2500);
   await expect(
     page.locator('div[role="status"]').filter({ hasText: /Exported/ }),
   ).toHaveCount(0);
 
-  // The Save shortcut committed a NEW version for the unsaved Widget part.
+  // The save modal committed a NEW version for the unsaved Widget part.
   const widgetVersionsAfter = await page.evaluate(async () => {
     const pw = (window as any).partwright;
     const db = await import('/src/storage/db.ts');
