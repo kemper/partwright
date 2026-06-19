@@ -1293,6 +1293,11 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // One jointed finger, built in the canonical frame along +Z, curling toward
   // +Y (the palm) by `curlDeg` at each of the two finger joints. Three phalanges
   // taper to the tip; the per-joint smoothUnion gives subtle knuckle bumps.
+  // The weld radius is GENEROUS (fr*1.4): a small smoothUnion `k` between two
+  // capsules meeting at an angle makes a near-degenerate (non-Lipschitz) field
+  // that marching tetrahedra resolves into orientation-dependent SPIKES at the
+  // coarse figure grid — fat welds keep the field smooth and the hand clean for
+  // any arm pose. (This is the corruption that shipped on overhead-arm figures.)
   function digit(bx: number, len: number, fr: number, curlDeg: number, knuckleZ: number): Node {
     const phal = [0.42, 0.33, 0.25].map((f) => f * len);
     const rad = [fr, fr * 0.92, fr * 0.82, fr * 0.74];
@@ -1304,7 +1309,7 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       const a = ang * DEG;
       const end: Vec3 = [p[0], p[1] + Math.sin(a) * phal[k], p[2] + Math.cos(a) * phal[k]];
       const seg = sdf.capsule(p, end, (rad[k] + rad[k + 1]) / 2);
-      node = node ? node.smoothUnion(seg, fr * 0.6) : seg;
+      node = node ? node.smoothUnion(seg, fr * 1.4) : seg;
       p = end;
     }
     return node as Node;
@@ -1334,7 +1339,7 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       const d = digit(bx, rh * lengthK * lenProfile(u), fr, curlDeg, palmTopZ);
       fingers = fingers ? fingers.union(d) : d;
     }
-    let hand = fingers ? palm.smoothUnion(fingers, fr * 0.5) : palm;
+    let hand = fingers ? palm.smoothUnion(fingers, fr * 0.85) : palm;
 
     // Thumb: a jointed digit off the radial side edge, angled out and forward.
     let tp: Vec3 = [(palmW * 0.5 - fr) * side, 0, palmTopZ - palmL * 0.7];
@@ -1351,7 +1356,7 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       thumb = thumb ? thumb.smoothUnion(seg, fr * 0.5) : seg;
       tp = end;
     }
-    return thumb ? hand.smoothUnion(thumb, fr * 0.6) : hand;
+    return thumb ? hand.smoothUnion(thumb, fr * 1.0) : hand;
   }
 
   function hand(c: Vec3, dir: Vec3, hinge: Vec3, side: number): Node {
