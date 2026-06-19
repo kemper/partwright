@@ -585,7 +585,12 @@ function removeClipPlaneVisual() {
   }
 }
 
-function meshGLToBufferGeometry(mesh: MeshData): THREE.BufferGeometry {
+/** Convert a MeshData to a THREE.BufferGeometry. With per-triangle `triColors`
+ *  the geometry is unindexed (each triangle's 3 verts carry that triangle's
+ *  colour, unpainted → default blue) and gets a `color` attribute; without
+ *  colours it stays indexed. Exported so the multi-part GLB builder
+ *  (`buildGLBProject`) can reuse the exact same conversion the viewport uses. */
+export function meshGLToBufferGeometry(mesh: MeshData): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
 
   if (mesh.triColors) {

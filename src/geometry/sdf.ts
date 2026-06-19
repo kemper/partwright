@@ -49,6 +49,30 @@ type LabelFn = (shape: ManifoldInstance, name: string) => ManifoldInstance;
  *  undefined — only `.build()` requires it. */
 interface BuildContext { Manifold: ManifoldClass; label: LabelFn }
 
+// --- Fast-preview coarsening -------------------------------------------------
+// SDF builds (figures especially) spend ~all their time in Manifold.levelSet —
+// marching a fine grid plus per-detail-sphere refine passes. For a progressive
+// "show something now, refine in the background" render, the Worker sets a
+// preview scale before a throwaway first pass: `buildSdf` then multiplies the
+// march edgeLength by it and drops every `detail` region. A scale of ~2.5 cuts
+// the cell count ~15× AND skips the fine face/hand passes, so a 20s figure
+// roughs out in a second or two. null = normal (full-quality) build.
+let sdfPreviewScale: number | null = null;
+
+/** Worker-only: set the coarsening factor for the next preview pass, or null to
+ *  build at full quality. Read once at the top of every `buildSdf`. */
+export function setSdfPreviewScale(scale: number | null): void {
+  sdfPreviewScale = scale !== null && Number.isFinite(scale) && scale > 1 ? scale : null;
+}
+
+/** Cheap source heuristic: does this code lower an SDF through `.build()`? Only
+ *  such runs benefit from the coarse-preview pass (they're the slow ones —
+ *  everything else returns a Manifold directly and is already fast). Gates the
+ *  Worker's two-phase render so non-SDF code never pays for a throwaway pass. */
+export function sourceUsesSdfBuild(code: string): boolean {
+  return /\bsdf\b/.test(code) && /\.build\s*\(/.test(code);
+}
+
 export type Vec3 = [number, number, number];
 export interface Box { min: Vec3; max: Vec3 }
 
@@ -490,10 +514,15 @@ function buildSdf(
       + 'Intersect with a finite shape, or pass an explicit { bounds: { min:[x,y,z], max:[x,y,z] } }.',
     );
   }
-  const edgeLength = opts.edgeLength ?? defaultEdgeLength(bounds);
+  const baseEdgeLength = opts.edgeLength ?? defaultEdgeLength(bounds);
   const level = opts.level ?? 0;
   const tolerance = opts.tolerance;
-  const detail = opts.detail ?? [];
+  // Fast preview: coarsen the march and skip the fine detail passes. The result
+  // is a throwaway rough mesh shown while the full-quality pass runs (the Worker
+  // clears the scale and re-builds immediately after).
+  const previewScale = sdfPreviewScale;
+  const edgeLength = previewScale !== null ? baseEdgeLength * previewScale : baseEdgeLength;
+  const detail = previewScale !== null ? [] : (opts.detail ?? []);
 
   // Partition the tree into labelled regions. If there are no labels,
   // returns a single anonymous region covering the whole root.

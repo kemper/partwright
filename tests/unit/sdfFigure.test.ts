@@ -9,7 +9,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT, partitionByLabel, type SdfNode } from '../../src/geometry/sdf';
 import type { SdfApi } from '../../src/geometry/sdfFigure';
 
-const { buildRig, buildTorso, buildLegs, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
+const { buildRig, buildTorso, buildLegs, buildNipples, breastMounds, torsoMasses, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair } = __figureTestables__;
 
 /** Minimal engine-free SdfApi over the raw primitive factories — enough for
  *  the part builders (only `.build()` needs the engine binding). */
@@ -1189,6 +1189,84 @@ describe('figure pants — posed-leg coverage', () => {
   });
 });
 
+describe('figure panel — draping apron/cape + hug fit', () => {
+  const rig = buildRig({ build: 'stocky', weight: 0.6 });   // a belly that a flat box can't follow
+  const r = rig.r, j = rig.joints;
+  const body = buildTorso(api, rig).union(buildLegs(api, rig)) as SdfNode;
+  const mid = (a: number, b: number, t: number): number => a + (b - a) * t;
+  const zc = (j.chest[2] + j.hips[2]) / 2;
+  // Walk ±Y at x=0 to find the body's front (−Y) / back (+Y) surface at height z.
+  const surfaceY = (z: number, dir: -1 | 1): number => {
+    let y = 0;
+    for (let i = 0; i < 400; i++) { const n = y + dir * 0.1; if (body.evaluate(0, n, z) > 0) return y; y = n; }
+    return y;
+  };
+  // The body's forward/rear-most point over the torso — the line a drape hangs from.
+  const apexOf = (side: 'front' | 'back'): number => {
+    const dir = side === 'back' ? 1 : -1;
+    let best = dir > 0 ? -Infinity : Infinity;
+    for (let z = j.hips[2]; z <= j.chest[2]; z += 0.5) {
+      let y = 0, last = 0, inside = false;
+      for (let i = 0; i < 200; i++) { if (body.evaluate(0, y, z) > 0) break; last = y; inside = true; y += dir * 0.1; }
+      if (inside) best = dir > 0 ? Math.max(best, last) : Math.min(best, last);
+    }
+    return Number.isFinite(best) ? best : 0;
+  };
+
+  it('drape hangs PROUD in front of the body and welds at the belly (no pass-through)', () => {
+    const apron = buildPanel(api, rig, { side: 'front', top: 'chest', bottom: 'thigh' }) as SdfNode;
+    const apex = apexOf('front');
+    expect(apron.evaluate(0, apex - r.chestY * 0.06, zc)).toBeLessThan(0);  // sheet sits in front
+    expect(apron.evaluate(0, apex + r.chestY * 0.02, zc)).toBeLessThan(0);  // back welds into the body
+    expect(apron.evaluate(0, apexOf('back') + r.chestY * 0.05, zc)).toBeGreaterThan(0); // nothing behind
+    expect(apron.evaluate(0, 0, zc)).toBeGreaterThan(0);                    // torso interior not filled
+  });
+
+  it("side: 'back' (cape) hangs behind the body, front bare", () => {
+    const cape = buildPanel(api, rig, { side: 'back', top: 'chest', bottom: 'thigh' }) as SdfNode;
+    expect(cape.evaluate(0, apexOf('back') + r.chestY * 0.02, zc)).toBeLessThan(0);     // sheet behind
+    expect(cape.evaluate(0, apexOf('front') - r.chestY * 0.06, zc)).toBeGreaterThan(0); // front bare
+  });
+
+  it("side: 'both' hangs front AND back", () => {
+    const both = buildPanel(api, rig, { side: 'both', top: 'chest', bottom: 'thigh' }) as SdfNode;
+    expect(both.evaluate(0, apexOf('front') - r.chestY * 0.06, zc)).toBeLessThan(0);
+    expect(both.evaluate(0, apexOf('back') + r.chestY * 0.02, zc)).toBeLessThan(0);
+  });
+
+  it("fit: 'hug' conforms to the body surface (skin-tight, not hanging)", () => {
+    const hug = buildPanel(api, rig, { side: 'front', top: 'chest', bottom: 'thigh', fit: 'hug' }) as SdfNode;
+    expect(hug.evaluate(0, surfaceY(zc, -1), zc)).toBeLessThan(0);   // lies ON the front surface
+  });
+
+  it('apron preset drapes to the shin with a neck halter and waist ties', () => {
+    const apron = buildApron(api, rig, {}) as SdfNode;
+    const apex = apexOf('front');
+    // Sample within the skirt (below the knee) — proves the drape hangs well past
+    // the waist, not exactly on the rounded hem edge.
+    const zLow = mid(j.lowerLegL[2], j.footL[2], 0.3);
+    expect(apron.evaluate(0, apex - r.chestY * 0.05, zLow)).toBeLessThan(0);  // hangs past the knee
+    const neckRest = [0, r.neck * 0.6, j.chest[2] + r.head * 0.55] as const;   // halter endpoint
+    expect(apron.evaluate(neckRest[0], neckRest[1], neckRest[2])).toBeLessThan(0);
+    // Waist ties: present by default at the back-side tie endpoint, gone with ties:false.
+    const tie = [r.hipsX * 0.35, r.hipsY * 1.15, j.spine[2]] as const;
+    expect(apron.evaluate(tie[0], tie[1], tie[2])).toBeLessThan(0);
+    const noTies = buildApron(api, rig, { ties: false }) as SdfNode;
+    expect(noTies.evaluate(tie[0], tie[1], tie[2])).toBeGreaterThan(0);
+  });
+
+  it('rejects unknown side, level, fit, keys, and tie type', () => {
+    expect(() => buildPanel(api, rig, { side: 'left' })).toThrow(/side/);
+    expect(() => buildPanel(api, rig, { top: 'forehead' })).toThrow(/top/);
+    expect(() => buildPanel(api, rig, { bottom: 'toe' })).toThrow(/bottom/);
+    expect(() => buildPanel(api, rig, { fit: 'loose' })).toThrow(/fit/);
+    expect(() => buildPanel(api, rig, { wobble: 1 })).toThrow();
+    // The apron preset surfaces its OWN name in validation errors, not panel's.
+    expect(() => buildApron(api, rig, { wobble: 1 })).toThrow(/apron/);
+    expect(() => buildApron(api, rig, { ties: 'yes' })).toThrow(/ties/);
+  });
+});
+
 describe('figure top — dress/gown coverage', () => {
   it('a floor-length sleeveless gown still covers the chest on a tall figure', () => {
     // Regression (#topless-runway-gown): the hem "half-space" was a fixed
@@ -1260,7 +1338,37 @@ describe('figure top — dress/gown coverage', () => {
   });
 });
 
+/** Lowest solid z of a node sampled over a box around a footprint (its SDF
+ *  bounds() are loose for the offset+smoothUnion shoe, so sample for the truth). */
+function sampledMinZ(node: SdfNode, sf: { point: number[]; groundZ: number }, rf: number): number {
+  let min = Infinity;
+  for (let dz = 0.6; dz >= -1.4; dz -= 0.04) {
+    const z = sf.groundZ + dz * rf;
+    for (let dx = -1.3; dx <= 1.3; dx += 0.3) {
+      for (let dy = -1.8; dy <= 1.8; dy += 0.3) {
+        if (node.evaluate(sf.point[0] + dx * rf, sf.point[1] + dy * rf, z) < 0) min = Math.min(min, z);
+      }
+    }
+  }
+  return min;
+}
+
 describe('figure footwear — shoes & boots', () => {
+  it('a lifted shoe has a flat sole, not a bubble (offset shoe + flat-soled foot)', () => {
+    // The shoe is the bare foot offset outward (`foot.round(t)`); the plantarflexed
+    // foot is flat-soled (clipped at the sole plane before pivoting). So a LIFTED
+    // shoe must sit just under the foot — a sole's thickness — not bulge ~1·r.foot
+    // below it as the old from-scratch "last" ellipsoid did (the rock-climber /
+    // sprinter "bubble foot"). Guards the redesign against regressing to a ball.
+    const rig = buildRig({ pose: { legR: { raiseSide: 30, raiseFwd: 25, bend: 80 }, legL: { raiseSide: 12, bend: 25 } } });
+    const feet = buildFeet(api, rig) as SdfNode;
+    const shoes = buildShoes(api, rig) as SdfNode;
+    const sf = rig.sole.R;                                    // the lifted foot
+    const dip = sampledMinZ(feet, sf, rig.r.foot) - sampledMinZ(shoes, sf, rig.r.foot);
+    expect(dip).toBeGreaterThan(0);                           // shoe is UNDER the foot (sole present)
+    expect(dip).toBeLessThan(rig.r.foot * 0.55);             // …by a sole's thickness, not a bubble
+  });
+
   it('shoes wrap each foot (sole point is inside)', () => {
     const rig = buildRig({});
     const shoes = buildShoes(api, rig) as SdfNode;
@@ -1305,12 +1413,17 @@ describe('figure footwear — shoes & boots', () => {
     // with it (the builder reads rig.dir.foot*, like F.feet).
     const rig = buildRig({ pose: { legL: { twist: 40 } } });
     const shoes = buildShoes(api, rig) as SdfNode;
-    const A = rig.joints.footL, fwd = rig.dir.footL;
-    const sz = A[2] - rig.r.foot;
-    const footLen = rig.r.foot * 2.4;
-    // A point out along the heading at sole height (under the toe) is shod.
-    const toe = [A[0] + fwd[0] * footLen * 0.5, A[1] + fwd[1] * footLen * 0.5, sz];
-    expect(shoes.evaluate(toe[0], toe[1], toe[2])).toBeLessThan(0);
+    const s = rig.sole.L, rf = rig.r.foot;
+    // A point under the forefoot ALONG the turned-out heading (low, near the sole)
+    // is shod — the shoe's toe swung out with the foot. Turnout pushes the toe
+    // laterally (+X here), so this point is only covered if the shoe tracked the
+    // heading; a straight shoe would be narrow in X and miss it.
+    const onHeading = [s.point[0] + s.heading[0] * s.length * 0.2, s.point[1] + s.heading[1] * s.length * 0.2, s.groundZ + rf * 0.2];
+    expect(shoes.evaluate(onHeading[0], onHeading[1], onHeading[2])).toBeLessThan(0);
+    // The same distance along the UNTURNED front (−Y) is NOT shod — the toe moved.
+    const front = buildRig({}).sole.L.heading;
+    const offHeading = [s.point[0] + front[0] * s.length * 0.42, s.point[1] + front[1] * s.length * 0.42, s.groundZ + rf * 0.2];
+    expect(shoes.evaluate(offHeading[0], offHeading[1], offHeading[2])).toBeGreaterThan(0);
   });
 
   it("boots' shaftZ projects onto a posed (lunge) shank bone", () => {
@@ -1385,13 +1498,45 @@ describe('figure footwear — shoes & boots', () => {
     expect(pokesThrough).toBe(0);          // …and the shoe encloses every bit of it
   });
 
+  it('a lifted shoe has a flat sole, not a bubble — it does not bulge far below the foot', () => {
+    // The shared `last` ellipsoid is centred on the sole plane, so its lower half
+    // hangs ~1.5·r.foot below the foot. The flat path slices it off at groundZ; the
+    // plantarflexed path must clip it too (in its pitched plane) or that lower half
+    // shows as a round BUBBLE under lifted shoes (rock-climber / sprinter). Guard it:
+    // the lifted shoe's lowest point must sit only a sole's-thickness below the bare
+    // foot's lowest point — not the ~1·r.foot bulge the unclipped ellipsoid gave.
+    const rig = buildRig({ pose: { legR: { raiseSide: 30, raiseFwd: 25, bend: 80 }, legL: { raiseSide: 12, bend: 25 } } });
+    const feet = buildFeet(api, rig) as SdfNode;
+    const shoes = buildShoes(api, rig) as SdfNode;
+    const dip = feet.bounds().min[2] - shoes.bounds().min[2];   // how far the shoe hangs below the foot
+    expect(dip).toBeGreaterThan(0);                  // the shoe is still UNDER the foot (sole present)
+    expect(dip).toBeLessThan(rig.r.foot * 0.6);      // …but no ~1·r.foot bubble (was 0.96·r.foot)
+  });
+
   it('the base descends to contain a posed/shod sole (no poke-through)', () => {
     const rig = buildRig({ pose: { legR: { raiseFwd: 12, bend: 28 }, legL: { raiseSide: 6 } } });
     const base = buildBase(api, rig) as SdfNode;
     const boots = buildBoots(api, rig) as SdfNode;
-    // the base bottom is at or below the lowest boot sole, so the boot can't
-    // hang below the disc and punch through its underside.
-    expect(base.bounds().min[2]).toBeLessThanOrEqual(boots.bounds().min[2] + 1e-6);
+    // The base bottom must sit at or below the boot's ACTUAL lowest solid point, so
+    // the boot can't hang below the disc and punch through its underside. (Sample
+    // the boot for its true sole — its SDF bounds() are conservative/loose for the
+    // offset+smoothUnion shoe, so a bounds-vs-bounds compare would be a false fail.)
+    let bootMin = Infinity;
+    for (const side of ['L', 'R'] as const) {
+      const sf = rig.sole[side];
+      for (let dz = 0.4; dz >= -1.0; dz -= 0.05) {
+        const z = sf.groundZ + dz * rig.r.foot;
+        for (let dx = -1.2; dx <= 1.2; dx += 0.4) {
+          for (let dy = -1.6; dy <= 1.6; dy += 0.4) {
+            if (boots.evaluate(sf.point[0] + dx * rig.r.foot, sf.point[1] + dy * rig.r.foot, z) < 0) {
+              bootMin = Math.min(bootMin, z);
+            }
+          }
+        }
+      }
+    }
+    expect(bootMin).toBeLessThan(Infinity);                       // we found the sole
+    expect(base.bounds().min[2]).toBeLessThanOrEqual(bootMin + 1e-6);
   });
 });
 
@@ -1494,7 +1639,7 @@ describe('figure footwear — separate sole region', () => {
     const flush = buildBoots(api, rig, { sole: { style: 'flush' } }) as SdfNode;
     // A point just outside the flush sole edge, at sole height, is empty for flush
     // but inside the welt (its lip is proud of the upper).
-    const x = s.point[0] + r.foot * 1.08, y = s.point[1], z = s.groundZ + 0.1;
+    const x = s.point[0] + r.foot * 0.92, y = s.point[1], z = s.groundZ + 0.1;
     expect(flush.evaluate(x, y, z)).toBeGreaterThan(0);
     expect(welt.evaluate(x, y, z)).toBeLessThan(0);
   });

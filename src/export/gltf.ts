@@ -1,7 +1,9 @@
 import * as THREE from 'three';
-import { getScene, withExportColors } from '../renderer/viewport';
+import { getScene, withExportColors, meshGLToBufferGeometry } from '../renderer/viewport';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-import { downloadBlob, getExportFilename } from './download';
+import { downloadBlob, getExportFilename, getExportTitle } from './download';
+import { assertFiniteMesh, DEFAULT_COLOR_HEX } from './meshClean';
+import { gridLayout, uniquePartStem, type ExportPart } from './multiPart';
 import type { MeshData } from '../geometry/types';
 
 export interface BuiltExport {
@@ -108,4 +110,58 @@ export async function exportGLB(customName?: string, coloredMesh?: MeshData | nu
   const built = await buildGLB(customName, coloredMesh);
   downloadBlob(built.blob, built.filename, 'GLB');
   return built.filename;
+}
+
+const DEFAULT_RGB = Number('0x' + DEFAULT_COLOR_HEX.slice(1));
+
+/**
+ * Build a multi-part GLB: each Session Part becomes a separately-named node in one
+ * glTF scene, grid-arranged in XY so the parts don't overlap. glTF is a scene graph,
+ * so this — named distinct meshes — is the format's natural multi-part form (no
+ * triangle-soup merge). Painted parts (`mesh.triColors`) export as vertex colours;
+ * unpainted parts use the default fill colour. Built off-screen from the baked part
+ * meshes (NOT the live viewport), so it works for every part in the session, not just
+ * the active one.
+ */
+export async function buildGLBProject(
+  parts: ExportPart[],
+  opts: { customName?: string; gridGapMm?: number } = {},
+): Promise<BuiltExport> {
+  if (parts.length === 0) throw new Error('Cannot export: no parts selected.');
+  for (const p of parts) assertFiniteMesh(p.mesh);
+
+  const slots = gridLayout(parts.map(p => p.mesh), opts.gridGapMm);
+  const scene = new THREE.Scene();
+  scene.name = getExportTitle();
+  const used = new Set<string>();
+  parts.forEach((p, i) => {
+    const geometry = meshGLToBufferGeometry(p.mesh);
+    const material = p.mesh.triColors
+      ? new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.65, metalness: 0 })
+      : new THREE.MeshStandardMaterial({ color: DEFAULT_RGB, roughness: 0.65, metalness: 0 });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = uniquePartStem(p.name, used, `part_${i + 1}`);
+    const { dx, dy } = slots[i];
+    mesh.position.set(dx, dy, 0);
+    scene.add(mesh);
+  });
+
+  try {
+    const exporter = new GLTFExporter();
+    const result = await exporter.parseAsync(scene, { binary: true });
+    const mimeType = 'model/gltf-binary';
+    const blob = new Blob([result as ArrayBuffer], { type: mimeType });
+    return { blob, filename: getExportFilename('glb', opts.customName), mimeType };
+  } finally {
+    // Dispose the temporary scene's GPU-less geometries/materials (no WebGL upload
+    // happened, but BufferGeometry/Material still hold references — match the
+    // app-wide resource-lifecycle rule).
+    scene.traverse(obj => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry.dispose();
+        const mat = obj.material;
+        (Array.isArray(mat) ? mat : [mat]).forEach(m => m.dispose());
+      }
+    });
+  }
 }

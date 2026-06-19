@@ -57,6 +57,26 @@ const r = await partwright.export3MFPartsData(undefined, 'assembly', { bambu: tr
 // -> { filename, mimeType, base64: "...", sizeBytes, parts: 3 }
 ```
 
+## Multi-part OBJ / STL / GLB
+
+The same part-bake pipeline backs OBJ, STL, and GLB. Each takes `(partIds?, filename?)` (default: every part) and has a `*Data` twin that returns `{ filename, mimeType, base64, sizeBytes, parts }` instead of downloading. They're the console/AI twins of the **OBJ / STL / GLB** menu items in a multi-part session (the single button auto-routes to the part picker when the session has more than one part). Each format bundles parts the way its file format does best:
+
+- **`exportOBJParts` / `exportOBJPartsData`** — one `.obj` with a named `o <part>` object per part, **grid-arranged** so they don't overlap. Painted parts add a shared `.mtl` (OBJ + MTL bundled in a `.zip`); with no paint anywhere it's a plain `.obj`.
+- **`exportSTLParts` / `exportSTLPartsData`** — a `.zip` with **one `.stl` per part**. STL is a flat triangle soup with no object names or colour, so separate files are the only faithful way to keep parts distinct.
+- **`exportGLBParts` / `exportGLBPartsData`** — one `.glb` scene with a named node per part, **grid-arranged**. Painted parts export as vertex colours. glTF is a scene graph, so distinct named meshes is its natural multi-part form.
+
+```js
+// Every part as named objects in one OBJ:
+await partwright.exportOBJParts()
+// -> { ok: true, filename: "...zip", parts: 3 }
+
+// Specific parts, bytes returned (no download):
+const r = await partwright.exportGLBPartsData(["part_abc", "part_def"], "assembly")
+// -> { filename, mimeType, base64: "...", sizeBytes, parts: 2 }
+```
+
+Like 3MF, each part's **latest version** is re-baked with its colours (code-declared `api.label`/`api.paint.*` and saved manual paint) before bundling.
+
 ## Import — supply the payload directly
 ```js
 // Import a parsed .partwright.json (object or string) as a new active session

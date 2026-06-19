@@ -75,9 +75,9 @@ import { createDiffView, refreshDiff } from './ui/diffView';
 import { createNotesView, refreshNotes } from './ui/notes';
 import { initDataExplorer, refreshDataExplorer } from './ui/dataExplorer';
 import { initSessionList, showSessionList } from './ui/sessionList';
-import { exportGLB, buildGLB } from './export/gltf';
-import { exportSTL, buildSTL } from './export/stl';
-import { exportOBJ, buildOBJ } from './export/obj';
+import { exportGLB, buildGLB, buildGLBProject } from './export/gltf';
+import { exportSTL, buildSTL, buildSTLProject } from './export/stl';
+import { exportOBJ, buildOBJ, buildOBJProject } from './export/obj';
 import { export3MF, build3MF } from './export/threemf';
 import { build3MFProject } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
@@ -436,6 +436,22 @@ let paintBaseMesh: MeshData | null = null;
  *  stroke) and refine incrementally from the current mesh, instead of replaying
  *  every stroke from the base (which is O(strokes²) and made painting lag). */
 let lastStrokeList: RegionDescriptor[] = [];
+/** The refine-driving (subdivision) descriptors the current working mesh was
+ *  built against — every `brushStroke` plus any smooth slab/box/cylinder. When
+ *  a paint change leaves this set unchanged (a non-smooth stroke, a colour
+ *  edit, removing a non-refine region), the mesh topology is already correct,
+ *  so the reconcile re-resolves regions against it and recolours instead of
+ *  replaying the whole subdivision in the worker. Without this, one smooth
+ *  stroke made *every* later paint action trigger a full "Rebuilding refined
+ *  mesh…" pass — turning edge smoothing off didn't help, because the existing
+ *  smooth stroke still forced the rebuild. Kept in sync wherever the working
+ *  mesh is (re)built or reverted via `markMeshRefineState()`. */
+let meshRefineList: RegionDescriptor[] = [];
+/** The exact `currentMeshData` object `meshRefineList` was snapshotted for. The
+ *  fast path only fires while this still holds, so any external mesh swap (a
+ *  surface-modifier/scale bake, a model re-run, a version load) forces a real
+ *  rebuild instead of recolouring stale triangle indices. */
+let meshRefineForMesh: MeshData | null = null;
 /** Set while rehydration adds regions in bulk, so each addRegion doesn't kick
  *  off a reconcile mid-rebuild. */
 let suspendReconcile = false;
@@ -522,6 +538,11 @@ const partMeshCache = new Map<string, PartMeshCacheEntry>();
 let geometryDataEl: HTMLElement;
 // Viewport overlay pill — shows printability issues after each successful run.
 let printabilityIndicatorEl: HTMLElement | null = null;
+let fastPreviewPillEl: HTMLElement | null = null;
+/** True while the viewport shows the coarse fast-preview pass of an SDF model
+ *  and the full-quality render is still in flight. Used to gate mesh-altering
+ *  actions (paint, surface modifiers) so they don't bind to the throwaway mesh. */
+let _showingFastPreview = false;
 // Viewport overlay pill — shown when a run's `api.surface.*` texture chain is
 // NOT in the memo cache (a "sticky" miss): we render the base mesh and let the
 // user press this to recompute the (potentially slow) texture on demand. See
@@ -1152,9 +1173,24 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   clearRegions();
 
   const report: { carried: string[]; dropped: string[] } = { carried: [], dropped: [] };
-  if (!geometryData || !currentMeshData) return report;
+  if (!geometryData || !currentMeshData) {
+    // Nothing to colour against yet; still finalize the model underlay so a
+    // bare-mesh restore doesn't strand code-declared colours unrendered.
+    renderModelColorUnderlay();
+    return report;
+  }
   const regions = geometryData.colorRegions as SerializedColorRegion[] | undefined;
-  if (!regions || regions.length === 0) return report;
+  if (!regions || regions.length === 0) {
+    // No user paint to restore — but the model-declared colour underlay
+    // (api.label / api.paint) still needs to be drawn. This function is the
+    // single authority that finalizes a restored part's colours for EVERY load
+    // path (cache hit, cache miss, loadVersion, navigateVersion), so neither
+    // branch needs its own colour stamp — the class of "a restore path forgot
+    // to apply colours" bug can't recur. A model-only part never subdivides, so
+    // currentMeshData and the model regions' triangle indices stay aligned.
+    renderModelColorUnderlay();
+    return report;
+  }
 
   // Partition: smooth imagePaint regions with a stored imageDataUrl are replayed
   // sequentially below (they drive their own subdivision pass each). All other
@@ -1234,16 +1270,31 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   }
 
   lastStrokeList = getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
+  markMeshRefineState();
 
   syncLockState();
 
-  // Re-render with colors if regions were rehydrated
-  if (hasColorRegions() && currentMeshData) {
+  // Re-render with colors if any region layer is present (user paint and/or the
+  // model-declared underlay — applyTriColorsIfVisible stamps both).
+  if ((hasColorRegions() || hasModelColorRegions()) && currentMeshData) {
     const colored = applyTriColorsIfVisible(currentMeshData);
     updateMesh(colored, { skipAutoFrame: true });
   }
 
   return report;
+}
+
+/** Draw `currentMeshData` with the model-declared colour underlay (api.label /
+ *  api.paint) applied — or the plain mesh when the model declares no colours.
+ *  The shared "show model colours" step for restore paths: a no-op for an
+ *  uncoloured model (applyTriColorsIfVisible returns the mesh unchanged when no
+ *  regions exist), so it's always safe to call. User paint is layered on top by
+ *  rehydrateColorRegions' main path. */
+function renderModelColorUnderlay(): void {
+  if (!currentMeshData) return;
+  if (hasModelColorRegions()) {
+    updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+  }
 }
 
 function paintedColorRefresh(): void {
@@ -1282,6 +1333,7 @@ function rebuildPaintedGeometry(): void {
   reresolveModelRegions(mesh, adjacency, parentToChildren);
   paintedColorRefresh();
   syncLockState();
+  markMeshRefineState();
 }
 
 /** Re-resolve the code-declared color underlay (`api.label({color})` /
@@ -1341,10 +1393,63 @@ function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brush
   reresolveModelRegions(mesh, adjacency, parentToChildren);
   paintedColorRefresh();
   syncLockState();
+  markMeshRefineState();
 }
 
 function strokeDescriptors(): RegionDescriptor[] {
   return getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
+}
+
+/** Subdivision-driving descriptors in region order (see `descriptorRefines`) —
+ *  the snapshot the cheap-reconcile fast path compares against `meshRefineList`. */
+function currentRefineList(): RegionDescriptor[] {
+  return getRegions().filter(r => descriptorRefines(r.descriptor)).map(r => r.descriptor);
+}
+
+/** True when `a` holds exactly the entries of `b` by reference (same refine
+ *  descriptors, same order) — i.e. nothing that affects subdivision changed. */
+function sameRefineList(a: RegionDescriptor[], b: RegionDescriptor[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** Snapshot the refine set the current working mesh now reflects. Call after
+ *  any path that (re)builds or reverts the working mesh. */
+function markMeshRefineState(): void {
+  meshRefineList = currentRefineList();
+  meshRefineForMesh = currentMeshData;
+}
+
+/** True when the working mesh still matches its refine snapshot — same mesh
+ *  object and the same refine-driving descriptors — so a change can be
+ *  reconciled by recolouring instead of re-subdividing. */
+function refineSetUnchanged(): boolean {
+  return currentMeshData === meshRefineForMesh && sameRefineList(currentRefineList(), meshRefineList);
+}
+
+/** Cheap reconcile for a change that doesn't alter the refine set: the working
+ *  mesh's topology is already correct, so resolve any not-yet-resolved regions
+ *  against it and recolour — no worker subdivision, no progress modal. This is
+ *  what keeps painting instant once smooth strokes exist (and makes turning
+ *  edge smoothing off actually speed subsequent strokes up). */
+function reresolveRegionsAgainstCurrentMesh(): void {
+  const mesh = currentMeshData;
+  if (!mesh) return;
+  let adjacency: AdjacencyGraph | null = null;
+  for (const region of getRegions()) {
+    const d = region.descriptor;
+    // Explicit/byLabel sets and already-resolved regions are valid in the
+    // current mesh's index space (topology unchanged) — only a freshly-added
+    // geometric/flood region with no triangles yet needs resolving.
+    if (d.kind === 'triangles' || d.kind === 'byLabel' || region.triangles.size > 0) continue;
+    if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) adjacency = buildAdjacency(mesh);
+    const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null, region.id);
+    setRegionTriangles(region.id, triangles, perTriColors);
+  }
+  reresolveModelRegions(mesh, adjacency, null);
+  paintedColorRefresh();
+  syncLockState();
 }
 
 /** Synchronous mirror of `reconcilePaintedGeometryAsync` — the agent paint
@@ -1362,10 +1467,18 @@ function reconcilePaintedGeometrySync(): void {
   const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
     lastStrokeList = [];
+    markMeshRefineState();
     // Mirror the async tick (see reconcilePaintedGeometryAsyncTick) — color
     // mutations from the Edit colors panel must refresh the mesh even when
     // the Paint UI is closed.
     paintedColorRefresh();
+    return;
+  }
+  // Refine set unchanged — re-resolve against the current mesh, skip the heavy
+  // rebuild (mirrors the async tick's fast path).
+  if (refineSetUnchanged()) {
+    reresolveRegionsAgainstCurrentMesh();
+    lastStrokeList = strokesNow;
     return;
   }
   if (strokesNow.length === lastStrokeList.length + 1 && prefixRefEqual(strokesNow, lastStrokeList)) {
@@ -1463,6 +1576,7 @@ async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
   const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
     lastStrokeList = [];
+    markMeshRefineState();
     // Re-bake per-triangle colours regardless of whether the Paint UI is
     // open — the Relief Studio's Edit colors panel also mutates regions
     // (updateRegionColor / removeRegion) and the user expects the model to
@@ -1473,9 +1587,29 @@ async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
     return;
   }
 
+  // Refine set unchanged → the working mesh's topology already reflects every
+  // subdivision-driving descriptor. A change that doesn't touch that set (a
+  // non-smooth stroke, a colour edit, removing a non-refine region) only needs
+  // regions re-resolved against the current mesh + a recolour — NOT a full
+  // worker re-subdivision (and no progress modal). This is what keeps painting
+  // instant once a smooth stroke exists, so turning edge smoothing off actually
+  // speeds the next strokes up instead of leaving every one to rebuild.
+  if (refineSetUnchanged()) {
+    reresolveRegionsAgainstCurrentMesh();
+    lastStrokeList = strokesNow;
+    return;
+  }
+
   // Pure append: one new stroke at the end, prior strokes unchanged.
   if (strokesNow.length === lastStrokeList.length + 1 && prefixRefEqual(strokesNow, lastStrokeList)) {
     const newDesc = strokesNow[strokesNow.length - 1] as Extract<RegionDescriptor, { kind: 'brushStroke' }>;
+    // Track this in-flight stroke's region so a user Cancel (or the modal's
+    // "turn off smoothing" action) drops exactly it. The agent paint path sets
+    // this itself via paintBrushStrokeSync; the UI brush path didn't, so a
+    // cancelled UI stroke used to leave a dead, empty brushStroke region that
+    // still forced re-subdivision on every later paint.
+    const newRegion = getRegions().find(r => r.descriptor === newDesc);
+    if (newRegion) pendingStrokeRegionId = newRegion.id;
     try {
       await appendStrokeRefineAsync(newDesc);
       // The stroke resolved successfully, so it's no longer a cancel orphan.
@@ -1516,6 +1650,31 @@ function isAbortError(err: unknown): boolean {
     || (err instanceof Error && err.name === 'AbortError');
 }
 
+/** The "did you know you can speed this up" extras for the paint-refine
+ *  progress modal: a tip line plus a one-click "Stop & turn off smoothing"
+ *  button. Only offered when brush edge smoothing is currently on — that
+ *  subdivision is the usual reason a stroke takes multiple seconds. The button
+ *  doubles as Cancel (it aborts the in-flight job) AND turns smoothing off so
+ *  the next stroke paints instantly. Returns `{}` when smoothing is already off
+ *  (e.g. a spray stroke is what's refining) so we never offer a no-op. */
+function paintRefineSmoothingExtras(abort: AbortController): {
+  hint?: string;
+  secondaryAction?: { label: string; onClick: () => void };
+} {
+  if (!isPaintBrushSmooth()) return {};
+  return {
+    hint: 'Edge smoothing refines the mesh under each stroke — turn it off for faster painting.',
+    secondaryAction: {
+      label: 'Stop & turn off smoothing',
+      onClick: () => {
+        abort.abort();
+        setPaintBrushSmooth(false);
+        showToast('Edge smoothing turned off — painting will be faster', { variant: 'neutral' });
+      },
+    },
+  };
+}
+
 /** Worker-backed incremental append. Mirrors the sync `appendStrokeRefine`
  *  but offloads `buildStrokeMesh` to a dedicated thread, so a heavy stroke
  *  doesn't freeze the viewport. The Cancel button on the progress badge
@@ -1538,6 +1697,7 @@ async function appendStrokeRefineAsync(
     // variable pass count — no natural fraction to report. The animated
     // indeterminate stripe still telegraphs "something's happening."
     indeterminate: true,
+    ...paintRefineSmoothingExtras(abort),
   });
   paintProgressId = progressId;
 
@@ -1585,6 +1745,7 @@ async function appendStrokeRefineAsync(
     reresolveModelRegions(mesh, adjacency, parentToChildren);
     paintedColorRefresh();
     syncLockState();
+    markMeshRefineState();
   } finally {
     endProgress(progressId);
     if (paintProgressId === progressId) paintProgressId = null;
@@ -1615,6 +1776,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
     message: 'Rebuilding refined mesh…',
     onCancel: () => abort.abort(),
     indeterminate: true,
+    ...paintRefineSmoothingExtras(abort),
   });
   paintProgressId = progressId;
 
@@ -1647,6 +1809,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
     reresolveModelRegions(mesh, adjacency, parentToChildren);
     paintedColorRefresh();
     syncLockState();
+    markMeshRefineState();
   } finally {
     endProgress(progressId);
     if (paintProgressId === progressId) paintProgressId = null;
@@ -1696,6 +1859,10 @@ function handlePaintCancel(): void {
     }
   }
   lastStrokeList = strokeDescriptors();
+  // The orphan stroke was dropped and the mesh reverted to its pre-stroke
+  // state, so the refine set the working mesh reflects has shrunk — resnapshot
+  // it (otherwise the next non-refine change would needlessly full-rebuild).
+  markMeshRefineState();
   paintedColorRefresh();
   syncLockState();
   showToast('Painting cancelled.', { variant: 'neutral' });
@@ -3368,7 +3535,14 @@ async function main() {
     const s = getState();
     if (!s.session || !s.currentPart) return;
     const code = getValue();
-    if (isStarterCode(code)) return;
+    // A freshly-created part the user never touched still holds starter code;
+    // don't pollute its history with a version for it. BUT interactive paint
+    // applied on top of the starter geometry is real work — bailing here would
+    // silently drop it on a part switch (the painted part returns completely
+    // uncolored). Let saveVersion run when paint exists; it persists the
+    // regions via enrichGeometryDataWithColors and rehydrateColorRegions
+    // restores them when the part is reopened.
+    if (isStarterCode(code) && !hasColorRegions()) return;
     // Previously bailed here when code was unchanged, silently discarding
     // unsaved paint, annotations, param overrides, and companion-file edits.
     // saveVersion already deduplicates on all five axes (code + annotations +
@@ -4041,6 +4215,15 @@ async function main() {
       if (used > capacity) colorOverBudget = { used, capacity };
     }
     const colorDropped = format === 'STL' && (hasColorRegions() || hasModelColorRegions());
+    // Fold the design-for-print analysis (bed fit, overhangs, thin walls, small
+    // features, stability) into the confirm modal so the user reads it there
+    // rather than catching a fleeting toast. The watertight `manifold` check is
+    // dropped — it's already covered by the isManifold block above — and only
+    // blocker/warning levels are surfaced.
+    const report = exportPrintabilityReport();
+    const printabilityChecks = report
+      ? report.checks.filter(c => (c.level === 'fail' || c.level === 'warn') && c.id !== 'manifold')
+      : [];
     return {
       unitless: _getUnits() === 'unitless',
       dimensions,
@@ -4050,6 +4233,7 @@ async function main() {
       colorOverBudget,
       colorDropped,
       surfaceStale: pendingSurface !== null,
+      printabilityChecks,
     };
   }
 
@@ -4101,11 +4285,12 @@ async function main() {
     }
   };
 
-  // Run a quick printability check before each export so the user gets a
-  // heads-up about blockers (bed fit, watertight, …) and warnings (overhangs,
-  // thin walls). Non-blocking — the export still proceeds.
-  function warnIfNotPrintable(format: string): void {
-    if (!currentMeshData) return;
+  // Run a design-for-print analysis (bed fit, watertight, overhangs, thin walls,
+  // stability) over the live mesh so the export-confirm modal can surface the
+  // findings. Returns null when there's no mesh to analyze. The modal — not a
+  // toast — is where these now reach the user (see `exportWarningInfo`).
+  function exportPrintabilityReport(): PrintabilityReport | null {
+    if (!currentMeshData) return null;
     const settings = loadPrinterSettings();
     let isManifold = false;
     let renderOnly = false;
@@ -4114,29 +4299,21 @@ async function main() {
       isManifold = !!geo.isManifold;
       renderOnly = geo.manifoldStatus === 'render-only (not manifold)';
     } catch { /* default false */ }
-    const report: PrintabilityReport = analyzePrintability(currentMeshData, {
+    return analyzePrintability(currentMeshData, {
       bed: settings.bed,
       nozzleWidth: settings.nozzleWidth,
       overhangAngleDeg: settings.overhangAngleDeg,
       isManifold,
       renderOnly,
     });
-    const fails = report.checks.filter(c => c.level === 'fail');
-    const warns = report.checks.filter(c => c.level === 'warn');
-    if (fails.length === 0 && warns.length === 0) return;
-    const parts = [
-      fails.length > 0 ? `${fails.length} blocker${fails.length === 1 ? '' : 's'}` : null,
-      warns.length > 0 ? `${warns.length} warning${warns.length === 1 ? '' : 's'}` : null,
-    ].filter(Boolean).join(', ');
-    const first = (fails[0] ?? warns[0]).text;
-    showToast(`${format} export: printability check found ${parts}. ${first}`, { variant: 'warn', source: 'export' });
   }
 
   const actionExportGLB = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
-    warnIfNotPrintable('GLB');
+    // Multi-part session → pick parts and bundle them as named nodes in one scene.
+    if (getState().parts.length > 1) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob); return; }
     try {
       assertFiniteMesh(currentMeshData);
       notifyMultiPartExport();
@@ -4150,7 +4327,8 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
-    warnIfNotPrintable('STL');
+    // Multi-part session → pick parts and bundle a .stl per part in one .zip.
+    if (getState().parts.length > 1) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob); return; }
     notifyMultiPartExport();
     try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
@@ -4159,7 +4337,8 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
-    warnIfNotPrintable('OBJ');
+    // Multi-part session → pick parts and emit named objects in one .obj.
+    if (getState().parts.length > 1) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob); return; }
     notifyMultiPartExport();
     try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
@@ -4176,7 +4355,13 @@ async function main() {
       const v = await getLatestVersion(p.id);
       choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null });
     }
-    const selected = await showExportPartsModal(choices, activeId, bambu);
+    const selected = await showExportPartsModal(choices, {
+      activePartId: activeId,
+      title: bambu ? 'Export parts to 3MF (Bambu/Orca)' : 'Export parts to 3MF',
+      description: bambu
+        ? 'Choose which parts to include. Each selected part is placed on its own build plate, and painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
+        : 'Choose which parts to include. Each selected part is added as a separate object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.',
+    });
     if (!selected || selected.length === 0) return;
 
     const byId = new Map(parts.map(p => [p.id, p]));
@@ -4205,6 +4390,130 @@ async function main() {
       endProgress(job);
     }
   }
+
+  /** Format-agnostic multi-part export flow for OBJ / STL / GLB: pick parts (with
+   *  previews), bake each selected part's coloured mesh off-editor, hand the baked
+   *  set to `build`, and download the result. Mirrors {@link export3MFMultiPartFlow}
+   *  but for the scene-graph / soup formats (3MF keeps its own bed-aware flow). */
+  async function exportMultiPartFlow(
+    formatTag: string,
+    description: string,
+    build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+  ): Promise<void> {
+    const parts = getState().parts;
+    const activeId = getState().currentPart?.id ?? null;
+    const choices: ExportPartChoice[] = [];
+    for (const p of parts) {
+      const v = await getLatestVersion(p.id);
+      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null });
+    }
+    const selected = await showExportPartsModal(choices, {
+      activePartId: activeId,
+      title: `Export parts to ${formatTag}`,
+      description,
+    });
+    if (!selected || selected.length === 0) return;
+
+    const byId = new Map(parts.map(p => [p.id, p]));
+    const job = startProgress({ title: `Preparing ${formatTag}`, indeterminate: false, message: 'Baking parts…' });
+    try {
+      const baked: { name: string; mesh: MeshData }[] = [];
+      for (let i = 0; i < selected.length; i++) {
+        const part = byId.get(selected[i]);
+        if (!part) continue;
+        updateProgress(job, i / selected.length, `Baking "${part.name}" (${i + 1}/${selected.length})…`);
+        const result = await bakeColoredMeshForPart(part.id, part.name);
+        if (result) baked.push(result);
+      }
+      updateProgress(job, 1, `Writing ${formatTag}…`);
+      if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+
+      const built = await build(baked);
+      downloadBlob(built.blob, built.filename, formatTag);
+      const skipped = selected.length - baked.length;
+      const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
+      showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : `${formatTag} export failed`, { variant: 'warn' });
+    } finally {
+      endProgress(job);
+    }
+  }
+
+  /** Console/AI core for the multi-part OBJ/STL/GLB exports: validate the part ids
+   *  (default: all), bake each part's coloured mesh off-editor, and return the baked
+   *  set. Mirrors the validation of {@link build3MFPartsExport} without the 3MF
+   *  builder, so the per-format API twins just supply the builder. */
+  async function bakePartsForExport(partIds?: string[]): Promise<{ baked: { name: string; mesh: MeshData }[] } | { error: string }> {
+    const allParts = getState().parts;
+    if (allParts.length === 0) return { error: 'No parts in this session.' };
+    let ids = partIds;
+    if (ids !== undefined) {
+      if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
+        return { error: 'partIds must be an array of part-id strings.' };
+      }
+    } else {
+      ids = allParts.map(p => p.id);
+    }
+    const byId = new Map(allParts.map(p => [p.id, p]));
+    const baked: { name: string; mesh: MeshData }[] = [];
+    for (const id of ids) {
+      const part = byId.get(id);
+      if (!part) return { error: `Unknown part id "${id}".` };
+      const result = await bakeColoredMeshForPart(part.id, part.name);
+      if (result) baked.push(result);
+    }
+    if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
+    return { baked };
+  }
+
+  /** Console/AI twin of a multi-part OBJ/STL/GLB export — bakes the requested parts
+   *  (default: all) and DOWNLOADS the bundled file. */
+  async function exportPartsApi(
+    formatTag: string,
+    build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+    partIds?: string[],
+    filename?: string,
+  ): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
+    assertString(filename, `export${formatTag}Parts(partIds, filename)`, { optional: true });
+    const r = await bakePartsForExport(partIds);
+    if ('error' in r) return r;
+    let built: BuiltExport;
+    try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    downloadBlob(built.blob, built.filename, formatTag);
+    return { ok: true as const, filename: built.filename, parts: r.baked.length };
+  }
+
+  /** Like {@link exportPartsApi} but RETURNS the bytes (base64) instead of
+   *  downloading — the agent/test-friendly twin. */
+  async function exportPartsDataApi(
+    formatTag: string,
+    build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+    partIds?: string[],
+    filename?: string,
+  ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
+    assertString(filename, `export${formatTag}PartsData(partIds, filename)`, { optional: true });
+    const r = await bakePartsForExport(partIds);
+    if ('error' in r) return r;
+    let built: BuiltExport;
+    try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    return {
+      filename: built.filename,
+      mimeType: built.mimeType,
+      sizeBytes: built.blob.size,
+      base64: await blobToBase64(built.blob),
+      parts: r.baked.length,
+    };
+  }
+
+  // Per-format builder bound to a custom filename, shared by the menu flow + API.
+  const buildOBJPartsBlob = (baked: { name: string; mesh: MeshData }[], filename?: string) => buildOBJProject(baked, filename);
+  const buildSTLPartsBlob = (baked: { name: string; mesh: MeshData }[], filename?: string) => buildSTLProject(baked, filename);
+  const buildGLBPartsBlob = (baked: { name: string; mesh: MeshData }[], filename?: string) => buildGLBProject(baked, { customName: filename });
+
+  const OBJ_PARTS_DESC = 'Choose which parts to include. Each part becomes a named object in one .obj file, arranged in a grid so they don’t overlap. Painted colours export as materials (.mtl, bundled in a .zip).';
+  const STL_PARTS_DESC = 'Choose which parts to include. Each part is saved as its own .stl file, bundled in a .zip. STL has no colour or part names, so separate files keep the parts distinct.';
+  const GLB_PARTS_DESC = 'Choose which parts to include. Each part becomes a named node in one .glb scene, arranged in a grid. Painted colours export as vertex colours.';
 
   /** Shared core for the multi-part 3MF exports: validate the part ids, bake each
    *  selected part's coloured mesh off-editor, and build the 3MF. Returns the
@@ -4272,7 +4581,6 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
-    warnIfNotPrintable('3MF');
     // Multi-part session → offer the part picker and emit a GENERIC multi-object
     // 3MF (grid-arranged, no Bambu metadata). Single-part keeps the original
     // single-object export.
@@ -4288,7 +4596,6 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
-    warnIfNotPrintable('3MF');
     await export3MFMultiPartFlow(true);
   };
   // The integer VoxelGrid behind a voxel session. The engine meshes in the
@@ -4587,7 +4894,13 @@ async function main() {
       await loadVersionIntoEditor(version, opts, cached);
     } else {
       if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
-      startNewPartInEditor();
+      // Await the starter render (seedStarter runs the code + applies its label
+      // color) rather than the fire-and-forget startNewPartInEditor(). A part
+      // switch must not "complete" until the new part's geometry is on screen —
+      // otherwise a caller that captures a thumbnail right after (the Save-all
+      // loop) reads the previous part's stale mesh, so freshly-created parts all
+      // get one wrong, colorless thumbnail.
+      await seedStarter(getActiveLanguage());
     }
   }
 
@@ -4670,6 +4983,21 @@ async function main() {
   printabilityIndicatorEl.title = 'This model has structural issues that may prevent a clean 3D print. Open the ⚠ Diagnostic Log in the toolbar for details.';
   printabilityIndicatorEl.style.display = 'none';
   viewportPane.appendChild(printabilityIndicatorEl);
+
+  // Fast-preview pill — shown while the viewport is displaying the rough coarse
+  // pass of a slow SDF model (figures) and the full-quality render is still
+  // running in the Worker. A status indicator, not a toast: it clears the moment
+  // the full mesh lands (or the run errors/cancels). See runCodeSync's preview
+  // callback. Title explains the swap so the rough→sharp transition isn't a
+  // surprise.
+  fastPreviewPillEl = document.createElement('span');
+  fastPreviewPillEl.className = 'text-xs text-sky-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-sky-700/60 cursor-help whitespace-nowrap';
+  fastPreviewPillEl.textContent = '⚡ Fast preview';
+  fastPreviewPillEl.title = 'Showing a quick rough version of this model. The full-detail render is still computing and will replace it automatically. Wait for it before painting or editing the mesh.';
+  fastPreviewPillEl.style.display = 'none';
+  // Live inside the status row (next to the "Rendering… Xs" text + Cancel button)
+  // rather than as its own absolute overlay, so it never stacks on top of them.
+  (cancelInlineBtn.parentElement ?? viewportPane).appendChild(fastPreviewPillEl);
 
   // Surface "Re-apply" pill — a persistent status indicator (not a transient
   // toast) shown when the model declares `api.surface.*` textures whose result
@@ -5237,6 +5565,11 @@ async function main() {
       setPaintLabels(currentLabelMap);
       setModelColorRegions(cachedEntry.modelColorDecls);
       syncParamsPanel(cachedEntry.paramsSchema);
+      // Show the geometry; colours (model underlay + any user paint) are applied
+      // by the single rehydrateColorRegions pass below, which both load branches
+      // share — so this branch no longer hand-rolls its own colour stamp (the
+      // omission that shipped model-coloured parts restoring uncoloured). The
+      // paint mesh stays the uncoloured base (it backs hit-testing).
       updateMesh(cachedEntry.meshData);
       updatePaintMesh(cachedEntry.meshData);
       geometryDataEl.textContent = version.geometryData
@@ -7857,6 +8190,14 @@ async function main() {
   }
 
   async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean, opts?: { warnOnBake?: boolean }): Promise<Record<string, unknown>> {
+    // Refuse to bake while a coarse fast-preview is on screen: the modifier would
+    // bind to the throwaway low-res mesh, which the full-quality render is about
+    // to replace. Tell the user to let it finish (it auto-completes in seconds).
+    if (_showingFastPreview) {
+      const msg = 'Full-quality render still in progress — wait for it to finish before altering the mesh.';
+      showToast(msg, { variant: 'warn' });
+      return { error: msg };
+    }
     // Capture the language *before* the commit switches it, so we can warn when a
     // SCAD/BREP session is silently baked to a mesh. The transform path
     // (commitTransform) emits its own, more specific warning and passes
@@ -9146,6 +9487,46 @@ async function main() {
      *  export3MFParts (default true). */
     export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
       return export3MFPartsDataApi(partIds, filename, opts);
+    },
+
+    /** Bundle several Session Parts into ONE OBJ — each part a named `o <part>`
+     *  object in one .obj, grid-arranged so they don't overlap; painted parts add a
+     *  shared .mtl (OBJ + MTL in a .zip). The UI equivalent is the "OBJ" export in a
+     *  multi-part session. Pass an array of part ids (default: every part); each
+     *  part's latest version is baked WITH its colours. `{ ok, filename, parts }` or
+     *  `{ error }`. */
+    exportOBJParts(partIds?: string[], filename?: string) {
+      return exportPartsApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
+    },
+    /** Bytes-returning twin of {@link exportOBJParts} — RETURNS
+     *  `{ filename, mimeType, base64, sizeBytes, parts }` (or `{ error }`). */
+    exportOBJPartsData(partIds?: string[], filename?: string) {
+      return exportPartsDataApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
+    },
+
+    /** Bundle several Session Parts into ONE STL download — a `.zip` with one `.stl`
+     *  per part (STL has no part names or colour, so separate files keep them
+     *  distinct). The UI equivalent is the "STL" export in a multi-part session. Pass
+     *  an array of part ids (default: every part). `{ ok, filename, parts }` or
+     *  `{ error }`. */
+    exportSTLParts(partIds?: string[], filename?: string) {
+      return exportPartsApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
+    },
+    /** Bytes-returning twin of {@link exportSTLParts}. */
+    exportSTLPartsData(partIds?: string[], filename?: string) {
+      return exportPartsDataApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
+    },
+
+    /** Bundle several Session Parts into ONE GLB — each part a named node in one glTF
+     *  scene, grid-arranged; painted parts export as vertex colours. The UI
+     *  equivalent is the "GLB" export in a multi-part session. Pass an array of part
+     *  ids (default: every part). `{ ok, filename, parts }` or `{ error }`. */
+    exportGLBParts(partIds?: string[], filename?: string) {
+      return exportPartsApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
+    },
+    /** Bytes-returning twin of {@link exportGLBParts}. */
+    exportGLBPartsData(partIds?: string[], filename?: string) {
+      return exportPartsDataApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
     },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
@@ -14236,6 +14617,12 @@ async function main() {
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate, false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
         'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'exportOBJParts':  { signature: 'await exportOBJParts(partIds?, filename?) -- Bundle parts into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'exportOBJPartsData': { signature: 'await exportOBJPartsData(partIds?, filename?) -- Same as exportOBJParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'exportSTLParts':  { signature: 'await exportSTLParts(partIds?, filename?) -- Bundle parts into a .zip of one .stl per part -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'exportSTLPartsData': { signature: 'await exportSTLPartsData(partIds?, filename?) -- Same as exportSTLParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'exportGLBParts':  { signature: 'await exportGLBParts(partIds?, filename?) -- Bundle parts into one GLB (named nodes, grid-arranged; vertex colours) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'exportGLBPartsData': { signature: 'await exportGLBPartsData(partIds?, filename?) -- Same as exportGLBParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportVOX':       { signature: 'exportVOX() -- Download MagicaVoxel .vox (voxel sessions)', docs: '/ai/voxel.md' },
         // AI-friendly export — return bytes over the API instead of triggering a download
         'exportGLBData':   { signature: 'await exportGLBData() -- Return GLB as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
@@ -15350,6 +15737,15 @@ async function main() {
     cancelInlineBtn.classList.add('hidden');
   }
 
+  function showFastPreviewPill(): void {
+    _showingFastPreview = true;
+    if (fastPreviewPillEl) fastPreviewPillEl.style.display = '';
+  }
+  function hideFastPreviewPill(): void {
+    _showingFastPreview = false;
+    if (fastPreviewPillEl) fastPreviewPillEl.style.display = 'none';
+  }
+
   async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean; skipSurface?: boolean } = {}): Promise<boolean> {
     // Hard refusal in shared-preview mode: this is the single execution
     // chokepoint that the console API (partwright.run / runAndSave) also routes
@@ -15380,22 +15776,27 @@ async function main() {
     // on a session's first render, so a genuinely new model still auto-frames.
     const preservedCameraPose = opts.preserveCamera ? captureCameraToPreserve() : null;
 
-    // SCAD preview callback: receives the fast Phase 1 mesh and updates the
-    // viewport immediately so the user sees geometry while Phase 2 renders. Skip
-    // its auto-frame while preserving the camera, so the mid-run preview doesn't
-    // momentarily snap to the default view before the final restore lands.
-    const onScadPreview = getActiveLanguage() === 'scad'
+    // Progressive-render preview callback: receives the fast coarse-pass mesh and
+    // updates the viewport immediately so the user sees geometry while the full
+    // render finishes. Used by two engines: SCAD's two-phase compile, and the
+    // manifold-js SDF coarse pass (figures). Skip its auto-frame while preserving
+    // the camera, so the mid-run preview doesn't momentarily snap to the default
+    // view before the final restore lands. For SDF, raise the "⚡ Fast preview"
+    // pill so the user knows the rough mesh will be replaced.
+    const previewLang = getActiveLanguage();
+    const onEnginePreview = (previewLang === 'scad' || previewLang === 'manifold-js')
       ? (previewResult: MeshResult) => {
           if (myGen !== _runGeneration || !previewResult.mesh) return;
           currentMeshData = previewResult.mesh;
           updateMesh(previewResult.mesh, { skipAutoFrame: preservedCameraPose !== null });
+          if (previewLang === 'manifold-js') showFastPreviewPill();
         }
       : undefined;
 
     // Feed the Customizer's current overrides into the model's api.params(...).
     let result: Awaited<ReturnType<typeof executeCodeAsync>>;
     try {
-      result = await executeCodeAsync(src, undefined, currentParamValues, onScadPreview);
+      result = await executeCodeAsync(src, undefined, currentParamValues, onEnginePreview);
     } catch (err) {
       // Worker was terminated (cancelled by user, cancelled for a newer run,
       // timeout, or crash). Only clean up if we're still the active run —
@@ -15403,6 +15804,7 @@ async function main() {
       if (myGen !== _runGeneration) return false;
       _running = false;
       stopRunTimer();
+      hideFastPreviewPill();
       const msg = err instanceof Error ? err.message : String(err);
       const wasCancelled = /cancell?ed/i.test(msg);
       setStatus(statusBar, wasCancelled ? 'ready' : 'error', wasCancelled ? 'Cancelled' : msg);
@@ -15417,6 +15819,9 @@ async function main() {
     const elapsed = Math.round(performance.now() - t0);
     _running = false;
     stopRunTimer();
+    // The full-quality mesh is in hand — the coarse preview (if any) is about to
+    // be replaced, so drop the pill.
+    hideFastPreviewPill();
 
     // Record the engine WASM heap high-water for this run (undefined for non
     // manifold-js engines, which own separate heaps). Surfaced in the Data panel
@@ -15860,8 +16265,13 @@ function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'load
   el.title = text;
   // Keep the indicator click-transparent — `setStatus` overwrites the className
   // so the original `pointer-events-none` from layout.ts would otherwise be
-  // lost, letting it intercept clicks on the Insert button it overlaps.
-  el.className = 'text-xs font-mono max-w-[60%] truncate text-right pointer-events-none ';
+  // lost, letting it intercept clicks on what it overlaps. Restore the chip
+  // background/border too (also dropped on overwrite). The status row is an
+  // absolute, shrink-to-fit flex strip, so cap the width with a viewport-
+  // relative `max-w` (a percentage would resolve against this very element's
+  // shrink-to-fit parent and collapse "Ready" to "R…"); `truncate` still
+  // ellipsizes long error messages.
+  el.className = 'text-xs font-mono max-w-[55vw] truncate pointer-events-none bg-zinc-900/70 px-2 py-0.5 rounded border border-zinc-700 ';
   switch (state) {
     case 'ready':
       el.className += 'text-emerald-400';

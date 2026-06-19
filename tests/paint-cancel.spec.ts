@@ -215,4 +215,136 @@ test.describe('paint cancellation + waitForPaint', () => {
       expect(after.regions).toBe(1);
     }
   });
+
+  test('the refine modal offers a "turn off smoothing" tip + action that disables edge smoothing', async ({ page }) => {
+    await openEditor(page);
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      pw.__setProgressModalDelay(0);
+      // Heavy base + fine subdivision so the worker job lingers long enough for
+      // the secondary action to land before it finishes on its own.
+      await pw.run(`const { Manifold } = api; return Manifold.cube([60, 60, 60], true);`);
+      pw.setBrushSize(8);
+      pw.setBrushSmoothDivisor(512);
+    });
+
+    // Smoothing is on by default, so the tip + action should be offered.
+    expect(await page.evaluate(() =>
+      (window as unknown as { partwright: { getBrushSmooth(): { smooth: boolean } } }).partwright.getBrushSmooth().smooth
+    )).toBe(true);
+
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
+
+    await page.evaluate(() => {
+      const canvas = document.querySelector('canvas')!;
+      const r = canvas.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const fire = (t: string, x: number, y: number) =>
+        canvas.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      fire('pointermove', cx, cy);
+      fire('pointerdown', cx, cy);
+      for (let dx = 4; dx <= 40; dx += 4) fire('pointermove', cx + dx, cy);
+      fire('pointerup', cx + 40, cy);
+    });
+
+    const secondary = page.locator('[data-testid="progress-modal-secondary"]');
+    await expect(secondary).toBeVisible({ timeout: 5000 });
+    // Dispatch directly so the click fires even if the worker is about to finish.
+    await secondary.dispatchEvent('click');
+
+    await page.evaluate(() =>
+      (window as unknown as { partwright: { waitForPaint(): Promise<void> } }).partwright.waitForPaint()
+    );
+
+    // The action ends the modal and turns edge smoothing off. It also aborts
+    // the in-flight refine, which discards the triggering stroke's orphan
+    // region (handlePaintCancel) — so when the cancel lands before the worker
+    // finishes, no stroke remains. We tolerate the worker-beat-click race (the
+    // generic Cancel discard is covered deterministically in the test below and
+    // in 'clicking Cancel drops the in-flight stroke'); the new, deterministic
+    // contract here is that smoothing is now off.
+    await expect(page.locator('#progress-modal')).toBeHidden();
+    const after = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      return { smooth: pw.getBrushSmooth().smooth, regions: pw.listRegions().length };
+    });
+    expect(after.smooth).toBe(false);
+    expect(after.regions).toBeLessThanOrEqual(1);
+  });
+
+  test('with a smooth stroke present, a later non-smooth stroke does NOT re-subdivide (no modal)', async ({ page }) => {
+    // The bug behind the "turn off smoothing" button: a committed smooth stroke
+    // is a brushStroke descriptor that forced a full "Rebuilding refined mesh…"
+    // pass on every *subsequent* paint action, so turning smoothing off didn't
+    // actually make painting fast. The reconcile fast path fixes that — a change
+    // that doesn't alter the refine set recolours the existing mesh instead of
+    // re-subdividing in the worker (so no progress modal appears).
+    await openEditor(page);
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).partwright.__setProgressModalDelay(0);
+    });
+
+    // Count every time the progress modal becomes visible, from now on.
+    await page.evaluate(() => {
+      const w = window as unknown as { __modalShows: number };
+      w.__modalShows = 0;
+      const seen = () => {
+        const el = document.querySelector('#progress-modal') as HTMLElement | null;
+        if (el && getComputedStyle(el).display !== 'none') w.__modalShows++;
+      };
+      const obs = new MutationObserver(seen);
+      obs.observe(document.body, { attributes: true, subtree: true, attributeFilter: ['style'] });
+    });
+
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
+
+    const stroke = (x0: number) => page.evaluate((x0v) => {
+      const canvas = document.querySelector('canvas')!;
+      const r = canvas.getBoundingClientRect();
+      const cx = r.left + r.width / 2 + x0v, cy = r.top + r.height / 2;
+      const fire = (t: string, x: number, y: number) =>
+        canvas.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      fire('pointermove', cx, cy);
+      fire('pointerdown', cx, cy);
+      for (let dx = 4; dx <= 24; dx += 4) fire('pointermove', cx + dx, cy);
+      fire('pointerup', cx + 24, cy);
+    }, x0);
+    const settle = () => page.evaluate(() =>
+      (window as unknown as { partwright: { waitForPaint(): Promise<void> } }).partwright.waitForPaint()
+    );
+
+    // First stroke: smoothing on → genuine subdivision → the modal shows once.
+    await stroke(-40);
+    await settle();
+    const triAfterSmooth = await page.evaluate(() =>
+      (window as unknown as { partwright: { getMesh(): { numTri: number } } }).partwright.getMesh().numTri
+    );
+
+    // Turn smoothing off and paint a second stroke elsewhere.
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).partwright.setBrushSmooth(false);
+    });
+    await stroke(20);
+    await settle();
+
+    const result = await page.evaluate(() => {
+      const w = window as unknown as { __modalShows: number; partwright: { getMesh(): { numTri: number }; listRegions(): unknown[] } };
+      return { shows: w.__modalShows, tris: w.partwright.getMesh().numTri, regions: w.partwright.listRegions().length };
+    });
+
+    // The modal appeared for the first (smooth) stroke but NOT the second.
+    expect(result.shows).toBe(1);
+    // Both strokes landed as regions.
+    expect(result.regions).toBe(2);
+    // The non-smooth stroke didn't change the mesh topology (no re-subdivision).
+    expect(result.tris).toBe(triAfterSmooth);
+  });
 });
