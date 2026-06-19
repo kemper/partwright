@@ -554,8 +554,14 @@ function buildRig(rawOpts: unknown): Rig {
   const upperArmLen = H * 0.165;
   const foreArmLen = H * 0.150;
 
+  // The glenohumeral joint sits a touch BELOW the neck-base shoulder line. The
+  // acromion/neck-base is the top of the torso; the arm bone actually hangs from
+  // a point below it, so dropping S here lets the shoulders slope down from the
+  // neck instead of the deltoid mass riding up level with the chin.
+  const shoulderDropZ = headH * 0.12;
+
   function armChain(side: number, p: JointPose) {
-    const S: Vec3 = [side * shoulderHalfX, 0, shoulderZ];
+    const S: Vec3 = [side * shoulderHalfX, 0, shoulderZ - shoulderDropZ];
     // raiseSide: 0 = hanging down, 90 = straight out to the side, 180 = up.
     let dir: Vec3 = [side * Math.sin(p.raiseSide * DEG), 0, -Math.cos(p.raiseSide * DEG)];
     // raiseFwd: + brings the arm forward (−Y).
@@ -1237,7 +1243,7 @@ function buildArms(sdf: SdfApi, rig: Rig): Node {
     // arm, the delt bulges the shoulder laterally and the top reads as the
     // capsule cap, giving a natural slope. The offset follows the arm, so a RAISED
     // arm carries the delt up with it exactly as before.
-    const deltoid = sdf.sphere(r.upperArm * (1.0 + 0.3 * m)).translate(lerp3(S, E, 0.18));
+    const deltoid = sdf.sphere(r.upperArm * (0.9 + 0.3 * m)).translate(lerp3(S, E, 0.32));
     let out = upper.smoothUnion(fore, k).smoothUnion(deltoid, r.upperArm * 0.9);
     if (m > 0) {
       const flex = flexorDir(hinge, upDir);             // biceps (anterior) side
@@ -3899,7 +3905,7 @@ function weldBody(rig: Rig, parts: unknown, opts?: unknown): Node {
   // Halving the old 0.85·min(lowerArm,neck) keeps the coaxial seams smooth while
   // letting the armpit open into a real hollow. Override via `weld(rig, parts,
   // {k})` for a chunkier, blobbier look.
-  const k = num(o.k, Math.min(rig.r.lowerArm, rig.r.neck) * 0.45, 'weld.k', 1e-4);
+  const k = num(o.k, Math.min(rig.r.lowerArm, rig.r.neck) * 0.32, 'weld.k', 1e-4);
   let acc = parts[0] as Node;
   for (let i = 1; i < parts.length; i++) acc = acc.smoothUnion(parts[i] as Node, k);
   return acc;
