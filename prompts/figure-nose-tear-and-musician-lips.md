@@ -44,9 +44,15 @@ geometry", silhouette deltas — which still hold).
 ### Mouth — not reverted, just not opted-in
 
 The musician used `mouth: { style: 'lips', ... }` with no `lipShape`, which
-falls back to the historical flat capsule ridge (the "bump"). The sculpted
-two-lip form needs a preset, so I set `lipShape: 'natural'` — cupid's-bow upper
-+ fuller lower + parting groove.
+fell back to the historical flat capsule ridge (the "bump"). Per follow-up
+direction, fixed the **default** rather than the one figure: bare `style:'lips'`
+(no `lipShape`) now sculpts the `'natural'` two-lip shape (cupid's-bow upper +
+fuller lower + parting groove) instead of the flat capsule. Every figure asking
+for `'lips'` now gets real lips; the retired flat-ridge branch is deleted.
+`divided` survives as a validated `'natural'` alias. The musician example carries
+no mouth override — it relies on the improved default. Tests that locked the old
+flat default were updated to lock the new sculpted default + the `divided` alias
+equivalence. (The catalog re-bake, separate PR, propagates this to thumbnails.)
 
 On the "feature reverted" worry: it is NOT. `lipShape` presets, the
 smile/lips/open styles, and colored `mouthAccents` are all live in code and in

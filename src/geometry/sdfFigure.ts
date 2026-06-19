@@ -2591,36 +2591,21 @@ function buildMouthPart(sdf: SdfApi, rig: Rig, opts?: unknown): MouthPart {
     grooveCurl * bend * (t * t - 0.3) + smirk * halfW * 0.35 * t;
 
   if (style === 'lips') {
-    // A named refined SHAPE (cupid's-bow upper + fuller lower + parting groove):
-    // an explicit `lipShape`, or `divided: true` → the 'natural' two-lip shape.
-    const shapeName: LipShapeName | undefined = o.lipShape !== undefined
+    // A sculpted two-lip SHAPE (cupid's-bow upper + fuller lower + parting
+    // groove): an explicit `lipShape`, else 'natural' — now the DEFAULT. The
+    // old bare-lips fallback was a single flat capsule ridge that read as a
+    // featureless bump at print scale (the musician's "slightly extruded bump");
+    // every figure that asks for 'lips' now gets real lips. `divided` predates
+    // the sculpted default and survives as a validated 'natural' alias (it no
+    // longer changes the shape — the default already is the two-lip form).
+    void divided;
+    const shapeName: LipShapeName = o.lipShape !== undefined
       ? assertEnum(o.lipShape, LIP_SHAPE_NAMES, 'mouth.lipShape')
-      : divided ? 'natural' : undefined;
-    if (shapeName !== undefined) {
-      const shape = LIP_SHAPES[shapeName];
-      // Preset half-width unless the caller set an explicit `width`.
-      const hw = o.width !== undefined ? width * 0.5 : shape.hw * rig.r.head;
-      return { node: buildLipShape(sdf, rig, shape, fullness, hw, curveOpt ?? 0, smirk), mode: 'add' };
-    }
-    // No shape requested: the simple lip ridge (byte-identical default).
-    const lipR = rig.r.head * 0.085 * fullness;
-    const fwdPush = scale3(fwd, lipR * 0.6);
-    if (curveOpt === undefined) {
-      // Historical single straight ridge — smirk tips a corner.
-      const a = add3(add3(add3(m, fwdPush), scale3(right, halfW)), scale3(u, smirk * width * 0.25));
-      const b = add3(add3(add3(m, fwdPush), scale3(right, -halfW)), scale3(u, -smirk * width * 0.25));
-      return { node: sdf.capsule(a, b, lipR), mode: 'add' };
-    }
-    // Bowed single ridge — a 6-segment arc so the ridge follows the expression.
-    const bend = curveOpt;
-    const pt = (t: number): Vec3 => add3(add3(add3(m, fwdPush),
-      scale3(right, halfW * t)), scale3(u, arcVert(t, bend)));
-    let arc: Node | undefined;
-    for (let i = 0; i < 6; i++) {
-      const seg = sdf.capsule(pt(-1 + (2 * i) / 6), pt(-1 + (2 * (i + 1)) / 6), lipR);
-      arc = arc === undefined ? seg : arc.union(seg);
-    }
-    return { node: arc!, mode: 'add' };
+      : 'natural';
+    const shape = LIP_SHAPES[shapeName];
+    // Preset half-width unless the caller set an explicit `width`.
+    const hw = o.width !== undefined ? width * 0.5 : shape.hw * rig.r.head;
+    return { node: buildLipShape(sdf, rig, shape, fullness, hw, curveOpt ?? 0, smirk), mode: 'add' };
   }
 
   if (style === 'open') {
