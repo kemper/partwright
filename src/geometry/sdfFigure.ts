@@ -1230,8 +1230,14 @@ function buildArms(sdf: SdfApi, rig: Rig): Node {
     const upper = tapered(sdf, S, E, r.upperArm, r.lowerArm * 1.05, k);
     const fore = tapered(sdf, E, W, r.lowerArm * 1.02, r.lowerArm * 0.8, k);
     // Deltoid cap so the shoulder reads as a rounded mass, not a tube stub —
-    // grows with muscle into a capped delt.
-    const deltoid = sdf.sphere(r.upperArm * (1.15 + 0.3 * m)).translate(S);
+    // grows with muscle into a capped delt. Seated a little DOWN the arm from the
+    // joint (not centred ON it) and trimmed slightly: a sphere centred on S threw
+    // its mass ABOVE the shoulder line, so relaxed (arms-down) figures grew two
+    // high humps flanking the neck — the "bumpy shoulders" look. Riding the upper
+    // arm, the delt bulges the shoulder laterally and the top reads as the
+    // capsule cap, giving a natural slope. The offset follows the arm, so a RAISED
+    // arm carries the delt up with it exactly as before.
+    const deltoid = sdf.sphere(r.upperArm * (1.0 + 0.3 * m)).translate(lerp3(S, E, 0.18));
     let out = upper.smoothUnion(fore, k).smoothUnion(deltoid, r.upperArm * 0.9);
     if (m > 0) {
       const flex = flexorDir(hinge, upDir);             // biceps (anterior) side
@@ -3883,7 +3889,17 @@ function weldBody(rig: Rig, parts: unknown, opts?: unknown): Node {
   }
   const o = obj(opts, 'weld(opts)');
   assertNoUnknownKeys(o, ['k'], 'weld(opts)');
-  const k = num(o.k, Math.min(rig.r.lowerArm, rig.r.neck) * 0.85, 'weld.k', 1e-4);
+  // The default weld is deliberately TIGHT. The body masses join end-to-end
+  // (neck atop chest, legs below pelvis, hands off wrists), so a small k already
+  // gives those coaxial seams a smooth transition. The arms, however, run
+  // PARALLEL to the torso when they hang at the sides, separated by the armpit
+  // slot — and a large k bridges that slot, fusing the whole upper arm to the
+  // ribcage as an unrealistic web/wing (most visible on relaxed standing poses;
+  // a raised arm, running clear of the torso, only ever welded at the shoulder).
+  // Halving the old 0.85·min(lowerArm,neck) keeps the coaxial seams smooth while
+  // letting the armpit open into a real hollow. Override via `weld(rig, parts,
+  // {k})` for a chunkier, blobbier look.
+  const k = num(o.k, Math.min(rig.r.lowerArm, rig.r.neck) * 0.45, 'weld.k', 1e-4);
   let acc = parts[0] as Node;
   for (let i = 1; i < parts.length; i++) acc = acc.smoothUnion(parts[i] as Node, k);
   return acc;
