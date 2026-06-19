@@ -75,9 +75,9 @@ import { createDiffView, refreshDiff } from './ui/diffView';
 import { createNotesView, refreshNotes } from './ui/notes';
 import { initDataExplorer, refreshDataExplorer } from './ui/dataExplorer';
 import { initSessionList, showSessionList } from './ui/sessionList';
-import { exportGLB, buildGLB } from './export/gltf';
-import { exportSTL, buildSTL } from './export/stl';
-import { exportOBJ, buildOBJ } from './export/obj';
+import { exportGLB, buildGLB, buildGLBProject } from './export/gltf';
+import { exportSTL, buildSTL, buildSTLProject } from './export/stl';
+import { exportOBJ, buildOBJ, buildOBJProject } from './export/obj';
 import { export3MF, build3MF } from './export/threemf';
 import { build3MFProject } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
@@ -4137,6 +4137,8 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
     warnIfNotPrintable('GLB');
+    // Multi-part session → pick parts and bundle them as named nodes in one scene.
+    if (getState().parts.length > 1) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob); return; }
     try {
       assertFiniteMesh(currentMeshData);
       notifyMultiPartExport();
@@ -4151,6 +4153,8 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
     warnIfNotPrintable('STL');
+    // Multi-part session → pick parts and bundle a .stl per part in one .zip.
+    if (getState().parts.length > 1) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob); return; }
     notifyMultiPartExport();
     try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
@@ -4160,6 +4164,8 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
     warnIfNotPrintable('OBJ');
+    // Multi-part session → pick parts and emit named objects in one .obj.
+    if (getState().parts.length > 1) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob); return; }
     notifyMultiPartExport();
     try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
@@ -4176,7 +4182,13 @@ async function main() {
       const v = await getLatestVersion(p.id);
       choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null });
     }
-    const selected = await showExportPartsModal(choices, activeId, bambu);
+    const selected = await showExportPartsModal(choices, {
+      activePartId: activeId,
+      title: bambu ? 'Export parts to 3MF (Bambu/Orca)' : 'Export parts to 3MF',
+      description: bambu
+        ? 'Choose which parts to include. Each selected part is placed on its own build plate, and painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
+        : 'Choose which parts to include. Each selected part is added as a separate object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.',
+    });
     if (!selected || selected.length === 0) return;
 
     const byId = new Map(parts.map(p => [p.id, p]));
@@ -4205,6 +4217,130 @@ async function main() {
       endProgress(job);
     }
   }
+
+  /** Format-agnostic multi-part export flow for OBJ / STL / GLB: pick parts (with
+   *  previews), bake each selected part's coloured mesh off-editor, hand the baked
+   *  set to `build`, and download the result. Mirrors {@link export3MFMultiPartFlow}
+   *  but for the scene-graph / soup formats (3MF keeps its own bed-aware flow). */
+  async function exportMultiPartFlow(
+    formatTag: string,
+    description: string,
+    build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+  ): Promise<void> {
+    const parts = getState().parts;
+    const activeId = getState().currentPart?.id ?? null;
+    const choices: ExportPartChoice[] = [];
+    for (const p of parts) {
+      const v = await getLatestVersion(p.id);
+      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null });
+    }
+    const selected = await showExportPartsModal(choices, {
+      activePartId: activeId,
+      title: `Export parts to ${formatTag}`,
+      description,
+    });
+    if (!selected || selected.length === 0) return;
+
+    const byId = new Map(parts.map(p => [p.id, p]));
+    const job = startProgress({ title: `Preparing ${formatTag}`, indeterminate: false, message: 'Baking parts…' });
+    try {
+      const baked: { name: string; mesh: MeshData }[] = [];
+      for (let i = 0; i < selected.length; i++) {
+        const part = byId.get(selected[i]);
+        if (!part) continue;
+        updateProgress(job, i / selected.length, `Baking "${part.name}" (${i + 1}/${selected.length})…`);
+        const result = await bakeColoredMeshForPart(part.id, part.name);
+        if (result) baked.push(result);
+      }
+      updateProgress(job, 1, `Writing ${formatTag}…`);
+      if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+
+      const built = await build(baked);
+      downloadBlob(built.blob, built.filename, formatTag);
+      const skipped = selected.length - baked.length;
+      const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
+      showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : `${formatTag} export failed`, { variant: 'warn' });
+    } finally {
+      endProgress(job);
+    }
+  }
+
+  /** Console/AI core for the multi-part OBJ/STL/GLB exports: validate the part ids
+   *  (default: all), bake each part's coloured mesh off-editor, and return the baked
+   *  set. Mirrors the validation of {@link build3MFPartsExport} without the 3MF
+   *  builder, so the per-format API twins just supply the builder. */
+  async function bakePartsForExport(partIds?: string[]): Promise<{ baked: { name: string; mesh: MeshData }[] } | { error: string }> {
+    const allParts = getState().parts;
+    if (allParts.length === 0) return { error: 'No parts in this session.' };
+    let ids = partIds;
+    if (ids !== undefined) {
+      if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
+        return { error: 'partIds must be an array of part-id strings.' };
+      }
+    } else {
+      ids = allParts.map(p => p.id);
+    }
+    const byId = new Map(allParts.map(p => [p.id, p]));
+    const baked: { name: string; mesh: MeshData }[] = [];
+    for (const id of ids) {
+      const part = byId.get(id);
+      if (!part) return { error: `Unknown part id "${id}".` };
+      const result = await bakeColoredMeshForPart(part.id, part.name);
+      if (result) baked.push(result);
+    }
+    if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
+    return { baked };
+  }
+
+  /** Console/AI twin of a multi-part OBJ/STL/GLB export — bakes the requested parts
+   *  (default: all) and DOWNLOADS the bundled file. */
+  async function exportPartsApi(
+    formatTag: string,
+    build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+    partIds?: string[],
+    filename?: string,
+  ): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
+    assertString(filename, `export${formatTag}Parts(partIds, filename)`, { optional: true });
+    const r = await bakePartsForExport(partIds);
+    if ('error' in r) return r;
+    let built: BuiltExport;
+    try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    downloadBlob(built.blob, built.filename, formatTag);
+    return { ok: true as const, filename: built.filename, parts: r.baked.length };
+  }
+
+  /** Like {@link exportPartsApi} but RETURNS the bytes (base64) instead of
+   *  downloading — the agent/test-friendly twin. */
+  async function exportPartsDataApi(
+    formatTag: string,
+    build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+    partIds?: string[],
+    filename?: string,
+  ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
+    assertString(filename, `export${formatTag}PartsData(partIds, filename)`, { optional: true });
+    const r = await bakePartsForExport(partIds);
+    if ('error' in r) return r;
+    let built: BuiltExport;
+    try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    return {
+      filename: built.filename,
+      mimeType: built.mimeType,
+      sizeBytes: built.blob.size,
+      base64: await blobToBase64(built.blob),
+      parts: r.baked.length,
+    };
+  }
+
+  // Per-format builder bound to a custom filename, shared by the menu flow + API.
+  const buildOBJPartsBlob = (baked: { name: string; mesh: MeshData }[], filename?: string) => buildOBJProject(baked, filename);
+  const buildSTLPartsBlob = (baked: { name: string; mesh: MeshData }[], filename?: string) => buildSTLProject(baked, filename);
+  const buildGLBPartsBlob = (baked: { name: string; mesh: MeshData }[], filename?: string) => buildGLBProject(baked, { customName: filename });
+
+  const OBJ_PARTS_DESC = 'Choose which parts to include. Each part becomes a named object in one .obj file, arranged in a grid so they don’t overlap. Painted colours export as materials (.mtl, bundled in a .zip).';
+  const STL_PARTS_DESC = 'Choose which parts to include. Each part is saved as its own .stl file, bundled in a .zip. STL has no colour or part names, so separate files keep the parts distinct.';
+  const GLB_PARTS_DESC = 'Choose which parts to include. Each part becomes a named node in one .glb scene, arranged in a grid. Painted colours export as vertex colours.';
 
   /** Shared core for the multi-part 3MF exports: validate the part ids, bake each
    *  selected part's coloured mesh off-editor, and build the 3MF. Returns the
@@ -9146,6 +9282,46 @@ async function main() {
      *  export3MFParts (default true). */
     export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
       return export3MFPartsDataApi(partIds, filename, opts);
+    },
+
+    /** Bundle several Session Parts into ONE OBJ — each part a named `o <part>`
+     *  object in one .obj, grid-arranged so they don't overlap; painted parts add a
+     *  shared .mtl (OBJ + MTL in a .zip). The UI equivalent is the "OBJ" export in a
+     *  multi-part session. Pass an array of part ids (default: every part); each
+     *  part's latest version is baked WITH its colours. `{ ok, filename, parts }` or
+     *  `{ error }`. */
+    exportOBJParts(partIds?: string[], filename?: string) {
+      return exportPartsApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
+    },
+    /** Bytes-returning twin of {@link exportOBJParts} — RETURNS
+     *  `{ filename, mimeType, base64, sizeBytes, parts }` (or `{ error }`). */
+    exportOBJPartsData(partIds?: string[], filename?: string) {
+      return exportPartsDataApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
+    },
+
+    /** Bundle several Session Parts into ONE STL download — a `.zip` with one `.stl`
+     *  per part (STL has no part names or colour, so separate files keep them
+     *  distinct). The UI equivalent is the "STL" export in a multi-part session. Pass
+     *  an array of part ids (default: every part). `{ ok, filename, parts }` or
+     *  `{ error }`. */
+    exportSTLParts(partIds?: string[], filename?: string) {
+      return exportPartsApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
+    },
+    /** Bytes-returning twin of {@link exportSTLParts}. */
+    exportSTLPartsData(partIds?: string[], filename?: string) {
+      return exportPartsDataApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
+    },
+
+    /** Bundle several Session Parts into ONE GLB — each part a named node in one glTF
+     *  scene, grid-arranged; painted parts export as vertex colours. The UI
+     *  equivalent is the "GLB" export in a multi-part session. Pass an array of part
+     *  ids (default: every part). `{ ok, filename, parts }` or `{ error }`. */
+    exportGLBParts(partIds?: string[], filename?: string) {
+      return exportPartsApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
+    },
+    /** Bytes-returning twin of {@link exportGLBParts}. */
+    exportGLBPartsData(partIds?: string[], filename?: string) {
+      return exportPartsDataApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
     },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
@@ -14236,6 +14412,12 @@ async function main() {
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate, false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
         'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'exportOBJParts':  { signature: 'await exportOBJParts(partIds?, filename?) -- Bundle parts into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'exportOBJPartsData': { signature: 'await exportOBJPartsData(partIds?, filename?) -- Same as exportOBJParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'exportSTLParts':  { signature: 'await exportSTLParts(partIds?, filename?) -- Bundle parts into a .zip of one .stl per part -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'exportSTLPartsData': { signature: 'await exportSTLPartsData(partIds?, filename?) -- Same as exportSTLParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'exportGLBParts':  { signature: 'await exportGLBParts(partIds?, filename?) -- Bundle parts into one GLB (named nodes, grid-arranged; vertex colours) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'exportGLBPartsData': { signature: 'await exportGLBPartsData(partIds?, filename?) -- Same as exportGLBParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportVOX':       { signature: 'exportVOX() -- Download MagicaVoxel .vox (voxel sessions)', docs: '/ai/voxel.md' },
         // AI-friendly export — return bytes over the API instead of triggering a download
         'exportGLBData':   { signature: 'await exportGLBData() -- Return GLB as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
