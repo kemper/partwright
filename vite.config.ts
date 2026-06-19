@@ -161,6 +161,35 @@ function baseAwareManifest(): Plugin {
   };
 }
 
+// Emit `editor.html` as a copy of the SPA shell `index.html` so the editor's
+// no-file route is served as a REAL static file at its clean URL (Cloudflare
+// maps `/editor` → `/editor.html`, exactly like `/catalog` → `/catalog.html`).
+// This is the only reliable SPA-fallback on Cloudflare Pages: a `_redirects`
+// `200`-rewrite to `…/index.html` gets the destination canonicalized
+// (`/index.html` → `/`, `/foo.html` → `/foo`) and 308-redirects the user away
+// (and a `/*`/`/v1/*` splat to index.html is rejected as an infinite loop).
+// Runs per build via config.build.outDir, so it covers both `dist/` and the
+// nested `dist/v1/`. The copy keeps index.html's own (already base-correct)
+// asset refs. `/` and `/v1/` still serve their index via directory-index.
+function editorHtmlAlias(): Plugin {
+  let outDir = 'dist';
+  return {
+    name: 'partwright-editor-html-alias',
+    apply: 'build',
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    closeBundle() {
+      try {
+        const html = readFileSync(resolve(outDir, 'index.html'), 'utf8');
+        writeFileSync(resolve(outDir, 'editor.html'), html, 'utf8');
+      } catch {
+        /* no index.html emitted — nothing to alias */
+      }
+    },
+  };
+}
+
 // Build/version metadata surfaced by the in-app About dialog so a given deploy
 // can be traced back to an exact commit/branch — handy for Cloudflare branch &
 // PR preview deploys, which otherwise look identical. Cloudflare sets CF_PAGES_*
@@ -219,7 +248,7 @@ export default defineConfig({
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), basePaths(), markdownCharset(), dynamicSitemap(), baseAwareManifest()],
+  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), basePaths(), markdownCharset(), dynamicSitemap(), baseAwareManifest(), editorHtmlAlias()],
   esbuild: {
     // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
     // Preact without pulling in React. Vanilla .ts files in the rest of
