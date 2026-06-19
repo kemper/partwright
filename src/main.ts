@@ -1152,9 +1152,24 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   clearRegions();
 
   const report: { carried: string[]; dropped: string[] } = { carried: [], dropped: [] };
-  if (!geometryData || !currentMeshData) return report;
+  if (!geometryData || !currentMeshData) {
+    // Nothing to colour against yet; still finalize the model underlay so a
+    // bare-mesh restore doesn't strand code-declared colours unrendered.
+    renderModelColorUnderlay();
+    return report;
+  }
   const regions = geometryData.colorRegions as SerializedColorRegion[] | undefined;
-  if (!regions || regions.length === 0) return report;
+  if (!regions || regions.length === 0) {
+    // No user paint to restore — but the model-declared colour underlay
+    // (api.label / api.paint) still needs to be drawn. This function is the
+    // single authority that finalizes a restored part's colours for EVERY load
+    // path (cache hit, cache miss, loadVersion, navigateVersion), so neither
+    // branch needs its own colour stamp — the class of "a restore path forgot
+    // to apply colours" bug can't recur. A model-only part never subdivides, so
+    // currentMeshData and the model regions' triangle indices stay aligned.
+    renderModelColorUnderlay();
+    return report;
+  }
 
   // Partition: smooth imagePaint regions with a stored imageDataUrl are replayed
   // sequentially below (they drive their own subdivision pass each). All other
@@ -1237,13 +1252,27 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
 
   syncLockState();
 
-  // Re-render with colors if regions were rehydrated
-  if (hasColorRegions() && currentMeshData) {
+  // Re-render with colors if any region layer is present (user paint and/or the
+  // model-declared underlay — applyTriColorsIfVisible stamps both).
+  if ((hasColorRegions() || hasModelColorRegions()) && currentMeshData) {
     const colored = applyTriColorsIfVisible(currentMeshData);
     updateMesh(colored, { skipAutoFrame: true });
   }
 
   return report;
+}
+
+/** Draw `currentMeshData` with the model-declared colour underlay (api.label /
+ *  api.paint) applied — or the plain mesh when the model declares no colours.
+ *  The shared "show model colours" step for restore paths: a no-op for an
+ *  uncoloured model (applyTriColorsIfVisible returns the mesh unchanged when no
+ *  regions exist), so it's always safe to call. User paint is layered on top by
+ *  rehydrateColorRegions' main path. */
+function renderModelColorUnderlay(): void {
+  if (!currentMeshData) return;
+  if (hasModelColorRegions()) {
+    updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+  }
 }
 
 function paintedColorRefresh(): void {
@@ -3368,7 +3397,14 @@ async function main() {
     const s = getState();
     if (!s.session || !s.currentPart) return;
     const code = getValue();
-    if (isStarterCode(code)) return;
+    // A freshly-created part the user never touched still holds starter code;
+    // don't pollute its history with a version for it. BUT interactive paint
+    // applied on top of the starter geometry is real work — bailing here would
+    // silently drop it on a part switch (the painted part returns completely
+    // uncolored). Let saveVersion run when paint exists; it persists the
+    // regions via enrichGeometryDataWithColors and rehydrateColorRegions
+    // restores them when the part is reopened.
+    if (isStarterCode(code) && !hasColorRegions()) return;
     // Previously bailed here when code was unchanged, silently discarding
     // unsaved paint, annotations, param overrides, and companion-file edits.
     // saveVersion already deduplicates on all five axes (code + annotations +
@@ -4587,7 +4623,13 @@ async function main() {
       await loadVersionIntoEditor(version, opts, cached);
     } else {
       if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
-      startNewPartInEditor();
+      // Await the starter render (seedStarter runs the code + applies its label
+      // color) rather than the fire-and-forget startNewPartInEditor(). A part
+      // switch must not "complete" until the new part's geometry is on screen —
+      // otherwise a caller that captures a thumbnail right after (the Save-all
+      // loop) reads the previous part's stale mesh, so freshly-created parts all
+      // get one wrong, colorless thumbnail.
+      await seedStarter(getActiveLanguage());
     }
   }
 
@@ -5237,6 +5279,11 @@ async function main() {
       setPaintLabels(currentLabelMap);
       setModelColorRegions(cachedEntry.modelColorDecls);
       syncParamsPanel(cachedEntry.paramsSchema);
+      // Show the geometry; colours (model underlay + any user paint) are applied
+      // by the single rehydrateColorRegions pass below, which both load branches
+      // share — so this branch no longer hand-rolls its own colour stamp (the
+      // omission that shipped model-coloured parts restoring uncoloured). The
+      // paint mesh stays the uncoloured base (it backs hit-testing).
       updateMesh(cachedEntry.meshData);
       updatePaintMesh(cachedEntry.meshData);
       geometryDataEl.textContent = version.geometryData
