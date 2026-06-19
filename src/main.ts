@@ -4429,7 +4429,13 @@ async function main() {
       await loadVersionIntoEditor(version, opts, cached);
     } else {
       if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
-      startNewPartInEditor();
+      // Await the starter render (seedStarter runs the code + applies its label
+      // color) rather than the fire-and-forget startNewPartInEditor(). A part
+      // switch must not "complete" until the new part's geometry is on screen —
+      // otherwise a caller that captures a thumbnail right after (the Save-all
+      // loop) reads the previous part's stale mesh, so freshly-created parts all
+      // get one wrong, colorless thumbnail.
+      await seedStarter(getActiveLanguage());
     }
   }
 
