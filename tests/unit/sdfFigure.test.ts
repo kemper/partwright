@@ -1338,7 +1338,37 @@ describe('figure top — dress/gown coverage', () => {
   });
 });
 
+/** Lowest solid z of a node sampled over a box around a footprint (its SDF
+ *  bounds() are loose for the offset+smoothUnion shoe, so sample for the truth). */
+function sampledMinZ(node: SdfNode, sf: { point: number[]; groundZ: number }, rf: number): number {
+  let min = Infinity;
+  for (let dz = 0.6; dz >= -1.4; dz -= 0.04) {
+    const z = sf.groundZ + dz * rf;
+    for (let dx = -1.3; dx <= 1.3; dx += 0.3) {
+      for (let dy = -1.8; dy <= 1.8; dy += 0.3) {
+        if (node.evaluate(sf.point[0] + dx * rf, sf.point[1] + dy * rf, z) < 0) min = Math.min(min, z);
+      }
+    }
+  }
+  return min;
+}
+
 describe('figure footwear — shoes & boots', () => {
+  it('a lifted shoe has a flat sole, not a bubble (offset shoe + flat-soled foot)', () => {
+    // The shoe is the bare foot offset outward (`foot.round(t)`); the plantarflexed
+    // foot is flat-soled (clipped at the sole plane before pivoting). So a LIFTED
+    // shoe must sit just under the foot — a sole's thickness — not bulge ~1·r.foot
+    // below it as the old from-scratch "last" ellipsoid did (the rock-climber /
+    // sprinter "bubble foot"). Guards the redesign against regressing to a ball.
+    const rig = buildRig({ pose: { legR: { raiseSide: 30, raiseFwd: 25, bend: 80 }, legL: { raiseSide: 12, bend: 25 } } });
+    const feet = buildFeet(api, rig) as SdfNode;
+    const shoes = buildShoes(api, rig) as SdfNode;
+    const sf = rig.sole.R;                                    // the lifted foot
+    const dip = sampledMinZ(feet, sf, rig.r.foot) - sampledMinZ(shoes, sf, rig.r.foot);
+    expect(dip).toBeGreaterThan(0);                           // shoe is UNDER the foot (sole present)
+    expect(dip).toBeLessThan(rig.r.foot * 0.55);             // …by a sole's thickness, not a bubble
+  });
+
   it('shoes wrap each foot (sole point is inside)', () => {
     const rig = buildRig({});
     const shoes = buildShoes(api, rig) as SdfNode;
@@ -1383,12 +1413,17 @@ describe('figure footwear — shoes & boots', () => {
     // with it (the builder reads rig.dir.foot*, like F.feet).
     const rig = buildRig({ pose: { legL: { twist: 40 } } });
     const shoes = buildShoes(api, rig) as SdfNode;
-    const A = rig.joints.footL, fwd = rig.dir.footL;
-    const sz = A[2] - rig.r.foot;
-    const footLen = rig.r.foot * 2.4;
-    // A point out along the heading at sole height (under the toe) is shod.
-    const toe = [A[0] + fwd[0] * footLen * 0.5, A[1] + fwd[1] * footLen * 0.5, sz];
-    expect(shoes.evaluate(toe[0], toe[1], toe[2])).toBeLessThan(0);
+    const s = rig.sole.L, rf = rig.r.foot;
+    // A point under the forefoot ALONG the turned-out heading (low, near the sole)
+    // is shod — the shoe's toe swung out with the foot. Turnout pushes the toe
+    // laterally (+X here), so this point is only covered if the shoe tracked the
+    // heading; a straight shoe would be narrow in X and miss it.
+    const onHeading = [s.point[0] + s.heading[0] * s.length * 0.2, s.point[1] + s.heading[1] * s.length * 0.2, s.groundZ + rf * 0.2];
+    expect(shoes.evaluate(onHeading[0], onHeading[1], onHeading[2])).toBeLessThan(0);
+    // The same distance along the UNTURNED front (−Y) is NOT shod — the toe moved.
+    const front = buildRig({}).sole.L.heading;
+    const offHeading = [s.point[0] + front[0] * s.length * 0.42, s.point[1] + front[1] * s.length * 0.42, s.groundZ + rf * 0.2];
+    expect(shoes.evaluate(offHeading[0], offHeading[1], offHeading[2])).toBeGreaterThan(0);
   });
 
   it("boots' shaftZ projects onto a posed (lunge) shank bone", () => {
@@ -1463,13 +1498,45 @@ describe('figure footwear — shoes & boots', () => {
     expect(pokesThrough).toBe(0);          // …and the shoe encloses every bit of it
   });
 
+  it('a lifted shoe has a flat sole, not a bubble — it does not bulge far below the foot', () => {
+    // The shared `last` ellipsoid is centred on the sole plane, so its lower half
+    // hangs ~1.5·r.foot below the foot. The flat path slices it off at groundZ; the
+    // plantarflexed path must clip it too (in its pitched plane) or that lower half
+    // shows as a round BUBBLE under lifted shoes (rock-climber / sprinter). Guard it:
+    // the lifted shoe's lowest point must sit only a sole's-thickness below the bare
+    // foot's lowest point — not the ~1·r.foot bulge the unclipped ellipsoid gave.
+    const rig = buildRig({ pose: { legR: { raiseSide: 30, raiseFwd: 25, bend: 80 }, legL: { raiseSide: 12, bend: 25 } } });
+    const feet = buildFeet(api, rig) as SdfNode;
+    const shoes = buildShoes(api, rig) as SdfNode;
+    const dip = feet.bounds().min[2] - shoes.bounds().min[2];   // how far the shoe hangs below the foot
+    expect(dip).toBeGreaterThan(0);                  // the shoe is still UNDER the foot (sole present)
+    expect(dip).toBeLessThan(rig.r.foot * 0.6);      // …but no ~1·r.foot bubble (was 0.96·r.foot)
+  });
+
   it('the base descends to contain a posed/shod sole (no poke-through)', () => {
     const rig = buildRig({ pose: { legR: { raiseFwd: 12, bend: 28 }, legL: { raiseSide: 6 } } });
     const base = buildBase(api, rig) as SdfNode;
     const boots = buildBoots(api, rig) as SdfNode;
-    // the base bottom is at or below the lowest boot sole, so the boot can't
-    // hang below the disc and punch through its underside.
-    expect(base.bounds().min[2]).toBeLessThanOrEqual(boots.bounds().min[2] + 1e-6);
+    // The base bottom must sit at or below the boot's ACTUAL lowest solid point, so
+    // the boot can't hang below the disc and punch through its underside. (Sample
+    // the boot for its true sole — its SDF bounds() are conservative/loose for the
+    // offset+smoothUnion shoe, so a bounds-vs-bounds compare would be a false fail.)
+    let bootMin = Infinity;
+    for (const side of ['L', 'R'] as const) {
+      const sf = rig.sole[side];
+      for (let dz = 0.4; dz >= -1.0; dz -= 0.05) {
+        const z = sf.groundZ + dz * rig.r.foot;
+        for (let dx = -1.2; dx <= 1.2; dx += 0.4) {
+          for (let dy = -1.6; dy <= 1.6; dy += 0.4) {
+            if (boots.evaluate(sf.point[0] + dx * rig.r.foot, sf.point[1] + dy * rig.r.foot, z) < 0) {
+              bootMin = Math.min(bootMin, z);
+            }
+          }
+        }
+      }
+    }
+    expect(bootMin).toBeLessThan(Infinity);                       // we found the sole
+    expect(base.bounds().min[2]).toBeLessThanOrEqual(bootMin + 1e-6);
   });
 });
 
@@ -1572,7 +1639,7 @@ describe('figure footwear — separate sole region', () => {
     const flush = buildBoots(api, rig, { sole: { style: 'flush' } }) as SdfNode;
     // A point just outside the flush sole edge, at sole height, is empty for flush
     // but inside the welt (its lip is proud of the upper).
-    const x = s.point[0] + r.foot * 1.08, y = s.point[1], z = s.groundZ + 0.1;
+    const x = s.point[0] + r.foot * 0.92, y = s.point[1], z = s.groundZ + 0.1;
     expect(flush.evaluate(x, y, z)).toBeGreaterThan(0);
     expect(welt.evaluate(x, y, z)).toBeLessThan(0);
   });
