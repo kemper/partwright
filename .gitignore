@@ -69,3 +69,6 @@ playwright/.cache/
 
 # Serena MCP project metadata/cache
 .serena/
+
+# Local Cloudflare/wrangler emulation cache
+.wrangler/
