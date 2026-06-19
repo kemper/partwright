@@ -923,7 +923,43 @@ F.clothing.boots(rig, { size, shaftZ, thickness, label, sole })  // + a shaft up
 //       label: 'boots' = same colour as the boot.
 //   `size` scales the footprint, `thickness` the shell. For boots, `shaftZ` is a
 //   world-Z target projected onto each leg's own ankle→knee bone.
+F.clothing.panel(rig, { side, top, bottom, wrap, thickness, over, fit, label })
+//   A front/back-panel garment — apron, bib, tabard, loincloth, cape. Two fits:
+//   fit:'drape' (DEFAULT) — a flat cloth SHEET that hangs. It sits just in front
+//     of the body's MEASURED forward-most point (so it clears the body/under-
+//     garments and can't pass through), rests on the belly, and hangs straight
+//     DOWN — below the belly the legs recede, so the sheet hangs away from them
+//     (real "body separation"). This is the apron/cape look.
+//   fit:'hug' — the conforming skin-tight shell (lies ON the body), for a tabard
+//     or bib pressed flat to the chest rather than hanging off it.
+//   side:   'front' (−Y, default) | 'back' (+Y) | 'both'
+//   top:    'neck' | 'chest' (default) | 'waist'                       — or a world Z
+//   bottom: 'waist' | 'hip' | 'thigh' (default) | 'knee' | 'shin' | 'ankle' — or Z
+//   wrap:   half-width × the hip half-width (default 1.0; 1 ≈ hip-wide)
+//   thickness: SHEET thickness — set it above your slicer's min wall so it prints;
+//              the default is a sturdy, print-safe value.
+//   over:   a node or [nodes] (e.g. the under-jacket/pants) the drape hangs OVER —
+//           folded into the apex measurement so the sheet clears them. Pass your
+//           under-garments here, else a thick under-garment can bury the sheet.
+//   Recipes:  bib       = panel({ side:'front', top:'neck',  bottom:'waist' })
+//             tabard    = panel({ side:'both',  top:'chest', bottom:'thigh', fit:'hug' })
+//             loincloth = panel({ side:'both',  top:'waist', bottom:'thigh', wrap:0.8 })
+//             cape      = panel({ side:'back',  top:'neck',  bottom:'ankle', wrap:1.3 })
+F.clothing.apron(rig, { top, bottom, wrap, thickness, over, ties, label })
+//   Draping chef's BIB apron preset: a narrow bib flaring into a wider skirt that
+//   hangs to the shin (default chest → shin), held by a NECK halter + WAIST ties
+//   (ties:true by default). Pass `over:[jacket,pants]` so it clears the whites.
 ```
+
+> **Aprons/bibs/capes — ALWAYS use `F.clothing.panel`/`apron`, never a hand-rolled
+> flat box.** A flat slab at a fixed Y can't follow the body: it plunges into the
+> chest and floats off the receding thigh — it **passes through the body** (and a
+> shell that conforms all the way down looks like skin-tight underwear). `panel`
+> drapes from the body's *measured* forward-most point and hangs straight down, so
+> it clears the body AND reads as hanging cloth. On a clothed figure, pass the
+> under-garments as `over:[...]`; if a panel paints 0 triangles (model:preview's
+> 0-label warning) it's buried under a garment — pass it via `over` or raise
+> `thickness`.
 
 **Standing on a surface — `F.ground(rig, { mode, surface?|z?, tolerance? })`.** Feet
 posed at different heights end up with soles at different Z. `F.ground` returns a

@@ -70,19 +70,12 @@ const pants = F.clothing.pants(rig, {
   leg: 'slim',
 }).label('pants');
 
-// 4b. APRON — a flat rounded front panel from chest down to the thigh, welded to
-// the front of the jacket/pants so it stays one component. Built off the torso
-// front depth (−Y face) and the spine/hip heights.
-const apronTopZ = j.chest[2] - r.chestY * 0.2;
-const apronBotZ = j.upperLegL[2] - r.upperLeg * 1.6;
-const apronCZ = (apronTopZ + apronBotZ) * 0.5;
-const apronH = (apronTopZ - apronBotZ);
-const apronW = r.hipsX * 1.7;            // a touch wider than the hips
-const apronDepth = r.chestY * 0.32;      // panel thickness (front-back)
-const apronFrontY = -(r.chestY * 1.02);  // just in front of the torso
-const apron = sdf.roundedBox([apronW * 2, apronDepth, apronH], apronDepth * 0.45)
-  .translate([0, apronFrontY, apronCZ])
-  .label('apron');
+// 4b. APRON — a DRAPING chef's bib apron: a narrow bib flaring into a wider
+// skirt that hangs to the shin, held by a neck halter + waist ties. It sits just
+// in front of the body's measured forward-most point (passed `over` the jacket +
+// pants so it clears them) and hangs straight down — so it drapes like cloth with
+// real body separation, instead of hugging the body or passing through it.
+const apron = F.clothing.apron(rig, { over: [jacket, pants], bottom: 'shin', thickness: r.chestY * 0.2 });
 
 // 5. SHOES — own their 'shoes' upper + 'sole' regions.
 const shoes = F.clothing.shoes(rig, { label: 'shoes' });
