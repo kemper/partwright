@@ -54,7 +54,7 @@ const skin = F.weld(rig, [
 ], { k: r.lowerLeg * 1.3 }).label('skin');
 
 // 4. NIPPLES — top-level part, self-labels 'areola'. Bare chest.
-const nipples = F.nipples(rig);
+const nipples = F.nipples(rig, { on: skin });
 
 // 5. DHOTI — short wrapped cloth over the seat/hips (briefs-length pants).
 const dhoti = F.clothing.pants(rig, {

@@ -70,7 +70,7 @@ const skin = F.weld(rig, [
 ]).label('skin');
 
 // 3b. AREOLAE — flush paintable discs + tiny nipples on the bare chest.
-const nipples = F.nipples(rig);
+const nipples = F.nipples(rig, { on: skin });
 
 // 4. BOARD SHORTS — slim, knee-length board shorts. cuffZ projected to ~mid-shin
 //    so they read as longer surf shorts (not briefs).

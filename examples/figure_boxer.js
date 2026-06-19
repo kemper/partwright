@@ -67,11 +67,10 @@ const skin = F.weld(rig, [
 ]).label('skin');
 
 // 4. AREOLAE — flush paintable discs + tiny nipples, hard-unioned at the top
-//    level so the 'areola' region survives the body weld. The muscle:0.7 pectoral
-//    mass sits proud of the *base* chest the areola anchors ride, so nudge the
-//    discs forward (−Y) onto the pec surface; ~0.72× skin shade in the palette.
-const nipples = F.nipples(rig, { size: r.chestX * 0.16, nipple: r.chestX * 0.05 })
-  .translate([0, -r.chestY * 0.28, 0]);
+//    level so the 'areola' region survives the body weld. Passing `on: skin`
+//    seats each areola FLUSH on the real chest surface (the pec apex on this
+//    muscle:0.7 figure), so no manual nudge is needed; ~0.72× skin in the palette.
+const nipples = F.nipples(rig, { on: skin });
 
 // 5. BOXING TRUNKS — high-rise briefs (seat + hip coverage only).
 const trunks = F.clothing.pants(rig, {

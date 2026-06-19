@@ -314,18 +314,29 @@ F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
 2. **Areolae + nipple — `F.nipples(rig)`**, a **top-level part** (like
    `F.face.eyes`), NOT a torso option — because it carries its own **paint
    label** (`'areola'`), and a label can't survive the smooth body weld. So
-   hard-union it at the top level and **don't** wrap it in `.label()`:
+   hard-union it at the top level and **don't** wrap it in `.label()`. **Pass
+   `on: skin`** (the body weld) so the areolae seat on the real surface:
    ```js
    const skin    = F.weld(rig, [ F.torso(rig, { navel: true }), … ]).label('skin');
-   const nipples = F.nipples(rig);                 // self-labels 'areola'
+   const nipples = F.nipples(rig, { on: skin });    // self-labels 'areola', seats on `skin`
    return sdf.union(skin, F.face.eyes(rig), nipples, …).build({ … });
    ```
-   Each areola is a **flush disc** that follows the chest/mound curvature (the
-   iris-disc trick — a coin clipped from a sphere a hair larger than the surface,
-   so it sits flush, not as a stuck-on bump) with a deliberately **tiny** nipple
-   nub. It rides the `rig.torso` anchors, so it lands on the **mound apex**
-   whenever `bust > 0`. `opts`: `{ size }` (areola radius, default ≈ `chestX·0.16`),
-   `{ nipple }` (nub radius, default ≈ `chestX·0.05`; `0` for none).
+   With `on`, each areola is a **conformal offset of the torso** — the body's own
+   surface grown outward by a thin, uniform amount (`.round(t)`) and clipped to
+   the nipple region, like a layer of clothing hugging the chest. So it follows
+   whatever chest is actually there (bare, pectoral, mound, fat) *perfectly* and
+   sits **near-flush** (≈2.5% of torso depth), with a subtle central nipple. The
+   region is `smoothIntersect`-clipped so its rim rolls off as a **gentle dome**
+   (no hard disc edge) — it slopes back into the skin gradually. The
+   thin offset is essential — a perfectly **flush** (coincident) layer can't
+   paint, because the bake assigns each triangle to the nearest source shape and
+   a coincident areola dithers between `'areola'` and `'skin'` (a hatched, faded
+   blob). The offset clears one nipple-local detail triangle so the `'areola'`
+   label cleanly owns its surface → a solid, round, paintable areola that's still
+   near-flush. (Omit `on` and it falls back to an approximating clipped coin that
+   rides the bust/pec/bare anchor — finicky; prefer `on`.) `opts`: `{ size }`
+   (areola radius, default ≈ `chestX·0.16`), `{ nipple }` (nub radius, default ≈
+   `chestX·0.04`; `0` for none), `{ on }` (the body `Node` to offset).
 3. **Navel — `F.torso(rig, { navel })`** (opt-in). A shallow dimple carved into
    the belly front. `navel: true` or `{ size, depth }` (`depth` 0–1.5, default
    0.5). Off by default so an unset torso is byte-identical.
@@ -802,10 +813,18 @@ the skin weld), exactly like the eyes — a brow welded into a `.label('skin')`
 mass loses its `'brows'` colour:
 
 ```js
-const brows = F.face.brows(rig, { shape: 'natural' });   // self-labelled 'brows'
+const skin  = F.weld(rig, [ … ]).label('skin');
+const brows = F.face.brows(rig, { shape: 'natural', on: skin }); // self-labelled 'brows'
 return sdf.union(skin, eyes, brows, lips, hair, base)
   .build({ edgeLength: 0.5, detail: F.faceDetail(rig) }); // detail keeps the strip crisp
 ```
+
+**Pass `on: skin`** (the body/face weld), exactly like `F.nipples(rig, { on: skin })`:
+each brow is then a thin **conformal offset of the real forehead** — a proud strip
+of the actual surface clipped to the brow arc — so it follows any skull with no
+curvature guess, and the `'brows'` label paints cleanly. (Omit `on` and it falls
+back to a sunk capsule strip positioned by an analytic skull approximation —
+fine for default heads, less robust on unusual proportions.)
 
 Pick a **`shape`** preset (individual knobs override it):
 
@@ -823,8 +842,9 @@ Pick a **`shape`** preset (individual knobs override it):
 Knobs (each overrides the preset): `width` (lateral span ×), `taper` (0–0.9, how
 much the tail thins), `relief` (0 = dead flush … up to a whisper-proud edge),
 `spacing` (multiplier on the **eye** spacing — default 1 sits each brow directly
-over its eyeball; >1 spreads the pair apart, <1 draws them in), plus the
-back-compat multipliers `thickness` (brow weight) and `lift` (arch). The
+over its eyeball; >1 spreads the pair apart, <1 draws them in), `on` (the body
+weld to seat the brow conformally on — see above), plus the back-compat
+multipliers `thickness` (brow weight) and `lift` (arch). The
 old `F.face.assemble(…, { brows: {} })` path still works but paints the brow
 **skin-coloured** (it's inside the skin weld) — use the top-level union above for
 dark brows. Always give `.build()` `detail: F.faceDetail(rig)` so the thin strip

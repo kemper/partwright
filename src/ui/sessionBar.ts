@@ -19,6 +19,11 @@ import { isQuotaError } from '../storage/quota';
 import { languageBadge } from './languageBadge';
 
 export interface SessionBarCallbacks {
+  /** When provided, the 💾 Save button delegates entirely to this handler
+   *  (which owns its own toasts + the multi-part save modal) instead of the
+   *  bar's built-in single-version save. Lets a click and Cmd/Ctrl+S share one
+   *  flow. */
+  onSave?: () => void | Promise<void>;
   onSaveVersion: () => Promise<{ code: string; geometryData: Record<string, unknown> | null; thumbnail: Blob | null }>;
   onLoadVersion: (code: string) => void;
   onNewSession: () => void;
@@ -175,6 +180,22 @@ function render(state: SessionState) {
   let saving = false;
   const saveBtn = btn('\uD83D\uDCBE Save', async () => {
     if (saving) return;
+    // When the host supplies a save handler, delegate to it \u2014 it owns the
+    // multi-part save modal and its own toasts/guards \u2014 and skip the bar's
+    // built-in single-version path entirely.
+    if (callbacks.onSave) {
+      saving = true;
+      saveBtn.disabled = true;
+      saveBtn.classList.add('opacity-50');
+      try {
+        await callbacks.onSave();
+      } finally {
+        saving = false;
+        saveBtn.disabled = false;
+        saveBtn.classList.remove('opacity-50');
+      }
+      return;
+    }
     saving = true;
     saveBtn.disabled = true;
     saveBtn.classList.add('opacity-50');

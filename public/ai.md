@@ -343,6 +343,7 @@ await partwright.createSession(name?)    // -> {id, url, galleryUrl}
 await partwright.runAndSave(code, label?, assertions?) // Assert+save in one call -> {passed?, geometry, printability, version, diff, galleryUrl, colorRegions?}. `colorRegions` (also on saveVersion) lists each paint region's {name, kind, label?, triangleCount} — confirm `kind: 'byLabel'` for small files and a non-zero triangleCount. Voxel runs add `geometry.voxelCount`.
 await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch create
 await partwright.saveVersion(label?)     // Save current state as version
+await partwright.saveAllParts()          // Save every part with unsaved changes (visits each, restores the active part) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
 await partwright.renameVersion({index} | {id}, label) // Relabel a version (index is immutable) -> {ok, id, index, label} or {error}
