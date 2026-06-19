@@ -1284,6 +1284,36 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   return report;
 }
 
+/** Load a version's saved colour-region *descriptors* into the store WITHOUT
+ *  resolving them against a mesh (empty triangle sets). Used when a version
+ *  load can't finish its render — most importantly when the user cancels the
+ *  slow initial render of a catalog figure. Without this, the cancel skips
+ *  rehydrateColorRegions entirely (it needs a finished mesh + labelMap to
+ *  resolve `byLabel` regions), so the figure's colours never enter memory: a
+ *  subsequent Save then serialises the empty store over the version's colours
+ *  (permanent loss), and the next edit→rerender shows a colourless model.
+ *
+ *  Staging the descriptors fixes both: `serialize()` persists descriptors (not
+ *  triangles), so a Save keeps the colours, and runCodeSync re-resolves every
+ *  in-memory region against the freshly-rendered mesh+labelMap on the next run,
+ *  so the colours reappear. Regions that genuinely no longer match just resolve
+ *  to 0 triangles, exactly as the normal reconcile path already tolerates. */
+function stageUnresolvedColorRegions(geometryData: Record<string, unknown> | null): void {
+  resetPaintWorkerState();
+  clearRegions();
+  const regions = geometryData?.colorRegions as SerializedColorRegion[] | undefined;
+  if (!regions || regions.length === 0) {
+    syncLockState();
+    return;
+  }
+  suspendReconcile = true;
+  for (const region of regions) {
+    addRegion(region.name, region.color, region.source, region.descriptor, new Set<number>(), region.visible !== false, region.slotId);
+  }
+  suspendReconcile = false;
+  syncLockState();
+}
+
 /** Draw `currentMeshData` with the model-declared colour underlay (api.label /
  *  api.paint) applied — or the plain mesh when the model declares no colours.
  *  The shared "show model colours" step for restore paths: a no-op for an
@@ -5643,10 +5673,23 @@ async function main() {
         seedSurfaceCache(persistedTexture.key, persistedTexture.mesh as MeshData);
       }
       const meshBeforeRun = currentMeshData;
+      const genBeforeRun = _runGeneration;
       const applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
-      if (!applied) return;
+      if (!applied) {
+        // The render didn't complete (most commonly: the user cancelled the slow
+        // initial render of a catalog figure). rehydrateColorRegions needs a
+        // finished mesh + labelMap to resolve regions, so it's skipped here — but
+        // we must still stage the version's colour-region descriptors into memory,
+        // or a Save would persist an empty store over the figure's colours and the
+        // next edit→rerender would render colourless. They re-resolve on the next
+        // successful run. Skip when a NEWER run superseded ours (runCodeSync bumped
+        // _runGeneration past the one our call started): that newer run owns the
+        // store and must not be clobbered with this version's descriptors.
+        if (_runGeneration === genBeforeRun + 1) stageUnresolvedColorRegions(version.geometryData);
+        return;
+      }
       // Store the freshly compiled result so the next switch back is instant.
       // Only cache on a successful mesh-producing run (compile errors leave
       // currentMeshData as the previous part's mesh, i.e. unchanged).
