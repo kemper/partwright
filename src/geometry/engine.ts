@@ -584,7 +584,12 @@ export async function executeCodeAsync(
       meta: { startedAt: performance.now(), lang: l },
     });
     const companionFiles = getCompanionFiles();
-    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
+    // Progressive render: when the caller supplies an onPreview consumer and this
+    // is a manifold-js run, tell the Worker the coarse-preview factor so SDF
+    // figures rough out fast. The Worker further gates on the source actually
+    // doing an SDF `.build()`, so non-SDF code never pays for a second pass.
+    const sdfPreviewScale = (onPreview && l === 'manifold-js') ? getConfig().renderer.sdfPreviewScale : undefined;
+    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
   });
 }
 

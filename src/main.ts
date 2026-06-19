@@ -522,6 +522,11 @@ const partMeshCache = new Map<string, PartMeshCacheEntry>();
 let geometryDataEl: HTMLElement;
 // Viewport overlay pill — shows printability issues after each successful run.
 let printabilityIndicatorEl: HTMLElement | null = null;
+let fastPreviewPillEl: HTMLElement | null = null;
+/** True while the viewport shows the coarse fast-preview pass of an SDF model
+ *  and the full-quality render is still in flight. Used to gate mesh-altering
+ *  actions (paint, surface modifiers) so they don't bind to the throwaway mesh. */
+let _showingFastPreview = false;
 // Viewport overlay pill — shown when a run's `api.surface.*` texture chain is
 // NOT in the memo cache (a "sticky" miss): we render the base mesh and let the
 // user press this to recompute the (potentially slow) texture on demand. See
@@ -4849,6 +4854,19 @@ async function main() {
   printabilityIndicatorEl.style.display = 'none';
   viewportPane.appendChild(printabilityIndicatorEl);
 
+  // Fast-preview pill — shown while the viewport is displaying the rough coarse
+  // pass of a slow SDF model (figures) and the full-quality render is still
+  // running in the Worker. A status indicator, not a toast: it clears the moment
+  // the full mesh lands (or the run errors/cancels). See runCodeSync's preview
+  // callback. Title explains the swap so the rough→sharp transition isn't a
+  // surprise.
+  fastPreviewPillEl = document.createElement('span');
+  fastPreviewPillEl.className = 'absolute top-2 left-2 z-20 text-xs text-sky-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-sky-700/60 cursor-help';
+  fastPreviewPillEl.textContent = '⚡ Fast preview — rendering full quality…';
+  fastPreviewPillEl.title = 'Showing a quick rough version of this model. The full-detail render is still computing and will replace it automatically. Wait for it before painting or editing the mesh.';
+  fastPreviewPillEl.style.display = 'none';
+  viewportPane.appendChild(fastPreviewPillEl);
+
   // Surface "Re-apply" pill — a persistent status indicator (not a transient
   // toast) shown when the model declares `api.surface.*` textures whose result
   // isn't cached for the current code/params. Until pressed, the viewport shows
@@ -8040,6 +8058,14 @@ async function main() {
   }
 
   async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean, opts?: { warnOnBake?: boolean }): Promise<Record<string, unknown>> {
+    // Refuse to bake while a coarse fast-preview is on screen: the modifier would
+    // bind to the throwaway low-res mesh, which the full-quality render is about
+    // to replace. Tell the user to let it finish (it auto-completes in seconds).
+    if (_showingFastPreview) {
+      const msg = 'Full-quality render still in progress — wait for it to finish before altering the mesh.';
+      showToast(msg, { variant: 'warn' });
+      return { error: msg };
+    }
     // Capture the language *before* the commit switches it, so we can warn when a
     // SCAD/BREP session is silently baked to a mesh. The transform path
     // (commitTransform) emits its own, more specific warning and passes
@@ -15579,6 +15605,15 @@ async function main() {
     cancelInlineBtn.classList.add('hidden');
   }
 
+  function showFastPreviewPill(): void {
+    _showingFastPreview = true;
+    if (fastPreviewPillEl) fastPreviewPillEl.style.display = '';
+  }
+  function hideFastPreviewPill(): void {
+    _showingFastPreview = false;
+    if (fastPreviewPillEl) fastPreviewPillEl.style.display = 'none';
+  }
+
   async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean; skipSurface?: boolean } = {}): Promise<boolean> {
     // Hard refusal in shared-preview mode: this is the single execution
     // chokepoint that the console API (partwright.run / runAndSave) also routes
@@ -15609,22 +15644,27 @@ async function main() {
     // on a session's first render, so a genuinely new model still auto-frames.
     const preservedCameraPose = opts.preserveCamera ? captureCameraToPreserve() : null;
 
-    // SCAD preview callback: receives the fast Phase 1 mesh and updates the
-    // viewport immediately so the user sees geometry while Phase 2 renders. Skip
-    // its auto-frame while preserving the camera, so the mid-run preview doesn't
-    // momentarily snap to the default view before the final restore lands.
-    const onScadPreview = getActiveLanguage() === 'scad'
+    // Progressive-render preview callback: receives the fast coarse-pass mesh and
+    // updates the viewport immediately so the user sees geometry while the full
+    // render finishes. Used by two engines: SCAD's two-phase compile, and the
+    // manifold-js SDF coarse pass (figures). Skip its auto-frame while preserving
+    // the camera, so the mid-run preview doesn't momentarily snap to the default
+    // view before the final restore lands. For SDF, raise the "⚡ Fast preview"
+    // pill so the user knows the rough mesh will be replaced.
+    const previewLang = getActiveLanguage();
+    const onEnginePreview = (previewLang === 'scad' || previewLang === 'manifold-js')
       ? (previewResult: MeshResult) => {
           if (myGen !== _runGeneration || !previewResult.mesh) return;
           currentMeshData = previewResult.mesh;
           updateMesh(previewResult.mesh, { skipAutoFrame: preservedCameraPose !== null });
+          if (previewLang === 'manifold-js') showFastPreviewPill();
         }
       : undefined;
 
     // Feed the Customizer's current overrides into the model's api.params(...).
     let result: Awaited<ReturnType<typeof executeCodeAsync>>;
     try {
-      result = await executeCodeAsync(src, undefined, currentParamValues, onScadPreview);
+      result = await executeCodeAsync(src, undefined, currentParamValues, onEnginePreview);
     } catch (err) {
       // Worker was terminated (cancelled by user, cancelled for a newer run,
       // timeout, or crash). Only clean up if we're still the active run —
@@ -15632,6 +15672,7 @@ async function main() {
       if (myGen !== _runGeneration) return false;
       _running = false;
       stopRunTimer();
+      hideFastPreviewPill();
       const msg = err instanceof Error ? err.message : String(err);
       const wasCancelled = /cancell?ed/i.test(msg);
       setStatus(statusBar, wasCancelled ? 'ready' : 'error', wasCancelled ? 'Cancelled' : msg);
@@ -15646,6 +15687,9 @@ async function main() {
     const elapsed = Math.round(performance.now() - t0);
     _running = false;
     stopRunTimer();
+    // The full-quality mesh is in hand — the coarse preview (if any) is about to
+    // be replaced, so drop the pill.
+    hideFastPreviewPill();
 
     // Record the engine WASM heap high-water for this run (undefined for non
     // manifold-js engines, which own separate heaps). Surfaced in the Data panel
