@@ -1271,16 +1271,15 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hands(opts)');
   assertNoUnknownKeys(o, ['grip', 'fingers', 'count', 'length', 'palmThickness'], 'hands(opts)');
   const grip = o.grip === undefined ? 'relaxed'
-    : assertEnum(o.grip, ['fist', 'open', 'relaxed', 'spread', 'wave', 'point', 'peace', 'thumbsup'] as const, 'hands.grip');
-  // OPTION 1 hands — a CLEAN FLAT slab palm + FULLY-SEPARATED, STRAIGHT fingers.
-  // Each finger is a single straight capsule (one exact Lipschitz SDF: no
-  // smoothUnion smin spikes, no union-of-angled-segments concave slivers — so it
-  // marches clean at the coarse figure grid and any arm pose). `grip` picks a
-  // configuration: which fingers are EXTENDED (full separate capsules) vs FOLDED
-  // (shown as embedded knuckle bumps), plus their spread. No curled/gripping
-  // fingers — that's the deliberate trade for robustness (see the two other
-  // option PRs). Built in a canonical frame (fingers +Z, width +X, palm +Y) and
-  // oriented onto each wrist. Pair with `detail: F.handDetail(rig)`.
+    : assertEnum(o.grip, ['fist', 'open', 'relaxed', 'spread', 'wave', 'point', 'peace', 'thumbsup', 'ok', 'claw', 'clutch'] as const, 'hands.grip');
+  // OPTION 2 hands — a CLEAN FLAT slab palm + FULLY-SEPARATED fingers that can
+  // CURL. Each finger is a single capsule (no smoothUnion smin spikes), angled
+  // toward the palm by a per-finger curl. Curled separate fingers create tight
+  // concave palm-junction crevices, so this option pays for clean curls with a
+  // FINER hand mesh (see handDetail below) — ~+100–200k triangles per figure.
+  // `grip` picks a configuration via per-finger curl + spread. Built in a
+  // canonical frame (fingers +Z, width +X, palm +Y) and oriented onto each
+  // wrist. Pair with `detail: F.handDetail(rig)`.
   //   count / length / palmThickness — finger count, length mult, flat depth
   //   fingers:false — legacy puffy blob/paddle hands
   const sculpted = o.fingers !== false;
@@ -1289,17 +1288,20 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const palmThicknessK = num(o.palmThickness, 0.5, 'hands.palmThickness', 0.1, 2);
   const j = rig.joints, r = rig.r, rh = r.hand;
 
-  // Per-finger extend (1 = full extended finger, 0 = folded → knuckle bump) and
-  // spread° for index→pinky, plus the thumb pose. Resampled when count ≠ 4.
-  const PRESETS: Record<string, { ext: number[]; spread: number[]; thumb: { ext: number; ab: number } }> = {
-    open:     { ext: [1, 1, 1, 1], spread: [24, 9, -9, -24],   thumb: { ext: 1, ab: 1.0 } },
-    relaxed:  { ext: [1, 1, 1, 1], spread: [13, 5, -5, -13],   thumb: { ext: 0.9, ab: 0.9 } },
-    spread:   { ext: [1, 1, 1, 1], spread: [34, 14, -14, -34], thumb: { ext: 1, ab: 1.25 } },
-    wave:     { ext: [1, 1, 1, 1], spread: [18, 7, -7, -18],   thumb: { ext: 0.85, ab: 0.9 } },
-    point:    { ext: [1, 0, 0, 0], spread: [8, 3, -3, -8],     thumb: { ext: 0, ab: 0.5 } },
-    peace:    { ext: [1, 1, 0, 0], spread: [22, 11, -4, -10],  thumb: { ext: 0, ab: 0.4 } },
-    thumbsup: { ext: [0, 0, 0, 0], spread: [4, 2, -2, -4],     thumb: { ext: 1.15, ab: 0.7 } },
-    fist:     { ext: [0, 0, 0, 0], spread: [4, 2, -2, -4],     thumb: { ext: 0.25, ab: 0.5 } },
+  // Per-finger [curl 0..1] and [spread °] for index→pinky, plus the thumb pose.
+  // Curl angles the whole finger toward the palm. Resampled when count ≠ 4.
+  const PRESETS: Record<string, { curl: number[]; spread: number[]; thumb: { curl: number; ab: number } }> = {
+    open:     { curl: [0, 0, 0, 0],           spread: [24, 9, -9, -24],   thumb: { curl: 0.1, ab: 1.0 } },
+    relaxed:  { curl: [0.4, 0.45, 0.45, 0.4], spread: [13, 5, -5, -13],   thumb: { curl: 0.35, ab: 0.85 } },
+    spread:   { curl: [0, 0, 0, 0],           spread: [34, 14, -14, -34], thumb: { curl: 0.1, ab: 1.25 } },
+    wave:     { curl: [0, 0, 0, 0],           spread: [18, 7, -7, -18],   thumb: { curl: 0.2, ab: 0.9 } },
+    point:    { curl: [0, 1, 1, 1],           spread: [8, 3, -3, -8],     thumb: { curl: 0.6, ab: 0.5 } },
+    peace:    { curl: [0, 0, 1, 1],           spread: [22, 11, -4, -10],  thumb: { curl: 0.8, ab: 0.4 } },
+    thumbsup: { curl: [1, 1, 1, 1],           spread: [4, 2, -2, -4],     thumb: { curl: 0, ab: 0.7 } },
+    fist:     { curl: [1, 1, 1, 1],           spread: [4, 2, -2, -4],     thumb: { curl: 0.7, ab: 0.5 } },
+    ok:       { curl: [0.7, 0, 0, 0],         spread: [10, 6, 2, -8],     thumb: { curl: 0.5, ab: 0.85 } },
+    claw:     { curl: [0.5, 0.55, 0.55, 0.5], spread: [12, 4, -4, -12],   thumb: { curl: 0.4, ab: 1.0 } },
+    clutch:   { curl: [0.7, 0.75, 0.75, 0.7], spread: [8, 3, -3, -9],     thumb: { curl: 0.6, ab: 0.7 } },
   };
   const preset = PRESETS[grip];
 
@@ -1322,32 +1324,21 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       const k = count > 1 ? Math.round((i / (count - 1)) * 3) : 1;  // map onto the 4-entry preset
       const bx = u * (span / 2 - fr) * side;
       const sp = preset.spread[k] * side * DEG;
-      if (preset.ext[k] > 0.5) {
-        // Extended finger: a straight separate capsule, fanned across X by spread.
-        const base: Vec3 = [bx, 0, palmTopZ - fr * 0.3];
-        const d = norm3([Math.sin(sp), 0, Math.cos(sp)] as Vec3);
-        const tip = add3(base, scale3(d, rh * lengthK * lenProfile(u)));
-        hand = hand.union(sdf.capsule(base, tip, fr * 0.92));
-      } else {
-        // Folded finger: a knuckle bump mostly embedded in the palm top (clean —
-        // a convex sphere overlapping the slab, no thin gap).
-        hand = hand.union(sdf.sphere(fr * 1.05).translate([bx, thick * 0.18, palmTopZ - fr * 0.1]));
-      }
+      // Single capsule angled toward the palm (+Y) by curl, fanned across X.
+      const fold = preset.curl[k] * 150 * DEG;
+      const base: Vec3 = [bx, 0, palmTopZ - fr * 0.3];
+      const d = norm3([Math.sin(sp) * Math.cos(fold), Math.sin(fold), Math.cos(fold) * Math.cos(sp)] as Vec3);
+      const tip = add3(base, scale3(d, rh * lengthK * lenProfile(u)));
+      hand = hand.union(sdf.capsule(base, tip, fr * 0.92));
     }
 
-    // Thumb: extended → a straight capsule off the radial side edge; folded →
-    // a short capsule lying across the palm front. Both single clean capsules.
-    const te = preset.thumb.ext, ab = preset.thumb.ab;
+    // Thumb: a single capsule, extended off the side edge or angled across the
+    // palm by its curl.
+    const cu = preset.thumb.curl, ab = preset.thumb.ab;
     const tbase: Vec3 = [(palmW * 0.5 - fr) * 0.9 * side, thick * 0.2, palmTopZ - palmL * 0.5];
-    let ttip: Vec3;
-    if (te > 0.5) {
-      const ta = 34 * DEG;
-      const d = norm3([Math.cos(ta) * ab * side, 0.25, Math.sin(ta)] as Vec3);
-      ttip = add3(tbase, scale3(d, rh * 0.85 * te));
-    } else {
-      // folded across the palm toward the centre, on the palm (+Y) face
-      ttip = add3(tbase, scale3(norm3([-side, 0.4, 0.2] as Vec3), rh * 0.6));
-    }
+    const ta = (30 + cu * 55) * DEG;
+    const d = norm3([Math.cos(ta) * ab * side, 0.22 + cu * 0.5, Math.sin(ta)] as Vec3);
+    const ttip = add3(tbase, scale3(d, rh * 0.82));
     return hand.union(sdf.capsule(tbase, ttip, fr * 1.05));
   }
 
@@ -1377,8 +1368,11 @@ function handDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   const o = obj(opts, 'handDetail(opts)');
   assertNoUnknownKeys(o, ['radius', 'edgeLength'], 'handDetail(opts)');
   const r = rig.r;
-  const radius = num(o.radius, r.hand * 2.6, 'handDetail.radius', 1e-3);
-  const edgeLength = num(o.edgeLength, Math.max(r.hand * 0.085, 0.08), 'handDetail.edgeLength', 1e-4);
+  const radius = num(o.radius, r.hand * 2.8, 'handDetail.radius', 1e-3);
+  // OPTION 2: finer default than the other options so CURLED separate fingers
+  // resolve cleanly (the concave palm-junction crevices a curl makes need a fine
+  // grid). Costs ~+100–200k triangles per figure — the deliberate trade.
+  const edgeLength = num(o.edgeLength, Math.max(r.hand * 0.05, 0.05), 'handDetail.edgeLength', 1e-4);
   return [
     { center: [...(rig.joints.handL as Vec3)] as Vec3, radius, edgeLength },
     { center: [...(rig.joints.handR as Vec3)] as Vec3, radius, edgeLength },

@@ -1763,7 +1763,7 @@ describe('figure hands — sculpted fingers', () => {
   });
 
   it('rejects unknown grips and keys', () => {
-    expect(() => buildHands(api, rig, { grip: 'claw' })).toThrow(/grip/);
+    expect(() => buildHands(api, rig, { grip: 'wiggle' })).toThrow(/grip/);
     expect(() => buildHands(api, rig, { claws: true })).toThrow();
   });
 });
