@@ -3885,17 +3885,21 @@ function weldBody(rig: Rig, parts: unknown, opts?: unknown): Node {
   }
   const o = obj(opts, 'weld(opts)');
   assertNoUnknownKeys(o, ['k'], 'weld(opts)');
-  // The default weld is deliberately TIGHT. The body masses join end-to-end
-  // (neck atop chest, legs below pelvis, hands off wrists), so a small k already
-  // gives those coaxial seams a smooth transition. The arms, however, run
-  // PARALLEL to the torso when they hang at the sides, separated by the armpit
-  // slot — and a large k bridges that slot, fusing the whole upper arm to the
-  // ribcage as an unrealistic web/wing (most visible on relaxed standing poses;
-  // a raised arm, running clear of the torso, only ever welded at the shoulder).
-  // Halving the old 0.85·min(lowerArm,neck) keeps the coaxial seams smooth while
-  // letting the armpit open into a real hollow. Override via `weld(rig, parts,
-  // {k})` for a chunkier, blobbier look.
-  const k = num(o.k, Math.min(rig.r.lowerArm, rig.r.neck) * 0.32, 'weld.k', 1e-4);
+  // The default weld is TIGHTENED from the old 0.85·min(lowerArm,neck). The body
+  // masses join end-to-end (neck atop chest, legs below pelvis, hands off wrists),
+  // so a small k already gives those coaxial seams a smooth transition. The arms,
+  // though, run PARALLEL to the torso when they hang at the sides, separated by
+  // the armpit slot — a large k bridges that slot, fusing the whole upper arm to
+  // the ribcage as an unrealistic web/wing (most visible on relaxed standing
+  // poses). Shrinking k opens that armpit into a real hollow.
+  //
+  // But k can't go arbitrarily small: a RAISED arm runs clear of the torso and
+  // welds ONLY at the shoulder, so k is the entire arm→torso bridge there — too
+  // tight and an overhead arm detaches into its own component in the fine bake
+  // (the danseur split at 0.32). 0.48 is the sweet spot: comfortably below the
+  // ~0.6 where hanging arms re-web, comfortably above the ~0.32 where raised arms
+  // tear off. Override via `weld(rig, parts, {k})` for a chunkier, blobbier look.
+  const k = num(o.k, Math.min(rig.r.lowerArm, rig.r.neck) * 0.48, 'weld.k', 1e-4);
   let acc = parts[0] as Node;
   for (let i = 1; i < parts.length; i++) acc = acc.smoothUnion(parts[i] as Node, k);
   return acc;
