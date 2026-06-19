@@ -66,3 +66,4 @@ Branch from latest `origin/main`, commit the applied diffs + the report + the ar
 - You propose; the human disposes. Never merge the retro PR yourself.
 - Specific and grounded beats comprehensive. Cite the entries (by filename/area) behind each action.
 - If two clusters contradict each other (one agent wanted X, another the opposite), surface the tension in the report instead of silently picking a side.
+- **Telegram notifications:** After opening the draft PR, send a summary to the project Telegram channel. Bot: `@partwright_bot`. Channel numeric ID: `-1003948930577` (the `@PartwrightStudio` username alias fails the API; use the numeric ID). Use the `sendMessage` method: `POST https://api.telegram.org/bot<TOKEN>/sendMessage` with `{"chat_id": -1003948930577, "text": "..."}`. The bot token is provided in the scheduled task's instructions.
