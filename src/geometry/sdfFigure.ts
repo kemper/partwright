@@ -56,6 +56,9 @@ export interface Node {
   displace(amount: number, field: (x: number, y: number, z: number) => number): Node;
   label(name: string): Node;
   bounds(): { min: Vec3; max: Vec3 };
+  /** Signed distance at a world point (negative inside). Used to measure the
+   *  body's forward-most surface for draping garments. */
+  evaluate(x: number, y: number, z: number): number;
 }
 
 export interface SdfApi {
@@ -3888,33 +3891,62 @@ function panelLevel(v: unknown, table: Record<string, number>, def: string, name
   return table[assertEnum(v, Object.keys(table), name)];
 }
 
-// A conforming front/back-panel garment: aprons, bibs, tabards, loincloths,
-// capes. Built with the SAME "clothing = body region inflated + trimmed" rule
-// as buildTop/buildPants — the real torso+leg masses, offset OUTWARD by the
-// fabric thickness and clipped to a front (or back) slab + height window — so
-// the panel hugs the body's actual curved surface and can NEVER pass through
-// it the way a hand-rolled flat box does (the chef-apron pass-through, #apron).
+// Normalize an `over` option (a node or array of nodes to drape over) to an array.
+function asNodes(v: unknown): Node[] {
+  return (Array.isArray(v) ? v : [v]) as Node[];
+}
+
+// March the body's own SDF outward along ±Y at x=0 to find its forward-most
+// (front, −Y) or rear-most (back, +Y) surface over a z band — the line a drape
+// hangs from. Measured, never guessed, so a belly that bulges past any fixed
+// offset still can't poke through (the original chef-apron pass-through, #apron).
+function panelApex(body: Node, side: 'front' | 'back', zLo: number, zHi: number): number {
+  const dir = side === 'back' ? 1 : -1;
+  const step = Math.max((zHi - zLo) / 40, 0.2);
+  let best = dir > 0 ? -Infinity : Infinity;
+  for (let z = zLo; z <= zHi; z += step) {
+    let y = 0, last = 0, inside = false;
+    for (let i = 0; i < 200; i++) {
+      if (body.evaluate(0, y, z) > 0) break;   // crossed to outside → last was the surface
+      last = y; inside = true; y += dir * 0.1;
+    }
+    if (inside) best = dir > 0 ? Math.max(best, last) : Math.min(best, last);
+  }
+  return Number.isFinite(best) ? best : 0;
+}
+
+// A front/back-panel garment: aprons, bibs, tabards, loincloths, capes. Two fits:
 //
-// `side`  'front' (−Y, default) | 'back' (+Y) | 'both' (a front+back drape).
-// `top`/`bottom`  named coverage landmarks ('neck'/'chest'/'waist',
-//                 'hip'/'thigh'/'knee'/'shin'/'ankle') or a raw world Z.
-// `wrap`  half-width as a multiple of the hip half-width — how far the panel
-//         curls around the sides (1 ≈ hip-wide; >1 wraps toward the back).
-// `thickness`  fabric offset; defaults to sit PROUD of the default top+pants so
-//         the panel layers on TOP of them (too thin and it buries → paints
-//         nothing, exactly what model:preview's 0-triangle-label warning flags).
-// `label`  paint-region name applied to the result.
+//   'drape' (default) — a flat cloth SHEET that hangs. It sits just in front of
+//     the body's measured forward-most point (so it clears the body/under-
+//     garments and can't pass through), rests on the belly, and hangs straight
+//     DOWN — below the belly the legs recede, so the sheet is left hanging away
+//     from them (the "body separation" of real cloth). This is the apron/cape look.
+//   'hug' — the conforming shell (body mass offset + clipped); skin-tight, for a
+//     tabard/bib that lies flat ON the body rather than hanging off it.
+//
+// `side`  'front' (−Y, default) | 'back' (+Y) | 'both'.
+// `top`/`bottom`  named landmarks ('neck'/'chest'/'waist', 'waist'/'hip'/'thigh'/
+//                 'knee'/'shin'/'ankle') or a raw world Z. Apron/cape extend low.
+// `wrap`  half-width as a multiple of the hip half-width (1 ≈ hip-wide).
+// `thickness`  fabric thickness — set this so the printed sheet stays above your
+//              slicer's minimum wall; the default is a sturdy, print-safe value.
+// `over`  a node or array of nodes (e.g. an under-jacket/pants) the drape should
+//         hang OVER: they're folded into the apex measurement so the sheet clears
+//         them. Without it the sheet may bury under thicker under-garments.
+// `fit`   'drape' (default) | 'hug'.   `label`  paint-region name.
 function buildPanel(sdf: SdfApi, rig: Rig, opts?: unknown, opName = 'panel'): Node {
   // `opName` lets the apron preset surface its OWN name in validation errors
   // (an unknown key on apron(...) shouldn't blame panel(...)).
   const o = obj(opts, `${opName}(opts)`);
-  assertNoUnknownKeys(o, ['side', 'top', 'bottom', 'wrap', 'thickness', 'label'], `${opName}(opts)`);
+  assertNoUnknownKeys(o, ['side', 'top', 'bottom', 'wrap', 'thickness', 'over', 'fit', 'label'], `${opName}(opts)`);
   const side = o.side === undefined ? 'front' : assertEnum(o.side, ['front', 'back', 'both'] as const, `${opName}.side`);
+  const fit = o.fit === undefined ? 'drape' : assertEnum(o.fit, ['drape', 'hug'] as const, `${opName}.fit`);
   if (o.label !== undefined && typeof o.label !== 'string') throw new ValidationError(`${opName}.label must be a string`);
   const j = rig.joints, r = rig.r;
 
   // Named coverage heights → world Z. A taller bib reaches the collarbones; a
-  // waist apron / loincloth starts at the navel. Bottoms run hip → ankle.
+  // waist apron / loincloth starts at the navel. Bottoms run waist → ankle.
   const TOPS: Record<string, number> = {
     neck: j.chest[2] + r.chestY * 0.6,
     chest: j.chest[2] - r.chestY * 0.2,
@@ -3930,45 +3962,100 @@ function buildPanel(sdf: SdfApi, rig: Rig, opts?: unknown, opName = 'panel'): No
   };
   const topZ = panelLevel(o.top, TOPS, 'chest', `${opName}.top`);
   const botZ = panelLevel(o.bottom, BOTS, 'thigh', `${opName}.bottom`);
-  const wrap = num(o.wrap, 1.15, `${opName}.wrap`, 0.1);
-  // Default thickness clears BOTH default under-garments (top ≈ chestY·0.3,
-  // pants ≈ upperLeg·0.3) with margin, so the panel sits proud and paints.
-  const t = num(o.thickness, Math.max(r.chestY, r.upperLeg) * 0.3 + r.chestY * 0.08, `${opName}.thickness`, 0.01);
 
-  // The body the panel lies on (torso + legs so a long panel still has a
-  // surface to hug below the hips), offset outward by the fabric thickness.
-  const body = buildTorso(sdf, rig).union(buildLegs(sdf, rig)).round(t);
-  const big = Math.max(r.chestX, r.hipsX, r.upperLeg) * 8;
+  const bodyMass = buildTorso(sdf, rig).union(buildLegs(sdf, rig));
+
+  // --- 'hug': the conforming shell (skin-tight, lies ON the body) ------------
+  if (fit === 'hug') {
+    const wrap = num(o.wrap, 1.15, `${opName}.wrap`, 0.1);
+    const t = num(o.thickness, Math.max(r.chestY, r.upperLeg) * 0.3 + r.chestY * 0.08, `${opName}.thickness`, 0.01);
+    const body = bodyMass.round(t);
+    const big = Math.max(r.chestX, r.hipsX, r.upperLeg) * 8;
+    const halfW = r.hipsX * wrap;
+    const zCenter = (topZ + botZ) / 2;
+    const zSpan = Math.max(topZ - botZ, t);
+    const k = t * 1.0;
+    const cutY = r.chestY * 0.15;
+    const slab = (sign: number): Node => {
+      const zone = sdf.box([halfW * 2, big, zSpan]).translate([0, sign * (cutY + big / 2), zCenter]);
+      return body.smoothIntersect(zone, k);
+    };
+    const hugged = side === 'both' ? slab(-1).union(slab(+1)) : slab(side === 'back' ? +1 : -1);
+    return o.label !== undefined ? hugged.label(o.label as string) : hugged;
+  }
+
+  // --- 'drape': a flat hanging sheet (the apron/cape look) -------------------
+  const wrap = num(o.wrap, 1.0, `${opName}.wrap`, 0.1);
+  const t = num(o.thickness, r.chestY * 0.22, `${opName}.thickness`, 0.01);
+  // Measure the body PLUS anything we're draping over, so the sheet clears it.
+  let measured = bodyMass;
+  if (o.over !== undefined) for (const n of asNodes(o.over)) measured = measured.union(n);
   const halfW = r.hipsX * wrap;
-  const zCenter = (topZ + botZ) / 2;
-  const zSpan = Math.max(topZ - botZ, t);
-  // Soft hem/edge radius — rounds the panel's outline instead of a hard box cut.
-  const k = t * 1.0;
-
-  // One slab per requested side: a width × depth × height box whose INNER face
-  // (toward the body centre) defines the wrap line; smoothIntersect with the
-  // offset body rounds every panel edge into a soft hem.
-  const cutY = r.chestY * 0.15;   // wrap line a hair off centre so it laps the side
-  const slab = (sign: number): Node => {
-    // sign −1 → front (keep y ≤ −cutY); +1 → back (keep y ≥ +cutY).
-    const zone = sdf.box([halfW * 2, big, zSpan]).translate([0, sign * (cutY + big / 2), zCenter]);
-    return body.smoothIntersect(zone, k);
+  const zc = (topZ + botZ) / 2;
+  const span = Math.max(topZ - botZ, t * 2);
+  const rad = Math.min(t, halfW, span) * 0.4;
+  const eps = t * 0.15;                          // back face this far INTO the body → welds
+  // A flat sheet, front face proud of the measured apex, back face just inside
+  // it (so it fuses to the body at the belly/back and hangs free below).
+  const sheet = (s: number): Node => {
+    const apexY = panelApex(measured, s < 0 ? 'front' : 'back', j.hips[2], j.chest[2]);
+    const cy = apexY + s * (t / 2 - eps);
+    return sdf.roundedBox([halfW * 2, t, span], rad).translate([0, cy, zc]);
   };
-  let panel: Node;
-  if (side === 'both') panel = slab(-1).union(slab(+1));
-  else panel = slab(side === 'back' ? +1 : -1);
-
-  return o.label !== undefined ? panel.label(o.label as string) : panel;
+  const draped = side === 'both' ? sheet(-1).union(sheet(+1)) : sheet(side === 'back' ? +1 : -1);
+  return o.label !== undefined ? draped.label(o.label as string) : draped;
 }
 
-// Apron preset: a front panel from chest to thigh, labelled 'apron' by default.
-// Thin wrapper over buildPanel so the common case is a one-liner and other
-// front/back garments (bib, tabard, loincloth, cape) are buildPanel recipes.
+// Apron preset: a draping chef's bib apron — a narrow BIB flaring into a wider
+// SKIRT that hangs to the shin, held on by a NECK halter + WAIST ties (which is
+// what lets a real apron stand off the body). All draped, labelled 'apron'.
+//   top/bottom — bib top / skirt hem (default chest → shin).
+//   wrap — overall width scale.   thickness — print-safe sheet thickness.
+//   over — under-garments to hang over (so it clears them).   ties — waist ties.
 function buildApron(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'apron(opts)');
-  // Accepts every panel option (incl. `side`); `opName: 'apron'` keeps
-  // validation errors named for the function the caller actually invoked.
-  return buildPanel(sdf, rig, { label: 'apron', ...o }, 'apron');
+  assertNoUnknownKeys(o, ['top', 'bottom', 'wrap', 'thickness', 'over', 'ties', 'label'], 'apron(opts)');
+  if (o.ties !== undefined && typeof o.ties !== 'boolean') throw new ValidationError('apron.ties must be a boolean');
+  if (o.label !== undefined && typeof o.label !== 'string') throw new ValidationError('apron.label must be a string');
+  const j = rig.joints, r = rig.r;
+  const ties = o.ties === undefined ? true : o.ties as boolean;
+  const t = num(o.thickness, r.chestY * 0.22, 'apron.thickness', 0.01);
+  const wrap = num(o.wrap, 1.0, 'apron.wrap', 0.1);
+  const over = o.over;
+  const pass = over !== undefined ? { over } : {};
+  const bibTop = o.top ?? 'chest';
+  const hem = o.bottom ?? 'shin';
+  // Narrow bib (chest→waist) flaring into a wide skirt (waist→hem); same drape
+  // params so their front faces align and they smooth-weld into one sheet.
+  const bib = buildPanel(sdf, rig, { side: 'front', fit: 'drape', top: bibTop, bottom: 'waist', wrap: wrap * 0.62, thickness: t, ...pass }, 'apron');
+  const skirt = buildPanel(sdf, rig, { side: 'front', fit: 'drape', top: 'waist', bottom: hem, wrap: wrap * 1.05, thickness: t, ...pass }, 'apron');
+
+  // Strap geometry keys off the same measured belly apex the sheets use.
+  let measured = buildTorso(sdf, rig).union(buildLegs(sdf, rig));
+  if (over !== undefined) for (const n of asNodes(over)) measured = measured.union(n);
+  const apexY = panelApex(measured, 'front', j.hips[2], j.chest[2]);
+  const faceY = apexY - (t - t * 0.15) * 0.5;            // ~front of the sheet
+  const bibTopZ = j.chest[2] - r.chestY * 0.2;
+  const waistZ = j.spine[2];
+  const bibHalfW = r.hipsX * wrap * 0.62;
+
+  // NECK halter — straps from the bib's top corners up & back around the neck.
+  const strapR = Math.max(r.neck * 0.13, t * 0.5);
+  const neckRest: Vec3 = [0, r.neck * 0.6, j.chest[2] + r.head * 0.55];
+  const sL = sdf.capsule([bibHalfW * 0.82, faceY, bibTopZ], neckRest, strapR);
+  const sR = sdf.capsule([-bibHalfW * 0.82, faceY, bibTopZ], neckRest, strapR);
+  let apron = bib.smoothUnion(skirt, t * 1.5).smoothUnion(sL, strapR).smoothUnion(sR, strapR);
+
+  // WAIST ties — straps from the skirt's top corners wrapping toward the back.
+  if (ties) {
+    const skirtHalfW = r.hipsX * wrap * 1.05;
+    const tieR = Math.max(r.neck * 0.11, t * 0.45);
+    const tieEnd = (s: number): Vec3 => [s * r.hipsX * 0.35, r.hipsY * 1.15, waistZ];
+    const tL = sdf.capsule([skirtHalfW * 0.96, faceY, waistZ], tieEnd(1), tieR);
+    const tR = sdf.capsule([-skirtHalfW * 0.96, faceY, waistZ], tieEnd(-1), tieR);
+    apron = apron.smoothUnion(tL, tieR).smoothUnion(tR, tieR);
+  }
+  return apron.label(typeof o.label === 'string' ? o.label : 'apron');
 }
 
 // --- Body weld ------------------------------------------------------------
@@ -4103,16 +4190,22 @@ export interface FigureNamespace {
     top(rig: Rig, opts?: object): Node;
     shoes(rig: Rig, opts?: object): Node;
     boots(rig: Rig, opts?: object): Node;
-    /** A conforming front/back-panel garment — apron, bib, tabard, loincloth,
-     *  cape. Derived from the body masses (offset + clipped to a slab + height
-     *  window) so it hugs the curved torso and never passes through it.
-     *  `opts`: `{ side: 'front'|'back'|'both', top, bottom, wrap, thickness,
-     *  label }`. `top`/`bottom` accept a named landmark ('neck'/'chest'/'waist',
-     *  'hip'/'thigh'/'knee'/'shin'/'ankle') or a raw world Z. `wrap` defaults to
-     *  1.15 (a little past hip-wide). */
+    /** A front/back-panel garment — apron, bib, tabard, loincloth, cape.
+     *  `fit:'drape'` (default) hangs a flat cloth SHEET from the body's measured
+     *  forward-most point — it clears the body/under-garments (can't pass
+     *  through) and hangs straight down, separating from the receding legs like
+     *  real cloth. `fit:'hug'` is the skin-tight conforming shell.
+     *  `opts`: `{ side:'front'|'back'|'both', top, bottom, wrap, thickness, over,
+     *  fit, label }`. `top`/`bottom` accept a named landmark ('neck'/'chest'/
+     *  'waist', 'waist'/'hip'/'thigh'/'knee'/'shin'/'ankle') or a raw world Z.
+     *  `over` (a node or array) are under-garments to drape over; pass them so the
+     *  sheet clears them. `thickness` is the sheet thickness — keep it above your
+     *  slicer's min wall for printability. */
     panel(rig: Rig, opts?: object): Node;
-    /** Front apron preset (chest → thigh, labelled 'apron'). A thin wrapper
-     *  over {@link panel}; pass any panel option to customise. */
+    /** Draping chef's bib apron preset (narrow bib → wide skirt to the shin, with
+     *  a neck halter + waist ties; label 'apron'). `opts`: `{ top, bottom, wrap,
+     *  thickness, over, ties, label }` — pass `over:[jacket,pants]` so it clears
+     *  the under-garments; `ties:false` drops the waist ties. */
     apron(rig: Rig, opts?: object): Node;
   };
 }

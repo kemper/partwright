@@ -70,11 +70,12 @@ const pants = F.clothing.pants(rig, {
   leg: 'slim',
 }).label('pants');
 
-// 4b. APRON — a CONFORMING front panel from chest down to the thigh. Derived
-// from the real body masses (offset + front-clipped, the same "clothing = body
-// region inflated and trimmed" rule as F.clothing.top/pants), so it drapes flush
-// over the curved belly instead of passing through it the way a flat slab did.
-const apron = F.clothing.apron(rig, { top: 'chest', bottom: 'thigh' });
+// 4b. APRON — a DRAPING chef's bib apron: a narrow bib flaring into a wider
+// skirt that hangs to the shin, held by a neck halter + waist ties. It sits just
+// in front of the body's measured forward-most point (passed `over` the jacket +
+// pants so it clears them) and hangs straight down — so it drapes like cloth with
+// real body separation, instead of hugging the body or passing through it.
+const apron = F.clothing.apron(rig, { over: [jacket, pants], bottom: 'shin', thickness: r.chestY * 0.2 });
 
 // 5. SHOES — own their 'shoes' upper + 'sole' regions.
 const shoes = F.clothing.shoes(rig, { label: 'shoes' });
