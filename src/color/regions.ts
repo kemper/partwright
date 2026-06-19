@@ -559,7 +559,29 @@ export function clearModelColorRegions(): void {
  *  *underneath* itself — without this, its own freshly-stamped color would mask
  *  the source color it's meant to follow and the flood would collapse to the seed. */
 export function buildTriColors(numTri: number, respectPerRegionVisibility = false, excludeRegionId?: number, baseColors?: Uint8Array | null): Uint8Array | null {
-  if (regions.length === 0 && modelRegions.length === 0) return null;
+  // Model-declared colors are the base layer; the user's manual paint composites
+  // on top and always wins (it's an optional override of the code's colors).
+  return composeTriColors(numTri, [modelRegions, regions], { respectPerRegionVisibility, excludeRegionId, baseColors });
+}
+
+/**
+ * Pure triColors compositor — the engine behind {@link buildTriColors}, exposed
+ * so callers that hold their OWN region lists (e.g. baking a non-active part's
+ * mesh for multi-part export, off the live editor state) can reuse the exact
+ * same stamping rules without touching the module globals.
+ *
+ * `layers` are stamped in order (earlier = lower); within a layer higher
+ * `order` wins. Returns null when every layer is empty and there are no
+ * `baseColors` to seed from.
+ */
+export function composeTriColors(
+  numTri: number,
+  layers: ColorRegion[][],
+  opts: { respectPerRegionVisibility?: boolean; excludeRegionId?: number; baseColors?: Uint8Array | null } = {},
+): Uint8Array | null {
+  const { respectPerRegionVisibility = false, excludeRegionId, baseColors } = opts;
+  const hasBase = !!(baseColors && baseColors.length >= numTri * 3);
+  if (layers.every(l => l.length === 0) && !hasBase) return null;
 
   const buf = new Uint8Array(numTri * 3); // default 0,0,0 — ignored for un-colored tris
   // `painted[t] === 1` once ANY layer colors triangle `t`. Tracked separately
@@ -570,7 +592,7 @@ export function buildTriColors(numTri: number, respectPerRegionVisibility = fals
   // Seed from the mesh's own per-triangle colours (e.g. a voxel grid's colours
   // or an imported coloured model's) so painting a few regions doesn't blank the
   // rest of the model back to the default shade — the regions composite on top.
-  if (baseColors && baseColors.length >= numTri * 3) {
+  if (hasBase && baseColors) {
     buf.set(baseColors.subarray(0, numTri * 3));
     const basePainted = (baseColors as Uint8Array & { _painted?: Uint8Array })._painted;
     for (let t = 0; t < numTri; t++) {
@@ -611,10 +633,7 @@ export function buildTriColors(numTri: number, respectPerRegionVisibility = fals
     }
   };
 
-  // Model-declared colors are the base; the user's manual paint composites on
-  // top and always wins (it's an optional override of the code's colors).
-  stampLayer(modelRegions);
-  stampLayer(regions);
+  for (const layer of layers) stampLayer(layer);
 
   // Store the painted mask on the result for the renderer
   (buf as Uint8Array & { _painted?: Uint8Array })._painted = painted;
