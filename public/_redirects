@@ -2,6 +2,22 @@
 /agent /ai.md 301
 /api /ai.md 301
 
+# Versioned deployments (see CLAUDE.md › Deployment). The site root is the
+# LATEST version served versionlessly (/, /editor, /catalog … — unchanged), and
+# each major is ALSO available as an immutable, pinned mount under /vN/ so a user
+# who pins it keeps that version even after a newer one takes over the root.
+#
+# "/current/…" is a stable alias for the latest (versionless) deployment, for
+# anyone who wants an explicit "always newest" path. Strips the prefix.
+/current/* /:splat 302
+/current /editor 302
+
+# Pinned version mounts: each needs its OWN SPA fallback, listed BEFORE the root
+# one so a deep link like /v1/editor serves /v1/index.html (the pinned build),
+# not the root app. Real assets and the pre-rendered /v1/*.html content pages
+# resolve before this rule (same as the root fallback below).
+/v1/* /v1/index.html 200
+
 # Pre-rendered, app-free content pages (catalog.html / help.html / legal.html /
 # whats-new.html / ideas.html) are served by Cloudflare Pages at their CLEAN URLs
 # (/catalog, /help, …) automatically — Pages maps an `.html` asset to its
