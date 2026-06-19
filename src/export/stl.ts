@@ -1,10 +1,24 @@
 import type { MeshData } from '../geometry/types';
 import { downloadBlob, getExportFilename, getExportTitle } from './download';
 import { assertFiniteMesh, assertExportableMesh, cleanMeshForExport } from './meshClean';
+import { buildZip } from './zip';
+import { uniquePartStem, type ExportPart } from './multiPart';
 import type { BuiltExport } from './gltf';
 
-/** Build the binary STL blob for a mesh without triggering a download. */
-export function buildSTL(meshData: MeshData, customName?: string): BuiltExport {
+const ATTRIBUTION = 'Partwright partwrightstudio.com';
+
+/** Compose the (≤80-byte) ASCII header text for an STL file from a title, appending
+ *  the Partwright attribution when it still fits. The header must be plain ASCII:
+ *  setUint8 truncates each code unit to one byte, so a multi-byte char (e.g. the
+ *  em-dash getExportTitle puts between "name — label") would write garbage —
+ *  normalize dashes and drop other non-ASCII. */
+function stlHeaderText(title: string): string {
+  const t = title.replace(/[‒-―]/g, '-').replace(/[^\x20-\x7E]/g, '?');
+  return (t.length + 3 + ATTRIBUTION.length <= 80) ? `${t} - ${ATTRIBUTION}` : t;
+}
+
+/** Write the raw binary-STL bytes for a mesh, with `header` in the 80-byte header. */
+function buildSTLBuffer(meshData: MeshData, header: string): ArrayBuffer {
   assertFiniteMesh(meshData);
   const { numProp } = meshData;
 
@@ -26,23 +40,9 @@ export function buildSTL(meshData: MeshData, customName?: string): BuiltExport {
   const buffer = new ArrayBuffer(bufferSize);
   const view = new DataView(buffer);
 
-  // Header (80 bytes) — include session name if available, plus a Partwright
-  // attribution suffix when it fits. The header must be plain ASCII: setUint8
-  // truncates each code unit to one byte, so a multi-byte char (e.g. the
-  // em-dash getExportTitle puts between "name — label") would otherwise write
-  // garbage. Normalize dashes and drop other non-ASCII.
-  //
-  // CRITICAL: the header is fixed at 80 bytes and byte 80 holds the triangle
-  // count — the header must NEVER exceed 80 bytes or the count is corrupted.
-  // The attribution is only appended when the title + suffix still fits; the
-  // loop below caps at 80 as a final backstop regardless.
-  const title = getExportTitle()
-    .replace(/[‒-―]/g, '-')
-    .replace(/[^\x20-\x7E]/g, '?');
-  const ATTRIBUTION = 'Partwright partwrightstudio.com';
-  const header = (title.length + 3 + ATTRIBUTION.length <= 80)
-    ? `${title} - ${ATTRIBUTION}`
-    : title;
+  // Header (80 bytes). CRITICAL: the header is fixed at 80 bytes and byte 80
+  // holds the triangle count — the header must NEVER exceed 80 bytes or the count
+  // is corrupted, so the loop below caps at 80 as a final backstop regardless.
   for (let i = 0; i < Math.min(header.length, 80); i++) {
     view.setUint8(i, header.charCodeAt(i));
   }
@@ -100,9 +100,37 @@ export function buildSTL(meshData: MeshData, customName?: string): BuiltExport {
     view.setUint16(offset, 0, true); offset += 2;
   }
 
+  return buffer;
+}
+
+/** Build the binary STL blob for a mesh without triggering a download. */
+export function buildSTL(meshData: MeshData, customName?: string): BuiltExport {
+  const buffer = buildSTLBuffer(meshData, stlHeaderText(getExportTitle()));
   const mimeType = 'application/octet-stream';
   const blob = new Blob([buffer], { type: mimeType });
   return { blob, filename: getExportFilename('stl', customName), mimeType };
+}
+
+/**
+ * Build a multi-part STL: one `.stl` file per Session Part, bundled into a single
+ * `.zip`. STL is a flat triangle soup with no object names or boundaries, so the
+ * only faithful way to keep parts distinct is separate files (rather than merging
+ * them into one anonymous soup). Each part keeps its own coordinates; colours are
+ * dropped (STL has no colour). The part name drives both the file name and the STL
+ * header.
+ */
+export function buildSTLProject(parts: ExportPart[], customName?: string): BuiltExport {
+  if (parts.length === 0) throw new Error('Cannot export: no parts selected.');
+  const used = new Set<string>();
+  const files = parts.map((p, i) => {
+    const stem = uniquePartStem(p.name, used, `part_${i + 1}`);
+    const buffer = buildSTLBuffer(p.mesh, stlHeaderText(p.name || `part ${i + 1}`));
+    return { name: `${stem}.stl`, data: new Uint8Array(buffer) };
+  });
+  const zip = buildZip(files);
+  const mimeType = 'application/zip';
+  const base = getExportFilename('stl', customName).replace(/\.stl$/, '');
+  return { blob: new Blob([zip], { type: mimeType }), filename: `${base}.zip`, mimeType };
 }
 
 export function exportSTL(meshData: MeshData, customName?: string): string {

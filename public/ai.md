@@ -288,6 +288,12 @@ await partwright.exportSTLData()
 await partwright.exportOBJData()        // text or base64 depending on whether colors are painted
 await partwright.export3MFData()
 await partwright.exportVOXData()        // -> {filename, mimeType, base64, sizeBytes} (voxel sessions only)
+// Multi-part: bundle several Session Parts into one file (default: all parts). See /ai/file-io.md.
+await partwright.export3MFParts(partIds?, filename?, {bambu?})  // 3MF: one part per Bambu/Orca plate (bambu:true, default) or generic grid (false)
+await partwright.exportOBJParts(partIds?, filename?)            // OBJ: named objects in one file, grid-arranged (+ .mtl .zip if painted)
+await partwright.exportSTLParts(partIds?, filename?)            // STL: a .zip of one .stl per part
+await partwright.exportGLBParts(partIds?, filename?)            // GLB: named nodes in one scene, grid-arranged
+// ...each has a *Data twin (export{3MF,OBJ,STL,GLB}PartsData) that RETURNS the bytes instead of downloading.
 await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
