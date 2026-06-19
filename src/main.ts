@@ -1284,6 +1284,36 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   return report;
 }
 
+/** Load a version's saved colour-region *descriptors* into the store WITHOUT
+ *  resolving them against a mesh (empty triangle sets). Used when a version
+ *  load can't finish its render — most importantly when the user cancels the
+ *  slow initial render of a catalog figure. Without this, the cancel skips
+ *  rehydrateColorRegions entirely (it needs a finished mesh + labelMap to
+ *  resolve `byLabel` regions), so the figure's colours never enter memory: a
+ *  subsequent Save then serialises the empty store over the version's colours
+ *  (permanent loss), and the next edit→rerender shows a colourless model.
+ *
+ *  Staging the descriptors fixes both: `serialize()` persists descriptors (not
+ *  triangles), so a Save keeps the colours, and runCodeSync re-resolves every
+ *  in-memory region against the freshly-rendered mesh+labelMap on the next run,
+ *  so the colours reappear. Regions that genuinely no longer match just resolve
+ *  to 0 triangles, exactly as the normal reconcile path already tolerates. */
+function stageUnresolvedColorRegions(geometryData: Record<string, unknown> | null): void {
+  resetPaintWorkerState();
+  clearRegions();
+  const regions = geometryData?.colorRegions as SerializedColorRegion[] | undefined;
+  if (!regions || regions.length === 0) {
+    syncLockState();
+    return;
+  }
+  suspendReconcile = true;
+  for (const region of regions) {
+    addRegion(region.name, region.color, region.source, region.descriptor, new Set<number>(), region.visible !== false, region.slotId);
+  }
+  suspendReconcile = false;
+  syncLockState();
+}
+
 /** Draw `currentMeshData` with the model-declared colour underlay (api.label /
  *  api.paint) applied — or the plain mesh when the model declares no colours.
  *  The shared "show model colours" step for restore paths: a no-op for an
@@ -5015,6 +5045,29 @@ async function main() {
   // rather than as its own absolute overlay, so it never stacks on top of them.
   (cancelInlineBtn.parentElement ?? viewportPane).appendChild(fastPreviewPillEl);
 
+  // Owners of the inline Cancel button when an SDF surface carve (engrave /
+  // voronoi lamp) is running. Declared here — early, before the initial
+  // syncEditorFromURL render — so the click handler attached just below can
+  // close over them without a temporal-dead-zone error. They're assigned in
+  // buildSurfaceModifierProgress far below.
+  let surfaceCarveAbort: AbortController | null = null;
+  let surfaceCarveCancel: (() => void) | null = null;
+
+  // Wire the Cancel button NOW, before the first deep-link render. main() awaits
+  // the initial render inside syncEditorFromURL(), so attaching this handler at
+  // its natural spot far below left the button visible-but-dead for the whole
+  // first render of a slow model — exactly the catalog-figure case where the
+  // fast-preview pill + "Rendering… Xs" timer + Cancel button all appear but the
+  // click did nothing. Precedence: a running surface carve owns it (aborts the
+  // SDF sweep); then an in-flight surface-texture chain (terminates the surface
+  // Worker — the base mesh stays + the Re-apply pill appears); otherwise it
+  // cancels the current engine execution (terminates the geometry Worker).
+  cancelInlineBtn.addEventListener('click', () => {
+    if (surfaceCarveCancel) { surfaceCarveCancel(); return; }
+    if (cancelSurfaceCompute()) return;
+    cancelCurrentExecution();
+  });
+
   // Surface "Re-apply" pill — a persistent status indicator (not a transient
   // toast) shown when the model declares `api.surface.*` textures whose result
   // isn't cached for the current code/params. Until pressed, the viewport shows
@@ -5636,10 +5689,23 @@ async function main() {
         seedSurfaceCache(persistedTexture.key, persistedTexture.mesh as MeshData);
       }
       const meshBeforeRun = currentMeshData;
+      const genBeforeRun = _runGeneration;
       const applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
-      if (!applied) return;
+      if (!applied) {
+        // The render didn't complete (most commonly: the user cancelled the slow
+        // initial render of a catalog figure). rehydrateColorRegions needs a
+        // finished mesh + labelMap to resolve regions, so it's skipped here — but
+        // we must still stage the version's colour-region descriptors into memory,
+        // or a Save would persist an empty store over the figure's colours and the
+        // next edit→rerender would render colourless. They re-resolve on the next
+        // successful run. Skip when a NEWER run superseded ours (runCodeSync bumped
+        // _runGeneration past the one our call started): that newer run owns the
+        // store and must not be clobbered with this version's descriptors.
+        if (_runGeneration === genBeforeRun + 1) stageUnresolvedColorRegions(version.geometryData);
+        return;
+      }
       // Store the freshly compiled result so the next switch back is instant.
       // Only cache on a successful mesh-producing run (compile errors leave
       // currentMeshData as the previous part's mesh, i.e. unchanged).
@@ -8709,10 +8775,9 @@ async function main() {
   // the Cancel aborts the sweep (see surfaceCarveCancel, wired into
   // cancelInlineBtn). Supersede any in-flight carve when a newer one starts
   // (rapid slider edits). Lighter modifiers run inline with no indicator.
-  let surfaceCarveAbort: AbortController | null = null;
-  // While a carve is running, the toolbar Cancel button aborts it instead of
-  // cancelling a worker run. Cleared when the carve settles.
-  let surfaceCarveCancel: (() => void) | null = null;
+  // surfaceCarveAbort / surfaceCarveCancel are declared early (near the
+  // fast-preview pill setup) so the Cancel handler can be wired before the
+  // initial render; this block only assigns them.
   const SDF_HEAVY = new Set(['engrave', 'voronoiLamp']);
   async function buildSurfaceModifierProgress(
     id: Parameters<typeof buildSurfaceModifier>[0],
@@ -15719,15 +15784,12 @@ async function main() {
   // Start the elapsed-time display for a render. The cancel button and timer
   // are delayed 400 ms so fast runs (manifold-js is typically < 100 ms) never
   // flash them. stopRunTimer() always cancels the pending show before it fires.
-  cancelInlineBtn.addEventListener('click', () => {
-    // A running surface carve owns the Cancel button (it aborts the SDF sweep);
-    // an in-flight surface-texture chain owns it next (terminates the surface
-    // Worker — the run already finished, so the base mesh stays + the Re-apply
-    // pill appears); otherwise this cancels the current engine execution.
-    if (surfaceCarveCancel) { surfaceCarveCancel(); return; }
-    if (cancelSurfaceCompute()) return;
-    cancelCurrentExecution();
-  });
+  // NOTE: the Cancel button's click handler is attached *early* (right after the
+  // layout is built, before the initial syncEditorFromURL render) — see the
+  // `cancelInlineBtn.addEventListener` near the fast-preview pill setup. Attaching
+  // it here instead left the button dead for the entire first render of a slow
+  // deep-linked model (catalog SDF figures especially), because main() awaits
+  // that render before ever reaching this line.
 
   function startRunTimer(t0: number): void {
     _runTimerStart = t0;

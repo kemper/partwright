@@ -95,10 +95,14 @@ How it's wired:
   content nav (`rebaseHtmlPaths`), the pre-paint pair (`entry.ts` +
   `public/route-init.js`, which derives its base from its own `<script src>`),
   and `manifest.json` all follow it. Every piece is a **no-op at base `/`**.
-- **`npm run build:deploy`** produces the combined deploy: the versionless root
-  build in `dist/` plus a `DEPLOY_BASE=/v1/` build nested in `dist/v1/`. To go
-  live, point the **Cloudflare build command** at `npm run build:deploy` (the
-  default `npm run build` only emits the versionless root).
+- **`npm run build` produces the combined deploy**: the versionless root build
+  in `dist/` plus a `DEPLOY_BASE=/v1/` build nested in `dist/v1/`. The Cloudflare
+  build command stays the **default `npm run build`** — no per-deploy command
+  change, so a branch that predates this still builds (its own `build` just emits
+  the versionless root). `build:deploy` remains as a back-compat alias of
+  `build`. *(History: the dual build was briefly a separate `build:deploy` script;
+  pointing the project-wide Cloudflare command at it broke every branch that
+  lacked the script — so it was folded into `build`.)*
 - **`public/_redirects`** carries the per-mount SPA fallback (`/v1/* /v1/index.html 200`
   before the root `/* /index.html 200` — first-match wins) and the `/current/`
   alias. **Verify `/v1/editor` on a real Cloudflare preview** before flipping
