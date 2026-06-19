@@ -46,6 +46,7 @@ import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport,
 import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
+import { setSdfPreviewScale, sourceUsesSdfBuild } from './sdf';
 import type { Language } from './engines/types';
 import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, isEnhanceExceeded, type SimplifyResult, type EnhanceResult, type EnhanceExceeded } from './simplify';
 import type { MeshData } from './types';
@@ -105,7 +106,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params, companionFiles } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
@@ -113,6 +114,7 @@ self.onmessage = async (event: MessageEvent) => {
       circularSegments?: number;
       params?: Record<string, unknown> | null;
       companionFiles?: Record<string, string>;
+      sdfPreviewScale?: number | null;
     };
     // Worker-side compute timer. Reported back on execute_result so the
     // worker-health panel can separate real evaluation time from the
@@ -195,6 +197,32 @@ self.onmessage = async (event: MessageEvent) => {
           await preloadTextFonts();
         }
         setActiveImports(runImports);
+        // Progressive render for SDF models (figures): a throwaway coarse pass
+        // first, posted as `execute_preview` so the viewport shows a rough shape
+        // in ~1-2s, then the full-quality pass below. Gated on the source doing
+        // an SDF `.build()` so plain Manifold code never pays for a second pass.
+        // Both runs are synchronous and back-to-back (no await between them), so
+        // no newer execute can interleave; cancellation terminates the Worker.
+        if (typeof sdfPreviewScale === 'number' && sdfPreviewScale > 1 && sourceUsesSdfBuild(code as string)) {
+          try {
+            setSdfPreviewScale(sdfPreviewScale);
+            const preview = manifoldJsEngine.run(code as string, params ?? undefined);
+            if (preview.mesh) {
+              const pm = preview.mesh;
+              const ptransfer: Transferable[] = [pm.vertProperties.buffer, pm.triVerts.buffer];
+              if (pm.mergeFromVert) ptransfer.push(pm.mergeFromVert.buffer);
+              if (pm.mergeToVert)   ptransfer.push(pm.mergeToVert.buffer);
+              if (pm.runIndex)      ptransfer.push(pm.runIndex.buffer);
+              if (pm.runOriginalID) ptransfer.push(pm.runOriginalID.buffer);
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (self as any).postMessage({ type: 'execute_preview', callId, mesh: pm }, ptransfer);
+            }
+            // Free the preview's live Manifold — only the mesh was transferred.
+            const plive = (preview as { manifold?: { delete?: () => void } } | undefined)?.manifold;
+            if (plive && typeof plive.delete === 'function') { try { plive.delete(); } catch { /* freed */ } }
+          } catch { /* preview is best-effort; fall through to the full render */ }
+          finally { setSdfPreviewScale(null); }
+        }
         result = manifoldJsEngine.run(code as string, params ?? undefined);
       }
 
