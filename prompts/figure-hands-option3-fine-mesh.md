@@ -110,3 +110,19 @@ the palm (knuckle line at 1.2·r.hand, heel below the wrist joint) to balance th
 width, not narrowing it (narrowing crowds the fingers → webbing). Over-taper made
 a teardrop; settled on a gentle 0.06 taper. All 11 grips genus-clean; full figure
 genus 0, ~258k tris, verified in the real browser.
+
+## Human (follow-up 3)
+
+The hands look like robot hands — I'd like them more organic. (Also a separate
+sleeve defect on the diva — tracked separately.)
+
+## Assistant (follow-up 3)
+
+The robotic look was straight uniform-radius capsule fingers. Rebuilt each finger
+as THREE tapered phalange segments (radius steps down each segment → knuckle
+ridges) with a gentle progressive bend toward the palm, so fingers taper to the
+tip and curve naturally even when "extended" (real fingers aren't ramrod rods).
+Plain unions only (one finger's segments overlap collinearly) so the fine march
+stays clean. All 11 grips still genus-clean; fists/curls now show natural
+knuckles. Full figure genus 0. The diva sleeve-cuff aliasing is a separate
+clothing-subsystem issue, filed and handled apart from this hands PR.

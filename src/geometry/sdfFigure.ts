@@ -1363,12 +1363,27 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       const fanDeg = Math.max(0, Math.abs(spDeg) - 10);
       const baseFan = Math.sign(spDeg) * side * Math.sin(fanDeg * DEG) * rh * 1.3;
       const bx = clamp(u * (span / 2 - fr) * side + baseFan, -baseLimit, baseLimit);
-      // Single capsule angled toward the palm (+Y) by curl, fanned across X.
-      const fold = preset.curl[k] * 150 * DEG;
-      const base: Vec3 = [bx, 0, palmTopZ - fr * 0.3];
-      const d = norm3([Math.sin(sp) * Math.cos(fold), Math.sin(fold), Math.cos(fold) * Math.cos(sp)] as Vec3);
-      const tip = add3(base, scale3(d, rh * lengthK * lenProfile(u)));
-      hand = hand.union(sdf.capsule(base, tip, fr * 0.92));
+      // Organic finger: THREE tapered phalange segments with a gentle progressive
+      // bend toward the palm. The radius steps down each segment (knuckle ridges)
+      // and the per-joint bend curves the finger even when "extended" — real
+      // fingers aren't ramrod rods. Plain unions only (collinear-ish segments of
+      // one finger overlap cleanly), so the fine march stays clean.
+      const fold0 = preset.curl[k] * 150 * DEG;
+      const fingerLen = rh * lengthK * lenProfile(u);
+      const segN = 3;
+      const segLen = fingerLen / segN;
+      const r0 = fr * 0.98;
+      const segR = [r0, r0 * 0.93, r0 * 0.86, r0 * 0.78];
+      // A small base curl so even open fingers have life, plus extra per joint.
+      const jointBend = (6 + preset.curl[k] * 14) * DEG;
+      let p: Vec3 = [bx, 0, palmTopZ - fr * 0.3];
+      for (let s = 0; s < segN; s++) {
+        const fold = fold0 + jointBend * s;
+        const d = norm3([Math.sin(sp) * Math.cos(fold), Math.sin(fold), Math.cos(fold) * Math.cos(sp)] as Vec3);
+        const p2 = add3(p, scale3(d, segLen));
+        hand = hand.union(sdf.capsule(p, p2, segR[s]));
+        p = p2;
+      }
     }
 
     // Thumb: a single capsule, extended off the side edge or angled across the
