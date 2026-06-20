@@ -170,6 +170,7 @@ export const HELP_STATIC_SECTIONS: ContentSection[] = [
       '<li><strong class="text-zinc-300">GLB</strong> — Web/preview format with vertex colors. Good for embedding online, not read by slicers.</li>' +
       '<li><strong class="text-zinc-300">STEP</strong> — Exact BREP solids, available from BREP-language sessions. The CAD interchange format for downstream engineering tools.</li>' +
       '</ul><br>' +
+      '<strong class="text-zinc-300">Multi-part &amp; multi-color export:</strong> A session with several parts exports them all at once — 3MF, STL, OBJ, and GLB all carry every part. Multi-part 3MF lays the parts out across printer plates with their filament colours preserved and arranged to fit the bed, ready for Bambu Studio or OrcaSlicer. Color export is not capped at three filaments — every distinct color, including hand-painted per-triangle color, maps to its own filament. Before exporting, the confirm dialog warns when any part (even one you’re not currently viewing) has unsaved or never-saved changes and surfaces printability issues, so nothing ships stale.<br><br>' +
       '<strong class="text-zinc-300">Export — Project formats:</strong>' +
       '<ul class="list-disc list-inside mt-2 space-y-1 text-zinc-400">' +
       '<li><strong class="text-zinc-300">Session (.partwright.json)</strong> — All versions, notes, annotations, color regions, and attached images. Another Partwright user can import this and pick up where you left off. A dialog lets you choose whether to embed the thumbnail, notes, annotations, and color regions.</li>' +
