@@ -464,10 +464,13 @@ function frameModel(): void {
   updateDimensionLines(box);
 
   controls.target.copy(center);
+  // How tightly the default view frames the model (factor·maxDim along each
+  // axis). Higher = more zoomed out. Tunable via renderer.defaultFrameFactor.
+  const frameFactor = getConfig().renderer.defaultFrameFactor;
   camera.position.set(
-    center.x + maxDim * 1.2,
-    center.y - maxDim * 1.2,
-    center.z + maxDim * 1.2,
+    center.x + maxDim * frameFactor,
+    center.y - maxDim * frameFactor,
+    center.z + maxDim * frameFactor,
   );
   // Adapt the clip planes to the model size. With a fixed far plane a large
   // model (e.g. scaled to ~890mm) auto-frames the camera far enough away that
@@ -479,7 +482,8 @@ function frameModel(): void {
     camera.updateProjectionMatrix();
     // Bound how far the user can dolly out so the model can't shrink to a
     // speck (and drift toward the far plane). The default framing distance is
-    // ~maxDim*2.1, so a multiple well above that still leaves generous room.
+    // frameFactor·√3·maxDim (~2.6·maxDim at the default), so maxZoomOutFactor
+    // (a larger multiple) still leaves generous room.
     controls.maxDistance = maxDim * getConfig().renderer.maxZoomOutFactor;
   }
   controls.update();
