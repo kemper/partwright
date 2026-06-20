@@ -1344,7 +1344,11 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       .translate([0, 0, palmMidZ]);
     const heel = sdf.ellipsoid(palmW * 0.4, thick * 0.58, rh * 0.46)
       .translate([0, 0, wristZ + rh * 0.32]);
-    let hand = slab.union(heel);
+    // Round the slab→heel junction into one organic palm mass. Both are
+    // centred palm volumes (no fingers involved), so a smoothUnion here just
+    // softens the wrist transition — it can't web the inter-finger gaps (which
+    // stay plain unions below) into topological handles.
+    let hand = slab.smoothUnion(heel, rh * 0.28);
 
     const span = count * 2 * fr + (count - 1) * rh * 0.16;
     const baseLimit = palmW * 0.5 - fr;   // keep every finger base on the palm
@@ -1376,14 +1380,23 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       const segR = [r0, r0 * 0.93, r0 * 0.86, r0 * 0.78];
       // A small base curl so even open fingers have life, plus extra per joint.
       const jointBend = (6 + preset.curl[k] * 14) * DEG;
+      // Build the finger as its OWN mass, smooth-unioning consecutive segments so
+      // the knuckle joints round into one organic digit instead of three stacked
+      // capsules with faceted steps at each joint (the "low-poly finger" look).
+      // The smin is local to THIS finger's collinear-ish axis, so it can't reach
+      // an adjacent finger; the finished finger is then PLAIN-unioned onto the
+      // hand, leaving the inter-finger gaps as clean unions (no webbing handles).
       let p: Vec3 = [bx, 0, palmTopZ - fr * 0.3];
+      let finger: Node | null = null;
       for (let s = 0; s < segN; s++) {
         const fold = fold0 + jointBend * s;
         const d = norm3([Math.sin(sp) * Math.cos(fold), Math.sin(fold), Math.cos(fold) * Math.cos(sp)] as Vec3);
         const p2 = add3(p, scale3(d, segLen));
-        hand = hand.union(sdf.capsule(p, p2, segR[s]));
+        const seg = sdf.capsule(p, p2, segR[s]);
+        finger = finger ? finger.smoothUnion(seg, segR[s] * 0.7) : seg;
         p = p2;
       }
+      if (finger) hand = hand.union(finger);
     }
 
     // Thumb: a single capsule, extended off the side edge or angled across the
