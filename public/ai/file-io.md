@@ -117,3 +117,14 @@ partwright.clearRecentExports()
 ```
 
 This is also the easiest way to inspect what the user just exported manually: the bytes stay in memory until they're pushed out by newer exports.
+
+## Publish to a print site (assisted)
+
+`partwright.publish(platform?)` opens the **assisted-publish** modal for the major model-sharing sites — **Printables**, **MakerWorld** (Bambu), **Thingiverse**, and **Thangs**. Pass an optional platform id (`'printables'` | `'makerworld'` | `'thingiverse'` | `'thangs'`) to preselect one.
+
+```js
+partwright.publish()              // open the modal, default platform
+partwright.publish('makerworld')  // preselect MakerWorld
+```
+
+None of these platforms expose a public *upload* API a browser app can call, so Partwright **cannot post the model for the user**. The flow instead **prepares** the publish: it downloads a single **ZIP** containing the model file (in the platform's preferred format — Bambu/Orca 3MF for MakerWorld, generic 3MF for Printables, STL for Thingiverse/Thangs), a rendered `cover.png`, and a `details.txt` (also copied to the clipboard), then opens the platform's site — the user signs in, hits its Upload button, drops the files, and pastes. The modal also has an **"✨ Auto-populate with AI"** button (enabled only when an AI model is connected — otherwise disabled with a "connect an AI model first" tooltip) that reviews the session's code, geometry stats, notes, recent AI chat, and a 4-iso snapshot to draft the title/description/tags via the active provider. Bundling into one ZIP avoids the browser's "open multiple files?" prompt that several separate downloads trigger. Every platform's direct upload route is auth-gated and unreliable (404/500/login bounce), so each target opens a stable landing page rather than a fragile deep link. Returns `{ error }` if there's no geometry or the platform id is unknown.

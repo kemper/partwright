@@ -78,7 +78,11 @@ import { initSessionList, showSessionList } from './ui/sessionList';
 import { exportGLB, buildGLB, buildGLBProject } from './export/gltf';
 import { exportSTL, buildSTL, buildSTLProject } from './export/stl';
 import { exportOBJ, buildOBJ, buildOBJProject } from './export/obj';
+import { openPublishModal } from './ui/publishModal';
+import { findPublishTarget, type PublishFormat } from './publish/publishTargets';
+import { generatePublishMetadata, isActiveProviderConnected } from './ai/publishMetadata';
 import { export3MF, build3MF } from './export/threemf';
+import { buildZip, type ZipEntry } from './export/zip';
 import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
 import { exportVOX, buildVOX } from './export/vox';
@@ -4974,6 +4978,119 @@ async function main() {
   /** True when the share action can run: an active session on a ready engine. */
   const canShare = (): boolean => !!getState().session && engineOk && !isSharedPreview() && typeof CompressionStream !== 'undefined';
 
+  /** Axis-aligned bbox of the current export mesh, for the publish description. */
+  const currentModelDims = (): [number, number, number] | null => {
+    const m = currentMeshData;
+    if (!m || m.numVert === 0) return null;
+    const v = m.vertProperties, stride = m.numProp;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < m.numVert; i++) {
+      const x = v[i * stride], y = v[i * stride + 1], z = v[i * stride + 2];
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    }
+    return [maxX - minX, maxY - minY, maxZ - minZ];
+  };
+
+  /** Build a downloadable file in the requested format for the publish flow.
+   *  Mirrors the single-part export paths (colour-bake where the format carries
+   *  it). Returns null when there's no geometry. */
+  const buildPublishFile = async (
+    format: PublishFormat,
+  ): Promise<{ blob: Blob; filename: string } | null> => {
+    if (format === 'glb') {
+      if (!currentMeshData) return null;
+      assertFiniteMesh(currentMeshData);
+      const built = await buildGLB(undefined, coloredMeshForExport(currentMeshData));
+      return { blob: built.blob, filename: built.filename };
+    }
+    // MakerWorld's preferred 3MF is the Bambu Studio / OrcaSlicer project flavour
+    // (build plate + AMS filament bindings) — same builder as the toolbar's
+    // "3MF — Bambu/Orca" export, here for the single active model with default
+    // printer settings.
+    if (format === '3mf-bambu') {
+      const mesh = fileExportMesh(true);
+      if (!mesh) return null;
+      const bed = loadPrinterSettings().bed;
+      const built = build3MFProject([{ name: getState().session?.name ?? 'model', mesh }], {
+        bambu: true, bedSize: [bed[0], bed[1]],
+        printer: DEFAULT_BAMBU_PRINTER, nozzle: '0.4', filament: DEFAULT_BAMBU_FILAMENT,
+      });
+      return { blob: built.blob, filename: built.filename };
+    }
+    const mesh = fileExportMesh(format !== 'stl');
+    if (!mesh) return null;
+    const built = format === '3mf' ? build3MF(mesh)
+      : format === 'obj' ? buildOBJ(mesh)
+      : buildSTL(mesh);
+    return { blob: built.blob, filename: built.filename };
+  };
+
+  /** Render the publish cover PNG as bytes, or null when there's no geometry. */
+  const buildPublishCover = async (): Promise<Uint8Array | null> => {
+    if (!currentMeshData) return null;
+    const canvas = renderSingleViewCanvas(applyTriColorsIfVisible(currentMeshData), {
+      elevation: 25, azimuth: 45, size: 1024,
+    });
+    const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/png'));
+    if (!blob) return null;
+    return new Uint8Array(await blob.arrayBuffer());
+  };
+
+  /** Bundle the model file (+ optional cover + details.txt) into ONE ZIP, so the
+   *  user gets a single download instead of several files (which trips the
+   *  browser's "open multiple files?" prompt). */
+  const buildPublishBundle = async (opts: {
+    format: PublishFormat;
+    includeCover: boolean;
+    detailsText: string;
+  }): Promise<{ blob: Blob; filename: string } | null> => {
+    const file = await buildPublishFile(opts.format);
+    if (!file) return null;
+    const entries: ZipEntry[] = [
+      { name: file.filename, data: new Uint8Array(await file.blob.arrayBuffer()) },
+      { name: 'details.txt', data: new TextEncoder().encode(opts.detailsText) },
+    ];
+    if (opts.includeCover) {
+      const cover = await buildPublishCover();
+      if (cover) entries.push({ name: 'cover.png', data: cover });
+    }
+    const zip = buildZip(entries);
+    // ArrayBuffer copy so the Blob doesn't alias the SharedArrayBuffer-backed view.
+    const zipBytes = new Uint8Array(zip.byteLength);
+    zipBytes.set(zip);
+    const blob = new Blob([zipBytes], { type: 'application/zip' });
+    const filename = getExportFilename('zip').replace(/\.zip$/, '-publish.zip');
+    return { blob, filename };
+  };
+
+  /** Open the assisted-publish modal (Printables / MakerWorld / Thingiverse /
+   *  Thangs). `preselect` optionally focuses one platform. */
+  const actionPublish = async (preselect?: string): Promise<void> => {
+    if (isSharedPreview()) { showToast('Fork this shared design before publishing.', { variant: 'warn' }); return; }
+    if (!currentMeshData) { noGeometryToast(); return; }
+    // "Auto-populate with AI" is only offered when the active provider is
+    // connected; otherwise the modal disables the button with a tooltip.
+    const aiAvailable = await isActiveProviderConnected();
+    openPublishModal({
+      defaultTitle: getState().session?.name ?? 'My model',
+      stats: { dims: currentModelDims(), units: _getUnits() },
+      buildBundle: buildPublishBundle,
+      download: (blob, filename) => downloadBlob(blob, filename, 'Publish'),
+      aiAvailable,
+      aiGenerate: aiAvailable
+        ? async () => {
+            const sessionId = getState().session?.id;
+            if (!sessionId) throw new Error('Open or create a session first.');
+            return generatePublishMetadata(sessionId);
+          }
+        : undefined,
+      preselect,
+    });
+  };
+
   // Create toolbar
   createToolbar(editorUI, {
     onGoHome: () => {
@@ -5006,6 +5123,7 @@ async function main() {
       if (!ok) showToast('No active session to export. Save a version first.', { variant: 'warn', source: 'export' });
     },
     onShareLink: () => { void actionShareLink(); },
+    onPublish: () => { void actionPublish(); },
     onExportRawCode: () => {
       exportRawCode(getValue(), getActiveLanguage());
     },
@@ -5536,6 +5654,7 @@ async function main() {
     // (mirrors the toolbar's STEP gating); the action toasts if no shape exists.
     { id: 'export-step', title: 'Export STEP', hint: 'Export', keywords: 'download brep cad solidworks fusion freecad', run: () => { void actionExportSTEP(); }, enabled: () => getActiveLanguage() === 'replicad' },
     { id: 'share-link', title: 'Share design (copy link)', hint: 'Share', keywords: 'url public link copy fork readonly', run: () => { void actionShareLink(); }, enabled: canShare },
+    { id: 'publish-model', title: 'Publish to a print site…', hint: 'Share', keywords: 'printables makerworld bambu thingiverse thangs upload publish release post', run: () => { void actionPublish(); }, enabled: () => currentMeshData !== null && !isSharedPreview() },
     // Viewport tools — now grouped behind the View/Inspect/Tools popovers, so the
     // palette is the flat, searchable index of everything (keeps grouping cheap
     // for discoverability). Each fires the existing overlay button by id; click()
@@ -9727,6 +9846,20 @@ async function main() {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       warnIfSurfaceStale('3MF');
       export3MF(fileExportMesh(true)!, filename);
+    },
+
+    /** Open the assisted-publish modal (Printables / MakerWorld / Thingiverse /
+     *  Thangs). These sites have no public upload API, so this prepares the
+     *  publish — downloads the model file + cover image and copies the
+     *  title/description/tags to the clipboard, then opens the upload page —
+     *  rather than posting directly. Optional `platform` preselects one site. */
+    publish(platform?: string) {
+      assertString(platform, 'publish(platform)', { optional: true });
+      if (platform != null && !findPublishTarget(platform)) {
+        return { error: `Unknown platform "${platform}". Use one of: printables, makerworld, thingiverse, thangs.` };
+      }
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      void actionPublish(platform);
     },
 
     /** Bundle several Session Parts into ONE 3MF. With `{ bambu: true }` (the
@@ -14876,6 +15009,7 @@ async function main() {
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
+        'publish':         { signature: 'publish(platform?) -- Open the assisted-publish modal for Printables/MakerWorld/Thingiverse/Thangs (no public upload API, so it prepares the file + cover + clipboard details and opens the upload page). platform optionally preselects one site', docs: '/ai/file-io.md' },
         'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
         'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?, printer?, nozzle?, filament?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportOBJParts':  { signature: 'await exportOBJParts(partIds?, filename?) -- Bundle parts into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
