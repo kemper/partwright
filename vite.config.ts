@@ -161,6 +161,31 @@ function baseAwareManifest(): Plugin {
   };
 }
 
+// Inject the Cloudflare Web Analytics beacon into every emitted HTML page —
+// but ONLY in a production build (`apply: 'build'`), never in the dev server or
+// the Playwright e2e run. Two reasons it must stay build-only:
+//   1. The RUM beacon reports to Cloudflare keyed by token regardless of origin,
+//      so loading it from localhost / CI would pollute the production analytics
+//      with dev + test-suite traffic.
+//   2. The dev/preview CSP (server.headers below) deliberately omits the beacon
+//      host, so a stray external call surfaces in dev; loading the beacon there
+//      would trip that guard and the "no console errors" smoke specs.
+// The matching production CSP allowance lives in public/_headers (script-src).
+// The token is a public site identifier, not a secret, so it's safe in source.
+function injectAnalyticsBeacon(): Plugin {
+  const BEACON =
+    `<!-- Cloudflare Web Analytics --><script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "8841daefa37741dda00d7e9c6a1441af"}'></script><!-- End Cloudflare Web Analytics -->`;
+  return {
+    name: 'partwright-analytics-beacon',
+    apply: 'build',
+    transformIndexHtml(html) {
+      // Runs for every HTML input (index + the content pages); editor.html is a
+      // closeBundle copy of the built index.html, so it inherits the beacon too.
+      return html.replace('</body>', `  ${BEACON}\n</body>`);
+    },
+  };
+}
+
 // Emit `editor.html` as a copy of the SPA shell `index.html` so the editor's
 // no-file route is served as a REAL static file at its clean URL (Cloudflare
 // maps `/editor` → `/editor.html`, exactly like `/catalog` → `/catalog.html`).
@@ -248,7 +273,7 @@ export default defineConfig({
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), basePaths(), markdownCharset(), dynamicSitemap(), baseAwareManifest(), editorHtmlAlias()],
+  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), basePaths(), markdownCharset(), dynamicSitemap(), baseAwareManifest(), injectAnalyticsBeacon(), editorHtmlAlias()],
   esbuild: {
     // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
     // Preact without pulling in React. Vanilla .ts files in the rest of
@@ -277,7 +302,10 @@ export default defineConfig({
       // file over https). The dev-only
       // delta is the localhost WebSocket Vite uses for HMR/live-reload, which
       // production has no equivalent of. Keep the host allowlist in sync with
-      // public/_headers.
+      // public/_headers — with ONE intentional exception: the Cloudflare Web
+      // Analytics beacon host (static.cloudflareinsights.com) is in _headers'
+      // script-src but deliberately NOT here, because the beacon is injected
+      // build-only (see injectAnalyticsBeacon) and never loads in dev/test.
       'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* https: http://localhost:* http://127.0.0.1:* https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://raw.githubusercontent.com; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
     },
     fs: {

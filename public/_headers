@@ -6,10 +6,15 @@
 # that follow are the first-party cloud APIs + model CDN; they're subsumed by `https:`
 # but kept as documentation of expected traffic. Plain-HTTP LAN addresses still won't
 # load on the hosted HTTPS site (browser mixed-content rule) — only HTTPS or localhost.
+#
+# `script-src` additionally allows https://static.cloudflareinsights.com so the
+# privacy-first Cloudflare Web Analytics beacon (cookieless, aggregate-only — see
+# /legal) can load; its `cdn-cgi/rum` POST is already covered by the broad `https:`
+# in `connect-src`. Drop the host here if Web Analytics is ever turned off.
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https: http://localhost:* http://127.0.0.1:* https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://raw.githubusercontent.com; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https: http://localhost:* http://127.0.0.1:* https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://raw.githubusercontent.com; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'
 
 # Catalog thumbnails carry a content hash in their filename, so they're safe to
 # cache forever — a changed image gets a new name. Immutable = no revalidation
