@@ -51,8 +51,70 @@ import { buildZip } from './zip';
 import { assertFiniteMesh, assertExportableMesh, cleanMeshForExport, triColorHex, hasAnyPainted } from './meshClean';
 import { listFilaments } from '../color/palette';
 import { encodePaintColorState } from './paintColor3mf';
-// Static import so Vite bundles the JSON at build time (no fetch needed).
-import BAMBU_TEMPLATE from './bambuProjectTemplate.json';
+// Static imports so Vite bundles the JSON bases at build time (no fetch needed).
+// Two structural bases, each a complete real project export: H2C (dual-nozzle) and
+// P1S (single-nozzle). A printer either reuses one of these directly or overrides a
+// few identity/bed fields on it (see BAMBU_PRINTERS).
+import BAMBU_TEMPLATE_H2C from './bambuProjectTemplate.json';
+import BAMBU_TEMPLATE_P1S from './bambuProjectTemplateP1S.json';
+
+/** A selectable Bambu printer. Reuses a structural base (dual/single nozzle) and
+ *  overrides identity + bed footprint — no per-printer config files needed. Bed
+ *  dims are public specs; `model` MUST match Bambu's exact printer_model string or
+ *  Bambu converts the project on open (which can reset colours). */
+export interface BambuPrinterSpec {
+  id: string;
+  label: string;
+  base: 'h2c' | 'p1s';
+  model: string;
+  bed: [number, number];
+  height: number;
+}
+
+// "Common models first" — verified model strings + public bed footprints. Dual-nozzle
+// (H2 family) reuse the H2C base; single-nozzle (P1/X1/A1) reuse the P1S base.
+export const BAMBU_PRINTERS: BambuPrinterSpec[] = [
+  { id: 'h2c', label: 'Bambu Lab H2C', base: 'h2c', model: 'Bambu Lab H2C', bed: [330, 320], height: 325 },
+  { id: 'h2d', label: 'Bambu Lab H2D', base: 'h2c', model: 'Bambu Lab H2D', bed: [350, 320], height: 325 },
+  { id: 'h2s', label: 'Bambu Lab H2S', base: 'h2c', model: 'Bambu Lab H2S', bed: [340, 320], height: 340 },
+  { id: 'p1s', label: 'Bambu Lab P1S', base: 'p1s', model: 'Bambu Lab P1S', bed: [256, 256], height: 256 },
+  { id: 'p1p', label: 'Bambu Lab P1P', base: 'p1s', model: 'Bambu Lab P1P', bed: [256, 256], height: 256 },
+  { id: 'x1', label: 'Bambu Lab X1', base: 'p1s', model: 'Bambu Lab X1', bed: [256, 256], height: 256 },
+  { id: 'a1', label: 'Bambu Lab A1', base: 'p1s', model: 'Bambu Lab A1', bed: [256, 256], height: 256 },
+  { id: 'a1mini', label: 'Bambu Lab A1 mini', base: 'p1s', model: 'Bambu Lab A1 mini', bed: [180, 180], height: 180 },
+];
+export const DEFAULT_BAMBU_PRINTER = 'h2c';
+
+/** Resolve a printer id to its spec, falling back to the default (H2C). */
+function resolvePrinter(id: string | undefined): BambuPrinterSpec {
+  return BAMBU_PRINTERS.find(p => p.id === id) ?? BAMBU_PRINTERS.find(p => p.id === DEFAULT_BAMBU_PRINTER)!;
+}
+
+/** A selectable filament material. One material is applied to ALL colours (simple
+ *  multi-colour). `type` is Bambu's filament_type; temps are sensible defaults the
+ *  user can fine-tune in Bambu. `settingsId` uses Bambu's built-in Generic presets. */
+export interface BambuFilamentType {
+  id: string;
+  label: string;
+  type: string;
+  settingsId: string;
+  nozzleTemp: number;
+  bedTemp: number;
+}
+
+export const BAMBU_FILAMENT_TYPES: BambuFilamentType[] = [
+  { id: 'pla', label: 'PLA', type: 'PLA', settingsId: 'Generic PLA', nozzleTemp: 220, bedTemp: 55 },
+  { id: 'petg', label: 'PETG', type: 'PETG', settingsId: 'Generic PETG', nozzleTemp: 255, bedTemp: 70 },
+  { id: 'abs', label: 'ABS', type: 'ABS', settingsId: 'Generic ABS', nozzleTemp: 260, bedTemp: 90 },
+  { id: 'asa', label: 'ASA', type: 'ASA', settingsId: 'Generic ASA', nozzleTemp: 260, bedTemp: 90 },
+  { id: 'tpu', label: 'TPU', type: 'TPU', settingsId: 'Generic TPU', nozzleTemp: 230, bedTemp: 35 },
+  { id: 'pc', label: 'PC', type: 'PC', settingsId: 'Generic PC', nozzleTemp: 270, bedTemp: 100 },
+];
+export const DEFAULT_BAMBU_FILAMENT = 'pla';
+
+function resolveFilament(id: string | undefined): BambuFilamentType {
+  return BAMBU_FILAMENT_TYPES.find(f => f.id === id) ?? BAMBU_FILAMENT_TYPES.find(f => f.id === DEFAULT_BAMBU_FILAMENT)!;
+}
 
 /** One selected Session Part, with its baked (optionally coloured) mesh. */
 export interface PartExport {
@@ -68,6 +130,14 @@ export interface Build3MFProjectOptions {
   /** Emit the Bambu/Orca project layer (production-extension split files, one
    *  plate per part). When false, a GENERIC inline multi-object 3MF (grid). */
   bambu?: boolean;
+  /** Target Bambu printer id (see BAMBU_PRINTERS). Sets the printer profile + bed in
+   *  the Bambu export; defaults to H2C. Ignored in generic mode. */
+  printer?: string;
+  /** Nozzle diameter (mm) as a string: "0.2" | "0.4" | "0.6" | "0.8". Default "0.4". */
+  nozzle?: string;
+  /** Filament material id (see BAMBU_FILAMENT_TYPES) — one material for all colours.
+   *  Default "pla". Ignored in generic mode. */
+  filament?: string;
   /** Build-plate size `[x, y]` mm — reserved for future per-bed tuning of the
    *  generic grid. (Bambu plate placement uses the validated fixed grid below.) */
   bedSize?: [number, number];
@@ -100,10 +170,6 @@ const plateGridCols = (n: number) => Math.max(1, Math.ceil(Math.sqrt(n)));
 // practical multi-AMS ceiling; beyond this, least-used colours snap to a kept slot.
 const MAX_BAMBU_FILAMENTS = 16;
 
-// Number of filaments in the bundled H2C template (bambuProjectTemplate.json) — the
-// divisor for per-filament array lengths when resizing to N filaments.
-const TEMPLATE_FILAMENT_COUNT = 3;
-
 // Per-filament config keys that are NOT `filament_`-prefixed (the prefixed ones are
 // matched by name). Sourced verbatim from BambuStudio's `s_Preset_filament_options`
 // (src/libslic3r/Preset.cpp): every key here is indexed by filament, so its array
@@ -130,22 +196,6 @@ const NONPREFIXED_PER_FILAMENT_KEYS = new Set<string>([
   'supertack_plate_temp_initial_layer', 'temperature_vitrification', 'textured_plate_temp',
   'textured_plate_temp_initial_layer', 'volumetric_speed_coefficients',
 ]);
-
-/** Bed printable size [w, h] mm, parsed from the project template's printable_area
- *  (a list of "XxY" corner strings). Falls back to the H2C bed if unparseable. */
-function bedSizeFromTemplate(): [number, number] {
-  const area = (BAMBU_TEMPLATE as { printable_area?: string[] }).printable_area;
-  if (Array.isArray(area)) {
-    let w = 0, h = 0;
-    for (const corner of area) {
-      const [x, y] = String(corner).split('x').map(Number);
-      if (Number.isFinite(x) && x > w) w = x;
-      if (Number.isFinite(y) && y > h) h = y;
-    }
-    if (w > 0 && h > 0) return [w, h];
-  }
-  return [330, 320];
-}
 
 function escXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
@@ -315,7 +365,7 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
     : '';
 
   const built = bambu
-    ? buildBambuPackage(prepared, bambuFilamentColors)
+    ? buildBambuPackage(prepared, bambuFilamentColors, resolvePrinter(opts.printer), opts.nozzle ?? '0.4', resolveFilament(opts.filament))
     : buildGenericPackage(prepared, colorgroupXml, anyColour, colorGroupId, gridGap);
 
   const mimeType = 'application/vnd.ms-package.3dmanufacturing';
@@ -401,9 +451,9 @@ ${buildItems}
 //   - identify_id in each <model_instance>
 //   - filament_map_mode / filament_maps / filament_volume_maps / thumbnail* in <plate>
 //   - <assemble> block at the end
-function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[]): Uint8Array {
+function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType): Uint8Array {
   const unit = get3MFUnitString();
-  const [bedW, bedH] = bedSizeFromTemplate();
+  const [bedW, bedH] = printer.bed;                  // selected printer's bed footprint
   const gridCols = plateGridCols(prepared.length);  // ⌈√N⌉ to match Bambu's plate grid
   const filamentCount = filamentColors.length;       // AMS slots = distinct colours
   const strideX = bedW * PLATE_GAP_FACTOR;          // BambuStudio plate_stride_x (width·1.2)
@@ -578,7 +628,7 @@ ${assembleItems.join('\n')}
 
   // project_settings.config: the complete H2C template with filament_colour set to
   // the part palette (see buildProjectSettings).
-  const projectSettings = buildProjectSettings(filamentColors);
+  const projectSettings = buildProjectSettings(filamentColors, printer, nozzle, filament);
 
   // Content types: rels + model + png (for potential plate thumbnails) + gcode.
   // Matches the reference [Content_Types].xml exactly.
@@ -619,27 +669,34 @@ function isPerFilamentKey(key: string): boolean {
 }
 
 /**
- * Build the project_settings.config JSON from the BambuStudio template, RESIZED to
+ * Build the project_settings.config JSON for `printer`, RESIZED to
  * `filamentColors.length` (N) filaments with those colours.
  *
- * The template is a complete Bambu Lab H2C profile with 3 filaments. Every
- * per-filament array (filament_colour, nozzle_temperature, the plate temps, …) is
- * indexed by filament when Bambu's GUI `Plater::priv::load_files` binds objects to
- * filaments — an array shorter than the max filament index null-derefs → SIGSEGV on
- * open. So to support N colours we must resize EVERY per-filament array to N (or its
- * multiple), consistently. Each such array has a multiplier m = len/3 (×1 per
- * filament, ×2 per extruder-variant, ×4 …); since all template filaments share one
- * preset, every m-tuple is identical, so we repeat filament-0's m-tuple N times.
- * Non-per-filament arrays (machine limits, printable_area, compatible-machine list)
- * are left untouched. `isPerFilamentKey` is the gate, derived from BambuStudio's
- * `s_Preset_filament_options`. Structural arrays that don't follow the repeat rule
- * (filament_colour, filament_self_index, the flush matrices) are set explicitly.
+ * Starts from the printer's structural base — a complete real Bambu project config
+ * (H2C dual-nozzle or P1S single-nozzle) — then resizes its per-filament arrays and
+ * stamps the printer identity/bed/nozzle on top. Every per-filament array is indexed
+ * by filament when Bambu's GUI `Plater::priv::load_files` binds objects to filaments
+ * — an array shorter than the max filament index null-derefs → SIGSEGV on open. So
+ * we resize EVERY per-filament array consistently. Each has a multiplier m = len/T
+ * where T is the BASE's own filament count (×1 per filament, ×2 per extruder-variant,
+ * ×4 …); all base filaments share one preset, so every m-tuple is identical and we
+ * repeat filament-0's m-tuple N times. Non-per-filament arrays (machine limits,
+ * printable_area, compatible-machine list) are left untouched. `isPerFilamentKey`
+ * is the gate (from BambuStudio's `s_Preset_filament_options`). Structural arrays
+ * that don't follow the repeat rule (filament_colour, filament_self_index, the flush
+ * matrices) are set explicitly. The flush matrix is `nozzleCount × N×N` — nozzleCount
+ * comes from the base (H2C=2, P1S=1), validated against both real references.
  */
-function buildProjectSettings(filamentColors: string[]): string {
-  // Deep-copy the template so we don't mutate the module-level import.
-  const cfg: Record<string, unknown> = JSON.parse(JSON.stringify(BAMBU_TEMPLATE));
+function buildProjectSettings(filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType): string {
+  const baseTemplate = printer.base === 'p1s' ? BAMBU_TEMPLATE_P1S : BAMBU_TEMPLATE_H2C;
+  // Deep-copy the base so we don't mutate the module-level import.
+  const cfg: Record<string, unknown> = JSON.parse(JSON.stringify(baseTemplate));
   const N = Math.max(1, filamentColors.length);
-  const T = TEMPLATE_FILAMENT_COUNT;
+  // Derive the base's own filament count + physical nozzle count from the base itself
+  // (H2C: 3 filaments / 2 nozzles; P1S: 17 filaments / 1 nozzle).
+  const baseFil = Array.isArray(cfg.filament_colour) ? cfg.filament_colour.length : 1;
+  const T = Math.max(1, baseFil);
+  const nozzleCount = Array.isArray(cfg.nozzle_diameter) ? Math.max(1, cfg.nozzle_diameter.length) : 1;
 
   // Resize every per-filament array: repeat filament-0's m-tuple N times.
   for (const key of Object.keys(cfg)) {
@@ -662,20 +719,48 @@ function buildProjectSettings(filamentColors: string[]): string {
     for (let i = 1; i <= N; i++) { si.push(String(i), String(i)); }
     cfg.filament_self_index = si;
   }
-  // flush_volumes_matrix is per-nozzle (2) × N×N: diagonal 0, off-diagonal a default
+  // flush_volumes_matrix is nozzleCount × N×N: diagonal 0, off-diagonal a default
   // purge volume. Bambu recomputes flush on slice ("Auto For Flush"); size is what
   // matters for load.
   if (Array.isArray(cfg.flush_volumes_matrix)) {
     const FLUSH = '280';
     const mat: string[] = [];
-    for (let nozzle = 0; nozzle < 2; nozzle++)
+    for (let n = 0; n < nozzleCount; n++)
       for (let i = 0; i < N; i++)
         for (let j = 0; j < N; j++) mat.push(i === j ? '0' : FLUSH);
     cfg.flush_volumes_matrix = mat;
   }
-  // flush_volumes_vector is per-nozzle (2) × N (a per-filament purge volume).
+  // flush_volumes_vector is per-nozzle-variant (2) × N (a per-filament purge volume).
   if (Array.isArray(cfg.flush_volumes_vector)) {
     cfg.flush_volumes_vector = Array(2 * N).fill('140');
+  }
+
+  // ── Printer identity / bed / nozzle overrides ──────────────────────────────
+  // `model` must match Bambu's exact printer_model or Bambu converts on open.
+  cfg.printer_model = printer.model;
+  cfg.printer_settings_id = `${printer.model} ${nozzle} nozzle`;
+  cfg.printer_variant = nozzle;
+  cfg.printable_area = [`0x0`, `${printer.bed[0]}x0`, `${printer.bed[0]}x${printer.bed[1]}`, `0x${printer.bed[1]}`];
+  cfg.printable_height = String(printer.height);
+  cfg.nozzle_diameter = Array(nozzleCount).fill(nozzle);
+
+  // ── Filament material (one material for all colours) ───────────────────────
+  // Stamp the chosen material's type + temps over the (already-resized) per-filament
+  // arrays. Bambu's built-in "Generic <TYPE>" preset id keeps the filament panel
+  // consistent. Fills each array to its current length (so it stays N or 2N).
+  const fillArr = (key: string, value: string) => {
+    const v = cfg[key];
+    if (Array.isArray(v)) cfg[key] = Array(v.length).fill(value);
+  };
+  fillArr('filament_type', filament.type);
+  fillArr('filament_settings_id', filament.settingsId);
+  fillArr('nozzle_temperature', String(filament.nozzleTemp));
+  fillArr('nozzle_temperature_initial_layer', String(filament.nozzleTemp));
+  // Bed temps across the plate types Bambu may use for this material.
+  for (const k of ['hot_plate_temp', 'hot_plate_temp_initial_layer', 'textured_plate_temp',
+    'textured_plate_temp_initial_layer', 'cool_plate_temp', 'cool_plate_temp_initial_layer',
+    'eng_plate_temp', 'eng_plate_temp_initial_layer', 'supertack_plate_temp', 'supertack_plate_temp_initial_layer']) {
+    fillArr(k, String(filament.bedTemp));
   }
 
   return JSON.stringify(cfg, null, 4);

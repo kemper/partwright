@@ -175,6 +175,11 @@ export interface SessionDraft {
    *  recovers companion-file edits the same way it recovers main-code edits.
    *  Only written for SCAD drafts that have companions; absent otherwise. */
   companionFiles?: Record<string, string>;
+  /** Unsaved user paint regions (serialized) so a part that has been painted
+   *  but not yet saved keeps its paint across a part switch or reload. Stored
+   *  opaquely (unknown[]) to avoid importing color types into this low layer.
+   *  Only written when there are non-empty regions; absent otherwise. */
+  colorRegions?: unknown[];
   updatedAt: number;
 }
 
@@ -1071,7 +1076,7 @@ export async function getDraft(sessionId: string, language: 'manifold-js' | 'sca
   return reqToPromise(store.get(draftId(sessionId, language, partId))) as Promise<SessionDraft | null>;
 }
 
-export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>): Promise<void> {
+export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>, colorRegions?: unknown[]): Promise<void> {
   const store = await tx('drafts', 'readwrite');
   const row: SessionDraft = {
     id: draftId(sessionId, language, partId),
@@ -1079,6 +1084,7 @@ export async function setDraft(sessionId: string, language: 'manifold-js' | 'sca
     language,
     code,
     ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
+    ...(colorRegions && colorRegions.length > 0 ? { colorRegions } : {}),
     updatedAt: Date.now(),
   };
   store.put(row);

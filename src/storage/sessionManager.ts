@@ -706,10 +706,14 @@ export async function renameSession(id: string, newName: string): Promise<void> 
 // with the session (via sessionId index) and pruned when a part is deleted.
 
 /** The recoverable contents of an editor draft: the main buffer plus, for SCAD
- *  drafts, any unsaved companion files. */
+ *  drafts, any unsaved companion files, and unsaved user paint regions. */
 export interface DraftContents {
   code: string;
   companionFiles?: Record<string, string>;
+  /** Unsaved paint regions serialized from the draft slot. Absent when no paint
+   *  was stashed (e.g. the part was never painted or the draft predates this
+   *  field). */
+  colorRegions?: SerializedColorRegion[];
 }
 
 /** Read the working buffer for a (session, part, language) triple. Pass
@@ -718,15 +722,20 @@ export interface DraftContents {
 export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<DraftContents | null> {
   const row = await dbGetDraft(sessionId, language, partId);
   if (!row) return null;
-  return { code: row.code, companionFiles: row.companionFiles };
+  return {
+    code: row.code,
+    companionFiles: row.companionFiles,
+    colorRegions: row.colorRegions as SerializedColorRegion[] | undefined,
+  };
 }
 
 /** Write the working buffer for a (session, part, language) triple. Idempotent
  *  — the row is upserted by composite key. `companionFiles` is persisted for
  *  SCAD drafts so companion edits survive a reload; pass `{}` (or omit) for
- *  languages that don't use them. */
-export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>): Promise<void> {
-  await dbSetDraft(sessionId, language, code, partId, companionFiles);
+ *  languages that don't use them. `colorRegions` carries unsaved paint so a
+ *  painted part keeps its paint across a switch or reload. */
+export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>, colorRegions?: SerializedColorRegion[]): Promise<void> {
+  await dbSetDraft(sessionId, language, code, partId, companionFiles, colorRegions);
 }
 
 
@@ -936,10 +945,13 @@ export async function partSaveState(part: Part): Promise<PartSaveState> {
   const latest = await getLatestVersion(part.id);
   if (!latest) {
     // Never committed: "unsaved" if any stashed draft holds real (non-starter)
-    // content; otherwise it's an untouched new part ("no changes yet").
+    // content or unsaved paint; otherwise it's an untouched new part.
     const drafts = await dbListDrafts(part.sessionId);
     const prefix = `${part.sessionId}:${part.id}:`;
-    const hasContent = drafts.some(d => d.id.startsWith(prefix) && !isStarterCode(d.code));
+    const hasContent = drafts.some(d =>
+      d.id.startsWith(prefix) &&
+      (!isStarterCode(d.code) || (Array.isArray(d.colorRegions) && d.colorRegions.length > 0))
+    );
     return hasContent ? 'unsaved' : 'empty';
   }
   const lang = effectiveVersionLanguage(latest, currentState.session);
@@ -949,6 +961,13 @@ export async function partSaveState(part: Part): Promise<PartSaveState> {
   // SCAD drafts also stash unsaved companion-file edits; treat those as unsaved.
   if (lang === 'scad' && !companionFilesEqual(latest.companionFiles ?? {}, draft.companionFiles ?? {})) {
     return 'unsaved';
+  }
+  // A draft with paint regions that differ from the saved version's paint is unsaved.
+  if (draft.colorRegions && draft.colorRegions.length > 0) {
+    const savedGeoData = latest.geometryData as Record<string, unknown> | null;
+    if (!colorRegionsEqual({ colorRegions: draft.colorRegions }, savedGeoData)) {
+      return 'unsaved';
+    }
   }
   return 'clean';
 }

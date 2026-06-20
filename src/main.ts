@@ -79,7 +79,7 @@ import { exportGLB, buildGLB, buildGLBProject } from './export/gltf';
 import { exportSTL, buildSTL, buildSTLProject } from './export/stl';
 import { exportOBJ, buildOBJ, buildOBJProject } from './export/obj';
 import { export3MF, build3MF } from './export/threemf';
-import { build3MFProject } from './export/threemfProject';
+import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
@@ -4288,8 +4288,37 @@ async function main() {
    *  confirmed it. Only used by the UI export actions below. */
   async function confirmExportOrProceed(format: string): Promise<boolean> {
     const info = exportWarningInfo(format);
+    // Flag every part that isn't fully saved so the export doesn't silently use
+    // stale data. A multi-part export bakes each NON-current part from its last
+    // SAVED version (the current part exports from its live mesh), so unsaved
+    // edits drop out — and a part that was never saved at all (an untouched
+    // starter) has NO version, so it's skipped from the export entirely. Both
+    // 'unsaved' (edited, not saved) and 'empty' (brand-new, never saved) count;
+    // only 'clean' parts are omitted. We warn for the current part too: the user
+    // asked to be alerted whenever they export without saving.
+    const unsavedRows = (await gatherUnsavedParts()).filter(r => r.status === 'unsaved' || r.status === 'empty');
+    if (unsavedRows.length > 0) {
+      info.unsavedParts = { count: unsavedRows.length, names: unsavedRows.map(r => r.name) };
+    }
     if (!hasExportWarning(info)) return true;
-    return showExportConfirm(info);
+    const decision = await showExportConfirm(info);
+    if (decision === 'save') {
+      // Hand off to the multi-part save modal so the user picks which parts to
+      // save (or cancels) — the same chooser Cmd/Ctrl+S uses. The export is
+      // abandoned either way; the user re-clicks Export to resume once they've
+      // saved. Mirrors saveVersionWithToast's choice handling.
+      const choice = await showSaveAllModal(unsavedRows);
+      if (choice.action === 'selected') {
+        const onlyCurrent = choice.partIds.length === 1 && choice.partIds[0] === getState().currentPart?.id;
+        if (!onlyCurrent) await saveSelectedParts(choice.partIds);
+        else await saveCurrentPartWithToast();
+      } else if (choice.action === 'current') {
+        await saveCurrentPartWithToast();
+      }
+      // 'cancel' → save nothing; the user can re-open Export and decide again.
+      return false;
+    }
+    return decision === 'export';
   }
 
   // One standardized "nothing to export" toast for every mesh export action, so
@@ -4391,17 +4420,26 @@ async function main() {
       description: bambu
         ? 'Choose which parts to include. Each selected part is placed on its own build plate, and painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
         : 'Choose which parts to include. Each selected part is added as a separate object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.',
+      bambu: bambu ? {
+        printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label })),
+        defaultPrinter: DEFAULT_BAMBU_PRINTER,
+        nozzles: ['0.2', '0.4', '0.6', '0.8'],
+        defaultNozzle: '0.4',
+        filaments: BAMBU_FILAMENT_TYPES.map(f => ({ id: f.id, label: f.label })),
+        defaultFilament: DEFAULT_BAMBU_FILAMENT,
+      } : undefined,
     });
-    if (!selected || selected.length === 0) return;
+    if (!selected || selected.partIds.length === 0) return;
+    const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
     const job = startProgress({ title: 'Preparing 3MF', indeterminate: false, message: 'Baking parts…' });
     try {
       const baked: { name: string; mesh: MeshData }[] = [];
-      for (let i = 0; i < selected.length; i++) {
-        const part = byId.get(selected[i]);
+      for (let i = 0; i < selectedIds.length; i++) {
+        const part = byId.get(selectedIds[i]);
         if (!part) continue;
-        updateProgress(job, i / selected.length, `Baking "${part.name}" (${i + 1}/${selected.length})…`);
+        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
         const result = await bakeColoredMeshForPart(part.id, part.name);
         if (result) baked.push(result);
       }
@@ -4409,9 +4447,12 @@ async function main() {
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
 
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject(baked, { bambu, bedSize: [bed[0], bed[1]] });
+      const built = build3MFProject(baked, {
+        bambu, bedSize: [bed[0], bed[1]],
+        printer: selected.printer, nozzle: selected.nozzle, filament: selected.filament,
+      });
       downloadBlob(built.blob, built.filename, '3MF');
-      const skipped = selected.length - baked.length;
+      const skipped = selectedIds.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
       showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
@@ -4442,16 +4483,17 @@ async function main() {
       title: `Export parts to ${formatTag}`,
       description,
     });
-    if (!selected || selected.length === 0) return;
+    if (!selected || selected.partIds.length === 0) return;
+    const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
     const job = startProgress({ title: `Preparing ${formatTag}`, indeterminate: false, message: 'Baking parts…' });
     try {
       const baked: { name: string; mesh: MeshData }[] = [];
-      for (let i = 0; i < selected.length; i++) {
-        const part = byId.get(selected[i]);
+      for (let i = 0; i < selectedIds.length; i++) {
+        const part = byId.get(selectedIds[i]);
         if (!part) continue;
-        updateProgress(job, i / selected.length, `Baking "${part.name}" (${i + 1}/${selected.length})…`);
+        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
         const result = await bakeColoredMeshForPart(part.id, part.name);
         if (result) baked.push(result);
       }
@@ -4460,7 +4502,7 @@ async function main() {
 
       const built = await build(baked);
       downloadBlob(built.blob, built.filename, formatTag);
-      const skipped = selected.length - baked.length;
+      const skipped = selectedIds.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
       showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
@@ -4550,7 +4592,7 @@ async function main() {
    *  BuiltExport (no download, no base64) so callers can either trigger a
    *  download or return the bytes. `opts.bambu` (default true) → one part per
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     const allParts = getState().parts;
     if (allParts.length === 0) return { error: 'No parts in this session.' };
@@ -4573,7 +4615,10 @@ async function main() {
     if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
     try {
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject(baked, { customName: filename, bambu, bedSize: [bed[0], bed[1]] });
+      const built = build3MFProject(baked, {
+        customName: filename, bambu, bedSize: [bed[0], bed[1]],
+        printer: opts?.printer, nozzle: opts?.nozzle, filament: opts?.filament,
+      });
       return { built, parts: baked.length };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
@@ -4583,7 +4628,7 @@ async function main() {
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
     assertString(filename, 'export3MFParts(partIds, filename)', { optional: true });
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
@@ -4594,7 +4639,7 @@ async function main() {
   /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
-  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
     assertString(filename, 'export3MFPartsData(partIds, filename)', { optional: true });
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
@@ -4950,7 +4995,7 @@ async function main() {
     // saving inside loadVersionIntoEditor would land under the wrong id.
     const { session, currentPart } = getState();
     if (session && currentPart) {
-      await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles());
+      await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles(), currentDraftRegions());
     }
     const version = await changePart(partId);
     // skipDraftSave: the outgoing draft was already saved above.
@@ -5076,8 +5121,8 @@ async function main() {
       // Unlike the rail-switch path we deliberately DON'T auto-save it as a
       // version — leaving it unsaved is exactly what surfaces it in that modal.
       const { session, currentPart } = getState();
-      if (session && currentPart && !isStarterCode(getValue())) {
-        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles());
+      if (session && currentPart && (!isStarterCode(getValue()) || hasColorRegions())) {
+        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles(), currentDraftRegions());
       }
       await createPart();
       startNewPartInEditor();
@@ -5580,7 +5625,7 @@ async function main() {
       if (!opts.skipDraftSave) {
         const sid = getState().session?.id;
         const pid = getState().currentPart?.id;
-        if (sid) await writeDraft(sid, getActiveLanguage(), getValue(), pid, getCompanionFiles());
+        if (sid) await writeDraft(sid, getActiveLanguage(), getValue(), pid, getCompanionFiles(), currentDraftRegions());
       }
       await switchLanguage(versionLang);
     } else {
@@ -6278,6 +6323,13 @@ async function main() {
   // reload / crash. It is deliberately skipped when we loaded an OLDER version
   // (explicit history navigation), so a stale draft never shadows a version
   // the user intentionally went back to.
+
+  /** Snapshot the current paint regions for stashing into a draft. Returns the
+   *  serialized regions array when there are any user-painted regions, or
+   *  undefined when the part is unpainted (so the draft omits the field). */
+  const currentDraftRegions = (): SerializedColorRegion[] | undefined =>
+    (hasColorRegions() ? serializeRegions() : undefined);
+
   async function restoreDraftIfNewer(): Promise<void> {
     const sid = getState().session?.id;
     if (!sid) return;
@@ -6296,10 +6348,24 @@ async function main() {
     const isScad = getActiveLanguage() === 'scad';
     const draftCompanions = isScad ? (draft.companionFiles ?? {}) : {};
     const companionsDiffer = isScad && !companionFilesEqual(getCompanionFiles(), draftCompanions);
-    if (draft.code === getValue() && !companionsDiffer) return;
-    if (isScad) setCompanionFiles(draftCompanions);
-    setValue(draft.code);
-    await runCodeSync(draft.code);
+    const hasDraftPaint = !!(draft.colorRegions && draft.colorRegions.length > 0);
+    // Skip only when code, companions, AND paint all match the loaded state.
+    if (draft.code === getValue() && !companionsDiffer && !hasDraftPaint) return;
+    if (draft.code !== getValue() || companionsDiffer) {
+      // Code or companions changed \u2014 re-run to produce the correct mesh before
+      // applying paint on top.
+      if (isScad) setCompanionFiles(draftCompanions);
+      setValue(draft.code);
+      await runCodeSync(draft.code);
+    }
+    // Re-apply the stashed paint onto the (now-current) mesh. rehydrateColorRegions
+    // clears existing user regions first, so it correctly supersedes whatever the
+    // saved version had. Only rehydrate when the draft actually carries paint \u2014
+    // if it doesn't, leave the existing paint state (loaded from the saved version)
+    // untouched so we don't accidentally clear paint that was already there.
+    if (hasDraftPaint) {
+      await rehydrateColorRegions({ colorRegions: draft.colorRegions });
+    }
   }
 
   async function syncEditorFromURL() {
@@ -6661,7 +6727,7 @@ async function main() {
     const pid = getState().currentPart?.id;
     const lang = getActiveLanguage();
     const code = getValue();
-    void writeDraft(sid, lang, code, pid, getCompanionFiles()).catch((e) => {
+    void writeDraft(sid, lang, code, pid, getCompanionFiles(), currentDraftRegions()).catch((e) => {
       if (isQuotaError(e)) {
         showToast('Storage full — could not autosave your draft. Free up space or export your work.', { variant: 'warn' });
       }
@@ -7883,7 +7949,7 @@ async function main() {
       // Persist the previous language's working buffer so flipping back
       // restores it exactly. Both languages stay live in IDB until the
       // part/session is deleted. Companions ride along for the SCAD buffer.
-      await writeDraft(sid, prevLang, currentCode, pid, getCompanionFiles());
+      await writeDraft(sid, prevLang, currentCode, pid, getCompanionFiles(), currentDraftRegions());
     }
     await applyEngineLanguage(lang);
     let nextCode: string | null = null;
@@ -9541,7 +9607,7 @@ async function main() {
      *  multi-part session. Pass an array of part ids (default: every part); each
      *  part's latest version is baked WITH its colours. `{ ok, filename, parts }`
      *  or `{ error }`. */
-    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
+    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }) {
       return export3MFPartsApi(partIds, filename, opts);
     },
 
@@ -9550,7 +9616,7 @@ async function main() {
      *  `{ error }`) instead of downloading, so an agent/test can read the
      *  exported file back without the browser download path. `{ bambu }` as in
      *  export3MFParts (default true). */
-    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }) {
       return export3MFPartsDataApi(partIds, filename, opts);
     },
 
@@ -14680,8 +14746,8 @@ async function main() {
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
-        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate, false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
-        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?, printer?, nozzle?, filament?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportOBJParts':  { signature: 'await exportOBJParts(partIds?, filename?) -- Bundle parts into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
         'exportOBJPartsData': { signature: 'await exportOBJPartsData(partIds?, filename?) -- Same as exportOBJParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportSTLParts':  { signature: 'await exportSTLParts(partIds?, filename?) -- Bundle parts into a .zip of one .stl per part -> {ok, filename, parts}', docs: '/ai/file-io.md' },
