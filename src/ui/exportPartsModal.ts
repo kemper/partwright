@@ -18,6 +18,24 @@ export interface ExportPartChoice {
   thumbnail: Blob | null;
 }
 
+/** Optional Bambu/Orca controls (printer + nozzle + filament) shown only there. */
+export interface ExportPartsBambuOptions {
+  printers: { id: string; label: string }[];
+  defaultPrinter: string;
+  nozzles: string[];
+  defaultNozzle: string;
+  filaments: { id: string; label: string }[];
+  defaultFilament: string;
+}
+
+/** Modal result: the chosen part ids plus (for Bambu) the printer/nozzle/filament. */
+export interface ExportPartsResult {
+  partIds: string[];
+  printer?: string;
+  nozzle?: string;
+  filament?: string;
+}
+
 export interface ExportPartsModalOptions {
   /** Part preselected on open (typically the currently-viewed part). */
   activePartId: string | null;
@@ -25,20 +43,22 @@ export interface ExportPartsModalOptions {
   title: string;
   /** One-line explanation of how this format bundles the parts. */
   description: string;
+  /** When present, render the Bambu printer + nozzle dropdowns. */
+  bambu?: ExportPartsBambuOptions;
 }
 
 /**
  * Show the multi-part export part picker. Returns the selected part ids (in list
- * order), or null on cancel. The caller supplies the format-specific title +
- * description via `opts`.
+ * order) plus the Bambu printer/nozzle (when those controls are shown), or null on
+ * cancel. The caller supplies the format-specific title + description via `opts`.
  */
 export function showExportPartsModal(
   parts: ExportPartChoice[],
   opts: ExportPartsModalOptions,
-): Promise<string[] | null> {
-  const { activePartId, title, description } = opts;
+): Promise<ExportPartsResult | null> {
+  const { activePartId, title, description, bambu } = opts;
   return new Promise((resolve) => {
-    let result: string[] | null = null;
+    let result: ExportPartsResult | null = null;
     // Track object URLs so we can revoke them on teardown (no GPU/blob leak).
     const objectUrls: string[] = [];
 
@@ -118,6 +138,41 @@ export function showExportPartsModal(
       list.appendChild(row);
     }
 
+    // ── Bambu printer / nozzle / filament controls (only for the Bambu export) ──
+    let printerSel: HTMLSelectElement | null = null;
+    let nozzleSel: HTMLSelectElement | null = null;
+    let filamentSel: HTMLSelectElement | null = null;
+    if (bambu) {
+      const mkSelect = (label: string, choices: { value: string; label: string }[], def: string): HTMLSelectElement => {
+        const wrap = document.createElement('label');
+        wrap.className = 'flex items-center justify-between gap-3 mt-2';
+        const lbl = document.createElement('span');
+        lbl.className = 'text-[11px] text-zinc-300';
+        lbl.textContent = label;
+        const sel = document.createElement('select');
+        sel.className = 'flex-1 max-w-[60%] bg-zinc-900 border border-zinc-700 rounded text-xs text-zinc-200 px-2 py-1 cursor-pointer';
+        for (const c of choices) {
+          const o = document.createElement('option');
+          o.value = c.value; o.textContent = c.label;
+          if (c.value === def) o.selected = true;
+          sel.appendChild(o);
+        }
+        wrap.append(lbl, sel);
+        shell.body.appendChild(wrap);
+        return sel;
+      };
+      const div = document.createElement('div');
+      div.className = 'mt-3 pt-3 border-t border-zinc-700';
+      const h = document.createElement('div');
+      h.className = 'text-[11px] text-zinc-400 mb-1';
+      h.textContent = 'Bambu Studio settings';
+      div.appendChild(h);
+      shell.body.appendChild(div);
+      printerSel = mkSelect('Printer', bambu.printers.map(p => ({ value: p.id, label: p.label })), bambu.defaultPrinter);
+      nozzleSel = mkSelect('Nozzle', bambu.nozzles.map(n => ({ value: n, label: `${n} mm` })), bambu.defaultNozzle);
+      filamentSel = mkSelect('Filament', bambu.filaments.map(f => ({ value: f.id, label: f.label })), bambu.defaultFilament);
+    }
+
     const cancelBtn = document.createElement('button');
     cancelBtn.className = BUTTON_CANCEL;
     cancelBtn.textContent = 'Cancel';
@@ -145,7 +200,12 @@ export function showExportPartsModal(
     function confirm() {
       const ids = selectedIds();
       if (ids.length === 0) return;
-      result = ids;
+      result = {
+        partIds: ids,
+        printer: printerSel?.value,
+        nozzle: nozzleSel?.value,
+        filament: filamentSel?.value,
+      };
       shell.close();
     }
 
