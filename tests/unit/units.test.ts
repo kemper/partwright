@@ -19,8 +19,18 @@ describe('units', () => {
     vi.unstubAllGlobals();
   });
 
-  it('defaults to unitless (back-compat) when nothing is persisted', async () => {
+  it('defaults to mm when nothing is persisted', async () => {
     installLocalStorageStub();
+    const { getUnits, get3MFUnitString, formatDimension } = await import('../../src/geometry/units');
+    expect(getUnits()).toBe('mm');
+    expect(get3MFUnitString()).toBe('millimeter');
+    // formatDimension suffixes the unit once a concrete unit is set.
+    expect(formatDimension(1)).toBe('1.00 mm');
+  });
+
+  it('still treats an explicitly-chosen unitless value as unitless', async () => {
+    const store = installLocalStorageStub();
+    store.set('partwright-units', 'unitless');
     const { getUnits, get3MFUnitString, formatDimension } = await import('../../src/geometry/units');
     expect(getUnits()).toBe('unitless');
     // 3MF still requires a concrete unit — unitless maps to millimeter.
@@ -58,10 +68,10 @@ describe('units', () => {
     expect(second.getUnits()).toBe('cm');
   });
 
-  it('ignores a corrupt persisted value and falls back to unitless', async () => {
+  it('ignores a corrupt persisted value and falls back to the mm default', async () => {
     const store = installLocalStorageStub();
     store.set('partwright-units', 'furlongs');
     const { getUnits } = await import('../../src/geometry/units');
-    expect(getUnits()).toBe('unitless');
+    expect(getUnits()).toBe('mm');
   });
 });
