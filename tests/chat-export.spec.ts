@@ -107,8 +107,8 @@ test.describe('Chat export', () => {
         chat?: { id?: string; sessionId?: string; blocks: { type: string; text?: string }[] }[];
       };
     }, id);
-    expect(exported.partwright).toBe('1.15'); // tracks SCHEMA_VERSION (bumped to 1.15 for appVersion provenance)
-    // App-version provenance (schema 1.15): the dev build stamps package.json's semver.
+    expect(exported.partwright).toBe('1.16'); // tracks SCHEMA_VERSION (bumped to 1.16 for typed attachments)
+    // App-version provenance (schema 1.15+): the dev build stamps package.json's semver.
     expect(exported.appVersion).toMatch(/^\d+\.\d+\.\d+$/);
     expect(exported.chat?.length).toBe(3);
     expect(exported.chat?.[0].blocks[0].text).toBe('Design a widget bracket');

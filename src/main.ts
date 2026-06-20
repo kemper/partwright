@@ -5671,7 +5671,7 @@ async function main() {
     { id: 'tab-interactive', title: 'Go to 3D view', hint: 'Tab', keywords: 'interactive viewport model', run: () => switchTab('interactive'), enabled: isEditorActive },
     { id: 'tab-gallery', title: 'Go to Gallery (read-only)', hint: 'Tab', keywords: 'thumbnails versions visual grid', run: () => switchTab('gallery'), enabled: isEditorActive },
     { id: 'tab-versions', title: 'Go to Versions', hint: 'Tab', keywords: 'history rename delete', run: () => switchTab('versions'), enabled: isEditorActive },
-    { id: 'tab-images', title: 'Go to Attachments', hint: 'Tab', keywords: 'photos reference images attachments files model document pdf notes', run: () => switchTab('images'), enabled: isEditorActive },
+    { id: 'tab-images', title: 'Go to Attachments', hint: 'Tab', keywords: 'photos reference images attachments files model document pdf', run: () => switchTab('images'), enabled: isEditorActive },
     { id: 'tab-diff', title: 'Go to Diff', hint: 'Tab', keywords: 'compare changes', run: () => switchTab('diff'), enabled: isEditorActive },
     { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes'), enabled: isEditorActive },
     { id: 'tab-data', title: 'Go to Data', hint: 'Tab', keywords: 'storage browser indexeddb inventory', run: () => switchTab('data'), enabled: isEditorActive },
