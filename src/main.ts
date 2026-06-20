@@ -206,7 +206,7 @@ import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
-import { resolvePaintOps } from './color/paintOpsResolve';
+import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
@@ -2303,23 +2303,13 @@ async function main() {
     return { sessionId: session.id };
   }
 
-  // Bake a run's model-declared colours into a standalone coloured MeshData,
-  // touching no global paint/region state. Reuses composeTriColors — the same
-  // stamping the live model-colour underlay uses — so the result matches what
-  // the live pipeline would paint, minus the user's manual paint regions (which
-  // index the live tessellation and aren't resolvable off-state here).
-  //
-  // Always resolves api.label(shape, name, {color}). When `includePaintOps` is
-  // set it ALSO resolves api.paint.* ops (box / slab / cylinder / byLabel)
-  // against this result's own mesh + labelMap — used by the fast-preview path so
-  // the coarse mesh shows in-code paint too. Backfilled thumbnails leave it off:
-  // a paint-only model's historical-version thumbnail shades by normal (the live
-  // latest version always renders through the full pipeline with colour), and
-  // resolving descriptors over many offscreen versions would build adjacency per
-  // op for no gallery benefit.
-  function colorMeshFromModel(result: MeshResult, includePaintOps = false): MeshData | null {
+  // Build the model-declared colour layer (api.label({color}) + optionally
+  // api.paint.* ops) for a run/preview result, resolving every triangle set
+  // against THIS result's own mesh + labelMap — no global state. Shared by the
+  // offscreen-thumbnail bake and the fast-preview colouring below.
+  function buildModelColorLayer(result: MeshResult, includePaintOps: boolean): ColorRegion[] {
     const mesh = result.mesh;
-    if (!mesh) return null;
+    if (!mesh) return [];
     const { labelColors, labelMap, paintOps } = result;
     const layer: ColorRegion[] = [];
     let order = 0;
@@ -2349,8 +2339,57 @@ async function main() {
         });
       }
     }
+    return layer;
+  }
+
+  // Bake a run's model-declared colours into a standalone coloured MeshData,
+  // touching no global paint/region state. Reuses composeTriColors — the same
+  // stamping the live model-colour underlay uses — so the result matches what
+  // the live pipeline would paint, minus the user's manual paint regions (which
+  // index the live tessellation and aren't resolvable off-state here).
+  //
+  // Always resolves api.label(shape, name, {color}). When `includePaintOps` is
+  // set it ALSO resolves api.paint.* ops (box / slab / cylinder / byLabel)
+  // against this result's own mesh + labelMap — used by the fast-preview path so
+  // the coarse mesh shows in-code paint too. Backfilled thumbnails leave it off:
+  // a paint-only model's historical-version thumbnail shades by normal (the live
+  // latest version always renders through the full pipeline with colour), and
+  // resolving descriptors over many offscreen versions would build adjacency per
+  // op for no gallery benefit.
+  function colorMeshFromModel(result: MeshResult, includePaintOps = false): MeshData | null {
+    const mesh = result.mesh;
+    if (!mesh) return null;
+    const layer = buildModelColorLayer(result, includePaintOps);
     if (layer.length === 0) return mesh;
     const triColors = composeTriColors(mesh.numTri, [layer], { baseColors: mesh.triColors ?? null });
+    return triColors ? { ...mesh, triColors } : mesh;
+  }
+
+  // Colour the coarse FAST-PREVIEW mesh as faithfully as the rough tessellation
+  // allows: the model-declared underlay (above) PLUS the user's saved paint
+  // regions whose descriptors re-resolve geometrically — byLabel and the
+  // box/slab/cylinder selectors. This is what makes a painted catalog figure
+  // (whose colours live in saved `byLabel` regions, not in code) show colour on
+  // the preview instead of bare grey. `resolvePaintDescriptor` returns a triangle
+  // set for exactly those kinds and `null` for the index/seed-dependent ones
+  // (brush strokes, coplanar, colorFlood, raw triangle ids) — which can't map
+  // onto the coarse mesh and correctly fill in only with the full render. No
+  // global state is touched: each region is re-resolved against THIS coarse mesh,
+  // so stale full-mesh indices never stamp the wrong triangles.
+  function colorCoarsePreview(result: MeshResult): MeshData {
+    const mesh = result.mesh!;
+    const modelLayer = buildModelColorLayer(result, true);
+    const userLayer: ColorRegion[] = [];
+    for (const region of getRegions()) {
+      if (region.visible === false) continue;
+      const triangles = resolvePaintDescriptor(region.descriptor, mesh, result.labelMap ?? null);
+      if (!triangles || triangles.size === 0) continue;
+      userLayer.push({ ...region, triangles, descriptor: { kind: 'triangles', ids: [...triangles] } });
+    }
+    if (modelLayer.length === 0 && userLayer.length === 0) return mesh;
+    // Same layer order as the live compositor (buildTriColors): model underlay
+    // first, the user's manual paint on top.
+    const triColors = composeTriColors(mesh.numTri, [modelLayer, userLayer], { baseColors: mesh.triColors ?? null });
     return triColors ? { ...mesh, triColors } : mesh;
   }
 
@@ -5993,6 +6032,17 @@ async function main() {
       }
       const meshBeforeRun = currentMeshData;
       const genBeforeRun = _runGeneration;
+      // Stage this version's saved colour-region *descriptors* (empty triangle
+      // sets) into the store BEFORE the run, so the fast-preview pass can paint
+      // an estimate of a painted figure's colours (byLabel / geometric regions
+      // re-resolve against the coarse mesh — see colorCoarsePreview) instead of
+      // showing bare grey for the tens of seconds a figure takes to fully render.
+      // Without this the regions only arrive via rehydrateColorRegions AFTER the
+      // run, so the preview had nothing to resolve. The full render re-resolves
+      // them too, and rehydrateColorRegions below still owns the final resolution
+      // (smooth-stroke replay etc.) — it clears + rebuilds, so this is a strict
+      // head-start, not a competing source of truth.
+      stageUnresolvedColorRegions(version.geometryData);
       const applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
@@ -16249,13 +16299,15 @@ async function main() {
           // colours live only on the copy handed to updateMesh, mirroring the
           // full-render path where currentMeshData is also the uncoloured base.
           currentMeshData = previewResult.mesh;
-          // Estimate the model's colours on the coarse mesh: api.label({color})
-          // and api.paint.* ops both resolve geometrically/by-name against this
-          // preview result's own mesh + labelMap (no global state touched), so
-          // the fast preview shows roughly the right colours instead of bare
-          // grey. User brush paint and detail-region labels (eyes, etc.) can't
-          // map onto the coarse tessellation — they fill in with the full render.
-          const colouredPreview = colorMeshFromModel(previewResult, true) ?? previewResult.mesh;
+          // Estimate the model's colours on the coarse mesh: the in-code
+          // underlay (api.label({color}) + api.paint.*) plus the user's saved
+          // paint regions that re-resolve geometrically (byLabel / box / slab /
+          // cylinder) — so a painted catalog figure shows colour instead of bare
+          // grey. All resolve against this preview result's own mesh + labelMap
+          // (no global state touched). Brush strokes and detail-region labels
+          // (eyes, etc.) can't map onto the coarse mesh — they fill in with the
+          // full render.
+          const colouredPreview = colorCoarsePreview(previewResult);
           updateMesh(colouredPreview, { skipAutoFrame: preservedCameraPose !== null });
           if (previewLang === 'manifold-js') showFastPreviewPill();
         }

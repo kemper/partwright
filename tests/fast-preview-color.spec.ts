@@ -64,4 +64,35 @@ test.describe('fast preview colour estimate', () => {
     expect(red, 'red (top half) pixels on the preview').toBeGreaterThan(300);
     expect(blue, 'blue (bottom half) pixels on the preview').toBeGreaterThan(300);
   });
+
+  // The real-world case: a painted CATALOG figure. Its colours live in saved
+  // `byLabel` paint regions (not in code), staged into the store before the run
+  // so the coarse preview can re-resolve them against the rough mesh. Without
+  // this the figure renders bare grey for the tens of seconds it takes to fully
+  // mesh. (Guards the colorCoarsePreview + stage-before-run wiring.)
+  test('a painted catalog figure shows its colours on the coarse preview', async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.goto('/editor?catalog=archer.partwright.json');
+
+    const pill = page.getByText('⚡ Fast preview');
+    await pill.waitFor({ state: 'visible', timeout: 40_000 });
+    await page.waitForTimeout(300);
+    const shot = await page.locator('#viewport').screenshot();
+
+    // Sample the centre region (where the figure is), ignoring the toolbar UI.
+    // A coloured figure has substantial chroma; a grey/unpainted one has almost
+    // none (skin/cloth all collapse to r≈g≈b).
+    const { data, info } = await sharp(shot)
+      .extract({ left: 120, top: 150, width: 320, height: 320 })
+      .raw().toBuffer({ resolveWithObject: true });
+    const ch = info.channels;
+    let chroma = 0;
+    for (let i = 0; i < data.length; i += ch) {
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      if (r < 18 && g < 18 && b < 18) continue; // background
+      if (Math.max(r, g, b) - Math.min(r, g, b) > 18) chroma++;
+    }
+    expect(chroma, 'chroma (coloured) pixels on the figure preview').toBeGreaterThan(1500);
+  });
 });
