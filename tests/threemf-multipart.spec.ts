@@ -7,7 +7,7 @@ import { test, expect } from 'playwright/test';
 test.describe('multi-part 3MF export', () => {
   test.beforeEach(async ({ page }) => {
     // Suppress the first-run guided tour — its backdrop intercepts clicks.
-    await page.addInitScript(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ } });
+    await page.addInitScript(() => { try { localStorage.setItem('partwright-tour-completed', '1'); localStorage.setItem('editor-auto-format', 'false'); } catch { /* ignore */ } });
   });
 
   test('build3MFProject emits multiple objects, plates and colour bindings', async ({ page }) => {

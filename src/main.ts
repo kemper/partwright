@@ -4288,8 +4288,37 @@ async function main() {
    *  confirmed it. Only used by the UI export actions below. */
   async function confirmExportOrProceed(format: string): Promise<boolean> {
     const info = exportWarningInfo(format);
+    // Flag every part that isn't fully saved so the export doesn't silently use
+    // stale data. A multi-part export bakes each NON-current part from its last
+    // SAVED version (the current part exports from its live mesh), so unsaved
+    // edits drop out — and a part that was never saved at all (an untouched
+    // starter) has NO version, so it's skipped from the export entirely. Both
+    // 'unsaved' (edited, not saved) and 'empty' (brand-new, never saved) count;
+    // only 'clean' parts are omitted. We warn for the current part too: the user
+    // asked to be alerted whenever they export without saving.
+    const unsavedRows = (await gatherUnsavedParts()).filter(r => r.status === 'unsaved' || r.status === 'empty');
+    if (unsavedRows.length > 0) {
+      info.unsavedParts = { count: unsavedRows.length, names: unsavedRows.map(r => r.name) };
+    }
     if (!hasExportWarning(info)) return true;
-    return showExportConfirm(info);
+    const decision = await showExportConfirm(info);
+    if (decision === 'save') {
+      // Hand off to the multi-part save modal so the user picks which parts to
+      // save (or cancels) — the same chooser Cmd/Ctrl+S uses. The export is
+      // abandoned either way; the user re-clicks Export to resume once they've
+      // saved. Mirrors saveVersionWithToast's choice handling.
+      const choice = await showSaveAllModal(unsavedRows);
+      if (choice.action === 'selected') {
+        const onlyCurrent = choice.partIds.length === 1 && choice.partIds[0] === getState().currentPart?.id;
+        if (!onlyCurrent) await saveSelectedParts(choice.partIds);
+        else await saveCurrentPartWithToast();
+      } else if (choice.action === 'current') {
+        await saveCurrentPartWithToast();
+      }
+      // 'cancel' → save nothing; the user can re-open Export and decide again.
+      return false;
+    }
+    return decision === 'export';
   }
 
   // One standardized "nothing to export" toast for every mesh export action, so

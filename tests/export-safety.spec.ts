@@ -19,6 +19,7 @@ async function waitForEngine(page: Page) {
 type PW = {
   createSession: (n?: string) => Promise<unknown>;
   run: (code: string) => Promise<unknown>;
+  runAndSave: (code: string, label?: string) => Promise<unknown>;
   setUnits: (u: string) => void;
 };
 
@@ -26,7 +27,9 @@ async function runManifold(page: Page, code: string) {
   await page.evaluate(async (c) => {
     const pw = (window as unknown as { partwright: PW }).partwright;
     await pw.createSession('export-safety');
-    await pw.run(c);
+    // Save a version so the part isn't flagged "unsaved" — these tests isolate
+    // the units/printability warnings, not the new unsaved-parts warning.
+    await pw.runAndSave(c, 'v1');
   }, code);
 }
 
@@ -45,6 +48,10 @@ test.beforeEach(async ({ page }) => {
       localStorage.setItem('partwright-tour-completed', '1');
       // Ensure a clean unit baseline regardless of any persisted value.
       localStorage.removeItem('partwright-units');
+      // Disable auto-format so runAndSave's saved code matches the editor buffer
+      // exactly — otherwise the part reads as "unsaved" (formatted editor vs
+      // unformatted saved arg) and the new unsaved-parts export warning fires.
+      localStorage.setItem('editor-auto-format', 'false');
     } catch { /* ignore */ }
   });
 });
