@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { Timer } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import type { MeshData } from '../geometry/types';
-import { createDefaultMaterial, createWireframeMaterial } from './materials';
+import { createWireframeMaterial } from './materials';
+import { studioPresetFor, makeGradientTexture, createStudioMaterial, type StudioPreset } from './studioEnv';
 import { initMeasureOverlay } from './measureOverlay';
 import { initOrientationGizmo, renderGizmo, updateGizmo, isGizmoAnimating } from './orientationGizmo';
 import { initDimensionLines, updateDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
@@ -11,9 +13,7 @@ import { frameRateAdjustedDamping } from './orbitDamping';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
 import { getConfig } from '../config/appConfig';
 
-const VIEWPORT_BG = { dark: 0x1a1a2e, light: 0xededed } as const;
 const GRID_COLORS = { dark: { major: 0x444444, minor: 0x333333 }, light: { major: 0xb0b0b0, minor: 0xc8c8c8 } } as const;
-function bgFor(theme: Theme): number { return VIEWPORT_BG[theme]; }
 
 function makeGrid(theme: Theme): THREE.GridHelper {
   const c = GRID_COLORS[theme];
@@ -105,6 +105,38 @@ const ndcForHit = new THREE.Vector2();
 // Grid plane
 let grid: THREE.GridHelper;
 
+// Studio-space rendering: a gradient backdrop, image-based PBR lighting, a floor,
+// and a contact shadow that grounds the model in a space — instead of the old
+// flat color void. Driven by the light/dark theme (see studioEnv.ts).
+let studioPreset: StudioPreset = studioPresetFor('dark');
+let studioFloor: THREE.Mesh | null = null;
+let studioShadowCatcher: THREE.Mesh | null = null;
+let studioKeyLight: THREE.DirectionalLight | null = null;
+let lastFloorZ = 0;
+
+/** Re-skin the studio scene (backdrop, lights, floor, shadow, model material)
+ *  for a theme — called once at init's theme value and again on every flip. */
+function applyStudioTheme(theme: Theme): void {
+  studioPreset = studioPresetFor(theme);
+  const old = scene.background;
+  scene.background = makeGradientTexture(studioPreset.bgTop, studioPreset.bgBottom);
+  if (old instanceof THREE.Texture) old.dispose();
+  renderer.toneMappingExposure = studioPreset.exposure;
+  scene.environmentIntensity = studioPreset.envIntensity;
+  if (studioFloor) (studioFloor.material as THREE.MeshStandardMaterial).color.set(studioPreset.floorColor);
+  if (studioShadowCatcher) (studioShadowCatcher.material as THREE.ShadowMaterial).opacity = studioPreset.shadowStrength;
+  // Recolor the live model material in place (it's only rebuilt on the next run).
+  const solid = meshGroup?.children.find(c => c instanceof THREE.Mesh && c.name !== 'wireframe' && c.name !== 'clip-cap');
+  if (solid instanceof THREE.Mesh) {
+    const mat = solid.material;
+    if (mat instanceof THREE.MeshStandardMaterial && !mat.vertexColors) {
+      mat.color.set(studioPreset.matColor);
+      mat.roughness = studioPreset.matRoughness;
+      mat.metalness = studioPreset.matMetalness;
+    }
+  }
+}
+
 // Mesh edge (wireframe) overlay visibility. Hidden by default so the model
 // reads cleanly; paint mode forces it on (see paintMode.ts) and the viewport
 // toggle button lets the user override either way.
@@ -137,8 +169,10 @@ export function initViewport(container: HTMLElement): {
   camera: THREE.PerspectiveCamera;
   renderer: THREE.WebGLRenderer;
 } {
+  studioPreset = studioPresetFor(getTheme());
+
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(bgFor(getTheme()));
+  scene.background = makeGradientTexture(studioPreset.bgTop, studioPreset.bgBottom);
 
   camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
   camera.position.set(15, -15, 15);
@@ -152,6 +186,10 @@ export function initViewport(container: HTMLElement): {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(baseDpr());
   renderer.localClippingEnabled = true;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = studioPreset.exposure;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   // WebGL context-loss recovery. preventDefault() on 'lost' is what lets the
   // browser restore the context; while lost we cancel the RAF loop so we don't
@@ -166,10 +204,23 @@ export function initViewport(container: HTMLElement): {
   canvas.addEventListener('webglcontextrestored', () => {
     contextLost = false;
     needsRender = true;
+    // The image-based-lighting env texture lives on the GPU and is lost with
+    // the context — regenerate it so the model isn't left unlit after restore.
+    buildStudioEnvironment();
     onContextRestored?.();
     // Restart the render loop (it was cancelled on loss).
     animate();
   }, false);
+
+  // Build (or rebuild) the RoomEnvironment IBL map and apply it to the scene.
+  function buildStudioEnvironment(): void {
+    const old = scene.environment;
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environmentIntensity = studioPreset.envIntensity;
+    pmrem.dispose();
+    if (old) old.dispose();
+  }
 
   controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
@@ -245,31 +296,60 @@ export function initViewport(container: HTMLElement): {
     }));
   }, { capture: true, passive: false });
 
-  // Lighting
+  // Lighting — ambient + key/fill directionals; intensities stay user-tunable
+  // via appConfig.renderer. The key (dir1) also casts the contact shadow.
   const ambient = new THREE.AmbientLight(0xffffff, getConfig().renderer.ambientLightIntensity);
   scene.add(ambient);
 
   const dir1 = new THREE.DirectionalLight(0xffffff, getConfig().renderer.primaryLightIntensity);
   dir1.position.set(10, -10, 15);
+  dir1.castShadow = true;
+  dir1.shadow.mapSize.set(2048, 2048);
+  dir1.shadow.bias = -0.0005;
   scene.add(dir1);
+  scene.add(dir1.target);
+  studioKeyLight = dir1;
 
   const dir2 = new THREE.DirectionalLight(0xffffff, getConfig().renderer.secondaryLightIntensity);
   dir2.position.set(-10, 10, -5);
   scene.add(dir2);
 
-  // Grid on XY plane (hidden by default)
+  // Image-based lighting from a neutral room for believable PBR shading. The
+  // generated env is a GPU texture, so it's lost with the WebGL context and
+  // rebuilt on restore (see the webglcontextrestored handler above).
+  buildStudioEnvironment();
+
+  // Floor the model sits on, plus a transparent shadow-catcher above it so the
+  // contact shadow's darkness is tunable independent of the floor color.
+  const floorMat = new THREE.MeshStandardMaterial({
+    color: studioPreset.floorColor,
+    roughness: 0.95,
+    metalness: 0.0,
+  });
+  studioFloor = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), floorMat);
+  scene.add(studioFloor);
+
+  studioShadowCatcher = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.ShadowMaterial({ opacity: studioPreset.shadowStrength }),
+  );
+  studioShadowCatcher.receiveShadow = true;
+  scene.add(studioShadowCatcher);
+
+  // Grid on XY plane (hidden by default; user-toggleable). Theme-colored.
   grid = makeGrid(getTheme());
   scene.add(grid);
 
-  // Re-tint scene + grid when theme flips
+  // Re-skin the whole studio when the theme flips.
   onThemeChange((theme) => {
-    (scene.background as THREE.Color).set(bgFor(theme));
+    applyStudioTheme(theme);
     const wasVisible = grid.visible;
     scene.remove(grid);
     grid.geometry.dispose();
     (grid.material as THREE.Material).dispose();
     grid = makeGrid(theme);
     grid.visible = wasVisible;
+    grid.position.z = lastFloorZ;
     scene.add(grid);
     needsRender = true;
   });
@@ -388,7 +468,7 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
   const geometry = meshGLToBufferGeometry(meshData);
   const hasColors = geometry.hasAttribute('color');
 
-  const solidMat = createDefaultMaterial(hasColors);
+  const solidMat = createStudioMaterial(studioPreset, hasColors);
   const wireMat = createWireframeMaterial();
 
   // Apply clipping planes to materials
@@ -398,6 +478,7 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
   }
 
   const solidMesh = new THREE.Mesh(geometry, solidMat);
+  solidMesh.castShadow = true;
   const wireMesh = new THREE.Mesh(geometry, wireMat);
   wireMesh.name = 'wireframe';
   wireMesh.visible = wireframeVisible;
@@ -457,8 +538,30 @@ function frameModel(): void {
   // Update model bounds for clip slider
   modelBounds = { min: box.min.z, max: box.max.z };
 
-  // Position grid at the bottom of the model
+  // Position grid + studio floor at the bottom of the model.
+  lastFloorZ = box.min.z;
   grid.position.z = box.min.z;
+
+  // Studio: park the floor (and its shadow catcher just above it) under the
+  // model, and size the key light's shadow frustum to the model's footprint.
+  if (studioFloor) {
+    studioFloor.position.set(center.x, center.y, box.min.z - maxDim * 0.004);
+    studioFloor.scale.set(maxDim * 14, maxDim * 14, 1);
+  }
+  if (studioShadowCatcher) {
+    studioShadowCatcher.position.set(center.x, center.y, box.min.z - maxDim * 0.002);
+    studioShadowCatcher.scale.set(maxDim * 14, maxDim * 14, 1);
+  }
+  if (studioKeyLight) {
+    studioKeyLight.position.set(center.x + maxDim * 0.8, center.y - maxDim * 0.5, box.max.z + maxDim * 1.4);
+    studioKeyLight.target.position.copy(center);
+    studioKeyLight.target.updateMatrixWorld();
+    const cam = studioKeyLight.shadow.camera;
+    const ext = maxDim * 1.4;
+    cam.left = -ext; cam.right = ext; cam.top = ext; cam.bottom = -ext;
+    cam.near = maxDim * 0.1; cam.far = maxDim * 6;
+    cam.updateProjectionMatrix();
+  }
 
   // Update bounding box dimension annotations
   updateDimensionLines(box);
