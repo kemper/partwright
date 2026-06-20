@@ -24,6 +24,7 @@ const {
   primRoundedCylinder,
   primTorus,
   primCapsule,
+  primTube,
   primGyroid,
   primSchwarzP,
   primDiamond,
@@ -152,6 +153,38 @@ describe('sdf primitives', () => {
     });
     it('rejects coincident endpoints', () => {
       expect(() => primCapsule([0, 0, 0], [0, 0, 0], 1)).toThrow();
+    });
+  });
+
+  describe('tube', () => {
+    it('a smooth 2-point tube matches the capsule it generalizes', () => {
+      const t = primTube([[0, 0, 0], [10, 0, 0]], 2);
+      expect(t.evaluate(5, 2, 0)).toBeCloseTo(0, APPROX);   // side surface
+      expect(t.evaluate(-2, 0, 0)).toBeCloseTo(0, APPROX);  // A end cap
+      expect(t.evaluate(15, 0, 0)).toBeCloseTo(3, APPROX);  // past B: 5 from B minus r
+    });
+    it('flutes carve INWARD only — the ridge sits at the base radius, grooves cut in', () => {
+      const t = primTube([[0, 0, 0], [0, 0, 20]], 5, { profile: 'flutes', count: 8, depth: 1 });
+      // theta=0 is a ridge (g=0) -> surface at full radius 5.
+      expect(t.evaluate(5, 0, 10)).toBeCloseTo(0, APPROX);
+      // Grooves only REMOVE material, so the surface never exceeds the nominal
+      // radius: every point on the radius-5 cylinder is on-or-outside (f >= 0).
+      for (let a = 0; a < Math.PI * 2; a += 0.3) {
+        const x = 5 * Math.cos(a), y = 5 * Math.sin(a);
+        expect(t.evaluate(x, y, 10)).toBeGreaterThanOrEqual(-1e-9);
+      }
+    });
+    it('bounds enclose the path expanded by the radius', () => {
+      const b = primTube([[0, 0, 0], [0, 0, 30]], 4).bounds();
+      expect(b.min[2]).toBeLessThanOrEqual(-4);
+      expect(b.max[2]).toBeGreaterThanOrEqual(34);
+      expect(b.max[0]).toBeGreaterThanOrEqual(4);
+    });
+    it('rejects too-short paths, coincident points, and unknown options', () => {
+      expect(() => primTube([[0, 0, 0]], 2)).toThrow();
+      expect(() => primTube([[0, 0, 0], [0, 0, 0]], 2)).toThrow();
+      expect(() => primTube([[0, 0, 0], [0, 0, 10]], 2, { profile: 'zigzag' })).toThrow();
+      expect(() => primTube([[0, 0, 0], [0, 0, 10]], 2, { bogus: 1 } as never)).toThrow();
     });
   });
 

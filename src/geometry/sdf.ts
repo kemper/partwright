@@ -983,6 +983,157 @@ function primCapsule(a: Vec3, b: Vec3, radius: number): SdfNode {
   );
 }
 
+/** A tube swept along a polyline path, with an optional surface texture
+ *  that FLOWS ALONG the direction of travel. This is the directional-surface
+ *  primitive: longitudinal `flutes`, circumferential `rings`, or wrapping
+ *  `helix` threads are parameterized by (distance along the path, angle
+ *  around it) using a rotation-minimizing frame, so the pattern stays
+ *  continuous through bends — no per-segment phase seams, no separate caps
+ *  to align. The whole tube is ONE connected component by construction.
+ *
+ *  `path` is a Vec3[] of >= 2 points (2 = a straight column; more = it bends
+ *  through them). Texture grooves are carved INWARD from the radius, so they
+ *  can never detach a piece. */
+export type TubeProfile = 'smooth' | 'flutes' | 'rings' | 'helix';
+export interface TubeOptions {
+  /** Surface pattern that flows along the path. Default `'smooth'`. */
+  profile?: TubeProfile;
+  /** Rib count (flutes), ring count over the whole length (rings), or
+   *  thread-start count (helix). Defaults size-relative. */
+  count?: number;
+  /** Helix only: number of full wraps along the entire path. Default 6. */
+  turns?: number;
+  /** Groove depth, carved inward in world units. Default ~9% of radius. */
+  depth?: number;
+  /** End radius as a fraction of the start radius, applied linearly along
+   *  the path (1 = no taper, <1 = taper toward the last point). Default 1. */
+  taper?: number;
+}
+
+const TUBE_OPTION_KEYS = ['profile', 'count', 'turns', 'depth', 'taper'] as const;
+
+/** Tube along a polyline path with a direction-following surface texture. */
+function primTube(path: unknown, radius: unknown, opts: unknown = {}): SdfNode {
+  if (!Array.isArray(path) || path.length < 2) {
+    throw new ValidationError('tube(path): path must be an array of at least 2 points ([x,y,z]).');
+  }
+  const P: Vec3[] = path.map((p, i) => assertNumberTuple(p, 3, `tube(path[${i}])`) as Vec3);
+  const r0 = assertNumber(radius, 'tube(radius)', { min: 1e-6 }) as number;
+  const o = assertObject(opts, 'tube(opts)', { optional: true }) ?? {};
+  assertNoUnknownKeys(o, TUBE_OPTION_KEYS, 'tube(opts)');
+  const profile = (o.profile === undefined
+    ? 'smooth'
+    : assertEnum(o.profile, ['smooth', 'flutes', 'rings', 'helix'] as const, 'tube(opts.profile)')) as TubeProfile;
+  const taper = o.taper === undefined ? 1 : assertNumber(o.taper, 'tube(opts.taper)', { min: 1e-3 }) as number;
+  const depth = o.depth === undefined ? r0 * 0.09 : assertNumber(o.depth, 'tube(opts.depth)', { min: 0 }) as number;
+  const turns = o.turns === undefined ? 6 : assertNumber(o.turns, 'tube(opts.turns)') as number;
+
+  // --- precompute per-segment data + a rotation-minimizing frame (RMF) -----
+  const n = P.length;
+  const segDir: Vec3[] = [];   // unit direction of each segment
+  const segLen: number[] = [];
+  const cum: number[] = [0];   // cumulative arc length at each vertex
+  for (let i = 0; i < n - 1; i++) {
+    const dx = P[i + 1][0] - P[i][0], dy = P[i + 1][1] - P[i][1], dz = P[i + 1][2] - P[i][2];
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-9) throw new ValidationError('tube(path): consecutive points must be distinct.');
+    segDir.push([dx / len, dy / len, dz / len]);
+    segLen.push(len);
+    cum.push(cum[i] + len);
+  }
+  const total = cum[n - 1];
+  // Tangent per vertex (segment dir; last vertex reuses the final segment).
+  const tan: Vec3[] = [];
+  for (let i = 0; i < n; i++) tan.push(segDir[Math.min(i, n - 2)]);
+
+  const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const unit = (a: Vec3): Vec3 => { const m = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / m, a[1] / m, a[2] / m]; };
+
+  // Initial frame vector U[0] perpendicular to the first tangent.
+  const t0 = tan[0];
+  const ref: Vec3 = Math.abs(t0[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+  const U: Vec3[] = [unit(cross(t0, ref))];
+  // Double-reflection RMF (Wang et al. 2008) — minimal twist along the path.
+  for (let i = 0; i < n - 1; i++) {
+    const v1: Vec3 = [P[i + 1][0] - P[i][0], P[i + 1][1] - P[i][1], P[i + 1][2] - P[i][2]];
+    const c1 = dot(v1, v1) || 1e-9;
+    const ui = U[i], ti = tan[i];
+    const fr = 2 * dot(v1, ui) / c1;
+    const rL: Vec3 = [ui[0] - fr * v1[0], ui[1] - fr * v1[1], ui[2] - fr * v1[2]];
+    const ft = 2 * dot(v1, ti) / c1;
+    const tL: Vec3 = [ti[0] - ft * v1[0], ti[1] - ft * v1[1], ti[2] - ft * v1[2]];
+    const v2: Vec3 = [tan[i + 1][0] - tL[0], tan[i + 1][1] - tL[1], tan[i + 1][2] - tL[2]];
+    const c2 = dot(v2, v2);
+    if (c2 < 1e-9) { U.push(unit(rL)); continue; }
+    const fr2 = 2 * dot(v2, rL) / c2;
+    U.push(unit([rL[0] - fr2 * v2[0], rL[1] - fr2 * v2[1], rL[2] - fr2 * v2[2]]));
+  }
+
+  const TWO_PI = Math.PI * 2;
+  const flutes = profile === 'flutes', rings = profile === 'rings';
+  const defaultCount = rings
+    ? Math.max(4, Math.round(total / (r0 * 1.6)))
+    : Math.max(6, Math.round(r0 * 0.9));
+  const count = o.count === undefined ? defaultCount : assertNumber(o.count, 'tube(opts.count)', { min: 1 }) as number;
+
+  const evalFn: EvalFn = (x, y, z) => {
+    // Nearest point over all segments.
+    let best = Infinity, bSeg = 0, bT = 0;
+    let bcx = 0, bcy = 0, bcz = 0;
+    for (let i = 0; i < n - 1; i++) {
+      const A = P[i], d = segDir[i], L = segLen[i];
+      const px = x - A[0], py = y - A[1], pz = z - A[2];
+      let t = px * d[0] + py * d[1] + pz * d[2];   // projection (world units along seg)
+      if (t < 0) t = 0; else if (t > L) t = L;
+      const cx = A[0] + d[0] * t, cy = A[1] + d[1] * t, cz = A[2] + d[2] * t;
+      const ex = x - cx, ey = y - cy, ez = z - cz;
+      const dist2 = ex * ex + ey * ey + ez * ez;
+      if (dist2 < best) { best = dist2; bSeg = i; bT = t / L; bcx = cx; bcy = cy; bcz = cz; }
+    }
+    const dist = Math.sqrt(best);
+    const sNorm = total > 0 ? (cum[bSeg] + bT * segLen[bSeg]) / total : 0;
+    const rad = r0 * (1 + (taper - 1) * sNorm);
+    if (profile === 'smooth' || depth === 0) return dist - rad;
+
+    // Local frame at the nearest point: interpolate tangent + RMF normal.
+    const i0 = bSeg, i1 = bSeg + 1, t = bT;
+    const ax = unit([
+      tan[i0][0] + (tan[i1][0] - tan[i0][0]) * t,
+      tan[i0][1] + (tan[i1][1] - tan[i0][1]) * t,
+      tan[i0][2] + (tan[i1][2] - tan[i0][2]) * t,
+    ]);
+    let ux = U[i0][0] + (U[i1][0] - U[i0][0]) * t;
+    let uy = U[i0][1] + (U[i1][1] - U[i0][1]) * t;
+    let uz = U[i0][2] + (U[i1][2] - U[i0][2]) * t;
+    const ud = ux * ax[0] + uy * ax[1] + uz * ax[2];   // re-orthogonalize U against axis
+    ux -= ud * ax[0]; uy -= ud * ax[1]; uz -= ud * ax[2];
+    const um = Math.hypot(ux, uy, uz) || 1; ux /= um; uy /= um; uz /= um;
+    const vx = ax[1] * uz - ax[2] * uy, vy = ax[2] * ux - ax[0] * uz, vz = ax[0] * uy - ax[1] * ux;
+    const wx = x - bcx, wy = y - bcy, wz = z - bcz;
+    const theta = Math.atan2(wx * vx + wy * vy + wz * vz, wx * ux + wy * uy + wz * uz);
+
+    // Groove value g in [0,1]; carved inward so the surface never detaches.
+    let phase: number;
+    if (flutes) phase = count * theta;
+    else if (rings) phase = TWO_PI * count * sNorm;
+    else /* helix */ phase = count * theta + TWO_PI * turns * sNorm;
+    const g = 0.5 - 0.5 * Math.cos(phase);
+    return dist - rad + depth * g;
+  };
+
+  const grow = r0 * Math.max(1, taper) + 1e-3;
+  let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+  for (const p of P) {
+    if (p[0] < mnx) mnx = p[0]; if (p[1] < mny) mny = p[1]; if (p[2] < mnz) mnz = p[2];
+    if (p[0] > mxx) mxx = p[0]; if (p[1] > mxy) mxy = p[1]; if (p[2] > mxz) mxz = p[2];
+  }
+  return leafNode('tube', evalFn, {
+    min: [mnx - grow, mny - grow, mnz - grow],
+    max: [mxx + grow, mxy + grow, mxz + grow],
+  });
+}
+
 const INFINITE_BOUNDS: Box = {
   min: [-Infinity, -Infinity, -Infinity],
   max: [Infinity, Infinity, Infinity],
@@ -1876,6 +2027,12 @@ export interface SdfNamespace {
   roundedCylinder(radius: number, height: number, edgeRadius: number): SdfNode;
   torus(majorRadius: number, minorRadius: number): SdfNode;
   capsule(a: Vec3, b: Vec3, radius: number): SdfNode;
+  /** A tube swept along a polyline `path` (>= 2 points) with a surface
+   *  texture that flows along the direction of travel — `flutes` (ridges
+   *  along the path), `rings` (across it), or `helix` (threads wrapping it).
+   *  Uses a rotation-minimizing frame so the pattern is continuous through
+   *  bends, and is ONE connected component by construction. */
+  tube(path: Vec3[], radius: number, opts?: TubeOptions): SdfNode;
   gyroid(cellSize: number, thickness: number): SdfNode;
   schwarzP(cellSize: number, thickness: number): SdfNode;
   diamond(cellSize: number, thickness: number): SdfNode;
@@ -1940,6 +2097,7 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     roundedCylinder: (radius, height, edgeRadius) => bound(primRoundedCylinder(radius, height, edgeRadius)),
     torus: (R, r) => bound(primTorus(R, r)),
     capsule: (a, b, radius) => bound(primCapsule(a, b, radius)),
+    tube: (path, radius, opts) => bound(primTube(path, radius, opts)),
     gyroid: (cellSize, thickness) => bound(primGyroid(cellSize, thickness)),
     schwarzP: (cellSize, thickness) => bound(primSchwarzP(cellSize, thickness)),
     diamond: (cellSize, thickness) => bound(primDiamond(cellSize, thickness)),
@@ -1984,6 +2142,7 @@ export const __testables__ = {
   primRoundedCylinder,
   primTorus,
   primCapsule,
+  primTube,
   primGyroid,
   primSchwarzP,
   primDiamond,

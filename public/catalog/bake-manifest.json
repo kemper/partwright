@@ -59,6 +59,16 @@
         ]
       }
     },
+    "cactus-dock": {
+      "source": "examples/cactus_dock.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "cactus",
+          "pot"
+        ]
+      }
+    },
     "chess-rook": {
       "source": "examples/chess_rook.js",
       "gates": {
@@ -469,6 +479,24 @@
       "gates": {
         "maxGenus": null,
         "requiredLabels": []
+      }
+    },
+    "unicorn-horn": {
+      "source": "examples/unicorn_horn.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "horn"
+        ]
+      }
+    },
+    "vacuum-hose-elbow": {
+      "source": "examples/vacuum_hose_elbow.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "hose"
+        ]
       }
     },
     "vintage-biplane": {

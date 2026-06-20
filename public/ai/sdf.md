@@ -44,7 +44,56 @@ api.sdf.cylinder(radius, height)        // Z-aligned, spans [-h/2, h/2]
 api.sdf.roundedCylinder(radius, height, edgeR)  // rounded top/bottom edges — OUTER radius+height preserved
 api.sdf.torus(majorR, minorR)           // ring in XY plane
 api.sdf.capsule([x1,y1,z1], [x2,y2,z2], radius)   // hemisphere-capped rod
+api.sdf.tube(path, radius, opts?)        // capsule swept along a polyline path — see below
 ```
+
+### Directional surface textures — `tube` (flutes / rings / helix that follow the path) {#tube}
+
+**Reach for `tube` whenever a surface texture should flow along a direction of
+travel** — ribs running up a stalk, threads wrapping a bolt, corrugations
+around a bent hose, a spiral up a horn. `path` is a `Vec3[]` of ≥ 2 points (2 =
+a straight column; more = it bends through them, like `Curves` control points).
+The whole tube is **ONE connected component by construction** (no floating
+parts), and the texture is carried by a **rotation-minimizing frame**, so the
+pattern stays continuous *through bends* — no per-segment phase seam, and no
+separate end caps to phase-match (the hemispherical caps are part of the same
+continuous surface).
+
+```js
+const { sdf } = api;
+// Straight fluted column:
+sdf.tube([[0,0,0],[0,0,60]], 8, { profile: 'flutes', count: 16 }).build();
+// A bent arm whose flutes follow the elbow:
+sdf.tube([[0,0,0],[30,0,0],[40,0,12],[40,0,40]], 6, { profile: 'flutes', count: 12 }).build();
+```
+
+`opts`:
+- **`profile`** — `'smooth'` (default), `'flutes'` (ridges ALONG the path),
+  `'rings'` (bands ACROSS it), or `'helix'` (threads WRAPPING it).
+- **`count`** — rib count (flutes), ring count over the whole length (rings),
+  or number of thread-starts (helix). Size-relative default.
+- **`turns`** — *helix only*: full wraps along the entire path (default 6).
+- **`depth`** — groove depth, carved **inward** in world units (default ~9% of
+  radius). Inward-only carving means a groove can never detach a piece.
+- **`taper`** — end radius as a fraction of the start radius, linearly along the
+  path (1 = none, `<1` = taper toward the last point). Great for tips/spikes.
+
+**This is the right tool for ribbed/branching organic shapes — do NOT hand-roll
+it with `warp`/`displace`.** A saguaro cactus is `tube` trunk + `tube` arms,
+`smoothUnion`'d and wrapped in one `.label()`:
+
+```js
+const { sdf } = api;
+const trunk = sdf.tube([[0,0,0],[0,0,150]], 16, { profile: 'flutes', count: 22, depth: 1.4 });
+const arm   = sdf.tube([[0,0,70],[40,0,70],[56,0,86],[56,0,120]], 11,
+                       { profile: 'flutes', count: 15, taper: 0.92 });
+return trunk.smoothUnion(arm, 6).label('cactus').build({ edgeLength: 0.7 });
+```
+
+Mesh fine enough to resolve the grooves (`edgeLength` ≲ groove spacing) or the
+texture aliases — same rule as `.displace()`. Very deep `rings`/`helix` at a
+tight concave bend can shed tiny mesh slivers (`componentCount` > 1); a gentler
+bend radius (more path points) or shallower `depth` clears them.
 
 ### TPMS lattices (all infinite — see "Bounds for unbounded shapes")
 

@@ -11,6 +11,7 @@ Curves: arc, bezier, naca4, polyline, loft, sweep, revolveAxis,
         fillet, chamfer, ringCopy, linearCopy, mirrorCopy   (see /ai/curves.md)
 sdf: sphere, ellipsoid, box, roundedBox, cylinder, roundedCylinder,
      torus, capsule,
+     tube(path, radius, {profile:'flutes'|'rings'|'helix', count, turns, depth, taper}) — directional surface texture along a path,
      gyroid/schwarzP/diamond/lidinoid + their graded* variants (TPMS),
      union/subtract/intersect, smoothUnion/Subtract/Intersect,
      .translate/.rotate/.scale/.mirror, .shell/.round/.twist/.bend/.taper,
@@ -40,6 +41,9 @@ Booleans:   .add(other)  .subtract(other)  .intersect(other)  .hull()
 Transforms: .translate([x,y,z])  .rotate([rx,ry,rz]) (degrees, applied X->Y->Z)
             .scale(s) or .scale([x,y,z])  .mirror([nx,ny,nz]) (plane normal)
             .warp(fn)  .transform(mat4)
+            ^ warp's `fn(v)` MUST MUTATE the vertex IN PLACE: write v[0]=…; v[1]=…; v[2]=…
+              — returning a new array (e.g. `v => [x*2, y, z]`) silently does NOTHING.
+              For surface texture that follows a path, prefer `api.sdf.tube(...)` over warp.
 Mesh ops:   .refine(n)  .simplify(tolerance)  .smoothOut(minSharpAngle?, minSmoothness?)
             .calculateNormals(idx, angle?)
 Queries:    .volume()  .surfaceArea()  .genus()  .numVert()  .numTri()  .isEmpty()

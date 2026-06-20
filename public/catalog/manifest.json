@@ -1287,7 +1287,7 @@
       "name": "Elf Archer",
       "file": "elf_archer.partwright.json",
       "language": "manifold-js",
-      "description": "A wood-elf archer holding a longbow upright — pointed elf ears left fully exposed by hair worn behind them, on a slim ranger build.",
+      "description": "A wood-elf archer holding a longbow upright \u2014 pointed elf ears left fully exposed by hair worn behind them, on a slim ranger build.",
       "tags": [
         "figures"
       ]
@@ -1297,7 +1297,7 @@
       "name": "Topknot Sensei",
       "file": "topknot_sensei.partwright.json",
       "language": "manifold-js",
-      "description": "A calm tai-chi master with palms pressed at the chest — anatomical detailed ears (helix rim, concha, lobe) framed by a topknot bun worn behind them.",
+      "description": "A calm tai-chi master with palms pressed at the chest \u2014 anatomical detailed ears (helix rim, concha, lobe) framed by a topknot bun worn behind them.",
       "tags": [
         "figures"
       ]
@@ -1357,7 +1357,7 @@
       "name": "Elf Bust",
       "file": "bust_elf.partwright.json",
       "language": "manifold-js",
-      "description": "A wood-elf bust — pointed ears left exposed by long hair worn behind them, with almond iris eyes, a fine nose and calm lips. A clean look at the figure API's pointed ear type on a full face.",
+      "description": "A wood-elf bust \u2014 pointed ears left exposed by long hair worn behind them, with almond iris eyes, a fine nose and calm lips. A clean look at the figure API's pointed ear type on a full face.",
       "tags": [
         "figures"
       ]
@@ -1367,7 +1367,7 @@
       "name": "Listener Bust",
       "file": "bust_listener.partwright.json",
       "language": "manifold-js",
-      "description": "An attentive adult bust — anatomical detailed ears (helix, concha, tragus, lobe) framed by short hair worn behind them, with iris eyes, a broad nose and an easy smile.",
+      "description": "An attentive adult bust \u2014 anatomical detailed ears (helix, concha, tragus, lobe) framed by short hair worn behind them, with iris eyes, a broad nose and an easy smile.",
       "tags": [
         "figures"
       ]
@@ -1377,7 +1377,7 @@
       "name": "Pixie Bust",
       "file": "bust_pixie.partwright.json",
       "language": "manifold-js",
-      "description": "A bright young bust — clean round ears exposed by a cropped pixie worn behind them, with big iris eyes, a button nose and a grin.",
+      "description": "A bright young bust \u2014 clean round ears exposed by a cropped pixie worn behind them, with big iris eyes, a button nose and a grin.",
       "tags": [
         "figures"
       ]
@@ -1620,6 +1620,36 @@
       "description": "A male ballet dancer in a turning port de bras, one arm curved overhead and the other extended \u2014 bare-chested in tights, a counterpoint to the ballerina.",
       "tags": [
         "figures"
+      ]
+    },
+    {
+      "id": "cactus-dock",
+      "name": "Cactus Dock",
+      "file": "cactus_dock.partwright.json",
+      "language": "manifold-js",
+      "description": "A saguaro cactus desk dock \u2014 fluted trunk and two arms whose vertical ribs flow continuously around the bends, set in a tan pot. Built with the directional-surface primitive api.sdf.tube.",
+      "tags": [
+        "decor"
+      ]
+    },
+    {
+      "id": "unicorn-horn",
+      "name": "Unicorn Horn",
+      "file": "unicorn_horn.partwright.json",
+      "language": "manifold-js",
+      "description": "A golden spiral unicorn horn \u2014 a double-helix groove tightening up a tapering, gently curved path. Shows api.sdf.tube's helix profile with taper.",
+      "tags": [
+        "decor"
+      ]
+    },
+    {
+      "id": "vacuum-hose-elbow",
+      "name": "Vacuum Hose Elbow",
+      "file": "vacuum_hose_elbow.partwright.json",
+      "language": "manifold-js",
+      "description": "A corrugated vacuum-hose elbow \u2014 ring ridges that stay evenly spaced as the hose turns a 90\u00b0 bend. Shows api.sdf.tube's rings profile following a path.",
+      "tags": [
+        "mechanical"
       ]
     }
   ]
