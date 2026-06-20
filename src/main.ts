@@ -2325,14 +2325,14 @@ async function main() {
     return triColors ? { ...mesh, triColors } : mesh;
   }
 
-  // Render + persist a thumbnail for every version of a freshly imported session
-  // that arrived without one (default exports omit thumbnails). Runs after the
-  // session is selected and its latest version loaded, so the new part appears
-  // immediately rather than waiting on these WASM runs. Each version executes
-  // OFFSCREEN via executeCodeAsync (no updateMesh → no viewport flicker) with its
-  // own imports + companion files passed explicitly, so the live active-imports
-  // register is never touched. Bails as soon as the user navigates away from the
-  // imported session.
+  // Render + persist a thumbnail for every version (in the given parts) that
+  // arrived without one (default exports omit thumbnails). Runs AFTER the
+  // session/part is selected and its latest version loaded, so the new part
+  // appears immediately rather than waiting on these WASM runs. Each version
+  // executes OFFSCREEN via executeCodeAsync (no updateMesh → no viewport flicker)
+  // with its own imports + companion files passed explicitly, so the live
+  // active-imports register is never touched. Bails as soon as the user
+  // navigates away from the session.
   //
   // Backfill execs share the single engine Worker with live user runs. They
   // carry per-version imports/companions explicitly, so a manifold-js/SCAD run
@@ -2341,15 +2341,14 @@ async function main() {
   // older replicad version landing between a live run and a manual STEP export
   // could export the wrong shape. Rare (same-session, bounded, STEP-during-import
   // is unusual) and self-corrects on the next live run; not guarded here.
-  async function backfillImportedThumbnails(sessionId: string): Promise<void> {
+  async function backfillThumbnailsForParts(sessionId: string, partIds: string[]): Promise<void> {
     let wrote = false;
     try {
-      const parts = await listParts(sessionId);
-      for (const part of parts) {
-        const versions = await listVersions(part.id);
+      for (const partId of partIds) {
+        const versions = await listVersions(partId);
         for (const v of versions) {
-          // Stop the moment the user leaves the imported session — don't tie up
-          // the engine Worker rendering snapshots nobody is waiting on.
+          // Stop the moment the user leaves the session — don't tie up the
+          // engine Worker rendering snapshots nobody is waiting on.
           if (getState().session?.id !== sessionId) return;
           if (v.thumbnail) continue;
           let result: MeshResult;
@@ -2383,6 +2382,13 @@ async function main() {
     if (wrote && getState().session?.id === sessionId) {
       window.dispatchEvent(new CustomEvent('session-changed', { detail: getState() }));
     }
+  }
+
+  // New-session import: backfill thumbnails across all of the imported session's
+  // parts (it owns the whole session, so every part is fair game).
+  async function backfillImportedThumbnails(sessionId: string): Promise<void> {
+    const parts = await listParts(sessionId);
+    await backfillThumbnailsForParts(sessionId, parts.map(p => p.id));
   }
 
   // Cancel an active voxel-paint session. Its live grid + per-triangle
@@ -3106,30 +3112,46 @@ async function main() {
     const choice = await showImportPreview(filename, summary, { mergeTargetName });
     if (choice === 'cancel') return false;
     if (choice === 'merge') {
-      // The regen callback runs each imported version's code to snapshot a
-      // thumbnail. Code like `Manifold.ofMesh(api.imports[0])` reads the active-
-      // imports register, so we must seed it with *that* version's meshes
-      // before running — otherwise the run produces the host (previously
-      // selected) part's geometry and the captured thumbnail is stale. Restore
-      // the host's own imports afterwards so the closing re-render is correct.
-      const hostImports = getActiveImports();
-      const result = await importSessionPartsIntoActive(data, async (code, importedMeshes) => {
-        setActiveImports(importedMeshes ?? []);
-        await runCodeSync(code);
-        return captureThumbnail();
-      });
-      setActiveImports(hostImports);
-      if (result) {
-        // Merging an imported version with no embedded thumbnail runs that
-        // version's code through runCodeSync to capture one — which leaves the
-        // viewport showing the last imported geometry while the editor still
-        // shows the active version's code. Re-render the active version so the
-        // editor text and viewport agree again.
-        const st = getState();
-        if (st.currentVersion) await runCodeSync(st.currentVersion.code, { preserveCamera: true });
+      // Append the imported parts WITHOUT regenerating thumbnails inline. The old
+      // path ran every imported version's code through the live renderer (the
+      // 10–15s render the user saw), then re-rendered the host version on top — a
+      // second full render — while leaving the host part selected. Instead: copy
+      // the parts in (fast, no WASM), switch to the FIRST new part so it appears
+      // selected with a single progressive render (fast preview → full), then
+      // backfill the rest of the new parts' thumbnails offscreen.
+      const result = await importSessionPartsIntoActive(data);
+      if (result && result.addedParts.length > 0) {
+        // Navigate to the first newly-added part so it appears selected with a
+        // single progressive render (fast preview → full). We do NOT route
+        // through selectPart here: its cancelCurrentExecution + saveVersion-based
+        // edit preservation deadlock when invoked from inside the import flow.
+        // Instead, stash the outgoing part's buffer as a draft BEFORE changePart
+        // (so it lands under the host part's id, not the incoming one), then load
+        // the new part with skipDraftSave since we've already saved that draft.
+        const outgoing = getState();
+        if (outgoing.session && outgoing.currentPart) {
+          await writeDraft(outgoing.session.id, getActiveLanguage(), getValue(), outgoing.currentPart.id, getCompanionFiles(), currentDraftRegions());
+        }
+        const newVersion = await changePart(result.addedParts[0].id);
+        if (newVersion) await loadVersionIntoEditor(newVersion, { skipSurface: true, skipDraftSave: true });
+        // The selected part is now rendered live with full colour — snapshot its
+        // thumbnail straight from that state (the most accurate tile, and it lets
+        // the backfill skip re-running this one).
+        const sel = getState();
+        if (sel.currentVersion && !sel.currentVersion.thumbnail) {
+          const thumb = await captureThumbnail();
+          if (thumb) await updateVersionThumbnail(sel.currentVersion.id, thumb);
+        }
+        const sessionId = sel.session?.id;
+        if (sessionId) void backfillThumbnailsForParts(sessionId, result.addedParts.map(p => p.id));
         const partWord = result.addedParts.length === 1 ? 'part' : 'parts';
-        showToast(`Merged ${result.addedParts.length} ${partWord} into this session.`, { variant: 'success' });
+        showToast(`Added ${result.addedParts.length} ${partWord} to this session.`, { variant: 'success' });
         return true;
+      }
+      // Nothing importable (e.g. every imported part was empty) — report it.
+      if (result) {
+        showToast('That file had no parts to add.', { variant: 'warn', source: 'import' });
+        return false;
       }
     }
     await importSessionPayload(data);
