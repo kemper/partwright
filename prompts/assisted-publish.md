@@ -59,3 +59,9 @@ Verified: typecheck, full unit tier (1514 pass) incl. the new
 (`tests/publish.spec.ts`) that opens the modal, switches platform, asserts the
 file download + window.open + clipboard, and rejects an unknown platform id.
 Eyes-on screenshot of the modal posted in chat.
+
+Follow-up (same session): the user expected the entry point in the Export
+menu, not just the command palette — so added a "Publish to a print site…"
+item to the toolbar Export dropdown's Project section (under "Share link…"),
+wired through a new `onPublish` toolbar callback, with an e2e assertion guarding
+the menu path.
