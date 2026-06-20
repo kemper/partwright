@@ -113,4 +113,10 @@ describe('characterSpec normalize/decode', () => {
   it('returns null decoding code without a header', () => {
     expect(decodeSpecComment('return api.cube();')).toBeNull();
   });
+
+  it('does not pollute the prototype from a crafted spec', () => {
+    normalizeSpec(JSON.parse('{"__proto__":{"polluted":true},"constructor":{"x":1}}'));
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
+  });
 });

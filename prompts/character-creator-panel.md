@@ -68,3 +68,10 @@ All 7 presets render manifold, 1 component, with every label painted.
 
 This is v1 of a larger arc — pure SDF-offset clothing, hair fidelity, painted
 brows, and a full-page Studio route are natural follow-ups.
+
+## Follow-up — CodeQL prototype-pollution guard
+
+CodeQL flagged `normalizeSpec`'s deep-merge: a spec can arrive from an untrusted
+`// @character` header, so copying its keys into the default object could write
+`__proto__`/`constructor`/`prototype`. Added a guard skipping those keys, with a
+regression test asserting no pollution from a crafted spec.

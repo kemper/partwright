@@ -259,6 +259,9 @@ export function normalizeSpec(partial: unknown): CharacterSpec {
   const merge = (dst: Record<string, unknown>, src: unknown): void => {
     if (!src || typeof src !== 'object') return;
     for (const [k, v] of Object.entries(src as Record<string, unknown>)) {
+      // Guard against prototype pollution: a spec can arrive from an untrusted
+      // `// @character` header, so never let it write __proto__/constructor.
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
       if (v && typeof v === 'object' && !Array.isArray(v) && dst[k] && typeof dst[k] === 'object') {
         merge(dst[k] as Record<string, unknown>, v);
       } else if (v !== undefined) {
