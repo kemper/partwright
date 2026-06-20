@@ -42,6 +42,16 @@ test.describe('session attachments', () => {
     }, { png: PNG });
     expect(kinds).toEqual(['document', 'image', 'model', 'text']);
 
+    // Newly-pinned attachments are stamped with addedAt + source (the metadata
+    // the "aging"/provenance story relies on).
+    const meta = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const a = (window as any).partwright.getAttachments()[0];
+      return { addedAt: typeof a.addedAt, source: a.source };
+    });
+    expect(meta.addedAt).toBe('number');
+    expect(meta.source).toBe('user');
+
     // clearImages drops only the image-kind attachment; the rest remain.
     const afterClear = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -257,7 +257,7 @@ export function showAttachImageModal(
       const name = file.name.toLowerCase();
       const dataUrl = await readFileAsDataURL(file);
       const att = normalizeAttachment(
-        { src: dataUrl, label: file.name, mediaType: file.type || undefined, source: 'user' },
+        { src: dataUrl, label: file.name, mediaType: file.type || undefined, addedAt: Date.now(), source: 'user' },
         generateId(),
       );
       // For reference photos, snap the label to a matching preset angle.
@@ -321,7 +321,7 @@ export function showAttachImageModal(
       const dataUrl = await fetchImageAsDataURL(url);
       const matched = PRESET_LABELS.find(p => url.toLowerCase().includes(p.toLowerCase()));
       const item = normalizeAttachment(
-        { src: dataUrl, label: matched ?? 'Perspective', kind: 'image', source: 'user' },
+        { src: dataUrl, label: matched ?? 'Perspective', kind: 'image', addedAt: Date.now(), source: 'user' },
         generateId(),
       );
       await onSave([...current, item]);

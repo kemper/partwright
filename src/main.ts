@@ -367,6 +367,7 @@ function buildAttachmentFromInput(input: unknown, ctx: string, source?: 'user' |
     label: obj.label as string | undefined,
     kind: obj.kind as AttachmentKind | undefined,
     mediaType: obj.mediaType as string | undefined,
+    addedAt: Date.now(),
     source,
   }, generateId());
 }
@@ -11087,6 +11088,7 @@ async function main() {
           src: item.src as string,
           label: item.label as string | undefined,
           kind: 'image',
+          addedAt: Date.now(),
           source: 'user',
         }, generateId()));
       }
@@ -11107,6 +11109,7 @@ async function main() {
         src: obj.src as string,
         label: obj.label as string | undefined,
         kind: 'image',
+        addedAt: Date.now(),
         source: 'user',
       }, generateId());
       commitAttachments([..._getAttachments(), item]);
