@@ -291,17 +291,27 @@ test.describe('multi-part 3MF export', () => {
         const m = text.match(new RegExp(`"${key}":\\s*\\[([\\s\\S]*?)\\]`));
         return m ? (m[1].match(/"[^"]*"/g) ?? []).length : -1;
       };
+      const str = (text: string, key: string) => new RegExp(`"${key}":\\s*"([^"]*)"`).exec(text)?.[1];
       const parts = Array.from({ length: 4 }, (_, i) => makePart('p' + i));
       const h2c = await decode(build3MFProject(parts, { bambu: true })); // default
       const p1s = await decode(build3MFProject(parts, { bambu: true, printer: 'p1s', nozzle: '0.6' }));
+      // H2S is single-nozzle (regression guard: was wrongly mapped to the dual base);
+      // H2D is dual + a non-base printer (guards the print-process compatibility fix).
+      const h2s = await decode(build3MFProject(parts, { bambu: true, printer: 'h2s' }));
+      const h2d = await decode(build3MFProject(parts, { bambu: true, printer: 'h2d' }));
       return {
-        h2cModel: /"printer_model":\s*"([^"]*)"/.exec(h2c)?.[1],
+        h2cModel: str(h2c, 'printer_model'),
         h2cArea: /"printable_area":\s*\[([^\]]*)\]/.exec(h2c)?.[1].replace(/\s/g, ''),
         h2cNozzles: arrLen(h2c, 'nozzle_diameter'),
-        p1sModel: /"printer_model":\s*"([^"]*)"/.exec(p1s)?.[1],
-        p1sSettings: /"printer_settings_id":\s*"([^"]*)"/.exec(p1s)?.[1],
+        p1sModel: str(p1s, 'printer_model'),
+        p1sSettings: str(p1s, 'printer_settings_id'),
         p1sArea: /"printable_area":\s*\[([^\]]*)\]/.exec(p1s)?.[1].replace(/\s/g, ''),
         p1sNozzles: arrLen(p1s, 'nozzle_diameter'),
+        h2sNozzles: arrLen(h2s, 'nozzle_diameter'),
+        h2sProcess: str(h2s, 'print_settings_id'),
+        h2sCompat: /"print_compatible_printers":\s*\[([^\]]*)\]/.exec(h2s)?.[1],
+        h2dProcess: str(h2d, 'print_settings_id'),
+        h2dCompat: /"print_compatible_printers":\s*\[([^\]]*)\]/.exec(h2d)?.[1],
       };
     });
 
@@ -314,5 +324,14 @@ test.describe('multi-part 3MF export', () => {
     expect(out.p1sSettings).toBe('Bambu Lab P1S 0.6 nozzle');
     expect(out.p1sNozzles).toBe(1);
     expect(out.p1sArea).toContain('256x256');
+    // H2S is SINGLE-nozzle (not the dual H2C base) — regression guard.
+    expect(out.h2sNozzles).toBe(1);
+    // Process + compatibility stamped to the target printer (the rc -17 fix): a
+    // non-base printer must carry its own process + print_compatible_printers, else
+    // Bambu rejects "printer not compatible with the process preset".
+    expect(out.h2sProcess).toBe('0.20mm Standard @BBL H2S');
+    expect(out.h2sCompat).toContain('Bambu Lab H2S');
+    expect(out.h2dProcess).toBe('0.20mm Standard @BBL H2D');
+    expect(out.h2dCompat).toContain('Bambu Lab H2D');
   });
 });
