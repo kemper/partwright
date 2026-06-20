@@ -3734,7 +3734,7 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     const slZone = (S: Vec3, E: Vec3, W: Vec3): Node => {
       const rad = (r.upperArm + t) * 1.8;
       if (sleeve === 'short') return sdf.capsule(S, lerp3(S, E, 0.85), rad);
-      return sdf.capsule(S, E, rad).union(sdf.capsule(E, lerp3(E, W, 0.9), rad));
+      return sdf.capsule(S, E, rad).union(sdf.capsule(E, lerp3(E, W, 0.97), rad));
     };
     zone = zone
       .union(slZone(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3))
@@ -3767,9 +3767,19 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     // bridge the shell and the sleeve tops so no skin shows at the armpit/collar.
     const sl = (S: Vec3, E: Vec3, W: Vec3): Node => {
       const rad = (r.upperArm + t) * 1.05;
-      if (sleeve === 'short') return sdf.capsule(S, lerp3(S, E, 0.85), rad);
+      // A rounded cuff cap at the sleeve end: a thin capsule END aliases
+      // pose-dependently at the coarse garment grid (the diva's jagged,
+      // asymmetric cuffs); a sphere is a robust rounded feature that meshes
+      // cleanly at any orientation. Long sleeves run to ~0.97 of the wrist so
+      // they reach where the hand connects (was 0.9 — a bare-wrist gap).
+      if (sleeve === 'short') {
+        const end = lerp3(S, E, 0.85);
+        return sdf.capsule(S, end, rad).union(sdf.sphere(rad).translate(end));
+      }
+      const end = lerp3(E, W, 0.97);
       return sdf.capsule(S, E, rad)
-        .smoothUnion(sdf.capsule(E, lerp3(E, W, 0.9), rad * 0.95), r.lowerArm * 0.8);
+        .smoothUnion(sdf.capsule(E, end, rad * 0.95), r.lowerArm * 0.8)
+        .union(sdf.sphere(rad * 0.95).translate(end));
     };
     const yoke = (S: Vec3): Node => sdf.sphere((r.upperArm + t) * 1.2).translate(S);
     garment = garment

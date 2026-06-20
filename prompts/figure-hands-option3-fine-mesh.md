@@ -126,3 +126,19 @@ Plain unions only (one finger's segments overlap collinearly) so the fine march
 stays clean. All 11 grips still genus-clean; fists/curls now show natural
 knuckles. Full figure genus 0. The diva sleeve-cuff aliasing is a separate
 clothing-subsystem issue, filed and handled apart from this hands PR.
+
+## Human (follow-up 4)
+
+Sleeves: make them look the same on both arms, and be sure sleeves can mesh all
+the way to where the hand connects the wrist. (Chose: quick fix here, robust fix
+on a new PR.)
+
+## Assistant (follow-up 4)
+
+Quick fix in `buildTop`: long sleeves now run to ~0.97 of the wrist (was 0.9 — a
+bare-wrist gap) so they reach where the hand connects, and every cuff gets a
+rounded sphere cap. A thin capsule END aliases pose-dependently at the coarse
+garment grid (the diva's jagged, asymmetric short cuffs); a sphere is a robust
+rounded feature that meshes cleanly at any orientation. Long sleeves now reach
+the wrist symmetrically on both arms. The deeper short-cuff pose-asymmetry in
+extreme twisted poses is the canonical-frame fine-mesh job tracked in #788.
