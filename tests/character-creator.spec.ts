@@ -91,6 +91,9 @@ test.describe('Character Creator', () => {
 
     // Pick a preset — this generates and live-previews the figure.
     await panel.getByRole('button', { name: 'Chibi' }).click();
+    // A fresh session has starter code, so generating asks to replace it once.
+    await page.getByRole('dialog', { name: 'Start a character' })
+      .getByRole('button', { name: 'Replace', exact: true }).click();
     await page.waitForFunction(
       () => (window as unknown as { partwright: PW }).partwright.getCode().includes('@character v1'),
       { timeout: 60_000 },

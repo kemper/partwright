@@ -21,7 +21,16 @@ import {
 function fmt(v: number | boolean | string): string {
   if (typeof v === 'number') return String(Number(v.toPrecision(6)));
   if (typeof v === 'boolean') return String(v);
-  return `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  // Single-quoted literal, fully escaped — backslash/quote plus any control
+  // char (newlines included) that a hand-edited @character header could smuggle
+  // into a string value, so the generated code always parses.
+  const s = v.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/[\u0000-\u001f]/g, c => {
+    if (c === '\n') return '\\n';
+    if (c === '\r') return '\\r';
+    if (c === '\t') return '\\t';
+    return '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0');
+  });
+  return `'${s}'`;
 }
 
 /** Render a record as a one-line object literal, skipping undefined values.
@@ -157,15 +166,15 @@ export function specToCode(spec: CharacterSpec): string {
   // round-trip through the panel. Only emit labels that exist in this build.
   const paint: Array<[string, string]> = [
     ['skin', colors.skin],
-    // `F.face.eyes` emits a skin-coloured eyelid region ('lids') for every lid
-    // style except 'none'; paint it skin so it doesn't render as a grey patch.
-    ['lids', colors.skin],
     ['eyes', colors.eyes],
     ['iris', colors.iris],
     ['pupil', colors.pupil],
     ['lips', colors.lips],
     ['brows', colors.brows],
   ];
+  // `F.face.eyes` only emits a skin-coloured eyelid region ('lids') when lids
+  // aren't 'none'; paint it skin so it doesn't render as a grey patch.
+  if (face.lids !== 'none') paint.splice(1, 0, ['lids', colors.skin]);
   if (hair.style !== 'bald') paint.push(['hair', colors.hair]);
   if (clothing.top.on) paint.push(['top', colors.top]);
   if (clothing.pants.on) paint.push(['pants', colors.pants]);

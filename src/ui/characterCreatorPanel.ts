@@ -12,6 +12,7 @@ import { createToolPanelShell } from './toolPanel';
 import { registerCommands } from './commandPalette';
 import { BUTTON_PRIMARY, BUTTON_SMALL_SECONDARY } from './styleConstants';
 import { showToast } from './toast';
+import { confirmDialog } from './dialogs';
 import { getConfig } from '../config/appConfig';
 import {
   type CharacterSpec,
@@ -138,12 +139,29 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   let spec: CharacterSpec = existing ? existing : cloneSpec(DEFAULT_SPEC);
   const currentCodeEmpty = api.getCode().trim() === '';
 
+  // Generating overwrites the editor buffer. When the panel opens over
+  // unrelated hand-written code (not a character, not empty), confirm once
+  // before the first destructive build so a stray slider can't silently wipe it.
+  let needsConfirm = !existing && !currentCodeEmpty;
+  const confirmClobber = async (): Promise<boolean> => {
+    if (!needsConfirm) return true;
+    const ok = await confirmDialog(
+      'Replace the current model in the editor with a generated character? Your unsaved code will be overwritten.',
+      { title: 'Start a character', confirmLabel: 'Replace' },
+    );
+    if (ok) needsConfirm = false;
+    return ok;
+  };
+
   // Debounced live preview. The engine shows its own "Rendering…" status.
   let timer: number | undefined;
   const preview = (): void => {
     window.clearTimeout(timer);
     const delay = getConfig().ui.characterPreviewDebounceMs;
-    timer = window.setTimeout(() => { void api.buildCharacter(spec, { save: false }); }, delay);
+    timer = window.setTimeout(async () => {
+      if (!(await confirmClobber())) return;
+      void api.buildCharacter(spec, { save: false });
+    }, delay);
   };
 
   // A change handler that mutates the spec then re-previews.
@@ -244,6 +262,7 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   const saveBtn = el('button', BUTTON_PRIMARY);
   saveBtn.textContent = 'Save to session';
   saveBtn.addEventListener('click', async () => {
+    if (!(await confirmClobber())) return;
     saveBtn.disabled = true;
     const prev = saveBtn.textContent;
     saveBtn.textContent = 'Saving…';

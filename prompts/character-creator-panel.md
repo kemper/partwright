@@ -75,3 +75,17 @@ CodeQL flagged `normalizeSpec`'s deep-merge: a spec can arrive from an untrusted
 `// @character` header, so copying its keys into the default object could write
 `__proto__`/`constructor`/`prototype`. Added a guard skipping those keys, with a
 regression test asserting no pollution from a crafted spec.
+
+## Follow-up — work-reviewer fixes
+
+The work-reviewer found no blockers; addressed its should-fix + nits:
+- `fmt` now fully escapes string values (control chars / newlines) so a
+  hand-edited `@character` header can't emit un-runnable code.
+- The panel confirms once (via `confirmDialog`) before the first destructive
+  build when opened over unrelated, unsaved editor code, so a stray slider can't
+  silently overwrite hand-written code.
+- `lids` paint is only emitted when lids ≠ 'none' (no more 0-triangle warning on
+  chibi/child).
+- Dropped the unresolvable `#shortcut` anchor from the ai.md link.
+- e2e: scope the confirm-dialog "Replace" click to the dialog (CodeMirror's
+  Find/Replace also has a "replace" button).
