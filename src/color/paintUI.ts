@@ -1670,14 +1670,52 @@ function createLabelRow(label: LabelInfo, alreadyPainted: boolean): HTMLElement 
     );
   });
 
-  const dot = document.createElement('span');
-  dot.className = 'w-3 h-3 rounded-sm shrink-0 border border-zinc-600/60';
-  if (alreadyPainted) {
-    // Show the most recently-applied color for this label so the user can
-    // distinguish "blue eye" from "red eye" at a glance.
-    const last = [...getRegions()].reverse().find(r => r.descriptor.kind === 'byLabel' && r.descriptor.label === label.name);
-    if (last) dot.style.backgroundColor = rgbToCSS(last.color);
-  }
+  // Inline colour swatch — set the colour of this whole part directly, without
+  // first selecting the active paint colour. It doubles as the "already
+  // painted" indicator: when a byLabel region exists for this label the swatch
+  // shows its colour (the most recent one wins in compositing), so the user can
+  // tell a "blue eye" from a "red eye" at a glance. Editing it recolours that
+  // region in place instead of stacking a duplicate; for an unpainted label it
+  // commits a fresh byLabel region (the same descriptor partwright.paintByLabel
+  // emits, so it persists and re-resolves across runs). Defaults to the active
+  // paint colour so the swatch previews "the part will become this".
+  const lastPainted = alreadyPainted
+    ? [...getRegions()].reverse().find(r => r.descriptor.kind === 'byLabel' && r.descriptor.label === label.name) ?? null
+    : null;
+  const dot = document.createElement('input');
+  dot.type = 'color';
+  dot.value = rgbToHex(lastPainted ? lastPainted.color : getColor());
+  dot.className = 'w-3.5 h-3.5 shrink-0 rounded-sm border border-zinc-500 hover:border-white/60 cursor-pointer bg-transparent p-0 [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded-sm [&::-webkit-color-swatch]:border-0 [&::-moz-color-swatch]:rounded-sm [&::-moz-color-swatch]:border-0';
+  dot.dataset.action = 'set-label-color';
+  dot.title = lastPainted
+    ? `Recolour the whole "${label.name}" part`
+    : `Set the colour of the whole "${label.name}" part`;
+  // Don't let the swatch click bubble to the row (which paints with the active
+  // colour); the swatch is the "pick a specific colour" path.
+  dot.addEventListener('click', (e) => e.stopPropagation());
+  dot.addEventListener('change', () => {
+    if (label.triangles.size === 0) return;
+    const hex = dot.value;
+    const rgb: [number, number, number] = [
+      parseInt(hex.slice(1, 3), 16) / 255,
+      parseInt(hex.slice(3, 5), 16) / 255,
+      parseInt(hex.slice(5, 7), 16) / 255,
+    ];
+    const existing = [...getRegions()].reverse().find(r => r.descriptor.kind === 'byLabel' && r.descriptor.label === label.name);
+    if (existing) {
+      updateRegionColor(existing.id, rgb);
+    } else {
+      addRegion(
+        label.name,
+        rgb,
+        'paintbrush',
+        { kind: 'byLabel', label: label.name },
+        new Set(label.triangles),
+        true,
+        getSlotId() ?? undefined,
+      );
+    }
+  });
 
   const nameEl = document.createElement('span');
   nameEl.className = 'text-[11px] truncate flex-1 text-zinc-300';
