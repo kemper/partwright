@@ -936,6 +936,7 @@ function createClipControls(): HTMLElement {
   // independent flips, and a menu round-trip per toggle was pure friction.
   container.appendChild(makeViewportPill('wireframe-toggle', '△ Edges', 'Show mesh edges'));
   container.appendChild(makeViewportPill('grid-toggle', '▦ Grid', 'Show grid plane'));
+  container.appendChild(makeViewportPill('light-toggle', '☀ Light', 'Studio lighting: reflections + soft shadow (off by default)'));
   // Dimensions defaults on — give it the active blue styling to match its state.
   container.appendChild(makeViewportPill(
     'dimensions-toggle', '⬚ Dims', 'Toggle bounding box dimensions',

@@ -31,7 +31,7 @@ import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel'
 import { viewportToolsMount, openPopoverGroupById } from './ui/popoverMenu';
 import { TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './ui/toolPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView, onOrbitEnd } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, resetView, onOrbitEnd } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -7341,6 +7341,7 @@ async function main() {
   // Wire up viewport overlay buttons
   initWireframeToggle(clipControls);
   initGridToggle(clipControls);
+  initLightToggle(clipControls);
   initDimensionsToggle(clipControls);
   initAnnotateUI(clipControls);
   initPaintUI(clipControls);
@@ -10105,6 +10106,19 @@ async function main() {
     /** Whether the grid plane is currently visible */
     isGridVisible(): boolean {
       return isGridVisible();
+    },
+
+    /** Enable or disable studio lighting (image-based reflections + a mild
+     *  contact shadow). Off by default. Pass a boolean to set, omit to toggle. */
+    setStudioLighting(on?: boolean): boolean {
+      assertBoolean(on, 'setStudioLighting(on)', { optional: true });
+      setStudioLighting(on ?? !isStudioLighting());
+      return isStudioLighting();
+    },
+
+    /** Whether studio lighting (reflections + soft shadow) is currently on */
+    isStudioLighting(): boolean {
+      return isStudioLighting();
     },
 
     /** Show or hide the bounding box dimension overlays. Pass a boolean to set, omit to toggle. */
@@ -14703,6 +14717,8 @@ async function main() {
         // Viewport controls
         'setGridVisible':       { signature: 'setGridVisible(on?) -- Show/hide grid plane (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isGridVisible':        { signature: 'isGridVisible() -- Whether grid plane is visible', docs: '/ai.md#viewport-controls' },
+        'setStudioLighting':    { signature: 'setStudioLighting(on?) -- Toggle studio lighting: reflections + soft shadow, off by default (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
+        'isStudioLighting':     { signature: 'isStudioLighting() -- Whether studio lighting is on', docs: '/ai.md#viewport-controls' },
         'setDimensionsVisible': { signature: 'setDimensionsVisible(on?) -- Show/hide bounding box dimensions (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'areDimensionsVisible': { signature: 'areDimensionsVisible() -- Whether dimensions overlay is visible', docs: '/ai.md#viewport-controls' },
         'setOrbitLock':         { signature: 'setOrbitLock(on?) -- Lock/unlock camera rotation (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
@@ -16319,6 +16335,23 @@ async function main() {
       gridBtn.className = nowVisible ? activeClass : inactiveClass;
       gridBtn.title = nowVisible ? 'Hide grid plane' : 'Show grid plane';
     });
+  }
+
+  function initLightToggle(container: HTMLElement) {
+    const lightBtn = container.querySelector('#light-toggle') as HTMLButtonElement;
+    if (!lightBtn) return;
+
+    const inactiveClass = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+    const activeClass = 'px-2 py-1 rounded text-xs bg-amber-500/20 backdrop-blur text-amber-400 hover:bg-amber-500/30 transition-colors border border-amber-500/30';
+
+    const reflect = (on: boolean) => {
+      lightBtn.className = on ? activeClass : inactiveClass;
+      lightBtn.title = on ? 'Turn off studio lighting (reflections + soft shadow)' : 'Studio lighting: reflections + soft shadow (off by default)';
+    };
+    reflect(isStudioLighting());
+    onStudioLightingChange(reflect);
+
+    lightBtn.addEventListener('click', () => { setStudioLighting(!isStudioLighting()); });
   }
 
   function initDimensionsToggle(container: HTMLElement) {

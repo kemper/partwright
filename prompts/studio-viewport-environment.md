@@ -79,3 +79,25 @@ users get the still-good gradient + floor + contact-shadow + direct-light PBR
 fallback, while real GPUs keep the full IBL look (the bake is effectively free
 there). Readiness back to ~3.2s; the failing spec passes 3/3. Unknown renderer
 (privacy-restricted debug info) is treated as hardware.
+
+### Follow-up: lighting/shadow made opt-in (user feedback)
+
+User feedback after seeing it live: loved the space + colors, but the
+image-based lighting looked too bright / washed-out (a "spotlight") and the
+shadow added little. Asked for a **"Light" button in the viewport, off by
+default**.
+
+Reworked accordingly:
+- **Default** is now the calm matte look — gradient backdrop + floor + matte
+  PBR under the existing ambient + two directional lights. **No env reflections,
+  no cast shadow.** (This also removed the `isSoftwareRenderer` gate entirely:
+  with no env at startup the latency problem is gone for everyone.)
+- A new **"☀ Light" viewport pill** (`#light-toggle`, off by default) toggles
+  `setStudioLighting`, which builds the PMREM env on first opt-in (never at
+  startup → startup stays fast, software-WebGL bake cost only paid on click) and
+  enables a **mild** contact shadow (shadowStrength 0.2 dark / 0.13 light) via
+  the key light's `castShadow` + the existing ShadowMaterial catcher.
+- Closed UI↔JS parity: `partwright.setStudioLighting(on?)` / `isStudioLighting()`
+  + help table + ai.md. New e2e `tests/studio-lighting.spec.ts` (off by default,
+  toggles on/off). The env build/shadow framing was factored into
+  `frameModelShadow()` so the toggle can size the shadow to the current model.

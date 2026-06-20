@@ -28,28 +28,27 @@ export interface StudioPreset {
 }
 
 const STUDIO_PRESETS: Record<Theme, StudioPreset> = {
-  // Dark studio stage — a graded charcoal "spotlit stage" with rim highlights
-  // from the environment and a strong contact shadow. The default look.
+  // Dark studio stage — a graded charcoal space. Matte by default; the "Light"
+  // toggle adds image-based reflections (envIntensity) + a mild contact shadow.
   dark: {
     bgTop: 0x2b2f36,
     bgBottom: 0x14161a,
     floorColor: 0x14161a,
     envIntensity: 0.7,
     exposure: 1.05,
-    shadowStrength: 0.55,
+    shadowStrength: 0.2,
     matColor: 0xb8c0cc,
-    matRoughness: 0.45,
-    matMetalness: 0.1,
+    matRoughness: 0.5,
+    matMetalness: 0.0,
   },
-  // Light soft studio — near-white seamless paper, neutral matte object, soft
-  // grounding shadow. The "product photo on seamless paper" look.
+  // Light soft studio — near-white seamless paper, neutral matte object.
   light: {
     bgTop: 0xf6f4f0,
     bgBottom: 0xe4ded4,
     floorColor: 0xe9e3da,
     envIntensity: 1.0,
     exposure: 1.0,
-    shadowStrength: 0.28,
+    shadowStrength: 0.13,
     matColor: 0x9aa3ad,
     matRoughness: 0.6,
     matMetalness: 0.0,
@@ -58,23 +57,6 @@ const STUDIO_PRESETS: Record<Theme, StudioPreset> = {
 
 export function studioPresetFor(theme: Theme): StudioPreset {
   return STUDIO_PRESETS[theme];
-}
-
-/** Whether the WebGL context is a software rasterizer (SwiftShader / llvmpipe /
- *  Microsoft Basic Render). PMREM image-based-lighting generation is ~50ms on a
- *  real GPU but multiple seconds on a software rasterizer, where it would freeze
- *  startup — callers skip the env bake when this is true. Unknown renderer
- *  (privacy-restricted debug info) is treated as hardware. */
-export function isSoftwareRenderer(gl: WebGLRenderingContext | WebGL2RenderingContext): boolean {
-  try {
-    const ext = gl.getExtension('WEBGL_debug_renderer_info');
-    if (!ext) return false;
-    const r = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) ?? '').toLowerCase();
-    return r.includes('swiftshader') || r.includes('llvmpipe') ||
-      r.includes('software') || r.includes('basic render');
-  } catch {
-    return false;
-  }
 }
 
 /** Vertical gradient background as a small CanvasTexture. */

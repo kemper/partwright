@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import type { MeshData } from '../geometry/types';
 import { createWireframeMaterial } from './materials';
-import { studioPresetFor, makeGradientTexture, createStudioMaterial, isSoftwareRenderer, type StudioPreset } from './studioEnv';
+import { studioPresetFor, makeGradientTexture, createStudioMaterial, type StudioPreset } from './studioEnv';
 import { initMeasureOverlay } from './measureOverlay';
 import { initOrientationGizmo, renderGizmo, updateGizmo, isGizmoAnimating } from './orientationGizmo';
 import { initDimensionLines, updateDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
@@ -105,29 +105,35 @@ const ndcForHit = new THREE.Vector2();
 // Grid plane
 let grid: THREE.GridHelper;
 
-// Studio-space rendering: a gradient backdrop, image-based PBR lighting, a floor,
-// and a contact shadow that grounds the model in a space — instead of the old
-// flat color void. Driven by the light/dark theme (see studioEnv.ts).
+// Studio-space rendering: a gradient backdrop + a floor place the model in a
+// space (instead of the old flat color void). By DEFAULT the model is evenly lit
+// and matte with no image-based reflections and no cast shadow — those read as a
+// distracting "spotlight". The optional "Light" toggle (off by default) turns on
+// RoomEnvironment image-based lighting + a mild contact shadow for users who want
+// the richer studio look. Driven by the light/dark theme (see studioEnv.ts).
 let studioPreset: StudioPreset = studioPresetFor('dark');
 let studioFloor: THREE.Mesh | null = null;
 let studioShadowCatcher: THREE.Mesh | null = null;
 let studioKeyLight: THREE.DirectionalLight | null = null;
 let lastFloorZ = 0;
-// Whether to bake the PMREM image-based-lighting env. Off on software WebGL,
-// where the bake costs seconds and would freeze startup (see isSoftwareRenderer).
-let studioEnvEnabled = true;
+// The "Light" toggle: enhanced image-based lighting + mild contact shadow. Off
+// by default (the calm matte look); building the PMREM env only on opt-in keeps
+// startup fast and dodges the software-WebGL bake cost entirely.
+let studioLightingOn = false;
+let studioEnvBuilt = false;
+const studioLightingListeners: Array<(on: boolean) => void> = [];
 
-/** Re-skin the studio scene (backdrop, lights, floor, shadow, model material)
- *  for a theme — called once at init's theme value and again on every flip. */
+/** Re-skin the studio scene (backdrop, floor, model material) for a theme —
+ *  called once at init's theme value and again on every flip. */
 function applyStudioTheme(theme: Theme): void {
   studioPreset = studioPresetFor(theme);
   const old = scene.background;
   scene.background = makeGradientTexture(studioPreset.bgTop, studioPreset.bgBottom);
   if (old instanceof THREE.Texture) old.dispose();
   renderer.toneMappingExposure = studioPreset.exposure;
-  scene.environmentIntensity = studioPreset.envIntensity;
   if (studioFloor) (studioFloor.material as THREE.MeshStandardMaterial).color.set(studioPreset.floorColor);
   if (studioShadowCatcher) (studioShadowCatcher.material as THREE.ShadowMaterial).opacity = studioPreset.shadowStrength;
+  if (studioLightingOn && studioEnvBuilt) scene.environmentIntensity = studioPreset.envIntensity;
   // Recolor the live model material in place (it's only rebuilt on the next run).
   const solid = meshGroup?.children.find(c => c instanceof THREE.Mesh && c.name !== 'wireframe' && c.name !== 'clip-cap');
   if (solid instanceof THREE.Mesh) {
@@ -139,6 +145,44 @@ function applyStudioTheme(theme: Theme): void {
     }
   }
 }
+
+/** Build (or rebuild) the RoomEnvironment IBL map and apply it. The PMREM bake
+ *  is ~tens of ms on a GPU but seconds on a software rasterizer, so it only runs
+ *  when the user opts into the "Light" toggle (never at startup). */
+function buildStudioEnvironment(): void {
+  const old = scene.environment;
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environmentIntensity = studioPreset.envIntensity;
+  pmrem.dispose();
+  if (old) old.dispose();
+  studioEnvBuilt = true;
+}
+
+/** Toggle the enhanced studio lighting (image-based reflections + mild contact
+ *  shadow). Off by default. Exposed on the viewport "Light" button. */
+export function setStudioLighting(on: boolean): void {
+  if (on === studioLightingOn) return;
+  studioLightingOn = on;
+  if (on) {
+    if (!studioEnvBuilt) buildStudioEnvironment();
+    else scene.environmentIntensity = studioPreset.envIntensity;
+    renderer.shadowMap.enabled = true;
+    if (studioKeyLight) studioKeyLight.castShadow = true;
+    if (studioShadowCatcher) studioShadowCatcher.visible = true;
+    frameModelShadow();
+  } else {
+    scene.environment = null;
+    if (studioKeyLight) studioKeyLight.castShadow = false;
+    if (studioShadowCatcher) studioShadowCatcher.visible = false;
+    renderer.shadowMap.enabled = false;
+  }
+  studioLightingListeners.forEach(fn => fn(on));
+  needsRender = true;
+}
+
+export function isStudioLighting(): boolean { return studioLightingOn; }
+export function onStudioLightingChange(fn: (on: boolean) => void): void { studioLightingListeners.push(fn); }
 
 // Mesh edge (wireframe) overlay visibility. Hidden by default so the model
 // reads cleanly; paint mode forces it on (see paintMode.ts) and the viewport
@@ -191,9 +235,6 @@ export function initViewport(container: HTMLElement): {
   renderer.localClippingEnabled = true;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = studioPreset.exposure;
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  studioEnvEnabled = !isSoftwareRenderer(renderer.getContext());
 
   // WebGL context-loss recovery. preventDefault() on 'lost' is what lets the
   // browser restore the context; while lost we cancel the RAF loop so we don't
@@ -208,23 +249,10 @@ export function initViewport(container: HTMLElement): {
   canvas.addEventListener('webglcontextrestored', () => {
     contextLost = false;
     needsRender = true;
-    // The image-based-lighting env texture lives on the GPU and is lost with
-    // the context — regenerate it so the model isn't left unlit after restore.
-    if (studioEnvEnabled) buildStudioEnvironment();
     onContextRestored?.();
     // Restart the render loop (it was cancelled on loss).
     animate();
   }, false);
-
-  // Build (or rebuild) the RoomEnvironment IBL map and apply it to the scene.
-  function buildStudioEnvironment(): void {
-    const old = scene.environment;
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    scene.environmentIntensity = studioPreset.envIntensity;
-    pmrem.dispose();
-    if (old) old.dispose();
-  }
 
   controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
@@ -301,13 +329,13 @@ export function initViewport(container: HTMLElement): {
   }, { capture: true, passive: false });
 
   // Lighting — ambient + key/fill directionals; intensities stay user-tunable
-  // via appConfig.renderer. The key (dir1) also casts the contact shadow.
+  // via appConfig.renderer. The key (dir1) only casts a shadow when the "Light"
+  // toggle is on (castShadow flipped in setStudioLighting).
   const ambient = new THREE.AmbientLight(0xffffff, getConfig().renderer.ambientLightIntensity);
   scene.add(ambient);
 
   const dir1 = new THREE.DirectionalLight(0xffffff, getConfig().renderer.primaryLightIntensity);
   dir1.position.set(10, -10, 15);
-  dir1.castShadow = true;
   dir1.shadow.mapSize.set(2048, 2048);
   dir1.shadow.bias = -0.0005;
   scene.add(dir1);
@@ -318,15 +346,9 @@ export function initViewport(container: HTMLElement): {
   dir2.position.set(-10, 10, -5);
   scene.add(dir2);
 
-  // Image-based lighting from a neutral room for believable PBR shading. On a
-  // real GPU the PMREM bake is ~tens of ms; on a software rasterizer it costs
-  // seconds and would freeze startup, so it's skipped there (the model still
-  // reads well under the ambient + two directional lights). It's a GPU texture,
-  // so it's also rebuilt on webglcontextrestored (see the handler above).
-  if (studioEnvEnabled) buildStudioEnvironment();
-
   // Floor the model sits on, plus a transparent shadow-catcher above it so the
-  // contact shadow's darkness is tunable independent of the floor color.
+  // contact shadow's darkness is tunable independent of the floor color. The
+  // catcher is hidden until the "Light" toggle turns on.
   const floorMat = new THREE.MeshStandardMaterial({
     color: studioPreset.floorColor,
     roughness: 0.95,
@@ -340,6 +362,7 @@ export function initViewport(container: HTMLElement): {
     new THREE.ShadowMaterial({ opacity: studioPreset.shadowStrength }),
   );
   studioShadowCatcher.receiveShadow = true;
+  studioShadowCatcher.visible = false;
   scene.add(studioShadowCatcher);
 
   // Grid on XY plane (hidden by default; user-toggleable). Theme-colored.
@@ -514,6 +537,38 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
   onMeshUpdate?.(meshData);
 }
 
+/** Park the studio floor under the model and (when lighting is on) size the key
+ *  light's shadow frustum + catcher to the model's footprint. Computes its own
+ *  bounds so the "Light" toggle can call it without a full re-frame. No-op when
+ *  the mesh group is empty. */
+function frameModelShadow(): void {
+  const box = new THREE.Box3().setFromObject(meshGroup);
+  if (box.isEmpty()) return;
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) return;
+
+  if (studioFloor) {
+    studioFloor.position.set(center.x, center.y, box.min.z - maxDim * 0.004);
+    studioFloor.scale.set(maxDim * 14, maxDim * 14, 1);
+  }
+  if (studioShadowCatcher) {
+    studioShadowCatcher.position.set(center.x, center.y, box.min.z - maxDim * 0.002);
+    studioShadowCatcher.scale.set(maxDim * 14, maxDim * 14, 1);
+  }
+  if (studioKeyLight) {
+    studioKeyLight.position.set(center.x + maxDim * 0.8, center.y - maxDim * 0.5, box.max.z + maxDim * 1.4);
+    studioKeyLight.target.position.copy(center);
+    studioKeyLight.target.updateMatrixWorld();
+    const cam = studioKeyLight.shadow.camera;
+    const ext = maxDim * 1.4;
+    cam.left = -ext; cam.right = ext; cam.top = ext; cam.bottom = -ext;
+    cam.near = maxDim * 0.1; cam.far = maxDim * 6;
+    cam.updateProjectionMatrix();
+  }
+}
+
 /** Frame the camera to the default 3/4 view of the current model and refresh
  *  everything derived from its bounds: clip-slider range, grid height, dimension
  *  annotations, near/far planes, and the zoom-out (maxDistance) limit. Shared by
@@ -548,26 +603,8 @@ function frameModel(): void {
   lastFloorZ = box.min.z;
   grid.position.z = box.min.z;
 
-  // Studio: park the floor (and its shadow catcher just above it) under the
-  // model, and size the key light's shadow frustum to the model's footprint.
-  if (studioFloor) {
-    studioFloor.position.set(center.x, center.y, box.min.z - maxDim * 0.004);
-    studioFloor.scale.set(maxDim * 14, maxDim * 14, 1);
-  }
-  if (studioShadowCatcher) {
-    studioShadowCatcher.position.set(center.x, center.y, box.min.z - maxDim * 0.002);
-    studioShadowCatcher.scale.set(maxDim * 14, maxDim * 14, 1);
-  }
-  if (studioKeyLight) {
-    studioKeyLight.position.set(center.x + maxDim * 0.8, center.y - maxDim * 0.5, box.max.z + maxDim * 1.4);
-    studioKeyLight.target.position.copy(center);
-    studioKeyLight.target.updateMatrixWorld();
-    const cam = studioKeyLight.shadow.camera;
-    const ext = maxDim * 1.4;
-    cam.left = -ext; cam.right = ext; cam.top = ext; cam.bottom = -ext;
-    cam.near = maxDim * 0.1; cam.far = maxDim * 6;
-    cam.updateProjectionMatrix();
-  }
+  // Studio: park the floor under the model + size the shadow to its footprint.
+  frameModelShadow();
 
   // Update bounding box dimension annotations
   updateDimensionLines(box);

@@ -243,6 +243,8 @@ partwright.getClipState()      // -> {enabled, z, min, max}
 // Viewport controls
 partwright.setGridVisible(on?)       // Show/hide grid plane (omit to toggle) -> boolean
 partwright.isGridVisible()           // Whether grid plane is visible
+partwright.setStudioLighting(on?)    // Toggle studio lighting: reflections + soft shadow, off by default (omit to toggle) -> boolean
+partwright.isStudioLighting()        // Whether studio lighting is on
 partwright.setDimensionsVisible(on?) // Show/hide bounding box dimensions (omit to toggle) -> boolean
 partwright.areDimensionsVisible()    // Whether dimensions overlay is visible
 partwright.setOrbitLock(on?)         // Lock/unlock camera rotation (omit to toggle) -> boolean
