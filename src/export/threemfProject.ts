@@ -69,19 +69,37 @@ export interface BambuPrinterSpec {
   model: string;
   bed: [number, number];
   height: number;
+  /** print_settings_id (process preset) compatible with this printer. MUST match a
+   *  preset whose compatible_printers includes the model, or Bambu rejects the
+   *  project as "printer not compatible with the process preset" (rc -17). Sourced
+   *  from each BBL process preset's compatible_printers — note many printers SHARE a
+   *  preset (P1S/X1/X1E all use "@BBL X1C"). */
+  process: string;
 }
 
-// "Common models first" — verified model strings + public bed footprints. Dual-nozzle
-// (H2 family) reuse the H2C base; single-nozzle (P1/X1/A1) reuse the P1S base.
+// Model strings + bed footprints + nozzle class taken verbatim from BambuStudio's
+// bundled machine profiles (resources/profiles/BBL/machine, resolving `inherits`):
+// fdm_bbl_3dp_002_common = dual-nozzle (→ H2C base), fdm_bbl_3dp_001_common =
+// single-nozzle (→ P1S base). `model` MUST match Bambu's exact printer_model or
+// Bambu converts the project on open. Note H2S/A2L are SINGLE-nozzle despite their
+// large beds; X2D / H2D Pro are dual.
 export const BAMBU_PRINTERS: BambuPrinterSpec[] = [
-  { id: 'h2c', label: 'Bambu Lab H2C', base: 'h2c', model: 'Bambu Lab H2C', bed: [330, 320], height: 325 },
-  { id: 'h2d', label: 'Bambu Lab H2D', base: 'h2c', model: 'Bambu Lab H2D', bed: [350, 320], height: 325 },
-  { id: 'h2s', label: 'Bambu Lab H2S', base: 'h2c', model: 'Bambu Lab H2S', bed: [340, 320], height: 340 },
-  { id: 'p1s', label: 'Bambu Lab P1S', base: 'p1s', model: 'Bambu Lab P1S', bed: [256, 256], height: 256 },
-  { id: 'p1p', label: 'Bambu Lab P1P', base: 'p1s', model: 'Bambu Lab P1P', bed: [256, 256], height: 256 },
-  { id: 'x1', label: 'Bambu Lab X1', base: 'p1s', model: 'Bambu Lab X1', bed: [256, 256], height: 256 },
-  { id: 'a1', label: 'Bambu Lab A1', base: 'p1s', model: 'Bambu Lab A1', bed: [256, 256], height: 256 },
-  { id: 'a1mini', label: 'Bambu Lab A1 mini', base: 'p1s', model: 'Bambu Lab A1 mini', bed: [180, 180], height: 180 },
+  // Dual-nozzle (H2C structural base)
+  { id: 'h2c', label: 'Bambu Lab H2C', base: 'h2c', model: 'Bambu Lab H2C', bed: [330, 320], height: 325, process: '0.20mm Standard @BBL H2C' },
+  { id: 'h2d', label: 'Bambu Lab H2D', base: 'h2c', model: 'Bambu Lab H2D', bed: [350, 320], height: 325, process: '0.20mm Standard @BBL H2D' },
+  { id: 'h2dpro', label: 'Bambu Lab H2D Pro', base: 'h2c', model: 'Bambu Lab H2D Pro', bed: [350, 320], height: 325, process: '0.20mm Standard @BBL H2DP' },
+  { id: 'x2d', label: 'Bambu Lab X2D', base: 'h2c', model: 'Bambu Lab X2D', bed: [256, 256], height: 261, process: '0.20mm Standard @BBL X2D' },
+  // Single-nozzle (P1S structural base)
+  { id: 'h2s', label: 'Bambu Lab H2S', base: 'p1s', model: 'Bambu Lab H2S', bed: [340, 320], height: 340, process: '0.20mm Standard @BBL H2S' },
+  { id: 'a2l', label: 'Bambu Lab A2L', base: 'p1s', model: 'Bambu Lab A2L', bed: [330, 320], height: 325, process: '0.20mm Standard @BBL A2L' },
+  { id: 'x1c', label: 'Bambu Lab X1 Carbon', base: 'p1s', model: 'Bambu Lab X1 Carbon', bed: [256, 256], height: 250, process: '0.20mm Standard @BBL X1C' },
+  { id: 'x1e', label: 'Bambu Lab X1E', base: 'p1s', model: 'Bambu Lab X1E', bed: [256, 256], height: 250, process: '0.20mm Standard @BBL X1C' },
+  { id: 'x1', label: 'Bambu Lab X1', base: 'p1s', model: 'Bambu Lab X1', bed: [256, 256], height: 250, process: '0.20mm Standard @BBL X1C' },
+  { id: 'p1s', label: 'Bambu Lab P1S', base: 'p1s', model: 'Bambu Lab P1S', bed: [256, 256], height: 250, process: '0.20mm Standard @BBL X1C' },
+  { id: 'p1p', label: 'Bambu Lab P1P', base: 'p1s', model: 'Bambu Lab P1P', bed: [256, 256], height: 250, process: '0.20mm Standard @BBL P1P' },
+  { id: 'p2s', label: 'Bambu Lab P2S', base: 'p1s', model: 'Bambu Lab P2S', bed: [256, 256], height: 256, process: '0.20mm Standard @BBL P2S' },
+  { id: 'a1', label: 'Bambu Lab A1', base: 'p1s', model: 'Bambu Lab A1', bed: [256, 256], height: 256, process: '0.20mm Standard @BBL A1' },
+  { id: 'a1mini', label: 'Bambu Lab A1 mini', base: 'p1s', model: 'Bambu Lab A1 mini', bed: [180, 180], height: 180, process: '0.20mm Standard @BBL A1M' },
 ];
 export const DEFAULT_BAMBU_PRINTER = 'h2c';
 
@@ -739,6 +757,11 @@ function buildProjectSettings(filamentColors: string[], printer: BambuPrinterSpe
   // `model` must match Bambu's exact printer_model or Bambu converts on open.
   cfg.printer_model = printer.model;
   cfg.printer_settings_id = `${printer.model} ${nozzle} nozzle`;
+  // print_settings_id names the process; print_compatible_printers is the actual
+  // gate — if the selected printer isn't in it, Bambu rejects with rc -17 ("printer
+  // not compatible with the process preset"). Set both to the target printer.
+  cfg.print_settings_id = printer.process;
+  cfg.print_compatible_printers = [`${printer.model} ${nozzle} nozzle`];
   cfg.printer_variant = nozzle;
   cfg.printable_area = [`0x0`, `${printer.bed[0]}x0`, `${printer.bed[0]}x${printer.bed[1]}`, `0x${printer.bed[1]}`];
   cfg.printable_height = String(printer.height);
