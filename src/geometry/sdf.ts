@@ -1075,7 +1075,11 @@ function primTube(path: unknown, radius: unknown, opts: unknown = {}): SdfNode {
   const defaultCount = rings
     ? Math.max(4, Math.round(total / (r0 * 1.6)))
     : Math.max(6, Math.round(r0 * 0.9));
-  const count = o.count === undefined ? defaultCount : assertNumber(o.count, 'tube(opts.count)', { min: 1 }) as number;
+  // Integer count: a fractional helix start-count leaves a longitudinal seam
+  // where atan2 wraps (the phase is not even in theta); flutes/rings are even
+  // in theta so they'd tolerate it, but an integer rib/ring/thread count is
+  // what callers mean anyway.
+  const count = o.count === undefined ? defaultCount : assertNumber(o.count, 'tube(opts.count)', { min: 1, integer: true }) as number;
 
   const evalFn: EvalFn = (x, y, z) => {
     // Nearest point over all segments.
@@ -1097,19 +1101,20 @@ function primTube(path: unknown, radius: unknown, opts: unknown = {}): SdfNode {
     if (profile === 'smooth' || depth === 0) return dist - rad;
 
     // Local frame at the nearest point: interpolate tangent + RMF normal.
+    // Kept fully scalar (no per-sample array allocation) — this runs once per
+    // marching-cube sample, matching the allocation-free sibling primitives.
     const i0 = bSeg, i1 = bSeg + 1, t = bT;
-    const ax = unit([
-      tan[i0][0] + (tan[i1][0] - tan[i0][0]) * t,
-      tan[i0][1] + (tan[i1][1] - tan[i0][1]) * t,
-      tan[i0][2] + (tan[i1][2] - tan[i0][2]) * t,
-    ]);
+    let axx = tan[i0][0] + (tan[i1][0] - tan[i0][0]) * t;
+    let axy = tan[i0][1] + (tan[i1][1] - tan[i0][1]) * t;
+    let axz = tan[i0][2] + (tan[i1][2] - tan[i0][2]) * t;
+    const am = Math.hypot(axx, axy, axz) || 1; axx /= am; axy /= am; axz /= am;
     let ux = U[i0][0] + (U[i1][0] - U[i0][0]) * t;
     let uy = U[i0][1] + (U[i1][1] - U[i0][1]) * t;
     let uz = U[i0][2] + (U[i1][2] - U[i0][2]) * t;
-    const ud = ux * ax[0] + uy * ax[1] + uz * ax[2];   // re-orthogonalize U against axis
-    ux -= ud * ax[0]; uy -= ud * ax[1]; uz -= ud * ax[2];
+    const ud = ux * axx + uy * axy + uz * axz;   // re-orthogonalize U against axis
+    ux -= ud * axx; uy -= ud * axy; uz -= ud * axz;
     const um = Math.hypot(ux, uy, uz) || 1; ux /= um; uy /= um; uz /= um;
-    const vx = ax[1] * uz - ax[2] * uy, vy = ax[2] * ux - ax[0] * uz, vz = ax[0] * uy - ax[1] * ux;
+    const vx = axy * uz - axz * uy, vy = axz * ux - axx * uz, vz = axx * uy - axy * ux;
     const wx = x - bcx, wy = y - bcy, wz = z - bcz;
     const theta = Math.atan2(wx * vx + wy * vy + wz * vz, wx * ux + wy * uy + wz * uz);
 
