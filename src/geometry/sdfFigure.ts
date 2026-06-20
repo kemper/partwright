@@ -1330,16 +1330,21 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   function canonicalHand(side: number): Node {
     const fr = rh * 0.19;
     const thick = rh * palmThicknessK;
-    const rEdge = Math.min(thick * 0.48, rh * 0.22);
-    const palmW = rh * 1.9, palmL = rh * 1.1, palmTopZ = rh * 0.55;
-    const knuckleSlab = sdf.roundedBox([palmW, thick, palmL * 0.6], rEdge)
-      .translate([0, 0, palmTopZ - palmL * 0.3]);
-    const wristSlab = sdf.roundedBox([palmW * 0.72, thick, palmL * 0.6], rEdge)
-      .translate([0, 0, palmTopZ - palmL * 0.72]);
-    // PLAIN union (Lipschitz): a smoothUnion here is a smin field whose marching
-    // artifacts get WORSE at the fine hand resolution (spurious tiny handles).
-    // Two coplanar overlapping rounded boxes union cleanly.
-    let hand = knuckleSlab.union(wristSlab);
+    const palmW = rh * 1.9, palmTopZ = rh * 1.2;    // knuckle line (finger bases)
+    const wristZ = -rh * 0.34;                       // heel; overlaps the forearm
+    const palmL = palmTopZ - wristZ;                 // full palm length, wrist→knuckles
+    const palmMidZ = (palmTopZ + wristZ) / 2;
+    const pEdge = Math.min(thick * 0.49, rh * 0.32);
+    // Natural palm: a flat rounded slab that TAPERS narrower toward the wrist,
+    // capped by a rounded heel that plugs into the forearm — so the hand reads as
+    // a continuous form from wrist to knuckles rather than a rectangular block.
+    // Plain unions only (Lipschitz) so the fine hand march stays clean.
+    const slab = sdf.roundedBox([palmW, thick, palmL], pEdge)
+      .taper(0.06, 'z')
+      .translate([0, 0, palmMidZ]);
+    const heel = sdf.ellipsoid(palmW * 0.4, thick * 0.58, rh * 0.46)
+      .translate([0, 0, wristZ + rh * 0.32]);
+    let hand = slab.union(heel);
 
     const span = count * 2 * fr + (count - 1) * rh * 0.16;
     const baseLimit = palmW * 0.5 - fr;   // keep every finger base on the palm

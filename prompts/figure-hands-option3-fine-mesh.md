@@ -91,3 +91,22 @@ naturally, fist/claw/clutch curl, point/peace/ok/thumbsup read correctly. Added 
 `hands({ size })` knob (default 1.15× baseline so hands read a bit bigger) and
 lengthened the fingers slightly. Full figure: genus 0, 242k tris, verified in the
 real browser. 1511 unit tests pass; preflight green.
+
+## Human (follow-up 2)
+
+The fingers look good now but the palms are too short and rectangular — I want
+more natural palms and hands that extend from the wrist to the fingers.
+
+## Assistant (follow-up 2)
+
+Redesigned the palm in `canonicalHand`: replaced the two short coplanar slabs
+with a LONGER tapered rounded slab (wrist→knuckles, gently narrower at the wrist
+via `.taper`) plus a rounded heel ellipsoid that plugs into the forearm — so the
+hand reads as a continuous form from wrist through palm to fingers instead of a
+rectangular block with finger-stubs. Kept everything plain-union (Lipschitz) so
+the fine march stays clean. Learned the palm WIDTH (~1.9·r.hand) is constrained
+by needing clean gaps between 4 fat fingers, so naturalness came from LENGTHENING
+the palm (knuckle line at 1.2·r.hand, heel below the wrist joint) to balance the
+width, not narrowing it (narrowing crowds the fingers → webbing). Over-taper made
+a teardrop; settled on a gentle 0.06 taper. All 11 grips genus-clean; full figure
+genus 0, ~258k tris, verified in the real browser.
