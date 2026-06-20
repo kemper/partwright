@@ -4979,7 +4979,7 @@ async function main() {
     // saving inside loadVersionIntoEditor would land under the wrong id.
     const { session, currentPart } = getState();
     if (session && currentPart) {
-      await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles());
+      await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles(), currentDraftRegions());
     }
     const version = await changePart(partId);
     // skipDraftSave: the outgoing draft was already saved above.
@@ -5105,8 +5105,8 @@ async function main() {
       // Unlike the rail-switch path we deliberately DON'T auto-save it as a
       // version — leaving it unsaved is exactly what surfaces it in that modal.
       const { session, currentPart } = getState();
-      if (session && currentPart && !isStarterCode(getValue())) {
-        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles());
+      if (session && currentPart && (!isStarterCode(getValue()) || hasColorRegions())) {
+        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles(), currentDraftRegions());
       }
       await createPart();
       startNewPartInEditor();
@@ -5609,7 +5609,7 @@ async function main() {
       if (!opts.skipDraftSave) {
         const sid = getState().session?.id;
         const pid = getState().currentPart?.id;
-        if (sid) await writeDraft(sid, getActiveLanguage(), getValue(), pid, getCompanionFiles());
+        if (sid) await writeDraft(sid, getActiveLanguage(), getValue(), pid, getCompanionFiles(), currentDraftRegions());
       }
       await switchLanguage(versionLang);
     } else {
@@ -6307,6 +6307,13 @@ async function main() {
   // reload / crash. It is deliberately skipped when we loaded an OLDER version
   // (explicit history navigation), so a stale draft never shadows a version
   // the user intentionally went back to.
+
+  /** Snapshot the current paint regions for stashing into a draft. Returns the
+   *  serialized regions array when there are any user-painted regions, or
+   *  undefined when the part is unpainted (so the draft omits the field). */
+  const currentDraftRegions = (): SerializedColorRegion[] | undefined =>
+    (hasColorRegions() ? serializeRegions() : undefined);
+
   async function restoreDraftIfNewer(): Promise<void> {
     const sid = getState().session?.id;
     if (!sid) return;
@@ -6325,10 +6332,24 @@ async function main() {
     const isScad = getActiveLanguage() === 'scad';
     const draftCompanions = isScad ? (draft.companionFiles ?? {}) : {};
     const companionsDiffer = isScad && !companionFilesEqual(getCompanionFiles(), draftCompanions);
-    if (draft.code === getValue() && !companionsDiffer) return;
-    if (isScad) setCompanionFiles(draftCompanions);
-    setValue(draft.code);
-    await runCodeSync(draft.code);
+    const hasDraftPaint = !!(draft.colorRegions && draft.colorRegions.length > 0);
+    // Skip only when code, companions, AND paint all match the loaded state.
+    if (draft.code === getValue() && !companionsDiffer && !hasDraftPaint) return;
+    if (draft.code !== getValue() || companionsDiffer) {
+      // Code or companions changed \u2014 re-run to produce the correct mesh before
+      // applying paint on top.
+      if (isScad) setCompanionFiles(draftCompanions);
+      setValue(draft.code);
+      await runCodeSync(draft.code);
+    }
+    // Re-apply the stashed paint onto the (now-current) mesh. rehydrateColorRegions
+    // clears existing user regions first, so it correctly supersedes whatever the
+    // saved version had. Only rehydrate when the draft actually carries paint \u2014
+    // if it doesn't, leave the existing paint state (loaded from the saved version)
+    // untouched so we don't accidentally clear paint that was already there.
+    if (hasDraftPaint) {
+      await rehydrateColorRegions({ colorRegions: draft.colorRegions });
+    }
   }
 
   async function syncEditorFromURL() {
@@ -6690,7 +6711,7 @@ async function main() {
     const pid = getState().currentPart?.id;
     const lang = getActiveLanguage();
     const code = getValue();
-    void writeDraft(sid, lang, code, pid, getCompanionFiles()).catch((e) => {
+    void writeDraft(sid, lang, code, pid, getCompanionFiles(), currentDraftRegions()).catch((e) => {
       if (isQuotaError(e)) {
         showToast('Storage full — could not autosave your draft. Free up space or export your work.', { variant: 'warn' });
       }
@@ -7912,7 +7933,7 @@ async function main() {
       // Persist the previous language's working buffer so flipping back
       // restores it exactly. Both languages stay live in IDB until the
       // part/session is deleted. Companions ride along for the SCAD buffer.
-      await writeDraft(sid, prevLang, currentCode, pid, getCompanionFiles());
+      await writeDraft(sid, prevLang, currentCode, pid, getCompanionFiles(), currentDraftRegions());
     }
     await applyEngineLanguage(lang);
     let nextCode: string | null = null;
