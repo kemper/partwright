@@ -565,8 +565,14 @@ function buildRig(rawOpts: unknown): Rig {
   const upperArmLen = H * 0.165;
   const foreArmLen = H * 0.150;
 
+  // The glenohumeral joint sits a touch BELOW the neck-base shoulder line. The
+  // acromion/neck-base is the top of the torso; the arm bone actually hangs from
+  // a point below it, so dropping S here lets the shoulders slope down from the
+  // neck instead of the deltoid mass riding up level with the chin.
+  const shoulderDropZ = headH * 0.12;
+
   function armChain(side: number, p: JointPose) {
-    const S: Vec3 = [side * shoulderHalfX, 0, shoulderZ];
+    const S: Vec3 = [side * shoulderHalfX, 0, shoulderZ - shoulderDropZ];
     // raiseSide: 0 = hanging down, 90 = straight out to the side, 180 = up.
     let dir: Vec3 = [side * Math.sin(p.raiseSide * DEG), 0, -Math.cos(p.raiseSide * DEG)];
     // raiseFwd: + brings the arm forward (−Y).
@@ -1241,8 +1247,14 @@ function buildArms(sdf: SdfApi, rig: Rig): Node {
     const upper = tapered(sdf, S, E, r.upperArm, r.lowerArm * 1.05, k);
     const fore = tapered(sdf, E, W, r.lowerArm * 1.02, r.lowerArm * 0.8, k);
     // Deltoid cap so the shoulder reads as a rounded mass, not a tube stub —
-    // grows with muscle into a capped delt.
-    const deltoid = sdf.sphere(r.upperArm * (1.15 + 0.3 * m)).translate(S);
+    // grows with muscle into a capped delt. Seated a little DOWN the arm from the
+    // joint (not centred ON it) and trimmed slightly: a sphere centred on S threw
+    // its mass ABOVE the shoulder line, so relaxed (arms-down) figures grew two
+    // high humps flanking the neck — the "bumpy shoulders" look. Riding the upper
+    // arm, the delt bulges the shoulder laterally and the top reads as the
+    // capsule cap, giving a natural slope. The offset follows the arm, so a RAISED
+    // arm carries the delt up with it exactly as before.
+    const deltoid = sdf.sphere(r.upperArm * (0.9 + 0.3 * m)).translate(lerp3(S, E, 0.32));
     let out = upper.smoothUnion(fore, k).smoothUnion(deltoid, r.upperArm * 0.9);
     if (m > 0) {
       const flex = flexorDir(hinge, upDir);             // biceps (anterior) side
@@ -2412,16 +2424,18 @@ function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const ala = (s: number): Node => orientToHeadPose(sdf.ellipsoid(alaR, alaR * 1.18, alaR * 0.96), rig)
     .translate(add3(noseBase, scale3(right, s * alaSpread)));
   nose = nose.smoothUnion(ala(1), tipR * 0.5).smoothUnion(ala(-1), tipR * 0.5);
-  // Nostrils — two forward-oval cavities carved into the underside, opening
-  // down and slightly forward, with the columella/septum surviving between
-  // them. The flared alae bulge the underside well past the analytic tip, so
-  // the opening height is MEASURED (smoothUnion bulge — see /ai/figure.md) by
+  // Nostrils — two shallow rounded depressions on the underside, opening down
+  // and slightly forward, with a thick columella/septum surviving between them.
+  // The flared alae bulge the underside well past the analytic tip, so the
+  // opening height is MEASURED (smoothUnion bulge — see /ai/figure.md) by
   // sampling the lower surface along each nostril column rather than guessed:
-  // the cavity straddles that surface and tunnels UP into the tip, giving a
-  // real opening that reads from below, not a buried bubble or a flat dimple.
+  // each dish straddles that surface. A DEEP carved tunnel (the prior approach)
+  // eroded the small figure tip into sub-cell walls that shattered into a torn
+  // "triangular" crater on every normal-sized nose; a shallow, well-separated,
+  // large-blend dish reads as a nostril from below yet always meshes clean.
   if (nostrils && nostrilSize > 0) {
-    const nRad = tipR * 0.4 * nostrilSize;
-    const nostrilSpread = tipR * (0.36 + 0.34 * width);
+    const nRad = tipR * 0.3 * nostrilSize;
+    const nostrilSpread = tipR * (0.5 + 0.3 * width);
     const nostrilBack = scale3(f, -tipR * 0.14);
     // Each nostril splays outward like a real teardrop opening (narrow end
     // forward-medial, wider back-lateral) instead of two parallel inward slits.
@@ -2445,10 +2459,13 @@ function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       // Opening at the measured surface; centre lifted so the bulk tunnels up.
       const drop = surfaceDrop(lat) - 0.26;
       const c = add3(add3(tip, add3(scale3(u, -drop * tipR), scale3(right, lat))), nostrilBack);
-      // Rounded-oval opening (lateral × forward) that tunnels UP (tall Z),
-      // yaw-splayed about the vertical so it opens down-and-outward.
+      // Rounded-oval opening (lateral × forward) — a SHALLOW domed depression
+      // (Z ≈ the in-plane radius, not a deep tunnel) yaw-splayed about the
+      // vertical so it opens down-and-outward. A deep tunnel (#703) eroded the
+      // tip into sub-cell walls that shattered on every just-above-floor nose;
+      // a shallow bowl reads as a nostril from below yet leaves a thick septum.
       return orientToHeadPose(
-        sdf.ellipsoid(nRad * 1.0, nRad * 1.18, nRad * 1.5).rotate([0, 0, -s * splay]),
+        sdf.ellipsoid(nRad * 0.95, nRad * 1.12, nRad * 0.92).rotate([0, 0, -s * splay]),
         rig,
       ).translate(c);
     };
@@ -2461,7 +2478,7 @@ function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     // rounded crater, not a torn one. It stays a crease (small k) on big noses,
     // so good faces are essentially unchanged.
     const nearFloor = Math.max(0, Math.min(1, (tipR - NOSTRIL_TIP_FLOOR) / (NOSTRIL_TIP_FLOOR * 0.6)));
-    const carveK = Math.max(nRad * (0.42 + 0.28 * (1 - nearFloor)), 0.05);
+    const carveK = Math.max(nRad * (1.3 + 0.4 * (1 - nearFloor)), 0.18);
     nose = nose.smoothSubtract(cavity(1), carveK).smoothSubtract(cavity(-1), carveK);
   }
   return nose;
@@ -2682,36 +2699,21 @@ function buildMouthPart(sdf: SdfApi, rig: Rig, opts?: unknown): MouthPart {
     grooveCurl * bend * (t * t - 0.3) + smirk * halfW * 0.35 * t;
 
   if (style === 'lips') {
-    // A named refined SHAPE (cupid's-bow upper + fuller lower + parting groove):
-    // an explicit `lipShape`, or `divided: true` → the 'natural' two-lip shape.
-    const shapeName: LipShapeName | undefined = o.lipShape !== undefined
+    // A sculpted two-lip SHAPE (cupid's-bow upper + fuller lower + parting
+    // groove): an explicit `lipShape`, else 'natural' — now the DEFAULT. The
+    // old bare-lips fallback was a single flat capsule ridge that read as a
+    // featureless bump at print scale (the musician's "slightly extruded bump");
+    // every figure that asks for 'lips' now gets real lips. `divided` predates
+    // the sculpted default and survives as a validated 'natural' alias (it no
+    // longer changes the shape — the default already is the two-lip form).
+    void divided;
+    const shapeName: LipShapeName = o.lipShape !== undefined
       ? assertEnum(o.lipShape, LIP_SHAPE_NAMES, 'mouth.lipShape')
-      : divided ? 'natural' : undefined;
-    if (shapeName !== undefined) {
-      const shape = LIP_SHAPES[shapeName];
-      // Preset half-width unless the caller set an explicit `width`.
-      const hw = o.width !== undefined ? width * 0.5 : shape.hw * rig.r.head;
-      return { node: buildLipShape(sdf, rig, shape, fullness, hw, curveOpt ?? 0, smirk), mode: 'add' };
-    }
-    // No shape requested: the simple lip ridge (byte-identical default).
-    const lipR = rig.r.head * 0.085 * fullness;
-    const fwdPush = scale3(fwd, lipR * 0.6);
-    if (curveOpt === undefined) {
-      // Historical single straight ridge — smirk tips a corner.
-      const a = add3(add3(add3(m, fwdPush), scale3(right, halfW)), scale3(u, smirk * width * 0.25));
-      const b = add3(add3(add3(m, fwdPush), scale3(right, -halfW)), scale3(u, -smirk * width * 0.25));
-      return { node: sdf.capsule(a, b, lipR), mode: 'add' };
-    }
-    // Bowed single ridge — a 6-segment arc so the ridge follows the expression.
-    const bend = curveOpt;
-    const pt = (t: number): Vec3 => add3(add3(add3(m, fwdPush),
-      scale3(right, halfW * t)), scale3(u, arcVert(t, bend)));
-    let arc: Node | undefined;
-    for (let i = 0; i < 6; i++) {
-      const seg = sdf.capsule(pt(-1 + (2 * i) / 6), pt(-1 + (2 * (i + 1)) / 6), lipR);
-      arc = arc === undefined ? seg : arc.union(seg);
-    }
-    return { node: arc!, mode: 'add' };
+      : 'natural';
+    const shape = LIP_SHAPES[shapeName];
+    // Preset half-width unless the caller set an explicit `width`.
+    const hw = o.width !== undefined ? width * 0.5 : shape.hw * rig.r.head;
+    return { node: buildLipShape(sdf, rig, shape, fullness, hw, curveOpt ?? 0, smirk), mode: 'add' };
   }
 
   if (style === 'open') {
@@ -3989,7 +3991,21 @@ function weldBody(rig: Rig, parts: unknown, opts?: unknown): Node {
   }
   const o = obj(opts, 'weld(opts)');
   assertNoUnknownKeys(o, ['k'], 'weld(opts)');
-  const k = num(o.k, Math.min(rig.r.lowerArm, rig.r.neck) * 0.85, 'weld.k', 1e-4);
+  // The default weld is TIGHTENED from the old 0.85·min(lowerArm,neck). The body
+  // masses join end-to-end (neck atop chest, legs below pelvis, hands off wrists),
+  // so a small k already gives those coaxial seams a smooth transition. The arms,
+  // though, run PARALLEL to the torso when they hang at the sides, separated by
+  // the armpit slot — a large k bridges that slot, fusing the whole upper arm to
+  // the ribcage as an unrealistic web/wing (most visible on relaxed standing
+  // poses). Shrinking k opens that armpit into a real hollow.
+  //
+  // But k can't go arbitrarily small: a RAISED arm runs clear of the torso and
+  // welds ONLY at the shoulder, so k is the entire arm→torso bridge there — too
+  // tight and an overhead arm detaches into its own component in the fine bake
+  // (the danseur split at 0.32). 0.48 is the sweet spot: comfortably below the
+  // ~0.6 where hanging arms re-web, comfortably above the ~0.32 where raised arms
+  // tear off. Override via `weld(rig, parts, {k})` for a chunkier, blobbier look.
+  const k = num(o.k, Math.min(rig.r.lowerArm, rig.r.neck) * 0.48, 'weld.k', 1e-4);
   // Fine-hands markers must NOT be smooth-blended into the body field: that
   // fuses arm+hand into one surface the coarse march then webs. Keep them OUT
   // of the smooth weld and HARD-union them on top, so the build meshes each

@@ -34,15 +34,23 @@ Each call also adds the export to the Recent Exports inbox so the user can re-do
 
 ## Multi-part 3MF — bundle several parts into one file
 
-`export3MFParts(partIds?, filename?, { bambu? })` bundles several Session Parts into **one** 3MF. Two modes:
+`export3MFParts(partIds?, filename?, { bambu?, printer?, nozzle?, filament? })` bundles several Session Parts into **one** 3MF. Two modes:
 
-- **`{ bambu: true }`** (default) — a Bambu Studio / OrcaSlicer **project**: each part on its **own build plate**, painted colours bound to filaments. The console/AI twin of the **"3MF — Bambu/Orca"** menu item.
+- **`{ bambu: true }`** (default) — a Bambu Studio / OrcaSlicer **project**: each part on its **own build plate**, painted colours bound to filaments (one filament per distinct colour). The console/AI twin of the **"3MF — Bambu/Orca"** menu item.
 - **`{ bambu: false }`** — a **generic** multi-object 3MF: parts grid-arranged (no overlap), opens in any slicer, no Bambu metadata. The console/AI twin of the generic **"3MF"** export in a multi-part session.
 
+In Bambu mode you can pick the target machine (these match the export modal's dropdowns):
+- **`printer`** — dual-nozzle: `"h2c"` (default), `"h2d"`, `"h2dpro"`, `"x2d"`; single-nozzle: `"h2s"`, `"a2l"`, `"x1c"`, `"x1e"`, `"x1"`, `"p1s"`, `"p1p"`, `"p2s"`, `"a1"`, `"a1mini"`. Sets the printer profile + bed + process so Bambu opens it natively without converting.
+- **`nozzle`** — `"0.2"` | `"0.4"` (default) | `"0.6"` | `"0.8"`.
+- **`filament`** — `"pla"` (default) | `"petg"` | `"abs"` | `"asa"` | `"tpu"` | `"pc"`. One material for all colours; sets the filament type + temps.
+
 ```js
-// Every part in the session, one per Bambu plate (default):
+// Every part in the session, one per Bambu plate (default H2C / 0.4 / PLA):
 await partwright.export3MFParts()
 // -> { ok: true, filename: "...3mf", parts: 3 }
+
+// Target a P1S with a 0.6 nozzle in PETG:
+await partwright.export3MFParts(undefined, "tree", { printer: "p1s", nozzle: "0.6", filament: "petg" })
 
 // Specific parts as a generic multi-object 3MF (ids from listParts()):
 await partwright.export3MFParts(["part_abc", "part_def"], "assembly", { bambu: false })

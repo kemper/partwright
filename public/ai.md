@@ -289,7 +289,7 @@ await partwright.exportOBJData()        // text or base64 depending on whether c
 await partwright.export3MFData()
 await partwright.exportVOXData()        // -> {filename, mimeType, base64, sizeBytes} (voxel sessions only)
 // Multi-part: bundle several Session Parts into one file (default: all parts). See /ai/file-io.md.
-await partwright.export3MFParts(partIds?, filename?, {bambu?})  // 3MF: one part per Bambu/Orca plate (bambu:true, default) or generic grid (false)
+await partwright.export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?})  // 3MF: one part per Bambu/Orca plate (bambu:true, default; printer "p1s"/"h2c"…, nozzle "0.4", filament "pla"/"petg"…) or generic grid (false)
 await partwright.exportOBJParts(partIds?, filename?)            // OBJ: named objects in one file, grid-arranged (+ .mtl .zip if painted)
 await partwright.exportSTLParts(partIds?, filename?)            // STL: a .zip of one .stl per part
 await partwright.exportGLBParts(partIds?, filename?)            // GLB: named nodes in one scene, grid-arranged

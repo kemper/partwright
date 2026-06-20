@@ -36,7 +36,7 @@ import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost,
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
-import { generateId, getLatestVersion } from './storage/db';
+import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
@@ -79,7 +79,7 @@ import { exportGLB, buildGLB, buildGLBProject } from './export/gltf';
 import { exportSTL, buildSTL, buildSTLProject } from './export/stl';
 import { exportOBJ, buildOBJ, buildOBJProject } from './export/obj';
 import { export3MF, build3MF } from './export/threemf';
-import { build3MFProject } from './export/threemfProject';
+import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
@@ -802,15 +802,23 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
  *  we cap the wait and let the save proceed without it rather than hang forever
  *  (which silently blocked saving a painted version). */
 
-function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
+function captureThumbnail(
+  mesh: MeshData | null = currentMeshData,
+  opts: { rawColors?: boolean } = {},
+): Promise<Blob | null> {
   if (!mesh) return Promise.resolve(null);
   let canvas: HTMLCanvasElement;
   // Honour a session-pinned thumbnail camera (partwright.setThumbnailCamera);
   // fall back to the default iso 3/4 view. The pin keeps the perspective ortho
   // flag of the iso view so a custom angle still reads as a 3/4 tile.
   const pin = getState().session?.thumbCamera;
+  // `rawColors` renders the mesh's OWN triColors verbatim, bypassing the global
+  // paint/region state — used by the offscreen import thumbnail backfill, whose
+  // colours are pre-baked per version and must not pick up the live (latest)
+  // version's regions.
+  const colored = opts.rawColors ? mesh : applyTriColorsIfVisible(mesh);
   try {
-    canvas = renderSingleViewCanvas(applyTriColorsIfVisible(mesh), {
+    canvas = renderSingleViewCanvas(colored, {
       elevation: pin ? pin.elevation : STANDARD_VIEWS.iso.elevation,
       azimuth: pin ? pin.azimuth : STANDARD_VIEWS.iso.azimuth,
       ortho: STANDARD_VIEWS.iso.ortho,
@@ -1282,6 +1290,36 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   }
 
   return report;
+}
+
+/** Load a version's saved colour-region *descriptors* into the store WITHOUT
+ *  resolving them against a mesh (empty triangle sets). Used when a version
+ *  load can't finish its render — most importantly when the user cancels the
+ *  slow initial render of a catalog figure. Without this, the cancel skips
+ *  rehydrateColorRegions entirely (it needs a finished mesh + labelMap to
+ *  resolve `byLabel` regions), so the figure's colours never enter memory: a
+ *  subsequent Save then serialises the empty store over the version's colours
+ *  (permanent loss), and the next edit→rerender shows a colourless model.
+ *
+ *  Staging the descriptors fixes both: `serialize()` persists descriptors (not
+ *  triangles), so a Save keeps the colours, and runCodeSync re-resolves every
+ *  in-memory region against the freshly-rendered mesh+labelMap on the next run,
+ *  so the colours reappear. Regions that genuinely no longer match just resolve
+ *  to 0 triangles, exactly as the normal reconcile path already tolerates. */
+function stageUnresolvedColorRegions(geometryData: Record<string, unknown> | null): void {
+  resetPaintWorkerState();
+  clearRegions();
+  const regions = geometryData?.colorRegions as SerializedColorRegion[] | undefined;
+  if (!regions || regions.length === 0) {
+    syncLockState();
+    return;
+  }
+  suspendReconcile = true;
+  for (const region of regions) {
+    addRegion(region.name, region.color, region.source, region.descriptor, new Set<number>(), region.visible !== false, region.slotId);
+  }
+  suspendReconcile = false;
+  syncLockState();
 }
 
 /** Draw `currentMeshData` with the model-declared colour underlay (api.label /
@@ -2224,27 +2262,133 @@ async function main() {
   // Import an already-parsed session payload. Used by both file import and the
   // window.partwright.importSessionData() API so AI agents can bypass the file picker.
   async function importSessionPayload(data: ExportedSession): Promise<{ sessionId: string }> {
-    // Seed the active-imports register with each version's own meshes before
-    // running its code: `Manifold.ofMesh(api.imports[0])` only reproduces this
-    // version's geometry (and thus a correct thumbnail) if the register holds
-    // these meshes — otherwise the run captures a stale, previously-loaded part.
-    // importSession resets the register to the latest version's imports when it
-    // finishes, so no manual restore is needed here.
-    const session = await importSession(data, async (code, importedMeshes) => {
-      setActiveImports(importedMeshes ?? []);
-      // Skip surface texture computation during thumbnail generation — the
-      // heavy surface Worker run would hang the import for complex models.
-      // The textures will apply on first interactive load instead.
-      await runCodeSync(code, { skipSurface: true });
-      return captureThumbnail();
-    });
+    // Import the session STRUCTURE first, without regenerating any thumbnails.
+    // Regenerating a thumbnail runs that version's code through WASM (seconds
+    // apiece for a complex figure), and doing it inside importSession deferred
+    // the notify()/selection + editor swap until the whole loop finished. The
+    // user saw the new geometry render into the viewport while the OLD part
+    // stayed selected and the OLD code lingered in the editor for seconds. So we
+    // now create + select the session and load its latest version immediately,
+    // then backfill the missing thumbnails offscreen in the background. Embedded
+    // thumbnails (when the export carried them) are still restored by
+    // importSession; only versions exported without one need the backfill.
+    const session = await importSession(data);
     const version = await openSession(session.id);
-    // Skip surface texture computation during catalog import — the surface
-    // Worker (voronoi/knurl/woven) can take 30–120s on complex catalog models
-    // and blocks the entire import. Textures apply on the first user-triggered
-    // run (edit code, or click Re-apply if the pill appears).
-    if (version) await loadVersionIntoEditor(version, { skipSurface: true });
+    if (version) {
+      // Skip surface texture computation during import — the surface Worker
+      // (voronoi/knurl/woven) can take 30–120s on complex models and would block
+      // the load. Textures apply on the first user-triggered run.
+      await loadVersionIntoEditor(version, { skipSurface: true });
+      // The latest version is now rendered live with full colour (model labels
+      // AND user paint), so snapshot its thumbnail straight from that state —
+      // the most accurate tile for the version the user is actually looking at,
+      // and it lets the backfill below skip re-running this one.
+      if (!version.thumbnail) {
+        const thumb = await captureThumbnail();
+        if (thumb) await updateVersionThumbnail(version.id, thumb);
+      }
+    }
+    // Fire-and-forget: render a snapshot for each remaining version that
+    // imported without a thumbnail. Runs AFTER the user is already on the new
+    // part, fully offscreen, so it never disturbs the live viewport or editor.
+    void backfillImportedThumbnails(session.id);
     return { sessionId: session.id };
+  }
+
+  // Bake a run's model-declared label colours (api.label(shape, name, {color}))
+  // into a standalone coloured MeshData for an OFFSCREEN thumbnail, touching no
+  // global paint/region state. Reuses composeTriColors — the same stamping the
+  // live model-colour underlay uses — so an imported figure's gallery thumbnail
+  // shows its colours. User paint regions and api.paint.* ops are NOT resolved
+  // here (that needs the full descriptor pipeline against live state); a
+  // paint-only model's backfilled thumbnail therefore shades by normal, which
+  // is acceptable for the historical-version gallery (the live latest version,
+  // rendered through the normal pipeline, always shows full colour).
+  function colorMeshFromLabels(result: MeshResult): MeshData | null {
+    const mesh = result.mesh;
+    if (!mesh) return null;
+    const { labelColors, labelMap } = result;
+    if (!labelColors || !labelMap || labelColors.size === 0) return mesh;
+    const layer: ColorRegion[] = [];
+    let order = 0;
+    for (const [name, color] of labelColors) {
+      const tris = labelMap.get(name);
+      if (!tris || tris.size === 0) continue;
+      layer.push({
+        id: order, name, color, source: 'model',
+        descriptor: { kind: 'triangles', ids: [...tris] },
+        order: order++, visible: true, triangles: tris,
+      });
+    }
+    if (layer.length === 0) return mesh;
+    const triColors = composeTriColors(mesh.numTri, [layer], { baseColors: mesh.triColors ?? null });
+    return triColors ? { ...mesh, triColors } : mesh;
+  }
+
+  // Render + persist a thumbnail for every version (in the given parts) that
+  // arrived without one (default exports omit thumbnails). Runs AFTER the
+  // session/part is selected and its latest version loaded, so the new part
+  // appears immediately rather than waiting on these WASM runs. Each version
+  // executes OFFSCREEN via executeCodeAsync (no updateMesh → no viewport flicker)
+  // with its own imports + companion files passed explicitly, so the live
+  // active-imports register is never touched. Bails as soon as the user
+  // navigates away from the session.
+  //
+  // Backfill execs share the single engine Worker with live user runs. They
+  // carry per-version imports/companions explicitly, so a manifold-js/SCAD run
+  // can't read stale module state — but the replicad engine retains the last
+  // tessellated BREP shape in Worker scope for `exportSTEP`, so a backfill of an
+  // older replicad version landing between a live run and a manual STEP export
+  // could export the wrong shape. Rare (same-session, bounded, STEP-during-import
+  // is unusual) and self-corrects on the next live run; not guarded here.
+  async function backfillThumbnailsForParts(sessionId: string, partIds: string[]): Promise<void> {
+    let wrote = false;
+    try {
+      for (const partId of partIds) {
+        const versions = await listVersions(partId);
+        for (const v of versions) {
+          // Stop the moment the user leaves the session — don't tie up the
+          // engine Worker rendering snapshots nobody is waiting on.
+          if (getState().session?.id !== sessionId) return;
+          if (v.thumbnail) continue;
+          let result: MeshResult;
+          try {
+            result = await executeCodeAsync(
+              v.code,
+              effectiveVersionLanguage(v, getState().session),
+              v.paramValues,
+              undefined,
+              (v.importedMeshes ?? []) as ImportedMesh[],
+              v.companionFiles,
+            );
+          } catch {
+            // Worker restarted (a live run cancelled it) or an engine fault —
+            // skip this one; the gallery keeps its placeholder.
+            continue;
+          }
+          if (!result.mesh) continue;
+          const thumbnail = await captureThumbnail(colorMeshFromLabels(result), { rawColors: true });
+          if (!thumbnail) continue;
+          await updateVersionThumbnail(v.id, thumbnail);
+          wrote = true;
+        }
+      }
+    } catch {
+      // Best-effort — keep whatever thumbnails we managed to persist.
+    }
+    // Refresh the gallery (if open) so new thumbnails replace placeholders
+    // without a manual reopen. Guarded so we don't redraw a session the user has
+    // since navigated away from.
+    if (wrote && getState().session?.id === sessionId) {
+      window.dispatchEvent(new CustomEvent('session-changed', { detail: getState() }));
+    }
+  }
+
+  // New-session import: backfill thumbnails across all of the imported session's
+  // parts (it owns the whole session, so every part is fair game).
+  async function backfillImportedThumbnails(sessionId: string): Promise<void> {
+    const parts = await listParts(sessionId);
+    await backfillThumbnailsForParts(sessionId, parts.map(p => p.id));
   }
 
   // Cancel an active voxel-paint session. Its live grid + per-triangle
@@ -2968,30 +3112,46 @@ async function main() {
     const choice = await showImportPreview(filename, summary, { mergeTargetName });
     if (choice === 'cancel') return false;
     if (choice === 'merge') {
-      // The regen callback runs each imported version's code to snapshot a
-      // thumbnail. Code like `Manifold.ofMesh(api.imports[0])` reads the active-
-      // imports register, so we must seed it with *that* version's meshes
-      // before running — otherwise the run produces the host (previously
-      // selected) part's geometry and the captured thumbnail is stale. Restore
-      // the host's own imports afterwards so the closing re-render is correct.
-      const hostImports = getActiveImports();
-      const result = await importSessionPartsIntoActive(data, async (code, importedMeshes) => {
-        setActiveImports(importedMeshes ?? []);
-        await runCodeSync(code);
-        return captureThumbnail();
-      });
-      setActiveImports(hostImports);
-      if (result) {
-        // Merging an imported version with no embedded thumbnail runs that
-        // version's code through runCodeSync to capture one — which leaves the
-        // viewport showing the last imported geometry while the editor still
-        // shows the active version's code. Re-render the active version so the
-        // editor text and viewport agree again.
-        const st = getState();
-        if (st.currentVersion) await runCodeSync(st.currentVersion.code, { preserveCamera: true });
+      // Append the imported parts WITHOUT regenerating thumbnails inline. The old
+      // path ran every imported version's code through the live renderer (the
+      // 10–15s render the user saw), then re-rendered the host version on top — a
+      // second full render — while leaving the host part selected. Instead: copy
+      // the parts in (fast, no WASM), switch to the FIRST new part so it appears
+      // selected with a single progressive render (fast preview → full), then
+      // backfill the rest of the new parts' thumbnails offscreen.
+      const result = await importSessionPartsIntoActive(data);
+      if (result && result.addedParts.length > 0) {
+        // Navigate to the first newly-added part so it appears selected with a
+        // single progressive render (fast preview → full). We do NOT route
+        // through selectPart here: its cancelCurrentExecution + saveVersion-based
+        // edit preservation deadlock when invoked from inside the import flow.
+        // Instead, stash the outgoing part's buffer as a draft BEFORE changePart
+        // (so it lands under the host part's id, not the incoming one), then load
+        // the new part with skipDraftSave since we've already saved that draft.
+        const outgoing = getState();
+        if (outgoing.session && outgoing.currentPart) {
+          await writeDraft(outgoing.session.id, getActiveLanguage(), getValue(), outgoing.currentPart.id, getCompanionFiles(), currentDraftRegions());
+        }
+        const newVersion = await changePart(result.addedParts[0].id);
+        if (newVersion) await loadVersionIntoEditor(newVersion, { skipSurface: true, skipDraftSave: true });
+        // The selected part is now rendered live with full colour — snapshot its
+        // thumbnail straight from that state (the most accurate tile, and it lets
+        // the backfill skip re-running this one).
+        const sel = getState();
+        if (sel.currentVersion && !sel.currentVersion.thumbnail) {
+          const thumb = await captureThumbnail();
+          if (thumb) await updateVersionThumbnail(sel.currentVersion.id, thumb);
+        }
+        const sessionId = sel.session?.id;
+        if (sessionId) void backfillThumbnailsForParts(sessionId, result.addedParts.map(p => p.id));
         const partWord = result.addedParts.length === 1 ? 'part' : 'parts';
-        showToast(`Merged ${result.addedParts.length} ${partWord} into this session.`, { variant: 'success' });
+        showToast(`Added ${result.addedParts.length} ${partWord} to this session.`, { variant: 'success' });
         return true;
+      }
+      // Nothing importable (e.g. every imported part was empty) — report it.
+      if (result) {
+        showToast('That file had no parts to add.', { variant: 'warn', source: 'import' });
+        return false;
       }
     }
     await importSessionPayload(data);
@@ -4258,8 +4418,37 @@ async function main() {
    *  confirmed it. Only used by the UI export actions below. */
   async function confirmExportOrProceed(format: string): Promise<boolean> {
     const info = exportWarningInfo(format);
+    // Flag every part that isn't fully saved so the export doesn't silently use
+    // stale data. A multi-part export bakes each NON-current part from its last
+    // SAVED version (the current part exports from its live mesh), so unsaved
+    // edits drop out — and a part that was never saved at all (an untouched
+    // starter) has NO version, so it's skipped from the export entirely. Both
+    // 'unsaved' (edited, not saved) and 'empty' (brand-new, never saved) count;
+    // only 'clean' parts are omitted. We warn for the current part too: the user
+    // asked to be alerted whenever they export without saving.
+    const unsavedRows = (await gatherUnsavedParts()).filter(r => r.status === 'unsaved' || r.status === 'empty');
+    if (unsavedRows.length > 0) {
+      info.unsavedParts = { count: unsavedRows.length, names: unsavedRows.map(r => r.name) };
+    }
     if (!hasExportWarning(info)) return true;
-    return showExportConfirm(info);
+    const decision = await showExportConfirm(info);
+    if (decision === 'save') {
+      // Hand off to the multi-part save modal so the user picks which parts to
+      // save (or cancels) — the same chooser Cmd/Ctrl+S uses. The export is
+      // abandoned either way; the user re-clicks Export to resume once they've
+      // saved. Mirrors saveVersionWithToast's choice handling.
+      const choice = await showSaveAllModal(unsavedRows);
+      if (choice.action === 'selected') {
+        const onlyCurrent = choice.partIds.length === 1 && choice.partIds[0] === getState().currentPart?.id;
+        if (!onlyCurrent) await saveSelectedParts(choice.partIds);
+        else await saveCurrentPartWithToast();
+      } else if (choice.action === 'current') {
+        await saveCurrentPartWithToast();
+      }
+      // 'cancel' → save nothing; the user can re-open Export and decide again.
+      return false;
+    }
+    return decision === 'export';
   }
 
   // One standardized "nothing to export" toast for every mesh export action, so
@@ -4361,17 +4550,26 @@ async function main() {
       description: bambu
         ? 'Choose which parts to include. Each selected part is placed on its own build plate, and painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
         : 'Choose which parts to include. Each selected part is added as a separate object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.',
+      bambu: bambu ? {
+        printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label })),
+        defaultPrinter: DEFAULT_BAMBU_PRINTER,
+        nozzles: ['0.2', '0.4', '0.6', '0.8'],
+        defaultNozzle: '0.4',
+        filaments: BAMBU_FILAMENT_TYPES.map(f => ({ id: f.id, label: f.label })),
+        defaultFilament: DEFAULT_BAMBU_FILAMENT,
+      } : undefined,
     });
-    if (!selected || selected.length === 0) return;
+    if (!selected || selected.partIds.length === 0) return;
+    const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
     const job = startProgress({ title: 'Preparing 3MF', indeterminate: false, message: 'Baking parts…' });
     try {
       const baked: { name: string; mesh: MeshData }[] = [];
-      for (let i = 0; i < selected.length; i++) {
-        const part = byId.get(selected[i]);
+      for (let i = 0; i < selectedIds.length; i++) {
+        const part = byId.get(selectedIds[i]);
         if (!part) continue;
-        updateProgress(job, i / selected.length, `Baking "${part.name}" (${i + 1}/${selected.length})…`);
+        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
         const result = await bakeColoredMeshForPart(part.id, part.name);
         if (result) baked.push(result);
       }
@@ -4379,9 +4577,12 @@ async function main() {
       if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
 
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject(baked, { bambu, bedSize: [bed[0], bed[1]] });
+      const built = build3MFProject(baked, {
+        bambu, bedSize: [bed[0], bed[1]],
+        printer: selected.printer, nozzle: selected.nozzle, filament: selected.filament,
+      });
       downloadBlob(built.blob, built.filename, '3MF');
-      const skipped = selected.length - baked.length;
+      const skipped = selectedIds.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
       showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
@@ -4412,16 +4613,17 @@ async function main() {
       title: `Export parts to ${formatTag}`,
       description,
     });
-    if (!selected || selected.length === 0) return;
+    if (!selected || selected.partIds.length === 0) return;
+    const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
     const job = startProgress({ title: `Preparing ${formatTag}`, indeterminate: false, message: 'Baking parts…' });
     try {
       const baked: { name: string; mesh: MeshData }[] = [];
-      for (let i = 0; i < selected.length; i++) {
-        const part = byId.get(selected[i]);
+      for (let i = 0; i < selectedIds.length; i++) {
+        const part = byId.get(selectedIds[i]);
         if (!part) continue;
-        updateProgress(job, i / selected.length, `Baking "${part.name}" (${i + 1}/${selected.length})…`);
+        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
         const result = await bakeColoredMeshForPart(part.id, part.name);
         if (result) baked.push(result);
       }
@@ -4430,7 +4632,7 @@ async function main() {
 
       const built = await build(baked);
       downloadBlob(built.blob, built.filename, formatTag);
-      const skipped = selected.length - baked.length;
+      const skipped = selectedIds.length - baked.length;
       const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
       showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
     } catch (e) {
@@ -4520,7 +4722,7 @@ async function main() {
    *  BuiltExport (no download, no base64) so callers can either trigger a
    *  download or return the bytes. `opts.bambu` (default true) → one part per
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     const allParts = getState().parts;
     if (allParts.length === 0) return { error: 'No parts in this session.' };
@@ -4543,7 +4745,10 @@ async function main() {
     if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
     try {
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject(baked, { customName: filename, bambu, bedSize: [bed[0], bed[1]] });
+      const built = build3MFProject(baked, {
+        customName: filename, bambu, bedSize: [bed[0], bed[1]],
+        printer: opts?.printer, nozzle: opts?.nozzle, filament: opts?.filament,
+      });
       return { built, parts: baked.length };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
@@ -4553,7 +4758,7 @@ async function main() {
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
     assertString(filename, 'export3MFParts(partIds, filename)', { optional: true });
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
@@ -4564,7 +4769,7 @@ async function main() {
   /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
-  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
     assertString(filename, 'export3MFPartsData(partIds, filename)', { optional: true });
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
@@ -4920,7 +5125,7 @@ async function main() {
     // saving inside loadVersionIntoEditor would land under the wrong id.
     const { session, currentPart } = getState();
     if (session && currentPart) {
-      await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles());
+      await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles(), currentDraftRegions());
     }
     const version = await changePart(partId);
     // skipDraftSave: the outgoing draft was already saved above.
@@ -4999,6 +5204,29 @@ async function main() {
   // rather than as its own absolute overlay, so it never stacks on top of them.
   (cancelInlineBtn.parentElement ?? viewportPane).appendChild(fastPreviewPillEl);
 
+  // Owners of the inline Cancel button when an SDF surface carve (engrave /
+  // voronoi lamp) is running. Declared here — early, before the initial
+  // syncEditorFromURL render — so the click handler attached just below can
+  // close over them without a temporal-dead-zone error. They're assigned in
+  // buildSurfaceModifierProgress far below.
+  let surfaceCarveAbort: AbortController | null = null;
+  let surfaceCarveCancel: (() => void) | null = null;
+
+  // Wire the Cancel button NOW, before the first deep-link render. main() awaits
+  // the initial render inside syncEditorFromURL(), so attaching this handler at
+  // its natural spot far below left the button visible-but-dead for the whole
+  // first render of a slow model — exactly the catalog-figure case where the
+  // fast-preview pill + "Rendering… Xs" timer + Cancel button all appear but the
+  // click did nothing. Precedence: a running surface carve owns it (aborts the
+  // SDF sweep); then an in-flight surface-texture chain (terminates the surface
+  // Worker — the base mesh stays + the Re-apply pill appears); otherwise it
+  // cancels the current engine execution (terminates the geometry Worker).
+  cancelInlineBtn.addEventListener('click', () => {
+    if (surfaceCarveCancel) { surfaceCarveCancel(); return; }
+    if (cancelSurfaceCompute()) return;
+    cancelCurrentExecution();
+  });
+
   // Surface "Re-apply" pill — a persistent status indicator (not a transient
   // toast) shown when the model declares `api.surface.*` textures whose result
   // isn't cached for the current code/params. Until pressed, the viewport shows
@@ -5023,8 +5251,8 @@ async function main() {
       // Unlike the rail-switch path we deliberately DON'T auto-save it as a
       // version — leaving it unsaved is exactly what surfaces it in that modal.
       const { session, currentPart } = getState();
-      if (session && currentPart && !isStarterCode(getValue())) {
-        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles());
+      if (session && currentPart && (!isStarterCode(getValue()) || hasColorRegions())) {
+        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles(), currentDraftRegions());
       }
       await createPart();
       startNewPartInEditor();
@@ -5527,7 +5755,7 @@ async function main() {
       if (!opts.skipDraftSave) {
         const sid = getState().session?.id;
         const pid = getState().currentPart?.id;
-        if (sid) await writeDraft(sid, getActiveLanguage(), getValue(), pid, getCompanionFiles());
+        if (sid) await writeDraft(sid, getActiveLanguage(), getValue(), pid, getCompanionFiles(), currentDraftRegions());
       }
       await switchLanguage(versionLang);
     } else {
@@ -5620,10 +5848,23 @@ async function main() {
         seedSurfaceCache(persistedTexture.key, persistedTexture.mesh as MeshData);
       }
       const meshBeforeRun = currentMeshData;
+      const genBeforeRun = _runGeneration;
       const applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
-      if (!applied) return;
+      if (!applied) {
+        // The render didn't complete (most commonly: the user cancelled the slow
+        // initial render of a catalog figure). rehydrateColorRegions needs a
+        // finished mesh + labelMap to resolve regions, so it's skipped here — but
+        // we must still stage the version's colour-region descriptors into memory,
+        // or a Save would persist an empty store over the figure's colours and the
+        // next edit→rerender would render colourless. They re-resolve on the next
+        // successful run. Skip when a NEWER run superseded ours (runCodeSync bumped
+        // _runGeneration past the one our call started): that newer run owns the
+        // store and must not be clobbered with this version's descriptors.
+        if (_runGeneration === genBeforeRun + 1) stageUnresolvedColorRegions(version.geometryData);
+        return;
+      }
       // Store the freshly compiled result so the next switch back is instant.
       // Only cache on a successful mesh-producing run (compile errors leave
       // currentMeshData as the previous part's mesh, i.e. unchanged).
@@ -6212,6 +6453,13 @@ async function main() {
   // reload / crash. It is deliberately skipped when we loaded an OLDER version
   // (explicit history navigation), so a stale draft never shadows a version
   // the user intentionally went back to.
+
+  /** Snapshot the current paint regions for stashing into a draft. Returns the
+   *  serialized regions array when there are any user-painted regions, or
+   *  undefined when the part is unpainted (so the draft omits the field). */
+  const currentDraftRegions = (): SerializedColorRegion[] | undefined =>
+    (hasColorRegions() ? serializeRegions() : undefined);
+
   async function restoreDraftIfNewer(): Promise<void> {
     const sid = getState().session?.id;
     if (!sid) return;
@@ -6230,10 +6478,24 @@ async function main() {
     const isScad = getActiveLanguage() === 'scad';
     const draftCompanions = isScad ? (draft.companionFiles ?? {}) : {};
     const companionsDiffer = isScad && !companionFilesEqual(getCompanionFiles(), draftCompanions);
-    if (draft.code === getValue() && !companionsDiffer) return;
-    if (isScad) setCompanionFiles(draftCompanions);
-    setValue(draft.code);
-    await runCodeSync(draft.code);
+    const hasDraftPaint = !!(draft.colorRegions && draft.colorRegions.length > 0);
+    // Skip only when code, companions, AND paint all match the loaded state.
+    if (draft.code === getValue() && !companionsDiffer && !hasDraftPaint) return;
+    if (draft.code !== getValue() || companionsDiffer) {
+      // Code or companions changed \u2014 re-run to produce the correct mesh before
+      // applying paint on top.
+      if (isScad) setCompanionFiles(draftCompanions);
+      setValue(draft.code);
+      await runCodeSync(draft.code);
+    }
+    // Re-apply the stashed paint onto the (now-current) mesh. rehydrateColorRegions
+    // clears existing user regions first, so it correctly supersedes whatever the
+    // saved version had. Only rehydrate when the draft actually carries paint \u2014
+    // if it doesn't, leave the existing paint state (loaded from the saved version)
+    // untouched so we don't accidentally clear paint that was already there.
+    if (hasDraftPaint) {
+      await rehydrateColorRegions({ colorRegions: draft.colorRegions });
+    }
   }
 
   async function syncEditorFromURL() {
@@ -6595,7 +6857,7 @@ async function main() {
     const pid = getState().currentPart?.id;
     const lang = getActiveLanguage();
     const code = getValue();
-    void writeDraft(sid, lang, code, pid, getCompanionFiles()).catch((e) => {
+    void writeDraft(sid, lang, code, pid, getCompanionFiles(), currentDraftRegions()).catch((e) => {
       if (isQuotaError(e)) {
         showToast('Storage full — could not autosave your draft. Free up space or export your work.', { variant: 'warn' });
       }
@@ -7817,7 +8079,7 @@ async function main() {
       // Persist the previous language's working buffer so flipping back
       // restores it exactly. Both languages stay live in IDB until the
       // part/session is deleted. Companions ride along for the SCAD buffer.
-      await writeDraft(sid, prevLang, currentCode, pid, getCompanionFiles());
+      await writeDraft(sid, prevLang, currentCode, pid, getCompanionFiles(), currentDraftRegions());
     }
     await applyEngineLanguage(lang);
     let nextCode: string | null = null;
@@ -8693,10 +8955,9 @@ async function main() {
   // the Cancel aborts the sweep (see surfaceCarveCancel, wired into
   // cancelInlineBtn). Supersede any in-flight carve when a newer one starts
   // (rapid slider edits). Lighter modifiers run inline with no indicator.
-  let surfaceCarveAbort: AbortController | null = null;
-  // While a carve is running, the toolbar Cancel button aborts it instead of
-  // cancelling a worker run. Cleared when the carve settles.
-  let surfaceCarveCancel: (() => void) | null = null;
+  // surfaceCarveAbort / surfaceCarveCancel are declared early (near the
+  // fast-preview pill setup) so the Cancel handler can be wired before the
+  // initial render; this block only assigns them.
   const SDF_HEAVY = new Set(['engrave', 'voronoiLamp']);
   async function buildSurfaceModifierProgress(
     id: Parameters<typeof buildSurfaceModifier>[0],
@@ -9476,7 +9737,7 @@ async function main() {
      *  multi-part session. Pass an array of part ids (default: every part); each
      *  part's latest version is baked WITH its colours. `{ ok, filename, parts }`
      *  or `{ error }`. */
-    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
+    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }) {
       return export3MFPartsApi(partIds, filename, opts);
     },
 
@@ -9485,7 +9746,7 @@ async function main() {
      *  `{ error }`) instead of downloading, so an agent/test can read the
      *  exported file back without the browser download path. `{ bambu }` as in
      *  export3MFParts (default true). */
-    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean }) {
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }) {
       return export3MFPartsDataApi(partIds, filename, opts);
     },
 
@@ -14615,8 +14876,8 @@ async function main() {
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
-        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate, false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
-        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?, printer?, nozzle?, filament?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportOBJParts':  { signature: 'await exportOBJParts(partIds?, filename?) -- Bundle parts into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
         'exportOBJPartsData': { signature: 'await exportOBJPartsData(partIds?, filename?) -- Same as exportOBJParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportSTLParts':  { signature: 'await exportSTLParts(partIds?, filename?) -- Bundle parts into a .zip of one .stl per part -> {ok, filename, parts}', docs: '/ai/file-io.md' },
@@ -15703,15 +15964,12 @@ async function main() {
   // Start the elapsed-time display for a render. The cancel button and timer
   // are delayed 400 ms so fast runs (manifold-js is typically < 100 ms) never
   // flash them. stopRunTimer() always cancels the pending show before it fires.
-  cancelInlineBtn.addEventListener('click', () => {
-    // A running surface carve owns the Cancel button (it aborts the SDF sweep);
-    // an in-flight surface-texture chain owns it next (terminates the surface
-    // Worker — the run already finished, so the base mesh stays + the Re-apply
-    // pill appears); otherwise this cancels the current engine execution.
-    if (surfaceCarveCancel) { surfaceCarveCancel(); return; }
-    if (cancelSurfaceCompute()) return;
-    cancelCurrentExecution();
-  });
+  // NOTE: the Cancel button's click handler is attached *early* (right after the
+  // layout is built, before the initial syncEditorFromURL render) — see the
+  // `cancelInlineBtn.addEventListener` near the fast-preview pill setup. Attaching
+  // it here instead left the button dead for the entire first render of a slow
+  // deep-linked model (catalog SDF figures especially), because main() awaits
+  // that render before ever reaching this line.
 
   function startRunTimer(t0: number): void {
     _runTimerStart = t0;

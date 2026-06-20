@@ -175,6 +175,11 @@ export interface SessionDraft {
    *  recovers companion-file edits the same way it recovers main-code edits.
    *  Only written for SCAD drafts that have companions; absent otherwise. */
   companionFiles?: Record<string, string>;
+  /** Unsaved user paint regions (serialized) so a part that has been painted
+   *  but not yet saved keeps its paint across a part switch or reload. Stored
+   *  opaquely (unknown[]) to avoid importing color types into this low layer.
+   *  Only written when there are non-empty regions; absent otherwise. */
+  colorRegions?: unknown[];
   updatedAt: number;
 }
 
@@ -941,6 +946,28 @@ export async function deleteVersion(id: string): Promise<void> {
   await txComplete(txn);
 }
 
+/** Overwrite a single version's thumbnail blob, leaving every other field
+ *  intact. Used by the import-time thumbnail backfill: imported versions are
+ *  persisted with no thumbnail so the new session can be selected immediately,
+ *  then each snapshot is rendered offscreen afterwards and written back here.
+ *  No-op when the version no longer exists (e.g. session deleted mid-backfill). */
+export async function updateVersionThumbnail(id: string, thumbnail: Blob | null): Promise<void> {
+  const db = await openDB();
+  const txn = db.transaction('versions', 'readwrite');
+  const store = txn.objectStore('versions');
+  // Read then write inside the same request chain — never await between the get
+  // and the put, or IndexedDB auto-commits the transaction first.
+  const getReq = store.get(id);
+  getReq.onsuccess = () => {
+    const v = getReq.result as Version | null;
+    if (v) {
+      v.thumbnail = thumbnail;
+      store.put(v);
+    }
+  };
+  await txComplete(txn);
+}
+
 /** Find all versions in a part whose parentVersionId points to the given id.
  *  Used to warn the user before deleting a version that other versions depend on. */
 export async function findVersionChildren(parentId: string, partId: string): Promise<Version[]> {
@@ -1071,7 +1098,7 @@ export async function getDraft(sessionId: string, language: 'manifold-js' | 'sca
   return reqToPromise(store.get(draftId(sessionId, language, partId))) as Promise<SessionDraft | null>;
 }
 
-export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>): Promise<void> {
+export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>, colorRegions?: unknown[]): Promise<void> {
   const store = await tx('drafts', 'readwrite');
   const row: SessionDraft = {
     id: draftId(sessionId, language, partId),
@@ -1079,6 +1106,7 @@ export async function setDraft(sessionId: string, language: 'manifold-js' | 'sca
     language,
     code,
     ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
+    ...(colorRegions && colorRegions.length > 0 ? { colorRegions } : {}),
     updatedAt: Date.now(),
   };
   store.put(row);
