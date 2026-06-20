@@ -2330,8 +2330,17 @@ async function main() {
   // session is selected and its latest version loaded, so the new part appears
   // immediately rather than waiting on these WASM runs. Each version executes
   // OFFSCREEN via executeCodeAsync (no updateMesh → no viewport flicker) with its
-  // own imports passed explicitly, so the live active-imports register is never
-  // touched. Bails as soon as the user navigates away from the imported session.
+  // own imports + companion files passed explicitly, so the live active-imports
+  // register is never touched. Bails as soon as the user navigates away from the
+  // imported session.
+  //
+  // Backfill execs share the single engine Worker with live user runs. They
+  // carry per-version imports/companions explicitly, so a manifold-js/SCAD run
+  // can't read stale module state — but the replicad engine retains the last
+  // tessellated BREP shape in Worker scope for `exportSTEP`, so a backfill of an
+  // older replicad version landing between a live run and a manual STEP export
+  // could export the wrong shape. Rare (same-session, bounded, STEP-during-import
+  // is unusual) and self-corrects on the next live run; not guarded here.
   async function backfillImportedThumbnails(sessionId: string): Promise<void> {
     let wrote = false;
     try {
@@ -2351,6 +2360,7 @@ async function main() {
               v.paramValues,
               undefined,
               (v.importedMeshes ?? []) as ImportedMesh[],
+              v.companionFiles,
             );
           } catch {
             // Worker restarted (a live run cancelled it) or an engine fault —
@@ -2371,7 +2381,7 @@ async function main() {
     // without a manual reopen. Guarded so we don't redraw a session the user has
     // since navigated away from.
     if (wrote && getState().session?.id === sessionId) {
-      window.dispatchEvent(new Event('session-changed'));
+      window.dispatchEvent(new CustomEvent('session-changed', { detail: getState() }));
     }
   }
 

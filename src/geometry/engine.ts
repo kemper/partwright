@@ -550,6 +550,7 @@ export async function executeCodeAsync(
   paramOverrides?: Record<string, unknown>,
   onPreview?: (result: MeshResult) => void,
   explicitImports?: ImportedMesh[],
+  explicitCompanions?: Record<string, string>,
 ): Promise<MeshResult> {
   const l = pickLang(lang);
 
@@ -587,7 +588,10 @@ export async function executeCodeAsync(
       onPreview,
       meta: { startedAt: performance.now(), lang: l },
     });
-    const companionFiles = getCompanionFiles();
+    // Like explicitImports: a caller (offscreen thumbnail backfill) may pass a
+    // specific version's companion files so a SCAD run doesn't pick up the live
+    // (latest) version's includes.
+    const companionFiles = explicitCompanions ?? getCompanionFiles();
     // Progressive render: when the caller supplies an onPreview consumer and this
     // is a manifold-js run, tell the Worker the coarse-preview factor so SDF
     // figures rough out fast. The Worker further gates on the source actually
