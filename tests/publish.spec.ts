@@ -54,6 +54,12 @@ test.describe('assisted publish', () => {
     // The primary button reflects the selected platform.
     await expect(page.getByRole('button', { name: 'Download & open Printables' })).toBeVisible();
 
+    // No AI key connected in this test → the auto-populate button is disabled
+    // with the connect-first tooltip.
+    const autoBtn = page.getByRole('button', { name: '✨ Auto-populate with AI' });
+    await expect(autoBtn).toBeDisabled();
+    await expect(autoBtn).toHaveAttribute('title', 'Connect an AI model first for this option');
+
     // MakerWorld recommends the Bambu/Orca 3MF flavour.
     await page.getByRole('button', { name: 'MakerWorld', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Download & open MakerWorld' })).toBeVisible();

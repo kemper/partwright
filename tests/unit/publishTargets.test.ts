@@ -6,6 +6,7 @@ import {
   parseTags,
   buildDefaultDescription,
   composeClipboardText,
+  parseAiPublishMetadata,
   PUBLISH_CREDIT,
 } from '../../src/publish/publishTargets';
 
@@ -54,5 +55,27 @@ describe('publishTargets', () => {
 
     const noTags = composeClipboardText({ title: 'T', description: 'D', tags: [] });
     expect(noTags).not.toContain('Tags:');
+  });
+
+  it('parseAiPublishMetadata parses plain JSON, fenced JSON, and JSON with prose', () => {
+    const plain = parseAiPublishMetadata('{"title":"Widget","description":"A thing","tags":["a","b"]}');
+    expect(plain).toEqual({ title: 'Widget', description: 'A thing', tags: ['a', 'b'] });
+
+    const fenced = parseAiPublishMetadata('```json\n{"title":"W","description":"D","tags":[]}\n```');
+    expect(fenced.title).toBe('W');
+
+    const prosey = parseAiPublishMetadata('Here you go:\n{"title":"W","description":"D"}\nHope that helps!');
+    expect(prosey.description).toBe('D');
+    expect(prosey.tags).toEqual([]);
+  });
+
+  it('parseAiPublishMetadata trims tags and rejects empties / non-strings', () => {
+    const r = parseAiPublishMetadata('{"title":"T","description":"D","tags":[" a ","",3,"b"]}');
+    expect(r.tags).toEqual(['a', 'b']);
+  });
+
+  it('parseAiPublishMetadata throws when there is no title or description', () => {
+    expect(() => parseAiPublishMetadata('{"tags":["x"]}')).toThrow();
+    expect(() => parseAiPublishMetadata('not json at all')).toThrow();
   });
 });

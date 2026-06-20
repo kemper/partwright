@@ -87,3 +87,16 @@ Thangs `/upload` 404s. Switched every target to its **stable landing page**
 (home) and put "sign in, then use its Upload button (location)" in each note +
 the modal/toast copy. Deep links bounce to login when logged out anyway, so the
 landing page is the robust choice; one extra click is the tradeoff.
+
+Follow-up 4 (same session): "Auto-populate with AI" button in the modal. Reviews
+the session (code, geometry stats, notes, recent AI chat, 4-iso snapshot) via the
+ACTIVE provider and drafts title/description/tags. Reused the cross-provider
+review infra: extracted the 5-provider one-shot dispatch out of `review.ts` into a
+shared `src/ai/oneShot.ts` (DRY — review.ts now calls it), added
+`src/ai/publishMetadata.ts` (`isActiveProviderConnected` gates the button;
+`generatePublishMetadata(sessionId)` gathers context + chat history and parses the
+JSON reply). The risky JSON-extraction lives as the pure `parseAiPublishMetadata`
+in `publishTargets.ts` so it unit-tests without pulling provider modules into the
+node tier. Button is disabled with a "Connect an AI model first for this option"
+tooltip when no model is connected (e2e-asserted). Regression-checked the review
+refactor with the full ai-providers e2e (38 pass).

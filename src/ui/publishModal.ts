@@ -40,6 +40,11 @@ export interface PublishModalContext {
   }) => Promise<{ blob: Blob; filename: string } | null>;
   /** Trigger a browser download (the app's downloadBlob). */
   download: (blob: Blob, filename: string) => void;
+  /** Whether an AI model is connected — gates the "Auto-populate" button. */
+  aiAvailable?: boolean;
+  /** Generate title/description/tags from the session via the active AI model.
+   *  Only provided when {@link aiAvailable}. */
+  aiGenerate?: () => Promise<{ title: string; description: string; tags: string[] }>;
   /** Optional platform id to preselect. */
   preselect?: string;
 }
@@ -109,7 +114,8 @@ export function openPublishModal(ctx: PublishModalContext): void {
   titleInput.value = ctx.defaultTitle || 'My model';
   titleInput.placeholder = 'Model title';
   titleInput.className = 'w-full bg-zinc-900 border border-zinc-600 rounded px-2 py-1.5 text-sm text-zinc-200 focus:outline-none focus:border-blue-500';
-  shell.body.appendChild(fieldGroup('Title', titleInput));
+  const titleGroup = fieldGroup('Title', titleInput);
+  shell.body.appendChild(titleGroup);
 
   // --- Description ---
   const descInput = document.createElement('textarea');
@@ -134,6 +140,20 @@ export function openPublishModal(ctx: PublishModalContext): void {
   coverCheck.className = 'accent-blue-600';
   coverLabel.append(coverCheck, document.createTextNode('Include a cover image (PNG) in the ZIP'));
   shell.body.appendChild(coverLabel);
+
+  // --- Auto-populate with AI (inserted above the Title field) ---
+  const autoBtn = document.createElement('button');
+  autoBtn.type = 'button';
+  autoBtn.textContent = '✨ Auto-populate with AI';
+  const autoEnabled = ctx.aiAvailable === true && typeof ctx.aiGenerate === 'function';
+  autoBtn.className = autoEnabled
+    ? 'self-start px-3 py-1.5 rounded-lg text-xs font-medium bg-violet-600 text-white hover:bg-violet-500 transition-colors'
+    : 'self-start px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-700 text-zinc-500 cursor-not-allowed';
+  autoBtn.disabled = !autoEnabled;
+  if (!autoEnabled) autoBtn.title = 'Connect an AI model first for this option';
+  else autoBtn.title = 'Review the model, notes & chat to draft a title, description, and tags';
+  autoBtn.addEventListener('click', () => { void autoPopulate(); });
+  shell.body.insertBefore(autoBtn, titleGroup);
 
   // --- Footer ---
   const cancelBtn = document.createElement('button');
@@ -170,6 +190,25 @@ export function openPublishModal(ctx: PublishModalContext): void {
       showToast('Title, description & tags copied to clipboard.', { variant: 'success' });
     } catch {
       showToast('Could not access the clipboard.', { variant: 'warn' });
+    }
+  }
+
+  async function autoPopulate(): Promise<void> {
+    if (!ctx.aiGenerate) return;
+    autoBtn.disabled = true;
+    const original = autoBtn.textContent;
+    autoBtn.textContent = '✨ Generating…';
+    try {
+      const meta = await ctx.aiGenerate();
+      if (meta.title) titleInput.value = meta.title;
+      if (meta.description) descInput.value = meta.description;
+      if (meta.tags.length > 0) tagsInput.value = meta.tags.join(', ');
+      showToast('Drafted title, description & tags from the model. Review before publishing.', { variant: 'success' });
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'AI auto-populate failed.', { variant: 'warn' });
+    } finally {
+      autoBtn.disabled = false;
+      autoBtn.textContent = original;
     }
   }
 

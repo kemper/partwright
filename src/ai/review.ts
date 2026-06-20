@@ -5,16 +5,12 @@
 // 'review' block AND (optionally) as a [REVIEW from ...] session note
 // so the original agent picks it up on the next turn via getSessionContext.
 
-import { streamTurn as anthropicStreamTurn, buildApiMessages } from './anthropic';
-import { streamTurn as openaiStreamTurn } from './openai';
-import { streamTurn as geminiStreamTurn } from './gemini';
-import { streamTurn as customStreamTurn } from './custom';
-import { streamLocalTurn } from './local';
+import { streamOneShotTurn } from './oneShot';
 import { turnCostUsd } from './cost';
 import { recordEvent } from './diagnostics';
 import { generateId } from '../storage/db';
-import { putMessages, getKey } from './db';
-import { loadSettings, providerLabel } from './settings';
+import { putMessages } from './db';
+import { providerLabel } from './settings';
 import { captureIsoViews } from './images';
 import type {
   ChatBlock,
@@ -100,85 +96,15 @@ export async function runReview(
   let text = '';
   let usage: TurnUsage = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
   try {
-    if (req.provider === 'anthropic') {
-      const key = req.apiKey ?? (await getKey('anthropic'))?.apiKey;
-      if (!key) throw new Error('Anthropic API key required for review.');
-      const r = await anthropicStreamTurn({
-        apiKey: key,
-        model: req.model,
-        systemPrompt: REVIEW_SYSTEM,
-        systemSuffix: '',
-        apiMessages: buildApiMessages([ephemeral]),
-        tools: [],
-        // No maxTokens override: use each provider's reasoning-aware default
-        // (Anthropic 8192, OpenAI 8192, Gemini 32768). A hardcoded 1024 here
-        // let a thinking/reasoning reviewer model (Gemini Pro, OpenAI o-series)
-        // spend the whole ceiling on hidden reasoning and return an empty review.
-      });
-      text = r.text;
-      usage = r.usage;
-    } else if (req.provider === 'openai') {
-      const key = req.apiKey ?? (await getKey('openai'))?.apiKey;
-      if (!key) throw new Error('OpenAI API key required for review.');
-      const r = await openaiStreamTurn({
-        apiKey: key,
-        model: req.model,
-        systemPrompt: REVIEW_SYSTEM,
-        systemSuffix: '',
-        history: [ephemeral],
-        tools: [],
-        // See the Anthropic branch: use the provider default so an o-series /
-        // gpt-5 reviewer has headroom for hidden reasoning + the answer.
-      });
-      text = r.text;
-      usage = r.usage;
-    } else if (req.provider === 'gemini') {
-      const key = req.apiKey ?? (await getKey('gemini'))?.apiKey;
-      if (!key) throw new Error('Gemini API key required for review.');
-      const r = await geminiStreamTurn({
-        apiKey: key,
-        model: req.model,
-        systemPrompt: REVIEW_SYSTEM,
-        systemSuffix: '',
-        history: [ephemeral],
-        tools: [],
-        // See the Anthropic branch: Gemini's 32768 default is what keeps a
-        // Pro/2.5 thinking reviewer from spending the ceiling on reasoning.
-      });
-      text = r.text;
-      usage = r.usage;
-    } else if (req.provider === 'custom') {
-      // Self-hosted OpenAI-compatible endpoint as the reviewer. Base URL
-      // comes from settings (the same endpoint the chat uses); the key is
-      // optional. The Chat Completions transport is reused via custom.ts.
-      const baseUrl = loadSettings().toggles.customBaseUrl;
-      if (!baseUrl.trim()) throw new Error('Custom endpoint URL required for review. Set it in AI Settings → Custom.');
-      const key = req.apiKey ?? (await getKey('custom'))?.apiKey ?? '';
-      const r = await customStreamTurn({
-        apiKey: key,
-        baseUrl,
-        model: req.model,
-        systemPrompt: REVIEW_SYSTEM,
-        systemSuffix: '',
-        history: [ephemeral],
-        tools: [],
-      });
-      text = r.text;
-      usage = r.usage;
-    } else {
-      // local — keep an explicit ceiling (local's default is only 768, which
-      // can truncate a multi-sentence review), but give the answer headroom.
-      const r = await streamLocalTurn({
-        modelId: req.model,
-        systemPrompt: REVIEW_SYSTEM,
-        systemSuffix: '',
-        history: [ephemeral],
-        tools: [],
-        maxTokens: 2048,
-      });
-      text = r.text;
-      usage = r.usage;
-    }
+    const r = await streamOneShotTurn({
+      provider: req.provider,
+      model: req.model,
+      apiKey: req.apiKey,
+      systemPrompt: REVIEW_SYSTEM,
+      history: [ephemeral],
+    });
+    text = r.text;
+    usage = r.usage;
   } catch (err) {
     recordEvent({
       provider: req.provider, model: req.model, kind: 'review',

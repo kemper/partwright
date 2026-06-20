@@ -107,6 +107,28 @@ export function buildDefaultDescription(title: string, stats?: {
   return lines.join('\n');
 }
 
+/** Parse an AI model's reply into publish metadata. Tolerates ```json fences
+ *  and leading/trailing prose by extracting the first `{...}` span. Throws if
+ *  no usable title or description is found. */
+export function parseAiPublishMetadata(raw: string): PublishMetadata {
+  let s = raw.trim();
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) s = fence[1].trim();
+  if (!s.startsWith('{')) {
+    const start = s.indexOf('{');
+    const end = s.lastIndexOf('}');
+    if (start >= 0 && end > start) s = s.slice(start, end + 1);
+  }
+  const obj = JSON.parse(s) as Record<string, unknown>;
+  const title = typeof obj.title === 'string' ? obj.title.trim() : '';
+  const description = typeof obj.description === 'string' ? obj.description.trim() : '';
+  const tags = Array.isArray(obj.tags)
+    ? obj.tags.filter((t): t is string => typeof t === 'string').map(t => t.trim()).filter(Boolean)
+    : [];
+  if (!title && !description) throw new Error('AI response had no title or description.');
+  return { title, description, tags };
+}
+
 /** Compose the copy-to-clipboard block a user pastes into the upload form. */
 export function composeClipboardText(meta: PublishMetadata): string {
   const tags = meta.tags.filter(t => t.trim().length > 0);

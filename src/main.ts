@@ -80,6 +80,7 @@ import { exportSTL, buildSTL, buildSTLProject } from './export/stl';
 import { exportOBJ, buildOBJ, buildOBJProject } from './export/obj';
 import { openPublishModal } from './ui/publishModal';
 import { findPublishTarget, type PublishFormat } from './publish/publishTargets';
+import { generatePublishMetadata, isActiveProviderConnected } from './ai/publishMetadata';
 import { export3MF, build3MF } from './export/threemf';
 import { buildZip, type ZipEntry } from './export/zip';
 import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT } from './export/threemfProject';
@@ -4937,14 +4938,25 @@ async function main() {
 
   /** Open the assisted-publish modal (Printables / MakerWorld / Thingiverse /
    *  Thangs). `preselect` optionally focuses one platform. */
-  const actionPublish = (preselect?: string): void => {
+  const actionPublish = async (preselect?: string): Promise<void> => {
     if (isSharedPreview()) { showToast('Fork this shared design before publishing.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
+    // "Auto-populate with AI" is only offered when the active provider is
+    // connected; otherwise the modal disables the button with a tooltip.
+    const aiAvailable = await isActiveProviderConnected();
     openPublishModal({
       defaultTitle: getState().session?.name ?? 'My model',
       stats: { dims: currentModelDims(), units: _getUnits() },
       buildBundle: buildPublishBundle,
       download: (blob, filename) => downloadBlob(blob, filename, 'Publish'),
+      aiAvailable,
+      aiGenerate: aiAvailable
+        ? async () => {
+            const sessionId = getState().session?.id;
+            if (!sessionId) throw new Error('Open or create a session first.');
+            return generatePublishMetadata(sessionId);
+          }
+        : undefined,
       preselect,
     });
   };
@@ -4981,7 +4993,7 @@ async function main() {
       if (!ok) showToast('No active session to export. Save a version first.', { variant: 'warn', source: 'export' });
     },
     onShareLink: () => { void actionShareLink(); },
-    onPublish: () => { actionPublish(); },
+    onPublish: () => { void actionPublish(); },
     onExportRawCode: () => {
       exportRawCode(getValue(), getActiveLanguage());
     },
@@ -5512,7 +5524,7 @@ async function main() {
     // (mirrors the toolbar's STEP gating); the action toasts if no shape exists.
     { id: 'export-step', title: 'Export STEP', hint: 'Export', keywords: 'download brep cad solidworks fusion freecad', run: () => { void actionExportSTEP(); }, enabled: () => getActiveLanguage() === 'replicad' },
     { id: 'share-link', title: 'Share design (copy link)', hint: 'Share', keywords: 'url public link copy fork readonly', run: () => { void actionShareLink(); }, enabled: canShare },
-    { id: 'publish-model', title: 'Publish to a print site…', hint: 'Share', keywords: 'printables makerworld bambu thingiverse thangs upload publish release post', run: () => { actionPublish(); }, enabled: () => currentMeshData !== null && !isSharedPreview() },
+    { id: 'publish-model', title: 'Publish to a print site…', hint: 'Share', keywords: 'printables makerworld bambu thingiverse thangs upload publish release post', run: () => { void actionPublish(); }, enabled: () => currentMeshData !== null && !isSharedPreview() },
     // Viewport tools — now grouped behind the View/Inspect/Tools popovers, so the
     // palette is the flat, searchable index of everything (keeps grouping cheap
     // for discoverability). Each fires the existing overlay button by id; click()
@@ -9717,7 +9729,7 @@ async function main() {
         return { error: `Unknown platform "${platform}". Use one of: printables, makerworld, thingiverse, thangs.` };
       }
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      actionPublish(platform);
+      void actionPublish(platform);
     },
 
     /** Bundle several Session Parts into ONE 3MF. With `{ bambu: true }` (the
