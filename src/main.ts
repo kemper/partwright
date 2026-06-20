@@ -11537,6 +11537,12 @@ async function main() {
         return { code, ...(r as Record<string, unknown>) };
       }
       // Live preview: swap the editor buffer and re-render without saving.
+      // Cancel any in-flight render first — a heavy SDF figure build runs in the
+      // geometry Worker, and without this a rapid preset/slider change would
+      // start a second build while the first keeps churning (they contend and
+      // stack, so the preview lags badly). Terminating the prior build mirrors
+      // what the interactive runCode path does for superseding auto-runs.
+      if (_running) cancelCurrentExecution();
       setValue(code);
       await runCodeSync(code);
       return { code };

@@ -153,15 +153,19 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
     return ok;
   };
 
-  // Debounced live preview. The engine shows its own "Rendering…" status.
+  // Live preview. Slider drags debounce (one rebuild on settle); discrete jumps
+  // like a preset switch fire immediately (`immediate`). Either way buildCharacter
+  // cancels any in-flight render first, so changes never stack in the worker. The
+  // engine shows its own "Rendering…" status.
   let timer: number | undefined;
-  const preview = (): void => {
+  const preview = (opts?: { immediate?: boolean }): void => {
     window.clearTimeout(timer);
-    const delay = getConfig().ui.characterPreviewDebounceMs;
-    timer = window.setTimeout(async () => {
+    const fire = async () => {
       if (!(await confirmClobber())) return;
       void api.buildCharacter(spec, { save: false });
-    }, delay);
+    };
+    if (opts?.immediate) { void fire(); return; }
+    timer = window.setTimeout(fire, getConfig().ui.characterPreviewDebounceMs);
   };
 
   // A change handler that mutates the spec then re-previews.
@@ -174,7 +178,7 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   for (const p of CHARACTER_PRESETS) {
     const b = el('button', BUTTON_SMALL_SECONDARY);
     b.textContent = p.label;
-    b.addEventListener('click', () => { spec = p.patch(); rebuild(); preview(); });
+    b.addEventListener('click', () => { spec = p.patch(); rebuild(); preview({ immediate: true }); });
     presetWrap.appendChild(b);
   }
   body.append(sectionTitle('Start from a preset'), presetWrap);
@@ -205,7 +209,7 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
     controls.append(selectRow('Preset', spec.pose.preset, posePresetOpts, v => {
       spec.pose = POSE_PRESETS[v]();
       rebuild();
-      preview();
+      preview({ immediate: true });
     }));
     const jointSlider = (label: string, get: () => number, set: (n: number) => void, min: number, max: number) =>
       controls.append(sliderRow(label, get(), min, max, 1, v => onEdit(() => set(v))));
