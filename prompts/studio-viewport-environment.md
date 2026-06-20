@@ -60,3 +60,22 @@ Verified both themes in the browser (screenshots posted), plus `tsc`, unit tier,
 
 Deferred (tracked for follow-up): the selection-first quick-actions HUD
 (click a model/part → Move/Rotate/Resize/Paint menu wired to existing ops).
+
+### Follow-up: CI e2e failure (window.partwright undefined)
+
+`multipart-export.spec.ts` failed in CI (and reproduced locally): two tests read
+`window.partwright` after a hard `waitForTimeout(4000)` and got `undefined`.
+Root cause was a **startup-latency regression**, not a crash — measured
+app-readiness jumped from ~2.85s (main) to ~6.95s (branch). The PMREM /
+RoomEnvironment image-based-lighting bake is ~tens of ms on a real GPU but
+~3.9s on the **software WebGL rasterizer** (SwiftShader) that CI and the
+sandbox use, and it ran on the synchronous init path before `window.partwright`
+attaches. A `setTimeout(0)` deferral didn't help (it fired during an `await`
+gap still ahead of the attach).
+
+Fix: detect a software rasterizer (`isSoftwareRenderer` via
+`WEBGL_debug_renderer_info`) and **skip the env bake there** — software/GPU-less
+users get the still-good gradient + floor + contact-shadow + direct-light PBR
+fallback, while real GPUs keep the full IBL look (the bake is effectively free
+there). Readiness back to ~3.2s; the failing spec passes 3/3. Unknown renderer
+(privacy-restricted debug info) is treated as hardware.

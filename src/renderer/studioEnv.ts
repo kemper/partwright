@@ -60,6 +60,23 @@ export function studioPresetFor(theme: Theme): StudioPreset {
   return STUDIO_PRESETS[theme];
 }
 
+/** Whether the WebGL context is a software rasterizer (SwiftShader / llvmpipe /
+ *  Microsoft Basic Render). PMREM image-based-lighting generation is ~50ms on a
+ *  real GPU but multiple seconds on a software rasterizer, where it would freeze
+ *  startup — callers skip the env bake when this is true. Unknown renderer
+ *  (privacy-restricted debug info) is treated as hardware. */
+export function isSoftwareRenderer(gl: WebGLRenderingContext | WebGL2RenderingContext): boolean {
+  try {
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    if (!ext) return false;
+    const r = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) ?? '').toLowerCase();
+    return r.includes('swiftshader') || r.includes('llvmpipe') ||
+      r.includes('software') || r.includes('basic render');
+  } catch {
+    return false;
+  }
+}
+
 /** Vertical gradient background as a small CanvasTexture. */
 export function makeGradientTexture(topHex: number, bottomHex: number): THREE.Texture {
   const canvas = document.createElement('canvas');

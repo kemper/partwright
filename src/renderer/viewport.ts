@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import type { MeshData } from '../geometry/types';
 import { createWireframeMaterial } from './materials';
-import { studioPresetFor, makeGradientTexture, createStudioMaterial, type StudioPreset } from './studioEnv';
+import { studioPresetFor, makeGradientTexture, createStudioMaterial, isSoftwareRenderer, type StudioPreset } from './studioEnv';
 import { initMeasureOverlay } from './measureOverlay';
 import { initOrientationGizmo, renderGizmo, updateGizmo, isGizmoAnimating } from './orientationGizmo';
 import { initDimensionLines, updateDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
@@ -113,6 +113,9 @@ let studioFloor: THREE.Mesh | null = null;
 let studioShadowCatcher: THREE.Mesh | null = null;
 let studioKeyLight: THREE.DirectionalLight | null = null;
 let lastFloorZ = 0;
+// Whether to bake the PMREM image-based-lighting env. Off on software WebGL,
+// where the bake costs seconds and would freeze startup (see isSoftwareRenderer).
+let studioEnvEnabled = true;
 
 /** Re-skin the studio scene (backdrop, lights, floor, shadow, model material)
  *  for a theme — called once at init's theme value and again on every flip. */
@@ -190,6 +193,7 @@ export function initViewport(container: HTMLElement): {
   renderer.toneMappingExposure = studioPreset.exposure;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  studioEnvEnabled = !isSoftwareRenderer(renderer.getContext());
 
   // WebGL context-loss recovery. preventDefault() on 'lost' is what lets the
   // browser restore the context; while lost we cancel the RAF loop so we don't
@@ -206,7 +210,7 @@ export function initViewport(container: HTMLElement): {
     needsRender = true;
     // The image-based-lighting env texture lives on the GPU and is lost with
     // the context — regenerate it so the model isn't left unlit after restore.
-    buildStudioEnvironment();
+    if (studioEnvEnabled) buildStudioEnvironment();
     onContextRestored?.();
     // Restart the render loop (it was cancelled on loss).
     animate();
@@ -314,10 +318,12 @@ export function initViewport(container: HTMLElement): {
   dir2.position.set(-10, 10, -5);
   scene.add(dir2);
 
-  // Image-based lighting from a neutral room for believable PBR shading. The
-  // generated env is a GPU texture, so it's lost with the WebGL context and
-  // rebuilt on restore (see the webglcontextrestored handler above).
-  buildStudioEnvironment();
+  // Image-based lighting from a neutral room for believable PBR shading. On a
+  // real GPU the PMREM bake is ~tens of ms; on a software rasterizer it costs
+  // seconds and would freeze startup, so it's skipped there (the model still
+  // reads well under the ambient + two directional lights). It's a GPU texture,
+  // so it's also rebuilt on webglcontextrestored (see the handler above).
+  if (studioEnvEnabled) buildStudioEnvironment();
 
   // Floor the model sits on, plus a transparent shadow-catcher above it so the
   // contact shadow's darkness is tunable independent of the floor color.
