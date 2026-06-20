@@ -77,7 +77,9 @@ const skin = F.weld(rig, [
 // 4. GOWN — floor-length dress (hemZ near the base so the flared cone covers the legs).
 // generous thickness to fully hide legs and convey the full skirt volume.
 const gown = F.clothing.top(rig, {
-  sleeve: 'short',
+  sleeve: 'long',                  // full opera sleeves: follow the arm to the wrist
+                                   // on BOTH the raised and the extended arm (a short
+                                   // sleeve ends at the elbow, baring the raised forearm)
   hemZ: rig.opts.height * 0.04,   // near ground — full floor-length flared skirt
   thickness: r.chestY * 0.46,     // generous: hides legs, adds silhouette volume
 }).label('gown');

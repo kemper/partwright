@@ -38,7 +38,13 @@ const DEG = Math.PI / 180;
 // SdfNamespace is assignable to `SdfApi`. Declaring them here (rather than
 // importing from ./sdf) avoids a dependency cycle.
 
+/** One hand for the fine-mesh path: the canonical (axis-aligned) hand node plus
+ *  the transform onto its wrist (matches sdf.ts `FineHandPiece`). */
+export interface FineRegion { node: Node; euler: Vec3; translate: Vec3; edgeLength: number }
+
 export interface Node {
+  /** Node kind tag — lets `weld` recognise a fine-hands marker among its parts. */
+  readonly kind?: string;
   union(o: Node): Node;
   add(o: Node): Node;
   subtract(o: Node): Node;
@@ -70,6 +76,10 @@ export interface SdfApi {
   roundedCylinder(radius: number, height: number, edgeRadius: number): Node;
   capsule(a: Vec3, b: Vec3, radius: number): Node;
   union(...nodes: Node[]): Node;
+  /** @internal Tag a subtree (the hands) as a fine-hands region — meshed
+   *  per-sphere at a uniform fine grid and hard-unioned, so the coarse body
+   *  march never webs the fingers. */
+  __fineHands(node: Node, regions: FineRegion[]): Node;
 }
 
 // --- Small vector math ----------------------------------------------------
@@ -86,6 +96,7 @@ function lerp3(a: Vec3, b: Vec3, t: number): Vec3 {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 }
 function mix(a: number, b: number, t: number): number { return a + (b - a) * t; }
+function clamp(x: number, lo: number, hi: number): number { return x < lo ? lo : x > hi ? hi : x; }
 
 function rotX(v: Vec3, deg: number): Vec3 {
   const c = Math.cos(deg * DEG), s = Math.sin(deg * DEG);
@@ -1308,113 +1319,198 @@ function buildArms(sdf: SdfApi, rig: Rig): Node {
   return armL.union(armR);
 }
 
-function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
-  const o = obj(opts, 'hands(opts)');
-  assertNoUnknownKeys(o, ['grip', 'fingers'], 'hands(opts)');
-  const grip = o.grip === undefined ? 'relaxed'
-    : assertEnum(o.grip, ['fist', 'open', 'relaxed'] as const, 'hands.grip');
-  // Sculpted three-finger + thumb hands (the art-toy convention — three fat
-  // fingers keep the inter-finger gaps printable where four go sub-cell at
-  // figure scale). Pass `fingers: false` for the legacy blob/paddle hands.
-  // Fingers are ADDITIVE capsules (no carving → no aliasing trap), but they
-  // are finer than the global figure grid — pair with
-  // `detail: F.handDetail(rig)` so the march resolves them.
-  const fingers = o.fingers !== false;
-  const j = rig.joints, r = rig.r;
-
-  function hand(c: Vec3, dir: Vec3, hinge: Vec3, side: number): Node {
-    // Hand frame: fingers extend along the forearm `dir`, splay across the
-    // elbow-hinge axis, palm faces the curl direction (hinge × dir).
-    const splay = hinge;
-    const palmN = norm3(cross3(splay, dir));
-    const inner = scale3(splay, side);     // toward the body for a neutral pose
-    const fr = r.hand * 0.24;              // finger radius
-    const at = (base: Vec3, ...offs: Vec3[]): Vec3 => offs.reduce(add3, base);
-
-    if (!fingers) {
-      if (grip === 'fist') return sdf.sphere(r.hand * 1.05).translate(c);
-      if (grip === 'open') {
-        return sdf.ellipsoid(r.hand * 0.55, r.hand * 1.2, r.hand * 0.9).translate(c);
-      }
-      const tip = add3(c, scale3(dir, r.hand * 1.1));
-      return tapered(sdf, c, tip, r.hand * 0.95, r.hand * 0.6, r.hand * 0.5);
-    }
-
-    if (grip === 'fist') {
-      // Ball fist + three chunky folded-finger ridges on the dir face + a
-      // thumb capsule folded across the palm side. The ridges are short
-      // capsules (not spheres) with a tight weld so the knuckle creases
-      // survive the union instead of melting into the ball.
-      const ball = sdf.ellipsoid(r.hand * 0.95, r.hand * 0.95, r.hand * 0.88).translate(c);
-      let out = ball;
-      for (const s of [-0.62, 0, 0.62]) {
-        const kc = at(c, scale3(dir, r.hand * 0.62), scale3(splay, s * r.hand * 0.85));
-        const ridge = sdf.capsule(
-          at(kc, scale3(palmN, -r.hand * 0.25)),
-          at(kc, scale3(palmN, r.hand * 0.45)),
-          r.hand * 0.3,
-        );
-        out = out.smoothUnion(ridge, r.hand * 0.16);
-      }
-      const thumb = sdf.capsule(
-        at(c, scale3(inner, r.hand * 0.8), scale3(palmN, r.hand * 0.35)),
-        at(c, scale3(palmN, r.hand * 0.95), scale3(dir, r.hand * 0.25)),
-        fr * 1.25,
-      );
-      return out.smoothUnion(thumb, r.hand * 0.18);
-    }
-
-    // Palm: a squashed knuckle-block oriented along the forearm — wider
-    // across the splay axis than front-to-back, so the hand reads flat.
-    const palm = sdf.capsule(
-      add3(c, scale3(dir, -r.hand * 0.55)),
-      add3(c, scale3(dir, r.hand * 0.1)),
-      r.hand * 0.72,
-    ).smoothUnion(
-      sdf.capsule(
-        at(c, scale3(dir, r.hand * 0.15), scale3(splay, -r.hand * 0.45)),
-        at(c, scale3(dir, r.hand * 0.15), scale3(splay, r.hand * 0.45)),
-        r.hand * 0.5,
-      ), r.hand * 0.5,
-    );
-
-    // Three fingers, middle longest, fanned slightly. `relaxed` curls them
-    // toward the palm; `open` keeps them straight.
-    const curl = grip === 'relaxed' ? 0.45 : 0;
-    const lens = [1.0, 1.18, 0.92];
-    let out = palm;
-    [-1, 0, 1].forEach((t, i) => {
-      const len = r.hand * lens[i];
-      const s = t * r.hand * 0.62;
-      const base = at(c, scale3(dir, r.hand * 0.38), scale3(splay, s * 0.85));
-      const reach = norm3(add3(scale3(dir, 1 - curl * 0.45), scale3(palmN, curl)));
-      const tip = at(base, scale3(reach, len), scale3(splay, s * 0.25));
-      out = out.smoothUnion(sdf.capsule(base, tip, fr), fr * 1.05);
-    });
-    // Thumb: from the inner palm edge, angled out and slightly palm-ward.
-    const thumbBase = at(c, scale3(dir, -r.hand * 0.25), scale3(inner, r.hand * 0.55));
-    const thumbDir = norm3(add3(add3(scale3(inner, 0.8), scale3(dir, 0.55)), scale3(palmN, 0.35)));
-    const thumb = sdf.capsule(thumbBase, at(thumbBase, scale3(thumbDir, r.hand * 0.85)), fr * 1.08);
-    return out.smoothUnion(thumb, fr * 1.1);
-  }
-
-  return hand(j.handL as Vec3, rig.dir.lowerArmL, rig.dir.elbowHingeL, +1)
-    .union(hand(j.handR as Vec3, rig.dir.lowerArmR, rig.dir.elbowHingeR, -1));
+/** Z-Y-X (Rz·Ry·Rx) Euler angles, in degrees, that rotate the canonical axes
+ *  (X, Y, Z) onto the orthonormal basis (cx, cy, cz). Used to orient a hand
+ *  built in its own canonical frame onto each wrist without skewing the flat
+ *  palm slab. */
+function eulerFromBasis(cx: Vec3, cy: Vec3, cz: Vec3): Vec3 {
+  const D = 180 / Math.PI;
+  const ry = Math.atan2(-cx[2], Math.hypot(cx[0], cx[1]));
+  const rz = Math.atan2(cx[1], cx[0]);
+  const rx = Math.atan2(cy[2], cz[2]);
+  return [rx * D, ry * D, rz * D];
 }
 
-/** Detail-region spheres for the hands, mirroring `faceDetail` — fingers are
- *  finer than the recommended 0.4–0.6 figure grid, so sculpted hands need a
- *  local fine march to resolve (an under-marched finger aliases away). */
-function handDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
+function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'hands(opts)');
+  assertNoUnknownKeys(o, ['grip', 'fingers', 'count', 'length', 'palmThickness', 'size'], 'hands(opts)');
+  const grip = o.grip === undefined ? 'relaxed'
+    : assertEnum(o.grip, ['fist', 'open', 'relaxed', 'spread', 'wave', 'point', 'peace', 'thumbsup', 'ok', 'claw', 'clutch'] as const, 'hands.grip');
+  // OPTION 2 hands — a CLEAN FLAT slab palm + FULLY-SEPARATED fingers that can
+  // CURL. Each finger is a single capsule (no smoothUnion smin spikes), angled
+  // toward the palm by a per-finger curl. Curled separate fingers create tight
+  // concave palm-junction crevices, so this option pays for clean curls with a
+  // FINER hand mesh (see handDetail below) — ~+100–200k triangles per figure.
+  // `grip` picks a configuration via per-finger curl + spread. Built in a
+  // canonical frame (fingers +Z, width +X, palm +Y) and oriented onto each
+  // wrist. Pair with `detail: F.handDetail(rig)`.
+  //   count / length / palmThickness — finger count, length mult, flat depth
+  //   fingers:false — legacy puffy blob/paddle hands
+  const sculpted = o.fingers !== false;
+  const count = Math.round(num(o.count, 4, 'hands.count', 1, 5));
+  const lengthK = num(o.length, 1, 'hands.length', 0.2, 3);
+  const palmThicknessK = num(o.palmThickness, 0.5, 'hands.palmThickness', 0.1, 2);
+  // `size` scales the whole hand around the wrist. The 1.15 baseline makes hands
+  // a bit larger than the bare rig proportion by default (they read better);
+  // `size` multiplies that, so size:1 = default, size:1.3 = noticeably bigger.
+  const sizeK = num(o.size, 1, 'hands.size', 0.3, 3);
+  const j = rig.joints, r = rig.r, rh = r.hand * 1.15 * sizeK;
+
+  // Per-finger [curl 0..1] and [spread °] for index→pinky, plus the thumb pose.
+  // Curl angles the whole finger toward the palm. Resampled when count ≠ 4.
+  // spread[] is per-finger fan angle, index→pinky. NEGATIVE fans a finger toward
+  // −X, positive toward +X; with index on −X and pinky on +X, the outer fingers
+  // must fan OUTWARD (index negative, pinky positive) or they arch into the palm
+  // centre — both an alien look AND near-contact handles between converging
+  // capsules. Keep the outer-fingers-outward sign.
+  const PRESETS: Record<string, { curl: number[]; spread: number[]; thumb: { curl: number; ab: number } }> = {
+    open:     { curl: [0.16, 0.18, 0.18, 0.16], spread: [-14, -6, 6, 14],   thumb: { curl: 0.12, ab: 1.0 } },
+    relaxed:  { curl: [0.4, 0.45, 0.45, 0.4],   spread: [-13, -5, 5, 13],   thumb: { curl: 0.35, ab: 0.85 } },
+    spread:   { curl: [0.12, 0.14, 0.14, 0.12], spread: [-22, -10, 10, 22], thumb: { curl: 0.1, ab: 1.25 } },
+    wave:     { curl: [0.16, 0.18, 0.18, 0.16], spread: [-12, -5, 5, 12],   thumb: { curl: 0.2, ab: 0.9 } },
+    point:    { curl: [0, 1, 1, 1],             spread: [-8, -3, 3, 8],     thumb: { curl: 0.6, ab: 0.5 } },
+    peace:    { curl: [0, 0, 1, 1],             spread: [-16, 6, 4, 10],    thumb: { curl: 0.8, ab: 0.4 } },
+    thumbsup: { curl: [1, 1, 1, 1],             spread: [-4, -2, 2, 4],     thumb: { curl: 0, ab: 0.7 } },
+    fist:     { curl: [1, 1, 1, 1],             spread: [-4, -2, 2, 4],     thumb: { curl: 0.7, ab: 0.5 } },
+    ok:       { curl: [0.7, 0, 0, 0],           spread: [-10, -6, -2, 8],   thumb: { curl: 0.5, ab: 0.85 } },
+    claw:     { curl: [0.5, 0.55, 0.55, 0.5],   spread: [-12, -4, 4, 12],   thumb: { curl: 0.4, ab: 1.0 } },
+    clutch:   { curl: [0.7, 0.75, 0.75, 0.7],   spread: [-8, -3, 3, 9],     thumb: { curl: 0.6, ab: 0.7 } },
+  };
+  const preset = PRESETS[grip];
+
+  // The whole hand in canonical coords, mirrored across X by `side`.
+  function canonicalHand(side: number): Node {
+    const fr = rh * 0.19;
+    const thick = rh * palmThicknessK;
+    const palmW = rh * 1.9, palmTopZ = rh * 1.2;    // knuckle line (finger bases)
+    const wristZ = -rh * 0.34;                       // heel; overlaps the forearm
+    const palmL = palmTopZ - wristZ;                 // full palm length, wrist→knuckles
+    const palmMidZ = (palmTopZ + wristZ) / 2;
+    const pEdge = Math.min(thick * 0.49, rh * 0.32);
+    // Natural palm: a flat rounded slab that TAPERS narrower toward the wrist,
+    // capped by a rounded heel that plugs into the forearm — so the hand reads as
+    // a continuous form from wrist to knuckles rather than a rectangular block.
+    // Plain unions only (Lipschitz) so the fine hand march stays clean.
+    const slab = sdf.roundedBox([palmW, thick, palmL], pEdge)
+      .taper(0.06, 'z')
+      .translate([0, 0, palmMidZ]);
+    const heel = sdf.ellipsoid(palmW * 0.4, thick * 0.58, rh * 0.46)
+      .translate([0, 0, wristZ + rh * 0.32]);
+    // Round the slab→heel junction into one organic palm mass. Both are
+    // centred palm volumes (no fingers involved), so a smoothUnion here just
+    // softens the wrist transition — it can't web the inter-finger gaps (which
+    // stay plain unions below) into topological handles.
+    let hand = slab.smoothUnion(heel, rh * 0.28);
+
+    const span = count * 2 * fr + (count - 1) * rh * 0.16;
+    const baseLimit = palmW * 0.5 - fr;   // keep every finger base on the palm
+    const lenProfile = (u: number): number => 1.22 - 0.22 * u * u + 0.05 * u;
+    for (let i = 0; i < count; i++) {
+      const u = count > 1 ? (i / (count - 1)) * 2 - 1 : 0;        // −1..1 across the fan
+      const k = count > 1 ? Math.round((i / (count - 1)) * 3) : 1;  // map onto the 4-entry preset
+      const spDeg = preset.spread[k];
+      const sp = spDeg * side * DEG;
+      // Fan the BASE outward along the spread too — not just the tip angle. With
+      // straight fingers angled wide, the bases stay crowded on the flat palm
+      // and adjacent fanned capsules enclose a tunnel (a genus handle the mesh
+      // can't avoid). Spreading the bases (clamped to the palm) opens those gaps.
+      // Only WIDE spreads tunnel, so the base offset kicks in past ~10° —
+      // narrow/curled grips (already clean) are left untouched.
+      const fanDeg = Math.max(0, Math.abs(spDeg) - 10);
+      const baseFan = Math.sign(spDeg) * side * Math.sin(fanDeg * DEG) * rh * 1.3;
+      const bx = clamp(u * (span / 2 - fr) * side + baseFan, -baseLimit, baseLimit);
+      // Organic finger: THREE tapered phalange segments with a gentle progressive
+      // bend toward the palm. The radius steps down each segment (knuckle ridges)
+      // and the per-joint bend curves the finger even when "extended" — real
+      // fingers aren't ramrod rods. Plain unions only (collinear-ish segments of
+      // one finger overlap cleanly), so the fine march stays clean.
+      const fold0 = preset.curl[k] * 150 * DEG;
+      const fingerLen = rh * lengthK * lenProfile(u);
+      const segN = 3;
+      const segLen = fingerLen / segN;
+      const r0 = fr * 0.98;
+      const segR = [r0, r0 * 0.93, r0 * 0.86, r0 * 0.78];
+      // A small base curl so even open fingers have life, plus extra per joint.
+      const jointBend = (6 + preset.curl[k] * 14) * DEG;
+      // Build the finger as its OWN mass, smooth-unioning consecutive segments so
+      // the knuckle joints round into one organic digit instead of three stacked
+      // capsules with faceted steps at each joint (the "low-poly finger" look).
+      // The smin is local to THIS finger's collinear-ish axis, so it can't reach
+      // an adjacent finger; the finished finger is then PLAIN-unioned onto the
+      // hand, leaving the inter-finger gaps as clean unions (no webbing handles).
+      let p: Vec3 = [bx, 0, palmTopZ - fr * 0.3];
+      let finger: Node | null = null;
+      for (let s = 0; s < segN; s++) {
+        const fold = fold0 + jointBend * s;
+        const d = norm3([Math.sin(sp) * Math.cos(fold), Math.sin(fold), Math.cos(fold) * Math.cos(sp)] as Vec3);
+        const p2 = add3(p, scale3(d, segLen));
+        const seg = sdf.capsule(p, p2, segR[s]);
+        finger = finger ? finger.smoothUnion(seg, segR[s] * 0.7) : seg;
+        p = p2;
+      }
+      if (finger) hand = hand.union(finger);
+    }
+
+    // Thumb: a single capsule, extended off the side edge or angled across the
+    // palm by its curl.
+    const cu = preset.thumb.curl, ab = preset.thumb.ab;
+    const tbase: Vec3 = [(palmW * 0.5 - fr) * 0.9 * side, thick * 0.2, palmTopZ - palmL * 0.5];
+    const ta = (30 + cu * 55) * DEG;
+    const d = norm3([Math.cos(ta) * ab * side, 0.22 + cu * 0.5, Math.sin(ta)] as Vec3);
+    const ttip = add3(tbase, scale3(d, rh * 0.82));
+    return hand.union(sdf.capsule(tbase, ttip, fr * 1.05));
+  }
+
+  // Canonical hand + the rigid transform that places it on a wrist (palm =
+  // dir × splay). The mesh path marches the canonical node and applies this
+  // transform to the MESH, so the inter-finger gaps stay axis-aligned.
+  function placedHand(c: Vec3, dir: Vec3, hinge: Vec3, side: number): { node: Node; euler: Vec3; c: Vec3 } {
+    const dn = norm3(dir);
+    const dotSD = hinge[0] * dn[0] + hinge[1] * dn[1] + hinge[2] * dn[2];
+    const sp = norm3(sub3(hinge, scale3(dn, dotSD)));
+    const pn = norm3(cross3(dn, sp));
+    return { node: canonicalHand(side), euler: eulerFromBasis(sp, pn, dn), c };
+  }
+
+  if (!sculpted) {
+    // Legacy puffy hands have no thin gaps — ride the normal coarse path.
+    const puffy = (c: Vec3, dir: Vec3): Node => {
+      if (grip === 'fist') return sdf.sphere(rh * 1.05).translate(c);
+      if (grip === 'open') return sdf.ellipsoid(rh * 0.55, rh * 1.2, rh * 0.9).translate(c);
+      const tip = add3(c, scale3(dir, rh * 1.1));
+      return tapered(sdf, c, tip, rh * 0.95, rh * 0.6, rh * 0.5);
+    };
+    return puffy(j.handL as Vec3, rig.dir.lowerArmL).union(puffy(j.handR as Vec3, rig.dir.lowerArmR));
+  }
+
+  // Sculpted hands carry separated fingers the coarse body march would web into
+  // topological handles (the in-place refine can only fray them into spikes — it
+  // can't change topology). Tag them as a FINE-HANDS region: each hand is marched
+  // in its CANONICAL frame on a tight uniform fine grid (so the finger gaps line
+  // up with the grid and resolve cleanly at any pose, and the tight bbox keeps a
+  // fine grid cheap) and the mesh is rotated onto the wrist and hard-unioned onto
+  // the coarse forearm (distinct shapes → clean overlap, no seam).
+  const fineEdge = Math.max(rh * 0.04, 0.04);
+  const pL = placedHand(j.handL as Vec3, rig.dir.lowerArmL, rig.dir.elbowHingeL, +1);
+  const pR = placedHand(j.handR as Vec3, rig.dir.lowerArmR, rig.dir.elbowHingeR, -1);
+  const world = (p: { node: Node; euler: Vec3; c: Vec3 }): Node => p.node.rotate(p.euler).translate(p.c);
+  const both = world(pL).union(world(pR));
+  const pieces: FineRegion[] = [
+    { node: pL.node, euler: pL.euler, translate: pL.c, edgeLength: fineEdge },
+    { node: pR.node, euler: pR.euler, translate: pR.c, edgeLength: fineEdge },
+  ];
+  return sdf.__fineHands(both, pieces);
+}
+
+
+/** @deprecated Hands now self-mesh via the fine-hands marker (`F.hands` tags
+ *  them so the build marches each hand on its own fine grid). This is kept as a
+ *  no-op so existing examples that spread `...F.handDetail(rig)` into
+ *  `build({detail})` keep working — it simply contributes no detail spheres. */
+function handDetail(_rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
   const o = obj(opts, 'handDetail(opts)');
   assertNoUnknownKeys(o, ['radius', 'edgeLength'], 'handDetail(opts)');
-  const r = rig.r;
-  const radius = num(o.radius, r.hand * 2.6, 'handDetail.radius', 1e-3);
-  const edgeLength = num(o.edgeLength, Math.max(r.hand * 0.085, 0.08), 'handDetail.edgeLength', 1e-4);
-  return [
-    { center: [...(rig.joints.handL as Vec3)] as Vec3, radius, edgeLength },
-    { center: [...(rig.joints.handR as Vec3)] as Vec3, radius, edgeLength },
-  ];
+  return [];
 }
 
 function buildLegs(sdf: SdfApi, rig: Rig): Node {
@@ -3693,7 +3789,7 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     const slZone = (S: Vec3, E: Vec3, W: Vec3): Node => {
       const rad = (r.upperArm + t) * 1.8;
       if (sleeve === 'short') return sdf.capsule(S, lerp3(S, E, 0.85), rad);
-      return sdf.capsule(S, E, rad).union(sdf.capsule(E, lerp3(E, W, 0.9), rad));
+      return sdf.capsule(S, E, rad).union(sdf.capsule(E, lerp3(E, W, 0.97), rad));
     };
     zone = zone
       .union(slZone(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3))
@@ -3726,9 +3822,19 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     // bridge the shell and the sleeve tops so no skin shows at the armpit/collar.
     const sl = (S: Vec3, E: Vec3, W: Vec3): Node => {
       const rad = (r.upperArm + t) * 1.05;
-      if (sleeve === 'short') return sdf.capsule(S, lerp3(S, E, 0.85), rad);
+      // A rounded cuff cap at the sleeve end: a thin capsule END aliases
+      // pose-dependently at the coarse garment grid (the diva's jagged,
+      // asymmetric cuffs); a sphere is a robust rounded feature that meshes
+      // cleanly at any orientation. Long sleeves run to ~0.97 of the wrist so
+      // they reach where the hand connects (was 0.9 — a bare-wrist gap).
+      if (sleeve === 'short') {
+        const end = lerp3(S, E, 0.85);
+        return sdf.capsule(S, end, rad).union(sdf.sphere(rad).translate(end));
+      }
+      const end = lerp3(E, W, 0.97);
       return sdf.capsule(S, E, rad)
-        .smoothUnion(sdf.capsule(E, lerp3(E, W, 0.9), rad * 0.95), r.lowerArm * 0.8);
+        .smoothUnion(sdf.capsule(E, end, rad * 0.95), r.lowerArm * 0.8)
+        .union(sdf.sphere(rad * 0.95).translate(end));
     };
     const yoke = (S: Vec3): Node => sdf.sphere((r.upperArm + t) * 1.2).translate(S);
     garment = garment
@@ -3940,8 +4046,19 @@ function weldBody(rig: Rig, parts: unknown, opts?: unknown): Node {
   // ~0.6 where hanging arms re-web, comfortably above the ~0.32 where raised arms
   // tear off. Override via `weld(rig, parts, {k})` for a chunkier, blobbier look.
   const k = num(o.k, Math.min(rig.r.lowerArm, rig.r.neck) * 0.48, 'weld.k', 1e-4);
-  let acc = parts[0] as Node;
-  for (let i = 1; i < parts.length; i++) acc = acc.smoothUnion(parts[i] as Node, k);
+  // Fine-hands markers must NOT be smooth-blended into the body field: that
+  // fuses arm+hand into one surface the coarse march then webs. Keep them OUT
+  // of the smooth weld and HARD-union them on top, so the build meshes each
+  // hand on its own fine grid and merges it at the wrist as a distinct solid.
+  const nodes = parts as Node[];
+  const markers = nodes.filter((p) => p.kind === 'fineHands');
+  const welded = nodes.filter((p) => p.kind !== 'fineHands');
+  if (welded.length === 0) {
+    throw new ValidationError('figure.weld(rig, parts): need at least one non-hand part to weld.');
+  }
+  let acc = welded[0];
+  for (let i = 1; i < welded.length; i++) acc = acc.smoothUnion(welded[i], k);
+  for (const m of markers) acc = acc.union(m);
   return acc;
 }
 
