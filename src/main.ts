@@ -16245,6 +16245,9 @@ async function main() {
     const onEnginePreview = (previewLang === 'scad' || previewLang === 'manifold-js')
       ? (previewResult: MeshResult) => {
           if (myGen !== _runGeneration || !previewResult.mesh) return;
+          // currentMeshData stays the raw (uncoloured) coarse mesh — the model
+          // colours live only on the copy handed to updateMesh, mirroring the
+          // full-render path where currentMeshData is also the uncoloured base.
           currentMeshData = previewResult.mesh;
           // Estimate the model's colours on the coarse mesh: api.label({color})
           // and api.paint.* ops both resolve geometrically/by-name against this
