@@ -42,7 +42,9 @@ import {
   type VersionOperation,
   type SessionNote,
   type AttachedImage,
+  type SessionAttachment,
 } from './db';
+import { normalizeAttachment } from './attachment';
 import { publishTabSync, onTabSync } from './tabSync';
 import { clearReliefSettings } from '../relief/reliefSettings';
 import { listMessages as dbListMessages, putMessages as dbPutMessages } from '../ai/db';
@@ -168,8 +170,16 @@ import { appPath } from '../deployment';
  *           schema number; it's the signal the cross-major migration flow keys
  *           off (see appVersionCompat.ts). Absent on pre-1.15 files and on
  *           dev/test builds (version 'unknown'); older readers ignore it.
+ *  - `1.16` — reference images generalized to typed **attachments**
+ *           (`session.attachments`). Each item carries a `kind`
+ *           (`image | model | document | text | other`) plus optional
+ *           `mediaType`/`addedAt`/`source`, so a session can pin non-image
+ *           files (spec PDFs, reference models, notes) as durable project
+ *           context. Legacy `session.images` / `session.referenceImages`
+ *           (and the object-map form) still read as image attachments. Older
+ *           readers ignore the new field.
  */
-export const SCHEMA_VERSION = '1.15';
+export const SCHEMA_VERSION = '1.16';
 
 const CURRENT_MAJOR = 1;
 
@@ -204,9 +214,10 @@ export interface ExportedSession {
    * @since 1.15
    */
   appVersion?: string;
-  /** Images may be the array form or the legacy object map ({front, right, ...}).
-   * Both also exist under `referenceImages` for pre-rename exports. */
-  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number }; workCamera?: { position: [number, number, number]; target: [number, number, number] } };
+  /** Attachments (schema 1.16+) are the array of typed `SessionAttachment`s.
+   * Legacy `images` / `referenceImages` (array form or the object map
+   * {front, right, ...}) still read as image attachments for older exports. */
+  session: { name: string; created: number; updated: number; attachments?: SessionAttachment[] | null; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number }; workCamera?: { position: [number, number, number]; target: [number, number, number] } };
   /**
    * The session's parts, ordered by `order`. Present from schema 1.7. Pre-1.7
    * files omit this; on import they collapse into a single default part.
@@ -479,7 +490,7 @@ export function getSchemaCompatibilityWarning(data: ExportedSession): string | n
   return null;
 }
 
-export type { Session, Part, Version, VersionOperation, SessionNote, AttachedImage, SessionDraft } from './db';
+export type { Session, Part, Version, VersionOperation, SessionNote, AttachedImage, SessionAttachment, AttachmentKind, SessionDraft } from './db';
 
 // Pure resolver for a version's effective modeling language — re-exported from
 // its own tiny module so unit tests can import it without dragging in the
@@ -1461,29 +1472,29 @@ export function getGalleryUrl(): string {
   return `${base}?session=${currentState.session.id}&gallery`;
 }
 
-// === Images ===
+// === Attachments (formerly "reference images") ===
 
-export async function saveImages(images: AttachedImage[] | null): Promise<void> {
+export async function saveAttachments(attachments: SessionAttachment[] | null): Promise<void> {
   if (!currentState.session) return;
   const id = currentState.session.id;
   await dbUpdateSession(id, {
-    images,
+    attachments,
     updated: Date.now(),
   });
   // Update local state so getState() reflects the change
   currentState = {
     ...currentState,
-    session: { ...currentState.session, images },
+    session: { ...currentState.session, attachments },
   };
   notify();
   publishTabSync({ kind: 'session-meta', sessionId: id });
 }
 
-export async function getImagesFromSession(): Promise<AttachedImage[] | null> {
+export async function getAttachmentsFromSession(): Promise<SessionAttachment[] | null> {
   if (!currentState.session) return null;
   // Refresh from DB in case it was updated externally
   const session = await getSession(currentState.session.id);
-  return session?.images ?? null;
+  return session?.attachments ?? null;
 }
 
 // === Notes ===
@@ -1890,7 +1901,7 @@ export async function exportSession(
   return {
     partwright: SCHEMA_VERSION,
     ...(stampedAppVersion ? { appVersion: stampedAppVersion } : {}),
-    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}) },
+    session: { name: session.name, created: session.created, updated: session.updated, attachments: session.attachments ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}) },
     parts: parts.map(p => ({ name: p.name, order: p.order })),
     versions: flat.map(({ v, partOrder }, i) => {
       const colorRegions = opts.includeColorRegions ? extractColorRegions(v.geometryData) : undefined;
@@ -1961,15 +1972,19 @@ export async function importSession(
   // version-language fallback chain).
   const session = await dbCreateSession(data.session.name, asLanguage(data.session.language));
 
-  // Restore images if present in the exported data. Handle two legacy shapes:
+  // Restore attachments if present. Handle the new field plus legacy shapes:
+  //   - 1.16+: `attachments` (typed SessionAttachment[])
+  //   - pre-1.16: `images` (typed-less array of {id, src, label})
   //   - pre-rename: `referenceImages` instead of `images`
-  //   - pre-array: object map `{front: 'url', ...}` instead of `[{id, angle, src}]`
-  const rawImages = data.session.images ?? data.session.referenceImages ?? null;
-  if (rawImages) {
-    const imagesArr = Array.isArray(rawImages)
-      ? rawImages
-      : legacyImagesObjectToArray(rawImages);
-    await dbUpdateSession(session.id, { images: imagesArr });
+  //   - pre-array: object map `{front: 'url', ...}`
+  // Everything is normalized into typed attachments (image-kind for the legacy
+  // shapes, which only ever held images).
+  const rawAttachments = data.session.attachments ?? data.session.images ?? data.session.referenceImages ?? null;
+  if (rawAttachments) {
+    const arr = Array.isArray(rawAttachments)
+      ? rawAttachments.map(a => normalizeAttachment(a, generateId()))
+      : legacyImagesObjectToArray(rawAttachments);
+    await dbUpdateSession(session.id, { attachments: arr });
   }
 
   // Restore the pinned thumbnail camera (schema 1.12+). Validate both angles

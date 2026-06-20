@@ -35,7 +35,8 @@ import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost,
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
-import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
+import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
+import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
 import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
@@ -289,8 +290,8 @@ import {
   importSession,
   importSessionPartsIntoActive,
   clearAllSessions,
-  saveImages as persistImages,
-  getImagesFromSession,
+  saveAttachments as persistAttachments,
+  getAttachmentsFromSession,
   addSessionNote,
   listSessionNotes,
   deleteIfEmpty,
@@ -338,6 +339,37 @@ import { getConfig, saveAppConfig } from './config/appConfig';
 import { nextStarter, isStarterCode } from './editor/starters';
 import { parseLabelColor } from './color/labelColor';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
+
+// === Attachment helpers (shared by the setImages/addImage + setAttachments/
+// addAttachment API methods) ===
+
+/** Push the new attachment list into the in-memory mirror AND persist it to
+ *  the active session. Mirrors the old `_setImages + persistImages` pairing. */
+function commitAttachments(next: SessionAttachment[]): void {
+  _setAttachments(next);
+  void persistAttachments(next);
+}
+
+/** Validate a loose `{src, id?, label?, kind?, mediaType?}` input and normalize
+ *  it into a typed SessionAttachment. `kind`/`mediaType` are inferred from the
+ *  src/label when omitted; an explicit `kind` is checked against the enum. */
+function buildAttachmentFromInput(input: unknown, ctx: string, source?: 'user' | 'chat'): SessionAttachment {
+  const obj = assertObject(input, ctx)!;
+  assertNoUnknownKeys(obj, ['src', 'id', 'label', 'kind', 'mediaType'] as const, ctx);
+  assertString(obj.src, `${ctx}.src`, { allowEmpty: false });
+  if (obj.id !== undefined) assertString(obj.id, `${ctx}.id`, { allowEmpty: false });
+  if (obj.label !== undefined) assertString(obj.label, `${ctx}.label`, { optional: true, allowEmpty: true });
+  if (obj.mediaType !== undefined) assertString(obj.mediaType, `${ctx}.mediaType`, { allowEmpty: false });
+  if (obj.kind !== undefined) assertEnum(obj.kind, ATTACHMENT_KINDS, `${ctx}.kind`);
+  return normalizeAttachment({
+    id: obj.id as string | undefined,
+    src: obj.src as string,
+    label: obj.label as string | undefined,
+    kind: obj.kind as AttachmentKind | undefined,
+    mediaType: obj.mediaType as string | undefined,
+    source,
+  }, generateId());
+}
 
 // Editor starters — one simple, labelled, self-coloured primitive per engine,
 // rotated so a fresh session/part/language opens on a different cube / sphere /
@@ -5194,11 +5226,11 @@ async function main() {
 
   function startNewSessionInEditor() {
     resetEditorToStarter();
-    _clearImages();
+    _clearAttachments();
   }
 
   // Reset the editor for a freshly created part. Unlike a new session, parts
-  // share the session's reference images, so those are left intact.
+  // share the session's attachments, so those are left intact.
   function startNewPartInEditor() {
     resetEditorToStarter();
   }
@@ -5639,7 +5671,7 @@ async function main() {
     { id: 'tab-interactive', title: 'Go to 3D view', hint: 'Tab', keywords: 'interactive viewport model', run: () => switchTab('interactive'), enabled: isEditorActive },
     { id: 'tab-gallery', title: 'Go to Gallery (read-only)', hint: 'Tab', keywords: 'thumbnails versions visual grid', run: () => switchTab('gallery'), enabled: isEditorActive },
     { id: 'tab-versions', title: 'Go to Versions', hint: 'Tab', keywords: 'history rename delete', run: () => switchTab('versions'), enabled: isEditorActive },
-    { id: 'tab-images', title: 'Go to Reference images', hint: 'Tab', keywords: 'photos reference', run: () => switchTab('images'), enabled: isEditorActive },
+    { id: 'tab-images', title: 'Go to Attachments', hint: 'Tab', keywords: 'photos reference images attachments files model document pdf notes', run: () => switchTab('images'), enabled: isEditorActive },
     { id: 'tab-diff', title: 'Go to Diff', hint: 'Tab', keywords: 'compare changes', run: () => switchTab('diff'), enabled: isEditorActive },
     { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes'), enabled: isEditorActive },
     { id: 'tab-data', title: 'Go to Data', hint: 'Tab', keywords: 'storage browser indexeddb inventory', run: () => switchTab('data'), enabled: isEditorActive },
@@ -5701,8 +5733,8 @@ async function main() {
   // Init images view
   createImagesView(imagesContainer, {
     onChange: async (next) => {
-      _setImages(next);
-      await persistImages(next);
+      _setAttachments(next);
+      await persistAttachments(next);
     },
   });
 
@@ -6017,11 +6049,11 @@ async function main() {
 
     await rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
-    const sessionImages = await getImagesFromSession();
-    if (sessionImages) {
-      _setImages(sessionImages);
+    const sessionAttachments = await getAttachmentsFromSession();
+    if (sessionAttachments) {
+      _setAttachments(sessionAttachments);
     } else {
-      _clearImages();
+      _clearAttachments();
     }
   }
 
@@ -11043,23 +11075,25 @@ async function main() {
     },
     setImages(images: Array<{ src: string; id?: string; label?: string }>): AttachedImage[] {
       const arr = assertArray(images, 'setImages(images)') as Array<Record<string, unknown>>;
-      const items: AttachedImage[] = [];
+      const items: SessionAttachment[] = [];
       for (let i = 0; i < arr.length; i++) {
         const item = assertObject(arr[i], `setImages(images)[${i}]`)!;
         assertNoUnknownKeys(item, ['src', 'id', 'label'] as const, `setImages(images)[${i}]`);
         assertString(item.src, `setImages(images)[${i}].src`, { allowEmpty: false });
         if (item.id !== undefined) assertString(item.id, `setImages(images)[${i}].id`, { allowEmpty: false });
         if (item.label !== undefined) assertString(item.label, `setImages(images)[${i}].label`, { optional: true, allowEmpty: true });
-        const built: AttachedImage = {
-          id: (item.id as string | undefined) ?? generateId(),
+        items.push(normalizeAttachment({
+          id: item.id as string | undefined,
           src: item.src as string,
-        };
-        const lbl = (item.label as string | undefined)?.trim();
-        if (lbl) built.label = lbl;
-        items.push(built);
+          label: item.label as string | undefined,
+          kind: 'image',
+          source: 'user',
+        }, generateId()));
       }
-      _setImages(items);
-      persistImages(items);
+      // Replace the image-kind attachments, preserving any non-image ones
+      // (models, docs) the user/AI may have pinned.
+      const nonImages = _getAttachments().filter(a => a.kind !== 'image');
+      commitAttachments([...items, ...nonImages]);
       return items;
     },
 
@@ -11069,35 +11103,78 @@ async function main() {
       assertNoUnknownKeys(obj, ['src', 'label'] as const, 'addImage(image)');
       assertString(obj.src, 'addImage(image).src', { allowEmpty: false });
       if (obj.label !== undefined) assertString(obj.label, 'addImage(image).label', { optional: true, allowEmpty: true });
-      const item: AttachedImage = { id: generateId(), src: obj.src as string };
-      const lbl = (obj.label as string | undefined)?.trim();
-      if (lbl) item.label = lbl;
-      const next = [..._getImages(), item];
-      _setImages(next);
-      persistImages(next);
+      const item = normalizeAttachment({
+        src: obj.src as string,
+        label: obj.label as string | undefined,
+        kind: 'image',
+        source: 'user',
+      }, generateId());
+      commitAttachments([..._getAttachments(), item]);
       return item;
     },
 
-    /** Remove an image by id. Returns true if an image was removed. */
+    /** Remove an image (or any attachment) by id. Returns true if one was removed. */
     removeImage(id: string): boolean {
       assertString(id, 'removeImage(id)', { allowEmpty: false });
-      const current = _getImages();
-      const next = current.filter(img => img.id !== id);
+      const current = _getAttachments();
+      const next = current.filter(a => a.id !== id);
       if (next.length === current.length) return false;
-      _setImages(next);
-      persistImages(next);
+      commitAttachments(next);
       return true;
     },
 
-    /** Clear all images */
+    /** Clear the image attachments (non-image attachments are preserved). */
     clearImages(): void {
-      _clearImages();
-      persistImages(null);
+      const nonImages = _getAttachments().filter(a => a.kind !== 'image');
+      commitAttachments(nonImages);
     },
 
-    /** Get the currently attached images as an array of `{id, angle, src}`. */
+    /** Get the image-kind attachments as `{id, src, label}`. */
     getImages(): AttachedImage[] {
-      return _getImages();
+      return _getImageAttachments();
+    },
+
+    // === Attachments (generalization of reference images) ===
+
+    /** Replace the whole attachment list. Each item: `{src, kind?, mediaType?, id?, label?}`
+     *  — `kind`/`mediaType` are inferred from the src/label when omitted. */
+    setAttachments(attachments: Array<{ src: string; id?: string; label?: string; kind?: AttachmentKind; mediaType?: string }>): SessionAttachment[] {
+      const arr = assertArray(attachments, 'setAttachments(attachments)') as Array<Record<string, unknown>>;
+      const items: SessionAttachment[] = [];
+      for (let i = 0; i < arr.length; i++) {
+        items.push(buildAttachmentFromInput(arr[i], `setAttachments(attachments)[${i}]`));
+      }
+      commitAttachments(items);
+      return items;
+    },
+
+    /** Append one attachment. `{src, kind?, mediaType?, label?}` — kind/mediaType
+     *  inferred when omitted. Returns the stored item with its assigned id. */
+    addAttachment(attachment: { src: string; label?: string; kind?: AttachmentKind; mediaType?: string }): SessionAttachment {
+      const obj = assertObject(attachment, 'addAttachment(attachment)')!;
+      const item = buildAttachmentFromInput(obj, 'addAttachment(attachment)', 'user');
+      commitAttachments([..._getAttachments(), item]);
+      return item;
+    },
+
+    /** Remove an attachment by id. Returns true if one was removed. */
+    removeAttachment(id: string): boolean {
+      assertString(id, 'removeAttachment(id)', { allowEmpty: false });
+      const current = _getAttachments();
+      const next = current.filter(a => a.id !== id);
+      if (next.length === current.length) return false;
+      commitAttachments(next);
+      return true;
+    },
+
+    /** Clear ALL attachments (images and non-images). */
+    clearAttachments(): void {
+      commitAttachments([]);
+    },
+
+    /** Get all attachments: `{id, kind, mediaType?, src, label?, addedAt?, source?}`. */
+    getAttachments(): SessionAttachment[] {
+      return _getAttachments();
     },
 
     // === Session API ===
@@ -11137,12 +11214,12 @@ async function main() {
         setValue(version.code);
         await runCodeSync(version.code, { preserveCamera: true });
       }
-      // Restore images from session
-      const sessionImages = await getImagesFromSession();
-      if (sessionImages) {
-        _setImages(sessionImages);
+      // Restore attachments from session
+      const sessionAttachments = await getAttachmentsFromSession();
+      if (sessionAttachments) {
+        _setAttachments(sessionAttachments);
       } else {
-        _clearImages();
+        _clearAttachments();
       }
       return version ? { id: version.id, index: version.index, label: version.label } : null;
     },
@@ -11856,10 +11933,10 @@ async function main() {
         setValue(version.code);
         await runCodeSync(version.code, { preserveCamera: true });
       }
-      // Restore images from imported session
-      const sessionImages = await getImagesFromSession();
-      if (sessionImages) {
-        _setImages(sessionImages);
+      // Restore attachments from imported session
+      const sessionAttachments = await getAttachmentsFromSession();
+      if (sessionAttachments) {
+        _setAttachments(sessionAttachments);
       }
       return { id: session.id, name: session.name, ...(warning ? { warning } : {}) };
     },
@@ -14988,6 +15065,17 @@ async function main() {
         // Notes
         'addSessionNote':  { signature: 'await addSessionNote(text) -- Add note with [PREFIX] tag', docs: '/ai.md#session-notes----tracking-design-context' },
         'listSessionNotes': { signature: 'await listSessionNotes() -- List all session notes', docs: '/ai.md#session-notes----tracking-design-context' },
+        // Attachments (durable project files: reference images, models, docs — survive a chat clear)
+        'getAttachments':  { signature: 'getAttachments() -- List session attachments -> [{id, kind, mediaType?, src, label?, addedAt?, source?}]. kind: image|model|document|text|other', docs: '/ai/reference-images.md#attachments' },
+        'addAttachment':   { signature: 'addAttachment({src, label?, kind?, mediaType?}) -- Pin a file to the session (kind/mediaType inferred when omitted) -> the stored item', docs: '/ai/reference-images.md#attachments' },
+        'setAttachments':  { signature: 'setAttachments([{src, label?, kind?, mediaType?}]) -- Replace the whole attachment list', docs: '/ai/reference-images.md#attachments' },
+        'removeAttachment': { signature: 'removeAttachment(id) -- Remove an attachment by id -> boolean', docs: '/ai/reference-images.md#attachments' },
+        'clearAttachments': { signature: 'clearAttachments() -- Remove all attachments', docs: '/ai/reference-images.md#attachments' },
+        'getImages':       { signature: 'getImages() -- Image-kind attachments only -> [{id, src, label?}]', docs: '/ai/reference-images.md#attachments' },
+        'addImage':        { signature: 'addImage({src, label?}) -- Pin a reference image (shorthand for addAttachment with kind:image)', docs: '/ai/reference-images.md#attachments' },
+        'setImages':       { signature: 'setImages([{src, label?, id?}]) -- Replace the image attachments (non-image attachments preserved)', docs: '/ai/reference-images.md#attachments' },
+        'removeImage':     { signature: 'removeImage(id) -- Remove an attachment by id -> boolean', docs: '/ai/reference-images.md#attachments' },
+        'clearImages':     { signature: 'clearImages() -- Remove the image attachments (non-image attachments preserved)', docs: '/ai/reference-images.md#attachments' },
         // Inspection
         'sliceAtZ':        { signature: 'sliceAtZ(z) -- Cross-section at height -> {polygons, svg, area}', docs: '/ai.md#console-api--windowpartwright' },
         'getBoundingBox':  { signature: 'getBoundingBox() -- -> {min, max}', docs: '/ai.md#console-api--windowpartwright' },
