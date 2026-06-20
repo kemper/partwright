@@ -8,7 +8,7 @@
 // touches the engine or storage directly.
 
 import type { ParamSpec, ParamValue, ParamValues } from '../geometry/params';
-import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { openViewportPanel, closeViewportPanel, getActiveViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 
 export interface ParamsPanelOptions {
@@ -177,8 +177,14 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     if (schemaChanged) {
       currentSig = sig;
       rebuild(schema);
-      // A new or changed parameter set re-opens the panel so its knobs are seen.
-      userClosed = false;
+      // A new or changed parameter set normally re-opens the panel so its knobs
+      // are seen (e.g. first opening a parameterizable model). But if the user
+      // already has a DIFFERENT viewport tool menu open — typically because they
+      // switched parts while using Surface/Paint/Resize/etc. — keep that menu as
+      // the current one and stay closed, rather than auto-popping over it. The
+      // user can still open Customize from its toolbar pill.
+      const other = getActiveViewportPanel();
+      userClosed = other !== null && other !== registryEntry;
     }
     paramCount = schema.length;
     updateValues(values);
