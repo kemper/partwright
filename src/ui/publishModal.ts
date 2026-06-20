@@ -29,11 +29,16 @@ export interface PublishModalContext {
   defaultTitle: string;
   /** Optional model stats used to enrich the default description. */
   stats?: { dims?: [number, number, number] | null; units?: string } | null;
-  /** Build the model file in the requested format, or null if unavailable. */
-  buildFile: (format: PublishFormat) => Promise<{ blob: Blob; filename: string } | null>;
-  /** Render a cover PNG for the model, or null if there's no geometry. */
-  buildCover: () => Promise<{ blob: Blob; filename: string } | null>;
-  /** Trigger a browser download (the app's downloadBlob, sans inbox registration). */
+  /** Build a single ZIP bundle (model file + optional cover PNG + details.txt)
+   *  so the user gets ONE download instead of several files (which trips the
+   *  browser's "open multiple files?" prompt). Returns null if there's no
+   *  geometry. */
+  buildBundle: (opts: {
+    format: PublishFormat;
+    includeCover: boolean;
+    detailsText: string;
+  }) => Promise<{ blob: Blob; filename: string } | null>;
+  /** Trigger a browser download (the app's downloadBlob). */
   download: (blob: Blob, filename: string) => void;
   /** Optional platform id to preselect. */
   preselect?: string;
@@ -42,6 +47,7 @@ export interface PublishModalContext {
 const FORMAT_LABELS: Record<PublishFormat, string> = {
   stl: 'STL',
   '3mf': '3MF (keeps colours)',
+  '3mf-bambu': '3MF — MakerWorld/Bambu',
   glb: 'GLB',
   obj: 'OBJ',
 };
@@ -58,9 +64,9 @@ export function openPublishModal(ctx: PublishModalContext): void {
   intro.className = 'text-xs text-zinc-400 leading-snug';
   intro.innerHTML =
     'These sites have no public upload API, so Partwright can’t post for you. ' +
-    'It prepares everything instead: it downloads the model file and a cover image, ' +
-    'copies the title/description/tags to your clipboard, and opens the upload page — ' +
-    'then you drop the file and paste.';
+    'It prepares everything instead: it downloads a single <strong>ZIP</strong> with the model file, ' +
+    'a cover image, and a <span class="font-mono">details.txt</span> (also copied to your clipboard), ' +
+    'then opens the upload page — unzip, drop the files, and paste.';
   shell.body.appendChild(intro);
 
   // --- Platform pills ---
@@ -126,7 +132,7 @@ export function openPublishModal(ctx: PublishModalContext): void {
   coverCheck.type = 'checkbox';
   coverCheck.checked = true;
   coverCheck.className = 'accent-blue-600';
-  coverLabel.append(coverCheck, document.createTextNode('Also download a cover image (PNG)'));
+  coverLabel.append(coverCheck, document.createTextNode('Include a cover image (PNG) in the ZIP'));
   shell.body.appendChild(coverLabel);
 
   // --- Footer ---
@@ -172,25 +178,25 @@ export function openPublishModal(ctx: PublishModalContext): void {
     const originalLabel = goBtn.textContent;
     goBtn.textContent = 'Preparing…';
     try {
-      const file = await ctx.buildFile(format);
-      if (!file) {
+      const detailsText = composeClipboardText(currentMeta());
+      const bundle = await ctx.buildBundle({
+        format,
+        includeCover: coverCheck.checked,
+        detailsText,
+      });
+      if (!bundle) {
         showToast('No geometry to publish — run a model first.', { variant: 'warn' });
         return;
       }
-      ctx.download(file.blob, file.filename);
-
-      if (coverCheck.checked) {
-        const cover = await ctx.buildCover();
-        if (cover) ctx.download(cover.blob, cover.filename);
-      }
+      ctx.download(bundle.blob, bundle.filename);
 
       // Best-effort clipboard copy — never block the open on a clipboard denial.
-      try { await navigator.clipboard.writeText(composeClipboardText(currentMeta())); } catch { /* ignore */ }
+      try { await navigator.clipboard.writeText(detailsText); } catch { /* ignore */ }
 
       window.open(target.uploadUrl, '_blank', 'noopener,noreferrer');
       showToast(
-        `Downloaded the ${FORMAT_LABELS[format].replace(/ .*/, '')} file and copied details. ` +
-        `Drop the file on the ${target.label} upload page and paste.`,
+        `Downloaded ${bundle.filename} and copied the details. ` +
+        `Unzip it, drop the files on the ${target.label} upload page, and paste.`,
         { variant: 'success' },
       );
       shell.close();

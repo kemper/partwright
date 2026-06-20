@@ -65,3 +65,17 @@ menu, not just the command palette — so added a "Publish to a print site…"
 item to the toolbar Export dropdown's Project section (under "Share link…"),
 wired through a new `onPublish` toolbar callback, with an e2e assertion guarding
 the menu path.
+
+Follow-up 2 (same session), from user feedback:
+- **Single ZIP instead of multiple downloads.** Separate model + cover downloads
+  tripped the browser's "open multiple files?" prompt. Reworked the flow to bundle
+  the model file + `cover.png` + `details.txt` into one ZIP (`buildZip`,
+  STORE method) — `buildBundle` replaced the per-file `buildFile`/`buildCover`
+  callbacks in the modal context.
+- **MakerWorld → Bambu/Orca 3MF.** Added a `3mf-bambu` `PublishFormat` that
+  routes through `build3MFProject({bambu:true})` (same builder as the toolbar's
+  Bambu export) for the single active model; it's MakerWorld's recommended format.
+- **MakerWorld 404 fix.** `/en/upload` 404s because the real upload page is
+  user-scoped (`/en/@<username>/upload`); pointed the target at the homepage
+  (`https://makerworld.com/en`) where the "Upload" button lives, and said so in
+  the modal note.

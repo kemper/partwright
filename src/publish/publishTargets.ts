@@ -10,8 +10,10 @@
 // it unit-tests in the node tier. The DOM flow lives in src/ui/publishModal.ts.
 
 /** Export formats the publish flow can hand to a platform. Mirrors the file
- *  formats Partwright already builds (see src/export/). */
-export type PublishFormat = 'stl' | '3mf' | 'glb' | 'obj';
+ *  formats Partwright already builds (see src/export/). `3mf-bambu` is the
+ *  Bambu Studio / OrcaSlicer project flavour MakerWorld prefers (build plate +
+ *  filament bindings), distinct from the generic `3mf`. */
+export type PublishFormat = 'stl' | '3mf' | '3mf-bambu' | 'glb' | 'obj';
 
 export interface PublishTarget {
   /** Stable id (used by the window.partwright API + tests). */
@@ -41,10 +43,12 @@ export const PUBLISH_TARGETS: PublishTarget[] = [
   },
   {
     id: 'makerworld',
+    // MakerWorld's upload page is user-scoped (/en/@<you>/upload), so there's no
+    // generic upload URL — open the homepage and click "Upload" at the top.
     label: 'MakerWorld',
-    uploadUrl: 'https://makerworld.com/en/upload',
-    formats: ['3mf', 'stl'],
-    notes: "Bambu's platform — upload a 3MF for colours and printer settings. (It can also import from Printables/Thingiverse.)",
+    uploadUrl: 'https://makerworld.com/en',
+    formats: ['3mf-bambu', '3mf', 'stl'],
+    notes: "Bambu's platform — a Bambu/Orca 3MF earns extra rewards. Click \"Upload\" at the top of the homepage. (It can also import from Printables/Thingiverse.)",
   },
   {
     id: 'thingiverse',

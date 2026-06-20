@@ -53,6 +53,10 @@ test.describe('assisted publish', () => {
 
     // The primary button reflects the selected platform.
     await expect(page.getByRole('button', { name: 'Download & open Printables' })).toBeVisible();
+
+    // MakerWorld recommends the Bambu/Orca 3MF flavour.
+    await page.getByRole('button', { name: 'MakerWorld', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Download & open MakerWorld' })).toBeVisible();
     await page.screenshot({ path: 'test-results/publish-modal.png' });
 
     // Switch to Thingiverse — primary label follows.
@@ -60,13 +64,13 @@ test.describe('assisted publish', () => {
     const go = page.getByRole('button', { name: 'Download & open Thingiverse' });
     await expect(go).toBeVisible();
 
-    // Clicking prepares: a file download fires, the upload page "opens", and
-    // the details land on the clipboard.
+    // Clicking prepares: a single ZIP download fires (model + cover + details),
+    // the upload page "opens", and the details land on the clipboard.
     const download = await Promise.all([
       page.waitForEvent('download'),
       go.click(),
     ]).then(([d]) => d);
-    expect(download.suggestedFilename()).toMatch(/\.stl$/);
+    expect(download.suggestedFilename()).toMatch(/\.zip$/);
 
     await expect.poll(async () =>
       page.evaluate(() => (window as unknown as { __opened?: string[] }).__opened ?? []),

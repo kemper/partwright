@@ -81,6 +81,7 @@ import { exportOBJ, buildOBJ, buildOBJProject } from './export/obj';
 import { openPublishModal } from './ui/publishModal';
 import { findPublishTarget, type PublishFormat } from './publish/publishTargets';
 import { export3MF, build3MF } from './export/threemf';
+import { buildZip, type ZipEntry } from './export/zip';
 import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
 import { exportVOX, buildVOX } from './export/vox';
@@ -4874,12 +4875,64 @@ async function main() {
       const built = await buildGLB(undefined, coloredMeshForExport(currentMeshData));
       return { blob: built.blob, filename: built.filename };
     }
+    // MakerWorld's preferred 3MF is the Bambu Studio / OrcaSlicer project flavour
+    // (build plate + AMS filament bindings) — same builder as the toolbar's
+    // "3MF — Bambu/Orca" export, here for the single active model with default
+    // printer settings.
+    if (format === '3mf-bambu') {
+      const mesh = fileExportMesh(true);
+      if (!mesh) return null;
+      const bed = loadPrinterSettings().bed;
+      const built = build3MFProject([{ name: getState().session?.name ?? 'model', mesh }], {
+        bambu: true, bedSize: [bed[0], bed[1]],
+        printer: DEFAULT_BAMBU_PRINTER, nozzle: '0.4', filament: DEFAULT_BAMBU_FILAMENT,
+      });
+      return { blob: built.blob, filename: built.filename };
+    }
     const mesh = fileExportMesh(format !== 'stl');
     if (!mesh) return null;
     const built = format === '3mf' ? build3MF(mesh)
       : format === 'obj' ? buildOBJ(mesh)
       : buildSTL(mesh);
     return { blob: built.blob, filename: built.filename };
+  };
+
+  /** Render the publish cover PNG as bytes, or null when there's no geometry. */
+  const buildPublishCover = async (): Promise<Uint8Array | null> => {
+    if (!currentMeshData) return null;
+    const canvas = renderSingleViewCanvas(applyTriColorsIfVisible(currentMeshData), {
+      elevation: 25, azimuth: 45, size: 1024,
+    });
+    const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/png'));
+    if (!blob) return null;
+    return new Uint8Array(await blob.arrayBuffer());
+  };
+
+  /** Bundle the model file (+ optional cover + details.txt) into ONE ZIP, so the
+   *  user gets a single download instead of several files (which trips the
+   *  browser's "open multiple files?" prompt). */
+  const buildPublishBundle = async (opts: {
+    format: PublishFormat;
+    includeCover: boolean;
+    detailsText: string;
+  }): Promise<{ blob: Blob; filename: string } | null> => {
+    const file = await buildPublishFile(opts.format);
+    if (!file) return null;
+    const entries: ZipEntry[] = [
+      { name: file.filename, data: new Uint8Array(await file.blob.arrayBuffer()) },
+      { name: 'details.txt', data: new TextEncoder().encode(opts.detailsText) },
+    ];
+    if (opts.includeCover) {
+      const cover = await buildPublishCover();
+      if (cover) entries.push({ name: 'cover.png', data: cover });
+    }
+    const zip = buildZip(entries);
+    // ArrayBuffer copy so the Blob doesn't alias the SharedArrayBuffer-backed view.
+    const zipBytes = new Uint8Array(zip.byteLength);
+    zipBytes.set(zip);
+    const blob = new Blob([zipBytes], { type: 'application/zip' });
+    const filename = getExportFilename('zip').replace(/\.zip$/, '-publish.zip');
+    return { blob, filename };
   };
 
   /** Open the assisted-publish modal (Printables / MakerWorld / Thingiverse /
@@ -4890,16 +4943,7 @@ async function main() {
     openPublishModal({
       defaultTitle: getState().session?.name ?? 'My model',
       stats: { dims: currentModelDims(), units: _getUnits() },
-      buildFile: buildPublishFile,
-      buildCover: async () => {
-        if (!currentMeshData) return null;
-        const canvas = renderSingleViewCanvas(applyTriColorsIfVisible(currentMeshData), {
-          elevation: 25, azimuth: 45, size: 1024,
-        });
-        const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/png'));
-        if (!blob) return null;
-        return { blob, filename: getExportFilename('png').replace(/\.png$/, '-cover.png') };
-      },
+      buildBundle: buildPublishBundle,
       download: (blob, filename) => downloadBlob(blob, filename, 'Publish'),
       preselect,
     });

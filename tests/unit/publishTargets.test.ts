@@ -28,6 +28,8 @@ describe('publishTargets', () => {
   it('recommendedFormat is the first accepted format', () => {
     expect(recommendedFormat(findPublishTarget('printables')!)).toBe('3mf');
     expect(recommendedFormat(findPublishTarget('thingiverse')!)).toBe('stl');
+    // MakerWorld prefers the Bambu/Orca project 3MF (build plate + filaments).
+    expect(recommendedFormat(findPublishTarget('makerworld')!)).toBe('3mf-bambu');
   });
 
   it('parseTags trims, splits on commas, and drops blanks', () => {
