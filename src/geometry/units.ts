@@ -7,17 +7,19 @@ export type UnitSystem = 'mm' | 'cm' | 'in' | 'unitless';
 const STORAGE_KEY = 'partwright-units';
 const VALID_UNITS: readonly UnitSystem[] = ['mm', 'cm', 'in', 'unitless'];
 
-// Default MUST stay 'unitless' for back-compat (it drives export filenames and
-// the 3MF unit attribute). Persisted per-tab (with a shared seed for fresh
+// Default is 'mm': new sessions, freshly-loaded catalog entries, and imported
+// older sessions (whose files never carried a live unit anyway) all start in
+// millimeters — the unit most slicers assume — instead of the old 'unitless'
+// state and its export warning. Persisted per-tab (with a shared seed for fresh
 // tabs) so a chosen unit sticks for this window without retroactively changing
-// the unit — and thus the export unit attribute — of another open window. A
-// fresh browser still starts unitless.
+// the unit — and thus the export unit attribute — of another open window.
+// 'unitless' remains a selectable value for anyone who explicitly wants it.
 function readPersistedUnit(): UnitSystem {
   const stored = readPerTabPref(STORAGE_KEY);
   if (stored && (VALID_UNITS as readonly string[]).includes(stored)) {
     return stored as UnitSystem;
   }
-  return 'unitless';
+  return 'mm';
 }
 
 let currentUnit: UnitSystem = readPersistedUnit();
