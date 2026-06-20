@@ -41,7 +41,7 @@ const face = F.face.assemble(head, rig, {
   ears: { size: r.head * 0.22 },
   brows: {},
 });
-const eyes = F.face.eyes(rig, { radius: r.head * 0.14 });
+const eyes = F.face.eyes(rig, { radius: r.head * 0.14, lids: 'hooded' });
 
 // 3. SKIN — relaxed grip so the staff seats in the open finger cup.
 const skin = F.weld(rig, [

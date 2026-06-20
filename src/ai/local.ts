@@ -29,6 +29,7 @@ import { loadSettings, type CustomLocalModel } from './settings';
 import { buildFallbackLadder, getCachedCeiling, getModelCeiling } from './modelMetadata';
 import { getConfig } from '../config/appConfig';
 import { registerWorker, markWorkerStarted } from '../diagnostics/workerStats';
+import { repairToolHistory } from './historyRepair';
 
 // We can't statically type-import from @mlc-ai/web-llm without forcing it
 // into the main bundle, so we keep the engine handle untyped here and rely
@@ -551,7 +552,12 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
   const systemSuffix = native
     ? spec.systemSuffix
     : appendPromptToolDocs(spec.systemSuffix, spec.tools);
-  const messages = buildLocalApiMessages(spec.systemPrompt, systemSuffix, spec.history, info, native);
+  // Repair any tool-history invariant violation (orphaned tool_use missing its
+  // result, or orphaned tool_result whose call was dropped by compaction)
+  // before building — the native function-calling path emits per-id `tool`
+  // messages WebLLM would otherwise reject. Mirrors gemini.ts.
+  const history = repairToolHistory(spec.history).messages;
+  const messages = buildLocalApiMessages(spec.systemPrompt, systemSuffix, history, info, native);
 
   const baseReq: Record<string, unknown> = {
     messages,

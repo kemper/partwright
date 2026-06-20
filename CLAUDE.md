@@ -41,6 +41,14 @@ Hosted on **Cloudflare Pages**. Three branches map to three environments, wired 
 
 > **`main` is the superset — `staging` and `production` must never hold content `main` lacks.** The pipeline is strictly one-directional: every change reaches `staging`/`production` only *after* it lands on `main`. `staging` is just `main` fast-forwarded by the gate, so it can't drift. The one drift vector is the **manual release PR into `production`**: a release PR must be a **pure promotion** of gated `staging` — it must introduce **zero** content that isn't already on `main`. **Never commit changelog, release-note, help, or any other edits onto the release branch.** Release notes are normal product changes: write them on a feature branch into `main` first (`docs:` PR), let the gate advance `staging`, *then* cut the release from `staging`. The `production-promotion-guard` Action (`.github/workflows/production-promotion-guard.yml`) fails any production PR that carries content beyond `main` — if it trips, you've put release-time edits in the wrong place. (This is the rule that the May 2026 changelog/help drift violated: release-note commits added straight onto release branches never flowed back to `main`, so a later `main`-side refactor silently clobbered them.)
 
+**Release versioning — `package.json` `version` is the single source of truth.** Releases are semantically versioned (`vX.Y.Z`) and **every production release is git-tagged automatically.** The `Tag release on production` Action (`.github/workflows/release-tag.yml`) fires on each push to `production` (i.e. each promotion merge), reads `package.json`'s `version`, and — if no tag for that version exists yet — creates the annotated `vX.Y.Z` tag and a GitHub Release with auto-generated notes (grouped per `.github/release.yml`). It's idempotent: a production push that didn't change the version no-ops.
+
+> **Bump the version through the pipeline, never on the release branch.** To cut a release, bump `package.json` on a *feature branch into `main`* — the bump level encodes the change's blast radius and follows the same semantics that drive the (planned) versioned-deployment strategy:
+> - **major** (`1.0.0` → `2.0.0`, commit `feat!:`) — a breaking change: code or sessions authored against the old version may not work, so it requires a conscious user migration to a new top-level deployment.
+> - **minor** (`feat:`) / **patch** (`fix:`) — backward-compatible; rolls forward in place on the latest deployment of the current major.
+>
+> The bump flows main → gate → staging → the promotion PR → production exactly like any other change, so it never violates the pure-promotion rule. The running version is surfaced in the in-app **About** dialog (`src/buildInfo.ts` `version`, from `package.json` at build time). The first tagged release is `v1.0.0`. *(Planned next: stamp this `X.Y.Z` into the session schema + exported files as the "last known-good" version, and segment IndexedDB by major for the versioned-deployment migration flow.)*
+
 Feature work follows a **draft-PR-first** flow: open the PR as a draft the moment the implementation looks good, and PR-checks runs the full suite — build + unit *and* the e2e shards — on every push, draft or ready. Marking the PR ready for review is a review-readiness signal, not a CI trigger; your task is done once every PR-checks shard goes green. The full sequence:
 
 1. **Start from the latest `main`.** Before writing any code, run `git fetch origin main` and base your feature branch on `origin/main`. Do this at the *start* of the task, not just before the final push.
@@ -65,6 +73,45 @@ Skip the PR only when the user explicitly scoped you away from it — a request 
 - **SPA routing:** `public/_redirects` (`/* /index.html 200`)
 - **Headers:** `public/_headers` (COEP, COOP, CSP) — Cloudflare Pages serves these automatically
 - **Environment variable:** Set `SITE_URL` in Cloudflare Pages dashboard (Settings > Environment variables) to the production URL (`https://www.partwrightstudio.com`). This is used at build time by the `absoluteUrls` Vite plugin to make Open Graph image URLs and canonical links absolute. If `SITE_URL` is not set, the plugin falls back to `CF_PAGES_URL` (provided automatically by Cloudflare Pages for each deployment).
+
+### Versioned deployments (path-mounted majors)
+
+The app supports serving each major version under its own path base on one
+origin, so a future breaking `v2` can coexist with `v1` instead of clobbering it.
+The model — **the site root is always the LATEST version, served versionlessly;
+each major is ALSO available as an immutable pinned mount under `/vN/`**:
+
+| URL | Serves |
+|-----|--------|
+| `/`, `/editor`, `/catalog`, … | the **latest** version (versionless — the default, unchanged) |
+| `/v1/`, `/v1/editor`, … | **pinned v1** (frozen; survives a later cutover to a newer root) |
+| `/current/…` | 302 → the versionless latest (stable "always newest" alias) |
+
+How it's wired:
+
+- **`DEPLOY_BASE`** env sets Vite's `base` (default `/`). `src/deployment.ts` is
+  the single source of truth (`appPath`/`appRoute`/`assetPath`/`currentMajor`);
+  asset fetches, the route layer, SEO (`meta.ts`/`sitemap.ts`), the prerendered
+  content nav (`rebaseHtmlPaths`), the pre-paint pair (`entry.ts` +
+  `public/route-init.js`, which derives its base from its own `<script src>`),
+  and `manifest.json` all follow it. Every piece is a **no-op at base `/`**.
+- **`npm run build` produces the combined deploy**: the versionless root build
+  in `dist/` plus a `DEPLOY_BASE=/v1/` build nested in `dist/v1/`. The Cloudflare
+  build command stays the **default `npm run build`** — no per-deploy command
+  change, so a branch that predates this still builds (its own `build` just emits
+  the versionless root). `build:deploy` remains as a back-compat alias of
+  `build`. *(History: the dual build was briefly a separate `build:deploy` script;
+  pointing the project-wide Cloudflare command at it broke every branch that
+  lacked the script — so it was folded into `build`.)*
+- **`public/_redirects`** carries the per-mount SPA fallback (`/v1/* /v1/index.html 200`
+  before the root `/* /index.html 200` — first-match wins) and the `/current/`
+  alias. **Verify `/v1/editor` on a real Cloudflare preview** before flipping
+  production: `wrangler pages dev` emulation of nested-SPA `_redirects` is
+  unreliable; Cloudflare's documented first-match semantics are the ground truth.
+- **Pinned mounts should be built from their version's git tag** (immutable
+  snapshot), not rebuilt from latest `main`. While `main == v1` they're
+  identical; when `v2` lands, the pipeline must build `/v1/` from the `v1.x` tag
+  so it stays frozen. (Tracked in the versioned-deploy issue.)
 
 ## Tests — two tiers
 
@@ -164,20 +211,25 @@ npm run model:preview -- .plans/fidgets/spiral-cone.js          # writes <file>.
 npm run model:preview -- model.js --json                        # stats only, no PNG
 npm run model:preview -- model.js --png out.png -p turns=6      # override api.params (only binds when snippet declares a paramsSchema)
 npm run model:preview -- model.js --view 130,35                 # ONE custom-angle tile (peek behind a feature)
+npm run model:preview -- model.js --view "130,35;0,-72;90,7"    # SEVERAL custom angles in one call (';'-separated az,el) — tiled
 npm run model:preview -- model.js --views front,iso,back        # pick/reorder named views (front,back,right,left,top,bottom,iso)
 ```
 
-- **JSON stat block** (stdout): `isManifold`, `componentCount`, per-component `{volume, bbox, triangleCount, center}`, `volume`, `surfaceArea`, `genus`, `bbox`, `aspectRatio`, `minEdgeLength`/`meanEdgeLength`, model-declared `labels` (name + color), `paramsSchema`, and a `warnings[]` array (fused parts, **interpenetrating components / clearance**, tri-count over the ~200k catalog budget, sub-0.4 mm detail, …).
-- **4-view PNG** (front / right / top / iso by default; override with `--view`/`--views`), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail. Use `--view az,el` to rotate to an occluded feature when the four default angles hide it. The default PNG path is **stamped unique per run** (old stamps for the same model are cleaned up) so the Read tool's per-path image cache can never serve a stale render — take the path from the JSON's `png` field.
+- **JSON stat block** (stdout): `isManifold`, `componentCount`, per-component `{volume, bbox, triangleCount, center}`, `volume`, `surfaceArea`, `genus`, `bbox`, `aspectRatio`, `minEdgeLength`/`meanEdgeLength`, model-declared `labels` (every declared label as `{name, color, triangleCount}` — colored AND uncolored; a **0 triangleCount = a buried/aliased label that paints nothing**), `paramsSchema`, and a `warnings[]` array (fused parts, **interpenetrating components / clearance**, **0-triangle labels**, tri-count over the ~500k catalog budget, sub-0.4 mm detail, …).
+- **4-view PNG** (front / right / top / iso by default; override with `--view`/`--views`), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail. Use `--view az,el` to rotate to an occluded feature when the four default angles hide it — or pass **several `;`-separated pairs** (`--view "az,el;az,el;…"`) to get **multiple custom angles tiled in one call** (e.g. iso + underside + side together). The default PNG path is **stamped unique per run** (old stamps for the same model are cleaned up) so the Read tool's per-path image cache can never serve a stale render — take the path from the JSON's `png` field.
 - **Paint-in-code is verified headlessly.** `api.paint.*` ops (box/slab/cylinder/label) resolve against the mesh with the same pure helpers the browser uses: the PNG shows the colours and `stats.paintOps` lists per-op `{name, kind, triangleCount}` — an op that resolves to **0 triangles warns** (region misses the surface / label doesn't exist). Brush-painted sidecar regions still need the browser.
 - **Voxel `v.sdf` extras:** `voxelRes` (world-units-per-voxel, when all `v.sdf` calls agree), `worldBBox` (bbox × res — the authored world size, no mental ×res), and `sdfLabelCounts` (fills per `colors` label, **including 0** — a zero-fill label warns, surfacing the smoothUnion deepest-region trap instead of silently coloring nothing).
 - Implementation: `scripts/model-preview.mjs` (CLI + pure-JS rasterizer → `sharp`) + `src/tools/previewModel.ts` (the faithful engine call). No WebGL needed.
 
-> **Verify from the angle where a defect would hide — including the underside — not just the default iso/front.** The default 4-view (front/right/top/iso) can completely hide a problem on the bottom of a model (a sole clipping through a base, a foot poking through a pedestal underside, a hollow that only opens downward). When you've changed anything near the ground/underside, **add `--view az,el` with a negative elevation to look UP at the bottom** (e.g. `--view 0,-72`). And when a user reports a defect, **reproduce their exact camera angle first** — fixing what you can't see from your chosen angle is how a "fixed" bug ships unfixed twice.
+> **Verify from the angle where a defect would hide — including the underside — not just the default iso/front.** The default 4-view (front/right/top/iso) can completely hide a problem on the bottom of a model (a sole clipping through a base, a foot poking through a pedestal underside, a hollow that only opens downward). When you've changed anything near the ground/underside, **add `--view az,el` with a negative elevation to look UP at the bottom** (e.g. `--view 0,-72`), or capture several angles at once with `--view "az,el;az,el;…"` (e.g. `--view "-50,28;0,-72;90,7"` for iso + underside + side). And when a user reports a defect, **reproduce their exact camera angle first** — fixing what you can't see from your chosen angle is how a "fixed" bug ships unfixed twice.
 >
-> **`model:preview` shades by face normal — it does NOT show paint/label colors.** To confirm color correctness (e.g. "is this the boot or the skin showing?"), you must render the **colored** catalog bake: `xvfb-run -a node scripts/build-catalog-entry.cjs --source <file> --lang manifold-js --out /tmp/x.partwright.json --palette-file <palette>` writes `/tmp/x.thumb.png`; point its camera with `THUMB_AZIMUTH`/`THUMB_ELEVATION` (negative elevation = from below). A shaded-normal preview that "looks solid" can still be a different label's surface.
+> **Inspect at HIGH RESOLUTION for quality control — small renders hide real defects.** `model:preview` now defaults to `--size 768`, but that is still too small to judge fine features. When scrutinising faces, eyes, lettering, seams, or paint, render a single tight `--view` at **`--size 1200`+** and actively hunt for defects: jagged or rectangular openings, interpenetrations, sliver gaps, faceting, and **paint/colour bleed** (one label's colour spilling onto an adjacent surface). **Crop the PNG natively** (`sharp(...).extract(...)` on the high-res render) to zoom — never upscale a small crop, which only blurs and re-hides the defect. A bug invisible at the default tile size (a jagged box-cut eye opening shipped twice this way) is obvious at 1200px. Treat "looks fine in the thumbnail" as unverified until you've looked at the feature up close.
+>
+> **`model:preview` shades by face normal — it does NOT show `api.label`/palette colors** (in-code `api.paint.*` ops DO resolve and show). To confirm color correctness (e.g. "is this the boot or the skin showing?"), you must render the **colored** catalog bake: `xvfb-run -a node scripts/build-catalog-entry.cjs --source <file> --lang manifold-js --out /tmp/x.partwright.json --palette-file <palette>` writes `/tmp/x.thumb.png`; point its camera with `THUMB_AZIMUTH`/`THUMB_ELEVATION` (negative elevation = from below). A shaded-normal preview that "looks solid" can still be a different label's surface.
 >
 > **Measure geometry empirically when `smoothUnion` is involved — don't trust analytic primitive extents.** A `smoothUnion` bulges the surface *past* either input primitive's bounds (a foot's real underside sat ~0.79·r below the sole centre vs the analytic 0.65·r), and `bounds()` is loose. To find a true surface position, walk `evaluate(x,y,z)` along the axis in a tiny vite-node script (`npx vite-node probe.mjs` importing `__figureTestables__` + `__testables__`) until the sign flips. Set clearances/clip planes below the *measured* value, then confirm coverage with a sample-grid check (sample where one label is solid; assert the covering label is solid there too).
+>
+> **For SUBJECTIVE / aesthetic work, prototype options and get the user's pick BEFORE wiring it into a builder.** When the deliverable is *how something looks* (a shoe/sole, a face, a silhouette, a colour scheme) — not a measurable spec — don't implement one interpretation and iterate it through full implement→bake→review cycles; that's the slowest path and it burns the user's patience. Instead build **2–3 throwaway variations**, render them **from ≥4 angles (incl. the underside) in colour**, show the user a side-by-side (e.g. `bin/partwright.mjs compare`, or `--view "az,el;az,el;…"` / colored bakes montaged with `sharp`), and let them choose the direction. One comparison round beats five blind iterations. (This is the lesson from the footwear sole: several rounds shipped "fixed" before a quick demo-and-pick converged it.)
 
 **`componentCount` is the instrument for print-in-place mechanisms.** A model that returns separate moving parts (screw, spinner, hinge, captive ball, two-tone spiral) must report `componentCount === N`. If it fuses to `1`, the clearance gap is too small or parts collide. The reliable recipe for splitting one solid into interleaved colored parts: subtract a clearance-thick cutter (e.g. a full-diameter helical **slab** for a spiral), then `manifold.decompose()` and color each component. Verify topological/geometric claims with `model:preview`, not from memory.
 
@@ -196,6 +248,16 @@ node bin/partwright.mjs fetch <image-url> --out ref.png            # pull a remo
 ```
 
 `--explain-components` prints the per-island breakdown (already in the JSON's `stats.components`, capped at the top 16 by volume) to stderr so the stdout JSON stays parseable. `--expect-components N` compares against the uncapped `stats.componentCount` and exits 1 on mismatch — the escape hatch for "this mechanism MUST stay N parts." `compare` runs several variants and lays one view of each side-by-side (default iso, `--view az,el` to change it), for A/B param sweeps or before/after checks. `fetch` downloads a remote image to disk so the `photo` voxel-import flow can consume a URL (the env's network policy governs reachability).
+
+> **Paint-label QC headlessly — `figure:smoke` / `--require-labels` (catches buried eyes WITHOUT the ~75s xvfb bake).** `model:preview` shades by face normal and `stats.labels` now lists **every** declared label with its **paintable-triangle count** — including uncolored ones (figure eyes/iris/pupil are labelled geometry whose colour is applied at bake time, so they used to be invisible here). **A label at 0 triangles is a buried/aliased-away feature that will bake as nothing** — the exact trap that shipped eyeless figures, previously only catchable by the slow colored bake. Two ways to gate it in ~2s:
+>
+> ```bash
+> npm run figure:smoke -- figure.js                          # paint-QC report: per-label tri counts, 0-tri flags, manifold/components/genus
+> npm run figure:smoke -- figure.js --require-labels eyes,iris,pupil   # exit 1 if any listed label paints 0 triangles
+> npm run model:preview -- figure.js --require-labels eyes,iris,pupil  # same gate on the full preview (also writes the PNG)
+> ```
+>
+> `--require-labels` is the headless twin of `scripts/build-catalog-entry.cjs --require-labels`, so you catch buried-feature paint failures in the fast loop instead of at bake time. **Pass only the labels THIS figure must show** — closed-lid / closed-mouth figures legitimately paint 0 for eyes/teeth, so a blanket gate would false-positive. Note `components` here is the Node SSR count and can still **under-report vs the browser bake** for near-threshold thin features (see the headless-`componentCount` callout above) — trust `figure:smoke` for *paint resolution*, still verify *component splits* in the browser bake.
 
 **Delegate multi-pass visual iteration to the `model-sculpt` subagent.** Each preview PNG you `Read` in the main context stays there and is re-billed every subsequent turn — image tokens compound. For 3+ render passes on the same model, delegate to `model-sculpt` (or `general-purpose` with its instructions): it owns the render→look→adjust loop in its own disposable context and returns only text. The main agent calls `SendUserFile` to ship the final PNG to the user **without** reading it.
 
@@ -454,6 +516,23 @@ The module graph is **cycle-free** and CI gates on it (`lint:deps`). To keep it 
 
 When you add a feature that would otherwise import "sideways" or "down into" a lower layer, reach for one of these leaf patterns rather than adding the back-edge. Run `npm run lint:deps` before pushing.
 
+### Issue hygiene — don't lose work or discoveries at a boundary
+
+GitHub issues are the durable memory; a chat session is not. Insights, defects, and half-finished scope that live only in chat replies vanish when the session ends. You do **not** need to open an issue before starting ad-hoc work (that friction would kill the fast chat-driven flow) — but you **must reconcile issues at every completion boundary** (a PR opened/merged, or a task declared done).
+
+**Multi-deliverable sessions are the #1 way work leaks.** A dynamic session often fans out into 3–4 intended deliverables, but only the first becomes a PR — and the rest, which lived only in the chat, evaporate when the session ends or its context compacts. Every other durable mechanism here (prompt logs, retros, this close-out nudge) writes at the *end* of work; nothing records the *plan*. So when work is multi-part, capture the **full set** the moment you recognize it, in a place that outlives the conversation:
+
+- **Open one tracking issue per multi-deliverable session** — not one per item; keep the granularity low. Title it `[tracking] <session intent>` with a task-list checklist of the deliverables. **Run `/scope`** to do this. Each deliverable's PR refs the issue and ticks its box; the issue closes only when every box is ticked, so unfinished items survive as the next session's pickup list.
+- **Every multi-part PR carries a scope manifest in its body** — the "Part X of N" sibling checklist (see [Commit & PR Conventions](#commit--pr-conventions)). It rides on the artifact you're looking at when you merge, so leftovers are visible at the exact moment of loss and the weekly `/issue-reconcile` can find them.
+
+Before you say "done":
+
+1. **Discoveries get filed.** Any defect, gap, or "we should also…" you find *while implementing* — something out of scope for the current change — becomes a GitHub issue **before you move on**, not just a sentence in chat. (Example: the carved-mouth-at-small-head defect found while adding figures → filed as its own bug.)
+2. **Partial implementation never closes silently.** If a PR merges but doesn't fully satisfy its originating issue, that issue stays **open** with a checklist of what's left — or you file an explicit follow-up issue (tick the matching box on the tracking issue / scope manifest rather than closing the umbrella). Only close a source issue when **every** acceptance criterion is actually met; a merged PR is not automatically a completed issue.
+3. **Close-out reconciliation.** When you finish a task (and again after a merge), state in chat: *did this fully satisfy the source issue? what was deferred, and where is it tracked? is the tracking issue's checklist current? what did I discover, and did I file it?* Resolve each — done, or tracked in an issue — before ending the turn.
+
+This is boundary hygiene, not bureaucracy: the test is "could the next session pick up everything important without reading this chat?" The `Stop` hook nudges you toward this reconciliation whenever the working tree is dirty **or your branch has unmerged commits** (so it fires even after a clean commit-and-push); the weekly **`/issue-reconcile`** skill is the backstop that walks merged PRs and tracking issues to re-file anything that slipped. The call on *what* warrants an issue is yours, but "nothing tracked it" is the failure mode to avoid.
+
 ### Retros — continuous improvement loop
 
 This repo runs a lightweight self-improving loop so agents make the *next* agent faster and more reliable. See `retros/README.md` for the full picture.
@@ -520,6 +599,17 @@ Subject is imperative and lowercase after the prefix: `feat: add light/dark mode
 - `ignore-for-release` — suppress from release notes (use for `chore:`/`refactor:` housekeeping that shouldn't appear in user-facing notes)
 
 Anything unlabeled lands in "Other Changes." That's fine for occasional internal cleanup, but features and fixes should always be labeled.
+
+**Scope manifest — multi-part PRs declare their siblings.** When a PR is one slice of a larger intent, put a checklist at the top of the body so the full scope is visible at merge time (the moment leftover work is most easily lost):
+
+```
+Part 1 of 3 of "<session intent>" (tracking: #N):
+- [x] this PR — <what it does>
+- [ ] <sibling 2> — <tracked: #M, or "not yet filed">
+- [ ] <sibling 3> — …
+```
+
+Tie it to the session's `[tracking]` issue (`#N`) when one exists (see [Issue hygiene](#issue-hygiene--dont-lose-work-or-discoveries-at-a-boundary) / `/scope`). The weekly `/issue-reconcile` greps merged PR bodies for unchecked sibling boxes, so the manifest is what lets a leftover get re-filed instead of forgotten.
 
 ### Agent working discipline (git, PRs, tool output)
 

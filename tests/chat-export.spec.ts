@@ -103,10 +103,13 @@ test.describe('Chat export', () => {
       const w = window as unknown as { partwright: { exportSessionData: (id: string) => Promise<{ data: unknown }> } };
       return (await w.partwright.exportSessionData(sid)).data as {
         partwright: string;
+        appVersion?: string;
         chat?: { id?: string; sessionId?: string; blocks: { type: string; text?: string }[] }[];
       };
     }, id);
-    expect(exported.partwright).toBe('1.14'); // tracks SCHEMA_VERSION (bumped to 1.14 for surfaceTexture)
+    expect(exported.partwright).toBe('1.15'); // tracks SCHEMA_VERSION (bumped to 1.15 for appVersion provenance)
+    // App-version provenance (schema 1.15): the dev build stamps package.json's semver.
+    expect(exported.appVersion).toMatch(/^\d+\.\d+\.\d+$/);
     expect(exported.chat?.length).toBe(3);
     expect(exported.chat?.[0].blocks[0].text).toBe('Design a widget bracket');
     expect(exported.chat?.[0].id).toBeUndefined();

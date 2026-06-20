@@ -288,6 +288,12 @@ await partwright.exportSTLData()
 await partwright.exportOBJData()        // text or base64 depending on whether colors are painted
 await partwright.export3MFData()
 await partwright.exportVOXData()        // -> {filename, mimeType, base64, sizeBytes} (voxel sessions only)
+// Multi-part: bundle several Session Parts into one file (default: all parts). See /ai/file-io.md.
+await partwright.export3MFParts(partIds?, filename?, {bambu?})  // 3MF: one part per Bambu/Orca plate (bambu:true, default) or generic grid (false)
+await partwright.exportOBJParts(partIds?, filename?)            // OBJ: named objects in one file, grid-arranged (+ .mtl .zip if painted)
+await partwright.exportSTLParts(partIds?, filename?)            // STL: a .zip of one .stl per part
+await partwright.exportGLBParts(partIds?, filename?)            // GLB: named nodes in one scene, grid-arranged
+// ...each has a *Data twin (export{3MF,OBJ,STL,GLB}PartsData) that RETURNS the bytes instead of downloading.
 await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
@@ -343,6 +349,7 @@ await partwright.createSession(name?)    // -> {id, url, galleryUrl}
 await partwright.runAndSave(code, label?, assertions?) // Assert+save in one call -> {passed?, geometry, printability, version, diff, galleryUrl, colorRegions?}. `colorRegions` (also on saveVersion) lists each paint region's {name, kind, label?, triangleCount} — confirm `kind: 'byLabel'` for small files and a non-zero triangleCount. Voxel runs add `geometry.voxelCount`.
 await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch create
 await partwright.saveVersion(label?)     // Save current state as version
+await partwright.saveAllParts()          // Save every part with unsaved changes (visits each, restores the active part) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
 await partwright.renameVersion({index} | {id}, label) // Relabel a version (index is immutable) -> {ok, id, index, label} or {error}
@@ -362,12 +369,14 @@ await partwright.clearAllSessions()      // Delete all sessions & versions
 // (run, save, paint, export, listVersions, ...) acts on. Versions are scoped
 // per part. Use parts for several distinct objects in one session (e.g. a box
 // and its lid); save them as separate STLs/parts, or model each in isolation.
+// Address a part by its name, its id, or its 0-based index (changePart/
+// renamePart/deletePart all accept any of the three).
 partwright.listParts()                   // -> [{id, name, order, isCurrent}]
 partwright.getCurrentPart()              // -> {id, name, order} or null
 await partwright.createPart(name?)       // New empty part + switch to it -> {id, name, order}
-await partwright.changePart(id)          // Switch active part (loads its latest version)
-await partwright.renamePart(id, name)    // Rename a part
-await partwright.deletePart(id)          // Delete a part + its versions (refuses the last one)
+await partwright.changePart(name|id|index)   // Switch active part (loads its latest version)
+await partwright.renamePart(name|id|index, newName)  // Rename a part
+await partwright.deletePart(name|id|index)   // Delete a part + its versions (refuses the last one)
 
 // Color regions -- tag face regions with a color. Full API in /ai/colors.md.
 // Quick reference (~30 methods total):
@@ -451,7 +460,7 @@ Extra fields that appear conditionally:
 - **`containedComponents: N`** — present when N components are fully enclosed inside another solid (e.g. sealed interior voids in a voxel shell). These are excluded from `maxComponents` assertion checks and from the floater warning, since they can't detach in print. Use `runAndExplain(code)` to inspect them individually.
 - **`componentsInterpenetrate: true`** — present when two *separate* components' bounding boxes overlap: they interpenetrate rather than sit apart. If the model should be ONE solid, a boolean didn't fuse (operands must overlap by ≥ 0.5 units); if it's an intentional multi-part assembly, sanity-check the clearance gap.
 - **`stale: true`** — present when the editor code has changed since the last execution (e.g. `setCode` was called without a subsequent run). Stats reflect the *previous* run. Call `runAndSave`/`run` before relying on component counts or other metrics.
-- **`warnings: string[]`** — present when the geometry has issues worth acting on. Beyond the structural ones (non-manifold, free-floating components, empty paint regions) these now include the same cheap heuristics the headless `model:preview` emits: **over the ~200k triangle budget**, **extreme aspect ratio**, **sub-extrusion-width detail** (smallest edge < 0.4), and **interpenetrating components**. Treat every warning as a to-do before declaring done — they catch a whole class of defects from stats alone, no render needed.
+- **`warnings: string[]`** — present when the geometry has issues worth acting on. Beyond the structural ones (non-manifold, free-floating components, empty paint regions) these now include the same cheap heuristics the headless `model:preview` emits: **over the ~500k triangle budget**, **extreme aspect ratio**, **sub-extrusion-width detail** (smallest edge < 0.4), and **interpenetrating components**. Treat every warning as a to-do before declaring done — they catch a whole class of defects from stats alone, no render needed.
 
 On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}`
 

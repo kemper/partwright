@@ -9,13 +9,17 @@
 // pre-paint check in public/route-init.js: pathname "/" with no editor view
 // state in the query or a share hash.
 import { CHUNK_RELOAD_GUARD_KEY, chunkRecoveryAction } from './chunkReload';
+import { appRoute } from './deployment';
 
 function isLandingRoute(): boolean {
-  const p = window.location.pathname;
+  // Compare the base-stripped route so this matches main.ts shouldShowLanding
+  // (which uses appRoute) and public/route-init.js under a `/vN/` mount. No-op
+  // at base `/` (appRoute is the identity there).
+  const route = appRoute(window.location.pathname);
   const q = window.location.search;
   const h = window.location.hash;
   return (
-    (p === '/' || p === '') &&
+    route === '/' &&
     !h.startsWith('#share=') &&
     q.indexOf('view=') < 0 &&
     q.indexOf('session=') < 0 &&

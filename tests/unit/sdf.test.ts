@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import {
   SdfNode,
   partitionByLabel,
+  sourceUsesSdfBuild,
   __testables__,
 } from '../../src/geometry/sdf';
 
@@ -1089,7 +1090,21 @@ describe('sdf build options — detail regions', () => {
   });
 
   it('caps the region count', () => {
-    const many = Array.from({ length: 17 }, () => ({ center: [0, 0, 0], radius: 1, edgeLength: 0.1 }));
+    const many = Array.from({ length: 25 }, () => ({ center: [0, 0, 0], radius: 1, edgeLength: 0.1 }));
     expect(() => assertBuildOpts({ detail: many })).toThrow(/at most/);
+  });
+});
+
+describe('sourceUsesSdfBuild — fast-preview gate', () => {
+  it('matches code that lowers an SDF through .build()', () => {
+    expect(sourceUsesSdfBuild('const { sdf } = api;\nreturn sdf.sphere(10).build({ edgeLength: 0.5 });')).toBe(true);
+    expect(sourceUsesSdfBuild('return api.sdf.figure.rig({}).build({ edgeLength: 0.52 });')).toBe(true);
+    expect(sourceUsesSdfBuild('return foo.build ( { edgeLength: 1 } ); // sdf model')).toBe(true);
+  });
+
+  it('skips plain Manifold code so it never pays for a second pass', () => {
+    expect(sourceUsesSdfBuild('return Manifold.cube([10, 10, 10]);')).toBe(false);
+    expect(sourceUsesSdfBuild('return api.imports[0].build();')).toBe(false); // .build() but no sdf
+    expect(sourceUsesSdfBuild('const { sdf } = api;\nreturn sdf.sphere(10);')).toBe(false); // sdf but no .build()
   });
 });

@@ -38,7 +38,7 @@ const face = F.face.assemble(head, rig, {
   ears:  { size: r.head * 0.25 },
   brows: {},
 });
-const eyes = F.face.eyes(rig, { radius: r.head * 0.17 });
+const eyes = F.face.eyes(rig, { radius: r.head * 0.17, lids: 'upper' });
 const mouthParts = F.face.mouthAccents(rig, mouthOpts);  // provides 'teeth' label
 
 // 3. SKIN — fists on both hands.

@@ -33,7 +33,7 @@ const face = F.face.assemble(head, rig, {
   ears: false,        // the afro covers the sides
   brows: {},
 });
-const eyes = F.face.eyes(rig, { radius: r.head * 0.14 });
+const eyes = F.face.eyes(rig, { radius: r.head * 0.14, lids: 'upper' });
 
 // 3. SKIN — both hands open for the dance.
 const skin = F.weld(rig, [

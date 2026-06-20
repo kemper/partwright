@@ -32,6 +32,21 @@ describe('buildSitemapXml', () => {
     expect(xml).not.toMatch(/<loc>\/[^<]*<\/loc>/);
   });
 
+  it('mounts every <loc> under a versioned base, without double-slashing', () => {
+    const xml = buildSitemapXml('https://example.com', undefined, '/v2/');
+    expect(xml).toContain('<loc>https://example.com/v2/editor</loc>');
+    expect(xml).toContain('<loc>https://example.com/v2/</loc>'); // root → base itself
+    expect(xml).not.toContain('https://example.com/v2//');
+    // The bare (unversioned) paths must NOT appear under a versioned base.
+    expect(xml).not.toContain('<loc>https://example.com/editor</loc>');
+  });
+
+  it('is byte-identical at base "/" (or "") to omitting the base — a no-op', () => {
+    const baseline = buildSitemapXml('https://example.com');
+    expect(buildSitemapXml('https://example.com', undefined, '/')).toBe(baseline);
+    expect(buildSitemapXml('https://example.com', undefined, '')).toBe(baseline);
+  });
+
   it('renders valid sitemap envelope with changefreq + priority', () => {
     const xml = buildSitemapXml('https://example.com', [
       { path: '/', changefreq: 'weekly', priority: 1.0 },

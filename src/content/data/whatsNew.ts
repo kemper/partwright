@@ -26,6 +26,97 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'June 14 – 20, 2026',
+    headline: 'Partwright 1.0 — multi-part & multi-color export, a big figure expansion, and pinned version URLs',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.0',
+            body: 'Partwright reached its first tagged release. The running version is shown in the About dialog, and every release from here on is semantically versioned (vX.Y.Z) so you can tell at a glance whether an update is a routine fix or a bigger change.',
+          },
+          {
+            title: 'Pinned version URLs',
+            body: 'The site root always serves the latest version (the usual /, /editor, /catalog…). Each major version is now also reachable at its own path — e.g. /v1/editor — which stays frozen even after a newer version takes over the root, so a link you pin keeps working. /current/ is a stable alias that always points at the newest.',
+          },
+        ],
+      },
+      {
+        label: 'Export & printing',
+        items: [
+          {
+            title: 'Export every part at once',
+            body: 'A session with several parts now exports them all together — to 3MF, STL, OBJ, or GLB — instead of one part at a time.',
+          },
+          {
+            title: 'Multi-plate Bambu / Orca layout',
+            body: 'Multi-part 3MF export lays your parts out across printer plates with their filament colours preserved, arranged to fit the bed, ready to open in Bambu Studio or OrcaSlicer.',
+          },
+          {
+            title: 'More than three colors',
+            body: 'Color export is no longer capped at three filaments — every distinct color in a model is exported to its own filament, and hand-painted per-triangle color carries through to the slicer.',
+          },
+          {
+            title: 'Don’t lose unsaved work on export',
+            body: 'The export dialog now warns when any part — including parts you’re not currently looking at — has unsaved or never-saved changes, surfaces printability issues right in the confirm step, and can jump you straight to a save chooser so nothing ships stale.',
+          },
+        ],
+      },
+      {
+        label: 'Figures',
+        items: [
+          {
+            title: 'Many more ready-made figures',
+            body: 'The catalog gained 20+ full-body figures showcasing the figure builder, plus ear-showcase busts — all baking as clean, single printable pieces.',
+          },
+          {
+            title: 'More expressive faces',
+            body: 'Figure faces got richer noses with a properly sculpted, projecting form (and a cleaner nostril carve), named lip-shape presets, preset-driven eyebrows that track the eyes, and an elf-ear option with an adjustable point and tilt.',
+          },
+          {
+            title: 'More varied bodies',
+            body: 'New body controls include a native belly knob, a maternity build with a cradle pose and dress for expectant figures, and areolae/nipples that seat flush and paint cleanly across slim, muscled, and fuller chests.',
+          },
+          {
+            title: 'Smoother, faster figure preview',
+            body: 'Figures now render progressively — a coarse pass appears almost immediately and refines to full detail — so posing and tweaking feel responsive instead of waiting on a single slow render.',
+          },
+        ],
+      },
+      {
+        label: 'Garments & footwear',
+        items: [
+          {
+            title: 'Conforming and draping garments',
+            body: 'Figures can wear front/back-panel garments — apron, bib, tabard, cape — that either conform to the torso or drape from it (with apron ties and adjustable thickness), and dress/robe skirts now reliably cover the legs and chest instead of leaving gaps.',
+          },
+          {
+            title: 'Footwear that fits the foot',
+            body: 'Shoes and boots are now derived from each figure’s bare foot via an SDF offset rather than a generic last, so they fit without heel jut or club toe, and a lifted (plantarflexed) foot gets a flat sole instead of a bubble.',
+          },
+        ],
+      },
+      {
+        label: 'Editor, paint & AI',
+        items: [
+          {
+            title: 'Cancel a slow render',
+            body: 'The render Cancel button is now wired up from the moment a deep-linked model starts rendering, so a heavy model opened from a link can be interrupted instead of locking the view.',
+          },
+          {
+            title: 'Smoother painting',
+            body: 'After a smooth stroke the mesh no longer needlessly re-subdivides on every subsequent paint, and the paint refine modal offers a one-click “turn off edge smoothing” tip when it would give cleaner results.',
+          },
+          {
+            title: 'AI can target any part',
+            body: 'The in-app AI can now address parts by name, id, or index — not just whichever part is selected — and the advisory triangle budget was raised to 500k for more detailed models.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'June 12 – 13, 2026',
     headline: 'Diverse figures, footwear and expressive faces, plus editor and viewport polish',
     groups: [
@@ -43,6 +134,10 @@ export const WHATS_NEW_WEEKS: WeekEntry[] = [
           {
             title: 'Expressive eyes',
             body: 'Figure eyes now read as a recognizable layered iris and pupil painted onto a smooth eyeball, instead of raised beads, with smoother eye meshing across all the figures.',
+          },
+          {
+            title: 'Eyelids',
+            body: 'Eyes gained paintable eyelids that wrap the eyeball — two independent lids (upper and lower) you can dial from open to a slit to fully closed, plus named presets (upper, hooded, half, closed, almond, tapered). The catalog figures now wear lids suited to each character.',
           },
           {
             title: 'Headwear and richer hair',

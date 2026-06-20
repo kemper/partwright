@@ -32,6 +32,7 @@ import {
   getDraft as dbGetDraft,
   setDraft as dbSetDraft,
   deleteDraft as dbDeleteDraft,
+  listDrafts as dbListDrafts,
   deletePartDrafts as dbDeletePartDrafts,
   legacyImagesObjectToArray,
   generateId,
@@ -61,7 +62,11 @@ import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
 import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
+import { isStarterCode } from '../editor/starters';
 import { effectiveVersionLanguage, asLanguage } from './languageFallback';
+import { buildInfo } from '../buildInfo';
+import { appVersionCompatibility } from './appVersionCompat';
+import { appPath } from '../deployment';
 
 /**
  * Current schema version for `.partwright.json` exports.
@@ -155,10 +160,24 @@ import { effectiveVersionLanguage, asLanguage } from './languageFallback';
  *           texture's appearance is pinned at save time. Self-validating via
  *           the key (a stale key just recomputes); absent ⇒ recompute on
  *           demand. Older readers ignore the field.
+ *  - `1.15` — app-version provenance. Records the Partwright **app** semver
+ *           (package.json `version`, e.g. "1.0.0") that authored the file: a
+ *           top-level `appVersion` (the exporting build) and per-version
+ *           `versions[].appVersion` (the build that saved each snapshot — its
+ *           "last known good" version). This is a *different axis* from this
+ *           schema number; it's the signal the cross-major migration flow keys
+ *           off (see appVersionCompat.ts). Absent on pre-1.15 files and on
+ *           dev/test builds (version 'unknown'); older readers ignore it.
  */
-export const SCHEMA_VERSION = '1.14';
+export const SCHEMA_VERSION = '1.15';
 
 const CURRENT_MAJOR = 1;
+
+/** The running build's app semver (package.json `version`). 'unknown' in
+ *  dev/test, where we stamp nothing rather than persist the placeholder. */
+const APP_VERSION = buildInfo.version;
+const stampedAppVersion: string | undefined =
+  APP_VERSION && APP_VERSION !== 'unknown' ? APP_VERSION : undefined;
 
 /** Name given to the implicit first part of every session. */
 const DEFAULT_PART_NAME = 'Part 1';
@@ -176,6 +195,15 @@ export interface ExportedSession {
   partwright?: string;
   /** Legacy alias from the pre-rebrand era. Read as a fallback only. */
   mainifold?: string;
+  /**
+   * The Partwright **app** semver (package.json `version`, e.g. "1.0.0") of the
+   * build that exported this file — distinct from the `partwright` schema
+   * version above. The file-level "authored with" signal the cross-major
+   * migration flow reads (see {@link appVersionCompatibility}). Absent on
+   * pre-1.15 files and dev/test builds.
+   * @since 1.15
+   */
+  appVersion?: string;
   /** Images may be the array form or the legacy object map ({front, right, ...}).
    * Both also exist under `referenceImages` for pre-rename exports. */
   session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number }; workCamera?: { position: [number, number, number]; target: [number, number, number] } };
@@ -256,6 +284,15 @@ export interface ExportedSession {
      * @since 1.14
      */
     surfaceTexture?: ExportedSurfaceTexture;
+    /**
+     * App semver (package.json `version`) of the build that saved this version —
+     * its "last known good" app version. Absent on versions saved before this
+     * field existed and on dev/test builds. Preserved verbatim on import (the
+     * provenance follows the geometry; it is NOT re-stamped to the importing
+     * build).
+     * @since 1.15
+     */
+    appVersion?: string;
   }[];
   notes?: { text: string; timestamp: number }[];
   /**
@@ -505,7 +542,7 @@ export function getState(): SessionState {
 
 function updateURL() {
   const params = new URLSearchParams(window.location.search);
-  const basePath = '/editor';
+  const basePath = appPath('/editor');
   if (currentState.session) {
     params.set('session', currentState.session.id);
     // Only pin the part in the URL when the session has more than one — a
@@ -884,6 +921,38 @@ export async function changePart(partId: string, versionIndex?: number): Promise
   return version;
 }
 
+/** Save state of a NON-current part for the multi-part save flow:
+ *   - `'clean'`   — committed and its draft matches (nothing to save).
+ *   - `'empty'`   — never committed AND still the untouched starter ("no changes
+ *                   yet"): savable, but the modal notes it so the user can skip.
+ *   - `'unsaved'` — real work to save: either never committed but edited, or
+ *                   committed with a diverging draft (code / SCAD companions).
+ *  The CURRENT part is judged from the live editor buffer instead (its draft
+ *  doesn't carry paint/param/annotation changes) — see {@link currentPartIsDirty}.
+ */
+export type PartSaveState = 'clean' | 'empty' | 'unsaved';
+
+export async function partSaveState(part: Part): Promise<PartSaveState> {
+  const latest = await getLatestVersion(part.id);
+  if (!latest) {
+    // Never committed: "unsaved" if any stashed draft holds real (non-starter)
+    // content; otherwise it's an untouched new part ("no changes yet").
+    const drafts = await dbListDrafts(part.sessionId);
+    const prefix = `${part.sessionId}:${part.id}:`;
+    const hasContent = drafts.some(d => d.id.startsWith(prefix) && !isStarterCode(d.code));
+    return hasContent ? 'unsaved' : 'empty';
+  }
+  const lang = effectiveVersionLanguage(latest, currentState.session);
+  const draft = await readDraft(part.sessionId, lang, part.id);
+  if (!draft) return 'clean';
+  if (draft.code !== latest.code) return 'unsaved';
+  // SCAD drafts also stash unsaved companion-file edits; treat those as unsaved.
+  if (lang === 'scad' && !companionFilesEqual(latest.companionFiles ?? {}, draft.companionFiles ?? {})) {
+    return 'unsaved';
+  }
+  return 'clean';
+}
+
 export async function renamePart(partId: string, newName: string): Promise<void> {
   await dbUpdatePart(partId, { name: newName, updated: Date.now() });
   const idx = currentState.parts.findIndex(p => p.id === partId);
@@ -1060,6 +1129,52 @@ function colorRegionsEqual(prev: Record<string, unknown> | null | undefined, nex
   return JSON.stringify(prevRegions) === JSON.stringify(nextRegions);
 }
 
+/** Shared dedup predicate: true when the given editor state is byte-identical
+ *  to the loaded version (code, annotations, color regions, params, companion
+ *  files), so saving it would be a no-op. `annotationSnapshot` is passed in so
+ *  callers don't re-serialize annotations twice. Used by both saveVersion (to
+ *  skip a redundant save) and {@link currentPartIsDirty} (to detect a dirty
+ *  current part for the multi-part save flow). */
+function versionMatchesCurrent(
+  code: string,
+  annotationSnapshot: ReturnType<typeof serializeAnnotations>,
+  geometryData: Record<string, unknown> | null,
+  paramValues: Record<string, number | boolean | string> | undefined,
+  nextCompanions: Record<string, string>,
+): boolean {
+  return (
+    !!currentState.currentVersion &&
+    currentState.currentVersion.code === code &&
+    annotationsEqual(currentState.currentVersion.annotations, annotationSnapshot) &&
+    colorRegionsEqual(currentState.currentVersion.geometryData as Record<string, unknown> | null, geometryData) &&
+    paramValuesEqual(currentState.currentVersion.paramValues, paramValues) &&
+    companionFilesEqual(currentState.currentVersion.companionFiles, nextCompanions)
+  );
+}
+
+/** Whether the CURRENT part has unsaved edits relative to its loaded version —
+ *  the live-editor counterpart to {@link partHasUnsavedDraft} (which judges the
+ *  other parts from their stashed drafts). Mirrors saveVersion's dedup so the
+ *  multi-part save flow can decide whether the current part belongs in the
+ *  unsaved set before committing anything. A part with no loaded version yet
+ *  (freshly created, never saved) is NOT reported dirty here — an untouched
+ *  starter buffer isn't unsaved work to nag about. */
+export function currentPartIsDirty(
+  code: string,
+  geometryData: Record<string, unknown> | null,
+  opts?: {
+    paramValues?: Record<string, number | boolean | string>;
+    companionFiles?: Record<string, string>;
+  },
+): boolean {
+  if (!currentState.session || !currentState.currentPart) return false;
+  // Never committed → unsaved, even if the buffer is still the starter: a part
+  // the user created and hasn't saved should be offered in the multi-part save.
+  if (!currentState.currentVersion) return true;
+  const nextCompanions = opts?.companionFiles ?? currentState.currentVersion.companionFiles ?? {};
+  return !versionMatchesCurrent(code, serializeAnnotations(), geometryData, opts?.paramValues, nextCompanions);
+}
+
 export async function saveVersion(
   code: string,
   geometryData: Record<string, unknown> | null,
@@ -1105,12 +1220,7 @@ export async function saveVersion(
   // identical to the current version (unless forced).
   if (
     !options?.force &&
-    currentState.currentVersion &&
-    currentState.currentVersion.code === code &&
-    annotationsEqual(currentState.currentVersion.annotations, annotationSnapshot) &&
-    colorRegionsEqual(currentState.currentVersion.geometryData as Record<string, unknown> | null, geometryData) &&
-    paramValuesEqual(currentState.currentVersion.paramValues, paramValues) &&
-    companionFilesEqual(currentState.currentVersion.companionFiles, nextCompanions)
+    versionMatchesCurrent(code, annotationSnapshot, geometryData, paramValues, nextCompanions)
   ) {
     return null;
   }
@@ -1135,6 +1245,9 @@ export async function saveVersion(
       parentVersionId: options?.parentVersionId ?? null,
       operation: options?.operation ?? null,
       surfaceTexture: options?.surfaceTexture,
+      // Stamp the app version that authored this snapshot — its "last known
+      // good" version (undefined in dev where it's 'unknown').
+      appVersion: stampedAppVersion,
     }
   );
 
@@ -1319,13 +1432,13 @@ export async function renameVersion(versionId: string, label: string): Promise<V
 
 export function getSessionUrl(): string {
   if (!currentState.session) return window.location.href;
-  const base = window.location.origin + '/editor';
+  const base = window.location.origin + appPath('/editor');
   return `${base}?session=${currentState.session.id}`;
 }
 
 export function getGalleryUrl(): string {
   if (!currentState.session) return window.location.href;
-  const base = window.location.origin + '/editor';
+  const base = window.location.origin + appPath('/editor');
   return `${base}?session=${currentState.session.id}&gallery`;
 }
 
@@ -1757,6 +1870,7 @@ export async function exportSession(
 
   return {
     partwright: SCHEMA_VERSION,
+    ...(stampedAppVersion ? { appVersion: stampedAppVersion } : {}),
     session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}) },
     parts: parts.map(p => ({ name: p.name, order: p.order })),
     versions: flat.map(({ v, partOrder }, i) => {
@@ -1782,6 +1896,7 @@ export async function exportSession(
         ...(surfaceTexture ? { surfaceTexture } : {}),
         ...(v.paramValues && Object.keys(v.paramValues).length > 0 ? { paramValues: v.paramValues } : {}),
         ...(v.companionFiles && Object.keys(v.companionFiles).length > 0 ? { companionFiles: v.companionFiles } : {}),
+        ...(v.appVersion ? { appVersion: v.appVersion } : {}),
       };
     }),
     ...(notes.length > 0 ? { notes: notes.map(n => ({ text: n.text, timestamp: n.timestamp })) } : {}),
@@ -1799,6 +1914,11 @@ export async function importSession(
 ): Promise<Session> {
   const warning = getSchemaCompatibilityWarning(data);
   if (warning && onWarning) onWarning(warning);
+  // App-version provenance check — distinct axis from the schema warning above.
+  // Newer-major files warn; older-major is silent and is where a future major
+  // will hook its forward-migration codemod (see appVersionCompat.ts).
+  const appCompat = appVersionCompatibility(data);
+  if (appCompat.warning && onWarning) onWarning(appCompat.warning);
 
   // Validate before creating anything: a file with no `versions` array would
   // otherwise throw partway through (data.versions.reduce/for-of) and strand an
@@ -1945,6 +2065,10 @@ export async function importSession(
           // Persisted surface texture (schema 1.14+). Pre-1.14 files omit it;
           // the texture chain then recomputes on the version's first load.
           surfaceTexture: deserializeSurfaceTexture(v.surfaceTexture),
+          // App-version provenance (schema 1.15+). Preserved verbatim — the
+          // "last known good" version follows the geometry, so it is NOT
+          // re-stamped to the importing build.
+          appVersion: typeof v.appVersion === 'string' ? v.appVersion : undefined,
         }
       );
     }
@@ -2132,6 +2256,8 @@ export async function importSessionPartsIntoActive(
           operation: null,
           // Persisted surface texture (schema 1.14+); absent ⇒ recompute on load.
           surfaceTexture: deserializeSurfaceTexture(v.surfaceTexture),
+          // App-version provenance (schema 1.15+) — preserved, not re-stamped.
+          appVersion: typeof v.appVersion === 'string' ? v.appVersion : undefined,
         }
       );
       copiedVersions++;

@@ -23,6 +23,7 @@ import {
   assertNumber,
   assertNumberTuple,
   assertEnum,
+  assertBoolean,
   assertObject,
   assertNoUnknownKeys,
   ValidationError,
@@ -55,6 +56,9 @@ export interface Node {
   displace(amount: number, field: (x: number, y: number, z: number) => number): Node;
   label(name: string): Node;
   bounds(): { min: Vec3; max: Vec3 };
+  /** Signed distance at a world point (negative inside). Used to measure the
+   *  body's forward-most surface for draping garments. */
+  evaluate(x: number, y: number, z: number): number;
 }
 
 export interface SdfApi {
@@ -137,7 +141,7 @@ const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const LEG_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const HEAD_FIELDS = ['yaw', 'pitch', 'roll'];
 const SPINE_FIELDS = ['lean', 'turn', 'side'];
-const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'pose'];
+const RIG_FIELDS = ['height', 'headsTall', 'build', 'sex', 'age', 'weight', 'muscle', 'bust', 'belly', 'pose'];
 const POSE_FIELDS = ['arms', 'legs', 'armL', 'armR', 'legL', 'legR', 'head', 'spine'];
 
 function parseArm(v: unknown, name: string, defRaiseSide: number): JointPose {
@@ -170,6 +174,40 @@ export interface RigOptions {
    *  widens the shoulders and narrows the waist/hips; 'female' does the
    *  reverse. Independent of `build` (overall thickness). */
   sex?: 'neutral' | 'male' | 'female';
+  /** Age in years (1..90, default 25 = young adult). Shifts torso girth toward
+   *  the mined MakeHuman baby/child/old proportions; it does NOT change
+   *  `headsTall` (the head-to-body ratio) — lower `headsTall` too for a full
+   *  child/chibi look. */
+  age?: number;
+  /** Body weight as a 0..1 slider (default 0.5 = average; 0 = lean, 1 = heavy).
+   *  Widens/narrows the waist, hips, and chest (and their depth) per the mined
+   *  MakeHuman weight morph. */
+  weight?: number;
+  /** Muscle definition as a 0..1 slider (default 0 = smooth/undefined; 1 =
+   *  heavily muscled). Adds anatomically-anchored muscle masses — pectorals,
+   *  abdominals, lats and traps on the torso; deltoids, biceps, triceps and a
+   *  forearm swell on the arms; quadriceps, calves and glutes on the legs — that
+   *  track the pose via the rig frames. Orthogonal to `weight` (fat vs muscle):
+   *  a lean athlete is high `muscle`, low `weight`; a soft build is the reverse.
+   *  At `muscle: 0` no masses are added, so existing figures are unchanged. */
+  muscle?: number;
+  /** Bust / chest mound size, a continuous 0..2 knob (0 = flat, ~0.35 subtle,
+   *  ~0.7 medium, ~1.1 full). It is **independent of `sex`** — any figure can
+   *  carry any value. `sex:'female'` only *pre-fills* a sensible default
+   *  (≈0.35) when `bust` is omitted; pass an explicit `bust` to override on any
+   *  figure. The mound blends into the chest and the nipple/areola landmarks
+   *  ride its apex. */
+  bust?: number;
+  /** Belly / abdominal swell, a continuous 0..2 knob (default 0 = no swell;
+   *  ~0.5 a soft tummy, ~1 a pronounced pregnant/round belly). Grows the
+   *  abdomen ellipsoid FORWARD (and modestly in girth/height) while RAISING its
+   *  centre as it grows so the swell's bottom stays above the hip joint — it
+   *  reads as a belly, never a low mass dropping between the legs. Because the
+   *  torso masses feed both `F.torso` AND the coverage underlayer of
+   *  `F.clothing.top`, one knob makes the body swell, the navel ride it, and a
+   *  dress/top drape over it automatically — no hand-rolled bump needed. At
+   *  `belly: 0` the torso is byte-identical to before. */
+  belly?: number;
   pose?: {
     armL?: object; armR?: object; legL?: object; legR?: object;
     head?: object; spine?: object;
@@ -179,6 +217,22 @@ export interface RigOptions {
 export interface FaceAnchors {
   eyeL: Vec3; eyeR: Vec3; browL: Vec3; browR: Vec3;
   nose: Vec3; mouth: Vec3; earL: Vec3; earR: Vec3; chinTip: Vec3;
+}
+
+/** Front-of-torso surface landmarks — the torso analog of {@link FaceAnchors}.
+ *  The two chest nipple points and the navel, each projected onto the body's
+ *  FRONT (−Y) surface and tracking `sex`/`age`/`weight`/`build` automatically
+ *  (a fuller chest pushes the nipples out, a heavier belly pushes the navel
+ *  out). `figure.torso(rig, { nipples, navel })` reliefs them, but they're also
+ *  the canonical anchors for attaching your own detail there — pasties, a navel
+ *  gem, body-paint discs, a chest emblem. Derived; never hand-typed. */
+export interface TorsoAnchors {
+  /** Figure-LEFT (+X) nipple, on the chest front surface. */
+  nippleL: Vec3;
+  /** Figure-RIGHT (−X) nipple, on the chest front surface. */
+  nippleR: Vec3;
+  /** Navel, on the belly front surface at the natural navel height. */
+  navel: Vec3;
 }
 
 /** A hand's grip as a full coordinate frame — the missing piece for connecting
@@ -254,10 +308,79 @@ export interface Rig {
   sole: { L: SoleFrame; R: SoleFrame };
   /** Facial landmark world positions (derived; never hand-typed). */
   face: FaceAnchors;
-  opts: { height: number; headsTall: number; build: string; sex: string; pose: ResolvedPose };
+  /** Front-of-torso surface landmarks (nipples + navel) — see {@link TorsoAnchors}. */
+  torso: TorsoAnchors;
+  opts: { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; muscle: number; bust: number; belly: number; pose: ResolvedPose };
 }
 
 const BUILD_MUL: Record<string, number> = { slim: 0.82, average: 1, stocky: 1.22 };
+
+// --- Anthropometric girth model (sex / age / weight) ---------------------
+// Per-region torso-girth multipliers applied to the head-unit widths, all
+// normalized so the calibration anchor — sex 'neutral', age 25 (young adult),
+// weight 0.5 (average) — is exactly 1.0 in every region, leaving existing
+// figures byte-identical.
+//
+// AGE and WEIGHT are MINED from MakeHuman's CC0 macrodetail morph targets
+// (github.com/makehumancommunity/makehuman, targets released CC0 2020) by
+// scripts/mine-makehuman-anthropometry.mjs: each corner target is applied to
+// MakeHuman's base mesh and the torso cross-section circumference is measured
+// at shoulder/chest/waist/hip landmarks (heights taken from the mesh's own
+// joint helpers), then normalized to the young/average point.
+//
+// SEX breadth is anthropometry-informed *stylization*. The mine confirmed that
+// MakeHuman's macro gender delta is sub-1% at these landmarks — the gendered
+// look there comes from the muscle/proportion sliders, not gender alone — too
+// subtle to read on a stylized figurine. So the breadth values below are tuned
+// for a recognizable silhouette (male: wider shoulders, narrower waist/hips;
+// female: the hourglass), while the one strong CC0 sex signal — the female-only
+// breast target (≈ chest ×1.04 at a moderate cup) — is reflected in `chest`.
+// See public/ai/figure.md and the mining-script header for full provenance.
+type Girth = { shoulder: number; chest: number; waist: number; hip: number };
+const GIRTH_REGIONS = ['shoulder', 'chest', 'waist', 'hip'] as const;
+const SEX_MUL: Record<string, Girth> = {
+  neutral: { shoulder: 1, chest: 1, waist: 1, hip: 1 },
+  male: { shoulder: 1.16, chest: 1.06, waist: 0.94, hip: 0.9 },
+  female: { shoulder: 0.9, chest: 1.06, waist: 0.84, hip: 1.14 },
+};
+// MakeHuman-mined anchors (.plans/mh/anthro.json). `age` interpolates by years,
+// `weight` by a 0..1 slider (0 = lean/minweight, 0.5 = average, 1 = heavy/maxweight).
+const AGE_ANCHORS: { x: number; g: Girth }[] = [
+  { x: 1,  g: { shoulder: 1.006, chest: 0.981, waist: 0.959, hip: 0.969 } }, // baby
+  { x: 7,  g: { shoulder: 1.003, chest: 0.997, waist: 0.995, hip: 0.999 } }, // child
+  { x: 25, g: { shoulder: 1, chest: 1, waist: 1, hip: 1 } },                 // young (anchor)
+  { x: 70, g: { shoulder: 0.998, chest: 0.996, waist: 0.976, hip: 1 } },     // old
+];
+const WEIGHT_ANCHORS: { x: number; g: Girth }[] = [
+  { x: 0,   g: { shoulder: 0.979, chest: 1.008, waist: 0.949, hip: 0.993 } },  // minweight
+  { x: 0.5, g: { shoulder: 1, chest: 1, waist: 1, hip: 1 } },                  // average (anchor)
+  { x: 1,   g: { shoulder: 1.027, chest: 1.039, waist: 1.096, hip: 1.058 } },  // maxweight
+];
+
+/** Piecewise-linear interpolation of a per-region anchor table at `x` (clamped
+ *  to the anchor range). */
+function interpGirth(anchors: { x: number; g: Girth }[], x: number): Girth {
+  let i = 0;
+  while (i < anchors.length - 1 && x > anchors[i + 1].x) i++;
+  const j = Math.min(i + 1, anchors.length - 1);
+  const x0 = anchors[i].x, x1 = anchors[j].x;
+  const t = x1 > x0 ? Math.max(0, Math.min(1, (x - x0) / (x1 - x0))) : 0;
+  const a = anchors[i].g, b = anchors[j].g;
+  const out = {} as Girth;
+  for (const r of GIRTH_REGIONS) out[r] = a[r] + (b[r] - a[r]) * t;
+  return out;
+}
+
+/** Combined per-region girth multiplier from sex × age(years) × weight(0..1).
+ *  Neutral/young(25)/average(0.5) yields 1.0 in every region. */
+function anthroGirth(sex: string, ageYears: number, weight: number): Girth {
+  const s = SEX_MUL[sex] || SEX_MUL.neutral;
+  const ag = interpGirth(AGE_ANCHORS, ageYears);
+  const wt = interpGirth(WEIGHT_ANCHORS, weight);
+  const out = {} as Girth;
+  for (const r of GIRTH_REGIONS) out[r] = s[r] * ag[r] * wt[r];
+  return out;
+}
 
 // --- Skin-tone palette ----------------------------------------------------
 // A curated, evenly-spaced ramp of realistic skin hexes spanning the full
@@ -310,6 +433,15 @@ function buildRig(rawOpts: unknown): Rig {
   const bw = BUILD_MUL[build];
   const sex = o.sex === undefined ? 'neutral'
     : assertEnum(o.sex, ['neutral', 'male', 'female'] as const, 'rig.sex');
+  const age = num(o.age, 25, 'rig.age', 1, 90);
+  const weight = num(o.weight, 0.5, 'rig.weight', 0, 1);
+  const muscle = num(o.muscle, 0, 'rig.muscle', 0, 1);
+  // Bust is independent of sex; `sex:'female'` only pre-fills a default when the
+  // caller didn't set `bust`. Any figure can carry any value.
+  const bust = o.bust === undefined ? (sex === 'female' ? 0.35 : 0) : num(o.bust, 0, 'rig.bust', 0, 2);
+  // Abdominal swell (pregnancy / soft tummy). Default 0 = no swell, so every
+  // existing figure stays byte-identical. Independent of `weight`/`build`.
+  const belly = num(o.belly, 0, 'rig.belly', 0, 2);
 
   const poseRaw = obj(o.pose, 'rig.pose');
   assertNoUnknownKeys(poseRaw, POSE_FIELDS, 'rig.pose');
@@ -375,30 +507,47 @@ function buildRig(rawOpts: unknown): Rig {
   // default headsTall:6 silhouette is unchanged, but now every headsTall stays
   // proportionally coherent — chibis get chunky, heroes get lean, automatically.
   //
-  // `sex` shifts the shoulder/chest/waist/hip balance along the same canon
-  // (male: wider shoulders + narrower waist/hips; female: the reverse). These
-  // are the anthropometric shape deltas MakeHuman's CC0 targets encode, written
-  // as head-unit ratio multipliers rather than mesh morphs. `build` (overall
-  // thickness) multiplies on top, so the two axes compose.
-  const SEX_MUL: Record<string, { shoulder: number; chest: number; waist: number; hip: number }> = {
-    neutral: { shoulder: 1, chest: 1, waist: 1, hip: 1 },
-    male: { shoulder: 1.16, chest: 1.06, waist: 0.92, hip: 0.9 },
-    female: { shoulder: 0.9, chest: 0.98, waist: 0.86, hip: 1.14 },
-  };
-  const sm = SEX_MUL[sex];
+  // `sex`, `age`, and `weight` shift the shoulder/chest/waist/hip balance via
+  // `anthroGirth` (the MakeHuman-CC0-mined model defined at module scope —
+  // weight/age mined, sex breadth anthropometry-informed). `build` (overall
+  // thickness) multiplies on top, so the axes compose. At the calibration
+  // anchor (neutral / age 25 / weight 0.5) every multiplier is 1.
+  const gm = anthroGirth(sex, age, weight);
+  const wt = interpGirth(WEIGHT_ANCHORS, weight);   // weight also adds torso DEPTH (3D bulk)
   const hu = (ratio: number) => headH * ratio * bw;   // head-unit girth (× build)
-  const shoulderHalfX = hu(0.648) * sm.shoulder;
-  const hipHalfX = hu(0.432) * sm.hip;
+  const shoulderHalfX = hu(0.648) * gm.shoulder;
+  const hipHalfX = hu(0.432) * gm.hip;
+  // Minimum front-back torso DEPTH floor. The torso's thin dimension is its
+  // depth (chestY/hipsY); a slim × lean × narrow-sex combination can drive it
+  // low enough that surface masses (muscle bellies, garment offsets) pinch the
+  // wall into holes/voids. Floor it at a fraction of the head so the core always
+  // has a printable, non-self-intersecting depth — leanness can make a figure
+  // trim, never paper-thin. The floor is **muscle-aware**: muscle bellies need
+  // core depth to seat into, so each unit of `muscle` raises the minimum depth
+  // (you can't be both maximally lean AND maximally muscled — the masses would
+  // have nothing to merge into). At `muscle: 0` the floor (0.26/0.24·headH)
+  // sits BELOW every real build's depth (slim chestY ≈ 0.33·headH), so existing
+  // figures are byte-identical; it only lifts the very thinnest muscled combos.
+  const depthFloor = (v: number, minRatio: number): number =>
+    Math.max(v, headH * (minRatio + 0.14 * muscle));
   const r = {
     head: ryHead, headX: rxHead, headZ: rzHead,
     neck: hu(0.204),
-    chestX: hu(0.630) * sm.chest, chestY: hu(0.396),
-    hipsX: hu(0.516) * sm.hip, hipsY: hu(0.360),
+    chestX: hu(0.630) * gm.chest, chestY: depthFloor(hu(0.396) * wt.chest, 0.26),
+    hipsX: hu(0.516) * gm.hip, hipsY: depthFloor(hu(0.360) * wt.hip, 0.24),
     // The garment-fitting radius at the natural waist (rig.joints.spine) — use
     // this, not hipsX (a leg-insertion radius), to size belts/skirts/tutus.
-    waist: hu(0.492) * sm.waist,
+    waist: hu(0.492) * gm.waist,
     upperArm: hu(0.204), lowerArm: hu(0.168), hand: hu(0.252),
     upperLeg: hu(0.288), lowerLeg: hu(0.216), foot: hu(0.240),
+    // Foot LENGTH is a stature proportion — like the limb lengths (`H * …`)
+    // below, NOT a head-unit girth: anthropometric foot length ≈ 0.15·stature
+    // and is fairly stable across builds, so it scales with H, not the head.
+    // (The mined anthropometry covers girth by sex/age/weight, not segment
+    // length, so there is no per-demographic foot table — this is the canon.)
+    // `r.foot` (above) still drives foot WIDTH/HEIGHT; this drives heel→toe,
+    // weighted into the forefoot (buildFeet keeps the heel a shallow bump).
+    footLen: H * 0.15,
   };
 
   // --- Arm FK ------------------------------------------------------------
@@ -468,7 +617,7 @@ function buildRig(rawOpts: unknown): Rig {
     // (knee 0 — ballet first/fifth) shows the turnout only here, since the
     // shank stays vertical; buildFeet orients the foot along this.
     const footFwd = norm3(rotZ([0, -1, 0], side * p.twist));
-    return { Hj, K, A, dir, shankDir, footFwd };
+    return { Hj, K, A, dir, shankDir, footFwd, hinge };
   }
   const lL = legChain(+1, pose.legL);
   const lR = legChain(-1, pose.legR);
@@ -551,19 +700,41 @@ function buildRig(rawOpts: unknown): Rig {
     };
   };
 
+  // Joint POINTS named in the VRM/Unity humanoid scheme (the single canonical
+  // vocabulary — see public/ai/figure.md). A joint is the bone's ROOT point:
+  // `upperArmL` is the glenohumeral joint where the upper-arm bone starts (NOT
+  // the clavicle, which VRM confusingly calls the "shoulder" bone). `wristL`
+  // is the forearm end; `handL` is the hand-mass centre (the prop/grip point).
+  const joints: Record<string, Vec3> = {
+    hips: [0, 0, pelvisZ], spine: [0, -r.chestY * 0.4, navelZ], chest: sPt([0, -r.chestY * 0.2, chestZ]),
+    neck: sPt([0, 0, shoulderZ + neckLen * 0.2]), head: sPt(headCenter), crown: sPt([headCenter[0], headCenter[1], H]), chin: sPt([0, 0, chinZ]),
+    upperArmL: sPt(aL.S), lowerArmL: sPt(aL.E), wristL: sPt(aL.W), handL: sPt(aL.handC),
+    upperArmR: sPt(aR.S), lowerArmR: sPt(aR.E), wristR: sPt(aR.W), handR: sPt(aR.handC),
+    upperLegL: lL.Hj, lowerLegL: lL.K, footL: lL.A, upperLegR: lR.Hj, lowerLegR: lR.K, footR: lR.A,
+  };
+
+  // --- Front-of-torso surface landmarks (nipples + navel) ----------------
+  // Project them onto the FRONT (−Y) surface of the torso so they track every
+  // proportion knob (sex/age/weight widen the chest; a heavy belly bulges the
+  // navel out). When `bust > 0` the nipples ride the breast-mound APEX instead
+  // of the bare chest. The masses are computed by the SAME helpers buildTorso
+  // uses, so the anchor and the geometry can never drift. The chest centre is
+  // spine-transformed, so a leaning figure carries its nipples with the chest.
+  const tm = torsoMasses(joints, r, belly);
+  const mounds = breastMounds(joints, r, bust);
+  // Muscled chests bulge a pec mass forward of the bare chest; the areola rides
+  // its apex (like it rides the mound apex for bust) so it doesn't sink in.
+  const pecs = pecApex(joints, r, muscle, pose.spine);
+  const nippleZ = nippleLineZ(joints.upperArmL[2], joints.hips[2], headH);   // upper chest, ≈0.62 head below the shoulder
+  const nippleDX = r.chestX * 0.42;                      // half the inter-nipple span
+  const torsoAnchors: TorsoAnchors = {
+    nippleL: mounds ? mounds.apexL : pecs ? pecs.apexL : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, nippleDX, nippleZ),
+    nippleR: mounds ? mounds.apexR : pecs ? pecs.apexR : ellipsoidFront(tm.chest.c, tm.chest.a, tm.chest.b, tm.chest.cz, -nippleDX, nippleZ),
+    navel: ellipsoidFront(tm.belly.c, tm.belly.a, tm.belly.b, tm.belly.cz, 0, navelZ),
+  };
+
   return {
-    // Joint POINTS named in the VRM/Unity humanoid scheme (the single canonical
-    // vocabulary — see public/ai/figure.md). A joint is the bone's ROOT point:
-    // `upperArmL` is the glenohumeral joint where the upper-arm bone starts (NOT
-    // the clavicle, which VRM confusingly calls the "shoulder" bone). `wristL`
-    // is the forearm end; `handL` is the hand-mass centre (the prop/grip point).
-    joints: {
-      hips: [0, 0, pelvisZ], spine: [0, -r.chestY * 0.4, navelZ], chest: sPt([0, -r.chestY * 0.2, chestZ]),
-      neck: sPt([0, 0, shoulderZ + neckLen * 0.2]), head: sPt(headCenter), crown: sPt([headCenter[0], headCenter[1], H]), chin: sPt([0, 0, chinZ]),
-      upperArmL: sPt(aL.S), lowerArmL: sPt(aL.E), wristL: sPt(aL.W), handL: sPt(aL.handC),
-      upperArmR: sPt(aR.S), lowerArmR: sPt(aR.E), wristR: sPt(aR.W), handR: sPt(aR.handC),
-      upperLegL: lL.Hj, lowerLegL: lL.K, footL: lL.A, upperLegR: lR.Hj, lowerLegR: lR.K, footR: lR.A,
-    },
+    joints,
     r,
     dir: {
       upperArmL: sDir(aL.dir), lowerArmL: sDir(aL.foreDir), upperArmR: sDir(aR.dir), lowerArmR: sDir(aR.foreDir),
@@ -572,6 +743,10 @@ function buildRig(rawOpts: unknown): Rig {
       // faces hinge × lowerArm (the curl direction).
       elbowHingeL: sDir(aL.hinge), elbowHingeR: sDir(aR.hinge),
       upperLegL: lL.dir, lowerLegL: lL.shankDir, upperLegR: lR.dir, lowerLegR: lR.shankDir,
+      // The knee-hinge axis (post-twist) — ⟂ to the shank-curl plane, the leg
+      // analog of elbowHinge. The anterior (quad) / posterior (hamstring/calf)
+      // muscle directions derive from it; legs stay planted so no spine xform.
+      kneeHingeL: lL.hinge, kneeHingeR: lR.hinge,
       // Foot heading per side (front −Y yawed by hip turnout) — buildFeet
       // orients toe/heel along it, so leg twist turns the feet out.
       footL: lL.footFwd, footR: lR.footFwd,
@@ -580,16 +755,53 @@ function buildRig(rawOpts: unknown): Rig {
     grip: { L: gripFrame(aL), R: gripFrame(aR) },
     sole: { L: makeSoleFrame(lL.A, lL.footFwd, r), R: makeSoleFrame(lR.A, lR.footFwd, r) },
     face: sFace,
-    opts: { height: H, headsTall: N, build, sex, pose },
+    torso: torsoAnchors,
+    opts: { height: H, headsTall: N, build, sex, age, weight, muscle, bust, belly, pose },
   };
+}
+
+// --- Muscle masses (the `muscle` 0..1 axis) -------------------------------
+// Anatomically-anchored bulges welded onto the bare limb/torso capsules when
+// rig.opts.muscle > 0. Each belly is a capsule (orientation-free, never a
+// degenerate cross) running along its bone, offset to the correct flexor/
+// extensor side and welded with a generous k so it reads as integrated muscle,
+// not a bolted-on ball. Everything is sized off rig.r.* (tracks build/size) and
+// scaled by the muscle knob. At muscle:0 the helpers are skipped entirely, so
+// the parts stay byte-identical (pinned by the unit tests).
+
+/** Unit vector ⟂ to a bone, on its flexor side — the way the joint curls. The
+ *  rig builds a bend as a rotation about `hinge`, whose derivative is
+ *  `hinge × boneDir`; that is the direction the limb curls toward, i.e. the
+ *  biceps (upper arm) / hamstring (thigh) side. `hinge` is ⟂ to the bone by
+ *  construction, so the cross is always well-defined (magnitude 1). */
+function flexorDir(hinge: Vec3, boneDir: Vec3): Vec3 {
+  return norm3(cross3(hinge, boneDir));
+}
+
+/** A muscle belly: two overlapping capsules along `a`→`b`, offset toward `side`
+ *  by `off`, welded so it reads as a tapered fusiform mass rather than a tube.
+ *  `ra`/`rb` are the belly radii at the `a`/`b` ends (thick belly, thin
+ *  insertion). */
+function muscleBelly(sdf: SdfApi, a: Vec3, b: Vec3, side: Vec3, off: number, ra: number, rb: number): Node {
+  const a2 = add3(a, scale3(side, off));
+  const b2 = add3(b, scale3(side, off));
+  const thick = sdf.capsule(a2, lerp3(a2, b2, 0.6), ra);
+  const thin = sdf.capsule(lerp3(a2, b2, 0.4), b2, rb);
+  return thick.smoothUnion(thin, Math.min(ra, rb) * 1.2);
 }
 
 // --- Part builders --------------------------------------------------------
 // Each takes the rig first and returns an unlabeled Node (the caller composes
 // regions and labels the result, matching the paintByLabel flow).
 
-function buildTorso(sdf: SdfApi, rig: Rig): Node {
-  const j = rig.joints, r = rig.r;
+/** The chest + belly ellipsoid parameters of the torso — the single source
+ *  shared by `buildTorso` (which builds the masses) and `buildRig` (which
+ *  projects the nipple/navel surface landmarks onto them), so the geometry and
+ *  the anchors can never drift apart. Pure: reads only the joints + radii. */
+function torsoMasses(j: Record<string, Vec3>, r: Record<string, number>, belly = 0): {
+  chest: { c: Vec3; a: number; b: number; cz: number };
+  belly: { c: Vec3; a: number; b: number; cz: number };
+} {
   // Cap the chest mass at the shoulder line — the neck capsule provides the
   // neck. An uncapped tall ellipsoid climbs past the chin on stocky / few-
   // heads-tall rigs and buries the lower face inside the torso (the carved
@@ -598,13 +810,402 @@ function buildTorso(sdf: SdfApi, rig: Rig): Node {
     (j.chest[2] - j.spine[2]) * 1.15 + r.chestY,
     j.upperArmL[2] + r.neck * 0.8 - j.chest[2],
   );
-  const chest = sdf.ellipsoid(r.chestX, r.chestY, chestSemiZ)
-    .translate(j.chest);
-  const belly = sdf.ellipsoid(r.chestX * 0.92, r.chestY * 0.94, (j.spine[2] - j.hips[2]) * 0.9 + r.chestY * 0.6)
-    .translate([0, -r.chestY * 0.1, mix(j.spine[2], j.hips[2], 0.4)]);
+  // Abdomen ellipsoid. `belly` grows it FORWARD (−Y depth, the `b` semi-axis)
+  // strongly and its girth/height modestly, while RAISING the centre so the
+  // BOTTOM stays put above the hips — the swell reads as a belly, never a low
+  // mass dropping toward the crotch (the pendant-between-the-legs failure mode).
+  // At belly=0 every term is its original value, so the torso is byte-identical.
+  const b0 = { a: r.chestX * 0.92, b: r.chestY * 0.94, cz: (j.spine[2] - j.hips[2]) * 0.9 + r.chestY * 0.6 };
+  const bellyA = b0.a + r.chestX * 0.22 * belly;        // modest girth growth
+  const bellyB = b0.b + r.chestY * 1.7 * belly;         // strong forward projection
+  const bellyCz = b0.cz + r.chestX * 0.4 * belly;       // a little taller
+  // Raise the centre by the same amount the swell grew in half-height, plus a
+  // touch, so the bottom edge never descends; seat the bulk further forward.
+  const baseCz = mix(j.spine[2], j.hips[2], 0.4);
+  const bellyCenterZ = baseCz + (bellyCz - b0.cz) + r.chestX * 0.12 * belly;
+  const bellyCy = -r.chestY * (0.1 + 0.6 * belly);
+  return {
+    chest: { c: j.chest as Vec3, a: r.chestX, b: r.chestY, cz: chestSemiZ },
+    belly: {
+      c: [0, bellyCy, bellyCenterZ],
+      a: bellyA, b: bellyB, cz: bellyCz,
+    },
+  };
+}
+
+/** Project a point at lateral offset `dx` and height `z` onto the FRONT (−Y)
+ *  surface of an axis-aligned ellipsoid {centre `c`, semi-axes (`a`,`b`,`cz`)}.
+ *  Points outside the ellipse footprint clamp to the rim (front Y = centre Y),
+ *  so the result is always a sensible body-front landmark. */
+function ellipsoidFront(c: Vec3, a: number, b: number, cz: number, dx: number, z: number): Vec3 {
+  const u = dx / a, w = (z - c[2]) / cz;
+  const inside = Math.max(0, 1 - u * u - w * w);
+  return [c[0] + dx, c[1] - b * Math.sqrt(inside), z];
+}
+
+/** The bust / nipple LINE — the vertical height the nipples sit at on the chest,
+ *  measured in HEAD-UNITS down from the shoulder line (≈0.62 head below it).
+ *  The figure-drawing canon places the nipples roughly two heads below the
+ *  crown — about a head below the clavicle/shoulder — so anchoring off the
+ *  shoulder in head-units (like every other girth/landmark here) keeps them on
+ *  the UPPER chest at every build and headsTall. The old `chestZ − cz·0.16`
+ *  drop instead rode the chest ellipsoid's own half-height, which is CAPPED
+ *  LARGE on tall (high-headsTall) and stocky rigs, so the "touch below centre"
+ *  became a big drop that sank the mounds to the lower ribcage / upper belly —
+ *  the "nipples in the middle of the body" defect, where the bust also poked
+ *  out below a garment's chest coverage. The drop is clamped against the torso
+ *  span for extreme chibis (below). Shared by `buildRig` (bare-chest anchor)
+ *  and `breastMounds` (mound centre) so the two can't drift. */
+function nippleLineZ(shoulderZ: number, hipZ: number, headH: number): number {
+  // Clamp the head-unit drop so it never falls more than ~42% of the way down
+  // to the pelvis: at an extreme LOW headsTall (chibi) the head dwarfs the
+  // torso, so a raw 0.62-head drop would push the line into the belly. For the
+  // realistic 6–8.5-head range the head-unit drop wins and the clamp is inert.
+  const drop = Math.min(headH * 0.62, (shoulderZ - hipZ) * 0.42);
+  return shoulderZ - drop;
+}
+
+/** Per-side breast-mound ellipsoids + their apex landmarks, derived from the
+ *  chest mass and a continuous `bust` size (0 ⇒ `null`, no mound). Shared by
+ *  `buildRig` (to ride the nipple anchors on the apex) and `buildTorso` (to
+ *  build the mounds), so they can never drift. A teardrop is approximated by a
+ *  near-sphere dropped a little below the nipple line and pulled back into the
+ *  chest so the base melds and only the apex projects. */
+function breastMounds(j: Record<string, Vec3>, r: Record<string, number>, bust: number): {
+  L: { c: Vec3; a: number; b: number; cz: number };
+  R: { c: Vec3; a: number; b: number; cz: number };
+  apexL: Vec3; apexR: Vec3; radius: number;
+} | null {
+  if (bust <= 0) return null;
+  const tm = torsoMasses(j, r);
+  const cc = tm.chest.c, a = tm.chest.a, b = tm.chest.b, cz = tm.chest.cz;
+  const dx = r.chestX * 0.42;
+  // headH from r.head (= headH·0.46, the only un-built head radius) so the mound
+  // rides the same head-unit nipple line as the bare-chest anchor in buildRig.
+  const moundZ = nippleLineZ(j.upperArmL[2], j.hips[2], r.head / 0.46);   // nipple line on the upper chest
+  const R = r.chestX * (0.34 + 0.46 * bust);              // mound radius grows with bust
+  const proj = R * (0.5 + 0.35 * bust);                   // forward projection
+  const side = (s: 1 | -1): { mound: { c: Vec3; a: number; b: number; cz: number }; apex: Vec3 } => {
+    const cx = s * dx;
+    const u = cx / a, w = (moundZ - cc[2]) / cz;
+    const fy = cc[1] - b * Math.sqrt(Math.max(0, 1 - u * u - w * w));   // chest front at the mound
+    const center: Vec3 = [cx, fy + (R - proj), moundZ];                 // pulled back so apex protrudes
+    return {
+      mound: { c: center, a: R, b: R * 0.9, cz: R * 1.05 },
+      apex: [center[0], center[1] - R * 0.9, center[2] - R * 0.12],     // forward-most, nudged down
+    };
+  };
+  const L = side(+1), Rr = side(-1);
+  return { L: L.mound, R: Rr.mound, apexL: L.apex, apexR: Rr.apex, radius: R };
+}
+
+/** Per-side PECTORAL-mass front apex + curvature, for seating the nipple/areola
+ *  on a MUSCLED chest — the `muscle`-axis analog of {@link breastMounds} for
+ *  `bust`. The pec ellipsoids `buildTorso` welds bulge FORWARD of the base chest
+ *  ellipsoid the bare-chest anchor rides, so on a muscled figure the areola has
+ *  to ride the PEC apex or it sinks into the pec (only a partial rim pokes
+ *  through — the buried/stuck-on areola the old muscle-scaled `eps` push hacked
+ *  around). Geometry MUST match buildTorso's `pec(sx)` ellipsoid — built in the
+ *  REST frame then spine-leaned — or the anchor drifts off the surface. Returns
+ *  WORLD-frame apexes (the rest apex rotated by the spine lean) so the leaning
+ *  figure carries its nipples with the chest, exactly like the bare anchor.
+ *  `null` when muscle is 0 (no pec mass — ride the bare chest). */
+function pecApex(
+  j: Record<string, Vec3>, r: Record<string, number>, muscle: number,
+  sp: { lean: number; turn: number; side: number },
+): { apexL: Vec3; apexR: Vec3; radius: number } | null {
+  if (muscle <= 0) return null;
+  const m = muscle;
+  const pivot: Vec3 = [0, 0, j.spine[2]];
+  const leaned = sp.lean !== 0 || sp.turn !== 0 || sp.side !== 0;
+  // Rest-frame (un-leaned) chest/shoulder anchors — buildTorso's `restPt`.
+  const restPt = (p: Vec3): Vec3 =>
+    leaned ? add3(pivot, rotZ(rotX(rotY(sub3(p, pivot), -sp.side), -sp.lean), -sp.turn)) : p;
+  // Forward spine rotation of a single point (the inverse of restPt) — the
+  // point-wise form of buildTorso's `spineTx` so the apex lands on the leaned pec.
+  const spineRotPt = (p: Vec3): Vec3 =>
+    leaned ? add3(pivot, rotY(rotX(rotZ(sub3(p, pivot), sp.turn), sp.lean), sp.side)) : p;
+  const chestR = restPt(j.chest), armR = restPt(j.upperArmL);
+  // The pec ellipsoid — IDENTICAL to buildTorso's `pec(sx)`.
+  const pecZ = mix(chestR[2], armR[2], 0.18);
+  const pecY = -r.chestY * (0.5 + 0.18 * m);
+  const aPec = r.chestX * (0.42 + 0.05 * m);   // lateral semi-axis
+  const bPec = r.chestY * (0.45 + 0.18 * m);   // forward (depth) semi-axis
+  const czPec = r.chestY * (0.52 + 0.12 * m);  // vertical semi-axis
+  const cx = r.chestX * 0.4;                   // pec centre x (matches buildTorso)
+  // Seat the areola at the same head-unit nipple line the bare anchor uses, but
+  // projected onto the PEC front (rest frame), then lean it into world.
+  const nz = nippleLineZ(armR[2], j.hips[2], r.head / 0.46);
+  const apex = (sx: 1 | -1): Vec3 =>
+    spineRotPt(ellipsoidFront([sx * cx, pecY, pecZ], aPec, bPec, czPec, 0, nz));
+  // surfR rides the pec's TALL (vertical) semi-axis, not its shallow depth, so
+  // the flush coin matches the elongated pec curvature and its rim doesn't sink
+  // (the clipping seen when a depth-sized sphere curves away faster than the pec).
+  return { apexL: apex(1), apexR: apex(-1), radius: czPec };
+}
+
+/** A shallow navel dimple — a sphere centred just OUTSIDE the belly surface so
+ *  `smoothSubtract` carves only a cap-deep crater. `depth` (0..1.5) slides the
+ *  centre inward to deepen it. */
+function navelPit(sdf: SdfApi, anchor: Vec3, size: number, depth: number): Node {
+  const c: Vec3 = [anchor[0], anchor[1] - size * (1 - depth), anchor[2]];
+  return sdf.sphere(size).translate(c);
+}
+
+function buildTorso(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'torso(opts)');
+  assertNoUnknownKeys(o, ['navel'], 'torso(opts)');
+  const j = rig.joints, r = rig.r;
+  const tm = torsoMasses(j, r, rig.opts.belly);
+  const chest = sdf.ellipsoid(tm.chest.a, tm.chest.b, tm.chest.cz).translate(tm.chest.c);
+  const belly = sdf.ellipsoid(tm.belly.a, tm.belly.b, tm.belly.cz).translate(tm.belly.c);
   const pelvis = sdf.ellipsoid(r.hipsX, r.hipsY, r.hipsY * 1.25).translate(j.hips);
   const k = r.chestY * 0.6;
-  return chest.smoothUnion(belly, k).smoothUnion(pelvis, k);
+  let body = chest.smoothUnion(belly, k).smoothUnion(pelvis, k);
+
+  // Muscle masses (only when the `muscle` axis is engaged). Pectorals + traps
+  // + lats + a tight abdominal panel, all on the body front (−Y) / sides, kept
+  // BELOW the shoulder line so they never climb into the lower face. Mirrors —
+  // and supersedes — the chest/trap masses figures used to hand-roll.
+  const m = rig.opts.muscle;
+  if (m > 0) {
+    const wk = r.chestY * 0.7;
+    // The chest/upper-arm joints arrive ALREADY spine-leaned (buildRig applies
+    // `sPt` to them), but the abdominal/lat anchors hang off the planted navel
+    // line (`j.spine`/`j.hips`, never leaned). Building the back masses (traps,
+    // lats) and the chest masses (pecs) directly from this mix welds half the
+    // mass to the leaned chest and half to the upright pelvis, so under a
+    // forward lean the upper back tears into a twin-lobed bulge with a central
+    // depression and a knob behind the spine (GitHub #702). Fix: build EVERY
+    // muscle mass in the figure's REST (un-leaned) frame — un-rotating the
+    // chest/upper-arm anchors back about the navel pivot first — then rigidly
+    // re-apply the same spine rotation to the whole assembled mass, exactly as
+    // the rig does to the chest. The masses then ride the bent torso as one
+    // rigid block instead of bunching. Zero spine ⇒ identity (`spineTx` and the
+    // un-rotation both no-op), so upright muscled figures stay byte-identical.
+    const sp = rig.opts.pose.spine;
+    const spineLeaned = sp.lean !== 0 || sp.turn !== 0 || sp.side !== 0;
+    const pivot: Vec3 = [0, 0, j.spine[2]];   // navel line — the rig's spine pivot
+    // Inverse of the rig's `spineRot = rotY(rotX(rotZ(v,turn),lean),side)`.
+    const restPt = (p: Vec3): Vec3 =>
+      spineLeaned ? add3(pivot, rotZ(rotX(rotY(sub3(p, pivot), -sp.side), -sp.lean), -sp.turn)) : p;
+    // Re-apply the rig's spine rotation to an assembled Node about the pivot.
+    // Single-axis `.rotate` calls compose unambiguously; chaining Z→X→Y gives
+    // forward Ry(side)·Rx(lean)·Rz(turn) — identical to `spineRot`.
+    const spineTx = (n: Node): Node => spineLeaned
+      ? n.translate(scale3(pivot, -1)).rotate([0, 0, sp.turn]).rotate([sp.lean, 0, 0]).rotate([0, sp.side, 0]).translate(pivot)
+      : n;
+    // Rest-frame chest / upper-arm anchors (un-lean the joints the rig leaned).
+    const chestR = restPt(j.chest);
+    const armR = restPt(j.upperArmL);
+    // Pectorals — two forward masses on the upper chest.
+    const pecZ = mix(chestR[2], armR[2], 0.18);
+    const pecY = -r.chestY * (0.5 + 0.18 * m);
+    const pec = (sx: number): Node => sdf.ellipsoid(
+      r.chestX * (0.42 + 0.05 * m), r.chestY * (0.45 + 0.18 * m), r.chestY * (0.52 + 0.12 * m),
+    ).translate([sx * r.chestX * 0.4, pecY, pecZ]);
+    const pecs = pec(1).smoothUnion(pec(-1), r.chestX * 0.3);
+    // Trapezius — neck-to-shoulder ramps (the strongman's hand-rolled traps).
+    const trap = (sx: number): Node => sdf.ellipsoid(
+      r.upperArm * (0.9 + 0.4 * m), r.upperArm * 0.7, r.upperArm * (0.8 + 0.4 * m),
+    ).translate([sx * armR[0] * 0.6, -r.chestY * 0.15, armR[2] + r.upperArm * 0.1]);
+    const traps = trap(1).union(trap(-1));
+    // Lats — tapering "wings" from under the arms down into the waist (the
+    // V-taper). A side ellipsoid offset off a tapering waist forms a TUNNEL
+    // (it overlaps the core only at top and bottom, looping a handle); a
+    // tapered capsule running high-and-wide → low-and-inward instead overlaps
+    // the core along its whole length, so it can never pinch a hole.
+    const latTop = (sx: number): Vec3 => [sx * r.chestX * 0.8, r.chestY * 0.08, mix(chestR[2], armR[2], 0.05)];
+    const latBot = (sx: number): Vec3 => [sx * r.chestX * 0.34, r.chestY * 0.12, j.spine[2]];
+    const lat = (sx: number): Node => tapered(sdf, latTop(sx), latBot(sx),
+      r.chestX * (0.26 + 0.08 * m), r.chestX * (0.16 + 0.05 * m), r.chestX * 0.22);
+    const lats = lat(1).union(lat(-1));
+    // Abdominal panel — a tight forward core on the lower belly.
+    const abs = sdf.ellipsoid(
+      r.chestX * (0.34 + 0.05 * m), r.chestY * (0.32 + 0.12 * m), (j.spine[2] - j.hips[2]) * 0.62,
+    ).translate([0, -r.chestY * (0.55 + 0.12 * m), mix(j.spine[2], j.hips[2], 0.42)]);
+    // Rigidly lean each mass with the torso (about the navel pivot), then weld
+    // it into the body with its original blend radius — preserving the upright
+    // (zero-spine) weld exactly while making the leaned masses track the chest.
+    body = body
+      .smoothUnion(spineTx(pecs), wk)
+      .smoothUnion(spineTx(traps), r.upperArm * 0.8)
+      .smoothUnion(spineTx(lats), wk)
+      .smoothUnion(spineTx(abs), wk);
+  }
+
+  // Breast mounds — driven by `rig.bust` (like sex/age/weight, a rig-level
+  // proportion), so `F.torso(rig)` shapes them automatically; `bust === 0`
+  // (every non-female default) leaves the torso byte-identical. Blended into
+  // the chest with a bust-scaled k so the base melds and only the apex projects.
+  // Applied AFTER the muscle pecs so a female muscular figure reads as a bust
+  // riding the chest rather than the pec swallowing it.
+  const mounds = breastMounds(j, r, rig.opts.bust);
+  if (mounds) {
+    const mk = r.chestX * (0.3 + 0.2 * rig.opts.bust);
+    body = body
+      .smoothUnion(sdf.ellipsoid(mounds.L.a, mounds.L.b, mounds.L.cz).translate(mounds.L.c), mk)
+      .smoothUnion(sdf.ellipsoid(mounds.R.a, mounds.R.b, mounds.R.cz).translate(mounds.R.c), mk);
+  }
+
+  // Navel — opt-in (default OFF, so an unset torso is byte-identical). Carved
+  // with a small local k so the soft body weld can't fill the dimple.
+  if (o.navel !== undefined && o.navel !== false) {
+    const no = o.navel === true ? {} : obj(o.navel, 'torso.navel');
+    assertNoUnknownKeys(no, ['size', 'depth'], 'torso.navel');
+    const size = num(no.size, r.chestX * 0.16, 'torso.navel.size', 1e-3);
+    const depth = num(no.depth, 0.5, 'torso.navel.depth', 0, 1.5);
+    body = surfaceRecess(body, navelPit(sdf, rig.torso.navel, size, depth), size * 0.55);
+  }
+  return body;
+}
+
+// ── Conformal surface features (issue #738) ────────────────────────────────
+// Two engine helpers for attaching a feature to a figure's REAL surface rather
+// than welding a separate primitive that APPROXIMATES it — the bug class behind
+// the areola/brow/eye fragility, where an analytic curvature guess jutted or
+// buried the feature and a coincident label dithered the paint. Both derive
+// their geometry from the actual body via `.round()` (SDF `f ∓ r`: an offset
+// along the TRUE normal everywhere), so they conform to whatever surface is
+// there with no guess. The two cases are deliberately separate ops because they
+// don't share a mechanism: a marking is ADDED (union) and carries a paint label;
+// a recess is REMOVED (subtract) and — being a void — cannot.
+
+/** A PROUD, paintable surface MARKING (areola, brow, …): `surface` grown outward
+ *  by `relief` along its true normal, clipped to `region`, with the rim softened
+ *  (`soften`) so it slopes back into the skin instead of ending in a hard wall.
+ *  Hard-union the result at the figure's TOP level and `.label()` it — standing
+ *  `relief` proud, the marking owns its own triangles so the label paints
+ *  cleanly (a flush/coincident marking dithers in the nearest-source label
+ *  transfer). `relief` must clear ~one local detail triangle, so the feature
+ *  also needs a matching `faceDetail` region; keep it small for a near-flush
+ *  look. The shape is fully conformal regardless of `relief`. */
+function surfaceMarking(surface: Node, region: Node, relief: number, soften: number): Node {
+  return surface.round(relief).smoothIntersect(region, soften);
+}
+
+/** A RECESS carved into `body` (navel, groove): subtracts `cutter` smoothly.
+ *  NOTE — a carved void CANNOT carry a paint label: colour rides positive,
+ *  unioned nodes (the nearest-source transfer has nothing to attach to on a
+ *  carved wall), so a recess paints as the surrounding skin. For a COLOURED
+ *  recess, pair this with a `surfaceMarking` shell seated inside the cavity (the
+ *  teeth-through-cavity pattern in `buildMouthAccents`). */
+function surfaceRecess(body: Node, cutter: Node, soften: number): Node {
+  return body.smoothSubtract(cutter, soften);
+}
+
+/** Flush, paintable areola discs + a tiny nipple nub, for hard-unioning at the
+ *  figure's TOP level (like `F.face.eyes`) so the `'areola'` paint label
+ *  survives — a smooth body weld would flatten it. Each areola is a coin clipped
+ *  from a sphere a hair larger than the local surface (the iris-disc trick), so
+ *  it sits flush and follows the chest/mound curvature instead of bulging. The
+ *  nipple is a deliberately TINY nub at the centre. Riding the `rig.torso`
+ *  anchors, they track the bust automatically. Colour the `'areola'` label a
+ *  slightly darker shade of the skin (see `F.areolaColor`). */
+function buildNipples(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'nipples(opts)');
+  assertNoUnknownKeys(o, ['size', 'nipple', 'on'], 'nipples(opts)');
+  const r = rig.r;
+  const size = num(o.size, r.chestX * 0.16, 'nipples.size', 1e-3);     // areola radius
+  const nipR = num(o.nipple, r.chestX * 0.04, 'nipples.nipple', 0);    // tiny nipple nub
+  // `on` — the body Node to seat the areolae FLUSH against. When supplied (the
+  // recommended path; pass the `skin` weld), each areola is the body's OWN front
+  // surface within `size` of the nipple anchor, relabelled — so it CONFORMS to
+  // whatever chest is actually there (bare, pectoral, mound, fat) and is flush by
+  // construction. No curvature guess, so it can never sit proud as a "patty" nor
+  // sink its rim into the body — the two failure modes the approximating coin
+  // (below) traded between. `union(body, areola)` adds zero relief (the areola is
+  // a subset of the body), and the 'areola' label resolves the surface disc.
+  const body = o.on as Node | undefined;
+  // The areola is a CONFORMAL OFFSET of the torso — the "clothing" model. It is
+  // the body's own surface grown outward by a thin, uniform amount (`.round(t)`,
+  // i.e. SDF `f − t`, which pushes the iso-surface out along the TRUE normal
+  // everywhere), then clipped to the nipple region by a column. So it follows
+  // whatever chest is actually there — bare, pec, mound, belly — perfectly,
+  // standing proud by exactly `t` at every point. No analytic curvature guess
+  // (the failure mode of the old coin: a wrong guess jutted on one figure and
+  // sank on another), and no flat disc face that can only kiss a curved chest
+  // at its centre.
+  //
+  // Why `t` can't be zero: a perfectly-flush (coincident) layer can't PAINT.
+  // The bake assigns each final triangle to the nearest SOURCE shape, so a layer
+  // sitting exactly on the skin is a per-triangle coin-flip between 'areola' and
+  // 'skin' → the dithered/hatched, faded blob the flush attempt shipped. The
+  // offset must clear ~one detail-triangle (chest detail edge ≈ chestX·0.03) for
+  // the 'areola' label to own its triangles cleanly, so `t` is a small fixed
+  // fraction of the chest — the THICKNESS knob; the SHAPE is fully conformal.
+  // Kept just above the chest-detail triangle (`chestEdgeLength ≈ chestX·0.018`,
+  // ~1.7× it) — as flush as the local mesh allows without the paint dithering.
+  const t = Math.max(r.chestX * 0.03, 0.09);
+  const at = (anchor: Vec3): Node => {
+    if (body !== undefined) {
+      // Forward COLUMN scoping the offset to the nipple. Axis ≈ −Y (chest front);
+      // reaches well in front (empty space is trimmed by the body) and is bounded
+      // INSIDE the body at the back so it can't raise a second patch on the spine.
+      const fwd = r.chestY * 0.9;   // column reach in front of the surface
+      const back = r.chestY * 0.55; // column reach inside the body (< half-depth)
+      const cylCY = anchor[1] + (back - fwd) / 2;
+      const col = (rad: number): Node =>
+        sdf.cylinder(rad, fwd + back).rotate([90, 0, 0]).translate([anchor[0], cylCY, anchor[2]]);
+      // Disc: torso grown by `t`, clipped to `size`. `surfaceMarking`'s soft clip
+      // rolls the rim off — instead of a hard cylinder wall (a `t`-tall step → a
+      // visible edge), the raised offset tapers gradually from its proud centre
+      // back into the skin, so the areola reads as a gentle dome, not a disc. The
+      // soften radius (≈ `size·0.7`) is large vs `t`, so it's mostly slope.
+      let patch = surfaceMarking(body, col(size), t, size * 0.7);
+      if (nipR > 0) {
+        // Nipple: a narrower region grown a hair more — a subtle central bump.
+        patch = patch.union(surfaceMarking(body, col(nipR), t + nipR * 0.5, nipR));
+      }
+      return patch;
+    }
+    return legacyCoin(anchor);
+  };
+
+  // --- Legacy approximating coin (only when `on` is omitted) ---------------
+  // A sphere-clipped disc that APPROXIMATES the local curvature. Kept for
+  // back-compat, but it's finicky: too flat a `surfR` sits proud (patty), too
+  // curved sinks the rim. Prefer the flush `on` path above.
+  const mounds = breastMounds(rig.joints, r, rig.opts.bust);
+  const pecs = pecApex(rig.joints, r, rig.opts.muscle, rig.opts.pose.spine);
+  const surfR = mounds ? mounds.radius : pecs ? pecs.radius : r.chestX * 1.4;
+  const eps = Math.max(r.chestX * 0.03, 0.06);
+  const edgeK = Math.min(size * 0.35, eps * 1.2);
+  const discDepth = Math.min(size * 0.6, surfR * 0.35, r.chestY * 0.5);
+  const cylLen = eps + discDepth;
+  function legacyCoin(anchor: Vec3): Node {
+    const sc: Vec3 = [anchor[0], anchor[1] + surfR, anchor[2]];
+    const cylCY = anchor[1] + (discDepth - eps) / 2;
+    const coin = sdf.sphere(surfR + eps).translate(sc).smoothIntersect(
+      sdf.cylinder(size, cylLen).rotate([90, 0, 0]).translate([anchor[0], cylCY, anchor[2]]),
+      edgeK,
+    );
+    return nipR > 0
+      ? coin.union(sdf.sphere(nipR).translate([anchor[0], anchor[1] - nipR * 0.5, anchor[2]]))
+      : coin;
+  }
+
+  return at(rig.torso.nippleL).union(at(rig.torso.nippleR)).label('areola');
+}
+
+/** A sensible default areola colour: a slightly darker shade of the given skin
+ *  tone (a hex like `'#cf9163'` or a curated `F.skin` name). Use it in the paint
+ *  step — `paintByLabels([…, { label: 'areola', color: F.areolaColor(skin) }])`
+ *  — or bake it into a catalog palette. Overridable: paint `'areola'` any colour. */
+function areolaColor(skin: unknown, factor?: unknown): string {
+  const f = num(factor, 0.72, 'areolaColor(factor)', 0.1, 1);
+  if (typeof skin !== 'string' || skin.length === 0) {
+    throw new Error('areolaColor(skin): expected a #rrggbb hex or a skin name');
+  }
+  const raw = skin;
+  // Accept a curated skin name (resolve via the ramp) or a literal hex.
+  const hex = raw.startsWith('#') ? raw : (figureSkin(raw) as string);
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) throw new Error(`areolaColor(skin): expected a #rrggbb hex or a skin name, got "${raw}"`);
+  const n = parseInt(m[1], 16);
+  const ch = (shift: number): string =>
+    Math.max(0, Math.min(255, Math.round(((n >> shift) & 255) * f))).toString(16).padStart(2, '0');
+  return `#${ch(16)}${ch(8)}${ch(0)}`;
 }
 
 function buildNeck(sdf: SdfApi, rig: Rig): Node {
@@ -622,17 +1223,36 @@ function tapered(sdf: SdfApi, a: Vec3, b: Vec3, ra: number, rb: number, k: numbe
 }
 
 function buildArms(sdf: SdfApi, rig: Rig): Node {
-  const j = rig.joints, r = rig.r;
+  const j = rig.joints, r = rig.r, d = rig.dir;
+  const m = rig.opts.muscle;
   const k = r.lowerArm * 1.3;             // elbow weld — soft, no kink
-  function arm(S: Vec3, E: Vec3, W: Vec3): Node {
+  function arm(S: Vec3, E: Vec3, W: Vec3, upDir: Vec3, foreDir: Vec3, hinge: Vec3): Node {
     const upper = tapered(sdf, S, E, r.upperArm, r.lowerArm * 1.05, k);
     const fore = tapered(sdf, E, W, r.lowerArm * 1.02, r.lowerArm * 0.8, k);
-    // Deltoid cap so the shoulder reads as a rounded mass, not a tube stub.
-    const deltoid = sdf.sphere(r.upperArm * 1.15).translate(S);
-    return upper.smoothUnion(fore, k).smoothUnion(deltoid, r.upperArm * 0.9);
+    // Deltoid cap so the shoulder reads as a rounded mass, not a tube stub —
+    // grows with muscle into a capped delt.
+    const deltoid = sdf.sphere(r.upperArm * (1.15 + 0.3 * m)).translate(S);
+    let out = upper.smoothUnion(fore, k).smoothUnion(deltoid, r.upperArm * 0.9);
+    if (m > 0) {
+      const flex = flexorDir(hinge, upDir);             // biceps (anterior) side
+      const wk = r.upperArm * 0.9;
+      const biceps = muscleBelly(sdf, lerp3(S, E, 0.30), lerp3(S, E, 0.68),
+        flex, r.upperArm * (0.25 + 0.3 * m),
+        r.upperArm * (0.4 + 0.5 * m), r.upperArm * (0.3 + 0.35 * m));
+      const triceps = muscleBelly(sdf, lerp3(S, E, 0.18), lerp3(S, E, 0.66),
+        scale3(flex, -1), r.upperArm * (0.2 + 0.28 * m),
+        r.upperArm * (0.38 + 0.42 * m), r.upperArm * (0.3 + 0.3 * m));
+      // Forearm flexor swell near the elbow (brachioradialis/flexor mass).
+      const fflex = flexorDir(hinge, foreDir);
+      const foreSwell = muscleBelly(sdf, lerp3(E, W, 0.12), lerp3(E, W, 0.52),
+        fflex, r.lowerArm * (0.15 + 0.2 * m),
+        r.lowerArm * (0.3 + 0.45 * m), r.lowerArm * (0.25 + 0.3 * m));
+      out = out.smoothUnion(biceps, wk).smoothUnion(triceps, wk).smoothUnion(foreSwell, r.lowerArm * 0.8);
+    }
+    return out;
   }
-  const armL = arm(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3);
-  const armR = arm(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3);
+  const armL = arm(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3, d.upperArmL, d.lowerArmL, d.elbowHingeL);
+  const armR = arm(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3, d.upperArmR, d.lowerArmR, d.elbowHingeR);
   return armL.union(armR);
 }
 
@@ -746,15 +1366,44 @@ function handDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
 }
 
 function buildLegs(sdf: SdfApi, rig: Rig): Node {
-  const j = rig.joints, r = rig.r;
+  const j = rig.joints, r = rig.r, d = rig.dir;
+  const m = rig.opts.muscle;
   const k = r.lowerLeg * 1.3;               // knee weld — soft, no kink
-  function leg(Hj: Vec3, K: Vec3, A: Vec3): Node {
+  function leg(Hj: Vec3, K: Vec3, A: Vec3, thighDir: Vec3, shankDir: Vec3, hinge: Vec3, glute: Vec3): Node {
     const thigh = tapered(sdf, Hj, K, r.upperLeg, r.lowerLeg * 1.1, k);
     const shank = tapered(sdf, K, A, r.lowerLeg * 1.05, r.lowerLeg * 0.78, k);
-    return thigh.smoothUnion(shank, k);
+    let out = thigh.smoothUnion(shank, k);
+    if (m > 0) {
+      const wk = r.upperLeg * 0.9;
+      const ant = flexorDir(hinge, thighDir);          // quad (anterior) side
+      const post = scale3(ant, -1);                     // hamstring (posterior)
+      const quad = muscleBelly(sdf, lerp3(Hj, K, 0.25), lerp3(Hj, K, 0.8),
+        ant, r.upperLeg * (0.18 + 0.22 * m),
+        r.upperLeg * (0.32 + 0.4 * m), r.upperLeg * (0.26 + 0.3 * m));
+      const ham = muscleBelly(sdf, lerp3(Hj, K, 0.2), lerp3(Hj, K, 0.72),
+        post, r.upperLeg * (0.15 + 0.18 * m),
+        r.upperLeg * (0.28 + 0.3 * m), r.upperLeg * (0.24 + 0.25 * m));
+      // Calf (gastrocnemius) — posterior of the upper shank.
+      const calfPost = scale3(flexorDir(hinge, shankDir), -1);
+      const calf = muscleBelly(sdf, lerp3(K, A, 0.06), lerp3(K, A, 0.5),
+        calfPost, r.lowerLeg * (0.2 + 0.25 * m),
+        r.lowerLeg * (0.32 + 0.45 * m), r.lowerLeg * (0.18 + 0.25 * m));
+      // Glute — a forward-of-hamstring mass at the seat (posterior of the hip).
+      const gluteNode = sdf.ellipsoid(
+        r.upperLeg * (0.7 + 0.2 * m), r.upperLeg * (0.55 + 0.2 * m), r.upperLeg * (0.6 + 0.15 * m),
+      ).translate(glute);
+      out = out
+        .smoothUnion(quad, wk)
+        .smoothUnion(ham, wk)
+        .smoothUnion(calf, r.lowerLeg * 0.9)
+        .smoothUnion(gluteNode, wk);
+    }
+    return out;
   }
-  return leg(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3)
-    .union(leg(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3));
+  // Glute centre: just behind (+Y) and below the hip joint, between hip and knee start.
+  const glutePt = (Hj: Vec3): Vec3 => [Hj[0], r.hipsY * (0.6 + 0.2 * m), mix(Hj[2], j.hips[2], 0.25)];
+  return leg(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3, d.upperLegL, d.lowerLegL, d.kneeHingeL, glutePt(j.upperLegL as Vec3))
+    .union(leg(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3, d.upperLegR, d.lowerLegR, d.kneeHingeR, glutePt(j.upperLegR as Vec3)));
 }
 
 /** The sole-plane Z of a foot (centre of the sole capsule), derived from its
@@ -771,7 +1420,7 @@ function footSoleZ(rig: Rig, ankle: Vec3): number {
  *  Single source of truth for the footprint + ground plane that `buildFeet`,
  *  `buildFootwear` and `buildBase` (and `figure.standOn`) all read. */
 function makeSoleFrame(ankle: Vec3, heading: Vec3, r: Record<string, number>): SoleFrame {
-  const footLen = r.foot * 2.4;
+  const footLen = r.footLen;                      // stature-based heel→toe length
   const soleCenterZ = ankle[2] - r.foot;          // == footSoleZ
   // The bare foot's real underside sits ~0.79·foot below the sole centre (the
   // sole⊔instep⊔ankle smoothUnion bulges well past the analytic instep). groundZ
@@ -793,44 +1442,220 @@ function makeSoleFrame(ankle: Vec3, heading: Vec3, r: Record<string, number>): S
   };
 }
 
-function buildFeet(sdf: SdfApi, rig: Rig): Node {
-  const j = rig.joints, r = rig.r;
-  function foot(A: Vec3, s: SoleFrame, side: number): Node {
-    const footLen = s.length;
-    const fwd = s.heading;
-    const sz = footSoleZ(rig, A);                 // sole capsule centre
-    // Toe forward along the foot heading (default −Y, yawed by hip turnout),
-    // heel back, ankle ~40% from the heel so the foot sits UNDER the body
-    // instead of jutting forward (which reads as leaning back). The toe gets a
-    // small outward (`side`·lateral) splay across the heading.
-    const lat: Vec3 = [-fwd[1], fwd[0], 0];        // heading yawed +90° in XY
-    const onGround = (p: Vec3): Vec3 => [p[0], p[1], sz];
-    const toe = onGround(add3(A, add3(scale3(fwd, footLen * 0.62), scale3(lat, side * r.foot * 0.12))));
-    const heel = onGround(add3(A, scale3(fwd, -footLen * 0.38)));
-    const instepC = onGround(add3(A, scale3(fwd, footLen * 0.35)));
-    const sole = sdf.capsule(heel, toe, r.foot * 0.62);
-    const instep = sdf.ellipsoid(r.foot * 0.8, footLen * 0.5, r.foot * 0.8)
-      .translate([instepC[0], instepC[1], sz + r.foot * 0.15]);
-    // A short ankle column bridges the (possibly elevated) ankle to the sole so
-    // the foot stays welded to the leg in any pose.
-    const ankleCol = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.lowerLeg * 0.8);
-    return sole.smoothUnion(instep, r.foot * 0.6).smoothUnion(ankleCol, r.foot * 0.6);
-  }
-  return foot(j.footL as Vec3, rig.sole.L, +1)
-    .union(foot(j.footR as Vec3, rig.sole.R, -1));
+/** The local Z (above the foot's flat-clip plane `bottomZ`) at which the ankle
+ *  sits — derived empirically from {@link makeSoleFrame}: A.z = groundZ + 1.95·foot
+ *  and bottomZ = groundZ + 0.14·foot, so the ankle is 1.81·foot above the clip. */
+const ANKLE_LOCAL_Z = 1.81;
+/** A foot whose own ground plane is more than this (× r.foot) above the figure's
+ *  lowest sole is LIFTED — eligible for plantarflexion. The lowest (base-welding)
+ *  foot and every planted/standing foot fall below this, so they stay byte-for-
+ *  byte flat (the safe-design invariant). */
+const FOOT_LIFT_THRESHOLD = 0.5;
+
+/** Plantarflexion of a LIFTED foot: pitch the toe DOWN so it continues the leg's
+ *  downward extension (a pointed/extended foot) and the heel tucks up toward the
+ *  ankle instead of projecting behind the leg axis (#701), and point the toe's
+ *  horizontal HEADING along the leg's swing.
+ *
+ *  Returns `null` when the foot should stay FLAT — either it isn't lifted clear
+ *  of the figure's ground plane (`liftAboveGround ≤ threshold`), or the shin is
+ *  too near vertical to define a meaningful pitch (a raised-straight-up leg keeps
+ *  the resting forward heading). A null result means callers run their existing,
+ *  unchanged flat-foot path, so standing/planted feet never change.
+ *
+ *  The downward `pitch` follows the SHIN (`shinDir` = lower-leg bone): a pointed
+ *  foot continues the shin line. The horizontal `heading`, though, follows the
+ *  THIGH (`thighDir` = upper-leg bone), NOT the shin. A deeply FLEXED knee folds
+ *  the shin BACKWARD under a forward thigh, and reading the heading off the shin
+ *  there yawed the toe behind the figure — a raised-knee-in-front foot pointing
+ *  its toe backward (#707, the tai-chi "white crane" raised knee read as a
+ *  backwards foot). The thigh encodes whether the whole leg is swept BACK
+ *  (grand-jeté / sprinter trailing leg → thigh points back → toe correctly points
+ *  back) or merely raised in FRONT (thigh points forward → toe hangs forward-
+ *  down), so it is the right heading source. Falls back to `restHeading` (the
+ *  resting foot forward) when the thigh is near-vertical. `pitch` is in degrees:
+ *  0 = flat, 90 = straight down. */
+function footPitchFrame(
+  shinDir: Vec3, thighDir: Vec3, restHeading: Vec3, liftAboveGround: number, foot: number,
+): { heading: Vec3; pitch: number } | null {
+  if (liftAboveGround <= foot * FOOT_LIFT_THRESHOLD) return null;   // planted → flat
+  const shinHoriz = Math.hypot(shinDir[0], shinDir[1]);
+  // Near-vertical shin: no toe pitch direction to follow — keep resting, flat.
+  if (shinHoriz < 0.15) return null;
+  // How far the foot tips below horizontal — follows the SHIN's descent.
+  const down = -shinDir[2];
+  const pitch = Math.atan2(down, shinHoriz) / DEG;   // 0 (horizontal) … 90 (straight down)
+  if (pitch < 4) return null;                        // negligible — stay flat
+  // Heading from the THIGH (which way the whole leg swings), not the folded shin.
+  const thighHoriz = Math.hypot(thighDir[0], thighDir[1]);
+  const restHoriz = Math.hypot(restHeading[0], restHeading[1]) || 1;
+  const heading: Vec3 = thighHoriz < 0.15
+    ? [restHeading[0] / restHoriz, restHeading[1] / restHoriz, 0]
+    : [thighDir[0] / thighHoriz, thighDir[1] / thighHoriz, 0];
+  return { heading, pitch };
 }
 
-/** Shoes and boots — footwear that wraps each foot, following the foot heading
- *  (`rig.dir.footL/R`) so it tracks `leg*.twist` turnout exactly like
- *  {@link buildFeet}. A shoe is the foot's sole + upper inflated by `thickness`;
- *  a boot adds a shaft up the lower-leg bone. `kind` selects which.
+/** The bare-foot mass in its LOCAL frame: origin = footprint centre on the sole
+ *  design plane (local z 0), +Y = toe, +X = lateral, +Z = up. The single source
+ *  of foot shape, shared by {@link buildFeet} (the skin foot) and
+ *  {@link buildFootwear} (which offsets this exact shape outward into a shoe, so
+ *  a shoe can never drift from the foot again). Masses cross z = 0; the consumer
+ *  flat-clips at/below z 0. `instepH` is returned for the ankle-weld height. */
+function footMassLocal(
+  sdf: SdfApi, s: SoleFrame, r: Record<string, number>, side: number, toesOn: boolean,
+): { local: Node; instepH: number } {
+  const footLen = s.length;
+  const hw = r.foot * 0.6;                          // sole half-width
+  const ankleY = -footLen * 0.12;                  // ankle's local Y
+  const instepH = r.foot * 0.74;                   // instep crown height
+  // Instep/arch dome — the high midfoot over the ankle, reaching forward to the ball.
+  const arch = sdf.ellipsoid(hw, footLen * 0.3, instepH)
+    .translate([0, ankleY + footLen * 0.16, instepH * 0.12]);
+  // Forefoot / ball: a flat, lower rounded pad (smooth toe-box when toes are off).
+  const foreH = r.foot * 0.42;
+  const foreFront = toesOn ? footLen * 0.4 : footLen * 0.49;
+  const foreCY = (foreFront + footLen * 0.06) / 2;
+  const foreLY = foreFront - footLen * 0.06;
+  const fore = sdf.roundedBox([hw * 1.92, foreLY, foreH * 1.8], Math.min(hw * 0.5, foreH * 0.85))
+    .translate([0, foreCY, foreH * 0.55]);
+  // Heel: a SHALLOW rounded bump just behind the ankle — sized off foot WIDTH.
+  const heelH = r.foot * 0.54;
+  const heel = sdf.ellipsoid(hw * 0.9, r.foot * 0.9, heelH)
+    .translate([0, ankleY - r.foot * 0.05, heelH * 0.1]);
+  let local = arch.smoothUnion(fore, r.foot * 0.5).smoothUnion(heel, r.foot * 0.5);
+
+  if (toesOn) {
+    // Five toes forming a SCALLOPED toe row (stylised figurine look). Big toe on
+    // the MEDIAL side. Each capsule lies roughly flat along the foot plane.
+    const toeRootY = foreFront * 0.72;
+    const toeTipY = foreFront * 1.10;
+    const toeBaseZ = foreH * 0.6;
+    const toeTipZ = foreH * 0.46;
+    const medialX = -side;
+    const rads = [0.192, 0.174, 0.158, 0.143, 0.124];                        // × r.foot
+    const xs = [0.88, 0.44, 0.0, -0.44, -0.88].map((f) => medialX * hw * f);
+    const yArc = [0.94, 0.98, 1.0, 0.98, 0.93];
+    rads.forEach((rad, i) => {
+      const tr = r.foot * rad;
+      const base: Vec3 = [xs[i], toeRootY * yArc[i], toeBaseZ];
+      const tip: Vec3 = [xs[i] + medialX * tr * 0.04, toeTipY * yArc[i], toeTipZ];
+      local = local.smoothUnion(sdf.capsule(base, tip, tr), tr * 0.42);
+    });
+  }
+  return { local, instepH };
+}
+
+/** Place a LOCAL foot-frame node into the world — pitched (a LIFTED foot points
+ *  its toe down along the leg, {@link footPitchFrame}) or flat (a planted foot on
+ *  the ground). Shared by the skin foot and the shoe so they stay concentric. The
+ *  caller adds its own ankle weld and sole clip. `bottomZ` is the flat sole plane;
+ *  `flat` says which branch ran. */
+function footPlacement(
+  A: Vec3, s: SoleFrame, r: Record<string, number>, pf: { heading: Vec3; pitch: number } | null,
+): { place: (n: Node) => Node; flat: boolean; bottomZ: number } {
+  const bottomZ = s.groundZ + r.foot * 0.14;
+  if (pf) {
+    const yawL = Math.atan2(pf.heading[0], pf.heading[1]) / DEG;
+    const ankleLocal: Vec3 = [0, -s.length * 0.12, ANKLE_LOCAL_Z * r.foot];
+    return {
+      flat: false,
+      bottomZ,
+      place: (n: Node) => n
+        .translate([-ankleLocal[0], -ankleLocal[1], -ankleLocal[2]])
+        .rotate([-pf.pitch, 0, 0])
+        .rotate([0, 0, yawL])
+        .translate([A[0], A[1], A[2]]),
+    };
+  }
+  const yaw = Math.atan2(s.heading[0], s.heading[1]) / DEG;
+  return {
+    flat: true,
+    bottomZ,
+    place: (n: Node) => n.rotate([0, 0, yaw]).translate([s.point[0], s.point[1], bottomZ]),
+  };
+}
+
+function buildFeet(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'feet(opts)');
+  assertNoUnknownKeys(o, ['toes'], 'feet(opts)');
+  if (o.toes !== undefined && typeof o.toes !== 'boolean') throw new ValidationError('feet.toes must be a boolean');
+  // Toes are opt-in (default: a smooth, realistic toe-box). When on, five toes
+  // form a scalloped toe row across the forefoot, big toe on the medial side
+  // tapering to the pinky — mirroring sculpted hands. The toes are finer than
+  // the recommended 0.4–0.6 figure grid, so pair `toes: true` with
+  // `detail: F.footDetail(rig)` or they alias away (exactly like handDetail).
+  const toesOn = o.toes === true;
+  const j = rig.joints, r = rig.r;
+  // Figure ground plane: the lowest sole. A foot clearly above it is LIFTED and
+  // gets plantarflexed (#701); the lowest foot (which a base welds to) and any
+  // standing foot stay flat, so componentCount and the standing case are safe.
+  const planeZ = Math.min(rig.sole.L.groundZ, rig.sole.R.groundZ);
+
+  function foot(A: Vec3, s: SoleFrame, side: number, shinDir: Vec3, thighDir: Vec3): Node {
+    const { local, instepH } = footMassLocal(sdf, s, r, side, toesOn);
+    // Plantarflexion (#701): a LIFTED foot points its toe along the leg's
+    // downward extension; planted/standing feet get `null` and run the flat path.
+    const pf = footPitchFrame(shinDir, thighDir, s.heading, s.groundZ - planeZ, r.foot);
+    const { place, flat, bottomZ } = footPlacement(A, s, r, pf);
+    const big = s.length * 8;
+    if (!flat) {
+      // Lifted: flat-clip the sole IN THE LOCAL frame (z ≥ 0) BEFORE pivoting, so a
+      // plantarflexed foot keeps a real flat sole that tilts with the foot — not a
+      // rounded nub. Then weld up the leg so the airborne foot stays attached.
+      const soleFloor = sdf.box([big, big, big]).translate([0, 0, big / 2]); // local z ≥ 0
+      const world = place(local.intersect(soleFloor));
+      const ankleCol = sdf.capsule(A, [A[0], A[1], A[2] + r.lowerLeg * 0.5], r.lowerLeg * 0.8);
+      return world.smoothUnion(ankleCol, r.foot * 0.5);
+    }
+    // Planted: bridge the ankle to the foot, then flat-clip the bottom LAST so the
+    // sole is a true ground plane with no smoothUnion blend-halo dipping below it.
+    const world = place(local);
+    const ankleCol = sdf.capsule(A, [A[0], A[1], bottomZ + instepH * 0.9], r.lowerLeg * 0.8);
+    const welded = world.smoothUnion(ankleCol, r.foot * 0.5);
+    const floor = sdf.box([big, big, big])
+      .translate([s.point[0], s.point[1], bottomZ + big / 2]);   // keep z ≥ bottomZ
+    return welded.intersect(floor);
+  }
+  return foot(j.footL as Vec3, rig.sole.L, +1, rig.dir.lowerLegL, rig.dir.upperLegL)
+    .union(foot(j.footR as Vec3, rig.sole.R, -1, rig.dir.lowerLegR, rig.dir.upperLegR));
+}
+
+/** Detail-region spheres over both feet — required when `F.feet(rig, { toes:
+ *  true })` is used, since the toes are finer than the figure grid (mirrors
+ *  {@link handDetail}): `build({ detail: [...F.faceDetail(rig), ...F.footDetail(rig)] })`. */
+function footDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
+  const o = obj(opts, 'footDetail(opts)');
+  assertNoUnknownKeys(o, ['radius', 'edgeLength'], 'footDetail(opts)');
+  const r = rig.r;
+  const radius = num(o.radius, r.foot * 2.2, 'footDetail.radius', 1e-3);
+  const edgeLength = num(o.edgeLength, Math.max(r.foot * 0.07, 0.08), 'footDetail.edgeLength', 1e-4);
+  // Centre on the forefoot (where the toes live), forward of the ankle.
+  const center = (ankle: Vec3, sole: SoleFrame): Vec3 => [
+    ankle[0] + sole.heading[0] * sole.length * 0.42,
+    ankle[1] + sole.heading[1] * sole.length * 0.42,
+    sole.groundZ + r.foot * 0.4,
+  ];
+  return [
+    { center: center(rig.joints.footL as Vec3, rig.sole.L), radius, edgeLength },
+    { center: center(rig.joints.footR as Vec3, rig.sole.R), radius, edgeLength },
+  ];
+}
+
+/** Shoes and boots — footwear DERIVED from the bare foot, not rebuilt. The shoe
+ *  upper is the exact {@link footMassLocal} bare-foot shape grown outward by the
+ *  wall `thickness` (`.round(t)` — the SDF parallel offset, the same primitive
+ *  behind `surfaceMarking`). Because it's an outward offset of the foot it:
+ *   • hugs the foot exactly (no heel-jut / club-toe drift — there is no separate
+ *     "last" to fall out of sync with the foot),
+ *   • inherits the foot's plantarflexion for free (it offsets the SAME pitched
+ *     foot {@link buildFeet} builds, via {@link footPlacement}) — no bubble,
+ *   • is a superset of the foot by construction, so the skin can NEVER poke
+ *     through (the old guaranteed-coverage underlayer is gone).
  *
- *  Coverage follows the {@link buildPants} pattern: a shaped overlay (the visible
- *  silhouette) plus a guaranteed-coverage underlayer — the body's own foot mass
- *  (and, for boots, the lower-leg shank) offset outward by `t` and clipped to the
- *  footwear zone, unioned UNDER the overlay so it only ADDS coverage and the skin
- *  can never poke through. Footwear overlaps the foot/shank skin, so the
- *  top-level union keeps the figure one component in any pose.
+ *  A boot adds a shaft up the lower-leg bone; `kind` selects which. The sole is
+ *  the lowest `sole.thickness` band of the shoe's own footprint (a distinct paint
+ *  region), clipped flat at the ground plane (grounded foot) or tilted with the
+ *  foot (lifted). Heading tracks `leg*.twist` turnout via the shared placement.
  *
  *  Usage: see `examples/figure_sneakers.js` (shoes + contrasting sole, feet
  *  grounded level) and `examples/figure_superhero.js` (boots). */
@@ -871,123 +1696,74 @@ function buildFootwear(sdf: SdfApi, rig: Rig, opts: unknown, kind: 'shoes' | 'bo
     return lerp3(A, K, Math.min(0.95, Math.max(0.1, frac)));
   }
 
-  // Build one foot's two regions: the upper (boot body, clipped to sit ABOVE the
-  // sole) and the sole slab (a wide flat footprint from groundZ up). They overlap
-  // a little so the union welds into one component.
-  function foot(A: Vec3, K: Vec3, sole0: SoleFrame, side: number): { upper: Node; sole: Node | null } {
-    const footLen = sole0.length * size;           // heel→toe, full length
-    const fwd = sole0.heading;
+  // Figure ground plane: the lowest sole (matches buildFeet). A foot clearly
+  // above it is LIFTED and plantarflexes, so its footwear must pitch with it.
+  const planeZ = Math.min(rig.sole.L.groundZ, rig.sole.R.groundZ);
+
+  // Build one foot's shoe as the bare foot OFFSET outward by the wall thickness,
+  // then split off the lowest band as the (paintable) sole. The upper carries the
+  // collar (and, for boots, the shaft); both weld into one component.
+  function foot(A: Vec3, K: Vec3, sole0: SoleFrame, side: number, shinDir: Vec3, thighDir: Vec3): { upper: Node; sole: Node | null } {
     const groundZ = sole0.groundZ;
     const sz = footSoleZ(rig, A);                   // sole-capsule centre (world Z)
-    // Yaw that maps the local +Y axis onto the foot heading.
-    const yaw = Math.atan2(fwd[0], fwd[1]) / DEG;
+    const big = Math.max(sole0.length, r.lowerLeg) * 8;
+    const weld = r.foot * 0.18;                      // upper↔sole band overlap (welds them)
+    const lipCap = Math.min(lip, r.foot * 0.45);    // welt sits proud, never balloons
 
-    // ─── Build the shoe body in a LOCAL frame ───────────────────────────────
-    //  origin = footprint centre on the ground, +Y = toe, +X = lateral, +Z = up.
-    //  The bare foot spans ≈ ±0.78·footLen heel↔toe and ≈ ±0.8·r.foot laterally
-    //  about this origin, with its underside near +Z 0 (groundZ) — so everything
-    //  below is sized to swallow that. `soleTopZ` is where the upper sits on the
-    //  sole; we build the upper from there up and let the coverage underlayer
-    //  fill the gap down to groundZ. The silhouette reads as a real shoe: one
-    //  smooth ellipsoid LAST whose ends curve down into a toe-spring at the front
-    //  and round into the HEEL at the back, a low heel fill, an ANKLE COLLAR rise
-    //  at the opening — and (boots) a shaft — over a wide flat two-tier SOLE.
-    const soleTopZ = soleOn ? groundZ + soleThick : groundZ;
-    const wallT = t;                               // upper-wall thickness over skin
-    const hw = r.foot * 0.78 * size + wallT;        // upper half-width (foot + wall)
-    const heelY = -footLen * 0.72;                  // heel back (local −Y)
-    // The last reaches the GROUND (local Z 0); the sole is later sliced off its
-    // bottom so it follows the foot's own curvature (not a separate cuboid).
-    const bodyLow = 0;
-    // Foot landmarks in local Z (relative to groundZ): foot capsule top ≈ instep.
-    const footTopZ = (sz - groundZ) + r.foot * 0.62;   // top of the bare-foot mass
-    const instepZ = footTopZ + wallT;                  // crown over the instep
+    // The bare foot (smooth toe-box — a shoe doesn't show toes), optionally scaled
+    // for chunkier/daintier footwear, then grown outward by the wall `t`.
+    const { local: rawFoot } = footMassLocal(sdf, sole0, r, side, false);
+    const footMass = size === 1 ? rawFoot : rawFoot.scale(size);
+    const offsetFoot = footMass.round(t);           // SDF parallel offset = the shoe shell
 
-    // MAIN LAST — one long, smooth ellipsoid spanning the whole footprint (heel→
-    // toe). An ellipsoid tapers and rounds at BOTH ends, so the front naturally
-    // curves down to a toe-spring and the back rounds into the heel — a single
-    // continuous shoe-last form rather than separate blobs. Its flat bottom comes
-    // from the sole clip; the foot-mass underlayer guarantees the ends stay shod.
-    const bodyTopZ = instepZ;                           // crown over the instep/arch
-    const lastRZ = bodyTopZ - bodyLow;                  // last half-height at the crest
-    const last = sdf.ellipsoid(hw, footLen * 0.86, lastRZ)
-      .translate([0, -footLen * 0.04, bodyLow]);
+    // Same plantarflexion + placement the bare foot uses, so shoe and foot stay
+    // concentric in any pose (lifted foot → the shoe pitches with it).
+    const pf = footPitchFrame(shinDir, thighDir, sole0.heading, groundZ - planeZ, r.foot);
+    const { place } = footPlacement(A, sole0, r, pf);
 
-    // HEEL — a low rounded mass that fills out the back of the last to the heel
-    // tip without rising above the instep (the tall rise to the ankle is the
-    // collar's job). Overlaps the last so it reads as the same continuous form.
-    const heelTopZ = bodyLow + lastRZ * 0.92;
-    const heelR = r.foot * 0.6 * size + wallT;
-    const heel = sdf.roundedCylinder(heelR, (heelTopZ - bodyLow), Math.min(heelR * 0.55, (heelTopZ - bodyLow) * 0.45))
-      .translate([0, heelY + heelR * 0.85, bodyLow + (heelTopZ - bodyLow) / 2]);
+    // Collar welds the opening to the shank; (boots) the shaft runs up the lower
+    // leg. Both WORLD-anchored (they follow the shank, not the foot).
+    const weldCollarShaft = (body: Node): Node => {
+      const collar = sdf.capsule(
+        [A[0], A[1], A[2] + r.foot * 0.1],
+        [A[0], A[1], sz - r.foot * 0.1],
+        r.lowerLeg * 0.92 + t,
+      );
+      let out = body.smoothUnion(collar, r.foot * 0.55);
+      if (kind === 'boots') {
+        const shaft = sdf.capsule(A, shaftTop(A, K), r.lowerLeg + t);
+        out = out.smoothUnion(shaft, r.lowerLeg * 0.9);
+      }
+      return out;
+    };
 
-    const kBody = r.foot * 0.6;
-    let local = last
-      .smoothUnion(heel, kBody);
-
-    // Place the local shoe body into the world (yaw to heading, drop onto ground).
-    let upper = local.rotate([0, 0, yaw]).translate([sole0.point[0], sole0.point[1], groundZ]);
-
-    // ─── ANKLE COLLAR + bridge to the leg (world coords) ────────────────────
-    //  A collar ring at the ankle opening welds the shoe to the shank and keeps
-    //  the figure one component; the bridge capsule reaches from the ankle down
-    //  into the body so a posed (lifted) ankle stays connected.
-    const collar = sdf.capsule(
-      [A[0], A[1], A[2] + r.foot * 0.1],
-      [A[0], A[1], sz - r.foot * 0.1],
-      r.lowerLeg * 0.92 + wallT,
-    );
-    upper = upper.smoothUnion(collar, r.foot * 0.55);
-    if (kind === 'boots') {
-      const shaft = sdf.capsule(A, shaftTop(A, K), r.lowerLeg + wallT);
-      upper = upper.smoothUnion(shaft, r.lowerLeg * 0.9);
+    // Split the shoe body into upper (above soleTop−weld) and the sole band, in the
+    // foot's own frame so a lifted sole tilts WITH the foot. `clip` cuts the shoe
+    // flat at the sole plane; `soleTop` is the top of the sole band. For the welt
+    // style the sole grows outward by `lipCap` so it sits a touch proud.
+    function regions(bodyFrame: Node, soleZ: number): { upper: Node; sole: Node | null } {
+      const soleTop = soleZ + soleThick;
+      const floor = sdf.box([big, big, big]).translate([0, 0, big / 2 + soleZ]);      // z ≥ soleZ
+      const clipped = bodyFrame.intersect(floor);
+      const upperBox = sdf.box([big, big, big]).translate([0, 0, big / 2 + soleTop - weld]); // z ≥ soleTop−weld
+      const upper = weldCollarShaft(place(clipped.intersect(upperBox)));
+      if (!soleOn) return { upper: weldCollarShaft(place(clipped)), sole: null };
+      const band = sdf.box([big, big, soleThick]).translate([0, 0, soleZ + soleThick / 2]);
+      const proud = lipCap > 0 ? clipped.round(lipCap) : clipped;
+      const sole = place(proud.intersect(band));
+      return { upper, sole };
     }
 
-    // ─── Guaranteed-coverage underlayer ─────────────────────────────────────
-    //  The body's own foot/shank mass offset by `t` and clipped to the footwear
-    //  zone, unioned UNDER the shaped upper so the skin can NEVER poke through —
-    //  this is the same belt-and-braces pattern buildPants uses.
-    const footMass = (() => {
-      const lat: Vec3 = [-fwd[1], fwd[0], 0];
-      const onG = (p: Vec3): Vec3 => [p[0], p[1], sz];
-      const toe = onG(add3(A, add3(scale3(fwd, footLen * 0.62), scale3(lat, side * r.foot * 0.12))));
-      const hl = onG(add3(A, scale3(fwd, -footLen * 0.38)));
-      const instepC = onG(add3(A, scale3(fwd, footLen * 0.35)));
-      const s = sdf.capsule(hl, toe, r.foot * 0.62);
-      const inst = sdf.ellipsoid(r.foot * 0.8 * size, footLen * 0.5, r.foot * 0.8)
-        .translate([instepC[0], instepC[1], sz + r.foot * 0.15]);
-      const col = sdf.capsule(A, [A[0], A[1], sz + r.foot * 0.2], r.lowerLeg * 0.8);
-      let m = s.smoothUnion(inst, r.foot * 0.6).smoothUnion(col, r.foot * 0.6);
-      if (kind === 'boots') m = m.union(sdf.capsule(A, shaftTop(A, K), r.lowerLeg));
-      return m.round(t);
-    })();
-    const big = Math.max(footLen, r.lowerLeg) * 8;
-    const topZ = kind === 'boots' ? shaftTop(A, K)[2] : sz + r.foot * 1.2 + t;
-    const zone = sdf.box([big, big, big]).translate([A[0], A[1], topZ - big / 2]); // z ≤ topZ
-    // The complete shoe solid, flat-clipped at the ground plane (nothing below it).
-    const shoeFloor = sdf.box([big, big, big]).translate([A[0], A[1], groundZ + big / 2]); // z ≥ groundZ
-    const shoe = upper.union(footMass.intersect(zone)).intersect(shoeFloor);
-
-    if (!soleOn) return { upper: shoe, sole: null };
-
-    // SOLE = a horizontal SLICE off the bottom of the shoe's OWN shape, so it
-    // follows the foot's curvature exactly (no cuboid welded onto rounded feet).
-    // 'welt' inflates that slice outward by `lip` so it sits proud of the upper
-    // (classic shoe sole); 'flush' keeps the upper's own outline. The bottom
-    // stays flat at groundZ (the slab clip). UPPER = the rest of the shoe; they
-    // overlap by `weld` so the union is one component.
-    const weld = r.foot * 0.18;
-    const soleBand = sdf.box([big, big, soleThick]).translate([A[0], A[1], groundZ + soleThick / 2]);
-    const upperHalf = sdf.box([big, big, big]).translate([A[0], A[1], (soleTopZ - weld) + big / 2]); // z ≥ soleTopZ−weld
-    const soleSolid = lip > 0 ? shoe.round(lip) : shoe;
-    return {
-      upper: shoe.intersect(upperHalf),
-      sole: soleSolid.intersect(soleBand),
-    };
+    // Both the planted and the (now flat-soled) plantarflexed foot have their sole
+    // at local z 0, so the shoe clips the offset foot a hair below it — local
+    // z = −0.14·r.foot — in BOTH cases. Grounded: that plane is the world ground
+    // (footPlacement maps local 0 → world bottomZ = groundZ + 0.14·r.foot), so the
+    // sole plants flat on the base. Lifted: it tilts with the foot. Never a bubble.
+    return regions(offsetFoot, -r.foot * 0.14);
   }
 
-  const L = foot(j.footL as Vec3, j.lowerLegL as Vec3, rig.sole.L, +1);
-  const R = foot(j.footR as Vec3, j.lowerLegR as Vec3, rig.sole.R, -1);
+  const L = foot(j.footL as Vec3, j.lowerLegL as Vec3, rig.sole.L, +1, rig.dir.lowerLegL, rig.dir.upperLegL);
+  const R = foot(j.footR as Vec3, j.lowerLegR as Vec3, rig.sole.R, -1, rig.dir.lowerLegR, rig.dir.upperLegR);
   const parts: Node[] = [L.upper.label(upperLabel), R.upper.label(upperLabel)];
   if (L.sole && R.sole) parts.push(L.sole.label(soleLabel), R.sole.label(soleLabel));
   return parts.reduce((a, b) => a.union(b));
@@ -1161,121 +1937,498 @@ function groundRig(rig: Rig, opts?: unknown): Rig {
 
 // --- Face features (read rig.face anchors) --------------------------------
 
+// Eyelid styles. The lid is modelled as TWO independent lids — an upper and a
+// lower — each a thin skin shell that hugs (wraps) the eyeball and sweeps in
+// from its pole to a margin. `upper`/`lower` are how far each lid has closed,
+// 0 (fully retracted, eye wide) … 1 (fully drawn across). The eye is OPEN
+// between the two margins; when `upper + lower ≥ 1` the margins meet and the
+// eye is CLOSED. So {upper:0.75, lower:0.25} and {0.5,0.5} both read closed,
+// {0.25,0.25} is a slit, {0.3,0.05} is an alert eye with just an upper lid.
+//
+// `lids` accepts a `{ upper, lower }` pair for full control, OR one of the
+// named presets below as shorthand (mapped to a pair). 'none' / undefined =
+// no lids (the bare eyeball — backward compatible).
+const LID_STYLES = ['none', 'upper', 'hooded', 'half', 'closed', 'almond', 'tapered'] as const;
+type LidStyle = typeof LID_STYLES[number];
+interface LidFrac { upper: number; lower: number }
+const LID_PRESET: Record<Exclude<LidStyle, 'none'>, LidFrac> = {
+  upper: { upper: 0.30, lower: 0.06 },    // alert, open eye with a defined upper lid
+  hooded: { upper: 0.46, lower: 0.06 },   // heavier upper hood
+  half: { upper: 0.40, lower: 0.12 },     // sleepy / half-closed (pupil still visible)
+  closed: { upper: 0.56, lower: 0.50 },   // lids meet — shut
+  almond: { upper: 0.30, lower: 0.20 },   // both lids visible, almond opening
+  tapered: { upper: 0.38, lower: 0.28 },  // narrower, more drawn-out
+};
+// The lid sits this fraction proud of the eyeball (a thin shell that wraps it),
+// and the margins tilt forward by this much so they arc naturally over a round
+// eye instead of cutting a flat chord.
+const LID_SCALE = 1.06;
+const LID_TILT_DEG = 18;
+
+// --- Gaze: where the iris/pupil point --------------------------------------
+// A gaze rotates the iris/pupil plug away from straight-ahead, ABOUT THE
+// EYEBALL CENTRE, in the CANONICAL head frame (so it follows the head pose).
+// `yaw` > 0 turns the gaze toward the FIGURE'S OWN LEFT (+headLeft); `pitch` >
+// 0 turns it UP (+headUp) — both in DEGREES. Supply a named preset (the nine
+// cardinal/intercardinal looks below), a { yaw, pitch } pair for an exact
+// angle, or 'middle'/'center' for straight ahead. Modest angles keep the iris
+// within the eye opening; at the extremes the discs clip cleanly to the lid
+// band (a far look tucks partly behind the lid, as a real eye does).
+interface Gaze { yaw: number; pitch: number }
+const GAZE_CARDINAL = 22;   // degrees for a pure left / right / up / down look
+const GAZE_DIAGONAL = 15;   // per-axis degrees for the four corner looks
+const GAZE_PRESETS: Record<string, Gaze> = {
+  middle: { yaw: 0, pitch: 0 },
+  center: { yaw: 0, pitch: 0 },                                   // alias of 'middle'
+  left: { yaw: GAZE_CARDINAL, pitch: 0 },                         // figure's own left
+  right: { yaw: -GAZE_CARDINAL, pitch: 0 },
+  up: { yaw: 0, pitch: GAZE_CARDINAL },
+  down: { yaw: 0, pitch: -GAZE_CARDINAL },
+  'upper-left': { yaw: GAZE_DIAGONAL, pitch: GAZE_DIAGONAL },
+  'upper-right': { yaw: -GAZE_DIAGONAL, pitch: GAZE_DIAGONAL },
+  'lower-left': { yaw: GAZE_DIAGONAL, pitch: -GAZE_DIAGONAL },
+  'lower-right': { yaw: -GAZE_DIAGONAL, pitch: -GAZE_DIAGONAL },
+};
+const GAZE_NAMES = Object.keys(GAZE_PRESETS) as [string, ...string[]];
+
+/** Parse a gaze value: a preset name, a { yaw, pitch } pair (degrees, figure's
+ *  left / up positive), or undefined → straight ahead ({ yaw: 0, pitch: 0 }). */
+function parseGaze(v: unknown, name: string): Gaze {
+  if (v === undefined) return { yaw: 0, pitch: 0 };
+  if (typeof v === 'string') return GAZE_PRESETS[assertEnum(v, GAZE_NAMES, name)];
+  const o = assertObject(v, name) as Record<string, unknown>;
+  assertNoUnknownKeys(o, ['yaw', 'pitch'], name);
+  return {
+    yaw: num(o.yaw, 0, `${name}.yaw`, -45, 45),
+    pitch: num(o.pitch, 0, `${name}.pitch`, -45, 45),
+  };
+}
+
 function buildEyes(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'eyes(opts)');
-  assertNoUnknownKeys(o, ['radius', 'style'], 'eyes(opts)');
+  assertNoUnknownKeys(o, ['radius', 'style', 'lids', 'gaze', 'gazeL', 'gazeR'], 'eyes(opts)');
   const rad = num(o.radius, rig.r.head * 0.16, 'eyes.radius', 0.01);
+  // `gaze` aims BOTH irises/pupils; `gazeL` / `gazeR` override one eye (the
+  // figure's own left / right) for cross-eyed or independent looks.
+  const gazeBase = parseGaze(o.gaze, 'eyes.gaze');
+  const gazeLeft = o.gazeL === undefined ? gazeBase : parseGaze(o.gazeL, 'eyes.gazeL');
+  const gazeRight = o.gazeR === undefined ? gazeBase : parseGaze(o.gazeR, 'eyes.gazeR');
   const style = o.style === undefined ? 'iris'
     : assertEnum(o.style, ['solid', 'iris'] as const, 'eyes.style');
+  // `lids`: a named preset string, or a { upper, lower } pair (each 0..1), or
+  // 'none'/undefined for the bare eyeball.
+  let lidFrac: LidFrac | null;
+  if (o.lids === undefined) {
+    lidFrac = null;
+  } else if (typeof o.lids === 'string') {
+    const preset = assertEnum(o.lids, LID_STYLES, 'eyes.lids');
+    lidFrac = preset === 'none' ? null : LID_PRESET[preset];
+  } else {
+    const lo = assertObject(o.lids, 'eyes.lids') as Record<string, unknown>;
+    assertNoUnknownKeys(lo, ['upper', 'lower'], 'eyes.lids');
+    lidFrac = {
+      upper: num(lo.upper, 0, 'eyes.lids.upper', 0, 1),
+      lower: num(lo.lower, 0, 'eyes.lids.lower', 0, 1),
+    };
+    if (lidFrac.upper === 0 && lidFrac.lower === 0) lidFrac = null;
+  }
   const f = rig.dir.headForward;
   // Push the eyeballs out so a dome reliably protrudes past the cheek welds —
   // an eye centred ON the anchor can be fully swallowed, leaving a paintable
-  // label with zero triangles. `rad * 0.28` alone is ~1 face-detail march cell
-  // (faceDetail's head edge ≈ r.head * 0.045) and shrinks toward zero as the
-  // head is posed/enlarged, so the eye/iris/pupil labels collapse to 0 tris on
-  // many figures. Floor the push at ~2 cells (r.head * 0.09) — the same
-  // cell-count discipline the mouth cavity (`cavH`) already uses — while
-  // staying shallow enough that the eye reads as sitting IN the face.
-  const push = Math.max(rad * 0.28, rig.r.head * 0.09);
+  // label with zero triangles. The eye anchor sits at ~0.86·headZ forward but
+  // the cheek spheres (front ≈ 0.55·headZ + 0.5·headX·cheek, then bulged
+  // further by their smoothUnion) reach PAST the eye plane even at the default
+  // cheek=1, so the welded face surface is already forward of the anchor. A
+  // shallow push (the old `max(rad*0.28, r.head*0.09)`) left the eyeball front
+  // sitting right AT that surface — and marching-cubes asymmetry then buries
+  // ONE of the two L/R-symmetric eyes (#691: expectant_mother's left eye gone,
+  // surfer lopsided). buildEyes can't see the head's `cheek` knob, so the FLOOR
+  // does the clearing: ~3.5 march cells (r.head * 0.16) is enough that even a
+  // small (radius 0.13·head) eye on a default-cheek face protrudes past the
+  // burial threshold with margin, so neither L/R eye sits on the knife-edge
+  // where the march drops one. The `rad`-proportional term (kept at the original
+  // 0.28) only kicks in for already-large eyes, where it adds a little extra so
+  // the protrusion scales with the eye — but we DON'T over-push big eyes (that
+  // would shove their iris out past faceDetail's fine eye region and re-jag it).
+  // Still shallow enough that a normal face (boxer/runway_model) reads as eyes
+  // sitting IN the face, not bugging out — the eyeball back stays inside the skull.
+  const push = Math.max(rad * 0.28, rig.r.head * 0.16);
   const cL = add3(rig.face.eyeL, scale3(f, push));
   const cR = add3(rig.face.eyeR, scale3(f, push));
   const pair = (r: number, forwardOff: number): Node => {
     const off = scale3(f, forwardOff);
     return sdf.sphere(r).translate(add3(cL, off)).union(sdf.sphere(r).translate(add3(cR, off)));
   };
-  if (style === 'solid') return pair(rad, 0);
-  // 'iris' (default): a perfectly ROUND white eyeball with the coloured iris and
-  // black pupil PAINTED ON as flush concentric discs — each its own pre-labelled
-  // hard-union region so paintByLabels can colour them independently. Don't wrap
-  // the result in another .label() — the outer label would win and flatten the
-  // eye back to one colour.
+
+  // --- Eyelids -----------------------------------------------------------
+  // TWO independent lids, each a thin skin shell that WRAPS the eyeball: a cap
+  // of a slightly-larger concentric sphere (`dome`) sliced to the band the lid
+  // covers. The slicing plane is TILTED forward (about X) so the lid margin
+  // arcs over the round eye like a real lid instead of cutting a flat chord —
+  // and because the cut is a circle on the sphere, the margin wraps. Built in
+  // the CANONICAL head frame (forward −Y, up +Z, lateral ±X) then oriented into
+  // the posed head and translated onto each eye centre.
   //
-  // The discs are NOT raised lenses (those protruded forward as beads — a pupil
-  // bump read as a "nipple"). Instead each is a thick cylindrical plug clipped to
-  // a sphere CONCENTRIC with the eyeball but a hair larger (`capR`), so the plug's
-  // front face exactly follows the eyeball's curvature and wins the hard-union
-  // over its disc with no perceptible bump — the iris/pupil read as painted on a
-  // round eye. The plug reaches from the front pole back to ~the eyeball centre
-  // (deep enough to always mesh, even on a coarse grid, while keeping the buried
-  // barrel — and the fine triangles spent meshing it — modest); only its flush
-  // front cap survives the union (the rest is interior), carrying the label.
-  // `capR` increases sclera < iris < pupil so each disc reliably wins the union
-  // over the one beneath it; the increments are <3% of `rad` — sub-visual, so the
-  // silhouette stays round.
+  //   • upper lid covers z ≥ +(1−2·upper)·rad  (margin descends as `upper` → 1)
+  //   • lower lid covers z ≤ −(1−2·lower)·rad  (margin rises as `lower` → 1)
+  //   • lids = (upper ∪ lower) caps of the dome, labelled 'lids'
+  //   • the eyeball stays a WHOLE sphere (fills behind the lids → genus-clean,
+  //     no tunnels); only the iris/pupil are clipped out from under the lids so
+  //     their colour can't bleed onto the lid. When the margins meet (upper +
+  //     lower ≥ 1) the lids cover the whole eye → shut.
+  let lidLocal: Node | null = null;   // the two-lid SKIN shell of ONE eye, canonical frame
+  let bandLocal: Node | null = null;  // the OPENING band between the margins (half-spaces)
+  if (lidFrac) {
+    const lidR = rad * LID_SCALE;
+    const big = lidR * 4;
+    // A margin plane at height `mz` tilted forward (about X) so the lid rim arcs
+    // over the round eye. `coverBox` is the solid half the lid fills (z·dir ≥ 0);
+    // `openBox` is the opposite half — the eye opening on that side.
+    const halfSpace = (mz: number, dir: 1 | -1, side: 1 | -1): Node =>
+      sdf.box([big, big, big])
+        .translate([0, 0, side * dir * big / 2])
+        .rotate([dir * LID_TILT_DEG, 0, 0])
+        .translate([0, 0, mz]);
+    const caps: Node[] = [];
+    const opens: Node[] = [];
+    const addLid = (frac: number, dir: 1 | -1): void => {
+      if (frac <= 0) return;
+      const mz = dir * (1 - 2 * frac) * rad;
+      caps.push(sdf.sphere(lidR).intersect(halfSpace(mz, dir, 1)));  // the skin cap
+      opens.push(halfSpace(mz, dir, -1));                            // the opening on this side
+    };
+    addLid(lidFrac.upper, 1);
+    addLid(lidFrac.lower, -1);
+    if (caps.length > 0) {
+      lidLocal = caps.reduce((acc, n) => acc.union(n));
+      // The opening is the intersection of the per-margin opening half-spaces.
+      // Clipping iris/pupil with these flat half-spaces (true box SDFs) keeps a
+      // CLEAN field — subtracting the lid solid (sphere ∩ tilted box) is a
+      // non-metric field that makes levelSet mesh the disc coarsely/jaggedly.
+      bandLocal = opens.reduce((acc, n) => acc.intersect(n));
+    }
+  }
+  const lidAt = (c: Vec3): Node => orientToHeadPose(lidLocal as Node, rig).translate(c);
+  // Clip iris/pupil to the opening band so their colour stays off the lid.
+  const clipDiscAt = (n: Node, c: Vec3): Node =>
+    (bandLocal ? n.intersect(orientToHeadPose(bandLocal, rig).translate(c)) : n);
+
+  // 'solid' with no lids: the original unlabelled pair for the caller to label.
+  if (style === 'solid' && !lidLocal) return pair(rad, 0);
+
+  // One iris/pupil plug, oriented into the posed head and placed at eye `c`.
+  // Built facing the canonical front (−Y) about the eyeball centre (origin),
+  // aimed by the gaze, then posed by `orientToHeadPose`.
   //
-  // The cylinder is built along +Z then translated forward and rotated 90° about
-  // X so its axis points along the (canonical −Y) head-forward before
-  // `orientToHeadPose` carries it into the posed head frame — its front end sits
-  // at the eyeball's front pole and it reaches back to the centre. (`rotate` is
-  // in DEGREES; `translate` before `rotate` so +Z→−Y places the plug at the
-  // front.)
-  const disc = (capR: number, discR: number): Node => {
-    const depth = capR; // front pole back to ~the eyeball centre
-    const plug = sdf.sphere(capR).intersect(
-      sdf.cylinder(discR, depth).translate([0, 0, capR - depth / 2]).rotate([90, 0, 0]),
-    );
-    const one = (c: Vec3): Node => orientToHeadPose(plug, rig).translate(c);
-    return one(cL).union(one(cR));
+  // #703 root cause + fix. The OLD disc was a cap sphere CONCENTRIC with the
+  // eyeball (radius rad·1.012/1.024) clipped by a cylinder: because cap and
+  // eyeball share a centre, the cap was a constant-thickness shell, and at the
+  // cylinder edge that shell thinned to a near-tangent SLIVER — marching-cubes
+  // aliases the vanishing step into a jagged, dashed ring (a floating stuck-on
+  // disc, worst on crawling_baby's 0.32·head eye, where the iris also rides
+  // past faceDetail's fine eye region onto a coarser grid). Any concentric-cap
+  // variant is stuck with that tangential boundary that vanishes at the rim.
+  //
+  // Instead make the iris/pupil a SMALL BALL seated forward INSIDE the eyeball
+  // so only a cap pokes out the front. The union boundary of two non-concentric
+  // spheres is the radical CIRCLE where they cross, and the surfaces meet there
+  // at a real dihedral angle — a crisp, march-resolvable edge at any eyeball
+  // size, no sliver. `discAt` solves the ball's radius + offset from the desired
+  // disc radius and protrusion so the visible cap is exactly the disc we want.
+  const discAt = (c: Vec3, lift: number, discR: number, g: Gaze): Node => {
+    // Solve ball radius `br` and forward offset `d` (along −Y) from two targets:
+    //   front:  d + br  = rad + lift            (cap protrudes `lift` past the eye)
+    //   circle: discR^2 = rad^2 - z^2,  z = (rad^2 - br^2 + d^2) / (2 d)
+    // Substituting br = rad + lift - d and z = sqrt(rad^2 - discR^2) gives:
+    //   d = (front^2 - rad^2) / (2 (front - z)),  front = rad + lift = d + br.
+    const z = Math.sqrt(Math.max(rad * rad - discR * discR, 1e-9));
+    const front = rad + lift;
+    const d = (front * front - rad * rad) / (2 * (front - z));
+    const br = front - d;
+    // Build the ball at −Y (the canonical front) and clip it to a `discR`-radius
+    // cylinder coaxial along −Y. The cylinder radius equals the radical-circle
+    // radius, so its wall sits at/below that circle: it trims only the ball's
+    // buried lower flare — keeping the protruding cap and its clean sphere∩sphere
+    // edge — while tightening the labelled node's BOUNDS to the visible disc
+    // (≈ discR wide, cap-tall) rather than the whole buried ball.
+    const depth = front + rad;                       // cap front → behind the eye centre
+    const cyl = sdf.cylinder(discR, depth).rotate([90, 0, 0]).translate([0, -(front - depth / 2), 0]);
+    let plug = sdf.sphere(br).translate([0, -d, 0]).intersect(cyl);
+    // Aim about the eyeball centre (origin): pitch about X (−pitch so +pitch
+    // looks UP), then yaw about Z (+yaw toward the figure's left). The ball+cap
+    // swing as a unit about the eye centre, so the gaze re-aims while the cap
+    // stays seated on the eye.
+    if (g.yaw !== 0 || g.pitch !== 0) plug = plug.rotate([-g.pitch, 0, 0]).rotate([0, 0, g.yaw]);
+    return orientToHeadPose(plug, rig).translate(c);
   };
-  // discR sets how much white shows: the iris spans a bit over half the eyeball
-  // width (a generous coloured disc, the look that read best) leaving a clear
-  // white margin; the pupil is half the iris.
-  const sclera = pair(rad, 0).label('eyes');
-  const iris = disc(rad * 1.012, rad * 0.55).label('iris');
-  const pupil = disc(rad * 1.024, rad * 0.27).label('pupil');
-  return sclera.union(iris).union(pupil);
+
+  // Assemble PER EYE and label each part per eye. A region spanning BOTH eyes is
+  // too wide to march at the fine eye grid within the direct-fine cell budget,
+  // so it falls back to the coarse path and the small iris/pupil facet badly.
+  // Per-eye regions are each small enough to march fine; resolveLabelMap merges
+  // the two same-named partitions back into one label. The eyeball stays a WHOLE
+  // sphere (genus-clean, fills behind the lids); iris/pupil (≈0.55 / 0.27 · rad,
+  // a generous white margin) are clipped out from under the lids so their colour
+  // can't bleed onto the lid.
+  const parts: Node[] = [];
+  for (const [c, g] of [[cL, gazeLeft], [cR, gazeRight]] as [Vec3, Gaze][]) {
+    parts.push(sdf.sphere(rad).translate(c).label('eyes'));
+    if (lidLocal) parts.push(lidAt(c).label('lids'));
+    if (style === 'iris') {
+      // `lift` = how far the cap pokes proud of the eyeball. Pupil sits a hair
+      // prouder than iris so it wins the union over the iris beneath it. ~10/14%
+      // of rad gives each cap a clearly march-resolvable convex edge (no sliver
+      // to alias into a dashed ring) while still reading as a disc seated on the
+      // eye, not a bug-eyed bump.
+      parts.push(clipDiscAt(discAt(c, rad * 0.10, rad * 0.55, g), c).label('iris'));
+      parts.push(clipDiscAt(discAt(c, rad * 0.14, rad * 0.27, g), c).label('pupil'));
+    }
+  }
+  return parts.reduce((acc, n) => acc.union(n));
 }
+
+// Nose presets — everyday descriptive shapes bundled as starting points. Each
+// is a full set of axis values; explicit `nose.*` keys OVERRIDE the preset
+// value (they do NOT multiply), so `{ type: 'broad', flare: 0.5 }` is the broad
+// nose with a tamer alar flare. Fields: proj (face→tip projection), len (dorsum
+// length), width (tip+alae), bridge (height/prominence), bw (bridge width,
+// pinched↔broad), profile (−scooped..+roman hump), tip (tipRadius mult), tipSize
+// (end-bulb scale), shape (tip silhouette), flare (alar wings), upturn (tip
+// rotation), nostril (cavity size). 'straight' is the neutral all-purpose nose.
+interface NosePreset {
+  proj: number; len: number; width: number; bridge: number; bw: number;
+  profile: number; tip: number; tipSize: number; shape: TipShape;
+  flare: number; upturn: number; nostril: number;
+}
+const TIP_SHAPES = ['round', 'pointed', 'bulbous', 'cleft'] as const;
+type TipShape = typeof TIP_SHAPES[number];
+const NOSE_TYPE: Record<string, NosePreset> = {
+  straight: { proj: 1.15, len: 1,    width: 1,    bridge: 1,    bw: 1,    profile: 0,     tip: 1,    tipSize: 1,    shape: 'round',   flare: 0.6,  upturn: 0,     nostril: 1 },
+  button:   { proj: 0.95, len: 0.7,  width: 0.95, bridge: 0.7,  bw: 1.05, profile: -0.2,  tip: 1.05, tipSize: 1.12, shape: 'round',   flare: 0.55, upturn: 0.6,   nostril: 0.95 },
+  snub:     { proj: 0.9,  len: 0.75, width: 1.05, bridge: 0.7,  bw: 1.05, profile: -0.45, tip: 1,    tipSize: 1.05, shape: 'round',   flare: 0.8,  upturn: 0.95,  nostril: 1.1 },
+  roman:    { proj: 1.32, len: 1.2,  width: 1,    bridge: 1.25, bw: 0.9,  profile: 0.6,   tip: 0.95, tipSize: 0.95, shape: 'pointed', flare: 0.5,  upturn: -0.2,  nostril: 0.95 },
+  aquiline: { proj: 1.45, len: 1.35, width: 0.92, bridge: 1.3,  bw: 0.82, profile: 0.85,  tip: 0.88, tipSize: 0.9,  shape: 'pointed', flare: 0.42, upturn: -0.55, nostril: 0.85 },
+  broad:    { proj: 1.05, len: 0.95, width: 1.55, bridge: 0.6,  bw: 1.4,  profile: -0.1,  tip: 1.15, tipSize: 1.22, shape: 'round',   flare: 1.15, upturn: 0.1,   nostril: 1.4 },
+  pointed:  { proj: 1.28, len: 1.2,  width: 0.8,  bridge: 1.12, bw: 0.78, profile: 0,     tip: 0.78, tipSize: 0.8,  shape: 'pointed', flare: 0.38, upturn: 0,     nostril: 0.8 },
+  bulbous:  { proj: 1.1,  len: 1,    width: 1.3,  bridge: 0.85, bw: 1.15, profile: 0.1,   tip: 1.4,  tipSize: 1.5,  shape: 'bulbous', flare: 1,    upturn: 0,     nostril: 1.2 },
+};
+const NOSE_TYPES = Object.keys(NOSE_TYPE) as Array<keyof typeof NOSE_TYPE>;
+
+const NOSE_FIELDS = ['type', 'tipRadius', 'projection', 'length', 'width', 'bridge', 'bridgeWidth', 'profile', 'bump', 'tipSize', 'tipShape', 'flare', 'upturn', 'nostrils', 'nostrilSize'];
 
 function buildNose(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'nose(opts)');
-  assertNoUnknownKeys(o, ['tipRadius', 'length', 'width', 'bridge', 'flare'], 'nose(opts)');
+  assertNoUnknownKeys(o, NOSE_FIELDS, 'nose(opts)');
+  const type = o.type === undefined ? 'straight'
+    : assertEnum(o.type, NOSE_TYPES as unknown as readonly string[], 'nose.type');
+  const P = NOSE_TYPE[type];
   const R = rig.r.head;
-  const tipR = num(o.tipRadius, R * 0.12, 'nose.tipRadius', 0.01);
-  // length: how far the dorsum runs from the tip up to the bridge root (a
-  // multiplier on the default span). width: lateral fullness of the tip + alae.
-  // bridge: nasal-bridge projection/height — a LOW bridge (≈0.4) reads broad and
-  // flat, a HIGH bridge (≈1.4) thin and prominent; this is one of the strongest
-  // axes of real facial variation. flare: alar (nostril-wing) size, 0 = none
-  // (the smooth default), up to 1.5 for a broad base. Defaults reproduce the
-  // original slim tapered nose so existing figures are unchanged.
-  const length = num(o.length, 1, 'nose.length', 0.3, 2);
-  const width = num(o.width, 1, 'nose.width', 0.4, 2.2);
-  const bridge = num(o.bridge, 1, 'nose.bridge', 0.3, 1.5);
-  const flare = num(o.flare, 0, 'nose.flare', 0, 1.5);
+  const tipR = num(o.tipRadius, R * 0.12 * P.tip, 'nose.tipRadius', 0.01);
+  // See the preset comment + public/ai/figure.md for the axis semantics. Every
+  // axis defaults to the chosen preset's value; explicit keys override it.
+  const projection = num(o.projection, P.proj, 'nose.projection', 0.4, 2);
+  const length = num(o.length, P.len, 'nose.length', 0.3, 2);
+  const width = num(o.width, P.width, 'nose.width', 0.4, 2.2);
+  const bridge = num(o.bridge, P.bridge, 'nose.bridge', 0.3, 1.5);
+  const bridgeWidth = num(o.bridgeWidth, P.bw, 'nose.bridgeWidth', 0.4, 1.8);
+  // profile: −1 concave/scooped (ski-jump) … 0 straight … +1 convex (roman
+  // hump). Legacy `bump` (0..1) is accepted as the positive-only alias —
+  // validate it whenever it's present (even if `profile` wins) so a bad value
+  // can't slip through unchecked.
+  const bump = o.bump !== undefined ? num(o.bump, 0, 'nose.bump', 0, 1) : undefined;
+  const profile = o.profile !== undefined ? num(o.profile, P.profile, 'nose.profile', -1, 1)
+    : bump !== undefined ? bump : P.profile;
+  const tipSize = num(o.tipSize, P.tipSize, 'nose.tipSize', 0.4, 2);
+  const tipShape = o.tipShape === undefined ? P.shape
+    : assertEnum(o.tipShape, TIP_SHAPES, 'nose.tipShape');
+  const flare = num(o.flare, P.flare, 'nose.flare', 0, 1.5);
+  const upturn = num(o.upturn, P.upturn, 'nose.upturn', -1, 1);
+  const nostrilSize = num(o.nostrilSize, P.nostril, 'nose.nostrilSize', 0, 1.5);
+  // Auto-skip the nostril carve on SMALL noses by default (#703). The cavity is
+  // smoothSubtracted into the underside, so below an absolute tip size its rim
+  // can no longer span enough march cells to mesh cleanly and tears into a
+  // jagged "crater" (button / chibi noses). The floor is a WORLD size, not a
+  // ratio: the rim-to-cell ratio is scale-invariant, so only an absolute tip
+  // radius distinguishes a clean carve from a torn one. Below it, default to a
+  // clean smooth bulb with NO carve; an explicit `nostrils: true` still forces
+  // the carve (the caller knowingly opting into the risk), and `nostrils: false`
+  // always skips. The carve blend below also softens as tipR nears the floor, so
+  // the boundary case meshes a rounded crater rather than snapping torn.
+  const NOSTRIL_TIP_FLOOR = 0.46;
+  const nostrils = o.nostrils === undefined
+    ? tipR >= NOSTRIL_TIP_FLOOR
+    : assertBoolean(o.nostrils, 'nose.nostrils') as boolean;
+
   const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
-  const tip = rig.face.nose;
-  // Bridge root: up the forehead by `length`, set back by `bridge` (a high
-  // bridge tucks the root back and up for a straight prominent dorsum; a low
-  // bridge keeps it forward and shallow for a flatter profile).
-  const root = add3(tip, add3(scale3(u, R * 0.34 * length), scale3(f, -R * 0.18 * bridge)));
-  // The dorsum: a tapered ridge, thinner at the root, swelling to the tip.
-  const dorsum = tapered(sdf, root, tip, tipR * 0.7 * bridge, tipR, tipR * 0.6);
-  if (width === 1 && flare === 0) return dorsum;
-  // A tip bulb widened laterally by `width` (oriented into the posed head
-  // frame so it stays put on a turned head), plus optional alar wings whose
-  // spread tracks both width and flare.
-  let nose = dorsum.smoothUnion(
-    orientToHeadPose(sdf.ellipsoid(tipR * width, tipR * 0.9, tipR * 0.85), rig).translate(tip),
-    tipR * 0.6,
+  const anchor = rig.face.nose;
+  // Project the tip OFF the face by `projection`, then slide it with `upturn`:
+  // + lifts it up and pokes it forward (snub, nostrils show from the front), −
+  // drops + projects it (hooked). The bridge root stays recessed on the face.
+  const proj = scale3(f, R * 0.14 * projection);
+  const tipShift = add3(
+    scale3(u, tipR * 0.28 * upturn),
+    scale3(f, tipR * (0.14 * Math.max(0, upturn) + 0.24 * Math.max(0, -upturn))),
   );
-  if (flare > 0) {
-    const spread = tipR * (0.65 + 0.5 * width);
-    const wingR = tipR * 0.6 * flare;
-    const wingC = add3(tip, scale3(u, -tipR * 0.25));
-    const wing = (s: number): Node => sdf.sphere(wingR).translate(add3(wingC, scale3(right, s * spread)));
-    nose = nose.smoothUnion(wing(1), tipR * 0.4).smoothUnion(wing(-1), tipR * 0.4);
+  const tip = add3(add3(anchor, proj), tipShift);
+  const root = add3(anchor, add3(scale3(u, R * 0.34 * length), scale3(f, -R * 0.13 * bridge)));
+  // Dorsum: a chain of head-oriented ellipsoids from the recessed root to a
+  // supratip point just above the tip — TALLER than wide (a defined nasal ridge
+  // with sidewalls, not a round tube). `bridgeWidth` pinches/broadens it,
+  // `profile` bows the mid-span forward (hump) or back (scoop).
+  const supratip = add3(lerp3(root, tip, 0.82), scale3(u, tipR * 0.12));
+  const baseW = tipR * 0.8 * bridge;
+  const SEGS = 5;
+  let nose: Node | undefined;
+  for (let i = 0; i <= SEGS; i++) {
+    const t = i / SEGS;
+    const bow = Math.sin(t * Math.PI) * R * 0.055 * profile;
+    const c = add3(lerp3(root, supratip, t), scale3(f, bow));
+    const grow = 0.5 + 0.55 * t;                 // thin at root → full at supratip
+    const rw = baseW * grow * bridgeWidth;       // lateral (pinch/broaden)
+    const rh = baseW * (0.78 + 0.5 * t);         // vertical — taller than wide
+    const rd = baseW * (0.66 + 0.4 * t);         // forward depth
+    const seg = orientToHeadPose(sdf.ellipsoid(rw, rd, rh), rig).translate(c);
+    nose = nose === undefined ? seg : nose.smoothUnion(seg, baseW * 0.55);
+  }
+  // Tip bulb — a defined ball at the projected tip. A SMALL weld k to the
+  // dorsum leaves a subtle supratip break (the real crease above the tip)
+  // instead of melting into the bridge. `tipShape` sets the silhouette.
+  const rT = tipR * tipSize;
+  const latW = 0.85 + 0.18 * width;
+  let bulb: Node;
+  if (tipShape === 'pointed') {
+    bulb = orientToHeadPose(sdf.ellipsoid(rT * 0.8 * latW, rT * 1.12, rT * 0.86), rig).translate(add3(tip, scale3(f, rT * 0.12)));
+  } else if (tipShape === 'bulbous') {
+    bulb = orientToHeadPose(sdf.ellipsoid(rT * 1.08 * latW, rT * 1.04, rT * 1.02), rig).translate(tip);
+  } else if (tipShape === 'cleft') {
+    const lobe = (s: number): Node => orientToHeadPose(sdf.ellipsoid(rT * 0.66 * latW, rT * 0.98, rT * 0.92), rig).translate(add3(tip, scale3(right, s * rT * 0.42)));
+    bulb = lobe(1).smoothUnion(lobe(-1), rT * 0.5);
+  } else {
+    bulb = orientToHeadPose(sdf.ellipsoid(rT * latW, rT * 1.0, rT * 0.92), rig).translate(tip);
+  }
+  nose = nose!.smoothUnion(bulb, rT * 0.32);
+  // Alae — the fleshy nostril wings flanking the tip on the underside. Always
+  // present (so the tip has walls for the nostrils to sit inside); `flare`
+  // swells them outward and forward for a broad base.
+  const alaR = tipR * (0.46 + 0.4 * flare);
+  const noseBase = add3(tip, add3(scale3(u, -tipR * 0.5), scale3(f, -tipR * 0.16)));
+  const alaSpread = tipR * (0.52 + 0.46 * width);
+  const ala = (s: number): Node => orientToHeadPose(sdf.ellipsoid(alaR, alaR * 1.18, alaR * 0.96), rig)
+    .translate(add3(noseBase, scale3(right, s * alaSpread)));
+  nose = nose.smoothUnion(ala(1), tipR * 0.5).smoothUnion(ala(-1), tipR * 0.5);
+  // Nostrils — two shallow rounded depressions on the underside, opening down
+  // and slightly forward, with a thick columella/septum surviving between them.
+  // The flared alae bulge the underside well past the analytic tip, so the
+  // opening height is MEASURED (smoothUnion bulge — see /ai/figure.md) by
+  // sampling the lower surface along each nostril column rather than guessed:
+  // each dish straddles that surface. A DEEP carved tunnel (the prior approach)
+  // eroded the small figure tip into sub-cell walls that shattered into a torn
+  // "triangular" crater on every normal-sized nose; a shallow, well-separated,
+  // large-blend dish reads as a nostril from below yet always meshes clean.
+  if (nostrils && nostrilSize > 0) {
+    const nRad = tipR * 0.3 * nostrilSize;
+    const nostrilSpread = tipR * (0.5 + 0.3 * width);
+    const nostrilBack = scale3(f, -tipR * 0.14);
+    // Each nostril splays outward like a real teardrop opening (narrow end
+    // forward-medial, wider back-lateral) instead of two parallel inward slits.
+    const splay = 22;
+    const evalAt = (p: Vec3): number =>
+      (nose as unknown as { evaluate(x: number, y: number, z: number): number }).evaluate(p[0], p[1], p[2]);
+    // Walk down −u to the first outside crossing = the underside surface depth.
+    const surfaceDrop = (lat: number): number => {
+      const col = add3(add3(tip, scale3(right, lat)), nostrilBack);
+      for (let d = 0.3; d <= 2.8; d += 0.07) {
+        if (evalAt(add3(col, scale3(u, -d * tipR))) > 0) return d;
+      }
+      // Should-never-happen guard: the underside surface always lies within
+      // 2.8·tipR for every preset/flare/width (verified empirically). If a
+      // future extreme combo never crosses, fall back to a mid-depth so the
+      // cavity still places sanely rather than off the model.
+      return 1.4;
+    };
+    const cavity = (s: number): Node => {
+      const lat = s * nostrilSpread;
+      // Opening at the measured surface; centre lifted so the bulk tunnels up.
+      const drop = surfaceDrop(lat) - 0.26;
+      const c = add3(add3(tip, add3(scale3(u, -drop * tipR), scale3(right, lat))), nostrilBack);
+      // Rounded-oval opening (lateral × forward) — a SHALLOW domed depression
+      // (Z ≈ the in-plane radius, not a deep tunnel) yaw-splayed about the
+      // vertical so it opens down-and-outward. A deep tunnel (#703) eroded the
+      // tip into sub-cell walls that shattered on every just-above-floor nose;
+      // a shallow bowl reads as a nostril from below yet leaves a thick septum.
+      return orientToHeadPose(
+        sdf.ellipsoid(nRad * 0.95, nRad * 1.12, nRad * 0.92).rotate([0, 0, -s * splay]),
+        rig,
+      ).translate(c);
+    };
+    // Soft carve blend (#703). The historical k (`tipR * 0.045` ≈ 0.02) is far
+    // finer than the nose detail march cell (`faceDetail.noseEdgeLength`/
+    // `nostrilEdgeLength`), so the rim landed sub-cell and tore. Blend on a
+    // fraction of the nostril radius — the actual feature size — with an
+    // absolute floor so the rim always spans several cells, and ramp it softer
+    // still as tipR nears the skip floor so a just-above-floor nose meshes a
+    // rounded crater, not a torn one. It stays a crease (small k) on big noses,
+    // so good faces are essentially unchanged.
+    const nearFloor = Math.max(0, Math.min(1, (tipR - NOSTRIL_TIP_FLOOR) / (NOSTRIL_TIP_FLOOR * 0.6)));
+    const carveK = Math.max(nRad * (1.3 + 0.4 * (1 - nearFloor)), 0.18);
+    nose = nose.smoothSubtract(cavity(1), carveK).smoothSubtract(cavity(-1), carveK);
   }
   return nose;
 }
 
 type MouthStyle = 'smile' | 'lips' | 'open';
+type MouthRender = 'auto' | 'carved' | 'painted';
 
-/** How the mouth combines with the head: protruding lips are ADDED
- *  (smoothUnion), while smile lines and open mouths are CARVED
- *  (smoothSubtract). assembleFace dispatches on this. */
+/** How the mouth combines with the head: protruding lips (and the print-safe
+ *  additive fallbacks) are ADDED (smoothUnion), while carved smile lines and
+ *  open cavities are CARVED (smoothSubtract). assembleFace dispatches on this. */
 interface MouthPart { node: Node; mode: 'add' | 'carve' }
 
-const MOUTH_FIELDS = ['width', 'smirk', 'open', 'style', 'teeth', 'lips', 'fullness'];
+const MOUTH_FIELDS = ['width', 'smirk', 'open', 'style', 'teeth', 'lips', 'fullness', 'expression', 'curve', 'divided', 'render', 'lipShape'];
+
+/** Named expression presets → a signed mouth curve (−1 deep frown … 0 neutral
+ *  … +1 big smile). The curve bows the mouth line: positive lifts the corners
+ *  (happy), zero is a straight line (neutral), negative drops them (sad). These
+ *  are the artist-facing "levels" — super-smiley through deep-frown. */
+const MOUTH_EXPRESSIONS = ['bigSmile', 'smile', 'slightSmile', 'neutral', 'slightFrown', 'frown', 'deepFrown'] as const;
+type MouthExpression = (typeof MOUTH_EXPRESSIONS)[number];
+const EXPRESSION_CURVE: Record<MouthExpression, number> = {
+  bigSmile: 1, smile: 0.7, slightSmile: 0.35, neutral: 0,
+  slightFrown: -0.35, frown: -0.7, deepFrown: -1,
+};
+
+/** Resolve the signed expression curve (−1..+1) from `curve` / `expression`, or
+ *  `undefined` when the caller set neither — in which case each style keeps its
+ *  HISTORICAL default bend (smile bows up, lips/open stay straight), so an
+ *  un-set mouth is byte-identical to before. An explicit numeric `curve` wins
+ *  over the `expression` preset. */
+function resolveMouthCurve(o: Record<string, unknown>, name: string): number | undefined {
+  if (o.curve !== undefined) return num(o.curve, 0, `${name}.curve`, -1, 1);
+  if (o.expression !== undefined) return EXPRESSION_CURVE[assertEnum(o.expression, MOUTH_EXPRESSIONS, `${name}.expression`)];
+  return undefined;
+}
+
+/** Is a CARVED mouth safe to mesh at this head size? The subtractive carve
+ *  tears into degenerate, visibly-spiky sub-cell geometry when the absolute
+ *  groove feature gets small (issue #652 — torn mouth on small / high-`headsTall`
+ *  heads). The floor is an ABSOLUTE world size, not a cell ratio: the
+ *  groove-to-march-edge ratio is scale-invariant (≈3.5 at any head), so only an
+ *  absolute floor distinguishes a clean carve from a torn one. Above it we carve
+ *  as before; below it the default `render: 'auto'` falls back to a clean
+ *  ADDITIVE mouth (the documented Yoga workaround, now automatic).
+ *
+ *  Calibrated empirically (`grooveR = r.head·0.07`):
+ *    - #652 Yoga repro `r.head ≈ 2.82` (grooveR 0.197) — VISIBLY TORN → paint.
+ *    - 60-unit `headsTall:8` adult `r.head ≈ 3.45` (grooveR 0.242) — carves
+ *      clean → must stay carved (back-compat for mainstream figures).
+ *  The floor sits between them at `grooveR ≥ 0.21` (`r.head ≥ 3.0`): it catches
+ *  the documented torn cases (Yoga, very-lanky `headsTall:10`) while leaving
+ *  every height-60 figure (`headsTall` 5–8) carving exactly as before. A
+ *  figure in the narrow torn band below 3.0 changes from a TORN carve to a
+ *  clean painted mouth — the #652 fix, not a regression of good output. */
+function carveIsSafe(rig: Rig): boolean {
+  return rig.r.head * 0.07 >= 0.21;
+}
 
 /** Orient an origin-built node into the posed head frame, so axis-aligned
  *  mouth/eye parts follow the head pose. `tilt` is a ROLL about the (canonical)
@@ -1305,6 +2458,103 @@ function mouthCavityFrame(rig: Rig, width: number, open: number): { halfW: numbe
   return { halfW, cavH, center };
 }
 
+/** A named lip SHAPE — a bundle of geometry ratios (all ×`r.head`, except the
+ *  *Mul/*Amt unitless multipliers) for the refined cupid's-bow lip builder.
+ *  `fullness` scales the radii and `width`/`expression`/`smirk` ride on top, so
+ *  a shape is the silhouette, not the size or mood. Ported from the reviewed
+ *  mockups (feminine natural/full/thin/wide/rosebud, masculine flat). */
+interface LipShape {
+  hw: number;          // half-width
+  baseR: number;       // base lip radius
+  fwd: number;         // forward bias off the anchor (so lips sit ON the surface)
+  archH: number;       // gentle upper arch (flat lips); 0 when a cupid's bow is used
+  peakH: number;       // cupid's-bow peak height (0 = no bow)
+  dipH: number;        // central philtrum dip
+  upperRMul: number;   // upper-lip thickness vs baseR
+  bowFullAmt: number;  // 0 = uniform upper, 1 = volume concentrated at the bow peaks
+  lowerShift: number;  // how far the lower lip sits below the line
+  lowerRMul: number;   // lower-lip thickness vs baseR (>1 = fuller lower)
+  lowerWidth: number;  // lower width vs upper (×hw)
+  lowerBow: number;    // lower-lip belly droop
+  bellyAmt: number;    // lower-lip taper toward the corners
+  seamR: number;       // parting-groove cutter radius
+  seamK: number;       // parting-groove smoothSubtract blend
+}
+
+const LIP_SHAPE_NAMES = ['natural', 'full', 'thin', 'wide', 'rosebud', 'flat'] as const;
+type LipShapeName = (typeof LIP_SHAPE_NAMES)[number];
+
+const LIP_SHAPES: Record<LipShapeName, LipShape> = {
+  // Thin upper + very full lower — the everyday natural balance.
+  natural: { hw: 0.238, baseR: 0.060, fwd: 0.094, archH: 0, peakH: 0.026, dipH: 0.014, upperRMul: 0.80, bowFullAmt: 0.30, lowerShift: 0.040, lowerRMul: 1.50, lowerWidth: 1.12, lowerBow: 0.028, bellyAmt: 0.16, seamR: 0.016, seamK: 0.008 },
+  // Plump both lips with a sharp, defined cupid's bow — glamorous/full.
+  full:    { hw: 0.250, baseR: 0.083, fwd: 0.092, archH: 0, peakH: 0.036, dipH: 0.018, upperRMul: 0.93, bowFullAmt: 0.45, lowerShift: 0.038, lowerRMul: 1.26, lowerWidth: 1.10, lowerBow: 0.024, bellyAmt: 0.18, seamR: 0.021, seamK: 0.010 },
+  // Slim, elegant, sharp bow set into the face — delicate.
+  thin:    { hw: 0.210, baseR: 0.055, fwd: 0.075, archH: 0, peakH: 0.032, dipH: 0.016, upperRMul: 0.88, bowFullAmt: 0.60, lowerShift: 0.026, lowerRMul: 1.05, lowerWidth: 1.06, lowerBow: 0.013, bellyAmt: 0.20, seamR: 0.013, seamK: 0.006 },
+  // Wide, medium fullness, moderate bow.
+  wide:    { hw: 0.295, baseR: 0.066, fwd: 0.090, archH: 0, peakH: 0.024, dipH: 0.013, upperRMul: 0.82, bowFullAmt: 0.30, lowerShift: 0.038, lowerRMul: 1.30, lowerWidth: 1.06, lowerBow: 0.020, bellyAmt: 0.20, seamR: 0.020, seamK: 0.009 },
+  // Narrow, small, soft rounded bow, fairly even — petite.
+  rosebud: { hw: 0.185, baseR: 0.062, fwd: 0.085, archH: 0, peakH: 0.016, dipH: 0.010, upperRMul: 0.95, bowFullAmt: 0.15, lowerShift: 0.030, lowerRMul: 1.15, lowerWidth: 1.00, lowerBow: 0.016, bellyAmt: 0.18, seamR: 0.013, seamK: 0.006 },
+  // Wide, thin, near-flat upper (no cupid's bow), controlled fuller lower — the
+  // masculine/neutral look. Pair with `expression:'slightFrown'` for a stern set.
+  flat:    { hw: 0.300, baseR: 0.068, fwd: 0.100, archH: 0.010, peakH: 0, dipH: 0, upperRMul: 0.75, bowFullAmt: 0, lowerShift: 0.040, lowerRMul: 1.40, lowerWidth: 1.04, lowerBow: 0.016, bellyAmt: 0.22, seamR: 0.022, seamK: 0.009 },
+};
+
+/** Build one lip (a tapered capsule chain) from a per-`t` centre + radius. */
+function lipChain(sdf: SdfApi, R: number, pt: (t: number) => Vec3, rad: (t: number) => number, kMul: number): Node {
+  const N = 14;
+  let node: Node | undefined;
+  for (let i = 0; i < N; i++) {
+    const t0 = -1 + (2 * i) / N, t1 = -1 + (2 * (i + 1)) / N;
+    const r = (rad(t0) + rad(t1)) * 0.5;
+    if (r < R * 0.0008) continue;        // skip the tapered-to-nothing corner caps
+    const seg = sdf.capsule(pt(t0), pt(t1), r);
+    node = node === undefined ? seg : node.smoothUnion(seg, r * kMul);
+  }
+  return node!;
+}
+
+/** The refined cupid's-bow lips: a tapered upper lip (optional M-shaped bow), a
+ *  fuller lower lip, and a parting groove, all sitting on the face surface and
+ *  bowed by `bend` (expression) / skewed by `smirk`. `hw` is the world-space
+ *  half-width (preset default or an explicit `width`); `fullness` scales radii. */
+function buildLipShape(sdf: SdfApi, rig: Rig, p: LipShape, fullness: number, hw: number, bend: number, smirk: number): Node {
+  const m = rig.face.mouth, f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft, R = rig.r.head;
+  const anchor = add3(m, scale3(f, R * p.fwd));
+  const baseR = R * p.baseR * fullness;
+  // Shared expression/smirk offset: bend lifts (smile) or drops (frown) the
+  // corners about a parabola; smirk skews the whole mouth.
+  const vbend = (t: number): number => R * 0.06 * bend * (t * t - 0.3) + smirk * hw * 0.3 * t;
+  const upperPt = (t: number): Vec3 => {
+    const peaks = R * p.peakH * Math.exp(-(((Math.abs(t) - 0.39) / 0.19) ** 2));
+    const dip = R * p.dipH * Math.exp(-t * t * 24);
+    const arch = R * p.archH * (1 - t * t);
+    return add3(add3(anchor, scale3(right, hw * t)), scale3(u, peaks - dip + arch + vbend(t)));
+  };
+  const upperR = (t: number): number => {
+    const cornerFade = Math.max(0, 1 - (Math.abs(t) / 0.94) ** 2);
+    const peakProx = Math.max(0, 1 - (((Math.abs(t) - 0.39) / 0.37) ** 2));
+    return baseR * p.upperRMul * cornerFade * (1 - p.bowFullAmt + p.bowFullAmt * peakProx);
+  };
+  const lowerCtr = add3(anchor, scale3(u, -R * p.lowerShift));
+  const lowerPt = (t: number): Vec3 => {
+    const droop = R * p.lowerBow * (1 - t * t * 0.8);
+    return add3(add3(lowerCtr, scale3(right, hw * p.lowerWidth * t)), scale3(u, -droop + vbend(t)));
+  };
+  const lowerR = (t: number): number => {
+    const belly = 1 - p.bellyAmt * t * t;
+    const cornerFade = Math.max(0, 1 - (Math.abs(t) / 0.98) ** 2);
+    return baseR * p.lowerRMul * belly * cornerFade;
+  };
+  const upper = lipChain(sdf, R, upperPt, upperR, 0.4);
+  const lower = lipChain(sdf, R, lowerPt, lowerR, 0.35);
+  // Parting groove between the lips (carries the bend so the seam follows a
+  // smile/frown), carved with a small blend for a soft philtrum shadow.
+  const seamPt = (s: number): Vec3 => add3(add3(anchor, scale3(right, hw * 0.84 * s)), scale3(u, vbend(0.84 * s)));
+  const seam = sdf.capsule(seamPt(-1), seamPt(1), R * p.seamR);
+  return upper.union(lower).smoothSubtract(seam, R * p.seamK);
+}
+
 function buildMouthPart(sdf: SdfApi, rig: Rig, opts?: unknown): MouthPart {
   const o = obj(opts, 'mouth(opts)');
   assertNoUnknownKeys(o, MOUTH_FIELDS, 'mouth(opts)');
@@ -1315,54 +2565,119 @@ function buildMouthPart(sdf: SdfApi, rig: Rig, opts?: unknown): MouthPart {
   // ring). 1 = the default; >1 for fuller lips, <1 for thinner — another real
   // axis of facial variation that decouples lip volume from mouth width.
   const fullness = num(o.fullness, 1, 'mouth.fullness', 0.4, 2.2);
+  // `divided` splits the lip ridge into a distinct upper + lower lip (the
+  // natural two-lip look) — only meaningful for style 'lips'.
+  const divided = assertBoolean(o.divided, 'mouth.divided', { optional: true }) ?? false;
+  const render = assertEnum(o.render ?? 'auto', ['auto', 'carved', 'painted'] as const, 'mouth.render') as MouthRender;
+  // Signed expression curve, or undefined → each style keeps its historical bend.
+  const curveOpt = resolveMouthCurve(o, 'mouth');
   // `open > 0` implies the open style unless the caller said otherwise.
   const style: MouthStyle = o.style !== undefined
     ? assertEnum(o.style, ['smile', 'lips', 'open'] as const, 'mouth.style')
     : open > 0 ? 'open' : 'smile';
-  const u = rig.dir.headUp, right = rig.dir.headLeft;
+  const u = rig.dir.headUp, right = rig.dir.headLeft, fwd = rig.dir.headForward;
   const m = rig.face.mouth;
   const halfW = width * 0.5;
+  // Carve when explicitly asked, or under 'auto' only when the head is big
+  // enough for a clean carve; otherwise paint the mouth additively (#652).
+  const wantCarve = render === 'carved' || (render === 'auto' && carveIsSafe(rig));
+
+  // Vertical profile of the mouth LINE across t∈[−1,1], scaled by the signed
+  // `bend` (−1 frown … +1 smile). bend=1 reproduces the historical smile
+  // (corners +0.7·curl, centre −0.3·curl); bend=0 is straight; bend<0 frowns.
+  // `smirk` skews the whole line asymmetrically.
+  const grooveCurl = rig.r.head * 0.14;
+  const arcVert = (t: number, bend: number): number =>
+    grooveCurl * bend * (t * t - 0.3) + smirk * halfW * 0.35 * t;
 
   if (style === 'lips') {
-    // A protruding lip ridge, pushed forward of the anchor so it clearly
-    // stands proud of the face (an on-surface capsule reads as nothing when
-    // it isn't smooth-welded). Smirk tips one corner up.
-    const lipR = rig.r.head * 0.085 * fullness;
-    const fwd = scale3(rig.dir.headForward, lipR * 0.6);
-    const a = add3(add3(add3(m, fwd), scale3(right, halfW)), scale3(u, smirk * width * 0.25));
-    const b = add3(add3(add3(m, fwd), scale3(right, -halfW)), scale3(u, -smirk * width * 0.25));
-    return { node: sdf.capsule(a, b, lipR), mode: 'add' };
+    // A sculpted two-lip SHAPE (cupid's-bow upper + fuller lower + parting
+    // groove): an explicit `lipShape`, else 'natural' — now the DEFAULT. The
+    // old bare-lips fallback was a single flat capsule ridge that read as a
+    // featureless bump at print scale (the musician's "slightly extruded bump");
+    // every figure that asks for 'lips' now gets real lips. `divided` predates
+    // the sculpted default and survives as a validated 'natural' alias (it no
+    // longer changes the shape — the default already is the two-lip form).
+    void divided;
+    const shapeName: LipShapeName = o.lipShape !== undefined
+      ? assertEnum(o.lipShape, LIP_SHAPE_NAMES, 'mouth.lipShape')
+      : 'natural';
+    const shape = LIP_SHAPES[shapeName];
+    // Preset half-width unless the caller set an explicit `width`.
+    const hw = o.width !== undefined ? width * 0.5 : shape.hw * rig.r.head;
+    return { node: buildLipShape(sdf, rig, shape, fullness, hw, curveOpt ?? 0, smirk), mode: 'add' };
   }
 
   if (style === 'open') {
-    // A carved mouth cavity — the cartoon "laughing / talking" mouth. The
-    // ellipsoid straddles the surface and reaches inward so the opening reads
-    // as a dark interior, not a shallow dent.
-    const { halfW: hw, cavH, center } = mouthCavityFrame(rig, width, open);
-    const cavity = orientToHeadPose(sdf.ellipsoid(hw, rig.r.head * 0.38, cavH), rig)
-      .translate(center);
-    return { node: cavity, mode: 'carve' };
+    if (wantCarve) {
+      // A carved mouth cavity — the cartoon "laughing / talking" mouth. The
+      // ellipsoid straddles the surface and reaches inward so the opening reads
+      // as a dark interior, not a shallow dent.
+      const { halfW: hw, cavH, center } = mouthCavityFrame(rig, width, open);
+      const cavity = orientToHeadPose(sdf.ellipsoid(hw, rig.r.head * 0.38, cavH), rig)
+        .translate(center);
+      return { node: cavity, mode: 'carve' };
+    }
+    // Print-safe / small-head fallback: an ADDITIVE lip ring bowed by the
+    // expression instead of a deep carved cavity (which tears at small head
+    // sizes — #652 — and needs internal print supports). Colored teeth + lips
+    // come from mouthAccents; this is the skin-welded mouth presence.
+    return { node: buildLipRing(sdf, rig, width, open, fullness, curveOpt ?? 0), mode: 'add' };
   }
 
-  // 'smile' (default): a carved smile LINE — an arc of capsules through the
-  // mouth anchor, corners curling up, carved into the face as a groove.
-  // Cartoon faces read a carved line far better than a protruding ridge.
-  const curl = rig.r.head * 0.14;          // corner lift at t = ±1
+  // 'smile' (default): the cartoon mouth LINE through the anchor, bowed by the
+  // expression (default bend=1 = the historical happy smile). Carved as a
+  // groove when safe; otherwise raised as a clean additive ridge (#652 fix) —
+  // a carved line tears into slivers below ~r.head 3.5.
+  const bend = curveOpt === undefined ? 1 : curveOpt;
   const grooveR = rig.r.head * 0.07;
-  const SEGS = 6;
+  const lineFwd = wantCarve ? ([0, 0, 0] as Vec3) : scale3(fwd, grooveR * 0.6);
   const pt = (t: number): Vec3 => add3(
-    add3(m, scale3(right, halfW * t)),
-    // t² curl dips the middle 30% of `curl` below the anchor and lifts the
-    // corners 70% above it; smirk skews the whole line.
-    scale3(u, curl * (t * t - 0.3) + smirk * halfW * 0.35 * t),
+    add3(add3(m, lineFwd), scale3(right, halfW * t)),
+    scale3(u, arcVert(t, bend)),
   );
+  // More segments + a smooth weld between them (#703). The 6-segment HARD union
+  // chorded the bowed line into faceted joints whose corners tore at the carve
+  // edge (slightly ragged lip-line on slimmer heads). A denser chain with a
+  // small smoothUnion blend gives one continuous groove that carves a clean
+  // edge — the line shape itself is unchanged.
   let arc: Node | undefined;
-  for (let i = 0; i < SEGS; i++) {
-    const t0 = -1 + (2 * i) / SEGS, t1 = -1 + (2 * (i + 1)) / SEGS;
+  const ARC_SEGS = 10;
+  for (let i = 0; i < ARC_SEGS; i++) {
+    const t0 = -1 + (2 * i) / ARC_SEGS, t1 = -1 + (2 * (i + 1)) / ARC_SEGS;
     const seg = sdf.capsule(pt(t0), pt(t1), grooveR);
-    arc = arc === undefined ? seg : arc.union(seg);
+    arc = arc === undefined ? seg : arc.smoothUnion(seg, grooveR * 0.5);
   }
-  return { node: arc!, mode: 'carve' };
+  return { node: arc!, mode: wantCarve ? 'carve' : 'add' };
+}
+
+/** The open-mouth lip ring: a chain of capsules around the opening ellipse,
+ *  bowed by the expression `bend`. Shared by the additive open-mouth fallback
+ *  (skin-welded mouth presence) and `mouthAccents` (the painted 'lips' region).
+ *  A thin ellipsoid-minus-tunnel shell fragments into shards when marched —
+ *  capsule chains are unconditionally robust. */
+function buildLipRing(sdf: SdfApi, rig: Rig, width: number, open: number, fullness: number, bend: number): Node {
+  const { halfW, cavH } = mouthCavityFrame(rig, width, open);
+  const u = rig.dir.headUp, right = rig.dir.headLeft, R = rig.r.head;
+  const lipR = Math.min(R * 0.10, cavH * 0.55) * fullness;
+  // Ring centre: the cavity opening projected onto the face. Centred ON the
+  // surface — half the capsule is buried, so the lips read as part of the face.
+  const cc = add3(rig.face.mouth, scale3(u, -cavH * 0.25));
+  const SEGS = 14;
+  const ringPt = (theta: number): Vec3 => add3(cc, add3(
+    scale3(right, halfW * 1.02 * Math.cos(theta)),
+    // sin → the ellipse height; the bend term lifts the corners (|cos| large)
+    // and dips the centre, so a positive bend gives a smiling opening. Vanishes
+    // at bend=0, keeping an un-set ring byte-identical.
+    scale3(u, cavH * 1.08 * Math.sin(theta) + bend * halfW * 0.4 * (Math.cos(theta) ** 2 - 0.3)),
+  ));
+  let ring: Node | undefined;
+  for (let i = 0; i < SEGS; i++) {
+    const t0 = (2 * Math.PI * i) / SEGS, t1 = (2 * Math.PI * (i + 1)) / SEGS;
+    const seg = sdf.capsule(ringPt(t0), ringPt(t1), lipR);
+    ring = ring === undefined ? seg : ring.union(seg);
+  }
+  return ring!;
 }
 
 /** Public `F.face.mouth(rig, opts)` — returns the mouth geometry node. For
@@ -1376,13 +2691,15 @@ function buildMouth(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
  *  TOP level of the figure (next to the eyes), complementing the carve that
  *  `face.assemble` applies. Pass the SAME options object you gave `mouth`.
  *
- *  - style 'open': a 'teeth' band hanging from the cavity ceiling (skip with
- *    `teeth: false`) and a 'lips' ring around the opening (skip with
- *    `lips: false`).
- *  - style 'lips': the lip ridge labelled 'lips' — pass `mouth: false` to
- *    `face.assemble` in this case so the ridge isn't ALSO smooth-welded
+ *  - style 'open': a 'teeth' band (`teeth: 'upper'` (default) | 'lower' | 'both'
+ *    | false) and a 'lips' ring around the opening (skip with `lips: false`),
+ *    both bowed by the expression so a grin's opening smiles.
+ *  - style 'lips': the lip ridge labelled 'lips' (honours `divided`) — pass
+ *    `mouth: false` to `face.assemble` so the ridge isn't ALSO smooth-welded
  *    (a welded copy would swallow the labelled one).
- *  - style 'smile' has no accents (the carved line needs no paint). */
+ *  - style 'smile': a paintable lip LINE labelled 'lips' — the additive form of
+ *    the carved groove, for a coloured expressive mouth line. Pass `mouth: false`
+ *    to `assemble` if you want ONLY the painted line (no carved groove too). */
 function buildMouthAccents(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'mouthAccents(opts)');
   assertNoUnknownKeys(o, MOUTH_FIELDS, 'mouthAccents(opts)');
@@ -1397,75 +2714,71 @@ function buildMouthAccents(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   if (style === 'lips') {
     return buildMouthPart(sdf, rig, { ...o, style: 'lips' }).node.label('lips');
   }
-  if (style !== 'open') {
-    throw new ValidationError(
-      "face.mouthAccents: only the 'open' and 'lips' mouth styles have paintable accents — "
-      + "the carved 'smile' line is shading, not a part. See /ai/figure.md#mouth-styles.",
-    );
+  if (style === 'smile') {
+    // A paintable lip LINE — the additive form of the smile/frown groove, so a
+    // coloured (e.g. pink) EXPRESSIVE mouth line can be painted on. Bowed by
+    // the expression like the carve. (The carved groove `assemble` makes is
+    // shading, not paintable; pass `mouth: false` to assemble for ONLY this.)
+    return buildMouthPart(sdf, rig, { ...o, style: 'smile', render: 'painted' }).node.label('lips');
   }
 
   const { halfW, cavH, center } = mouthCavityFrame(rig, width, open);
+  const fineEdge = Math.max(R * 0.02, 0.03);
+  // Painted (print-safe, no cavity) when render says so or `auto` on a small
+  // head — mirrors buildMouthPart's carve/paint split so teeth and the carve
+  // agree on the same mouth.
+  const render = assertEnum(o.render ?? 'auto', ['auto', 'carved', 'painted'] as const, 'mouthAccents.render') as MouthRender;
+  const painted = render === 'painted' || (render === 'auto' && !carveIsSafe(rig));
+  const fullness = num(o.fullness, 1, 'mouthAccents.fullness', 0.4, 2.2);
+  const lipR = Math.min(R * 0.10, cavH * 0.55) * fullness;
+  const cc = add3(rig.face.mouth, scale3(u, -cavH * 0.25));
   const parts: Node[] = [];
-  if (o.teeth !== false) {
-    // A white band hanging from the cavity ceiling: top edge buried in the
-    // head above the opening (fuses into one component), front face recessed
-    // just behind the face surface. The recess scales with the cavity so a
-    // slim gritted-teeth mouth (small `open`) still shows the band — a fixed
-    // recess deeper than the opening buries it entirely.
-    // Slightly NARROWER than the opening with a cavity-proportional recess:
-    // a band wider than the opening (or flush with the rim) grazes the
-    // carved skin and sheds zero-volume boolean slivers, while a recess
-    // deeper than the cavity buries the band entirely (body welds can
-    // inflate the face surface past any fixed offset).
-    const td = R * 0.5;
-    // Every face of the band must clear (or decisively cross) the cavity
-    // surfaces by a couple of MARCH CELLS, not by a proportion of cavH — on
-    // a slim gritted mouth the proportional margins drop below one cell and
-    // the near-tangent surfaces shred into dozens of micro-handles (genus
-    // explosion). fineEdge mirrors faceDetail's mouth-region march edge.
-    const fineEdge = Math.max(R * 0.02, 0.03);
-    // Front face: recessed behind the carved rim by at least ~1.5 cells.
-    const recess = Math.max(cavH * 0.18, fineEdge * 1.5);
-    // roundedBox takes FULL sizes (not half-extents). Width spans most of
-    // the opening but stays NARROWER than it, so the flat front face lies
-    // inside the aperture and meets only air — a band wider than the slot
-    // grazes the curved rim at a shallow angle all around it (a ring of
-    // near-tangent boolean crossings → micro-handles).
-    const bandW = halfW * 1.7;
-    // Height: hang the band above the floor (dark gap under the teeth — the
-    // open-laugh look); when that gap would be sub-cell, close it instead:
-    // run the band through the floor into the jaw — a transversal weld, and
-    // the right look for gritted teeth.
-    const hangGap = cavH * 0.7; // bottom edge at 0.45·cavH − 0.75·cavH
-    const bandH = hangGap < fineEdge * 2.5 ? cavH * 2.9 + fineEdge * 3 : cavH * 1.5;
-    const teeth = orientToHeadPose(
-      sdf.roundedBox([bandW, td, bandH], Math.min(cavH, halfW) * 0.18), rig,
-    ).translate(add3(center, add3(scale3(u, cavH * 0.45), scale3(f, -recess - td * 0.5))));
-    parts.push(teeth.label('teeth'));
-  }
-  if (o.lips !== false) {
-    // A lip ring: a chain of capsules around the opening ellipse. (A thin
-    // ellipsoid-minus-tunnel shell fragments into dozens of shards when
-    // marched — capsule chains are unconditionally robust.)
-    const right = rig.dir.headLeft;
-    const fullness = num(o.fullness, 1, 'mouthAccents.fullness', 0.4, 2.2);
-    const lipR = Math.min(R * 0.10, cavH * 0.55) * fullness;
-    // Ring centre: the cavity opening projected onto the face. Centred ON
-    // the surface — half the capsule is buried, so the lips read as part of
-    // the face instead of a donut stuck onto it.
-    const cc = add3(rig.face.mouth, scale3(u, -cavH * 0.25));
-    const SEGS = 14;
-    const ringPt = (theta: number): Vec3 => add3(cc, add3(
-      scale3(right, halfW * 1.02 * Math.cos(theta)),
-      scale3(u, cavH * 1.08 * Math.sin(theta)),
-    ));
-    let ring: Node | undefined;
-    for (let i = 0; i < SEGS; i++) {
-      const t0 = (2 * Math.PI * i) / SEGS, t1 = (2 * Math.PI * (i + 1)) / SEGS;
-      const seg = sdf.capsule(ringPt(t0), ringPt(t1), lipR);
-      ring = ring === undefined ? seg : ring.union(seg);
+  // A white teeth band, mirrorable to upper (sign +1) or lower (sign −1).
+  // CARVED mouths recess the band behind the rim so it shows through the
+  // cavity; PAINTED mouths (no cavity) sit a flat plate PROUD in the lip-ring
+  // opening so the teeth read on the surface (and print without internal
+  // supports). `teeth: 'both'` builds both, leaving a thin mouth line between.
+  const teethBand = (sign: 1 | -1): Node => {
+    if (painted) {
+      const td = R * 0.45;                      // depth into head (fused); front proud
+      const plateW = halfW * 1.45;              // inside the lip-ring opening
+      const plateH = cavH * 0.85;
+      // The mouth anchor sits ~lipR behind the skin surface, so the plate's
+      // front face must reach past that (just shy of the lip-ring front) to
+      // show on the surface instead of staying buried in solid skin.
+      const front = lipR * 1.05;
+      return orientToHeadPose(sdf.roundedBox([plateW, td, plateH], Math.min(cavH, halfW) * 0.18), rig)
+        .translate(add3(cc, add3(scale3(u, sign * cavH * 0.5), scale3(f, front - td * 0.5))));
     }
-    parts.push(ring!.label('lips'));
+    // Slightly NARROWER than the opening with a cavity-proportional recess: a
+    // band wider than the opening (or flush with the rim) grazes the carved
+    // skin and sheds zero-volume slivers; a recess deeper than the cavity
+    // buries the band (body welds can inflate the face past any fixed offset).
+    const td = R * 0.5;
+    // Every face must clear (or decisively cross) the cavity surfaces by a
+    // couple of MARCH CELLS, not a proportion of cavH — on a slim gritted
+    // mouth the proportional margins drop below one cell and near-tangent
+    // surfaces shred into micro-handles. fineEdge mirrors faceDetail's edge.
+    const recess = Math.max(cavH * 0.18, fineEdge * 1.5);
+    const bandW = halfW * 1.7;
+    // Hang the band off the rim (dark gap behind the teeth — the open-laugh
+    // look); when that gap would be sub-cell, close it by running the band
+    // into the jaw (a transversal weld — the gritted-teeth look).
+    const hangGap = cavH * 0.7;
+    const bandH = hangGap < fineEdge * 2.5 ? cavH * 2.9 + fineEdge * 3 : cavH * 1.5;
+    return orientToHeadPose(
+      sdf.roundedBox([bandW, td, bandH], Math.min(cavH, halfW) * 0.18), rig,
+    ).translate(add3(center, add3(scale3(u, sign * cavH * 0.45), scale3(f, -recess - td * 0.5))));
+  };
+  let teeth: Node | undefined;
+  for (const side of resolveTeeth(o.teeth)) {
+    const band = teethBand(side === 'upper' ? 1 : -1);
+    teeth = teeth === undefined ? band : teeth.union(band);
+  }
+  if (teeth !== undefined) parts.push(teeth.label('teeth'));
+  if (o.lips !== false) {
+    const ring = buildLipRing(sdf, rig, width, open, fullness, resolveMouthCurve(o, 'mouthAccents') ?? 0);
+    parts.push(ring.label('lips'));
   }
   if (parts.length === 0) {
     throw new ValidationError('face.mouthAccents: both teeth and lips are disabled — nothing to build.');
@@ -1473,50 +2786,213 @@ function buildMouthAccents(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   return parts.length === 1 ? parts[0] : parts[0].union(parts[1]);
 }
 
+// `type` shapes the pinna. Each is a THIN, ear-shaped plate (laterally flat) so
+// it reads as an ear from the front and 3/4, with a SHALLOW concha scooped from
+// the outer face — leaving a natural rim, never a punched "keyhole" hole:
+//   'round'    — a clean cupped ear: comma plate + shallow scoop + lobe.
+//   'detailed' — anatomical (DEFAULT): adds a tragus + antitragus to the cup.
+//   'pointed'  — elf/fantasy: the upper pinna pulls UP and back into a point.
+const EAR_TYPES = ['round', 'pointed', 'detailed'] as const;
+type EarType = typeof EAR_TYPES[number];
+
+/** One ear in the CANONICAL head frame (outward-left = +X, forward = −Y, up =
+ *  +Z), built OUTBOARD of the origin so it stands proud of the skull once the
+ *  anchor (which sits just inside the surface) places it. The caller orients it
+ *  to the head pose and drops it on `rig.face.earL/earR`; the right ear is the
+ *  same node mirrored across X. */
+function earLocal(sdf: SdfApi, type: EarType, s: number): Node {
+  const OUT = s * 0.34;   // outboard offset so the ear stands proud of the skull
+  const tx = s * 0.2;     // lateral half-thickness — a thin plate, not a blob
+
+  if (type === 'pointed') {
+    // Elf: a leaf/teardrop pinna — a stack of ellipsoids that NARROW (front-back)
+    // and shrink as they rise, drifting slightly BACK (+Y), so the silhouette is
+    // a broad TRIANGLE sloping up to a ROUNDED point (not a thin straight spike).
+    const seg = (ry: number, rz: number, y: number, z: number, w: number): Node =>
+      sdf.ellipsoid(tx * w, ry, rz).translate([OUT, y, z]);
+    let n = seg(s * 0.5, s * 0.46, -s * 0.02, s * 0.02, 1.0)                          // wide base
+      .smoothUnion(seg(s * 0.40, s * 0.34, s * 0.04, s * 0.48, 0.96), s * 0.16)       // lower-mid, drifts back
+      .smoothUnion(seg(s * 0.28, s * 0.26, s * 0.12, s * 0.86, 0.9), s * 0.14)        // upper-mid
+      .smoothUnion(seg(s * 0.17, s * 0.18, s * 0.20, s * 1.14, 0.84), s * 0.12)       // shoulder of the point
+      .smoothUnion(seg(s * 0.10, s * 0.11, s * 0.26, s * 1.34, 0.78), s * 0.10);      // rounded tip
+    const lobe = sdf.ellipsoid(tx * 0.9, s * 0.26, s * 0.26).translate([OUT, s * 0.02, -s * 0.58]);
+    n = n.smoothUnion(lobe, s * 0.2);
+    // Shallow concha scoop over the lower-mid (NOT up at the point).
+    const scoop = sdf.ellipsoid(tx * 1.15, s * 0.3, s * 0.4).translate([OUT + tx * 0.95, -s * 0.08, s * 0.06]);
+    return n.smoothSubtract(scoop, s * 0.11);
+  }
+
+  // round + detailed share the comma plate + shallow scoop + lobe base.
+  const pinna = sdf.ellipsoid(tx, s * 0.52, s * 0.8).translate([OUT, -s * 0.02, s * 0.06]);
+  const lobe = sdf.ellipsoid(tx * 0.92, s * 0.3, s * 0.32).translate([OUT, s * 0.03, -s * 0.66]);
+  let n = pinna.smoothUnion(lobe, s * 0.22);
+  // Scoop the OUTER face from just outside, offset down+front so the top-back
+  // rim stays thick (the helix) and the bowl (concha) opens toward the front.
+  const scoop = sdf.ellipsoid(tx * 1.15, s * 0.32, s * 0.44).translate([OUT + tx * 0.95, -s * 0.08, s * 0.04]);
+  n = n.smoothSubtract(scoop, s * 0.11);
+  if (type === 'detailed') {
+    // Tragus flap at the front of the bowl + an antitragus bump opposite it —
+    // the cues that make it read as a real ear rather than a smooth cup.
+    const tragus = sdf.ellipsoid(tx * 0.7, s * 0.12, s * 0.16).translate([OUT + tx * 0.3, -s * 0.34, -s * 0.16]);
+    const anti = sdf.ellipsoid(tx * 0.7, s * 0.1, s * 0.12).translate([OUT + tx * 0.3, -s * 0.06, -s * 0.44]);
+    n = n.smoothUnion(tragus, s * 0.07).smoothUnion(anti, s * 0.07);
+  }
+  return n;
+}
+
+/** Resolve the `teeth` option to the set of bands to build: `false` → none;
+ *  `true`/unset → the historical upper band; `'upper'` / `'lower'` / `'both'`
+ *  pick explicitly. (Upper-only stays byte-identical to the old behaviour.) */
+function resolveTeeth(v: unknown): Array<'upper' | 'lower'> {
+  if (v === false) return [];
+  if (v === undefined || v === true) return ['upper'];
+  const sel = assertEnum(v, ['upper', 'lower', 'both'] as const, 'mouthAccents.teeth');
+  return sel === 'both' ? ['upper', 'lower'] : [sel];
+}
+
 function buildEars(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'ears(opts)');
-  assertNoUnknownKeys(o, ['size'], 'ears(opts)');
-  const s = num(o.size, rig.r.head * 0.3, 'ears.size', 0.01);
-  const earL = sdf.ellipsoid(s * 0.4, s * 0.8, s).translate(rig.face.earL);
-  const earR = sdf.ellipsoid(s * 0.4, s * 0.8, s).translate(rig.face.earR);
+  assertNoUnknownKeys(o, ['size', 'type', 'tilt'], 'ears(opts)');
+  // Default to the anatomical 'detailed' ear — it reads most convincingly as an
+  // ear; 'round' is the cleaner/simpler cup, 'pointed' the elf shape.
+  const type = o.type === undefined ? 'detailed' : assertEnum(o.type, EAR_TYPES, 'ears.type');
+  // Default sized to the head; the thin pinna plate stands proud of the skull so
+  // it reads from the front as well as the side.
+  const s = num(o.size, rig.r.head * 0.4, 'ears.size', 0.01);
+  // `tilt` (degrees, +back) angles the top of the ear toward the nape — most
+  // useful on 'pointed' to sweep the elf point back, but valid on any type.
+  const tilt = num(o.tilt, 0, 'ears.tilt', -45, 45);
+  // Tilt rotates the local ear about its lateral axis BEFORE the mirror/pose,
+  // so both ears sweep back symmetrically (the rotation is in the YZ plane,
+  // which the X-mirror leaves untouched).
+  const local = (): Node => {
+    const e = earLocal(sdf, type, s);
+    return tilt ? e.rotate([-tilt, 0, 0]) : e;
+  };
+  const earL = orientToHeadPose(local(), rig).translate(rig.face.earL);
+  const earR = orientToHeadPose(local().mirror('x'), rig).translate(rig.face.earR);
   return earL.union(earR);
 }
 
+// Brow shape presets, mirroring NOSE_TYPE / LIP_SHAPES: a named `shape` selects
+// a full bundle of axis values; explicit knobs OVERRIDE (see buildBrows). Fields
+// are all × head radius except `taper`/`relief`/`peak` (ratios):
+//   width  — lateral half-span of one brow (sized to sit OVER the eyeball, not
+//            splay past it — the brow tracks the eye spacing, see buildBrows)
+//   band   — strip thickness (the brow "weight")
+//   arch   — mid-brow lift over the brow bone
+//   taper  — 0..1 how much the lateral tail thins vs the medial head
+//   relief — 0..1 proud fraction of the band (0 = DEAD FLUSH; the brow reads from
+//            its 'brows' colour, not a 3D shelf — see buildBrows). Default look.
+//   peak   — apex position along the span (0 = centred arch; + shifts the peak
+//            toward the tail for an angled/raised brow)
+interface BrowPreset {
+  width: number; band: number; arch: number; taper: number; relief: number; peak: number;
+}
+const BROW_SHAPE_NAMES = ['natural', 'thin', 'bushy', 'arched', 'flat', 'angled', 'rounded', 'straight'] as const;
+type BrowShapeName = typeof BROW_SHAPE_NAMES[number];
+const BROW_SHAPE: Record<BrowShapeName, BrowPreset> = {
+  natural:  { width: 0.20, band: 0.050, arch: 0.025, taper: 0.35, relief: 0.08, peak: 0    },
+  thin:     { width: 0.20, band: 0.032, arch: 0.022, taper: 0.50, relief: 0.05, peak: 0    },
+  bushy:    { width: 0.22, band: 0.090, arch: 0.022, taper: 0.18, relief: 0.35, peak: 0    },
+  arched:   { width: 0.19, band: 0.048, arch: 0.060, taper: 0.40, relief: 0.08, peak: 0.12 },
+  flat:     { width: 0.21, band: 0.050, arch: 0.004, taper: 0.35, relief: 0.08, peak: 0    },
+  angled:   { width: 0.20, band: 0.050, arch: 0.040, taper: 0.45, relief: 0.10, peak: 0.45 },
+  rounded:  { width: 0.18, band: 0.058, arch: 0.038, taper: 0.22, relief: 0.10, peak: 0    },
+  straight: { width: 0.21, band: 0.052, arch: 0.010, taper: 0.18, relief: 0.08, peak: 0    },
+};
+
 function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
-  // Arched ridges that HUG the skull. A straight capsule chord between two
-  // points on a curved surface leaves its middle proud (the "shelf brow"
-  // look), so each brow is an arc whose points (a) curve up toward the
-  // middle and (b) pull BACK following the skull's lateral curvature, and
-  // the whole ridge is sunk by part of its radius.
+  // FLUSH, paintable brows (#703/#724) — NOT a raised ridge. Each brow is an arc
+  // of capsule segments smooth-welded into one strip, then SUNK into the forehead
+  // so only a flush (or, with `relief`, a whisper-proud) cap reads. The dark brow
+  // colour comes from the 'brows' label, not from 3D relief — so this is built to
+  // be hard-unioned at the TOP LEVEL and painted by its label, exactly like
+  // F.face.eyes (see assembleFace's docstring). The arc follows the skull (the
+  // circular sagitta pulls each point back) plus a gentle anatomical arch, with a
+  // slightly lifted medial head. (Replaces the old raised capsule-tube ridge that
+  // frayed into spiky slivers at the figure grid.)
   const o = obj(opts, 'brows(opts)');
-  assertNoUnknownKeys(o, ['thickness', 'lift'], 'brows(opts)');
-  const thickness = num(o.thickness, 1, 'brows.thickness', 0.1, 5); // ridge weight
-  const lift = num(o.lift, 1, 'brows.lift', 0, 5);                   // mid-brow arch
+  assertNoUnknownKeys(o, ['shape', 'thickness', 'lift', 'width', 'taper', 'relief', 'spacing', 'on'], 'brows(opts)');
+  const shape = o.shape === undefined ? 'natural'
+    : assertEnum(o.shape, BROW_SHAPE_NAMES as unknown as readonly string[], 'brows.shape') as BrowShapeName;
+  const P = BROW_SHAPE[shape];
+  const R = rig.r.head;
+  // `thickness`/`lift` are back-compat MULTIPLIERS on the preset (both default 1,
+  // so legacy `{}` / `{ lift, thickness }` callers keep working); `width` scales
+  // the lateral span; `taper`/`relief` override the preset absolutely.
+  const thickness = num(o.thickness, 1, 'brows.thickness', 0.1, 5);
+  const lift = num(o.lift, 1, 'brows.lift', 0, 5);
+  const widthMul = num(o.width, 1, 'brows.width', 0.3, 2);
+  const taper = num(o.taper, P.taper, 'brows.taper', 0, 0.9);
+  const relief = num(o.relief, P.relief, 'brows.relief', 0, 1);
+  // `spacing` is a multiplier on the EYE spacing (default 1): each brow centre sits
+  // directly over its eyeball, so the pair is never wider apart than the eyes.
+  // >1 spreads them, <1 draws them together. (#724 follow-up: the brow anchors sit
+  // a touch wider than the eyes, which read as "spread apart" — tie them to the
+  // eyes instead.) The brow keeps the anchors' forehead HEIGHT/DEPTH; only the
+  // lateral placement is re-derived from the eye spacing.
+  const spacing = num(o.spacing, 1, 'brows.spacing', 0, 3);
+  const halfSpan = R * P.width * widthMul;
+  const band = R * P.band * thickness;
+  const arch = R * P.arch * lift;
+  const peak = P.peak;
   const f = rig.dir.headForward, u = rig.dir.headUp, right = rig.dir.headLeft;
-  const w = rig.r.head * 0.24;                  // half-span of one brow
-  const browRad = rig.r.head * 0.045 * thickness;
-  const arch = rig.r.head * 0.06 * lift;        // mid-brow lift
-  const sink = browRad * 0.5;
-  const SEGS = 4;
-  const browArc = (anchor: Vec3): Node => {
-    const pt = (t: number): Vec3 => {
-      const s = w * t;
-      // Pull back by the circular sagitta at lateral offset s so the arc
-      // follows the skull instead of chording across it.
-      const drop = (s * s) / (2 * Math.max(rig.r.headX, 1e-3)) + sink;
-      return add3(anchor, add3(
-        add3(scale3(right, s), scale3(u, arch * (1 - t * t))),
-        scale3(f, -drop),
-      ));
-    };
+  // Lateral half-distance of an eye centre from the face midline, along headLeft.
+  const eyeMid = scale3(add3(rig.face.eyeL, rig.face.eyeR), 0.5);
+  const eyeLatVec = add3(rig.face.eyeL, scale3(eyeMid, -1));
+  const eyeHalfDist = eyeLatVec[0] * right[0] + eyeLatVec[1] * right[1] + eyeLatVec[2] * right[2];
+  // Brow midline point (on the centreline, at the correct forehead height/depth).
+  const browMid = scale3(add3(rig.face.browL, rig.face.browR), 0.5);
+  const browCenter = (sideSign: number): Vec3 =>
+    add3(browMid, scale3(right, sideSign * eyeHalfDist * spacing));
+  const SEGS = 16;
+  // `on` — the head/face surface to seat the brow CONFORMALLY on (the recommended
+  // path; pass the assembled face, or `skin` for top-level painted brows). With
+  // it, the swept arc below becomes a CLIP REGION and the brow itself is the real
+  // forehead offset outward a hair (`surfaceMarking`) — so it follows any skull
+  // with no sagitta curvature guess defining the geometry, and the 'brows' label
+  // paints cleanly. Without `on`, fall back to the legacy sunk-capsule strip
+  // (which IS the marking, positioned by the `sagDrop` guess).
+  const body = o.on as Node | undefined;
+  // Legacy sink (no `on`): sink the strip so only a flush/whisper-proud cap reads
+  // (relief 0 → dead flush, 1 → proud). Conformal (`on`): the arc straddles the
+  // surface as a clip region, so don't sink it — `surfaceMarking` sets the relief.
+  const backSink = body !== undefined ? 0 : band * (1 - relief);
+  const browPt = (center: Vec3, sideSign: number, t: number): Vec3 => {
+    const s = halfSpan * t;                                  // t<0 = medial (toward nose)
+    const sagDrop = (s * s) / (2 * Math.max(rig.r.headX, 1e-3)); // follow skull curvature
+    const td = t - peak;                                     // apex shifted toward the tail
+    const arcFac = Math.max(0, 1 - td * td);
+    const medialLift = t < 0 ? arch * 0.15 * (-t) : 0;       // lift the inner head a touch
+    return add3(center, add3(
+      add3(scale3(right, sideSign * s), scale3(u, arch * arcFac + medialLift)),
+      scale3(f, -(sagDrop + backSink)),
+    ));
+  };
+  const browArc = (sideSign: number): Node => {
+    const center = browCenter(sideSign);
     let arc: Node | undefined;
     for (let i = 0; i < SEGS; i++) {
-      const seg = sdf.capsule(pt(-1 + (2 * i) / SEGS), pt(-1 + (2 * (i + 1)) / SEGS), browRad);
-      arc = arc === undefined ? seg : arc.union(seg);
+      const t0 = -1 + (2 * i) / SEGS, t1 = -1 + (2 * (i + 1)) / SEGS;
+      const tm = (t0 + t1) / 2;
+      const taperFactor = Math.max(0.4, 1 - taper * Math.abs(tm));
+      const rad = band * taperFactor;
+      const seg = sdf.capsule(browPt(center, sideSign, t0), browPt(center, sideSign, t1), rad);
+      arc = arc === undefined ? seg : arc.smoothUnion(seg, rad * 0.5);
     }
     return arc!;
   };
-  return browArc(rig.face.browL).union(browArc(rig.face.browR));
+  const arcs = browArc(+1).union(browArc(-1));
+  if (body !== undefined) {
+    // Conformal: the arc is the clip REGION; the brow is the real forehead grown
+    // a hair proud (near-flush, but enough to clear the brow detail triangle so
+    // the 'brows' label owns its surface). `relief` (0..1) nudges how proud.
+    const proud = Math.max(R * 0.02, band * 0.4) * (0.7 + 0.6 * relief);
+    return surfaceMarking(body, arcs, proud, band * 0.7).label('brows');
+  }
+  // Self-labelled so a top-level hard-union carries the 'brows' paint region.
+  return arcs.label('brows');
 }
 
 /** Weld nose/mouth/ears/brows onto a head with SHARP creases (small k), vs
@@ -1528,14 +3004,27 @@ function buildBrows(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
  *  in-face eyes into the skin region (their `eyes`/`iris`/`pupil` labels resolve
  *  to 0 paintable triangles). So build eyes at the top level instead:
  *  `sdf.union(skin, F.face.eyes(rig), …)`. Pass `eyes: true` (or an options
- *  object) only when you are NOT re-labelling the result. (See /ai/figure.md.) */
+ *  object) only when you are NOT re-labelling the result. (See /ai/figure.md.)
+ *
+ *  BROWS are now FLUSH, paintable strips labelled 'brows' (#724). In-assemble
+ *  brows are HARD-unioned (label-safe), but the `.label('skin')` weld flattens
+ *  them to skin colour — fine if you want plain skin-toned brows. For DARK
+ *  painted brows, do the eyes thing: leave them out of the skin weld and union
+ *  `F.face.brows(rig, { … })` at the top level so the 'brows' colour survives. */
 function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'face.assemble(opts)');
   assertNoUnknownKeys(o, ['eyes', 'nose', 'mouth', 'ears', 'brows'], 'face.assemble(opts)');
   const crease = rig.r.head * 0.12;
   let result = head;
   if (o.nose !== false) result = result.smoothUnion(buildNose(sdf, rig, o.nose === true ? undefined : o.nose), crease);
-  if (o.brows !== false && o.brows !== undefined) result = result.smoothUnion(buildBrows(sdf, rig, o.brows === true ? undefined : o.brows), crease);
+  // Flush brows are hard-unioned (a smoothUnion would wipe the 'brows' label, #698,
+  // and the sunk strip barely protrudes so the weld is near-invisible either way).
+  // In-assemble brows stay on the legacy FLUSH path on purpose: the `.label('skin')`
+  // weld flattens them to skin, so they must read as flush skin, NOT a proud ridge.
+  // The conformal `surfaceMarking` brow (`buildBrows` with `on`) is a PROUD strip so
+  // its label can win the paint — wanted only for DARK painted brows, built at the
+  // top level via `F.face.brows(rig, { on: skin })` (see that function's `on` param).
+  if (o.brows !== false && o.brows !== undefined) result = result.union(buildBrows(sdf, rig, o.brows === true ? undefined : o.brows));
   if (o.ears !== false) result = result.smoothUnion(buildEars(sdf, rig, o.ears === true ? undefined : o.ears), crease * 1.5);
   if (o.mouth !== false) {
     const mouth = buildMouthPart(sdf, rig, o.mouth === true ? undefined : o.mouth);
@@ -1554,13 +3043,21 @@ function assembleFace(sdf: SdfApi, head: Node, rig: Rig, opts?: unknown): Node {
 
 /** The face's detail spheres for `build({ detail: F.faceDetail(rig) })` —
  *  returns an ARRAY: a head sphere (features, ears, chin, hairline) at an
- *  edge length scaled to the head, plus a much finer MOUTH sphere — the
- *  carved smile groove / mouth opening is the smallest face feature and
- *  reads pixelated at the head-wide target. The body keeps the cheap global
- *  grid either way. */
+ *  edge length scaled to the head, plus much finer MOUTH / NOSE / EYE spheres —
+ *  the carved smile groove, nostril rims and iris discs are the smallest face
+ *  features and read pixelated at the head-wide target. It ALSO returns two
+ *  small CHEST spheres over the areola discs (#703): the flush areola coin has
+ *  the same fine-rim problem as the iris, and the torso otherwise meshes at the
+ *  coarse global grid where the disc perimeter slivers; these refine just the
+ *  two coins. They're harmless on a figure with no areola (a tiny refinement of
+ *  flat chest skin). The body keeps the cheap global grid everywhere else.
+ *  Pass `chest: false` to drop them, or `chestEdgeLength` to tune. It also
+ *  returns two small BROW spheres (#724): the flush brow band is the thinnest
+ *  face feature after the iris and frays without a detail region; these refine
+ *  just the brows. Pass `brows: false` to drop them, or `browEdgeLength`. */
 function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: number; edgeLength: number }> {
   const o = obj(opts, 'faceDetail(opts)');
-  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength', 'eyeEdgeLength'], 'faceDetail(opts)');
+  assertNoUnknownKeys(o, ['radius', 'edgeLength', 'mouthEdgeLength', 'noseEdgeLength', 'nostrilEdgeLength', 'eyeEdgeLength', 'irisEdgeLength', 'earEdgeLength', 'brows', 'browEdgeLength', 'chest', 'chestEdgeLength'], 'faceDetail(opts)');
   const r = rig.r;
   const radius = num(o.radius, Math.max(r.headX, r.head, r.headZ) * 1.5, 'faceDetail.radius', 1e-3);
   // ~4.5% of the head radius ≈ one subdivision round below the recommended
@@ -1568,26 +3065,88 @@ function faceDetail(rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: num
   // count. Halve it (e.g. r.head * 0.02) for a final extra-fine pass.
   const edgeLength = num(o.edgeLength, Math.max(r.head * 0.045, 0.05), 'faceDetail.edgeLength', 1e-4);
   const mouthEdgeLength = num(o.mouthEdgeLength, Math.max(r.head * 0.02, 0.03), 'faceDetail.mouthEdgeLength', 1e-4);
-  // The iris/pupil are small painted-on discs whose *circular edge* is only as
-  // smooth as the local mesh — at the head grid (~r.head·0.045) a disc that
-  // small reads as a faceted polygon. Give each eyeball front its own extra-fine
-  // sphere (like the mouth groove) so the iris/pupil circles tessellate round.
-  const eyeEdgeLength = num(o.eyeEdgeLength, Math.max(r.head * 0.009, 0.025), 'faceDetail.eyeEdgeLength', 1e-4);
-  const f = rig.dir.headForward;
+  // The eye area gets TWO nested detail spheres per eye:
+  //  • a MEDIUM one over the whole eye (sclera + eyelid skin) — the eyelid margin
+  //    is a curved rim that facets badly at the head grid; this keeps it smooth.
+  //  • a FINE, smaller one over the iris/pupil — those tiny discs need ~14+ cells
+  //    across to read round, finer than the lid needs. Splitting them matters
+  //    because the large lid cap can't march at the fine iris edge within the
+  //    per-region cell budget (it would fall back to a coarse grid), so the iris
+  //    sphere stays small enough that only the small iris/pupil regions pick it.
+  const eyeEdgeLength = num(o.eyeEdgeLength, Math.max(r.head * 0.009, 0.03), 'faceDetail.eyeEdgeLength', 1e-4);
+  const irisEdgeLength = num(o.irisEdgeLength, Math.max(r.head * 0.0045, 0.018), 'faceDetail.irisEdgeLength', 1e-4);
+  // The ear is a thin plate with a fine rim/concha/tragus — it facets badly at
+  // the head grid (and so does the hair pocket carved around it when hair is
+  // worn 'behind'). A sphere over each ear, pushed outboard to cover the
+  // protruding pinna, keeps both crisp.
+  const earEdgeLength = num(o.earEdgeLength, Math.max(r.head * 0.02, 0.025), 'faceDetail.earEdgeLength', 1e-4);
+  // The nose gets its own fine sphere: the carved nostril cavities + columella
+  // are the second-smallest face feature (after the iris) and alias into half-
+  // sealed pockets at the head grid. ~1.4% of the head radius keeps the nostril
+  // rims and septum crisp. Centred at the nose anchor, nudged down+forward to
+  // sit over the alae/nostril underside.
+  const noseEdgeLength = num(o.noseEdgeLength, Math.max(r.head * 0.011, 0.02), 'faceDetail.noseEdgeLength', 1e-4);
+  // The carved NOSTRIL rims + columella are the finest nose feature (#703): even
+  // the nose sphere's ~0.02-0.05 cell is too coarse for their soft-blended edge,
+  // so they aliased into torn craters. A small EXTRA-fine sphere over the tip
+  // underside meshes the rim cleanly — local, so the global tri-count stays put.
+  const nostrilEdgeLength = num(o.nostrilEdgeLength, Math.max(r.head * 0.009, 0.016), 'faceDetail.nostrilEdgeLength', 1e-4);
+  // Brow strips (#703/#724): the flush brow is a thin band (≈5% of head radius)
+  // that aliased into spiky slivers at the coarse body grid with no detail region
+  // of its own. A small fine sphere over each brow anchor meshes the strip + its
+  // arc-following 'brows' colour edge crisply. ~1.5% of the head radius ≈ 3 cells
+  // across the band. Local (small radius), so the global tri-count barely moves.
+  const showBrows = o.brows === undefined ? true : assertBoolean(o.brows, 'faceDetail.brows') as boolean;
+  const browEdgeLength = num(o.browEdgeLength, Math.max(r.head * 0.015, 0.022), 'faceDetail.browEdgeLength', 1e-4);
+  // Chest areola discs (#703): the flush coins' perimeter slivers at the coarse
+  // torso grid, so refine just the two coins. Centred at the nipple anchors with
+  // a radius a hair past the default areola size (`r.chestX * 0.16`) so the disc
+  // rim + a margin of surrounding skin are covered.
+  const chest = o.chest === undefined ? true : assertBoolean(o.chest, 'faceDetail.chest') as boolean;
+  // ~1.8% of the chest half-width ≈ 18-20 cells across the default areola disc
+  // (radius ≈ chestX·0.16). Finer than a plain rim needs, deliberately: the
+  // conformal areola (`F.nipples`, body grown by `t`) paints cleanly only where
+  // its raised front clears ≳ one detail triangle, so a finer mesh in these two
+  // small nipple-local spheres (below) lets `t` shrink — a thinner, more flush
+  // areola that still owns its triangles. Stays local: ~+1% triangles total.
+  const chestEdgeLength = num(o.chestEdgeLength, Math.max(r.chestX * 0.018, 0.035), 'faceDetail.chestEdgeLength', 1e-4);
+  const f = rig.dir.headForward, u = rig.dir.headUp, hl = rig.dir.headLeft;
   const eyeFront = (anchor: Vec3): Vec3 => add3(anchor, scale3(f, r.head * 0.22));
-  return [
+  const earOut = (anchor: Vec3, side: number): Vec3 => add3(anchor, scale3(hl, side * r.head * 0.12));
+  const noseCenter = add3(rig.face.nose, add3(scale3(f, r.head * 0.05), scale3(u, -r.head * 0.05)));
+  // Nostril underside: off the nose anchor, forward to the projected tip and
+  // dropped to the alae/nostril plane, so the fine sphere hugs the openings.
+  const nostrilCenter = add3(rig.face.nose, add3(scale3(f, r.head * 0.14), scale3(u, -r.head * 0.11)));
+  const regions: Array<{ center: Vec3; radius: number; edgeLength: number }> = [
     { center: [...(rig.joints.head as Vec3)] as Vec3, radius, edgeLength },
     { center: [...(rig.face.mouth as Vec3)] as Vec3, radius: r.head * 0.55, edgeLength: mouthEdgeLength },
+    { center: noseCenter, radius: r.head * 0.34, edgeLength: noseEdgeLength },
+    { center: nostrilCenter, radius: r.head * 0.17, edgeLength: nostrilEdgeLength },
     { center: eyeFront(rig.face.eyeL), radius: r.head * 0.26, edgeLength: eyeEdgeLength },
     { center: eyeFront(rig.face.eyeR), radius: r.head * 0.26, edgeLength: eyeEdgeLength },
+    { center: eyeFront(rig.face.eyeL), radius: r.head * 0.13, edgeLength: irisEdgeLength },
+    { center: eyeFront(rig.face.eyeR), radius: r.head * 0.13, edgeLength: irisEdgeLength },
+    { center: earOut(rig.face.earL, +1), radius: r.head * 0.72, edgeLength: earEdgeLength },
+    { center: earOut(rig.face.earR, -1), radius: r.head * 0.72, edgeLength: earEdgeLength },
   ];
+  if (showBrows) {
+    const browR2 = r.head * 0.32;
+    regions.push({ center: [...(rig.face.browL as Vec3)] as Vec3, radius: browR2, edgeLength: browEdgeLength });
+    regions.push({ center: [...(rig.face.browR as Vec3)] as Vec3, radius: browR2, edgeLength: browEdgeLength });
+  }
+  if (chest) {
+    const areolaR = r.chestX * 0.16 * 1.35;
+    regions.push({ center: [...(rig.torso.nippleL as Vec3)] as Vec3, radius: areolaR, edgeLength: chestEdgeLength });
+    regions.push({ center: [...(rig.torso.nippleR as Vec3)] as Vec3, radius: areolaR, edgeLength: chestEdgeLength });
+  }
+  return regions;
 }
 
 // --- Hair -----------------------------------------------------------------
 
 function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hair(opts)');
-  assertNoUnknownKeys(o, ['style', 'thickness', 'hairline', 'length', 'volume', 'part', 'texture'], 'hair(opts)');
+  assertNoUnknownKeys(o, ['style', 'thickness', 'hairline', 'length', 'volume', 'part', 'texture', 'ears'], 'hair(opts)');
   const style = o.style === undefined ? 'short'
     : assertEnum(o.style, ['short', 'long', 'bob', 'bun', 'bald', 'bangs', 'ponytail', 'afro', 'braids', 'spiked', 'locs', 'cornrows', 'boxBraids'] as const, 'hair.style');
   // bald = no hair. Return a sub-cell sphere AT the head centre (not parked at
@@ -1611,6 +3170,12 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const volume = num(o.volume, 1, 'hair.volume', 0.3, 4);
   const part = o.part === undefined ? 'none'
     : assertEnum(o.part, ['none', 'left', 'right', 'center'] as const, 'hair.part');
+  // Hair⇄ear relationship: 'cover' (default) lets the cap flow over the ears;
+  // 'behind' tucks the hair behind them — an ear-clearance pocket is carved at
+  // each ear anchor so the skin ears protrude in front of the hair. 'cover'
+  // carves nothing, so existing bakes stay byte-identical.
+  const ears = o.ears === undefined ? 'cover'
+    : assertEnum(o.ears, ['cover', 'behind'] as const, 'hair.ears');
   // Physical strand/curl relief, displaced along the cap surface — the
   // print-native analog of a hair texture map (real geometry an FDM/resin
   // printer reproduces). New styles default to a fitting texture; classic
@@ -1861,6 +3426,25 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       .translate(add3(c, add3(scale3(right, off), scale3(u, bottomZ + big / 2))));
     cap = cap.subtract(groove);
   }
+  // Ear-clearance pockets ('behind'): scoop a recess out of the cap at each ear
+  // anchor so the skin ears sit IN FRONT of the hair. The pocket is a sphere at
+  // the ear anchor, pushed slightly outboard so it clears the protruding pinna
+  // without biting a chunk out of the side of the hairdo. Localized at ear
+  // height — the crown and nape mass are untouched. 'cover' skips this entirely
+  // (byte-identical default).
+  if (ears === 'behind') {
+    // A snug pocket so the hair HUGS the ear rather than carving a wide crater
+    // around it — just enough to clear the protruding pinna at the ear anchor.
+    const pocketR = r.head * 0.3;
+    const outboard = r.headX * 0.06;
+    for (const [anchor, lat] of [[rig.face.earL, right], [rig.face.earR, scale3(right, -1)]] as const) {
+      const pc = add3(anchor, scale3(lat, outboard));
+      // smoothSubtract (not a hard cut) so the pocket rim is a rounded fillet
+      // that blends into the hair — a sharp cut here slivers against the nearby
+      // ear surface and meshes as speckle.
+      cap = cap.smoothSubtract(sdf.sphere(pocketR).translate(pc), r.head * 0.22);
+    }
+  }
   // Face window: the cap overlaps the face INTERIOR, and since hair is its
   // own labelled region it survives the skin's mouth/feature carves — a
   // carved smile then exposes pale hair volume inside its corners ("nub
@@ -1944,16 +3528,28 @@ function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // the foot — defines the hem.
   const body = buildTorso(sdf, rig).union(buildLegs(sdf, rig)).round(t);
   const big = Math.max(r.hipsX, r.chestX, r.upperLeg) * 8;
+  // Soft-hem radius for the waistband top edge (see the `coverage` comment below).
+  const hemK = t * 1.0;
   const underWaist = sdf.box([big, big, big]).translate([0, 0, waistZ - big / 2]); // z ≤ waistZ
   const seatBot = j.upperLegL[2] - r.upperLeg;
-  const seatZone = sdf.box([big, big, waistZ - seatBot]).translate([0, 0, (waistZ + seatBot) / 2]);
+  // Let `underWaist` (smooth-cut) own the top edge: raise the seat zone a hair
+  // above the waist line so its own hard top plane never pre-clips the rounded rim.
+  const seatTop = waistZ + hemK;
+  const seatZone = sdf.box([big, big, seatTop - seatBot]).translate([0, 0, (seatTop + seatBot) / 2]);
   const legZone = (Hj: Vec3, K: Vec3): Node =>
     sdf.capsule(Hj, K, (r.upperLeg + t) * 1.8).union(sdf.sphere((r.lowerLeg + t) * 1.9).translate(K));
   let zone = seatZone;
   if (length !== 'briefs') {
     zone = zone.union(legZone(j.upperLegL as Vec3, j.lowerLegL as Vec3)).union(legZone(j.upperLegR as Vec3, j.lowerLegR as Vec3));
   }
-  const coverage = body.intersect(zone.intersect(underWaist));
+  // Round the waistband TOP edge. A hard `intersect` against the flat `underWaist`
+  // plane slices the curved body SDF dead-flat, and the mesher aliases that
+  // body-meets-plane crease into a sawtooth seam across the waist (#704). A small
+  // `smoothIntersect` rounds that rim into a soft hem instead — the round only
+  // rolls the very top edge inward by ≤ hemK, well inside the garment, so it can
+  // never open a bare-skin gap below the band, and the paint label (carried on
+  // the whole coverage node) is untouched.
+  const coverage = body.intersect(zone).smoothIntersect(underWaist, hemK);
 
   // briefs: seat + gusset + hip pads only — leotard bottoms, swimwear.
   if (length === 'briefs') {
@@ -1995,39 +3591,18 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // centred at y=0 lets the chest bulge straight through its front).
   const chest = sdf.ellipsoid(r.chestX + t, (r.chestY + t) * 1.05, (j.chest[2] - hemZ) * 0.62 + r.chestY)
     .translate([0, j.chest[1], mix(hemZ, j.chest[2] + r.chestY, 0.5)]);
-  let top = chest;
+  let shell = chest;
   // A hem below the pelvis means a robe/dress — the chest ELLIPSOID recedes
   // toward its bottom tip, so legs poke out of its lower front. Add a flared
   // cone skirt from the waist down to the hem.
-  if (hemZ < j.hips[2] - r.hipsY * 0.6) {
+  const isDress = hemZ < j.hips[2] - r.hipsY * 0.6;
+  if (isDress) {
     const skirtH = j.spine[2] - hemZ;
     const r0 = Math.max(r.hipsX, r.chestX) + t;
     const skirt = sdf.cylinder(r0, skirtH)
       .taper(-0.8 / skirtH)
       .translate([0, 0, hemZ + skirtH / 2]);
-    top = top.smoothUnion(skirt, r.chestY * 0.8);
-  }
-  if (sleeve !== 'none') {
-    // Sleeves FOLLOW the arm chain: a straight shoulder→forearm capsule cuts
-    // the corner on a bent elbow and the elbow pokes through the sleeve.
-    function sl(S: Vec3, E: Vec3, W: Vec3): Node {
-      const rad = (r.upperArm + t) * 1.05;
-      if (sleeve === 'short') {
-        return sdf.capsule(S, lerp3(S, E, 0.85), rad);
-      }
-      // long: upper-arm segment + forearm segment, welded at the elbow.
-      return sdf.capsule(S, E, rad)
-        .smoothUnion(sdf.capsule(E, lerp3(E, W, 0.9), rad * 0.95), r.lowerArm * 0.8);
-    }
-    // Shoulder yokes: spheres over the shoulder joints bridging the chest
-    // shell and the sleeve tops. Without them a wedge of skin shows at the
-    // armpit/collar where the shell's side ends inboard of the shoulder.
-    const yoke = (S: Vec3): Node => sdf.sphere((r.upperArm + t) * 1.2).translate(S);
-    top = top
-      .smoothUnion(sl(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3), r.upperArm * 0.7)
-      .smoothUnion(sl(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3), r.upperArm * 0.7)
-      .smoothUnion(yoke(j.upperArmL as Vec3), r.upperArm * 0.8)
-      .smoothUnion(yoke(j.upperArmR as Vec3), r.upperArm * 0.8);
+    shell = shell.smoothUnion(skirt, r.chestY * 0.8);
   }
   // Clavicle bar: the chest ellipsoid's front-top slopes away below the
   // collarbones, leaving a deep bare V at the sternum. A shoulder-to-shoulder
@@ -2044,13 +3619,24 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // zone, unioned UNDER the shaped shell. It fills the spots the shaped
   // ellipsoid/sleeves only approximate — the sternum V, the armpit wedge, and
   // belly/pelvis weld bulges on slim builds — with a body offset that can't be
-  // poked through. No legs in the masses, so a dress hem stays the cone skirt's
-  // job; a sleeveless top excludes the arms so it stays bare-shouldered.
-  const masses = sleeve === 'none' ? buildTorso(sdf, rig) : buildTorso(sdf, rig).union(buildArms(sdf, rig));
+  // poked through. A sleeveless top excludes the arms so it stays bare-shouldered.
+  // For a DRESS/ROBE the legs join the coverage too: a centered cone skirt is too
+  // narrow at the spread outer thigh/knee, so the leg pokes through its side as a
+  // bare-skin patch (#dress-outer-thigh). Offsetting the legs by `t` and clipping
+  // them to the skirt zone + hem (exactly as buildPants guarantees leg coverage)
+  // fills wherever the leg out-runs the cone, while the cone still gives the drape
+  // and stays solid BETWEEN the legs (no culotte split). Non-dress tops keep no
+  // legs, so a shirt never wraps the thighs.
+  let masses = sleeve === 'none' ? buildTorso(sdf, rig) : buildTorso(sdf, rig).union(buildArms(sdf, rig));
+  if (isDress) masses = masses.union(buildLegs(sdf, rig));
   const body = masses.round(t);
   const big = Math.max(r.chestX, r.upperArm) * 8;
   const torsoTop = j.upperArmL[2] + r.upperArm;
-  let zone = sdf.box([big, big, torsoTop - hemZ]).translate([0, 0, (torsoTop + hemZ) / 2]);
+  // Hem box spans a hair past both the sleeve/yoke line and the hem so only the
+  // soft-cut `hemPlane` below owns the visible bottom edge (mirrors buildPants).
+  const hemK = t * 1.0;
+  const zTop = torsoTop + hemK, zBot = hemZ - hemK;
+  let zone = sdf.box([big, big, zTop - zBot]).translate([0, 0, (zTop + zBot) / 2]);
   if (sleeve !== 'none') {
     const slZone = (S: Vec3, E: Vec3, W: Vec3): Node => {
       const rad = (r.upperArm + t) * 1.8;
@@ -2061,7 +3647,220 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       .union(slZone(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3))
       .union(slZone(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3));
   }
-  return top.smoothUnion(clav, r.neck * 0.9).union(body.intersect(zone));
+  // Round the shirt HEM (bottom edge): a hard intersect with the flat hem plane
+  // aliases the body-meets-plane crease into a sawtooth (#704). A half-space cut
+  // at `hemZ` (z ≥ hemZ), smooth-intersected, rolls the bottom rim into a soft
+  // hem. The round only lifts the very bottom edge by ≤ hemK, still well below a
+  // mid-rise waistband, so it can't reopen the midriff strip the hem default closes.
+  // The box must reach ABOVE the garment top (`zTop`): a fixed `big`-tall box is
+  // too short for a floor-length gown on a tall figure (chest sits high, `chestX`
+  // — hence `big` — is small), so its top would slice through the chest/shoulders
+  // and amputate the whole bodice, leaving a bare torso over a cone skirt (the
+  // "topless runway gown" bug). Size the height to span hem → past zTop instead.
+  const hemH = (zTop - hemZ) + big;
+  const hemPlane = sdf.box([big, big, hemH]).translate([0, 0, hemZ + hemH / 2]); // z ≥ hemZ
+  // Clip the SHELL + clavicle + coverage to the hem so the chest ellipsoid's
+  // bottom tip can't dangle below the hemline as a central pendant between the
+  // legs (#nub), and every hem gets the same soft rolled edge. Sleeves are
+  // EXCLUDED from this clip (unioned in below): they follow the arms and
+  // legitimately hang below a high hem, so clipping them flat would amputate them.
+  let garment = shell.smoothUnion(clav, r.neck * 0.9)
+    .union(body.intersect(zone).smoothIntersect(hemPlane, hemK))
+    .smoothIntersect(hemPlane, hemK);
+  if (sleeve !== 'none') {
+    // Sleeves FOLLOW the arm chain: a straight shoulder→forearm capsule cuts the
+    // corner on a bent elbow and the elbow pokes through, so the long sleeve is
+    // welded at the elbow. Shoulder yokes (spheres over the shoulder joints)
+    // bridge the shell and the sleeve tops so no skin shows at the armpit/collar.
+    const sl = (S: Vec3, E: Vec3, W: Vec3): Node => {
+      const rad = (r.upperArm + t) * 1.05;
+      if (sleeve === 'short') return sdf.capsule(S, lerp3(S, E, 0.85), rad);
+      return sdf.capsule(S, E, rad)
+        .smoothUnion(sdf.capsule(E, lerp3(E, W, 0.9), rad * 0.95), r.lowerArm * 0.8);
+    };
+    const yoke = (S: Vec3): Node => sdf.sphere((r.upperArm + t) * 1.2).translate(S);
+    garment = garment
+      .smoothUnion(sl(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3), r.upperArm * 0.7)
+      .smoothUnion(sl(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3), r.upperArm * 0.7)
+      .smoothUnion(yoke(j.upperArmL as Vec3), r.upperArm * 0.8)
+      .smoothUnion(yoke(j.upperArmR as Vec3), r.upperArm * 0.8);
+  }
+  return garment;
+}
+
+// Resolve a coverage level (`top`/`bottom`) that may be a named landmark
+// (looked up in `table`) or a raw world-Z number. Shared by panel garments.
+function panelLevel(v: unknown, table: Record<string, number>, def: string, name: string): number {
+  if (v === undefined) return table[def];
+  if (typeof v === 'number') return num(v, table[def], name);
+  return table[assertEnum(v, Object.keys(table), name)];
+}
+
+// Normalize an `over` option (a node or array of nodes to drape over) to an array.
+function asNodes(v: unknown): Node[] {
+  return (Array.isArray(v) ? v : [v]) as Node[];
+}
+
+// March the body's own SDF outward along ±Y at x=0 to find its forward-most
+// (front, −Y) or rear-most (back, +Y) surface over a z band — the line a drape
+// hangs from. Measured, never guessed, so a belly that bulges past any fixed
+// offset still can't poke through (the original chef-apron pass-through, #apron).
+function panelApex(body: Node, side: 'front' | 'back', zLo: number, zHi: number): number {
+  const dir = side === 'back' ? 1 : -1;
+  const step = Math.max((zHi - zLo) / 40, 0.2);
+  let best = dir > 0 ? -Infinity : Infinity;
+  for (let z = zLo; z <= zHi; z += step) {
+    let y = 0, last = 0, inside = false;
+    for (let i = 0; i < 200; i++) {
+      if (body.evaluate(0, y, z) > 0) break;   // crossed to outside → last was the surface
+      last = y; inside = true; y += dir * 0.1;
+    }
+    if (inside) best = dir > 0 ? Math.max(best, last) : Math.min(best, last);
+  }
+  return Number.isFinite(best) ? best : 0;
+}
+
+// A front/back-panel garment: aprons, bibs, tabards, loincloths, capes. Two fits:
+//
+//   'drape' (default) — a flat cloth SHEET that hangs. It sits just in front of
+//     the body's measured forward-most point (so it clears the body/under-
+//     garments and can't pass through), rests on the belly, and hangs straight
+//     DOWN — below the belly the legs recede, so the sheet is left hanging away
+//     from them (the "body separation" of real cloth). This is the apron/cape look.
+//   'hug' — the conforming shell (body mass offset + clipped); skin-tight, for a
+//     tabard/bib that lies flat ON the body rather than hanging off it.
+//
+// `side`  'front' (−Y, default) | 'back' (+Y) | 'both'.
+// `top`/`bottom`  named landmarks ('neck'/'chest'/'waist', 'waist'/'hip'/'thigh'/
+//                 'knee'/'shin'/'ankle') or a raw world Z. Apron/cape extend low.
+// `wrap`  half-width as a multiple of the hip half-width (1 ≈ hip-wide).
+// `thickness`  fabric thickness — set this so the printed sheet stays above your
+//              slicer's minimum wall; the default is a sturdy, print-safe value.
+// `over`  a node or array of nodes (e.g. an under-jacket/pants) the drape should
+//         hang OVER: they're folded into the apex measurement so the sheet clears
+//         them. Without it the sheet may bury under thicker under-garments.
+// `fit`   'drape' (default) | 'hug'.   `label`  paint-region name.
+function buildPanel(sdf: SdfApi, rig: Rig, opts?: unknown, opName = 'panel'): Node {
+  // `opName` lets the apron preset surface its OWN name in validation errors
+  // (an unknown key on apron(...) shouldn't blame panel(...)).
+  const o = obj(opts, `${opName}(opts)`);
+  assertNoUnknownKeys(o, ['side', 'top', 'bottom', 'wrap', 'thickness', 'over', 'fit', 'label'], `${opName}(opts)`);
+  const side = o.side === undefined ? 'front' : assertEnum(o.side, ['front', 'back', 'both'] as const, `${opName}.side`);
+  const fit = o.fit === undefined ? 'drape' : assertEnum(o.fit, ['drape', 'hug'] as const, `${opName}.fit`);
+  if (o.label !== undefined && typeof o.label !== 'string') throw new ValidationError(`${opName}.label must be a string`);
+  const j = rig.joints, r = rig.r;
+
+  // Named coverage heights → world Z. A taller bib reaches the collarbones; a
+  // waist apron / loincloth starts at the navel. Bottoms run waist → ankle.
+  const TOPS: Record<string, number> = {
+    neck: j.chest[2] + r.chestY * 0.6,
+    chest: j.chest[2] - r.chestY * 0.2,
+    waist: j.spine[2],
+  };
+  const BOTS: Record<string, number> = {
+    waist: j.spine[2],
+    hip: j.hips[2],
+    thigh: j.upperLegL[2] - r.upperLeg * 1.6,
+    knee: j.lowerLegL[2],
+    shin: mix(j.lowerLegL[2], j.footL[2], 0.5),
+    ankle: j.footL[2] + r.lowerLeg,
+  };
+  const topZ = panelLevel(o.top, TOPS, 'chest', `${opName}.top`);
+  const botZ = panelLevel(o.bottom, BOTS, 'thigh', `${opName}.bottom`);
+
+  const bodyMass = buildTorso(sdf, rig).union(buildLegs(sdf, rig));
+
+  // --- 'hug': the conforming shell (skin-tight, lies ON the body) ------------
+  if (fit === 'hug') {
+    const wrap = num(o.wrap, 1.15, `${opName}.wrap`, 0.1);
+    const t = num(o.thickness, Math.max(r.chestY, r.upperLeg) * 0.3 + r.chestY * 0.08, `${opName}.thickness`, 0.01);
+    const body = bodyMass.round(t);
+    const big = Math.max(r.chestX, r.hipsX, r.upperLeg) * 8;
+    const halfW = r.hipsX * wrap;
+    const zCenter = (topZ + botZ) / 2;
+    const zSpan = Math.max(topZ - botZ, t);
+    const k = t * 1.0;
+    const cutY = r.chestY * 0.15;
+    const slab = (sign: number): Node => {
+      const zone = sdf.box([halfW * 2, big, zSpan]).translate([0, sign * (cutY + big / 2), zCenter]);
+      return body.smoothIntersect(zone, k);
+    };
+    const hugged = side === 'both' ? slab(-1).union(slab(+1)) : slab(side === 'back' ? +1 : -1);
+    return o.label !== undefined ? hugged.label(o.label as string) : hugged;
+  }
+
+  // --- 'drape': a flat hanging sheet (the apron/cape look) -------------------
+  const wrap = num(o.wrap, 1.0, `${opName}.wrap`, 0.1);
+  const t = num(o.thickness, r.chestY * 0.22, `${opName}.thickness`, 0.01);
+  // Measure the body PLUS anything we're draping over, so the sheet clears it.
+  let measured = bodyMass;
+  if (o.over !== undefined) for (const n of asNodes(o.over)) measured = measured.union(n);
+  const halfW = r.hipsX * wrap;
+  const zc = (topZ + botZ) / 2;
+  const span = Math.max(topZ - botZ, t * 2);
+  const rad = Math.min(t, halfW, span) * 0.4;
+  const eps = t * 0.15;                          // back face this far INTO the body → welds
+  // A flat sheet, front face proud of the measured apex, back face just inside
+  // it (so it fuses to the body at the belly/back and hangs free below).
+  const sheet = (s: number): Node => {
+    const apexY = panelApex(measured, s < 0 ? 'front' : 'back', j.hips[2], j.chest[2]);
+    const cy = apexY + s * (t / 2 - eps);
+    return sdf.roundedBox([halfW * 2, t, span], rad).translate([0, cy, zc]);
+  };
+  const draped = side === 'both' ? sheet(-1).union(sheet(+1)) : sheet(side === 'back' ? +1 : -1);
+  return o.label !== undefined ? draped.label(o.label as string) : draped;
+}
+
+// Apron preset: a draping chef's bib apron — a narrow BIB flaring into a wider
+// SKIRT that hangs to the shin, held on by a NECK halter + WAIST ties (which is
+// what lets a real apron stand off the body). All draped, labelled 'apron'.
+//   top/bottom — bib top / skirt hem (default chest → shin).
+//   wrap — overall width scale.   thickness — print-safe sheet thickness.
+//   over — under-garments to hang over (so it clears them).   ties — waist ties.
+function buildApron(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  const o = obj(opts, 'apron(opts)');
+  assertNoUnknownKeys(o, ['top', 'bottom', 'wrap', 'thickness', 'over', 'ties', 'label'], 'apron(opts)');
+  if (o.ties !== undefined && typeof o.ties !== 'boolean') throw new ValidationError('apron.ties must be a boolean');
+  if (o.label !== undefined && typeof o.label !== 'string') throw new ValidationError('apron.label must be a string');
+  const j = rig.joints, r = rig.r;
+  const ties = o.ties === undefined ? true : o.ties as boolean;
+  const t = num(o.thickness, r.chestY * 0.22, 'apron.thickness', 0.01);
+  const wrap = num(o.wrap, 1.0, 'apron.wrap', 0.1);
+  const over = o.over;
+  const pass = over !== undefined ? { over } : {};
+  const bibTop = o.top ?? 'chest';
+  const hem = o.bottom ?? 'shin';
+  // Narrow bib (chest→waist) flaring into a wide skirt (waist→hem); same drape
+  // params so their front faces align and they smooth-weld into one sheet.
+  const bib = buildPanel(sdf, rig, { side: 'front', fit: 'drape', top: bibTop, bottom: 'waist', wrap: wrap * 0.62, thickness: t, ...pass }, 'apron');
+  const skirt = buildPanel(sdf, rig, { side: 'front', fit: 'drape', top: 'waist', bottom: hem, wrap: wrap * 1.05, thickness: t, ...pass }, 'apron');
+
+  // Strap geometry keys off the same measured belly apex the sheets use.
+  let measured = buildTorso(sdf, rig).union(buildLegs(sdf, rig));
+  if (over !== undefined) for (const n of asNodes(over)) measured = measured.union(n);
+  const apexY = panelApex(measured, 'front', j.hips[2], j.chest[2]);
+  const faceY = apexY - (t - t * 0.15) * 0.5;            // ~front of the sheet
+  const bibTopZ = j.chest[2] - r.chestY * 0.2;
+  const waistZ = j.spine[2];
+  const bibHalfW = r.hipsX * wrap * 0.62;
+
+  // NECK halter — straps from the bib's top corners up & back around the neck.
+  const strapR = Math.max(r.neck * 0.13, t * 0.5);
+  const neckRest: Vec3 = [0, r.neck * 0.6, j.chest[2] + r.head * 0.55];
+  const sL = sdf.capsule([bibHalfW * 0.82, faceY, bibTopZ], neckRest, strapR);
+  const sR = sdf.capsule([-bibHalfW * 0.82, faceY, bibTopZ], neckRest, strapR);
+  let apron = bib.smoothUnion(skirt, t * 1.5).smoothUnion(sL, strapR).smoothUnion(sR, strapR);
+
+  // WAIST ties — straps from the skirt's top corners wrapping toward the back.
+  if (ties) {
+    const skirtHalfW = r.hipsX * wrap * 1.05;
+    const tieR = Math.max(r.neck * 0.11, t * 0.45);
+    const tieEnd = (s: number): Vec3 => [s * r.hipsX * 0.35, r.hipsY * 1.15, waistZ];
+    const tL = sdf.capsule([skirtHalfW * 0.96, faceY, waistZ], tieEnd(1), tieR);
+    const tR = sdf.capsule([-skirtHalfW * 0.96, faceY, waistZ], tieEnd(-1), tieR);
+    apron = apron.smoothUnion(tL, tieR).smoothUnion(tR, tieR);
+  }
+  return apron.label(typeof o.label === 'string' ? o.label : 'apron');
 }
 
 // --- Body weld ------------------------------------------------------------
@@ -2090,6 +3889,19 @@ export interface FigureNamespace {
    *  not ethnicity. */
   skin(name?: string): string | Record<string, string>;
   torso(rig: Rig, opts?: object): Node;
+  /** Flush, paintable areola discs + a tiny nipple nub — hard-union at the TOP
+   *  level (like `face.eyes`) so the self-applied `'areola'` paint label
+   *  survives the body weld. Rides the `rig.torso` nipple anchors (so it tracks
+   *  the bust/pec/bare chest). **Pass `on: skin`** (the body weld) so each areola
+   *  is the body's OWN front surface relabelled — flush by construction on any
+   *  chest (bare, pectoral, mound, fat), never a proud "patty" nor a sunk rim.
+   *  `opts`: `{ size, nipple, on }`. Colour the `'areola'` label — see
+   *  `areolaColor`. */
+  nipples(rig: Rig, opts?: object): Node;
+  /** A default areola colour: a slightly darker shade of `skin` (a `#rrggbb` hex
+   *  or a curated `skin` name); optional `factor` (0.1..1, default 0.72) sets how
+   *  much darker. For the paint step / a catalog palette. */
+  areolaColor(skin: string, factor?: number): string;
   neck(rig: Rig, opts?: object): Node;
   arms(rig: Rig, opts?: object): Node;
   hands(rig: Rig, opts?: object): Node;
@@ -2103,6 +3915,10 @@ export interface FigureNamespace {
    *  legs (2-bone IK) so every foot lands. Plane = `z`, else top of `surface`,
    *  else the lowest foot. */
   ground(rig: Rig, opts?: object): Rig;
+  /** Hair as a labelled cap/mane over the skull. `ears: 'cover'` (default) lets
+   *  the hair flow over the ears; `ears: 'behind'` tucks it behind them (carves
+   *  an ear-clearance pocket so the skin ears protrude in front). See
+   *  public/ai/figure.md for `style`/`hairline`/`length`/`volume`/`part`/`texture`. */
   hair(rig: Rig, opts?: object): Node;
   weld(rig: Rig, parts: Node[], opts?: object): Node;
   /** Snap an accessory node to a rig joint by its bbox anchor (no offset math).
@@ -2129,20 +3945,47 @@ export interface FigureNamespace {
   /** Deterministic world-coordinate dump of the rig's joints, grip frames, and
    *  directions (rounded) plus a `.text` summary — use instead of hand-rolled
    *  JSON scratch probes when authoring a pose. */
-  poseProbe(rig: Rig): { height: number; headsTall: number; build: string; sex: string; joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame }; soles: { L: SoleFrame; R: SoleFrame }; dir: Record<string, Vec3>; text: string };
+  poseProbe(rig: Rig): { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame }; soles: { L: SoleFrame; R: SoleFrame }; dir: Record<string, Vec3>; text: string };
   /** The face's detail-region spheres (head + finer mouth) for
    *  `build({ detail: F.faceDetail(rig) })`. */
   faceDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
   /** Detail spheres over both hands — required for sculpted fingers:
    *  `build({ detail: [...F.faceDetail(rig), ...F.handDetail(rig)] })`. */
   handDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
+  /** Detail spheres over both feet — required for sculpted toes
+   *  (`F.feet(rig, { toes: true })`):
+   *  `build({ detail: [...F.faceDetail(rig), ...F.footDetail(rig)] })`. */
+  footDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
   face: {
+    /** Eyeballs (self-labelled `eyes`/`iris`/`pupil` for the default `'iris'`
+     *  style, or plain spheres for `'solid'`). Pass `lids` to add two wrapping
+     *  skin eyelids (paintable `'lids'` region): either `{ upper, lower }` (each
+     *  0..1 — closed when their sum ≥ 1) or a named preset (`'upper' | 'hooded' |
+     *  'half' | 'closed' | 'almond' | 'tapered'`; default `'none'`). See
+     *  public/ai/figure.md. */
     eyes(rig: Rig, opts?: object): Node;
+    /** A sculpted, projecting nose: a recessed bridge root, a defined ridge, a
+     *  tip bulb, alae, and two carved nostril cavities (columella between them).
+     *  `type` picks a preset (`'straight' | 'button' | 'snub' | 'roman' |
+     *  'aquiline' | 'broad' | 'pointed' | 'bulbous'`); the explicit axes OVERRIDE
+     *  the preset: `projection` (face→tip stand-off), `length`, `width`,
+     *  `bridge`, `bridgeWidth`, `profile` (−1 scoop … +1 roman hump; `bump` is
+     *  the positive alias), `tipSize`, `tipShape` (`'round'|'pointed'|'bulbous'|
+     *  'cleft'`), `flare`, `upturn` (−1..1 snub↔hooked), `nostrilSize`,
+     *  `nostrils` (default true), `tipRadius`. Pair with `faceDetail` so the
+     *  nostril rims mesh crisply. See public/ai/figure.md. */
     nose(rig: Rig, opts?: object): Node;
     mouth(rig: Rig, opts?: object): Node;
     /** Pre-labelled paintable mouth parts (teeth band, lip ring / ridge)
      *  to hard-union at the figure's top level. */
     mouthAccents(rig: Rig, opts?: object): Node;
+    /** Ears welded at `rig.face.earL/earR` — a thin ear-shaped plate with a
+     *  shallow concha scoop. `type`: `'detailed'` (default — cup + tragus +
+     *  antitragus), `'round'` (clean cup, no inner detail), or `'pointed'`
+     *  (elf/fantasy — a triangular pinna sloping to a rounded point). `size`
+     *  scales them; `tilt` (deg, −45..45, +back) angles the top toward the nape
+     *  (sweeps the elf point back). Pair with `F.hair(rig, { ears: 'behind' })`
+     *  to expose them in front of the hair. */
     ears(rig: Rig, opts?: object): Node;
     brows(rig: Rig, opts?: object): Node;
     assemble(head: Node, rig: Rig, opts?: object): Node;
@@ -2152,6 +3995,23 @@ export interface FigureNamespace {
     top(rig: Rig, opts?: object): Node;
     shoes(rig: Rig, opts?: object): Node;
     boots(rig: Rig, opts?: object): Node;
+    /** A front/back-panel garment — apron, bib, tabard, loincloth, cape.
+     *  `fit:'drape'` (default) hangs a flat cloth SHEET from the body's measured
+     *  forward-most point — it clears the body/under-garments (can't pass
+     *  through) and hangs straight down, separating from the receding legs like
+     *  real cloth. `fit:'hug'` is the skin-tight conforming shell.
+     *  `opts`: `{ side:'front'|'back'|'both', top, bottom, wrap, thickness, over,
+     *  fit, label }`. `top`/`bottom` accept a named landmark ('neck'/'chest'/
+     *  'waist', 'waist'/'hip'/'thigh'/'knee'/'shin'/'ankle') or a raw world Z.
+     *  `over` (a node or array) are under-garments to drape over; pass them so the
+     *  sheet clears them. `thickness` is the sheet thickness — keep it above your
+     *  slicer's min wall for printability. */
+    panel(rig: Rig, opts?: object): Node;
+    /** Draping chef's bib apron preset (narrow bib → wide skirt to the shin, with
+     *  a neck halter + waist ties; label 'apron'). `opts`: `{ top, bottom, wrap,
+     *  thickness, over, ties, label }` — pass `over:[jacket,pants]` so it clears
+     *  the under-garments; `ties:false` drops the waist ties. */
+    apron(rig: Rig, opts?: object): Node;
   };
 }
 
@@ -2299,7 +4159,7 @@ function round3(v: Vec3, p = 2): Vec3 {
  *  multi-line summary; `throw new Error(F.poseProbe(rig).text)` (or
  *  `console.log`) surfaces every joint + grip without forgetting one. */
 function poseProbe(rig: Rig): {
-  height: number; headsTall: number; build: string; sex: string;
+  height: number; headsTall: number; build: string; sex: string; age: number; weight: number;
   joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame };
   soles: { L: SoleFrame; R: SoleFrame }; dir: Record<string, Vec3>; text: string;
 } {
@@ -2320,7 +4180,7 @@ function poseProbe(rig: Rig): {
   const soles = { L: soleR(rig.sole.L), R: soleR(rig.sole.R) };
   const o = rig.opts;
   const lines: string[] = [
-    `figure poseProbe — height ${o.height}, headsTall ${o.headsTall}, build ${o.build}, sex ${o.sex}`,
+    `figure poseProbe — height ${o.height}, headsTall ${o.headsTall}, build ${o.build}, sex ${o.sex}, age ${o.age}, weight ${o.weight}`,
     'joints:',
     ...Object.keys(joints).map(k => `  ${k}: [${joints[k].join(', ')}]`),
     'grips:',
@@ -2330,7 +4190,7 @@ function poseProbe(rig: Rig): {
     `  L.point [${soles.L.point.join(', ')}]  heading [${soles.L.heading.join(', ')}]  groundZ ${soles.L.groundZ}`,
     `  R.point [${soles.R.point.join(', ')}]  heading [${soles.R.heading.join(', ')}]  groundZ ${soles.R.groundZ}`,
   ];
-  return { height: o.height, headsTall: o.headsTall, build: o.build, sex: o.sex, joints, grips, soles, dir, text: lines.join('\n') };
+  return { height: o.height, headsTall: o.headsTall, build: o.build, sex: o.sex, age: o.age, weight: o.weight, joints, grips, soles, dir, text: lines.join('\n') };
 }
 
 function assertRig(rig: unknown, name: string): Rig {
@@ -2345,12 +4205,14 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
   return {
     rig: (opts) => buildRig(opts),
     skin: (name) => figureSkin(name),
-    torso: (rig) => buildTorso(sdf, assertRig(rig, 'torso(rig)')),
+    torso: (rig, opts) => buildTorso(sdf, assertRig(rig, 'torso(rig)'), opts),
+    nipples: (rig, opts) => buildNipples(sdf, assertRig(rig, 'nipples(rig)'), opts),
+    areolaColor: (skin, factor) => areolaColor(skin, factor),
     neck: (rig) => buildNeck(sdf, assertRig(rig, 'neck(rig)')),
     arms: (rig) => buildArms(sdf, assertRig(rig, 'arms(rig)')),
     hands: (rig, opts) => buildHands(sdf, assertRig(rig, 'hands(rig)'), opts),
     legs: (rig) => buildLegs(sdf, assertRig(rig, 'legs(rig)')),
-    feet: (rig) => buildFeet(sdf, assertRig(rig, 'feet(rig)')),
+    feet: (rig, opts) => buildFeet(sdf, assertRig(rig, 'feet(rig)'), opts),
     head: (rig, opts) => buildHead(sdf, assertRig(rig, 'head(rig)'), opts),
     base: (rig, opts) => buildBase(sdf, assertRig(rig, 'base(rig)'), opts),
     ground: (rig, opts) => groundRig(assertRig(rig, 'ground(rig)'), opts),
@@ -2364,6 +4226,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     poseProbe: (rig) => poseProbe(assertRig(rig, 'poseProbe(rig)')),
     faceDetail: (rig, opts) => faceDetail(assertRig(rig, 'faceDetail(rig)'), opts),
     handDetail: (rig, opts) => handDetail(assertRig(rig, 'handDetail(rig)'), opts),
+    footDetail: (rig, opts) => footDetail(assertRig(rig, 'footDetail(rig)'), opts),
     face: {
       eyes: (rig, opts) => buildEyes(sdf, assertRig(rig, 'face.eyes(rig)'), opts),
       nose: (rig, opts) => buildNose(sdf, assertRig(rig, 'face.nose(rig)'), opts),
@@ -2378,9 +4241,11 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
       top: (rig, opts) => buildTop(sdf, assertRig(rig, 'clothing.top(rig)'), opts),
       shoes: (rig, opts) => buildShoes(sdf, assertRig(rig, 'clothing.shoes(rig)'), opts),
       boots: (rig, opts) => buildBoots(sdf, assertRig(rig, 'clothing.boots(rig)'), opts),
+      panel: (rig, opts) => buildPanel(sdf, assertRig(rig, 'clothing.panel(rig)'), opts),
+      apron: (rig, opts) => buildApron(sdf, assertRig(rig, 'clothing.apron(rig)'), opts),
     },
   };
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildMouthPart, buildMouthAccents, buildEyes, faceDetail, buildPants, buildShoes, buildBoots, buildBase, buildFeet, standOn, groundRig, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };

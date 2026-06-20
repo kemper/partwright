@@ -18,6 +18,7 @@ import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
 import { RENDER_VIEW_MODES, EDGE_MODES } from '../renderer/multiview';
 import { getRenderBudget } from './settings';
+import { assetPath } from '../deployment';
 import { applyLiteralPatch, applyPatches } from './patch';
 
 export interface ToolDefinition {
@@ -846,12 +847,12 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'listParts',
-    description: 'List the parts in the active session: [{id, name, order, isCurrent}]. A session can hold multiple parts — independent objects, each with its own code and version history. The current part is what runCode / runAndSave / paint / export act on.',
+    description: 'List the parts in the active session: [{id, name, order, isCurrent}]. A session can hold multiple parts — independent objects, each with its own code and version history. The current part is the default target for runCode / runAndSave / paint / export, but those tools also take an optional `part` target (name, id, or index) so you can act on any part directly without switching focus first.',
     input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'getCurrentPart',
-    description: 'Return the active part {id, name, order}, or null when no session is open.',
+    description: "Return the active part {id, name, order}, or null when no session is open. You rarely need this: changePart returns the part it switched to, listParts marks the current one (isCurrent), and every part-scoped tool takes a `part` target — so prefer addressing parts by name/index over reading the current selection (which the user can change while you work).",
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -866,36 +867,37 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'changePart',
-    description: "Switch the active part. Pass the part id from listParts(). Loads that part's latest version into the editor/viewport; all later code, paint, and version operations act on it.",
+    description: "Switch the active part — i.e. change what the USER sees in the editor/viewport. Address it by name, id (from listParts), or 0-based index. Loads that part's latest version. You usually do NOT need this just to work on a different part: every part-scoped tool (getCode, runCode, runAndSave, paint*, getGeometryData, …) takes an optional `part` target that addresses a part directly. Use changePart only when you want to move the user's focus, or to reset the editor to a part's latest saved version.",
     input_schema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'Part id from listParts().' },
+        part: { description: 'The part to switch to — its name, id (from listParts), or 0-based index.' },
+        id: { type: 'string', description: 'Deprecated alias for `part` — a part id from listParts().' },
       },
-      required: ['id'],
     },
   },
   {
     name: 'renamePart',
-    description: 'Rename a part. Pass its id (from listParts) and the new name.',
+    description: 'Rename a part. Address it by name, id (from listParts), or 0-based index, and give the new name.',
     input_schema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'Part id from listParts().' },
+        part: { description: 'The part to rename — its name, id (from listParts), or 0-based index.' },
+        id: { type: 'string', description: 'Deprecated alias for `part` — a part id from listParts().' },
         name: { type: 'string', description: 'New part name.' },
       },
-      required: ['id', 'name'],
+      required: ['name'],
     },
   },
   {
     name: 'deletePart',
-    description: "Delete a part and all its versions. Refuses to delete a session's last remaining part. If the active part is deleted, an adjacent part becomes active.",
+    description: "Delete a part and all its versions. Refuses to delete a session's last remaining part. If the active part is deleted, an adjacent part becomes active. Address it by name, id (from listParts), or 0-based index.",
     input_schema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'Part id from listParts().' },
+        part: { description: 'The part to delete — its name, id (from listParts), or 0-based index.' },
+        id: { type: 'string', description: 'Deprecated alias for `part` — a part id from listParts().' },
       },
-      required: ['id'],
     },
   },
   {
@@ -1341,6 +1343,44 @@ Plus preserveColor (default true — bake path only; on the code path paint re-r
   },
 ];
 
+/** Tools whose effect is scoped to a single part — they read or mutate the
+ *  active part's code, geometry, paint, or version history. Each gains an
+ *  optional `part` target (injected below) so the model can address a part
+ *  directly instead of leaning on the shared "current part" pointer, which the
+ *  human can move from the part menu mid-turn. When `part` is supplied,
+ *  executeTool switches focus to it *before* running the op (see
+ *  `focusTargetPart`), so the op always acts on the part the model named — not
+ *  on whatever the user last clicked. The part-management tools (listParts /
+ *  changePart / createPart / …) are deliberately excluded: they already take an
+ *  explicit target or operate at the session level. */
+export const PART_TARGETABLE_TOOLS = new Set<string>([
+  'getActiveLanguage', 'setActiveLanguage',
+  'getCode', 'setCode', 'runCode', 'runAndSave', 'runAndAssert', 'runAndExplain',
+  'getParams', 'setParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
+  'listVersions', 'loadVersion', 'saveVersion', 'forkVersion', 'copyColorsFromVersion',
+  'modifyAndTest', 'query', 'findFaces', 'listComponents', 'listLabels', 'getModelColors',
+  'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
+  'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox',
+  'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
+  'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
+  'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
+  'renderView', 'renderViews',
+  'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
+  'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel',
+]);
+
+// The shared `part` target schema, injected into every targetable tool so the
+// description stays in one place. Typeless on purpose — it accepts a name/id
+// string OR a 0-based index number (resolvePartTarget in main.ts handles both).
+const PART_TARGET_PROP = {
+  description: 'Optional. The part to act on — addressed by its name, its id (from listParts), or its 0-based index. Defaults to the current part. Pass this to target a specific part directly instead of relying on the current selection; it also makes a separate changePart call unnecessary. Switching focus to the part is visible to the user.',
+};
+for (const tool of ALL_TOOLS) {
+  if (PART_TARGETABLE_TOOLS.has(tool.name) && !('part' in tool.input_schema.properties)) {
+    tool.input_schema.properties.part = PART_TARGET_PROP;
+  }
+}
+
 const ALWAYS_AVAILABLE = new Set([
   'getActiveLanguage',
   'setActiveLanguage',
@@ -1484,6 +1524,33 @@ function getApi(): PartwrightAPI {
   return w.partwright;
 }
 
+/** Switch focus to the part a part-scoped tool named via its `part` target, so
+ *  the op runs against that part rather than whatever the user last selected in
+ *  the part menu. `target` is a part name, id, or 0-based index (mirrors
+ *  resolvePartTarget on the API side). No-op when the target is already current
+ *  — which avoids reloading the part and clobbering any in-progress editor draft
+ *  on it. Returns an error string on a bad target, or null on success. */
+async function focusTargetPart(api: PartwrightAPI, target: string | number): Promise<string | null> {
+  const parts = api.listParts() as Array<{ id: string; name: string; order: number; isCurrent: boolean }> | undefined;
+  if (!Array.isArray(parts) || parts.length === 0) {
+    return `Cannot target part ${JSON.stringify(target)}: no active session with parts. Open a session first.`;
+  }
+  let match: { id: string; isCurrent: boolean } | undefined;
+  if (typeof target === 'number') {
+    if (!Number.isInteger(target) || target < 0) return `Cannot target part: index must be a non-negative integer (got ${JSON.stringify(target)}).`;
+    match = [...parts].sort((a, b) => a.order - b.order)[target];
+  } else {
+    match = parts.find(p => p.id === target) ?? parts.find(p => p.name === target);
+  }
+  if (!match) return `Cannot target part ${JSON.stringify(target)}: no matching part (by name, id, or index). Call listParts() to see what's available.`;
+  if (match.isCurrent) return null; // already focused — don't reload and clobber an in-progress edit
+  const switched = await api.changePart(match.id) as { error?: string } | undefined;
+  if (switched && typeof switched === 'object' && 'error' in switched && switched.error) {
+    return `Cannot target part ${JSON.stringify(target)}: ${switched.error}`;
+  }
+  return null;
+}
+
 /** Dispatches a tool call to window.partwright and stringifies the result.
  *  Errors are caught and returned with isError: true so the loop can feed
  *  them back to the model for self-correction. Tools that return an
@@ -1509,6 +1576,18 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       }
     }
     const api = getApi();
+    // Part addressing: a part-scoped tool may name a `part` target (name, id, or
+    // 0-based index). Switch focus to it before running so the op acts on the
+    // addressed part — not whatever the user last clicked. Strip the key first so
+    // the per-tool APIs (which reject unknown keys) never see it.
+    if (PART_TARGETABLE_TOOLS.has(name)) {
+      const target = input.part as string | number | undefined;
+      delete input.part;
+      if (target != null) {
+        const focusErr = await focusTargetPart(api, target);
+        if (focusErr) return { content: focusErr, isError: true };
+      }
+    }
     // Tools that ship images back to the model bypass the generic JSON
     // dispatch — they need the data-URL → multimodal-image wrapping.
     if (name === 'renderView') return executeRenderView(api, input);
@@ -1584,7 +1663,7 @@ async function readSubdoc(name: string): Promise<{ content: string; isError: boo
     return { content: `Unknown subdoc "${name}". Valid names: ${Array.from(SUBDOC_NAMES).join(', ')}.`, isError: true };
   }
   try {
-    const res = await fetch(`/ai/${name}.md`, { cache: 'force-cache' });
+    const res = await fetch(assetPath(`/ai/${name}.md`), { cache: 'force-cache' });
     if (!res.ok) return { content: `Failed to fetch /ai/${name}.md: ${res.status} ${res.statusText}`, isError: true };
     const text = await res.text();
     return { content: text, isError: false };
@@ -1902,11 +1981,11 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'createPart':
       return api.createPart(input.name as string | undefined);
     case 'changePart':
-      return api.changePart(input.id as string);
+      return api.changePart((input.part ?? input.id) as string | number);
     case 'renamePart':
-      return api.renamePart(input.id as string, input.name as string);
+      return api.renamePart((input.part ?? input.id) as string | number, input.name as string);
     case 'deletePart':
-      return api.deletePart(input.id as string);
+      return api.deletePart((input.part ?? input.id) as string | number);
     case 'assertPaint':
       return api.assertPaint(input);
     case 'paintInCylinder':

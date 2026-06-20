@@ -149,6 +149,12 @@ export interface AppConfig {
      *  Caps how much IndexedDB space one save can take — a textured mesh costs
      *  roughly 18 bytes per triangle. */
     surfaceTexturePersistMaxTriangles: number;
+    /** Fast-preview coarsening factor for SDF models (figures). Before the
+     *  full-quality render, the Worker meshes a throwaway coarse pass at this
+     *  multiple of the model's march `edgeLength` (and skips detail regions) so
+     *  the viewport shows a rough shape in ~1-2s instead of waiting 10-50s.
+     *  Higher = faster/rougher preview; 1 (or below) disables the preview pass. */
+    sdfPreviewScale: number;
   };
   import: {
     /** Vertex-weld tolerance for STL imports (world units). */
@@ -244,7 +250,10 @@ export interface AppConfig {
   geometry: {
     /** Triangle count above which the live model warns it may be too heavy for
      *  the catalog budget / slow to slice. Mirrors the headless model:preview
-     *  tri-budget warning so the in-app AI sees the same signal. */
+     *  tri-budget warning so the in-app AI sees the same signal. Advisory only —
+     *  nothing blocks a denser model; raised to 500k because catalog figure
+     *  entries store re-runnable code (not a baked mesh), so a high triangle
+     *  count costs per-open render + slice time, not catalog file size. */
     triCountWarnBudget: number;
     /** Shortest mesh edge (world units) below which a fine-detail warning fires
      *  — features this small are dropped by FDM slicers (sub-extrusion-width).
@@ -310,6 +319,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
     surfaceTexturePersistMaxTriangles: 1_000_000,
+    sdfPreviewScale: 2.5,
   },
   import: {
     stlWeldTolerance: 1e-5,
@@ -348,7 +358,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     editorFontSizeMax: 28,
   },
   geometry: {
-    triCountWarnBudget: 200_000,
+    triCountWarnBudget: 500_000,
     minEdgeLengthWarn: 0.4,
     aspectRatioWarn: 12,
   },

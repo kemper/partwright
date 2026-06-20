@@ -660,6 +660,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={20_000_000} integer
           onChange={v => set('renderer', 'surfaceTexturePersistMaxTriangles', v)}
         />
+        <Field
+          label="SDF fast-preview coarsening"
+          unit="×"
+          hint="Higher = faster but rougher preview. Set to 1 to disable the preview pass."
+          tooltip="SDF models (figures) render in two passes: a fast, coarse preview shown immediately, then the full-quality mesh that replaces it. This is how much coarser the preview march is than the model's real edgeLength — at 2.5× a figure that takes 20-40s roughs out in ~1-2s. The preview also skips fine detail regions (faces, hands). Set to 1 or below to turn the preview off and always render at full quality directly."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.sdfPreviewScale}
+          value={c.renderer.sdfPreviewScale}
+          min={1} max={6} step={0.5}
+          onChange={v => set('renderer', 'sdfPreviewScale', v)}
+        />
       </Section>
 
       <Section title="Import">

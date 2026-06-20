@@ -53,7 +53,15 @@ if (typeof window === 'undefined') {
       window.sessionStorage.setItem("coiReloadedByCOI", "true");
       window.location.reload();
     } else if (n.serviceWorker) {
-      n.serviceWorker.register(new URL("coi-serviceworker.js", import.meta.url).href).then(
+      // Register this very file as the service worker. Must NOT use `import.meta`
+      // here: this script is loaded as a CLASSIC <script src> (not type=module),
+      // so `import.meta` is a *parse-time* SyntaxError that discards the whole
+      // file — silently breaking COI registration on every load. `currentScript`
+      // is reliable for a synchronous classic script and already carries the
+      // build's base prefix (e.g. /v1/coi-serviceworker.js), so it stays
+      // base-correct for versioned (/vN/) deploys. Mirrors route-init.js.
+      var swUrl = (document.currentScript && document.currentScript.src) || "coi-serviceworker.js";
+      n.serviceWorker.register(swUrl).then(
         (registration) => {
           registration.addEventListener("updatefound", () => {
             const newSW = registration.installing;

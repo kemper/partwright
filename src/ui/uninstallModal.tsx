@@ -6,6 +6,7 @@
 import { signal, type Signal } from '@preact/signals';
 import { useEffect } from 'preact/hooks';
 import { mountPreactModal } from './preact/mount';
+import { appPath } from '../deployment';
 import { BUTTON_DANGER } from './styleConstants';
 import {
   getStoreCounts,
@@ -115,7 +116,7 @@ function UninstallFooter(props: {
     try { await wipeData(selection.value); }
     catch (err) { console.error('Uninstall failed:', err); }
     // Reload so all in-memory state is rebuilt from the now-empty stores.
-    window.location.assign('/');
+    window.location.assign(appPath('/'));
   }
 
   return (
