@@ -358,6 +358,7 @@ await partwright.diffVersions({index} | {id}, {index} | {id}) // Compare two ver
 await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
 await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
 await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); external/console agents hand this to the user — in-app users click the toolbar Share (↗) button instead
+partwright.publish(platform?)            // Assisted publish to Printables/MakerWorld/Thingiverse/Thangs: no public upload API, so it prepares the file + cover + clipboard details and opens the upload page. platform?: 'printables'|'makerworld'|'thingiverse'|'thangs' (or {error}). See /ai/file-io.md
 partwright.getGalleryUrl()               // -> URL for gallery view (local browser only)
 partwright.getSessionUrl()               // -> URL for this session (local browser only)
 await partwright.listSessions()          // -> [{id, name, updated}]
