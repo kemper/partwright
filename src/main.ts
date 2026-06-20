@@ -36,7 +36,7 @@ import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost,
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
-import { generateId, getLatestVersion } from './storage/db';
+import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
@@ -802,15 +802,23 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
  *  we cap the wait and let the save proceed without it rather than hang forever
  *  (which silently blocked saving a painted version). */
 
-function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
+function captureThumbnail(
+  mesh: MeshData | null = currentMeshData,
+  opts: { rawColors?: boolean } = {},
+): Promise<Blob | null> {
   if (!mesh) return Promise.resolve(null);
   let canvas: HTMLCanvasElement;
   // Honour a session-pinned thumbnail camera (partwright.setThumbnailCamera);
   // fall back to the default iso 3/4 view. The pin keeps the perspective ortho
   // flag of the iso view so a custom angle still reads as a 3/4 tile.
   const pin = getState().session?.thumbCamera;
+  // `rawColors` renders the mesh's OWN triColors verbatim, bypassing the global
+  // paint/region state — used by the offscreen import thumbnail backfill, whose
+  // colours are pre-baked per version and must not pick up the live (latest)
+  // version's regions.
+  const colored = opts.rawColors ? mesh : applyTriColorsIfVisible(mesh);
   try {
-    canvas = renderSingleViewCanvas(applyTriColorsIfVisible(mesh), {
+    canvas = renderSingleViewCanvas(colored, {
       elevation: pin ? pin.elevation : STANDARD_VIEWS.iso.elevation,
       azimuth: pin ? pin.azimuth : STANDARD_VIEWS.iso.azimuth,
       ortho: STANDARD_VIEWS.iso.ortho,
@@ -2254,27 +2262,117 @@ async function main() {
   // Import an already-parsed session payload. Used by both file import and the
   // window.partwright.importSessionData() API so AI agents can bypass the file picker.
   async function importSessionPayload(data: ExportedSession): Promise<{ sessionId: string }> {
-    // Seed the active-imports register with each version's own meshes before
-    // running its code: `Manifold.ofMesh(api.imports[0])` only reproduces this
-    // version's geometry (and thus a correct thumbnail) if the register holds
-    // these meshes — otherwise the run captures a stale, previously-loaded part.
-    // importSession resets the register to the latest version's imports when it
-    // finishes, so no manual restore is needed here.
-    const session = await importSession(data, async (code, importedMeshes) => {
-      setActiveImports(importedMeshes ?? []);
-      // Skip surface texture computation during thumbnail generation — the
-      // heavy surface Worker run would hang the import for complex models.
-      // The textures will apply on first interactive load instead.
-      await runCodeSync(code, { skipSurface: true });
-      return captureThumbnail();
-    });
+    // Import the session STRUCTURE first, without regenerating any thumbnails.
+    // Regenerating a thumbnail runs that version's code through WASM (seconds
+    // apiece for a complex figure), and doing it inside importSession deferred
+    // the notify()/selection + editor swap until the whole loop finished. The
+    // user saw the new geometry render into the viewport while the OLD part
+    // stayed selected and the OLD code lingered in the editor for seconds. So we
+    // now create + select the session and load its latest version immediately,
+    // then backfill the missing thumbnails offscreen in the background. Embedded
+    // thumbnails (when the export carried them) are still restored by
+    // importSession; only versions exported without one need the backfill.
+    const session = await importSession(data);
     const version = await openSession(session.id);
-    // Skip surface texture computation during catalog import — the surface
-    // Worker (voronoi/knurl/woven) can take 30–120s on complex catalog models
-    // and blocks the entire import. Textures apply on the first user-triggered
-    // run (edit code, or click Re-apply if the pill appears).
-    if (version) await loadVersionIntoEditor(version, { skipSurface: true });
+    if (version) {
+      // Skip surface texture computation during import — the surface Worker
+      // (voronoi/knurl/woven) can take 30–120s on complex models and would block
+      // the load. Textures apply on the first user-triggered run.
+      await loadVersionIntoEditor(version, { skipSurface: true });
+      // The latest version is now rendered live with full colour (model labels
+      // AND user paint), so snapshot its thumbnail straight from that state —
+      // the most accurate tile for the version the user is actually looking at,
+      // and it lets the backfill below skip re-running this one.
+      if (!version.thumbnail) {
+        const thumb = await captureThumbnail();
+        if (thumb) await updateVersionThumbnail(version.id, thumb);
+      }
+    }
+    // Fire-and-forget: render a snapshot for each remaining version that
+    // imported without a thumbnail. Runs AFTER the user is already on the new
+    // part, fully offscreen, so it never disturbs the live viewport or editor.
+    void backfillImportedThumbnails(session.id);
     return { sessionId: session.id };
+  }
+
+  // Bake a run's model-declared label colours (api.label(shape, name, {color}))
+  // into a standalone coloured MeshData for an OFFSCREEN thumbnail, touching no
+  // global paint/region state. Reuses composeTriColors — the same stamping the
+  // live model-colour underlay uses — so an imported figure's gallery thumbnail
+  // shows its colours. User paint regions and api.paint.* ops are NOT resolved
+  // here (that needs the full descriptor pipeline against live state); a
+  // paint-only model's backfilled thumbnail therefore shades by normal, which
+  // is acceptable for the historical-version gallery (the live latest version,
+  // rendered through the normal pipeline, always shows full colour).
+  function colorMeshFromLabels(result: MeshResult): MeshData | null {
+    const mesh = result.mesh;
+    if (!mesh) return null;
+    const { labelColors, labelMap } = result;
+    if (!labelColors || !labelMap || labelColors.size === 0) return mesh;
+    const layer: ColorRegion[] = [];
+    let order = 0;
+    for (const [name, color] of labelColors) {
+      const tris = labelMap.get(name);
+      if (!tris || tris.size === 0) continue;
+      layer.push({
+        id: order, name, color, source: 'model',
+        descriptor: { kind: 'triangles', ids: [...tris] },
+        order: order++, visible: true, triangles: tris,
+      });
+    }
+    if (layer.length === 0) return mesh;
+    const triColors = composeTriColors(mesh.numTri, [layer], { baseColors: mesh.triColors ?? null });
+    return triColors ? { ...mesh, triColors } : mesh;
+  }
+
+  // Render + persist a thumbnail for every version of a freshly imported session
+  // that arrived without one (default exports omit thumbnails). Runs after the
+  // session is selected and its latest version loaded, so the new part appears
+  // immediately rather than waiting on these WASM runs. Each version executes
+  // OFFSCREEN via executeCodeAsync (no updateMesh → no viewport flicker) with its
+  // own imports passed explicitly, so the live active-imports register is never
+  // touched. Bails as soon as the user navigates away from the imported session.
+  async function backfillImportedThumbnails(sessionId: string): Promise<void> {
+    let wrote = false;
+    try {
+      const parts = await listParts(sessionId);
+      for (const part of parts) {
+        const versions = await listVersions(part.id);
+        for (const v of versions) {
+          // Stop the moment the user leaves the imported session — don't tie up
+          // the engine Worker rendering snapshots nobody is waiting on.
+          if (getState().session?.id !== sessionId) return;
+          if (v.thumbnail) continue;
+          let result: MeshResult;
+          try {
+            result = await executeCodeAsync(
+              v.code,
+              effectiveVersionLanguage(v, getState().session),
+              v.paramValues,
+              undefined,
+              (v.importedMeshes ?? []) as ImportedMesh[],
+            );
+          } catch {
+            // Worker restarted (a live run cancelled it) or an engine fault —
+            // skip this one; the gallery keeps its placeholder.
+            continue;
+          }
+          if (!result.mesh) continue;
+          const thumbnail = await captureThumbnail(colorMeshFromLabels(result), { rawColors: true });
+          if (!thumbnail) continue;
+          await updateVersionThumbnail(v.id, thumbnail);
+          wrote = true;
+        }
+      }
+    } catch {
+      // Best-effort — keep whatever thumbnails we managed to persist.
+    }
+    // Refresh the gallery (if open) so new thumbnails replace placeholders
+    // without a manual reopen. Guarded so we don't redraw a session the user has
+    // since navigated away from.
+    if (wrote && getState().session?.id === sessionId) {
+      window.dispatchEvent(new Event('session-changed'));
+    }
   }
 
   // Cancel an active voxel-paint session. Its live grid + per-triangle

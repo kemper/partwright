@@ -5,7 +5,7 @@ import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { openscadEngine } from './engines/openscad';
 import { replicadEngine } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
-import { getActiveImports } from '../import/importedMesh';
+import { getActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { getCompanionFiles } from '../import/companionFiles';
 import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
@@ -549,6 +549,7 @@ export async function executeCodeAsync(
   lang?: Language,
   paramOverrides?: Record<string, unknown>,
   onPreview?: (result: MeshResult) => void,
+  explicitImports?: ImportedMesh[],
 ): Promise<MeshResult> {
   const l = pickLang(lang);
 
@@ -559,7 +560,10 @@ export async function executeCodeAsync(
   const callId = `exec-${++callIdCounter}`;
 
   // Include the currently-active imports so user code can access api.imports.
-  const imports = getActiveImports().map(m => ({
+  // A caller may pass an explicit set (offscreen thumbnail backfill) to run a
+  // specific version's code without disturbing — or depending on — the live
+  // active-imports register, which another tab/run may be mutating.
+  const imports = (explicitImports ?? getActiveImports()).map(m => ({
     id:             m.id,
     filename:       m.filename,
     format:         m.format,
