@@ -10109,7 +10109,7 @@ async function main() {
     },
 
     /** Enable or disable studio lighting (image-based reflections + a mild
-     *  contact shadow). Off by default. Pass a boolean to set, omit to toggle. */
+     *  contact shadow). On by default. Pass a boolean to set, omit to toggle. */
     setStudioLighting(on?: boolean): boolean {
       assertBoolean(on, 'setStudioLighting(on)', { optional: true });
       setStudioLighting(on ?? !isStudioLighting());
@@ -14717,7 +14717,7 @@ async function main() {
         // Viewport controls
         'setGridVisible':       { signature: 'setGridVisible(on?) -- Show/hide grid plane (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isGridVisible':        { signature: 'isGridVisible() -- Whether grid plane is visible', docs: '/ai.md#viewport-controls' },
-        'setStudioLighting':    { signature: 'setStudioLighting(on?) -- Toggle studio lighting: reflections + soft shadow, off by default (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
+        'setStudioLighting':    { signature: 'setStudioLighting(on?) -- Toggle studio lighting: reflections + soft shadow, on by default (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isStudioLighting':     { signature: 'isStudioLighting() -- Whether studio lighting is on', docs: '/ai.md#viewport-controls' },
         'setDimensionsVisible': { signature: 'setDimensionsVisible(on?) -- Show/hide bounding box dimensions (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'areDimensionsVisible': { signature: 'areDimensionsVisible() -- Whether dimensions overlay is visible', docs: '/ai.md#viewport-controls' },
@@ -16346,7 +16346,7 @@ async function main() {
 
     const reflect = (on: boolean) => {
       lightBtn.className = on ? activeClass : inactiveClass;
-      lightBtn.title = on ? 'Turn off studio lighting (reflections + soft shadow)' : 'Studio lighting: reflections + soft shadow (off by default)';
+      lightBtn.title = on ? 'Turn off studio lighting (reflections + soft shadow)' : 'Turn on studio lighting (reflections + soft shadow)';
     };
     reflect(isStudioLighting());
     onStudioLightingChange(reflect);

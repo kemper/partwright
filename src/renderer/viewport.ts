@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import type { MeshData } from '../geometry/types';
 import { createWireframeMaterial } from './materials';
-import { studioPresetFor, makeGradientTexture, createStudioMaterial, type StudioPreset } from './studioEnv';
+import { studioPresetFor, makeGradientTexture, createStudioMaterial, isSoftwareRenderer, type StudioPreset } from './studioEnv';
 import { initMeasureOverlay } from './measureOverlay';
 import { initOrientationGizmo, renderGizmo, updateGizmo, isGizmoAnimating } from './orientationGizmo';
 import { initDimensionLines, updateDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
@@ -106,21 +106,23 @@ const ndcForHit = new THREE.Vector2();
 let grid: THREE.GridHelper;
 
 // Studio-space rendering: a gradient backdrop + a floor place the model in a
-// space (instead of the old flat color void). By DEFAULT the model is evenly lit
-// and matte with no image-based reflections and no cast shadow — those read as a
-// distracting "spotlight". The optional "Light" toggle (off by default) turns on
-// RoomEnvironment image-based lighting + a mild contact shadow for users who want
-// the richer studio look. Driven by the light/dark theme (see studioEnv.ts).
+// space (instead of the old flat color void). The "Light" toggle adds (gentle)
+// RoomEnvironment image-based reflections + a mild contact shadow on top of the
+// matte base — ON by default, but toggleable from the viewport. Driven by the
+// light/dark theme (see studioEnv.ts).
 let studioPreset: StudioPreset = studioPresetFor('dark');
 let studioFloor: THREE.Mesh | null = null;
 let studioShadowCatcher: THREE.Mesh | null = null;
 let studioKeyLight: THREE.DirectionalLight | null = null;
 let lastFloorZ = 0;
-// The "Light" toggle: enhanced image-based lighting + mild contact shadow. Off
-// by default (the calm matte look); building the PMREM env only on opt-in keeps
-// startup fast and dodges the software-WebGL bake cost entirely.
-let studioLightingOn = false;
-let studioEnvBuilt = false;
+// The "Light" toggle: gentle image-based reflections + a mild contact shadow.
+// On by default. The PMREM env is cached (built once, reused across off→on
+// cycles) and skipped entirely on a software rasterizer (studioEnvAllowed),
+// where the bake would freeze startup — there the toggle controls just the
+// shadow and the model stays matte.
+let studioLightingOn = true;
+let studioEnvAllowed = true;
+let studioEnvTexture: THREE.Texture | null = null;
 const studioLightingListeners: Array<(on: boolean) => void> = [];
 
 /** Re-skin the studio scene (backdrop, floor, model material) for a theme —
@@ -133,7 +135,7 @@ function applyStudioTheme(theme: Theme): void {
   renderer.toneMappingExposure = studioPreset.exposure;
   if (studioFloor) (studioFloor.material as THREE.MeshStandardMaterial).color.set(studioPreset.floorColor);
   if (studioShadowCatcher) (studioShadowCatcher.material as THREE.ShadowMaterial).opacity = studioPreset.shadowStrength;
-  if (studioLightingOn && studioEnvBuilt) scene.environmentIntensity = studioPreset.envIntensity;
+  if (scene.environment) scene.environmentIntensity = studioPreset.envIntensity;
   // Recolor the live model material in place (it's only rebuilt on the next run).
   const solid = meshGroup?.children.find(c => c instanceof THREE.Mesh && c.name !== 'wireframe' && c.name !== 'clip-cap');
   if (solid instanceof THREE.Mesh) {
@@ -146,27 +148,27 @@ function applyStudioTheme(theme: Theme): void {
   }
 }
 
-/** Build (or rebuild) the RoomEnvironment IBL map and apply it. The PMREM bake
- *  is ~tens of ms on a GPU but seconds on a software rasterizer, so it only runs
- *  when the user opts into the "Light" toggle (never at startup). */
-function buildStudioEnvironment(): void {
-  const old = scene.environment;
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+/** Apply the cached RoomEnvironment IBL map (baking it once, lazily). The PMREM
+ *  bake is ~tens of ms on a GPU but seconds on a software rasterizer, so it's
+ *  gated on studioEnvAllowed. The texture is cached so off→on cycles just
+ *  reattach it (no rebake) — re-nulled only on context loss. */
+function applyStudioEnvironment(): void {
+  if (!studioEnvAllowed) return;
+  if (!studioEnvTexture) {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    studioEnvTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+  }
+  scene.environment = studioEnvTexture;
   scene.environmentIntensity = studioPreset.envIntensity;
-  pmrem.dispose();
-  if (old) old.dispose();
-  studioEnvBuilt = true;
 }
 
-/** Toggle the enhanced studio lighting (image-based reflections + mild contact
- *  shadow). Off by default. Exposed on the viewport "Light" button. */
-export function setStudioLighting(on: boolean): void {
-  if (on === studioLightingOn) return;
-  studioLightingOn = on;
-  if (on) {
-    if (!studioEnvBuilt) buildStudioEnvironment();
-    else scene.environmentIntensity = studioPreset.envIntensity;
+/** Apply the current studio-lighting state to the scene: env reflections (when
+ *  allowed) + the mild contact shadow, or neither. Shared by the toggle and the
+ *  initial setup. */
+function refreshStudioLighting(): void {
+  if (studioLightingOn) {
+    applyStudioEnvironment();
     renderer.shadowMap.enabled = true;
     if (studioKeyLight) studioKeyLight.castShadow = true;
     if (studioShadowCatcher) studioShadowCatcher.visible = true;
@@ -177,8 +179,16 @@ export function setStudioLighting(on: boolean): void {
     if (studioShadowCatcher) studioShadowCatcher.visible = false;
     renderer.shadowMap.enabled = false;
   }
-  studioLightingListeners.forEach(fn => fn(on));
   needsRender = true;
+}
+
+/** Toggle the studio lighting (image-based reflections + mild contact shadow).
+ *  On by default. Exposed on the viewport "Light" button. */
+export function setStudioLighting(on: boolean): void {
+  if (on === studioLightingOn) return;
+  studioLightingOn = on;
+  refreshStudioLighting();
+  studioLightingListeners.forEach(fn => fn(on));
 }
 
 export function isStudioLighting(): boolean { return studioLightingOn; }
@@ -235,6 +245,10 @@ export function initViewport(container: HTMLElement): {
   renderer.localClippingEnabled = true;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = studioPreset.exposure;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // Skip the costly PMREM env bake on a software rasterizer (CI / GPU-less) so
+  // it never freezes startup; the toggle there controls just the matte+shadow.
+  studioEnvAllowed = !isSoftwareRenderer(renderer.getContext());
 
   // WebGL context-loss recovery. preventDefault() on 'lost' is what lets the
   // browser restore the context; while lost we cancel the RAF loop so we don't
@@ -249,6 +263,10 @@ export function initViewport(container: HTMLElement): {
   canvas.addEventListener('webglcontextrestored', () => {
     contextLost = false;
     needsRender = true;
+    // The env map is a GPU texture lost with the context — drop the cache and
+    // reapply the current lighting state (rebuilds it if lighting is on).
+    studioEnvTexture = null;
+    refreshStudioLighting();
     onContextRestored?.();
     // Restart the render loop (it was cancelled on loss).
     animate();
@@ -329,8 +347,8 @@ export function initViewport(container: HTMLElement): {
   }, { capture: true, passive: false });
 
   // Lighting — ambient + key/fill directionals; intensities stay user-tunable
-  // via appConfig.renderer. The key (dir1) only casts a shadow when the "Light"
-  // toggle is on (castShadow flipped in setStudioLighting).
+  // via appConfig.renderer. The key (dir1) casts the contact shadow when the
+  // "Light" toggle is on (castShadow flipped in refreshStudioLighting).
   const ambient = new THREE.AmbientLight(0xffffff, getConfig().renderer.ambientLightIntensity);
   scene.add(ambient);
 
@@ -347,8 +365,8 @@ export function initViewport(container: HTMLElement): {
   scene.add(dir2);
 
   // Floor the model sits on, plus a transparent shadow-catcher above it so the
-  // contact shadow's darkness is tunable independent of the floor color. The
-  // catcher is hidden until the "Light" toggle turns on.
+  // contact shadow's darkness is tunable independent of the floor color. Its
+  // visibility follows the "Light" toggle (set in refreshStudioLighting).
   const floorMat = new THREE.MeshStandardMaterial({
     color: studioPreset.floorColor,
     roughness: 0.95,
@@ -385,6 +403,11 @@ export function initViewport(container: HTMLElement): {
 
   meshGroup = new THREE.Group();
   scene.add(meshGroup);
+
+  // Apply the initial studio-lighting state (on by default): env reflections
+  // (GPU only) + the mild contact shadow. Runs after meshGroup exists so the
+  // shadow framing has something to measure.
+  refreshStudioLighting();
 
   // Measure overlay group
   initMeasureOverlay(scene, camera, renderer);

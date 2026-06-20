@@ -101,3 +101,23 @@ Reworked accordingly:
   + help table + ai.md. New e2e `tests/studio-lighting.spec.ts` (off by default,
   toggles on/off). The env build/shadow framing was factored into
   `frameModelShadow()` so the toggle can size the shadow to the current model.
+
+### Follow-up: Light on-by-default + less bright + toggle re-enable bug
+
+More feedback: a toggle bug ("turned on, then off, then stopped working") and a
+preference shift — keep the Light feature but **on by default and less bright**,
+keeping the button.
+
+- **Toggle bug fix:** off→on stopped restoring reflections because the off path
+  nulled `scene.environment` but kept a "built" flag, so re-on skipped
+  re-applying it. Replaced the flag with a **cached env texture** (`studioEnvTexture`)
+  that off→on simply re-attaches; the on/off paths are unified in
+  `refreshStudioLighting()`. The e2e now exercises a full off→on→off→on cycle.
+- **On by default + less bright:** `studioLightingOn = true`; envIntensity
+  lowered (dark 0.7→0.32, light 1.0→0.45) and exposure normalized to 1.0 so the
+  reflections read as gentle fill, not a washed-out spotlight.
+- **Startup/CI safety with on-by-default:** re-introduced the software-rasterizer
+  gate (`studioEnvAllowed` via `isSoftwareRenderer`). On a GPU the env bakes at
+  init (~tens of ms); on software (CI/sandbox/GPU-less) it's skipped (matte +
+  shadow only), so `window.partwright` readiness stays ~3s and the env map is
+  rebuilt on context-restore only when lighting is on.
