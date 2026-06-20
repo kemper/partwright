@@ -936,6 +936,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'surfacePreviewDebounceMs', v)}
         />
         <Field
+          label="Character preview debounce"
+          unit="ms"
+          tooltip="Debounce delay for the Character Creator's live figure preview. An SDF figure rebuild is heavy, so this is longer than the surface debounce — it coalesces rapid slider edits into a single rebuild once you settle. Lower for snappier preview; raise if rebuilds stack up."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.characterPreviewDebounceMs}
+          value={c.ui.characterPreviewDebounceMs}
+          min={0} max={3_000} integer
+          onChange={v => set('ui', 'characterPreviewDebounceMs', v)}
+        />
+        <Field
           label="Relief 2D preview debounce"
           unit="ms"
           tooltip="Debounce delay for the 2D image preview in the relief import wizard. While you adjust sliders (brightness, contrast, depth), this delay prevents a new preview from firing on every pixel of slider movement. Lower = more responsive; raise if CPU spikes during slider drag."

@@ -19,6 +19,23 @@ It is not a photoreal-human generator — lean into the clean, simplified look.
 > Coordinate convention (same as ai.md): **front = −Y**, **Z up**, figure's
 > **left = +X**, right = −X. Sides are suffixed `L` / `R`.
 
+## Shortcut: `buildCharacter(spec)` / the 🧍 Character panel
+
+For a **standard humanoid** (body proportions, pose, face, hair, clothing,
+colours) you don't have to hand-write the recipe below — there's a no-code
+**Character Creator** panel (Tools ▸ 🧍 Character, or the command palette) whose
+console twin is `partwright.buildCharacter(spec, { save })`. It generates exactly
+the kind of code shown below from a plain spec object and (with `save: true`)
+commits a version. The spec mirrors this API: `{ body:{height, headsTall, build,
+sex, age, weight, muscle, bust, belly}, pose:{preset, armL/armR/legL/legR:{raiseSide,
+raiseFwd, bend, twist}, spine, head}, face:{shape, lids, gaze, nose, expression,
+lipShape, ears, brows}, hair:{style, length, volume}, clothing:{top, pants, feet},
+colors:{…}, base }` — every field falls back to a sensible default, so a partial
+patch works (`buildCharacter({ body:{ sex:'female' }, hair:{ style:'bun' } }, { save:true })`).
+The generated code embeds the spec as a `// @character` header so the panel can
+re-open it. Reach for the **hand-written recipe below** when you need anything
+the spec doesn't cover (props, accessories, custom geometry, multi-figure scenes).
+
 ## The one pattern
 
 Build a **rig**, build **parts** off it, **weld** the body, **label** regions,

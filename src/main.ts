@@ -139,6 +139,9 @@ import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, me
 import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, SURFACE_SCOPE_KEYS, parseSurfaceOpts, isSurfaceOpId, type SurfaceOpId, type PersistedSurfaceTexture, type ResolvedScope } from './surface/surfaceOpSpec';
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
+import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
+import { specToCode } from './figure/characterCodegen';
+import { normalizeSpec } from './figure/characterSpec';
 import { initResizeUI } from './ui/resizeModal';
 import { initPlaceUI } from './ui/placeModal';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
@@ -11517,6 +11520,28 @@ async function main() {
       };
     },
 
+    /** Generate a posed, painted human figure from a Character Creator spec and
+     *  run it. With `{ save: true }` it commits a new version (via runAndSave);
+     *  otherwise it just updates the editor + viewport for a live preview. The
+     *  generated code embeds the spec as a `// @character` header so the panel
+     *  (and a re-opened session) can restore every control. `spec` is the plain
+     *  object the panel edits — see src/figure/characterSpec.ts; unknown/missing
+     *  fields fall back to the defaults. */
+    async buildCharacter(spec: unknown, opts?: { save?: boolean; label?: string }) {
+      if (!spec || typeof spec !== 'object') {
+        return { error: 'buildCharacter(spec): spec must be a Character Creator spec object. See src/figure/characterSpec.ts / public/ai/figure.md.' };
+      }
+      const code = specToCode(normalizeSpec(spec));
+      if (opts?.save) {
+        const r = await partwrightAPI.runAndSave(code, opts.label ?? 'Character');
+        return { code, ...(r as Record<string, unknown>) };
+      }
+      // Live preview: swap the editor buffer and re-render without saving.
+      setValue(code);
+      await runCodeSync(code);
+      return { code };
+    },
+
     /** Fork a prior version: load its code, apply transformFn, validate, and save as a new version.
      *  target: { index } or { id } from listVersions().
      *  transformFn: (code: string) => string — modifies the parent's code. Return the full new code.
@@ -14938,6 +14963,7 @@ async function main() {
         // Sessions
         'createSession':   { signature: 'await createSession(name?) -- Create session -> {id, url, galleryUrl}', docs: '/ai.md#console-api--windowpartwright' },
         'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call', docs: '/ai.md#assert--save-in-one-call' },
+        'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted human figure from a Character Creator spec (body/pose/face/hair/clothing/colors). save:true commits a version. Same engine as the 🧍 Character panel.', docs: '/ai/figure.md' },
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
         'saveAllParts':    { signature: 'await saveAllParts() -- Save every part with unsaved changes', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
@@ -15205,6 +15231,8 @@ async function main() {
 
   // Surface modifiers UI (viewport ✦ Surface button + command-palette entries).
   initSurfaceUI(partwrightAPI as unknown as Parameters<typeof initSurfaceUI>[0]);
+  // Character Creator UI (viewport 🧍 Character button + command-palette entry).
+  initCharacterCreatorUI(partwrightAPI as unknown as Parameters<typeof initCharacterCreatorUI>[0]);
   // Resize/scale UI (viewport ⇲ Resize button + command-palette entry).
   initResizeUI(partwrightAPI as unknown as Parameters<typeof initResizeUI>[0]);
   // Placement UI (viewport ⤓ Place button + command-palette entries).
