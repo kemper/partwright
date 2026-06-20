@@ -6151,6 +6151,7 @@ async function main() {
   }
 
   let catalogEl: HTMLElement | null = null;
+  let catalogElPromise: Promise<HTMLElement> | null = null;
   let catalogHasAppBackTarget = false;
   async function showCatalogPage(options: { history?: 'push' | 'replace' | 'none' } = {}) {
     const historyMode = options.history ?? 'push';
@@ -6159,18 +6160,25 @@ async function main() {
       updateAppHistory(appPath('/catalog'), historyMode);
     }
     if (!catalogEl) {
-      catalogEl = await createCatalogPage(overlayContainer, {
-        onBack: () => {
-          if (catalogHasAppBackTarget) {
-            window.history.back();
-          } else {
-            updateAppHistory(appPath('/'), 'replace');
-            void syncRouteFromURL();
-          }
-        },
-        onLoadEntry: handleCatalogEntryLoad,
-        onOpenIdeas: () => { showIdeasPage(); },
-      });
+      // createCatalogPage awaits a manifest fetch before returning, so guard the
+      // async gap with an in-flight promise: rapid re-entry (a second click, or
+      // the popstate the first click's pushState fires) must reuse the pending
+      // build, not start a second one that appends another #catalog-page pane.
+      if (!catalogElPromise) {
+        catalogElPromise = createCatalogPage(overlayContainer, {
+          onBack: () => {
+            if (catalogHasAppBackTarget) {
+              window.history.back();
+            } else {
+              updateAppHistory(appPath('/'), 'replace');
+              void syncRouteFromURL();
+            }
+          },
+          onLoadEntry: handleCatalogEntryLoad,
+          onOpenIdeas: () => { showIdeasPage(); },
+        });
+      }
+      catalogEl = await catalogElPromise;
     }
     overlayContainer.classList.remove('hidden');
     editorUI.classList.add('hidden');
