@@ -554,8 +554,14 @@ function buildRig(rawOpts: unknown): Rig {
   const upperArmLen = H * 0.165;
   const foreArmLen = H * 0.150;
 
+  // The glenohumeral joint sits a touch BELOW the neck-base shoulder line. The
+  // acromion/neck-base is the top of the torso; the arm bone actually hangs from
+  // a point below it, so dropping S here lets the shoulders slope down from the
+  // neck instead of the deltoid mass riding up level with the chin.
+  const shoulderDropZ = headH * 0.12;
+
   function armChain(side: number, p: JointPose) {
-    const S: Vec3 = [side * shoulderHalfX, 0, shoulderZ];
+    const S: Vec3 = [side * shoulderHalfX, 0, shoulderZ - shoulderDropZ];
     // raiseSide: 0 = hanging down, 90 = straight out to the side, 180 = up.
     let dir: Vec3 = [side * Math.sin(p.raiseSide * DEG), 0, -Math.cos(p.raiseSide * DEG)];
     // raiseFwd: + brings the arm forward (−Y).
@@ -1230,8 +1236,14 @@ function buildArms(sdf: SdfApi, rig: Rig): Node {
     const upper = tapered(sdf, S, E, r.upperArm, r.lowerArm * 1.05, k);
     const fore = tapered(sdf, E, W, r.lowerArm * 1.02, r.lowerArm * 0.8, k);
     // Deltoid cap so the shoulder reads as a rounded mass, not a tube stub —
-    // grows with muscle into a capped delt.
-    const deltoid = sdf.sphere(r.upperArm * (1.15 + 0.3 * m)).translate(S);
+    // grows with muscle into a capped delt. Seated a little DOWN the arm from the
+    // joint (not centred ON it) and trimmed slightly: a sphere centred on S threw
+    // its mass ABOVE the shoulder line, so relaxed (arms-down) figures grew two
+    // high humps flanking the neck — the "bumpy shoulders" look. Riding the upper
+    // arm, the delt bulges the shoulder laterally and the top reads as the
+    // capsule cap, giving a natural slope. The offset follows the arm, so a RAISED
+    // arm carries the delt up with it exactly as before.
+    const deltoid = sdf.sphere(r.upperArm * (0.9 + 0.3 * m)).translate(lerp3(S, E, 0.32));
     let out = upper.smoothUnion(fore, k).smoothUnion(deltoid, r.upperArm * 0.9);
     if (m > 0) {
       const flex = flexorDir(hinge, upDir);             // biceps (anterior) side
@@ -3873,7 +3885,21 @@ function weldBody(rig: Rig, parts: unknown, opts?: unknown): Node {
   }
   const o = obj(opts, 'weld(opts)');
   assertNoUnknownKeys(o, ['k'], 'weld(opts)');
-  const k = num(o.k, Math.min(rig.r.lowerArm, rig.r.neck) * 0.85, 'weld.k', 1e-4);
+  // The default weld is TIGHTENED from the old 0.85·min(lowerArm,neck). The body
+  // masses join end-to-end (neck atop chest, legs below pelvis, hands off wrists),
+  // so a small k already gives those coaxial seams a smooth transition. The arms,
+  // though, run PARALLEL to the torso when they hang at the sides, separated by
+  // the armpit slot — a large k bridges that slot, fusing the whole upper arm to
+  // the ribcage as an unrealistic web/wing (most visible on relaxed standing
+  // poses). Shrinking k opens that armpit into a real hollow.
+  //
+  // But k can't go arbitrarily small: a RAISED arm runs clear of the torso and
+  // welds ONLY at the shoulder, so k is the entire arm→torso bridge there — too
+  // tight and an overhead arm detaches into its own component in the fine bake
+  // (the danseur split at 0.32). 0.48 is the sweet spot: comfortably below the
+  // ~0.6 where hanging arms re-web, comfortably above the ~0.32 where raised arms
+  // tear off. Override via `weld(rig, parts, {k})` for a chunkier, blobbier look.
+  const k = num(o.k, Math.min(rig.r.lowerArm, rig.r.neck) * 0.48, 'weld.k', 1e-4);
   let acc = parts[0] as Node;
   for (let i = 1; i < parts.length; i++) acc = acc.smoothUnion(parts[i] as Node, k);
   return acc;
