@@ -969,41 +969,72 @@ function buildTorso(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const k = r.chestY * 0.6;
   let body = chest.smoothUnion(belly, k).smoothUnion(pelvis, k);
 
+  const m = rig.opts.muscle;
+  // Rest-frame machinery (HOISTED so the always-on structural masses below use it
+  // too). Every added mass must be built in the figure's un-leaned frame and
+  // rigidly re-leaned about the navel pivot, or a spine lean tears it into a
+  // twin-lobed bulge with a central depression (GitHub #702): the chest/upper-arm
+  // joints arrive already spine-leaned, but the navel/hip anchors never are, so a
+  // mass spanning both bunches under a lean. Un-rotating to rest, building, then
+  // re-applying the lean keeps each mass rigid. Zero spine ⇒ identity, so upright
+  // figures are byte-identical.
+  const sp = rig.opts.pose.spine;
+  const spineLeaned = sp.lean !== 0 || sp.turn !== 0 || sp.side !== 0;
+  const pivot: Vec3 = [0, 0, j.spine[2]];   // navel line — the rig's spine pivot
+  // Inverse of the rig's `spineRot = rotY(rotX(rotZ(v,turn),lean),side)`.
+  const restPt = (p: Vec3): Vec3 =>
+    spineLeaned ? add3(pivot, rotZ(rotX(rotY(sub3(p, pivot), -sp.side), -sp.lean), -sp.turn)) : p;
+  // Re-apply the rig's spine rotation to an assembled Node about the pivot.
+  // Single-axis `.rotate` calls compose unambiguously; chaining Z→X→Y gives
+  // forward Ry(side)·Rx(lean)·Rz(turn) — identical to `spineRot`.
+  const spineTx = (n: Node): Node => spineLeaned
+    ? n.translate(scale3(pivot, -1)).rotate([0, 0, sp.turn]).rotate([sp.lean, 0, 0]).rotate([0, sp.side, 0]).translate(pivot)
+    : n;
+  // Rest-frame chest / upper-arm anchors (un-lean the joints the rig leaned).
+  const chestR = restPt(j.chest);
+  const armR = restPt(j.upperArmL);
+
+  // ── Always-on STRUCTURAL shoulder→arm anatomy ──────────────────────────────
+  // The arm used to weld into a smooth torso ellipsoid as a flat web, because a
+  // lean figure had no FORM for it to meet. A real torso — even a slim one —
+  // carries a trapezius ramp from the neck to the shoulder and a latissimus shelf
+  // that flares toward the armpit then tapers to the waist; the arm rests against
+  // that shelf and CREASES rather than fusing into a wall. These two masses give
+  // every figure that form. `structural` FADES OUT as `muscle` rises (the richer
+  // muscle pecs/traps/lats below take over) and shrinks for a lean (low-weight)
+  // build, so a slim swimmer reads subtle while a heavier/older figure reads
+  // fuller. Built in the rest frame + re-leaned like the muscle masses; pure mesh.
+  const structural = Math.max(0, (0.30 + 0.40 * rig.opts.weight) * (1 - m));
+  if (structural > 0.02) {
+    // Trapezius ramp — a smooth TAPERED CAPSULE running from the base of the neck
+    // out and down to the shoulder/acromion, so the shoulder reads as one
+    // continuous slope off the neck. A single ellipsoid here read as a sphere
+    // embedded in the shoulder (a bump); an extruded capsule along the neck→
+    // shoulder line gives the uniform ramp instead.
+    const trapNeck = (sx: number): Vec3 => [sx * r.neck * 0.5, -r.chestY * 0.05, armR[2] + r.upperArm * 0.45];
+    const trapTip = (sx: number): Vec3 => [sx * armR[0] * 0.95, -r.chestY * 0.05, armR[2]];
+    const strap = (sx: number): Node => tapered(sdf, trapNeck(sx), trapTip(sx),
+      r.upperArm * (0.26 + 0.22 * structural), r.upperArm * (0.34 + 0.30 * structural), r.upperArm * 0.6);
+    const straps = strap(1).union(strap(-1));
+    // Lat shelf — flares OUT toward the armpit up top (so the hanging arm meets it)
+    // and tapers IN toward the waist, opening a crease/V below the armpit. Tapered
+    // capsule (not a side ellipsoid) so it overlaps the core along its whole length
+    // and can never pinch a tunnel/hole (same reasoning as the muscle lat).
+    const sLatTop = (sx: number): Vec3 => [sx * r.chestX * 0.84, r.chestY * 0.06, mix(chestR[2], armR[2], 0.12)];
+    const sLatBot = (sx: number): Vec3 => [sx * r.chestX * 0.42, r.chestY * 0.10, mix(j.spine[2], chestR[2], 0.35)];
+    const slat = (sx: number): Node => tapered(sdf, sLatTop(sx), sLatBot(sx),
+      r.chestX * (0.12 + 0.16 * structural), r.chestX * 0.10, r.chestX * 0.20);
+    const slats = slat(1).union(slat(-1));
+    body = body
+      .smoothUnion(spineTx(straps), r.upperArm * 0.7)
+      .smoothUnion(spineTx(slats), r.chestY * 0.6);
+  }
+
   // Muscle masses (only when the `muscle` axis is engaged). Pectorals + traps
   // + lats + a tight abdominal panel, all on the body front (−Y) / sides, kept
-  // BELOW the shoulder line so they never climb into the lower face. Mirrors —
-  // and supersedes — the chest/trap masses figures used to hand-roll.
-  const m = rig.opts.muscle;
+  // BELOW the shoulder line so they never climb into the lower face.
   if (m > 0) {
     const wk = r.chestY * 0.7;
-    // The chest/upper-arm joints arrive ALREADY spine-leaned (buildRig applies
-    // `sPt` to them), but the abdominal/lat anchors hang off the planted navel
-    // line (`j.spine`/`j.hips`, never leaned). Building the back masses (traps,
-    // lats) and the chest masses (pecs) directly from this mix welds half the
-    // mass to the leaned chest and half to the upright pelvis, so under a
-    // forward lean the upper back tears into a twin-lobed bulge with a central
-    // depression and a knob behind the spine (GitHub #702). Fix: build EVERY
-    // muscle mass in the figure's REST (un-leaned) frame — un-rotating the
-    // chest/upper-arm anchors back about the navel pivot first — then rigidly
-    // re-apply the same spine rotation to the whole assembled mass, exactly as
-    // the rig does to the chest. The masses then ride the bent torso as one
-    // rigid block instead of bunching. Zero spine ⇒ identity (`spineTx` and the
-    // un-rotation both no-op), so upright muscled figures stay byte-identical.
-    const sp = rig.opts.pose.spine;
-    const spineLeaned = sp.lean !== 0 || sp.turn !== 0 || sp.side !== 0;
-    const pivot: Vec3 = [0, 0, j.spine[2]];   // navel line — the rig's spine pivot
-    // Inverse of the rig's `spineRot = rotY(rotX(rotZ(v,turn),lean),side)`.
-    const restPt = (p: Vec3): Vec3 =>
-      spineLeaned ? add3(pivot, rotZ(rotX(rotY(sub3(p, pivot), -sp.side), -sp.lean), -sp.turn)) : p;
-    // Re-apply the rig's spine rotation to an assembled Node about the pivot.
-    // Single-axis `.rotate` calls compose unambiguously; chaining Z→X→Y gives
-    // forward Ry(side)·Rx(lean)·Rz(turn) — identical to `spineRot`.
-    const spineTx = (n: Node): Node => spineLeaned
-      ? n.translate(scale3(pivot, -1)).rotate([0, 0, sp.turn]).rotate([sp.lean, 0, 0]).rotate([0, sp.side, 0]).translate(pivot)
-      : n;
-    // Rest-frame chest / upper-arm anchors (un-lean the joints the rig leaned).
-    const chestR = restPt(j.chest);
-    const armR = restPt(j.upperArmL);
     // Pectorals — two forward masses on the upper chest.
     const pecZ = mix(chestR[2], armR[2], 0.18);
     const pecY = -r.chestY * (0.5 + 0.18 * m);
@@ -1235,6 +1266,15 @@ function buildArms(sdf: SdfApi, rig: Rig): Node {
   function arm(S: Vec3, E: Vec3, W: Vec3, upDir: Vec3, foreDir: Vec3, hinge: Vec3): Node {
     const upper = tapered(sdf, S, E, r.upperArm, r.lowerArm * 1.05, k);
     const fore = tapered(sdf, E, W, r.lowerArm * 1.02, r.lowerArm * 0.8, k);
+    // Shoulder SEAT — a short buried plug from a point well INSIDE the torso out
+    // to the joint S, so the arm always overlaps the body at the shoulder no
+    // matter how it is posed. The glenohumeral joint sits just OUTSIDE the chest
+    // ellipsoid, so a raised/abducted arm (whose capsule tilts away from the
+    // ribcage) could otherwise lose its only overlap and detach as a separate
+    // component (grand-jeté / viking). Pulling the seat's root toward the body
+    // centre (x·0.7) keeps it inside the chest; it's invisible (buried) and costs
+    // nothing visually, but guarantees the weld bridges torso→arm.
+    const seat = tapered(sdf, [S[0] * 0.7, S[1], S[2]] as Vec3, S, r.upperArm * 0.92, r.upperArm, r.upperArm * 0.6);
     // Deltoid cap so the shoulder reads as a rounded mass, not a tube stub —
     // grows with muscle into a capped delt. Seated a little DOWN the arm from the
     // joint (not centred ON it) and trimmed slightly: a sphere centred on S threw
@@ -1243,8 +1283,8 @@ function buildArms(sdf: SdfApi, rig: Rig): Node {
     // arm, the delt bulges the shoulder laterally and the top reads as the
     // capsule cap, giving a natural slope. The offset follows the arm, so a RAISED
     // arm carries the delt up with it exactly as before.
-    const deltoid = sdf.sphere(r.upperArm * (0.9 + 0.3 * m)).translate(lerp3(S, E, 0.32));
-    let out = upper.smoothUnion(fore, k).smoothUnion(deltoid, r.upperArm * 0.9);
+    const deltoid = sdf.sphere(r.upperArm * (0.6 + 0.3 * m)).translate(lerp3(S, E, 0.42));
+    let out = upper.smoothUnion(fore, k).smoothUnion(deltoid, r.upperArm * 0.9).smoothUnion(seat, r.upperArm * 0.7);
     if (m > 0) {
       const flex = flexorDir(hinge, upDir);             // biceps (anterior) side
       const wk = r.upperArm * 0.9;
