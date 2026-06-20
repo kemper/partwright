@@ -37,6 +37,9 @@ export interface ToolbarCallbacks {
   /** "Share link…" — encode the current version into a read-only,
    *  hash-encoded share URL and open the copy modal. */
   onShareLink: () => void;
+  /** "Publish to a print site…" — open the assisted-publish modal
+   *  (Printables / MakerWorld / Thingiverse / Thangs). */
+  onPublish: () => void;
   onExportRawCode: () => void;
   onImportFile: (file: File) => void | Promise<void>;
   /** Open the "Import from URL…" modal (share link or remote file URL). */
@@ -676,9 +679,19 @@ export function createToolbar(
     callbacks.onShareLink();
   });
 
+  const publishOpt = createDescribedItem(
+    'Publish to a print site…',
+    'Prepare an upload to Printables, MakerWorld, Thingiverse, or Thangs: downloads the file + a cover image, copies the details, and opens the upload page.',
+  );
+  publishOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onPublish();
+  });
+
   dropdown.appendChild(sessionOpt);
   dropdown.appendChild(codeOpt);
   dropdown.appendChild(shareOpt);
+  dropdown.appendChild(publishOpt);
 
   // Section: Recent Exports — reuse-anything-you-just-downloaded list. Hidden when empty.
   const recentDivider = createMenuDivider();

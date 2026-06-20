@@ -47,7 +47,7 @@ test.describe('assisted publish', () => {
     });
 
     // Modal is up with the platform pills.
-    await expect(page.getByText('Publish to a print site')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Publish to a print site' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Printables', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'MakerWorld', exact: true })).toBeVisible();
 
@@ -74,6 +74,19 @@ test.describe('assisted publish', () => {
 
     const clip = await page.evaluate(() => (window as unknown as { __clip?: string[] }).__clip ?? []);
     expect(clip.join('\n')).toContain('Title: publish-test');
+  });
+
+  test('Export menu has a "Publish to a print site…" entry that opens the modal', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      await pw.createSession('publish-menu');
+      await pw.run('const { Manifold } = api;\nreturn Manifold.cube(10);');
+    });
+    await page.getByRole('button', { name: '↓ Export' }).click();
+    await page.getByText('Publish to a print site…').click();
+    await expect(page.getByRole('heading', { name: 'Publish to a print site' })).toBeVisible();
   });
 
   test('publish() rejects an unknown platform id', async ({ page }) => {

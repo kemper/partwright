@@ -4937,6 +4937,7 @@ async function main() {
       if (!ok) showToast('No active session to export. Save a version first.', { variant: 'warn', source: 'export' });
     },
     onShareLink: () => { void actionShareLink(); },
+    onPublish: () => { actionPublish(); },
     onExportRawCode: () => {
       exportRawCode(getValue(), getActiveLanguage());
     },
