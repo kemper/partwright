@@ -74,7 +74,7 @@ test.describe('assisted publish', () => {
 
     await expect.poll(async () =>
       page.evaluate(() => (window as unknown as { __opened?: string[] }).__opened ?? []),
-    ).toContain('https://www.thingiverse.com/upload');
+    ).toContain('https://www.thingiverse.com/');
 
     const clip = await page.evaluate(() => (window as unknown as { __clip?: string[] }).__clip ?? []);
     expect(clip.join('\n')).toContain('Title: publish-test');

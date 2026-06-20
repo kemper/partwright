@@ -66,7 +66,7 @@ export function openPublishModal(ctx: PublishModalContext): void {
     'These sites have no public upload API, so Partwright can’t post for you. ' +
     'It prepares everything instead: it downloads a single <strong>ZIP</strong> with the model file, ' +
     'a cover image, and a <span class="font-mono">details.txt</span> (also copied to your clipboard), ' +
-    'then opens the upload page — unzip, drop the files, and paste.';
+    'then opens the site — sign in, hit its Upload button, drop the files, and paste.';
   shell.body.appendChild(intro);
 
   // --- Platform pills ---
@@ -196,7 +196,7 @@ export function openPublishModal(ctx: PublishModalContext): void {
       window.open(target.uploadUrl, '_blank', 'noopener,noreferrer');
       showToast(
         `Downloaded ${bundle.filename} and copied the details. ` +
-        `Unzip it, drop the files on the ${target.label} upload page, and paste.`,
+        `On ${target.label}, sign in and use its Upload button, then drop the files and paste.`,
         { variant: 'success' },
       );
       shell.close();

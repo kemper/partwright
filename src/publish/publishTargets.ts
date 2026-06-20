@@ -36,33 +36,34 @@ export function recommendedFormat(target: PublishTarget): PublishFormat {
 export const PUBLISH_TARGETS: PublishTarget[] = [
   {
     id: 'printables',
+    // Every platform's direct upload route is auth-gated and unreliable (404s,
+    // 500s, or bounces to login when you're not signed in), so each target opens
+    // a STABLE landing page and the note says where the "Upload" button is.
     label: 'Printables',
-    uploadUrl: 'https://www.printables.com/model/add',
+    uploadUrl: 'https://www.printables.com/',
     formats: ['3mf', 'stl', 'obj'],
-    notes: "Prusa's community site. 3MF keeps painted colours; STL is geometry-only.",
+    notes: "Prusa's community site. Sign in, then use \"Add a print\" (top bar / profile menu). 3MF keeps painted colours; STL is geometry-only.",
   },
   {
     id: 'makerworld',
-    // MakerWorld's upload page is user-scoped (/en/@<you>/upload), so there's no
-    // generic upload URL — open the homepage and click "Upload" at the top.
     label: 'MakerWorld',
     uploadUrl: 'https://makerworld.com/en',
     formats: ['3mf-bambu', '3mf', 'stl'],
-    notes: "Bambu's platform — a Bambu/Orca 3MF earns extra rewards. Click \"Upload\" at the top of the homepage. (It can also import from Printables/Thingiverse.)",
+    notes: "Bambu's platform — a Bambu/Orca 3MF earns extra rewards. Sign in, then click \"Upload\" at the top. (It can also import from Printables/Thingiverse.)",
   },
   {
     id: 'thingiverse',
     label: 'Thingiverse',
-    uploadUrl: 'https://www.thingiverse.com/upload',
+    uploadUrl: 'https://www.thingiverse.com/',
     formats: ['stl', '3mf', 'obj', 'glb'],
-    notes: "MakerBot's site. STL is the safest, most widely-supported format here.",
+    notes: "MakerBot's site. Sign in, then \"Create\" → upload. STL is the safest, most widely-supported format here.",
   },
   {
     id: 'thangs',
     label: 'Thangs',
-    uploadUrl: 'https://thangs.com/upload',
+    uploadUrl: 'https://thangs.com/',
     formats: ['stl', '3mf', 'obj', 'glb'],
-    notes: 'Search-first model host; accepts 30+ formats, including STL and 3MF.',
+    notes: 'Search-first model host. Sign in, then click "Upload" (top-right). Accepts 30+ formats, including STL and 3MF.',
   },
 ];
 

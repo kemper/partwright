@@ -79,3 +79,11 @@ Follow-up 2 (same session), from user feedback:
   user-scoped (`/en/@<username>/upload`); pointed the target at the homepage
   (`https://makerworld.com/en`) where the "Upload" button lives, and said so in
   the modal note.
+
+Follow-up 3 (same session), from user testing every deep link: ALL the direct
+upload routes are broken/auth-gated — Thingiverse `/upload` 500s
+(`sanitizeFilename(null)`), Printables `/model/add` serves an MK404 easter-egg,
+Thangs `/upload` 404s. Switched every target to its **stable landing page**
+(home) and put "sign in, then use its Upload button (location)" in each note +
+the modal/toast copy. Deep links bounce to login when logged out anyway, so the
+landing page is the robust choice; one extra click is the tradeoff.
