@@ -309,7 +309,24 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     const pending = pendingExecutions.get(callId);
     if (!pending?.onPreview) return;
     const mesh = msg.mesh as MeshResult['mesh'];
-    pending.onPreview({ mesh, manifold: null, error: null });
+    // Model-declared colour data, when the engine attached it (manifold-js SDF
+    // preview path). Reconstruct the Map<string,Set> the consumer expects, same
+    // as the execute_result branch below — so the coarse preview can paint its
+    // estimated label/paint colours instead of bare grey.
+    const labelMapEntries = msg.labelMapEntries as [string, number[]][] | null | undefined;
+    const labelColorEntries = msg.labelColorEntries as [string, [number, number, number]][] | null | undefined;
+    pending.onPreview({
+      mesh,
+      manifold: null,
+      error: null,
+      labelMap: labelMapEntries
+        ? new Map(labelMapEntries.map(([k, v]) => [k, new Set(v)]))
+        : undefined,
+      labelColors: labelColorEntries && labelColorEntries.length > 0
+        ? new Map(labelColorEntries)
+        : undefined,
+      paintOps: (msg.paintOps as MeshResult['paintOps']) ?? undefined,
+    });
     return;
   }
 
