@@ -141,12 +141,12 @@
             "contours": 3
           }
         },
-        "unit": "unitless",
-        "executionTimeMs": 26204,
+        "unit": "mm",
+        "executionTimeMs": 26403,
         "codeHash": "ae6758fe",
-        "sessionId": "TCUO4NDNfREU",
-        "sessionUrl": "http://localhost:5173/editor?session=TCUO4NDNfREU",
-        "galleryUrl": "http://localhost:5173/editor?session=TCUO4NDNfREU&gallery",
+        "sessionId": "DfLKGRY81bup",
+        "sessionUrl": "http://localhost:5173/editor?session=DfLKGRY81bup",
+        "galleryUrl": "http://localhost:5173/editor?session=DfLKGRY81bup&gallery",
         "engineMemory": "479 MB / 4096 MB (12%)",
         "colorRegions": [
           {

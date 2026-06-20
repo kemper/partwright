@@ -109,12 +109,12 @@
         "isManifold": true,
         "componentCount": 1,
         "crossSections": {},
-        "unit": "unitless",
-        "executionTimeMs": 25562,
+        "unit": "mm",
+        "executionTimeMs": 27698,
         "codeHash": "2dd65120",
-        "sessionId": "qV5AYdZsFYoF",
-        "sessionUrl": "http://localhost:5173/editor?session=qV5AYdZsFYoF",
-        "galleryUrl": "http://localhost:5173/editor?session=qV5AYdZsFYoF&gallery",
+        "sessionId": "G5RSpL6XtTtK",
+        "sessionUrl": "http://localhost:5173/editor?session=G5RSpL6XtTtK",
+        "galleryUrl": "http://localhost:5173/editor?session=G5RSpL6XtTtK&gallery",
         "engineMemory": "594 MB / 4096 MB (15%)",
         "colorRegions": [
           {
