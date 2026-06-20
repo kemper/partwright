@@ -134,6 +134,20 @@ function bbTransformCorners(a: Box, fn: (p: Vec3) => Vec3): Box {
 
 type EvalFn = (x: number, y: number, z: number) => number;
 
+/** One hand of a fine-hands region: the hand in its CANONICAL (axis-aligned)
+ *  frame plus the rigid transform that places it on the wrist. The build meshes
+ *  the canonical node on a tight axis-aligned fine grid — where the inter-finger
+ *  gaps line up with the march grid, so they resolve cleanly at ANY arm pose —
+ *  then `Manifold.rotate(euler).translate(translate)` snaps the mesh onto the
+ *  wrist (the SDF `.rotate` matches `Manifold.rotate`, so the result is
+ *  identical to transforming the SDF first, minus the pose-dependent webbing). */
+export interface FineHandPiece {
+  node: SdfNode;
+  euler: Vec3;
+  translate: Vec3;
+  edgeLength: number;
+}
+
 interface NodeData {
   kind: string;
   eval: EvalFn;
@@ -167,7 +181,7 @@ interface NodeData {
    *  the per-feature spheres to march. The coarse march webs thin, closely-
    *  spaced features (figure fingers) into topological handles the in-place
    *  refine can't undo; this resolves them at the source. */
-  fineRegions?: DetailRegion[];
+  fineRegions?: FineHandPiece[];
 }
 
 let nextId = 1;
@@ -185,7 +199,7 @@ export class SdfNode {
   /** @internal */ readonly _partitionable: boolean;
   /** @internal */ readonly _rewrap: ((child: SdfNode) => SdfNode) | undefined;
   /** @internal */ readonly _ctx: BuildContext | undefined;
-  /** @internal */ readonly _fineRegions: DetailRegion[] | undefined;
+  /** @internal */ readonly _fineRegions: FineHandPiece[] | undefined;
 
   constructor(data: NodeData) {
     this.id = `sdf_${nextId++}`;
@@ -544,15 +558,15 @@ function buildSdf(
     // standard SDF: positive=inside, negative=outside. Negate so user
     // code can keep writing distance functions the normal way.
     const negated: (p: Vec3) => number = (p) => -evalFn(p[0], p[1], p[2]);
-    // FINE-HANDS region: mesh each feature sphere on its OWN uniform fine grid
-    // (a hand's bbox is tiny, so a fine grid is cheap) and union the chunks.
-    // This resolves thin, closely-spaced fingers that the coarse global march
-    // would web into a topological handle — the in-place refine pass can't fix
-    // topology, so the feature must be marched fine at the source. The region's
-    // geometry overlaps the coarse body at the wrist, so the final hard-union
-    // (below) merges them as distinct shapes with no seam.
+    // FINE-HANDS region: mesh each hand in its canonical frame on a tight fine
+    // grid and rotate it onto the wrist (see meshFineRegions). The coarse global
+    // march would web the thin, closely-spaced fingers into a topological handle
+    // the in-place refine can't fix — and a rotated SDF webs them pose-dependent
+    // — so the hand is marched fine and axis-aligned at the source. The result
+    // overlaps the coarse body at the wrist, so the final hard-union (below)
+    // merges them as distinct shapes with no seam.
     if (region.fineRegions !== undefined && region.fineRegions.length > 0) {
-      let m = meshFineRegions(negated, region.fineRegions, level, edgeLength, Manifold);
+      let m = meshFineRegions(region.fineRegions, level, edgeLength, Manifold);
       if (m !== null) {
         if (region.labelName) m = label(m, region.labelName);
         meshed.push(m);
@@ -742,36 +756,33 @@ function refineManifoldNearRegions(
   }
 }
 
-/** Mesh a fine-hands region: march each feature sphere's bounding box on its
- *  OWN uniform fine grid and hard-union the chunks. Each sphere is sized to
- *  fully contain one feature (a hand), so its box captures that feature only
- *  (the other hand lies outside it) and marches it at full topological fidelity
- *  — no coarse-grid webbing. Returns null if every march was empty (so the
- *  caller drops the region rather than pushing an empty mesh). */
+/** Mesh a fine-hands region: march each hand in its CANONICAL (axis-aligned)
+ *  frame on a tight uniform fine grid, then `rotate(euler).translate(...)` the
+ *  mesh onto its wrist and hard-union the pieces. Marching in canonical space
+ *  is the whole point: the inter-finger gaps run along the grid axes there, so
+ *  they resolve cleanly at ANY arm pose (a rotated SDF would mesh those thin
+ *  gaps diagonally and web them — the pose-dependent garbage), and the canonical
+ *  bbox is tight so a fine grid stays cheap. Returns null if every march was
+ *  empty (so the caller drops the region rather than pushing an empty mesh). */
 function meshFineRegions(
-  negated: (p: Vec3) => number,
-  regions: DetailRegion[],
+  pieces: FineHandPiece[],
   level: number,
   coarseEdge: number,
   Manifold: ManifoldClass,
 ): ManifoldInstance | null {
   let acc: ManifoldInstance | null = null;
-  for (const r of regions) {
-    const [cx, cy, cz] = r.center;
-    const R = r.radius;
-    const pad = fineMargin(r.edgeLength);
-    const bbox: Box = {
-      min: [cx - R - pad, cy - R - pad, cz - R - pad],
-      max: [cx + R + pad, cy + R + pad, cz + R + pad],
-    };
+  for (const piece of pieces) {
+    const negated: (p: Vec3) => number = (p) => -piece.node._eval(p[0], p[1], p[2]);
+    const bbox = bbExpand(piece.node._bounds, fineMargin(piece.edgeLength));
     let chunk: ManifoldInstance;
     try {
-      chunk = Manifold.levelSet(negated, bbox, r.edgeLength, level);
+      chunk = Manifold.levelSet(negated, bbox, piece.edgeLength, level);
+      if ((chunk.numTri() as number) === 0) continue;
+      chunk = chunk.rotate(piece.euler).translate(piece.translate);
     } catch (err) {
-      console.warn('api.sdf.build(): fine-hands march failed for a region, skipping it.', err);
+      console.warn('api.sdf.build(): fine-hands march failed for a hand, skipping it.', err);
       continue;
     }
-    if ((chunk.numTri() as number) === 0) continue;
     acc = acc === null ? chunk : acc.add(chunk);
   }
   // A fine march of two near-but-separate features can shed a sub-cell sliver
@@ -791,7 +802,7 @@ function expandedMeshBounds(nodeBounds: Box, userBounds: Box, edgeLength: number
 
 // --- Label partitioning -------------------------------------------------
 
-interface Partition { node: SdfNode; labelName?: string; fineRegions?: DetailRegion[] }
+interface Partition { node: SdfNode; labelName?: string; fineRegions?: FineHandPiece[] }
 
 /** True if a fine-hands marker (`opFineHands`) sits anywhere in the subtree. */
 function containsFineHands(node: SdfNode): boolean {
@@ -1238,7 +1249,7 @@ function opUnion(a: SdfNode, b: SdfNode): SdfNode {
  *  grid, then hard-unions it with the coarse body. `regions` are the per-hand
  *  spheres (centre = wrist, radius contains the hand, edgeLength = fine grid).
  *  Not partitionable: the hand is one atomic region. */
-function opFineHands(node: SdfNode, regions: DetailRegion[]): SdfNode {
+function opFineHands(node: SdfNode, regions: FineHandPiece[]): SdfNode {
   return new SdfNode({
     kind: 'fineHands',
     eval: (x, y, z) => node._eval(x, y, z),
@@ -2027,7 +2038,7 @@ export interface SdfNamespace {
   /** @internal Tag a subtree as a fine-hands region — meshed per-sphere at a
    *  uniform fine grid and hard-unioned (used by the figure's hands so the
    *  coarse body march never webs the fingers). Not a documented user API. */
-  __fineHands(node: SdfNode, regions: DetailRegion[]): SdfNode;
+  __fineHands(node: SdfNode, regions: FineHandPiece[]): SdfNode;
 }
 
 /** Construct a fresh SDF namespace for one engine run. Bound to the

@@ -38,8 +38,9 @@ const DEG = Math.PI / 180;
 // SdfNamespace is assignable to `SdfApi`. Declaring them here (rather than
 // importing from ./sdf) avoids a dependency cycle.
 
-/** A per-feature fine-march sphere (matches sdf.ts `DetailRegion`). */
-export interface FineRegion { center: Vec3; radius: number; edgeLength: number }
+/** One hand for the fine-mesh path: the canonical (axis-aligned) hand node plus
+ *  the transform onto its wrist (matches sdf.ts `FineHandPiece`). */
+export interface FineRegion { node: Node; euler: Vec3; translate: Vec3; edgeLength: number }
 
 export interface Node {
   /** Node kind tag — lets `weld` recognise a fine-hands marker among its parts. */
@@ -1280,7 +1281,7 @@ function eulerFromBasis(cx: Vec3, cy: Vec3, cz: Vec3): Vec3 {
 
 function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'hands(opts)');
-  assertNoUnknownKeys(o, ['grip', 'fingers', 'count', 'length', 'palmThickness'], 'hands(opts)');
+  assertNoUnknownKeys(o, ['grip', 'fingers', 'count', 'length', 'palmThickness', 'size'], 'hands(opts)');
   const grip = o.grip === undefined ? 'relaxed'
     : assertEnum(o.grip, ['fist', 'open', 'relaxed', 'spread', 'wave', 'point', 'peace', 'thumbsup', 'ok', 'claw', 'clutch'] as const, 'hands.grip');
   // OPTION 2 hands — a CLEAN FLAT slab palm + FULLY-SEPARATED fingers that can
@@ -1297,22 +1298,31 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   const count = Math.round(num(o.count, 4, 'hands.count', 1, 5));
   const lengthK = num(o.length, 1, 'hands.length', 0.2, 3);
   const palmThicknessK = num(o.palmThickness, 0.5, 'hands.palmThickness', 0.1, 2);
-  const j = rig.joints, r = rig.r, rh = r.hand;
+  // `size` scales the whole hand around the wrist. The 1.15 baseline makes hands
+  // a bit larger than the bare rig proportion by default (they read better);
+  // `size` multiplies that, so size:1 = default, size:1.3 = noticeably bigger.
+  const sizeK = num(o.size, 1, 'hands.size', 0.3, 3);
+  const j = rig.joints, r = rig.r, rh = r.hand * 1.15 * sizeK;
 
   // Per-finger [curl 0..1] and [spread °] for index→pinky, plus the thumb pose.
   // Curl angles the whole finger toward the palm. Resampled when count ≠ 4.
+  // spread[] is per-finger fan angle, index→pinky. NEGATIVE fans a finger toward
+  // −X, positive toward +X; with index on −X and pinky on +X, the outer fingers
+  // must fan OUTWARD (index negative, pinky positive) or they arch into the palm
+  // centre — both an alien look AND near-contact handles between converging
+  // capsules. Keep the outer-fingers-outward sign.
   const PRESETS: Record<string, { curl: number[]; spread: number[]; thumb: { curl: number; ab: number } }> = {
-    open:     { curl: [0, 0, 0, 0],           spread: [24, 9, -9, -24],   thumb: { curl: 0.1, ab: 1.0 } },
-    relaxed:  { curl: [0.4, 0.45, 0.45, 0.4], spread: [13, 5, -5, -13],   thumb: { curl: 0.35, ab: 0.85 } },
-    spread:   { curl: [0, 0, 0, 0],           spread: [34, 14, -14, -34], thumb: { curl: 0.1, ab: 1.25 } },
-    wave:     { curl: [0, 0, 0, 0],           spread: [18, 7, -7, -18],   thumb: { curl: 0.2, ab: 0.9 } },
-    point:    { curl: [0, 1, 1, 1],           spread: [8, 3, -3, -8],     thumb: { curl: 0.6, ab: 0.5 } },
-    peace:    { curl: [0, 0, 1, 1],           spread: [22, 11, -4, -10],  thumb: { curl: 0.8, ab: 0.4 } },
-    thumbsup: { curl: [1, 1, 1, 1],           spread: [4, 2, -2, -4],     thumb: { curl: 0, ab: 0.7 } },
-    fist:     { curl: [1, 1, 1, 1],           spread: [4, 2, -2, -4],     thumb: { curl: 0.7, ab: 0.5 } },
-    ok:       { curl: [0.7, 0, 0, 0],         spread: [10, 6, 2, -8],     thumb: { curl: 0.5, ab: 0.85 } },
-    claw:     { curl: [0.5, 0.55, 0.55, 0.5], spread: [12, 4, -4, -12],   thumb: { curl: 0.4, ab: 1.0 } },
-    clutch:   { curl: [0.7, 0.75, 0.75, 0.7], spread: [8, 3, -3, -9],     thumb: { curl: 0.6, ab: 0.7 } },
+    open:     { curl: [0.16, 0.18, 0.18, 0.16], spread: [-14, -6, 6, 14],   thumb: { curl: 0.12, ab: 1.0 } },
+    relaxed:  { curl: [0.4, 0.45, 0.45, 0.4],   spread: [-13, -5, 5, 13],   thumb: { curl: 0.35, ab: 0.85 } },
+    spread:   { curl: [0.12, 0.14, 0.14, 0.12], spread: [-22, -10, 10, 22], thumb: { curl: 0.1, ab: 1.25 } },
+    wave:     { curl: [0.16, 0.18, 0.18, 0.16], spread: [-12, -5, 5, 12],   thumb: { curl: 0.2, ab: 0.9 } },
+    point:    { curl: [0, 1, 1, 1],             spread: [-8, -3, 3, 8],     thumb: { curl: 0.6, ab: 0.5 } },
+    peace:    { curl: [0, 0, 1, 1],             spread: [-16, 6, 4, 10],    thumb: { curl: 0.8, ab: 0.4 } },
+    thumbsup: { curl: [1, 1, 1, 1],             spread: [-4, -2, 2, 4],     thumb: { curl: 0, ab: 0.7 } },
+    fist:     { curl: [1, 1, 1, 1],             spread: [-4, -2, 2, 4],     thumb: { curl: 0.7, ab: 0.5 } },
+    ok:       { curl: [0.7, 0, 0, 0],           spread: [-10, -6, -2, 8],   thumb: { curl: 0.5, ab: 0.85 } },
+    claw:     { curl: [0.5, 0.55, 0.55, 0.5],   spread: [-12, -4, 4, 12],   thumb: { curl: 0.4, ab: 1.0 } },
+    clutch:   { curl: [0.7, 0.75, 0.75, 0.7],   spread: [-8, -3, 3, 9],     thumb: { curl: 0.6, ab: 0.7 } },
   };
   const preset = PRESETS[grip];
 
@@ -1326,11 +1336,14 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
       .translate([0, 0, palmTopZ - palmL * 0.3]);
     const wristSlab = sdf.roundedBox([palmW * 0.72, thick, palmL * 0.6], rEdge)
       .translate([0, 0, palmTopZ - palmL * 0.72]);
-    let hand = knuckleSlab.smoothUnion(wristSlab, rh * 0.45);   // 2 big coplanar boxes — safe
+    // PLAIN union (Lipschitz): a smoothUnion here is a smin field whose marching
+    // artifacts get WORSE at the fine hand resolution (spurious tiny handles).
+    // Two coplanar overlapping rounded boxes union cleanly.
+    let hand = knuckleSlab.union(wristSlab);
 
     const span = count * 2 * fr + (count - 1) * rh * 0.16;
     const baseLimit = palmW * 0.5 - fr;   // keep every finger base on the palm
-    const lenProfile = (u: number): number => 1.05 - 0.26 * u * u + 0.05 * u;
+    const lenProfile = (u: number): number => 1.22 - 0.22 * u * u + 0.05 * u;
     for (let i = 0; i < count; i++) {
       const u = count > 1 ? (i / (count - 1)) * 2 - 1 : 0;        // −1..1 across the fan
       const k = count > 1 ? Math.round((i / (count - 1)) * 3) : 1;  // map onto the 4-entry preset
@@ -1363,39 +1376,45 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
     return hand.union(sdf.capsule(tbase, ttip, fr * 1.05));
   }
 
-  function hand(c: Vec3, dir: Vec3, hinge: Vec3, side: number): Node {
-    if (!sculpted) {
-      if (grip === 'fist') return sdf.sphere(rh * 1.05).translate(c);
-      if (grip === 'open') return sdf.ellipsoid(rh * 0.55, rh * 1.2, rh * 0.9).translate(c);
-      const tip = add3(c, scale3(dir, rh * 1.1));
-      return tapered(sdf, c, tip, rh * 0.95, rh * 0.6, rh * 0.5);
-    }
-    // Build in the canonical frame and orient onto this wrist (palm = dir × splay).
+  // Canonical hand + the rigid transform that places it on a wrist (palm =
+  // dir × splay). The mesh path marches the canonical node and applies this
+  // transform to the MESH, so the inter-finger gaps stay axis-aligned.
+  function placedHand(c: Vec3, dir: Vec3, hinge: Vec3, side: number): { node: Node; euler: Vec3; c: Vec3 } {
     const dn = norm3(dir);
     const dotSD = hinge[0] * dn[0] + hinge[1] * dn[1] + hinge[2] * dn[2];
     const sp = norm3(sub3(hinge, scale3(dn, dotSD)));
     const pn = norm3(cross3(dn, sp));
-    return canonicalHand(side).rotate(eulerFromBasis(sp, pn, dn)).translate(c);
+    return { node: canonicalHand(side), euler: eulerFromBasis(sp, pn, dn), c };
   }
 
-  const both = hand(j.handL as Vec3, rig.dir.lowerArmL, rig.dir.elbowHingeL, +1)
-    .union(hand(j.handR as Vec3, rig.dir.lowerArmR, rig.dir.elbowHingeR, -1));
-  // Sculpted hands carry separated fingers that the coarse body march would web
-  // into topological handles (and the in-place refine pass can only fray into
-  // spikes — it can't change topology). Tag them as a FINE-HANDS region so the
-  // build meshes each hand on its own uniform fine grid (cheap — a hand's bbox
-  // is tiny) and hard-unions it onto the coarse forearm at the wrist (distinct
-  // shapes → clean overlap, no seam). Puffy `fingers:false` hands have no thin
-  // gaps, so they ride the normal coarse path. The fine radius grows with finger
-  // length so long fingers stay inside the marched box.
-  if (!sculpted) return both;
-  const fineEdge = Math.max(rh * 0.055, 0.055);
-  const fineRadius = rh * Math.max(2.6, 1.4 + lengthK * 1.4);
-  const regions: FineRegion[] = [
-    { center: [...(j.handL as Vec3)] as Vec3, radius: fineRadius, edgeLength: fineEdge },
-    { center: [...(j.handR as Vec3)] as Vec3, radius: fineRadius, edgeLength: fineEdge },
+  if (!sculpted) {
+    // Legacy puffy hands have no thin gaps — ride the normal coarse path.
+    const puffy = (c: Vec3, dir: Vec3): Node => {
+      if (grip === 'fist') return sdf.sphere(rh * 1.05).translate(c);
+      if (grip === 'open') return sdf.ellipsoid(rh * 0.55, rh * 1.2, rh * 0.9).translate(c);
+      const tip = add3(c, scale3(dir, rh * 1.1));
+      return tapered(sdf, c, tip, rh * 0.95, rh * 0.6, rh * 0.5);
+    };
+    return puffy(j.handL as Vec3, rig.dir.lowerArmL).union(puffy(j.handR as Vec3, rig.dir.lowerArmR));
+  }
+
+  // Sculpted hands carry separated fingers the coarse body march would web into
+  // topological handles (the in-place refine can only fray them into spikes — it
+  // can't change topology). Tag them as a FINE-HANDS region: each hand is marched
+  // in its CANONICAL frame on a tight uniform fine grid (so the finger gaps line
+  // up with the grid and resolve cleanly at any pose, and the tight bbox keeps a
+  // fine grid cheap) and the mesh is rotated onto the wrist and hard-unioned onto
+  // the coarse forearm (distinct shapes → clean overlap, no seam).
+  const fineEdge = Math.max(rh * 0.04, 0.04);
+  const pL = placedHand(j.handL as Vec3, rig.dir.lowerArmL, rig.dir.elbowHingeL, +1);
+  const pR = placedHand(j.handR as Vec3, rig.dir.lowerArmR, rig.dir.elbowHingeR, -1);
+  const world = (p: { node: Node; euler: Vec3; c: Vec3 }): Node => p.node.rotate(p.euler).translate(p.c);
+  const both = world(pL).union(world(pR));
+  const pieces: FineRegion[] = [
+    { node: pL.node, euler: pL.euler, translate: pL.c, edgeLength: fineEdge },
+    { node: pR.node, euler: pR.euler, translate: pR.c, edgeLength: fineEdge },
   ];
-  return sdf.__fineHands(both, regions);
+  return sdf.__fineHands(both, pieces);
 }
 
 

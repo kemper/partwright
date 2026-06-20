@@ -58,3 +58,36 @@ component, 203k tris, clean separated spike-free fingers in the REAL browser
 (`renderViews`) AND headless `model:preview`. 1511 unit tests pass; preflight
 green (no new dep cycles). Catalog rebake (#751) still needed for the baked
 `.partwright.json` thumbnails to show the new hands.
+
+## Human (follow-up)
+
+The relaxed hand looks good but the open hand looks alien — fingers fuse and arch
+into the centre. Do close-up previews of EACH grip to confirm appearance
+holistically. Make hands a bit bigger by default, and add a hand-size parameter.
+Also: even relaxed shows mesh garbage between fingers on some models — we may need
+finer hand resolution.
+
+## Assistant (follow-up)
+
+Three real bugs behind the "alien open hand" + inter-finger garbage:
+1. **Spread sign was inverted** — outer fingers (index on −X, pinky on +X) fanned
+   toward the palm CENTRE instead of outward, so they arched in (the alien look)
+   AND converged into near-contact, whose union valleys the marcher bridged into
+   handles. Flipped every grip's spread so outer fingers fan outward; tuned
+   `peace` to a real index/middle V.
+2. **Palm used `smoothUnion`** (smin = non-Lipschitz). Its marching artifacts get
+   WORSE at the finer hand resolution (genus rose with resolution — the tell).
+   Switched to a plain Lipschitz `union` of the two coplanar palm slabs.
+3. **Hands meshed in WORLD space** (rotated onto the wrist), so the thin
+   inter-finger gaps marched diagonally to the grid → pose-dependent webbing.
+   Now each hand is meshed in its CANONICAL (axis-aligned) frame on a tight fine
+   grid, then the MESH is `rotate(euler).translate(c)`-ed onto the wrist (SDF
+   `.rotate` matches `Manifold.rotate`, verified). Tight bbox also makes a finer
+   grid cheap.
+
+Result: all 11 grips genus-clean and resolution-stable (genus stays 0 as the grid
+refines). Reviewed every grip in close-up palm-on previews — open/spread/wave fan
+naturally, fist/claw/clutch curl, point/peace/ok/thumbsup read correctly. Added a
+`hands({ size })` knob (default 1.15× baseline so hands read a bit bigger) and
+lengthened the fingers slightly. Full figure: genus 0, 242k tris, verified in the
+real browser. 1511 unit tests pass; preflight green.

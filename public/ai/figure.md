@@ -382,7 +382,8 @@ const skin = F.weld(rig, [F.torso(rig), F.arms(rig), F.hands(rig, { grip: 'open'
 
 `F.handDetail(rig)` is now a deprecated no-op (it returns no spheres) — existing
 `detail: [...F.handDetail(rig)]` keeps working but contributes nothing. Optional
-`hands` knobs: `count` (finger count), `length` (finger length multiplier),
+`hands` knobs: `size` (overall hand scale, 1 = default; e.g. `size: 1.3` for
+bigger hands), `count` (finger count), `length` (finger length multiplier),
 `palmThickness`. Pass `fingers: false` for the legacy mitten/paddle hands. The
 hand frame derives from the rig (fingers extend along the forearm, palm faces
 the elbow-curl direction), so posed arms keep correct hands automatically.

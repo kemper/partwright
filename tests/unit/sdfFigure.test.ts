@@ -2191,21 +2191,22 @@ describe('figure placeOnHead — seat headwear on the hair', () => {
 describe('figure hands — fine-hands marker + partition', () => {
   const rig = buildRig({ height: 60, headsTall: 6 });
 
-  it('tags sculpted hands as a fine-hands region with one sphere per hand', () => {
+  it('tags sculpted hands as a fine-hands region with one canonical piece per hand', () => {
     const hands = buildHands(api, rig) as SdfNode;
     expect(hands.kind).toBe('fineHands');
-    const regions = hands._fineRegions!;
-    expect(regions).toHaveLength(2);
-    expect(regions[0].center).toEqual(rig.joints.handL);
-    expect(regions[1].center).toEqual(rig.joints.handR);
-    expect(regions[0].edgeLength).toBeLessThan(0.4);           // finer than the figure grid
-    expect(regions[0].radius).toBeGreaterThan(rig.r.hand * 2); // covers the fingers
+    const pieces = hands._fineRegions!;
+    expect(pieces).toHaveLength(2);
+    expect(pieces[0].translate).toEqual(rig.joints.handL);     // placed on the wrist
+    expect(pieces[1].translate).toEqual(rig.joints.handR);
+    expect(pieces[0].euler).toHaveLength(3);                    // rotation onto the wrist
+    expect(pieces[0].edgeLength).toBeLessThan(0.4);            // finer than the figure grid
+    expect(pieces[0].node.kind).toBeDefined;                   // the canonical hand SDF
   });
 
   it('follows posed hands', () => {
     const posed = buildRig({ pose: { armL: { raiseSide: 150, bend: 40 } } });
     const hands = buildHands(api, posed) as SdfNode;
-    expect(hands._fineRegions![0].center).toEqual(posed.joints.handL);
+    expect(hands._fineRegions![0].translate).toEqual(posed.joints.handL);
   });
 
   it('legacy puffy hands (fingers:false) are NOT a fine-hands region', () => {
