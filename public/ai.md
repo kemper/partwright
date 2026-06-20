@@ -348,6 +348,7 @@ partwright.listAnnotations() / addTextAnnotation({anchor, text}) / clearAnnotati
 await partwright.createSession(name?)    // -> {id, url, galleryUrl}
 await partwright.runAndSave(code, label?, assertions?) // Assert+save in one call -> {passed?, geometry, printability, version, diff, galleryUrl, colorRegions?}. `colorRegions` (also on saveVersion) lists each paint region's {name, kind, label?, triangleCount} — confirm `kind: 'byLabel'` for small files and a non-zero triangleCount. Voxel runs add `geometry.voxelCount`.
 await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch create
+await partwright.buildCharacter(spec, {save?, label?}) // No-code humanoid: generate a posed, painted figure from a spec (body/pose/face/hair/clothing/colors) -> {code, ...runAndSave result}. Same engine as the 🧍 Character panel. Partial specs fall back to defaults. See /ai/figure.md#shortcut.
 await partwright.saveVersion(label?)     // Save current state as version
 await partwright.saveAllParts()          // Save every part with unsaved changes (visits each, restores the active part) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]

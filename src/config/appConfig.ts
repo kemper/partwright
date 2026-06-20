@@ -205,6 +205,10 @@ export interface AppConfig {
     workCameraSaveDebounceMs: number;
     /** Debounce delay (ms) for the surface-modifier live preview. */
     surfacePreviewDebounceMs: number;
+    /** Debounce delay (ms) for the Character Creator's live figure preview.
+     *  An SDF figure rebuild is heavy, so this is longer than the surface one to
+     *  coalesce rapid slider edits into a single rebuild on settle. */
+    characterPreviewDebounceMs: number;
     /** Debounce delay (ms) for the relief import 2D preview. */
     reliefPreviewDebounceMs: number;
     /** Debounce delay (ms) for the relief import 3D preview. */
@@ -345,6 +349,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     companionDraftDebounceMs: 600,
     workCameraSaveDebounceMs: 500,
     surfacePreviewDebounceMs: 250,
+    characterPreviewDebounceMs: 450,
     reliefPreviewDebounceMs: 120,
     reliefPreview3dDebounceMs: 250,
     progressModalShowDelayMs: 250,
