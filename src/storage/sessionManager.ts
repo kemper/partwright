@@ -2164,7 +2164,19 @@ export interface MergePartsResult {
  * with no `parts[]` collapse into one part; the same color-region and
  * top-level-annotation back-compat fallbacks apply) but writes into the
  * existing session instead of a fresh one. Returns null if no session is open.
- */
+ *//** Pick a part name that doesn't collide with names already in the session.
+ *  A meaningful imported name (anything that isn't the generic `Part N`) is kept
+ *  when it's free; otherwise we assign the next free sequential `Part N`. This
+ *  stops a merged default-named figure from importing as a second "Part 1"
+ *  alongside the host's "Part 1". */
+function uniquePartName(desired: string, taken: Set<string>, order: number): string {
+  const trimmed = desired.trim();
+  if (trimmed && !/^Part \d+$/.test(trimmed) && !taken.has(trimmed)) return trimmed;
+  let n = order + 1;
+  while (taken.has(`Part ${n}`)) n++;
+  return `Part ${n}`;
+}
+
 export async function importSessionPartsIntoActive(
   data: ExportedSession,
   regenerateThumbnail?: (
@@ -2214,9 +2226,15 @@ export async function importSessionPartsIntoActive(
     // Skip an imported part that carries no versions — nothing to seed it with.
     if (partVersions.length === 0) continue;
 
+    // Name the appended part so it can't collide with a name already in the
+    // session (host parts + parts added earlier in this same merge).
+    const taken = new Set<string>([
+      ...currentState.parts.map(p => p.name),
+      ...addedParts.map(p => p.name),
+    ]);
     const part = await dbCreatePart(
       sessionId,
-      (def.name && def.name.trim()) || `Part ${i + 1}`,
+      uniquePartName(def.name ?? '', taken, nextOrder),
       nextOrder++,
     );
     addedParts.push(part);
