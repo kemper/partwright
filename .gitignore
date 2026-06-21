@@ -72,3 +72,7 @@ playwright/.cache/
 
 # Local Cloudflare/wrangler emulation cache
 .wrangler/
+
+# Figure-eval per-run output (renders, contact sheets) — keep cases/ + baseline.json
+evals/figures/results/
+evals/figures/cases/*/verdict.json
