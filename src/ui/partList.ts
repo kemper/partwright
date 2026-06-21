@@ -90,7 +90,12 @@ function render(state: SessionState): void {
   addBtn.addEventListener('click', () => { if (state.session) void cb.onCreatePart(); });
   header.appendChild(addBtn);
 
+  // Collapsing the rail to reclaim horizontal width is a desktop affordance; on
+  // mobile the parts list is a full-width pane reached via the pane toggle, so
+  // hide the collapse button there (it would otherwise leave the pane empty).
   const collapseBtn = iconBtn('«', 'Hide parts panel'); // «
+  collapseBtn.classList.remove('flex');
+  collapseBtn.classList.add('hidden', 'md:flex');
   collapseBtn.addEventListener('click', () => cb.onToggleCollapse());
   header.appendChild(collapseBtn);
 

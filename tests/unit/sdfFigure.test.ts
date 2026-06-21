@@ -22,6 +22,7 @@ const api: SdfApi = {
   roundedCylinder: sdfT.primRoundedCylinder,
   capsule: sdfT.primCapsule,
   union: (...nodes) => nodes.reduce((a, b) => sdfT.opUnion(a, b)),
+  __fineHands: (node, regions) => sdfT.opFineHands(node, regions),
 } as unknown as SdfApi;
 
 const dist = (a: number[], b: number[]): number =>
@@ -1764,7 +1765,7 @@ describe('figure hands — sculpted fingers', () => {
   });
 
   it('rejects unknown grips and keys', () => {
-    expect(() => buildHands(api, rig, { grip: 'claw' })).toThrow(/grip/);
+    expect(() => buildHands(api, rig, { grip: 'karate' })).toThrow(/grip/);
     expect(() => buildHands(api, rig, { claws: true })).toThrow();
   });
 });
@@ -2188,24 +2189,47 @@ describe('figure placeOnHead — seat headwear on the hair', () => {
   });
 });
 
-describe('figure handDetail — detail-region helper', () => {
+describe('figure hands — fine-hands marker + partition', () => {
   const rig = buildRig({ height: 60, headsTall: 6 });
 
-  it('returns one sphere per hand, centred on the hand joints, finer than the figure grid', () => {
-    const [L, R] = handDetail(rig);
-    expect(L.center).toEqual(rig.joints.handL);
-    expect(R.center).toEqual(rig.joints.handR);
-    expect(L.edgeLength).toBeLessThan(0.4);          // finer than the 0.4–0.6 figure grid
-    expect(L.radius).toBeGreaterThan(rig.r.hand * 2); // covers the fingers
+  it('tags sculpted hands as a fine-hands region with one canonical piece per hand', () => {
+    const hands = buildHands(api, rig) as SdfNode;
+    expect(hands.kind).toBe('fineHands');
+    const pieces = hands._fineRegions!;
+    expect(pieces).toHaveLength(2);
+    expect(pieces[0].translate).toEqual(rig.joints.handL);     // placed on the wrist
+    expect(pieces[1].translate).toEqual(rig.joints.handR);
+    expect(pieces[0].euler).toHaveLength(3);                    // rotation onto the wrist
+    expect(pieces[0].edgeLength).toBeLessThan(0.4);            // finer than the figure grid
+    expect(pieces[0].node.kind).toBeDefined;                   // the canonical hand SDF
   });
 
-  it('follows posed hands and honours overrides', () => {
+  it('follows posed hands', () => {
     const posed = buildRig({ pose: { armL: { raiseSide: 150, bend: 40 } } });
-    const [L] = handDetail(posed);
-    expect(L.center).toEqual(posed.joints.handL);
-    const [o] = handDetail(rig, { radius: 9, edgeLength: 0.11 });
-    expect(o.radius).toBe(9);
-    expect(o.edgeLength).toBe(0.11);
+    const hands = buildHands(api, posed) as SdfNode;
+    expect(hands._fineRegions![0].translate).toEqual(posed.joints.handL);
+  });
+
+  it('legacy puffy hands (fingers:false) are NOT a fine-hands region', () => {
+    const puffy = buildHands(api, rig, { fingers: false, grip: 'open' }) as SdfNode;
+    expect(puffy.kind).not.toBe('fineHands');
+  });
+
+  it('partition splits a labelled weld into a coarse body + per-hand fine regions, all sharing the label', () => {
+    const hands = buildHands(api, rig) as SdfNode;
+    const body = api.sphere(10) as unknown as SdfNode;
+    const skin = (api.union(body, hands) as unknown as SdfNode).label('skin');
+    const parts = partitionByLabel(skin);
+    const fine = parts.filter((p) => p.fineRegions !== undefined);
+    const coarse = parts.filter((p) => p.fineRegions === undefined);
+    expect(coarse).toHaveLength(1);                  // the body, meshed coarse
+    expect(fine).toHaveLength(1);                    // the hands, meshed per-sphere fine
+    expect(fine[0].fineRegions).toHaveLength(2);
+    expect(parts.every((p) => p.labelName === 'skin')).toBe(true);  // hands still paint as skin
+  });
+
+  it('handDetail is now a no-op (hands self-mesh) but still validates keys', () => {
+    expect(handDetail(rig)).toEqual([]);
     expect(() => handDetail(rig, { density: 1 })).toThrow();
   });
 });

@@ -42,7 +42,9 @@ import {
   type VersionOperation,
   type SessionNote,
   type AttachedImage,
+  type SessionAttachment,
 } from './db';
+import { normalizeAttachment } from './attachment';
 import { publishTabSync, onTabSync } from './tabSync';
 import { clearReliefSettings } from '../relief/reliefSettings';
 import { listMessages as dbListMessages, putMessages as dbPutMessages } from '../ai/db';
@@ -168,8 +170,20 @@ import { appPath } from '../deployment';
  *           schema number; it's the signal the cross-major migration flow keys
  *           off (see appVersionCompat.ts). Absent on pre-1.15 files and on
  *           dev/test builds (version 'unknown'); older readers ignore it.
+ *  - `1.16` — reference images generalized to typed **attachments**
+ *           (`session.attachments`). Each item carries a `kind`
+ *           (`image | model | document | text | other`) plus optional
+ *           `mediaType`/`addedAt`/`source`, so a session can pin non-image
+ *           files (spec PDFs, reference models, notes) as durable project
+ *           context. Legacy `session.images` / `session.referenceImages`
+ *           (and the object-map form) still read as image attachments. Older
+ *           readers ignore the new field.
+ *  - `1.17` — attachments gain an optional free-form `description`
+ *           (`session.attachments[].description`) — a "why this matters" note
+ *           distinct from the short `label`/perspective caption. Additive;
+ *           older readers ignore it.
  */
-export const SCHEMA_VERSION = '1.15';
+export const SCHEMA_VERSION = '1.17';
 
 const CURRENT_MAJOR = 1;
 
@@ -204,9 +218,10 @@ export interface ExportedSession {
    * @since 1.15
    */
   appVersion?: string;
-  /** Images may be the array form or the legacy object map ({front, right, ...}).
-   * Both also exist under `referenceImages` for pre-rename exports. */
-  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number }; workCamera?: { position: [number, number, number]; target: [number, number, number] } };
+  /** Attachments (schema 1.16+) are the array of typed `SessionAttachment`s.
+   * Legacy `images` / `referenceImages` (array form or the object map
+   * {front, right, ...}) still read as image attachments for older exports. */
+  session: { name: string; created: number; updated: number; attachments?: SessionAttachment[] | null; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number }; workCamera?: { position: [number, number, number]; target: [number, number, number] } };
   /**
    * The session's parts, ordered by `order`. Present from schema 1.7. Pre-1.7
    * files omit this; on import they collapse into a single default part.
@@ -479,7 +494,7 @@ export function getSchemaCompatibilityWarning(data: ExportedSession): string | n
   return null;
 }
 
-export type { Session, Part, Version, VersionOperation, SessionNote, AttachedImage, SessionDraft } from './db';
+export type { Session, Part, Version, VersionOperation, SessionNote, AttachedImage, SessionAttachment, AttachmentKind, SessionDraft } from './db';
 
 // Pure resolver for a version's effective modeling language — re-exported from
 // its own tiny module so unit tests can import it without dragging in the
@@ -706,10 +721,14 @@ export async function renameSession(id: string, newName: string): Promise<void> 
 // with the session (via sessionId index) and pruned when a part is deleted.
 
 /** The recoverable contents of an editor draft: the main buffer plus, for SCAD
- *  drafts, any unsaved companion files. */
+ *  drafts, any unsaved companion files, and unsaved user paint regions. */
 export interface DraftContents {
   code: string;
   companionFiles?: Record<string, string>;
+  /** Unsaved paint regions serialized from the draft slot. Absent when no paint
+   *  was stashed (e.g. the part was never painted or the draft predates this
+   *  field). */
+  colorRegions?: SerializedColorRegion[];
 }
 
 /** Read the working buffer for a (session, part, language) triple. Pass
@@ -718,15 +737,20 @@ export interface DraftContents {
 export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<DraftContents | null> {
   const row = await dbGetDraft(sessionId, language, partId);
   if (!row) return null;
-  return { code: row.code, companionFiles: row.companionFiles };
+  return {
+    code: row.code,
+    companionFiles: row.companionFiles,
+    colorRegions: row.colorRegions as SerializedColorRegion[] | undefined,
+  };
 }
 
 /** Write the working buffer for a (session, part, language) triple. Idempotent
  *  — the row is upserted by composite key. `companionFiles` is persisted for
  *  SCAD drafts so companion edits survive a reload; pass `{}` (or omit) for
- *  languages that don't use them. */
-export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>): Promise<void> {
-  await dbSetDraft(sessionId, language, code, partId, companionFiles);
+ *  languages that don't use them. `colorRegions` carries unsaved paint so a
+ *  painted part keeps its paint across a switch or reload. */
+export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>, colorRegions?: SerializedColorRegion[]): Promise<void> {
+  await dbSetDraft(sessionId, language, code, partId, companionFiles, colorRegions);
 }
 
 
@@ -936,10 +960,13 @@ export async function partSaveState(part: Part): Promise<PartSaveState> {
   const latest = await getLatestVersion(part.id);
   if (!latest) {
     // Never committed: "unsaved" if any stashed draft holds real (non-starter)
-    // content; otherwise it's an untouched new part ("no changes yet").
+    // content or unsaved paint; otherwise it's an untouched new part.
     const drafts = await dbListDrafts(part.sessionId);
     const prefix = `${part.sessionId}:${part.id}:`;
-    const hasContent = drafts.some(d => d.id.startsWith(prefix) && !isStarterCode(d.code));
+    const hasContent = drafts.some(d =>
+      d.id.startsWith(prefix) &&
+      (!isStarterCode(d.code) || (Array.isArray(d.colorRegions) && d.colorRegions.length > 0))
+    );
     return hasContent ? 'unsaved' : 'empty';
   }
   const lang = effectiveVersionLanguage(latest, currentState.session);
@@ -949,6 +976,13 @@ export async function partSaveState(part: Part): Promise<PartSaveState> {
   // SCAD drafts also stash unsaved companion-file edits; treat those as unsaved.
   if (lang === 'scad' && !companionFilesEqual(latest.companionFiles ?? {}, draft.companionFiles ?? {})) {
     return 'unsaved';
+  }
+  // A draft with paint regions that differ from the saved version's paint is unsaved.
+  if (draft.colorRegions && draft.colorRegions.length > 0) {
+    const savedGeoData = latest.geometryData as Record<string, unknown> | null;
+    if (!colorRegionsEqual({ colorRegions: draft.colorRegions }, savedGeoData)) {
+      return 'unsaved';
+    }
   }
   return 'clean';
 }
@@ -1442,29 +1476,29 @@ export function getGalleryUrl(): string {
   return `${base}?session=${currentState.session.id}&gallery`;
 }
 
-// === Images ===
+// === Attachments (formerly "reference images") ===
 
-export async function saveImages(images: AttachedImage[] | null): Promise<void> {
+export async function saveAttachments(attachments: SessionAttachment[] | null): Promise<void> {
   if (!currentState.session) return;
   const id = currentState.session.id;
   await dbUpdateSession(id, {
-    images,
+    attachments,
     updated: Date.now(),
   });
   // Update local state so getState() reflects the change
   currentState = {
     ...currentState,
-    session: { ...currentState.session, images },
+    session: { ...currentState.session, attachments },
   };
   notify();
   publishTabSync({ kind: 'session-meta', sessionId: id });
 }
 
-export async function getImagesFromSession(): Promise<AttachedImage[] | null> {
+export async function getAttachmentsFromSession(): Promise<SessionAttachment[] | null> {
   if (!currentState.session) return null;
   // Refresh from DB in case it was updated externally
   const session = await getSession(currentState.session.id);
-  return session?.images ?? null;
+  return session?.attachments ?? null;
 }
 
 // === Notes ===
@@ -1871,7 +1905,7 @@ export async function exportSession(
   return {
     partwright: SCHEMA_VERSION,
     ...(stampedAppVersion ? { appVersion: stampedAppVersion } : {}),
-    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}) },
+    session: { name: session.name, created: session.created, updated: session.updated, attachments: session.attachments ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}) },
     parts: parts.map(p => ({ name: p.name, order: p.order })),
     versions: flat.map(({ v, partOrder }, i) => {
       const colorRegions = opts.includeColorRegions ? extractColorRegions(v.geometryData) : undefined;
@@ -1942,15 +1976,19 @@ export async function importSession(
   // version-language fallback chain).
   const session = await dbCreateSession(data.session.name, asLanguage(data.session.language));
 
-  // Restore images if present in the exported data. Handle two legacy shapes:
+  // Restore attachments if present. Handle the new field plus legacy shapes:
+  //   - 1.16+: `attachments` (typed SessionAttachment[])
+  //   - pre-1.16: `images` (typed-less array of {id, src, label})
   //   - pre-rename: `referenceImages` instead of `images`
-  //   - pre-array: object map `{front: 'url', ...}` instead of `[{id, angle, src}]`
-  const rawImages = data.session.images ?? data.session.referenceImages ?? null;
-  if (rawImages) {
-    const imagesArr = Array.isArray(rawImages)
-      ? rawImages
-      : legacyImagesObjectToArray(rawImages);
-    await dbUpdateSession(session.id, { images: imagesArr });
+  //   - pre-array: object map `{front: 'url', ...}`
+  // Everything is normalized into typed attachments (image-kind for the legacy
+  // shapes, which only ever held images).
+  const rawAttachments = data.session.attachments ?? data.session.images ?? data.session.referenceImages ?? null;
+  if (rawAttachments) {
+    const arr = Array.isArray(rawAttachments)
+      ? rawAttachments.map(a => normalizeAttachment(a, generateId()))
+      : legacyImagesObjectToArray(rawAttachments);
+    await dbUpdateSession(session.id, { attachments: arr });
   }
 
   // Restore the pinned thumbnail camera (schema 1.12+). Validate both angles
@@ -2145,7 +2183,19 @@ export interface MergePartsResult {
  * with no `parts[]` collapse into one part; the same color-region and
  * top-level-annotation back-compat fallbacks apply) but writes into the
  * existing session instead of a fresh one. Returns null if no session is open.
- */
+ *//** Pick a part name that doesn't collide with names already in the session.
+ *  A meaningful imported name (anything that isn't the generic `Part N`) is kept
+ *  when it's free; otherwise we assign the next free sequential `Part N`. This
+ *  stops a merged default-named figure from importing as a second "Part 1"
+ *  alongside the host's "Part 1". */
+function uniquePartName(desired: string, taken: Set<string>, order: number): string {
+  const trimmed = desired.trim();
+  if (trimmed && !/^Part \d+$/.test(trimmed) && !taken.has(trimmed)) return trimmed;
+  let n = order + 1;
+  while (taken.has(`Part ${n}`)) n++;
+  return `Part ${n}`;
+}
+
 export async function importSessionPartsIntoActive(
   data: ExportedSession,
   regenerateThumbnail?: (
@@ -2195,9 +2245,15 @@ export async function importSessionPartsIntoActive(
     // Skip an imported part that carries no versions — nothing to seed it with.
     if (partVersions.length === 0) continue;
 
+    // Name the appended part so it can't collide with a name already in the
+    // session (host parts + parts added earlier in this same merge).
+    const taken = new Set<string>([
+      ...currentState.parts.map(p => p.name),
+      ...addedParts.map(p => p.name),
+    ]);
     const part = await dbCreatePart(
       sessionId,
-      (def.name && def.name.trim()) || `Part ${i + 1}`,
+      uniquePartName(def.name ?? '', taken, nextOrder),
       nextOrder++,
     );
     addedParts.push(part);

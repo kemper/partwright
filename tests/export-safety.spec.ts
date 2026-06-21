@@ -46,8 +46,9 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     try {
       localStorage.setItem('partwright-tour-completed', '1');
-      // Ensure a clean unit baseline regardless of any persisted value.
-      localStorage.removeItem('partwright-units');
+      // Pin the unitless baseline explicitly so these unit-warning tests don't
+      // depend on the app default (which is now 'mm', not 'unitless').
+      localStorage.setItem('partwright-units', 'unitless');
       // Disable auto-format so runAndSave's saved code matches the editor buffer
       // exactly — otherwise the part reads as "unsaved" (formatted editor vs
       // unformatted saved arg) and the new unsaved-parts export warning fires.

@@ -8,8 +8,9 @@
 // touches the engine or storage directly.
 
 import type { ParamSpec, ParamValue, ParamValues } from '../geometry/params';
-import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { openViewportPanel, closeViewportPanel, getActiveViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
+import { createColorSwatch } from './colorPickerModal';
 
 export interface ParamsPanelOptions {
   /** Fired when a single widget changes — main.ts updates the override, re-runs,
@@ -177,8 +178,14 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     if (schemaChanged) {
       currentSig = sig;
       rebuild(schema);
-      // A new or changed parameter set re-opens the panel so its knobs are seen.
-      userClosed = false;
+      // A new or changed parameter set normally re-opens the panel so its knobs
+      // are seen (e.g. first opening a parameterizable model). But if the user
+      // already has a DIFFERENT viewport tool menu open — typically because they
+      // switched parts while using Surface/Paint/Resize/etc. — keep that menu as
+      // the current one and stay closed, rather than auto-popping over it. The
+      // user can still open Customize from its toolbar pill.
+      const other = getActiveViewportPanel();
+      userClosed = other !== null && other !== registryEntry;
     }
     paramCount = schema.length;
     updateValues(values);
@@ -336,12 +343,15 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
     setValue = (v) => { sel.value = String(v); };
   } else if (spec.type === 'color') {
     row.appendChild(labelRow);
-    const color = document.createElement('input');
-    color.type = 'color';
-    color.className = 'w-full h-7 bg-zinc-800 border border-zinc-600 rounded cursor-pointer';
-    color.addEventListener('change', () => onChange(spec.key, color.value));
-    row.appendChild(color);
-    setValue = (v) => { color.value = String(v); };
+    const sw = createColorSwatch({
+      initialHex: '#000000',
+      title: 'Pick a colour',
+      modalTitle: spec.label ?? 'Pick a colour',
+      className: 'w-full h-7 rounded border border-zinc-600 cursor-pointer',
+      onPick: (hex) => onChange(spec.key, hex),
+    });
+    row.appendChild(sw.el);
+    setValue = (v) => { sw.setHex(String(v)); };
   } else {
     // text
     row.appendChild(labelRow);

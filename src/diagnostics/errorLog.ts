@@ -23,6 +23,7 @@ export type ErrorSource =
   | 'storage'
   | 'network'
   | 'app'
+  | 'character'
   | 'uncaught';
 
 export interface LogEntry {

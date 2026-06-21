@@ -81,6 +81,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Polygon with rounded corners | `Curves.polyline(points, {fillet: r})` | BOSL2 `round_corners(...)` | (use manifold-js Curves) |
 | Wing, hull, fuselage (varying profile along axis) | `Curves.loft([profA, profB], [zA, zB])` -> `/ai/curves.md` | BOSL2 `skin([profiles], z=, slices=)` -> `/ai/bosl2.md` | (use manifold-js Curves) |
 | Handle, tube, propeller (profile along 3D path) | `Curves.sweep(profile, pathPoints)` | BOSL2 `path_sweep(profile, path)` | (use manifold-js Curves) |
+| Ribbed / fluted / threaded / corrugated tube — texture that FLOWS along the path (incl. branching organic shapes like a cactus) | **`api.sdf.tube(path, radius, {profile:'flutes'\|'rings'\|'helix'})` -> `/ai/sdf.md#tube`** (continuous through bends; `smoothUnion` several for a branching body — don't hand-roll with `warp`/`displace`) | BOSL2 `path_sweep` of a fluted profile | (use manifold-js sdf) |
 | Revolve around an arbitrary axis | `Curves.revolveAxis(profile, [ax,ay,az])` | `rotate([...]) rotate_extrude() polygon()` | (use manifold-js Curves) |
 | 3D text / embossed label | **`api.text("Hi", {size, height, font, spacing, center})` → Manifold** (Liberation Sans; fonts lazy-loaded ~1.6 MB on first use); `api.textSection(...)` → CrossSection for custom extrusion | `text("Hi", size=10, font="Liberation Sans:style=Regular")` | (use manifold-js) |
 | Round/chamfer all sharp edges of a solid | `Curves.fillet(solid, {angle: 60})` (mesh-smoothing) | BOSL2 `cuboid(rounding=...)`, `round3d(...)` | **`.fillet(radius)` / `.chamfer(distance)` -> `/ai/replicad.md` (exact, BREP-true)** |
@@ -243,6 +244,8 @@ partwright.getClipState()      // -> {enabled, z, min, max}
 // Viewport controls
 partwright.setGridVisible(on?)       // Show/hide grid plane (omit to toggle) -> boolean
 partwright.isGridVisible()           // Whether grid plane is visible
+partwright.setStudioLighting(on?)    // Toggle studio lighting: reflections + soft shadow, on by default (omit to toggle) -> boolean
+partwright.isStudioLighting()        // Whether studio lighting is on
 partwright.setDimensionsVisible(on?) // Show/hide bounding box dimensions (omit to toggle) -> boolean
 partwright.areDimensionsVisible()    // Whether dimensions overlay is visible
 partwright.setOrbitLock(on?)         // Lock/unlock camera rotation (omit to toggle) -> boolean
@@ -289,7 +292,7 @@ await partwright.exportOBJData()        // text or base64 depending on whether c
 await partwright.export3MFData()
 await partwright.exportVOXData()        // -> {filename, mimeType, base64, sizeBytes} (voxel sessions only)
 // Multi-part: bundle several Session Parts into one file (default: all parts). See /ai/file-io.md.
-await partwright.export3MFParts(partIds?, filename?, {bambu?})  // 3MF: one part per Bambu/Orca plate (bambu:true, default) or generic grid (false)
+await partwright.export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?})  // 3MF: one part per Bambu/Orca plate (bambu:true, default; printer "p1s"/"h2c"…, nozzle "0.4", filament "pla"/"petg"…) or generic grid (false)
 await partwright.exportOBJParts(partIds?, filename?)            // OBJ: named objects in one file, grid-arranged (+ .mtl .zip if painted)
 await partwright.exportSTLParts(partIds?, filename?)            // STL: a .zip of one .stl per part
 await partwright.exportGLBParts(partIds?, filename?)            // GLB: named nodes in one scene, grid-arranged
@@ -325,12 +328,16 @@ partwright.isRunning()                   // -> boolean (is code executing?)
 partwright.getSpendingMode()             // -> {mode, thinking, renderResolution, renderResolutionPx, verificationAngles, painting, sessionNotes, ...}
 partwright.setSpendingMode('balanced')   // 'cheap' | 'balanced' | 'expensive' (sets thinking, vision, paint, notes, caps at once)
 
-// Images -- attach photos to compare model against (see /ai/reference-images.md)
-partwright.setImages([{src, label?}, ...])  // replace all; src is data URL or http(s) URL; label is an optional caption
-partwright.addImage({src, label?})          // append one; returns {id, src, label?}
+// Attachments -- durable session files: reference photos, models, docs, notes
+//   (survive a chat clear; see /ai/reference-images.md#attachments)
+partwright.setImages([{src, label?}, ...])  // replace image attachments; src is data URL or http(s) URL; label optional
+partwright.addImage({src, label?})          // append one image; returns {id, src, label?}
 partwright.removeImage(id)                  // remove by id; returns true if removed
-partwright.clearImages()
-partwright.getImages()                      // -> [{id, src, label?}, ...]
+partwright.clearImages()                    // clear image attachments (non-image ones kept)
+partwright.getImages()                      // -> [{id, src, label?}, ...] (image-kind only)
+partwright.addAttachment({src, kind?, mediaType?, label?, description?})  // pin ANY file; kind/mediaType inferred; description = why it matters
+partwright.getAttachments()                 // -> [{id, kind, mediaType?, src, label?, description?, addedAt?, source?}, ...]
+partwright.setAttachments([...]) / partwright.removeAttachment(id) / partwright.clearAttachments()
 
 // Color regions (~30 paint methods) — call readDoc("colors") for the full picker decision tree.
 partwright.paintRegion({point, normal, color, name?, tolerance?})  // coplanar flood-fill (flat faces)
@@ -348,6 +355,7 @@ partwright.listAnnotations() / addTextAnnotation({anchor, text}) / clearAnnotati
 await partwright.createSession(name?)    // -> {id, url, galleryUrl}
 await partwright.runAndSave(code, label?, assertions?) // Assert+save in one call -> {passed?, geometry, printability, version, diff, galleryUrl, colorRegions?}. `colorRegions` (also on saveVersion) lists each paint region's {name, kind, label?, triangleCount} — confirm `kind: 'byLabel'` for small files and a non-zero triangleCount. Voxel runs add `geometry.voxelCount`.
 await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch create
+await partwright.buildCharacter(spec, {save?, label?}) // No-code humanoid: generate a posed, painted figure from a spec (body/pose/face/hair/clothing/colors) -> {code, ...runAndSave result}. Same engine as the 🧍 Character panel. Partial specs fall back to defaults. See /ai/figure.md.
 await partwright.saveVersion(label?)     // Save current state as version
 await partwright.saveAllParts()          // Save every part with unsaved changes (visits each, restores the active part) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
@@ -358,6 +366,7 @@ await partwright.diffVersions({index} | {id}, {index} | {id}) // Compare two ver
 await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
 await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
 await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); external/console agents hand this to the user — in-app users click the toolbar Share (↗) button instead
+partwright.publish(platform?)            // Assisted publish to Printables/MakerWorld/Thingiverse/Thangs: no public upload API, so it prepares the file + cover + clipboard details and opens the upload page. platform?: 'printables'|'makerworld'|'thingiverse'|'thangs' (or {error}). See /ai/file-io.md
 partwright.getGalleryUrl()               // -> URL for gallery view (local browser only)
 partwright.getSessionUrl()               // -> URL for this session (local browser only)
 await partwright.listSessions()          // -> [{id, name, updated}]
@@ -829,9 +838,9 @@ The standard `exportGLB()` / `exportSTL()` / `exportOBJ()` / `export3MF()` metho
 
 ## Reference images & photo-to-model
 
-The user can attach reference photos via `partwright.setImages([...])`; they appear in the Images tab and Gallery. There's also an analyze-and-build workflow that takes a single photo and bootstraps a model from it.
+The user can attach reference photos via `partwright.setImages([...])`; they appear in the Attachments tab and Gallery. Photos are one **kind** of session attachment — the same panel also holds reference models, PDFs, and notes (`getAttachments`/`addAttachment`), all of which persist across a chat clear. There's also an analyze-and-build workflow that takes a single photo and bootstraps a model from it.
 
-**Call `readDoc({name: "reference-images"})`** when the user attaches a photo or asks you to model something from an image — covers `setImages` arguments, label conventions for elevation matching, and the five-step photo-to-model loop (major masses first, verify each elevation, iterate details).
+**Call `readDoc({name: "reference-images"})`** when the user attaches a photo or asks you to model something from an image — covers `setImages`/`getAttachments` arguments, label conventions for elevation matching, the durable-attachments model, and the five-step photo-to-model loop (major masses first, verify each elevation, iterate details).
 
 ## Iteration workflow
 

@@ -41,3 +41,11 @@ export function openViewportPanel(panel: ViewportPanel, opts?: { silent?: boolea
 export function closeViewportPanel(panel: ViewportPanel): void {
   if (active === panel) active = null;
 }
+
+/** The viewport tool panel currently open ("the current menu"), or `null` if
+ *  none. Lets a panel about to auto-open check whether the user already has a
+ *  *different* menu open and defer to it (see the Customizer's part-switch
+ *  auto-reveal). */
+export function getActiveViewportPanel(): ViewportPanel | null {
+  return active;
+}

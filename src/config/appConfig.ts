@@ -122,6 +122,11 @@ export interface AppConfig {
      *  far the camera can dolly back (OrbitControls maxDistance) so the model
      *  can't shrink to a speck. Re-derived from the model size on each frame. */
     maxZoomOutFactor: number;
+    /** Default framing tightness: when auto-framing (every fresh render and
+     *  "Reset view"), the camera sits at this multiple of the model's largest
+     *  dimension along each of X/Y/Z, i.e. a view distance of factor·√3·maxDim.
+     *  Higher = more zoomed out / more margin around the model. */
+    defaultFrameFactor: number;
     /** Ambient light intensity in the 3D viewport (0–2 range). */
     ambientLightIntensity: number;
     /** Primary directional light intensity (0–2 range). */
@@ -200,6 +205,10 @@ export interface AppConfig {
     workCameraSaveDebounceMs: number;
     /** Debounce delay (ms) for the surface-modifier live preview. */
     surfacePreviewDebounceMs: number;
+    /** Debounce delay (ms) for the Character Creator's live figure preview.
+     *  An SDF figure rebuild is heavy, so this is longer than the surface one to
+     *  coalesce rapid slider edits into a single rebuild on settle. */
+    characterPreviewDebounceMs: number;
     /** Debounce delay (ms) for the relief import 2D preview. */
     reliefPreviewDebounceMs: number;
     /** Debounce delay (ms) for the relief import 3D preview. */
@@ -310,6 +319,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     orbitDampingFactor: 0.1,
     orbitDampingReferenceFps: 60,
     maxZoomOutFactor: 12,
+    defaultFrameFactor: 1.5,
     ambientLightIntensity: 0.6,
     primaryLightIntensity: 0.8,
     secondaryLightIntensity: 0.3,
@@ -339,6 +349,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     companionDraftDebounceMs: 600,
     workCameraSaveDebounceMs: 500,
     surfacePreviewDebounceMs: 250,
+    characterPreviewDebounceMs: 450,
     reliefPreviewDebounceMs: 120,
     reliefPreview3dDebounceMs: 250,
     progressModalShowDelayMs: 250,

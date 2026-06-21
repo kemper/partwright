@@ -134,6 +134,20 @@ function bbTransformCorners(a: Box, fn: (p: Vec3) => Vec3): Box {
 
 type EvalFn = (x: number, y: number, z: number) => number;
 
+/** One hand of a fine-hands region: the hand in its CANONICAL (axis-aligned)
+ *  frame plus the rigid transform that places it on the wrist. The build meshes
+ *  the canonical node on a tight axis-aligned fine grid — where the inter-finger
+ *  gaps line up with the march grid, so they resolve cleanly at ANY arm pose —
+ *  then `Manifold.rotate(euler).translate(translate)` snaps the mesh onto the
+ *  wrist (the SDF `.rotate` matches `Manifold.rotate`, so the result is
+ *  identical to transforming the SDF first, minus the pose-dependent webbing). */
+export interface FineHandPiece {
+  node: SdfNode;
+  euler: Vec3;
+  translate: Vec3;
+  edgeLength: number;
+}
+
 interface NodeData {
   kind: string;
   eval: EvalFn;
@@ -159,8 +173,15 @@ interface NodeData {
   rewrap?: (child: SdfNode) => SdfNode;
   /** Engine binding for `.build()`. Threaded through chain methods and
    *  ops from the input node(s). Undefined for pure-logic unit-test
-   *  factories — only callers of `.build()` need it. */
+   *  factories — only callers of `.build()` require it. */
   ctx?: BuildContext;
+  /** Marks this node as a FINE-HANDS region (see `opFineHands`): at build
+   *  time it is pulled into its own region and meshed by a per-sphere uniform
+   *  fine march instead of the coarse global march, then hard-unioned. Carries
+   *  the per-feature spheres to march. The coarse march webs thin, closely-
+   *  spaced features (figure fingers) into topological handles the in-place
+   *  refine can't undo; this resolves them at the source. */
+  fineRegions?: FineHandPiece[];
 }
 
 let nextId = 1;
@@ -178,6 +199,7 @@ export class SdfNode {
   /** @internal */ readonly _partitionable: boolean;
   /** @internal */ readonly _rewrap: ((child: SdfNode) => SdfNode) | undefined;
   /** @internal */ readonly _ctx: BuildContext | undefined;
+  /** @internal */ readonly _fineRegions: FineHandPiece[] | undefined;
 
   constructor(data: NodeData) {
     this.id = `sdf_${nextId++}`;
@@ -188,6 +210,7 @@ export class SdfNode {
     this._partitionable = data.partitionable;
     this._rewrap = data.rewrap;
     this.labelName = data.labelName;
+    this._fineRegions = data.fineRegions;
     // Inherit ctx from data, else from the first child that has one.
     // Lets `union(a, b)` keep the engine binding from either operand.
     this._ctx = data.ctx ?? (data.children.find(c => c._ctx !== undefined)?._ctx);
@@ -535,6 +558,21 @@ function buildSdf(
     // standard SDF: positive=inside, negative=outside. Negate so user
     // code can keep writing distance functions the normal way.
     const negated: (p: Vec3) => number = (p) => -evalFn(p[0], p[1], p[2]);
+    // FINE-HANDS region: mesh each hand in its canonical frame on a tight fine
+    // grid and rotate it onto the wrist (see meshFineRegions). The coarse global
+    // march would web the thin, closely-spaced fingers into a topological handle
+    // the in-place refine can't fix — and a rotated SDF webs them pose-dependent
+    // — so the hand is marched fine and axis-aligned at the source. The result
+    // overlaps the coarse body at the wrist, so the final hard-union (below)
+    // merges them as distinct shapes with no seam.
+    if (region.fineRegions !== undefined && region.fineRegions.length > 0) {
+      let m = meshFineRegions(region.fineRegions, level, edgeLength, Manifold);
+      if (m !== null) {
+        if (region.labelName) m = label(m, region.labelName);
+        meshed.push(m);
+      }
+      continue;
+    }
     // Expand bounds slightly so the iso-surface closes cleanly; if the
     // SDF reaches the boundary, marching tetrahedra would emit egg-crate
     // closing faces. A margin of max(edgeLength, 1) is empirical — large
@@ -718,6 +756,40 @@ function refineManifoldNearRegions(
   }
 }
 
+/** Mesh a fine-hands region: march each hand in its CANONICAL (axis-aligned)
+ *  frame on a tight uniform fine grid, then `rotate(euler).translate(...)` the
+ *  mesh onto its wrist and hard-union the pieces. Marching in canonical space
+ *  is the whole point: the inter-finger gaps run along the grid axes there, so
+ *  they resolve cleanly at ANY arm pose (a rotated SDF would mesh those thin
+ *  gaps diagonally and web them — the pose-dependent garbage), and the canonical
+ *  bbox is tight so a fine grid stays cheap. Returns null if every march was
+ *  empty (so the caller drops the region rather than pushing an empty mesh). */
+function meshFineRegions(
+  pieces: FineHandPiece[],
+  level: number,
+  coarseEdge: number,
+  Manifold: ManifoldClass,
+): ManifoldInstance | null {
+  let acc: ManifoldInstance | null = null;
+  for (const piece of pieces) {
+    const negated: (p: Vec3) => number = (p) => -piece.node._eval(p[0], p[1], p[2]);
+    const bbox = bbExpand(piece.node._bounds, fineMargin(piece.edgeLength));
+    let chunk: ManifoldInstance;
+    try {
+      chunk = Manifold.levelSet(negated, bbox, piece.edgeLength, level);
+      if ((chunk.numTri() as number) === 0) continue;
+      chunk = chunk.rotate(piece.euler).translate(piece.translate);
+    } catch (err) {
+      console.warn('api.sdf.build(): fine-hands march failed for a hand, skipping it.', err);
+      continue;
+    }
+    acc = acc === null ? chunk : acc.add(chunk);
+  }
+  // A fine march of two near-but-separate features can shed a sub-cell sliver
+  // where their grids meet; drop debris below a couple of COARSE cells.
+  return acc === null ? null : dropSubCellDebris(acc, Manifold, coarseEdge);
+}
+
 function expandedMeshBounds(nodeBounds: Box, userBounds: Box, edgeLength: number): Box {
   // The user-supplied bounds (if any) clip the region. The node's own
   // bounds (where the surface actually lives) cap the work. Take the
@@ -730,7 +802,33 @@ function expandedMeshBounds(nodeBounds: Box, userBounds: Box, edgeLength: number
 
 // --- Label partitioning -------------------------------------------------
 
-interface Partition { node: SdfNode; labelName?: string }
+interface Partition { node: SdfNode; labelName?: string; fineRegions?: FineHandPiece[] }
+
+/** True if a fine-hands marker (`opFineHands`) sits anywhere in the subtree. */
+function containsFineHands(node: SdfNode): boolean {
+  if (node.kind === 'fineHands') return true;
+  for (const c of node._children) if (containsFineHands(c)) return true;
+  return false;
+}
+
+/** Split a subtree into the fine-hands markers and "the rest" (markers removed),
+ *  walking only the hard-`union` nodes that `weld` produces around the markers.
+ *  The rest's eval therefore EXCLUDES the hands, so the body meshes coarse with
+ *  no fingers to web; each marker becomes its own per-sphere-fine region. */
+function extractFineHands(node: SdfNode): { rest: SdfNode | null; hands: SdfNode[] } {
+  if (node.kind === 'fineHands') return { rest: null, hands: [node] };
+  if (node._partitionable && node.kind === 'union') {
+    let rest: SdfNode | null = null;
+    const hands: SdfNode[] = [];
+    for (const c of node._children) {
+      const r = extractFineHands(c);
+      if (r.rest !== null) rest = rest === null ? r.rest : opUnion(rest, r.rest);
+      hands.push(...r.hands);
+    }
+    return { rest, hands };
+  }
+  return { rest: node, hands: [] };
+}
 
 /** Walk the tree top-down. When we hit a labelled node, that whole
  *  subtree becomes one region (with the label). When we hit a
@@ -740,8 +838,25 @@ interface Partition { node: SdfNode; labelName?: string }
  *  the perspective of its surviving A side) in which case the inner
  *  label propagates up. */
 export function partitionByLabel(root: SdfNode): Partition[] {
-  // If the root itself is labelled, the whole tree is one region.
+  // A fine-hands marker reached directly is its own region (meshed per-sphere).
+  if (root.kind === 'fineHands') {
+    return [{ node: root._children[0], fineRegions: root._fineRegions }];
+  }
+  // If the root itself is labelled, the whole tree is one region — UNLESS the
+  // labelled subtree carries fine-hands markers, in which case split them out
+  // as sibling regions that still paint with this label (hands stay 'skin')
+  // but mesh per-sphere-fine while the rest meshes coarse.
   if (root.labelName !== undefined) {
+    const child = root._children[0];
+    if (child !== undefined && containsFineHands(child)) {
+      const { rest, hands } = extractFineHands(child);
+      const parts: Partition[] = [];
+      if (rest !== null) parts.push({ node: rest, labelName: root.labelName });
+      for (const h of hands) {
+        parts.push({ node: h._children[0], labelName: root.labelName, fineRegions: h._fineRegions });
+      }
+      return parts;
+    }
     return [{ node: root, labelName: root.labelName }];
   }
   // Rigid/similarity transforms distribute over union: partition the child
@@ -754,9 +869,9 @@ export function partitionByLabel(root: SdfNode): Partition[] {
       labelName: p.labelName,
     }));
   }
-  // If the root is a partitionable boolean (union/etc.) AND any
-  // descendant carries a label, walk into the children.
-  if (root._partitionable && hasLabelledDescendant(root)) {
+  // If the root is a partitionable boolean (union/etc.) AND any descendant
+  // carries a label OR a fine-hands marker, walk into the children.
+  if (root._partitionable && (hasLabelledDescendant(root) || containsFineHands(root))) {
     const parts: Partition[] = [];
     for (const child of root._children) {
       parts.push(...partitionByLabel(child));
@@ -983,6 +1098,162 @@ function primCapsule(a: Vec3, b: Vec3, radius: number): SdfNode {
   );
 }
 
+/** A tube swept along a polyline path, with an optional surface texture
+ *  that FLOWS ALONG the direction of travel. This is the directional-surface
+ *  primitive: longitudinal `flutes`, circumferential `rings`, or wrapping
+ *  `helix` threads are parameterized by (distance along the path, angle
+ *  around it) using a rotation-minimizing frame, so the pattern stays
+ *  continuous through bends — no per-segment phase seams, no separate caps
+ *  to align. The whole tube is ONE connected component by construction.
+ *
+ *  `path` is a Vec3[] of >= 2 points (2 = a straight column; more = it bends
+ *  through them). Texture grooves are carved INWARD from the radius, so they
+ *  can never detach a piece. */
+export type TubeProfile = 'smooth' | 'flutes' | 'rings' | 'helix';
+export interface TubeOptions {
+  /** Surface pattern that flows along the path. Default `'smooth'`. */
+  profile?: TubeProfile;
+  /** Rib count (flutes), ring count over the whole length (rings), or
+   *  thread-start count (helix). Defaults size-relative. */
+  count?: number;
+  /** Helix only: number of full wraps along the entire path. Default 6. */
+  turns?: number;
+  /** Groove depth, carved inward in world units. Default ~9% of radius. */
+  depth?: number;
+  /** End radius as a fraction of the start radius, applied linearly along
+   *  the path (1 = no taper, <1 = taper toward the last point). Default 1. */
+  taper?: number;
+}
+
+const TUBE_OPTION_KEYS = ['profile', 'count', 'turns', 'depth', 'taper'] as const;
+
+/** Tube along a polyline path with a direction-following surface texture. */
+function primTube(path: unknown, radius: unknown, opts: unknown = {}): SdfNode {
+  if (!Array.isArray(path) || path.length < 2) {
+    throw new ValidationError('tube(path): path must be an array of at least 2 points ([x,y,z]).');
+  }
+  const P: Vec3[] = path.map((p, i) => assertNumberTuple(p, 3, `tube(path[${i}])`) as Vec3);
+  const r0 = assertNumber(radius, 'tube(radius)', { min: 1e-6 }) as number;
+  const o = assertObject(opts, 'tube(opts)', { optional: true }) ?? {};
+  assertNoUnknownKeys(o, TUBE_OPTION_KEYS, 'tube(opts)');
+  const profile = (o.profile === undefined
+    ? 'smooth'
+    : assertEnum(o.profile, ['smooth', 'flutes', 'rings', 'helix'] as const, 'tube(opts.profile)')) as TubeProfile;
+  const taper = o.taper === undefined ? 1 : assertNumber(o.taper, 'tube(opts.taper)', { min: 1e-3 }) as number;
+  const depth = o.depth === undefined ? r0 * 0.09 : assertNumber(o.depth, 'tube(opts.depth)', { min: 0 }) as number;
+  const turns = o.turns === undefined ? 6 : assertNumber(o.turns, 'tube(opts.turns)') as number;
+
+  // --- precompute per-segment data + a rotation-minimizing frame (RMF) -----
+  const n = P.length;
+  const segDir: Vec3[] = [];   // unit direction of each segment
+  const segLen: number[] = [];
+  const cum: number[] = [0];   // cumulative arc length at each vertex
+  for (let i = 0; i < n - 1; i++) {
+    const dx = P[i + 1][0] - P[i][0], dy = P[i + 1][1] - P[i][1], dz = P[i + 1][2] - P[i][2];
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-9) throw new ValidationError('tube(path): consecutive points must be distinct.');
+    segDir.push([dx / len, dy / len, dz / len]);
+    segLen.push(len);
+    cum.push(cum[i] + len);
+  }
+  const total = cum[n - 1];
+  // Tangent per vertex (segment dir; last vertex reuses the final segment).
+  const tan: Vec3[] = [];
+  for (let i = 0; i < n; i++) tan.push(segDir[Math.min(i, n - 2)]);
+
+  const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const unit = (a: Vec3): Vec3 => { const m = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / m, a[1] / m, a[2] / m]; };
+
+  // Initial frame vector U[0] perpendicular to the first tangent.
+  const t0 = tan[0];
+  const ref: Vec3 = Math.abs(t0[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+  const U: Vec3[] = [unit(cross(t0, ref))];
+  // Double-reflection RMF (Wang et al. 2008) — minimal twist along the path.
+  for (let i = 0; i < n - 1; i++) {
+    const v1: Vec3 = [P[i + 1][0] - P[i][0], P[i + 1][1] - P[i][1], P[i + 1][2] - P[i][2]];
+    const c1 = dot(v1, v1) || 1e-9;
+    const ui = U[i], ti = tan[i];
+    const fr = 2 * dot(v1, ui) / c1;
+    const rL: Vec3 = [ui[0] - fr * v1[0], ui[1] - fr * v1[1], ui[2] - fr * v1[2]];
+    const ft = 2 * dot(v1, ti) / c1;
+    const tL: Vec3 = [ti[0] - ft * v1[0], ti[1] - ft * v1[1], ti[2] - ft * v1[2]];
+    const v2: Vec3 = [tan[i + 1][0] - tL[0], tan[i + 1][1] - tL[1], tan[i + 1][2] - tL[2]];
+    const c2 = dot(v2, v2);
+    if (c2 < 1e-9) { U.push(unit(rL)); continue; }
+    const fr2 = 2 * dot(v2, rL) / c2;
+    U.push(unit([rL[0] - fr2 * v2[0], rL[1] - fr2 * v2[1], rL[2] - fr2 * v2[2]]));
+  }
+
+  const TWO_PI = Math.PI * 2;
+  const flutes = profile === 'flutes', rings = profile === 'rings';
+  const defaultCount = rings
+    ? Math.max(4, Math.round(total / (r0 * 1.6)))
+    : Math.max(6, Math.round(r0 * 0.9));
+  // Integer count: a fractional helix start-count leaves a longitudinal seam
+  // where atan2 wraps (the phase is not even in theta); flutes/rings are even
+  // in theta so they'd tolerate it, but an integer rib/ring/thread count is
+  // what callers mean anyway.
+  const count = o.count === undefined ? defaultCount : assertNumber(o.count, 'tube(opts.count)', { min: 1, integer: true }) as number;
+
+  const evalFn: EvalFn = (x, y, z) => {
+    // Nearest point over all segments.
+    let best = Infinity, bSeg = 0, bT = 0;
+    let bcx = 0, bcy = 0, bcz = 0;
+    for (let i = 0; i < n - 1; i++) {
+      const A = P[i], d = segDir[i], L = segLen[i];
+      const px = x - A[0], py = y - A[1], pz = z - A[2];
+      let t = px * d[0] + py * d[1] + pz * d[2];   // projection (world units along seg)
+      if (t < 0) t = 0; else if (t > L) t = L;
+      const cx = A[0] + d[0] * t, cy = A[1] + d[1] * t, cz = A[2] + d[2] * t;
+      const ex = x - cx, ey = y - cy, ez = z - cz;
+      const dist2 = ex * ex + ey * ey + ez * ez;
+      if (dist2 < best) { best = dist2; bSeg = i; bT = t / L; bcx = cx; bcy = cy; bcz = cz; }
+    }
+    const dist = Math.sqrt(best);
+    const sNorm = total > 0 ? (cum[bSeg] + bT * segLen[bSeg]) / total : 0;
+    const rad = r0 * (1 + (taper - 1) * sNorm);
+    if (profile === 'smooth' || depth === 0) return dist - rad;
+
+    // Local frame at the nearest point: interpolate tangent + RMF normal.
+    // Kept fully scalar (no per-sample array allocation) — this runs once per
+    // marching-cube sample, matching the allocation-free sibling primitives.
+    const i0 = bSeg, i1 = bSeg + 1, t = bT;
+    let axx = tan[i0][0] + (tan[i1][0] - tan[i0][0]) * t;
+    let axy = tan[i0][1] + (tan[i1][1] - tan[i0][1]) * t;
+    let axz = tan[i0][2] + (tan[i1][2] - tan[i0][2]) * t;
+    const am = Math.hypot(axx, axy, axz) || 1; axx /= am; axy /= am; axz /= am;
+    let ux = U[i0][0] + (U[i1][0] - U[i0][0]) * t;
+    let uy = U[i0][1] + (U[i1][1] - U[i0][1]) * t;
+    let uz = U[i0][2] + (U[i1][2] - U[i0][2]) * t;
+    const ud = ux * axx + uy * axy + uz * axz;   // re-orthogonalize U against axis
+    ux -= ud * axx; uy -= ud * axy; uz -= ud * axz;
+    const um = Math.hypot(ux, uy, uz) || 1; ux /= um; uy /= um; uz /= um;
+    const vx = axy * uz - axz * uy, vy = axz * ux - axx * uz, vz = axx * uy - axy * ux;
+    const wx = x - bcx, wy = y - bcy, wz = z - bcz;
+    const theta = Math.atan2(wx * vx + wy * vy + wz * vz, wx * ux + wy * uy + wz * uz);
+
+    // Groove value g in [0,1]; carved inward so the surface never detaches.
+    let phase: number;
+    if (flutes) phase = count * theta;
+    else if (rings) phase = TWO_PI * count * sNorm;
+    else /* helix */ phase = count * theta + TWO_PI * turns * sNorm;
+    const g = 0.5 - 0.5 * Math.cos(phase);
+    return dist - rad + depth * g;
+  };
+
+  const grow = r0 * Math.max(1, taper) + 1e-3;
+  let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+  for (const p of P) {
+    if (p[0] < mnx) mnx = p[0]; if (p[1] < mny) mny = p[1]; if (p[2] < mnz) mnz = p[2];
+    if (p[0] > mxx) mxx = p[0]; if (p[1] > mxy) mxy = p[1]; if (p[2] > mxz) mxz = p[2];
+  }
+  return leafNode('tube', evalFn, {
+    min: [mnx - grow, mny - grow, mnz - grow],
+    max: [mxx + grow, mxy + grow, mxz + grow],
+  });
+}
+
 const INFINITE_BOUNDS: Box = {
   min: [-Infinity, -Infinity, -Infinity],
   max: [Infinity, Infinity, Infinity],
@@ -1125,6 +1396,23 @@ function opUnion(a: SdfNode, b: SdfNode): SdfNode {
     bounds: bbUnion(a._bounds, b._bounds),
     children: [a, b],
     partitionable: true,
+  });
+}
+
+/** Tag `node` as a fine-hands region (internal — used by the figure's hands).
+ *  Transparent for eval/bounds (it IS its child geometrically); the build
+ *  partitions it into its own region and meshes it per-sphere at a uniform fine
+ *  grid, then hard-unions it with the coarse body. `regions` are the per-hand
+ *  spheres (centre = wrist, radius contains the hand, edgeLength = fine grid).
+ *  Not partitionable: the hand is one atomic region. */
+function opFineHands(node: SdfNode, regions: FineHandPiece[]): SdfNode {
+  return new SdfNode({
+    kind: 'fineHands',
+    eval: (x, y, z) => node._eval(x, y, z),
+    bounds: node._bounds,
+    children: [node],
+    partitionable: false,
+    fineRegions: regions,
   });
 }
 
@@ -1876,6 +2164,12 @@ export interface SdfNamespace {
   roundedCylinder(radius: number, height: number, edgeRadius: number): SdfNode;
   torus(majorRadius: number, minorRadius: number): SdfNode;
   capsule(a: Vec3, b: Vec3, radius: number): SdfNode;
+  /** A tube swept along a polyline `path` (>= 2 points) with a surface
+   *  texture that flows along the direction of travel — `flutes` (ridges
+   *  along the path), `rings` (across it), or `helix` (threads wrapping it).
+   *  Uses a rotation-minimizing frame so the pattern is continuous through
+   *  bends, and is ONE connected component by construction. */
+  tube(path: Vec3[], radius: number, opts?: TubeOptions): SdfNode;
   gyroid(cellSize: number, thickness: number): SdfNode;
   schwarzP(cellSize: number, thickness: number): SdfNode;
   diamond(cellSize: number, thickness: number): SdfNode;
@@ -1903,6 +2197,10 @@ export interface SdfNamespace {
   /** Build the SDF tree into a Manifold via Manifold.levelSet, with
    *  optional explicit bounds / edgeLength / level / tolerance. */
   build(node: SdfNode, opts?: SdfBuildOptions): ManifoldInstance;
+  /** @internal Tag a subtree as a fine-hands region — meshed per-sphere at a
+   *  uniform fine grid and hard-unioned (used by the figure's hands so the
+   *  coarse body march never webs the fingers). Not a documented user API. */
+  __fineHands(node: SdfNode, regions: FineHandPiece[]): SdfNode;
 }
 
 /** Construct a fresh SDF namespace for one engine run. Bound to the
@@ -1940,6 +2238,7 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     roundedCylinder: (radius, height, edgeRadius) => bound(primRoundedCylinder(radius, height, edgeRadius)),
     torus: (R, r) => bound(primTorus(R, r)),
     capsule: (a, b, radius) => bound(primCapsule(a, b, radius)),
+    tube: (path, radius, opts) => bound(primTube(path, radius, opts)),
     gyroid: (cellSize, thickness) => bound(primGyroid(cellSize, thickness)),
     schwarzP: (cellSize, thickness) => bound(primSchwarzP(cellSize, thickness)),
     diamond: (cellSize, thickness) => bound(primDiamond(cellSize, thickness)),
@@ -1962,6 +2261,7 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     noise: (opts) => makeNoise(assertNoiseOpts(opts)),
     lsystem: (opts) => bound(buildLSystem(opts)),
     build: (node, opts) => assertSdfNode(node, 'build(node)').build(opts ?? {}),
+    __fineHands: (node, regions) => bound(opFineHands(assertSdfNode(node, '__fineHands(node)'), regions)),
     // Placeholder; replaced below once `namespace` exists (figure builds its
     // parts from these bound namespace methods).
     figure: undefined as unknown as FigureNamespace,
@@ -1984,6 +2284,7 @@ export const __testables__ = {
   primRoundedCylinder,
   primTorus,
   primCapsule,
+  primTube,
   primGyroid,
   primSchwarzP,
   primDiamond,
@@ -1993,6 +2294,7 @@ export const __testables__ = {
   primGradedDiamond,
   primGradedLidinoid,
   opUnion,
+  opFineHands,
   opSubtract,
   opIntersect,
   opSmoothUnion,

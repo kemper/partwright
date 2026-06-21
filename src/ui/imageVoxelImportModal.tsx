@@ -22,6 +22,7 @@ import {
   type ImageVoxelColorMode,
 } from '../import/imageToVoxel';
 import { listSlotRgb255 } from '../color/palette';
+import { openColorPicker } from './colorPickerModal';
 
 export interface ImageVoxelModalOptions {
   filename?: string;
@@ -260,11 +261,12 @@ function PaletteEditor(props: {
       <div class="flex flex-wrap items-center gap-1.5">
         {palette.map((c, i) => (
           <div class="relative">
-            <input
-              type="color"
-              class="w-7 h-7 rounded border border-zinc-700 bg-transparent cursor-pointer"
-              value={toHex(c)}
-              onInput={e => setSwatch(i, (e.target as HTMLInputElement).value)}
+            <button
+              type="button"
+              title={`Edit colour (${toHex(c)})`}
+              class="w-7 h-7 rounded border border-zinc-700 cursor-pointer hover:border-white/70 transition-colors"
+              style={`background-color:${toHex(c)}`}
+              onClick={() => openColorPicker({ initialHex: toHex(c), title: 'Palette colour', onPick: hex => setSwatch(i, hex) })}
             />
             <button
               type="button"
@@ -584,11 +586,12 @@ function ImageVoxelBody(props: {
                 Flat
               </SegButton>
               {opts.colorMode === 'flat' && (
-                <input
-                  type="color"
-                  class="w-7 h-7 rounded border border-zinc-700 bg-transparent cursor-pointer shrink-0"
-                  value={toHex(opts.flatColor)}
-                  onInput={e => set('flatColor', fromHex((e.target as HTMLInputElement).value))}
+                <button
+                  type="button"
+                  title={`Flat colour (${toHex(opts.flatColor)})`}
+                  class="w-7 h-7 rounded border border-zinc-700 cursor-pointer shrink-0 hover:border-white/70 transition-colors"
+                  style={`background-color:${toHex(opts.flatColor)}`}
+                  onClick={() => openColorPicker({ initialHex: toHex(opts.flatColor), title: 'Flat colour', onPick: hex => set('flatColor', fromHex(hex)) })}
                 />
               )}
             </div>

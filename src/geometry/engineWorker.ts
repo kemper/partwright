@@ -214,8 +214,22 @@ self.onmessage = async (event: MessageEvent) => {
               if (pm.mergeToVert)   ptransfer.push(pm.mergeToVert.buffer);
               if (pm.runIndex)      ptransfer.push(pm.runIndex.buffer);
               if (pm.runOriginalID) ptransfer.push(pm.runOriginalID.buffer);
+              // Carry the model-declared colour data so the main thread can paint
+              // an estimated colour onto the coarse mesh (api.label colours +
+              // api.paint.* ops). Same serialisation as the full execute_result
+              // below — labelMap is a Map<string,Set>, so flatten to entries.
+              const pLabelMapEntries: [string, number[]][] | null = preview.labelMap
+                ? Array.from(preview.labelMap.entries()).map(([k, v]) => [k, Array.from(v)])
+                : null;
+              const pLabelColorEntries: [string, [number, number, number]][] | null = preview.labelColors
+                ? Array.from(preview.labelColors.entries())
+                : null;
+              const pPaintOps = preview.paintOps ?? null;
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              (self as any).postMessage({ type: 'execute_preview', callId, mesh: pm }, ptransfer);
+              (self as any).postMessage(
+                { type: 'execute_preview', callId, mesh: pm, labelMapEntries: pLabelMapEntries, labelColorEntries: pLabelColorEntries, paintOps: pPaintOps },
+                ptransfer,
+              );
             }
             // Free the preview's live Manifold — only the mesh was transferred.
             const plive = (preview as { manifold?: { delete?: () => void } } | undefined)?.manifold;

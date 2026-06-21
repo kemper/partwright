@@ -572,6 +572,14 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'maxZoomOutFactor', v)}
         />
         <Field
+          label="Default zoom (framing)"
+          tooltip="How zoomed-out the default view is, as a multiple of the model's largest dimension along each axis (view distance ≈ factor × 1.7 × that dimension). Higher leaves more margin around the model; lower fills more of the viewport. Applied on every fresh render and when you click Reset view."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.defaultFrameFactor}
+          value={c.renderer.defaultFrameFactor}
+          min={1} max={3} step={0.1}
+          onChange={v => set('renderer', 'defaultFrameFactor', v)}
+        />
+        <Field
           label="Orientation gizmo size"
           unit="px"
           tooltip="The canvas size in CSS pixels of the orientation gizmo (the XYZ cube in the viewport corner). Larger makes the axis labels easier to read; smaller keeps it out of the way. Takes effect after a page reload."
@@ -926,6 +934,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.surfacePreviewDebounceMs}
           min={0} max={2_000} integer
           onChange={v => set('ui', 'surfacePreviewDebounceMs', v)}
+        />
+        <Field
+          label="Character preview debounce"
+          unit="ms"
+          tooltip="Debounce delay for the Character Creator's live figure preview. An SDF figure rebuild is heavy, so this is longer than the surface debounce — it coalesces rapid slider edits into a single rebuild once you settle. Lower for snappier preview; raise if rebuilds stack up."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.characterPreviewDebounceMs}
+          value={c.ui.characterPreviewDebounceMs}
+          min={0} max={3_000} integer
+          onChange={v => set('ui', 'characterPreviewDebounceMs', v)}
         />
         <Field
           label="Relief 2D preview debounce"

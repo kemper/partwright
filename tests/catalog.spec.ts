@@ -192,4 +192,26 @@ test.describe('Catalog page (static)', () => {
     await expect(page.locator('#catalog-page [data-catalog-empty]')).toBeVisible();
     await expect(page.locator('#catalog-page a[data-catalog-tile]:not(.hidden)')).toHaveCount(0);
   });
+
+  test('rapid re-navigation to the catalog renders a single pane (no split view)', async ({ page }) => {
+    // Regression: createCatalogPage awaits a manifest fetch before returning, so
+    // the `if (!catalogEl)` guard stayed null across the await. Rapid re-entry
+    // (a double-click, or the popstate a pushState fires) bypassed it and
+    // appended a second/third #catalog-page, stacking duplicate catalog panes.
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.goto('/editor');
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: unknown }).partwright, null, { timeout: 30_000 });
+
+    // Fire several route syncs back-to-back, faster than the manifest fetch
+    // resolves — the same concurrency a rapid double/triple click produces.
+    await page.evaluate(() => {
+      for (let i = 0; i < 4; i++) {
+        window.history.pushState({}, '', '/catalog');
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      }
+    });
+
+    await expect(page.locator('#catalog-page')).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('#catalog-page')).toHaveCount(1);
+  });
 });
