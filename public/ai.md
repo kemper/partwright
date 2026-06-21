@@ -335,8 +335,8 @@ partwright.addImage({src, label?})          // append one image; returns {id, sr
 partwright.removeImage(id)                  // remove by id; returns true if removed
 partwright.clearImages()                    // clear image attachments (non-image ones kept)
 partwright.getImages()                      // -> [{id, src, label?}, ...] (image-kind only)
-partwright.addAttachment({src, kind?, mediaType?, label?})  // pin ANY file; kind/mediaType inferred when omitted
-partwright.getAttachments()                 // -> [{id, kind, mediaType?, src, label?, addedAt?, source?}, ...]
+partwright.addAttachment({src, kind?, mediaType?, label?, description?})  // pin ANY file; kind/mediaType inferred; description = why it matters
+partwright.getAttachments()                 // -> [{id, kind, mediaType?, src, label?, description?, addedAt?, source?}, ...]
 partwright.setAttachments([...]) / partwright.removeAttachment(id) / partwright.clearAttachments()
 
 // Color regions (~30 paint methods) — call readDoc("colors") for the full picker decision tree.

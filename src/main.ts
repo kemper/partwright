@@ -356,16 +356,18 @@ function commitAttachments(next: SessionAttachment[]): void {
  *  src/label when omitted; an explicit `kind` is checked against the enum. */
 function buildAttachmentFromInput(input: unknown, ctx: string, source?: 'user' | 'chat'): SessionAttachment {
   const obj = assertObject(input, ctx)!;
-  assertNoUnknownKeys(obj, ['src', 'id', 'label', 'kind', 'mediaType'] as const, ctx);
+  assertNoUnknownKeys(obj, ['src', 'id', 'label', 'description', 'kind', 'mediaType'] as const, ctx);
   assertString(obj.src, `${ctx}.src`, { allowEmpty: false });
   if (obj.id !== undefined) assertString(obj.id, `${ctx}.id`, { allowEmpty: false });
   if (obj.label !== undefined) assertString(obj.label, `${ctx}.label`, { optional: true, allowEmpty: true });
+  if (obj.description !== undefined) assertString(obj.description, `${ctx}.description`, { optional: true, allowEmpty: true });
   if (obj.mediaType !== undefined) assertString(obj.mediaType, `${ctx}.mediaType`, { allowEmpty: false });
   if (obj.kind !== undefined) assertEnum(obj.kind, ATTACHMENT_KINDS, `${ctx}.kind`);
   return normalizeAttachment({
     id: obj.id as string | undefined,
     src: obj.src as string,
     label: obj.label as string | undefined,
+    description: obj.description as string | undefined,
     kind: obj.kind as AttachmentKind | undefined,
     mediaType: obj.mediaType as string | undefined,
     addedAt: Date.now(),
@@ -5321,6 +5323,25 @@ async function main() {
       // loop) reads the previous part's stale mesh, so freshly-created parts all
       // get one wrong, colorless thumbnail.
       await seedStarter(getActiveLanguage());
+      // Attachments are session-level, not version-level. The version-load path
+      // (loadVersionIntoEditor) restores them, but a session with attachments
+      // and NO saved version reaches the editor through this branch — so without
+      // this it would lose its attachments on refresh. See
+      // restoreAttachmentsForActiveSession.
+      await restoreAttachmentsForActiveSession();
+    }
+  }
+
+  /** Reload the active session's attachments (stored on the Session row) into
+   *  the in-memory mirror. Session-level data: restored on every session open,
+   *  independent of version/part loading, so attachments survive a refresh even
+   *  when the session has no saved version. */
+  async function restoreAttachmentsForActiveSession(): Promise<void> {
+    const sessionAttachments = await getAttachmentsFromSession();
+    if (sessionAttachments) {
+      _setAttachments(sessionAttachments);
+    } else {
+      _clearAttachments();
     }
   }
 
@@ -6122,12 +6143,7 @@ async function main() {
 
     await rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
-    const sessionAttachments = await getAttachmentsFromSession();
-    if (sessionAttachments) {
-      _setAttachments(sessionAttachments);
-    } else {
-      _clearAttachments();
-    }
+    await restoreAttachmentsForActiveSession();
   }
 
   async function openEditorFromLanding() {
@@ -11297,13 +11313,8 @@ async function main() {
         setValue(version.code);
         await runCodeSync(version.code, { preserveCamera: true });
       }
-      // Restore attachments from session
-      const sessionAttachments = await getAttachmentsFromSession();
-      if (sessionAttachments) {
-        _setAttachments(sessionAttachments);
-      } else {
-        _clearAttachments();
-      }
+      // Attachments are session-level — restore regardless of whether a version loaded.
+      await restoreAttachmentsForActiveSession();
       return version ? { id: version.id, index: version.index, label: version.label } : null;
     },
 
@@ -12022,11 +12033,8 @@ async function main() {
         setValue(version.code);
         await runCodeSync(version.code, { preserveCamera: true });
       }
-      // Restore attachments from imported session
-      const sessionAttachments = await getAttachmentsFromSession();
-      if (sessionAttachments) {
-        _setAttachments(sessionAttachments);
-      }
+      // Restore attachments from imported session (session-level).
+      await restoreAttachmentsForActiveSession();
       return { id: session.id, name: session.name, ...(warning ? { warning } : {}) };
     },
 
@@ -15155,9 +15163,9 @@ async function main() {
         'addSessionNote':  { signature: 'await addSessionNote(text) -- Add note with [PREFIX] tag', docs: '/ai.md#session-notes----tracking-design-context' },
         'listSessionNotes': { signature: 'await listSessionNotes() -- List all session notes', docs: '/ai.md#session-notes----tracking-design-context' },
         // Attachments (durable project files: reference images, models, docs — survive a chat clear)
-        'getAttachments':  { signature: 'getAttachments() -- List session attachments -> [{id, kind, mediaType?, src, label?, addedAt?, source?}]. kind: image|model|document|text|other', docs: '/ai/reference-images.md#attachments' },
-        'addAttachment':   { signature: 'addAttachment({src, label?, kind?, mediaType?}) -- Pin a file to the session (kind/mediaType inferred when omitted) -> the stored item', docs: '/ai/reference-images.md#attachments' },
-        'setAttachments':  { signature: 'setAttachments([{src, label?, kind?, mediaType?}]) -- Replace the whole attachment list', docs: '/ai/reference-images.md#attachments' },
+        'getAttachments':  { signature: 'getAttachments() -- List session attachments -> [{id, kind, mediaType?, src, label?, description?, addedAt?, source?}]. kind: image|model|document|text|other; description = why it matters', docs: '/ai/reference-images.md#attachments' },
+        'addAttachment':   { signature: 'addAttachment({src, label?, description?, kind?, mediaType?}) -- Pin a file to the session (kind/mediaType inferred when omitted; description = why it matters) -> the stored item', docs: '/ai/reference-images.md#attachments' },
+        'setAttachments':  { signature: 'setAttachments([{src, label?, description?, kind?, mediaType?}]) -- Replace the whole attachment list', docs: '/ai/reference-images.md#attachments' },
         'removeAttachment': { signature: 'removeAttachment(id) -- Remove an attachment by id -> boolean', docs: '/ai/reference-images.md#attachments' },
         'clearAttachments': { signature: 'clearAttachments() -- Remove all attachments', docs: '/ai/reference-images.md#attachments' },
         'getImages':       { signature: 'getImages() -- Image-kind attachments only -> [{id, src, label?}]', docs: '/ai/reference-images.md#attachments' },

@@ -204,6 +204,34 @@ function createImageTile(item: SessionAttachment, allImages: SessionAttachment[]
   footer.appendChild(removeBtn);
 
   tile.appendChild(footer);
+
+  // Description: a free-form "why this matters" note, distinct from the short
+  // label. This is the durable context the AI reads back via getAttachments.
+  const descInput = document.createElement('textarea');
+  descInput.rows = 2;
+  descInput.placeholder = 'Describe why this matters (optional)…';
+  descInput.value = item.description ?? '';
+  descInput.className = 'mx-3 mb-2 bg-zinc-900 text-zinc-300 text-xs px-2 py-1 rounded border border-zinc-700 outline-none focus:border-blue-500 placeholder-zinc-600 resize-y';
+  const commitDescription = async () => {
+    const next = descInput.value.trim();
+    const current = item.description ?? '';
+    if (next === current) return;
+    const nextList = allImages.map(x => {
+      if (x.id !== item.id) return x;
+      const updated: SessionAttachment = { ...x, description: next };
+      if (!next) delete updated.description;
+      return updated;
+    });
+    await persistAndRefresh(nextList);
+  };
+  descInput.addEventListener('blur', commitDescription);
+  descInput.addEventListener('keydown', (e) => {
+    // Enter commits (Shift+Enter inserts a newline); Escape reverts.
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); descInput.blur(); }
+    if (e.key === 'Escape') { descInput.value = item.description ?? ''; descInput.blur(); }
+  });
+  tile.appendChild(descInput);
+
   return tile;
 }
 

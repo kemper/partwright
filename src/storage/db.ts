@@ -603,6 +603,7 @@ function migrateSessionImages(s: Session & { images?: LegacyImagesShape; referen
           src: typeof item.src === 'string' ? item.src : '',
           // Pre-unification rows tagged the angle; fold it into the label.
           label: collapseAngleIntoLabel(item),
+          description: typeof item.description === 'string' ? item.description : undefined,
           kind: typeof item.kind === 'string' ? (item.kind as AttachmentKind) : undefined,
           mediaType: typeof item.mediaType === 'string' ? item.mediaType : undefined,
           addedAt: typeof item.addedAt === 'number' ? item.addedAt : undefined,

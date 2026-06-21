@@ -178,8 +178,12 @@ import { appPath } from '../deployment';
  *           context. Legacy `session.images` / `session.referenceImages`
  *           (and the object-map form) still read as image attachments. Older
  *           readers ignore the new field.
+ *  - `1.17` — attachments gain an optional free-form `description`
+ *           (`session.attachments[].description`) — a "why this matters" note
+ *           distinct from the short `label`/perspective caption. Additive;
+ *           older readers ignore it.
  */
-export const SCHEMA_VERSION = '1.16';
+export const SCHEMA_VERSION = '1.17';
 
 const CURRENT_MAJOR = 1;
 

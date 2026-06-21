@@ -332,7 +332,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'getAttachments',
-    description: 'List ALL files the user pinned to this session (the "Attachments" panel): reference images, reference models (STL/STEP/3MF), documents (PDF), and text/notes. Returns a manifest — each entry\'s id, kind (image|model|document|text|other), media type, label, when it was added, and source (user vs captured from a chat upload). Text/notes attachments include their contents inline. These are DURABLE project context: they survive clearing the chat, so use this to recover reference material an earlier conversation was working from. To actually SEE image attachments, call getReferenceImages.',
+    description: 'List ALL files the user pinned to this session (the "Attachments" panel): reference images, reference models (STL/STEP/3MF), documents (PDF), and text/notes. Returns a manifest — each entry\'s id, kind (image|model|document|text|other), media type, label, the user\'s free-form DESCRIPTION of why it matters (shown as "↳ …" — read these, they\'re the key signal), when it was added, and source (user vs captured from a chat upload). Text/notes attachments include their contents inline. These are DURABLE project context: they survive clearing the chat, so use this to recover reference material an earlier conversation was working from. To actually SEE image attachments, call getReferenceImages.',
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -1720,6 +1720,7 @@ interface AttachmentEntry {
   mediaType?: string;
   src?: string;
   label?: string;
+  description?: string;
   addedAt?: number;
   source?: string;
 }
@@ -1771,6 +1772,10 @@ function executeGetAttachments(api: PartwrightAPI): ToolExecResult {
       a.id ? `id=${a.id}` : null,
     ].filter(Boolean);
     lines.push(parts.join(' · '));
+    // The description is the user's "why this matters" note — the most
+    // important signal for the model, so surface it prominently per entry.
+    const desc = a.description?.trim();
+    if (desc) lines.push(`   ↳ ${desc.replace(/\n/g, ' ')}`);
     if (a.kind === 'text') {
       const text = decodeTextAttachment(a.src);
       if (text) lines.push(`   ---\n${text.split('\n').map(l => `   ${l}`).join('\n')}\n   ---`);
