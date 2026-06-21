@@ -103,6 +103,25 @@ export const BAMBU_PRINTERS: BambuPrinterSpec[] = [
 ];
 export const DEFAULT_BAMBU_PRINTER = 'h2c';
 
+/** Selectable nozzle diameters (mm, as Bambu writes them in the profile). The
+ *  value is interpolated straight into the project config, so callers must pass
+ *  one of these exactly — see {@link isBambuNozzle}. */
+export const BAMBU_NOZZLES = ['0.2', '0.4', '0.6', '0.8'];
+export const DEFAULT_BAMBU_NOZZLE = '0.4';
+
+/** True when `id` is a known Bambu printer id (for API-boundary validation). */
+export function isBambuPrinter(id: string): boolean {
+  return BAMBU_PRINTERS.some(p => p.id === id);
+}
+/** True when `nozzle` is one of {@link BAMBU_NOZZLES}. */
+export function isBambuNozzle(nozzle: string): boolean {
+  return BAMBU_NOZZLES.includes(nozzle);
+}
+/** True when `id` is a known Bambu filament id. */
+export function isBambuFilament(id: string): boolean {
+  return BAMBU_FILAMENT_TYPES.some(f => f.id === id);
+}
+
 /** Resolve a printer id to its spec, falling back to the default (H2C). */
 function resolvePrinter(id: string | undefined): BambuPrinterSpec {
   return BAMBU_PRINTERS.find(p => p.id === id) ?? BAMBU_PRINTERS.find(p => p.id === DEFAULT_BAMBU_PRINTER)!;

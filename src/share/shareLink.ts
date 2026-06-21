@@ -127,10 +127,29 @@ export function trimForShare(exported: ExportedSession): ExportedSession {
   const versions = Array.isArray(exported.versions) ? exported.versions : [];
   return {
     ...exported,
+    session: trimAttachmentsForShare(exported.session),
     versions: versions.map(v => {
       const { importedMeshes: _dropMeshes, surfaceTexture: _dropTexture, geometryData, ...rest } = v;
       return { ...rest, geometryData: trimGeometryData(geometryData) };
     }),
+  };
+}
+
+/** Drop the bulky inline `src` data-URL payloads from session attachments,
+ *  keeping the lightweight metadata ({id, kind, label, description, …}). Since
+ *  the attachments generalization (schema 1.16), an attachment can be a
+ *  reference photo OR a reference model (STL/STEP/3MF) or PDF encoded as a
+ *  data URL — potentially megabytes each, all of which would otherwise be
+ *  base64'd into the share URL and blow past {@link MAX_DECOMPRESSED_BYTES} on
+ *  decode. External `http(s)` refs are tiny pointers, so they're kept. */
+function trimAttachmentsForShare(session: ExportedSession['session']): ExportedSession['session'] {
+  const attachments = session.attachments;
+  if (!Array.isArray(attachments) || attachments.length === 0) return session;
+  return {
+    ...session,
+    attachments: attachments.map(a =>
+      typeof a.src === 'string' && a.src.startsWith('data:') ? { ...a, src: '' } : a,
+    ),
   };
 }
 

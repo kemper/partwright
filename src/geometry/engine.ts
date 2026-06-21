@@ -554,6 +554,14 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingSimplifies.delete(callId ?? '');
       pendingEnhances.get(callId)?.reject(err);
       pendingEnhances.delete(callId ?? '');
+    } else {
+      // callId === null: the Worker forwarded an *unhandled* rejection / escaped
+      // WASM panic (engineWorker installs this to keep the main thread from
+      // hanging forever). It isn't tied to one call, and an escaped trap likely
+      // poisoned the WASM instance — so reject every in-flight call and recycle
+      // the Worker rather than silently dropping the error (which would leave
+      // the no-timeout render path's promise unsettled and the UI spinning).
+      recycleEngineWorker(err.message || 'Geometry worker reported an unhandled error');
     }
   }
 }

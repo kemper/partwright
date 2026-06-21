@@ -191,7 +191,9 @@ async function createSessionRow(session: Session): Promise<HTMLElement> {
     img.src = URL.createObjectURL(latestVersion.thumbnail);
     img.loading = 'lazy';
     img.alt = session.name;
-    img.addEventListener('load', () => URL.revokeObjectURL(img.src));
+    const revoke = () => URL.revokeObjectURL(img.src);
+    img.addEventListener('load', revoke);
+    img.addEventListener('error', revoke);
     thumb.appendChild(img);
   } else {
     const placeholder = document.createElement('span');

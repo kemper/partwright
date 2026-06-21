@@ -113,6 +113,12 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── run_turn ───────────────────────────────────────────────────────────
   if (msg.type === 'run_turn') {
+    // Start from an empty queue. The main thread is the source of truth for
+    // queued blocks and re-relays them per turn (via queue_blocks, only while a
+    // turn is in flight). Any blocks left over from a previous turn that ended
+    // without a tool round were never drained; the main thread re-fires them as
+    // this turn's userBlocks, so a stale buffer here would deliver them twice.
+    workerQueuedBlocks.length = 0;
     const input = msg.input as AgentWorkerInput;
     // Seed the Worker's config cache with the user's overrides BEFORE anything
     // reads getConfig() (providers, transient-retry, thinking budgets).

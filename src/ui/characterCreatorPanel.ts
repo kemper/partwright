@@ -9,6 +9,7 @@
 // Paint panels.
 
 import { createToolPanelShell } from './toolPanel';
+import { createColorSwatch } from './colorPickerModal';
 import { registerCommands } from './commandPalette';
 import { BUTTON_PRIMARY, BUTTON_SMALL_SECONDARY } from './styleConstants';
 import { showToast } from './toast';
@@ -101,11 +102,15 @@ function sliderRow(
 }
 
 function colorRow(label: string, value: string, onChange: (v: string) => void): HTMLElement {
-  const input = el('input', 'w-8 h-6 rounded border border-zinc-600 bg-transparent cursor-pointer');
-  input.type = 'color';
-  input.value = value;
-  input.addEventListener('input', () => onChange(input.value));
-  return labelledRow(label, input);
+  // Shared palette modal (filament swatches + recent colours), not the native
+  // OS picker — matches the paint/voxel/relief colour fields.
+  const swatch = createColorSwatch({
+    initialHex: value,
+    title: label,
+    className: 'w-8 h-6 shrink-0 rounded border border-zinc-600 hover:border-white/70 cursor-pointer transition-colors',
+    onPick: (hex) => onChange(hex),
+  });
+  return labelledRow(label, swatch.el);
 }
 
 function toggleRow(label: string, value: boolean, onChange: (v: boolean) => void): HTMLElement {
@@ -130,7 +135,18 @@ const EXPRESSIONS: [string, string][] = [
 export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   if (openClose) { openClose(); openClose = null; }
 
-  const shell = createToolPanelShell({ title: 'Character Creator', width: 'w-[20rem]' });
+  // Live-preview debounce state — declared before the shell so onClose can
+  // cancel a pending rebuild. Without this, closing the panel within the
+  // debounce window still fires the queued build, overwriting the editor and
+  // re-rendering a character after the user dismissed the panel.
+  let timer: number | undefined;
+  let closed = false;
+
+  const shell = createToolPanelShell({
+    title: 'Character Creator',
+    width: 'w-[20rem]',
+    onClose: () => { closed = true; window.clearTimeout(timer); },
+  });
   openClose = shell.close;
 
   // Restore the spec from the current code if it was made here; otherwise start
@@ -157,11 +173,12 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi): void {
   // like a preset switch fire immediately (`immediate`). Either way buildCharacter
   // cancels any in-flight render first, so changes never stack in the worker. The
   // engine shows its own "Rendering…" status.
-  let timer: number | undefined;
   const preview = (opts?: { immediate?: boolean }): void => {
     window.clearTimeout(timer);
     const fire = async () => {
+      if (closed) return;
       if (!(await confirmClobber())) return;
+      if (closed) return; // panel was dismissed while the confirm dialog was open
       void api.buildCharacter(spec, { save: false });
     };
     if (opts?.immediate) { void fire(); return; }

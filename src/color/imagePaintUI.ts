@@ -649,11 +649,10 @@ function buildImageSection(): HTMLElement {
 
 /** Load a file into ImageData, rendering SVGs at high resolution. */
 async function applyImageFile(file: File): Promise<void> {
+  const objectUrl = URL.createObjectURL(file);
   try {
-    const objectUrl = URL.createObjectURL(file);
     const isSvg = file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
     const raw = await loadImageDataHighRes(objectUrl, isSvg);
-    URL.revokeObjectURL(objectUrl);
     pickedImageData = resizeImageData(raw, STAMP_MAX);
     pickedImageThumb = resizeImageData(raw, THUMB_MAX);
     if (sourceLabel) sourceLabel.textContent = file.name;
@@ -662,6 +661,10 @@ async function applyImageFile(file: File): Promise<void> {
     updateStampMode();
   } catch {
     if (sourceLabel) sourceLabel.textContent = 'Failed to load image';
+  } finally {
+    // Revoke on every path — a decode failure must not leak the blob (it
+    // retains the full file bytes in memory until the page closes).
+    URL.revokeObjectURL(objectUrl);
   }
 }
 

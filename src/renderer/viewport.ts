@@ -166,7 +166,9 @@ function applyStudioEnvironment(): void {
   if (!studioEnvAllowed) return;
   if (!studioEnvTexture) {
     const pmrem = new THREE.PMREMGenerator(renderer);
-    studioEnvTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    const room = new RoomEnvironment();
+    studioEnvTexture = pmrem.fromScene(room, 0.04).texture;
+    room.dispose(); // frees the RoomEnvironment's BoxGeometry + ~9 materials
     pmrem.dispose();
   }
   scene.environment = studioEnvTexture;

@@ -1239,7 +1239,12 @@ function primTube(path: unknown, radius: unknown, opts: unknown = {}): SdfNode {
     else if (rings) phase = TWO_PI * count * sNorm;
     else /* helix */ phase = count * theta + TWO_PI * turns * sNorm;
     const g = 0.5 - 0.5 * Math.cos(phase);
-    return dist - rad + depth * g;
+    // Clamp the groove against the *local* (tapered) radius so it can never
+    // reach the centerline and slot the tube clean through — which would split
+    // it into separate components / go non-manifold. Keeps ≥10% of the radius
+    // as solid core, honouring the class docstring's "never detach a piece"
+    // guarantee even for depth > rad or a depth held constant down a taper.
+    return dist - rad + Math.min(depth, rad * 0.9) * g;
   };
 
   const grow = r0 * Math.max(1, taper) + 1e-3;

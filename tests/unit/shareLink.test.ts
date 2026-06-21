@@ -150,6 +150,26 @@ describe('trimForShare', () => {
     trimForShare(exported);
     expect(exported.versions[0].importedMeshes).toBeDefined();
   });
+
+  test('strips inline data-URL attachment payloads but keeps metadata + http refs', () => {
+    const exported = makeExported({}, {
+      session: {
+        name: 'with attachments', created: 1000, updated: 2000,
+        attachments: [
+          { id: 'a1', kind: 'model', label: 'ref.stl', mediaType: 'model/stl', src: 'data:model/stl;base64,QUFBQQ==' },
+          { id: 'a2', kind: 'image', label: 'remote', src: 'https://example.com/photo.png' },
+        ],
+      },
+    });
+    const trimmed = trimForShare(exported);
+    const [a1, a2] = trimmed.session.attachments!;
+    expect(a1.src).toBe('');             // heavy data: payload dropped
+    expect(a1.label).toBe('ref.stl');    // metadata preserved
+    expect(a1.kind).toBe('model');
+    expect(a2.src).toBe('https://example.com/photo.png'); // tiny http ref kept
+    // input is not mutated
+    expect(exported.session.attachments![0].src).toBe('data:model/stl;base64,QUFBQQ==');
+  });
 });
 
 describe('encodeShare / decodeShare round-trip', () => {
