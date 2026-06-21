@@ -1,8 +1,10 @@
 {
   "body": "#EE8B3D",
+  "muzzle": "#F5E9D8",
   "eye": "#FAFAFA",
   "iris": "#3E8E41",
   "pupil": "#141414",
   "nose": "#E79AA6",
+  "mouth": "#5A3A3A",
   "innerEar": "#EBA9B0"
 }

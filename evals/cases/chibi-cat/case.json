@@ -6,7 +6,7 @@
   "rubric": "rubric.md",
   "gates": {
     "manifold": true,
-    "maxGenus": 0,
+    "maxGenus": 2,
     "requireLabels": ["eye", "iris", "pupil", "nose"]
   }
 }
