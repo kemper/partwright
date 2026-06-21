@@ -260,12 +260,12 @@ export function checkExpectComponents(stats, expected) {
 
 // Run a model file through the real engine via a throwaway in-process Vite SSR
 // server. Returns the PreviewResult from src/tools/previewModel.ts.
-export async function runPreview(file, { params = {}, lang = 'manifold-js' } = {}) {
+export async function runPreview(file, { params = {}, lang = 'manifold-js', palette = undefined } = {}) {
   const code = readFileSync(file, 'utf8');
   const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
   try {
     const mod = await server.ssrLoadModule('/src/tools/previewModel.ts');
-    return await mod.previewModel(code, { params, lang });
+    return await mod.previewModel(code, { params, lang, palette });
   } finally {
     await server.close();
   }
