@@ -107,4 +107,35 @@ test.describe('Character Creator', () => {
     expect(code).toContain('@character v1');
     expect(code).toContain('headsTall');
   });
+
+  test('switching presets mid-build cancels the in-flight render (no stacking)', async ({ page }) => {
+    // A figure rebuild is heavy; without cancellation a second preset would start
+    // a build while the first kept churning in the worker. Switching mid-build
+    // must terminate the prior build (worker restart) so previews don't stack.
+    const restarts: string[] = [];
+    page.on('console', m => { if (m.text().includes('[EngineWorker]')) restarts.push(m.text()); });
+
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => (window as unknown as { partwright: PW }).partwright.createSession('character-cancel'));
+
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.locator('input[aria-label="Search commands"]').fill('Character Creator');
+    await page.keyboard.press('Enter');
+    const panel = page.getByRole('dialog', { name: 'Character Creator' });
+
+    await panel.getByRole('button', { name: 'Adult woman' }).click();
+    await page.getByRole('dialog', { name: 'Start a character' })
+      .getByRole('button', { name: 'Replace', exact: true }).click();
+    await page.waitForTimeout(1500);                       // let the build start
+    await panel.getByRole('button', { name: 'Chibi' }).click();   // switch mid-build
+
+    await page.waitForFunction(
+      () => (window as unknown as { partwright: PW }).partwright.getCode().includes('headsTall: 3.2'),
+      { timeout: 60_000 },
+    );
+    // The mid-build switch terminated the running build at least once.
+    expect(restarts.some(r => /cancel/i.test(r))).toBe(true);
+  });
 });
