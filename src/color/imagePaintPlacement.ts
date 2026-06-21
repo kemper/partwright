@@ -20,8 +20,8 @@ export type StampView = 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom';
 const VIEW_NORMALS: Record<StampView, readonly [number, number, number]> = {
   front:  [0, -1, 0],
   back:   [0,  1, 0],
-  right:  [1,  0, 0],
   left:   [-1, 0, 0],
+  right:  [1,  0, 0],
   top:    [0,  0, 1],
   bottom: [0,  0, -1],
 };
@@ -174,26 +174,25 @@ export function resolveImageStampPlacement(
   // Fully explicit — no geometry analysis needed.
   if (at && size != null) return { at, normal, size };
 
-  const bbox = meshBBox(mesh);
-  if (!bbox) return { error: 'paintImage: the model has no geometry to project onto.' };
-  const diag = Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2]);
-  const radius = diag / 2 || 1;
-
   const label = (input.labelTriangles && input.labelTriangles.size > 0)
     ? labelGeometry(mesh, input.labelTriangles, normal)
     : null;
 
-  const center: [number, number, number] = label
-    ? label.center
-    : [
-        (bbox.min[0] + bbox.max[0]) / 2,
-        (bbox.min[1] + bbox.max[1]) / 2,
-        (bbox.min[2] + bbox.max[2]) / 2,
-      ];
-
   // Auto-anchor: cast from far on the camera side back toward the surface,
-  // through the lateral centre, and take the nearest forward hit.
+  // through the lateral centre, and take the nearest forward hit. Only the
+  // ray path needs the bbox, so compute it lazily here.
   if (!at) {
+    const bbox = meshBBox(mesh);
+    if (!bbox) return { error: 'paintImage: the model has no geometry to project onto.' };
+    const diag = Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2]);
+    const radius = diag / 2 || 1;
+    const center: [number, number, number] = label
+      ? label.center
+      : [
+          (bbox.min[0] + bbox.max[0]) / 2,
+          (bbox.min[1] + bbox.max[1]) / 2,
+          (bbox.min[2] + bbox.max[2]) / 2,
+        ];
     const margin = radius * 2 + 1;
     const origin: [number, number, number] = [
       center[0] + normal[0] * margin,

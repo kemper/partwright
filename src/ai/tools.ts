@@ -1973,10 +1973,12 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       let imageUrl = typeof input.imageUrl === 'string' ? input.imageUrl : undefined;
       if (!imageUrl && input.imageRef != null) {
         const imgs = typeof api.getImages === 'function' ? api.getImages() : [];
-        const list = (Array.isArray(imgs) ? imgs : []) as Array<{ src?: string }>;
-        const idx = Number(input.imageRef) - 1;
-        const entry = list[idx];
-        if (!entry || typeof entry.src !== 'string' || entry.src.length === 0) {
+        // Index the SAME filtered list getReferenceImages numbers (entries with a
+        // usable src), so a 1-based imageRef the model read there resolves here.
+        const list = ((Array.isArray(imgs) ? imgs : []) as Array<{ src?: string }>)
+          .filter(im => typeof im.src === 'string' && im.src.length > 0);
+        const entry = list[Number(input.imageRef) - 1];
+        if (!entry) {
           return { error: `paintImage: no reference image at index ${input.imageRef}. Call getReferenceImages to list attached images and their indices.` };
         }
         imageUrl = entry.src;

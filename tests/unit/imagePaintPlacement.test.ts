@@ -89,6 +89,6 @@ describe('resolveImageStampPlacement', () => {
   });
 
   it('exposes all six named views', () => {
-    expect(STAMP_VIEWS).toEqual(['front', 'back', 'right', 'left', 'top', 'bottom']);
+    expect(STAMP_VIEWS).toEqual(['front', 'back', 'left', 'right', 'top', 'bottom']);
   });
 });
