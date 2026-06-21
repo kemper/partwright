@@ -29,6 +29,7 @@
     "audit:catalog": "node scripts/catalog-audit.cjs",
     "model:preview": "node scripts/model-preview.mjs",
     "figure:smoke": "node scripts/figure-smoke.mjs",
+    "eval:models": "node scripts/eval-models.mjs",
     "new:modifier": "node scripts/new-modifier.mjs",
     "cli": "node bin/partwright.mjs"
   },
