@@ -36,11 +36,9 @@ const face = F.face.assemble(head, rig, {
 const eyes = F.face.eyes(rig, { lids: 'almond' });
 const lips = F.face.mouthAccents(rig, mouthOpts);
 
-// 3. SKIN — bust (neck + torso cropped at chest)
-const cutZ = j.chest[2] - r.chestY;
-const skin = F.weld(rig, [face, F.neck(rig), F.torso(rig)])
-  .subtract(sdf.box([200, 200, 200]).translate([0, 0, cutZ - 100]))
-  .label('skin');
+// 3. SKIN — EVAL FRAMING: head + neck only so the face fills the frame and the
+// judge can resolve the blush/lipstick/eyeshadow (a full bust shrinks the face).
+const skin = F.weld(rig, [face, F.neck(rig)]).label('skin');
 
 // 4. MAKEUP via api.paint.*
 // CRITICAL: declare base label colors FIRST, makeup boxes LAST (later ops win).

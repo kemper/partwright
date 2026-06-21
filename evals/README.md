@@ -42,6 +42,15 @@ cases/<case>/
 `baseline.json` (committed) holds the accepted per-case scores. `results/` is
 gitignored per-run output (candidate render, contact sheet, result.json).
 
+> **Frame the case `model.js` to its subject.** The renderer fits the whole model
+> bbox into each tile, so a small feature on a big body is unreadable to the judge
+> — a pair of glasses on a full head+torso+arms bust renders the head ~40 px tall
+> and the judge scores it "no glasses present." For a **face accessory** (glasses,
+> makeup) build just the **head + neck**; for a **held/worn** item the full figure
+> is fine because the accessory (sword, belt, hat, breastplate) is large relative
+> to the body. Keep the full-figure showcase elsewhere; the eval case is framed for
+> judging, not for display.
+
 ## Judges (tiered by cost — this is the whole point)
 
 | Judge | Cost | What it is |

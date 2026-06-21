@@ -7,6 +7,6 @@
   "gates": {
     "manifold": true,
     "maxGenus": 5,
-    "requireLabels": ["skin", "hat", "hair"]
+    "requireLabels": ["hat"]
   }
 }

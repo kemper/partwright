@@ -16,9 +16,10 @@ const face = F.face.assemble(head, rig, {
   nose: {}, mouth: { style: 'lips' }, ears: {}, brows: {}, eyes: false,
 });
 const eyes = F.face.eyes(rig, { lids: 'almond' });
-const skin = F.weld(rig, [
-  F.torso(rig), F.neck(rig), F.arms(rig), F.hands(rig), face,
-]).label('skin');
+// EVAL FRAMING: head + neck only (no torso/arms) so the head fills the frame and
+// the judge can resolve the glasses. The full-figure showcase lives in
+// .plans/accessories/glasses.js; this case is framed for judging the accessory.
+const skin = F.weld(rig, [F.neck(rig), face]).label('skin');
 
 // --- GLASSES (perched) -----------------------------------------------------
 const ff = F.onFace(rig);
