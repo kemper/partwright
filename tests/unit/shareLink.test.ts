@@ -170,6 +170,13 @@ describe('trimForShare', () => {
     // input is not mutated
     expect(exported.session.attachments![0].src).toBe('data:model/stl;base64,QUFBQQ==');
   });
+
+  test('tolerates a malformed payload with no session block', () => {
+    // Invalid share inputs (hand-built / corrupt) can lack `session`; trimming
+    // must not throw on the attachment pass.
+    const malformed = { partwright: '1.8', versions: [] } as unknown as ExportedSession;
+    expect(() => trimForShare(malformed)).not.toThrow();
+  });
 });
 
 describe('encodeShare / decodeShare round-trip', () => {

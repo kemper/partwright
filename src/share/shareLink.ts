@@ -143,6 +143,9 @@ export function trimForShare(exported: ExportedSession): ExportedSession {
  *  base64'd into the share URL and blow past {@link MAX_DECOMPRESSED_BYTES} on
  *  decode. External `http(s)` refs are tiny pointers, so they're kept. */
 function trimAttachmentsForShare(session: ExportedSession['session']): ExportedSession['session'] {
+  // `session` can be missing/malformed for an invalid payload (e.g. a hand-built
+  // or corrupt share input) — guard before dereferencing.
+  if (!session || typeof session !== 'object') return session;
   const attachments = session.attachments;
   if (!Array.isArray(attachments) || attachments.length === 0) return session;
   return {
