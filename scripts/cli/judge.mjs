@@ -5,15 +5,20 @@
 //   { score: 0..100, perItem: [{ item, pass, severity, critique, fix }],
 //     usage: { provider, model, inputTokens, outputTokens, estUsd } }
 //
-// Three adapters, deliberately tiered by cost:
+// Four adapters, deliberately tiered by cost:
+//   - 'claude' — DEFAULT semantic judge. Shells to the `claude` CLI in headless
+//                print mode (`-p --output-format json`), which is present in the
+//                Claude Code container and bills against the user's Max OAuth —
+//                so it RUNS AND IS TESTABLE IN-CONTAINER. Returns a part-level
+//                checklist + per-item geometry fixes.
 //   - 'pixel'  — FREE, offline. Structural similarity of candidate vs reference
 //                tiles. NOT an anatomy judge; a cheap regression sentinel that
 //                proves the loop and catches silhouette changes. Always runnable.
 //   - 'human'  — FREE. Emits the contact sheet + rubric and reads a verdict the
 //                human fills in. The anchor that keeps the cheap judges honest.
-//   - 'gemini' — CHEAP cloud vision (separate quota from a Claude Max sub).
-//                Shells out to the `gemini` CLI, which lives on the user's
-//                machine (NOT this remote container). The real semantic judge.
+//   - 'gemini' — CHEAP cloud vision on a quota SEPARATE from Max. Shells to the
+//                `gemini` CLI, which lives on the user's machine (not the
+//                container). An alternate semantic judge.
 //
 // Every adapter reports `usage` so the harness can tally spend and enforce a
 // per-run budget — the whole point being that you SEE the cost of looping.
@@ -21,6 +26,7 @@
 import sharp from 'sharp';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 
 // --- pixel judge: free offline structural-similarity sentinel ---------------
 
@@ -78,7 +84,42 @@ function humanJudge({ verdictPath, rubric }) {
   };
 }
 
-// --- gemini judge: the real semantic judge (runs on the user's machine) ------
+// --- claude judge: the default semantic judge (runs IN the container) --------
+
+// Shells to the `claude` CLI in headless print mode. Run from a tmp cwd (not
+// the repo) so the project's own hooks/settings don't intercept the output, and
+// attach the contact sheet via the `@<abs-path>` mention (inlined into context,
+// no Read-tool permission needed). The JSON envelope's `.result` is the model's
+// reply (our strict judge JSON); `.total_cost_usd` + `.usage` drive the spend
+// tally. Bills against the user's Max OAuth, so it's free-at-the-margin to loop.
+function claudeJudge({ contactSheetPath, rubric, model = process.env.EVAL_JUDGE_MODEL || 'claude-sonnet-4-6', claudePath }) {
+  const bin = claudePath || process.env.CLAUDE_PATH || 'claude';
+  const prompt = buildJudgePrompt(rubric);
+  let out;
+  try {
+    out = execFileSync(bin, ['-p', `${prompt}\n\n@${contactSheetPath}`, '--output-format', 'json', '--model', model], {
+      encoding: 'utf8', cwd: tmpdir(), maxBuffer: 16 * 1024 * 1024, timeout: 180000,
+    });
+  } catch (e) {
+    throw new Error(`claude CLI failed (is "${bin}" on PATH and authed?): ${e.message}`);
+  }
+  let env;
+  try { env = JSON.parse(out); } catch { throw new Error(`claude CLI did not return JSON envelope: ${out.slice(0, 300)}`); }
+  if (env.is_error) throw new Error(`claude judge error: ${env.result || env.subtype}`);
+  const json = extractJson(env.result);
+  return {
+    score: Number(json.score),
+    perItem: json.perItem || [],
+    usage: {
+      provider: 'claude', model,
+      inputTokens: env.usage?.input_tokens ?? 0,
+      outputTokens: env.usage?.output_tokens ?? 0,
+      estUsd: env.total_cost_usd ?? 0,
+    },
+  };
+}
+
+// --- gemini judge: alternate semantic judge (runs on the user's machine) ------
 
 // Gemini Flash pricing (approx, per 1M tokens) for the spend estimate. Tunable
 // via env so the printed cost stays honest as prices change.
@@ -147,9 +188,10 @@ function extractJson(text) {
 
 export async function runJudge(kind, ctx) {
   switch (kind) {
+    case 'claude': return claudeJudge(ctx);
     case 'pixel': return pixelJudge(ctx);
     case 'human': return humanJudge(ctx);
     case 'gemini': return geminiJudge(ctx);
-    default: throw new Error(`unknown judge "${kind}" (use pixel|human|gemini)`);
+    default: throw new Error(`unknown judge "${kind}" (use claude|pixel|human|gemini)`);
   }
 }

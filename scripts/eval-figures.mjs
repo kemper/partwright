@@ -8,16 +8,17 @@
 // rest of the corpus. Spend is tallied and budget-capped so looping is cheap
 // and VISIBLE.
 //
-//   npm run eval:figures -- <case> [--judge pixel|human|gemini]
+//   npm run eval:figures -- <case> [--judge claude|pixel|human|gemini] [--model <id>]
 //   npm run eval:figures -- shoulders --set-reference   # pin current render as the target
-//   npm run eval:figures -- shoulders --set-baseline    # commit current score as baseline
-//   npm run eval:figures -- shoulders --judge gemini --budget 0.05
+//   npm run eval:figures -- shoulders --set-baseline    # commit current score as baseline (per judge)
+//   npm run eval:figures -- shoulders --judge claude --budget 0.20
 //   npm run eval:figures -- --all                       # whole corpus
 //
-// The 'pixel' judge is free/offline (a regression sentinel + harness proof).
-// The 'gemini' judge is the real semantic anatomy judge and runs on YOUR
-// machine (the gemini CLI is not in the remote container). 'human' is the
-// anchor. See evals/figures/README.md.
+// The DEFAULT 'claude' judge is the real semantic anatomy judge and runs
+// IN-CONTAINER via the `claude` CLI (bills against the user's Max OAuth). The
+// 'pixel' judge is free/offline (a regression sentinel + harness proof);
+// 'gemini' is an alternate cloud judge on a separate quota; 'human' is the
+// anchor. Baselines are keyed by judge. See evals/figures/README.md.
 
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,10 +34,12 @@ const BASELINE_PATH = join(ROOT, 'evals/figures/baseline.json');
 const TILE = 384;
 
 function parseArgs(argv) {
-  const a = { case: null, judge: 'pixel', setReference: false, setBaseline: false, budget: Infinity, all: false };
+  const a = { case: null, judge: 'claude', model: null, tolerance: 0, setReference: false, setBaseline: false, budget: Infinity, all: false };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--judge') a.judge = argv[++i];
+    else if (t === '--model') a.model = argv[++i];
+    else if (t === '--tolerance') { a.tolerance = Number(argv[++i]); if (!Number.isFinite(a.tolerance) || a.tolerance < 0) { console.error('--tolerance needs a non-negative number'); process.exit(2); } }
     else if (t === '--set-reference') a.setReference = true;
     else if (t === '--set-baseline') a.setBaseline = true;
     else if (t === '--budget') {
@@ -132,20 +135,25 @@ async function runOne(c, a, spend) {
         contactSheetPath: sheetPath,
         verdictPath: join(c.dir, 'verdict.json'),
         rubric: c.rubric,
+        ...(a.model ? { model: a.model } : {}),
       });
       if (verdict?.usage) { spend.usd += verdict.usage.estUsd; spend.calls++; spend.inTok += verdict.usage.inputTokens; spend.outTok += verdict.usage.outputTokens; }
     }
   }
 
-  // 3. Regression gate vs committed baseline.
+  // 3. Regression gate vs committed baseline. Baselines are keyed BY JUDGE —
+  // scores from different judges aren't comparable (a pixel 100 and a claude 72
+  // measure different things), so we only compare like-with-like.
   const baseline = loadBaseline();
-  const base = baseline.cases[c.name]?.score ?? null;
+  const base = baseline.cases[c.name]?.[a.judge]?.score ?? null;
   const score = verdict?.score ?? null;
   let regression = null;
-  if (score != null && base != null) regression = score < base ? `REGRESSION ${score} < baseline ${base}` : null;
+  // A semantic (LLM) judge is noisy run-to-run, so allow a tolerance band below
+  // the baseline before calling it a regression (set higher for the claude judge).
+  if (score != null && base != null) regression = score < base - (a.tolerance || 0) ? `REGRESSION ${score} < baseline ${base}${a.tolerance ? ` (tol ${a.tolerance})` : ''}` : null;
 
   if (a.setBaseline && score != null) {
-    baseline.cases[c.name] = { score, judge: a.judge, at: stamp };
+    baseline.cases[c.name] = { ...(baseline.cases[c.name] || {}), [a.judge]: { score, at: stamp } };
     saveBaseline(baseline);
   }
 
@@ -174,7 +182,7 @@ function printReport(recs, spend, budget) {
 async function main() {
   const a = parseArgs(process.argv.slice(2));
   const names = a.all ? readdirSync(CASES_DIR).filter((n) => existsSync(join(CASES_DIR, n, 'case.json'))) : (a.case ? [a.case] : null);
-  if (!names) { console.error('Usage: npm run eval:figures -- <case> [--judge pixel|human|gemini] [--set-reference] [--set-baseline] [--budget USD]\n       npm run eval:figures -- --all'); process.exit(2); }
+  if (!names) { console.error('Usage: npm run eval:figures -- <case> [--judge claude|pixel|human|gemini] [--model <id>] [--set-reference] [--set-baseline] [--budget USD]\n       npm run eval:figures -- --all'); process.exit(2); }
 
   const spend = { usd: 0, calls: 0, inTok: 0, outTok: 0 };
   const recs = [];
