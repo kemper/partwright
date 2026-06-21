@@ -1,24 +1,25 @@
 #!/usr/bin/env node
-// eval:figures — vision-judged figure-quality eval loop (tracking: #827).
+// eval:models — vision-judged model-quality eval loop (tracking: #827).
 //
-// Builds an eval case with the CURRENT figure library, renders matched-angle
-// tiles, runs printability gates, judges the render against a pinned REFERENCE
-// (a target look) with a pluggable judge, and checks the score against a
-// committed baseline so a primitive improvement can't silently regress the
-// rest of the corpus. Spend is tallied and budget-capped so looping is cheap
-// and VISIBLE.
+// Subject-neutral: a case can be a figure, an animal, an accessory, or any
+// object — the harness just builds, renders, gates, and judges whatever the
+// model returns. Builds an eval case with the CURRENT library, renders
+// matched-angle tiles, runs printability gates, judges the render against a
+// pinned REFERENCE (a target look) with a pluggable judge, and checks the score
+// against a committed baseline so a change can't silently regress the rest of
+// the corpus. Spend is tallied and budget-capped so looping is cheap and VISIBLE.
 //
-//   npm run eval:figures -- <case> [--judge claude|pixel|human|gemini] [--model <id>]
-//   npm run eval:figures -- shoulders --set-reference   # pin current render as the target
-//   npm run eval:figures -- shoulders --set-baseline    # commit current score as baseline (per judge)
-//   npm run eval:figures -- shoulders --judge claude --budget 0.20
-//   npm run eval:figures -- --all                       # whole corpus
+//   npm run eval:models -- <case> [--judge claude|pixel|human|gemini] [--model <id>]
+//   npm run eval:models -- shoulders --set-reference   # pin current render as the target
+//   npm run eval:models -- shoulders --set-baseline    # commit current score as baseline (per judge)
+//   npm run eval:models -- shoulders --judge claude --budget 0.20
+//   npm run eval:models -- --all                       # whole corpus
 //
-// The DEFAULT 'claude' judge is the real semantic anatomy judge and runs
-// IN-CONTAINER via the `claude` CLI (bills against the user's Max OAuth). The
-// 'pixel' judge is free/offline (a regression sentinel + harness proof);
-// 'gemini' is an alternate cloud judge on a separate quota; 'human' is the
-// anchor. Baselines are keyed by judge. See evals/figures/README.md.
+// The DEFAULT 'claude' judge is the real semantic judge and runs IN-CONTAINER
+// via the `claude` CLI (bills against the user's Max OAuth). The 'pixel' judge
+// is free/offline (a regression sentinel + harness proof); 'gemini' is an
+// alternate cloud judge on a separate quota; 'human' is the anchor. Baselines
+// are keyed by judge. See evals/README.md.
 
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,9 +29,9 @@ import { runPreview, composePng, resolveViews } from './cli/preview.mjs';
 import { runJudge } from './cli/judge.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const CASES_DIR = join(ROOT, 'evals/figures/cases');
-const RESULTS_DIR = join(ROOT, 'evals/figures/results');
-const BASELINE_PATH = join(ROOT, 'evals/figures/baseline.json');
+const CASES_DIR = join(ROOT, 'evals/cases');
+const RESULTS_DIR = join(ROOT, 'evals/results');
+const BASELINE_PATH = join(ROOT, 'evals/baseline.json');
 const TILE = 384;
 
 function parseArgs(argv) {
@@ -116,7 +117,7 @@ async function runOne(c, a, spend) {
   // --set-reference: pin THIS render as the case's target and stop.
   if (a.setReference) {
     writeFileSync(join(c.dir, 'reference.png'), candidatePng);
-    console.log(`[${c.name}] reference pinned → evals/figures/cases/${c.name}/reference.png`);
+    console.log(`[${c.name}] reference pinned → evals/cases/${c.name}/reference.png`);
     return { case: c.name, score: null, gateFails, set: 'reference' };
   }
 
@@ -164,7 +165,7 @@ async function runOne(c, a, spend) {
 }
 
 function printReport(recs, spend, budget) {
-  console.log('\n──────── eval:figures ────────');
+  console.log('\n──────── eval:models ────────');
   for (const r of recs) {
     if (r.set) { console.log(`  ${r.case}: ${r.set} pinned`); continue; }
     const gate = r.gateFails.length ? `❌ GATE: ${r.gateFails.join('; ')}` : '✓ gates';
@@ -182,7 +183,7 @@ function printReport(recs, spend, budget) {
 async function main() {
   const a = parseArgs(process.argv.slice(2));
   const names = a.all ? readdirSync(CASES_DIR).filter((n) => existsSync(join(CASES_DIR, n, 'case.json'))) : (a.case ? [a.case] : null);
-  if (!names) { console.error('Usage: npm run eval:figures -- <case> [--judge claude|pixel|human|gemini] [--model <id>] [--set-reference] [--set-baseline] [--budget USD]\n       npm run eval:figures -- --all'); process.exit(2); }
+  if (!names) { console.error('Usage: npm run eval:models -- <case> [--judge claude|pixel|human|gemini] [--model <id>] [--set-reference] [--set-baseline] [--budget USD]\n       npm run eval:models -- --all'); process.exit(2); }
 
   const spend = { usd: 0, calls: 0, inTok: 0, outTok: 0 };
   const recs = [];
@@ -198,4 +199,4 @@ async function main() {
   process.exit(regressed ? 1 : 0);
 }
 
-main().catch((e) => { console.error('eval:figures failed:', e?.stack || e?.message || e); process.exit(1); });
+main().catch((e) => { console.error('eval:models failed:', e?.stack || e?.message || e); process.exit(1); });

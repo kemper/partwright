@@ -1,7 +1,7 @@
-// judge.mjs — pluggable quality judges for the figure eval loop.
+// judge.mjs — pluggable quality judges for the model eval loop (eval:models).
 //
 // A judge takes a rendered CANDIDATE (matched-angle tiles) + a REFERENCE
-// (the target the figure should look like) + a rubric, and returns:
+// (the target the model should look like) + a rubric, and returns:
 //   { score: 0..100, perItem: [{ item, pass, severity, critique, fix }],
 //     usage: { provider, model, inputTokens, outputTokens, estUsd } }
 //
@@ -44,7 +44,7 @@ async function pixelSimilarity(candidatePng, referencePng) {
 
 async function pixelJudge({ candidatePng, referencePng }) {
   if (!referencePng) {
-    throw new Error('pixel judge needs a reference image — generate one with `eval:figures --set-reference` first');
+    throw new Error('pixel judge needs a reference image — generate one with `eval:models --set-reference` first');
   }
   const score = await pixelSimilarity(candidatePng, referencePng);
   return {

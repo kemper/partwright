@@ -1,21 +1,31 @@
-# Figure-quality eval corpus
+# Model-quality eval corpus
 
-A vision-judged regression suite for the figure library (tracking: **#827**).
-Each case pins a **reference** (the target look) and a **rubric** (an anatomical
-checklist). The harness builds the case with the *current* `F.*` primitives,
+A vision-judged regression suite for the model library (tracking: **#827**).
+**Subject-neutral** — a case can be a **figure, animal, accessory, or any
+object**; the harness just builds, renders, gates, and judges whatever the model
+returns (manifold-js / voxel / scad — not BREP, which can't preview headlessly).
+Each case pins a **reference** (the target look) and a **rubric** (a checklist —
+anatomy for figures/animals, fit/conformance for accessories, style/proportion
+for a look like chibi). The harness builds the case with the *current* library,
 renders matched camera angles, runs printability gates, judges the render
-against the reference, and compares the score to a committed **baseline** — so
-improving one primitive can't silently regress the rest of the corpus.
+against the reference, and compares the score to a committed **baseline** — so a
+change can't silently regress the rest of the corpus.
+
+> The `shoulders` case is a figure example. Add an animal/accessory case the
+> same way: a `model.js` that returns the geometry, a `rubric.md`, a `case.json`
+> with views + gates, and (optionally) a pinned `reference.png` style/anatomy
+> target. A consistent style (e.g. chibi) is best driven by pinning a small,
+> consistent reference set; a style *rubric* alone also works to start.
 
 Run it:
 
 ```bash
-npm run eval:figures -- shoulders                  # judge current build (claude judge, in-container, default)
-npm run eval:figures -- shoulders --set-reference  # pin the current render as the target
-npm run eval:figures -- shoulders --set-baseline   # commit the current score as the baseline (per judge)
-npm run eval:figures -- shoulders --judge pixel    # free/offline regression sentinel
-npm run eval:figures -- shoulders --model claude-opus-4-8 --budget 0.20   # pick a judge model
-npm run eval:figures -- --all                      # whole corpus; exits non-zero on any regression/gate fail
+npm run eval:models -- shoulders                  # judge current build (claude judge, in-container, default)
+npm run eval:models -- shoulders --set-reference  # pin the current render as the target
+npm run eval:models -- shoulders --set-baseline   # commit the current score as the baseline (per judge)
+npm run eval:models -- shoulders --judge pixel    # free/offline regression sentinel
+npm run eval:models -- shoulders --model claude-opus-4-8 --budget 0.20   # pick a judge model
+npm run eval:models -- --all                      # whole corpus; exits non-zero on any regression/gate fail
 ```
 
 ## Case layout
@@ -23,7 +33,7 @@ npm run eval:figures -- --all                      # whole corpus; exits non-zer
 ```
 cases/<case>/
   case.json     # { model, lang, views: [[az,el]…], rubric, gates }
-  model.js      # the figure built with the current library
+  model.js      # the model built (figure / animal / accessory / object)
   rubric.md     # one judged item per `-` bullet
   reference.png # the target look (pinned via --set-reference, or a real photo grid)
   verdict.json  # (human judge) the filled-in verdict, read back on the next run
