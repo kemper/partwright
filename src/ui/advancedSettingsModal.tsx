@@ -25,6 +25,7 @@ function cloneConfig(c: AppConfig): AppConfig {
     renderer: { ...c.renderer },
     import: { ...c.import },
     ui: { ...c.ui },
+    geometry: { ...c.geometry },
   };
 }
 
@@ -238,8 +239,8 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="Tool-call timeout (Worker)"
           unit="ms"
-          hint="If the main thread doesn't reply to a tool call within this time, the Worker aborts it."
-          tooltip="The AI agent runs in a background Worker and calls tools (geometry execution, rendering, etc.) on the main thread. If the main thread doesn't respond within this timeout — e.g. because WASM initialization is still in progress or the browser is paused — the Worker treats the call as failed and surfaces an error. Increase for very slow machines or complex BREP/SCAD evaluations."
+          hint="If a tool call (e.g. a render) hasn't finished within this time, it's cancelled and reported back to the agent as a failed step — the turn keeps going."
+          tooltip="The AI agent runs in a background Worker and calls tools (geometry execution, rendering, etc.) on the main thread. If a tool doesn't finish within this timeout — e.g. a very heavy boolean/BREP/SCAD evaluation, or WASM still initializing — the in-flight execution is cancelled and the agent receives an error result for that step, so it can react (simplify, retry) without the chat getting stuck. Increase for very slow machines or genuinely heavy models."
           defaultValue={APP_CONFIG_DEFAULTS.ai.toolCallTimeoutMs}
           value={c.ai.toolCallTimeoutMs}
           min={5_000} max={600_000} integer
@@ -264,6 +265,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.maxAttachments}
           min={1} max={100} integer
           onChange={v => set('ai', 'maxAttachments', v)}
+        />
+        <Field
+          label="Recent render images kept in context"
+          unit="images"
+          hint="How many of the latest render snapshots stay in the request sent to the AI."
+          tooltip="renderView / renderViews / runIsolated return PNG snapshots so the agent can see the model. Every snapshot is otherwise re-sent to the provider on every subsequent turn, so a long session's image tokens compound. This keeps only the N most-recent render images in the request (their text stats always stay); older ones are replaced with a short note. The on-screen transcript still shows every image — only the wire request is trimmed. Raise it to give the model more visual memory at higher token cost; set very high to disable trimming."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.keepRecentToolImages}
+          value={c.ai.keepRecentToolImages}
+          min={0} max={50} integer
+          onChange={v => set('ai', 'keepRecentToolImages', v)}
         />
       </Section>
 
@@ -496,17 +507,17 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'interactionRenderScale', v)}
         />
         <Field
-          label="Grid size"
-          unit="units"
-          tooltip="The total side length of the ground-plane grid in model units. If your models are typically 200 units wide, set this to 400 or so to keep the grid visible around them. Takes effect after a page reload."
-          defaultValue={APP_CONFIG_DEFAULTS.renderer.gridSize}
-          value={c.renderer.gridSize}
-          min={4} max={1000} integer
-          onChange={v => set('renderer', 'gridSize', v)}
+          label="Grid room factor"
+          unit="× model"
+          tooltip="How far the ground grid extends, as a multiple of the model's largest dimension. The grid now scales with the model — spanning the studio 'room' around it — instead of being a fixed-size patch, so it stays useful from tiny parts to large models. Higher = a bigger grid around the model. Takes effect on the next render or 'Reset view'."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.gridRoomFactor}
+          value={c.renderer.gridRoomFactor}
+          min={1} max={40} step={0.5}
+          onChange={v => set('renderer', 'gridRoomFactor', v)}
         />
         <Field
           label="Grid divisions"
-          tooltip="The number of cells the grid is divided into. Combined with grid size this sets the cell size: a 40-unit grid with 40 divisions gives 1-unit cells. Takes effect after a page reload."
+          tooltip="The number of cells the grid is divided into across its full width. Since the grid scales to the model, this sets cell density (more divisions = finer cells). Takes effect after a page reload."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.gridDivisions}
           value={c.renderer.gridDivisions}
           min={2} max={200} integer
@@ -545,12 +556,28 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'orbitDampingFactor', v)}
         />
         <Field
+          label="Orbit damping reference fps"
+          tooltip="The frame rate the orbit damping factor is tuned for. The coast is re-derived from the real frame delta so it decays at a constant rate per second — without this, a heavy mesh that drops the frame rate makes the same drag coast for far longer and the model lags behind the cursor (sluggish, slow rotation). Leave at 60 unless you target a different refresh rate."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.orbitDampingReferenceFps}
+          value={c.renderer.orbitDampingReferenceFps}
+          min={30} max={240} step={5}
+          onChange={v => set('renderer', 'orbitDampingReferenceFps', v)}
+        />
+        <Field
           label="Max zoom-out factor"
           tooltip="How far you can zoom the camera out, as a multiple of the model's largest dimension. The default framing sits at roughly 2× that dimension, so a value of 12 lets you pull back about 6× from the default before hitting the limit. Lower it to keep the model filling more of the view; raise it for more room. Re-applied each time the model is framed."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.maxZoomOutFactor}
           value={c.renderer.maxZoomOutFactor}
           min={3} max={100} step={1}
           onChange={v => set('renderer', 'maxZoomOutFactor', v)}
+        />
+        <Field
+          label="Default zoom (framing)"
+          tooltip="How zoomed-out the default view is, as a multiple of the model's largest dimension along each axis (view distance ≈ factor × 1.7 × that dimension). Higher leaves more margin around the model; lower fills more of the viewport. Applied on every fresh render and when you click Reset view."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.defaultFrameFactor}
+          value={c.renderer.defaultFrameFactor}
+          min={1} max={3} step={0.1}
+          onChange={v => set('renderer', 'defaultFrameFactor', v)}
         />
         <Field
           label="Orientation gizmo size"
@@ -631,6 +658,25 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.renderer.enhanceMaxTriangles}
           min={100_000} max={100_000_000} integer
           onChange={v => set('renderer', 'enhanceMaxTriangles', v)}
+        />
+        <Field
+          label="Persist surface textures up to"
+          unit="tris"
+          tooltip="Computed api.surface.* textures are saved with the version so reopening the session renders them instantly. Above this triangle count the texture is not persisted (the version still saves; reopening just recomputes the texture on demand). A textured mesh costs roughly 18 bytes per triangle of storage."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.surfaceTexturePersistMaxTriangles}
+          value={c.renderer.surfaceTexturePersistMaxTriangles}
+          min={0} max={20_000_000} integer
+          onChange={v => set('renderer', 'surfaceTexturePersistMaxTriangles', v)}
+        />
+        <Field
+          label="SDF fast-preview coarsening"
+          unit="×"
+          hint="Higher = faster but rougher preview. Set to 1 to disable the preview pass."
+          tooltip="SDF models (figures) render in two passes: a fast, coarse preview shown immediately, then the full-quality mesh that replaces it. This is how much coarser the preview march is than the model's real edgeLength — at 2.5× a figure that takes 20-40s roughs out in ~1-2s. The preview also skips fine detail regions (faces, hands). Set to 1 or below to turn the preview off and always render at full quality directly."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.sdfPreviewScale}
+          value={c.renderer.sdfPreviewScale}
+          min={1} max={6} step={0.5}
+          onChange={v => set('renderer', 'sdfPreviewScale', v)}
         />
       </Section>
 
@@ -715,6 +761,39 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         />
       </Section>
 
+      <Section title="Geometry warnings">
+        <Field
+          label="Triangle-count warning budget"
+          unit="triangles"
+          hint="Live model warns above this triangle count."
+          tooltip="When the model exceeds this many triangles, the geometry warnings (shown to you and to the AI agent) flag it as heavy to slice and over the catalog budget. Mirrors the headless model:preview tri-budget warning. Raise it if you routinely build dense organic models; lower it to be nudged toward lighter geometry sooner."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.triCountWarnBudget}
+          value={c.geometry.triCountWarnBudget}
+          min={10_000} max={2_000_000} integer
+          onChange={v => set('geometry', 'triCountWarnBudget', v)}
+        />
+        <Field
+          label="Minimum edge-length warning"
+          unit="units (≈mm)"
+          hint="Warns when the smallest mesh edge is below this."
+          tooltip="Features whose mesh edges fall below a typical FDM extrusion width silently disappear on the print. When the shortest edge is under this threshold, the geometry warnings flag possible sub-extrusion detail. Mirrors model:preview's sub-0.4 mm detail warning. Lower it if you print on a fine nozzle; raise it for chunky FDM."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.minEdgeLengthWarn}
+          value={c.geometry.minEdgeLengthWarn}
+          min={0} max={5} step={0.05}
+          onChange={v => set('geometry', 'minEdgeLengthWarn', v)}
+        />
+        <Field
+          label="Aspect-ratio warning"
+          unit=": 1"
+          hint="Warns when longest ÷ shortest dimension exceeds this."
+          tooltip="Tall, thin parts (high bounding-box aspect ratio) are fragile and tip-prone on an FDM bed. When the ratio of the longest to the shortest non-zero dimension exceeds this, the geometry warnings flag it. Mirrors model:preview. Raise it if you intentionally build slender parts; lower it to be warned earlier."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.aspectRatioWarn}
+          value={c.geometry.aspectRatioWarn}
+          min={2} max={100} step={1}
+          onChange={v => set('geometry', 'aspectRatioWarn', v)}
+        />
+      </Section>
+
       <Section title="UI">
         <ToggleField
           label="Show editor hints"
@@ -744,6 +823,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'toastDurationMs', v)}
         />
         <Field
+          label="Pane slide"
+          unit="ms"
+          hint="How long the side panes (AI panel, code editor) take to slide open/closed."
+          tooltip="The docked AI panel and code editor pane animate their layout so the viewport grows/shrinks smoothly instead of snapping. Lower for a snappier toggle, 0 for instant. Ignored when your OS is set to reduce motion."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paneSlideMs}
+          value={c.ui.paneSlideMs}
+          min={0} max={600} integer
+          onChange={v => set('ui', 'paneSlideMs', v)}
+        />
+        <Field
           label="Default palette capacity"
           hint="How many filament slots the paint panel assumes your printer has."
           tooltip="The default number of colour slots (e.g. 4 for one Bambu AMS). Drives the paint panel's over-budget warning when a model uses more colours than your printer can load. Never blocks painting or export — it's just a heads-up."
@@ -770,6 +859,36 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.tooltipDelayMs}
           min={0} max={2000} integer
           onChange={v => set('ui', 'tooltipDelayMs', v)}
+        />
+        <Field
+          label="Default editor font size"
+          unit="px"
+          hint="Seeds a fresh tab; change the live size from the editor's ⚙ menu (−/+)."
+          tooltip="The code editor's starting font size. The active size is remembered per browser tab via the ⚙ Editor menu's −/+ stepper; this default applies to a fresh tab and is the value the stepper returns to. Must sit within the min/max bounds below."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.editorFontSizeDefault}
+          value={c.ui.editorFontSizeDefault}
+          min={6} max={48} integer
+          onChange={v => set('ui', 'editorFontSizeDefault', v)}
+        />
+        <Field
+          label="Min editor font size"
+          unit="px"
+          hint="Lower bound for the editor's −/+ font stepper."
+          tooltip="The smallest font size the editor's ⚙ menu −/+ stepper will go down to."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.editorFontSizeMin}
+          value={c.ui.editorFontSizeMin}
+          min={6} max={24} integer
+          onChange={v => set('ui', 'editorFontSizeMin', v)}
+        />
+        <Field
+          label="Max editor font size"
+          unit="px"
+          hint="Upper bound for the editor's −/+ font stepper."
+          tooltip="The largest font size the editor's ⚙ menu −/+ stepper will go up to."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.editorFontSizeMax}
+          value={c.ui.editorFontSizeMax}
+          min={12} max={64} integer
+          onChange={v => set('ui', 'editorFontSizeMax', v)}
         />
         <Field
           label="Code editor error idle delay"
@@ -815,6 +934,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.surfacePreviewDebounceMs}
           min={0} max={2_000} integer
           onChange={v => set('ui', 'surfacePreviewDebounceMs', v)}
+        />
+        <Field
+          label="Character preview debounce"
+          unit="ms"
+          tooltip="Debounce delay for the Character Creator's live figure preview. An SDF figure rebuild is heavy, so this is longer than the surface debounce — it coalesces rapid slider edits into a single rebuild once you settle. Lower for snappier preview; raise if rebuilds stack up."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.characterPreviewDebounceMs}
+          value={c.ui.characterPreviewDebounceMs}
+          min={0} max={3_000} integer
+          onChange={v => set('ui', 'characterPreviewDebounceMs', v)}
         />
         <Field
           label="Relief 2D preview debounce"

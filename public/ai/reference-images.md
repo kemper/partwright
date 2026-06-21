@@ -33,9 +33,38 @@ partwright.clearImages()
 partwright.getImages()  // -> [{id, src, label?}, ...]
 ```
 
-Attached images appear in the Images tab and the Gallery; render the model with `renderViews` to compare it against them at matching angles.
+Attached images appear in the Attachments tab and the Gallery; render the model with `renderViews` to compare it against them at matching angles.
 
-**Seeing the references as the AI:** in the in-app AI chat, call the **`getReferenceImages`** tool — it returns every attached reference as one labeled grid image (plus a text list of the labels), so the model can actually look at what the user attached on any turn rather than guess.
+**Seeing the references as the AI:** in the in-app AI chat, call the **`getReferenceImages`** tool — it returns every attached reference *image* as one labeled grid image (plus a text list of the labels), so the model can actually look at what the user attached on any turn rather than guess.
+
+## Attachments
+
+Reference images are one **kind** of a more general session **attachment** — any file the user pins to the session as durable project context. An attachment carries a `kind` (`image` · `model` · `document` · `text` · `other`) plus an optional `mediaType`, so a session can hold reference photos *and* a reference STL/STEP, a spec-sheet PDF, or design notes. Attachments are **durable**: they survive clearing the AI chat and are saved in the exported `.partwright` file, so an agent resuming a session — or one whose chat history was cleared — can still find the material the work was based on.
+
+Each attachment has two text fields: a short **`label`** (a caption / perspective preset like "Front"), and a free-form **`description`** — *why* it matters (what to match, the constraint it captures, where it came from). **Read the descriptions** — they're the user's intent, the most important signal about what each file is for.
+
+The `setImages`/`addImage`/`getImages`/etc. helpers above still work (they operate on the `image`-kind attachments). The general API mirrors them across all kinds:
+
+```js
+// Pin any file (kind + mediaType are inferred from the src/data URL or label
+// when omitted). source defaults to 'user'.
+partwright.addAttachment({ src: 'data:model/stl;base64,...', label: 'Reference bracket', description: 'Match the bolt-hole spacing on this part' })
+// -> { id, kind: 'model', mediaType: 'model/stl', src, label, description, addedAt, source: 'user' }
+
+// List everything pinned to the session
+partwright.getAttachments()
+// -> [{ id, kind, mediaType?, src, label?, description?, addedAt?, source? }, ...]
+
+partwright.setAttachments([{ src, kind?, mediaType?, label?, description? }, ...])  // replace the whole list
+partwright.removeAttachment(id)                                        // remove one by id
+partwright.clearAttachments()                                          // remove ALL (images included)
+```
+
+`clearImages()` / `setImages()` touch only the image-kind attachments and leave non-image ones intact; `clearAttachments()` removes everything.
+
+**Captured chat uploads.** When the user uploads or pastes an image into the AI chat drawer, it is automatically pinned to the session as an `image` attachment with `source: 'chat'` (deduped by content). So even if the chat is later cleared, those references remain available.
+
+**Seeing all attachments as the AI:** call the **`getAttachments`** tool to get a manifest of every attachment — id, kind, media type, label, when it was added, and whether it came from the user or a chat upload. `text`-kind attachments include their contents inline. Use it to recover reference material an earlier conversation worked from; to actually *view* image attachments, call `getReferenceImages`.
 
 ## Photo-to-model workflow
 

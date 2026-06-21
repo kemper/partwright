@@ -31,16 +31,20 @@ export interface SessionImportSummary {
 
 /** Build a SessionImportSummary from a parsed .partwright.json payload. */
 export function summarizeSessionImport(data: ExportedSession): SessionImportSummary {
-  // Build a list of image labels for the import preview. Handle three shapes:
-  //   - current: array of {id, src, label?}
+  // Build a list of image labels for the import preview. Handle the shapes:
+  //   - 1.16+: array of typed attachments {id, kind, src, label?} — image-kind only
+  //   - pre-1.16: array of {id, src, label?} (all images)
   //   - pre-unification: array of {id, angle, src, label?} — fall back to angle
   //   - pre-array: object map {front: 'url', ...} — use the keys
-  // Items with no label and no angle are listed as "(unlabeled)".
-  const imgs = data.session.images ?? data.session.referenceImages ?? null;
+  // Non-image attachments (models/docs/text) are excluded — this list is the
+  // reference-photo preview. Items with no label and no angle are "(unlabeled)".
+  const imgs = data.session.attachments ?? data.session.images ?? data.session.referenceImages ?? null;
   const referenceSides: string[] = [];
   if (Array.isArray(imgs)) {
     for (const item of imgs) {
-      const it = item as { label?: string; angle?: string };
+      const it = item as { label?: string; angle?: string; kind?: string };
+      // Legacy rows carry no `kind` (all were images); 1.16 rows may be non-image.
+      if (it.kind !== undefined && it.kind !== 'image') continue;
       const label = (it.label ?? '').trim() || (it.angle ? it.angle : '');
       referenceSides.push(label || '(unlabeled)');
     }

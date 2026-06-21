@@ -1,11 +1,25 @@
 // IndexedDB storage for sessions and versions
 
+import {
+  type AttachedImage,
+  type SessionAttachment,
+  type AttachmentKind,
+  normalizeAttachment,
+} from './attachment';
+
+export type { AttachedImage, SessionAttachment, AttachmentKind } from './attachment';
+
 export interface Session {
   id: string;
   name: string;
   created: number;
   updated: number;
-  images?: AttachedImage[] | null;
+  /** Typed project attachments (reference photos, spec PDFs, reference models,
+   *  notes…) — the generalization of the old `images` list. Survives an AI
+   *  chat clear and is exported with the session. Legacy `images` /
+   *  `referenceImages` shapes migrate into this field on read
+   *  ({@link migrateSessionImages}). */
+  attachments?: SessionAttachment[] | null;
   /** Modeling language for this session. Missing = 'manifold-js'. */
   language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
   /** Id of the part that is active when the session is (re)opened. Missing =
@@ -53,18 +67,6 @@ export interface Part {
   order: number;
   created: number;
   updated: number;
-}
-
-export interface AttachedImage {
-  id: string;
-  /** data URL or remote URL */
-  src: string;
-  /** User-facing caption. Shown in the Gallery, lightbox, and tooltips.
-   *  May match one of the preset labels (Front, Right, Back, Left, Top,
-   *  Perspective) — those drive ordering of the image strip — or be
-   *  a free-form custom string. Empty string and undefined both mean
-   *  "no caption". */
-  label?: string;
 }
 
 /** Suggested labels offered as quick picks in the UI. Items whose label
@@ -131,6 +133,16 @@ export interface Version {
    *  `include <models.scad>` inside the main code resolves at compile time.
    *  Only present for SCAD sessions that need companion files. */
   companionFiles?: Record<string, string>;
+  /** Computed `api.surface.*` texture result (full-chain memo key + textured
+   *  mesh) persisted at save time, so reopening the version renders textured
+   *  immediately instead of recomputing the chain — and so the texture's
+   *  appearance is pinned to what the user saw when they saved. Shape is
+   *  `PersistedSurfaceTexture` (`src/surface/surfaceOpSpec.ts`); kept as
+   *  `unknown` here to preserve db-layer isolation (typed arrays survive
+   *  IndexedDB's structured clone as-is). Absent on versions saved before this
+   *  field existed or without in-code textures — loaders must treat absence as
+   *  "recompute on demand". */
+  surfaceTexture?: unknown;
   /** The version this was derived from. Set when a mesh-capture operation
    *  (simplify, enhance, paint-bake, import) creates a child version from an
    *  existing parametric version. Absent for versions created from scratch.
@@ -139,6 +151,12 @@ export interface Version {
   /** The operation that produced this version. Set alongside
    *  {@link parentVersionId} when the version is derived from another. */
   operation?: VersionOperation | null;
+  /** App semver (package.json `version`, from `buildInfo.version`) that authored
+   *  this version — the "last known good" app version for this snapshot. Stamped
+   *  at save time. Absent on versions saved before this field existed, and in
+   *  dev/test builds where the version resolves to 'unknown' (we store nothing
+   *  rather than the placeholder). Read by the cross-major migration seam. */
+  appVersion?: string;
 }
 
 /** Editor working buffer scoped to (session, part, language). One slot per
@@ -159,6 +177,11 @@ export interface SessionDraft {
    *  recovers companion-file edits the same way it recovers main-code edits.
    *  Only written for SCAD drafts that have companions; absent otherwise. */
   companionFiles?: Record<string, string>;
+  /** Unsaved user paint regions (serialized) so a part that has been painted
+   *  but not yet saved keeps its paint across a part switch or reload. Stored
+   *  opaquely (unknown[]) to avoid importing color types into this low layer.
+   *  Only written when there are non-empty regions; absent otherwise. */
+  colorRegions?: unknown[];
   updatedAt: number;
 }
 
@@ -540,67 +563,84 @@ export async function createSession(name?: string, language?: 'manifold-js' | 's
 // stored before the array migration may still be in this form.
 type LegacyImagesObject = Partial<Record<LegacyImageAngle, string>>;
 
+type LegacyImagesShape = LegacyImagesObject | AttachedImage[] | null;
+
 export async function getSession(id: string): Promise<Session | null> {
   const store = await tx('sessions', 'readonly');
-  const raw = await reqToPromise(store.get(id)) as (Session & { referenceImages?: LegacyImagesObject | AttachedImage[] | null }) | null;
+  const raw = await reqToPromise(store.get(id)) as (Session & { images?: LegacyImagesShape; referenceImages?: LegacyImagesShape }) | null;
   return raw ? migrateSessionImages(raw) : null;
 }
 
 export async function listSessions(): Promise<Session[]> {
   const store = await tx('sessions', 'readonly');
-  const sessions = await reqToPromise(store.getAll()) as (Session & { referenceImages?: LegacyImagesObject | AttachedImage[] | null })[];
+  const sessions = await reqToPromise(store.getAll()) as (Session & { images?: LegacyImagesShape; referenceImages?: LegacyImagesShape })[];
   return sessions.map(migrateSessionImages).sort((a, b) => b.updated - a.updated);
 }
 
-// Read-time migration for three legacy shapes:
-//  1. Pre-rename sessions stored data under `referenceImages` instead of `images`.
+// Read-time migration for legacy shapes, collapsing them all into the typed
+// `attachments` array:
+//  1. Pre-rename sessions stored data under `referenceImages`, then `images`.
 //  2. Pre-array sessions stored an object map ({front: 'url', ...}) rather than an array.
 //  3. Pre-unification sessions stored items as {id, angle, src, label?}; we collapse
-//     `angle` into `label` here so callers see a single user-facing field.
-function migrateSessionImages(s: Session & { referenceImages?: LegacyImagesObject | AttachedImage[] | null }): Session {
+//     `angle` into `label`.
+//  4. Pre-attachments sessions stored `{id, src, label}` images with no `kind` —
+//     we normalize each into a typed `kind: 'image'` attachment.
+function migrateSessionImages(s: Session & { images?: LegacyImagesShape; referenceImages?: LegacyImagesShape }): Session {
   // Operate on an untyped view so we can hold both legacy and new shapes during migration.
-  const raw = s as unknown as { images?: unknown; referenceImages?: unknown };
-  if (raw.images == null && raw.referenceImages != null) {
-    raw.images = raw.referenceImages;
-  }
+  const raw = s as unknown as { attachments?: unknown; images?: unknown; referenceImages?: unknown };
+  // Pick the first present source, newest field name first.
+  let src: unknown = raw.attachments ?? raw.images ?? raw.referenceImages ?? null;
+  delete raw.images;
   delete raw.referenceImages;
-  if (raw.images && !Array.isArray(raw.images) && typeof raw.images === 'object') {
-    raw.images = legacyImagesObjectToArray(raw.images as LegacyImagesObject);
+  if (src && !Array.isArray(src) && typeof src === 'object') {
+    src = legacyImagesObjectToArray(src as LegacyImagesObject);
   }
-  if (Array.isArray(raw.images)) {
-    raw.images = (raw.images as Array<Record<string, unknown>>).map(collapseAngleIntoLabel);
+  if (Array.isArray(src)) {
+    raw.attachments = (src as Array<Record<string, unknown>>).map(item =>
+      normalizeAttachment(
+        {
+          id: typeof item.id === 'string' ? item.id : undefined,
+          src: typeof item.src === 'string' ? item.src : '',
+          // Pre-unification rows tagged the angle; fold it into the label.
+          label: collapseAngleIntoLabel(item),
+          description: typeof item.description === 'string' ? item.description : undefined,
+          kind: typeof item.kind === 'string' ? (item.kind as AttachmentKind) : undefined,
+          mediaType: typeof item.mediaType === 'string' ? item.mediaType : undefined,
+          addedAt: typeof item.addedAt === 'number' ? item.addedAt : undefined,
+          source: item.source === 'chat' || item.source === 'user' ? item.source : undefined,
+        },
+        generateId(),
+      ),
+    );
+  } else {
+    raw.attachments = null;
   }
   return s;
 }
 
-/** Drop the legacy `angle` field, copying it into `label` (capitalized) when
- *  a label isn't already present. After this, `label` is the single source of
- *  truth for how the image is named in the UI. */
-function collapseAngleIntoLabel(item: Record<string, unknown>): AttachedImage {
-  const id = typeof item.id === 'string' ? item.id : generateId();
-  const src = typeof item.src === 'string' ? item.src : '';
+/** Compute the effective label: explicit label wins, else the legacy
+ *  `angle` field capitalized, else empty. */
+function collapseAngleIntoLabel(item: Record<string, unknown>): string {
   const existingLabel = typeof item.label === 'string' ? item.label.trim() : '';
+  if (existingLabel) return existingLabel;
   const angle = typeof item.angle === 'string' ? item.angle : '';
-  const out: AttachedImage = { id, src };
-  const label = existingLabel || (angle ? capitalize(angle) : '');
-  if (label) out.label = label;
-  return out;
+  return angle ? capitalize(angle) : '';
 }
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-export function legacyImagesObjectToArray(obj: LegacyImagesObject): AttachedImage[] {
-  const result: AttachedImage[] = [];
+export function legacyImagesObjectToArray(obj: LegacyImagesObject): SessionAttachment[] {
+  const result: SessionAttachment[] = [];
   for (const angle of LEGACY_ANGLES) {
     const src = obj[angle];
-    if (src) result.push({ id: generateId(), src, label: capitalize(angle) });
+    if (src) result.push(normalizeAttachment({ src, label: capitalize(angle), kind: 'image' }, generateId()));
   }
   return result;
 }
 
-export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference' | 'thumbCamera' | 'workCamera'>>): Promise<void> {
+export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'attachments' | 'language' | 'currentPartId' | 'aiPreference' | 'thumbCamera' | 'workCamera'>>): Promise<void> {
   const store = await tx('sessions', 'readwrite');
   // Read-modify-write inside one transaction: queue the put from the get's
   // callback (awaiting between them risks auto-commit), then await oncomplete.
@@ -609,8 +649,9 @@ export async function updateSession(id: string, updates: Partial<Pick<Session, '
     const session = getReq.result as Session | null;
     if (!session) return;
     Object.assign(session, updates);
-    // Strip legacy field if present so it doesn't shadow the new one on re-read
+    // Strip legacy fields if present so they don't shadow the new one on re-read
     delete (session as { referenceImages?: unknown }).referenceImages;
+    delete (session as { images?: unknown }).images;
     store.put(session);
   };
   await txComplete(store.transaction);
@@ -755,35 +796,59 @@ export async function deleteParts(ids: string[]): Promise<void> {
 
 // === Versions ===
 
+export interface SaveVersionOptions {
+  label?: string;
+  notes?: string;
+  /** Override the version timestamp (used by import to preserve the original). */
+  timestamp?: number;
+  /** Snapshot of annotations at save time (opaque to the db layer). */
+  annotations?: unknown[];
+  /** External meshes imported into this version (opaque to the db layer). */
+  importedMeshes?: unknown[];
+  /** Modeling language the version was authored in. Stored on the version so
+   *  navigating between versions can swap the engine independently of the
+   *  session's default language. */
+  language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
+  /** Customizer parameter overrides for this version (opaque to the db layer). */
+  paramValues?: Record<string, number | boolean | string>;
+  /** Companion SCAD files (path → source) for this version (opaque to the db layer). */
+  companionFiles?: Record<string, string>;
+  /** The version this was derived from (e.g. the parametric version before
+   *  simplify/enhance was applied). Stored so the UI can show provenance and
+   *  offer a one-click jump back to the source. */
+  parentVersionId?: string | null;
+  /** The operation that produced this version. */
+  operation?: VersionOperation | null;
+  /** Computed `api.surface.*` texture (key + mesh) — see {@link Version.surfaceTexture}. */
+  surfaceTexture?: unknown;
+  /** App semver that authored this version — see {@link Version.appVersion}.
+   *  Caller passes `buildInfo.version` (omit/undefined in dev where it's
+   *  'unknown'); the db layer just stores it opaquely. */
+  appVersion?: string;
+}
+
 export async function saveVersion(
   partId: string,
   sessionId: string,
   code: string,
   geometryData: Record<string, unknown> | null,
   thumbnail: Blob | null,
-  label?: string,
-  notes?: string,
-  /** Override the version timestamp (used by import to preserve the original). */
-  timestamp?: number,
-  /** Snapshot of annotations at save time (opaque to the db layer). */
-  annotations?: unknown[],
-  /** External meshes imported into this version (opaque to the db layer). */
-  importedMeshes?: unknown[],
-  /** Modeling language the version was authored in. Stored on the version so
-   *  navigating between versions can swap the engine independently of the
-   *  session's default language. */
-  language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel',
-  /** Customizer parameter overrides for this version (opaque to the db layer). */
-  paramValues?: Record<string, number | boolean | string>,
-  /** Companion SCAD files (path → source) for this version (opaque to the db layer). */
-  companionFiles?: Record<string, string>,
-  /** The version this was derived from (e.g. the parametric version before
-   *  simplify/enhance was applied). Stored so the UI can show provenance and
-   *  offer a one-click jump back to the source. */
-  parentVersionId?: string | null,
-  /** The operation that produced this version. */
-  operation?: VersionOperation | null,
+  options?: SaveVersionOptions,
 ): Promise<Version> {
+  const {
+    label,
+    notes,
+    timestamp,
+    annotations,
+    importedMeshes,
+    language,
+    paramValues,
+    companionFiles,
+    parentVersionId,
+    operation,
+    surfaceTexture,
+    appVersion,
+  } = options ?? {};
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
   // the same store (even across tabs), so two tabs saving to the same part
@@ -823,6 +888,8 @@ export async function saveVersion(
         ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
         ...(parentVersionId ? { parentVersionId } : {}),
         ...(operation ? { operation } : {}),
+        ...(surfaceTexture ? { surfaceTexture } : {}),
+        ...(appVersion ? { appVersion } : {}),
       };
       const putReq = store.put(v);
       putReq.onsuccess = () => resolve(v);
@@ -896,6 +963,28 @@ export async function deleteVersion(id: string): Promise<void> {
   const db = await openDB();
   const txn = db.transaction('versions', 'readwrite');
   txn.objectStore('versions').delete(id);
+  await txComplete(txn);
+}
+
+/** Overwrite a single version's thumbnail blob, leaving every other field
+ *  intact. Used by the import-time thumbnail backfill: imported versions are
+ *  persisted with no thumbnail so the new session can be selected immediately,
+ *  then each snapshot is rendered offscreen afterwards and written back here.
+ *  No-op when the version no longer exists (e.g. session deleted mid-backfill). */
+export async function updateVersionThumbnail(id: string, thumbnail: Blob | null): Promise<void> {
+  const db = await openDB();
+  const txn = db.transaction('versions', 'readwrite');
+  const store = txn.objectStore('versions');
+  // Read then write inside the same request chain — never await between the get
+  // and the put, or IndexedDB auto-commits the transaction first.
+  const getReq = store.get(id);
+  getReq.onsuccess = () => {
+    const v = getReq.result as Version | null;
+    if (v) {
+      v.thumbnail = thumbnail;
+      store.put(v);
+    }
+  };
   await txComplete(txn);
 }
 
@@ -1029,7 +1118,7 @@ export async function getDraft(sessionId: string, language: 'manifold-js' | 'sca
   return reqToPromise(store.get(draftId(sessionId, language, partId))) as Promise<SessionDraft | null>;
 }
 
-export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>): Promise<void> {
+export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>, colorRegions?: unknown[]): Promise<void> {
   const store = await tx('drafts', 'readwrite');
   const row: SessionDraft = {
     id: draftId(sessionId, language, partId),
@@ -1037,6 +1126,7 @@ export async function setDraft(sessionId: string, language: 'manifold-js' | 'sca
     language,
     code,
     ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
+    ...(colorRegions && colorRegions.length > 0 ? { colorRegions } : {}),
     updatedAt: Date.now(),
   };
   store.put(row);

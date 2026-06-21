@@ -52,6 +52,23 @@ export interface SdfSample {
 /** SDF value at a sample: `< 0` is inside the result solid. */
 export type SdfCombine = (s: SdfSample) => number;
 
+/** Cooperative-cancellation + progress hooks for the (otherwise main-thread,
+ *  synchronous) field sweep. The sweep yields to the event loop periodically so
+ *  the UI can paint a progress indicator and an abort can take effect between
+ *  slices. */
+export interface SdfRunControl {
+  signal?: AbortSignal;
+  /** Reports sweep progress in [0,1] as slices complete. */
+  onProgress?: (fraction: number) => void;
+}
+
+/** Thrown when the caller aborts a carve via `SdfRunControl.signal`. */
+export class SdfAbortError extends Error {
+  constructor() { super('aborted'); this.name = 'AbortError'; }
+}
+
+const yieldToEventLoop = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+
 export interface SdfModifierOptions {
   /** Desired field resolution along the longest axis (clamped to
    *  [16, MAX_FIELD_RESOLUTION]). The caller folds in any feature-specific floor. */
@@ -71,13 +88,23 @@ export interface SdfModifierOptions {
    *  perforated lamp, a strut web) leave it at the default. The field-level
    *  fragment cull (`watertight`) still runs independently to drop stray bits. */
   keepLargestMeshComponent?: boolean;
+  /** Extra world-space lattice padding beyond the model's bounds (on top of the
+   *  standard closing ring). Needed when `combine` ADDS material outside the
+   *  original surface (an embossed relief): without it the new solid is clipped
+   *  at the lattice edge. Capped at 32 voxels per side to bound the field
+   *  allocation (the Float32 field grows with the cube of the padded dims). */
+  padWorld?: number;
   /** Light Taubin passes to relax the mesh rims (default 3, no subdivide). */
   smoothIterations?: number;
 }
 
 /** Build a smooth manifold mesh as the iso-0 surface of a feature-defined SDF.
- *  Returns a position-only `MeshData` (empty for an empty input mesh). */
-export function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, combine: SdfCombine): MeshData {
+ *  Returns a position-only `MeshData` (empty for an empty input mesh).
+ *
+ *  Async because the field sweep is the heavy step: it yields to the event loop
+ *  every few slices (via `ctl`) so the main thread can paint a progress modal
+ *  and honor a cancel between slices. Throws {@link SdfAbortError} if aborted. */
+export async function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, combine: SdfCombine, ctl?: SdfRunControl): Promise<MeshData> {
   const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
   if (mesh.numTri === 0) return empty;
 
@@ -107,8 +134,10 @@ export function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, combin
   const hit = { point: new THREE.Vector3(), distance: 0, faceIndex: -1 };
 
   // Padded lattice: one extra ring of "outside" samples on every side so the
-  // outer surface closes even when the model touches its bounding box.
-  const pad = 2;
+  // outer surface closes even when the model touches its bounding box, plus
+  // whatever extra headroom the feature asked for (emboss height) — capped so a
+  // tall relief can't balloon the field allocation.
+  const pad = 2 + Math.min(32, Math.max(0, Math.ceil((opts.padWorld ?? 0) / voxelSize)));
   const fnx = nx + 2 * pad, fny = ny + 2 * pad, fnz = nz + 2 * pad;
   const origin: [number, number, number] = [min[0] - pad * voxelSize, min[1] - pad * voxelSize, min[2] - pad * voxelSize];
   const fidx = (i: number, j: number, k: number) => (k * fny + j) * fnx + i;
@@ -121,7 +150,16 @@ export function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, combin
   const BIG = bandWorld + (bandVox + 2) * voxelSize; // exceeds any in-band magnitude
 
   const field = new Float32Array(fnx * fny * fnz);
+  // Yield roughly every YIELD_SLICES depth-slices so the event loop can paint
+  // the progress modal and apply a cancel; small enough to stay responsive,
+  // large enough that the setTimeout overhead is negligible next to the sweep.
+  const YIELD_SLICES = 4;
   for (let k = 0; k < fnz; k++) {
+    if (k > 0 && k % YIELD_SLICES === 0) {
+      await yieldToEventLoop();
+      if (ctl?.signal?.aborted) { bvhGeom.dispose(); throw new SdfAbortError(); }
+      ctl?.onProgress?.(k / fnz);
+    }
     for (let j = 0; j < fny; j++) {
       for (let i = 0; i < fnx; i++) {
         const fi = fidx(i, j, k);
@@ -148,6 +186,7 @@ export function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, combin
     }
   }
   bvhGeom.dispose(); // BVH is only consulted in the field sweep above
+  ctl?.onProgress?.(1);
 
   // Keep the largest face-connected region of inside samples *before* meshing
   // (drops detached fragments without sealing windows the way growing the iso

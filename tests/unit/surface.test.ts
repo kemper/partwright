@@ -12,6 +12,7 @@ import { fuzzySkin } from '../../src/surface/fuzzySkin';
 import { knitTextureUV } from '../../src/surface/knitTexture';
 import { cableKnit } from '../../src/surface/cableKnit';
 import { waffleStitch } from '../../src/surface/waffleStitch';
+import { knurlTexture } from '../../src/surface/knurlTexture';
 import { furVelvet } from '../../src/surface/furVelvet';
 import { wovenFabric } from '../../src/surface/wovenFabric';
 import { voronoiShell } from '../../src/surface/voronoiShell';
@@ -24,7 +25,7 @@ import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
 import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp, applyHollow } from '../../src/surface/modifiers';
 import { hollowShellMesh } from '../../src/surface/hollowShell';
-import { nearestTriangleMap } from '../../src/surface/colorTransfer';
+import { nearestTriangleMap, remapTriangleSets, selectTrianglesNearSeeds, nearestSurfaceVertexDistance } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
 function cube(s = 10): MeshData {
@@ -180,12 +181,13 @@ describe('knitTextureUV', () => {
 // The four fabric textures added after fuzzySkin share its structure (densify →
 // displace along normals, deterministic per seed, color carried through
 // subdivision). One parameterized table guards the invariants for all of them.
-describe('fabric textures (cable / waffle / fur / woven / voronoi)', () => {
+describe('fabric textures (cable / waffle / fur / woven / knurl / voronoi)', () => {
   const cases = [
     { name: 'cableKnit', fn: cableKnit as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cableWidth: 2, seed: 3 } },
     { name: 'waffleStitch', fn: waffleStitch as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellWidth: 2, seed: 3 } },
     { name: 'furVelvet', fn: furVelvet as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, fiberSpacing: 2, seed: 3 } },
     { name: 'wovenFabric', fn: wovenFabric as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, threadSpacing: 2, seed: 3 } },
+    { name: 'knurlTexture', fn: knurlTexture as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellWidth: 2, seed: 3 } },
     { name: 'voronoiShell', fn: voronoiShell as (m: MeshData, o: Record<string, number>) => MeshData, opts: { amplitude: 0.5, cellSize: 3, seed: 3 } },
   ] as const;
 
@@ -211,6 +213,41 @@ describe('fabric textures (cable / waffle / fur / woven / voronoi)', () => {
       expect([...out.triColors!].every(v => v === 42)).toBe(true);
     });
   }
+});
+
+describe('knurlTexture', () => {
+  it('the three styles produce distinct displacements', () => {
+    const diamond = knurlTexture(cube(10), { amplitude: 0.5, cellWidth: 2, style: 'diamond' });
+    const straight = knurlTexture(cube(10), { amplitude: 0.5, cellWidth: 2, style: 'straight' });
+    const ribs = knurlTexture(cube(10), { amplitude: 0.5, cellWidth: 2, style: 'ribs' });
+    expect([...diamond.vertProperties]).not.toEqual([...straight.vertProperties]);
+    expect([...straight.vertProperties]).not.toEqual([...ribs.vertProperties]);
+  });
+
+  it('displacement is outward-bounded by amplitude (ridges only raise)', () => {
+    // A knurl raises the surface by [0, amplitude] along the normal; on an
+    // axis-aligned cube face the max coordinate can grow by at most amplitude.
+    const amp = 0.5;
+    const out = knurlTexture(cube(10), { amplitude: amp, cellWidth: 2, style: 'diamond' });
+    let maxX = -Infinity;
+    for (let v = 0; v < out.numVert; v++) maxX = Math.max(maxX, out.vertProperties[v * 3]);
+    // Cube spans [0,10]; the +X face can rise to at most 10 + amplitude (+ε).
+    expect(maxX).toBeLessThanOrEqual(10 + amp + 1e-3);
+    expect(maxX).toBeGreaterThan(10); // something raised
+  });
+
+  it('the pyramid profile differs from round but stays amplitude-bounded', () => {
+    const amp = 0.5;
+    const round = knurlTexture(cube(10), { amplitude: amp, cellWidth: 2, style: 'diamond', profile: 'round' });
+    const pyramid = knurlTexture(cube(10), { amplitude: amp, cellWidth: 2, style: 'diamond', profile: 'pyramid' });
+    // Straight-sided pyramids ≠ rounded cosine bumps.
+    expect([...round.vertProperties]).not.toEqual([...pyramid.vertProperties]);
+    // Same outward bound: ridges only raise, capped at amplitude.
+    let maxX = -Infinity;
+    for (let v = 0; v < pyramid.numVert; v++) maxX = Math.max(maxX, pyramid.vertProperties[v * 3]);
+    expect(maxX).toBeLessThanOrEqual(10 + amp + 1e-3);
+    expect(maxX).toBeGreaterThan(10);
+  });
 });
 
 describe('voronoiShell', () => {
@@ -337,24 +374,32 @@ describe('largestMeshComponent (edge-connected)', () => {
 });
 
 describe('sdfModifierMesh (shared volumetric scaffolding)', () => {
-  it('meshes a feature SDF (a hollow shell) into a non-empty mesh', () => {
+  it('meshes a feature SDF (a hollow shell) into a non-empty mesh', async () => {
     const wall = 2;
     // combine = max(d, -(d+wall)) keeps material within `wall` of the surface.
-    const m = sdfModifierMesh(cube(20), { resolution: 48, bandWorld: wall }, ({ d }) => Math.max(d, -(d + wall)));
+    const m = await sdfModifierMesh(cube(20), { resolution: 48, bandWorld: wall }, ({ d }) => Math.max(d, -(d + wall)));
     expect(m.numTri).toBeGreaterThan(12);
     expect(m.numVert).toBeGreaterThan(8);
   });
 
-  it('returns an empty mesh for an empty input', () => {
+  it('returns an empty mesh for an empty input', async () => {
     const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
-    const m = sdfModifierMesh(empty, { resolution: 32, bandWorld: 1 }, ({ d }) => d);
+    const m = await sdfModifierMesh(empty, { resolution: 32, bandWorld: 1 }, ({ d }) => d);
     expect(m.numTri).toBe(0);
+  });
+
+  it('aborts a carve via the AbortSignal', async () => {
+    const ctl = new AbortController();
+    ctl.abort();
+    await expect(
+      sdfModifierMesh(cube(20), { resolution: 48, bandWorld: 2 }, ({ d }) => d, { signal: ctl.signal }),
+    ).rejects.toThrow(/abort/i);
   });
 });
 
 describe('applyVoronoiLamp (mesh output)', () => {
-  it('emits a smooth (SDF) manifold mesh wrapper with struts', () => {
-    const r = applyVoronoiLamp(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 64 });
+  it('emits a smooth (SDF) manifold mesh wrapper with struts', async () => {
+    const r = await applyVoronoiLamp(cube(20), { cellSize: 6, wallThickness: 1.5, resolution: 64 });
     expect(r.kind).toBe('manifold');
     if (r.kind === 'manifold') {
       // SDF mesh path: ofMesh wrapper over a baked, smooth perforated shell.
@@ -365,21 +410,21 @@ describe('applyVoronoiLamp (mesh output)', () => {
 });
 
 describe('hollowShellMesh (vase mode)', () => {
-  it('hollows a solid into a non-empty shell', () => {
-    const m = hollowShellMesh(cube(20), { wallThickness: 2, resolution: 64 });
+  it('hollows a solid into a non-empty shell', async () => {
+    const m = await hollowShellMesh(cube(20), { wallThickness: 2, resolution: 64 });
     expect(m.numTri).toBeGreaterThan(12);
     expect(m.numVert).toBeGreaterThan(8);
   });
 
-  it('returns an empty mesh for an empty input', () => {
+  it('returns an empty mesh for an empty input', async () => {
     const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
-    expect(hollowShellMesh(empty, { wallThickness: 1 }).numTri).toBe(0);
+    expect((await hollowShellMesh(empty, { wallThickness: 1 })).numTri).toBe(0);
   });
 
-  it('open top lops the cap off — the result is shorter than the closed shell', () => {
+  it('open top lops the cap off — the result is shorter than the closed shell', async () => {
     const rim = 4;
-    const closed = hollowShellMesh(cube(20), { wallThickness: 2, resolution: 64 });
-    const open = hollowShellMesh(cube(20), { wallThickness: 2, resolution: 64, openTop: true, rimHeight: rim });
+    const closed = await hollowShellMesh(cube(20), { wallThickness: 2, resolution: 64 });
+    const open = await hollowShellMesh(cube(20), { wallThickness: 2, resolution: 64, openTop: true, rimHeight: rim });
     const closedTop = bboxOf(extractPositions(closed)).max[2];
     const openTop = bboxOf(extractPositions(open)).max[2];
     // The closed shell reaches the original top (z=20); the open one is cut at
@@ -389,8 +434,8 @@ describe('hollowShellMesh (vase mode)', () => {
 });
 
 describe('applyHollow (mesh output)', () => {
-  it('emits a smooth (SDF) manifold mesh wrapper with a shell', () => {
-    const r = applyHollow(cube(20), { wallThickness: 2, resolution: 64 });
+  it('emits a smooth (SDF) manifold mesh wrapper with a shell', async () => {
+    const r = await applyHollow(cube(20), { wallThickness: 2, resolution: 64 });
     expect(r.kind).toBe('manifold');
     if (r.kind === 'manifold') {
       expect(r.label).toBe('hollow / vase');
@@ -399,8 +444,8 @@ describe('applyHollow (mesh output)', () => {
     }
   });
 
-  it('labels an open-top vase with drain holes in the header comment', () => {
-    const r = applyHollow(cube(20), { wallThickness: 2, resolution: 48, openTop: true, drainHoles: 3 });
+  it('labels an open-top vase with drain holes in the header comment', async () => {
+    const r = await applyHollow(cube(20), { wallThickness: 2, resolution: 48, openTop: true, drainHoles: 3 });
     if (r.kind === 'manifold') {
       expect(r.code).toContain('open top');
       expect(r.code).toContain('3 drain holes');
@@ -495,6 +540,119 @@ describe('modifiers (codegen)', () => {
       const moved: MeshData = { ...c, vertProperties: Float32Array.from(c.vertProperties, (v, i) => v + (i % 3 === 0 ? 0.05 : -0.03)) };
       const map = nearestTriangleMap(c, moved);
       for (let t = 0; t < c.numTri; t++) expect(map[t]).toBe(t);
+    });
+  });
+
+  describe('remapTriangleSets (carry labels through texturing)', () => {
+    it('expands a base-triangle label set onto every subdivided child', () => {
+      const c = cube(10);
+      const dense = subdivideToMaxEdge(c, { maxEdge: 3 });
+      // Label the first two base triangles; after subdivision the textured mesh
+      // should carry MORE triangles for that label (the children), never fewer.
+      const sets = new Map<string, Set<number>>([['grip', new Set([0, 1])]]);
+      const out = remapTriangleSets(sets, c, dense);
+      const grip = out.get('grip')!;
+      expect(grip.size).toBeGreaterThanOrEqual(2);
+      // Every remapped child's nearest base triangle is one of the labeled ones.
+      const map = nearestTriangleMap(c, dense);
+      for (const t of grip) expect([0, 1]).toContain(map[t]);
+    });
+
+    it('is identity-preserving on an unchanged mesh', () => {
+      const c = cube(10);
+      const sets = new Map<string, Set<number>>([['a', new Set([0, 3, 5])]]);
+      const out = remapTriangleSets(sets, c, c);
+      expect([...out.get('a')!].sort((x, y) => x - y)).toEqual([0, 3, 5]);
+    });
+
+    it('keeps overlapping labels distinct', () => {
+      const c = cube(10);
+      const sets = new Map<string, Set<number>>([
+        ['a', new Set([0, 1])],
+        ['b', new Set([1, 2])],
+      ]);
+      const out = remapTriangleSets(sets, c, c);
+      expect(out.get('a')).toEqual(new Set([0, 1]));
+      expect(out.get('b')).toEqual(new Set([1, 2]));
+    });
+
+    it('returns empty sets (not missing keys) when nothing maps', () => {
+      const c = cube(10);
+      const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
+      const out = remapTriangleSets(new Map([['x', new Set([0])]]), c, empty);
+      expect(out.get('x')).toEqual(new Set());
+    });
+  });
+
+  describe('selectTrianglesNearSeeds (op scoping)', () => {
+    it('selects only triangles within radius of a seed point', () => {
+      const c = cube(10); // spans [0,10]^3
+      // A seed at one corner with a small radius hits only the triangles that
+      // touch that corner, not the whole cube.
+      const near = selectTrianglesNearSeeds(c, Float32Array.of(0, 0, 0), 8);
+      const all = selectTrianglesNearSeeds(c, Float32Array.of(5, 5, 5), 100);
+      expect(near.size).toBeGreaterThan(0);
+      expect(near.size).toBeLessThan(c.numTri);
+      expect(all.size).toBe(c.numTri); // huge radius from the center catches all
+    });
+
+    it('returns nothing for empty seeds or non-positive radius', () => {
+      const c = cube(10);
+      expect(selectTrianglesNearSeeds(c, new Float32Array(0), 5).size).toBe(0);
+      expect(selectTrianglesNearSeeds(c, Float32Array.of(0, 0, 0), 0).size).toBe(0);
+    });
+
+    it('catches a subdivided triangle from its parent centroid seed', () => {
+      const c = cube(10);
+      const dense = subdivideToMaxEdge(c, { maxEdge: 3 });
+      // Seed at the centroid of original triangle 0 with a generous radius: its
+      // children (which sit on the same face) must be selected.
+      const { vertProperties: vp, triVerts: tv, numProp } = c;
+      const a = tv[0] * numProp, b = tv[1] * numProp, d = tv[2] * numProp;
+      const seed = Float32Array.of(
+        (vp[a] + vp[b] + vp[d]) / 3, (vp[a + 1] + vp[b + 1] + vp[d + 1]) / 3, (vp[a + 2] + vp[b + 2] + vp[d + 2]) / 3,
+      );
+      const sel = selectTrianglesNearSeeds(dense, seed, 6);
+      expect(sel.size).toBeGreaterThan(0);
+    });
+  });
+
+  describe('nearestSurfaceVertexDistance (engrave/emboss displacement)', () => {
+    it('reports ~0 per-vertex for an identical mesh', () => {
+      const c = cube(10);
+      const d = nearestSurfaceVertexDistance(c, c);
+      expect(d.length).toBe(c.numVert);
+      for (let v = 0; v < c.numVert; v++) expect(d[v]).toBeCloseTo(0, 5);
+    });
+
+    it('has no tessellation floor — vertices on a re-meshed surface read ~0', () => {
+      // Point-to-triangle (not centroid-to-centroid) distance: a re-tessellated
+      // copy of the same surface reads ~0 at every vertex, even though its verts
+      // don't coincide with the reference's. (A centroid-to-centroid proxy would
+      // report up to ~half the reference edge length instead.) The reference is
+      // moderately dense so the nearest triangle is picked correctly.
+      const ref = subdivideToMaxEdge(cube(20), { maxEdge: 2 });
+      const requeried = subdivideToMaxEdge(cube(20), { maxEdge: 3 });
+      const d = nearestSurfaceVertexDistance(ref, requeried);
+      for (let v = 0; v < requeried.numVert; v++) expect(d[v]).toBeLessThan(1e-3);
+    });
+
+    it('reports the offset distance for a translated-off copy', () => {
+      // Translate every vertex straight up by 3: the moved top/bottom/side faces
+      // now sit 3 off the original surface, so the max distance is ~3.
+      const c = cube(20);
+      const moved: MeshData = { ...c, vertProperties: Float32Array.from(c.vertProperties, (v, i) => (i % 3 === 2 ? v + 3 : v)) };
+      const d = nearestSurfaceVertexDistance(c, moved);
+      let maxD = 0;
+      for (let v = 0; v < d.length; v++) maxD = Math.max(maxD, d[v]);
+      expect(maxD).toBeGreaterThan(2.5);
+      expect(maxD).toBeLessThanOrEqual(3 + 1e-3);
+    });
+
+    it('reports Infinity entries when the reference mesh is empty', () => {
+      const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
+      const d = nearestSurfaceVertexDistance(empty, cube(10));
+      expect([...d].every(v => v === Infinity)).toBe(true);
     });
   });
 

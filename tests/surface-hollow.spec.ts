@@ -93,7 +93,8 @@ test.describe('Hollow / vase surface modifier', () => {
 
     // Switch to the Hollow / vase tab and apply to the whole model.
     await page.getByRole('button', { name: 'Hollow / vase', exact: true }).click();
-    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    // Hollow is bake-only, so the footer button reads "Apply (bake)".
+    await page.getByRole('button', { name: 'Apply (bake)', exact: true }).click();
 
     // Apply saves a new version that bakes the shell mesh.
     await expect.poll(async () =>

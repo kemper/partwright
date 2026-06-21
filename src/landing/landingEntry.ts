@@ -24,6 +24,8 @@ import {
   type Session,
   type Version,
 } from '../storage/db';
+// deployment.ts is dependency-free, so it respects this module's tiny-import rule.
+import { assetPath } from '../deployment';
 
 /** Minimal shape of a catalog manifest entry (avoids importing ui/catalog). */
 interface ManifestEntry {
@@ -133,13 +135,13 @@ async function fillCatalog(): Promise<void> {
   if (!grid) return;
   let entries: { manifest: ManifestEntry; thumbnailUrl: string | null }[] = [];
   try {
-    const res = await fetch('/catalog/manifest.json', { cache: 'no-cache' });
+    const res = await fetch(assetPath('/catalog/manifest.json'), { cache: 'no-cache' });
     if (!res.ok) return; // leave skeletons rather than flashing an error
     const manifest = await res.json() as { entries: ManifestEntry[] };
     const picked = shuffle(manifest.entries).slice(0, FEATURED_CATALOG_COUNT);
     entries = await Promise.all(picked.map(async (m) => {
       try {
-        const r = await fetch(`/catalog/${m.file}`, { cache: 'no-cache' });
+        const r = await fetch(assetPath(`/catalog/${m.file}`), { cache: 'no-cache' });
         if (!r.ok) return { manifest: m, thumbnailUrl: null };
         const payload = await r.json() as { versions?: { thumbnail?: string | null }[] };
         const versions = payload.versions ?? [];

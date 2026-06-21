@@ -70,6 +70,14 @@ function bool(val: unknown, def: boolean): boolean {
   return val;
 }
 
+function choice<T extends string>(val: unknown, name: string, allowed: readonly T[], def: T): T {
+  if (val === undefined) return def;
+  if (typeof val !== 'string' || !allowed.includes(val as T)) {
+    throw new ValidationError(`joints: ${name} must be one of ${allowed.map((a) => `"${a}"`).join(', ')}, got ${describe(val)}.`);
+  }
+  return val as T;
+}
+
 function opts(val: unknown, name: string): Record<string, unknown> {
   if (val === undefined || val === null) return {};
   if (typeof val !== 'object' || Array.isArray(val)) {
@@ -398,27 +406,44 @@ export function createJointsNamespace(module: any) {
     },
 
     /**
-     * Snap-together ball-and-socket joint. Returns { ball, socket } — TWO
-     * separate Manifolds, printed apart and snapped together afterwards.
-     * `ball` is a sphere on a cylindrical stem rising from a mounting disc
-     * (base on z=0, ball on top). `socket` is a cylindrical housing (base on
-     * z=0) whose spherical cavity (`ballD + 2·clearance`) opens upward through
-     * a circular mouth of `openingRatio · ballD` — smaller than the ball, so it
-     * snaps in past the lip and stays captive while articulating — with a
-     * conical entry chamfer to guide the snap. Union each piece onto your
-     * parts (or use the discs as-is).
+     * Articulating ball-and-socket joint. Returns { ball, socket } — TWO
+     * separate Manifolds, printed apart and assembled afterwards. `ball` is a
+     * sphere on a cylindrical stem rising from a mounting disc (base on z=0,
+     * ball on top), with a conical fillet at the stem root so it doesn't snap.
+     * `socket` is a cylindrical housing (base on z=0) whose spherical cavity
+     * (`ballD + 2·clearance`) opens upward through a circular mouth of
+     * `openingRatio · ballD`.
      *
-     * opts: { ballD?, clearance?, openingRatio?, stemD?, stemL?, baseD?, baseT?, segments? }
+     * `retention` picks how the ball is held — the key choice, since a plain
+     * solid socket can't be both easy to insert AND hold a pose:
+     *   • `'friction'` (default) — the rim is split into springy fingers by
+     *     `slots` axial relief cuts. The fingers splay on insertion (low force,
+     *     so the stem survives) then clamp the ball, so it holds the angle you
+     *     set it to. No hardware. Tune grip with `openingRatio`/`slots`.
+     *   • `'clamp'` — a single pinch slot and a pair of lugs with a transverse
+     *     bore for an M-screw (default Ø `screwD`). The ball drops in free;
+     *     tighten the screw to set friction up to a hard lock (camera-ball-head
+     *     style). Add your own screw + nut.
+     *   • `'snap'` — the legacy solid retention lip: the ball is forced past a
+     *     mouth smaller than itself and stays captive but swivels freely. High
+     *     insertion force; no friction once seated.
+     *
+     * opts: { ballD?, clearance?, openingRatio?, retention?, slots?, screwD?,
+     *         stemD?, stemL?, baseD?, baseT?, segments? }
      *   ballD:        ball diameter (default 10)
      *   clearance:    radial articulation gap (default 0.15)
      *   openingRatio: opening diameter as a fraction of ballD, 0.7..0.95
-     *                 (default 0.85 — smaller is tighter to snap, harder to pop out)
+     *                 (default 0.85 — smaller grips/retains harder)
+     *   retention:    'friction' | 'clamp' | 'snap' (default 'friction')
+     *   slots:        finger count for 'friction' (default 4, min 2)
+     *   screwD:       clamp-screw bore Ø for 'clamp' (default 3.4 = M3 clearance)
      */
     ballSocket(o0: unknown): { ball: any; socket: any } {
       const o = opts(o0, 'ballSocket');
       const ballD = num(o.ballD, 'ballD', { def: 10, min: 2 });
       const gap = num(o.clearance, 'clearance', { def: 0.15, min: 0 });
       const ratio = num(o.openingRatio, 'openingRatio', { def: 0.85, min: 0.7, max: 0.95 });
+      const retention = choice(o.retention, 'retention', ['friction', 'clamp', 'snap'] as const, 'friction');
       const dims = ballSocketDims(ballD, gap, ratio);
       const stemD = num(o.stemD, 'stemD', { def: ballD * 0.4, min: 0.8 });
       if (stemD / 2 >= dims.openingR) {
@@ -429,11 +454,16 @@ export function createJointsNamespace(module: any) {
       const baseT = num(o.baseT, 'baseT', { def: 3, min: 0.8 });
       const s = seg(o);
 
-      // Ball half: disc base → stem → sphere (tip buried in the sphere).
+      // Ball half: disc base → conical root fillet → stem → sphere (tip buried
+      // in the sphere). The fillet spreads the bending load out of the stem
+      // root — the stress riser that snaps thin stems on insertion/use.
+      const stemR = stemD / 2;
       const stemTop = baseT + stemL;
       const ballC = stemTop + dims.ballR - Math.min(1.5, dims.ballR * 0.3);
+      const filletH = Math.min(stemL * 0.6, stemR + 0.5);
       const ball = cyl(0, baseT, baseD / 2, s)
-        .add(cyl(0, stemTop, stemD / 2, s))
+        .add(cone(baseT, baseT + filletH, stemR + filletH, stemR, s))
+        .add(cyl(0, stemTop, stemR, s))
         .add(Manifold.sphere(dims.ballR, s ?? 0).translate([0, 0, ballC]));
 
       // Socket half: housing cylinder minus the cavity sphere. The housing's
@@ -443,14 +473,62 @@ export function createJointsNamespace(module: any) {
       const floor = Math.max(1.2, wall);
       const cavC = floor + dims.cavityR;
       const topZ = cavC + dims.lipH;
-      let socket = cyl(0, topZ, dims.cavityR + wall, s)
+      const housingR = dims.cavityR + wall;
+      let socket = cyl(0, topZ, housingR, s)
         .subtract(Manifold.sphere(dims.cavityR, s ?? 0).translate([0, 0, cavC]));
-      // Conical entry chamfer around the mouth — eases the snap without eating
+      // Conical entry chamfer around the mouth — eases insertion without eating
       // the retention lip (capped well below cavityR − openingR).
       const cham = Math.min(1.2, Math.max(0.3, (dims.cavityR - dims.openingR) * 0.6));
       socket = socket.subtract(
         cone(topZ - cham, topZ + LIP, dims.openingR, dims.openingR + cham + LIP, s),
       );
+
+      // Where the rim relief cuts start — below the cavity equator so the
+      // fingers/halves are long enough to flex, but above the floor ring that
+      // keeps the socket one piece.
+      const reliefZ0 = Math.max(floor + 0.8, cavC - dims.cavityR * 0.5);
+      const reliefTop = topZ + LIP;
+
+      if (retention === 'friction') {
+        // Axial relief slots split the rim into springy fingers.
+        const nSlots = int(o.slots, 'slots', { def: 4, min: 2 });
+        const slotW = Math.max(0.8, wall * 0.5);
+        for (let i = 0; i < nSlots; i++) {
+          const ang = (360 * i) / nSlots;
+          const slot = Manifold.cube([housingR + 2, slotW, reliefTop - reliefZ0], false)
+            .translate([-1, -slotW / 2, reliefZ0])
+            .rotate([0, 0, ang]);
+          socket = socket.subtract(slot);
+        }
+      } else if (retention === 'clamp') {
+        // Pinch slot on +Y plus a lug block (split by the same slot into two
+        // ears) bored transversely for a clamp screw. Tightening squeezes the
+        // halves together onto the ball.
+        const screwD = num(o.screwD, 'screwD', { def: 3.4, min: 1 });
+        const slotW = Math.max(0.8, wall * 0.5);
+        const lugX = screwD * 2 + 4;          // total lug-block width across the slot
+        const lugThk = screwD + 4;            // lug depth in +Y and z-height
+        // Lug block straddling the pinch plane, overlapping the housing in −Y.
+        socket = socket.add(
+          Manifold.cube([lugX, lugThk, reliefTop - reliefZ0], false)
+            .translate([-lugX / 2, housingR - 1, reliefZ0]),
+        );
+        // Pinch kerf along +Y (thin in x) — splits housing rim + lug block.
+        socket = socket.subtract(
+          Manifold.cube([slotW, housingR + lugThk + 2, reliefTop - reliefZ0], false)
+            .translate([-slotW / 2, -1, reliefZ0]),
+        );
+        // Transverse clamp-screw bore through both lugs.
+        const boreZ = reliefZ0 + (reliefTop - reliefZ0) / 2;
+        const boreY = housingR - 1 + lugThk / 2;
+        socket = socket.subtract(
+          Manifold.cylinder(lugX + 2, screwD / 2, screwD / 2, s ?? 0)
+            .rotate([0, 90, 0])
+            .translate([-(lugX / 2) - 1, boreY, boreZ]),
+        );
+      }
+      // 'snap' leaves the solid retention lip as-is.
+
       return { ball, socket };
     },
 

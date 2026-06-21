@@ -26,7 +26,14 @@ describe('catalog snapshot shape', () => {
 
   test('every model has a release_date inside the rolling year window', () => {
     const cutoff = Date.now() - 365 * 86_400_000;
-    const slack = 7 * 86_400_000; // tolerate week-of-day variance vs script run
+    // The snapshot is committed once and the test then runs on every PR for
+    // however long it takes the *next* weekly refresh to land. A model sitting
+    // right at the 365-day edge at refresh time ages out within days, so the
+    // slack must cover a realistically-delayed or skipped refresh (review lag,
+    // a holiday week, a soft-failed upstream fetch) — not just the day-of-week
+    // variance between the script run and this test. 30 days still flags a
+    // snapshot whose refresh pipeline has genuinely stalled for a month+.
+    const slack = 30 * 86_400_000;
     const cat = catalogJson as Record<string, { models: Record<string, { release_date: string }> }>;
     for (const [providerId, provider] of Object.entries(cat)) {
       for (const [modelId, model] of Object.entries(provider.models)) {

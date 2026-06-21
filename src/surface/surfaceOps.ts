@@ -1,25 +1,29 @@
-// Main-thread application + memoization of `api.surface.*` ops.
+// Main-thread coordination + memoization of `api.surface.*` ops.
 //
-// The Worker records an ordered chain of surface ops (`MeshResult.surfaceOps`)
-// during a run but never touches the mesh. Here, on the main thread, we apply
-// that chain to the run's base mesh by reusing the existing modifier math
-// (`src/surface/modifiers.ts`, which is main-thread + WebGPU). Each prefix of
-// the chain is memoized by `hash(baseKey + serialized op-chain)` so:
+// The geometry Worker records an ordered chain of surface ops
+// (`MeshResult.surfaceOps`) during a run but never touches the mesh. Here we
+// apply that chain to the run's base mesh — normally inside the dedicated
+// surface Worker (`surfaceWorker.ts`) so the UI stays responsive, with an
+// in-process fallback where `Worker` doesn't exist (vitest's node env). Each
+// prefix of the chain is memoized by `hash(baseKey + serialized op-chain)` so:
 //   - a cache hit is instant (no recompute), and
 //   - editing op[i] reuses op[0..i-1]'s cached result.
 //
-// "Sticky" gating lives in main.ts: on a miss we render the BASE mesh and raise
-// a "Re-apply" pill rather than recomputing on every keystroke. `computeChain`
-// is the explicit recompute the button triggers.
+// The base identity is the BASE MESH CONTENT (`meshContentKey`), not the
+// source text — so whitespace/comment/refactor edits that produce the same
+// geometry keep every cached texture, and any edit that changes the geometry
+// re-keys the chain no matter how it was expressed.
+//
+// main.ts applies chains on every run with an inline "Applying textures…"
+// timer + Cancel; `cancelSurfaceCompute` (terminate+respawn — the only true
+// interrupt for synchronous per-op math) rejects the in-flight computeChain
+// with `SurfaceComputeCancelled`, and the caller falls back to the base mesh
+// + the sticky "Re-apply" pill.
 
 import type { MeshData } from '../geometry/types';
 import { simpleHash } from '../geometry/statsComputation';
-import type { SurfaceOp, SurfaceOpId } from './surfaceOpSpec';
-import {
-  applyFuzzy, applyKnitAsync, applyCable, applyWaffle, applyFur, applyWoven, applyVoronoi, applySmooth,
-  defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions,
-  defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultSmoothOptions,
-} from './modifiers';
+import type { SurfaceOp, ResolvedScope } from './surfaceOpSpec';
+import type { ChainOp } from './applyChain';
 
 /** Memo cache: prefix key → textured mesh after that prefix of the chain.
  *  Bounded so a long editing session can't grow it without limit (insertion
@@ -38,40 +42,44 @@ function remember(key: string, mesh: MeshData): void {
   }
 }
 
-/** Stable key for the chain prefix `ops[0..upTo]` against a given base identity.
- *  `baseKey` already folds in the code + customizer params (computed by the
- *  caller), so the same code+params+ops always maps to the same key — and any
- *  geometry-affecting change shifts it (→ a miss → the Re-apply pill). */
-function prefixKey(baseKey: string, ops: SurfaceOp[], upTo: number): string {
-  const chain = ops.slice(0, upTo + 1).map(o => ({ id: o.id, params: o.params }));
-  return simpleHash(`${baseKey}|${JSON.stringify(chain)}`);
+/** Content hash of the geometry a texture chain sits on: FNV-1a over the
+ *  vertex and index buffers (+ the layout scalars). Two runs whose base mesh
+ *  is byte-identical share every cached texture — regardless of how the
+ *  source text changed (whitespace, comments, refactors) — and any real
+ *  geometry change re-keys the chain. ~milliseconds even on multi-MB meshes. */
+export function meshContentKey(mesh: MeshData): string {
+  let h = 0x811c9dc5;
+  const mix = (bytes: Uint8Array) => {
+    for (let i = 0; i < bytes.length; i++) {
+      h ^= bytes[i];
+      h = Math.imul(h, 0x01000193);
+    }
+  };
+  mix(new Uint8Array(mesh.vertProperties.buffer, mesh.vertProperties.byteOffset, mesh.vertProperties.byteLength));
+  mix(new Uint8Array(mesh.triVerts.buffer, mesh.triVerts.byteOffset, mesh.triVerts.byteLength));
+  // The modifier kernel carries the base mesh's triColors into its output, so
+  // a colored base must key differently from an uncolored (or differently
+  // colored) one — otherwise a cache hit could serve a mis-colored texture.
+  if (mesh.triColors) mix(new Uint8Array(mesh.triColors.buffer, mesh.triColors.byteOffset, mesh.triColors.byteLength));
+  return `m${(h >>> 0).toString(36)}-${mesh.numVert}-${mesh.numTri}-${mesh.numProp}${mesh.triColors ? 'c' : ''}`;
 }
 
-/** Apply one op to `mesh`, filling size-relative defaults from the actual mesh
- *  and reusing the modifier math. The async knit path uses the GPU when present. */
-async function applyOne(mesh: MeshData, op: SurfaceOp): Promise<MeshData> {
-  const p = op.params;
-  switch (op.id) {
-    case 'fuzzy':   return applyFuzzy(mesh, { ...defaultFuzzyOptions(mesh), ...p }).mesh;
-    case 'knit':    return (await applyKnitAsync(mesh, { ...defaultKnitOptions(mesh), ...p })).mesh;
-    case 'cable':   return applyCable(mesh, { ...defaultCableOptions(mesh), ...p }).mesh;
-    case 'waffle':  return applyWaffle(mesh, { ...defaultWaffleOptions(mesh), ...p }).mesh;
-    case 'fur':     return applyFur(mesh, { ...defaultFurOptions(mesh), ...p }).mesh;
-    case 'woven':   return applyWoven(mesh, { ...defaultWovenOptions(mesh), ...p }).mesh;
-    case 'voronoi': return applyVoronoi(mesh, { ...defaultVoronoiOptions(mesh), ...p }).mesh;
-    case 'smooth':  return applySmooth(mesh, { ...defaultSmoothOptions(), ...p }).mesh;
-    default: {
-      // Exhaustiveness guard — a new SurfaceOpId must add a case above.
-      const _never: never = op.id;
-      throw new Error(`surfaceOps: unsupported op "${_never as SurfaceOpId}"`);
-    }
-  }
+/** Stable key for the chain prefix `ops[0..upTo]` against a given base identity.
+ *  `baseKey` is the base mesh's content hash (see {@link meshContentKey}), so
+ *  the same geometry + ops always maps to the same key — and any
+ *  geometry-affecting change shifts it (→ a recompute). */
+function prefixKey(baseKey: string, ops: SurfaceOp[], upTo: number): string {
+  // Include `scope` (declarative): a scoped op produces a different mesh than
+  // the same op unscoped, so they must key apart. The resolved seeds are NOT
+  // keyed — they derive deterministically from scope + the base mesh (baseKey).
+  const chain = ops.slice(0, upTo + 1).map(o => ({ id: o.id, params: o.params, scope: o.scope }));
+  return simpleHash(`${baseKey}|${JSON.stringify(chain)}`);
 }
 
 /** Cache lookup for a fully-applied chain. `cached: true` with `mesh` means the
  *  textured result is ready to render; `cached: false` means at least the final
- *  op must be recomputed (the sticky-pill case). An empty chain is trivially
- *  "cached" with no mesh (caller keeps the base mesh). */
+ *  op must be recomputed. An empty chain is trivially "cached" with no mesh
+ *  (caller keeps the base mesh). */
 export function surfaceCacheStatus(baseKey: string, ops: SurfaceOp[]): { cached: boolean; mesh: MeshData | null } {
   if (ops.length === 0) return { cached: true, mesh: null };
   const mesh = cache.get(prefixKey(baseKey, ops, ops.length - 1));
@@ -83,16 +91,124 @@ export function surfaceCacheStatus(baseKey: string, ops: SurfaceOp[]): { cached:
   return { cached: false, mesh: null };
 }
 
+/** The memo key for a fully-applied chain, or null for an empty chain. This is
+ *  the key persisted with a saved version (`Version.surfaceTexture`) so the
+ *  computed mesh can be re-seeded on load — see {@link seedSurfaceCache}. */
+export function surfaceChainKey(baseKey: string, ops: SurfaceOp[]): string | null {
+  if (ops.length === 0) return null;
+  return prefixKey(baseKey, ops, ops.length - 1);
+}
+
+/** Warm the memo cache with a previously computed result (a texture persisted
+ *  on a saved version). The next `surfaceCacheStatus` / `computeChain` for the
+ *  same base identity + chain hits instead of recomputing. A key that no longer
+ *  matches anything simply ages out of the LRU — seeding is always safe. */
+export function seedSurfaceCache(key: string, mesh: MeshData): void {
+  remember(key, mesh);
+}
+
+/** Thrown (as the computeChain rejection) when the in-flight compute was
+ *  cancelled — by the user's Cancel button or by a newer compute superseding
+ *  it. The caller shows the base mesh + the Re-apply pill, not an error. */
+export class SurfaceComputeCancelled extends Error {
+  constructor() { super('Surface texture compute cancelled'); }
+}
+
+// === Worker client ===
+
+interface PendingCall {
+  callId: number;
+  baseKey: string;
+  ops: SurfaceOp[];
+  startIndex: number;
+  resolve: (mesh: MeshData) => void;
+  reject: (err: Error) => void;
+  onProgress?: (fraction: number) => void;
+}
+
+let worker: Worker | null = null;
+let pending: PendingCall | null = null;
+let nextCallId = 1;
+
+function initWorker(): Worker {
+  if (worker) return worker;
+  worker = new Worker(new URL('./surfaceWorker.ts', import.meta.url), { type: 'module' });
+  worker.onmessage = (e: MessageEvent<{ type: string; callId: number; index?: number; mesh?: MeshData; message?: string }>) => {
+    const msg = e.data;
+    if (!pending || msg.callId !== pending.callId) return; // stale (superseded call)
+    const call = pending;
+    if (msg.type === 'prefix' || msg.type === 'done') {
+      const absoluteIndex = call.startIndex + (msg.index ?? 0);
+      remember(prefixKey(call.baseKey, call.ops, absoluteIndex), msg.mesh!);
+      const remaining = call.ops.length - call.startIndex;
+      call.onProgress?.(remaining > 0 ? (absoluteIndex - call.startIndex + 1) / remaining : 1);
+      if (msg.type === 'done') {
+        pending = null;
+        call.resolve(msg.mesh!);
+      }
+    } else if (msg.type === 'error') {
+      pending = null;
+      call.reject(new Error(msg.message ?? 'surface compute failed'));
+    }
+  };
+  worker.onerror = (e) => {
+    // The Worker has faulted — tear it down so the next compute respawns a
+    // fresh instance. Reusing a crashed Worker would leave the next
+    // postMessage with no responder and hang the "Applying texture…" UI.
+    worker?.terminate();
+    worker = null;
+    if (pending) {
+      const call = pending;
+      pending = null;
+      call.reject(new Error(e.message || 'surface worker error'));
+    }
+  };
+  return worker;
+}
+
+/** Cancel the in-flight chain compute (if any): terminate the Worker — the
+ *  only true interrupt for synchronous math — and reject the pending
+ *  computeChain with {@link SurfaceComputeCancelled}. The Worker respawns
+ *  lazily on the next compute (the WebGPU pipeline cache rebuilds then).
+ *  Returns true when something was actually cancelled. */
+export function cancelSurfaceCompute(): boolean {
+  if (!pending) return false;
+  const call = pending;
+  pending = null;
+  worker?.terminate();
+  worker = null;
+  call.reject(new SurfaceComputeCancelled());
+  return true;
+}
+
+/** True while a chain compute is running in the surface Worker. */
+export function surfaceComputeInFlight(): boolean {
+  return pending !== null;
+}
+
 /** Force-apply the whole chain, reusing the deepest already-cached prefix and
  *  caching every newly-computed prefix. `onProgress(fraction)` reports progress
- *  across the uncached tail. Returns the final textured mesh. */
+ *  across the uncached tail. Runs in the surface Worker (so the UI thread stays
+ *  free); falls back to in-process compute where `Worker` doesn't exist
+ *  (vitest's node env). A computeChain that starts while another is in flight
+ *  supersedes it — the older call rejects with {@link SurfaceComputeCancelled}
+ *  (latest-wins, matching the editor's run generations). Returns the final
+ *  textured mesh. */
 export async function computeChain(
   base: MeshData,
   baseKey: string,
   ops: SurfaceOp[],
   onProgress?: (fraction: number) => void,
+  resolved?: (ResolvedScope | null)[],
 ): Promise<MeshData> {
   if (ops.length === 0) return base;
+
+  // The kernel sees each op with its resolved scope attached (when scoped). The
+  // memo key still uses the declarative `ops` (resolved seeds derive from scope
+  // + baseKey), so keying and cache lookups below stay on `ops`.
+  const chainOps: ChainOp[] = resolved
+    ? ops.map((op, i) => (resolved[i] ? { ...op, resolvedScope: resolved[i]! } : op))
+    : ops;
 
   // Resume from the deepest cached prefix so editing the last op doesn't redo
   // the whole stack.
@@ -102,14 +218,27 @@ export async function computeChain(
     const cached = cache.get(prefixKey(baseKey, ops, i));
     if (cached) { mesh = cached; start = i + 1; break; }
   }
+  if (start >= ops.length) return mesh; // full chain already cached
 
-  const remaining = ops.length - start;
-  for (let i = start; i < ops.length; i++) {
-    mesh = await applyOne(mesh, ops[i]);
-    remember(prefixKey(baseKey, ops, i), mesh);
-    onProgress?.(remaining > 0 ? (i - start + 1) / remaining : 1);
+  // In-process fallback (no Worker global — unit tier).
+  if (typeof Worker === 'undefined') {
+    const { applyChainOps } = await import('./applyChain');
+    const remaining = ops.length - start;
+    return applyChainOps(mesh, chainOps.slice(start), (i, m) => {
+      remember(prefixKey(baseKey, ops, start + i), m);
+      onProgress?.((i + 1) / remaining);
+    });
   }
-  return mesh;
+
+  // Latest-wins: a new compute supersedes any in-flight one.
+  cancelSurfaceCompute();
+  const w = initWorker();
+  return new Promise<MeshData>((resolve, reject) => {
+    pending = { callId: nextCallId++, baseKey, ops, startIndex: start, resolve, reject, onProgress };
+    // The starting mesh may be a cache entry — post WITHOUT a transfer list so
+    // the structured clone leaves the cached buffers intact.
+    w.postMessage({ type: 'computeChain', callId: pending.callId, base: mesh, ops: chainOps.slice(start) });
+  });
 }
 
 /** Test/diagnostic hook — clears the memo cache. */

@@ -18,6 +18,7 @@ import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
 import { RENDER_VIEW_MODES, EDGE_MODES } from '../renderer/multiview';
 import { getRenderBudget } from './settings';
+import { assetPath } from '../deployment';
 import { applyLiteralPatch, applyPatches } from './patch';
 
 export interface ToolDefinition {
@@ -326,7 +327,12 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'getReferenceImages',
-    description: 'See the reference images the user attached to this session (the "Images" / reference panel — e.g. photos or alternate-angle views to model from or match). Returns ALL of them as ONE labeled grid image (each tile captioned with its label) plus a text list of the labels. Call this at the START of any task that refers to attached photos/views, and again whenever you need to re-check them — do NOT guess at a subject you have not actually seen. If nothing is attached, it says so.',
+    description: 'See the reference IMAGES the user attached to this session (the "Attachments" panel — e.g. photos or alternate-angle views to model from or match). Returns ALL image attachments as ONE labeled grid image (each tile captioned with its label) plus a text list of the labels. Call this at the START of any task that refers to attached photos/views, and again whenever you need to re-check them — do NOT guess at a subject you have not actually seen. For non-image attachments (reference models, PDFs, notes) use getAttachments. If nothing is attached, it says so.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'getAttachments',
+    description: 'List ALL files the user pinned to this session (the "Attachments" panel): reference images, reference models (STL/STEP/3MF), documents (PDF), and text/notes. Returns a manifest — each entry\'s id, kind (image|model|document|text|other), media type, label, the user\'s free-form DESCRIPTION of why it matters (shown as "↳ …" — read these, they\'re the key signal), when it was added, and source (user vs captured from a chat upload). Text/notes attachments include their contents inline. These are DURABLE project context: they survive clearing the chat, so use this to recover reference material an earlier conversation was working from. To actually SEE image attachments, call getReferenceImages.',
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -532,6 +538,27 @@ const ALL_TOOLS: ToolDefinition[] = [
         name: { type: 'string' },
       },
       required: ['points', 'radius', 'color'],
+    },
+  },
+  {
+    name: 'paintImage',
+    description: 'Project a RASTER IMAGE onto the surface as paint — the right tool for a logo, graphic, styled text/wordmark, or any picture-on-a-surface (a shirt graphic, a sticker/decal, a label, face/skin detail). It maps the actual image pixels onto the triangles, so a logo stays a logo and lettering stays legible — unlike the solid-colour region tools (paintNear/paintInBox), which can only flood one flat colour and turn a graphic into a blob. The image background is removed by default so only the subject paints. THE IMAGE: pass `imageRef` (1-based index of a session reference image — call getReferenceImages first to see what the user attached and its index) OR `imageUrl` (a data: or same-origin URL). PLACEMENT, two ways: (1) easiest — pass `view` (front/back/left/right/top/bottom) and it projects flat along that axis onto the surface facing the camera, auto-anchored at the model centre; add `label` to centre it on an api.label region (e.g. the shirt) and, if you omit `size`, to auto-size it to that region; (2) precise — pass explicit `at` (surface point) + `normal` (outward direction there) from probePixel/probeRay. `size` is the decal width in model units. `rotationDeg` twists it around the axis. Returns {ok, name, triangles, avgColor} or {error}. Verify with renderView/renderViews from the projection direction afterwards.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        imageRef: { type: 'number', description: '1-based index of a session reference image to paint (the order getReferenceImages lists them). Use this for an image the user attached.' },
+        imageUrl: { type: 'string', description: 'Alternative to imageRef: a data: URL or same-origin image URL.' },
+        view: { type: 'string', enum: ['front', 'back', 'left', 'right', 'top', 'bottom'], description: 'Project flat along this view axis onto the surface facing it, auto-anchored at the model centre. The simplest placement. front=-Y, back=+Y, right=+X, left=-X, top=+Z, bottom=-Z.' },
+        label: { type: 'string', description: 'Centre the projection on this api.label region (and auto-size to it when `size` is omitted). Combine with `view`, or with `at`+`normal` for explicit control.' },
+        at: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Explicit stamp centre on the surface (world coords), from probePixel/probeRay. Use with `normal` for precise placement instead of `view`.' },
+        normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Explicit outward projection direction at `at`. Pair with `at`.' },
+        size: { type: 'number', description: 'Decal width in model units. Optional when `label` is given (auto-sized to the label footprint).' },
+        rotationDeg: { type: 'number', description: 'Rotate the image around the projection axis, degrees. Default 0.' },
+        detail: { type: 'number', description: 'Triangle rows across the stamp; higher = crisper (default 96). 0 = flat stamp on the existing tessellation.' },
+        removeBackground: { type: 'boolean', description: 'Drop the image background so only the subject paints. Default true.' },
+        name: { type: 'string' },
+      },
+      required: [],
     },
   },
   {
@@ -846,12 +873,12 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'listParts',
-    description: 'List the parts in the active session: [{id, name, order, isCurrent}]. A session can hold multiple parts — independent objects, each with its own code and version history. The current part is what runCode / runAndSave / paint / export act on.',
+    description: 'List the parts in the active session: [{id, name, order, isCurrent}]. A session can hold multiple parts — independent objects, each with its own code and version history. The current part is the default target for runCode / runAndSave / paint / export, but those tools also take an optional `part` target (name, id, or index) so you can act on any part directly without switching focus first.',
     input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'getCurrentPart',
-    description: 'Return the active part {id, name, order}, or null when no session is open.',
+    description: "Return the active part {id, name, order}, or null when no session is open. You rarely need this: changePart returns the part it switched to, listParts marks the current one (isCurrent), and every part-scoped tool takes a `part` target — so prefer addressing parts by name/index over reading the current selection (which the user can change while you work).",
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -866,36 +893,37 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'changePart',
-    description: "Switch the active part. Pass the part id from listParts(). Loads that part's latest version into the editor/viewport; all later code, paint, and version operations act on it.",
+    description: "Switch the active part — i.e. change what the USER sees in the editor/viewport. Address it by name, id (from listParts), or 0-based index. Loads that part's latest version. You usually do NOT need this just to work on a different part: every part-scoped tool (getCode, runCode, runAndSave, paint*, getGeometryData, …) takes an optional `part` target that addresses a part directly. Use changePart only when you want to move the user's focus, or to reset the editor to a part's latest saved version.",
     input_schema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'Part id from listParts().' },
+        part: { description: 'The part to switch to — its name, id (from listParts), or 0-based index.' },
+        id: { type: 'string', description: 'Deprecated alias for `part` — a part id from listParts().' },
       },
-      required: ['id'],
     },
   },
   {
     name: 'renamePart',
-    description: 'Rename a part. Pass its id (from listParts) and the new name.',
+    description: 'Rename a part. Address it by name, id (from listParts), or 0-based index, and give the new name.',
     input_schema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'Part id from listParts().' },
+        part: { description: 'The part to rename — its name, id (from listParts), or 0-based index.' },
+        id: { type: 'string', description: 'Deprecated alias for `part` — a part id from listParts().' },
         name: { type: 'string', description: 'New part name.' },
       },
-      required: ['id', 'name'],
+      required: ['name'],
     },
   },
   {
     name: 'deletePart',
-    description: "Delete a part and all its versions. Refuses to delete a session's last remaining part. If the active part is deleted, an adjacent part becomes active.",
+    description: "Delete a part and all its versions. Refuses to delete a session's last remaining part. If the active part is deleted, an adjacent part becomes active. Address it by name, id (from listParts), or 0-based index.",
     input_schema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'Part id from listParts().' },
+        part: { description: 'The part to delete — its name, id (from listParts), or 0-based index.' },
+        id: { type: 'string', description: 'Deprecated alias for `part` — a part id from listParts().' },
       },
-      required: ['id'],
     },
   },
   {
@@ -1123,442 +1151,55 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: 'applyFuzzySkin',
-    description: `Apply a fuzzy-skin surface texture to the current model — a 3D-printing finish that roughens the surface with fine, irregular noise displacement along per-vertex normals. Saves a new version.
+    name: 'applySurfaceTexture',
+    description: `Apply a surface texture (fuzzy skin, knit, cable knit, waffle, fur/velvet, woven, knurl grip, voronoi relief, or smooth) to the WHOLE current model and save a new version.
 
-**When to use:** After the geometry is final, before or after paint. Paint is carried through subdivision automatically (preserveColor: true) — region descriptors (coplanar/slab/label) re-resolve against the denser mesh; raw triangle-id regions survive as nearest-triangle transfers.
+**Routing — prefer the default.** mode 'auto' (default): in a manifold-js session the texture is written INTO THE CODE as an \`api.surface.<id>({…})\` call (inserted before the final return, or the existing call for that id is updated in place) — the model stays parametric, the texture recomputes when the code changes, and saved versions keep the computed result. In a SCAD/BREP/voxel session it falls back to BAKING the textured mesh (the parametric source is replaced — the returned warnings say so). mode 'code' forces the in-code path (errors off manifold-js); mode 'bake' forces the destructive bake. To fine-tune on manifold-js, just call again with new opts — the code call is edited in place, no undo round-trip needed.
 
-**Parameters:** amplitude = peak outward displacement (world units; start at ~1% of model diagonal); scale = characteristic feature size (smaller → finer fuzz; ~4% of diagonal is a good default); octaves = 1–5 fractal layers (more → busier surface; default 2); seed = reproducibility.
+**opts by id** (all optional — size-relative defaults fill in; amplitude in world units, start ~1–3% of model diagonal; quality 1–5 mesh detail; seed for reproducibility):
+- fuzzy: amplitude, scale (feature size, ~4% of diagonal), octaves (1–5), seed, quality
+- knit: amplitude, stitchWidth, stitchHeight, rowOffset (0–1), roundness (0–1), grainAngleDeg, variation, seed, quality, algorithm ('bfs'|'lscm'|'harmonic')
+- cable: amplitude, cableWidth, cablePitch, plyWidth, grainAngleDeg, variation, seed, quality
+- waffle: amplitude, cellWidth, cellHeight, sharpness (1=soft…8+=thin border), rowOffset (0.5=honeycomb), grainAngleDeg, seed, quality
+- fur: amplitude, fiberSpacing, fiberLength, octaves, grainAngleDeg, seed, quality
+- woven: amplitude, threadSpacing, threadWidth (0.1–0.9 fraction), underDepth (0–1), grainAngleDeg, seed, quality
+- knurl: amplitude (ridge height), cellWidth/cellHeight (ridge spacing), style ('diamond'|'straight'|'ribs'), profile ('round' soft cosine bumps | 'pyramid' straight-sided machinist diamonds), sharpness (1 soft … 6+ sharp peaks), grainAngleDeg, seed, quality — the machinist grip pattern (diamond cross-hatch, axial splines, or finger ribs)
+- voronoi: amplitude, cellSize, wallWidth (fraction), raised (false = engraved channels), jitter (0–1), grainAngleDeg, seed, quality
+- smooth: iterations (Taubin passes, ~5), subdivide (default true)
+Plus preserveColor (default true — bake path only; on the code path paint re-resolves against the textured mesh every run automatically).
 
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. warnings is an array of strings — always check it. Typical warnings: amplitude-too-large (try ≤ 5% of diagonal), scale-too-small/too-large, color-transfer-low-coverage (repaint those areas or use copyColorsFromVersion).
+**Scoping (code path / manifold-js only).** By default the texture covers the whole skin. Add ONE of these to opts to limit it to part of the model:
+- label: 'name' — texture only the triangles of an \`api.label(shape, 'name', …)\` region. Lets you texture one shape of a union (e.g. a knurled grip on a smooth body): label that shape in the code, union it, then \`applySurfaceTexture('knurl', { label: 'grip' })\`.
+- region: { point: [x,y,z], radius } — texture every triangle whose surface is within \`radius\` of a world-space point. Use getGeometryData's bbox/centroid to pick a point on the model.
+(Scoping is ignored on the bake path; pass label/region only with mode 'auto'/'code'.)
 
-**Workflow guidance:** call renderViews after to verify the texture. For fine-tuning: apply → render → undo (loadVersion to the prior version) → re-apply with adjusted params.`,
+**Return:** { path: 'code'|'bake', ok, … } — code path: { call, replaced, version, geometry }; bake path: { label, geometry, colorsCarried, warnings? }. Always check warnings. Call renderViews after to verify.`,
     input_schema: {
       type: 'object',
       properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Peak displacement in world units. Default: ~1% of model diagonal. Keep ≤ 5% to avoid manifold artifacts.',
+        id: {
+          type: 'string',
+          enum: ['fuzzy', 'knit', 'cable', 'waffle', 'fur', 'woven', 'knurl', 'voronoi', 'smooth'],
+          description: 'Which texture to apply.',
         },
-        scale: {
-          type: 'number',
-          description: 'Characteristic feature size in world units (smaller = finer fuzz). Default ~4% of diagonal.',
+        opts: {
+          type: 'object',
+          description: "That id's options (see the per-id list in the tool description) plus preserveColor. Omit for size-relative defaults.",
         },
-        octaves: {
-          type: 'integer',
-          description: 'Fractal octaves 1–5 (more = busier/noisier surface). Default 2.',
-          minimum: 1,
-          maximum: 5,
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic seed. Different seeds produce different patterns with identical parameters. Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Default 3. Higher = smoother displacement curves, longer compute. Use 4–5 for final renders, 1–2 for quick iteration.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint regions onto the retessellated mesh. Default true. Pass false for an intentionally clean-slate texture.',
+        mode: {
+          type: 'string',
+          enum: ['auto', 'code', 'bake'],
+          description: "Routing. Default 'auto' (in-code on manifold-js, bake elsewhere). Only pass 'bake' when the user explicitly wants the mesh flattened.",
         },
       },
-    },
-  },
-  {
-    name: 'applyKnitTexture',
-    description: `Apply a knit-stitch surface texture — a repeating brick-offset V-pattern mimicking hand-knitted fabric (stockinette stitch). Each stitch is a smooth raised bump arranged in alternating rows whose horizontal offset creates the characteristic interlocking V shapes.
-
-**When to use:** After the geometry is final; works best on organic and rounded models. Paint is carried through subdivision automatically (preserveColor: true).
-
-**Key parameters:**
-- amplitude: peak bump height (world units; ~3% of diagonal is a good start)
-- stitchWidth: width of one stitch (horizontal repeat; ~5% of diagonal)
-- stitchHeight: height of one stitch (default stitchWidth × 1.4 — stitches are taller than wide)
-- rowOffset: brick pattern offset in [0,1] (default 0.5 = classic half-stitch)
-- roundness: 0 = sharp V-ridges (heavy column contrast), 1 = soft round bumps (default 0.5)
-- grainAngleDeg: rotate the knit grain in the XY plane (default 0 = stitches run up Z)
-- variation: per-stitch amplitude jitter 0–1 (default 0.1 for organic handmade feel)
-- seed: deterministic seed for per-stitch variation
-
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. warnings is an array of strings — always check it. Typical warnings: amplitude-too-large, stitchWidth/Height too large (too few stitches visible) or too small (invisible), color-transfer-low-coverage.
-
-**Workflow guidance:** Start with default parameters, render to verify, then tune. A coarser stitchWidth (10–20% of diagonal) gives a chunky knit look; finer (3–6%) gives a tight knit. For sweater-like geometry, grainAngleDeg=0 (stitches vertical) is typical.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Peak displacement in world units. Default ~3% of model diagonal. Keep ≤ 5% to avoid manifold artifacts.',
-        },
-        stitchWidth: {
-          type: 'number',
-          description: 'Horizontal stitch repeat in world units. Default ~5% of diagonal. Larger = chunkier knit.',
-        },
-        stitchHeight: {
-          type: 'number',
-          description: 'Vertical stitch repeat in world units. Default stitchWidth × 1.4 (stitches taller than wide).',
-        },
-        rowOffset: {
-          type: 'number',
-          description: 'Brick-pattern horizontal offset for alternating rows as a fraction [0, 1]. Default 0.5 (half-stitch, classic stockinette).',
-          minimum: 0,
-          maximum: 1,
-        },
-        roundness: {
-          type: 'number',
-          description: 'Blend from sharp V-ridges (0) to soft circular bumps (1). Default 0.5.',
-          minimum: 0,
-          maximum: 1,
-        },
-        grainAngleDeg: {
-          type: 'number',
-          description: 'Rotate the knit grain in the XY plane, degrees. 0 = stitches run up the Z axis (default, natural for standing models). 90 = stitches run left–right.',
-        },
-        variation: {
-          type: 'number',
-          description: 'Per-stitch amplitude variation 0–1. 0.1 = each stitch varies by ±10% for an organic handmade feel (default). 0 = perfectly uniform machine-knit look.',
-          minimum: 0,
-          maximum: 1,
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic seed for per-stitch variation. Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = smoother stitch curves.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint regions onto the retessellated mesh. Default true. Pass false for an intentionally unpainted result.',
-        },
-      },
-    },
-  },
-  {
-    name: 'applyCableKnit',
-    description: `Apply a cable-knit surface texture — pairs of Gaussian ply ridges that cross sinusoidally within each cable column, mimicking traditional rope-like cable knit fabric. Saves a new version.
-
-**When to use:** After the geometry is final; ideal for sweaters, hats, and organic shapes. Paint is carried through subdivision automatically (preserveColor: true).
-
-**Key parameters:**
-- amplitude: peak ply-ridge height (~3% of diagonal is a good start)
-- cableWidth: width of one cable column (~8% of diagonal)
-- cablePitch: distance between twist repeats along the column (default cableWidth × 2.5)
-- plyWidth: width of each individual ply ridge (default cableWidth × 0.3)
-- grainAngleDeg: rotate the cable grain in the XY plane (default 0 = cables run up Z)
-- variation: per-cable jitter 0–1 (default 0.08)
-- seed: deterministic seed for variation
-
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. warnings is an array of strings — always check it. Typical warnings: amplitude-too-large, cableWidth too large (too few cables visible).
-
-**Workflow guidance:** Start with defaults. A wider cableWidth (15–25% of diagonal) gives bold Aran-style cables; narrower (5–8%) gives a fine twisted-rope look. Pair with knit background by layering.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Peak ply-ridge displacement in world units. Default ~3% of model diagonal.',
-        },
-        cableWidth: {
-          type: 'number',
-          description: 'Width of one cable column in world units. Default ~8% of diagonal.',
-        },
-        cablePitch: {
-          type: 'number',
-          description: 'Length of one twist repeat along the column. Default cableWidth × 2.5.',
-        },
-        plyWidth: {
-          type: 'number',
-          description: 'Width of each individual ply ridge. Default cableWidth × 0.3.',
-        },
-        grainAngleDeg: {
-          type: 'number',
-          description: 'Rotate cable columns in the XY plane, degrees. 0 = cables run up Z (default).',
-        },
-        variation: {
-          type: 'number',
-          description: 'Per-cable amplitude jitter 0–1. Default 0.08.',
-          minimum: 0,
-          maximum: 1,
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic seed for per-cable variation. Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = smoother ply ridges.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint onto the retessellated mesh. Default true.',
-        },
-      },
-    },
-  },
-  {
-    name: 'applyWaffleStitch',
-    description: `Apply a waffle-stitch surface texture — a regular grid of recessed cells with raised border ridges, producing the classic waffle-knit or waffle-iron look. Set rowOffset=0.5 for a honeycomb/brick variant. Saves a new version.
-
-**When to use:** After geometry is final. Works well on flat-ish or gently curved surfaces; the grid pattern reads clearly on large, low-curvature areas. Paint is carried automatically.
-
-**Key parameters:**
-- amplitude: height of the raised border (~2.5% of diagonal is a good start)
-- cellWidth: width of one cell (~6% of diagonal)
-- cellHeight: height of one cell (default cellWidth for square cells)
-- sharpness: 1 = soft rounded borders, 3–5 = crisp waffle, 8+ = very thin crisp border (default 3)
-- rowOffset: 0 = straight grid (waffle, default); 0.5 = honeycomb offset; any value [0,1] shifts alternate rows
-- grainAngleDeg: rotate the grid in the XY plane (default 0)
-
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. Typical warnings: amplitude-too-large, cellWidth out of range.
-
-**Workflow guidance:** Increase sharpness for a more defined waffle. Use rowOffset=0.5 for a diamond/honeycomb pattern. Try cellWidth = 10–15% of diagonal for a chunky waffle blanket look.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Peak border height in world units. Default ~2.5% of model diagonal.',
-        },
-        cellWidth: {
-          type: 'number',
-          description: 'Width of one waffle cell in world units. Default ~6% of diagonal.',
-        },
-        cellHeight: {
-          type: 'number',
-          description: 'Height of one waffle cell in world units. Default cellWidth (square cells).',
-        },
-        sharpness: {
-          type: 'number',
-          description: 'Controls border width vs. cell recess. 1 = soft rounded, 3 = crisp waffle (default), 8+ = very thin crisp border.',
-          minimum: 1,
-        },
-        rowOffset: {
-          type: 'number',
-          description: 'Alternating-row horizontal offset as a fraction [0, 1]. 0 = straight grid (default). 0.5 = honeycomb offset.',
-          minimum: 0,
-          maximum: 1,
-        },
-        grainAngleDeg: {
-          type: 'number',
-          description: 'Rotate the cell grid in the XY plane, degrees. Default 0.',
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic seed (reserved for future variation). Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = crisper cell borders.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint onto the retessellated mesh. Default true.',
-        },
-      },
-    },
-  },
-  {
-    name: 'applyFurVelvet',
-    description: `Apply a fur/velvet surface texture — directional pile using anisotropic FBM noise. Simulates velvet, velour, short fur, or chenille: the noise is sampled at fine scale perpendicular to the grain (creating individual fibers) and coarse scale along the grain (smooth fiber length). Saves a new version.
-
-**When to use:** After geometry is final. Works best on soft, organic forms. Paint is carried automatically.
-
-**Key parameters:**
-- amplitude: pile height (~2.5% of diagonal)
-- fiberSpacing: cross-grain repeat (individual fiber width; ~2% of diagonal for fine velvet, ~4% for shaggy fur)
-- fiberLength: along-grain scale (default fiberSpacing × 6 — fibers are 6× longer than wide)
-- octaves: fractal detail layers 1–4 (2 = default for fine sub-fiber detail)
-- grainAngleDeg: rotate the fiber direction in the XY plane (default 0 = fibers run up Z)
-- seed: deterministic seed for the noise pattern
-
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. Typical warnings: amplitude-too-large, fiberSpacing out of range.
-
-**Workflow guidance:** Smaller fiberSpacing = denser, finer velvet. Larger = coarser fur. Adjust grainAngleDeg to match the model's natural grain direction. Pair with paint to simulate different colored fur patches.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Pile height in world units. Default ~2.5% of model diagonal.',
-        },
-        fiberSpacing: {
-          type: 'number',
-          description: 'Cross-grain fiber spacing in world units. Default ~2% of diagonal. Smaller = finer velvet; larger = shaggy fur.',
-        },
-        fiberLength: {
-          type: 'number',
-          description: 'Along-grain scale (fiber length). Default fiberSpacing × 6.',
-        },
-        octaves: {
-          type: 'integer',
-          description: 'Fractal octaves 1–4. More = finer sub-fiber detail. Default 2.',
-          minimum: 1,
-          maximum: 4,
-        },
-        grainAngleDeg: {
-          type: 'number',
-          description: 'Rotate the fiber grain in the XY plane, degrees. Default 0 = fibers run up Z.',
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic noise seed. Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = finer fiber strands.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint onto the retessellated mesh. Default true.',
-        },
-      },
-    },
-  },
-  {
-    name: 'applyWovenFabric',
-    description: `Apply a woven-fabric surface texture — a plain-weave interlacing pattern where warp and weft threads alternate over/under at each crossing, producing the characteristic checker-board weave. Saves a new version.
-
-**When to use:** After geometry is final. Looks great on cloth-like forms (bags, cushions, baskets). Paint is carried automatically.
-
-**Key parameters:**
-- amplitude: peak thread height (~2% of diagonal)
-- threadSpacing: distance between thread center-lines (the weave cell size; ~4% of diagonal)
-- threadWidth: width of each thread bump as fraction of spacing [0.1–0.9] (default 0.4)
-- underDepth: how much the under-thread is recessed [0–1] (0 = flat valleys; 0.3 = subtle dip, default; 1 = deep recess)
-- grainAngleDeg: rotate the weave in the XY plane (default 0 = warp runs up Z)
-- seed: deterministic seed
-
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. Typical warnings: amplitude-too-large, threadSpacing out of range.
-
-**Workflow guidance:** threadWidth 0.4 = loose weave with visible gaps; 0.7 = tight weave; 0.9 = nearly closed. Increase underDepth for a more pronounced over-under contrast.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Peak thread displacement in world units. Default ~2% of model diagonal.',
-        },
-        threadSpacing: {
-          type: 'number',
-          description: 'Distance between thread center-lines in world units (weave cell size). Default ~4% of diagonal.',
-        },
-        threadWidth: {
-          type: 'number',
-          description: 'Width of each thread bump as a fraction of threadSpacing [0.1–0.9]. 0.4 = default (open weave); 0.7 = tight weave.',
-          minimum: 0.1,
-          maximum: 0.9,
-        },
-        underDepth: {
-          type: 'number',
-          description: 'How much the under-thread is depressed relative to amplitude [0–1]. 0 = flat valleys; 0.3 = subtle dip (default); 1 = deep recess.',
-          minimum: 0,
-          maximum: 1,
-        },
-        grainAngleDeg: {
-          type: 'number',
-          description: 'Rotate the weave in the XY plane, degrees. Default 0 = warp runs up Z.',
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic seed. Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = finer thread definition.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint onto the retessellated mesh. Default true.',
-        },
-      },
-    },
-  },
-  {
-    name: 'applyVoronoiShell',
-    description: `Apply a Voronoi-shell surface texture — an organic network of raised ridges that trace the boundaries between Voronoi cells, leaving flat cell interiors. This is the "cracked-mud", "dragonfly-wing", or decorative-lampshade look. Saves a new version.
-
-**When to use:** After geometry is final. Great on vases, planters, lampshades, and shells where you want an organic cell pattern. This is a *relief* texture (displaces along normals) — it raises/engraves cell walls but does NOT cut through-holes; for an open strut lattice, model that with booleans instead. Paint is carried automatically.
-
-**Key parameters:**
-- amplitude: peak wall height (~3% of diagonal)
-- cellSize: approximate spacing between cells (~12% of diagonal → ~8 cells across)
-- wallWidth: raised-wall band width as a fraction of cellSize [0.05–0.6] (default 0.25; smaller = thinner struts)
-- raised: true = raised wall network (default); false = engrave the network as recessed channels
-- jitter: cell irregularity [0–1] (1 = full irregular Voronoi, default; 0 = a regular square grid)
-- grainAngleDeg: rotate the cell pattern in the XY plane (default 0)
-- seed: deterministic seed — change it to reshuffle the cell layout
-
-**Return:** { ok, label, geometry, colorsCarried, warnings? }. Typical warnings: cellSize out of range.
-
-**Workflow guidance:** Use a larger amplitude + smaller wallWidth for a delicate, deep-celled shell; jitter=0 turns it into a clean square-cell waffle-like grid. Increase cellSize for fewer, larger cells.`,
-    input_schema: {
-      type: 'object',
-      properties: {
-        amplitude: {
-          type: 'number',
-          description: 'Peak wall displacement in world units. Default ~3% of model diagonal.',
-        },
-        cellSize: {
-          type: 'number',
-          description: 'Approximate spacing between cells in world units. Default ~12% of diagonal (~8 cells across).',
-        },
-        wallWidth: {
-          type: 'number',
-          description: 'Raised-wall band width as a fraction of cellSize [0.05–0.6]. Default 0.25. Smaller = thinner, crisper struts.',
-          minimum: 0.05,
-          maximum: 0.6,
-        },
-        raised: {
-          type: 'boolean',
-          description: 'true = raised wall network (default); false = engrave the cell-wall network as recessed channels.',
-        },
-        jitter: {
-          type: 'number',
-          description: 'Cell irregularity [0–1]. 1 = full irregular Voronoi (default); 0 = a regular square grid.',
-          minimum: 0,
-          maximum: 1,
-        },
-        grainAngleDeg: {
-          type: 'number',
-          description: 'Rotate the cell pattern in the XY plane, degrees. Default 0.',
-        },
-        seed: {
-          type: 'integer',
-          description: 'Deterministic seed — change it to reshuffle the cell layout. Default 1.',
-        },
-        quality: {
-          type: 'integer',
-          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = crisper wall definition.',
-          minimum: 1,
-          maximum: 5,
-        },
-        preserveColor: {
-          type: 'boolean',
-          description: 'Carry existing paint onto the retessellated mesh. Default true.',
-        },
-      },
+      required: ['id'],
     },
   },
   {
     name: 'applyVoronoiLamp',
     description: `Turn the current model into a **true perforated Voronoi shell** — a "Voronoi lamp" / planter: a thin hollow wall with the cell interiors cut clean through, leaving a see-through network of struts along the cell edges. Saves a new version.
 
-**This is the real cutaway, not a texture.** Unlike \`applyVoronoiShell\` (which only displaces the surface — a relief, no holes), this opens actual windows through the wall. \`output:'mesh'\` (default) bakes a smooth manifold-js mesh (Taubin-rounded, no engine change). \`output:'voxel'\` switches the session to the \`voxel\` language (paintable, \`.vox\`-exportable, blockier).
+**This is the real cutaway, not a texture.** Unlike the voronoi relief texture (\`applySurfaceTexture\` with id 'voronoi' — displacement only, no holes), this opens actual windows through the wall. \`output:'mesh'\` (default) bakes a smooth manifold-js mesh (Taubin-rounded, no engine change). \`output:'voxel'\` switches the session to the \`voxel\` language (paintable, \`.vox\`-exportable, blockier).
 
 **When to use:** when the user wants a Voronoi lamp / lampshade, a perforated planter, or any see-through cell-lattice shell. Start from a closed solid (vase, sphere, vessel).
 
@@ -1626,21 +1267,51 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: 'smoothModel',
-    description: `Smooth/round the current model with a Taubin λ/μ pass — softens sharp edges and facets without the shrinkage a naive Laplacian causes. Saves a new version.
+    name: 'engraveModel',
+    description: `Stamp **text** onto the current model: carve it as recessed channels (engrave), cut holes clean through the wall (cut-through), or — with \`raised: true\` — **EMBOSS it as a raised relief**. Saves a new version.
 
-**When to use:** to round a blocky/low-poly model or take the edge off hard corners, after the geometry is final. This is mesh smoothing, not a true fillet — for exact fillets/chamfers use the replicad (BREP) engine.
+**This removes (or, embossing, adds) material** — unlike the relief textures (\`applySurfaceTexture\`: voronoi, knit, waffle…) which only displace the surface skin. The text is rasterized (the app's font path) and projected onto a chosen face (planar) or wrapped around the Z axis (cylindrical), then subtracted from (or unioned onto) the solid.
 
-**Parameters:** iterations = smoothing passes (more → rounder/softer; start ~5); subdivide = densify the mesh first for finer smoothing (default true); preserveColor = carry existing paint (default true).
+**When to use:** to label / brand a part (a name on a tag, a logo plate), cut a stencil, perforate a sign, or add raised lettering. Start from a slab, plate, ring, or cylinder.
 
-**Cross-engine note:** a SCAD or BREP/replicad model is baked to a manifold-js mesh by this operation — the parametric source (and STEP export for BREP) is then unavailable. Returns { ok, label, geometry, warnings? } — always check warnings.`,
+**Key parameters:**
+- text: the string to engrave/emboss (required)
+- raised: true = EMBOSS — raise the text \`depth\` above the face instead of carving (through is ignored). Default false.
+- through: false (default) recesses to \`depth\`; true cuts a hole clean through the wall (stencil)
+- depth: engrave depth — or emboss height with raised — in world units (ignored when through); default ~6% of the model diagonal
+- size: stamp width in world units — how wide the text spans across the face; default ~70% of the face
+- color: paint the letters ('#rrggbb' hex) for a multicolor print — the raised relief (emboss) or the channel walls (engrave/through). Existing paint is still carried.
+- mode: 'planar' (default — onto one face) or 'cylindrical' (wrap around Z, e.g. text around a ring/cup)
+- axis + side: planar face — axis 'x'|'y'|'z' (default 'z') and side 'min'|'max' (default 'max' = the +axis face). For cylindrical, side 'outer' (default) or 'inner'.
+- resolution: field resolution [48–256], default 180. Thin strokes need higher; raise it if letters look mushy.
+- watertight: keep only the largest connected piece (default true).
+
+**Return:** { ok, label, geometry, warnings? }. Verify with renderViews — check the letters are legible, (for through) the holes are open, and (for raised) the relief stands proud. With watertight on the result should be manifold.
+
+**Note:** engraving an **image** is supported only from the Surface UI panel (it needs local image bytes); this tool handles text.`,
     input_schema: {
       type: 'object',
       properties: {
-        iterations: { type: 'integer', description: 'Number of Taubin smoothing passes. More = rounder/softer. Default ~5.', minimum: 1, maximum: 50 },
-        subdivide: { type: 'boolean', description: 'Subdivide the mesh before smoothing for finer results. Default true.' },
-        preserveColor: { type: 'boolean', description: 'Carry existing paint regions onto the smoothed mesh. Default true.' },
+        text: { type: 'string', description: 'The text to engrave/cut. Required.' },
+        font: { type: 'string', enum: ['regular', 'bold', 'italic', 'bold-italic'], description: "Font weight/style. Default 'bold' (heavier strokes engrave more legibly)." },
+        through: { type: 'boolean', description: 'true = cut clean through the wall (stencil); false (default) = recess to `depth`. Ignored when raised.' },
+        raised: { type: 'boolean', description: 'true = EMBOSS: add the text as a raised relief `depth` high instead of carving it. Default false.' },
+        depth: { type: 'number', description: 'Engrave depth — or emboss height when raised — in world units (ignored when through). Default ~6% of the model diagonal.' },
+        size: { type: 'number', description: 'Stamp width in world units — how wide the text spans. Default ~70% of the face span.' },
+        color: { type: 'string', description: "Paint the letters for a multicolor print, '#rrggbb' hex — colors the raised relief (emboss) or the channel walls (engrave/through). Existing paint is still carried." },
+        mode: { type: 'string', enum: ['planar', 'cylindrical'], description: "'planar' (default): onto one flat face. 'cylindrical': wrap the text around the Z axis." },
+        axis: { type: 'string', enum: ['x', 'y', 'z'], description: "Planar only: which face axis. Default 'z' (top/bottom)." },
+        side: { type: 'string', enum: ['min', 'max', 'outer', 'inner'], description: "Planar: 'max' (default, +axis face) or 'min'. Cylindrical: 'outer' (default) or 'inner'." },
+        posU: { type: 'number', description: 'Planar only: stamp center across the face, as a fraction [0–1] of the bbox on the first in-plane axis. Default 0.5 (centered); 0.25/0.75 = quarter points.', minimum: 0, maximum: 1 },
+        posV: { type: 'number', description: 'Planar only: stamp center up the face, as a fraction [0–1] of the bbox on the second in-plane axis. Default 0.5 (centered).', minimum: 0, maximum: 1 },
+        rotationDeg: { type: 'number', description: 'Rotate the stamp in the face plane (planar) or around Z (cylindrical), degrees. Default 0.' },
+        curveAxis: { type: 'string', enum: ['none', 'u', 'v'], description: "Planar/free only: bend the flat stamp around a surface. 'v' = wrap around the vertical axis (text curves left↔right, e.g. around a cylinder/tower/mug); 'u' = wrap around the horizontal axis (text curves up↔down, over a dome). 'none' (default) = flat." },
+        curveAngleDeg: { type: 'number', description: 'Total arc the curved stamp subtends, in degrees (used with curveAxis). The whole word spans this angle; larger = tighter wrap. Default 90.' },
+        resolution: { type: 'integer', description: 'Field resolution along the longest axis [48–256]. Higher = crisper letters, slower. Default 180.', minimum: 48, maximum: 256 },
+        watertight: { type: 'boolean', description: 'Keep only the largest connected piece — one manifold result. Default true.' },
+        preserveColor: { type: 'boolean', description: 'Carry existing paint onto the carved mesh. Default true.' },
       },
+      required: ['text'],
     },
   },
   {
@@ -1665,13 +1336,14 @@ const ALL_TOOLS: ToolDefinition[] = [
     name: 'scaleModel',
     description: `Resize the current model by per-axis multiplicative factors and save a new version. 1 = unchanged, 2 = double, 0.5 = half. For a uniform resize pass the same factor for sx, sy, and sz.
 
-**Cross-engine note:** a SCAD or BREP/replicad model is baked to a manifold-js mesh; a manifold-js model stays editable. Returns { ok, label, geometry, warnings? }.`,
+**Write-back:** mode 'auto' (default) keeps a manifold-js model parametric (wraps the source in an editable .scale([sx, sy, sz])) when safe, otherwise bakes to a mesh; 'parametric' forces editable code; 'bake' flattens to a mesh. A SCAD/BREP/painted/voxel model can only bake. Factors must be positive (a negative or zero scale would mirror or collapse the mesh). Returns { ok, noop?, label, geometry, warnings? }.`,
     input_schema: {
       type: 'object',
       properties: {
         sx: { type: 'number', description: 'X-axis scale factor (1 = no change).', exclusiveMinimum: 0 },
         sy: { type: 'number', description: 'Y-axis scale factor (1 = no change).', exclusiveMinimum: 0 },
         sz: { type: 'number', description: 'Z-axis scale factor (1 = no change).', exclusiveMinimum: 0 },
+        mode: { type: 'string', enum: ['auto', 'parametric', 'bake'], description: "Write-back mode. Default 'auto'." },
         preserveColor: { type: 'boolean', description: 'Carry existing paint onto the scaled mesh. Default true.' },
       },
       required: ['sx', 'sy', 'sz'],
@@ -1729,6 +1401,44 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
 ];
 
+/** Tools whose effect is scoped to a single part — they read or mutate the
+ *  active part's code, geometry, paint, or version history. Each gains an
+ *  optional `part` target (injected below) so the model can address a part
+ *  directly instead of leaning on the shared "current part" pointer, which the
+ *  human can move from the part menu mid-turn. When `part` is supplied,
+ *  executeTool switches focus to it *before* running the op (see
+ *  `focusTargetPart`), so the op always acts on the part the model named — not
+ *  on whatever the user last clicked. The part-management tools (listParts /
+ *  changePart / createPart / …) are deliberately excluded: they already take an
+ *  explicit target or operate at the session level. */
+export const PART_TARGETABLE_TOOLS = new Set<string>([
+  'getActiveLanguage', 'setActiveLanguage',
+  'getCode', 'setCode', 'runCode', 'runAndSave', 'runAndAssert', 'runAndExplain',
+  'getParams', 'setParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
+  'listVersions', 'loadVersion', 'saveVersion', 'forkVersion', 'copyColorsFromVersion',
+  'modifyAndTest', 'query', 'findFaces', 'listComponents', 'listLabels', 'getModelColors',
+  'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
+  'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
+  'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
+  'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
+  'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
+  'renderView', 'renderViews',
+  'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
+  'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel',
+]);
+
+// The shared `part` target schema, injected into every targetable tool so the
+// description stays in one place. Typeless on purpose — it accepts a name/id
+// string OR a 0-based index number (resolvePartTarget in main.ts handles both).
+const PART_TARGET_PROP = {
+  description: 'Optional. The part to act on — addressed by its name, its id (from listParts), or its 0-based index. Defaults to the current part. Pass this to target a specific part directly instead of relying on the current selection; it also makes a separate changePart call unnecessary. Switching focus to the part is visible to the user.',
+};
+for (const tool of ALL_TOOLS) {
+  if (PART_TARGETABLE_TOOLS.has(tool.name) && !('part' in tool.input_schema.properties)) {
+    tool.input_schema.properties.part = PART_TARGET_PROP;
+  }
+}
+
 const ALWAYS_AVAILABLE = new Set([
   'getActiveLanguage',
   'setActiveLanguage',
@@ -1739,6 +1449,7 @@ const ALWAYS_AVAILABLE = new Set([
   'getMeshSummary',
   'getFeatureCentroids',
   'getReferenceImages',
+  'getAttachments',
   'getSessionContext',
   'listVersions',
   // loadVersion is intentionally NOT here — it's listed in SAVE_GATED so
@@ -1808,7 +1519,7 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
 export const RETRY_SAFE_TOOLS = new Set([
   // Pure reads / queries
   'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary',
-  'getFeatureCentroids', 'getReferenceImages', 'getSessionContext', 'listVersions',
+  'getFeatureCentroids', 'getReferenceImages', 'getAttachments', 'getSessionContext', 'listVersions',
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
@@ -1821,8 +1532,8 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric', 'applyVoronoiShell', 'applyVoronoiLamp', 'applyHollow', 'smoothModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'applyHollow', 'engraveModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -1872,6 +1583,33 @@ function getApi(): PartwrightAPI {
   return w.partwright;
 }
 
+/** Switch focus to the part a part-scoped tool named via its `part` target, so
+ *  the op runs against that part rather than whatever the user last selected in
+ *  the part menu. `target` is a part name, id, or 0-based index (mirrors
+ *  resolvePartTarget on the API side). No-op when the target is already current
+ *  — which avoids reloading the part and clobbering any in-progress editor draft
+ *  on it. Returns an error string on a bad target, or null on success. */
+async function focusTargetPart(api: PartwrightAPI, target: string | number): Promise<string | null> {
+  const parts = api.listParts() as Array<{ id: string; name: string; order: number; isCurrent: boolean }> | undefined;
+  if (!Array.isArray(parts) || parts.length === 0) {
+    return `Cannot target part ${JSON.stringify(target)}: no active session with parts. Open a session first.`;
+  }
+  let match: { id: string; isCurrent: boolean } | undefined;
+  if (typeof target === 'number') {
+    if (!Number.isInteger(target) || target < 0) return `Cannot target part: index must be a non-negative integer (got ${JSON.stringify(target)}).`;
+    match = [...parts].sort((a, b) => a.order - b.order)[target];
+  } else {
+    match = parts.find(p => p.id === target) ?? parts.find(p => p.name === target);
+  }
+  if (!match) return `Cannot target part ${JSON.stringify(target)}: no matching part (by name, id, or index). Call listParts() to see what's available.`;
+  if (match.isCurrent) return null; // already focused — don't reload and clobber an in-progress edit
+  const switched = await api.changePart(match.id) as { error?: string } | undefined;
+  if (switched && typeof switched === 'object' && 'error' in switched && switched.error) {
+    return `Cannot target part ${JSON.stringify(target)}: ${switched.error}`;
+  }
+  return null;
+}
+
 /** Dispatches a tool call to window.partwright and stringifies the result.
  *  Errors are caught and returned with isError: true so the loop can feed
  *  them back to the model for self-correction. Tools that return an
@@ -1897,6 +1635,18 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       }
     }
     const api = getApi();
+    // Part addressing: a part-scoped tool may name a `part` target (name, id, or
+    // 0-based index). Switch focus to it before running so the op acts on the
+    // addressed part — not whatever the user last clicked. Strip the key first so
+    // the per-tool APIs (which reject unknown keys) never see it.
+    if (PART_TARGETABLE_TOOLS.has(name)) {
+      const target = input.part as string | number | undefined;
+      delete input.part;
+      if (target != null) {
+        const focusErr = await focusTargetPart(api, target);
+        if (focusErr) return { content: focusErr, isError: true };
+      }
+    }
     // Tools that ship images back to the model bypass the generic JSON
     // dispatch — they need the data-URL → multimodal-image wrapping.
     if (name === 'renderView') return executeRenderView(api, input);
@@ -1904,6 +1654,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
     if (name === 'runIsolated') return await executeRunIsolated(api, input);
     if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
     if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
+    if (name === 'getAttachments') return executeGetAttachments(api);
 
     const result = await dispatch(api, name, input);
     if (result === undefined) return { content: '(ok)', isError: false };
@@ -1972,7 +1723,7 @@ async function readSubdoc(name: string): Promise<{ content: string; isError: boo
     return { content: `Unknown subdoc "${name}". Valid names: ${Array.from(SUBDOC_NAMES).join(', ')}.`, isError: true };
   }
   try {
-    const res = await fetch(`/ai/${name}.md`, { cache: 'force-cache' });
+    const res = await fetch(assetPath(`/ai/${name}.md`), { cache: 'force-cache' });
     if (!res.ok) return { content: `Failed to fetch /ai/${name}.md: ${res.status} ${res.statusText}`, isError: true };
     const text = await res.text();
     return { content: text, isError: false };
@@ -1999,7 +1750,7 @@ async function executeGetReferenceImages(api: PartwrightAPI): Promise<ToolExecRe
     .map(im => ({ src: im.src as string, label: im.label }));
   if (usable.length === 0) {
     return {
-      content: 'No reference images are attached to this session. If the task refers to photos or views, ask the user to attach them in the Images panel (or via the Self-Modeling Studio) — do not invent a subject.',
+      content: 'No reference images are attached to this session. If the task refers to photos or views, ask the user to attach them in the Attachments panel (or via the Self-Modeling Studio) — do not invent a subject. (Non-image attachments, if any, are listed by getAttachments.)',
       isError: false,
     };
   }
@@ -2012,6 +1763,82 @@ async function executeGetReferenceImages(api: PartwrightAPI): Promise<ToolExecRe
   return {
     content: `${usable.length} reference image(s), tiled left-to-right, top-to-bottom in the attached grid:\n${labels}`,
     image: grid,
+    isError: false,
+  };
+}
+
+interface AttachmentEntry {
+  id?: string;
+  kind?: string;
+  mediaType?: string;
+  src?: string;
+  label?: string;
+  description?: string;
+  addedAt?: number;
+  source?: string;
+}
+
+/** Decode a text attachment's `data:` URL to its string contents, capped so a
+ *  large file can't blow the tool result. Returns null when it isn't decodable
+ *  inline (remote URL, non-text payload). */
+function decodeTextAttachment(src: string | undefined): string | null {
+  if (!src || !src.startsWith('data:')) return null;
+  const comma = src.indexOf(',');
+  if (comma < 0) return null;
+  const meta = src.slice(5, comma);
+  const payload = src.slice(comma + 1);
+  const CAP = 4000;
+  try {
+    let text: string;
+    if (/;base64/i.test(meta)) {
+      const bin = atob(payload);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      text = new TextDecoder().decode(bytes);
+    } else {
+      text = decodeURIComponent(payload);
+    }
+    return text.length > CAP ? `${text.slice(0, CAP)}\n…(truncated, ${text.length} chars total)` : text;
+  } catch {
+    return null;
+  }
+}
+
+function executeGetAttachments(api: PartwrightAPI): ToolExecResult {
+  const raw = typeof api.getAttachments === 'function' ? api.getAttachments() : [];
+  const items = (Array.isArray(raw) ? raw : []) as AttachmentEntry[];
+  if (items.length === 0) {
+    return {
+      content: 'No attachments are pinned to this session. Reference files (images, models, PDFs, notes) added in the Attachments panel — or images uploaded in this chat — would appear here. If the task needs reference material, ask the user to attach it.',
+      isError: false,
+    };
+  }
+  const imageCount = items.filter(a => a.kind === 'image').length;
+  const lines: string[] = [];
+  items.forEach((a, i) => {
+    const when = typeof a.addedAt === 'number' ? new Date(a.addedAt).toISOString().slice(0, 10) : 'date unknown';
+    const parts = [
+      `${i + 1}. [${a.kind ?? 'other'}] ${a.label?.trim() || '(no label)'}`,
+      a.mediaType ? `type=${a.mediaType}` : null,
+      `added ${when}`,
+      a.source ? `via ${a.source}` : null,
+      a.id ? `id=${a.id}` : null,
+    ].filter(Boolean);
+    lines.push(parts.join(' · '));
+    // The description is the user's "why this matters" note — the most
+    // important signal for the model, so surface it prominently per entry.
+    const desc = a.description?.trim();
+    if (desc) lines.push(`   ↳ ${desc.replace(/\n/g, ' ')}`);
+    if (a.kind === 'text') {
+      const text = decodeTextAttachment(a.src);
+      if (text) lines.push(`   ---\n${text.split('\n').map(l => `   ${l}`).join('\n')}\n   ---`);
+    }
+  });
+  const hint = imageCount > 0
+    ? `\n\n${imageCount} image attachment(s) above — call getReferenceImages to view them.`
+    : '';
+  return {
+    content: `${items.length} attachment(s) pinned to this session:\n${lines.join('\n')}${hint}`,
     isError: false,
   };
 }
@@ -2172,6 +1999,38 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintNear(input);
     case 'paintStroke':
       return api.paintStroke(input);
+    case 'paintImage': {
+      // Resolve the image source: imageUrl wins; else imageRef indexes the
+      // session reference images (1-based, matching getReferenceImages).
+      let imageUrl = typeof input.imageUrl === 'string' ? input.imageUrl : undefined;
+      if (!imageUrl && input.imageRef != null) {
+        const imgs = typeof api.getImages === 'function' ? api.getImages() : [];
+        // Index the SAME filtered list getReferenceImages numbers (entries with a
+        // usable src), so a 1-based imageRef the model read there resolves here.
+        const list = ((Array.isArray(imgs) ? imgs : []) as Array<{ src?: string }>)
+          .filter(im => typeof im.src === 'string' && im.src.length > 0);
+        const entry = list[Number(input.imageRef) - 1];
+        if (!entry) {
+          return { error: `paintImage: no reference image at index ${input.imageRef}. Call getReferenceImages to list attached images and their indices.` };
+        }
+        imageUrl = entry.src;
+      }
+      if (!imageUrl) {
+        return { error: 'paintImage: provide imageRef (1-based index from getReferenceImages) or imageUrl.' };
+      }
+      return api.paintImage({
+        imageUrl,
+        view: input.view,
+        label: input.label,
+        at: input.at,
+        normal: input.normal,
+        size: input.size,
+        rotationDeg: input.rotationDeg,
+        detail: input.detail,
+        removeBackground: input.removeBackground,
+        name: input.name,
+      });
+    }
     case 'paintInBox':
       return api.paintInBox(input);
     case 'paintInOrientedBox':
@@ -2290,11 +2149,11 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'createPart':
       return api.createPart(input.name as string | undefined);
     case 'changePart':
-      return api.changePart(input.id as string);
+      return api.changePart((input.part ?? input.id) as string | number);
     case 'renamePart':
-      return api.renamePart(input.id as string, input.name as string);
+      return api.renamePart((input.part ?? input.id) as string | number, input.name as string);
     case 'deletePart':
-      return api.deletePart(input.id as string);
+      return api.deletePart((input.part ?? input.id) as string | number);
     case 'assertPaint':
       return api.assertPaint(input);
     case 'paintInCylinder':
@@ -2313,30 +2172,22 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.getReliefSwapGuide();
     case 'setReliefPreviewMode':
       return api.setReliefPreviewMode(input.mode);
-    case 'applyFuzzySkin':
-      return api.applyFuzzySkin(input);
-    case 'applyKnitTexture':
-      return api.applyKnitTexture(input);
-    case 'applyCableKnit':
-      return api.applyCableKnit(input);
-    case 'applyWaffleStitch':
-      return api.applyWaffleStitch(input);
-    case 'applyFurVelvet':
-      return api.applyFurVelvet(input);
-    case 'applyWovenFabric':
-      return api.applyWovenFabric(input);
-    case 'applyVoronoiShell':
-      return api.applyVoronoiShell(input);
+    case 'applySurfaceTexture':
+      return api.applySurfaceTexture(
+        input.id as 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'smooth',
+        input.opts as Record<string, number | boolean | string> | undefined,
+        input.mode as 'auto' | 'code' | 'bake' | undefined,
+      );
     case 'applyVoronoiLamp':
       return api.applyVoronoiLamp(input);
     case 'applyHollow':
       return api.applyHollow(input);
-    case 'smoothModel':
-      return api.smoothModel(input);
+    case 'engraveModel':
+      return api.engraveModel(input);
     case 'voxelizeModel':
       return api.voxelizeModel(input);
     case 'scaleModel':
-      return api.scaleModel(input.sx as number, input.sy as number, input.sz as number, { preserveColor: input.preserveColor as boolean | undefined });
+      return api.scaleModel(input.sx as number, input.sy as number, input.sz as number, { mode: input.mode as 'auto' | 'parametric' | 'bake' | undefined, preserveColor: input.preserveColor as boolean | undefined });
     case 'placeModel':
       return api.placeModel(input);
     case 'rotateModel':

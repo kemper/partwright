@@ -23,7 +23,7 @@
 // Pure logic → unit-tested in the vitest tier.
 
 import type { MeshData } from '../geometry/types';
-import { sdfModifierMesh, MAX_FIELD_RESOLUTION } from './sdfModifier';
+import { sdfModifierMesh, MAX_FIELD_RESOLUTION, type SdfRunControl } from './sdfModifier';
 import { extractPositions, bboxOf } from './meshSubdivide';
 
 export interface HollowShellOptions {
@@ -53,8 +53,9 @@ export interface HollowShellOptions {
 const MIN_WALL_VOXELS = 5;
 
 /** Build a smooth hollow-shell mesh from a solid model. Returns an empty mesh
- *  for an empty input. */
-export function hollowShellMesh(mesh: MeshData, opts: HollowShellOptions): MeshData {
+ *  for an empty input. Async: the underlying field sweep yields to the event
+ *  loop (progress + cancel) via `ctl`. */
+export async function hollowShellMesh(mesh: MeshData, opts: HollowShellOptions, ctl?: SdfRunControl): Promise<MeshData> {
   if (mesh.numTri === 0) return { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
 
   const wall = Math.max(1e-4, opts.wallThickness);
@@ -105,5 +106,5 @@ export function hollowShellMesh(mesh: MeshData, opts: HollowShellOptions): MeshD
       v = Math.max(v, -cyl);
     }
     return v;
-  });
+  }, ctl);
 }

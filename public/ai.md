@@ -81,6 +81,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Polygon with rounded corners | `Curves.polyline(points, {fillet: r})` | BOSL2 `round_corners(...)` | (use manifold-js Curves) |
 | Wing, hull, fuselage (varying profile along axis) | `Curves.loft([profA, profB], [zA, zB])` -> `/ai/curves.md` | BOSL2 `skin([profiles], z=, slices=)` -> `/ai/bosl2.md` | (use manifold-js Curves) |
 | Handle, tube, propeller (profile along 3D path) | `Curves.sweep(profile, pathPoints)` | BOSL2 `path_sweep(profile, path)` | (use manifold-js Curves) |
+| Ribbed / fluted / threaded / corrugated tube — texture that FLOWS along the path (incl. branching organic shapes like a cactus) | **`api.sdf.tube(path, radius, {profile:'flutes'\|'rings'\|'helix'})` -> `/ai/sdf.md#tube`** (continuous through bends; `smoothUnion` several for a branching body — don't hand-roll with `warp`/`displace`) | BOSL2 `path_sweep` of a fluted profile | (use manifold-js sdf) |
 | Revolve around an arbitrary axis | `Curves.revolveAxis(profile, [ax,ay,az])` | `rotate([...]) rotate_extrude() polygon()` | (use manifold-js Curves) |
 | 3D text / embossed label | **`api.text("Hi", {size, height, font, spacing, center})` → Manifold** (Liberation Sans; fonts lazy-loaded ~1.6 MB on first use); `api.textSection(...)` → CrossSection for custom extrusion | `text("Hi", size=10, font="Liberation Sans:style=Regular")` | (use manifold-js) |
 | Round/chamfer all sharp edges of a solid | `Curves.fillet(solid, {angle: 60})` (mesh-smoothing) | BOSL2 `cuboid(rounding=...)`, `round3d(...)` | **`.fillet(radius)` / `.chamfer(distance)` -> `/ai/replicad.md` (exact, BREP-true)** |
@@ -103,6 +104,9 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Captive / clearance nut pocket | `api.fasteners.nutPocket({size:"M3", captive:true})` → subtract -> `/ai/fasteners.md` | BOSL2 `nut_trap_side()` | (use manifold-js fasteners) |
 | Snap-fit, dovetail, or alignment-pin joint | `api.joints.snapFit/dovetail/pin/socket(...)` -> `/ai/joints.md` | (build manually) | (use manifold-js joints) |
 | Print-in-place hinge / ball joint / press-on lid rim | `api.joints.hinge/ballSocket/snapRim(...)` -> `/ai/joints.md` | (build manually) | (use manifold-js joints) |
+| Two-part project box / enclosure (lip or screw lid) | `api.enclosure.box({size:[x,y,z], type:'lip'\|'screw'})` → `{base, lid}` -> `/ai/enclosure.md` | (build manually) | (use manifold-js enclosure) |
+| Rounded shell / PCB standoff post | `api.enclosure.shell({size})` / `api.enclosure.standoff({size:"M3"})` -> `/ai/enclosure.md` | (build manually) | (use manifold-js enclosure) |
+| Knurled grip (diamond / straight / ribs) on a knob or handle | `api.knurl.diamond/straight/ribs({diameter, height})` -> `/ai/knurl.md` | BOSL2 `knurled_cylinder()` | (use manifold-js knurl) |
 | Dial in printer fit tolerances | `api.fasteners.clearanceCoupon({size:"M3"})` + `api.fasteners.clearance(fit)` -> `/ai/fasteners.md` | (build manually) | (use manifold-js fasteners) |
 | Print-in-place mechanism (screw, spinner, hinge, captive ball, slider) | Separate parts via `labeledUnion`, separated by a ~0.3–0.5 mm clearance gap; assert `componentCount` -> `/ai/mechanisms.md` | (model parts + clearance manually) | (model parts + clearance manually) |
 | Helical thread / auger / spiral flute | Real ISO threads: `api.threads.rod/bolt/nut(...)` -> `/ai/threads.md`. Custom augers/flutes: `cs.extrude(h, nDiv, 360*turns, scaleTop)` -> `/ai/mechanisms.md` | `linear_extrude(twist=)`, or BOSL2 `threaded_rod()` | (use manifold-js) |
@@ -148,15 +152,17 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
 | `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over) and `get/setPrinterSettings`. The same check also runs automatically on STL / OBJ / 3MF / GLB export. Read before declaring a model print-ready, then steer the user to the dedicated Resize and Split tools if it doesn't fit. |
 | `fasteners` | Before building parts that mate with real hardware — `api.fasteners.*` screw holes, tap/pilot holes, heat-set insert bosses, captive-nut pockets, the M2–M8 metric table, clearance presets, and a calibration coupon. |
-| `joints` | Before connecting printed parts to each other — `api.joints.*` alignment pins, sliding dovetails, snap-fits, print-in-place barrel hinges, snap-together ball joints, and annular snap rims for press-on lids. |
+| `joints` | Before connecting printed parts to each other — `api.joints.*` alignment pins, sliding dovetails, snap-fits, print-in-place barrel hinges, articulating ball joints (friction / clamp / snap retention), and annular snap rims for press-on lids. |
 | `gears` | Before modeling an involute spur gear, a meshing gear pair, or a rack — `api.gears.spur/pair/rack(...)`, module/teeth/pressure-angle, centre distance, ratio, bores and hubs. |
 | `threads` | Before modeling a threaded rod, bolt, or nut — `api.threads.rod/bolt/nut(...)`, the metric coarse-pitch table, fit clearance, and handedness. |
+| `enclosure` | Before modeling a project box / case, a rounded shell, or PCB standoffs — `api.enclosure.box/shell/standoff(...)`, lip vs screw lids, mate clearance, and the `componentCount === 2` fit check. |
+| `knurl` | Before adding a functional grip to a knob, thumbscrew, or handle — `api.knurl.diamond/straight/ribs(...)` knurled cylinders (distinct from decorative surface textures). |
 | `colors` | Before any paint operation — the picker decision tree, labelled construction, vision-driven painting, export behavior. |
 | `reference-images` | When the user attaches a photo or asks you to model from one — `setImages` shape, label conventions, the five-step photo-to-model loop. |
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
 | `annotations` | When the user has marked up the model with the Annotate tool (or you need to write annotations programmatically). |
 | `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
-| `textures` | Before adding fabric/knit surface detail with `applyFuzzySkin` / `applyKnitTexture` / `applyCableKnit` / `applyWaffleStitch` / `applyFurVelvet` / `applyWovenFabric` / `applyVoronoiShell` — normal-displaced textures (knit, cable, waffle, fur/velvet, woven, voronoi shell, fuzzy skin), their parameters, and the paint-ordering rules. Also covers `applyVoronoiLamp` — a true perforated Voronoi shell (see-through lamp/planter; smooth-mesh output by default, optional voxel) — and `applyHollow` — vase mode: hollow the model into a thin shell, optionally open-topped with drain holes. |
+| `textures` | Before adding fuzzy-skin / fabric / knit surface detail — the `applySurfaceTexture(id, opts?, mode?)` tool or `api.surface.<id>({…})` in manifold-js code (ids: `fuzzy`, `knit`, `cable`, `waffle`, `fur`, `woven`, `knurl`, `voronoi`, `smooth`) — normal-displaced textures, their parameters, scoping a texture to one labelled region, and the paint-ordering rules. Also covers `applyVoronoiLamp` — a true perforated Voronoi shell (see-through lamp/planter; smooth-mesh output by default, optional voxel); `applyHollow` — vase mode: hollow the model into a thin shell, optionally open-topped with drain holes; and `engraveModel`, which stamps text (or, from the UI, an image) onto the model as recessed channels, holes cut clean through (stencil), or an embossed raised relief (`raised: true`), with optional letter `color` for multicolor prints. |
 | `iteration-workflow` | Before calling `runAndSave`, `forkVersion`, `modifyAndTest`, `createSessionWithVersions`, or managing session notes — the full versioning and iteration workflow. |
 | `gotchas` | When something looks wrong — boolean overlap requirements, disconnected components, `paintRegion` on smooth surfaces, `probeRay` normals, `rotate` direction, re-running invalidating painted colors. |
 | `visual-verification` | Before declaring a build done — all-faces check, edge overlay options, feature-specific checks, stat-based validation. |
@@ -238,6 +244,8 @@ partwright.getClipState()      // -> {enabled, z, min, max}
 // Viewport controls
 partwright.setGridVisible(on?)       // Show/hide grid plane (omit to toggle) -> boolean
 partwright.isGridVisible()           // Whether grid plane is visible
+partwright.setStudioLighting(on?)    // Toggle studio lighting: reflections + soft shadow, on by default (omit to toggle) -> boolean
+partwright.isStudioLighting()        // Whether studio lighting is on
 partwright.setDimensionsVisible(on?) // Show/hide bounding box dimensions (omit to toggle) -> boolean
 partwright.areDimensionsVisible()    // Whether dimensions overlay is visible
 partwright.setOrbitLock(on?)         // Lock/unlock camera rotation (omit to toggle) -> boolean
@@ -247,6 +255,31 @@ partwright.setTheme('dark'|'light')  // Set color theme
 partwright.getTheme()                // -> 'dark' or 'light'
 partwright.setAutoRun(enabled)       // Enable/disable auto-render on code edit
 partwright.isAutoRunEnabled()        // Whether auto-run is active
+
+// Arrange mode (Tinkercad-style direct manipulation) -- see #arrange-mode
+partwright.enterArrange()                 // Activate the click-to-select / drag-to-move tool -> {ok}
+partwright.exitArrange()                  // Deactivate
+partwright.isArrangeActive()              // -> boolean
+partwright.selectParts(['box','ball'])    // Replace selection -> matched names
+partwright.addToSelection(['cyl'])        // Extend (shift-click equivalent) -> matched names
+partwright.clearSelection()
+partwright.getSelection()                 // -> string[]
+partwright.listArrangeParts()             // -> [{name, box:{min,max}, center}] every part the tool knows about
+partwright.resizeSelection([2,1,1])       // Per-axis scale (or uniform [s,s,s]) -> {ok, reason?}
+partwright.alignSelection('z','center')   // axis 'x'|'y'|'z', mode 'min'|'center'|'max' -> {ok, reason?}
+partwright.groupSelection()               // ∪ Union the selected parts in code (not voxel) -> {ok, reason?}
+partwright.subtractSelection()            // ∖ first - rest
+partwright.intersectSelection()           // ∩
+partwright.duplicateSelection()           // Clone, offset along +X -> {ok}
+partwright.mirrorSelection('x')           // Mirror across axis
+partwright.rotateSelection([0,0,90])      // Rotate in place (degrees, per-axis); 2+ pivots around group centroid (Z)
+partwright.deleteSelection()              // Remove selected parts from the code
+partwright.undo() / partwright.redo()     // Coarse-grained: one Tinkercad action = one step
+partwright.canUndo() / partwright.canRedo()
+partwright.setAutoCombine(false)          // Insert without auto-union (managed engines)
+partwright.getAutoCombine()               // -> boolean
+partwright.setSnapToGrid(true)            // Round drag/translate deltas to whole units (non-voxel)
+partwright.getSnapToGrid()                // -> boolean
 await partwright.exportGLB()   // Download GLB (browser file dialog -- prefer exportGLBData() in agent flows)
 partwright.exportSTL()         // Download STL ("                                       exportSTLData() ")
 partwright.exportOBJ()         // Download OBJ ("                                       exportOBJData() ")
@@ -258,6 +291,12 @@ await partwright.exportSTLData()
 await partwright.exportOBJData()        // text or base64 depending on whether colors are painted
 await partwright.export3MFData()
 await partwright.exportVOXData()        // -> {filename, mimeType, base64, sizeBytes} (voxel sessions only)
+// Multi-part: bundle several Session Parts into one file (default: all parts). See /ai/file-io.md.
+await partwright.export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?})  // 3MF: one part per Bambu/Orca plate (bambu:true, default; printer "p1s"/"h2c"…, nozzle "0.4", filament "pla"/"petg"…) or generic grid (false)
+await partwright.exportOBJParts(partIds?, filename?)            // OBJ: named objects in one file, grid-arranged (+ .mtl .zip if painted)
+await partwright.exportSTLParts(partIds?, filename?)            // STL: a .zip of one .stl per part
+await partwright.exportGLBParts(partIds?, filename?)            // GLB: named nodes in one scene, grid-arranged
+// ...each has a *Data twin (export{3MF,OBJ,STL,GLB}PartsData) that RETURNS the bytes instead of downloading.
 await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
@@ -289,12 +328,16 @@ partwright.isRunning()                   // -> boolean (is code executing?)
 partwright.getSpendingMode()             // -> {mode, thinking, renderResolution, renderResolutionPx, verificationAngles, painting, sessionNotes, ...}
 partwright.setSpendingMode('balanced')   // 'cheap' | 'balanced' | 'expensive' (sets thinking, vision, paint, notes, caps at once)
 
-// Images -- attach photos to compare model against (see /ai/reference-images.md)
-partwright.setImages([{src, label?}, ...])  // replace all; src is data URL or http(s) URL; label is an optional caption
-partwright.addImage({src, label?})          // append one; returns {id, src, label?}
+// Attachments -- durable session files: reference photos, models, docs, notes
+//   (survive a chat clear; see /ai/reference-images.md#attachments)
+partwright.setImages([{src, label?}, ...])  // replace image attachments; src is data URL or http(s) URL; label optional
+partwright.addImage({src, label?})          // append one image; returns {id, src, label?}
 partwright.removeImage(id)                  // remove by id; returns true if removed
-partwright.clearImages()
-partwright.getImages()                      // -> [{id, src, label?}, ...]
+partwright.clearImages()                    // clear image attachments (non-image ones kept)
+partwright.getImages()                      // -> [{id, src, label?}, ...] (image-kind only)
+partwright.addAttachment({src, kind?, mediaType?, label?, description?})  // pin ANY file; kind/mediaType inferred; description = why it matters
+partwright.getAttachments()                 // -> [{id, kind, mediaType?, src, label?, description?, addedAt?, source?}, ...]
+partwright.setAttachments([...]) / partwright.removeAttachment(id) / partwright.clearAttachments()
 
 // Color regions (~30 paint methods) — call readDoc("colors") for the full picker decision tree.
 partwright.paintRegion({point, normal, color, name?, tolerance?})  // coplanar flood-fill (flat faces)
@@ -312,7 +355,9 @@ partwright.listAnnotations() / addTextAnnotation({anchor, text}) / clearAnnotati
 await partwright.createSession(name?)    // -> {id, url, galleryUrl}
 await partwright.runAndSave(code, label?, assertions?) // Assert+save in one call -> {passed?, geometry, printability, version, diff, galleryUrl, colorRegions?}. `colorRegions` (also on saveVersion) lists each paint region's {name, kind, label?, triangleCount} — confirm `kind: 'byLabel'` for small files and a non-zero triangleCount. Voxel runs add `geometry.voxelCount`.
 await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch create
+await partwright.buildCharacter(spec, {save?, label?}) // No-code humanoid: generate a posed, painted figure from a spec (body/pose/face/hair/clothing/colors) -> {code, ...runAndSave result}. Same engine as the 🧍 Character panel. Partial specs fall back to defaults. See /ai/figure.md.
 await partwright.saveVersion(label?)     // Save current state as version
+await partwright.saveAllParts()          // Save every part with unsaved changes (visits each, restores the active part) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
 await partwright.renameVersion({index} | {id}, label) // Relabel a version (index is immutable) -> {ok, id, index, label} or {error}
@@ -321,6 +366,7 @@ await partwright.diffVersions({index} | {id}, {index} | {id}) // Compare two ver
 await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
 await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
 await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); external/console agents hand this to the user — in-app users click the toolbar Share (↗) button instead
+partwright.publish(platform?)            // Assisted publish to Printables/MakerWorld/Thingiverse/Thangs: no public upload API, so it prepares the file + cover + clipboard details and opens the upload page. platform?: 'printables'|'makerworld'|'thingiverse'|'thangs' (or {error}). See /ai/file-io.md
 partwright.getGalleryUrl()               // -> URL for gallery view (local browser only)
 partwright.getSessionUrl()               // -> URL for this session (local browser only)
 await partwright.listSessions()          // -> [{id, name, updated}]
@@ -332,12 +378,14 @@ await partwright.clearAllSessions()      // Delete all sessions & versions
 // (run, save, paint, export, listVersions, ...) acts on. Versions are scoped
 // per part. Use parts for several distinct objects in one session (e.g. a box
 // and its lid); save them as separate STLs/parts, or model each in isolation.
+// Address a part by its name, its id, or its 0-based index (changePart/
+// renamePart/deletePart all accept any of the three).
 partwright.listParts()                   // -> [{id, name, order, isCurrent}]
 partwright.getCurrentPart()              // -> {id, name, order} or null
 await partwright.createPart(name?)       // New empty part + switch to it -> {id, name, order}
-await partwright.changePart(id)          // Switch active part (loads its latest version)
-await partwright.renamePart(id, name)    // Rename a part
-await partwright.deletePart(id)          // Delete a part + its versions (refuses the last one)
+await partwright.changePart(name|id|index)   // Switch active part (loads its latest version)
+await partwright.renamePart(name|id|index, newName)  // Rename a part
+await partwright.deletePart(name|id|index)   // Delete a part + its versions (refuses the last one)
 
 // Color regions -- tag face regions with a color. Full API in /ai/colors.md.
 // Quick reference (~30 methods total):
@@ -367,7 +415,7 @@ partwright.undoLastPaint() / redoLastPaint()                              // sin
 partwright.removeRegion(id) / setRegionVisibility(id, visible)            // per-region edits
 partwright.hideRegion(id) / showRegion(id) / clearColors()
 partwright.replaceColor({from:[r,g,b], to:[r,g,b], tolerance?})           // bulk-recolor matching regions (0..1 colors) -> {replaced}
-await partwright.paintImage({imageUrl, at:[x,y,z], normal:[nx,ny,nz], size, rotationDeg?, detail?, removeBackground?, name?}) // stamp an image onto the surface as a region -> {ok, name, triangles, avgColor}; get at/normal from probeRay; see /ai/colors.md
+await partwright.paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?}) // project a raster image onto the surface as paint (logo/graphic/text/decal) -> {ok, name, triangles, avgColor}; use view (+ optional label) OR explicit at+normal (from probeRay); see /ai/colors.md
 // Filament palette — the print slots (AMS/MMU) regions map onto; see /ai/colors.md
 partwright.getPalette()                                                   // -> {id, name, capacity, constrained, slots:[{id,name,hex,td}]}
 partwright.listPalettes() / setActivePalette(id) / createPalette(name)
@@ -401,6 +449,7 @@ await partwright.getSessionContext()     // -> {session, versions[], notes[], cu
   "boundingBox": { "x":[-5,5], "y":[-5,5], "z":[-5,5], "dimensions":[10,10,10] },
   "centroid": [0,0,0],
   "volume": 1000, "surfaceArea": 600,
+  "minEdgeLength": 0.8, "meanEdgeLength": 2.1, "aspectRatio": 1.0,
   "genus": 0, "isManifold": true, "componentCount": 1,
   "crossSections": {
     "z25": {"z":-2.5,"area":100,"contours":1},
@@ -412,10 +461,15 @@ await partwright.getSessionContext()     // -> {session, versions[], notes[], cu
 }
 ```
 
+Always present (cheap mesh-quality signals — read them *instead of* paying for a render when the question is structural, not visual):
+- **`minEdgeLength` / `meanEdgeLength`** — shortest and mean triangle-edge length, in model units. A `minEdgeLength` under ~0.4 (≈ FDM extrusion width) means fine detail that will silently vanish on the print.
+- **`aspectRatio`** — longest bounding-box dimension ÷ shortest non-zero one. A high value (>12) flags a tall/thin, tip-prone, fragile part. Omitted when not measurable (empty/degenerate).
+
 Extra fields that appear conditionally:
 - **`containedComponents: N`** — present when N components are fully enclosed inside another solid (e.g. sealed interior voids in a voxel shell). These are excluded from `maxComponents` assertion checks and from the floater warning, since they can't detach in print. Use `runAndExplain(code)` to inspect them individually.
+- **`componentsInterpenetrate: true`** — present when two *separate* components' bounding boxes overlap: they interpenetrate rather than sit apart. If the model should be ONE solid, a boolean didn't fuse (operands must overlap by ≥ 0.5 units); if it's an intentional multi-part assembly, sanity-check the clearance gap.
 - **`stale: true`** — present when the editor code has changed since the last execution (e.g. `setCode` was called without a subsequent run). Stats reflect the *previous* run. Call `runAndSave`/`run` before relying on component counts or other metrics.
-- **`warnings: string[]`** — present when the geometry has printability issues (non-manifold, free-floating components, etc.).
+- **`warnings: string[]`** — present when the geometry has issues worth acting on. Beyond the structural ones (non-manifold, free-floating components, empty paint regions) these now include the same cheap heuristics the headless `model:preview` emits: **over the ~500k triangle budget**, **extreme aspect ratio**, **sub-extrusion-width detail** (smallest edge < 0.4), and **interpenetrating components**. Treat every warning as a to-do before declaring done — they catch a whole class of defects from stats alone, no render needed.
 
 On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}`
 
@@ -440,20 +494,22 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `Manifold` and `CrossSection` -- the raw manifold-3d bindings
 - `Curves` -- helpers for smooth/organic shapes (loft, sweep, bezier, arc, naca4, polyline with fillet, arbitrary-axis revolve, fillet/chamfer, pattern arrays). See **[/ai/curves.md](/ai/curves.md)**.
 - `text(str, opts)` / `textSection(str, opts)` -- extruded or 2D text from Liberation Sans. See **[Text](#text--api-text--api-textsection)** below.
-- `params` -- declare tweakable **Customizer** knobs that surface as sliders/toggles in the viewport (see below).
+- `params` -- `api.params(schema)` is a **native manifold-js code feature** (it also works identically in voxel and replicad sessions): it declares the model's tweakable knobs and returns their resolved values for your code to read. The same knobs *also* surface as a live Customizer panel in the viewport, but the feature is the code call, not the panel — reach for it whenever a model should be reusable/parametric. See **[Customizer parameters](#customizer-parameters-apiparams)** below.
 - `sdf` -- signed-distance-field builder for smooth blends, twists, gyroids, and shells. Tree-of-expressions style, lowered to a Manifold via `.build()`. See **[/ai/sdf.md](/ai/sdf.md)**.
 - `geom` -- 2D sketch-primitive layer (dependency-free). Parametric profiles, each returning a `CrossSection` centered on the origin, ready for `.extrude(h)` / `Manifold.revolve(cs, …)` / booleans: `geom.star(r, points, innerRatio)`, `geom.ngon(r, sides)`, `geom.ellipse(rx, ry, segments)`, `geom.roundedRect(w, h, r, segments)`, `geom.chamferedRect(w, h, chamfer)`, `geom.slot(length, r, segments)`, `geom.teardrop(r, segments, angle)` (printable horizontal-hole profile), `geom.annulus(outer, inner, segments)`, `geom.sector(r, startDeg, endDeg, segments)`, `geom.fromPoints(pts)`, and subdivision smoothing `geom.smooth(pts, {iterations, kernel:'chaikin'|'cubic', closed})`. For polygon booleans/hull/offset use `CrossSection` directly; for smooth paths/sweeps/fillets use `Curves`; for gear profiles use `gears`. See `examples/geom_sketch.js`.
 - `gears` -- involute spur gears, meshing gear pairs, and racks (`spur`/`pair`/`rack`), plus `centerDistance`/`ratio`/`dimensions` helpers. See **[/ai/gears.md](/ai/gears.md)**.
 - `threads` -- ISO-metric threaded rods, bolts, and nuts (`rod`/`bolt`/`nut`) with a coarse-pitch table and print-fit clearance. See **[/ai/threads.md](/ai/threads.md)**.
 - `fasteners` -- hardware fits: screw holes, tap holes, insert bosses, nut pockets, the M2–M8 metric table, clearance presets, calibration coupon. See **[/ai/fasteners.md](/ai/fasteners.md)**.
 - `joints` -- part-to-part joinery: pins, dovetails, snap-fits, print-in-place hinges, ball joints, snap rims. See **[/ai/joints.md](/ai/joints.md)**. (`printFit` is a deprecated alias spreading both `fasteners` and `joints` — old sessions keep working; write new code against the split namespaces.)
+- `enclosure` -- two-part project boxes (`box` → `{base, lid}`, lip or screw lid), rounded `shell`s, and PCB `standoff` posts; composes `fasteners` for the screw variant. A correct box reports `componentCount === 2`. See **[/ai/enclosure.md](/ai/enclosure.md)**.
+- `knurl` -- functional grips: `diamond`/`straight`/`ribs` knurled cylinders for knobs, thumbscrews, and handles (distinct from decorative `surface` textures). See **[/ai/knurl.md](/ai/knurl.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
 Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
 
 ### Customizer parameters (`api.params`)
 
-Declare the model's tweakable dimensions/options at the top via `api.params(schema)`. It returns an object of resolved values; a **Parameters panel** appears in the viewport so the user (or you) can adjust them with sliders/toggles/dropdowns and the model re-runs live — Tinkercad-style customization without leaving code. This is the preferred way to make a model reusable: expose the few dimensions someone would actually want to change.
+`api.params` is part of the **manifold-js sandbox API** — a code feature, not a UI-only one — so adding parameters to a plain manifold-js model is just a matter of calling it; you do **not** need SCAD for parametric models. Declare the model's tweakable dimensions/options at the top via `api.params(schema)`. It returns an object of resolved values your code reads directly; a **Parameters panel** also appears in the viewport so the user (or you) can adjust them with sliders/toggles/dropdowns and the model re-runs live — Tinkercad-style customization without leaving code. This is the preferred way to make a model reusable: expose the few dimensions someone would actually want to change.
 
 `api.params` works the same in **manifold-js, voxel, and BREP (replicad) sessions** — all three are JS sandboxes that share one implementation. For `number`/`int` params the panel pairs a slider with an editable number field, so you can type an exact value (and exceed the slider's range when the spec declares no `max`).
 
@@ -523,7 +579,7 @@ return part;
 
 #### Surface textures in code — `api.surface.*`
 
-Just like paint, **surface textures** can live in the code instead of being baked: `api.surface.fuzzy / .knit / .cable / .waffle / .fur / .woven / .voronoi / .smooth` (or the generic `api.surface.apply('knit', {…})`). Each call records a texture op applied to the **final returned mesh**, in order — a parametric, non-baking counterpart of the `applyFuzzySkin` / `applyKnitTexture` / … tools (same options; size-relative defaults fill in omissions).
+Just like paint, **surface textures** can live in the code instead of being baked: `api.surface.fuzzy / .knit / .cable / .waffle / .fur / .woven / .knurl / .voronoi / .smooth` (or the generic `api.surface.apply('knit', {…})`). Each call records a texture op applied to the **final returned mesh**, in order — a parametric, non-baking counterpart of the `applyFuzzySkin` / `applyKnitTexture` / … tools (same options; size-relative defaults fill in omissions).
 
 ```js
 const { Manifold } = api;
@@ -531,7 +587,9 @@ api.surface.knit({ stitchWidth: 1.2, amplitude: 0.6 });
 return Manifold.sphere(10, 64);
 ```
 
-Textures are expensive, so they're **memoized**: an unchanged model renders the cached result instantly. An **explicit run computes the texture automatically** — `partwright.run` / `runAndSave` (and the Run button / version loads) force the compute and return the **textured** mesh, so you don't need to do anything special; the result you render/inspect is already textured. Only the editor's **live-typing** auto-run is gated (it shows the base mesh + a "⟳ Re-apply" pill so keystrokes stay snappy) — that never affects `run`/`runAndSave`. manifold-js-only. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
+Textures are expensive, so they're **memoized on the base mesh content**: any run that produces the same geometry (whitespace/comment/refactor edits included) renders the cached result instantly. **Every run applies the chain** — `partwright.run` / `runAndSave`, the Run button, version loads, and live typing alike — computing in a dedicated Worker behind an inline "Applying texture… Xs" status + Cancel, so the result you render/inspect is already textured with no extra step. Cancelling parks the chain behind a "⟳ Re-apply" pill (recover via the pill, `ensureSurfaceTexturesApplied()`, or any re-run). manifold-js-only. `partwright.applySurfaceTextureAsCode(id, opts?)` writes/updates the call in the code for you (insert before the final `return`, or edit the existing call), re-runs, and saves a version — the same path the Surface panel's "Apply as code" button takes. `partwright.applySurfaceTexture(id, opts?, mode?)` is the auto-routing wrapper: 'auto' (default) takes this in-code path on manifold-js and falls back to the bake tools elsewhere — returns `path: 'code' | 'bake'`. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
+
+**Scope a texture to part of the model** with one extra option: `api.surface.knurl({ label: 'grip' })` textures only an `api.label(…)` region (so you can texture one shape of a union), and `api.surface.fuzzy({ region: { point: [x,y,z], radius } })` textures only the triangles near a world-space point. The label's color carries onto the textured region. (Scope keys are manifold-js-code only; ignored on the bake path.)
 
 ### Primitive origins and orientations
 
@@ -780,9 +838,9 @@ The standard `exportGLB()` / `exportSTL()` / `exportOBJ()` / `export3MF()` metho
 
 ## Reference images & photo-to-model
 
-The user can attach reference photos via `partwright.setImages([...])`; they appear in the Images tab and Gallery. There's also an analyze-and-build workflow that takes a single photo and bootstraps a model from it.
+The user can attach reference photos via `partwright.setImages([...])`; they appear in the Attachments tab and Gallery. Photos are one **kind** of session attachment — the same panel also holds reference models, PDFs, and notes (`getAttachments`/`addAttachment`), all of which persist across a chat clear. There's also an analyze-and-build workflow that takes a single photo and bootstraps a model from it.
 
-**Call `readDoc({name: "reference-images"})`** when the user attaches a photo or asks you to model something from an image — covers `setImages` arguments, label conventions for elevation matching, and the five-step photo-to-model loop (major masses first, verify each elevation, iterate details).
+**Call `readDoc({name: "reference-images"})`** when the user attaches a photo or asks you to model something from an image — covers `setImages`/`getAttachments` arguments, label conventions for elevation matching, the durable-attachments model, and the five-step photo-to-model loop (major masses first, verify each elevation, iterate details).
 
 ## Iteration workflow
 
@@ -992,4 +1050,37 @@ Read `partwright.getSpendingMode()` at session start and honor the user's budget
 Users can mark up the model surface with the **Annotate** tool (✏️ in the viewport overlay): freehand strokes raycast onto the mesh, and text labels pinned to a 3D anchor. Annotations are per-version, persist in session exports, and are distinct from color regions — they do not modify geometry.
 
 **Call `readDoc({name: "annotations"})`** when the user has placed annotations and you want to read them, or when you need to write annotations programmatically — covers the `getAnnotations` / `setAnnotations` shape and the persistence model.
+
+## Arrange mode
+
+<a id="arrange-mode"></a>
+
+Arrange mode is the Tinkercad-style direct-manipulation tool reached from the Insert palette: a persistent viewport mode where clicking a shape selects it, shift-click extends the selection, drag slides parts around, and a shift-drag marquee lassos every part whose centre lands inside it. The same selection drives **Size** (per-axis scale), **Align** (min/center/max along X/Y/Z), and the **Operations** row (Group / Subtract / Intersect / Duplicate / Mirror / Delete). Every action is recorded in a coarse-grained **undo** stack — one Tinkercad-style gesture = one Ctrl-Z step — independent of CodeMirror's per-text-edit history.
+
+The tool also seeds itself from the live code when you enter it: any hand-written declaration the parser recognises (e.g. `const myCube = Manifold.cube([10,10,10]).translate([5,0,0])`, `cube([10,10,10]) // part: foo`, `v.fillBox([0,0,0],[10,10,10],'#abc') // part: ball`) becomes draggable / resizable / alignable — not just parts you inserted from the palette.
+
+Every UI action is exposed on `window.partwright` so you can drive the same flow from code:
+
+```js
+partwright.enterArrange();
+partwright.selectParts(['ball', 'box']);   // Replace selection
+partwright.alignSelection('z', 'min');     // Drop them to the same Z floor
+partwright.resizeSelection([2, 2, 1]);     // 2x2x1 anisotropic scale
+partwright.groupSelection();               // ∪ Union them in code
+partwright.undo();                         // Reverse one step
+partwright.listArrangeParts();             // [{name, box:{min,max}, center}, …]
+partwright.exitArrange();
+```
+
+A successful action returns `{ ok: true }`; rejected ones return `{ ok: false, reason: <why> }` (e.g. `'no selection'`, `'need 2+ parts'`, `'voxel grids union implicitly'`). The selection set, registry, and undo stack are the **same** instances the panel buttons use — alternating UI clicks and `partwright.*` calls is supported.
+
+**`enterArrange()` opens the Insert panel as a side effect** so the chip strip, Size/Align inputs, and Undo/Redo buttons are visible — matching what a user sees when they enable arrange by hand. Headless flows that just want the canvas pointer hook should still call it; the panel doesn't steal focus from `partwright.*` calls.
+
+**Drag along Z.** Hold **Alt** during drag to slide the part along the world Z axis instead of across the horizontal plane (Tinkercad's lift-up gesture). The drag plane is built from the camera's look direction so the part stays under the cursor as the camera turns.
+
+**Group centroid.** When 2+ parts are selected, `resizeSelection` scales around — and `rotateSelection` (Z axis) pivots around — the **union centroid** rather than each part's own centre. This matches Tinkercad's behaviour: a group resize spreads the parts apart and a Z-rotation swings them around the common pivot.
+
+**Snap-to-grid.** `setSnapToGrid(true)` rounds every per-engine translate delta (drag commit, align spread, rotate spread) to whole units. Voxel grids already snap; this gives the JS/SCAD/BREP engines an opt-in tidy-lattice mode. Note: with snap on, each part in a group transform rounds independently, so a fractional group-spread (e.g. a 2.5× scale) can drift the layout by up to one unit per part.
+
+**Caveats.** Hand-written parts the regex parser can't decode (chained `.scale()`/`.color()`/computed args/custom expressions) stay out of the registry and are skipped silently — a single trailing `.translate(...)` and a single trailing `.rotate(...)` are recognised. Voxel rotation is rejected (lattice quantization makes arbitrary angles unfaithful). Voxel grids union implicitly, so `groupSelection` / `subtractSelection` / `intersectSelection` are no-ops in a voxel session.
 

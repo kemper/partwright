@@ -5,33 +5,37 @@ const { sdf } = api;
 const F = sdf.figure;
 
 // 1. RIG — elongated elegant proportions (8 heads = very tall/slim).
-// Arms raised in high fifth: abduct 165, elbow 78 creates graceful forearm curve.
-// Arabesque: right leg back (flex -38, knee 30) — knee bend keeps foot close
+// Arms raised in high fifth: raiseSide 165, bend 78, twist 90 — the twist rolls
+// the (forward) elbow-curl plane inward so the forearms arc toward each other
+// over the head, the rounded ballet-fifth "O".
+// Arabesque: right leg back (raiseFwd -38, bend 30) — knee bend keeps foot close
 // enough to the standing leg/base to remain connected.
 const rig = F.rig({
   height: 72,
   headsTall: 8,
   build: 'slim',
   pose: {
-    // Arms raised, forearms arc gracefully overhead
-    armL: { abduct: 165, flex: 0, elbow: 78 },
-    armR: { abduct: 165, flex: 0, elbow: 78 },
+    // Arms raised, forearms arc gracefully inward overhead. raiseSide 157 keeps
+    // the sculpted fingertips MEETING over the head — at 165 the two hands
+    // overlap and the fingers interpenetrate in a tangle.
+    arms: { raiseSide: 157, raiseFwd: 0, bend: 78, twist: 90 },
     // Standing left leg: ballet turnout
-    legL: { abduct: 8 },
+    legL: { raiseSide: 8 },
     // Arabesque right leg: swept back and up
-    legR: { abduct: 2, flex: -38, knee: 30 },
+    legR: { raiseSide: 2, raiseFwd: -38, bend: 30 },
     // Head: upward gaze
-    head: { nod: -13, tilt: 2 },
+    head: { pitch: -13, roll: 2 },
     spine: { lean: 2 },
   },
 });
 
-// 2. HEAD + FACE
+// 2. HEAD + FACE — eyes: false so they get their own paint label at the top level.
+// Mouth: delicate carved smile — narrow width, gentle rightward smirk for elegance.
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
-  eyes: { radius: rig.r.head * 0.14 },
+  eyes: false,
   nose: { tipRadius: rig.r.head * 0.09 },
-  mouth: { smirk: 0.1, width: rig.r.head * 0.40 },
+  mouth: false,  // the painted lips ridge below IS the mouth
   ears: false,
   brows: {},
 });
@@ -47,19 +51,32 @@ const skin = F.weld(rig, [
   face,
 ]).label('skin');
 
-// 4. LEOTARD — snug sleeveless top
-const leotard = F.clothing.top(rig, {
+// 3b. EYES — hard-unioned at the top level with their own label so they can be
+// painted white/black separately from the skin.
+const eyes = F.face.eyes(rig, { radius: rig.r.head * 0.14, lids: 'almond' }); // iris style: labels eyes/iris/pupil itself
+// Delicate painted lips ('lips' label) — an additive ridge, so assemble gets mouth: false.
+const lips = F.face.mouthAccents(rig, { style: 'lips', width: rig.r.head * 0.3, smirk: 0.12 });
+
+// 4. LEOTARD — snug sleeveless top + briefs (one piece, one label), so the
+// pelvis under the tutu is dressed, not bare skin.
+const bodice = F.clothing.top(rig, {
   sleeve: 'none',
   thickness: rig.r.chestY * 0.16,
-}).label('leotard');
+});
+const briefs = F.clothing.pants(rig, {
+  rise: 'high',
+  length: 'briefs',
+  thickness: rig.r.upperLeg * 0.22,
+});
+const leotard = bodice.union(briefs).label('leotard');
 
 // 5. TUTU — wide disk skirt placed at the NAVEL/waist level.
-// rig.joints.navel Z ≈ 40.1, which is the natural waistline.
+// rig.joints.spine Z ≈ 40.1, which is the natural waistline.
 // Tutu at the waist means: torso is visible above it, legs below it.
 // This creates the correct visual read of a skirt from the front.
-const navelPos  = rig.joints.navel;
+const navelPos  = rig.joints.spine;
 const navelZ    = navelPos[2];    // ≈ 40.1
-const bodyR     = rig.r.pelvisX;  // ≈ 5.1 (body half-width at hip level)
+const bodyR     = rig.r.hipsX;  // ≈ 5.1 (body half-width at hip level)
 
 // The tutu disk center is at waist level
 // Lowered slightly from navel so it sits at the top of the hip area
@@ -95,5 +112,8 @@ const base = F.base(rig, {
   thickness: rig.opts.height * 0.038,
 }).label('base');
 
-// 8. Hard-union all labeled regions and build
-return sdf.union(skin, leotard, tutu, hair, base).build({ edgeLength: 0.52 });
+// 8. Hard-union all labeled regions and build.
+// detail: faceDetail meshes the head finely (~3x finer grid) so the carved
+// smile and eye domes are smooth; handDetail resolves the sculpted fingers.
+return sdf.union(skin, eyes, lips, leotard, tutu, hair, base)
+  .build({ edgeLength: 0.52, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] });

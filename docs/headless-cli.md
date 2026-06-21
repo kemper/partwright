@@ -36,6 +36,27 @@ control server. One source of truth (the app), full fidelity, full tool parity,
 and the painful WASM+renderer warm-up is paid **once** and amortized across every
 subsequent call.
 
+### Choosing a render path — fast vs app-fidelity
+
+Both layers can produce a PNG; pick by how exact the pixels need to be:
+
+| Want | Use | What you get |
+|---|---|---|
+| A quick "what does it look like?" with no browser | `npm run model:preview -- <file.js>` (Phase 1) | The Node software rasterizer — now **smooth-shaded (per-vertex normals) + 2× antialiased + key/fill/ambient lit**, so it's close to the app's look at ~2 s. Same *mesh* as the browser (verified: identical triangleCount/genus/componentCount). |
+| **Exact app pixels** (the real Three.js viewport — for QC, the eval judge, anything where shading/material fidelity matters) | `partwright render --code <file.js> --out x.png` or `partwright iterate <file.js>` (Phase 2 daemon) | The real WebGL `renderViews` output — true app fidelity. |
+
+> **The Phase-1 rasterizer is no longer "low quality."** It was upgraded
+> (`scripts/cli/preview.mjs`: `vertexNormals` + SSAA + `shadeLights`) so a flat,
+> faceted, aliased look is no longer the reason to reach for the browser — reach
+> for Phase 2 only when you need *exact* app pixels.
+
+> **Speed reality for heavy figures:** the daemon amortizes the ~60 s browser +
+> WASM cold-start (paid once on `daemon start`), but a complex SDF figure still
+> costs **10–70 s to *build*** (marching-cubes meshing) on *every* render — and
+> that same build cost is paid by `model:preview` too. So the daemon's win is
+> **repeated** renders/iterations (warm-up amortized), not making a single heavy
+> figure cheap. The meshing dominates; the render itself is fast in both layers.
+
 ## CLI surface
 
 ```
@@ -44,7 +65,7 @@ partwright run     <file.js> [-p k=v ...]            # stats JSON only, no PNG
 
 partwright preview <file.js> [--lang manifold-js|voxel|scad] [--png out] [--json] [--size N]
                    [--view az,el] [--views front,right,top,bottom,left,back,iso]
-                   [--explain-components] [--expect-components N] [-p k=v]
+                   [--explain-components] [--expect-components N] [--require-labels a,b,c] [-p k=v]
 partwright compare <a.js> <b.js> [more.js ...] [--png out] [--size N] [--view az,el] [-p k=v]  # one tile per model
 partwright photo <image> [--palette p.json] [--max N] [--mode billboard|heightmap] [--depth N] [--bg] [--crop x,y,w,h] [--out model.js] [--png out]
 partwright fetch <url> [--out file]                  # download a remote image to disk (for `photo`)
@@ -97,6 +118,17 @@ a feature the four defaults occlude) or `--views a,b,c` (pick/reorder named
 angles: front,back,right,left,top,bottom,iso). `--explain-components` prints a
 per-island vol/tris/size/center breakdown to stderr; `--expect-components N`
 exits non-zero on a count mismatch (a CI gate for "this must stay N parts").
+
+`stats.labels` lists **every** declared label as `{name, color, triangleCount}` —
+colored *and* uncolored. A label with `triangleCount: 0` is **buried/aliased away
+and paints nothing** (the trap that ships eyeless figures). `--require-labels
+a,b,c` exits non-zero if any listed label resolves to 0 paintable triangles — the
+fast (~2s, no browser) twin of `scripts/build-catalog-entry.cjs --require-labels`.
+`npm run figure:smoke -- <file> [--require-labels …]` is a focused wrapper that
+prints a per-label paint-QC report and applies the same gate. Pass only the labels
+a given figure must show (closed-lid eyes legitimately paint 0). `componentCount`
+is the Node SSR value and can under-report vs the browser bake for near-threshold
+thin features — trust the label gate for paint, verify component splits in-browser.
 
 The default PNG name is **stamped unique per run** (`<file>.preview-<stamp>.png`,
 older stamps for the same model are cleaned up) because the agent Read tool

@@ -19,6 +19,7 @@ async function waitForEngine(page: Page) {
 type PW = {
   createSession: (n?: string) => Promise<unknown>;
   run: (code: string) => Promise<unknown>;
+  runAndSave: (code: string, label?: string) => Promise<unknown>;
   setUnits: (u: string) => void;
 };
 
@@ -26,7 +27,9 @@ async function runManifold(page: Page, code: string) {
   await page.evaluate(async (c) => {
     const pw = (window as unknown as { partwright: PW }).partwright;
     await pw.createSession('export-safety');
-    await pw.run(c);
+    // Save a version so the part isn't flagged "unsaved" — these tests isolate
+    // the units/printability warnings, not the new unsaved-parts warning.
+    await pw.runAndSave(c, 'v1');
   }, code);
 }
 
@@ -34,13 +37,22 @@ const CUBE = 'const { Manifold } = api; return Manifold.cube([10, 10, 10], true)
 // Two non-overlapping cubes → 2 disconnected components (printability warning).
 const TWO_COMPONENTS =
   'const { Manifold } = api; return Manifold.cube([5,5,5], true).add(Manifold.cube([5,5,5], true).translate([40,0,0]));';
+// A 300mm-long bar overruns the default 256³ bed on X → a printability BLOCKER
+// (bed fit) that is otherwise watertight + single-component, so the modal opens
+// solely because of the design-for-print analysis.
+const TOO_BIG = 'const { Manifold } = api; return Manifold.cube([300, 10, 10], true);';
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     try {
       localStorage.setItem('partwright-tour-completed', '1');
-      // Ensure a clean unit baseline regardless of any persisted value.
-      localStorage.removeItem('partwright-units');
+      // Pin the unitless baseline explicitly so these unit-warning tests don't
+      // depend on the app default (which is now 'mm', not 'unitless').
+      localStorage.setItem('partwright-units', 'unitless');
+      // Disable auto-format so runAndSave's saved code matches the editor buffer
+      // exactly — otherwise the part reads as "unsaved" (formatted editor vs
+      // unformatted saved arg) and the new unsaved-parts export warning fires.
+      localStorage.setItem('editor-auto-format', 'false');
     } catch { /* ignore */ }
   });
 });
@@ -77,6 +89,59 @@ test.describe('Export safety confirmation', () => {
     await expect(dialog).toBeVisible();
     await expect(dialog).toContainText('Printability warning');
     await expect(dialog).toContainText('disconnected components');
+  });
+
+  test('design-for-print blockers surface in the export modal', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await runManifold(page, TOO_BIG);
+
+    // Set mm via the export-menu selector so the unitless warning is gone and the
+    // modal can only be opening because of the printability analysis.
+    await page.locator('#btn-export').click();
+    await page.locator('#export-units-select').selectOption('mm');
+    await page.locator('#export-dropdown').getByText('STL', { exact: true }).click();
+
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).not.toContainText('No units set');
+    await expect(dialog).toContainText('Printability blockers');
+    await expect(dialog).toContainText('Too big for the bed');
+    // It's a blocker, so the button stays "Export anyway" until the user accepts.
+    await expect(dialog.getByRole('button', { name: 'Export anyway' })).toBeVisible();
+  });
+
+  test('unitless modal lets the user set units inline', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await runManifold(page, CUBE);
+
+    await page.locator('#btn-export').click();
+    await page.locator('#export-dropdown').getByText('STL', { exact: true }).click();
+
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('No units set');
+    // Inline selector is present, defaulting to unitless; button warns.
+    const select = dialog.locator('#export-confirm-units-select');
+    await expect(select).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Export anyway' })).toBeVisible();
+
+    // Pick millimeters right in the modal — warning clears to a confirmation,
+    // dims re-format in mm, and the button relaxes to "Export".
+    await select.selectOption('mm');
+    await expect(dialog).toContainText('Units set to mm');
+    await expect(dialog).toContainText('10.00 mm × 10.00 mm × 10.00 mm');
+    await expect(dialog.getByRole('button', { name: 'Export', exact: true })).toBeVisible();
+
+    // The choice persists to the toolbar selector and proceeds with the export.
+    await dialog.getByRole('button', { name: 'Export', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(
+      page.locator('div[role="status"]').filter({ hasText: /Exported/ }),
+    ).toBeVisible({ timeout: 5_000 });
+    await page.locator('#btn-export').click();
+    await expect(page.locator('#export-units-select')).toHaveValue('mm');
   });
 
   test('setting a unit suppresses the unitless modal', async ({ page }) => {

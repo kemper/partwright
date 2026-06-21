@@ -25,11 +25,11 @@ const rig = F.rig({
   pose: {
     // Arms neutral so torso/shoulder geometry computes at the right position.
     // We override the arm geometry below with manual capsules.
-    armL: { abduct: 0, flex: 0, elbow: 0 },
-    armR: { abduct: 0, flex: 0, elbow: 0 },
-    legL: { abduct: 14 },
-    legR: { abduct: 14 },
-    head: { nod: -5 },
+    armL: { raiseSide: 0, raiseFwd: 0, bend: 0 },
+    armR: { raiseSide: 0, raiseFwd: 0, bend: 0 },
+    legL: { raiseSide: 14 },
+    legR: { raiseSide: 14 },
+    head: { pitch: -5 },
   },
 });
 
@@ -42,9 +42,9 @@ const r = rig.r;
 // Right arm (figure's right = −X side)
 //
 // For a stocky 7-head figure at height=60:
-//   shoulderL = [7.9,  0, 48.5]
-//   shoulderR = [-7.9, 0, 48.5]
-//   headCenter = [0, 0, 55.7]
+//   upperArmL = [7.9,  0, 48.5]
+//   upperArmR = [-7.9, 0, 48.5]
+//   head = [0, 0, 55.7]
 //   chin = [0, 0, 51.4]
 //
 // Classic double-biceps: elbow directly OUT to the side (same Z as shoulder,
@@ -57,8 +57,8 @@ const foreArmLen  = 60 * 0.150;   // 9.0
 // Elbows: directly out to the side at shoulder height, slightly forward.
 // Classic double-biceps: elbow at same Z as shoulder, arm horizontal.
 // Extend the upper arm a bit beyond the standard length for extra visual space.
-const elbowLX = j.shoulderL[0] + upperArmLen * 1.05;  // ~18.7 — arm extended out
-const elbowZ  = j.shoulderL[2] + 0.5;                 // 49 — barely above shoulder
+const elbowLX = j.upperArmL[0] + upperArmLen * 1.05;  // ~18.7 — arm extended out
+const elbowZ  = j.upperArmL[2] + 0.5;                 // 49 — barely above shoulder
 const elbowY  = -1.5;                                  // slightly forward toward camera
 
 const elbowL = [elbowLX,  elbowY, elbowZ];
@@ -84,10 +84,10 @@ const fistR = [-fistLX, fistY, fistZ];
 
 // Build the arms as thick tapered capsule chains — bodybuilder scale
 function makeArm(shoulderPos, elbow, wrist, fist) {
-  const k = r.foreArm * 0.85;
+  const k = r.lowerArm * 0.85;
   // Bodybuilder arms — notably thicker than average
   const rU = r.upperArm * 1.25;   // thick upper arm
-  const rF = r.foreArm * 1.15;    // thick forearm
+  const rF = r.lowerArm * 1.15;    // thick forearm
   // Upper arm: full capsule shoulder→elbow
   const upper = sdf.capsule(shoulderPos, elbow, rU);
   // Bicep peak: forward-offset sphere at the midpoint of the upper arm
@@ -110,51 +110,86 @@ function makeArm(shoulderPos, elbow, wrist, fist) {
     .smoothUnion(bicepPeak, k * 0.7)
     .smoothUnion(deltoid, r.upperArm * 0.6)
     .smoothUnion(fore, k)
-    .smoothUnion(fistSphere, r.foreArm * 0.9);
+    .smoothUnion(fistSphere, r.lowerArm * 0.9);
 }
 
-const armL = makeArm(j.shoulderL, elbowL, wristL, fistL);
-const armR = makeArm(j.shoulderR, elbowR, wristR, fistR);
+const armL = makeArm(j.upperArmL, elbowL, wristL, fistL);
+const armR = makeArm(j.upperArmR, elbowR, wristR, fistR);
 
 // 2. HEAD + FACE
+// eyes: false — eyes are lifted to the top-level hard-union with their own label
+// so they can be painted independently (paintable-eyes pattern).
+// Mouth: a gritted confident smile with a slight smirk — fits a strongman mid-flex.
+// style 'smile' carves a clean smile line into the face.
+// Gritted effortful mouth: a slim open carve filled by the white teeth band.
+const mouthOpts = { style: 'open', open: 0.26, width: r.head * 0.56, lips: false };
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
-  eyes:  { radius: r.head * 0.14 },
-  nose:  { tipRadius: r.head * 0.14, length: r.head * 0.22 },
-  mouth: { width: r.head * 0.44, smirk: 0.2 },
+  eyes:  false,
+  nose:  { type: 'broad', tipRadius: r.head * 0.13 },
+  mouth: mouthOpts,
   ears:  { size: r.head * 0.28 },
   brows: {},
 });
 
+// Paintable eyes — hard-union at top level with their own label
+const eyes = F.face.eyes(rig, { radius: r.head * 0.17, lids: 'hooded' }); // iris style: labels eyes/iris/pupil itself
+// Clenched teeth filling the open carve ('teeth' label; no lip ring under the mustache).
+const mouthParts = F.face.mouthAccents(rig, mouthOpts);
+
 // 3. EXTRA MUSCLE MASSES — puffed chest, big traps
-const chestPuff = sdf.ellipsoid(
-  r.chestX * 1.2, r.chestY * 1.4, r.chestY * 2.4,
-).translate([0, -r.chestY * 0.35, j.chest[2] + r.chestY * 0.4]);
+// Keep the puffed chest BELOW the chin — taller/higher masses bury the
+// lower face inside the torso (the mouth carve lands inside solid chest).
+const puffC = [0, -r.chestY * 0.35, j.chest[2] - r.chestY * 0.1];
+const puffR = [r.chestX * 1.25, r.chestY * 1.2, r.chestY * 1.6];
+const pecs = sdf.ellipsoid(puffR[0], puffR[1], puffR[2]).translate(puffC);
+
+// (Flush areolae are seated on the welded `skin` surface below, after it's built.)
 
 const trapL = sdf.ellipsoid(
-  r.upperArm * 1.2, r.upperArm * 0.75, r.upperArm * 1.25,
-).translate([j.shoulderL[0] * 0.65, -r.chestY * 0.2, j.shoulderL[2] + r.upperArm * 0.3]);
+  r.upperArm * 1.2, r.upperArm * 0.75, r.upperArm * 1.0,
+).translate([j.upperArmL[0] * 0.65, -r.chestY * 0.2, j.upperArmL[2] + r.upperArm * 0.1]);
 const trapR = sdf.ellipsoid(
-  r.upperArm * 1.2, r.upperArm * 0.75, r.upperArm * 1.25,
-).translate([j.shoulderR[0] * 0.65, -r.chestY * 0.2, j.shoulderR[2] + r.upperArm * 0.3]);
+  r.upperArm * 1.2, r.upperArm * 0.75, r.upperArm * 1.0,
+).translate([j.upperArmR[0] * 0.65, -r.chestY * 0.2, j.upperArmR[2] + r.upperArm * 0.1]);
 
 // 4. WELDED SKIN — note: F.arms and F.hands are NOT included here; we use
 //    our manual arm geometry above instead.
 const skin = F.weld(rig, [
-  F.torso(rig),
+  // navel relief on the bare midriff; the puffed `pecs` mass is welded in, and
+  // the flush areolae (above) hard-union at the top level for their own paint.
+  F.torso(rig, { navel: true }),
   F.neck(rig),
   F.legs(rig),
   F.feet(rig),
   face,
-  chestPuff,
+  pecs,
   trapL,
   trapR,
   armL,
   armR,
-], { k: r.foreArm * 0.7 }).label('skin');
+], { k: r.lowerArm * 0.7 }).label('skin');
+
+// Flush areolae on the PUFFED pec surface. F.nipples rides rig.torso (the
+// un-puffed base chest, behind this custom puff), so seat them ourselves on the
+// real welded `skin`: each areola is the body's OWN front surface within
+// areolaR of the puff-front anchor — flush by construction (no proud coin, no
+// sunk rim) — plus a tiny nipple nub. Hard-union at top level for its paint.
+const nipZ = puffC[2] + puffR[2] * 0.04;        // high on the pec, above the puff centre
+const nipDX = r.chestX * 0.5;
+const puffFrontY = (x, z) => puffC[1] - puffR[1] * Math.sqrt(
+  Math.max(0, 1 - (x / puffR[0]) ** 2 - ((z - puffC[2]) / puffR[2]) ** 2));
+const areolaR = r.chestX * 0.16;
+const tinyNip = r.chestX * 0.04;
+const areola = (x) => {
+  const anc = [x, puffFrontY(x, nipZ), nipZ];
+  const disc = skin.intersect(sdf.sphere(areolaR).translate(anc));
+  return disc.union(sdf.sphere(tinyNip).translate([anc[0], anc[1] - tinyNip * 0.5, anc[2]]));
+};
+const areolae = sdf.union(areola(nipDX), areola(-nipDX)).label('areola');
 
 // 5. SHORT TRUNKS — high-cut bodybuilding shorts
-const trunkCuffZ = j.hipL[2] + r.thigh * 0.4;
+const trunkCuffZ = j.upperLegL[2] + r.upperLeg * 0.4;
 const trunks = F.clothing.pants(rig, {
   rise: 'mid',
   leg: 'slim',
@@ -169,10 +204,15 @@ const nosePos  = rig.face.nose;
 const mouthPos = rig.face.mouth;
 const hl       = rig.dir.headLeft;
 
+// Push the bar forward of the lip surface so the mustache visibly protrudes
+// (a capsule centred between the anchors sits buried under the nose/cheek
+// welds — its label then resolves to 0 paintable triangles).
+const hf = rig.dir.headForward;
+const mustachePush = r.head * 0.22;
 const mustacheCenter = [
-  (nosePos[0] + mouthPos[0]) * 0.5,
-  (nosePos[1] + mouthPos[1]) * 0.5,
-  nosePos[2] + (mouthPos[2] - nosePos[2]) * 0.45,
+  (nosePos[0] + mouthPos[0]) * 0.5 + hf[0] * mustachePush,
+  (nosePos[1] + mouthPos[1]) * 0.5 + hf[1] * mustachePush,
+  nosePos[2] + (mouthPos[2] - nosePos[2]) * 0.30 + hf[2] * mustachePush,
 ];
 const halfSpan = r.headX * 0.52;
 const mustacheA = [
@@ -190,6 +230,9 @@ const mustache = sdf.capsule(mustacheA, mustacheB, r.head * 0.09).label('mustach
 // 8. BASE
 const base = F.base(rig, { radius: rig.opts.height * 0.28 }).label('base');
 
-// 9. Hard-union all labelled regions and build
-return sdf.union(skin, trunks, hair, mustache, base)
-  .build({ edgeLength: 0.5 });
+// 9. Hard-union all labelled regions and build.
+// eyes are at the top level (not inside skin weld) so they carry their own paint label.
+// F.faceDetail(rig) refines the head mesh locally — smooth smile groove, round eye domes —
+// without raising the global edgeLength (which would balloon triangle count).
+return sdf.union(skin, eyes, areolae, mouthParts, trunks, hair, mustache, base)
+  .build({ edgeLength: 0.5, detail: F.faceDetail(rig) });

@@ -12,11 +12,12 @@ import { readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { dirname, basename, join } from 'node:path';
 import sharp from 'sharp';
 import { DEFAULT_VIEWS, resolveViews } from './views.mjs';
+import { checkRequireLabels } from './gates.mjs';
 
 // Re-export so existing importers (main.mjs, model-preview.mjs) can keep
-// pulling resolveViews from preview.mjs; the implementation lives in views.mjs
-// (pure, unit-testable).
-export { resolveViews };
+// pulling resolveViews / checkRequireLabels from preview.mjs; the
+// implementations live in the pure, unit-testable sibling modules.
+export { resolveViews, checkRequireLabels };
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -55,28 +56,69 @@ function basis(azDeg, elDeg) {
   return { right, up, fwd, light: dir };
 }
 
-// Rasterize one view into an RGBA tile.
-function renderTile(positions, triVerts, triColors, center, scale, size, view, bg) {
-  const px = new Uint8ClampedArray(size * size * 4);
-  for (let i = 0; i < px.length; i += 4) { px[i] = bg[0]; px[i + 1] = bg[1]; px[i + 2] = bg[2]; px[i + 3] = 255; }
-  const zbuf = new Float32Array(size * size).fill(Infinity);
-  const half = size / 2;
+// Supersampling factor for antialiasing — render SS× and box-downsample. 2×
+// (4 samples/px) removes the jaggies that made silhouettes look low-quality;
+// rasterizing is a small fraction of a run (WASM meshing dominates), so the
+// extra pixel work is cheap.
+const SS = 2;
+
+// Per-vertex normals = area-weighted sum of incident face normals, normalized
+// (the same scheme Three.js `computeVertexNormals` uses). Computed ONCE per
+// model and shared across views, so smooth (Gouraud) shading replaces the
+// faceted flat shading. Welded seams (duplicate vertex indices) stay crisp.
+function vertexNormals(positions, triVerts) {
+  const nv = positions.length / 3;
+  const vn = new Float32Array(nv * 3);
+  const nt = triVerts.length / 3;
+  for (let t = 0; t < nt; t++) {
+    const ia = triVerts[t * 3], ib = triVerts[t * 3 + 1], ic = triVerts[t * 3 + 2];
+    const a = [positions[ia * 3], positions[ia * 3 + 1], positions[ia * 3 + 2]];
+    const b = [positions[ib * 3], positions[ib * 3 + 1], positions[ib * 3 + 2]];
+    const c = [positions[ic * 3], positions[ic * 3 + 1], positions[ic * 3 + 2]];
+    const fn = cross(sub(b, a), sub(c, a)); // length ∝ triangle area = the weight
+    vn[ia * 3] += fn[0]; vn[ia * 3 + 1] += fn[1]; vn[ia * 3 + 2] += fn[2];
+    vn[ib * 3] += fn[0]; vn[ib * 3 + 1] += fn[1]; vn[ib * 3 + 2] += fn[2];
+    vn[ic * 3] += fn[0]; vn[ic * 3 + 1] += fn[1]; vn[ic * 3 + 2] += fn[2];
+  }
+  for (let i = 0; i < nv; i++) {
+    const n = norm([vn[i * 3], vn[i * 3 + 1], vn[i * 3 + 2]]);
+    vn[i * 3] = n[0]; vn[i * 3 + 1] = n[1]; vn[i * 3 + 2] = n[2];
+  }
+  return vn;
+}
+
+// Three-term lighting: a key light from the camera, a softer fill from the
+// opposite-ish side (so unlit faces read as form rather than flat grey), and an
+// ambient floor. Matches the browser's lit look far better than one hard light.
+function shadeLights(n, view) {
+  const key = Math.max(0, dot(n, view.light));
+  const fillDir = norm([-view.light[0] + view.right[0] * 0.6, -view.light[1] + view.right[1] * 0.6, view.light[2] * 0.3 + 0.4]);
+  const fill = Math.max(0, dot(n, fillDir)) * 0.35;
+  return Math.min(1, 0.30 + key * 0.7 + fill);
+}
+
+// Rasterize one view into an RGBA `size`×`size` tile with smooth (per-vertex
+// normal) shading + SS× supersampled antialiasing. `vnorms` is the shared
+// vertex-normal array from vertexNormals(); colors stay per-triangle.
+function renderTile(positions, triVerts, triColors, center, scale, size, view, bg, vnorms) {
+  const S = size * SS, half = S / 2, sc = scale * SS;
+  const col = new Float32Array(S * S * 3);
+  const zbuf = new Float32Array(S * S).fill(Infinity);
+  const cov = new Uint8Array(S * S);
   const nt = triVerts.length / 3;
   const project = (vi) => {
     const p = [positions[vi * 3] - center[0], positions[vi * 3 + 1] - center[1], positions[vi * 3 + 2] - center[2]];
-    return { x: half + dot(p, view.right) * scale, y: half - dot(p, view.up) * scale, z: dot(p, view.fwd), w: p };
+    return { x: half + dot(p, view.right) * sc, y: half - dot(p, view.up) * sc, z: dot(p, view.fwd) };
   };
   for (let t = 0; t < nt; t++) {
     const ia = triVerts[t * 3], ib = triVerts[t * 3 + 1], ic = triVerts[t * 3 + 2];
     const A = project(ia), B = project(ib), C = project(ic);
-    const n = norm(cross(sub(B.w, A.w), sub(C.w, A.w)));
-    let shade = dot(n, view.light);
-    if (shade < 0) shade = -shade * 0.25; // dim backfaces rather than black
-    shade = 0.32 + 0.68 * Math.min(1, Math.max(0, shade));
+    const na = [vnorms[ia * 3], vnorms[ia * 3 + 1], vnorms[ia * 3 + 2]];
+    const nb = [vnorms[ib * 3], vnorms[ib * 3 + 1], vnorms[ib * 3 + 2]];
+    const ncn = [vnorms[ic * 3], vnorms[ic * 3 + 1], vnorms[ic * 3 + 2]];
     const baseR = triColors ? triColors[t * 3] : 190, baseG = triColors ? triColors[t * 3 + 1] : 190, baseB = triColors ? triColors[t * 3 + 2] : 200;
-    const cr = baseR * shade, cg = baseG * shade, cb = baseB * shade;
-    const minX = Math.max(0, Math.floor(Math.min(A.x, B.x, C.x))), maxX = Math.min(size - 1, Math.ceil(Math.max(A.x, B.x, C.x)));
-    const minY = Math.max(0, Math.floor(Math.min(A.y, B.y, C.y))), maxY = Math.min(size - 1, Math.ceil(Math.max(A.y, B.y, C.y)));
+    const minX = Math.max(0, Math.floor(Math.min(A.x, B.x, C.x))), maxX = Math.min(S - 1, Math.ceil(Math.max(A.x, B.x, C.x)));
+    const minY = Math.max(0, Math.floor(Math.min(A.y, B.y, C.y))), maxY = Math.min(S - 1, Math.ceil(Math.max(A.y, B.y, C.y)));
     const area = (B.x - A.x) * (C.y - A.y) - (C.x - A.x) * (B.y - A.y);
     if (Math.abs(area) < 1e-9) continue;
     for (let y = minY; y <= maxY; y++) {
@@ -86,11 +128,33 @@ function renderTile(positions, triVerts, triColors, center, scale, size, view, b
         const w2 = 1 - w0 - w1;
         if (w0 < -0.001 || w1 < -0.001 || w2 < -0.001) continue;
         const z = w0 * A.z + w1 * B.z + w2 * C.z;
-        const idx = y * size + x;
+        const idx = y * S + x;
         if (z >= zbuf[idx]) continue; // nearer = smaller fwd-depth
         zbuf[idx] = z;
-        const o = idx * 4; px[o] = cr; px[o + 1] = cg; px[o + 2] = cb; px[o + 3] = 255;
+        const nrm = norm([
+          w0 * na[0] + w1 * nb[0] + w2 * ncn[0],
+          w0 * na[1] + w1 * nb[1] + w2 * ncn[1],
+          w0 * na[2] + w1 * nb[2] + w2 * ncn[2],
+        ]);
+        const sh = shadeLights(nrm, view);
+        const o = idx * 3; col[o] = baseR * sh; col[o + 1] = baseG * sh; col[o + 2] = baseB * sh; cov[idx] = 1;
       }
+    }
+  }
+  // Box-downsample SS×SS → size×size RGBA, compositing over the background.
+  const px = new Uint8ClampedArray(size * size * 4);
+  const inv = 1 / (SS * SS);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let r = 0, g = 0, b = 0;
+      for (let dy = 0; dy < SS; dy++) {
+        for (let dx = 0; dx < SS; dx++) {
+          const si = (y * SS + dy) * S + (x * SS + dx);
+          if (cov[si]) { r += col[si * 3]; g += col[si * 3 + 1]; b += col[si * 3 + 2]; }
+          else { r += bg[0]; g += bg[1]; b += bg[2]; }
+        }
+      }
+      const o = (y * size + x) * 4; px[o] = r * inv; px[o + 1] = g * inv; px[o + 2] = b * inv; px[o + 3] = 255;
     }
   }
   return px;
@@ -137,7 +201,8 @@ function tileGrid(tiles, size) {
 // Returns a sharp instance (caller writes/toBuffer).
 export function composePng(positions, triVerts, triColors, bbox, size, views = DEFAULT_VIEWS) {
   const { center, scale } = fit(bbox, size);
-  const tiles = views.map((v) => renderTile(positions, triVerts, triColors, center, scale, size, basis(v.az, v.el), BG));
+  const vnorms = vertexNormals(positions, triVerts); // once, shared across views
+  const tiles = views.map((v) => renderTile(positions, triVerts, triColors, center, scale, size, basis(v.az, v.el), BG, vnorms));
   return tileGrid(tiles, size);
 }
 
@@ -152,7 +217,8 @@ export function composeContactSheet(results, size, view = { az: -50, el: 28 }) {
     const r = res && res.render;
     if (r && r.positions && r.triVerts && r.triVerts.length) {
       const { center, scale } = fit(r.bbox, size);
-      return renderTile(r.positions, r.triVerts, r.triColors, center, scale, size, basis(view.az, view.el), BG);
+      const vnorms = vertexNormals(r.positions, r.triVerts);
+      return renderTile(r.positions, r.triVerts, r.triColors, center, scale, size, basis(view.az, view.el), BG, vnorms);
     }
     const tile = new Uint8ClampedArray(size * size * 4);
     for (let p = 0; p < tile.length; p += 4) { tile[p] = 250; tile[p + 1] = 224; tile[p + 2] = 224; tile[p + 3] = 255; }
@@ -194,12 +260,12 @@ export function checkExpectComponents(stats, expected) {
 
 // Run a model file through the real engine via a throwaway in-process Vite SSR
 // server. Returns the PreviewResult from src/tools/previewModel.ts.
-export async function runPreview(file, { params = {}, lang = 'manifold-js' } = {}) {
+export async function runPreview(file, { params = {}, lang = 'manifold-js', palette = undefined } = {}) {
   const code = readFileSync(file, 'utf8');
   const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
   try {
     const mod = await server.ssrLoadModule('/src/tools/previewModel.ts');
-    return await mod.previewModel(code, { params, lang });
+    return await mod.previewModel(code, { params, lang, palette });
   } finally {
     await server.close();
   }

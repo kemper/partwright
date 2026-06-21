@@ -12,6 +12,7 @@ import type {
 } from './types';
 import type { ToolDefinition } from './tools';
 import { readSseStream } from './sse';
+import { repairToolHistory } from './historyRepair';
 import { getConfig } from '../config/appConfig';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -415,7 +416,14 @@ function mapStopReason(reason: string): string {
   return reason.toLowerCase();
 }
 
-function buildGeminiContents(history: ChatMessage[]): GeminiContent[] {
+function buildGeminiContents(rawHistory: ChatMessage[]): GeminiContent[] {
+  // Pair any orphaned tool calls with synthetic error results first. Unlike
+  // anthropic.ts (sanitizeToolUse) and openai.ts (sanitizeChatToolMessages),
+  // Gemini had no repair pass, so an assistant turn whose functionCall lacked a
+  // following functionResponse (an interrupted/timed-out tool round) produced a
+  // malformed history. repairToolHistory injects the missing results so the
+  // synthetic functionResponse parts are emitted below.
+  const history = repairToolHistory(rawHistory).messages;
   const out: GeminiContent[] = [];
   for (const msg of history) {
     if (msg.role === 'assistant') {

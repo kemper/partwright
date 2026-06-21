@@ -8,8 +8,9 @@
 // touches the engine or storage directly.
 
 import type { ParamSpec, ParamValue, ParamValues } from '../geometry/params';
-import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { openViewportPanel, closeViewportPanel, getActiveViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
+import { createColorSwatch } from './colorPickerModal';
 
 export interface ParamsPanelOptions {
   /** Fired when a single widget changes — main.ts updates the override, re-runs,
@@ -32,8 +33,9 @@ export interface ParamsPanelOptions {
 export interface ParamsPanelController {
   element: HTMLElement;
   /** Re-render for a new schema (or update values in place if the schema is
-   *  unchanged). Pass `undefined`/empty to hide the panel. */
-  update(schema: ParamSpec[] | undefined, values: ParamValues): void;
+   *  unchanged). Pass `undefined`/empty to hide the panel. `silentReveal` opens
+   *  the panel without hiding the AI panel (used for the post-AI-turn flush). */
+  update(schema: ParamSpec[] | undefined, values: ParamValues, opts?: { silentReveal?: boolean }): void;
   /** Show the panel (no-op when the active model declares no parameters). */
   open(): void;
   /** Hide the panel without dropping the schema — reopen via {@link open}. */
@@ -117,13 +119,13 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   let clampIntoViewRef: (() => void) | null = null;
   let escapeListenerActive = false;
 
-  function applyVisibility(): void {
+  function applyVisibility(silent = false): void {
     const wasOpen = !root.classList.contains('hidden');
     const willOpen = isOpen();
     root.classList.toggle('hidden', !willOpen);
     if (willOpen && !wasOpen) {
       setInitialPanelPosition(root);
-      openViewportPanel(registryEntry);
+      openViewportPanel(registryEntry, { silent });
       if (!escapeListenerActive) {
         document.addEventListener('keydown', onParamsEscape);
         escapeListenerActive = true;
@@ -157,7 +159,11 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     }
   }
 
-  function update(schema: ParamSpec[] | undefined, values: ParamValues): void {
+  function update(
+    schema: ParamSpec[] | undefined,
+    values: ParamValues,
+    { silentReveal = false }: { silentReveal?: boolean } = {},
+  ): void {
     if (!schema || schema.length === 0) {
       currentSig = '';
       paramCount = 0;
@@ -172,8 +178,14 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     if (schemaChanged) {
       currentSig = sig;
       rebuild(schema);
-      // A new or changed parameter set re-opens the panel so its knobs are seen.
-      userClosed = false;
+      // A new or changed parameter set normally re-opens the panel so its knobs
+      // are seen (e.g. first opening a parameterizable model). But if the user
+      // already has a DIFFERENT viewport tool menu open — typically because they
+      // switched parts while using Surface/Paint/Resize/etc. — keep that menu as
+      // the current one and stay closed, rather than auto-popping over it. The
+      // user can still open Customize from its toolbar pill.
+      const other = getActiveViewportPanel();
+      userClosed = other !== null && other !== registryEntry;
     }
     paramCount = schema.length;
     updateValues(values);
@@ -181,7 +193,10 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     // Reveal the Tools dropdown *before* positioning the panel, so applyVisibility
     // docks the panel beneath the now-open menu rather than the bare toolbar.
     if (schemaChanged && isOpen()) opts.onAutoReveal?.();
-    applyVisibility();
+    // `silentReveal` (the host's post-AI-turn flush) opens the panel without
+    // pulling the AI panel out of the way — the model just finished, so the user
+    // sees both at once. A normal/user-initiated reveal hides the AI panel.
+    applyVisibility(silentReveal);
   }
 
   const registryEntry = { close(): void { userClosed = true; applyVisibility(); } };
@@ -328,12 +343,15 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
     setValue = (v) => { sel.value = String(v); };
   } else if (spec.type === 'color') {
     row.appendChild(labelRow);
-    const color = document.createElement('input');
-    color.type = 'color';
-    color.className = 'w-full h-7 bg-zinc-800 border border-zinc-600 rounded cursor-pointer';
-    color.addEventListener('change', () => onChange(spec.key, color.value));
-    row.appendChild(color);
-    setValue = (v) => { color.value = String(v); };
+    const sw = createColorSwatch({
+      initialHex: '#000000',
+      title: 'Pick a colour',
+      modalTitle: spec.label ?? 'Pick a colour',
+      className: 'w-full h-7 rounded border border-zinc-600 cursor-pointer',
+      onPick: (hex) => onChange(spec.key, hex),
+    });
+    row.appendChild(sw.el);
+    setValue = (v) => { sw.setHex(String(v)); };
   } else {
     // text
     row.appendChild(labelRow);

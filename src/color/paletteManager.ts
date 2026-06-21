@@ -8,6 +8,7 @@
 import { createToolPanelShell } from '../ui/toolPanel';
 import { BUTTON_PRIMARY } from '../ui/styleConstants';
 import { showToast } from '../ui/toast';
+import { escapeHtml } from '../ui/htmlUtils';
 import { promptDialog, confirmDialog } from '../ui/dialogs';
 import {
   listPalettes,
@@ -339,7 +340,7 @@ export function openPaletteManager(): void {
     label.className = 'text-[11px] flex-1 min-w-0 truncate';
     const slot = slotForColor(rgb);
     if (slot) {
-      label.innerHTML = `<span class="font-mono text-zinc-400">${rgbToHex(rgb)}</span> <span class="text-emerald-400">✓ ${slot.name}</span>`;
+      label.innerHTML = `<span class="font-mono text-zinc-400">${rgbToHex(rgb)}</span> <span class="text-emerald-400">✓ ${escapeHtml(slot.name)}</span>`;
     } else {
       label.innerHTML = `<span class="font-mono text-zinc-300">${rgbToHex(rgb)}</span> <span class="text-amber-400">off-palette</span>`;
     }

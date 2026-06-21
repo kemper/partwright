@@ -1,0 +1,12 @@
+{
+  "title": "Male shoulders / deltoid definition — bare upper body, A-pose",
+  "model": "model.js",
+  "lang": "manifold-js",
+  "views": [[0, 8], [40, 12], [90, 5]],
+  "rubric": "rubric.md",
+  "gates": {
+    "manifold": true,
+    "maxGenus": 4,
+    "requireLabels": ["skin"]
+  }
+}

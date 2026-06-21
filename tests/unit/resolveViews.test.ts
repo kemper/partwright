@@ -16,6 +16,20 @@ describe('resolveViews', () => {
     expect(resolveViews(' -50 , 28 ', undefined)).toEqual({ views: [{ name: '-50,28', az: -50, el: 28 }] });
   });
 
+  it('parses several ";"-separated --view pairs into multiple tiles', () => {
+    expect(resolveViews('130,35;0,-72; 90,7', undefined)).toEqual({
+      views: [
+        { name: '130,35', az: 130, el: 35 },
+        { name: '0,-72', az: 0, el: -72 },
+        { name: '90,7', az: 90, el: 7 },
+      ],
+    });
+  });
+
+  it('tolerates a trailing/empty ";" segment', () => {
+    expect(resolveViews('10,20;', undefined)).toEqual({ views: [{ name: '10,20', az: 10, el: 20 }] });
+  });
+
   it('--view wins over --views when both are passed', () => {
     const r = resolveViews('10,20', 'front,iso');
     expect(r.views).toEqual([{ name: '10,20', az: 10, el: 20 }]);

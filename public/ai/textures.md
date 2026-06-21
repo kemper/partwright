@@ -1,7 +1,17 @@
 # Surface Texture & Mesh Operations
 
 Post-hoc operations that add surface detail to a finished model by displacing
-vertices along their normals. Seven textures are available:
+vertices along their normals.
+
+> **In-app chat tool:** the chat AI has ONE texture tool —
+> **`applySurfaceTexture(id, opts?, mode?)`** with
+> `id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'smooth'`.
+> It routes automatically: in a manifold-js session it writes the texture
+> **into the code** (`api.surface.<id>` — stays parametric); on SCAD/BREP/voxel
+> it falls back to baking (with a warning). The same auto method exists on the
+> console as `partwright.applySurfaceTexture`. The per-texture `apply*` console
+> methods below remain for external agents and for patch
+> (`selectedTriangles`) texturing. Eight textures are available:
 
 | Texture | Look | Best for |
 |---------|------|----------|
@@ -11,6 +21,7 @@ vertices along their normals. Seven textures are available:
 | `applyWaffleStitch` | Recessed grid cells with raised borders | Waffle-knit, waffle irons, honeycomb patterns |
 | `applyFurVelvet` | Directional anisotropic pile (velvet, fur, chenille) | Animal fur, velvet fabric, soft plush surfaces |
 | `applyWovenFabric` | Plain-weave over/under interlacing | Baskets, woven cloth, twill, burlap |
+| `applyKnurlTexture` | Functional grip relief — diamond / straight / ribs | Knobs, thumbscrews, tool handles, grips |
 | `applyVoronoiShell` | Organic cell-wall ridge network (Voronoi cells) | Lampshades, planters, vases, cracked-mud / dragonfly-wing shells |
 
 Two further mesh operations live in the same panel and share the same
@@ -22,6 +33,7 @@ apply→save→verify workflow:
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
 | `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
 | `applyHollow({ wallThickness, openTop, rimHeight, drainHoles, drainRadius, resolution })` | Hollows the model into a thin shell — 3D-print **"vase mode"**. `openTop` removes the cap (open vase); `drainHoles` bores vertical holes through the base (planter). Smooth manifold-js mesh, no engine change. | See [`applyHollow`](#applyhollow) below. |
+| `engraveModel({ text, raised, through, depth, size, color, axis, side, posU, posV, curveAxis, resolution })` | **Stamps text onto the model** — recessed channels (engrave), holes cut clean through the wall (`through:true`, a stencil), or a **raised relief** (`raised:true`, emboss). `color` paints the letters. Lands on a face; `curveAxis` wraps it around a round surface (cup, tower). | Unlike the relief textures (which only displace the skin), this **removes or adds** material. Image stamps are UI-only (need local bytes); the tool handles text. See [`engraveModel`](#engravemodel) below. |
 
 > **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
 > BREP/replicad model this discards the parametric source (and, for BREP, STEP
@@ -45,29 +57,67 @@ return body;
 ```
 
 - Available ops: `api.surface.fuzzy`, `.knit`, `.cable`, `.waffle`, `.fur`,
-  `.woven`, `.voronoi`, `.smooth`. Each takes the **same options** as its
+  `.woven`, `.knurl`, `.voronoi`, `.smooth`. Each takes the **same options** as its
   `apply*` tool (size-relative defaults fill in anything you omit). There's also
   a generic `api.surface.apply('knit', { … })` form.
+- **`applySurfaceTextureAsCode(id, opts?)`** writes the call into the code for
+  you: it updates an existing `api.surface.<id>` call in place (or inserts one
+  before the final `return`), re-runs (computing the texture), and saves a
+  version. This is what the Surface panel's **"Apply as code"** button uses for
+  whole-model textures in manifold-js sessions — region/patch applies, voxelize,
+  voronoiLamp, and SCAD/BREP sessions still take the bake path.
+- **`applySurfaceTexture(id, opts?, mode?)`** is the auto-routing wrapper (and
+  the in-app chat AI's only texture tool): `mode: 'auto'` (default) takes the
+  in-code path on manifold-js and falls back to bake elsewhere; `'code'`/`'bake'`
+  force a path. Returns the underlying result plus `path: 'code' | 'bake'`.
 - Calls are recorded, not applied during evaluation — they texture the **final
   returned mesh** in the order called (a terminal skin; you can chain several).
-- Surface textures are **expensive**, so they're **memoized**: a render reuses
-  the cached textured result when the code, params and ops are unchanged.
+- Surface textures are **expensive**, so they're **memoized on the BASE MESH
+  CONTENT**: a render reuses the cached textured result whenever the code
+  produces the same geometry — whitespace, comment, and refactor edits never
+  drop the textures. The compute itself runs in a dedicated Worker, so the UI
+  stays responsive while a chain applies.
+- **Saved versions keep the computed texture.** `runAndSave` / `saveVersion`
+  persist the textured mesh with the version, so reopening the session (or
+  loading the version later) renders textured immediately — no recompute, no
+  pill. Any change to the code, params, or imports invalidates it safely (the
+  chain just recomputes). Session JSON exports carry it too.
 - **Explicit runs compute the texture automatically.** A `runCode` / `runAndSave`
   / `run` call (and the editor's Run button + version loads) force the
   (memoized) compute and return the **textured** mesh — so an AI/console caller
   sees the real result with no extra step. The first compute shows a progress
   modal; repeats are instant (cache hit).
-- **Only live-typing is gated.** While a human edits in the editor, keystroke
-  auto-runs show the **base (untextured) mesh** plus a **"⟳ Textures stale —
-  Re-apply"** pill (top-left) instead of recomputing on every keystroke. Press
-  the pill (or just hit Run) to apply. This keeps typing snappy; it does **not**
-  affect `run`/`runAndSave`, which always apply. Exporting while the pill is up
-  warns (UI: a confirm modal; console `export*Data`: a `warning` field) because
-  the file would carry the untextured base — run first, then export.
-- **Whole-model only.** `api.surface.*` always textures the entire returned
-  mesh — there is no `region`/`triangles` option (passing one throws "unknown
-  option"). To texture only a selected patch, use the bake path: the Surface
-  panel's region selector, or `applyKnitTexture({ selectedTriangles })`.
+- **Every run applies — live typing included.** A run whose chain isn't cached
+  shows an inline **"Applying texture… Xs"** status with a **Cancel** button
+  (the "Rendering… Xs" pattern) while the Worker computes; the UI stays
+  interactive throughout. Pressing **Cancel** keeps the base (untextured) mesh
+  and parks the chain behind a **"⟳ Texture stale — Re-apply"** pill (top-left);
+  press the pill — or call `ensureSurfaceTexturesApplied()` / re-run — to
+  compute it. Exporting while parked warns (UI: a confirm modal; console
+  `export*Data`: a `warning` field) because the file would carry the untextured
+  base. The Surface panel applies any parked chain automatically before its
+  previews, so previews always show modifiers on the textured model.
+- **Scoping — texture part of the model.** By default `api.surface.*` textures
+  the whole returned mesh. Add **one** of these scope keys to limit it:
+  - `label: 'name'` — texture only the triangles of an `api.label(shape, 'name',
+    …)` region. This is how you texture **one shape of a union** — label that
+    shape, union it in, then scope the op to it:
+    ```js
+    const grip = api.label(Manifold.cube([16,16,16], true).translate([-6,0,0]), 'grip');
+    const body = Manifold.sphere(9, 48).translate([7,0,0]);
+    api.surface.knurl({ label: 'grip', cellWidth: 2.4 });  // only the cube knurls
+    return grip.add(body);
+    ```
+  - `region: { point: [x,y,z], radius }` — texture every triangle whose surface
+    is within `radius` of a world-space point (e.g. one captured from a viewport
+    click). The Surface panel's **Scope → Near point** picker writes this for you
+    from a click; for code, read `getGeometryData()`'s `boundingBox`/`centroid`
+    to choose a point.
+
+  Scoping is the code-path counterpart of the bake path's `selectedTriangles`
+  patch, and the label's color carries onto the textured region automatically.
+  (Scope keys are ignored on the bake path — pass them only in manifold-js code
+  or with `applySurfaceTexture` mode `'auto'`/`'code'`.)
 - This is the in-code counterpart of the bake tools, mirroring `api.paint.*`
   (see [colors](/ai/colors.md)). Use it when you want the texture to live with
   the code; use the `apply*` tools when you want a one-shot baked result.
@@ -265,6 +315,41 @@ slightly depressed.
 
 ---
 
+## applyKnurlTexture
+
+```
+applyKnurlTexture({ amplitude?, cellWidth?, cellHeight?, style?, profile?, sharpness?,
+                    grainAngleDeg?, seed?, quality?, preserveColor? })
+```
+
+Functional grip relief, displaced along surface normals. This textures **any
+existing mesh** — distinct from the `api.knurl.*` shape generator (which builds
+a whole knurled cylinder). Use it to add grip to a knob, bottle, pen barrel, or
+handle you already modeled. Region-selectable (texture only painted triangles).
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `style` | `'diamond'` | `'diamond'` (cross-hatch), `'straight'` (axial splines), `'ribs'` (horizontal rings). |
+| `profile` | `'round'` | Ridge cross-section. `'round'` = soft cosine bumps; `'pyramid'` = triangle-wave ridges → true straight-sided machinist diamonds with continuous sharp ridge lines. |
+| `amplitude` | ~2% of diagonal | Peak ridge height. |
+| `cellWidth` | ~5% of diagonal | Ridge spacing along the column axis. |
+| `cellHeight` | = cellWidth | Ridge spacing along the row (Z) axis. For square diamonds keep equal to cellWidth. |
+| `sharpness` | 2 | Ridge crispness. 1 = soft rounded, 2–4 = crisp, 6+ = sharp peaks. |
+| `grainAngleDeg` | 0 | Rotate the grid in the XY plane. |
+| `seed` | 1 | Deterministic seed (reserved). |
+| `quality` | 3 | Mesh detail 1 (draft) to 5 (ultra). Higher = smoother, slower. |
+| `preserveColor` | true | Carry paint through subdivision. |
+
+**Look guidance:**
+- Thumbscrew grip: `style='diamond'`, `cellWidth=d*0.04`, `sharpness=2`
+- Knob splines: `style='straight'`, `cellWidth=d*0.05`
+- Finger ridges: `style='ribs'`, `cellHeight=d*0.06`
+- Machinist diamonds: `style='diamond'`, `profile='pyramid'`, `sharpness=2` (straight-sided, continuous ridge lines)
+
+In-code form: `api.surface.knurl({ style:'diamond', cellWidth: 2, amplitude: 0.6 })`.
+
+---
+
 ## applyVoronoiShell
 
 ```
@@ -397,6 +482,98 @@ top when `openTop` is set).
 scale) can be fragile. With `watertight` on and `openTop:false`, the closed shell
 is manifold (`isManifold` true); an open top or drain holes intentionally open
 the solid. Verify with `renderViews`.
+
+---
+
+## engraveModel
+
+```
+engraveModel({ text, font?, raised?, through?, depth?, size?, color?,
+               mode?, axis?, side?, posU?, posV?, rotationDeg?,
+               curveAxis?, curveAngleDeg?, resolution?, watertight?,
+               preserveColor? })
+```
+
+**Stamps text onto the model** — recessed channels (engrave), holes cut clean
+through the wall (cut-through / stencil), or a **raised relief**
+(`raised: true`, emboss). Unlike every texture above (which only *displaces*
+the surface skin), this **removes or adds** material: the text is rasterized
+(the app's own font path, so it matches `api.text()`) and projected onto the
+model, then subtracted from — or, embossing, unioned onto — the solid. Use it
+to label / brand a part (a name on a tag, a logo plate), cut a stencil,
+perforate a sign, or add raised lettering. Start from a **slab, plate, ring, or
+cylinder**. Returns `{ ok, label, geometry, warnings? }`.
+
+It meshes a **continuous signed-distance field** like `applyVoronoiLamp`, so the
+channel walls follow the true surface with no voxel stair-stepping. A heavier op
+than the relief textures — allow a few seconds.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `text` | — | **Required.** The string to engrave/cut. |
+| `font` | `'bold'` | `'regular' \| 'bold' \| 'italic' \| 'bold-italic'`. Bold engraves more legibly. |
+| `raised` | `false` | `true` = **emboss**: raise the text `depth` above the face instead of carving it (`through` is then ignored). |
+| `through` | `false` | `false` = recess to `depth`; `true` = cut clean through the wall (stencil). |
+| `depth` | ~6% of diagonal | Engrave depth — or emboss height when `raised` — in world units (ignored when `through`). |
+| `size` | ~70% of the face | Stamp **width** in world units — how wide the text spans. |
+| `color` | — | Paint the letters for a multicolor print: `'#rrggbb'` hex or `[r,g,b]` in 0–1. Colors the raised relief (emboss) or the channel/hole walls (engrave/through); existing paint is still carried. |
+| `mode` | `'planar'` | `'planar'` = onto one flat face; `'cylindrical'` = wrap around the Z axis (rings, cups). |
+| `axis` | `'z'` | Planar only: which face axis (`'x' \| 'y' \| 'z'`). |
+| `side` | `'max'` | Planar: `'max'` (+axis face) or `'min'`. Cylindrical: `'outer'` (default) or `'inner'`. |
+| `posU` | 0.5 | Planar only: stamp center *across* the face, as a fraction [0–1] of the bbox on the first in-plane axis. 0.5 = centered; 0.25/0.75 = quarter points (the snap buttons in the UI). |
+| `posV` | 0.5 | Planar only: stamp center *up* the face, fraction [0–1] on the second in-plane axis. |
+| `rotationDeg` | 0 | Rotate the stamp in the face plane (planar) or around Z (cylindrical), degrees. |
+| `curveAxis` | `'none'` | Bend the flat stamp around a surface (planar/free). `'v'` = wrap around the **vertical** axis → text curves left↔right (around a cylinder, tower, mug); `'u'` = wrap around the **horizontal** axis → text curves up↔down (over a dome). |
+| `curveAngleDeg` | 90 | Total arc the curved stamp subtends (with `curveAxis`). The whole word spans this angle; larger = tighter wrap. |
+| `resolution` | 180 | Field resolution along the longest axis [48–256]. Raise if thin strokes look mushy. |
+| `watertight` | true | Keep only the largest connected piece — one manifold result. |
+
+**Placement:** in the **Surface panel**, type the text and press the small
+**Apply** button (typing no longer re-renders on every keystroke), then press
+**"place on model"** — a live footprint outline follows the cursor over the
+model; click to drop it on that face. Clicking a flat axis-aligned face snaps to
+that face (the position sliders + 0/25/50/75% snaps and `rotationDeg` apply);
+clicking a **sloped or curved face** lies the stamp flat on it (a "free"
+projection, positioned by the click). To wrap text around a round surface (a
+cup, a lighthouse), place it on the side then set **Curve** (`curveAxis` +
+`curveAngleDeg`). The live preview keeps the model's colors. Heavy carves drive
+the inline **"Rendering…"** status (with the toolbar Cancel link) just like a
+normal run, so you can cancel a slow carve.
+
+For a sloped/curved face from code, pass an explicit free projection (with an
+optional `curve`):
+`engraveModel({ text:'A', projection:{ mode:'free', origin:[x,y,z], normal:[nx,ny,nz], curve:{ axis:'v', angleDeg:120 } }, … })`
+— `origin` is the surface point and `normal` its outward direction.
+
+> **`cylindrical` is legacy.** The old `mode:'cylindrical'` (wrap around the
+> global Z axis) still works from code, but it guesses a single radius from the
+> bbox and misses tapered/eccentric shapes. Prefer **place-on-face + `curveAxis`**,
+> which anchors the wrap at the point you actually clicked.
+
+**Colors are preserved.** Engraving a painted model carries the existing paint
+onto the carved mesh (a spatial transfer), so a painted nameplate keeps its
+color and the channel walls take the nearest color. Pass `preserveColor:false`
+to clear instead. On top of the carry, `color` paints the stamp itself — e.g.
+`engraveModel({ text:'OPEN', raised:true, color:'#d4af37' })` gives gold raised
+letters on the existing model colors, ready for a multicolor print.
+
+**Tips:** verify with `renderViews` — check the letters are legible and (for
+`through`) the holes are open (genus rises above 0; the result stays manifold).
+If letters look mushy, raise `resolution`. Counters (the holes in O, A, B, …) are
+handled automatically — an engrave keeps the island; a cut-through drops it,
+leaving a clean ring.
+
+> **Image stamps are UI-only.** Engraving an *image* (logo, silhouette) needs
+> local image bytes, so it's available only from the **Surface** panel's Engrave
+> tab (upload an image; dark pixels cut). This tool handles **text**.
+
+### buildEngraveStamp — rasterize an ink mask
+
+`buildEngraveStamp({ text?, font?, imageUrl?, invert? })` rasterizes text (or an
+image) into an ink mask `{ mask, width, height }` — the same mask `engraveModel`
+and the Surface panel's Engrave tab consume internally. You rarely need it
+directly (pass `text` to `engraveModel` instead); it's exposed for callers that
+want to inspect or reuse the rasterized mask.
 
 ---
 

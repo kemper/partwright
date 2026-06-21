@@ -4,9 +4,11 @@ import {
   computePlacementDelta,
   isNoopDelta,
   isNoopRotation,
+  isNoopScale,
   buildTransformCode,
   placementLabel,
   rotationLabel,
+  scaleLabel,
   eulerToMatrix,
   matrixToEuler,
   rotationFromTo,
@@ -295,6 +297,47 @@ describe('mirror', () => {
     const out2 = buildTransformCode(out, [{ kind: 'translate', v: [0, 0, 5] }], 'lift', '2026-06-08');
     expect(out2.match(/return \(\(\) => \{/g)?.length).toBe(1);
     expect(out2).toContain('.mirror([1, 0, 0]).translate([0, 0, 5]);');
+  });
+});
+
+describe('scale', () => {
+  it('applySteps scales vertex positions about the origin', () => {
+    const out = applySteps(cube([0, 0, 0], [10, 10, 10]), [{ kind: 'scale', v: [2, 1, 0.5] }]);
+    const b = meshBox(out);
+    expect(b.max[0]).toBeCloseTo(20, 5); // X doubled
+    expect(b.max[1]).toBeCloseTo(10, 5); // Y unchanged
+    expect(b.max[2]).toBeCloseTo(5, 5);  // Z halved
+    // A positive scale preserves winding (no mirror parity flip).
+    expect(Array.from(out.triVerts.slice(0, 3))).toEqual([0, 2, 1]);
+  });
+
+  it('a negative scale on one axis mirrors and inverts winding', () => {
+    const out = applySteps(cube([0, 0, 0], [10, 10, 10]), [{ kind: 'scale', v: [-1, 1, 1] }]);
+    expect(Array.from(out.triVerts.slice(0, 3))).toEqual([0, 1, 2]); // flipped
+  });
+
+  it('buildTransformCode emits and re-parses a .scale chain, merging successive scales', () => {
+    const code = 'return api.Manifold.cube([10, 10, 10]);';
+    const out = buildTransformCode(code, [{ kind: 'scale', v: [2, 2, 2] }], 'scale 2×', '2026-06-12');
+    expect(out).toContain('})().scale([2, 2, 2]);');
+    // A second scale folds into the first (componentwise product), not a new call.
+    const out2 = buildTransformCode(out, [{ kind: 'scale', v: [1.5, 1.5, 1.5] }], 'scale 1.5×', '2026-06-12');
+    expect(out2.match(/\.scale\(/g)?.length).toBe(1);
+    expect(out2).toContain('.scale([3, 3, 3]);');
+  });
+
+  it('an identity scale folds away to the bare inner code', () => {
+    const code = 'return api.Manifold.cube([10, 10, 10]);';
+    const out = buildTransformCode(code, [{ kind: 'scale', v: [1, 1, 1] }], 'scale 1×', '2026-06-12');
+    expect(out).not.toContain('.scale(');
+    expect(out).toContain('api.Manifold.cube');
+  });
+
+  it('isNoopScale / scaleLabel', () => {
+    expect(isNoopScale([1, 1, 1])).toBe(true);
+    expect(isNoopScale([1, 1, 2])).toBe(false);
+    expect(scaleLabel([2, 2, 2])).toBe('scale 2×');
+    expect(scaleLabel([2, 1, 0.5])).toBe('scale (2, 1, 0.5)');
   });
 });
 

@@ -37,6 +37,7 @@ import { getCurrentMesh as getPaintMesh } from './paintAccessors';
 import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { viewportToolsMount } from '../ui/popoverMenu';
+import { createColorSwatch } from '../ui/colorPickerModal';
 import { setInitialPanelPosition, attachViewportPanelDrag } from '../ui/viewportPanelDrag';
 import { createToolPanelHeader } from '../ui/toolPanel';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
@@ -648,11 +649,10 @@ function buildImageSection(): HTMLElement {
 
 /** Load a file into ImageData, rendering SVGs at high resolution. */
 async function applyImageFile(file: File): Promise<void> {
+  const objectUrl = URL.createObjectURL(file);
   try {
-    const objectUrl = URL.createObjectURL(file);
     const isSvg = file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
     const raw = await loadImageDataHighRes(objectUrl, isSvg);
-    URL.revokeObjectURL(objectUrl);
     pickedImageData = resizeImageData(raw, STAMP_MAX);
     pickedImageThumb = resizeImageData(raw, THUMB_MAX);
     if (sourceLabel) sourceLabel.textContent = file.name;
@@ -661,6 +661,10 @@ async function applyImageFile(file: File): Promise<void> {
     updateStampMode();
   } catch {
     if (sourceLabel) sourceLabel.textContent = 'Failed to load image';
+  } finally {
+    // Revoke on every path — a decode failure must not leak the blob (it
+    // retains the full file bytes in memory until the page closes).
+    URL.revokeObjectURL(objectUrl);
   }
 }
 
@@ -775,28 +779,28 @@ function buildBackgroundSection(): HTMLElement {
   pickerLabel.className = 'text-[11px] text-zinc-400 shrink-0';
   pickerLabel.textContent = 'Or pick color:';
 
-  const colorInput = document.createElement('input');
-  colorInput.type = 'color';
-  colorInput.value = '#ffffff';
-  colorInput.className = 'w-7 h-7 rounded cursor-pointer border border-zinc-600/40 bg-transparent p-0 [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded [&::-webkit-color-swatch]:border-0';
-  colorInput.title = 'Manually specify the background colour to remove';
+  const colorSwatch = createColorSwatch({
+    initialHex: '#ffffff',
+    title: 'Manually specify the background colour to remove',
+    modalTitle: 'Background colour to remove',
+    className: 'w-7 h-7 shrink-0 rounded cursor-pointer border border-zinc-600/40 hover:border-white/70 transition-colors',
+    onPick: (hex) => {
+      opts.manualBgColor = [
+        parseInt(hex.slice(1, 3), 16),
+        parseInt(hex.slice(3, 5), 16),
+        parseInt(hex.slice(5, 7), 16),
+      ];
+      opts.removeBackground = true;
+      autoCheck.checked = true;
+      renderPreview();
+    },
+  });
+  const colorInput = colorSwatch.el;
 
   const colorClear = document.createElement('button');
   colorClear.className = 'text-[10px] text-zinc-500 hover:text-zinc-200 underline-offset-2 hover:underline transition-colors';
   colorClear.textContent = 'clear';
   colorClear.title = 'Revert to auto background detection';
-
-  colorInput.addEventListener('input', () => {
-    const hex = colorInput.value;
-    opts.manualBgColor = [
-      parseInt(hex.slice(1, 3), 16),
-      parseInt(hex.slice(3, 5), 16),
-      parseInt(hex.slice(5, 7), 16),
-    ];
-    opts.removeBackground = true;
-    autoCheck.checked = true;
-    renderPreview();
-  });
 
   colorClear.addEventListener('click', () => {
     opts.manualBgColor = undefined;

@@ -52,4 +52,21 @@ test.describe('Resize — fit to bed', () => {
     expect(dims.y).toBeCloseTo(128, 0);
     expect(dims.z).toBeCloseTo(128, 0);
   });
+
+  test('scaleModel keeps a manifold-js model parametric (wraps the code in .scale)', async ({ page }) => {
+    const out = await page.evaluate(async ([code]) => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('scale-parametric');
+      await pw.run(code);
+      const res = await pw.scaleModel(2, 2, 2, { mode: 'auto' });
+      const bb = pw.getGeometryData().boundingBox;
+      return { mode: res.mode, code: pw.getCode(), x: bb.x[1] - bb.x[0] };
+    }, [SMALL_BOX]);
+
+    // 'auto' on manifold-js stays parametric: the source is wrapped, not baked.
+    expect(out.mode).toBe('parametric');
+    expect(out.code).toContain('.scale([2, 2, 2])');
+    // And the geometry actually doubled (20 → 40 on X).
+    expect(out.x).toBeCloseTo(40, 0);
+  });
 });

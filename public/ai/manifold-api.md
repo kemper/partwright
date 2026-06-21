@@ -11,6 +11,7 @@ Curves: arc, bezier, naca4, polyline, loft, sweep, revolveAxis,
         fillet, chamfer, ringCopy, linearCopy, mirrorCopy   (see /ai/curves.md)
 sdf: sphere, ellipsoid, box, roundedBox, cylinder, roundedCylinder,
      torus, capsule,
+     tube(path, radius, {profile:'flutes'|'rings'|'helix', count, turns, depth, taper}) — directional surface texture along a path,
      gyroid/schwarzP/diamond/lidinoid + their graded* variants (TPMS),
      union/subtract/intersect, smoothUnion/Subtract/Intersect,
      .translate/.rotate/.scale/.mirror, .shell/.round/.twist/.bend/.taper,
@@ -22,6 +23,15 @@ meshOps (flat on api): intersects, contains, pointInside, bbox,
                        linearPattern, circularPattern, spiralPattern,
                        expectUnion, expectDifference, expectComponents,
                        heal
+params (flat on api):  api.params(schema) -> resolved values. NATIVE
+                       manifold-js feature for parametric / customizable
+                       models (also works in voxel + replicad sessions; NOT
+                       scad, which uses its own `// [min:max]` customizer
+                       comments). Declare knobs at the top, read the returned
+                       values in code, and they ALSO surface as a live
+                       Customizer panel. You do NOT need SCAD to make a model
+                       parametric. Schema types: number/int/boolean/select/
+                       text/color. See ai.md "Customizer parameters".
 ```
 
 ## Manifold instance methods
@@ -31,6 +41,9 @@ Booleans:   .add(other)  .subtract(other)  .intersect(other)  .hull()
 Transforms: .translate([x,y,z])  .rotate([rx,ry,rz]) (degrees, applied X->Y->Z)
             .scale(s) or .scale([x,y,z])  .mirror([nx,ny,nz]) (plane normal)
             .warp(fn)  .transform(mat4)
+            ^ warp's `fn(v)` MUST MUTATE the vertex IN PLACE: write v[0]=…; v[1]=…; v[2]=…
+              — returning a new array (e.g. `v => [x*2, y, z]`) silently does NOTHING.
+              For surface texture that follows a path, prefer `api.sdf.tube(...)` over warp.
 Mesh ops:   .refine(n)  .simplify(tolerance)  .smoothOut(minSharpAngle?, minSmoothness?)
             .calculateNormals(idx, angle?)
 Queries:    .volume()  .surfaceArea()  .genus()  .numVert()  .numTri()  .isEmpty()

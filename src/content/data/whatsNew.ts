@@ -26,6 +26,353 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'June 21, 2026',
+    headline: 'Partwright 1.2 — the AI paints images onto your model, and a grid that scales to your room',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.2',
+            body: 'A small, backward-compatible feature release — your existing sessions and exported files all keep working, and the running version is shown in the About dialog. This update teaches the in-browser AI to paint real images onto a surface and makes the viewport grid scale with your model.',
+          },
+        ],
+      },
+      {
+        label: 'AI assistant',
+        items: [
+          {
+            title: 'The AI can paint an image onto your model',
+            body: 'The in-browser assistant can now project a raster image or SVG — a logo, label, or decal — straight onto the model surface, instead of approximating it with flat color blobs. Point it at a named view (front, back, left, right, top, bottom) and it finds the surface for you, or name a painted part and the decal centers and sizes itself to fit. Ask for “put this logo on the front” and it just works.',
+          },
+        ],
+      },
+      {
+        label: 'Studio',
+        items: [
+          {
+            title: 'A grid that scales to your model',
+            body: 'The ground grid used to be a fixed patch — too small under a large model and oversized under a small one. It now tracks the size of your model and the studio room, like the floor does, and respects the grid-density setting in Advanced Settings so the cells stay readable at any scale.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'June 21, 2026',
+    headline: 'Partwright 1.1 — the Character Creator, session attachments, and directional surface textures',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.1',
+            body: 'A backward-compatible feature release — your existing sessions and exported files all keep working. The running version is shown in the About dialog; this update bundles the new Character Creator, typed session attachments, directional surface textures, and a redesigned color picker.',
+          },
+        ],
+      },
+      {
+        label: 'Figures',
+        items: [
+          {
+            title: 'Character Creator — build a figure with no code',
+            body: 'A new no-code panel drives the whole figure system through a GUI: pick a body build, face, hair, garments and footwear with live controls and an instant preview, and Partwright writes the model code for you. The fastest way yet to go from idea to a printable character.',
+          },
+          {
+            title: 'Faster, truer figure previews',
+            body: 'The Character Creator preview cancels an in-flight render the moment you change a control, so dragging a slider stays responsive, and the fast SDF preview now shows the model’s estimated colors — including painted catalog figures — instead of a flat gray shape.',
+          },
+        ],
+      },
+      {
+        label: 'Sessions & attachments',
+        items: [
+          {
+            title: 'Typed session attachments',
+            body: 'Reference images are now first-class “attachments” you can label by type and annotate with a description, so a session can carry the photos, sketches, and notes a design was built from. Attachments now survive a page refresh and come through correctly on import.',
+          },
+          {
+            title: 'Parts pane on mobile',
+            body: 'The editor’s Parts list is now reachable on phones through the pane toggle, so you can switch between a session’s parts without a desktop-width screen.',
+          },
+        ],
+      },
+      {
+        label: 'Modeling & surface',
+        items: [
+          {
+            title: 'Directional surface textures — api.sdf.tube',
+            body: 'A new SDF helper sweeps flutes, rings, or a helix along a path, so you can add grip ribbing, decorative reeding, or a spiral straight in code — the texture follows the tube instead of being stamped flat.',
+          },
+          {
+            title: 'New designs start in millimetres',
+            body: 'New sessions now default to millimetres instead of unitless, so dimensions and exported files line up with real-world print sizes out of the box. You can still switch a session to another unit (or back to unitless) at any time.',
+          },
+        ],
+      },
+      {
+        label: 'Painting & color',
+        items: [
+          {
+            title: 'A redesigned color picker',
+            body: 'The browser’s native color inputs are replaced everywhere by a shared palette modal — pick from your filament palette or a custom swatch in one consistent dialog, with proper keyboard focus handling.',
+          },
+          {
+            title: 'Recolor a whole part at once',
+            body: 'The paint menu’s Labels list can now set an entire part’s color in one click, instead of repainting region by region.',
+          },
+          {
+            title: 'Stamp a reference image with AI — paintImage',
+            body: 'The assistant can place one of your attached images onto the model as a decal from a named view (front, side, top…), so you can ask it to apply a logo or pattern and have it projected onto the surface for you.',
+          },
+        ],
+      },
+      {
+        label: 'Studio & publishing',
+        items: [
+          {
+            title: 'Studio lighting',
+            body: 'Studio lighting and a soft ground shadow give the viewport a rich, lit look by default, with an explicit “Light” toggle so you can switch to a fast, flat view whenever you want.',
+          },
+          {
+            title: 'AI-assisted publishing',
+            body: 'When you publish a model, the assistant can auto-populate a title, description, and tags for you, so a design is ready to share with a single review pass.',
+          },
+          {
+            title: 'Pick your exact Bambu printer, nozzle, and filament',
+            body: 'Multi-part 3MF export now targets any of 14 Bambu Lab printers — single- and dual-nozzle — with a nozzle-size and filament-type picker, so the exported project opens with the right machine profile and bed instead of a one-size-fits-all default.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'June 14 – 20, 2026',
+    headline: 'Partwright 1.0 — multi-part & multi-color export, a big figure expansion, and pinned version URLs',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.0',
+            body: 'Partwright reached its first tagged release. The running version is shown in the About dialog, and every release from here on is semantically versioned (vX.Y.Z) so you can tell at a glance whether an update is a routine fix or a bigger change.',
+          },
+          {
+            title: 'Pinned version URLs',
+            body: 'The site root always serves the latest version (the usual /, /editor, /catalog…). Each major version is now also reachable at its own path — e.g. /v1/editor — which stays frozen even after a newer version takes over the root, so a link you pin keeps working. /current/ is a stable alias that always points at the newest.',
+          },
+        ],
+      },
+      {
+        label: 'Export & printing',
+        items: [
+          {
+            title: 'Export every part at once',
+            body: 'A session with several parts now exports them all together — to 3MF, STL, OBJ, or GLB — instead of one part at a time.',
+          },
+          {
+            title: 'Multi-plate Bambu / Orca layout',
+            body: 'Multi-part 3MF export lays your parts out across printer plates with their filament colours preserved, arranged to fit the bed, ready to open in Bambu Studio or OrcaSlicer.',
+          },
+          {
+            title: 'More than three colors',
+            body: 'Color export is no longer capped at three filaments — every distinct color in a model is exported to its own filament, and hand-painted per-triangle color carries through to the slicer.',
+          },
+          {
+            title: 'Don’t lose unsaved work on export',
+            body: 'The export dialog now warns when any part — including parts you’re not currently looking at — has unsaved or never-saved changes, surfaces printability issues right in the confirm step, and can jump you straight to a save chooser so nothing ships stale.',
+          },
+        ],
+      },
+      {
+        label: 'Figures',
+        items: [
+          {
+            title: 'Many more ready-made figures',
+            body: 'The catalog gained 20+ full-body figures showcasing the figure builder, plus ear-showcase busts — all baking as clean, single printable pieces.',
+          },
+          {
+            title: 'More expressive faces',
+            body: 'Figure faces got richer noses with a properly sculpted, projecting form (and a cleaner nostril carve), named lip-shape presets, preset-driven eyebrows that track the eyes, and an elf-ear option with an adjustable point and tilt.',
+          },
+          {
+            title: 'More varied bodies',
+            body: 'New body controls include a native belly knob, a maternity build with a cradle pose and dress for expectant figures, and areolae/nipples that seat flush and paint cleanly across slim, muscled, and fuller chests.',
+          },
+          {
+            title: 'Smoother, faster figure preview',
+            body: 'Figures now render progressively — a coarse pass appears almost immediately and refines to full detail — so posing and tweaking feel responsive instead of waiting on a single slow render.',
+          },
+        ],
+      },
+      {
+        label: 'Garments & footwear',
+        items: [
+          {
+            title: 'Conforming and draping garments',
+            body: 'Figures can wear front/back-panel garments — apron, bib, tabard, cape — that either conform to the torso or drape from it (with apron ties and adjustable thickness), and dress/robe skirts now reliably cover the legs and chest instead of leaving gaps.',
+          },
+          {
+            title: 'Footwear that fits the foot',
+            body: 'Shoes and boots are now derived from each figure’s bare foot via an SDF offset rather than a generic last, so they fit without heel jut or club toe, and a lifted (plantarflexed) foot gets a flat sole instead of a bubble.',
+          },
+        ],
+      },
+      {
+        label: 'Editor, paint & AI',
+        items: [
+          {
+            title: 'Cancel a slow render',
+            body: 'The render Cancel button is now wired up from the moment a deep-linked model starts rendering, so a heavy model opened from a link can be interrupted instead of locking the view.',
+          },
+          {
+            title: 'Smoother painting',
+            body: 'After a smooth stroke the mesh no longer needlessly re-subdivides on every subsequent paint, and the paint refine modal offers a one-click “turn off edge smoothing” tip when it would give cleaner results.',
+          },
+          {
+            title: 'AI can target any part',
+            body: 'The in-app AI can now address parts by name, id, or index — not just whichever part is selected — and the advisory triangle budget was raised to 500k for more detailed models.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'June 12 – 13, 2026',
+    headline: 'Diverse figures, footwear and expressive faces, plus editor and viewport polish',
+    groups: [
+      {
+        label: 'Figures',
+        items: [
+          {
+            title: 'Diverse figures — skin tones, faces, and hair',
+            body: 'The figure builder gained diversity axes: a range of skin tones, face shapes, and hair styles (including cornrows and locs). Ready-made catalog figures were diversified to match, and each bakes as one clean printable piece.',
+          },
+          {
+            title: 'Footwear — shoes and boots',
+            body: 'A clothing.shoes / clothing.boots builder gives figures real footwear, with soles that follow the foot’s curvature (welt or flush styles), a paintable sole, and an F.standOn / F.ground helper to stand a figure level on a surface. A new “Sneakers Character” joins the catalog.',
+          },
+          {
+            title: 'Expressive eyes',
+            body: 'Figure eyes now read as a recognizable layered iris and pupil painted onto a smooth eyeball, instead of raised beads, with smoother eye meshing across all the figures.',
+          },
+          {
+            title: 'Eyelids',
+            body: 'Eyes gained paintable eyelids that wrap the eyeball — two independent lids (upper and lower) you can dial from open to a slit to fully closed, plus named presets (upper, hooded, half, closed, almond, tapered). The catalog figures now wear lids suited to each character.',
+          },
+          {
+            title: 'Headwear and richer hair',
+            body: 'F.placeOnHead positions headwear, and the hair system expanded with new styles — a tousled mop, a face-framing afro, and Bart-style spikes — plus a printable relief texture.',
+          },
+        ],
+      },
+      {
+        label: 'Editor',
+        items: [
+          {
+            title: 'Editor settings menu',
+            body: 'A ⚙ settings menu adds font-size and line-number controls, and a line-wrap toggle landed in the editor header.',
+          },
+        ],
+      },
+      {
+        label: 'Viewport & UX',
+        items: [
+          {
+            title: 'Smoother panels and steadier camera',
+            body: 'The AI panel and code pane now slide open and closed instead of snapping, and the AI panel steps aside when you open a viewport tool. Opening the Customizer or applying a surface modifier now keeps your current camera angle instead of resetting the view.',
+          },
+        ],
+      },
+      {
+        label: 'Export',
+        items: [
+          {
+            title: 'Set units inline on export',
+            body: 'The export warning modal now lets you set the model’s units right there, instead of cancelling out to change them first.',
+          },
+        ],
+      },
+      {
+        label: 'Catalog',
+        items: [
+          {
+            title: 'Catalog refresh',
+            body: 'Eight catalog models were redone with richer colors, paint, and surface textures.',
+          },
+        ],
+      },
+      {
+        label: 'Voxel & API',
+        items: [
+          {
+            title: 'Voxel rounding from the console API',
+            body: 'setVoxelRounding / getVoxelRounding were added to the window.partwright console API, so agents can drive voxel edge rounding the way the UI does.',
+          },
+        ],
+      },
+      {
+        label: 'Reliability',
+        items: [
+          {
+            title: 'Recover from stale deploys and stuck AI turns',
+            body: 'The app now recovers from stale-deploy chunk-load failures instead of spinning forever, and the AI assistant recovers from tool-call timeouts and orphaned tool history rather than wedging the chat.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'June 8 – 12, 2026',
+    headline: 'Pose-able figures, Tinkercad-style Arrange mode, scoped textures, and engraving',
+    groups: [
+      {
+        label: 'Figures',
+        items: [
+          {
+            title: 'Pose-able humanoid figures',
+            body: 'A new figure builder (api.sdf.figure) generates smooth, single-piece humanoid characters from a rig you pose joint by joint — arms, legs, head, hands — using one consistent vocabulary. A dozen ready-made figures (ballerina, warrior, rocker, wizard, and more) join the catalog as starting points.',
+          },
+        ],
+      },
+      {
+        label: 'Arrange & assemble',
+        items: [
+          {
+            title: 'Tinkercad-style Arrange mode',
+            body: 'Insert primitives from the palette, then drag, rotate, resize, align, group, and boolean them right in the viewport. Snap-to-grid, group-centroid pivots, a shift-drag marquee, and full undo/redo make assembling multi-part models direct and forgiving.',
+          },
+        ],
+      },
+      {
+        label: 'Surface textures',
+        items: [
+          {
+            title: 'Scope a texture to part of a model',
+            body: 'Surface textures (knit, fuzzy, knurl, voronoi, …) can now be confined to a named region or an area you click, instead of always covering the whole model — so a grip is knurled while the rest stays smooth.',
+          },
+          {
+            title: 'Engrave and emboss text or images',
+            body: 'Carve or raise text and image artwork onto any surface, including wrapping it around curved faces. The heavy carve runs off the main thread with a live progress indicator and a Cancel button.',
+          },
+          {
+            title: 'Machinist-diamond knurl',
+            body: 'The knurl texture gained a pyramid profile — straight-sided machinist diamonds — alongside the original rounded bumps.',
+          },
+        ],
+      },
+      {
+        label: 'Printing & transforms',
+        items: [
+          {
+            title: 'Non-destructive parametric scale',
+            body: 'Resizing a manifold-js model now keeps it parametric (wrapping the source in a scale) instead of baking it to a fixed mesh, so you can keep editing the original code afterward.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'June 7, 2026',
     headline: 'Voxel rotation, print-ready AI, voice input, and remembered views',
     groups: [

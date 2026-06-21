@@ -42,6 +42,36 @@ node scripts/generate-catalog.cjs http://localhost:5173   # in another
 Re-run any time `examples/` or the entry list at the top of the script
 changes.
 
+## Baking a single entry (with gates and palettes)
+
+`scripts/build-catalog-entry.cjs` bakes one entry from a source file by
+driving a running dev server. For painted models (figures, scad/replicad)
+pass a palette, and turn the quality checks into **exit-code gates** so a
+regression can't be committed by accident:
+
+```bash
+npm run dev    # in one terminal
+node scripts/build-catalog-entry.cjs \
+  --source examples/figure_karate.js --name "Karate Master" \
+  --out public/catalog/karate.partwright.json \
+  --palette-file public/catalog/palettes/karate.json \
+  --max-genus 3 --require-labels skin,eyes,iris,pupil,headband
+```
+
+- `--max-genus N` — fail if the baked solid's genus exceeds `N` (catches a
+  prop ring grazing a shell, near-tangent micro-handles, …).
+- `--require-labels a,b,c` — fail if any listed label is missing, lost, or
+  (when painting) resolves to 0 triangles — the "buried eyes" failure mode
+  where a sub-cell feature aliases away and its paint silently no-ops.
+- On a gate failure the script exits non-zero **without writing the entry**.
+
+**Palettes live in `public/catalog/palettes/<id>.json`** (flat
+`{label: "#rrggbb"}`) — committed, so re-bakes on a fresh container don't
+have to reconstruct colors. If an entry's palette was never committed,
+`--palette-from-existing <old-entry.partwright.json>` derives it from the
+baked entry's `byLabel` colorRegions; `scripts/extract-catalog-palettes.cjs`
+does the same for the whole catalog and refreshes the palettes directory.
+
 ## Auditing thumbnails for staleness
 
 A thumbnail (and the geometry stats baked alongside it) is **not**

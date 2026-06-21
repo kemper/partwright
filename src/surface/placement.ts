@@ -41,7 +41,8 @@ export interface PlacementOps {
 export type TransformStep =
   | { kind: 'translate'; v: Vec3 }
   | { kind: 'rotate'; v: Vec3 }
-  | { kind: 'mirror'; v: Vec3 };
+  | { kind: 'mirror'; v: Vec3 }
+  | { kind: 'scale'; v: Vec3 };
 
 const DEG = Math.PI / 180;
 
@@ -156,6 +157,15 @@ export function applySteps(mesh: MeshData, steps: TransformStep[]): MeshData {
         props[o + 2] = z - d * nz;
       }
       flipWinding = !flipWinding;
+    } else if (step.kind === 'scale') {
+      const [sx, sy, sz] = step.v;
+      for (let i = 0; i < mesh.numVert; i++) {
+        const o = i * np;
+        props[o] *= sx; props[o + 1] *= sy; props[o + 2] *= sz;
+      }
+      // A negative scale on an odd number of axes mirrors the mesh, inverting
+      // winding — track parity so it's flipped back like a mirror step.
+      if (sx * sy * sz < 0) flipWinding = !flipWinding;
     } else {
       const m = eulerToMatrix(step.v[0], step.v[1], step.v[2]);
       for (let i = 0; i < mesh.numVert; i++) {
@@ -233,6 +243,11 @@ export function isNoopDelta(delta: Vec3, box: PlacementBox): boolean {
 /** Rotation (Euler degrees) is negligible when every angle is within ~0.01°. */
 export function isNoopRotation(euler: Vec3): boolean {
   return Math.abs(euler[0]) < 1e-2 && Math.abs(euler[1]) < 1e-2 && Math.abs(euler[2]) < 1e-2;
+}
+
+/** Scale is a no-op when every factor is within ~0.0001 of 1 (identity). */
+export function isNoopScale(factors: Vec3): boolean {
+  return Math.abs(factors[0] - 1) < 1e-4 && Math.abs(factors[1] - 1) < 1e-4 && Math.abs(factors[2] - 1) < 1e-4;
 }
 
 /** Wrap a free rotation so it spins the model about its own center rather than
@@ -379,8 +394,8 @@ const SENTINEL = '@partwright-placement';
 // the human-readable comment text so repeated transforms extend one wrapper
 // instead of nesting IIFEs.
 const WRAPPER_RE =
-  /^\/\/ @partwright-placement[^\n]*\nreturn \(\(\) => \{\n([\s\S]*)\n\}\)\(\)((?:\.(?:rotate|translate|mirror)\(\[[^\]]*\]\))+);\n?$/;
-const CALL_RE = /\.(rotate|translate|mirror)\(\[\s*(-?[\d.eE+]+)\s*,\s*(-?[\d.eE+]+)\s*,\s*(-?[\d.eE+]+)\s*\]\)/g;
+  /^\/\/ @partwright-placement[^\n]*\nreturn \(\(\) => \{\n([\s\S]*)\n\}\)\(\)((?:\.(?:rotate|translate|mirror|scale)\(\[[^\]]*\]\))+);\n?$/;
+const CALL_RE = /\.(rotate|translate|mirror|scale)\(\[\s*(-?[\d.eE+]+)\s*,\s*(-?[\d.eE+]+)\s*,\s*(-?[\d.eE+]+)\s*\]\)/g;
 
 function fmt(n: number): string {
   const r = Number(n.toFixed(6));
@@ -390,7 +405,7 @@ function fmt(n: number): string {
 function parseChain(chain: string): TransformStep[] {
   const steps: TransformStep[] = [];
   for (const m of chain.matchAll(CALL_RE)) {
-    steps.push({ kind: m[1] as 'rotate' | 'translate' | 'mirror', v: [Number(m[2]), Number(m[3]), Number(m[4])] });
+    steps.push({ kind: m[1] as 'rotate' | 'translate' | 'mirror' | 'scale', v: [Number(m[2]), Number(m[3]), Number(m[4])] });
   }
   return steps;
 }
@@ -409,6 +424,9 @@ function normalizeChain(steps: TransformStep[]): TransformStep[] {
     const last = out[out.length - 1];
     if (s.kind === 'translate' && last && last.kind === 'translate') {
       last.v = [last.v[0] + s.v[0], last.v[1] + s.v[1], last.v[2] + s.v[2]];
+    } else if (s.kind === 'scale' && last && last.kind === 'scale') {
+      // Successive scales about the origin commute and multiply componentwise.
+      last.v = [last.v[0] * s.v[0], last.v[1] * s.v[1], last.v[2] * s.v[2]];
     } else {
       out.push({ kind: s.kind, v: [...s.v] as Vec3 });
     }
@@ -416,6 +434,7 @@ function normalizeChain(steps: TransformStep[]): TransformStep[] {
   return out.filter(s => {
     if (s.kind === 'translate') return Math.abs(s.v[0]) > 1e-9 || Math.abs(s.v[1]) > 1e-9 || Math.abs(s.v[2]) > 1e-9;
     if (s.kind === 'rotate') return !isNoopRotation(s.v);
+    if (s.kind === 'scale') return !isNoopScale(s.v);
     return true; // a mirror is never a no-op
   });
 }
@@ -457,6 +476,13 @@ export function placementLabel(ops: PlacementOps): string {
 /** Short label for a free rotation, e.g. "rotate (0°, 90°, 0°)". */
 export function rotationLabel(euler: Vec3): string {
   return `rotate (${fmt(euler[0])}°, ${fmt(euler[1])}°, ${fmt(euler[2])}°)`;
+}
+
+/** Short label for a scale, e.g. "scale 2×" (uniform) or "scale (2, 1, 0.5)". */
+export function scaleLabel(factors: Vec3): string {
+  const [sx, sy, sz] = factors;
+  if (Math.abs(sx - sy) < 1e-6 && Math.abs(sy - sz) < 1e-6) return `scale ${fmt(sx)}×`;
+  return `scale (${fmt(sx)}, ${fmt(sy)}, ${fmt(sz)})`;
 }
 
 /** Short label for a mirror, e.g. "mirror X". */

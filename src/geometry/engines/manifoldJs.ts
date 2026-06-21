@@ -12,10 +12,12 @@ import { createFastenersNamespace } from '../fasteners';
 import { createJointsNamespace } from '../joints';
 import { createGearsNamespace } from '../gears';
 import { createThreadsNamespace } from '../threads';
+import { createEnclosureNamespace } from '../enclosure';
+import { createKnurlNamespace } from '../knurl';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import type { RegionDescriptor } from '../../color/regions';
-import { SURFACE_OP_FIELDS, isSurfaceOpId, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
+import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
 import { wasmFaultHint } from '../workerFaults';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
@@ -48,6 +50,12 @@ function renderMesh(meshData: any) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let manifoldModule: any = null;
+// Memoized init so two concurrent first-callers (e.g. a direct initEngine()
+// racing replicadEngine.init(), which also calls this) share ONE WASM
+// instantiation instead of each loading the module and rebuilding every
+// namespace singleton — the second clobbering the first mid-flight. Mirrors the
+// OpenSCAD engine / ensureBrepLoaded pattern.
+let manifoldInitPromise: Promise<void> | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let curvesNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -66,6 +74,10 @@ let geom2dNamespace: any = null;
 let gearsNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let threadsNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let enclosureNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let knurlNamespace: any = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getManifoldModule(): any {
@@ -190,27 +202,44 @@ export const manifoldJsEngine: Engine = {
 
   async init() {
     if (manifoldModule) return;
-    const Module = await import('manifold-3d');
-    manifoldModule = await Module.default();
-    manifoldModule.setup();
-    curvesNamespace = createCurvesNamespace(manifoldModule);
-    meshOpsNamespace = createMeshOpsNamespace(manifoldModule);
-    // Fasteners shares the Curves text helper so its calibration coupon can
-    // emboss values; Curves is constructed just above, so the dep is ready.
-    fastenersNamespace = createFastenersNamespace(manifoldModule, { text: curvesNamespace.text });
-    jointsNamespace = createJointsNamespace(manifoldModule);
-    // Deprecated back-compat alias — old saved sessions call api.printFit.*
-    // (the namespace that was split into fasteners + joints). Never remove.
-    printFitAlias = Object.freeze({ ...fastenersNamespace, ...jointsNamespace });
-    // 2D sketch-primitive namespace (api.geom). Only needs CrossSection, so
-    // it's a module-level singleton like Curves/meshOps.
-    geom2dNamespace = createGeom2dNamespace(manifoldModule);
-    gearsNamespace = createGearsNamespace(manifoldModule);
-    threadsNamespace = createThreadsNamespace(manifoldModule);
-    // Kick off font pre-loading in the background so they're ready by the
-    // time the first api.text() call hits, even if the per-run regex didn't
-    // fire (e.g. destructured alias or api.Curves.text).
-    preloadTextFonts().catch(() => { /* will surface as a clear error at call time */ });
+    if (manifoldInitPromise) return manifoldInitPromise;
+    manifoldInitPromise = (async () => {
+      const Module = await import('manifold-3d');
+      const mod = await Module.default();
+      mod.setup();
+      curvesNamespace = createCurvesNamespace(mod);
+      meshOpsNamespace = createMeshOpsNamespace(mod);
+      // Fasteners shares the Curves text helper so its calibration coupon can
+      // emboss values; Curves is constructed just above, so the dep is ready.
+      fastenersNamespace = createFastenersNamespace(mod, { text: curvesNamespace.text });
+      jointsNamespace = createJointsNamespace(mod);
+      // Deprecated back-compat alias — old saved sessions call api.printFit.*
+      // (the namespace that was split into fasteners + joints). Never remove.
+      printFitAlias = Object.freeze({ ...fastenersNamespace, ...jointsNamespace });
+      // 2D sketch-primitive namespace (api.geom). Only needs CrossSection, so
+      // it's a module-level singleton like Curves/meshOps.
+      geom2dNamespace = createGeom2dNamespace(mod);
+      gearsNamespace = createGearsNamespace(mod);
+      threadsNamespace = createThreadsNamespace(mod);
+      // Enclosure composes the fasteners library (screw-lid bosses/holes,
+      // standoff bores), so it's built after fastenersNamespace above.
+      enclosureNamespace = createEnclosureNamespace(mod, { fasteners: fastenersNamespace });
+      knurlNamespace = createKnurlNamespace(mod);
+      // Publish the fully-built module only after every namespace is ready, so
+      // a concurrent caller that sees `manifoldModule` set never observes a
+      // half-initialised set of namespaces.
+      manifoldModule = mod;
+      // Kick off font pre-loading in the background so they're ready by the
+      // time the first api.text() call hits, even if the per-run regex didn't
+      // fire (e.g. destructured alias or api.Curves.text).
+      preloadTextFonts().catch(() => { /* will surface as a clear error at call time */ });
+    })();
+    try {
+      await manifoldInitPromise;
+    } catch (e) {
+      manifoldInitPromise = null; // allow a retry after a failed init
+      throw e;
+    }
   },
 
   isReady() {
@@ -453,20 +482,11 @@ export const manifoldJsEngine: Engine = {
         }
         opts = params as Record<string, unknown>;
       }
-      const allowed = SURFACE_OP_FIELDS[id];
-      const clean: Record<string, number | boolean | string> = {};
-      for (const [k, v] of Object.entries(opts)) {
-        if (!allowed.includes(k)) {
-          throw new Error(`api.surface.${id}: unknown option "${k}". Accepted: ${allowed.join(', ')}.`);
-        }
-        if (typeof v === 'number') {
-          if (!Number.isFinite(v)) throw new Error(`api.surface.${id}.${k}: must be a finite number.`);
-        } else if (typeof v !== 'boolean' && typeof v !== 'string') {
-          throw new Error(`api.surface.${id}.${k}: must be a number, boolean, or string.`);
-        }
-        clean[k] = v;
-      }
-      surfaceOps.push({ id, params: clean });
+      // parseSurfaceOpts validates the scalar params AND the reserved scope keys
+      // (label / region) — the single source of truth shared with the console
+      // twin (applySurfaceTextureAsCode).
+      const parsed = parseSurfaceOpts(id, opts);
+      surfaceOps.push(parsed.scope ? { id, params: parsed.params, scope: parsed.scope } : { id, params: parsed.params });
     };
     const makeSurfaceFn = (id: SurfaceOpId) => (params?: unknown): void => recordSurfaceOp(id, params);
     const surface: Record<SurfaceOpId, (params?: unknown) => void> & { apply(id: unknown, params?: unknown): void } = {
@@ -476,6 +496,7 @@ export const manifoldJsEngine: Engine = {
       waffle: makeSurfaceFn('waffle'),
       fur: makeSurfaceFn('fur'),
       woven: makeSurfaceFn('woven'),
+      knurl: makeSurfaceFn('knurl'),
       voronoi: makeSurfaceFn('voronoi'),
       smooth: makeSurfaceFn('smooth'),
       /** Generic form: `api.surface.apply('knit', { … })` — handy for data-driven code. */
@@ -534,6 +555,8 @@ export const manifoldJsEngine: Engine = {
       printFit: printFitAlias,
       gears: gearsNamespace,
       threads: threadsNamespace,
+      enclosure: enclosureNamespace,
+      knurl: knurlNamespace,
       // Text helpers — flat aliases so agents can write api.text(...) directly.
       text: curvesNamespace.text,
       textSection: curvesNamespace.textSection,

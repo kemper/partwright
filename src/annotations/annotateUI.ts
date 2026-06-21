@@ -44,6 +44,7 @@ import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegist
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
 import { viewportToolsMount } from '../ui/popoverMenu';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
+import { createColorSwatch } from '../ui/colorPickerModal';
 
 const PRESET_COLORS: [number, number, number][] = [
   [0.95, 0.20, 0.45], // hot pink (default)
@@ -293,6 +294,7 @@ function createPickerPanel(): HTMLElement {
       setPenColor(color);
       setTextColor(color);
       markActiveSwatch(grid, swatch);
+      custom.setHex(rgbToHex(color)); // keep the custom swatch a truthful preview
     });
     grid.appendChild(swatch);
   }
@@ -303,22 +305,23 @@ function createPickerPanel(): HTMLElement {
   // Custom color
   const customRow = document.createElement('div');
   customRow.className = 'flex items-center gap-1.5 mb-2';
-  const colorInput = document.createElement('input');
-  colorInput.type = 'color';
-  colorInput.value = rgbToHex(PRESET_COLORS[0]);
-  colorInput.className = 'w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent';
-  colorInput.title = 'Custom color';
-  colorInput.addEventListener('input', () => {
-    const hex = colorInput.value;
-    const r = parseInt(hex.slice(1, 3), 16) / 255;
-    const g = parseInt(hex.slice(3, 5), 16) / 255;
-    const b = parseInt(hex.slice(5, 7), 16) / 255;
-    setPenColor([r, g, b]);
-    setTextColor([r, g, b]);
-    for (const child of Array.from(grid.children)) {
-      (child as HTMLElement).classList.remove('border-white/80', 'ring-1', 'ring-white/30');
-    }
+  const custom = createColorSwatch({
+    initialHex: rgbToHex(PRESET_COLORS[0]),
+    title: 'Custom color',
+    modalTitle: 'Annotation colour',
+    className: 'w-6 h-6 shrink-0 rounded cursor-pointer border border-zinc-500 hover:border-white/70 transition-colors',
+    onPick: (hex) => {
+      const r = parseInt(hex.slice(1, 3), 16) / 255;
+      const g = parseInt(hex.slice(3, 5), 16) / 255;
+      const b = parseInt(hex.slice(5, 7), 16) / 255;
+      setPenColor([r, g, b]);
+      setTextColor([r, g, b]);
+      for (const child of Array.from(grid.children)) {
+        (child as HTMLElement).classList.remove('border-white/80', 'ring-1', 'ring-white/30');
+      }
+    },
   });
+  const colorInput = custom.el;
   const customLabel = document.createElement('span');
   customLabel.className = 'text-[10px] text-zinc-500';
   customLabel.textContent = 'Custom';

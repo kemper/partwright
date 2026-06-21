@@ -21,6 +21,7 @@
 
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
+import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
 import { formatEngineMemory } from './geometry/engineMemory';
@@ -30,14 +31,15 @@ import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel'
 import { viewportToolsMount, openPopoverGroupById } from './ui/popoverMenu';
 import { TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './ui/toolPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView, onOrbitEnd } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, resetView, onOrbitEnd } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
-import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
-import { generateId, getLatestVersion } from './storage/db';
+import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
+import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
+import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
+import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, getLineWrap, setLineWrap, getLineNumbers, setLineNumbers, getFontSize, setFontSize, getFontSizeBounds, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
@@ -48,8 +50,10 @@ import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { confirmDialog, promptDialog } from './ui/dialogs';
-import { updateAppHistory, currentURLPathAndSearch } from './ui/appHistory';
-import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive } from './ui/aiPanel';
+import { showSaveAllModal, type UnsavedPartRow } from './ui/saveAllModal';
+import { updateAppHistory } from './ui/appHistory';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive, closeAiPanel, isAiTurnInFlight, onAiTurnEnd } from './ui/aiPanel';
+import { onViewportPanelOpen } from './ui/viewportPanelRegistry';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
@@ -59,7 +63,7 @@ import { showExportOptionsDialog } from './ui/exportOptionsDialog';
 import { showExportConfirm, hasExportWarning, type ExportWarningInfo } from './ui/exportConfirmModal';
 import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
 import { createIdeasPage } from './ui/ideasPage';
-import type { Idea } from './ideas/ideas';
+import { IDEAS, type Idea } from './ideas/ideas';
 import { createWhatsNewPage } from './ui/whatsNew';
 import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
@@ -72,10 +76,16 @@ import { createDiffView, refreshDiff } from './ui/diffView';
 import { createNotesView, refreshNotes } from './ui/notes';
 import { initDataExplorer, refreshDataExplorer } from './ui/dataExplorer';
 import { initSessionList, showSessionList } from './ui/sessionList';
-import { exportGLB, buildGLB } from './export/gltf';
-import { exportSTL, buildSTL } from './export/stl';
-import { exportOBJ, buildOBJ } from './export/obj';
+import { exportGLB, buildGLB, buildGLBProject } from './export/gltf';
+import { exportSTL, buildSTL, buildSTLProject } from './export/stl';
+import { exportOBJ, buildOBJ, buildOBJProject } from './export/obj';
+import { openPublishModal } from './ui/publishModal';
+import { findPublishTarget, type PublishFormat } from './publish/publishTargets';
+import { generatePublishMetadata, isActiveProviderConnected } from './ai/publishMetadata';
 import { export3MF, build3MF } from './export/threemf';
+import { buildZip, type ZipEntry } from './export/zip';
+import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, isBambuPrinter, isBambuNozzle, isBambuFilament } from './export/threemfProject';
+import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
 import { exportSessionJSON, exportRawCode, buildSessionJSON, buildRawCode } from './export/session';
@@ -121,11 +131,18 @@ import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geom
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyHollow, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultHollowOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
-import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, mirrorLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
-import { nearestTriangleMap } from './surface/colorTransfer';
-import { surfaceCacheStatus, computeChain, type SurfaceOp } from './surface/surfaceOps';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyHollow, buildEngraveResult, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultHollowOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
+import { engraveInWorker } from './surface/engraveWorkerClient';
+import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampHost';
+import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, isNoopScale, placementLabel, rotationLabel, mirrorLabel, scaleLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
+import { nearestTriangleMap, remapTriangleSets, selectTrianglesNearSeeds } from './surface/colorTransfer';
+import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, meshContentKey, cancelSurfaceCompute, surfaceComputeInFlight, SurfaceComputeCancelled, type SurfaceOp } from './surface/surfaceOps';
+import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, SURFACE_SCOPE_KEYS, parseSurfaceOpts, isSurfaceOpId, type SurfaceOpId, type PersistedSurfaceTexture, type ResolvedScope } from './surface/surfaceOpSpec';
+import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
+import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
+import { specToCode } from './figure/characterCodegen';
+import { normalizeSpec } from './figure/characterSpec';
 import { initResizeUI } from './ui/resizeModal';
 import { initPlaceUI } from './ui/placeModal';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
@@ -161,6 +178,7 @@ import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
 import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook, stampImageProgrammatic } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
+import { resolveImageStampPlacement, STAMP_VIEWS, type StampView } from './color/imagePaintPlacement';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
 import { initPrintToolsUI, isPrintToolsOpen, forceDeactivate as closePrintToolsMenu, type PrintToolsHandlers } from './ui/printToolsUI';
@@ -189,7 +207,8 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
@@ -200,6 +219,35 @@ import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
 import { encodeShare, decodeShare, validateSharePayloadShape, ShareUnsupportedError } from './share/shareLink';
 import { openShareModal, renderSharedBanner, renderSharedOverlay } from './share/shareUI';
+import {
+  initInsertPalette,
+  setInsertPaletteAvailable,
+  apiEnterArrange,
+  apiExitArrange,
+  apiIsArrangeActive,
+  apiSetSelection,
+  apiAddToSelection,
+  apiClearSelection,
+  apiGetSelection,
+  apiUndo,
+  apiRedo,
+  apiCanUndo,
+  apiCanRedo,
+  apiResizeSelection,
+  apiAlignSelection,
+  apiGroupSelection,
+  apiSubtractSelection,
+  apiIntersectSelection,
+  apiDeleteSelection,
+  apiDuplicateSelection,
+  apiMirrorSelection,
+  apiListParts,
+  apiSetAutoCombine,
+  apiGetAutoCombine,
+  apiSetSnapToGrid,
+  apiGetSnapToGrid,
+  apiRotateSelection,
+} from './ui/insertPalette';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
@@ -233,6 +281,8 @@ import {
   deletePart,
   deleteParts,
   reorderParts,
+  partSaveState,
+  currentPartIsDirty,
   getState,
   setSessionThumbCamera,
   setSessionWorkCamera,
@@ -242,8 +292,8 @@ import {
   importSession,
   importSessionPartsIntoActive,
   clearAllSessions,
-  saveImages as persistImages,
-  getImagesFromSession,
+  saveAttachments as persistAttachments,
+  getAttachmentsFromSession,
   addSessionNote,
   listSessionNotes,
   deleteIfEmpty,
@@ -286,10 +336,45 @@ import {
   checkAssertions,
   type GeometryAssertions,
 } from './geometry/statsComputation';
+import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
 import { nextStarter, isStarterCode } from './editor/starters';
 import { parseLabelColor } from './color/labelColor';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
+
+// === Attachment helpers (shared by the setImages/addImage + setAttachments/
+// addAttachment API methods) ===
+
+/** Push the new attachment list into the in-memory mirror AND persist it to
+ *  the active session. Mirrors the old `_setImages + persistImages` pairing. */
+function commitAttachments(next: SessionAttachment[]): void {
+  _setAttachments(next);
+  void persistAttachments(next);
+}
+
+/** Validate a loose `{src, id?, label?, kind?, mediaType?}` input and normalize
+ *  it into a typed SessionAttachment. `kind`/`mediaType` are inferred from the
+ *  src/label when omitted; an explicit `kind` is checked against the enum. */
+function buildAttachmentFromInput(input: unknown, ctx: string, source?: 'user' | 'chat'): SessionAttachment {
+  const obj = assertObject(input, ctx)!;
+  assertNoUnknownKeys(obj, ['src', 'id', 'label', 'description', 'kind', 'mediaType'] as const, ctx);
+  assertString(obj.src, `${ctx}.src`, { allowEmpty: false });
+  if (obj.id !== undefined) assertString(obj.id, `${ctx}.id`, { allowEmpty: false });
+  if (obj.label !== undefined) assertString(obj.label, `${ctx}.label`, { optional: true, allowEmpty: true });
+  if (obj.description !== undefined) assertString(obj.description, `${ctx}.description`, { optional: true, allowEmpty: true });
+  if (obj.mediaType !== undefined) assertString(obj.mediaType, `${ctx}.mediaType`, { allowEmpty: false });
+  if (obj.kind !== undefined) assertEnum(obj.kind, ATTACHMENT_KINDS, `${ctx}.kind`);
+  return normalizeAttachment({
+    id: obj.id as string | undefined,
+    src: obj.src as string,
+    label: obj.label as string | undefined,
+    description: obj.description as string | undefined,
+    kind: obj.kind as AttachmentKind | undefined,
+    mediaType: obj.mediaType as string | undefined,
+    addedAt: Date.now(),
+    source,
+  }, generateId());
+}
 
 // Editor starters — one simple, labelled, self-coloured primitive per engine,
 // rotated so a fresh session/part/language opens on a different cube / sphere /
@@ -310,16 +395,37 @@ let paramsPanel: ParamsPanelController | null = null;
 /** Reconcile the Customizer panel + override state with the parameter schema a
  *  model declared on its latest run. Pass `undefined` when the model declared
  *  none (hides the panel and clears overrides). */
+// Set while an AI turn deferred the Customizer reveal (see syncParamsPanel); the
+// onAiTurnEnd flush below consumes it.
+let paramsRevealDeferred = false;
+
 function syncParamsPanel(schema: ParamSpec[] | undefined): void {
   if (schema && schema.length > 0) {
     currentParamSchema = schema;
     // Keep only overrides the model still declares (drops stale keys from a
     // previously-run model) and store the minimal non-default set.
     currentParamValues = pruneParamValues(schema, currentParamValues);
-    paramsPanel?.update(schema, resolveParamValues(schema, currentParamValues));
   } else {
     currentParamSchema = null;
     currentParamValues = {};
+  }
+  // While the AI is mid-turn (e.g. a runAndSave during a chat response), don't
+  // pop the Customizer over the chat or yank the AI panel aside — the user is
+  // still reading the model think. Record the schema now but defer the reveal
+  // until the turn ends, then reveal it *silently* so the AI panel stays open.
+  if (isAiTurnInFlight()) {
+    paramsRevealDeferred = true;
+    return;
+  }
+  refreshParamsPanelUI(false);
+}
+
+/** Push the current schema/values into the Customizer panel. `silentReveal`
+ *  opens it without hiding the AI panel — used for the post-AI-turn flush. */
+function refreshParamsPanelUI(silentReveal: boolean): void {
+  if (currentParamSchema && currentParamSchema.length > 0) {
+    paramsPanel?.update(currentParamSchema, resolveParamValues(currentParamSchema, currentParamValues), { silentReveal });
+  } else {
     paramsPanel?.update(undefined, {});
   }
 }
@@ -374,6 +480,22 @@ let paintBaseMesh: MeshData | null = null;
  *  stroke) and refine incrementally from the current mesh, instead of replaying
  *  every stroke from the base (which is O(strokes²) and made painting lag). */
 let lastStrokeList: RegionDescriptor[] = [];
+/** The refine-driving (subdivision) descriptors the current working mesh was
+ *  built against — every `brushStroke` plus any smooth slab/box/cylinder. When
+ *  a paint change leaves this set unchanged (a non-smooth stroke, a colour
+ *  edit, removing a non-refine region), the mesh topology is already correct,
+ *  so the reconcile re-resolves regions against it and recolours instead of
+ *  replaying the whole subdivision in the worker. Without this, one smooth
+ *  stroke made *every* later paint action trigger a full "Rebuilding refined
+ *  mesh…" pass — turning edge smoothing off didn't help, because the existing
+ *  smooth stroke still forced the rebuild. Kept in sync wherever the working
+ *  mesh is (re)built or reverted via `markMeshRefineState()`. */
+let meshRefineList: RegionDescriptor[] = [];
+/** The exact `currentMeshData` object `meshRefineList` was snapshotted for. The
+ *  fast path only fires while this still holds, so any external mesh swap (a
+ *  surface-modifier/scale bake, a model re-run, a version load) forces a real
+ *  rebuild instead of recolouring stale triangle indices. */
+let meshRefineForMesh: MeshData | null = null;
 /** Set while rehydration adds regions in bulk, so each addRegion doesn't kick
  *  off a reconcile mid-rebuild. */
 let suspendReconcile = false;
@@ -460,6 +582,11 @@ const partMeshCache = new Map<string, PartMeshCacheEntry>();
 let geometryDataEl: HTMLElement;
 // Viewport overlay pill — shows printability issues after each successful run.
 let printabilityIndicatorEl: HTMLElement | null = null;
+let fastPreviewPillEl: HTMLElement | null = null;
+/** True while the viewport shows the coarse fast-preview pass of an SDF model
+ *  and the full-quality render is still in flight. Used to gate mesh-altering
+ *  actions (paint, surface modifiers) so they don't bind to the throwaway mesh. */
+let _showingFastPreview = false;
 // Viewport overlay pill — shown when a run's `api.surface.*` texture chain is
 // NOT in the memo cache (a "sticky" miss): we render the base mesh and let the
 // user press this to recompute the (potentially slow) texture on demand. See
@@ -470,6 +597,31 @@ let surfaceReapplyEl: HTMLElement | null = null;
 // by the Re-apply handler. Null when there's nothing pending.
 let pendingSurface: { base: MeshData; ops: SurfaceOp[]; baseKey: string; src: string } | null = null;
 let surfaceReapplyBusy = false;
+// The most recent APPLIED `api.surface.*` result: the full-chain memo key plus
+// the textured mesh it produced (the same object that became the live
+// currentMeshData / paintBaseMesh). Persisted onto the version on save so
+// reopening the session renders textured instantly — and pins the texture's
+// appearance at save time as the modifier math evolves. Reset on every
+// mesh-producing run by applySurfaceTextures (null when the run declared no
+// ops or left them pending); save-time use is identity-guarded against the
+// live mesh so a version restored from partMeshCache never persists another
+// run's texture. See currentSurfaceTextureForSave.
+let lastAppliedSurface: { key: string; mesh: MeshData } | null = null;
+
+/** The `api.surface.*` texture to persist with a save, or undefined when the
+ *  live mesh isn't an applied-texture result. Identity-guarded: the tracked
+ *  textured mesh must BE the live mesh object (paintBaseMesh stays the run's
+ *  mesh through paint refinement; a version restored from partMeshCache is a
+ *  different object, so another run's texture can never be attributed to it).
+ *  Oversized meshes aren't persisted — the version still saves and reopening
+ *  recomputes the chain on demand, exactly as if nothing was stored. */
+function currentSurfaceTextureForSave(): PersistedSurfaceTexture | undefined {
+  if (!lastAppliedSurface) return undefined;
+  const live = paintBaseMesh ?? currentMeshData;
+  if (!live || lastAppliedSurface.mesh !== live) return undefined;
+  if (lastAppliedSurface.mesh.numTri > getConfig().renderer.surfaceTexturePersistMaxTriangles) return undefined;
+  return { key: lastAppliedSurface.key, mesh: lastAppliedSurface.mesh };
+}
 // The disconnected-components warning is surfaced as a transient toast (recorded
 // in the Diagnostic Log) rather than the persistent pill. Track the last one we
 // toasted so re-runs of an unchanged broken model don't re-spam the same toast;
@@ -694,15 +846,23 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
  *  we cap the wait and let the save proceed without it rather than hang forever
  *  (which silently blocked saving a painted version). */
 
-function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
+function captureThumbnail(
+  mesh: MeshData | null = currentMeshData,
+  opts: { rawColors?: boolean } = {},
+): Promise<Blob | null> {
   if (!mesh) return Promise.resolve(null);
   let canvas: HTMLCanvasElement;
   // Honour a session-pinned thumbnail camera (partwright.setThumbnailCamera);
   // fall back to the default iso 3/4 view. The pin keeps the perspective ortho
   // flag of the iso view so a custom angle still reads as a 3/4 tile.
   const pin = getState().session?.thumbCamera;
+  // `rawColors` renders the mesh's OWN triColors verbatim, bypassing the global
+  // paint/region state — used by the offscreen import thumbnail backfill, whose
+  // colours are pre-baked per version and must not pick up the live (latest)
+  // version's regions.
+  const colored = opts.rawColors ? mesh : applyTriColorsIfVisible(mesh);
   try {
-    canvas = renderSingleViewCanvas(applyTriColorsIfVisible(mesh), {
+    canvas = renderSingleViewCanvas(colored, {
       elevation: pin ? pin.elevation : STANDARD_VIEWS.iso.elevation,
       azimuth: pin ? pin.azimuth : STANDARD_VIEWS.iso.azimuth,
       ortho: STANDARD_VIEWS.iso.ortho,
@@ -1065,9 +1225,24 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   clearRegions();
 
   const report: { carried: string[]; dropped: string[] } = { carried: [], dropped: [] };
-  if (!geometryData || !currentMeshData) return report;
+  if (!geometryData || !currentMeshData) {
+    // Nothing to colour against yet; still finalize the model underlay so a
+    // bare-mesh restore doesn't strand code-declared colours unrendered.
+    renderModelColorUnderlay();
+    return report;
+  }
   const regions = geometryData.colorRegions as SerializedColorRegion[] | undefined;
-  if (!regions || regions.length === 0) return report;
+  if (!regions || regions.length === 0) {
+    // No user paint to restore — but the model-declared colour underlay
+    // (api.label / api.paint) still needs to be drawn. This function is the
+    // single authority that finalizes a restored part's colours for EVERY load
+    // path (cache hit, cache miss, loadVersion, navigateVersion), so neither
+    // branch needs its own colour stamp — the class of "a restore path forgot
+    // to apply colours" bug can't recur. A model-only part never subdivides, so
+    // currentMeshData and the model regions' triangle indices stay aligned.
+    renderModelColorUnderlay();
+    return report;
+  }
 
   // Partition: smooth imagePaint regions with a stored imageDataUrl are replayed
   // sequentially below (they drive their own subdivision pass each). All other
@@ -1147,16 +1322,61 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   }
 
   lastStrokeList = getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
+  markMeshRefineState();
 
   syncLockState();
 
-  // Re-render with colors if regions were rehydrated
-  if (hasColorRegions() && currentMeshData) {
+  // Re-render with colors if any region layer is present (user paint and/or the
+  // model-declared underlay — applyTriColorsIfVisible stamps both).
+  if ((hasColorRegions() || hasModelColorRegions()) && currentMeshData) {
     const colored = applyTriColorsIfVisible(currentMeshData);
     updateMesh(colored, { skipAutoFrame: true });
   }
 
   return report;
+}
+
+/** Load a version's saved colour-region *descriptors* into the store WITHOUT
+ *  resolving them against a mesh (empty triangle sets). Used when a version
+ *  load can't finish its render — most importantly when the user cancels the
+ *  slow initial render of a catalog figure. Without this, the cancel skips
+ *  rehydrateColorRegions entirely (it needs a finished mesh + labelMap to
+ *  resolve `byLabel` regions), so the figure's colours never enter memory: a
+ *  subsequent Save then serialises the empty store over the version's colours
+ *  (permanent loss), and the next edit→rerender shows a colourless model.
+ *
+ *  Staging the descriptors fixes both: `serialize()` persists descriptors (not
+ *  triangles), so a Save keeps the colours, and runCodeSync re-resolves every
+ *  in-memory region against the freshly-rendered mesh+labelMap on the next run,
+ *  so the colours reappear. Regions that genuinely no longer match just resolve
+ *  to 0 triangles, exactly as the normal reconcile path already tolerates. */
+function stageUnresolvedColorRegions(geometryData: Record<string, unknown> | null): void {
+  resetPaintWorkerState();
+  clearRegions();
+  const regions = geometryData?.colorRegions as SerializedColorRegion[] | undefined;
+  if (!regions || regions.length === 0) {
+    syncLockState();
+    return;
+  }
+  suspendReconcile = true;
+  for (const region of regions) {
+    addRegion(region.name, region.color, region.source, region.descriptor, new Set<number>(), region.visible !== false, region.slotId);
+  }
+  suspendReconcile = false;
+  syncLockState();
+}
+
+/** Draw `currentMeshData` with the model-declared colour underlay (api.label /
+ *  api.paint) applied — or the plain mesh when the model declares no colours.
+ *  The shared "show model colours" step for restore paths: a no-op for an
+ *  uncoloured model (applyTriColorsIfVisible returns the mesh unchanged when no
+ *  regions exist), so it's always safe to call. User paint is layered on top by
+ *  rehydrateColorRegions' main path. */
+function renderModelColorUnderlay(): void {
+  if (!currentMeshData) return;
+  if (hasModelColorRegions()) {
+    updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+  }
 }
 
 function paintedColorRefresh(): void {
@@ -1195,6 +1415,7 @@ function rebuildPaintedGeometry(): void {
   reresolveModelRegions(mesh, adjacency, parentToChildren);
   paintedColorRefresh();
   syncLockState();
+  markMeshRefineState();
 }
 
 /** Re-resolve the code-declared color underlay (`api.label({color})` /
@@ -1254,10 +1475,63 @@ function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brush
   reresolveModelRegions(mesh, adjacency, parentToChildren);
   paintedColorRefresh();
   syncLockState();
+  markMeshRefineState();
 }
 
 function strokeDescriptors(): RegionDescriptor[] {
   return getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
+}
+
+/** Subdivision-driving descriptors in region order (see `descriptorRefines`) —
+ *  the snapshot the cheap-reconcile fast path compares against `meshRefineList`. */
+function currentRefineList(): RegionDescriptor[] {
+  return getRegions().filter(r => descriptorRefines(r.descriptor)).map(r => r.descriptor);
+}
+
+/** True when `a` holds exactly the entries of `b` by reference (same refine
+ *  descriptors, same order) — i.e. nothing that affects subdivision changed. */
+function sameRefineList(a: RegionDescriptor[], b: RegionDescriptor[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** Snapshot the refine set the current working mesh now reflects. Call after
+ *  any path that (re)builds or reverts the working mesh. */
+function markMeshRefineState(): void {
+  meshRefineList = currentRefineList();
+  meshRefineForMesh = currentMeshData;
+}
+
+/** True when the working mesh still matches its refine snapshot — same mesh
+ *  object and the same refine-driving descriptors — so a change can be
+ *  reconciled by recolouring instead of re-subdividing. */
+function refineSetUnchanged(): boolean {
+  return currentMeshData === meshRefineForMesh && sameRefineList(currentRefineList(), meshRefineList);
+}
+
+/** Cheap reconcile for a change that doesn't alter the refine set: the working
+ *  mesh's topology is already correct, so resolve any not-yet-resolved regions
+ *  against it and recolour — no worker subdivision, no progress modal. This is
+ *  what keeps painting instant once smooth strokes exist (and makes turning
+ *  edge smoothing off actually speed subsequent strokes up). */
+function reresolveRegionsAgainstCurrentMesh(): void {
+  const mesh = currentMeshData;
+  if (!mesh) return;
+  let adjacency: AdjacencyGraph | null = null;
+  for (const region of getRegions()) {
+    const d = region.descriptor;
+    // Explicit/byLabel sets and already-resolved regions are valid in the
+    // current mesh's index space (topology unchanged) — only a freshly-added
+    // geometric/flood region with no triangles yet needs resolving.
+    if (d.kind === 'triangles' || d.kind === 'byLabel' || region.triangles.size > 0) continue;
+    if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) adjacency = buildAdjacency(mesh);
+    const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null, region.id);
+    setRegionTriangles(region.id, triangles, perTriColors);
+  }
+  reresolveModelRegions(mesh, adjacency, null);
+  paintedColorRefresh();
+  syncLockState();
 }
 
 /** Synchronous mirror of `reconcilePaintedGeometryAsync` — the agent paint
@@ -1275,10 +1549,18 @@ function reconcilePaintedGeometrySync(): void {
   const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
     lastStrokeList = [];
+    markMeshRefineState();
     // Mirror the async tick (see reconcilePaintedGeometryAsyncTick) — color
     // mutations from the Edit colors panel must refresh the mesh even when
     // the Paint UI is closed.
     paintedColorRefresh();
+    return;
+  }
+  // Refine set unchanged — re-resolve against the current mesh, skip the heavy
+  // rebuild (mirrors the async tick's fast path).
+  if (refineSetUnchanged()) {
+    reresolveRegionsAgainstCurrentMesh();
+    lastStrokeList = strokesNow;
     return;
   }
   if (strokesNow.length === lastStrokeList.length + 1 && prefixRefEqual(strokesNow, lastStrokeList)) {
@@ -1376,6 +1658,7 @@ async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
   const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
     lastStrokeList = [];
+    markMeshRefineState();
     // Re-bake per-triangle colours regardless of whether the Paint UI is
     // open — the Relief Studio's Edit colors panel also mutates regions
     // (updateRegionColor / removeRegion) and the user expects the model to
@@ -1386,9 +1669,29 @@ async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
     return;
   }
 
+  // Refine set unchanged → the working mesh's topology already reflects every
+  // subdivision-driving descriptor. A change that doesn't touch that set (a
+  // non-smooth stroke, a colour edit, removing a non-refine region) only needs
+  // regions re-resolved against the current mesh + a recolour — NOT a full
+  // worker re-subdivision (and no progress modal). This is what keeps painting
+  // instant once a smooth stroke exists, so turning edge smoothing off actually
+  // speeds the next strokes up instead of leaving every one to rebuild.
+  if (refineSetUnchanged()) {
+    reresolveRegionsAgainstCurrentMesh();
+    lastStrokeList = strokesNow;
+    return;
+  }
+
   // Pure append: one new stroke at the end, prior strokes unchanged.
   if (strokesNow.length === lastStrokeList.length + 1 && prefixRefEqual(strokesNow, lastStrokeList)) {
     const newDesc = strokesNow[strokesNow.length - 1] as Extract<RegionDescriptor, { kind: 'brushStroke' }>;
+    // Track this in-flight stroke's region so a user Cancel (or the modal's
+    // "turn off smoothing" action) drops exactly it. The agent paint path sets
+    // this itself via paintBrushStrokeSync; the UI brush path didn't, so a
+    // cancelled UI stroke used to leave a dead, empty brushStroke region that
+    // still forced re-subdivision on every later paint.
+    const newRegion = getRegions().find(r => r.descriptor === newDesc);
+    if (newRegion) pendingStrokeRegionId = newRegion.id;
     try {
       await appendStrokeRefineAsync(newDesc);
       // The stroke resolved successfully, so it's no longer a cancel orphan.
@@ -1429,6 +1732,31 @@ function isAbortError(err: unknown): boolean {
     || (err instanceof Error && err.name === 'AbortError');
 }
 
+/** The "did you know you can speed this up" extras for the paint-refine
+ *  progress modal: a tip line plus a one-click "Stop & turn off smoothing"
+ *  button. Only offered when brush edge smoothing is currently on — that
+ *  subdivision is the usual reason a stroke takes multiple seconds. The button
+ *  doubles as Cancel (it aborts the in-flight job) AND turns smoothing off so
+ *  the next stroke paints instantly. Returns `{}` when smoothing is already off
+ *  (e.g. a spray stroke is what's refining) so we never offer a no-op. */
+function paintRefineSmoothingExtras(abort: AbortController): {
+  hint?: string;
+  secondaryAction?: { label: string; onClick: () => void };
+} {
+  if (!isPaintBrushSmooth()) return {};
+  return {
+    hint: 'Edge smoothing refines the mesh under each stroke — turn it off for faster painting.',
+    secondaryAction: {
+      label: 'Stop & turn off smoothing',
+      onClick: () => {
+        abort.abort();
+        setPaintBrushSmooth(false);
+        showToast('Edge smoothing turned off — painting will be faster', { variant: 'neutral' });
+      },
+    },
+  };
+}
+
 /** Worker-backed incremental append. Mirrors the sync `appendStrokeRefine`
  *  but offloads `buildStrokeMesh` to a dedicated thread, so a heavy stroke
  *  doesn't freeze the viewport. The Cancel button on the progress badge
@@ -1451,6 +1779,7 @@ async function appendStrokeRefineAsync(
     // variable pass count — no natural fraction to report. The animated
     // indeterminate stripe still telegraphs "something's happening."
     indeterminate: true,
+    ...paintRefineSmoothingExtras(abort),
   });
   paintProgressId = progressId;
 
@@ -1498,6 +1827,7 @@ async function appendStrokeRefineAsync(
     reresolveModelRegions(mesh, adjacency, parentToChildren);
     paintedColorRefresh();
     syncLockState();
+    markMeshRefineState();
   } finally {
     endProgress(progressId);
     if (paintProgressId === progressId) paintProgressId = null;
@@ -1528,6 +1858,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
     message: 'Rebuilding refined mesh…',
     onCancel: () => abort.abort(),
     indeterminate: true,
+    ...paintRefineSmoothingExtras(abort),
   });
   paintProgressId = progressId;
 
@@ -1560,6 +1891,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
     reresolveModelRegions(mesh, adjacency, parentToChildren);
     paintedColorRefresh();
     syncLockState();
+    markMeshRefineState();
   } finally {
     endProgress(progressId);
     if (paintProgressId === progressId) paintProgressId = null;
@@ -1609,6 +1941,10 @@ function handlePaintCancel(): void {
     }
   }
   lastStrokeList = strokeDescriptors();
+  // The orphan stroke was dropped and the mesh reverted to its pre-stroke
+  // state, so the refine set the working mesh reflects has shrunk — resnapshot
+  // it (otherwise the next non-refine change would needlessly full-rebuild).
+  markMeshRefineState();
   paintedColorRefresh();
   syncLockState();
   showToast('Painting cancelled.', { variant: 'neutral' });
@@ -1698,7 +2034,7 @@ async function saveCurrentVersion(label?: string): Promise<
     return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
   }
   const thumbnail = await captureThumbnail();
-  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles() });
+  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
   if (version) {
     // Keep the mesh cache valid for the newly-saved version so that switching
     // away and back doesn't trigger a recompile. The code/geometry didn't
@@ -1775,14 +2111,31 @@ function resolvePartTarget(target: unknown, caller: string): Part | { error: str
     return { error: `${caller}: no active session. Call createSession() or openSession(id) first.` };
   }
   const parts = listCurrentParts();
+  // 0-based index into the parts as listParts() returns them (sorted by order).
+  // Lets a caller address "the second part" without first looking up its id.
+  if (typeof target === 'number') {
+    if (!Number.isInteger(target) || target < 0) {
+      return { error: `${caller}: index must be a non-negative integer.` };
+    }
+    const ordered = [...parts].sort((a, b) => a.order - b.order);
+    const part = ordered[target];
+    if (!part) return { error: `${caller}: no part at index ${target}. Use listParts() to see available parts.` };
+    return part;
+  }
+  // A bare string is ambiguous between an id and a human-facing name, so try
+  // both (id first — ids are unique). Object form keeps the field explicit.
+  if (typeof target === 'string') {
+    if (target.length === 0) return { error: `${caller}: part must be a non-empty string.` };
+    const part = parts.find(p => p.id === target) ?? parts.find(p => p.name === target);
+    if (!part) return { error: `${caller}: no part matching ${JSON.stringify(target)} (by id or name). Use listParts() to see available parts.` };
+    return part;
+  }
   let id: string | undefined;
   let name: string | undefined;
-  if (typeof target === 'string') {
-    id = target;
-  } else if (target && typeof target === 'object') {
+  if (target && typeof target === 'object') {
     ({ id, name } = target as { id?: string; name?: string });
   } else {
-    return { error: `${caller}(target): pass a part id string, or { id } / { name } from listParts().` };
+    return { error: `${caller}(target): pass a part name, id string, or 0-based index — or { id } / { name } from listParts().` };
   }
   let part: Part | undefined;
   if (id !== undefined) {
@@ -1798,43 +2151,59 @@ function resolvePartTarget(target: unknown, caller: string): Part | { error: str
   return part;
 }
 
+// The app-relative route for the current URL, with the deployment base
+// (`/`, `/v2/`, …) stripped — so route predicates compare against bare routes
+// ('/editor', '/help') regardless of where this major is mounted. A no-op at
+// base `/`. See src/deployment.ts.
+function currentRoute(): string {
+  return appRoute(window.location.pathname);
+}
+
+// Like appHistory's currentURLPathAndSearch(), but with the deployment base
+// stripped — so "did we arrive here from elsewhere in the app" back-target
+// checks compare against bare routes ('/help') regardless of the /vN/ mount.
+// A no-op at base `/`.
+function currentRouteAndSearch(): string {
+  return `${currentRoute()}${window.location.search}`;
+}
+
 // Determine which page to show based on URL path and query params
 function shouldShowLanding(): boolean {
-  const path = window.location.pathname;
+  const path = currentRoute();
   const params = new URLSearchParams(window.location.search);
   // Landing if at root path AND no query params that indicate a specific view
   // AND no share-link hash (a bare `/#share=…` must open the shared preview, not
   // the landing page).
-  const isRootPath = path === '/' || path === '';
+  const isRootPath = path === '/';
   return isRootPath && !hasShareHash() && !params.has('view') && !params.has('session') && !params.has('gallery') && !params.has('versions') && !params.has('images') && !params.has('diff') && !params.has('notes') && !params.has('data');
 }
 
 function shouldShowHelp(): boolean {
   // A `/help#share=…` link must open the shared preview (editor), not Help —
   // mirrors shouldShowLanding's share-hash exclusion.
-  return window.location.pathname === '/help' && !hasShareHash();
+  return currentRoute() === '/help' && !hasShareHash();
 }
 
 function shouldShowCatalog(): boolean {
-  return window.location.pathname === '/catalog' && !hasShareHash();
+  return currentRoute() === '/catalog' && !hasShareHash();
 }
 
 function shouldShowIdeas(): boolean {
-  return window.location.pathname === '/ideas' && !hasShareHash();
+  return currentRoute() === '/ideas' && !hasShareHash();
 }
 
 function shouldShowWhatsNew(): boolean {
-  return window.location.pathname === '/whats-new';
+  return currentRoute() === '/whats-new';
 }
 
 function shouldShowLegal(): boolean {
-  return window.location.pathname === '/legal';
+  return currentRoute() === '/legal';
 }
 
 function shouldShow404(): boolean {
   if (hasShareHash()) return false;
-  const path = window.location.pathname;
-  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/ideas' && path !== '/legal' && path !== '/whats-new';
+  const path = currentRoute();
+  return path !== '/' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/ideas' && path !== '/legal' && path !== '/whats-new';
 }
 
 /** True when the editor view is the active page. Editor-scoped command-palette
@@ -1843,7 +2212,7 @@ function shouldShow404(): boolean {
  *  `/editor?…` and toggle hidden panes without ever transitioning into the
  *  editor. A `#share=…` link also lands in the editor, so it counts too. */
 function isEditorActive(): boolean {
-  return window.location.pathname === '/editor' || hasShareHash();
+  return currentRoute() === '/editor' || hasShareHash();
 }
 
 function getTabFromURL(): TabName {
@@ -1891,17 +2260,10 @@ async function main() {
     if (keyed.some(Boolean)) void requestPersistentStorage();
   })();
 
-  // Remove loading overlays as soon as JS takes over — EXCEPT on /ideas, the
-  // one app-rendered overlay page. It boots the whole app before painting any
-  // content, so dropping the spinner here would leave a blank screen until the
-  // page renders; instead showIdeasPage() removes it once the content is up
-  // (with a timeout fallback so it can never get stuck).
-  const onIdeasRoute = window.location.pathname === '/ideas';
-  if (!onIdeasRoute) {
-    document.getElementById('loading-splash')?.remove();
-  } else {
-    setTimeout(() => document.getElementById('loading-splash')?.remove(), 12000);
-  }
+  // Remove loading overlays as soon as JS takes over. (/ideas is served as a
+  // static, app-free page now, so there's no boot-spinner special-case here —
+  // a soft-nav to the in-app ideas overlay happens after boot.)
+  document.getElementById('loading-splash')?.remove();
   if (!shouldShowLanding()) {
     document.getElementById('landing-inline')?.remove();
   }
@@ -1944,20 +2306,193 @@ async function main() {
   // Import an already-parsed session payload. Used by both file import and the
   // window.partwright.importSessionData() API so AI agents can bypass the file picker.
   async function importSessionPayload(data: ExportedSession): Promise<{ sessionId: string }> {
-    // Seed the active-imports register with each version's own meshes before
-    // running its code: `Manifold.ofMesh(api.imports[0])` only reproduces this
-    // version's geometry (and thus a correct thumbnail) if the register holds
-    // these meshes — otherwise the run captures a stale, previously-loaded part.
-    // importSession resets the register to the latest version's imports when it
-    // finishes, so no manual restore is needed here.
-    const session = await importSession(data, async (code, importedMeshes) => {
-      setActiveImports(importedMeshes ?? []);
-      await runCodeSync(code);
-      return captureThumbnail();
-    });
+    // Import the session STRUCTURE first, without regenerating any thumbnails.
+    // Regenerating a thumbnail runs that version's code through WASM (seconds
+    // apiece for a complex figure), and doing it inside importSession deferred
+    // the notify()/selection + editor swap until the whole loop finished. The
+    // user saw the new geometry render into the viewport while the OLD part
+    // stayed selected and the OLD code lingered in the editor for seconds. So we
+    // now create + select the session and load its latest version immediately,
+    // then backfill the missing thumbnails offscreen in the background. Embedded
+    // thumbnails (when the export carried them) are still restored by
+    // importSession; only versions exported without one need the backfill.
+    const session = await importSession(data);
     const version = await openSession(session.id);
-    if (version) await loadVersionIntoEditor(version);
+    if (version) {
+      // Skip surface texture computation during import — the surface Worker
+      // (voronoi/knurl/woven) can take 30–120s on complex models and would block
+      // the load. Textures apply on the first user-triggered run.
+      await loadVersionIntoEditor(version, { skipSurface: true });
+      // The latest version is now rendered live with full colour (model labels
+      // AND user paint), so snapshot its thumbnail straight from that state —
+      // the most accurate tile for the version the user is actually looking at,
+      // and it lets the backfill below skip re-running this one.
+      if (!version.thumbnail) {
+        const thumb = await captureThumbnail();
+        if (thumb) await updateVersionThumbnail(version.id, thumb);
+      }
+    }
+    // Fire-and-forget: render a snapshot for each remaining version that
+    // imported without a thumbnail. Runs AFTER the user is already on the new
+    // part, fully offscreen, so it never disturbs the live viewport or editor.
+    void backfillImportedThumbnails(session.id);
     return { sessionId: session.id };
+  }
+
+  // Build the model-declared colour layer (api.label({color}) + optionally
+  // api.paint.* ops) for a run/preview result, resolving every triangle set
+  // against THIS result's own mesh + labelMap — no global state. Shared by the
+  // offscreen-thumbnail bake and the fast-preview colouring below.
+  function buildModelColorLayer(result: MeshResult, includePaintOps: boolean): ColorRegion[] {
+    const mesh = result.mesh;
+    if (!mesh) return [];
+    const { labelColors, labelMap, paintOps } = result;
+    const layer: ColorRegion[] = [];
+    let order = 0;
+    if (labelColors && labelMap && labelColors.size > 0) {
+      for (const [name, color] of labelColors) {
+        const tris = labelMap.get(name);
+        if (!tris || tris.size === 0) continue;
+        layer.push({
+          id: order, name, color, source: 'model',
+          descriptor: { kind: 'triangles', ids: [...tris] },
+          order: order++, visible: true, triangles: tris,
+        });
+      }
+    }
+    if (includePaintOps && paintOps && paintOps.length > 0) {
+      // resolvePaintOps is the pure resolver `model:preview` uses — it covers
+      // every kind api.paint.* can record (slab / box / cylinder / byLabel) with
+      // no adjacency or global state, and resolves byLabel from THIS result's
+      // labelMap (not the global currentLabelMap, which still indexes the
+      // previous full render during the preview window).
+      for (const op of resolvePaintOps(paintOps, mesh, labelMap)) {
+        if (op.triangles.size === 0) continue;
+        layer.push({
+          id: order, name: op.name, color: op.color, source: 'model',
+          descriptor: { kind: 'triangles', ids: [...op.triangles] },
+          order: order++, visible: true, triangles: op.triangles,
+        });
+      }
+    }
+    return layer;
+  }
+
+  // Bake a run's model-declared colours into a standalone coloured MeshData,
+  // touching no global paint/region state. Reuses composeTriColors — the same
+  // stamping the live model-colour underlay uses — so the result matches what
+  // the live pipeline would paint, minus the user's manual paint regions (which
+  // index the live tessellation and aren't resolvable off-state here).
+  //
+  // Always resolves api.label(shape, name, {color}). When `includePaintOps` is
+  // set it ALSO resolves api.paint.* ops (box / slab / cylinder / byLabel)
+  // against this result's own mesh + labelMap — used by the fast-preview path so
+  // the coarse mesh shows in-code paint too. Backfilled thumbnails leave it off:
+  // a paint-only model's historical-version thumbnail shades by normal (the live
+  // latest version always renders through the full pipeline with colour), and
+  // resolving descriptors over many offscreen versions would build adjacency per
+  // op for no gallery benefit.
+  function colorMeshFromModel(result: MeshResult, includePaintOps = false): MeshData | null {
+    const mesh = result.mesh;
+    if (!mesh) return null;
+    const layer = buildModelColorLayer(result, includePaintOps);
+    if (layer.length === 0) return mesh;
+    const triColors = composeTriColors(mesh.numTri, [layer], { baseColors: mesh.triColors ?? null });
+    return triColors ? { ...mesh, triColors } : mesh;
+  }
+
+  // Colour the coarse FAST-PREVIEW mesh as faithfully as the rough tessellation
+  // allows: the model-declared underlay (above) PLUS the user's saved paint
+  // regions whose descriptors re-resolve geometrically — byLabel and the
+  // box/slab/cylinder selectors. This is what makes a painted catalog figure
+  // (whose colours live in saved `byLabel` regions, not in code) show colour on
+  // the preview instead of bare grey. `resolvePaintDescriptor` returns a triangle
+  // set for exactly those kinds and `null` for the index/seed-dependent ones
+  // (brush strokes, coplanar, colorFlood, raw triangle ids) — which can't map
+  // onto the coarse mesh and correctly fill in only with the full render. No
+  // global state is touched: each region is re-resolved against THIS coarse mesh,
+  // so stale full-mesh indices never stamp the wrong triangles.
+  function colorCoarsePreview(result: MeshResult): MeshData {
+    const mesh = result.mesh!;
+    const modelLayer = buildModelColorLayer(result, true);
+    const userLayer: ColorRegion[] = [];
+    for (const region of getRegions()) {
+      if (region.visible === false) continue;
+      const triangles = resolvePaintDescriptor(region.descriptor, mesh, result.labelMap ?? null);
+      if (!triangles || triangles.size === 0) continue;
+      userLayer.push({ ...region, triangles, descriptor: { kind: 'triangles', ids: [...triangles] } });
+    }
+    if (modelLayer.length === 0 && userLayer.length === 0) return mesh;
+    // Same layer order as the live compositor (buildTriColors): model underlay
+    // first, the user's manual paint on top.
+    const triColors = composeTriColors(mesh.numTri, [modelLayer, userLayer], { baseColors: mesh.triColors ?? null });
+    return triColors ? { ...mesh, triColors } : mesh;
+  }
+
+  // Render + persist a thumbnail for every version (in the given parts) that
+  // arrived without one (default exports omit thumbnails). Runs AFTER the
+  // session/part is selected and its latest version loaded, so the new part
+  // appears immediately rather than waiting on these WASM runs. Each version
+  // executes OFFSCREEN via executeCodeAsync (no updateMesh → no viewport flicker)
+  // with its own imports + companion files passed explicitly, so the live
+  // active-imports register is never touched. Bails as soon as the user
+  // navigates away from the session.
+  //
+  // Backfill execs share the single engine Worker with live user runs. They
+  // carry per-version imports/companions explicitly, so a manifold-js/SCAD run
+  // can't read stale module state — but the replicad engine retains the last
+  // tessellated BREP shape in Worker scope for `exportSTEP`, so a backfill of an
+  // older replicad version landing between a live run and a manual STEP export
+  // could export the wrong shape. Rare (same-session, bounded, STEP-during-import
+  // is unusual) and self-corrects on the next live run; not guarded here.
+  async function backfillThumbnailsForParts(sessionId: string, partIds: string[]): Promise<void> {
+    let wrote = false;
+    try {
+      for (const partId of partIds) {
+        const versions = await listVersions(partId);
+        for (const v of versions) {
+          // Stop the moment the user leaves the session — don't tie up the
+          // engine Worker rendering snapshots nobody is waiting on.
+          if (getState().session?.id !== sessionId) return;
+          if (v.thumbnail) continue;
+          let result: MeshResult;
+          try {
+            result = await executeCodeAsync(
+              v.code,
+              effectiveVersionLanguage(v, getState().session),
+              v.paramValues,
+              undefined,
+              (v.importedMeshes ?? []) as ImportedMesh[],
+              v.companionFiles,
+            );
+          } catch {
+            // Worker restarted (a live run cancelled it) or an engine fault —
+            // skip this one; the gallery keeps its placeholder.
+            continue;
+          }
+          if (!result.mesh) continue;
+          const thumbnail = await captureThumbnail(colorMeshFromModel(result), { rawColors: true });
+          if (!thumbnail) continue;
+          await updateVersionThumbnail(v.id, thumbnail);
+          wrote = true;
+        }
+      }
+    } catch {
+      // Best-effort — keep whatever thumbnails we managed to persist.
+    }
+    // Refresh the gallery (if open) so new thumbnails replace placeholders
+    // without a manual reopen. Guarded so we don't redraw a session the user has
+    // since navigated away from.
+    if (wrote && getState().session?.id === sessionId) {
+      window.dispatchEvent(new CustomEvent('session-changed', { detail: getState() }));
+    }
+  }
+
+  // New-session import: backfill thumbnails across all of the imported session's
+  // parts (it owns the whole session, so every part is fair game).
+  async function backfillImportedThumbnails(sessionId: string): Promise<void> {
+    const parts = await listParts(sessionId);
+    await backfillThumbnailsForParts(sessionId, parts.map(p => p.id));
   }
 
   // Cancel an active voxel-paint session. Its live grid + per-triangle
@@ -2681,30 +3216,46 @@ async function main() {
     const choice = await showImportPreview(filename, summary, { mergeTargetName });
     if (choice === 'cancel') return false;
     if (choice === 'merge') {
-      // The regen callback runs each imported version's code to snapshot a
-      // thumbnail. Code like `Manifold.ofMesh(api.imports[0])` reads the active-
-      // imports register, so we must seed it with *that* version's meshes
-      // before running — otherwise the run produces the host (previously
-      // selected) part's geometry and the captured thumbnail is stale. Restore
-      // the host's own imports afterwards so the closing re-render is correct.
-      const hostImports = getActiveImports();
-      const result = await importSessionPartsIntoActive(data, async (code, importedMeshes) => {
-        setActiveImports(importedMeshes ?? []);
-        await runCodeSync(code);
-        return captureThumbnail();
-      });
-      setActiveImports(hostImports);
-      if (result) {
-        // Merging an imported version with no embedded thumbnail runs that
-        // version's code through runCodeSync to capture one — which leaves the
-        // viewport showing the last imported geometry while the editor still
-        // shows the active version's code. Re-render the active version so the
-        // editor text and viewport agree again.
-        const st = getState();
-        if (st.currentVersion) await runCodeSync(st.currentVersion.code, { preserveCamera: true });
+      // Append the imported parts WITHOUT regenerating thumbnails inline. The old
+      // path ran every imported version's code through the live renderer (the
+      // 10–15s render the user saw), then re-rendered the host version on top — a
+      // second full render — while leaving the host part selected. Instead: copy
+      // the parts in (fast, no WASM), switch to the FIRST new part so it appears
+      // selected with a single progressive render (fast preview → full), then
+      // backfill the rest of the new parts' thumbnails offscreen.
+      const result = await importSessionPartsIntoActive(data);
+      if (result && result.addedParts.length > 0) {
+        // Navigate to the first newly-added part so it appears selected with a
+        // single progressive render (fast preview → full). We do NOT route
+        // through selectPart here: its cancelCurrentExecution + saveVersion-based
+        // edit preservation deadlock when invoked from inside the import flow.
+        // Instead, stash the outgoing part's buffer as a draft BEFORE changePart
+        // (so it lands under the host part's id, not the incoming one), then load
+        // the new part with skipDraftSave since we've already saved that draft.
+        const outgoing = getState();
+        if (outgoing.session && outgoing.currentPart) {
+          await writeDraft(outgoing.session.id, getActiveLanguage(), getValue(), outgoing.currentPart.id, getCompanionFiles(), currentDraftRegions());
+        }
+        const newVersion = await changePart(result.addedParts[0].id);
+        if (newVersion) await loadVersionIntoEditor(newVersion, { skipSurface: true, skipDraftSave: true });
+        // The selected part is now rendered live with full colour — snapshot its
+        // thumbnail straight from that state (the most accurate tile, and it lets
+        // the backfill skip re-running this one).
+        const sel = getState();
+        if (sel.currentVersion && !sel.currentVersion.thumbnail) {
+          const thumb = await captureThumbnail();
+          if (thumb) await updateVersionThumbnail(sel.currentVersion.id, thumb);
+        }
+        const sessionId = sel.session?.id;
+        if (sessionId) void backfillThumbnailsForParts(sessionId, result.addedParts.map(p => p.id));
         const partWord = result.addedParts.length === 1 ? 'part' : 'parts';
-        showToast(`Merged ${result.addedParts.length} ${partWord} into this session.`, { variant: 'success' });
+        showToast(`Added ${result.addedParts.length} ${partWord} to this session.`, { variant: 'success' });
         return true;
+      }
+      // Nothing importable (e.g. every imported part was empty) — report it.
+      if (result) {
+        showToast('That file had no parts to add.', { variant: 'warn', source: 'import' });
+        return false;
       }
     }
     await importSessionPayload(data);
@@ -3248,7 +3799,14 @@ async function main() {
     const s = getState();
     if (!s.session || !s.currentPart) return;
     const code = getValue();
-    if (isStarterCode(code)) return;
+    // A freshly-created part the user never touched still holds starter code;
+    // don't pollute its history with a version for it. BUT interactive paint
+    // applied on top of the starter geometry is real work — bailing here would
+    // silently drop it on a part switch (the painted part returns completely
+    // uncolored). Let saveVersion run when paint exists; it persists the
+    // regions via enrichGeometryDataWithColors and rehydrateColorRegions
+    // restores them when the part is reopened.
+    if (isStarterCode(code) && !hasColorRegions()) return;
     // Previously bailed here when code was unchanged, silently discarding
     // unsaved paint, annotations, param overrides, and companion-file edits.
     // saveVersion already deduplicates on all five axes (code + annotations +
@@ -3318,6 +3876,79 @@ async function main() {
     } finally {
       setActiveImports(saved);
     }
+  }
+
+  /** Bake a part's mesh WITH its colours, off the live editor, for multi-part
+   *  export. The active part is returned straight from `currentMeshData` (already
+   *  fully coloured, no re-run). Any other part is re-executed and BOTH colour
+   *  layers are resolved offline — code-declared colours (`api.label` /
+   *  `api.paint.*`, from the run result) and the part's saved manual paint
+   *  (`version.geometryData.colorRegions`) — using the same resolver + compositor
+   *  the live editor uses, so nothing is silently dropped. Returns null when the
+   *  part has no version or produced no usable mesh. */
+  async function bakeColoredMeshForPart(partId: string, name: string): Promise<{ name: string; mesh: MeshData } | null> {
+    if (partId === getState().currentPart?.id && currentMeshData) {
+      return { name, mesh: coloredMeshForExport(currentMeshData) };
+    }
+    const version = await getLatestVersion(partId);
+    if (!version) return null;
+    const lang = effectiveVersionLanguage(version, getState().session);
+    const saved = getActiveImports();
+    let result;
+    try {
+      setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
+      result = await executeCodeAsync(version.code, lang);
+    } finally {
+      setActiveImports(saved);
+    }
+    if (!result || result.error || !result.mesh) return null;
+    const mesh = result.mesh;
+
+    // Adjacency is only needed by a few descriptor kinds; build it lazily once.
+    let adjacency: AdjacencyGraph | null = null;
+    const needsAdjacency = (d: RegionDescriptor) =>
+      d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood';
+    const ensureAdjacency = () => (adjacency ??= buildAdjacency(mesh));
+
+    let order = 0;
+    const mkRegion = (color: [number, number, number], triangles: Set<number>, perTriColors?: Map<number, [number, number, number]>): ColorRegion => ({
+      id: ++order, name: '', color, source: 'model', descriptor: { kind: 'triangles', ids: [] },
+      order, visible: true, triangles, perTriColors,
+    });
+
+    // Layer B — code-declared colours (the model-colour underlay).
+    const modelLayer: ColorRegion[] = [];
+    if (result.labelColors && result.labelMap) {
+      for (const [labelName, color] of result.labelColors) {
+        const tris = result.labelMap.get(labelName);
+        if (tris && tris.size > 0) modelLayer.push(mkRegion(color, tris));
+      }
+    }
+    if (result.paintOps) {
+      for (const op of result.paintOps) {
+        const d = op.descriptor as RegionDescriptor;
+        if (needsAdjacency(d)) ensureAdjacency();
+        const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null);
+        if (triangles.size > 0) modelLayer.push(mkRegion(op.color, triangles, perTriColors));
+      }
+    }
+
+    // Layer A — the part's saved manual paint regions.
+    const manualLayer: ColorRegion[] = [];
+    for (const region of versionColorRegions(version)) {
+      const d = region.descriptor;
+      if (needsAdjacency(d)) ensureAdjacency();
+      const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, null);
+      if (triangles.size > 0) {
+        manualLayer.push({
+          id: ++order, name: region.name, color: region.color, source: region.source,
+          descriptor: d, order: region.order, visible: true, triangles, perTriColors,
+        });
+      }
+    }
+
+    const triColors = composeTriColors(mesh.numTri, [modelLayer, manualLayer]);
+    return { name, mesh: triColors ? { ...mesh, triColors } : mesh };
   }
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
@@ -3848,6 +4479,15 @@ async function main() {
       if (used > capacity) colorOverBudget = { used, capacity };
     }
     const colorDropped = format === 'STL' && (hasColorRegions() || hasModelColorRegions());
+    // Fold the design-for-print analysis (bed fit, overhangs, thin walls, small
+    // features, stability) into the confirm modal so the user reads it there
+    // rather than catching a fleeting toast. The watertight `manifold` check is
+    // dropped — it's already covered by the isManifold block above — and only
+    // blocker/warning levels are surfaced.
+    const report = exportPrintabilityReport();
+    const printabilityChecks = report
+      ? report.checks.filter(c => (c.level === 'fail' || c.level === 'warn') && c.id !== 'manifold')
+      : [];
     return {
       unitless: _getUnits() === 'unitless',
       dimensions,
@@ -3857,6 +4497,7 @@ async function main() {
       colorOverBudget,
       colorDropped,
       surfaceStale: pendingSurface !== null,
+      printabilityChecks,
     };
   }
 
@@ -3868,7 +4509,7 @@ async function main() {
    *  field), which must stay non-blocking for AI agents. */
   const surfaceStaleExportWarning = (format: string): string | null =>
     pendingSurface
-      ? `${format} export contains the untextured base mesh — this model's api.surface.* textures haven't been applied to the current code. Run the code (runs force-apply textures) and export again to include them.`
+      ? `${format} export contains the untextured base mesh — this model's api.surface.* textures haven't been applied to the current code. Run the code (every run applies textures) and export again to include them.`
       : null;
 
   /** Toast (and log) the stale-texture warning for a console-API export. */
@@ -3881,8 +4522,37 @@ async function main() {
    *  confirmed it. Only used by the UI export actions below. */
   async function confirmExportOrProceed(format: string): Promise<boolean> {
     const info = exportWarningInfo(format);
+    // Flag every part that isn't fully saved so the export doesn't silently use
+    // stale data. A multi-part export bakes each NON-current part from its last
+    // SAVED version (the current part exports from its live mesh), so unsaved
+    // edits drop out — and a part that was never saved at all (an untouched
+    // starter) has NO version, so it's skipped from the export entirely. Both
+    // 'unsaved' (edited, not saved) and 'empty' (brand-new, never saved) count;
+    // only 'clean' parts are omitted. We warn for the current part too: the user
+    // asked to be alerted whenever they export without saving.
+    const unsavedRows = (await gatherUnsavedParts()).filter(r => r.status === 'unsaved' || r.status === 'empty');
+    if (unsavedRows.length > 0) {
+      info.unsavedParts = { count: unsavedRows.length, names: unsavedRows.map(r => r.name) };
+    }
     if (!hasExportWarning(info)) return true;
-    return showExportConfirm(info);
+    const decision = await showExportConfirm(info);
+    if (decision === 'save') {
+      // Hand off to the multi-part save modal so the user picks which parts to
+      // save (or cancels) — the same chooser Cmd/Ctrl+S uses. The export is
+      // abandoned either way; the user re-clicks Export to resume once they've
+      // saved. Mirrors saveVersionWithToast's choice handling.
+      const choice = await showSaveAllModal(unsavedRows);
+      if (choice.action === 'selected') {
+        const onlyCurrent = choice.partIds.length === 1 && choice.partIds[0] === getState().currentPart?.id;
+        if (!onlyCurrent) await saveSelectedParts(choice.partIds);
+        else await saveCurrentPartWithToast();
+      } else if (choice.action === 'current') {
+        await saveCurrentPartWithToast();
+      }
+      // 'cancel' → save nothing; the user can re-open Export and decide again.
+      return false;
+    }
+    return decision === 'export';
   }
 
   // One standardized "nothing to export" toast for every mesh export action, so
@@ -3908,11 +4578,12 @@ async function main() {
     }
   };
 
-  // Run a quick printability check before each export so the user gets a
-  // heads-up about blockers (bed fit, watertight, …) and warnings (overhangs,
-  // thin walls). Non-blocking — the export still proceeds.
-  function warnIfNotPrintable(format: string): void {
-    if (!currentMeshData) return;
+  // Run a design-for-print analysis (bed fit, watertight, overhangs, thin walls,
+  // stability) over the live mesh so the export-confirm modal can surface the
+  // findings. Returns null when there's no mesh to analyze. The modal — not a
+  // toast — is where these now reach the user (see `exportWarningInfo`).
+  function exportPrintabilityReport(): PrintabilityReport | null {
+    if (!currentMeshData) return null;
     const settings = loadPrinterSettings();
     let isManifold = false;
     let renderOnly = false;
@@ -3921,29 +4592,21 @@ async function main() {
       isManifold = !!geo.isManifold;
       renderOnly = geo.manifoldStatus === 'render-only (not manifold)';
     } catch { /* default false */ }
-    const report: PrintabilityReport = analyzePrintability(currentMeshData, {
+    return analyzePrintability(currentMeshData, {
       bed: settings.bed,
       nozzleWidth: settings.nozzleWidth,
       overhangAngleDeg: settings.overhangAngleDeg,
       isManifold,
       renderOnly,
     });
-    const fails = report.checks.filter(c => c.level === 'fail');
-    const warns = report.checks.filter(c => c.level === 'warn');
-    if (fails.length === 0 && warns.length === 0) return;
-    const parts = [
-      fails.length > 0 ? `${fails.length} blocker${fails.length === 1 ? '' : 's'}` : null,
-      warns.length > 0 ? `${warns.length} warning${warns.length === 1 ? '' : 's'}` : null,
-    ].filter(Boolean).join(', ');
-    const first = (fails[0] ?? warns[0]).text;
-    showToast(`${format} export: printability check found ${parts}. ${first}`, { variant: 'warn', source: 'export' });
   }
 
   const actionExportGLB = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
-    warnIfNotPrintable('GLB');
+    // Multi-part session → pick parts and bundle them as named nodes in one scene.
+    if (getState().parts.length > 1) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob); return; }
     try {
       assertFiniteMesh(currentMeshData);
       notifyMultiPartExport();
@@ -3957,7 +4620,8 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
-    warnIfNotPrintable('STL');
+    // Multi-part session → pick parts and bundle a .stl per part in one .zip.
+    if (getState().parts.length > 1) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob); return; }
     notifyMultiPartExport();
     try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
@@ -3966,19 +4630,296 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
-    warnIfNotPrintable('OBJ');
+    // Multi-part session → pick parts and emit named objects in one .obj.
+    if (getState().parts.length > 1) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob); return; }
     notifyMultiPartExport();
     try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
   };
+  /** Multi-part 3MF: pick parts (with previews), bake each part's coloured mesh
+   *  off-editor, and bundle them into one 3MF. `bambu` true → one part per build
+   *  plate (Bambu/Orca project); false → a generic multi-object 3MF (grid). */
+  async function export3MFMultiPartFlow(bambu: boolean): Promise<void> {
+    const parts = getState().parts;
+    const activeId = getState().currentPart?.id ?? null;
+    // Pull each part's latest thumbnail for the picker (cheap — pre-baked Blobs).
+    const choices: ExportPartChoice[] = [];
+    for (const p of parts) {
+      const v = await getLatestVersion(p.id);
+      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null });
+    }
+    const selected = await showExportPartsModal(choices, {
+      activePartId: activeId,
+      title: bambu ? 'Export parts to 3MF (Bambu/Orca)' : 'Export parts to 3MF',
+      description: bambu
+        ? 'Choose which parts to include. Each selected part is placed on its own build plate, and painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
+        : 'Choose which parts to include. Each selected part is added as a separate object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.',
+      bambu: bambu ? {
+        printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label })),
+        defaultPrinter: DEFAULT_BAMBU_PRINTER,
+        nozzles: ['0.2', '0.4', '0.6', '0.8'],
+        defaultNozzle: '0.4',
+        filaments: BAMBU_FILAMENT_TYPES.map(f => ({ id: f.id, label: f.label })),
+        defaultFilament: DEFAULT_BAMBU_FILAMENT,
+      } : undefined,
+    });
+    if (!selected || selected.partIds.length === 0) return;
+    const selectedIds = selected.partIds;
+
+    const byId = new Map(parts.map(p => [p.id, p]));
+    const job = startProgress({ title: 'Preparing 3MF', indeterminate: false, message: 'Baking parts…' });
+    try {
+      const baked: { name: string; mesh: MeshData }[] = [];
+      for (let i = 0; i < selectedIds.length; i++) {
+        const part = byId.get(selectedIds[i]);
+        if (!part) continue;
+        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
+        const result = await bakeColoredMeshForPart(part.id, part.name);
+        if (result) baked.push(result);
+      }
+      updateProgress(job, 1, 'Writing 3MF…');
+      if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+
+      const bed = loadPrinterSettings().bed;
+      const built = build3MFProject(baked, {
+        bambu, bedSize: [bed[0], bed[1]],
+        printer: selected.printer, nozzle: selected.nozzle, filament: selected.filament,
+      });
+      downloadBlob(built.blob, built.filename, '3MF');
+      const skipped = selectedIds.length - baked.length;
+      const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
+      showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' });
+    } finally {
+      endProgress(job);
+    }
+  }
+
+  /** Format-agnostic multi-part export flow for OBJ / STL / GLB: pick parts (with
+   *  previews), bake each selected part's coloured mesh off-editor, hand the baked
+   *  set to `build`, and download the result. Mirrors {@link export3MFMultiPartFlow}
+   *  but for the scene-graph / soup formats (3MF keeps its own bed-aware flow). */
+  async function exportMultiPartFlow(
+    formatTag: string,
+    description: string,
+    build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+  ): Promise<void> {
+    const parts = getState().parts;
+    const activeId = getState().currentPart?.id ?? null;
+    const choices: ExportPartChoice[] = [];
+    for (const p of parts) {
+      const v = await getLatestVersion(p.id);
+      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null });
+    }
+    const selected = await showExportPartsModal(choices, {
+      activePartId: activeId,
+      title: `Export parts to ${formatTag}`,
+      description,
+    });
+    if (!selected || selected.partIds.length === 0) return;
+    const selectedIds = selected.partIds;
+
+    const byId = new Map(parts.map(p => [p.id, p]));
+    const job = startProgress({ title: `Preparing ${formatTag}`, indeterminate: false, message: 'Baking parts…' });
+    try {
+      const baked: { name: string; mesh: MeshData }[] = [];
+      for (let i = 0; i < selectedIds.length; i++) {
+        const part = byId.get(selectedIds[i]);
+        if (!part) continue;
+        updateProgress(job, i / selectedIds.length, `Baking "${part.name}" (${i + 1}/${selectedIds.length})…`);
+        const result = await bakeColoredMeshForPart(part.id, part.name);
+        if (result) baked.push(result);
+      }
+      updateProgress(job, 1, `Writing ${formatTag}…`);
+      if (baked.length === 0) { showToast('None of the selected parts produced geometry to export.', { variant: 'warn' }); return; }
+
+      const built = await build(baked);
+      downloadBlob(built.blob, built.filename, formatTag);
+      const skipped = selectedIds.length - baked.length;
+      const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
+      showToast(`Exported ${built.filename} — ${baked.length} part${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : `${formatTag} export failed`, { variant: 'warn' });
+    } finally {
+      endProgress(job);
+    }
+  }
+
+  /** Console/AI core for the multi-part OBJ/STL/GLB exports: validate the part ids
+   *  (default: all), bake each part's coloured mesh off-editor, and return the baked
+   *  set. Mirrors the validation of {@link build3MFPartsExport} without the 3MF
+   *  builder, so the per-format API twins just supply the builder. */
+  async function bakePartsForExport(partIds?: string[]): Promise<{ baked: { name: string; mesh: MeshData }[] } | { error: string }> {
+    const allParts = getState().parts;
+    if (allParts.length === 0) return { error: 'No parts in this session.' };
+    let ids = partIds;
+    if (ids !== undefined) {
+      if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
+        return { error: 'partIds must be an array of part-id strings.' };
+      }
+    } else {
+      ids = allParts.map(p => p.id);
+    }
+    const byId = new Map(allParts.map(p => [p.id, p]));
+    const baked: { name: string; mesh: MeshData }[] = [];
+    for (const id of ids) {
+      const part = byId.get(id);
+      if (!part) return { error: `Unknown part id "${id}".` };
+      const result = await bakeColoredMeshForPart(part.id, part.name);
+      if (result) baked.push(result);
+    }
+    if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
+    return { baked };
+  }
+
+  /** Console/AI twin of a multi-part OBJ/STL/GLB export — bakes the requested parts
+   *  (default: all) and DOWNLOADS the bundled file. */
+  async function exportPartsApi(
+    formatTag: string,
+    build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+    partIds?: string[],
+    filename?: string,
+  ): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
+    assertString(filename, `export${formatTag}Parts(partIds, filename)`, { optional: true });
+    const r = await bakePartsForExport(partIds);
+    if ('error' in r) return r;
+    let built: BuiltExport;
+    try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    downloadBlob(built.blob, built.filename, formatTag);
+    return { ok: true as const, filename: built.filename, parts: r.baked.length };
+  }
+
+  /** Like {@link exportPartsApi} but RETURNS the bytes (base64) instead of
+   *  downloading — the agent/test-friendly twin. */
+  async function exportPartsDataApi(
+    formatTag: string,
+    build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+    partIds?: string[],
+    filename?: string,
+  ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
+    assertString(filename, `export${formatTag}PartsData(partIds, filename)`, { optional: true });
+    const r = await bakePartsForExport(partIds);
+    if ('error' in r) return r;
+    let built: BuiltExport;
+    try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    return {
+      filename: built.filename,
+      mimeType: built.mimeType,
+      sizeBytes: built.blob.size,
+      base64: await blobToBase64(built.blob),
+      parts: r.baked.length,
+    };
+  }
+
+  // Per-format builder bound to a custom filename, shared by the menu flow + API.
+  const buildOBJPartsBlob = (baked: { name: string; mesh: MeshData }[], filename?: string) => buildOBJProject(baked, filename);
+  const buildSTLPartsBlob = (baked: { name: string; mesh: MeshData }[], filename?: string) => buildSTLProject(baked, filename);
+  const buildGLBPartsBlob = (baked: { name: string; mesh: MeshData }[], filename?: string) => buildGLBProject(baked, { customName: filename });
+
+  const OBJ_PARTS_DESC = 'Choose which parts to include. Each part becomes a named object in one .obj file, arranged in a grid so they don’t overlap. Painted colours export as materials (.mtl, bundled in a .zip).';
+  const STL_PARTS_DESC = 'Choose which parts to include. Each part is saved as its own .stl file, bundled in a .zip. STL has no colour or part names, so separate files keep the parts distinct.';
+  const GLB_PARTS_DESC = 'Choose which parts to include. Each part becomes a named node in one .glb scene, arranged in a grid. Painted colours export as vertex colours.';
+
+  /** Shared core for the multi-part 3MF exports: validate the part ids, bake each
+   *  selected part's coloured mesh off-editor, and build the 3MF. Returns the
+   *  BuiltExport (no download, no base64) so callers can either trigger a
+   *  download or return the bytes. `opts.bambu` (default true) → one part per
+   *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
+    const bambu = opts?.bambu ?? true;
+    // Validate the Bambu profile selectors at the boundary so a console/AI/MCP
+    // caller gets the same constraints the export modal's dropdowns enforce. An
+    // unknown printer/filament would silently fall back to the default profile,
+    // and a raw nozzle string is interpolated straight into the Bambu config —
+    // a bad value yields a malformed preset Bambu rejects. (Only meaningful for
+    // the Bambu project path; the generic grid ignores these.)
+    if (bambu && opts) {
+      if (opts.printer !== undefined && !isBambuPrinter(opts.printer))
+        return { error: `export3MFParts: unknown printer "${opts.printer}". Valid: ${BAMBU_PRINTERS.map(p => p.id).join(', ')}.` };
+      if (opts.nozzle !== undefined && !isBambuNozzle(opts.nozzle))
+        return { error: `export3MFParts: unknown nozzle "${opts.nozzle}". Valid: ${BAMBU_NOZZLES.join(', ')}.` };
+      if (opts.filament !== undefined && !isBambuFilament(opts.filament))
+        return { error: `export3MFParts: unknown filament "${opts.filament}". Valid: ${BAMBU_FILAMENT_TYPES.map(f => f.id).join(', ')}.` };
+    }
+    const allParts = getState().parts;
+    if (allParts.length === 0) return { error: 'No parts in this session.' };
+    let ids = partIds;
+    if (ids !== undefined) {
+      if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
+        return { error: 'export3MFParts(partIds): partIds must be an array of part-id strings.' };
+      }
+    } else {
+      ids = allParts.map(p => p.id);
+    }
+    const byId = new Map(allParts.map(p => [p.id, p]));
+    const baked: { name: string; mesh: MeshData }[] = [];
+    for (const id of ids) {
+      const part = byId.get(id);
+      if (!part) return { error: `export3MFParts: unknown part id "${id}".` };
+      const result = await bakeColoredMeshForPart(part.id, part.name);
+      if (result) baked.push(result);
+    }
+    if (baked.length === 0) return { error: 'None of the selected parts produced geometry to export.' };
+    try {
+      const bed = loadPrinterSettings().bed;
+      const built = build3MFProject(baked, {
+        customName: filename, bambu, bedSize: [bed[0], bed[1]],
+        printer: opts?.printer, nozzle: opts?.nozzle, filament: opts?.filament,
+      });
+      return { built, parts: baked.length };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
+   *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
+   *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
+    assertString(filename, 'export3MFParts(partIds, filename)', { optional: true });
+    const r = await build3MFPartsExport(partIds, filename, opts);
+    if ('error' in r) return r;
+    downloadBlob(r.built.blob, r.built.filename, '3MF');
+    return { ok: true as const, filename: r.built.filename, parts: r.parts };
+  }
+
+  /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
+   *  downloading — the agent/test-friendly twin. Lets a caller read the exported
+   *  3MF back without the browser download path. */
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
+    assertString(filename, 'export3MFPartsData(partIds, filename)', { optional: true });
+    const r = await build3MFPartsExport(partIds, filename, opts);
+    if ('error' in r) return r;
+    return {
+      filename: r.built.filename,
+      mimeType: r.built.mimeType,
+      sizeBytes: r.built.blob.size,
+      base64: await blobToBase64(r.built.blob),
+      parts: r.parts,
+    };
+  }
+
   const actionExport3MF = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
-    warnIfNotPrintable('3MF');
-    notifyMultiPartExport();
+    // Multi-part session → offer the part picker and emit a GENERIC multi-object
+    // 3MF (grid-arranged, no Bambu metadata). Single-part keeps the original
+    // single-object export.
+    if (getState().parts.length > 1) { await export3MFMultiPartFlow(false); return; }
     try { showToast(`Exported ${export3MF(fileExportMesh(true)!)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+  };
+  // Bambu/Orca multi-plate 3MF — a SEPARATE export from the generic 3MF above.
+  // Opens the part picker and bundles the chosen parts into one Bambu project
+  // (one part per build plate, colours bound to AMS filaments). Available for any
+  // session (single-part too); it always emits the Bambu project layer.
+  const actionExport3MFBambu = async () => {
+    if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
+    if (!currentMeshData) { noGeometryToast(); return; }
+    if (!(await confirmExportOrProceed('3MF'))) return;
+    await export3MFMultiPartFlow(true);
   };
   // The integer VoxelGrid behind a voxel session. The engine meshes in the
   // Worker, so the grid isn't on the main thread after a normal run — re-run the
@@ -4151,18 +5092,132 @@ async function main() {
   /** True when the share action can run: an active session on a ready engine. */
   const canShare = (): boolean => !!getState().session && engineOk && !isSharedPreview() && typeof CompressionStream !== 'undefined';
 
+  /** Axis-aligned bbox of the current export mesh, for the publish description. */
+  const currentModelDims = (): [number, number, number] | null => {
+    const m = currentMeshData;
+    if (!m || m.numVert === 0) return null;
+    const v = m.vertProperties, stride = m.numProp;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < m.numVert; i++) {
+      const x = v[i * stride], y = v[i * stride + 1], z = v[i * stride + 2];
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    }
+    return [maxX - minX, maxY - minY, maxZ - minZ];
+  };
+
+  /** Build a downloadable file in the requested format for the publish flow.
+   *  Mirrors the single-part export paths (colour-bake where the format carries
+   *  it). Returns null when there's no geometry. */
+  const buildPublishFile = async (
+    format: PublishFormat,
+  ): Promise<{ blob: Blob; filename: string } | null> => {
+    if (format === 'glb') {
+      if (!currentMeshData) return null;
+      assertFiniteMesh(currentMeshData);
+      const built = await buildGLB(undefined, coloredMeshForExport(currentMeshData));
+      return { blob: built.blob, filename: built.filename };
+    }
+    // MakerWorld's preferred 3MF is the Bambu Studio / OrcaSlicer project flavour
+    // (build plate + AMS filament bindings) — same builder as the toolbar's
+    // "3MF — Bambu/Orca" export, here for the single active model with default
+    // printer settings.
+    if (format === '3mf-bambu') {
+      const mesh = fileExportMesh(true);
+      if (!mesh) return null;
+      const bed = loadPrinterSettings().bed;
+      const built = build3MFProject([{ name: getState().session?.name ?? 'model', mesh }], {
+        bambu: true, bedSize: [bed[0], bed[1]],
+        printer: DEFAULT_BAMBU_PRINTER, nozzle: '0.4', filament: DEFAULT_BAMBU_FILAMENT,
+      });
+      return { blob: built.blob, filename: built.filename };
+    }
+    const mesh = fileExportMesh(format !== 'stl');
+    if (!mesh) return null;
+    const built = format === '3mf' ? build3MF(mesh)
+      : format === 'obj' ? buildOBJ(mesh)
+      : buildSTL(mesh);
+    return { blob: built.blob, filename: built.filename };
+  };
+
+  /** Render the publish cover PNG as bytes, or null when there's no geometry. */
+  const buildPublishCover = async (): Promise<Uint8Array | null> => {
+    if (!currentMeshData) return null;
+    const canvas = renderSingleViewCanvas(applyTriColorsIfVisible(currentMeshData), {
+      elevation: 25, azimuth: 45, size: 1024,
+    });
+    const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/png'));
+    if (!blob) return null;
+    return new Uint8Array(await blob.arrayBuffer());
+  };
+
+  /** Bundle the model file (+ optional cover + details.txt) into ONE ZIP, so the
+   *  user gets a single download instead of several files (which trips the
+   *  browser's "open multiple files?" prompt). */
+  const buildPublishBundle = async (opts: {
+    format: PublishFormat;
+    includeCover: boolean;
+    detailsText: string;
+  }): Promise<{ blob: Blob; filename: string } | null> => {
+    const file = await buildPublishFile(opts.format);
+    if (!file) return null;
+    const entries: ZipEntry[] = [
+      { name: file.filename, data: new Uint8Array(await file.blob.arrayBuffer()) },
+      { name: 'details.txt', data: new TextEncoder().encode(opts.detailsText) },
+    ];
+    if (opts.includeCover) {
+      const cover = await buildPublishCover();
+      if (cover) entries.push({ name: 'cover.png', data: cover });
+    }
+    const zip = buildZip(entries);
+    // ArrayBuffer copy so the Blob doesn't alias the SharedArrayBuffer-backed view.
+    const zipBytes = new Uint8Array(zip.byteLength);
+    zipBytes.set(zip);
+    const blob = new Blob([zipBytes], { type: 'application/zip' });
+    const filename = getExportFilename('zip').replace(/\.zip$/, '-publish.zip');
+    return { blob, filename };
+  };
+
+  /** Open the assisted-publish modal (Printables / MakerWorld / Thingiverse /
+   *  Thangs). `preselect` optionally focuses one platform. */
+  const actionPublish = async (preselect?: string): Promise<void> => {
+    if (isSharedPreview()) { showToast('Fork this shared design before publishing.', { variant: 'warn' }); return; }
+    if (!currentMeshData) { noGeometryToast(); return; }
+    // "Auto-populate with AI" is only offered when the active provider is
+    // connected; otherwise the modal disables the button with a tooltip.
+    const aiAvailable = await isActiveProviderConnected();
+    openPublishModal({
+      defaultTitle: getState().session?.name ?? 'My model',
+      stats: { dims: currentModelDims(), units: _getUnits() },
+      buildBundle: buildPublishBundle,
+      download: (blob, filename) => downloadBlob(blob, filename, 'Publish'),
+      aiAvailable,
+      aiGenerate: aiAvailable
+        ? async () => {
+            const sessionId = getState().session?.id;
+            if (!sessionId) throw new Error('Open or create a session first.');
+            return generatePublishMetadata(sessionId);
+          }
+        : undefined,
+      preselect,
+    });
+  };
+
   // Create toolbar
   createToolbar(editorUI, {
     onGoHome: () => {
       // The landing page is a separate static document that does NOT load this
       // app bundle, so going home is a real navigation, not an in-app render.
-      window.location.assign('/');
+      window.location.assign(appPath('/'));
     },
     onRun: () => runCode(),
     onExportGLB: actionExportGLB,
     onExportSTL: actionExportSTL,
     onExportOBJ: actionExportOBJ,
     onExport3MF: actionExport3MF,
+    onExport3MFBambu: actionExport3MFBambu,
     onExportVOX: actionExportVOX,
     onExportSTEP: actionExportSTEP,
     onExportSessionJSON: async () => {
@@ -4182,6 +5237,7 @@ async function main() {
       if (!ok) showToast('No active session to export. Save a version first.', { variant: 'warn', source: 'export' });
     },
     onShareLink: () => { void actionShareLink(); },
+    onPublish: () => { void actionPublish(); },
     onExportRawCode: () => {
       exportRawCode(getValue(), getActiveLanguage());
     },
@@ -4249,11 +5305,11 @@ async function main() {
 
   function startNewSessionInEditor() {
     resetEditorToStarter();
-    _clearImages();
+    _clearAttachments();
   }
 
   // Reset the editor for a freshly created part. Unlike a new session, parts
-  // share the session's reference images, so those are left intact.
+  // share the session's attachments, so those are left intact.
   function startNewPartInEditor() {
     resetEditorToStarter();
   }
@@ -4275,12 +5331,71 @@ async function main() {
       await loadVersionIntoEditor(version, opts, cached);
     } else {
       if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
-      startNewPartInEditor();
+      // Await the starter render (seedStarter runs the code + applies its label
+      // color) rather than the fire-and-forget startNewPartInEditor(). A part
+      // switch must not "complete" until the new part's geometry is on screen —
+      // otherwise a caller that captures a thumbnail right after (the Save-all
+      // loop) reads the previous part's stale mesh, so freshly-created parts all
+      // get one wrong, colorless thumbnail.
+      await seedStarter(getActiveLanguage());
+      // Attachments are session-level, not version-level. The version-load path
+      // (loadVersionIntoEditor) restores them, but a session with attachments
+      // and NO saved version reaches the editor through this branch — so without
+      // this it would lose its attachments on refresh. See
+      // restoreAttachmentsForActiveSession.
+      await restoreAttachmentsForActiveSession();
     }
   }
 
-  // Create session bar
+  /** Reload the active session's attachments (stored on the Session row) into
+   *  the in-memory mirror. Session-level data: restored on every session open,
+   *  independent of version/part loading, so attachments survive a refresh even
+   *  when the session has no saved version. */
+  async function restoreAttachmentsForActiveSession(): Promise<void> {
+    const sessionAttachments = await getAttachmentsFromSession();
+    if (sessionAttachments) {
+      _setAttachments(sessionAttachments);
+    } else {
+      _clearAttachments();
+    }
+  }
+
+  /** Switch the active part and load it (plus any stashed unsaved draft) into
+   *  the editor — the shared body behind the parts-rail click AND the
+   *  multi-part save flow's "visit each part to save it" loop. Stashes the
+   *  outgoing part's buffer as a draft first so nothing is lost on the switch. */
+  async function selectPart(partId: string): Promise<void> {
+    // Cancel any in-flight render so stale previews can't land on the viewport
+    // after we've switched away to a different part.
+    cancelCurrentExecution();
+    // Save any unsaved non-starter edits as a version (imported SCAD with
+    // errors, etc.) so they survive the switch and are loadable on return.
+    await preserveCurrentEditsIfNeeded();
+    // Also stash the raw editor buffer as a per-part draft BEFORE changePart
+    // runs — after that call currentPart is already the incoming part, so
+    // saving inside loadVersionIntoEditor would land under the wrong id.
+    const { session, currentPart } = getState();
+    if (session && currentPart) {
+      await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles(), currentDraftRegions());
+    }
+    const version = await changePart(partId);
+    // skipDraftSave: the outgoing draft was already saved above.
+    await loadPartIntoEditor(version, { skipDraftSave: true });
+    // Restore the incoming part's unsaved work (if any) on top of the saved
+    // version that loadPartIntoEditor just loaded.
+    await restoreDraftIfNewer();
+  }
+
+  // Assigned to the modal-aware save once it's defined below; the session bar's
+  // Save button reads it through this mutable handle so a click and Cmd/Ctrl+S
+  // run identical logic (including the multi-part save modal).
+  let saveVersionFromUI: (() => void | Promise<void>) | undefined;
+
+  // Create session bar. The 💾 Save button defers to `saveVersionFromUI` (the
+  // modal-aware save assigned below, once it's defined) so clicking Save and
+  // pressing Cmd/Ctrl+S share the exact same multi-part flow.
   createSessionBar(editorUI, {
+    onSave: () => { void saveVersionFromUI?.(); },
     onSaveVersion: async () => ({
       code: getValue(),
       geometryData: enrichGeometryDataWithColors(getGeometryDataObj()),
@@ -4300,7 +5415,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
+  const { editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, lineNumbersToggle, fontSizeDecBtn, fontSizeIncBtn, fontSizeValueEl, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
@@ -4325,6 +5440,44 @@ async function main() {
   printabilityIndicatorEl.style.display = 'none';
   viewportPane.appendChild(printabilityIndicatorEl);
 
+  // Fast-preview pill — shown while the viewport is displaying the rough coarse
+  // pass of a slow SDF model (figures) and the full-quality render is still
+  // running in the Worker. A status indicator, not a toast: it clears the moment
+  // the full mesh lands (or the run errors/cancels). See runCodeSync's preview
+  // callback. Title explains the swap so the rough→sharp transition isn't a
+  // surprise.
+  fastPreviewPillEl = document.createElement('span');
+  fastPreviewPillEl.className = 'text-xs text-sky-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-sky-700/60 cursor-help whitespace-nowrap';
+  fastPreviewPillEl.textContent = '⚡ Fast preview';
+  fastPreviewPillEl.title = 'Showing a quick rough version of this model. The full-detail render is still computing and will replace it automatically. Wait for it before painting or editing the mesh.';
+  fastPreviewPillEl.style.display = 'none';
+  // Live inside the status row (next to the "Rendering… Xs" text + Cancel button)
+  // rather than as its own absolute overlay, so it never stacks on top of them.
+  (cancelInlineBtn.parentElement ?? viewportPane).appendChild(fastPreviewPillEl);
+
+  // Owners of the inline Cancel button when an SDF surface carve (engrave /
+  // voronoi lamp) is running. Declared here — early, before the initial
+  // syncEditorFromURL render — so the click handler attached just below can
+  // close over them without a temporal-dead-zone error. They're assigned in
+  // buildSurfaceModifierProgress far below.
+  let surfaceCarveAbort: AbortController | null = null;
+  let surfaceCarveCancel: (() => void) | null = null;
+
+  // Wire the Cancel button NOW, before the first deep-link render. main() awaits
+  // the initial render inside syncEditorFromURL(), so attaching this handler at
+  // its natural spot far below left the button visible-but-dead for the whole
+  // first render of a slow model — exactly the catalog-figure case where the
+  // fast-preview pill + "Rendering… Xs" timer + Cancel button all appear but the
+  // click did nothing. Precedence: a running surface carve owns it (aborts the
+  // SDF sweep); then an in-flight surface-texture chain (terminates the surface
+  // Worker — the base mesh stays + the Re-apply pill appears); otherwise it
+  // cancels the current engine execution (terminates the geometry Worker).
+  cancelInlineBtn.addEventListener('click', () => {
+    if (surfaceCarveCancel) { surfaceCarveCancel(); return; }
+    if (cancelSurfaceCompute()) return;
+    cancelCurrentExecution();
+  });
+
   // Surface "Re-apply" pill — a persistent status indicator (not a transient
   // toast) shown when the model declares `api.surface.*` textures whose result
   // isn't cached for the current code/params. Until pressed, the viewport shows
@@ -4339,31 +5492,19 @@ async function main() {
 
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
-    onSelectPart: async (partId: string) => {
-      // Cancel any in-flight render so stale Part N previews can't land on
-      // the viewport after we've switched away to a different part.
-      cancelCurrentExecution();
-      // Save any unsaved non-starter edits as a version (imported SCAD with
-      // errors, etc.) so they survive the switch and are loadable on return.
-      await preserveCurrentEditsIfNeeded();
-      // Also stash the raw editor buffer as a per-part draft BEFORE changePart
-      // runs — after that call currentPart is already the incoming part, so
-      // saving inside loadVersionIntoEditor would land under the wrong id.
-      const { session, currentPart } = getState();
-      if (session && currentPart) {
-        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles());
-      }
-      const version = await changePart(partId);
-      // skipDraftSave: the outgoing draft was already saved above.
-      await loadPartIntoEditor(version, { skipDraftSave: true });
-      // Restore the incoming part's unsaved work (if any) on top of the
-      // saved version that loadPartIntoEditor just loaded.
-      await restoreDraftIfNewer();
-    },
+    onSelectPart: (partId: string) => selectPart(partId),
     onCreatePart: async () => {
       // Structural part edits are leader-only — a read-only viewer must not
       // write to the shared session (mirrors the run/save guard).
       if (isReadOnlyViewer()) return;
+      // Stash the current part's buffer as a draft before switching away so its
+      // unsaved work survives and is detectable by the multi-part save modal.
+      // Unlike the rail-switch path we deliberately DON'T auto-save it as a
+      // version — leaving it unsaved is exactly what surfaces it in that modal.
+      const { session, currentPart } = getState();
+      if (session && currentPart && (!isStarterCode(getValue()) || hasColorRegions())) {
+        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles(), currentDraftRegions());
+      }
       await createPart();
       startNewPartInEditor();
     },
@@ -4416,21 +5557,56 @@ async function main() {
   syncEditorTitle(getState());
   onStateChange(syncEditorTitle);
 
-  // Format button and auto-format toggle
-  const AUTO_FORMAT_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40';
-  const AUTO_FORMAT_OFF_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-zinc-500 border-zinc-700 hover:text-zinc-300';
-  function syncAutoFormatToggleUI(): void {
-    const on = getAutoFormat();
-    autoFormatToggle.textContent = on ? 'Auto ✓' : 'Auto';
-    autoFormatToggle.title = on ? 'Auto-format on — click to disable' : 'Auto-format off — click to enable';
-    autoFormatToggle.className = on ? AUTO_FORMAT_ON_CLASS : AUTO_FORMAT_OFF_CLASS;
+  // Editor settings menu (⚙) — Format / Auto-format / Word wrap / Line numbers /
+  // Font size. Each toggle renders as a compact On/Off pill via a shared helper.
+  const TOGGLE_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-[11px] leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40 min-w-[2.75rem] text-center';
+  const TOGGLE_OFF_CLASS = 'shrink-0 px-2 py-0.5 rounded text-[11px] leading-none border text-zinc-400 border-zinc-700 hover:text-zinc-200 min-w-[2.75rem] text-center';
+  function syncTogglePill(btn: HTMLButtonElement, on: boolean, name: string): void {
+    btn.textContent = on ? 'On' : 'Off';
+    btn.title = `${name}: ${on ? 'on' : 'off'} — click to toggle`;
+    btn.setAttribute('aria-pressed', String(on));
+    btn.className = on ? TOGGLE_ON_CLASS : TOGGLE_OFF_CLASS;
+  }
+  const syncAutoFormatToggleUI = (): void => syncTogglePill(autoFormatToggle, getAutoFormat(), 'Auto-format on load');
+  const syncLineWrapToggleUI = (): void => syncTogglePill(lineWrapToggle, getLineWrap(), 'Word wrap');
+  const syncLineNumbersToggleUI = (): void => syncTogglePill(lineNumbersToggle, getLineNumbers(), 'Line numbers');
+  function syncFontSizeUI(): void {
+    const px = getFontSize();
+    const { min, max } = getFontSizeBounds();
+    fontSizeValueEl.textContent = `${px}px`;
+    fontSizeDecBtn.disabled = px <= min;
+    fontSizeIncBtn.disabled = px >= max;
+    fontSizeDecBtn.classList.toggle('opacity-40', fontSizeDecBtn.disabled);
+    fontSizeDecBtn.classList.toggle('cursor-not-allowed', fontSizeDecBtn.disabled);
+    fontSizeIncBtn.classList.toggle('opacity-40', fontSizeIncBtn.disabled);
+    fontSizeIncBtn.classList.toggle('cursor-not-allowed', fontSizeIncBtn.disabled);
   }
   syncAutoFormatToggleUI();
+  syncLineWrapToggleUI();
+  syncLineNumbersToggleUI();
+  syncFontSizeUI();
+
   findReplaceBtn.addEventListener('click', () => openFindReplace());
   formatBtn.addEventListener('click', () => formatCode());
   autoFormatToggle.addEventListener('click', () => {
     setAutoFormat(!getAutoFormat());
     syncAutoFormatToggleUI();
+  });
+  lineWrapToggle.addEventListener('click', () => {
+    setLineWrap(!getLineWrap());
+    syncLineWrapToggleUI();
+  });
+  lineNumbersToggle.addEventListener('click', () => {
+    setLineNumbers(!getLineNumbers());
+    syncLineNumbersToggleUI();
+  });
+  fontSizeDecBtn.addEventListener('click', () => {
+    setFontSize(getFontSize() - 1);
+    syncFontSizeUI();
+  });
+  fontSizeIncBtn.addEventListener('click', () => {
+    setFontSize(getFontSize() + 1);
+    syncFontSizeUI();
   });
   document.addEventListener('keydown', (e) => {
     // Use e.code (physical key) — on macOS, Option+Shift+F composes a dead-key
@@ -4442,7 +5618,9 @@ async function main() {
   });
 
   // Global undo / redo / save shortcuts (OS-aware, focus/tool-routed).
-  const saveVersionWithToast = async () => {
+
+  // Save the CURRENT part and toast the outcome — the single-part save path.
+  const saveCurrentPartWithToast = async () => {
     let result;
     try {
       result = await saveCurrentVersion();
@@ -4471,6 +5649,100 @@ async function main() {
       showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}`, { variant: 'success' });
     }
   };
+
+  /** Parts in the active session with unsaved changes, in left-panel order.
+   *  The current part is judged from the live editor buffer; the others from
+   *  their stashed per-part drafts. */
+  const gatherUnsavedParts = async (): Promise<UnsavedPartRow[]> => {
+    const { session, parts, currentPart } = getState();
+    if (!session) return [];
+    const rows: UnsavedPartRow[] = [];
+    for (const part of parts) {
+      const isCurrent = part.id === currentPart?.id;
+      if (isCurrent) {
+        if (!currentPartIsDirty(
+          getValue(),
+          enrichGeometryDataWithColors(getGeometryDataObj()),
+          { paramValues: currentParamValues, companionFiles: getCompanionFiles() },
+        )) continue;
+        // No committed version + untouched starter buffer = "no changes yet".
+        const empty = !getState().currentVersion && isStarterCode(getValue());
+        rows.push({ id: part.id, name: part.name, isCurrent, status: empty ? 'empty' : 'unsaved' });
+      } else {
+        const state = await partSaveState(part);
+        if (state === 'clean') continue;
+        rows.push({ id: part.id, name: part.name, isCurrent, status: state });
+      }
+    }
+    return rows;
+  };
+
+  /** Save several parts in one action: each non-current part is loaded into the
+   *  editor (which restores its stashed draft and re-runs its code, so the saved
+   *  version carries the right geometry + thumbnail), saved, then the original
+   *  part is restored. The current part is saved in place first to avoid an
+   *  unnecessary round-trip. */
+  const saveSelectedParts = async (partIds: string[]): Promise<{ saved: number; failed: number }> => {
+    const wanted = new Set(partIds);
+    const originalPartId = getState().currentPart?.id ?? null;
+    // Preserve the rail's order; only touch parts the user kept checked.
+    const ordered = getState().parts.filter(p => wanted.has(p.id));
+    let saved = 0;
+    let failed = 0;
+    const tally = async () => {
+      try {
+        const result = await saveCurrentVersion();
+        if ('error' in result) failed++;
+        else if (!('skipped' in result)) saved++;
+        // 'skipped' = nothing actually changed (a race or already-saved); no-op.
+      } catch {
+        failed++;
+      }
+    };
+    try {
+      // Current part first, in place — no part switch needed.
+      if (originalPartId && wanted.has(originalPartId)) await tally();
+      for (const part of ordered) {
+        if (part.id === originalPartId) continue;
+        await selectPart(part.id);
+        await tally();
+      }
+    } finally {
+      // Always return to where the user was, even if a save threw.
+      if (originalPartId && getState().currentPart?.id !== originalPartId) {
+        await selectPart(originalPartId);
+      }
+    }
+    if (failed > 0) {
+      showToast(`Saved ${saved} part${saved === 1 ? '' : 's'}, ${failed} failed`, { variant: 'warn' });
+    } else {
+      showToast(`Saved ${saved} part${saved === 1 ? '' : 's'}`, { variant: 'success' });
+    }
+    return { saved, failed };
+  };
+
+  // Modal-aware save: when ≥2 parts have unsaved changes, let the user choose
+  // whether to save just the current part or a selected subset; otherwise this
+  // is the plain single-part save. Drives both Cmd/Ctrl+S and the 💾 button.
+  const saveVersionWithToast = async () => {
+    const unsaved = await gatherUnsavedParts();
+    if (unsaved.length >= 2) {
+      const choice = await showSaveAllModal(unsaved);
+      if (choice.action === 'cancel') return;
+      if (choice.action === 'selected') {
+        const onlyCurrent = choice.partIds.length === 1 && choice.partIds[0] === getState().currentPart?.id;
+        if (!onlyCurrent) {
+          await saveSelectedParts(choice.partIds);
+          return;
+        }
+      }
+      // 'current', or a "selected" set that's just the current part → fall
+      // through to the single-part save below (same toasts as a normal save).
+    }
+    await saveCurrentPartWithToast();
+  };
+  // Exposed so the session-bar 💾 button routes through the same modal flow.
+  saveVersionFromUI = saveVersionWithToast;
   installKeyboardShortcuts({ onSave: saveVersionWithToast });
 
   // Viewport tools need the editor active and a model on screen to act on.
@@ -4497,7 +5769,7 @@ async function main() {
     { id: 'tab-interactive', title: 'Go to 3D view', hint: 'Tab', keywords: 'interactive viewport model', run: () => switchTab('interactive'), enabled: isEditorActive },
     { id: 'tab-gallery', title: 'Go to Gallery (read-only)', hint: 'Tab', keywords: 'thumbnails versions visual grid', run: () => switchTab('gallery'), enabled: isEditorActive },
     { id: 'tab-versions', title: 'Go to Versions', hint: 'Tab', keywords: 'history rename delete', run: () => switchTab('versions'), enabled: isEditorActive },
-    { id: 'tab-images', title: 'Go to Reference images', hint: 'Tab', keywords: 'photos reference', run: () => switchTab('images'), enabled: isEditorActive },
+    { id: 'tab-images', title: 'Go to Attachments', hint: 'Tab', keywords: 'photos reference images attachments files model document pdf', run: () => switchTab('images'), enabled: isEditorActive },
     { id: 'tab-diff', title: 'Go to Diff', hint: 'Tab', keywords: 'compare changes', run: () => switchTab('diff'), enabled: isEditorActive },
     { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes'), enabled: isEditorActive },
     { id: 'tab-data', title: 'Go to Data', hint: 'Tab', keywords: 'storage browser indexeddb inventory', run: () => switchTab('data'), enabled: isEditorActive },
@@ -4505,6 +5777,7 @@ async function main() {
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
+    { id: 'export-3mf-bambu', title: 'Export 3MF — Bambu/Orca (multi-plate)', hint: 'Export', keywords: 'download print color bambu orca plate parts multi-part filament ams', run: actionExport3MFBambu, enabled: () => currentMeshData !== null },
     // VOX exports the voxel grid (getCurrentVoxelGrid), not currentMeshData, so
     // gate on the active language — the grid is re-derived on demand inside the
     // action, which also toasts if there's nothing to export. (Re-running the
@@ -4514,6 +5787,7 @@ async function main() {
     // (mirrors the toolbar's STEP gating); the action toasts if no shape exists.
     { id: 'export-step', title: 'Export STEP', hint: 'Export', keywords: 'download brep cad solidworks fusion freecad', run: () => { void actionExportSTEP(); }, enabled: () => getActiveLanguage() === 'replicad' },
     { id: 'share-link', title: 'Share design (copy link)', hint: 'Share', keywords: 'url public link copy fork readonly', run: () => { void actionShareLink(); }, enabled: canShare },
+    { id: 'publish-model', title: 'Publish to a print site…', hint: 'Share', keywords: 'printables makerworld bambu thingiverse thangs upload publish release post', run: () => { void actionPublish(); }, enabled: () => currentMeshData !== null && !isSharedPreview() },
     // Viewport tools — now grouped behind the View/Inspect/Tools popovers, so the
     // palette is the flat, searchable index of everything (keeps grouping cheap
     // for discoverability). Each fires the existing overlay button by id; click()
@@ -4557,8 +5831,8 @@ async function main() {
   // Init images view
   createImagesView(imagesContainer, {
     onChange: async (next) => {
-      _setImages(next);
-      await persistImages(next);
+      _setAttachments(next);
+      await persistAttachments(next);
     },
   });
 
@@ -4704,7 +5978,7 @@ async function main() {
     void ensureEngineStarted();
   }
 
-  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
+  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean; skipSurface?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
     // Cancel any active voxel paint before loading a different version — its
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
     // after navigation would write the wrong session's voxels into the new
@@ -4733,7 +6007,7 @@ async function main() {
       if (!opts.skipDraftSave) {
         const sid = getState().session?.id;
         const pid = getState().currentPart?.id;
-        if (sid) await writeDraft(sid, getActiveLanguage(), getValue(), pid, getCompanionFiles());
+        if (sid) await writeDraft(sid, getActiveLanguage(), getValue(), pid, getCompanionFiles(), currentDraftRegions());
       }
       await switchLanguage(versionLang);
     } else {
@@ -4771,6 +6045,11 @@ async function main() {
       setPaintLabels(currentLabelMap);
       setModelColorRegions(cachedEntry.modelColorDecls);
       syncParamsPanel(cachedEntry.paramsSchema);
+      // Show the geometry; colours (model underlay + any user paint) are applied
+      // by the single rehydrateColorRegions pass below, which both load branches
+      // share — so this branch no longer hand-rolls its own colour stamp (the
+      // omission that shipped model-coloured parts restoring uncoloured). The
+      // paint mesh stays the uncoloured base (it backs hit-testing).
       updateMesh(cachedEntry.meshData);
       updatePaintMesh(cachedEntry.meshData);
       geometryDataEl.textContent = version.geometryData
@@ -4792,7 +6071,7 @@ async function main() {
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;
       refreshSimplifyIfOpen();
-      // Cached entries were produced by a forced run (api.surface.* textures
+      // Cached entries come from completed runs (api.surface.* textures
       // applied), so a Re-apply pill raised by the previously shown version no
       // longer describes the restored mesh. The cache-miss branch clears it via
       // runCodeSync → applySurfaceTextures; this branch must do it explicitly.
@@ -4803,11 +6082,52 @@ async function main() {
       // preserveCamera keeps the user's interactive angle across the switch
       // (see captureCameraToPreserve); the cache-hit branch above relies on the
       // preservedCameraPose restore at the end of this function instead.
+      //
+      // If the version carries a persisted api.surface.* texture, seed the
+      // memo cache with it first so the run's chain apply hits instantly
+      // instead of recomputing — this is what makes a reopened session render
+      // textured immediately, and what pins the texture to the mesh the user
+      // saved (modifier math may have evolved since). The key is
+      // self-validating: it hashes the BASE MESH CONTENT + op chain, so a seed
+      // that doesn't match this run's recomputed key (different geometry, or a
+      // pre-mesh-key save) is simply never read and the chain recomputes.
+      const persistedTexture = version.surfaceTexture as PersistedSurfaceTexture | undefined;
+      if (
+        persistedTexture && typeof persistedTexture.key === 'string' &&
+        persistedTexture.mesh && persistedTexture.mesh.vertProperties instanceof Float32Array &&
+        persistedTexture.mesh.triVerts instanceof Uint32Array
+      ) {
+        seedSurfaceCache(persistedTexture.key, persistedTexture.mesh as MeshData);
+      }
       const meshBeforeRun = currentMeshData;
-      const applied = await runCodeSync(version.code, { preserveCamera: true });
+      const genBeforeRun = _runGeneration;
+      // Stage this version's saved colour-region *descriptors* (empty triangle
+      // sets) into the store BEFORE the run, so the fast-preview pass can paint
+      // an estimate of a painted figure's colours (byLabel / geometric regions
+      // re-resolve against the coarse mesh — see colorCoarsePreview) instead of
+      // showing bare grey for the tens of seconds a figure takes to fully render.
+      // Without this the regions only arrive via rehydrateColorRegions AFTER the
+      // run, so the preview had nothing to resolve. The full render re-resolves
+      // them too, and rehydrateColorRegions below still owns the final resolution
+      // (smooth-stroke replay etc.) — it clears + rebuilds, so this is a strict
+      // head-start, not a competing source of truth.
+      stageUnresolvedColorRegions(version.geometryData);
+      const applied = await runCodeSync(version.code, { preserveCamera: true, skipSurface: opts.skipSurface });
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
-      if (!applied) return;
+      if (!applied) {
+        // The render didn't complete (most commonly: the user cancelled the slow
+        // initial render of a catalog figure). rehydrateColorRegions needs a
+        // finished mesh + labelMap to resolve regions, so it's skipped here — but
+        // we must still stage the version's colour-region descriptors into memory,
+        // or a Save would persist an empty store over the figure's colours and the
+        // next edit→rerender would render colourless. They re-resolve on the next
+        // successful run. Skip when a NEWER run superseded ours (runCodeSync bumped
+        // _runGeneration past the one our call started): that newer run owns the
+        // store and must not be clobbered with this version's descriptors.
+        if (_runGeneration === genBeforeRun + 1) stageUnresolvedColorRegions(version.geometryData);
+        return;
+      }
       // Store the freshly compiled result so the next switch back is instant.
       // Only cache on a successful mesh-producing run (compile errors leave
       // currentMeshData as the previous part's mesh, i.e. unchanged).
@@ -4838,19 +6158,14 @@ async function main() {
 
     await rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
-    const sessionImages = await getImagesFromSession();
-    if (sessionImages) {
-      _setImages(sessionImages);
-    } else {
-      _clearImages();
-    }
+    await restoreAttachmentsForActiveSession();
   }
 
   async function openEditorFromLanding() {
-    updateAppHistory('/editor', 'push');
+    updateAppHistory(appPath('/editor'), 'push');
     transitionToEditor();
     await ensureEditorReady();
-    if (window.location.pathname !== '/editor') return;
+    if (currentRoute() !== '/editor') return;
     await ensureEngineStarted();
     if (!engineOk) return;
     await createSession();
@@ -4863,7 +6178,7 @@ async function main() {
   // CTA or the help page button): the tour spotlights editor chrome, so make
   // sure we're in the editor with a live session before it starts.
   async function takeGuidedTour() {
-    updateAppHistory('/editor', 'push');
+    updateAppHistory(appPath('/editor'), 'push');
     transitionToEditor();
     await ensureEditorReady();
     await ensureEngineStarted();
@@ -4882,14 +6197,14 @@ async function main() {
   // the lightweight landing entry instead of this bundle. (Callers: the boot
   // router and syncRouteFromURL's popstate handler.)
   function showLandingPage() {
-    window.location.assign('/');
+    window.location.assign(appPath('/'));
   }
 
   function showNotFoundPage() {
     if (!notFoundEl) {
       notFoundEl = createNotFoundPage(overlayContainer, {
         onGoHome: () => {
-          updateAppHistory('/', 'push');
+          updateAppHistory(appPath('/'), 'push');
           void syncRouteFromURL();
         },
       });
@@ -4911,8 +6226,8 @@ async function main() {
   function showHelp(options: { history?: 'push' | 'replace' | 'none' } = {}) {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
-      helpHasAppBackTarget = currentURLPathAndSearch() !== '/help';
-      updateAppHistory('/help', historyMode);
+      helpHasAppBackTarget = currentRouteAndSearch() !== '/help';
+      updateAppHistory(appPath('/help'), historyMode);
     }
     if (!helpEl) {
       helpEl = createHelpPage(overlayContainer, {
@@ -4920,7 +6235,7 @@ async function main() {
           if (helpHasAppBackTarget) {
             window.history.back();
           } else {
-            updateAppHistory('/editor', 'replace');
+            updateAppHistory(appPath('/editor'), 'replace');
             void syncEditorFromURL();
           }
         },
@@ -4944,8 +6259,8 @@ async function main() {
   function showLegal(options: { history?: 'push' | 'replace' | 'none' } = {}) {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
-      legalHasAppBackTarget = currentURLPathAndSearch() !== '/legal';
-      updateAppHistory('/legal', historyMode);
+      legalHasAppBackTarget = currentRouteAndSearch() !== '/legal';
+      updateAppHistory(appPath('/legal'), historyMode);
     }
     if (!legalEl) {
       legalEl = createLegalPage(overlayContainer, {
@@ -4953,7 +6268,7 @@ async function main() {
           if (legalHasAppBackTarget) {
             window.history.back();
           } else {
-            updateAppHistory('/editor', 'replace');
+            updateAppHistory(appPath('/editor'), 'replace');
             void syncEditorFromURL();
           }
         },
@@ -4972,26 +6287,34 @@ async function main() {
   }
 
   let catalogEl: HTMLElement | null = null;
+  let catalogElPromise: Promise<HTMLElement> | null = null;
   let catalogHasAppBackTarget = false;
   async function showCatalogPage(options: { history?: 'push' | 'replace' | 'none' } = {}) {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
-      catalogHasAppBackTarget = currentURLPathAndSearch() !== '/catalog';
-      updateAppHistory('/catalog', historyMode);
+      catalogHasAppBackTarget = currentRouteAndSearch() !== '/catalog';
+      updateAppHistory(appPath('/catalog'), historyMode);
     }
     if (!catalogEl) {
-      catalogEl = await createCatalogPage(overlayContainer, {
-        onBack: () => {
-          if (catalogHasAppBackTarget) {
-            window.history.back();
-          } else {
-            updateAppHistory('/', 'replace');
-            void syncRouteFromURL();
-          }
-        },
-        onLoadEntry: handleCatalogEntryLoad,
-        onOpenIdeas: () => { showIdeasPage(); },
-      });
+      // createCatalogPage awaits a manifest fetch before returning, so guard the
+      // async gap with an in-flight promise: rapid re-entry (a second click, or
+      // the popstate the first click's pushState fires) must reuse the pending
+      // build, not start a second one that appends another #catalog-page pane.
+      if (!catalogElPromise) {
+        catalogElPromise = createCatalogPage(overlayContainer, {
+          onBack: () => {
+            if (catalogHasAppBackTarget) {
+              window.history.back();
+            } else {
+              updateAppHistory(appPath('/'), 'replace');
+              void syncRouteFromURL();
+            }
+          },
+          onLoadEntry: handleCatalogEntryLoad,
+          onOpenIdeas: () => { showIdeasPage(); },
+        });
+      }
+      catalogEl = await catalogElPromise;
     }
     overlayContainer.classList.remove('hidden');
     editorUI.classList.add('hidden');
@@ -5011,8 +6334,8 @@ async function main() {
   function showWhatsNewPage(options: { history?: 'push' | 'replace' | 'none' } = {}) {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
-      whatsNewHasAppBackTarget = currentURLPathAndSearch() !== '/whats-new';
-      updateAppHistory('/whats-new', historyMode);
+      whatsNewHasAppBackTarget = currentRouteAndSearch() !== '/whats-new';
+      updateAppHistory(appPath('/whats-new'), historyMode);
     }
     if (!whatsNewEl) {
       whatsNewEl = createWhatsNewPage(overlayContainer, {
@@ -5020,7 +6343,7 @@ async function main() {
           if (whatsNewHasAppBackTarget) {
             window.history.back();
           } else {
-            updateAppHistory('/', 'replace');
+            updateAppHistory(appPath('/'), 'replace');
             void syncRouteFromURL();
           }
         },
@@ -5046,7 +6369,7 @@ async function main() {
     // sessionManager.updateURL). Without an earlier push, that replaceState
     // would clobber whatever page we came from (e.g. /catalog) and break the
     // browser back button.
-    updateAppHistory('/editor', 'push');
+    updateAppHistory(appPath('/editor'), 'push');
     transitionToEditor();
     await ensureEditorReady();
     await ensureEngineStarted();
@@ -5063,7 +6386,7 @@ async function main() {
   // rewrites the URL to /editor?session=<id>.
   async function loadCatalogFileIntoEditor(file: string): Promise<void> {
     try {
-      const res = await fetch(`/catalog/${file}`, { cache: 'no-cache' });
+      const res = await fetch(assetPath(`/catalog/${file}`), { cache: 'no-cache' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const payload = await res.json() as ExportedSession;
       await importSessionPayload(payload);
@@ -5091,7 +6414,7 @@ async function main() {
    *  (pushing the history entry BEFORE any session mutation, same reason as
    *  handleCatalogEntryLoad). */
   async function enterEditorForIdea(): Promise<void> {
-    updateAppHistory('/editor', 'push');
+    updateAppHistory(appPath('/editor'), 'push');
     transitionToEditor();
     await ensureEditorReady();
   }
@@ -5099,7 +6422,7 @@ async function main() {
   // A starter/technique idea — drop its prompt into the AI panel (don't send).
   async function handleIdeaUsePrompt(idea: Idea): Promise<void> {
     await enterEditorForIdea();
-    if (window.location.pathname !== '/editor') return;
+    if (currentRoute() !== '/editor') return;
     if (!getState().session) {
       await createSession();
       setStatus(statusBar, 'ready', 'Ready');
@@ -5113,23 +6436,86 @@ async function main() {
   // (reuses the existing image→voxel import flow, modal and all).
   async function handleIdeaPhotoToVoxel(file: File): Promise<void> {
     await enterEditorForIdea();
-    if (window.location.pathname !== '/editor') return;
+    if (currentRoute() !== '/editor') return;
     await handleImageImport(file);
     updateDocumentTitle({ page: 'editor' });
+  }
+
+  // Open the Relief import wizard in 'luminance' (tonal) mode — the "smooth
+  // relief / lithophane" idea promises a non-blocky result, unlike the global
+  // 'quantized' default (flat blocky colour clusters). Shared by the in-app
+  // tile and the /editor?idea= deep-link. Clone the defaults so we only
+  // override the mode.
+  function openReliefForIdea(file: File): void {
+    const initialOptions: ReliefOptions = { ...structuredClone(DEFAULT_RELIEF_OPTIONS), mode: 'luminance' };
+    openReliefImportFlow(file, initialOptions);
   }
 
   // An interactive idea: emboss the user's photo as a smooth relief tile
   // (reuses the existing Relief import wizard).
   async function handleIdeaPhotoToRelief(file: File): Promise<void> {
     await enterEditorForIdea();
-    if (window.location.pathname !== '/editor') return;
-    // The "smooth relief / lithophane" idea tile promises a non-blocky, tonal
-    // result, so open the wizard in 'luminance' mode rather than the global
-    // default ('quantized' — flat blocky colour clusters). Clone the defaults
-    // so we only override the mode.
-    const initialOptions: ReliefOptions = { ...structuredClone(DEFAULT_RELIEF_OPTIONS), mode: 'luminance' };
-    openReliefImportFlow(file, initialOptions);
+    if (currentRoute() !== '/editor') return;
+    openReliefForIdea(file);
     updateDocumentTitle({ page: 'editor' });
+  }
+
+  // Deep-link from the static /ideas page: /editor?idea=<id>. The static page
+  // can't hand an in-memory tile click across a real navigation, so it links
+  // here and we resolve the id against the IDEAS dataset. A prompt idea
+  // prefills the AI panel; an interactive idea opens a photo picker, then runs
+  // the same flow the in-app tile would. The editor is already entered (this
+  // runs inside syncEditorFromURL), so there's no history push — we just strip
+  // the one-shot ?idea= param for a clean URL.
+  async function loadIdeaIntoEditor(id: string): Promise<void> {
+    const clearIdeaParam = () => {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('idea')) {
+        url.searchParams.delete('idea');
+        history.replaceState(history.state, '', url.pathname + url.search);
+      }
+    };
+    const idea = IDEAS.find((i) => i.id === id);
+    // Ensure a live session exists either way (mirrors handleIdeaUsePrompt).
+    if (!getState().session) {
+      await createSession();
+      setStatus(statusBar, 'ready', 'Ready');
+      void seedStarter('manifold-js');
+    }
+    clearIdeaParam();
+    updateDocumentTitle({ page: 'editor' });
+    if (!idea) return; // unknown id — just land in a fresh editor session
+    if (idea.category === 'interactive' && idea.action) {
+      const action = idea.action;
+      // No file came across the navigation — pick one here, then run the flow.
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.style.display = 'none';
+      document.body.appendChild(input);
+      input.addEventListener(
+        'change',
+        () => {
+          const file = input.files?.[0];
+          input.remove();
+          if (!file) return;
+          if (action === 'photoToVoxel') void handleImageImport(file);
+          else openReliefForIdea(file);
+        },
+        { once: true },
+      );
+      input.click();
+      // Cancelling the native picker fires no 'change' — reclaim the orphaned
+      // input once focus returns (deferred so a real selection's change runs
+      // first and removes it).
+      window.addEventListener(
+        'focus',
+        () => setTimeout(() => { if (input.isConnected && !input.files?.length) input.remove(); }, 0),
+        { once: true },
+      );
+    } else {
+      prefillAiInput(idea.prompt ?? '');
+    }
   }
 
   let ideasEl: HTMLElement | null = null;
@@ -5137,8 +6523,8 @@ async function main() {
   function showIdeasPage(options: { history?: 'push' | 'replace' | 'none' } = {}) {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
-      ideasHasAppBackTarget = currentURLPathAndSearch() !== '/ideas';
-      updateAppHistory('/ideas', historyMode);
+      ideasHasAppBackTarget = currentRouteAndSearch() !== '/ideas';
+      updateAppHistory(appPath('/ideas'), historyMode);
     }
     if (!ideasEl) {
       ideasEl = createIdeasPage(overlayContainer, {
@@ -5146,7 +6532,7 @@ async function main() {
           if (ideasHasAppBackTarget) {
             window.history.back();
           } else {
-            updateAppHistory('/', 'replace');
+            updateAppHistory(appPath('/'), 'replace');
             void syncRouteFromURL();
           }
         },
@@ -5237,7 +6623,7 @@ async function main() {
     // to /editor — otherwise pasting #share=… onto /catalog or /help would
     // leave the URL claiming a non-editor page while the editor is on screen.
     // App-generated links already use /editor#share=, so this is a no-op there.
-    window.history.replaceState(null, '', '/editor' + window.location.search);
+    window.history.replaceState(null, '', appPath('/editor') + window.location.search);
   }
 
   /** Open a `#share=…` link as a read-only preview. Decodes + validates the
@@ -5318,7 +6704,7 @@ async function main() {
     // execution guard.
     exitSharedMode();
     pendingSharedPayload = null;
-    updateAppHistory('/editor', 'push');
+    updateAppHistory(appPath('/editor'), 'push');
     transitionToEditor();
     await ensureEditorReady();
     await importSessionPayload(payload);
@@ -5333,6 +6719,13 @@ async function main() {
   // reload / crash. It is deliberately skipped when we loaded an OLDER version
   // (explicit history navigation), so a stale draft never shadows a version
   // the user intentionally went back to.
+
+  /** Snapshot the current paint regions for stashing into a draft. Returns the
+   *  serialized regions array when there are any user-painted regions, or
+   *  undefined when the part is unpainted (so the draft omits the field). */
+  const currentDraftRegions = (): SerializedColorRegion[] | undefined =>
+    (hasColorRegions() ? serializeRegions() : undefined);
+
   async function restoreDraftIfNewer(): Promise<void> {
     const sid = getState().session?.id;
     if (!sid) return;
@@ -5351,10 +6744,24 @@ async function main() {
     const isScad = getActiveLanguage() === 'scad';
     const draftCompanions = isScad ? (draft.companionFiles ?? {}) : {};
     const companionsDiffer = isScad && !companionFilesEqual(getCompanionFiles(), draftCompanions);
-    if (draft.code === getValue() && !companionsDiffer) return;
-    if (isScad) setCompanionFiles(draftCompanions);
-    setValue(draft.code);
-    await runCodeSync(draft.code);
+    const hasDraftPaint = !!(draft.colorRegions && draft.colorRegions.length > 0);
+    // Skip only when code, companions, AND paint all match the loaded state.
+    if (draft.code === getValue() && !companionsDiffer && !hasDraftPaint) return;
+    if (draft.code !== getValue() || companionsDiffer) {
+      // Code or companions changed \u2014 re-run to produce the correct mesh before
+      // applying paint on top.
+      if (isScad) setCompanionFiles(draftCompanions);
+      setValue(draft.code);
+      await runCodeSync(draft.code);
+    }
+    // Re-apply the stashed paint onto the (now-current) mesh. rehydrateColorRegions
+    // clears existing user regions first, so it correctly supersedes whatever the
+    // saved version had. Only rehydrate when the draft actually carries paint \u2014
+    // if it doesn't, leave the existing paint state (loaded from the saved version)
+    // untouched so we don't accidentally clear paint that was already there.
+    if (hasDraftPaint) {
+      await rehydrateColorRegions({ colorRegions: draft.colorRegions });
+    }
   }
 
   async function syncEditorFromURL() {
@@ -5372,6 +6779,13 @@ async function main() {
     const catalogFile = new URLSearchParams(window.location.search).get('catalog');
     if (catalogFile) {
       await loadCatalogFileIntoEditor(catalogFile);
+      return;
+    }
+
+    // Ideas deep-link: /editor?idea=<id> hands off from the static /ideas page.
+    const ideaId = new URLSearchParams(window.location.search).get('idea');
+    if (ideaId) {
+      await loadIdeaIntoEditor(ideaId);
       return;
     }
 
@@ -5709,7 +7123,7 @@ async function main() {
     const pid = getState().currentPart?.id;
     const lang = getActiveLanguage();
     const code = getValue();
-    void writeDraft(sid, lang, code, pid, getCompanionFiles()).catch((e) => {
+    void writeDraft(sid, lang, code, pid, getCompanionFiles(), currentDraftRegions()).catch((e) => {
       if (isQuotaError(e)) {
         showToast('Storage full — could not autosave your draft. Free up space or export your work.', { variant: 'warn' });
       }
@@ -6323,9 +7737,25 @@ async function main() {
   // Wire up viewport overlay buttons
   initWireframeToggle(clipControls);
   initGridToggle(clipControls);
+  initLightToggle(clipControls);
   initDimensionsToggle(clipControls);
   initAnnotateUI(clipControls);
   initPaintUI(clipControls);
+  initInsertPalette(clipControls, {
+    getLanguage: () => getActiveLanguage(),
+    getCode: () => getValue(),
+    setCode: (code: string) => setValue(code),
+    getSelection: () => getSelection(),
+    run: (code?: string) => runCode(code),
+    showToast: (msg, opts) => showToast(msg, opts),
+    getMeshData: () => currentMeshData,
+    getCamera: () => getCamera(),
+    getCanvas: () => getCanvas(),
+  });
+  // initInsertPalette wires the toolbar button itself. All four engines now
+  // have insert codegen, so the palette is always available; per-engine shape
+  // and operation support is handled inside the palette.
+  setInsertPaletteAvailable(true);
   initImagePaintUI(clipControls);
   setSmoothStampCallback(smoothReplayCb = (imageData, stampOpts, maxEdge) => {
     if (!currentMeshData) return null;
@@ -6680,7 +8110,7 @@ async function main() {
   // the now-clean editor URL.
   if (new URLSearchParams(window.location.search).get('tour') === '1') {
     resetTour();
-    history.replaceState(history.state, '', '/editor');
+    history.replaceState(history.state, '', appPath('/editor'));
   }
 
   if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404 && !hasShareHash()) {
@@ -6765,6 +8195,23 @@ async function main() {
     }
   }
 
+  // Opening a hands-on viewport tool (Paint, Customize, Surface, Resize, …)
+  // steps the AI panel out of the way: once the user is driving a tool by hand
+  // they're not chatting, and the docked AI column would otherwise sit beneath
+  // the freshly-opened tool panel and be easy to miss. Wired here (not in the
+  // registry) so the registry stays a dependency-free leaf.
+  onViewportPanelOpen(() => closeAiPanel());
+
+  // When a chat turn produced a customizable model, the Customizer reveal was
+  // deferred (see syncParamsPanel) so it didn't pop over the live chat. Flush it
+  // now that the turn has ended — silently, so the AI panel stays open and the
+  // user sees the result and its knobs side by side.
+  onAiTurnEnd(() => {
+    if (!paramsRevealDeferred) return;
+    paramsRevealDeferred = false;
+    refreshParamsPanelUI(true);
+  });
+
   // Initialize the AI chat side drawer once the editor UI is mounted.
   // Wraps initAiPanel + setAiToolbarState; tolerated if it fails (e.g.
   // network blocks /ai.md) — toolbar still shows the Connect button.
@@ -6772,7 +8219,7 @@ async function main() {
     try {
       await initAiPanel({
         onNavigateToEditor: async () => {
-          updateAppHistory('/editor', 'push');
+          updateAppHistory(appPath('/editor'), 'push');
           await syncRouteFromURL();
         },
         mountInto: appRow,
@@ -6853,6 +8300,9 @@ async function main() {
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
     setVoxelPaintAvailable(lang === 'voxel');
+    // All four engines have insert codegen; the palette repaints its per-engine
+    // sections on this call (when open) and on its next open.
+    setInsertPaletteAvailable(true);
     notifyQualityLangChanged(lang);
     syncEditorTitle(getState());
     const loadingLabel =
@@ -6896,7 +8346,7 @@ async function main() {
       // Persist the previous language's working buffer so flipping back
       // restores it exactly. Both languages stay live in IDB until the
       // part/session is deleted. Companions ride along for the SCAD buffer.
-      await writeDraft(sid, prevLang, currentCode, pid, getCompanionFiles());
+      await writeDraft(sid, prevLang, currentCode, pid, getCompanionFiles(), currentDraftRegions());
     }
     await applyEngineLanguage(lang);
     let nextCode: string | null = null;
@@ -7024,7 +8474,7 @@ async function main() {
    *  feature size relative to the model's bounding-box diagonal so the AI gets
    *  actionable feedback before spending time on a degenerate run. */
   function textureWarnings(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi',
     opts: Record<string, unknown>,
     mesh: MeshData,
   ): string[] {
@@ -7128,6 +8578,20 @@ async function main() {
           `try threadSpacing ≈ ${(diag * 0.04).toFixed(3)}`,
         );
       }
+    } else if (id === 'knurl') {
+      const cw = (opts.cellWidth as number | undefined) ?? 0;
+      if (cw > diag * 0.4) {
+        warnings.push(
+          `cellWidth (${cw.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
+          `fewer than 3 ridges visible; try cellWidth ≈ ${(diag * 0.05).toFixed(3)}`,
+        );
+      }
+      if (cw > 0 && cw < diag / 400) {
+        warnings.push(
+          `cellWidth (${cw.toFixed(4)}) is very small — the knurl will be invisible; ` +
+          `try cellWidth ≈ ${(diag * 0.05).toFixed(3)}`,
+        );
+      }
     } else if (id === 'voronoi') {
       const cs = (opts.cellSize as number | undefined) ?? 0;
       if (cs > diag * 0.4) {
@@ -7151,10 +8615,41 @@ async function main() {
   // current model's mesh (clearSurfacePreview). Mirrors the relief preview path.
   // Colors are carried through subdivision in buildSurfaceModifier, so result.mesh
   // already has the correct per-triangle colors — no post-hoc transfer needed.
-  function previewSurfaceModifier(result: ModifierResult, _preserveColor: boolean): void {
+  /** Write per-triangle colors onto `target` by nearest-triangle transfer from a
+   *  colored `source` (a painted or model-declared mesh). Used to keep the
+   *  engrave/voronoi-lamp *preview* colored — those bake a fresh, color-less mesh,
+   *  so without this the live preview goes grey/default-blue and looks like the
+   *  carve wiped the model's colors. The `_painted` mask is carried so unmapped /
+   *  unpainted triangles render the default material instead of black — matching
+   *  what Apply produces (partial paint works too). */
+  function previewColorsFromSource(target: MeshData, source: MeshData): MeshData | null {
+    const src = source.triColors;
+    if (!src) return null;
+    const srcPainted = (src as Uint8Array & { _painted?: Uint8Array })._painted;
+    const nearest = nearestTriangleMap(source, target);
+    const out = new Uint8Array(target.numTri * 3);
+    const painted = new Uint8Array(target.numTri);
+    for (let t = 0; t < target.numTri; t++) {
+      const o = nearest[t];
+      if (o < 0 || (srcPainted && srcPainted[o] !== 1)) continue;
+      out[t * 3] = src[o * 3]; out[t * 3 + 1] = src[o * 3 + 1]; out[t * 3 + 2] = src[o * 3 + 2];
+      painted[t] = 1;
+    }
+    (out as Uint8Array & { _painted?: Uint8Array })._painted = painted;
+    return { ...target, triColors: out };
+  }
+
+  function previewSurfaceModifier(result: ModifierResult, preserveColor: boolean): void {
     const previewMesh = result.kind === 'manifold' ? result.mesh : result.previewMesh;
     if (previewMesh.numTri === 0) return;
-    updateMesh(previewMesh, { skipAutoFrame: true });
+    // Texture results already carry triColors (rendered colored). For a re-meshed
+    // result with none (engrave / voronoi lamp), transfer the model's colors so
+    // the preview matches what Apply will produce instead of flashing grey.
+    let mesh = previewMesh;
+    if (preserveColor && result.kind === 'manifold' && !previewMesh.triColors && result.colorSource) {
+      mesh = previewColorsFromSource(previewMesh, result.colorSource) ?? previewMesh;
+    }
+    updateMesh(mesh, { skipAutoFrame: true });
   }
 
   function clearSurfacePreview(): void {
@@ -7224,6 +8719,14 @@ async function main() {
   }
 
   async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean, opts?: { warnOnBake?: boolean }): Promise<Record<string, unknown>> {
+    // Refuse to bake while a coarse fast-preview is on screen: the modifier would
+    // bind to the throwaway low-res mesh, which the full-quality render is about
+    // to replace. Tell the user to let it finish (it auto-completes in seconds).
+    if (_showingFastPreview) {
+      const msg = 'Full-quality render still in progress — wait for it to finish before altering the mesh.';
+      showToast(msg, { variant: 'warn' });
+      return { error: msg };
+    }
     // Capture the language *before* the commit switches it, so we can warn when a
     // SCAD/BREP session is silently baked to a mesh. The transform path
     // (commitTransform) emits its own, more specific warning and passes
@@ -7235,8 +8738,17 @@ async function main() {
     // per-triangle paint (dense mesh, same shape as the engine output). We use
     // that as the color source rather than the pre-modifier coarse mesh, which
     // avoids the coarse→dense centroid-mapping errors that cause wrong colors.
-    const colorMesh = (preserveColor && result.kind === 'manifold' && result.mesh.triColors != null)
-      ? result.mesh : null;
+    // Prefer the baked mesh's own triColors (textures carry them exactly through
+    // subdivision). When the result is fully re-meshed (engrave, voronoi lamp) it
+    // has none, so fall back to a spatial transfer from the painted source mesh
+    // the modifier handed back — otherwise the carve would wipe all paint.
+    // A result that bakes its own triColors (a colored engrave/emboss stamp)
+    // persists them even with preserveColor off: that flag scopes the carry of
+    // EXISTING paint, not paint the modifier itself just introduced.
+    const colorMesh = result.kind === 'manifold'
+      ? (result.mesh.triColors != null ? result.mesh
+        : (preserveColor && result.colorSource?.triColors != null ? result.colorSource : null))
+      : null;
     cancelVoxelPaintIfActive();
     dropPaintState();
     if (result.kind === 'manifold') {
@@ -7253,7 +8765,10 @@ async function main() {
       };
       setActiveImports([comp]);
       setValue(result.code);
-      const ok = await runCodeSync(result.code);
+      // A surface modifier decorates the existing model in place (same bounds),
+      // so keep the user's camera angle instead of snapping back to the default
+      // framing when the baked result renders.
+      const ok = await runCodeSync(result.code, { preserveCamera: true });
       if (!ok) return { error: `Failed to apply ${result.label}` };
       let geoData = getGeometryDataObj();
       let carried = 0;
@@ -7297,7 +8812,9 @@ async function main() {
     if (getActiveLanguage() !== 'voxel') await switchLanguage('voxel');
     setActiveImports([]);
     setValue(result.code);
-    const ok = await runCodeSync(result.code);
+    // Same in-place decoration: a voxelize/voronoi-lamp bake keeps the model's
+    // bounds, so preserve the user's camera angle across the render.
+    const ok = await runCodeSync(result.code, { preserveCamera: true });
     if (!ok) return { error: `Failed to apply ${result.label}` };
     const thumbnail = await captureThumbnail();
     await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
@@ -7485,11 +9002,12 @@ async function main() {
   // so the result already has correct per-triangle paint — no post-hoc transfer.
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
-  function buildSurfaceModifier(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'hollow' | 'smooth' | 'voxelize',
+  async function buildSurfaceModifier(
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'hollow' | 'engrave' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
-  ): ModifierResult {
+    ctl?: SdfRunControl,
+  ): Promise<ModifierResult> {
     const sel = opts?.selectedTriangles as Set<number> | undefined;
     if (id === 'fuzzy') {
       const mesh = meshForModifier(preserveColor);
@@ -7587,6 +9105,23 @@ async function main() {
       if (sel && sel.size > 0) return applyWovenPatch(mesh, wovenOpts, sel);
       return applyWoven(mesh, wovenOpts);
     }
+    if (id === 'knurl') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultKnurlOptions(mesh);
+      const knurlOpts = {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        cellWidth: (opts?.cellWidth as number) ?? base.cellWidth,
+        cellHeight: (opts?.cellHeight as number) ?? base.cellHeight,
+        style: (opts?.style as 'diamond' | 'straight' | 'ribs') ?? base.style,
+        profile: (opts?.profile as 'round' | 'pyramid') ?? base.profile,
+        sharpness: (opts?.sharpness as number) ?? base.sharpness,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        seed: (opts?.seed as number) ?? base.seed,
+        quality: (opts?.quality as number) ?? base.quality,
+      };
+      if (sel && sel.size > 0) return applyKnurlPatch(mesh, knurlOpts, sel);
+      return applyKnurl(mesh, knurlOpts);
+    }
     if (id === 'voronoi') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultVoronoiOptions(mesh);
@@ -7618,7 +9153,36 @@ async function main() {
         watertight: (opts?.watertight as boolean) ?? base.watertight,
         output: (opts?.output as 'mesh' | 'voxel') ?? base.output,
         smooth: (opts?.smooth as boolean) ?? base.smooth,
-      });
+      }, ctl);
+    }
+    if (id === 'engrave') {
+      // Whole-model carve or emboss (no region patch). The ink mask is
+      // pre-rasterized by the host (text via the app's font path, or a decoded
+      // image) and passed in opts.mask. The SDF sweep yields via `ctl` so the
+      // UI shows progress.
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultEngraveOptions(mesh);
+      const mask = opts?.mask as StampMask | undefined;
+      if (!mask || mask.width === 0 || mask.height === 0) {
+        throw new Error('engrave requires a rasterized stamp — provide text or an image first.');
+      }
+      const raised = (opts?.raised as boolean) ?? false;
+      const engraveOpts = {
+        mask,
+        projection: (opts?.projection as EngraveProjection) ?? base.projection,
+        through: raised ? false : ((opts?.through as boolean) ?? base.through),
+        raised,
+        depth: (opts?.depth as number) ?? base.depth,
+        size: (opts?.size as number) ?? base.size,
+        resolution: (opts?.resolution as number) ?? base.resolution,
+        watertight: (opts?.watertight as boolean) ?? base.watertight,
+        source: opts?.source as string | undefined,
+        color: parseStampColor(opts?.color),
+      };
+      // Run the dense SDF carve in the engrave Worker so it never janks the UI;
+      // the cheap result assembly (paint transfer + version code) stays here.
+      const baked = await engraveInWorker(mesh, engraveOpts, ctl);
+      return buildEngraveResult(mesh, baked, engraveOpts);
     }
     if (id === 'hollow') {
       // Vase mode → hollow shell; whole-model only (no region patch).
@@ -7632,7 +9196,7 @@ async function main() {
         drainRadius: (opts?.drainRadius as number) ?? base.drainRadius,
         resolution: (opts?.resolution as number) ?? base.resolution,
         watertight: (opts?.watertight as boolean) ?? base.watertight,
-      });
+      }, ctl);
     }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
@@ -7651,22 +9215,237 @@ async function main() {
     });
   }
 
+  /** Normalize a stamp color from its console/UI forms — '#rrggbb' hex (the
+   *  color input) or [r,g,b] in [0,1] (the paint API's convention) — to the
+   *  modifier's [0,1] tuple. Returns undefined for absent or malformed input
+   *  (engraveModel validates and reports the error before reaching here). */
+  function parseStampColor(c: unknown): [number, number, number] | undefined {
+    if (typeof c === 'string') {
+      return /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c.trim()) ? hexToRgb(c) : undefined;
+    }
+    if (Array.isArray(c) && c.length === 3 && c.every(n => typeof n === 'number' && Number.isFinite(n))) {
+      const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
+      return [clamp01(c[0]), clamp01(c[1]), clamp01(c[2])];
+    }
+    return undefined;
+  }
+
+  // The SDF carves (engrave, voronoi lamp) sweep a dense lattice and can take a
+  // few seconds. Drive the same inline "Rendering…" status indicator (timer +
+  // the toolbar Cancel link) that a normal model run uses, rather than a modal —
+  // the Cancel aborts the sweep (see surfaceCarveCancel, wired into
+  // cancelInlineBtn). Supersede any in-flight carve when a newer one starts
+  // (rapid slider edits). Lighter modifiers run inline with no indicator.
+  // surfaceCarveAbort / surfaceCarveCancel are declared early (near the
+  // fast-preview pill setup) so the Cancel handler can be wired before the
+  // initial render; this block only assigns them.
+  const SDF_HEAVY = new Set(['engrave', 'voronoiLamp', 'hollow']);
+  async function buildSurfaceModifierProgress(
+    id: Parameters<typeof buildSurfaceModifier>[0],
+    opts: Record<string, unknown> | undefined,
+    preserveColor: boolean,
+  ): Promise<ModifierResult> {
+    if (!SDF_HEAVY.has(id)) return buildSurfaceModifier(id, opts, preserveColor);
+    surfaceCarveAbort?.abort();              // supersede an in-flight carve
+    const abort = new AbortController();
+    surfaceCarveAbort = abort;
+    surfaceCarveCancel = () => abort.abort();
+    startRunTimer(performance.now());        // shared inline "Rendering… Xs" + Cancel
+    try {
+      return await buildSurfaceModifier(id, opts, preserveColor, { signal: abort.signal });
+    } finally {
+      // Only the current carve owns the indicator — a superseded one must not
+      // hide the timer the newer carve just started.
+      if (surfaceCarveAbort === abort) {
+        stopRunTimer();
+        setStatus(statusBar, 'ready', 'Ready');
+        surfaceCarveAbort = null;
+        surfaceCarveCancel = null;
+      }
+    }
+  }
+
+  /** Resolve a preview op's `label` / `region` scope (the same keys Apply uses)
+   *  into a concrete `selectedTriangles` set against the current mesh, so a
+   *  scoped preview shows the same patch Apply will produce — closing the gap
+   *  where "By label" / "Near point" previewed the whole-model texture. Strips
+   *  the scope keys (buildSurfaceModifier only understands selectedTriangles).
+   *  Returns opts unchanged when the op isn't scoped; throws (→ surfaced as a
+   *  preview error) on a malformed scope, matching Apply's validation. */
+  function resolvePreviewScope(
+    id: string,
+    opts: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined {
+    if (!opts || (!('label' in opts) && !('region' in opts))) return opts;
+    const rest: Record<string, unknown> = { ...opts };
+    delete rest.label;
+    delete rest.region;
+    if (!isSurfaceOpId(id) || !currentMeshData) return rest;
+    const scopeOnly: Record<string, unknown> = {};
+    if ('label' in opts) scopeOnly.label = opts.label;
+    if ('region' in opts) scopeOnly.region = opts.region;
+    const { scope } = parseSurfaceOpts(id, scopeOnly);
+    if (!scope) return rest;
+    const resolved = resolveSurfaceScopes([{ id, params: {}, scope }], currentMeshData, currentLabelMap);
+    const rs = resolved?.[0];
+    // Resolve to a patch selection; an empty label set selects nothing (the op
+    // previews as a no-op, mirroring Apply rather than texturing the whole model).
+    rest.selectedTriangles = rs ? selectTrianglesNearSeeds(currentMeshData, rs.seeds, rs.radius) : new Set<number>();
+    return rest;
+  }
+
   // === Expose window.partwright console API ===
   const partwrightAPI = {
     /** Whether the current model carries paint (so the UI can warn before a
      *  color-clearing modifier, or offer "preserve colors"). */
     modelHasColor(): boolean { return modelHasColor(); },
+    /** Make sure the model's pending `api.surface.*` chain (parked by a Cancel
+     *  or a compute failure — the "Re-apply" pill state) is applied, so that
+     *  previews, modifiers, and exports operate on the textured mesh rather
+     *  than the base. No-ops (resolves true) when nothing is pending. The
+     *  Surface panel awaits this before every preview. */
+    async ensureSurfaceTexturesApplied(): Promise<{ ok: boolean }> {
+      if (!pendingSurface) return { ok: true };
+      const applied = await reapplySurfaceTextures();
+      return { ok: applied && pendingSurface === null };
+    },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
-     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize'. */
-    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'voronoi' | 'voronoiLamp' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize'. */
+    async previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'hollow' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): Promise<{ ok: true } | { error: string }> {
       try {
-        previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
+        const scopedOpts = resolvePreviewScope(id, opts);
+        previewSurfaceModifier(await buildSurfaceModifierProgress(id, scopedOpts, preserveColor), preserveColor);
         return { ok: true };
-      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+      } catch (e) {
+        // A superseded / user-cancelled carve isn't an error — keep the prior preview.
+        if (e instanceof SdfAbortError || (e as { name?: string })?.name === 'AbortError') return { ok: true };
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
     },
     /** Discard a live surface preview and restore the current model's mesh. */
     clearSurfacePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
+    /** Write a surface texture into the model code as an `api.surface.<id>({…})`
+     *  call instead of baking the mesh (manifold-js sessions only). Updates the
+     *  existing call for the same modifier in place, or inserts a new one before
+     *  the code's final `return`; then re-runs (computing the texture) and saves
+     *  a new version. The texture stays parametric — it recomputes when the model
+     *  changes and persists with the saved version. Whole-model only: for a
+     *  selected patch, or for SCAD/BREP/voxel sessions, use the bake tools
+     *  (applyFuzzySkin / applyKnitTexture / …) instead.
+     *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'smooth'.
+     *  opts: that op's api.surface options (see /ai/textures.md); omitted keys
+     *  use size-relative defaults at apply time.
+     *  Returns `{ ok, call, replaced, version?, geometry }` or `{ error }`. */
+    async applySurfaceTextureAsCode(id: SurfaceOpId, opts?: Record<string, unknown>) {
+      const check = guard(() => {
+        assertEnum(id, SURFACE_OP_IDS, 'applySurfaceTextureAsCode(id)');
+        if (opts !== undefined) {
+          const o = assertObject(opts, 'applySurfaceTextureAsCode(_, opts)')!;
+          // Shared validator: scalar params + the reserved scope keys
+          // (label / region). It throws a plain Error; re-wrap as a
+          // ValidationError so guard() returns { error } instead of throwing.
+          try {
+            parseSurfaceOpts(id as SurfaceOpId, o as Record<string, unknown>);
+          } catch (e) {
+            throw new ValidationError(e instanceof Error ? e.message : String(e));
+          }
+        }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+      if (getActiveLanguage() !== 'manifold-js') {
+        return { error: `api.surface.* textures live in manifold-js code only — this session is ${getActiveLanguage()}. Use the bake tools (applyFuzzySkin / applyKnitTexture / …), which convert the result to a mesh.` };
+      }
+      const previousCode = getValue();
+      const up = upsertSurfaceCall(previousCode, id, (opts ?? {}) as Record<string, unknown>);
+      if (!up) {
+        return { error: 'Could not find a top-level `return` in the code to insert the api.surface call before. Add the call manually, or bake instead.' };
+      }
+      setValue(up.code);
+      const applied = await runCodeSync(up.code);
+      if (!applied) return { error: 'Run was superseded by a concurrent execution — retry' };
+      const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
+      if (geo?.status === 'error') {
+        // The edited code doesn't run — put the buffer back the way it was
+        // (and re-render the previous model) rather than leaving a broken edit.
+        setValue(previousCode);
+        await runCodeSync(previousCode);
+        return { error: `Applying the texture failed: ${geo.error ?? 'run error'}. The code was restored.` };
+      }
+      // The code ran, but the texture compute itself can still have failed —
+      // applySurfaceTextures keeps the base mesh and raises the Re-apply pill
+      // in that case (geometry status stays 'ok'). The call is in the code, so
+      // the edit stands; report it honestly instead of implying textured stats.
+      const computeFailed = pendingSurface !== null;
+      const saved = await saveCurrentVersion(`api.surface.${id}`);
+      return {
+        ok: true,
+        call: up.call,
+        replaced: up.replaced,
+        ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
+        ...('error' in saved ? { saveWarning: saved.error } : {}),
+        ...('skipped' in saved ? { saveSkipped: saved.reason } : {}),
+        ...(computeFailed ? { warnings: ['The texture compute failed — the call is in the code but the model shows the untextured base mesh. Press the ⟳ Re-apply pill (or run again) to retry.'] } : {}),
+        geometry: getGeometryDataObj(),
+      };
+    },
+    /** Apply a surface texture by the best available path — the auto-routing
+     *  twin of the Surface panel's Apply (and the in-app AI's single texture
+     *  tool). mode 'auto' (default): a manifold-js session gets the texture AS
+     *  CODE (`api.surface.<id>` upserted via applySurfaceTextureAsCode — stays
+     *  parametric); any other engine falls back to the BAKE tool for that id
+     *  (with the engine-bake warning). 'code' forces the in-code path (errors
+     *  off manifold-js); 'bake' forces the destructive bake on any engine.
+     *  Whole-model only — for a selected patch use the per-texture bake
+     *  methods' selectedTriangles. opts: that id's api.surface options, plus
+     *  preserveColor (bake path only; code-path paint re-resolves every run).
+     *  Returns the underlying result plus `path: 'code' | 'bake'`. */
+    async applySurfaceTexture(
+      id: SurfaceOpId,
+      opts?: Record<string, unknown>,
+      mode: 'auto' | 'code' | 'bake' = 'auto',
+    ) {
+      const check = guard(() => {
+        assertEnum(id, SURFACE_OP_IDS, 'applySurfaceTexture(id)');
+        assertEnum(mode, ['auto', 'code', 'bake'], 'applySurfaceTexture(_, _, mode)');
+        if (opts !== undefined) {
+          const o = assertObject(opts, 'applySurfaceTexture(_, opts)')!;
+          assertNoUnknownKeys(o, [...(SURFACE_OP_FIELDS[id as SurfaceOpId] ?? []), 'preserveColor', ...SURFACE_SCOPE_KEYS], 'applySurfaceTexture(_, opts)');
+        }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const { preserveColor, label, region, ...opOpts } = (opts ?? {}) as Record<string, unknown> & { preserveColor?: boolean };
+      const scoped = label !== undefined || region !== undefined;
+      const scopeOpts = {
+        ...(label !== undefined ? { label } : {}),
+        ...(region !== undefined ? { region } : {}),
+      };
+      const asCode = mode === 'code' || (mode === 'auto' && getActiveLanguage() === 'manifold-js');
+      if (asCode) {
+        // The code path resolves label/region scopes via parseSurfaceOpts.
+        const r = await partwrightAPI.applySurfaceTextureAsCode(id, { ...opOpts, ...scopeOpts });
+        return { path: 'code' as const, ...r };
+      }
+      // Bake methods are whole-model only — they can't honor a label/region
+      // scope, so reject rather than silently texture the entire mesh.
+      if (scoped) {
+        return { error: `applySurfaceTexture: scoping (label/region) is only supported on the code path (a manifold-js session). The current session bakes whole-model; switch to manifold-js or drop the scope.` };
+      }
+      const bakeOpts = { ...opOpts, ...(preserveColor !== undefined ? { preserveColor } : {}) } as Record<string, number | boolean | string> & { preserveColor?: boolean };
+      const r = id === 'fuzzy' ? await partwrightAPI.applyFuzzySkin(bakeOpts)
+        : id === 'knit' ? await partwrightAPI.applyKnitTexture(bakeOpts)
+        : id === 'cable' ? await partwrightAPI.applyCableKnit(bakeOpts)
+        : id === 'waffle' ? await partwrightAPI.applyWaffleStitch(bakeOpts)
+        : id === 'fur' ? await partwrightAPI.applyFurVelvet(bakeOpts)
+        : id === 'woven' ? await partwrightAPI.applyWovenFabric(bakeOpts)
+        : id === 'knurl' ? await partwrightAPI.applyKnurlTexture(bakeOpts)
+        : id === 'voronoi' ? await partwrightAPI.applyVoronoiShell(bakeOpts)
+        : await partwrightAPI.smoothModel(bakeOpts);
+      return { path: 'bake' as const, ...(r as Record<string, unknown>) };
+    },
     /** Apply a fuzzy-skin surface texture to the current model; saves a new version.
      *  `preserveColor` (default true) re-resolves paint regions onto the new mesh.
      *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
@@ -7675,7 +9454,7 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('fuzzy', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('fuzzy', opts, preserve), preserve);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('fuzzy', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -7752,7 +9531,7 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('cable', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('cable', opts, preserve), preserve);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('cable', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -7780,7 +9559,7 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('waffle', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('waffle', opts, preserve), preserve);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('waffle', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -7807,7 +9586,7 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('fur', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('fur', opts, preserve), preserve);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('fur', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -7834,7 +9613,38 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('woven', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('woven', opts, preserve), preserve);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('woven', opts, preserve), preserve);
+        if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
+          const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
+          return { ...result, warnings: [...warns, ...(existing ?? [])] };
+        }
+        return result;
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Apply a knurl grip texture to the current model; saves a new version.
+     *  Functional grip relief — diamond cross-hatch, straight axial splines, or
+     *  horizontal finger ribs — displaced along surface normals. Distinct from
+     *  the `api.knurl.*` shape generator: this textures any existing mesh.
+     *  `preserveColor` (default true) carries paint across subdivision.
+     *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async applyKnurlTexture(opts?: {
+      amplitude?: number;
+      cellWidth?: number;
+      cellHeight?: number;
+      style?: 'diamond' | 'straight' | 'ribs';
+      profile?: 'round' | 'pyramid';
+      sharpness?: number;
+      grainAngleDeg?: number;
+      seed?: number;
+      quality?: number;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        const mesh = requireCurrentMeshForModifier();
+        const warns = textureWarnings('knurl', opts ?? {}, mesh);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('knurl', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -7864,7 +9674,7 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('voronoi', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('voronoi', opts, preserve), preserve);
+        const result = await commitSurfaceModifier(await buildSurfaceModifierProgress('voronoi', opts, preserve), preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };
@@ -7894,7 +9704,100 @@ async function main() {
     }) {
       try {
         const preserve = opts?.preserveColor ?? true;
-        return await commitSurfaceModifier(buildSurfaceModifier('voronoiLamp', opts, preserve), preserve);
+        return await commitSurfaceModifier(await buildSurfaceModifierProgress('voronoiLamp', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Rasterize an engrave stamp (text via the app's font path, or a decoded
+     *  image) to a mask the surface preview / engraveModel can consume. Browser-
+     *  only (font fetch / image decode). Returns `{ mask, width, height }`. */
+    async buildEngraveStamp(spec?: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }) {
+      try {
+        if (spec?.text) {
+          const mask = await buildTextStampMask(spec.text, { font: spec.font });
+          return { mask, width: mask.width, height: mask.height };
+        }
+        if (spec?.imageUrl) {
+          const mask = await buildImageStampMask(spec.imageUrl, { invert: spec.invert });
+          return { mask, width: mask.width, height: mask.height };
+        }
+        return { error: 'buildEngraveStamp needs `text` or `imageUrl`.' };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Carve TEXT or an IMAGE into the current model as recessed channels
+     *  (engrave) or holes through the whole wall (cut-through) — or, with
+     *  `raised`, EMBOSS it as a raised relief instead. Unlike the relief
+     *  textures (which only displace the skin), this removes (or adds) material.
+     *  The stamp is projected onto a chosen face (planar) or wrapped around Z
+     *  (cylindrical). Pass `text` (rasterized via the app's font path) or
+     *  `imageUrl`; the modal may pass a prebuilt `mask`. `color` paints the
+     *  letters ('#rrggbb' or [r,g,b] in 0–1) for multicolor prints. Saves a new
+     *  version. Returns `{ ok, label, geometry, warnings? }`. */
+    async engraveModel(opts?: {
+      text?: string;
+      imageUrl?: string;
+      mask?: StampMask;
+      invert?: boolean;
+      font?: 'regular' | 'bold' | 'italic' | 'bold-italic';
+      projection?: EngraveProjection;
+      mode?: 'planar' | 'cylindrical';
+      axis?: 'x' | 'y' | 'z';
+      side?: 'min' | 'max' | 'outer' | 'inner';
+      posU?: number;
+      posV?: number;
+      rotationDeg?: number;
+      curveAxis?: 'none' | 'u' | 'v';
+      curveAngleDeg?: number;
+      through?: boolean;
+      raised?: boolean;
+      depth?: number;
+      size?: number;
+      color?: string | [number, number, number];
+      resolution?: number;
+      watertight?: boolean;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        requireCurrentMeshForModifier();
+        if (opts?.color !== undefined && parseStampColor(opts.color) === undefined) {
+          return { error: "engraveModel: `color` must be '#rrggbb' hex or [r,g,b] with components in 0–1." };
+        }
+        let mask = opts?.mask;
+        let source: string | undefined;
+        if (!mask) {
+          if (opts?.text) {
+            if (!opts.text.trim()) return { error: 'engraveModel: `text` is empty.' };
+            mask = await buildTextStampMask(opts.text, { font: opts.font });
+            source = opts.text;
+          } else if (opts?.imageUrl) {
+            mask = await buildImageStampMask(opts.imageUrl, { invert: opts.invert });
+            source = 'image';
+          } else {
+            return { error: 'engraveModel needs `text` or `imageUrl` (or a prebuilt `mask`).' };
+          }
+        }
+        // Assemble the projection: a structured `projection` wins; otherwise
+        // build one from the flat mode/axis/side fields (the AI/console form).
+        const curve = opts?.curveAxis && opts.curveAxis !== 'none'
+          ? { axis: opts.curveAxis, angleDeg: opts.curveAngleDeg ?? 90 }
+          : undefined;
+        let projection: EngraveProjection;
+        if (opts?.projection) {
+          projection = opts.projection;
+        } else if (opts?.mode === 'cylindrical') {
+          projection = { mode: 'cylindrical', side: opts?.side === 'inner' ? 'inner' : 'outer', rotationDeg: opts?.rotationDeg };
+        } else {
+          projection = {
+            mode: 'planar',
+            axis: (opts?.axis as 'x' | 'y' | 'z') ?? 'z',
+            side: opts?.side === 'min' ? 'min' : 'max',
+            posU: opts?.posU, posV: opts?.posV, rotationDeg: opts?.rotationDeg, curve,
+          };
+        }
+        return await commitSurfaceModifier(
+          await buildSurfaceModifierProgress('engrave', { ...opts, mask, projection, source }, preserve),
+          preserve,
+        );
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Hollow the current model into a thin shell — 3D-print "vase mode". Bakes a
@@ -7914,21 +9817,21 @@ async function main() {
     }) {
       try {
         const preserve = opts?.preserveColor ?? true;
-        return await commitSurfaceModifier(buildSurfaceModifier('hollow', opts, preserve), preserve);
+        return await commitSurfaceModifier(await buildSurfaceModifierProgress('hollow', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Smooth/round the current model (Taubin λ/μ); saves a new version. */
     async smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }) {
       try {
         const preserve = opts?.preserveColor ?? true;
-        return await commitSurfaceModifier(buildSurfaceModifier('smooth', opts, preserve), preserve);
+        return await commitSurfaceModifier(await buildSurfaceModifierProgress('smooth', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Voxelize the current model into the voxel engine; saves a new version. */
     async voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }) {
       try {
         const preserve = opts?.preserveColor ?? true;
-        return await commitSurfaceModifier(buildSurfaceModifier('voxelize', opts, preserve), preserve);
+        return await commitSurfaceModifier(await buildSurfaceModifierProgress('voxelize', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Non-destructive viewport preview of a scale operation (no version saved). */
@@ -7945,12 +9848,24 @@ async function main() {
     clearScalePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
     /** Scale the current model and save as a new version.
      *  sx/sy/sz are multiplicative factors (1 = no change, 2 = double, 0.5 = half).
-     *  `preserveColor` (default true) re-resolves paint regions onto the scaled mesh. */
-    async scaleModel(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }) {
+     *  `mode`: 'auto' (default) keeps a manifold-js model parametric (wraps the
+     *  source in `.scale([sx,sy,sz])`), else bakes; 'parametric' forces the wrap;
+     *  'bake' flattens to a mesh. `preserveColor` (default true) re-resolves paint
+     *  regions onto the scaled mesh. */
+    async scaleModel(sx: number, sy: number, sz: number, opts?: { mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }) {
       try {
         if (!currentMeshData) return { error: 'No model loaded' };
-        const preserve = opts?.preserveColor ?? true;
-        return await commitSurfaceModifier(applyScale(meshForModifier(preserve), sx, sy, sz), preserve);
+        // Match applyScale's guard: a negative factor mirrors the mesh (inside-out,
+        // non-manifold) and zero collapses an axis — reject before either path.
+        for (const [name, f] of [['sx', sx], ['sy', sy], ['sz', sz]] as const) {
+          if (typeof f !== 'number' || !Number.isFinite(f) || f <= 0) {
+            return { error: `scaleModel: ${name} must be a positive, finite factor (got ${f}). A negative or zero scale would mirror or collapse the mesh into non-manifold geometry.` };
+          }
+        }
+        const factors: Vec3 = [sx, sy, sz];
+        const label = scaleLabel(factors);
+        if (isNoopScale(factors)) return { ok: true, noop: true, label, message: 'Scale factors are all 1 — nothing to do' };
+        return await commitTransform([{ kind: 'scale', v: factors }], label, opts?.mode, opts?.preserveColor);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Reposition the current model onto the print bed and save a new version.
@@ -8046,7 +9961,11 @@ async function main() {
         return { error: 'The current model declares no parameters. Add an api.params({...}) call to the model code (and run it) first.' };
       }
       currentParamValues = { ...currentParamValues, ...(values as Record<string, ParamValue>) };
-      const applied = await runCodeSync(getValue());
+      // Tweaking a parameter re-renders the same model, so keep the user's (or
+      // AI's) current camera angle rather than snapping to the default framing —
+      // matching the Customizer panel's onChange path (runCode preserves by
+      // default). captureCameraToPreserve still auto-frames a session's first run.
+      const applied = await runCodeSync(getValue(), { preserveCamera: true });
       if (!applied) return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
       const geometry = JSON.parse(geometryDataEl.textContent || '{}');
       return {
@@ -8109,6 +10028,81 @@ async function main() {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       warnIfSurfaceStale('3MF');
       export3MF(fileExportMesh(true)!, filename);
+    },
+
+    /** Open the assisted-publish modal (Printables / MakerWorld / Thingiverse /
+     *  Thangs). These sites have no public upload API, so this prepares the
+     *  publish — downloads the model file + cover image and copies the
+     *  title/description/tags to the clipboard, then opens the upload page —
+     *  rather than posting directly. Optional `platform` preselects one site. */
+    publish(platform?: string) {
+      assertString(platform, 'publish(platform)', { optional: true });
+      if (platform != null && !findPublishTarget(platform)) {
+        return { error: `Unknown platform "${platform}". Use one of: printables, makerworld, thingiverse, thangs.` };
+      }
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      void actionPublish(platform);
+    },
+
+    /** Bundle several Session Parts into ONE 3MF. With `{ bambu: true }` (the
+     *  default) each part lands on its own Bambu Studio / OrcaSlicer build plate
+     *  with colours bound to filaments; `{ bambu: false }` emits a generic
+     *  multi-object 3MF (grid-arranged, opens in any slicer). The UI equivalents
+     *  are the "3MF — Bambu/Orca" menu item and the generic "3MF" export in a
+     *  multi-part session. Pass an array of part ids (default: every part); each
+     *  part's latest version is baked WITH its colours. `{ ok, filename, parts }`
+     *  or `{ error }`. */
+    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }) {
+      return export3MFPartsApi(partIds, filename, opts);
+    },
+
+    /** Bytes-returning twin of {@link export3MFParts} — bundles parts into one
+     *  3MF and RETURNS `{ filename, mimeType, base64, sizeBytes, parts }` (or
+     *  `{ error }`) instead of downloading, so an agent/test can read the
+     *  exported file back without the browser download path. `{ bambu }` as in
+     *  export3MFParts (default true). */
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }) {
+      return export3MFPartsDataApi(partIds, filename, opts);
+    },
+
+    /** Bundle several Session Parts into ONE OBJ — each part a named `o <part>`
+     *  object in one .obj, grid-arranged so they don't overlap; painted parts add a
+     *  shared .mtl (OBJ + MTL in a .zip). The UI equivalent is the "OBJ" export in a
+     *  multi-part session. Pass an array of part ids (default: every part); each
+     *  part's latest version is baked WITH its colours. `{ ok, filename, parts }` or
+     *  `{ error }`. */
+    exportOBJParts(partIds?: string[], filename?: string) {
+      return exportPartsApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
+    },
+    /** Bytes-returning twin of {@link exportOBJParts} — RETURNS
+     *  `{ filename, mimeType, base64, sizeBytes, parts }` (or `{ error }`). */
+    exportOBJPartsData(partIds?: string[], filename?: string) {
+      return exportPartsDataApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
+    },
+
+    /** Bundle several Session Parts into ONE STL download — a `.zip` with one `.stl`
+     *  per part (STL has no part names or colour, so separate files keep them
+     *  distinct). The UI equivalent is the "STL" export in a multi-part session. Pass
+     *  an array of part ids (default: every part). `{ ok, filename, parts }` or
+     *  `{ error }`. */
+    exportSTLParts(partIds?: string[], filename?: string) {
+      return exportPartsApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
+    },
+    /** Bytes-returning twin of {@link exportSTLParts}. */
+    exportSTLPartsData(partIds?: string[], filename?: string) {
+      return exportPartsDataApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
+    },
+
+    /** Bundle several Session Parts into ONE GLB — each part a named node in one glTF
+     *  scene, grid-arranged; painted parts export as vertex colours. The UI
+     *  equivalent is the "GLB" export in a multi-part session. Pass an array of part
+     *  ids (default: every part). `{ ok, filename, parts }` or `{ error }`. */
+    exportGLBParts(partIds?: string[], filename?: string) {
+      return exportPartsApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
+    },
+    /** Bytes-returning twin of {@link exportGLBParts}. */
+    exportGLBPartsData(partIds?: string[], filename?: string) {
+      return exportPartsDataApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
     },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
@@ -8558,6 +10552,19 @@ async function main() {
       return isGridVisible();
     },
 
+    /** Enable or disable studio lighting (image-based reflections + a mild
+     *  contact shadow). On by default. Pass a boolean to set, omit to toggle. */
+    setStudioLighting(on?: boolean): boolean {
+      assertBoolean(on, 'setStudioLighting(on)', { optional: true });
+      setStudioLighting(on ?? !isStudioLighting());
+      return isStudioLighting();
+    },
+
+    /** Whether studio lighting (reflections + soft shadow) is currently on */
+    isStudioLighting(): boolean {
+      return isStudioLighting();
+    },
+
     /** Show or hide the bounding box dimension overlays. Pass a boolean to set, omit to toggle. */
     setDimensionsVisible(visible?: boolean): boolean {
       assertBoolean(visible, 'setDimensionsVisible(visible)', { optional: true });
@@ -8633,6 +10640,145 @@ async function main() {
     /** Whether auto-run is currently enabled */
     isAutoRunEnabled(): boolean {
       return isAutoRun();
+    },
+
+    // === Insert & arrange palette ===
+    //
+    // Drives the same Tinkercad-style arrange tool you reach from the toolbar.
+    // The selection Set, undo stack, and per-engine code rewriters are shared
+    // with the panel — calling `partwright.enterArrange()` then
+    // `partwright.alignSelection('z','center')` is identical to clicking the
+    // toggle, ⇧-clicking parts, and pressing the Z⊣ Align button.
+
+    /** Turn arrange mode on (the persistent click-to-select / drag-to-move
+     *  viewport tool). Opens the Insert palette if needed so chip strip and
+     *  undo controls are visible. Returns `{ ok: true }` on success. */
+    enterArrange(): { ok: boolean; reason?: string } {
+      return apiEnterArrange();
+    },
+
+    /** Turn arrange mode off and exit the canvas pointer hook. */
+    exitArrange(): void { apiExitArrange(); },
+
+    /** Whether arrange mode is currently capturing pointer events. */
+    isArrangeActive(): boolean { return apiIsArrangeActive(); },
+
+    /** Replace the arrange-mode selection with the given part names. Names
+     *  unknown to the current code are silently dropped; the returned array
+     *  lists names that actually stuck. */
+    selectParts(names: string[]): string[] {
+      assertArray(names, 'selectParts(names)');
+      for (let i = 0; i < names.length; i++) assertString(names[i], `selectParts(names[${i}])`);
+      return apiSetSelection(names);
+    },
+
+    /** Extend the selection — equivalent to ⇧-click on each part. */
+    addToSelection(names: string[]): string[] {
+      assertArray(names, 'addToSelection(names)');
+      for (let i = 0; i < names.length; i++) assertString(names[i], `addToSelection(names[${i}])`);
+      return apiAddToSelection(names);
+    },
+
+    /** Clear the arrange-mode selection. */
+    clearSelection(): void { apiClearSelection(); },
+
+    /** Names the arrange tool is currently treating as the active group. */
+    getSelection(): string[] { return apiGetSelection(); },
+
+    /** List the parts arrange mode can currently work with. Returns
+     *  `[{ name, box: { min, max }, center }]`. Includes both palette-inserted
+     *  parts and hand-written ones the parser was able to resolve. */
+    listArrangeParts(): Array<{ name: string; box: { min: [number, number, number]; max: [number, number, number] }; center: [number, number, number] }> {
+      return apiListParts();
+    },
+
+    /** Step back one palette operation (insert / move / resize / align /
+     *  duplicate / delete / mirror / boolean). Returns the label of the
+     *  reversed op, or null when nothing to undo. */
+    undo(): string | null { return apiUndo(); },
+
+    /** Reapply the most recently undone palette operation. */
+    redo(): string | null { return apiRedo(); },
+
+    /** Whether `undo()` would do anything right now. */
+    canUndo(): boolean { return apiCanUndo(); },
+
+    /** Whether `redo()` would do anything right now. */
+    canRedo(): boolean { return apiCanRedo(); },
+
+    /** Scale every part in the selection. `scale` may be uniform `[s,s,s]`
+     *  or anisotropic `[sx, sy, sz]`. Same path as the Size X/Y/Z inputs.
+     *  Errors are returned as `{ ok: false, reason }`. */
+    resizeSelection(scale: [number, number, number]): { ok: boolean; reason?: string } {
+      assertNumberTuple(scale, 3, 'resizeSelection(scale)');
+      return apiResizeSelection(scale as [number, number, number]);
+    },
+
+    /** Align 2+ selected parts on `axis` ('x' | 'y' | 'z') to `mode`
+     *  ('min' | 'center' | 'max'). The reference is the union of the
+     *  selection's bboxes (Tinkercad-style). */
+    alignSelection(axis: 'x' | 'y' | 'z', mode: 'min' | 'center' | 'max'): { ok: boolean; reason?: string } {
+      assertEnum(axis, ['x', 'y', 'z'] as const, 'alignSelection(axis)');
+      assertEnum(mode, ['min', 'center', 'max'] as const, 'alignSelection(mode)');
+      return apiAlignSelection(axis, mode);
+    },
+
+    /** Union the selected parts in code — same as the ∪ Group button. Voxel
+     *  grids union implicitly so the call is rejected there. */
+    groupSelection(): { ok: boolean; reason?: string } { return apiGroupSelection(); },
+
+    /** Subtract every later operand from the first selected part. */
+    subtractSelection(): { ok: boolean; reason?: string } { return apiSubtractSelection(); },
+
+    /** Intersect every selected part. */
+    intersectSelection(): { ok: boolean; reason?: string } { return apiIntersectSelection(); },
+
+    /** Remove every selected part from the code. */
+    deleteSelection(): { ok: boolean; reason?: string } { return apiDeleteSelection(); },
+
+    /** Clone every selected part, offset along +X. New parts replace the
+     *  selection so a follow-up call (resize / align / move) operates on the
+     *  copies. */
+    duplicateSelection(): { ok: boolean; reason?: string } { return apiDuplicateSelection(); },
+
+    /** Mirror every selected part in place across the given axis. */
+    mirrorSelection(axis: 'x' | 'y' | 'z'): { ok: boolean; reason?: string } {
+      assertEnum(axis, ['x', 'y', 'z'] as const, 'mirrorSelection(axis)');
+      return apiMirrorSelection(axis);
+    },
+
+    /** Toggle the "Auto-combine new shapes" checkbox programmatically. When
+     *  on (default), each inserted shape folds into the managed-return
+     *  engine's visible union so it appears immediately; when off, the part
+     *  is added to the code + registered for arrange/pick but not unioned
+     *  until you call `groupSelection`. Only meaningful for manifold-js /
+     *  replicad — voxel + scad union implicitly. */
+    setAutoCombine(on: boolean): void {
+      assertBoolean(on, 'setAutoCombine(on)');
+      apiSetAutoCombine(on);
+    },
+
+    /** Read the current Auto-combine flag. */
+    getAutoCombine(): boolean { return apiGetAutoCombine(); },
+
+    /** Toggle "Snap drag to whole units" — when on, arrange-mode drag
+     *  commits and the per-engine writeback paths round to whole units.
+     *  Voxel grids already snap; this gives the JS/SCAD/BREP engines an
+     *  opt-in "tidy lattice" mode. */
+    setSnapToGrid(on: boolean): void {
+      assertBoolean(on, 'setSnapToGrid(on)');
+      apiSetSnapToGrid(on);
+    },
+
+    /** Read the current snap-to-grid flag. */
+    getSnapToGrid(): boolean { return apiGetSnapToGrid(); },
+
+    /** Rotate the current selection in place (degrees, per-axis). For 2+
+     *  selected parts, the rotation pivots around the group centroid in the
+     *  XY plane. Voxel sessions are rejected (lattice quantization). */
+    rotateSelection(deg: [number, number, number]): { ok: boolean; reason?: string } {
+      assertNumberTuple(deg, 3, 'rotateSelection(deg)');
+      return apiRotateSelection(deg as [number, number, number]);
     },
 
     // === View rendering API ===
@@ -9075,23 +11221,26 @@ async function main() {
     },
     setImages(images: Array<{ src: string; id?: string; label?: string }>): AttachedImage[] {
       const arr = assertArray(images, 'setImages(images)') as Array<Record<string, unknown>>;
-      const items: AttachedImage[] = [];
+      const items: SessionAttachment[] = [];
       for (let i = 0; i < arr.length; i++) {
         const item = assertObject(arr[i], `setImages(images)[${i}]`)!;
         assertNoUnknownKeys(item, ['src', 'id', 'label'] as const, `setImages(images)[${i}]`);
         assertString(item.src, `setImages(images)[${i}].src`, { allowEmpty: false });
         if (item.id !== undefined) assertString(item.id, `setImages(images)[${i}].id`, { allowEmpty: false });
         if (item.label !== undefined) assertString(item.label, `setImages(images)[${i}].label`, { optional: true, allowEmpty: true });
-        const built: AttachedImage = {
-          id: (item.id as string | undefined) ?? generateId(),
+        items.push(normalizeAttachment({
+          id: item.id as string | undefined,
           src: item.src as string,
-        };
-        const lbl = (item.label as string | undefined)?.trim();
-        if (lbl) built.label = lbl;
-        items.push(built);
+          label: item.label as string | undefined,
+          kind: 'image',
+          addedAt: Date.now(),
+          source: 'user',
+        }, generateId()));
       }
-      _setImages(items);
-      persistImages(items);
+      // Replace the image-kind attachments, preserving any non-image ones
+      // (models, docs) the user/AI may have pinned.
+      const nonImages = _getAttachments().filter(a => a.kind !== 'image');
+      commitAttachments([...items, ...nonImages]);
       return items;
     },
 
@@ -9101,35 +11250,79 @@ async function main() {
       assertNoUnknownKeys(obj, ['src', 'label'] as const, 'addImage(image)');
       assertString(obj.src, 'addImage(image).src', { allowEmpty: false });
       if (obj.label !== undefined) assertString(obj.label, 'addImage(image).label', { optional: true, allowEmpty: true });
-      const item: AttachedImage = { id: generateId(), src: obj.src as string };
-      const lbl = (obj.label as string | undefined)?.trim();
-      if (lbl) item.label = lbl;
-      const next = [..._getImages(), item];
-      _setImages(next);
-      persistImages(next);
+      const item = normalizeAttachment({
+        src: obj.src as string,
+        label: obj.label as string | undefined,
+        kind: 'image',
+        addedAt: Date.now(),
+        source: 'user',
+      }, generateId());
+      commitAttachments([..._getAttachments(), item]);
       return item;
     },
 
-    /** Remove an image by id. Returns true if an image was removed. */
+    /** Remove an image (or any attachment) by id. Returns true if one was removed. */
     removeImage(id: string): boolean {
       assertString(id, 'removeImage(id)', { allowEmpty: false });
-      const current = _getImages();
-      const next = current.filter(img => img.id !== id);
+      const current = _getAttachments();
+      const next = current.filter(a => a.id !== id);
       if (next.length === current.length) return false;
-      _setImages(next);
-      persistImages(next);
+      commitAttachments(next);
       return true;
     },
 
-    /** Clear all images */
+    /** Clear the image attachments (non-image attachments are preserved). */
     clearImages(): void {
-      _clearImages();
-      persistImages(null);
+      const nonImages = _getAttachments().filter(a => a.kind !== 'image');
+      commitAttachments(nonImages);
     },
 
-    /** Get the currently attached images as an array of `{id, angle, src}`. */
+    /** Get the image-kind attachments as `{id, src, label}`. */
     getImages(): AttachedImage[] {
-      return _getImages();
+      return _getImageAttachments();
+    },
+
+    // === Attachments (generalization of reference images) ===
+
+    /** Replace the whole attachment list. Each item: `{src, kind?, mediaType?, id?, label?}`
+     *  — `kind`/`mediaType` are inferred from the src/label when omitted. */
+    setAttachments(attachments: Array<{ src: string; id?: string; label?: string; kind?: AttachmentKind; mediaType?: string }>): SessionAttachment[] {
+      const arr = assertArray(attachments, 'setAttachments(attachments)') as Array<Record<string, unknown>>;
+      const items: SessionAttachment[] = [];
+      for (let i = 0; i < arr.length; i++) {
+        items.push(buildAttachmentFromInput(arr[i], `setAttachments(attachments)[${i}]`));
+      }
+      commitAttachments(items);
+      return items;
+    },
+
+    /** Append one attachment. `{src, kind?, mediaType?, label?}` — kind/mediaType
+     *  inferred when omitted. Returns the stored item with its assigned id. */
+    addAttachment(attachment: { src: string; label?: string; kind?: AttachmentKind; mediaType?: string }): SessionAttachment {
+      const obj = assertObject(attachment, 'addAttachment(attachment)')!;
+      const item = buildAttachmentFromInput(obj, 'addAttachment(attachment)', 'user');
+      commitAttachments([..._getAttachments(), item]);
+      return item;
+    },
+
+    /** Remove an attachment by id. Returns true if one was removed. */
+    removeAttachment(id: string): boolean {
+      assertString(id, 'removeAttachment(id)', { allowEmpty: false });
+      const current = _getAttachments();
+      const next = current.filter(a => a.id !== id);
+      if (next.length === current.length) return false;
+      commitAttachments(next);
+      return true;
+    },
+
+    /** Clear ALL attachments (images and non-images). */
+    clearAttachments(): void {
+      commitAttachments([]);
+    },
+
+    /** Get all attachments: `{id, kind, mediaType?, src, label?, addedAt?, source?}`. */
+    getAttachments(): SessionAttachment[] {
+      return _getAttachments();
     },
 
     // === Session API ===
@@ -9169,13 +11362,8 @@ async function main() {
         setValue(version.code);
         await runCodeSync(version.code, { preserveCamera: true });
       }
-      // Restore images from session
-      const sessionImages = await getImagesFromSession();
-      if (sessionImages) {
-        _setImages(sessionImages);
-      } else {
-        _clearImages();
-      }
+      // Attachments are session-level — restore regardless of whether a version loaded.
+      await restoreAttachmentsForActiveSession();
       return version ? { id: version.id, index: version.index, label: version.label } : null;
     },
 
@@ -9225,9 +11413,10 @@ async function main() {
       return { id: part.id, name: part.name, order: part.order };
     },
 
-    /** Switch the active part. Pass a part id string, or { id } / { name } from
-     *  listParts(). Loads that part's latest version into the editor. */
-    async changePart(target: string | { id?: string; name?: string }) {
+    /** Switch the active part. Pass a part name, id string, or 0-based index —
+     *  or { id } / { name } from listParts(). Loads that part's latest version
+     *  into the editor. */
+    async changePart(target: string | number | { id?: string; name?: string }) {
       const part = resolvePartTarget(target, 'changePart');
       if ('error' in part) return part;
       const version = await changePart(part.id);
@@ -9239,8 +11428,8 @@ async function main() {
       };
     },
 
-    /** Rename a part. Pass a part id string, or { id } / { name }. */
-    async renamePart(target: string | { id?: string; name?: string }, newName: string) {
+    /** Rename a part. Pass a part name, id string, 0-based index, or { id } / { name }. */
+    async renamePart(target: string | number | { id?: string; name?: string }, newName: string) {
       const check = guard(() => assertString(newName, 'renamePart(newName)', { allowEmpty: false }));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const part = resolvePartTarget(target, 'renamePart');
@@ -9250,8 +11439,9 @@ async function main() {
     },
 
     /** Delete a part and its versions. Refuses to delete a session's last part.
-     *  Deleting the active part activates and loads an adjacent one. */
-    async deletePart(target: string | { id?: string; name?: string }) {
+     *  Deleting the active part activates and loads an adjacent one. Pass a part
+     *  name, id string, 0-based index, or { id } / { name }. */
+    async deletePart(target: string | number | { id?: string; name?: string }) {
       const part = resolvePartTarget(target, 'deletePart');
       if ('error' in part) return part;
       const wasCurrent = getCurrentPart()?.id === part.id;
@@ -9273,6 +11463,19 @@ async function main() {
     async saveVersion(label?: string) {
       assertString(label, 'saveVersion(label)', { optional: true });
       return saveCurrentVersion(label);
+    },
+
+    /** Save every part in the active session that has unsaved changes, in one
+     *  call — the non-interactive twin of the 💾 button's multi-part save
+     *  modal. Each part is loaded, saved, and the originally-active part is
+     *  restored. Returns how many parts were saved (and how many failed). */
+    async saveAllParts() {
+      if (!getState().session) {
+        return { error: 'No active session. Call createSession() or openSession(id) first.' };
+      }
+      const unsaved = await gatherUnsavedParts();
+      if (unsaved.length === 0) return { saved: 0, failed: 0 };
+      return saveSelectedParts(unsaved.map(p => p.id));
     },
 
     /** Commit the current state, routing between `runAndSave` and
@@ -9511,7 +11714,7 @@ async function main() {
       }
 
       const thumbnail = await captureThumbnail();
-      const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles() });
+      const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -9535,6 +11738,34 @@ async function main() {
         ...(lostLabels ? { lostLabels } : {}),
         ...(colorRegions.length > 0 ? { colorRegions } : {}),
       };
+    },
+
+    /** Generate a posed, painted human figure from a Character Creator spec and
+     *  run it. With `{ save: true }` it commits a new version (via runAndSave);
+     *  otherwise it just updates the editor + viewport for a live preview. The
+     *  generated code embeds the spec as a `// @character` header so the panel
+     *  (and a re-opened session) can restore every control. `spec` is the plain
+     *  object the panel edits — see src/figure/characterSpec.ts; unknown/missing
+     *  fields fall back to the defaults. */
+    async buildCharacter(spec: unknown, opts?: { save?: boolean; label?: string }) {
+      if (!spec || typeof spec !== 'object') {
+        return { error: 'buildCharacter(spec): spec must be a Character Creator spec object. See src/figure/characterSpec.ts / public/ai/figure.md.' };
+      }
+      const code = specToCode(normalizeSpec(spec));
+      if (opts?.save) {
+        const r = await partwrightAPI.runAndSave(code, opts.label ?? 'Character');
+        return { code, ...(r as Record<string, unknown>) };
+      }
+      // Live preview: swap the editor buffer and re-render without saving.
+      // Cancel any in-flight render first — a heavy SDF figure build runs in the
+      // geometry Worker, and without this a rapid preset/slider change would
+      // start a second build while the first keeps churning (they contend and
+      // stack, so the preview lags badly). Terminating the prior build mirrors
+      // what the interactive runCode path does for superseding auto-runs.
+      if (_running) cancelCurrentExecution();
+      setValue(code);
+      await runCodeSync(code);
+      return { code };
     },
 
     /** Fork a prior version: load its code, apply transformFn, validate, and save as a new version.
@@ -9634,7 +11865,7 @@ async function main() {
       const annotationsCarried = (parent.annotations?.length ?? 0) > 0;
 
       const thumbnail = await captureThumbnail();
-      const version = await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles() });
+      const version = await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -9851,11 +12082,8 @@ async function main() {
         setValue(version.code);
         await runCodeSync(version.code, { preserveCamera: true });
       }
-      // Restore images from imported session
-      const sessionImages = await getImagesFromSession();
-      if (sessionImages) {
-        _setImages(sessionImages);
-      }
+      // Restore attachments from imported session (session-level).
+      await restoreAttachmentsForActiveSession();
       return { id: session.id, name: session.name, ...(warning ? { warning } : {}) };
     },
 
@@ -11513,24 +13741,45 @@ async function main() {
       return { replaced: count };
     },
 
-    /** Stamp an image onto the model surface as a color region — the
-     *  programmatic Image-paint tool. `imageUrl` is a `data:` URL or a
-     *  same-origin URL. `at` is the stamp centre on the surface (world coords)
-     *  and `normal` the outward face direction there — get them from probeRay /
-     *  measureAt / a face centroid. `size` is the stamp diameter in world units.
+    /** Stamp a raster image onto the model surface as paint — the programmatic
+     *  Image-paint tool, the right way to put a logo / graphic / text / decal on
+     *  a surface (a shirt graphic, a label, face/skin detail). `imageUrl` is a
+     *  `data:` URL or a same-origin URL.
+     *
+     *  PLACEMENT (two ways):
+     *   - Easiest: pass `view` ('front'|'back'|'left'|'right'|'top'|'bottom') and
+     *     the decal is projected flat along that axis onto the surface facing it,
+     *     auto-anchored at the model centre. Add `label` to centre (and, when
+     *     `size` is omitted, auto-size) the projection on an `api.label` region.
+     *   - Precise: pass explicit `at` (stamp centre on the surface, world coords)
+     *     and `normal` (outward face direction there) — from probeRay / probePixel
+     *     / a face centroid.
+     *
+     *  `size` is the decal width in world units (auto-derived from `label` when
+     *  omitted). `rotationDeg` twists the image around the projection axis.
      *  `detail` (default 96) is triangle rows across the stamp — higher = crisper
      *  (0 = flat stamp on the existing tessellation). `removeBackground` (default
-     *  true) drops the image's background. Only forward-facing triangles inside
-     *  the footprint are painted. Returns `{ ok, name, triangles, avgColor }` or
-     *  `{ error }`. Call saveVersion() afterwards to persist. */
-    async paintImage(opts: { imageUrl: string; at: [number, number, number]; normal: [number, number, number]; size: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string }) {
+     *  true) drops the image's background so only the subject paints. Only
+     *  forward-facing triangles inside the footprint are painted; a depth slab
+     *  stops it bleeding through thin walls. Returns `{ ok, name, triangles,
+     *  avgColor }` or `{ error }`. Call saveVersion() afterwards to persist. */
+    async paintImage(opts: { imageUrl: string; view?: StampView; label?: string; at?: [number, number, number]; normal?: [number, number, number]; size?: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string }) {
       const check = guard(() => {
         assertObject(opts, 'paintImage(opts)');
         assertString(opts?.imageUrl, 'paintImage(opts.imageUrl)', { allowEmpty: false });
-        assertNumberTuple(opts?.at, 3, 'paintImage(opts.at)').forEach((n, i) => assertNumber(n, `paintImage(opts.at[${i}])`, {}));
-        assertNumberTuple(opts?.normal, 3, 'paintImage(opts.normal)').forEach((n, i) => assertNumber(n, `paintImage(opts.normal[${i}])`, {}));
-        assertNumber(opts?.size, 'paintImage(opts.size)', { min: 0 });
-        if (opts.size <= 0) throw new ValidationError('paintImage(opts.size) must be greater than 0');
+        if (opts?.view !== undefined) {
+          assertString(opts.view, 'paintImage(opts.view)', { allowEmpty: false });
+          if (!(STAMP_VIEWS as string[]).includes(opts.view)) {
+            throw new ValidationError(`paintImage(opts.view) must be one of: ${STAMP_VIEWS.join(', ')}`);
+          }
+        }
+        if (opts?.label !== undefined) assertString(opts.label, 'paintImage(opts.label)', { allowEmpty: false });
+        if (opts?.at !== undefined) assertNumberTuple(opts.at, 3, 'paintImage(opts.at)').forEach((n, i) => assertNumber(n, `paintImage(opts.at[${i}])`, {}));
+        if (opts?.normal !== undefined) assertNumberTuple(opts.normal, 3, 'paintImage(opts.normal)').forEach((n, i) => assertNumber(n, `paintImage(opts.normal[${i}])`, {}));
+        if (opts?.size !== undefined) {
+          assertNumber(opts.size, 'paintImage(opts.size)', { min: 0 });
+          if (opts.size <= 0) throw new ValidationError('paintImage(opts.size) must be greater than 0');
+        }
         if (opts?.rotationDeg !== undefined) assertNumber(opts.rotationDeg, 'paintImage(opts.rotationDeg)', {});
         if (opts?.detail !== undefined) assertNumber(opts.detail, 'paintImage(opts.detail)', { min: 0, integer: true });
         if (opts?.removeBackground !== undefined) assertBoolean(opts.removeBackground, 'paintImage(opts.removeBackground)');
@@ -11538,6 +13787,27 @@ async function main() {
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (!currentMeshData) return { error: 'No model loaded — run code first.' };
+
+      // Resolve a label name to its triangle set (used to centre/auto-size the
+      // projection). An unknown label is a clear user error, not a silent miss.
+      let labelTriangles: Set<number> | null = null;
+      if (opts.label) {
+        labelTriangles = currentLabelMap?.get(opts.label) ?? null;
+        if (!labelTriangles || labelTriangles.size === 0) {
+          const known = currentLabelMap ? Array.from(currentLabelMap.keys()) : [];
+          return { error: `paintImage: no label "${opts.label}" in the current model.${known.length ? ` Known labels: ${known.join(', ')}.` : ''}` };
+        }
+      }
+
+      const placement = resolveImageStampPlacement(currentMeshData, {
+        view: opts.view,
+        at: opts.at,
+        normal: opts.normal,
+        size: opts.size,
+        labelTriangles,
+      });
+      if ('error' in placement) return placement;
+
       let imageData: ImageData;
       try {
         imageData = await loadImageDataFromUrl(opts.imageUrl);
@@ -11545,9 +13815,9 @@ async function main() {
         return { error: `paintImage: could not load image — ${e instanceof Error ? e.message : String(e)}` };
       }
       const region = stampImageProgrammatic(imageData, {
-        hitPoint: opts.at,
-        hitNormal: opts.normal,
-        size: opts.size,
+        hitPoint: placement.at,
+        hitNormal: placement.normal,
+        size: placement.size,
         rotationDeg: opts.rotationDeg,
         detail: opts.detail,
         removeBackground: opts.removeBackground,
@@ -12390,6 +14660,11 @@ async function main() {
       });
       return { count: labels.length, labels, ...(lost ? { lostLabels: lost } : {}) };
     },
+    /** Just the current run's label names (for the Surface panel's code-path
+     *  scope dropdown). Empty when the model declares none. */
+    getLabelNames(): string[] {
+      return currentLabelMap ? [...currentLabelMap.keys()] : [];
+    },
 
     /** Report the colors the current run declared in code — via
      *  `api.label(shape, name, { color })` (and `api.labeledUnion` entries with
@@ -12578,6 +14853,54 @@ async function main() {
       return { axis };
     },
 
+    /** Set the active grid's surfacing (corner rounding) — the programmatic twin
+     *  of the Voxel Studio Rounding panel. Pass `null` for hard blocks, or
+     *  `{ algorithm?: 'taubin'|'surfaceNets', strength?: 0..1, iterations?: 1..8,
+     *  flatBottom?: bool, baseLayers?: int (0 = no flat base) }` to smooth.
+     *  Requires `activateVoxelPaint()` first. Returns `{ surfacing }` (the
+     *  resolved surfacing, or `null` when blocky) or `{ error }`. */
+    setVoxelRounding(opts: import('./color/voxelPaint').RoundingOpts | null) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      if (opts === null) {
+        voxelPaint.setRounding(null);
+        syncVoxelPaintUI();
+        return { surfacing: voxelPaint.getSurfacing() };
+      }
+      if (typeof opts !== 'object' || Array.isArray(opts)) return { error: 'setVoxelRounding.opts must be an object or null' };
+      const clean: import('./color/voxelPaint').RoundingOpts = {};
+      if (opts.algorithm !== undefined) {
+        if (opts.algorithm !== 'taubin' && opts.algorithm !== 'surfaceNets') return { error: "setVoxelRounding.algorithm must be 'taubin' or 'surfaceNets'" };
+        clean.algorithm = opts.algorithm;
+      }
+      if (opts.strength !== undefined) {
+        if (typeof opts.strength !== 'number' || opts.strength < 0 || opts.strength > 1) return { error: 'setVoxelRounding.strength must be a number 0..1' };
+        clean.strength = opts.strength;
+      }
+      if (opts.iterations !== undefined) {
+        if (typeof opts.iterations !== 'number' || !Number.isInteger(opts.iterations) || opts.iterations < 1 || opts.iterations > 8) return { error: 'setVoxelRounding.iterations must be an integer 1..8' };
+        clean.iterations = opts.iterations;
+      }
+      if (opts.flatBottom !== undefined) {
+        if (typeof opts.flatBottom !== 'boolean') return { error: 'setVoxelRounding.flatBottom must be a boolean' };
+        clean.flatBottom = opts.flatBottom;
+      }
+      if (opts.baseLayers !== undefined) {
+        if (typeof opts.baseLayers !== 'number' || !Number.isInteger(opts.baseLayers) || opts.baseLayers < 0 || opts.baseLayers > 1024) return { error: 'setVoxelRounding.baseLayers must be an integer 0..1024' };
+        if (opts.baseLayers > 0) clean.baseLayers = opts.baseLayers; // 0 = no flat base
+      }
+      voxelPaint.setRounding(clean);
+      syncVoxelPaintUI();
+      return { surfacing: voxelPaint.getSurfacing() };
+    },
+
+    /** Read the active grid's current surfacing (corner rounding) settings.
+     *  Returns `{ surfacing }` (the Surfacing object, or `null` when blocky) or
+     *  `{ error }` when Voxel Studio is not active. */
+    getVoxelRounding() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      return { surfacing: voxelPaint.getSurfacing() };
+    },
+
     /** Begin a brush stroke: subsequent `voxelStudioApply` calls collapse into a
      *  single undo step until `voxelStudioEndStroke()`. This is the programmatic
      *  equivalent of a click-drag. Returns `{ ok }` or `{ error }`. */
@@ -12626,9 +14949,12 @@ async function main() {
         return { error: 'No labels registered in the current run. Either wrap features with api.label(shape, "name") in your code, then runAndSave, then call paintByLabel — or, if you cannot edit the code, paint by coordinates instead: paintInBox / paintComponent (after listComponents) / paintConnected (after probePixel on a render).' };
       }
       const ids = currentLabelMap.get(opts.label);
-      if (!ids || ids.size === 0) {
+      if (!ids) {
         const known = [...currentLabelMap.keys()].map(k => `"${k}"`).join(', ');
         return { error: `paintByLabel: no label "${opts.label}". Known labels: ${known}.` };
+      }
+      if (ids.size === 0) {
+        return { error: `paintByLabel: label "${opts.label}" is registered but resolved to 0 triangles — the labelled geometry has no visible surface (it may be fully enclosed by another region, e.g. eyes swallowed by the head). Make the labelled shape protrude, or paint by coordinates instead.` };
       }
       const mesh = currentMeshData;
       const regionName = opts.name ?? opts.label;
@@ -12902,7 +15228,9 @@ async function main() {
         // Sessions
         'createSession':   { signature: 'await createSession(name?) -- Create session -> {id, url, galleryUrl}', docs: '/ai.md#console-api--windowpartwright' },
         'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call', docs: '/ai.md#assert--save-in-one-call' },
+        'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted human figure from a Character Creator spec (body/pose/face/hair/clothing/colors). save:true commits a version. Same engine as the 🧍 Character panel.', docs: '/ai/figure.md' },
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
+        'saveAllParts':    { signature: 'await saveAllParts() -- Save every part with unsaved changes', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
         'loadVersion':     { signature: 'await loadVersion({index} | {id}) -- Load version into editor -> {id, index, label, code, geometryData} or {error}', docs: '/ai.md#console-api--windowpartwright' },
         'renameVersion':   { signature: 'await renameVersion({index} | {id}, label) -- Relabel a version -> {ok, id, index, label} or {error}', docs: '/ai.md#console-api--windowpartwright' },
@@ -12917,14 +15245,25 @@ async function main() {
         'listParts':       { signature: 'listParts() -- List parts in the session -> [{id, name, order, isCurrent}]', docs: '/ai.md#console-api--windowpartwright' },
         'getCurrentPart':  { signature: 'getCurrentPart() -- Active part -> {id, name, order} or null', docs: '/ai.md#console-api--windowpartwright' },
         'createPart':      { signature: 'await createPart(name?) -- New empty part + switch to it -> {id, name, order}', docs: '/ai.md#console-api--windowpartwright' },
-        'changePart':      { signature: 'await changePart(id) -- Switch active part (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
-        'renamePart':      { signature: 'await renamePart(id, name) -- Rename a part', docs: '/ai.md#console-api--windowpartwright' },
-        'deletePart':      { signature: 'await deletePart(id) -- Delete a part and its versions', docs: '/ai.md#console-api--windowpartwright' },
+        'changePart':      { signature: 'await changePart(name|id|index) -- Switch active part (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
+        'renamePart':      { signature: 'await renamePart(name|id|index, newName) -- Rename a part', docs: '/ai.md#console-api--windowpartwright' },
+        'deletePart':      { signature: 'await deletePart(name|id|index) -- Delete a part and its versions', docs: '/ai.md#console-api--windowpartwright' },
         'getShareLink':    { signature: 'await getShareLink() -- Read-only share link for the current version -> {url, encodedBytes} or {error}; the link to hand the user when done', docs: '/ai.md#console-api--windowpartwright' },
         'getGalleryUrl':   { signature: 'getGalleryUrl() -- URL for gallery view (local browser only)', docs: '/ai.md#console-api--windowpartwright' },
         // Notes
         'addSessionNote':  { signature: 'await addSessionNote(text) -- Add note with [PREFIX] tag', docs: '/ai.md#session-notes----tracking-design-context' },
         'listSessionNotes': { signature: 'await listSessionNotes() -- List all session notes', docs: '/ai.md#session-notes----tracking-design-context' },
+        // Attachments (durable project files: reference images, models, docs — survive a chat clear)
+        'getAttachments':  { signature: 'getAttachments() -- List session attachments -> [{id, kind, mediaType?, src, label?, description?, addedAt?, source?}]. kind: image|model|document|text|other; description = why it matters', docs: '/ai/reference-images.md#attachments' },
+        'addAttachment':   { signature: 'addAttachment({src, label?, description?, kind?, mediaType?}) -- Pin a file to the session (kind/mediaType inferred when omitted; description = why it matters) -> the stored item', docs: '/ai/reference-images.md#attachments' },
+        'setAttachments':  { signature: 'setAttachments([{src, label?, description?, kind?, mediaType?}]) -- Replace the whole attachment list', docs: '/ai/reference-images.md#attachments' },
+        'removeAttachment': { signature: 'removeAttachment(id) -- Remove an attachment by id -> boolean', docs: '/ai/reference-images.md#attachments' },
+        'clearAttachments': { signature: 'clearAttachments() -- Remove all attachments', docs: '/ai/reference-images.md#attachments' },
+        'getImages':       { signature: 'getImages() -- Image-kind attachments only -> [{id, src, label?}]', docs: '/ai/reference-images.md#attachments' },
+        'addImage':        { signature: 'addImage({src, label?}) -- Pin a reference image (shorthand for addAttachment with kind:image)', docs: '/ai/reference-images.md#attachments' },
+        'setImages':       { signature: 'setImages([{src, label?, id?}]) -- Replace the image attachments (non-image attachments preserved)', docs: '/ai/reference-images.md#attachments' },
+        'removeImage':     { signature: 'removeImage(id) -- Remove an attachment by id -> boolean', docs: '/ai/reference-images.md#attachments' },
+        'clearImages':     { signature: 'clearImages() -- Remove the image attachments (non-image attachments preserved)', docs: '/ai/reference-images.md#attachments' },
         // Inspection
         'sliceAtZ':        { signature: 'sliceAtZ(z) -- Cross-section at height -> {polygons, svg, area}', docs: '/ai.md#console-api--windowpartwright' },
         'getBoundingBox':  { signature: 'getBoundingBox() -- -> {min, max}', docs: '/ai.md#console-api--windowpartwright' },
@@ -12943,6 +15282,8 @@ async function main() {
         // Viewport controls
         'setGridVisible':       { signature: 'setGridVisible(on?) -- Show/hide grid plane (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isGridVisible':        { signature: 'isGridVisible() -- Whether grid plane is visible', docs: '/ai.md#viewport-controls' },
+        'setStudioLighting':    { signature: 'setStudioLighting(on?) -- Toggle studio lighting: reflections + soft shadow, on by default (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
+        'isStudioLighting':     { signature: 'isStudioLighting() -- Whether studio lighting is on', docs: '/ai.md#viewport-controls' },
         'setDimensionsVisible': { signature: 'setDimensionsVisible(on?) -- Show/hide bounding box dimensions (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'areDimensionsVisible': { signature: 'areDimensionsVisible() -- Whether dimensions overlay is visible', docs: '/ai.md#viewport-controls' },
         'setOrbitLock':         { signature: 'setOrbitLock(on?) -- Lock/unlock camera rotation (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
@@ -12952,6 +15293,32 @@ async function main() {
         'getTheme':             { signature: 'getTheme() -- Current color theme', docs: '/ai.md#viewport-controls' },
         'setAutoRun':           { signature: 'setAutoRun(enabled) -- Enable/disable auto-render on edit', docs: '/ai.md#viewport-controls' },
         'isAutoRunEnabled':     { signature: 'isAutoRunEnabled() -- Whether auto-run is active', docs: '/ai.md#viewport-controls' },
+        // Insert & arrange palette (Tinkercad-style direct manipulation)
+        'enterArrange':         { signature: 'enterArrange() -- Activate arrange-mode pointer hook (drag to move parts in 3D) -> {ok}', docs: '/ai.md#arrange-mode' },
+        'exitArrange':          { signature: 'exitArrange() -- Deactivate arrange mode', docs: '/ai.md#arrange-mode' },
+        'isArrangeActive':      { signature: 'isArrangeActive() -- Whether arrange mode is currently capturing pointer events', docs: '/ai.md#arrange-mode' },
+        'selectParts':          { signature: 'selectParts(names) -- Replace the arrange-mode selection -> matched names', docs: '/ai.md#arrange-mode' },
+        'addToSelection':       { signature: 'addToSelection(names) -- Extend the arrange-mode selection -> matched names', docs: '/ai.md#arrange-mode' },
+        'clearSelection':       { signature: 'clearSelection() -- Drop everything from the arrange-mode selection', docs: '/ai.md#arrange-mode' },
+        'getSelection':         { signature: 'getSelection() -- Current arrange-mode selection -> string[]', docs: '/ai.md#arrange-mode' },
+        'listArrangeParts':     { signature: 'listArrangeParts() -- Names + bboxes of every part arrange mode can act on -> [{name, box:{min,max}, center}]', docs: '/ai.md#arrange-mode' },
+        'undo':                 { signature: 'undo() -- Reverse the last palette operation (insert/move/resize/align/boolean/etc) -> label or null', docs: '/ai.md#arrange-mode' },
+        'redo':                 { signature: 'redo() -- Reapply the last undone palette operation -> label or null', docs: '/ai.md#arrange-mode' },
+        'canUndo':              { signature: 'canUndo() -- Whether undo() would do anything', docs: '/ai.md#arrange-mode' },
+        'canRedo':              { signature: 'canRedo() -- Whether redo() would do anything', docs: '/ai.md#arrange-mode' },
+        'resizeSelection':      { signature: 'resizeSelection([sx,sy,sz]) -- Scale selected parts per-axis (or uniform [s,s,s]) -> {ok}', docs: '/ai.md#arrange-mode' },
+        'alignSelection':       { signature: 'alignSelection(axis, mode) -- axis: "x"|"y"|"z", mode: "min"|"center"|"max" -> {ok}', docs: '/ai.md#arrange-mode' },
+        'groupSelection':       { signature: 'groupSelection() -- Union selected parts in code (∪) -> {ok}', docs: '/ai.md#arrange-mode' },
+        'subtractSelection':    { signature: 'subtractSelection() -- Subtract later operands from the first (∖) -> {ok}', docs: '/ai.md#arrange-mode' },
+        'intersectSelection':   { signature: 'intersectSelection() -- Intersect every selected part (∩) -> {ok}', docs: '/ai.md#arrange-mode' },
+        'deleteSelection':      { signature: 'deleteSelection() -- Remove selected parts from the code -> {ok}', docs: '/ai.md#arrange-mode' },
+        'duplicateSelection':   { signature: 'duplicateSelection() -- Clone selected parts, offset along +X -> {ok}', docs: '/ai.md#arrange-mode' },
+        'mirrorSelection':      { signature: 'mirrorSelection("x"|"y"|"z") -- Mirror selected parts in place across axis -> {ok}', docs: '/ai.md#arrange-mode' },
+        'setAutoCombine':       { signature: 'setAutoCombine(on) -- Toggle "Auto-combine new shapes" (managed-return engines only)', docs: '/ai.md#arrange-mode' },
+        'getAutoCombine':       { signature: 'getAutoCombine() -- Whether Auto-combine is currently on', docs: '/ai.md#arrange-mode' },
+        'setSnapToGrid':        { signature: 'setSnapToGrid(on) -- Round arrange-drag deltas to whole units (non-voxel engines)', docs: '/ai.md#arrange-mode' },
+        'getSnapToGrid':        { signature: 'getSnapToGrid() -- Whether snap-to-grid is currently on', docs: '/ai.md#arrange-mode' },
+        'rotateSelection':      { signature: 'rotateSelection([rx,ry,rz]) -- Rotate selected parts in place (degrees); 2+ parts pivot around the group centroid (Z plane) -> {ok}', docs: '/ai.md#arrange-mode' },
         // View
         'setView':         { signature: 'setView(tab) -- Switch tab: "interactive", "gallery", "images", "diff", "notes"', docs: '/ai.md#how-to-use-this-tool' },
         'getViewState':    { signature: 'getViewState() -- Current tab and camera state', docs: '/ai.md#how-to-use-this-tool' },
@@ -12960,6 +15327,15 @@ async function main() {
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
+        'publish':         { signature: 'publish(platform?) -- Open the assisted-publish modal for Printables/MakerWorld/Thingiverse/Thangs (no public upload API, so it prepares the file + cover + clipboard details and opens the upload page). platform optionally preselects one site', docs: '/ai/file-io.md' },
+        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?}) -- Bundle parts into one 3MF; bambu:true (default) = one part per Bambu/Orca plate (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?, printer?, nozzle?, filament?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'exportOBJParts':  { signature: 'await exportOBJParts(partIds?, filename?) -- Bundle parts into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'exportOBJPartsData': { signature: 'await exportOBJPartsData(partIds?, filename?) -- Same as exportOBJParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'exportSTLParts':  { signature: 'await exportSTLParts(partIds?, filename?) -- Bundle parts into a .zip of one .stl per part -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'exportSTLPartsData': { signature: 'await exportSTLPartsData(partIds?, filename?) -- Same as exportSTLParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'exportGLBParts':  { signature: 'await exportGLBParts(partIds?, filename?) -- Bundle parts into one GLB (named nodes, grid-arranged; vertex colours) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'exportGLBPartsData': { signature: 'await exportGLBPartsData(partIds?, filename?) -- Same as exportGLBParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportVOX':       { signature: 'exportVOX() -- Download MagicaVoxel .vox (voxel sessions)', docs: '/ai/voxel.md' },
         // AI-friendly export — return bytes over the API instead of triggering a download
         'exportGLBData':   { signature: 'await exportGLBData() -- Return GLB as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
@@ -12998,7 +15374,7 @@ async function main() {
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
         'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
-        'paintImage':      { signature: 'await paintImage({imageUrl, at:[x,y,z], normal:[nx,ny,nz], size, rotationDeg?, detail?, removeBackground?, name?}) -- Stamp an image onto the surface as a color region -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
+        'paintImage':      { signature: 'await paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?}) -- Project a raster image onto the surface as paint (logo/graphic/text/decal). Use view (auto-anchored, optionally centred on a label) OR explicit at+normal -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
         'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
         'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
         'createPalette':   { signature: 'createPalette(name) -- Create an empty palette -> {id} (call setActivePalette to switch)', docs: '/ai/colors.md' },
@@ -13034,23 +15410,31 @@ async function main() {
         // wraps the displaced mesh; in a manifold-js session the in-code
         // api.surface.* alternative keeps the texture parametric instead)
         'modelHasColor':   { signature: 'modelHasColor() -- Whether the model carries any color (user paint or code-declared)', docs: '/ai/colors.md' },
-        'previewSurfaceModifier': { signature: "previewSurfaceModifier(id, opts?, preserveColor?) -- Non-destructive viewport preview of a modifier; id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'voronoi'|'voronoiLamp'|'smooth'|'voxelize' -> {ok} or {error}", docs: '/ai/textures.md' },
+        'ensureSurfaceTexturesApplied': { signature: 'await ensureSurfaceTexturesApplied() -- Apply any pending (cancelled/failed) api.surface.* chain so the live mesh is textured -> {ok}', docs: '/ai/textures.md' },
+        'previewSurfaceModifier': { signature: "previewSurfaceModifier(id, opts?, preserveColor?) -- Non-destructive viewport preview of a modifier; id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize' -> {ok} or {error}", docs: '/ai/textures.md' },
         'clearSurfacePreview': { signature: 'clearSurfacePreview() -- Discard a live surface preview and restore the current mesh', docs: '/ai/textures.md' },
+        'applySurfaceTexture': { signature: "await applySurfaceTexture(id, opts?, mode?) -- Texture by the best path: mode 'auto' (default) writes api.surface.<id> as code on manifold-js, bakes elsewhere; 'code'/'bake' force a path. opts may scope the code path with label:'name' or region:{point,radius}. Returns the result plus path: 'code'|'bake'", docs: '/ai/textures.md' },
+        'applySurfaceTextureAsCode': { signature: "await applySurfaceTextureAsCode(id, opts?) -- Write api.surface.<id>({…}) into the code (insert before the final return, or update the existing call) instead of baking; re-runs and saves a version. manifold-js only. opts may add a scope: label:'name' (an api.label region) or region:{point:[x,y,z],radius}. id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'smooth'", docs: '/ai/textures.md' },
         'applyFuzzySkin':  { signature: 'await applyFuzzySkin({amplitude?, scale?, octaves?, seed?, quality?, preserveColor?}) -- BAKE fuzzy-skin noise; saves a new version. In-code alternative: api.surface.fuzzy', docs: '/ai/textures.md' },
         'applyKnitTexture':{ signature: 'await applyKnitTexture({amplitude?, stitchWidth?, stitchHeight?, rowOffset?, roundness?, grainAngleDeg?, variation?, seed?, quality?, algorithm?, selectedTriangles?, preserveColor?}) -- BAKE knit stitches; saves a new version. In-code alternative: api.surface.knit', docs: '/ai/textures.md' },
         'applyCableKnit':  { signature: 'await applyCableKnit({amplitude?, cableWidth?, cablePitch?, plyWidth?, grainAngleDeg?, variation?, seed?, quality?, preserveColor?}) -- BAKE cable-knit ropes; saves a new version. In-code alternative: api.surface.cable', docs: '/ai/textures.md' },
         'applyWaffleStitch': { signature: 'await applyWaffleStitch({amplitude?, cellWidth?, cellHeight?, sharpness?, rowOffset?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE waffle grid; saves a new version. In-code alternative: api.surface.waffle', docs: '/ai/textures.md' },
         'applyFurVelvet':  { signature: 'await applyFurVelvet({amplitude?, fiberSpacing?, fiberLength?, octaves?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE fur/velvet fibers; saves a new version. In-code alternative: api.surface.fur', docs: '/ai/textures.md' },
         'applyWovenFabric':{ signature: 'await applyWovenFabric({amplitude?, threadSpacing?, threadWidth?, underDepth?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE woven threads; saves a new version. In-code alternative: api.surface.woven', docs: '/ai/textures.md' },
+        'applyKnurlTexture':{ signature: 'await applyKnurlTexture({amplitude?, cellWidth?, cellHeight?, style?, profile?, sharpness?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE knurl grip (style: diamond|straight|ribs; profile: round|pyramid); saves a new version. In-code alternative: api.surface.knurl', docs: '/ai/textures.md' },
         'applyVoronoiShell': { signature: 'await applyVoronoiShell({amplitude?, cellSize?, wallWidth?, raised?, jitter?, grainAngleDeg?, seed?, quality?, preserveColor?}) -- BAKE Voronoi cell relief; saves a new version. In-code alternative: api.surface.voronoi', docs: '/ai/textures.md' },
         'applyVoronoiLamp':{ signature: 'await applyVoronoiLamp({cellSize?, wallThickness?, strutWidth?, resolution?, jitter?, grainAngleDeg?, seed?, preserveColor?}) -- Convert the model into a perforated Voronoi lamp shell (bake only — no api.surface twin)', docs: '/ai/textures.md' },
+        'engraveModel':    { signature: "await engraveModel({text | imageUrl, raised?, through?, depth?, size?, color?, axis?, side?, posU?, posV?, rotationDeg?, curveAxis?, curveAngleDeg?, font?, resolution?, watertight?, preserveColor?}) -- Carve text/image as recessed channels (engrave), holes (through), or a raised relief (raised = emboss); color paints the letters ('#rrggbb' or [r,g,b] 0–1). Saves a new version.", docs: '/ai/textures.md#engravemodel' },
+        'buildEngraveStamp': { signature: 'await buildEngraveStamp({text?, font?, imageUrl?, invert?}) -- Rasterize an ink mask for engraveModel/the Surface panel -> {mask, width, height}', docs: '/ai/textures.md#engravemodel' },
         'smoothModel':     { signature: 'await smoothModel({iterations?, subdivide?, preserveColor?}) -- BAKE a Taubin smoothing pass; saves a new version. In-code alternative: api.surface.smooth', docs: '/ai/textures.md' },
         'voxelizeModel':   { signature: 'await voxelizeModel({resolution?, smooth?, preserveColor?}) -- Convert the mesh to a voxel-language session (engine change — bake only)', docs: '/ai/voxel.md' },
+        'setVoxelRounding': { signature: "setVoxelRounding(opts | null) -- Voxel Studio corner rounding: null = hard blocks; {algorithm?: 'taubin'|'surfaceNets', strength?: 0..1, iterations?: 1..8, flatBottom?: bool, baseLayers?: int} = smooth. Requires activateVoxelPaint(). Returns {surfacing} or {error}", docs: '/ai/voxel.md' },
+        'getVoxelRounding': { signature: 'getVoxelRounding() -- Read the active grid surfacing -> {surfacing} (null when blocky) or {error}', docs: '/ai/voxel.md' },
         // Transform / placement (mode 'parametric' wraps the code; 'bake' rewrites the mesh; 'auto' picks)
         'canPlaceParametric': { signature: 'canPlaceParametric() -- Whether transforms can be written into the code parametrically (manifold-js sessions)', docs: '/ai/printing.md' },
         'previewScale':    { signature: 'previewScale(sx, sy, sz, {preserveColor?}?) -- Non-destructive viewport preview of a resize -> {ok} or {error}', docs: '/ai/printing.md' },
         'clearScalePreview': { signature: 'clearScalePreview() -- Discard a live scale preview', docs: '/ai/printing.md' },
-        'scaleModel':      { signature: 'await scaleModel(sx, sy, sz, {preserveColor?}?) -- Resize the model; saves a new version', docs: '/ai/printing.md' },
+        'scaleModel':      { signature: "await scaleModel(sx, sy, sz, {mode?: 'parametric'|'bake'|'auto', preserveColor?}?) -- Resize the model (mode 'auto' keeps manifold-js parametric); saves a new version", docs: '/ai/printing.md' },
         'placeModel':      { signature: "await placeModel({dropToFloor?, centerX?, centerY?, centerZ?, mode?: 'parametric'|'bake'|'auto', preserveColor?}) -- Drop to the bed / center on axes; saves a new version", docs: '/ai/printing.md' },
         'rotateModel':     { signature: "await rotateModel({x?, y?, z?, mode?: 'parametric'|'bake'|'auto', preserveColor?}) -- Rotate by Euler degrees about the model's center; saves a new version", docs: '/ai/printing.md' },
         'layFlatModel':    { signature: "await layFlatModel({mode?: 'parametric'|'bake'|'auto', preserveColor?}) -- Auto-orient: largest flat face down onto the bed; saves a new version", docs: '/ai/printing.md' },
@@ -13125,6 +15509,8 @@ async function main() {
 
   // Surface modifiers UI (viewport ✦ Surface button + command-palette entries).
   initSurfaceUI(partwrightAPI as unknown as Parameters<typeof initSurfaceUI>[0]);
+  // Character Creator UI (viewport 🧍 Character button + command-palette entry).
+  initCharacterCreatorUI(partwrightAPI as unknown as Parameters<typeof initCharacterCreatorUI>[0]);
   // Resize/scale UI (viewport ⇲ Resize button + command-palette entry).
   initResizeUI(partwrightAPI as unknown as Parameters<typeof initResizeUI>[0]);
   // Placement UI (viewport ⤓ Place button + command-palette entries).
@@ -13725,6 +16111,22 @@ async function main() {
         'Re-add the label, or drop the region with removeRegion / clearColors and repaint by coordinates.',
       );
     }
+    // Cheap numeric heuristics (tri budget, aspect ratio, sub-extrusion detail,
+    // interpenetrating parts) — the signals the headless model:preview already
+    // emits but the in-app AI was previously blind to. Surfacing them here lets
+    // the agent catch these from stats without paying for a render.
+    const cc = typeof geo.componentCount === 'number' ? geo.componentCount : 1;
+    const enclosed = typeof geo.containedComponents === 'number' ? geo.containedComponents : 0;
+    warnings.push(...buildGeometryHeuristicWarnings(
+      {
+        triangleCount: typeof geo.triangleCount === 'number' ? geo.triangleCount : 0,
+        aspectRatio: typeof geo.aspectRatio === 'number' ? geo.aspectRatio : null,
+        minEdgeLength: typeof geo.minEdgeLength === 'number' ? geo.minEdgeLength : 0,
+        floatingComponentCount: cc - enclosed,
+        componentsInterpenetrate: geo.componentsInterpenetrate === true,
+      },
+      getConfig().geometry,
+    ));
     return warnings;
   }
 
@@ -13768,45 +16170,153 @@ async function main() {
     });
   }
 
-  // === api.surface.* — code-declared surface textures (memoized, sticky) ===
-
-  /** Base identity for the surface memo cache: code + customizer params + the
-   *  identity of any active imports. Any change here re-keys the chain (→ a
-   *  cache miss → the Re-apply pill), since each changes the base geometry the
-   *  textures sit on. Imports must be folded in explicitly: the generated
-   *  import wrapper carries only filename + date, so two different meshes
-   *  imported the same day can yield byte-identical source — without the
-   *  import ids the cache would serve the previous mesh's textured result. */
-  function surfaceBaseKey(src: string): string {
-    const imports = getActiveImports().map(m => `${m.id}/${m.numVert}/${m.numTri}`).join(",");
-    return simpleHash(`${src} ${JSON.stringify(currentParamValues ?? {})} ${imports}`);
-  }
+  // === api.surface.* — code-declared surface textures (off-thread, memoized) ===
 
   function hideSurfaceReapplyPill(): void {
     pendingSurface = null;
     if (surfaceReapplyEl) surfaceReapplyEl.style.display = 'none';
   }
 
+  /** Park the run's chain as pending and raise the sticky "Re-apply" pill —
+   *  the post-Cancel / post-failure state. */
+  function parkSurfaceChain(
+    park: { base: MeshData; ops: SurfaceOp[]; baseKey: string; src: string },
+    pillText: string,
+  ): void {
+    pendingSurface = park;
+    if (surfaceReapplyEl) {
+      surfaceReapplyEl.textContent = pillText;
+      surfaceReapplyEl.style.display = '';
+    }
+  }
+
+  function stalePillText(opCount: number): string {
+    return opCount > 1 ? `⟳ ${opCount} textures stale — Re-apply` : '⟳ Texture stale — Re-apply';
+  }
+
+  // Inline "Applying texture… Xs" timer — mirrors the "Rendering… Xs" run
+  // timer (400 ms delayed show so cache hits never flash it, shared Cancel
+  // button). Generation-tokened so a superseded compute's cleanup can't kill
+  // the newer compute's timer.
+  let _surfaceTimerGen = 0;
+  let _surfaceTimerShow: number | null = null;
+  let _surfaceTimerInterval: number | null = null;
+  let _surfaceProgressNote = '';
+
+  function startSurfaceTimer(label: string): number {
+    const gen = ++_surfaceTimerGen;
+    if (_surfaceTimerShow !== null) { clearTimeout(_surfaceTimerShow); _surfaceTimerShow = null; }
+    if (_surfaceTimerInterval !== null) { clearInterval(_surfaceTimerInterval); _surfaceTimerInterval = null; }
+    _surfaceProgressNote = '';
+    const t0 = performance.now();
+    _surfaceTimerShow = window.setTimeout(() => {
+      _surfaceTimerShow = null;
+      cancelInlineBtn.classList.remove('hidden');
+      _surfaceTimerInterval = window.setInterval(() => {
+        const s = ((performance.now() - t0) / 1000).toFixed(1);
+        setStatus(statusBar, 'running', `${label}${_surfaceProgressNote} ${s}s`);
+      }, 100);
+    }, 400);
+    return gen;
+  }
+
+  function stopSurfaceTimer(gen: number): void {
+    if (gen !== _surfaceTimerGen) return; // a newer compute owns the timer now
+    if (_surfaceTimerShow !== null) { clearTimeout(_surfaceTimerShow); _surfaceTimerShow = null; }
+    if (_surfaceTimerInterval !== null) { clearInterval(_surfaceTimerInterval); _surfaceTimerInterval = null; }
+    cancelInlineBtn.classList.add('hidden');
+  }
+
   /** Resolve a run's `api.surface.*` chain. Mutates `result` in place so the
    *  downstream wiring sees the final mesh:
    *   - cache hit → swap in the textured mesh (drop the stale base Manifold so
-   *     the run handler reconstructs from it).
-   *   - `force` (explicit/console runs — Run button, partwright.run/runAndSave,
-   *     version load) → compute the chain inline with the progress modal, so an
-   *     AI/console caller gets the real textured result instead of the gated
-   *     base (UI parity: agents can't press the pill).
-   *   - otherwise (live-typing auto-run) → leave the base mesh and raise the
-   *     sticky Re-apply pill, keeping keystroke renders snappy.
-   *  Returns true unless a forced compute failed (caller treats failure as a
-   *  non-fatal "base shown" run). */
-  async function applySurfaceTextures(result: MeshResult, src: string, force: boolean): Promise<void> {
+   *     the run handler reconstructs from it). The memo key is the BASE MESH
+   *     CONTENT (`meshContentKey`), so whitespace/comment/refactor edits that
+   *     don't change geometry hit instantly and never drop the textures.
+   *   - miss → compute the chain in the surface Worker (the UI thread stays
+   *     free) behind an inline "Applying texture… Xs" status + the Cancel
+   *     button, mirroring the "Rendering… Xs" pattern. EVERY run applies —
+   *     explicit and live-typing alike; a newer run's compute supersedes an
+   *     in-flight one (latest wins, like run generations).
+   *   - Cancel (or a compute failure) keeps the base mesh and parks the chain
+   *     behind the sticky "⟳ Re-apply" pill. */
+  /** Mean triangle-edge length of a base mesh (sampled), used to size a label
+   *  scope's catch radius so subdivided children — which sit within a parent
+   *  face — are selected without bleeding onto neighbours. */
+  function baseMeanEdge(mesh: MeshData): number {
+    const { vertProperties: vp, triVerts: tv, numProp, numTri } = mesh;
+    if (numTri === 0) return 1;
+    const step = Math.max(1, Math.floor(numTri / 2000));
+    const d = (i: number, j: number) => {
+      const dx = vp[i] - vp[j], dy = vp[i + 1] - vp[j + 1], dz = vp[i + 2] - vp[j + 2];
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    };
+    let total = 0, count = 0;
+    for (let t = 0; t < numTri; t += step) {
+      const a = tv[t * 3] * numProp, b = tv[t * 3 + 1] * numProp, c = tv[t * 3 + 2] * numProp;
+      total += d(a, b) + d(b, c) + d(c, a);
+      count += 3;
+    }
+    return count > 0 ? total / count : 1;
+  }
+
+  /** Resolve each scoped op (`label` / `point`) to seed centroids + a catch
+   *  radius against the BASE mesh. Unscoped ops → null (whole-model texture).
+   *  Returns undefined when no op is scoped, so the common path passes nothing.
+   *  An unknown/empty label yields empty seeds → the op textures nothing rather
+   *  than silently falling back to the whole model. */
+  function resolveSurfaceScopes(
+    ops: SurfaceOp[],
+    base: MeshData,
+    labelMap: Map<string, Set<number>> | null,
+  ): (ResolvedScope | null)[] | undefined {
+    if (!ops.some(o => o.scope)) return undefined;
+    let meanEdge = -1;
+    const { vertProperties: vp, triVerts: tv, numProp } = base;
+    return ops.map((op): ResolvedScope | null => {
+      const s = op.scope;
+      if (!s) return null;
+      if (s.kind === 'point') {
+        return { seeds: Float32Array.of(s.point[0], s.point[1], s.point[2]), radius: s.radius };
+      }
+      const tris = labelMap?.get(s.label);
+      if (!tris || tris.size === 0) return { seeds: new Float32Array(0), radius: 1 };
+      if (meanEdge < 0) meanEdge = baseMeanEdge(base);
+      const seeds = new Float32Array(tris.size * 3);
+      let i = 0;
+      for (const t of tris) {
+        const a = tv[t * 3] * numProp, b = tv[t * 3 + 1] * numProp, c = tv[t * 3 + 2] * numProp;
+        seeds[i++] = (vp[a] + vp[b] + vp[c]) / 3;
+        seeds[i++] = (vp[a + 1] + vp[b + 1] + vp[c + 1]) / 3;
+        seeds[i++] = (vp[a + 2] + vp[b + 2] + vp[c + 2]) / 3;
+      }
+      return { seeds, radius: Math.max(meanEdge * 1.1, 1e-3) };
+    });
+  }
+
+  async function applySurfaceTextures(result: MeshResult, src: string): Promise<void> {
+    // Each mesh-producing run re-establishes what (if any) applied texture the
+    // live mesh carries; stale-by-default until a branch below applies one.
+    lastAppliedSurface = null;
     const ops = result.surfaceOps;
     if (!ops || ops.length === 0 || !result.mesh) {
       hideSurfaceReapplyPill();
       return;
     }
     const base = result.mesh;
-    const baseKey = surfaceBaseKey(src);
+    const baseKey = meshContentKey(base);
+    // The textured mesh has a denser/displaced tessellation, so the run's
+    // labelMap (Set<baseTriIndex> per api.label name) no longer points at the
+    // right triangles. Remap each label's set onto the textured mesh by spatial
+    // proximity — the same nearest-centroid carry the bake path uses — so
+    // api.label / byLabel colors survive texturing. Geometric paint descriptors
+    // (box/slab/cylinder) and brush strokes re-resolve by shape downstream and
+    // need no remap.
+    const carryLabels = (textured: MeshData): void => {
+      if (result.labelMap && result.labelMap.size > 0) {
+        result.labelMap = remapTriangleSets(result.labelMap, base, textured);
+      }
+    };
     const status = surfaceCacheStatus(baseKey, ops);
     if (status.cached && status.mesh) {
       // These displaced meshes round-trip through Manifold.ofMesh like the bake
@@ -13814,51 +16324,49 @@ async function main() {
       // mesh (and fall back to render-only if it isn't watertight).
       result.mesh = status.mesh;
       result.manifold = null;
+      carryLabels(status.mesh);
+      lastAppliedSurface = { key: surfaceChainKey(baseKey, ops)!, mesh: status.mesh };
       hideSurfaceReapplyPill();
       return;
     }
-    if (force) {
-      const progressId = startProgress({
-        title: ops.length > 1 ? `Applying ${ops.length} surface textures…` : 'Applying surface texture…',
-        indeterminate: false,
-      });
-      try {
-        const textured = await computeChain(base, baseKey, ops, (f) => updateProgress(progressId, f));
-        result.mesh = textured;
-        result.manifold = null;
-        hideSurfaceReapplyPill();
-      } catch (e) {
-        // Compute failed — keep the base mesh and raise the pill so the user can
-        // retry; surface the reason in the log.
-        const msg = e instanceof Error ? e.message : String(e);
-        showToast(`Surface texture failed: ${msg}`, { variant: 'warn', source: 'app' });
-        pendingSurface = { base, ops, baseKey, src };
-        if (surfaceReapplyEl) {
-          surfaceReapplyEl.textContent = '⟳ Texture failed — Re-apply';
-          surfaceReapplyEl.style.display = '';
-        }
-      } finally {
-        endProgress(progressId);
+    // Resolve any label/point scopes to seed points + radius against the BASE
+    // mesh (before carryLabels rewrites result.labelMap to textured indices).
+    const resolvedScopes = resolveSurfaceScopes(ops, base, result.labelMap ?? null);
+    const label = ops.length > 1 ? `Applying ${ops.length} textures...` : 'Applying texture...';
+    const timer = startSurfaceTimer(label);
+    try {
+      const textured = await computeChain(base, baseKey, ops, (f) => {
+        if (ops.length > 1) _surfaceProgressNote = ` ${Math.min(Math.round(f * ops.length), ops.length)}/${ops.length}`;
+      }, resolvedScopes);
+      result.mesh = textured;
+      result.manifold = null;
+      carryLabels(textured);
+      lastAppliedSurface = { key: surfaceChainKey(baseKey, ops)!, mesh: textured };
+      hideSurfaceReapplyPill();
+    } catch (e) {
+      if (e instanceof SurfaceComputeCancelled) {
+        // Superseded by a newer run's compute: that run owns the UI now — stay
+        // quiet (runCodeSync's generation check discards this stale result).
+        if (surfaceComputeInFlight()) return;
+        // The user pressed Cancel: keep the base mesh, park the chain.
+        parkSurfaceChain({ base, ops, baseKey, src }, stalePillText(ops.length));
+        return;
       }
-      return;
-    }
-    // Sticky miss (live-typing): keep the base mesh, remember what to compute.
-    pendingSurface = { base, ops, baseKey, src };
-    if (surfaceReapplyEl) {
-      surfaceReapplyEl.textContent = ops.length > 1
-        ? `⟳ ${ops.length} textures stale — Re-apply`
-        : '⟳ Texture stale — Re-apply';
-      surfaceReapplyEl.style.display = '';
+      // Compute failed — keep the base mesh and raise the pill so the user can
+      // retry; surface the reason in the log.
+      const msg = e instanceof Error ? e.message : String(e);
+      showToast(`Surface texture failed: ${msg}`, { variant: 'warn', source: 'app' });
+      parkSurfaceChain({ base, ops, baseKey, src }, '⟳ Texture failed — Re-apply');
+    } finally {
+      stopSurfaceTimer(timer);
     }
   }
 
-  /** The Re-apply pill's click handler: force-compute the pending chain by
-   *  re-running the exact same source — `runCodeSync` defaults to
-   *  `surfaceErrors: true`, which force-applies and clears the pill. Using the
-   *  stored `src` (not `getValue()`) keeps the base key identical so the
-   *  compute is reused on the re-run. There's deliberately no console-API
-   *  twin: `partwright.run()` / `runAndSave()` already force-apply, so agents
-   *  never see the pill state. */
+  /** The Re-apply pill's click handler: compute the parked chain by re-running
+   *  the exact same source — every run now applies its chain, so the re-run
+   *  recomputes (or cache-hits) and clears the pill. Console agents reach the
+   *  same recovery via `ensureSurfaceTexturesApplied()` (the Surface panel
+   *  awaits it before previews); `run()`/`runAndSave()` apply inline anyway. */
   async function reapplySurfaceTextures(): Promise<boolean> {
     if (!pendingSurface || surfaceReapplyBusy) return false;
     surfaceReapplyBusy = true;
@@ -13912,7 +16420,12 @@ async function main() {
   // Start the elapsed-time display for a render. The cancel button and timer
   // are delayed 400 ms so fast runs (manifold-js is typically < 100 ms) never
   // flash them. stopRunTimer() always cancels the pending show before it fires.
-  cancelInlineBtn.addEventListener('click', () => { cancelCurrentExecution(); });
+  // NOTE: the Cancel button's click handler is attached *early* (right after the
+  // layout is built, before the initial syncEditorFromURL render) — see the
+  // `cancelInlineBtn.addEventListener` near the fast-preview pill setup. Attaching
+  // it here instead left the button dead for the entire first render of a slow
+  // deep-linked model (catalog SDF figures especially), because main() awaits
+  // that render before ever reaching this line.
 
   function startRunTimer(t0: number): void {
     _runTimerStart = t0;
@@ -13938,7 +16451,16 @@ async function main() {
     cancelInlineBtn.classList.add('hidden');
   }
 
-  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean } = {}): Promise<boolean> {
+  function showFastPreviewPill(): void {
+    _showingFastPreview = true;
+    if (fastPreviewPillEl) fastPreviewPillEl.style.display = '';
+  }
+  function hideFastPreviewPill(): void {
+    _showingFastPreview = false;
+    if (fastPreviewPillEl) fastPreviewPillEl.style.display = 'none';
+  }
+
+  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean; skipSurface?: boolean } = {}): Promise<boolean> {
     // Hard refusal in shared-preview mode: this is the single execution
     // chokepoint that the console API (partwright.run / runAndSave) also routes
     // through, so guarding it here keeps the sharer's untrusted code from ever
@@ -13958,20 +16480,49 @@ async function main() {
     const t0 = performance.now();
     startRunTimer(t0);
 
-    // SCAD preview callback: receives the fast Phase 1 mesh and updates the
-    // viewport immediately so the user sees geometry while Phase 2 renders.
-    const onScadPreview = getActiveLanguage() === 'scad'
+    // Snapshot the camera to restore *before* the engine runs, not after, when
+    // this is a re-render of an already-framed session (opts.preserveCamera:
+    // version switch, live edit, Customizer change, quality change). The SCAD
+    // path renders progressively — onScadPreview below calls updateMesh mid-run,
+    // which auto-frames; capturing afterwards would record that reset pose and
+    // "preserve" the default framing instead of the user's angle (the Customizer
+    // reset bug on parametric SCAD models). captureCameraToPreserve returns null
+    // on a session's first render, so a genuinely new model still auto-frames.
+    const preservedCameraPose = opts.preserveCamera ? captureCameraToPreserve() : null;
+
+    // Progressive-render preview callback: receives the fast coarse-pass mesh and
+    // updates the viewport immediately so the user sees geometry while the full
+    // render finishes. Used by two engines: SCAD's two-phase compile, and the
+    // manifold-js SDF coarse pass (figures). Skip its auto-frame while preserving
+    // the camera, so the mid-run preview doesn't momentarily snap to the default
+    // view before the final restore lands. For SDF, raise the "⚡ Fast preview"
+    // pill so the user knows the rough mesh will be replaced.
+    const previewLang = getActiveLanguage();
+    const onEnginePreview = (previewLang === 'scad' || previewLang === 'manifold-js')
       ? (previewResult: MeshResult) => {
           if (myGen !== _runGeneration || !previewResult.mesh) return;
+          // currentMeshData stays the raw (uncoloured) coarse mesh — the model
+          // colours live only on the copy handed to updateMesh, mirroring the
+          // full-render path where currentMeshData is also the uncoloured base.
           currentMeshData = previewResult.mesh;
-          updateMesh(previewResult.mesh);
+          // Estimate the model's colours on the coarse mesh: the in-code
+          // underlay (api.label({color}) + api.paint.*) plus the user's saved
+          // paint regions that re-resolve geometrically (byLabel / box / slab /
+          // cylinder) — so a painted catalog figure shows colour instead of bare
+          // grey. All resolve against this preview result's own mesh + labelMap
+          // (no global state touched). Brush strokes and detail-region labels
+          // (eyes, etc.) can't map onto the coarse mesh — they fill in with the
+          // full render.
+          const colouredPreview = colorCoarsePreview(previewResult);
+          updateMesh(colouredPreview, { skipAutoFrame: preservedCameraPose !== null });
+          if (previewLang === 'manifold-js') showFastPreviewPill();
         }
       : undefined;
 
     // Feed the Customizer's current overrides into the model's api.params(...).
     let result: Awaited<ReturnType<typeof executeCodeAsync>>;
     try {
-      result = await executeCodeAsync(src, undefined, currentParamValues, onScadPreview);
+      result = await executeCodeAsync(src, undefined, currentParamValues, onEnginePreview);
     } catch (err) {
       // Worker was terminated (cancelled by user, cancelled for a newer run,
       // timeout, or crash). Only clean up if we're still the active run —
@@ -13979,6 +16530,7 @@ async function main() {
       if (myGen !== _runGeneration) return false;
       _running = false;
       stopRunTimer();
+      hideFastPreviewPill();
       const msg = err instanceof Error ? err.message : String(err);
       const wasCancelled = /cancell?ed/i.test(msg);
       setStatus(statusBar, wasCancelled ? 'ready' : 'error', wasCancelled ? 'Cancelled' : msg);
@@ -13993,6 +16545,9 @@ async function main() {
     const elapsed = Math.round(performance.now() - t0);
     _running = false;
     stopRunTimer();
+    // The full-quality mesh is in hand — the coarse preview (if any) is about to
+    // be replaced, so drop the pill.
+    hideFastPreviewPill();
 
     // Record the engine WASM heap high-water for this run (undefined for non
     // manifold-js engines, which own separate heaps). Surfaced in the Data panel
@@ -14056,16 +16611,17 @@ async function main() {
       clearEditorErrorPanel(editorErrorPanel);
       pendingEditorError = null;
       // === Surface textures declared in code (api.surface.*) ===
-      // The Worker recorded an op chain but didn't touch the mesh. Apply it on
-      // this thread. Explicit runs (`surfaceErrors` — Run button, console
-      // run/runAndSave, version load) force the (memoized) compute so the caller
-      // gets the real textured mesh; live-typing auto-runs only use a cache hit
-      // and otherwise raise the "Re-apply" pill, keeping keystrokes snappy. On a
-      // hit/force, the textured mesh is swapped in so all the downstream wiring
-      // (manifold reconstruction, paint resolution, stats) sees final geometry.
-      await applySurfaceTextures(result, src, surfaceErrors);
-      // A forced compute can take seconds; if a newer run started meanwhile,
-      // abandon this one rather than stamping a stale mesh over the new render.
+      // The geometry Worker recorded an op chain but didn't touch the mesh.
+      // Apply it here — memoized (keyed on the base mesh content, so no-op
+      // edits hit instantly) and computed in the surface Worker on a miss,
+      // behind an inline "Applying texture… Xs" timer + Cancel. The textured
+      // mesh is swapped in so all the downstream wiring (manifold
+      // reconstruction, paint resolution, stats) sees final geometry.
+      // skipSurface: skip during thumbnail-regeneration imports so the
+      // heavy surface computation doesn't hang the import flow.
+      if (!opts.skipSurface) await applySurfaceTextures(result, src);
+      // A compute can take seconds; if a newer run started meanwhile, abandon
+      // this one rather than stamping a stale mesh over the new render.
       if (myGen !== _runGeneration) return false;
       // Bump the paint generation so any in-flight subdivision worker — started
       // against the previous base mesh — discards its result instead of stamping
@@ -14156,12 +16712,9 @@ async function main() {
       // strokes) so slab/box smooth regions rebuild too, exactly as the
       // visibility-toggle path does via reconcilePaintedGeometry.
       //
-      // Snapshot the camera before the auto-framing updateMesh runs when this
-      // run is a version switch (opts.preserveCamera) within an already-framed
-      // session: keep the user's interactive angle instead of snapping to the
-      // default 3/4 view. Genuine new-code runs (pw.run, live edits) leave this
-      // null so the new model auto-frames as before.
-      const preservedCameraPose = opts.preserveCamera ? captureCameraToPreserve() : null;
+      // preservedCameraPose was snapshotted at the top of runCodeSync (before
+      // the engine ran), so the auto-framing updateMesh calls below — and the
+      // SCAD progressive preview — don't poison the pose we restore at the end.
       if (hasColorRegions() && hasRefineDescriptors()) {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();
@@ -14366,6 +16919,23 @@ async function main() {
     });
   }
 
+  function initLightToggle(container: HTMLElement) {
+    const lightBtn = container.querySelector('#light-toggle') as HTMLButtonElement;
+    if (!lightBtn) return;
+
+    const inactiveClass = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+    const activeClass = 'px-2 py-1 rounded text-xs bg-amber-500/20 backdrop-blur text-amber-400 hover:bg-amber-500/30 transition-colors border border-amber-500/30';
+
+    const reflect = (on: boolean) => {
+      lightBtn.className = on ? activeClass : inactiveClass;
+      lightBtn.title = on ? 'Turn off studio lighting (reflections + soft shadow)' : 'Turn on studio lighting (reflections + soft shadow)';
+    };
+    reflect(isStudioLighting());
+    onStudioLightingChange(reflect);
+
+    lightBtn.addEventListener('click', () => { setStudioLighting(!isStudioLighting()); });
+  }
+
   function initDimensionsToggle(container: HTMLElement) {
     const dimBtn = container.querySelector('#dimensions-toggle') as HTMLButtonElement;
     if (!dimBtn) return;
@@ -14436,7 +17006,15 @@ function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'load
   el.setAttribute('aria-live', 'polite');
   el.textContent = text;
   el.title = text;
-  el.className = 'text-xs font-mono max-w-[60%] truncate text-right ';
+  // Keep the indicator click-transparent — `setStatus` overwrites the className
+  // so the original `pointer-events-none` from layout.ts would otherwise be
+  // lost, letting it intercept clicks on what it overlaps. Restore the chip
+  // background/border too (also dropped on overwrite). The status row is an
+  // absolute, shrink-to-fit flex strip, so cap the width with a viewport-
+  // relative `max-w` (a percentage would resolve against this very element's
+  // shrink-to-fit parent and collapse "Ready" to "R…"); `truncate` still
+  // ellipsizes long error messages.
+  el.className = 'text-xs font-mono max-w-[55vw] truncate pointer-events-none bg-zinc-900/70 px-2 py-0.5 rounded border border-zinc-700 ';
   switch (state) {
     case 'ready':
       el.className += 'text-emerald-400';

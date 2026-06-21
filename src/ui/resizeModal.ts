@@ -17,10 +17,11 @@ type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 type BBox = { x?: number[]; y?: number[]; z?: number[]; min?: number[]; max?: number[] } | null;
 
 export interface ResizeApi {
-  scaleModel(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }): Promise<ApplyResult>;
+  scaleModel(sx: number, sy: number, sz: number, opts?: { mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }): Promise<ApplyResult>;
   previewScale(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }): { ok: true } | { error: string };
   clearScalePreview(): { ok: true };
   getGeometryData(): { boundingBox?: BBox } | Record<string, unknown>;
+  canPlaceParametric(): boolean;
   modelHasColor(): boolean;
 }
 
@@ -106,6 +107,13 @@ export function openResizeModal(api: ResizeApi, opts?: { fitToBed?: boolean }): 
 
   let preserveColor = true;
   const hasColor = api.modelHasColor();
+  const canParametric = api.canPlaceParametric();
+  // Write-back: keep a manifold-js model editable (wrap the source in .scale)
+  // or bake the scaled mesh. Defaults to parametric when available.
+  let writeBack: 'parametric' | 'bake' = canParametric ? 'parametric' : 'bake';
+  let colorRow: HTMLElement | null = null;
+  // Preserve-colors only applies to the bake path; parametric re-runs the code.
+  const syncColorRow = () => { if (colorRow) colorRow.style.display = writeBack === 'bake' ? '' : 'none'; };
 
   let previewDirty = false;
   let previewTimer: number | undefined;
@@ -221,9 +229,39 @@ export function openResizeModal(api: ResizeApi, opts?: { fitToBed?: boolean }): 
   const axisContainer = el('div', 'space-y-3 mb-4');
   body.append(axisContainer);
 
+  // ---- Write-back mode ----
+  const modeWrap = el('div', 'flex flex-col gap-1.5 mb-3 pt-1 border-t border-zinc-800');
+  modeWrap.append(el('div', 'text-[11px] text-zinc-400 font-medium pt-2', 'Write-back'));
+  if (canParametric) {
+    const mkRadio = (value: 'parametric' | 'bake', label: string, hint: string): HTMLElement => {
+      const row = el('label', 'flex items-start gap-2 text-xs text-zinc-300 cursor-pointer');
+      const radio = el('input', 'accent-blue-500 mt-0.5');
+      radio.type = 'radio';
+      radio.name = 'resize-writeback';
+      radio.value = value;
+      radio.checked = writeBack === value;
+      radio.addEventListener('change', () => { if (radio.checked) { writeBack = value; syncColorRow(); } });
+      const txt = el('span', '');
+      txt.append(el('span', 'text-zinc-200', label));
+      txt.append(el('span', 'block text-[10px] text-zinc-500', hint));
+      row.append(radio, txt);
+      return row;
+    };
+    modeWrap.append(
+      mkRadio('parametric', 'Keep editable code', 'Wraps your model code in .scale(...) — stays parametric.'),
+      mkRadio('bake', 'Bake to mesh', 'Flattens the scaled model to a fixed mesh.'),
+    );
+  } else {
+    modeWrap.append(el('p', 'text-[11px] text-zinc-500 leading-snug',
+      hasColor
+        ? 'This model has manual paint, so the result is baked to a mesh (keeps the paint).'
+        : 'Baked to a mesh (editable-code scaling needs a manifold-js model).'));
+  }
+  body.append(modeWrap);
+
   // ---- Preserve colors checkbox (only when the model has paint) ----
   if (hasColor) {
-    const colorRow = el('label', 'flex items-center gap-2 mb-3 text-xs text-zinc-300 cursor-pointer');
+    colorRow = el('label', 'flex items-center gap-2 mb-3 text-xs text-zinc-300 cursor-pointer');
     const colorCheck = el('input', 'accent-blue-500');
     colorCheck.type = 'checkbox';
     colorCheck.checked = preserveColor;
@@ -233,6 +271,7 @@ export function openResizeModal(api: ResizeApi, opts?: { fitToBed?: boolean }): 
     });
     colorRow.append(colorCheck, el('span', '', 'Preserve colors (best-effort)'));
     body.append(colorRow);
+    syncColorRow();
   }
 
   // ---- Current size display ----
@@ -391,7 +430,7 @@ export function openResizeModal(api: ResizeApi, opts?: { fitToBed?: boolean }): 
     status.textContent = 'Working…';
     try {
       const [sx, sy, sz] = getScaleFactors();
-      const result = await api.scaleModel(sx, sy, sz, { preserveColor });
+      const result = await api.scaleModel(sx, sy, sz, { mode: writeBack, preserveColor });
       const err = (result as { error?: string })?.error;
       if (err) {
         status.textContent = `Error: ${err}`;

@@ -52,7 +52,7 @@ test.describe('Auto-continue (finish-tool resume)', () => {
         const url = String(input);
         // Let the system-prompt (/ai.md) and any other fetch pass through;
         // only the Gemini stream is canned.
-        if (!url.includes('generativelanguage.googleapis.com')) {
+        if (new URL(url, location.origin).hostname !== 'generativelanguage.googleapis.com') {
           return origFetch(input as RequestInfo, init);
         }
         n++;
@@ -115,7 +115,7 @@ test.describe('Auto-continue (finish-tool resume)', () => {
       // @ts-expect-error test stub
       window.fetch = async (input: unknown, init?: RequestInit) => {
         const url = String(input);
-        if (!url.includes('generativelanguage.googleapis.com')) return origFetch(input as RequestInfo, init);
+        if (new URL(url, location.origin).hostname !== 'generativelanguage.googleapis.com') return origFetch(input as RequestInfo, init);
         n++;
         bodies.push(String(init?.body ?? ''));
         // Call 1: a truly empty end_turn (no parts). Call 2: finish.
@@ -171,7 +171,7 @@ test.describe('Auto-continue (finish-tool resume)', () => {
       // @ts-expect-error test stub
       window.fetch = async (input: unknown, init?: RequestInit) => {
         const url = String(input);
-        if (!url.includes('generativelanguage.googleapis.com')) return origFetch(input as RequestInfo, init);
+        if (new URL(url, location.origin).hostname !== 'generativelanguage.googleapis.com') return origFetch(input as RequestInfo, init);
         n++;
         // Always a plain text end_turn — the model never calls finish.
         const frame = 'data: {"candidates":[{"content":{"parts":[{"text":"still going"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}';

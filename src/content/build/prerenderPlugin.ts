@@ -1,5 +1,5 @@
-// Vite plugin that turns the four content HTML shells (catalog/help/legal/
-// whats-new) into fully pre-rendered static pages: it injects the build-time
+// Vite plugin that turns the five content HTML shells (catalog/help/legal/
+// whats-new/ideas) into fully pre-rendered static pages: it injects the build-time
 // content (nav + page body + footer) into each shell's `<!--PW-CONTENT-->`
 // placeholder. The result is real HTML with real content for crawlers, with
 // no app JavaScript on the page.

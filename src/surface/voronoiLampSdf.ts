@@ -16,7 +16,7 @@
 
 import type { MeshData } from '../geometry/types';
 import { cellEdgeDist3D } from './voronoiLattice';
-import { sdfModifierMesh, MAX_FIELD_RESOLUTION } from './sdfModifier';
+import { sdfModifierMesh, MAX_FIELD_RESOLUTION, type SdfRunControl } from './sdfModifier';
 import { extractPositions, bboxOf } from './meshSubdivide';
 
 export interface VoronoiLampSdfOptions {
@@ -37,7 +37,7 @@ const MIN_STRUT_VOXELS = 6;
 
 /** Build a smooth Voronoi-lamp mesh from a solid model. Returns an empty mesh
  *  for an empty input. */
-export function voronoiLampSdfMesh(mesh: MeshData, opts: VoronoiLampSdfOptions): MeshData {
+export async function voronoiLampSdfMesh(mesh: MeshData, opts: VoronoiLampSdfOptions, ctl?: SdfRunControl): Promise<MeshData> {
   if (mesh.numTri === 0) return { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
 
   const cellSize = Math.max(1e-4, opts.cellSize);
@@ -66,5 +66,5 @@ export function voronoiLampSdfMesh(mesh: MeshData, opts: VoronoiLampSdfOptions):
     const gz = z / cellSize;
     const strut = cellEdgeDist3D(gx, gy, gz, jitter, seed) * cellSize - halfStrutWorld;
     return Math.max(shell, strut);
-  });
+  }, ctl);
 }

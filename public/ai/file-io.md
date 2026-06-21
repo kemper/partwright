@@ -32,6 +32,59 @@ const src = await partwright.exportCodeData()
 
 Each call also adds the export to the Recent Exports inbox so the user can re-download it from the toolbar's Export → Recent Exports list.
 
+## Multi-part 3MF — bundle several parts into one file
+
+`export3MFParts(partIds?, filename?, { bambu?, printer?, nozzle?, filament? })` bundles several Session Parts into **one** 3MF. Two modes:
+
+- **`{ bambu: true }`** (default) — a Bambu Studio / OrcaSlicer **project**: each part on its **own build plate**, painted colours bound to filaments (one filament per distinct colour). The console/AI twin of the **"3MF — Bambu/Orca"** menu item.
+- **`{ bambu: false }`** — a **generic** multi-object 3MF: parts grid-arranged (no overlap), opens in any slicer, no Bambu metadata. The console/AI twin of the generic **"3MF"** export in a multi-part session.
+
+In Bambu mode you can pick the target machine (these match the export modal's dropdowns):
+- **`printer`** — dual-nozzle: `"h2c"` (default), `"h2d"`, `"h2dpro"`, `"x2d"`; single-nozzle: `"h2s"`, `"a2l"`, `"x1c"`, `"x1e"`, `"x1"`, `"p1s"`, `"p1p"`, `"p2s"`, `"a1"`, `"a1mini"`. Sets the printer profile + bed + process so Bambu opens it natively without converting.
+- **`nozzle`** — `"0.2"` | `"0.4"` (default) | `"0.6"` | `"0.8"`.
+- **`filament`** — `"pla"` (default) | `"petg"` | `"abs"` | `"asa"` | `"tpu"` | `"pc"`. One material for all colours; sets the filament type + temps.
+
+```js
+// Every part in the session, one per Bambu plate (default H2C / 0.4 / PLA):
+await partwright.export3MFParts()
+// -> { ok: true, filename: "...3mf", parts: 3 }
+
+// Target a P1S with a 0.6 nozzle in PETG:
+await partwright.export3MFParts(undefined, "tree", { printer: "p1s", nozzle: "0.6", filament: "petg" })
+
+// Specific parts as a generic multi-object 3MF (ids from listParts()):
+await partwright.export3MFParts(["part_abc", "part_def"], "assembly", { bambu: false })
+```
+
+Each part's **latest version** is re-baked with its colours (both code-declared `api.label`/`api.paint.*` and saved manual paint). Bambu mode places each part on its plate using your configured **bed size** (printer settings) for the plate stride. Both modes carry colours via `m:colorgroup`, so any slicer sees them.
+
+`export3MFParts` triggers a browser download; **`export3MFPartsData(partIds?, filename?, { bambu? })`** is the bytes-returning twin — it returns `{ filename, mimeType, base64, sizeBytes, parts }` so an agent can read the exported 3MF back (unzip the base64) without the download path.
+
+```js
+const r = await partwright.export3MFPartsData(undefined, 'assembly', { bambu: true })
+// -> { filename, mimeType, base64: "...", sizeBytes, parts: 3 }
+```
+
+## Multi-part OBJ / STL / GLB
+
+The same part-bake pipeline backs OBJ, STL, and GLB. Each takes `(partIds?, filename?)` (default: every part) and has a `*Data` twin that returns `{ filename, mimeType, base64, sizeBytes, parts }` instead of downloading. They're the console/AI twins of the **OBJ / STL / GLB** menu items in a multi-part session (the single button auto-routes to the part picker when the session has more than one part). Each format bundles parts the way its file format does best:
+
+- **`exportOBJParts` / `exportOBJPartsData`** — one `.obj` with a named `o <part>` object per part, **grid-arranged** so they don't overlap. Painted parts add a shared `.mtl` (OBJ + MTL bundled in a `.zip`); with no paint anywhere it's a plain `.obj`.
+- **`exportSTLParts` / `exportSTLPartsData`** — a `.zip` with **one `.stl` per part**. STL is a flat triangle soup with no object names or colour, so separate files are the only faithful way to keep parts distinct.
+- **`exportGLBParts` / `exportGLBPartsData`** — one `.glb` scene with a named node per part, **grid-arranged**. Painted parts export as vertex colours. glTF is a scene graph, so distinct named meshes is its natural multi-part form.
+
+```js
+// Every part as named objects in one OBJ:
+await partwright.exportOBJParts()
+// -> { ok: true, filename: "...zip", parts: 3 }
+
+// Specific parts, bytes returned (no download):
+const r = await partwright.exportGLBPartsData(["part_abc", "part_def"], "assembly")
+// -> { filename, mimeType, base64: "...", sizeBytes, parts: 2 }
+```
+
+Like 3MF, each part's **latest version** is re-baked with its colours (code-declared `api.label`/`api.paint.*` and saved manual paint) before bundling.
+
 ## Import — supply the payload directly
 ```js
 // Import a parsed .partwright.json (object or string) as a new active session
@@ -64,3 +117,14 @@ partwright.clearRecentExports()
 ```
 
 This is also the easiest way to inspect what the user just exported manually: the bytes stay in memory until they're pushed out by newer exports.
+
+## Publish to a print site (assisted)
+
+`partwright.publish(platform?)` opens the **assisted-publish** modal for the major model-sharing sites — **Printables**, **MakerWorld** (Bambu), **Thingiverse**, and **Thangs**. Pass an optional platform id (`'printables'` | `'makerworld'` | `'thingiverse'` | `'thangs'`) to preselect one.
+
+```js
+partwright.publish()              // open the modal, default platform
+partwright.publish('makerworld')  // preselect MakerWorld
+```
+
+None of these platforms expose a public *upload* API a browser app can call, so Partwright **cannot post the model for the user**. The flow instead **prepares** the publish: it downloads a single **ZIP** containing the model file (in the platform's preferred format — Bambu/Orca 3MF for MakerWorld, generic 3MF for Printables, STL for Thingiverse/Thangs), a rendered `cover.png`, and a `details.txt` (also copied to the clipboard), then opens the platform's site — the user signs in, hits its Upload button, drops the files, and pastes. The modal also has an **"✨ Auto-populate with AI"** button (enabled only when an AI model is connected — otherwise disabled with a "connect an AI model first" tooltip) that reviews the session's code, geometry stats, notes, recent AI chat, and a 4-iso snapshot to draft the title/description/tags via the active provider. Bundling into one ZIP avoids the browser's "open multiple files?" prompt that several separate downloads trigger. Every platform's direct upload route is auth-gated and unreliable (404/500/login bounce), so each target opens a stable landing page rather than a fragile deep link. Returns `{ error }` if there's no geometry or the platform id is unknown.
