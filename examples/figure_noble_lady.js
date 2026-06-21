@@ -1,7 +1,9 @@
-// Noble Lady — a showcase of the figure ACCESSORY ATTACHMENT system:
-//   • Marked   → makeup (blush + lipstick + eyeshadow) via in-code api.paint
-//   • Ringed   → a necklace around the neck (F.ring on rig.ring.neck) + pendant
-//   • Hung     → the pendant dangling from the necklace (F.hangFrom)
+// Noble Lady — showcase of the figure ACCESSORY ATTACHMENT system:
+//   • Marked   → makeup WITHOUT mesh-painting: the existing `lips` label as
+//                lipstick, the `lids` label as eyeshadow, and proud CONFORMAL
+//                blush patches (offset-skin ∩ a cheek cylinder) coloured by label
+//   • Ringed   → a choker conformed to the neck (F.ring with `surface`)
+//   • Hung     → a short pendant resting proud on the upper chest (F.hangFrom)
 // Front = −Y, Z up, figure-left = +X, figure-right = −X.
 const { sdf } = api;
 const F = sdf.figure;
@@ -17,60 +19,61 @@ const rig = F.rig({
 });
 const j = rig.joints, r = rig.r, H = rig.opts.height;
 
-// 2. HEAD + FACE
+// 2. HEAD + FACE — mouth built separately (mouthAccents) so 'lips' is its own
+// paintable label for lipstick.
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
-  eyes: false, nose: { tipRadius: r.head * 0.08 },
-  mouth: { style: 'lips', lipShape: 'full', width: r.head * 0.34 }, ears: {}, brows: {},
+  eyes: false, mouth: false, nose: { tipRadius: r.head * 0.08 }, ears: {}, brows: {},
 });
 const eyes = F.face.eyes(rig, { radius: r.head * 0.14, lids: 'almond' });
+const lips = F.face.mouthAccents(rig, { style: 'lips', lipShape: 'full', width: r.head * 0.34 });
 const skin = F.weld(rig, [F.torso(rig), F.neck(rig), F.arms(rig), F.hands(rig), F.legs(rig), F.feet(rig), face]).label('skin');
 
-// 3. GOWN — a fitted dress (thin shell, so a sash reads on top of it).
+// 3. MAKEUP (Marked) — no mesh paint. Blush = a thin CONFORMAL patch: the skin
+// offset slightly proud, intersected with a forward (−Y) cylinder at the cheek,
+// so it owns its own triangles and hugs the cheek. Coloured by its label.
+const eyeL = rig.face.eyeL, eyeR = rig.face.eyeR;
+const cheekZ = eyeL[2] * 0.45 + rig.face.mouth[2] * 0.55;
+const cheekPatch = (cx) => skin.round(r.head * 0.045)
+  .intersect(sdf.cylinder(r.head * 0.17, r.headZ * 3).rotate([90, 0, 0]).translate([cx, 0, cheekZ]));
+const blush = cheekPatch(eyeL[0] * 0.92).union(cheekPatch(eyeR[0] * 0.92)).label('blush');
+
+// 4. GOWN — a fitted dress.
 const gown = F.clothing.top(rig, { sleeve: 'short', hemZ: H * 0.30, thickness: r.chestX * 0.08 }).label('gown');
 
-// 4. NECKLACE (Ringed) + PENDANT (Hung) at the neck base.
+// Clothed surface (skin + gown) for conforming the choker.
+const clothed = sdf.union(skin, gown);
+
+// 5. NECKLACE (Ringed) conformed to the neck + a short pendant (Hung) sitting
+// proud on the upper chest (offset forward so it doesn't embed the gown).
 const neckFrame = rig.ring.neck;
 const neckTube = r.neck * 0.10;
-const necklace = F.ring(neckFrame, { tube: neckTube, clearance: r.chestX * 0.05, drop: r.neck * 0.2, segments: 48 });
-const frontNeck = F.ringPoint(neckFrame, 0, { clearance: r.chestX * 0.05, drop: r.neck * 0.2 });
-// A teardrop pendant on a drop chain, hanging onto the upper chest where it reads.
-const dropChain = sdf.capsule(frontNeck, [frontNeck[0], frontNeck[1], frontNeck[2] - r.neck * 1.4], neckTube * 0.5);
-const pendantGem = sdf.ellipsoid(neckTube * 2.6, neckTube * 1.4, neckTube * 3.4)
-  .translate([frontNeck[0], frontNeck[1], frontNeck[2] - r.neck * 1.7]);
-const jewelry = necklace.union(dropChain).union(pendantGem).label('jewelry');
+const necklace = F.ring(neckFrame, { tube: neckTube, drop: r.neck * 0.15, segments: 56, surface: clothed });
+const frontNeck = F.ringPoint(neckFrame, 0, { drop: r.neck * 0.15, surface: clothed });
+const proud = [0, -neckTube * 1.2, 0];   // push the pendant proud of the gown front
+const chainTop = add(frontNeck, proud);
+const gemPt = [chainTop[0], chainTop[1] - neckTube * 0.6, chainTop[2] - r.neck * 0.7];
+const dropChain = sdf.capsule(chainTop, gemPt, neckTube * 0.45);
+const gem = sdf.ellipsoid(neckTube * 2.4, neckTube * 1.3, neckTube * 3.2).translate(gemPt);
+const jewelry = necklace.union(dropChain).union(gem).label('jewelry');
+function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
 
-// 5. HAIR + BASE
+// 6. HAIR + BASE
 const hair = F.hair(rig, { style: 'long', length: 'long', volume: 1.1 }).label('hair');
 const base = F.base(rig, { radius: H * 0.24 }).label('base');
 
-// 7. COLOR — base labels
+// 7. COLOR (label-only — no coordinate mesh painting)
 api.paint.label('skin', '#e8c4a0');
 api.paint.label('eyes', '#f6f4ef');
 api.paint.label('iris', '#5b3a21');
 api.paint.label('pupil', '#161616');
-api.paint.label('lids', '#e8c4a0');
+api.paint.label('lids', '#9c7790');   // eyeshadow (the eyelid geometry)
+api.paint.label('lips', '#b5384a');   // lipstick (the mouth's own label)
+api.paint.label('blush', '#e58a9a');  // conformal cheek patches
 api.paint.label('hair', '#2a1d14');
 api.paint.label('gown', '#7a2f52');
-api.paint.label('jewelry', '#d9b24a');   // gold
+api.paint.label('jewelry', '#d9b24a');
 api.paint.label('base', '#54504a');
 
-// 8. MAKEUP (Marked) — painted regions on the face surface (api.paint.box).
-const eyeL = rig.face.eyeL, eyeR = rig.face.eyeR, mouth = rig.face.mouth;
-const surY = eyeL[1];
-// Blush — round-ish patch on each cheek apple.
-// A deep slab through the cheek (front → into the head) so it can't miss the
-// curved cheek surface, kept small in X/Z so it stays an apple-of-cheek patch.
-const cheekZ = eyeL[2] * 0.40 + mouth[2] * 0.60, bW = r.headX * 0.16, bH = r.head * 0.14;
-for (const cx of [eyeL[0] * 0.98, eyeR[0] * 0.98]) {
-  api.paint.box({ min: [cx - bW, surY - r.headZ * 0.22, cheekZ - bH], max: [cx + bW, surY + r.headZ * 0.04, cheekZ + bH], color: '#e58a9a' });
-}
-// Lipstick.
-api.paint.box({ min: [mouth[0] - r.head * 0.28, mouth[1] - r.headZ * 0.04, mouth[2] - r.head * 0.10], max: [mouth[0] + r.head * 0.28, mouth[1] + r.headZ * 0.35, mouth[2] + r.head * 0.10], color: '#b5384a' });
-// Eyeshadow — mauve on each upper lid.
-for (const ex of [eyeL[0], eyeR[0]]) {
-  api.paint.box({ min: [ex - r.headX * 0.28, surY - r.headZ * 0.04, eyeL[2]], max: [ex + r.headX * 0.28, surY + r.headZ * 0.28, eyeL[2] + r.head * 0.20], color: '#8a6a86' });
-}
-
-return sdf.union(skin, eyes, gown, jewelry, hair, base)
-  .build({ edgeLength: 0.34, detail: [...F.faceDetail(rig)] });
+return sdf.union(skin, eyes, lips, blush, gown, jewelry, hair, base)
+  .build({ edgeLength: 0.32, detail: [...F.faceDetail(rig)] });

@@ -2181,9 +2181,13 @@ describe('figure placeOnHead — seat headwear on the hair', () => {
     expect(lifted.bounds().min[2]).toBeCloseTo(top + 1, 5);
   });
 
-  it('falls back to the crown joint without rest, and validates inputs', () => {
+  it('seats on the head (brow line) without rest, and validates inputs', () => {
+    // No `rest`: the hat sits DOWN on the head at head.z + r.headZ*sit (sit
+    // default 0.35) — the brim near the brow, crown enclosing the skull — not
+    // perched up on the crown joint (the old too-high default).
     const placed = F.placeOnHead(hat() as object, rig) as unknown as SdfNode;
-    expect(placed.bounds().min[2]).toBeCloseTo(rig.joints.crown[2], 5);
+    expect(placed.bounds().min[2]).toBeCloseTo(rig.joints.head[2] + rig.r.headZ * 0.35, 5);
+    expect(placed.bounds().min[2]).toBeLessThan(rig.joints.crown[2]); // lower than the crown
     expect(() => F.placeOnHead(hat() as object, rig, { rest: 5 })).toThrow(/rest/);
     expect(() => F.placeOnHead(hat() as object, rig, { wig: true })).toThrow();
   });

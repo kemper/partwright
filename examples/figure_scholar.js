@@ -62,12 +62,15 @@ const crownTop = sdf.ellipsoid(hR * 0.9, hR * 0.9, hR * 0.5).translate([0, 0, 1.
 const band = sdf.roundedCylinder(hR * 1.08, 1.2, 0.4).translate([0, 0, 1.5 + 0.6]);
 const hatLocal = brim.smoothUnion(band, 0.5).smoothUnion(crownBody, 1.0).smoothUnion(crownTop, 0.8);
 const hair = F.hair(rig, { style: 'short' }).label('hair');
-const hat = F.placeOnHead(hatLocal, rig, { rest: hair, embed: hR * 0.55 }).label('hat');
+// Seat the hat DOWN on the head (new default — brim near the brow), not perched
+// high on the hair top. `sit` fine-tunes the brim height.
+const hat = F.placeOnHead(hatLocal, rig, { sit: 0.30 }).label('hat');
 
-// 6. BELT (Ringed)
+// 6. BELT (Ringed) — conformed to the clothed body so it sits flush (no floating
+// sections), riding over the coat/pants.
+const clothed = sdf.union(skin, coat, pants);
 const beltTube = r.waist * 0.14;
-const beltClear = r.upperLeg * 0.30 + beltTube * 0.5 + 0.5;
-const belt = F.ring(rig.ring.waist, { tube: beltTube, clearance: beltClear, segments: 56 }).label('belt');
+const belt = F.ring(rig.ring.waist, { tube: beltTube, segments: 60, surface: clothed }).label('belt');
 
 // 7. BASE
 const base = F.base(rig, { radius: H * 0.25 }).label('base');

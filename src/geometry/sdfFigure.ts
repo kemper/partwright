@@ -743,11 +743,15 @@ function buildRig(rawOpts: unknown): Rig {
 
   // Grip frames: a held cylinder rests in the cup of the curled fingers, offset
   // from the hand centre toward the palm by GRIP_REACH × r.hand, and lies along
-  // the splay (elbow-hinge) axis. palmN matches the curl direction the hand
-  // builder uses (cross(hinge, foreDir)). All spine-transformed like the joints.
+  // the splay (elbow-hinge) axis. The palm normal MUST match the hand builder's
+  // actual palm: `placedHand` maps the canonical palm (+Y) to `cross(dir, splay)`
+  // = cross(foreDir, hinge), so a held prop seats in the PALM/finger cup. (Using
+  // the opposite sign, cross(hinge, foreDir), put the grip point on the BACK of
+  // the hand — a held sword welded to the knuckles, not the palm.) All
+  // spine-transformed like the joints.
   const GRIP_REACH = 0.72;
   const gripFrame = (a: { handC: Vec3; foreDir: Vec3; hinge: Vec3 }): GripFrame => {
-    const palmN = norm3(cross3(a.hinge, a.foreDir));
+    const palmN = norm3(cross3(a.foreDir, a.hinge));
     return {
       point: add3(sPt(a.handC), scale3(sDir(palmN), r.hand * GRIP_REACH)),
       palmNormal: sDir(palmN),
@@ -4333,31 +4337,34 @@ function standOn(node: Node, sole: unknown, opts?: unknown): Node {
   return node.translate([p[0] - cx, p[1] - cy, p[2] - cz]);
 }
 
-/** Seat headwear (hat, crown, headband, halo) ON TOP of the hair instead of the
- *  bare skull, so it rests on the hairstyle rather than embedding in it — the
- *  headwear analog of the hand `grip` frame. Pass the **hair** node (or any head
- *  node) as `rest`: the accessory's bbox `anchor` (default 'bottom') is moved to
- *  the TOP of that node along +Z, and its X/Y is centred on the head joint.
- *  Without `rest` it falls back to the skull crown joint (`rig.joints.crown`).
- *  `clearance` floats it above the hair; `embed` sinks it in a little so it
- *  welds into one printable piece (a deep embed is what made hand-placed crowns
- *  disappear into the hair). Build the accessory centred on the origin, then
- *  `F.placeOnHead(crown, rig, { rest: hair, embed: 0.2 })`. */
+/** Seat headwear (hat, crown, headband, halo) on the head. **Default (no `rest`):
+ *  the hat sits DOWN around the skull** — its bottom anchor lands at
+ *  `head.z + r.headZ · sit` (`sit` default 0.35 ≈ the brow/temple line), with the
+ *  crown rising to enclose the skull, so a brimmed hat reads worn, not perched
+ *  high. Raise `sit` for a higher perch (tiara/halo), lower/negative to pull it
+ *  down over the ears. `clearance` lifts it, `embed` sinks it further.
+ *  **Legacy: pass `rest`** (the hair node) to instead rest the anchor on the
+ *  hair's TOP (`bounds().max[2]`) — the original behavior, kept for callers tuned
+ *  to it; combine with `embed` to sink into the hair. Build the accessory centred
+ *  on the origin (brim in XY, crown up +Z), then
+ *  `F.placeOnHead(hat, rig)` (or `{ sit }`). Anchor default 'bottom'. */
 function placeOnHead(node: Node, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'placeOnHead(opts)');
-  assertNoUnknownKeys(o, ['rest', 'clearance', 'embed', 'anchor'], 'placeOnHead(opts)');
+  assertNoUnknownKeys(o, ['rest', 'clearance', 'embed', 'anchor', 'sit'], 'placeOnHead(opts)');
   const clearance = num(o.clearance, 0, 'placeOnHead.clearance', 0);
   const embed = num(o.embed, 0, 'placeOnHead.embed', 0);
+  const sit = num(o.sit, 0.35, 'placeOnHead.sit');
   const anchor = o.anchor === undefined ? 'bottom'
     : assertEnum(o.anchor, ['center', 'bottom', 'top'] as const, 'placeOnHead.anchor');
   const head = rig.joints.head as Vec3;
-  let restZ = (rig.joints.crown as Vec3)[2];
+  // Default: seat on the head (brim at the brow line, crown encloses the skull).
+  let restZ = head[2] + rig.r.headZ * sit;
   if (o.rest !== undefined) {
     const rn = o.rest as Node;
     if (!rn || typeof rn.bounds !== 'function') {
       throw new ValidationError('placeOnHead.rest must be an SDF node (e.g. the hair) whose top defines the rest height. See /ai/figure.md');
     }
-    restZ = rn.bounds().max[2];
+    restZ = rn.bounds().max[2];   // legacy: rest on the hair top
   }
   return placeAt(node, [head[0], head[1], restZ + clearance - embed], { anchor });
 }
@@ -4448,20 +4455,59 @@ function asRingFrame(v: unknown, name: string): RingFrame {
  *  non-circular cross-section. `drop` lowers the whole band along the body axis (a
  *  necklace drapes below the neck). Give the result its own `.label(...)` so it
  *  meshes in its own region (crisp) and paints separately. */
+/** Distance from `origin` along unit `dir` to where `surface` crosses from inside
+ *  (evaluate < 0) to outside — or null if `surface` can't be evaluated or no
+ *  crossing is found within `maxDist`. Used to CONFORM bands/straps to the real
+ *  (clothed) body surface instead of an analytic ellipse, so they sit flush and
+ *  layer over clothing. Coarse march + bisection. */
+function marchToSurface(surface: unknown, origin: Vec3, dir: Vec3, maxDist: number): number | null {
+  const s = surface as { evaluate?: (x: number, y: number, z: number) => number } | undefined;
+  if (!s || typeof s.evaluate !== 'function') return null;
+  const N = 48;
+  let prevD = s.evaluate(origin[0], origin[1], origin[2]);
+  let prevT = 0;
+  for (let i = 1; i <= N; i++) {
+    const t = (i / N) * maxDist;
+    const p = add3(origin, scale3(dir, t));
+    const d = s.evaluate(p[0], p[1], p[2]);
+    if (prevD < 0 && d >= 0) {
+      let lo = prevT, hi = t;
+      for (let b = 0; b < 22; b++) {
+        const m = (lo + hi) / 2;
+        const pm = add3(origin, scale3(dir, m));
+        if ((s.evaluate(pm[0], pm[1], pm[2])) < 0) lo = m; else hi = m;
+      }
+      return (lo + hi) / 2;
+    }
+    prevD = d; prevT = t;
+  }
+  return null;
+}
+
 function ringBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
   const f = asRingFrame(frame, 'ring(frame)');
   const o = obj(opts, 'ring(opts)');
-  assertNoUnknownKeys(o, ['tube', 'clearance', 'segments', 'drop'], 'ring(opts)');
+  assertNoUnknownKeys(o, ['tube', 'clearance', 'segments', 'drop', 'surface'], 'ring(opts)');
   const tube = num(o.tube, Math.max(f.rx, f.ry) * 0.12, 'ring.tube', 1e-3);
   const clearance = num(o.clearance, 0, 'ring.clearance', 0);
   const drop = num(o.drop, 0, 'ring.drop');
   const segments = Math.round(num(o.segments, 48, 'ring.segments', 8, 256));
   const off = clearance + tube;
   const c = add3(f.center, scale3(f.axis, -drop));
+  const maxR = Math.max(f.rx, f.ry) * 3;
   const pts: Vec3[] = [];
   for (let i = 0; i < segments; i++) {
     const t = (i / segments) * Math.PI * 2;
-    pts.push(add3(c, add3(scale3(f.xAxis, (f.rx + off) * Math.cos(t)), scale3(f.yAxis, (f.ry + off) * Math.sin(t)))));
+    // With a `surface`, ray-march from the centre to the REAL surface at this
+    // azimuth so the band sits flush on the (clothed) body; otherwise use the
+    // analytic ellipse.
+    const dir = norm3(add3(scale3(f.xAxis, Math.cos(t)), scale3(f.yAxis, Math.sin(t))));
+    const sd = o.surface !== undefined ? marchToSurface(o.surface, c, dir, maxR) : null;
+    if (sd !== null) {
+      pts.push(add3(c, scale3(dir, sd + clearance + tube)));
+    } else {
+      pts.push(add3(c, add3(scale3(f.xAxis, (f.rx + off) * Math.cos(t)), scale3(f.yAxis, (f.ry + off) * Math.sin(t)))));
+    }
   }
   let band = sdf.capsule(pts[segments - 1], pts[0], tube);
   for (let i = 0; i < segments - 1; i++) band = band.union(sdf.capsule(pts[i], pts[i + 1], tube));
@@ -4476,10 +4522,15 @@ function ringPoint(frame: unknown, az: unknown, opts?: unknown): Vec3 {
   const f = asRingFrame(frame, 'ringPoint(frame)');
   const a = (assertNumber(az, 'ringPoint(az)') as number) * DEG;
   const o = obj(opts, 'ringPoint(opts)');
-  assertNoUnknownKeys(o, ['clearance', 'drop'], 'ringPoint(opts)');
+  assertNoUnknownKeys(o, ['clearance', 'drop', 'surface'], 'ringPoint(opts)');
   const clr = num(o.clearance, 0, 'ringPoint.clearance', 0);
   const drop = num(o.drop, 0, 'ringPoint.drop');
   const c = add3(f.center, scale3(f.axis, -drop));
+  // Conform to the real surface at this azimuth when a `surface` is given (so a
+  // buckle/scabbard anchor sits flush over clothing), else the analytic ellipse.
+  const dir = norm3(sub3(scale3(f.xAxis, Math.sin(a)), scale3(f.yAxis, Math.cos(a))));
+  const sd = o.surface !== undefined ? marchToSurface(o.surface, c, dir, Math.max(f.rx, f.ry) * 3) : null;
+  if (sd !== null) return add3(c, scale3(dir, sd + clr));
   return add3(c, add3(scale3(f.xAxis, (f.rx + clr) * Math.sin(a)), scale3(f.yAxis, -(f.ry + clr) * Math.cos(a))));
 }
 
@@ -4493,13 +4544,26 @@ function strap(sdf: SdfApi, a: unknown, b: unknown, opts?: unknown): Node {
   const pa = asPoint3(a, 'strap(a)');
   const pb = asPoint3(b, 'strap(b)');
   const o = obj(opts, 'strap(opts)');
-  assertNoUnknownKeys(o, ['tube', 'bow', 'segments'], 'strap(opts)');
+  assertNoUnknownKeys(o, ['tube', 'bow', 'segments', 'surface'], 'strap(opts)');
   const tube = num(o.tube, len3(sub3(pb, pa)) * 0.05, 'strap.tube', 1e-3);
   const bow = num(o.bow, tube * 2, 'strap.bow');
   const segments = Math.round(num(o.segments, 16, 'strap.segments', 2, 128));
+  const maxR = len3(sub3(pb, pa)) + 1;
   const mid = scale3(add3(pa, pb), 0.5);
   const ctrl: Vec3 = [mid[0], mid[1] - bow, mid[2]];   // pull the midpoint forward (−Y)
   const at = (t: number): Vec3 => {
+    const base: Vec3 = [
+      (1 - t) * pa[0] + t * pb[0],
+      (1 - t) * pa[1] + t * pb[1],
+      (1 - t) * pa[2] + t * pb[2],
+    ];
+    // With a `surface`, lay the band ON the body: project each sample FORWARD
+    // (−Y) onto the front surface so the strap hugs the chest instead of bowing
+    // through it / burying under clothing. Falls back to a forward-bowed bezier.
+    if (o.surface !== undefined) {
+      const fd = marchToSurface(o.surface, [base[0], 0, base[2]], [0, -1, 0], maxR);
+      if (fd !== null) return [base[0], -fd - tube, base[2]];
+    }
     const u = 1 - t;
     return [
       u * u * pa[0] + 2 * u * t * ctrl[0] + t * t * pb[0],

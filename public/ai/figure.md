@@ -450,26 +450,24 @@ const staffPlaced = F.placeAt(staff, rig.joints.handR);                   // cen
 so they stay one printable piece — a staff floating next to the hand is a
 second component.
 
-**Seating headwear ON the hair — `F.placeOnHead(node, rig, opts?)`.** `placeAt`
-snaps to the *skull* crown joint, so a hat/crown placed there **embeds in the
-hair** (the hair adds volume above the skull). `placeOnHead` is the headwear
-analog of the hand grip frame: pass the **hair** as `opts.rest` and it rests the
-accessory's bbox `anchor` (default `'bottom'`) on the TOP of the hair, centred on
-the head. `clearance` floats it above; `embed` sinks it in a little so it welds
-into one printable piece. Build the accessory **centred on the origin** (ring in
-the z=0 plane, spikes up), then place it:
+**Seating headwear — `F.placeOnHead(node, rig, opts?)`.** Build the accessory
+**centred on the origin** (brim in the z=0 plane, crown up +Z). **Default (no
+`rest`): the hat sits DOWN on the head** — its bottom anchor lands at
+`head.z + r.headZ · sit` (`sit` default 0.35 ≈ the brow/temple line), with the
+crown enclosing the skull, so a brimmed hat reads worn rather than perched high.
+This is the recommended path for hats. Raise `sit` for a higher perch
+(tiara/halo), lower it (or go negative) to pull the hat down over the ears.
 
 ```js
-const hair = F.hair(rig, { style: 'long' }).label('hair');
-// coronet built at the origin; size the ring near the hair radius so it welds
-const crown = F.placeOnHead(coronet, rig, { rest: hair, embed: rig.r.head * 0.4 }).label('crown');
+const hat = F.placeOnHead(hatLocal, rig).label('hat');        // sits on the head
+const tiara = F.placeOnHead(tiaraLocal, rig, { sit: 0.7 }).label('tiara'); // higher
 ```
 
-Without `rest` it falls back to `rig.joints.crown` (the bare skull apex). A ring
-sized to the skull sits *inside* the larger hair volume — keep the ring small
-(a coronet on top) or grow it toward the hair radius so the band straddles the
-hair surface and welds (a band tangent to the surface prints as a second
-component).
+`clearance` lifts it, `embed` sinks it further. **Legacy: pass the hair as
+`opts.rest`** to instead rest the anchor on the hair's TOP (centred on the head);
+combine with `embed` to sink into the hair. A skull-sized ring sits *inside* the
+larger hair volume — keep it small or grow it toward the hair radius so the band
+straddles the surface and welds (a tangent band prints as a second component).
 
 **Putting a prop INTO a hand — `F.holdAt(prop, rig.grip.L|R, opts?)`.** `placeAt`
 only positions; `holdAt` also **orients** a prop to the grip and seats it in the
@@ -527,24 +525,37 @@ choker, or belt. The rig exposes two band-wrap frames: `rig.ring.neck` and
 semi-axes `rx`/`ry`, and `hang` = world-down). `F.ring` sweeps a closed elliptical
 tube that conforms to the body's (non-circular) cross-section and rides
 `clearance + tube` OUTSIDE the surface — raise `clearance` to clear clothing.
-`opts`: `{ tube, clearance, segments, drop }` (`drop` lowers a necklace below the
-neck). Give it its own `.label(...)` so it meshes crisply and paints separately.
+`opts`: `{ tube, clearance, segments, drop, surface }` (`drop` lowers a necklace
+below the neck). Give it its own `.label(...)` so it meshes crisply and paints
+separately.
+
+> **Pass `surface` to CONFORM the band to the real (clothed) body** — the node
+> the belt/necklace wraps (e.g. `sdf.union(skin, shirt, pants)`). The band then
+> ray-marches to the actual surface at each azimuth and sits flush ON it, over
+> the clothing — instead of an analytic ellipse that floats off the body in
+> places (unprintable) or embeds through a dress. **Always pass `surface` for a
+> belt/necklace over clothing.** `F.ringPoint(frame, az, { surface })` conforms
+> the same way, so a buckle or a hung-scabbard anchor sits on the clothed surface.
 
 ```js
-const belt = F.ring(rig.ring.waist, { tube: r.waist * 0.16, clearance: r.chestX * 0.18 }).label('belt');
+const clothed = sdf.union(skin, shirt, pants);
+const belt = F.ring(rig.ring.waist, { tube: r.waist * 0.16, surface: clothed }).label('belt');
 // Seat a buckle / hang a scabbard with F.ringPoint(frame, azDeg, opts?):
 //   az 0 = front (−Y), 90 = figure-left (+X), 180 = back, −90 = right.
-const fp = F.ringPoint(rig.ring.waist, 0, { clearance: r.chestX * 0.18 });
+const fp = F.ringPoint(rig.ring.waist, 0, { surface: clothed });
 const buckle = sdf.roundedBox([2.4, 1.2, 2.0], 0.3).translate(fp).label('belt');
 ```
 
 **A band CROSSING the body — `F.strap(a, b, opts?)`.** A bandolier (shoulder →
-opposite hip), sash, suspender, or backpack strap. Sweeps a tube from `a` to `b`
-bowed forward (−Y) by `opts.bow` so it rides OVER the chest. `a`/`b` accept grip
-frames, `rig.shoulder.L/R`, sole frames, or raw points (and `F.ringPoint` output).
+opposite hip), sash, suspender, or backpack strap. `a`/`b` accept grip frames,
+`rig.shoulder.L/R`, sole frames, or raw points (and `F.ringPoint` output). **Pass
+`surface`** to lay the band ON the body — each sample projects forward (−Y) onto
+the real surface, so the strap hugs the chest instead of bowing through it or
+burying under clothing. Without `surface` it falls back to a forward-bowed arc
+(`opts.bow`), which buries on a clothed torso — so prefer `surface`.
 
 ```js
-const sash = F.strap(rig.shoulder.L, F.ringPoint(rig.ring.waist, -90), { tube: r.chestX * 0.12, bow: r.chestY }).label('sash');
+const sash = F.strap(rig.shoulder.L, F.ringPoint(rig.ring.waist, -90), { tube: r.chestX * 0.12, surface: clothed }).label('sash');
 ```
 
 **Hanging something from an anchor — `F.hangFrom(node, point, opts?)`.** The

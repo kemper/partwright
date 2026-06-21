@@ -1,9 +1,10 @@
-// Knight — a showcase of the figure ACCESSORY ATTACHMENT system:
-//   • Worn shell  → a plate cuirass (.round over the shirt) + pauldron caps
-//   • Ringed      → a belt around the waist (F.ring + F.ringPoint buckle)
-//   • Held        → a sword seated in the right fist (F.holdAt)
-//   • Hung        → an empty scabbard dangling at the left hip (F.hangFrom)
-// Front = −Y, Z up, figure-left = +X, figure-right = −X. ~6.2 heads tall.
+// Knight — showcase of the figure ACCESSORY ATTACHMENT system:
+//   • Worn shell  → a plate cuirass LAYERED over the shirt (offset the clothed
+//                   surface, the way clothing offsets skin) + pauldron caps
+//   • Ringed      → a belt conformed to the body (F.ring with `surface`)
+//   • Held        → a sharp tapered sword seated in the right fist (F.holdAt)
+//   • Hung        → an empty scabbard dangling clear of the leg (F.hangFrom)
+// Front = −Y, Z up, figure-left = +X, figure-right = −X.
 const { sdf } = api;
 const F = sdf.figure;
 
@@ -23,8 +24,7 @@ const j = rig.joints, r = rig.r, H = rig.opts.height;
 const head = F.head(rig);
 const face = F.face.assemble(head, rig, {
   eyes: false, nose: { tipRadius: r.head * 0.09 },
-  mouth: { style: 'lips', width: r.head * 0.30 },
-  ears: { size: r.head * 0.21 }, brows: {},
+  mouth: { style: 'lips', width: r.head * 0.30 }, ears: { size: r.head * 0.21 }, brows: {},
 });
 const eyes = F.face.eyes(rig, { radius: r.head * 0.14, lids: 'upper' });
 
@@ -36,27 +36,27 @@ const skin = F.weld(rig, [
 
 // 4. UNDER-TUNIC + PANTS
 const shirtThick = r.chestX * 0.12;
-const shirt = F.clothing.top(rig, { sleeve: 'short', thickness: shirtThick }).label('shirt');
+const shirt = F.clothing.top(rig, { sleeve: 'long', thickness: shirtThick }).label('shirt');
 const pants = F.clothing.pants(rig, { leg: 'slim', rise: 'mid' }).label('pants');
 
-// 5. CUIRASS (Worn shell) — inflate the bare torso over the shirt, hard-clip to a
-// chest→waist band, add a keel ridge, peascod point, fauld rim, and pauldron caps.
-const tArmor = shirtThick + r.chestX * 0.09;
-const torsoNode = F.torso(rig);
-const armorMass = torsoNode.round(tArmor);
+// 5. CUIRASS (Worn shell) — LAYER over the shirt by offsetting the SHIRT surface
+// (so the shirt can never poke through), then clip to a chest→waist band and add
+// a keel ridge, peascod point, fauld rim, and pauldron caps.
+const armorGap = r.chestX * 0.08;          // the plate's standoff/thickness over the shirt
+const armorMass = shirt.round(armorGap);   // guaranteed OUTSIDE the shirt everywhere
 const topZ = j.upperArmL[2] - r.upperArm * 0.05;
 const botZ = j.spine[2] + r.chestY * 0.10;
-const halfX = r.chestX * 1.02 + tArmor * 0.5;
-const bigD = (r.chestY + tArmor) * 4;
+const halfX = r.chestX * 1.02 + shirtThick + armorGap;
+const bigD = (r.chestY + shirtThick + armorGap) * 4;
 const zone = sdf.box([halfX * 2, bigD * 2, topZ - botZ]).translate([0, 0, (topZ + botZ) / 2]);
 const plate = armorMass.intersect(zone);
-const frontY = -(r.chestY + tArmor);
-const keel = sdf.capsule([0, frontY * 0.90, topZ - r.chestY * 0.30], [0, frontY * 0.90, botZ + r.chestY * 0.15], r.chestX * 0.20).intersect(zone);
-const peascod = sdf.sphere(r.chestX * 0.42).translate([0, frontY * 0.82, botZ + r.chestY * 0.05]);
+const frontY = -(r.chestY + shirtThick + armorGap);
+const keel = sdf.capsule([0, frontY * 0.92, topZ - r.chestY * 0.30], [0, frontY * 0.92, botZ + r.chestY * 0.15], r.chestX * 0.20).intersect(zone);
+const peascod = sdf.sphere(r.chestX * 0.42).translate([0, frontY * 0.85, botZ + r.chestY * 0.05]);
 const neckScoop = sdf.sphere(r.neck * 1.7).translate([0, frontY * 0.6, topZ - r.chestY * 0.12]);
-const fauld = torsoNode.round(tArmor + r.chestX * 0.06)
+const fauld = shirt.round(armorGap + r.chestX * 0.06)
   .intersect(sdf.box([halfX * 2.4, bigD * 2, r.chestY * 0.5]).translate([0, 0, botZ + r.chestY * 0.1]));
-const pR = r.upperArm * 1.35 + shirtThick;
+const pR = r.upperArm * 1.35 + shirtThick + armorGap;
 const pauldron = (cx, cy, cz) =>
   sdf.ellipsoid(pR * 1.25, pR * 1.05, pR * 0.7).translate([cx, cy, cz])
     .union(sdf.ellipsoid(pR * 1.0, pR * 0.82, pR * 0.5).translate([cx * 1.10, cy, cz - pR * 0.7]));
@@ -66,45 +66,60 @@ const armor = plate.union(keel).smoothUnion(peascod, r.chestX * 0.25).union(faul
   .smoothUnion(pauldron(j.upperArmR[0] * 1.06, j.upperArmR[1], j.upperArmR[2] + r.upperArm * 0.45), r.upperArm * 0.18)
   .label('armor');
 
-// 6. BELT (Ringed) + buckle at the front
-const beltTube = r.waist * 0.16;
-const beltClear = r.upperLeg * 0.30 + beltTube * 0.5 + 0.5;
-const beltFrame = rig.ring.waist;
-const beltBand = F.ring(beltFrame, { tube: beltTube, clearance: beltClear, segments: 56 });
-const bucklePt = F.ringPoint(beltFrame, 0, { clearance: beltClear });
+// Clothed-body surface for conforming the belt + scabbard anchor.
+const clothed = sdf.union(skin, shirt, pants);
+
+// 6. BELT (Ringed) — conformed to the clothed body so it sits flush, + buckle.
+const beltTube = r.waist * 0.15;
+const beltBand = F.ring(rig.ring.waist, { tube: beltTube, segments: 64, surface: clothed });
+const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: clothed });
 const buckle = sdf.roundedBox([beltTube * 3, beltTube * 2, beltTube * 2.6], beltTube * 0.28).translate(bucklePt);
 const belt = beltBand.union(buckle).label('belt');
 
-// 7. SWORD (Held) — built along +Z centred at origin, then seated in the right fist.
-const gripLen = r.hand * 2.2, gripR = r.hand * 0.26;
-const guardW = r.hand * 3.8, guardH = r.hand * 0.34, guardD = r.hand * 0.70;
-const bladeLen = H * 0.58, bladeW = r.hand * 0.65, bladeT = r.hand * 0.34;
-const pommelR = r.hand * 0.40;
+// 7. SWORD (Held) — a SHARP tapered blade: flat diamond cross-section narrowing
+// to a point, a crisp wide cross-guard, a grip, and a disc pommel. Built along
+// +Z centred at origin, then seated in the right fist.
+const gripLen = r.hand * 2.2, gripR = r.hand * 0.24;
+const guardW = r.hand * 3.6, guardH = r.hand * 0.30, guardD = r.hand * 0.62;
+const bladeLen = H * 0.62, bladeHalfW = r.hand * 0.42, bladeHalfT = r.hand * 0.14;
+const pommelR = r.hand * 0.42;
 const pommelZ = -gripLen * 0.55, guardZ = gripLen * 0.55;
 const grip = sdf.capsule([0, 0, pommelZ], [0, 0, guardZ], gripR);
-const guard = sdf.roundedBox([guardW, guardD, guardH * 2], guardH * 0.2).translate([0, 0, guardZ]);
-const bladeBase = sdf.roundedBox([bladeW * 2, bladeT * 2, bladeLen * 0.55], bladeT * 0.25).translate([0, 0, guardZ + bladeLen * 0.275]);
-const bladeUpper = sdf.roundedBox([bladeW * 1.2, bladeT * 1.5, bladeLen * 0.50], bladeT * 0.20).translate([0, 0, guardZ + bladeLen * 0.725]);
-const bladeTip = sdf.sphere(r.hand * 0.35).translate([0, 0, guardZ + bladeLen]);
-const blade = bladeBase.smoothUnion(bladeUpper, bladeT * 0.6).smoothUnion(bladeTip, bladeT * 0.5);
-const pommel = sdf.sphere(pommelR).translate([0, 0, pommelZ]);
-const swordLocal = grip.union(guard).union(blade).smoothUnion(pommel, pommelR * 0.25);
+const guard = sdf.roundedBox([guardW, guardD, guardH * 2], guardH * 0.18).translate([0, 0, guardZ]);
+// Blade: a flat (wide X, thin Y) bar whose WIDTH tapers to a point while its
+// THICKNESS stays constant — so it can't pinch in two axes and shed the tip as a
+// floating sliver. Intersect a constant-thickness slab with a width-tapering
+// wedge whose Y is huge (so `taper`, which scales both X and Y, never thins the
+// blade below bladeHalfT). `taper` is anchored at z=0 → base at z=0, tip +bladeLen.
+const taperRate = -0.7 / bladeLen;   // tip ~30% width — pointed but printable
+const bladeSlab = sdf.roundedBox([bladeHalfW * 2, bladeHalfT * 2, bladeLen], bladeHalfT * 0.7)
+  .translate([0, 0, bladeLen * 0.5]);
+const bladeWedge = sdf.box([bladeHalfW * 2, bladeHalfW * 8, bladeLen])
+  .translate([0, 0, bladeLen * 0.5])
+  .taper(taperRate, 'z');
+const blade = bladeSlab.intersect(bladeWedge).translate([0, 0, guardZ]);
+const pommel = sdf.cylinder(pommelR, pommelR * 0.7).rotate([90, 0, 0]).translate([0, 0, pommelZ]);
+const swordLocal = grip.union(guard).smoothUnion(blade, bladeHalfT * 0.5).smoothUnion(pommel, pommelR * 0.3);
 const heldSword = F.holdAt(swordLocal, rig.grip.R);
-const swordBridge = sdf.capsule(j.handR, rig.grip.R.point, r.hand * 0.55);
+const swordBridge = sdf.capsule(j.handR, rig.grip.R.point, r.hand * 0.5);
 const sword = heldSword.smoothUnion(swordBridge, r.hand * 0.4).label('sword');
 
-// 8. SCABBARD (Hung) — empty sheath dangling at the left hip from the belt.
-const scabLen = bladeLen + gripLen * 0.3, scabW = r.hand * 1.10, scabT = r.hand * 0.70, scabTube = r.hand * 0.28;
-const collarH = r.hand * 0.90, collarR = scabW * 0.90;
+// 8. SCABBARD (Hung) — empty sheath at the left hip, pushed OUT past the thigh
+// and hung near-vertical so it clears the leg/clothes.
+const scabLen = bladeLen + gripLen * 0.3, scabW = r.hand * 0.95, scabT = r.hand * 0.55, scabTube = r.hand * 0.24;
+const collarH = r.hand * 0.85, collarR = scabW * 0.95;
 const scabBody = sdf.roundedBox([scabW * 2, scabT * 2, scabLen * 0.90], scabTube).translate([0, 0, -scabLen * 0.45]);
 const collar = sdf.cylinder(collarR, collarH).translate([0, 0, collarH * 0.5]);
 const chape = sdf.sphere(scabW * 0.80).translate([0, 0, -scabLen * 0.92]);
 const scabLocal = scabBody.smoothUnion(collar, scabTube * 0.8).smoothUnion(chape, scabTube * 0.8);
-const scabClear = beltClear + r.hand * 0.5;
-const hipPt = F.ringPoint(beltFrame, 85, { clearance: scabClear });
-const hungScab = F.hangFrom(scabLocal, hipPt, { tilt: 20, anchor: 'top' });
-const frogBelt = F.ringPoint(beltFrame, 85, { clearance: beltClear });
-const frog = sdf.capsule(frogBelt, [hipPt[0], hipPt[1], hipPt[2] + collarH * 0.3], scabTube * 0.8);
+// Anchor on the clothed surface at the left hip, then push further out so the
+// sheath hangs beside (not through) the leg.
+const hipPt0 = F.ringPoint(rig.ring.waist, 92, { surface: clothed });
+const outDir = [hipPt0[0] - rig.ring.waist.center[0], hipPt0[1] - rig.ring.waist.center[1], 0];
+const outLen = Math.hypot(outDir[0], outDir[1]) || 1;
+const hipPt = [hipPt0[0] + (outDir[0] / outLen) * r.hand * 1.1, hipPt0[1] + (outDir[1] / outLen) * r.hand * 1.1, hipPt0[2]];
+const hungScab = F.hangFrom(scabLocal, hipPt, { tilt: 8, anchor: 'top' });
+const frog = sdf.capsule(hipPt0, [hipPt[0], hipPt[1], hipPt[2] + collarH * 0.3], scabTube * 0.8);
 const scabbard = hungScab.union(frog).label('scabbard');
 
 // 9. HAIR + BASE
@@ -120,9 +135,9 @@ api.paint.label('lids', '#c89a6a');
 api.paint.label('hair', '#4a3526');
 api.paint.label('shirt', '#6e4a35');
 api.paint.label('pants', '#3a3326');
-api.paint.label('armor', '#b9c0c9');   // steel
+api.paint.label('armor', '#b9c0c9');
 api.paint.label('belt', '#3a2417');
-api.paint.label('sword', '#cfd4da');   // bright blade/steel
+api.paint.label('sword', '#cfd4da');
 api.paint.label('scabbard', '#5a3a22');
 api.paint.label('base', '#54504a');
 

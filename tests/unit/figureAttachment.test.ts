@@ -71,6 +71,34 @@ describe('rig attachment frames', () => {
   });
 });
 
+describe('grip frame — palm side (held props seat in the palm, not the knuckles)', () => {
+  it('palmNormal points to the hand palm: cross(foreDir, hinge), not its negative', () => {
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 40, bend: 30 } } });
+    const foreDir = rig.dir.lowerArmR as Vec3;
+    const hinge = rig.dir.elbowHingeR as Vec3;
+    // The hand builder (placedHand) maps the canonical palm (+Y) to cross(dir,
+    // splay) = cross(foreDir, hinge); the grip frame MUST match that sign so a
+    // held prop seats in the finger cup, not on the back of the hand.
+    const cx = [
+      foreDir[1] * hinge[2] - foreDir[2] * hinge[1],
+      foreDir[2] * hinge[0] - foreDir[0] * hinge[2],
+      foreDir[0] * hinge[1] - foreDir[1] * hinge[0],
+    ];
+    const l = Math.hypot(...cx) || 1;
+    const expected: Vec3 = [cx[0] / l, cx[1] / l, cx[2] / l];
+    const dot = rig.grip.R.palmNormal[0] * expected[0] + rig.grip.R.palmNormal[1] * expected[1] + rig.grip.R.palmNormal[2] * expected[2];
+    expect(dot).toBeGreaterThan(0.99); // same direction (not flipped)
+    // The grip point sits toward the palm: offset from the hand centre ALONG palmNormal.
+    const off = [
+      rig.grip.R.point[0] - rig.joints.handR[0],
+      rig.grip.R.point[1] - rig.joints.handR[1],
+      rig.grip.R.point[2] - rig.joints.handR[2],
+    ];
+    const offDot = off[0] * rig.grip.R.palmNormal[0] + off[1] * rig.grip.R.palmNormal[1] + off[2] * rig.grip.R.palmNormal[2];
+    expect(offDot).toBeGreaterThan(0);
+  });
+});
+
 describe('ringPoint', () => {
   it('maps azimuth to the right side of the body', () => {
     const rig = buildRig({ height: 64 });
