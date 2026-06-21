@@ -1,0 +1,12 @@
+{
+  "title": "Eyeglasses — round spectacles perched on the face (Perched / F.onFace)",
+  "model": "model.js",
+  "lang": "manifold-js",
+  "views": [[-90, 6], [-50, 15], [0, 6]],
+  "rubric": "rubric.md",
+  "gates": {
+    "manifold": true,
+    "maxGenus": 6,
+    "requireLabels": ["skin", "glasses"]
+  }
+}

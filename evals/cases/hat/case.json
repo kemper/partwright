@@ -1,0 +1,12 @@
+{
+  "title": "Wide-brim hat — seated on the hair (Crowned / F.placeOnHead)",
+  "model": "model.js",
+  "lang": "manifold-js",
+  "views": [[-90, 2], [-50, 15], [0, 2]],
+  "rubric": "rubric.md",
+  "gates": {
+    "manifold": true,
+    "maxGenus": 5,
+    "requireLabels": ["skin", "hat", "hair"]
+  }
+}
