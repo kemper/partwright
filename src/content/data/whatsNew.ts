@@ -26,6 +26,78 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'June 21, 2026',
+    headline: 'Partwright 1.1 — the Character Creator, session attachments, and directional surface textures',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.1',
+            body: 'A backward-compatible feature release — your existing sessions and exported files all keep working. The running version is shown in the About dialog; this update bundles the new Character Creator, typed session attachments, directional surface textures, and a redesigned color picker.',
+          },
+        ],
+      },
+      {
+        label: 'Figures',
+        items: [
+          {
+            title: 'Character Creator — build a figure with no code',
+            body: 'A new no-code panel drives the whole figure system through a GUI: pick a body build, face, hair, garments and footwear with live controls and an instant preview, and Partwright writes the model code for you. The fastest way yet to go from idea to a printable character.',
+          },
+          {
+            title: 'Faster, truer figure previews',
+            body: 'The Character Creator preview cancels an in-flight render the moment you change a control, so dragging a slider stays responsive, and the fast SDF preview now shows the model’s estimated colors — including painted catalog figures — instead of a flat gray shape.',
+          },
+        ],
+      },
+      {
+        label: 'Sessions & attachments',
+        items: [
+          {
+            title: 'Typed session attachments',
+            body: 'Reference images are now first-class “attachments” you can label by type and annotate with a description, so a session can carry the photos, sketches, and notes a design was built from. Attachments now survive a page refresh and come through correctly on import.',
+          },
+        ],
+      },
+      {
+        label: 'Modeling & surface',
+        items: [
+          {
+            title: 'Directional surface textures — api.sdf.tube',
+            body: 'A new SDF helper sweeps flutes, rings, or a helix along a path, so you can add grip ribbing, decorative reeding, or a spiral straight in code — the texture follows the tube instead of being stamped flat.',
+          },
+        ],
+      },
+      {
+        label: 'Painting & color',
+        items: [
+          {
+            title: 'A redesigned color picker',
+            body: 'The browser’s native color inputs are replaced everywhere by a shared palette modal — pick from your filament palette or a custom swatch in one consistent dialog, with proper keyboard focus handling.',
+          },
+          {
+            title: 'Recolor a whole part at once',
+            body: 'The paint menu’s Labels list can now set an entire part’s color in one click, instead of repainting region by region.',
+          },
+        ],
+      },
+      {
+        label: 'Studio & publishing',
+        items: [
+          {
+            title: 'Opt-in studio lighting',
+            body: 'Studio lighting and ground shadow are now an explicit “Light” toggle (off by default) so the viewport starts fast and clean, and you turn on the richer lit look only when you want it.',
+          },
+          {
+            title: 'AI-assisted publishing',
+            body: 'When you publish a model, the assistant can auto-populate a title, description, and tags for you, so a design is ready to share with a single review pass.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'June 14 – 20, 2026',
     headline: 'Partwright 1.0 — multi-part & multi-color export, a big figure expansion, and pinned version URLs',
     groups: [
