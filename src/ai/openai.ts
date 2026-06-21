@@ -694,6 +694,13 @@ async function consumeChatStream(
   // the Responses and Gemini paths.
   if (toolCalls.length > 0) stopReason = 'tool_use';
 
+  // Some OpenAI-compatible servers close the stream after content deltas with no
+  // final finish_reason chunk and no tool calls. Without this, stopReason stays
+  // 'unknown' and chatLoop reports a confusing 'other' outcome even though valid
+  // text streamed. Treat streamed-text-then-EOF as a normal end_turn, matching
+  // the Responses ('end_turn' default) and Gemini ('unknown'→'end_turn') paths.
+  if (stopReason === 'unknown' && collectedText.length > 0) stopReason = 'end_turn';
+
   return { text: collectedText, toolCalls, stopReason, usage };
 }
 

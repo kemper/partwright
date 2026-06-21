@@ -710,5 +710,6 @@ self.onmessage = async (event: MessageEvent) => {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+    return;
   }
 };

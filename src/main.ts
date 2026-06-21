@@ -84,7 +84,7 @@ import { findPublishTarget, type PublishFormat } from './publish/publishTargets'
 import { generatePublishMetadata, isActiveProviderConnected } from './ai/publishMetadata';
 import { export3MF, build3MF } from './export/threemf';
 import { buildZip, type ZipEntry } from './export/zip';
-import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT } from './export/threemfProject';
+import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, isBambuPrinter, isBambuNozzle, isBambuFilament } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
@@ -4828,6 +4828,20 @@ async function main() {
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
   async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
     const bambu = opts?.bambu ?? true;
+    // Validate the Bambu profile selectors at the boundary so a console/AI/MCP
+    // caller gets the same constraints the export modal's dropdowns enforce. An
+    // unknown printer/filament would silently fall back to the default profile,
+    // and a raw nozzle string is interpolated straight into the Bambu config —
+    // a bad value yields a malformed preset Bambu rejects. (Only meaningful for
+    // the Bambu project path; the generic grid ignores these.)
+    if (bambu && opts) {
+      if (opts.printer !== undefined && !isBambuPrinter(opts.printer))
+        return { error: `export3MFParts: unknown printer "${opts.printer}". Valid: ${BAMBU_PRINTERS.map(p => p.id).join(', ')}.` };
+      if (opts.nozzle !== undefined && !isBambuNozzle(opts.nozzle))
+        return { error: `export3MFParts: unknown nozzle "${opts.nozzle}". Valid: ${BAMBU_NOZZLES.join(', ')}.` };
+      if (opts.filament !== undefined && !isBambuFilament(opts.filament))
+        return { error: `export3MFParts: unknown filament "${opts.filament}". Valid: ${BAMBU_FILAMENT_TYPES.map(f => f.id).join(', ')}.` };
+    }
     const allParts = getState().parts;
     if (allParts.length === 0) return { error: 'No parts in this session.' };
     let ids = partIds;

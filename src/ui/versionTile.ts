@@ -67,7 +67,9 @@ export function createVersionTile(version: Version, options: VersionTileOptions 
     const img = document.createElement('img');
     img.src = URL.createObjectURL(version.thumbnail);
     img.className = 'w-full h-full object-contain';
-    img.addEventListener('load', () => URL.revokeObjectURL(img.src));
+    const revoke = () => URL.revokeObjectURL(img.src);
+    img.addEventListener('load', revoke);
+    img.addEventListener('error', revoke);
     thumbContainer.appendChild(img);
   } else {
     const placeholder = document.createElement('div');

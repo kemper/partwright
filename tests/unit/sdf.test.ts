@@ -186,6 +186,19 @@ describe('sdf primitives', () => {
       expect(() => primTube([[0, 0, 0], [0, 0, 10]], 2, { profile: 'zigzag' })).toThrow();
       expect(() => primTube([[0, 0, 0], [0, 0, 10]], 2, { bogus: 1 } as never)).toThrow();
     });
+    it('rejects a non-integer rib/ring/thread count (would seam at the theta wrap)', () => {
+      expect(() => primTube([[0, 0, 0], [0, 0, 10]], 2, { profile: 'helix', count: 2.5 })).toThrow();
+      expect(() => primTube([[0, 0, 0], [0, 0, 10]], 2, { profile: 'flutes', count: 0 })).toThrow();
+    });
+    it('a deep groove cannot carve through the centerline (stays solid at the axis)', () => {
+      // depth (5) > radius (2): without the clamp the field at the axis would go
+      // positive (a hole bored through), splitting the tube. The clamp keeps the
+      // core solid, so the axis stays well inside the surface.
+      const t = primTube([[0, 0, 0], [0, 0, 20]], 2, { profile: 'flutes', count: 6, depth: 5 });
+      for (let z = 2; z <= 18; z += 4) {
+        expect(t.evaluate(0, 0, z)).toBeLessThan(0);
+      }
+    });
   });
 
   describe('gyroid', () => {
