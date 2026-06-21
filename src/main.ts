@@ -178,6 +178,7 @@ import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
 import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook, stampImageProgrammatic } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
+import { resolveImageStampPlacement, STAMP_VIEWS, type StampView } from './color/imagePaintPlacement';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
 import { initPrintToolsUI, isPrintToolsOpen, forceDeactivate as closePrintToolsMenu, type PrintToolsHandlers } from './ui/printToolsUI';
@@ -13692,24 +13693,45 @@ async function main() {
       return { replaced: count };
     },
 
-    /** Stamp an image onto the model surface as a color region — the
-     *  programmatic Image-paint tool. `imageUrl` is a `data:` URL or a
-     *  same-origin URL. `at` is the stamp centre on the surface (world coords)
-     *  and `normal` the outward face direction there — get them from probeRay /
-     *  measureAt / a face centroid. `size` is the stamp diameter in world units.
+    /** Stamp a raster image onto the model surface as paint — the programmatic
+     *  Image-paint tool, the right way to put a logo / graphic / text / decal on
+     *  a surface (a shirt graphic, a label, face/skin detail). `imageUrl` is a
+     *  `data:` URL or a same-origin URL.
+     *
+     *  PLACEMENT (two ways):
+     *   - Easiest: pass `view` ('front'|'back'|'left'|'right'|'top'|'bottom') and
+     *     the decal is projected flat along that axis onto the surface facing it,
+     *     auto-anchored at the model centre. Add `label` to centre (and, when
+     *     `size` is omitted, auto-size) the projection on an `api.label` region.
+     *   - Precise: pass explicit `at` (stamp centre on the surface, world coords)
+     *     and `normal` (outward face direction there) — from probeRay / probePixel
+     *     / a face centroid.
+     *
+     *  `size` is the decal width in world units (auto-derived from `label` when
+     *  omitted). `rotationDeg` twists the image around the projection axis.
      *  `detail` (default 96) is triangle rows across the stamp — higher = crisper
      *  (0 = flat stamp on the existing tessellation). `removeBackground` (default
-     *  true) drops the image's background. Only forward-facing triangles inside
-     *  the footprint are painted. Returns `{ ok, name, triangles, avgColor }` or
-     *  `{ error }`. Call saveVersion() afterwards to persist. */
-    async paintImage(opts: { imageUrl: string; at: [number, number, number]; normal: [number, number, number]; size: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string }) {
+     *  true) drops the image's background so only the subject paints. Only
+     *  forward-facing triangles inside the footprint are painted; a depth slab
+     *  stops it bleeding through thin walls. Returns `{ ok, name, triangles,
+     *  avgColor }` or `{ error }`. Call saveVersion() afterwards to persist. */
+    async paintImage(opts: { imageUrl: string; view?: StampView; label?: string; at?: [number, number, number]; normal?: [number, number, number]; size?: number; rotationDeg?: number; detail?: number; removeBackground?: boolean; name?: string }) {
       const check = guard(() => {
         assertObject(opts, 'paintImage(opts)');
         assertString(opts?.imageUrl, 'paintImage(opts.imageUrl)', { allowEmpty: false });
-        assertNumberTuple(opts?.at, 3, 'paintImage(opts.at)').forEach((n, i) => assertNumber(n, `paintImage(opts.at[${i}])`, {}));
-        assertNumberTuple(opts?.normal, 3, 'paintImage(opts.normal)').forEach((n, i) => assertNumber(n, `paintImage(opts.normal[${i}])`, {}));
-        assertNumber(opts?.size, 'paintImage(opts.size)', { min: 0 });
-        if (opts.size <= 0) throw new ValidationError('paintImage(opts.size) must be greater than 0');
+        if (opts?.view !== undefined) {
+          assertString(opts.view, 'paintImage(opts.view)', { allowEmpty: false });
+          if (!(STAMP_VIEWS as string[]).includes(opts.view)) {
+            throw new ValidationError(`paintImage(opts.view) must be one of: ${STAMP_VIEWS.join(', ')}`);
+          }
+        }
+        if (opts?.label !== undefined) assertString(opts.label, 'paintImage(opts.label)', { allowEmpty: false });
+        if (opts?.at !== undefined) assertNumberTuple(opts.at, 3, 'paintImage(opts.at)').forEach((n, i) => assertNumber(n, `paintImage(opts.at[${i}])`, {}));
+        if (opts?.normal !== undefined) assertNumberTuple(opts.normal, 3, 'paintImage(opts.normal)').forEach((n, i) => assertNumber(n, `paintImage(opts.normal[${i}])`, {}));
+        if (opts?.size !== undefined) {
+          assertNumber(opts.size, 'paintImage(opts.size)', { min: 0 });
+          if (opts.size <= 0) throw new ValidationError('paintImage(opts.size) must be greater than 0');
+        }
         if (opts?.rotationDeg !== undefined) assertNumber(opts.rotationDeg, 'paintImage(opts.rotationDeg)', {});
         if (opts?.detail !== undefined) assertNumber(opts.detail, 'paintImage(opts.detail)', { min: 0, integer: true });
         if (opts?.removeBackground !== undefined) assertBoolean(opts.removeBackground, 'paintImage(opts.removeBackground)');
@@ -13717,6 +13739,27 @@ async function main() {
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (!currentMeshData) return { error: 'No model loaded — run code first.' };
+
+      // Resolve a label name to its triangle set (used to centre/auto-size the
+      // projection). An unknown label is a clear user error, not a silent miss.
+      let labelTriangles: Set<number> | null = null;
+      if (opts.label) {
+        labelTriangles = currentLabelMap?.get(opts.label) ?? null;
+        if (!labelTriangles || labelTriangles.size === 0) {
+          const known = currentLabelMap ? Array.from(currentLabelMap.keys()) : [];
+          return { error: `paintImage: no label "${opts.label}" in the current model.${known.length ? ` Known labels: ${known.join(', ')}.` : ''}` };
+        }
+      }
+
+      const placement = resolveImageStampPlacement(currentMeshData, {
+        view: opts.view,
+        at: opts.at,
+        normal: opts.normal,
+        size: opts.size,
+        labelTriangles,
+      });
+      if ('error' in placement) return placement;
+
       let imageData: ImageData;
       try {
         imageData = await loadImageDataFromUrl(opts.imageUrl);
@@ -13724,9 +13767,9 @@ async function main() {
         return { error: `paintImage: could not load image — ${e instanceof Error ? e.message : String(e)}` };
       }
       const region = stampImageProgrammatic(imageData, {
-        hitPoint: opts.at,
-        hitNormal: opts.normal,
-        size: opts.size,
+        hitPoint: placement.at,
+        hitNormal: placement.normal,
+        size: placement.size,
         rotationDeg: opts.rotationDeg,
         detail: opts.detail,
         removeBackground: opts.removeBackground,
@@ -15281,7 +15324,7 @@ async function main() {
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
         'replaceColor':    { signature: 'replaceColor({from:[r,g,b], to:[r,g,b], tolerance?}) -- Recolor every USER paint region matching `from` (0..1 colors) -> {replaced, hint?}. Code-declared colors (api.paint.*/api.label) are edited in the code, not here.', docs: '/ai/colors.md' },
-        'paintImage':      { signature: 'await paintImage({imageUrl, at:[x,y,z], normal:[nx,ny,nz], size, rotationDeg?, detail?, removeBackground?, name?}) -- Stamp an image onto the surface as a color region -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
+        'paintImage':      { signature: 'await paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?}) -- Project a raster image onto the surface as paint (logo/graphic/text/decal). Use view (auto-anchored, optionally centred on a label) OR explicit at+normal -> {ok, name, triangles, avgColor} or {error}', docs: '/ai/colors.md' },
         'getPalette':      { signature: 'getPalette() -- Active filament palette {id, name, capacity, constrained, slots:[{id,name,hex,td}]}', docs: '/ai/colors.md' },
         'listPalettes':    { signature: 'listPalettes() -- All saved palettes [{id, name, active}]', docs: '/ai/colors.md' },
         'createPalette':   { signature: 'createPalette(name) -- Create an empty palette -> {id} (call setActivePalette to switch)', docs: '/ai/colors.md' },

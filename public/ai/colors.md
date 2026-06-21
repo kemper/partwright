@@ -630,24 +630,39 @@ This only changes region *colors*, not which triangles they cover — to repaint
 
 ## Stamping an image onto the surface
 
-`paintImage({imageUrl, at, normal, size, ...})` projects an image onto the model as a color region — the programmatic Image-paint tool. Use it for logos, decals, faces, or photo decals on a surface.
+`paintImage({imageUrl, view|at+normal, size, ...})` projects a **raster image** onto the model as paint — the right tool for a logo, sticker/decal, styled text or wordmark, a shirt graphic, or face/skin detail. It maps the image's actual pixels onto the triangles, so a logo stays a logo and lettering stays legible. **Do not reach for `paintNear`/`paintInBox` for a graphic** — those flood one flat colour and turn a picture into a blob.
+
+**Easiest — project from a named view:**
 
 ```js
-// stamp a logo on the +Z face of a 20mm cube, centred, 12mm across
+// put a graphic on the chest of a figure, projected from the front,
+// centred (and auto-sized) on the "shirt" label
 await partwright.paintImage({
-  imageUrl: logoDataUrl,     // a data: URL or a same-origin URL
-  at: [0, 0, 10],            // stamp centre, ON the surface (world coords)
-  normal: [0, 0, 1],         // the outward face direction there
-  size: 12,                  // stamp diameter in world units
-  rotationDeg: 0,            // spin around the normal (optional)
-  detail: 96,                // triangle rows across the stamp; higher = crisper. 0 = flat
-  removeBackground: true,    // drop the image's background (default true)
+  imageUrl: graphicDataUrl,  // a data: URL or a same-origin URL
+  view: 'front',             // front|back|left|right|top|bottom — projects flat along that axis
+  label: 'shirt',            // optional: centre on this api.label region; auto-sizes when size is omitted
+  // size: 30,               // decal width in model units (optional when `label` is given)
+  rotationDeg: 0,            // spin around the projection axis (optional)
+  removeBackground: true,    // drop the image's background so only the subject paints (default true)
 })
 // -> { ok, name, triangles, avgColor } or { error }
 ```
 
-- **Getting `at` / `normal`:** use `probeRay({origin, direction})` (returns the hit point + face normal), `measureAt([x,y])`, or a known face centre — `at` must lie on the surface and `normal` must face outward, or the footprint is empty and you get `{ error }`.
-- Only **forward-facing** triangles inside the stamp square are painted, so a stamp never bleeds onto the far side.
+**Precise — explicit anchor + direction** (when you need exact placement):
+
+```js
+await partwright.paintImage({
+  imageUrl: logoDataUrl,
+  at: [0, 0, 10],            // stamp centre, ON the surface (world coords)
+  normal: [0, 0, 1],         // the outward face direction there
+  size: 12,                  // decal width in world units
+  detail: 96,                // triangle rows across the stamp; higher = crisper. 0 = flat
+})
+```
+
+- **Placement:** pass `view` (auto-anchored at the model centre, optionally centred on a `label`) for the common case, OR explicit `at` + `normal` for precision — get those from `probeRay({origin, direction})` (returns hit point + face normal), `probePixel`, or a known face centre. With `view`, the projection direction is the view axis (front=-Y, back=+Y, right=+X, left=-X, top=+Z, bottom=-Z) and the surface anchor is found by ray-casting toward the model centre.
+- Only **forward-facing** triangles inside the footprint are painted, and a depth slab stops paint bleeding through to the far side.
+- After painting, **verify** with `renderView`/`renderViews` from the projection direction — confirm the graphic landed where you intended and is the right size before saving.
 - The stamp subdivides the footprint for crisp edges (smooth mode), so the model's triangle count rises locally — call `getGeometryData()` after if you care about the budget.
 - Call `saveVersion('stamped')` afterwards to persist it (paint isn't auto-saved).
 
