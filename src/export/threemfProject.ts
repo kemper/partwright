@@ -83,6 +83,11 @@ export interface BambuPrinterSpec {
 // single-nozzle (→ P1S base). `model` MUST match Bambu's exact printer_model or
 // Bambu converts the project on open. Note H2S/A2L are SINGLE-nozzle despite their
 // large beds; X2D / H2D Pro are dual.
+// Every `model` + `process` string below was verified (2026-06-21) against the
+// live BambuStudio `master` bundle — each `process` is the exact `name` of a
+// `0.20mm Standard @BBL *` preset whose `compatible_printers` includes the model,
+// so Bambu accepts the project (no rc -17). tests/unit/bambuPrinters.test.ts pins
+// these; if you add/rename a printer, confirm its preset against the BBL bundle.
 export const BAMBU_PRINTERS: BambuPrinterSpec[] = [
   // Dual-nozzle (H2C structural base)
   { id: 'h2c', label: 'Bambu Lab H2C', base: 'h2c', model: 'Bambu Lab H2C', bed: [330, 320], height: 325, process: '0.20mm Standard @BBL H2C' },
