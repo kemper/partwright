@@ -39,6 +39,11 @@ export interface SessionAttachment extends AttachedImage {
   kind: AttachmentKind;
   /** MIME type when known (e.g. `image/png`, `model/stl`, `text/markdown`). */
   mediaType?: string;
+  /** Free-form note describing WHY this attachment matters — what to match, the
+   *  constraint it captures, the source it came from. Distinct from `label`
+   *  (a short caption / perspective preset): the description is the durable
+   *  context the AI reads back. */
+  description?: string;
   /** Epoch ms when the attachment was added — lets the UI/AI reason about
    *  staleness (a reference photo can age out of relevance). */
   addedAt?: number;
@@ -105,7 +110,7 @@ export function inferAttachmentKind(mediaType: string | undefined, src?: string,
  *  the read-time migration and by every construction site, so `kind`/`mediaType`
  *  are always populated consistently. */
 export function normalizeAttachment(
-  partial: { id?: string; src: string; label?: string; kind?: AttachmentKind; mediaType?: string; addedAt?: number; source?: 'user' | 'chat' },
+  partial: { id?: string; src: string; label?: string; description?: string; kind?: AttachmentKind; mediaType?: string; addedAt?: number; source?: 'user' | 'chat' },
   fallbackId: string,
 ): SessionAttachment {
   const mediaType = partial.mediaType || inferMediaType(partial.src, partial.label);
@@ -118,6 +123,8 @@ export function normalizeAttachment(
   if (mediaType) out.mediaType = mediaType;
   const label = partial.label?.trim();
   if (label) out.label = label;
+  const description = partial.description?.trim();
+  if (description) out.description = description;
   if (typeof partial.addedAt === 'number') out.addedAt = partial.addedAt;
   if (partial.source) out.source = partial.source;
   return out;

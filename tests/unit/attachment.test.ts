@@ -79,6 +79,16 @@ describe('normalizeAttachment', () => {
     expect(a.source).toBeUndefined();
   });
 
+  it('carries a trimmed description through, dropping an empty one', () => {
+    const a = normalizeAttachment(
+      { src: 'data:image/png;base64,AAAA', description: '  match the rounded corners  ' },
+      'id',
+    );
+    expect(a.description).toBe('match the rounded corners');
+    const b = normalizeAttachment({ src: 'data:image/png;base64,AAAA', description: '   ' }, 'id');
+    expect(b.description).toBeUndefined();
+  });
+
   it('keeps addedAt and source when provided', () => {
     const a = normalizeAttachment(
       { src: 'data:image/png;base64,AAAA', addedAt: 123, source: 'chat' },

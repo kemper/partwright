@@ -113,4 +113,55 @@ test.describe('session attachments', () => {
     await expect(panel.getByText('Model', { exact: true })).toBeVisible();
     await expect(panel.getByText('model/stl', { exact: true })).toBeVisible();
   });
+
+  test('attachments survive a page reload even with no saved version', async ({ page }) => {
+    await waitForEngine(page);
+    // Create a session and pin an attachment WITHOUT saving a version — the
+    // regression: attachments are session-level and must restore on open even
+    // when the version-load path never runs.
+    const sid = await page.evaluate(async ({ png }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const s = await pw.createSession('persist');
+      pw.addAttachment({ src: png, label: 'Front', description: 'why it matters' });
+      return s.id as string;
+    }, { png: PNG });
+    await page.waitForTimeout(1200);
+
+    await page.goto('/editor?session=' + sid);
+    await page.waitForFunction(
+      () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
+      undefined,
+      { timeout: 30_000 },
+    );
+    await page.waitForTimeout(2500);
+
+    const after = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (window as any).partwright.getAttachments();
+    });
+    expect(after.length).toBe(1);
+    expect(after[0].label).toBe('Front');
+    expect(after[0].description).toBe('why it matters');
+  });
+
+  test('description round-trips through add + getAttachments tool', async ({ page }) => {
+    await waitForEngine(page);
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (window as any).partwright.createSession('desc');
+    });
+    await page.waitForTimeout(1000);
+    const result = await page.evaluate(async ({ png }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const stored = pw.addAttachment({ src: png, label: 'Front', description: 'match the chamfer angle' });
+      const { executeTool } = await import('/src/ai/tools.ts');
+      const tool = await executeTool('getAttachments', {});
+      return { storedDesc: stored.description, content: tool.content };
+    }, { png: PNG });
+    expect(result.storedDesc).toBe('match the chamfer angle');
+    // The manifest surfaces the description as a "↳ …" line.
+    expect(result.content).toMatch(/match the chamfer angle/);
+  });
 });

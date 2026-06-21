@@ -41,19 +41,21 @@ Attached images appear in the Attachments tab and the Gallery; render the model 
 
 Reference images are one **kind** of a more general session **attachment** — any file the user pins to the session as durable project context. An attachment carries a `kind` (`image` · `model` · `document` · `text` · `other`) plus an optional `mediaType`, so a session can hold reference photos *and* a reference STL/STEP, a spec-sheet PDF, or design notes. Attachments are **durable**: they survive clearing the AI chat and are saved in the exported `.partwright` file, so an agent resuming a session — or one whose chat history was cleared — can still find the material the work was based on.
 
+Each attachment has two text fields: a short **`label`** (a caption / perspective preset like "Front"), and a free-form **`description`** — *why* it matters (what to match, the constraint it captures, where it came from). **Read the descriptions** — they're the user's intent, the most important signal about what each file is for.
+
 The `setImages`/`addImage`/`getImages`/etc. helpers above still work (they operate on the `image`-kind attachments). The general API mirrors them across all kinds:
 
 ```js
 // Pin any file (kind + mediaType are inferred from the src/data URL or label
 // when omitted). source defaults to 'user'.
-partwright.addAttachment({ src: 'data:model/stl;base64,...', label: 'Reference bracket' })
-// -> { id, kind: 'model', mediaType: 'model/stl', src, label, addedAt, source: 'user' }
+partwright.addAttachment({ src: 'data:model/stl;base64,...', label: 'Reference bracket', description: 'Match the bolt-hole spacing on this part' })
+// -> { id, kind: 'model', mediaType: 'model/stl', src, label, description, addedAt, source: 'user' }
 
 // List everything pinned to the session
 partwright.getAttachments()
-// -> [{ id, kind, mediaType?, src, label?, addedAt?, source? }, ...]
+// -> [{ id, kind, mediaType?, src, label?, description?, addedAt?, source? }, ...]
 
-partwright.setAttachments([{ src, kind?, mediaType?, label? }, ...])  // replace the whole list
+partwright.setAttachments([{ src, kind?, mediaType?, label?, description? }, ...])  // replace the whole list
 partwright.removeAttachment(id)                                        // remove one by id
 partwright.clearAttachments()                                          // remove ALL (images included)
 ```
