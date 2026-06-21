@@ -521,6 +521,60 @@ out **flat** on the ground plane (they sit flush on `F.base` and print flat) and
 track turnout — you don't hand-roll footwear. `F.base` rises to meet the lower of
 the two `groundZ`, so at least one foot always welds to it (one component).
 
+**Wrapping a band around the body — `F.ring(frame, opts?)`.** A necklace, collar,
+choker, or belt. The rig exposes two band-wrap frames: `rig.ring.neck` and
+`rig.ring.waist` (a {@link RingFrame}: `center`, `axis`, `xAxis`/`yAxis`, the body
+semi-axes `rx`/`ry`, and `hang` = world-down). `F.ring` sweeps a closed elliptical
+tube that conforms to the body's (non-circular) cross-section and rides
+`clearance + tube` OUTSIDE the surface — raise `clearance` to clear clothing.
+`opts`: `{ tube, clearance, segments, drop }` (`drop` lowers a necklace below the
+neck). Give it its own `.label(...)` so it meshes crisply and paints separately.
+
+```js
+const belt = F.ring(rig.ring.waist, { tube: r.waist * 0.16, clearance: r.chestX * 0.18 }).label('belt');
+// Seat a buckle / hang a scabbard with F.ringPoint(frame, azDeg, opts?):
+//   az 0 = front (−Y), 90 = figure-left (+X), 180 = back, −90 = right.
+const fp = F.ringPoint(rig.ring.waist, 0, { clearance: r.chestX * 0.18 });
+const buckle = sdf.roundedBox([2.4, 1.2, 2.0], 0.3).translate(fp).label('belt');
+```
+
+**A band CROSSING the body — `F.strap(a, b, opts?)`.** A bandolier (shoulder →
+opposite hip), sash, suspender, or backpack strap. Sweeps a tube from `a` to `b`
+bowed forward (−Y) by `opts.bow` so it rides OVER the chest. `a`/`b` accept grip
+frames, `rig.shoulder.L/R`, sole frames, or raw points (and `F.ringPoint` output).
+
+```js
+const sash = F.strap(rig.shoulder.L, F.ringPoint(rig.ring.waist, -90), { tube: r.chestX * 0.12, bow: r.chestY }).label('sash');
+```
+
+**Hanging something from an anchor — `F.hangFrom(node, point, opts?)`.** The
+gravity analog of `holdAt`: a scabbard off a belt, a pendant off a necklace, a
+pouch off a hip. Drops the node's `anchor` (default `top`) onto `point` lowered by
+`opts.drop`, after tilting it `opts.tilt`° forward. Build the item vertical/centred
+on the origin first.
+
+```js
+const hip = F.ringPoint(rig.ring.waist, 75, { clearance: r.chestX * 0.18 }); // left hip
+const sheathed = F.hangFrom(scabbard, hip, { tilt: 15 }).label('scabbard');
+```
+
+**Perching on the face — `F.onFace(rig)`.** Eyeglasses, sunglasses, masks,
+eyepatches. Returns `{ eyeL, eyeR, bridge, templeL, templeR, forward, up, lateral }`
+(all tracking head pose): build a lens ring at `eyeL`/`eyeR` pushed out along
+`forward`, a `bridge` between them, and temple arms back to `templeL`/`templeR`.
+
+> **Thin accessory features (glasses temples, chains, straps, blades) FRAGMENT on
+> the coarse march, and the `detail` REFINE pass FRAYS them** (the same failure as
+> over-refined fingers). Three rules: keep any tube/bar radius ≳ 1.3× your
+> `edgeLength`; route thin arms so they HUG/rest on the body surface (a supported
+> tube survives, a floating diagonal frays); and prefer a finer global
+> `edgeLength` over covering a thin tube with a big refine `detail` sphere.
+> Print-chunky is correct for a figurine. **Fuse every accessory into the figure**
+> (overlap it ≥0.5 units and `union`) so the result stays one printable piece
+> (`componentCount` 1). Other rig frames for accessories: `rig.shoulder.L/R`
+> (pauldrons, epaulets), `rig.back` (`{point, normal}` — backpacks, capes,
+> quivers), `rig.forearm.L/R` (bracers, vambraces).
+
 **Reading a pose — `F.poseProbe(rig)`.** Returns a deterministic, rounded dump
 of every world joint position, both grip frames, both sole frames, and the key
 directions, plus a `.text` summary — use it instead of hand-rolled `JSON.stringify` probes when

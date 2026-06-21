@@ -306,6 +306,33 @@ export interface SoleFrame {
   groundZ: number;
 }
 
+/** A band-wrapping frame: the elliptical body cross-section a *ringed* accessory
+ *  (necklace, collar, choker, belt, waistband) wraps around. `center` sits on the
+ *  body axis; `xAxis`/`yAxis` are the two unit in-plane axes (lateral / depth)
+ *  with `rx`/`ry` the body semi-axes, so the body surface at azimuth θ is
+ *  `center + xAxis·rx·cosθ + yAxis·ry·sinθ`. `axis` is the body's long axis
+ *  through the ring; `hang` is gravity-down (world −Z) for items that DANGLE from
+ *  the ring (a scabbard, pouch, or pendant). Returned as `rig.ring.neck` /
+ *  `rig.ring.waist`. Build a band with `F.ring(frame, …)`, get a point on the
+ *  ring (to seat a buckle or hang a scabbard) with `F.ringPoint(frame, az)`. */
+export interface RingFrame {
+  center: Vec3;
+  axis: Vec3;
+  xAxis: Vec3;
+  yAxis: Vec3;
+  rx: number;
+  ry: number;
+  hang: Vec3;
+}
+
+/** A limb segment as a frame — the forearm (elbow→wrist) — for bracers,
+ *  vambraces, watches, and arm bands. `a`/`b` are the segment ends, `axis` the
+ *  unit a→b direction, `length` the span, `radius` the limb radius. Returned per
+ *  side as `rig.forearm.L` / `rig.forearm.R`. */
+export interface LimbFrame {
+  a: Vec3; b: Vec3; axis: Vec3; length: number; radius: number;
+}
+
 export interface Rig {
   joints: Record<string, Vec3>;
   /** Canonical radii / half-extents, in world units. */
@@ -321,6 +348,18 @@ export interface Rig {
   face: FaceAnchors;
   /** Front-of-torso surface landmarks (nipples + navel) — see {@link TorsoAnchors}. */
   torso: TorsoAnchors;
+  /** Band-wrap frames for ringed accessories (necklace/collar/choker on `neck`,
+   *  belt/waistband on `waist`) — see {@link RingFrame}. */
+  ring: { neck: RingFrame; waist: RingFrame };
+  /** Per-side shoulder-top (acromion) points for straps, pauldrons, epaulets, and
+   *  cape/cloak attachment. */
+  shoulder: { L: Vec3; R: Vec3 };
+  /** Upper-back surface point + outward (+Y) normal, for backpacks, capes,
+   *  quivers, and a cross-back scabbard. */
+  back: { point: Vec3; normal: Vec3 };
+  /** Per-side forearm segment frames for bracers / vambraces / arm bands — see
+   *  {@link LimbFrame}. */
+  forearm: { L: LimbFrame; R: LimbFrame };
   opts: { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; muscle: number; bust: number; belly: number; pose: ResolvedPose };
 }
 
@@ -750,6 +789,39 @@ function buildRig(rawOpts: unknown): Rig {
     navel: ellipsoidFront(tm.belly.c, tm.belly.a, tm.belly.b, tm.belly.cz, 0, navelZ),
   };
 
+  // --- Attachment frames for accessories ---------------------------------
+  // Ring (neck/waist), shoulder, back, and forearm frames — the body-middle
+  // analogs of the existing grip/sole/face frames. Spine-transformed (sPt/sDir)
+  // so they follow lean/turn like the joints; `hang` stays WORLD-down (gravity).
+  // A ringed band sits OUTSIDE the body, so accessories add their own standoff.
+  const ringFrameRaw = (cz: number, rx: number, ry: number): RingFrame => ({
+    center: sPt([0, 0, cz]),
+    axis: sDir([0, 0, 1]), xAxis: sDir([1, 0, 0]), yAxis: sDir([0, 1, 0]),
+    rx, ry, hang: [0, 0, -1],
+  });
+  const ring = {
+    // Choker/necklace ring at the base of the neck (roughly circular).
+    neck: ringFrameRaw(shoulderZ + neckLen * 0.35, r.neck, r.neck),
+    // Belt/waistband ring at the natural waist (lateral = waist girth, depth = hip).
+    waist: ringFrameRaw(navelZ, r.waist, r.hipsY),
+  };
+  const shoulder = {
+    L: sPt([shoulderHalfX, 0, shoulderZ]),
+    R: sPt([-shoulderHalfX, 0, shoulderZ]),
+  };
+  const back = {
+    point: sPt([0, r.chestY * 0.92, mix(chestZ, shoulderZ, 0.5)]),
+    normal: sDir([0, 1, 0]),
+  };
+  const foreFrame = (e: Vec3, w: Vec3): LimbFrame => {
+    const d = sub3(w, e); const L = len3(d);
+    return { a: e, b: w, axis: L > 0 ? scale3(d, 1 / L) : [0, 0, 1], length: L, radius: r.lowerArm };
+  };
+  const forearm = {
+    L: foreFrame(joints.lowerArmL, joints.wristL),
+    R: foreFrame(joints.lowerArmR, joints.wristR),
+  };
+
   return {
     joints,
     r,
@@ -773,6 +845,10 @@ function buildRig(rawOpts: unknown): Rig {
     sole: { L: makeSoleFrame(lL.A, lL.footFwd, r), R: makeSoleFrame(lR.A, lR.footFwd, r) },
     face: sFace,
     torso: torsoAnchors,
+    ring,
+    shoulder,
+    back,
+    forearm,
     opts: { height: H, headsTall: N, build, sex, age, weight, muscle, bust, belly, pose },
   };
 }
@@ -4125,6 +4201,28 @@ export interface FigureNamespace {
    *  (`opts.anchor` ∈ top|center|bottom, default 'top' so the prop hangs below
    *  the foot). Accepts a sole frame or a raw `[x,y,z]` point. */
   standOn(node: Node, sole: SoleFrame | Vec3, opts?: object): Node;
+  /** Build a closed elliptical band wrapping a {@link RingFrame} (`rig.ring.neck`
+   *  / `rig.ring.waist`) — a necklace, collar, choker, or belt. `opts`: `{ tube,
+   *  clearance, segments, drop }`. Raise `clearance` to clear clothing; `drop`
+   *  lowers a necklace below the neck. Give the result its own `.label(...)`. */
+  ring(frame: RingFrame, opts?: object): Node;
+  /** A world point on a {@link RingFrame} at azimuth `az`° (0 = front, 90 = left,
+   *  180 = back, −90 = right) — seat a belt buckle (`az: 0`) or hang a scabbard at
+   *  the hip (`az: 80`). `opts.clearance`/`drop` match the band. */
+  ringPoint(frame: RingFrame, az: number, opts?: object): Vec3;
+  /** A band crossing the body between two anchors — bandolier (shoulder → opposite
+   *  hip), sash, suspender, backpack strap. Bowed forward (−Y) by `opts.bow` so it
+   *  rides over the chest. `opts`: `{ tube, bow, segments }`. Accepts frames or raw
+   *  points (like `spanGrips`). */
+  strap(a: GripFrame | SoleFrame | Vec3, b: GripFrame | SoleFrame | Vec3, opts?: object): Node;
+  /** Hang a node so it dangles below `point` (a scabbard off a belt, a pendant off
+   *  a necklace). Tilts `opts.tilt`° forward, then drops its `anchor` (default
+   *  'top') onto `point` lowered by `opts.drop`. The gravity analog of `holdAt`. */
+  hangFrom(node: Node, point: GripFrame | SoleFrame | Vec3, opts?: object): Node;
+  /** A face frame for items that perch on facial landmarks — eyeglasses, masks,
+   *  eyepatches. Returns `{ eyeL, eyeR, bridge, templeL, templeR, forward, up,
+   *  lateral }`, all tracking head pose. */
+  onFace(rig: Rig): { eyeL: Vec3; eyeR: Vec3; bridge: Vec3; templeL: Vec3; templeR: Vec3; forward: Vec3; up: Vec3; lateral: Vec3 };
   /** Deterministic world-coordinate dump of the rig's joints, grip frames, and
    *  directions (rounded) plus a `.text` summary — use instead of hand-rolled
    *  JSON scratch probes when authoring a pose. */
@@ -4329,6 +4427,131 @@ function spanGrips(a: unknown, b: unknown): SpanFrame {
   };
 }
 
+/** Validate + coerce a {@link RingFrame} (`rig.ring.neck` / `rig.ring.waist`). */
+function asRingFrame(v: unknown, name: string): RingFrame {
+  const o = obj(v, name);
+  return {
+    center: assertNumberTuple(o.center, 3, `${name}.center`) as Vec3,
+    axis: norm3(assertNumberTuple(o.axis, 3, `${name}.axis`) as Vec3),
+    xAxis: norm3(assertNumberTuple(o.xAxis, 3, `${name}.xAxis`) as Vec3),
+    yAxis: norm3(assertNumberTuple(o.yAxis, 3, `${name}.yAxis`) as Vec3),
+    rx: assertNumber(o.rx, `${name}.rx`, { min: 0 }) as number,
+    ry: assertNumber(o.ry, `${name}.ry`, { min: 0 }) as number,
+    hang: norm3(assertNumberTuple(o.hang, 3, `${name}.hang`) as Vec3),
+  };
+}
+
+/** Build a closed elliptical band wrapping a {@link RingFrame} — a necklace,
+ *  collar, choker, or belt. The band rides OUTSIDE the body surface by `clearance`
+ *  (raise it to clear clothing) as a smooth tube of cross-section radius `tube`,
+ *  swept from `segments` capsules around the ellipse so it conforms to the body's
+ *  non-circular cross-section. `drop` lowers the whole band along the body axis (a
+ *  necklace drapes below the neck). Give the result its own `.label(...)` so it
+ *  meshes in its own region (crisp) and paints separately. */
+function ringBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
+  const f = asRingFrame(frame, 'ring(frame)');
+  const o = obj(opts, 'ring(opts)');
+  assertNoUnknownKeys(o, ['tube', 'clearance', 'segments', 'drop'], 'ring(opts)');
+  const tube = num(o.tube, Math.max(f.rx, f.ry) * 0.12, 'ring.tube', 1e-3);
+  const clearance = num(o.clearance, 0, 'ring.clearance', 0);
+  const drop = num(o.drop, 0, 'ring.drop');
+  const segments = Math.round(num(o.segments, 48, 'ring.segments', 8, 256));
+  const off = clearance + tube;
+  const c = add3(f.center, scale3(f.axis, -drop));
+  const pts: Vec3[] = [];
+  for (let i = 0; i < segments; i++) {
+    const t = (i / segments) * Math.PI * 2;
+    pts.push(add3(c, add3(scale3(f.xAxis, (f.rx + off) * Math.cos(t)), scale3(f.yAxis, (f.ry + off) * Math.sin(t)))));
+  }
+  let band = sdf.capsule(pts[segments - 1], pts[0], tube);
+  for (let i = 0; i < segments - 1; i++) band = band.union(sdf.capsule(pts[i], pts[i + 1], tube));
+  return band;
+}
+
+/** A world point ON a {@link RingFrame}'s surface at azimuth `az` degrees (0 =
+ *  front/−Y, 90 = figure-left/+X, 180 = back/+Y, −90 = right/−X). `opts.clearance`
+ *  pushes it out past clothing (match the band's). Seat a buckle at the front of a
+ *  belt (`az: 0`) or hang a scabbard at the left hip (`az: 80`). */
+function ringPoint(frame: unknown, az: unknown, opts?: unknown): Vec3 {
+  const f = asRingFrame(frame, 'ringPoint(frame)');
+  const a = (assertNumber(az, 'ringPoint(az)') as number) * DEG;
+  const o = obj(opts, 'ringPoint(opts)');
+  assertNoUnknownKeys(o, ['clearance', 'drop'], 'ringPoint(opts)');
+  const clr = num(o.clearance, 0, 'ringPoint.clearance', 0);
+  const drop = num(o.drop, 0, 'ringPoint.drop');
+  const c = add3(f.center, scale3(f.axis, -drop));
+  return add3(c, add3(scale3(f.xAxis, (f.rx + clr) * Math.sin(a)), scale3(f.yAxis, -(f.ry + clr) * Math.cos(a))));
+}
+
+/** A band that CROSSES the body between two anchors — a bandolier (shoulder →
+ *  opposite hip), sash, suspender, or backpack strap. Sweeps a tube of radius
+ *  `tube` from `a` to `b`, bowed outward toward the front (−Y) by `bow` through
+ *  the midpoint so it rides OVER the chest instead of cutting a straight chord
+ *  through it. Accepts grip/ring/sole frames or raw `[x,y,z]` points on either
+ *  end (via the same coercion as `spanGrips`). */
+function strap(sdf: SdfApi, a: unknown, b: unknown, opts?: unknown): Node {
+  const pa = asPoint3(a, 'strap(a)');
+  const pb = asPoint3(b, 'strap(b)');
+  const o = obj(opts, 'strap(opts)');
+  assertNoUnknownKeys(o, ['tube', 'bow', 'segments'], 'strap(opts)');
+  const tube = num(o.tube, len3(sub3(pb, pa)) * 0.05, 'strap.tube', 1e-3);
+  const bow = num(o.bow, tube * 2, 'strap.bow');
+  const segments = Math.round(num(o.segments, 16, 'strap.segments', 2, 128));
+  const mid = scale3(add3(pa, pb), 0.5);
+  const ctrl: Vec3 = [mid[0], mid[1] - bow, mid[2]];   // pull the midpoint forward (−Y)
+  const at = (t: number): Vec3 => {
+    const u = 1 - t;
+    return [
+      u * u * pa[0] + 2 * u * t * ctrl[0] + t * t * pb[0],
+      u * u * pa[1] + 2 * u * t * ctrl[1] + t * t * pb[1],
+      u * u * pa[2] + 2 * u * t * ctrl[2] + t * t * pb[2],
+    ];
+  };
+  let prev = at(0);
+  let band = sdf.capsule(prev, at(1 / segments), tube);
+  for (let i = 1; i < segments; i++) {
+    const cur = at((i + 1) / segments);
+    band = band.union(sdf.capsule(prev = at(i / segments), cur, tube));
+  }
+  return band;
+}
+
+/** Hang a node from a point so it DANGLES below it — a scabbard off a belt, a
+ *  pendant off a necklace, a pouch off a hip. Tilts the node `tilt`° forward
+ *  about X first, then drops its `anchor` (default 'top') onto `point` lowered by
+ *  `drop`. The gravity analog of `holdAt`/`standOn`. Accepts a ring/grip/sole
+ *  frame or a raw point (e.g. from `F.ringPoint`). */
+function hangFrom(node: Node, point: unknown, opts?: unknown): Node {
+  const p = asPoint3(point, 'hangFrom(point)');
+  const o = obj(opts, 'hangFrom(opts)');
+  assertNoUnknownKeys(o, ['tilt', 'drop', 'anchor'], 'hangFrom(opts)');
+  const tilt = num(o.tilt, 0, 'hangFrom.tilt', -90, 90);
+  const drop = num(o.drop, 0, 'hangFrom.drop');
+  const anchor = o.anchor === undefined ? 'top'
+    : assertEnum(o.anchor, ['center', 'bottom', 'top'] as const, 'hangFrom.anchor');
+  const n = tilt ? node.rotate([tilt, 0, 0]) : node;
+  return placeAt(n, [p[0], p[1], p[2] - drop], { anchor });
+}
+
+/** A face frame for items that PERCH on facial landmarks — eyeglasses, sunglasses,
+ *  masks, eyepatches, monocles. Returns the two eye centres, the bridge point
+ *  (between the eyes), the two temple points (at the ears), and unit
+ *  `forward`/`up`/`lateral` axes of the face — all tracking head pose. Build a
+ *  lens at `eyeL`/`eyeR`, a bridge between them, and temple arms back to
+ *  `templeL`/`templeR`. */
+function onFace(rig: Rig): {
+  eyeL: Vec3; eyeR: Vec3; bridge: Vec3; templeL: Vec3; templeR: Vec3;
+  forward: Vec3; up: Vec3; lateral: Vec3;
+} {
+  const f = rig.face;
+  const lateral = norm3(sub3(f.earL, f.earR));            // +X (figure-left)
+  const earMid = scale3(add3(f.earL, f.earR), 0.5);
+  const forward = norm3(sub3(f.nose, earMid));            // face-forward (≈ −Y)
+  const up = norm3(cross3(forward, lateral));             // ≈ +Z
+  const bridge = scale3(add3(f.eyeL, f.eyeR), 0.5);
+  return { eyeL: f.eyeL, eyeR: f.eyeR, bridge, templeL: f.earL, templeR: f.earR, forward, up, lateral };
+}
+
 /** Round a Vec3 to `p` decimals for a readable probe dump. */
 function round3(v: Vec3, p = 2): Vec3 {
   const m = 10 ** p;
@@ -4406,6 +4629,11 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     holdAt: (node, grip, opts) => holdAt(node as Node, grip, opts),
     spanGrips: (a, b) => spanGrips(a, b),
     standOn: (node, sole, opts) => standOn(node as Node, sole, opts),
+    ring: (frame, opts) => ringBand(sdf, frame, opts),
+    ringPoint: (frame, az, opts) => ringPoint(frame, az, opts),
+    strap: (a, b, opts) => strap(sdf, a, b, opts),
+    hangFrom: (node, point, opts) => hangFrom(node as Node, point, opts),
+    onFace: (rig) => onFace(assertRig(rig, 'onFace(rig)')),
     poseProbe: (rig) => poseProbe(assertRig(rig, 'poseProbe(rig)')),
     faceDetail: (rig, opts) => faceDetail(assertRig(rig, 'faceDetail(rig)'), opts),
     handDetail: (rig, opts) => handDetail(assertRig(rig, 'handDetail(rig)'), opts),
@@ -4431,4 +4659,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, ringPoint, strap, hangFrom, onFace };
