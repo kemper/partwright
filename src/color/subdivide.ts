@@ -306,7 +306,22 @@ function brushClassifier(stroke: BrushStroke): TriClassifier {
     if (withinFootprint(a[0], a[1], a[2], stroke)) inside++;
     if (withinFootprint(b[0], b[1], b[2], stroke)) inside++;
     if (withinFootprint(c[0], c[1], c[2], stroke)) inside++;
-    if (inside === 3) return 'inside';
+    if (inside === 3) {
+      // All three vertices inside doesn't prove the *interior* is — the stroke
+      // footprint is the union of disks along a (possibly curved) path, so it can
+      // be concave: across a coarse triangle spanning the concave side the field
+      // dips inside at the corners yet bulges back outside in the middle. Such a
+      // triangle would (a) stop subdividing here and (b) resolve unpainted by the
+      // centroid test, leaving a big unpainted triangle inside the painted region.
+      // Sample the interior (centroid + edge midpoints); if any pokes outside,
+      // it's really a straddle — subdivide it so the boundary resolves to maxEdge.
+      const interiorCovered =
+        withinFootprint((a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3, stroke) &&
+        withinFootprint((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2, stroke) &&
+        withinFootprint((b[0] + c[0]) / 2, (b[1] + c[1]) / 2, (b[2] + c[2]) / 2, stroke) &&
+        withinFootprint((c[0] + a[0]) / 2, (c[1] + a[1]) / 2, (c[2] + a[2]) / 2, stroke);
+      return interiorCovered ? 'inside' : 'straddle';
+    }
     if (inside >= 1) return 'straddle';
     for (let s = 0; s < stroke.samples.length; s++) {
       const sp = stroke.samples[s];
