@@ -97,9 +97,12 @@ export interface AppConfig {
     maxPixelRatio: number;
     /** Render scale during camera orbit/zoom (0–1, lower = faster interaction). */
     interactionRenderScale: number;
-    /** Ground grid total size in world units. Takes effect on page reload. */
-    gridSize: number;
-    /** Number of grid divisions. Takes effect on page reload. */
+    /** Ground grid footprint as a multiple of the model's largest dimension, so
+     *  the grid scales with the model (spans the studio "room") instead of being
+     *  a fixed-size patch. Re-derived from the model size on each auto-frame. */
+    gridRoomFactor: number;
+    /** Number of grid divisions (cell count across the grid). Takes effect on
+     *  page reload. */
     gridDivisions: number;
     /** Orientation gizmo canvas size in CSS pixels. */
     gizmoSizePx: number;
@@ -310,7 +313,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     fov: 50,
     maxPixelRatio: 2,
     interactionRenderScale: 0.6,
-    gridSize: 40,
+    gridRoomFactor: 8,
     gridDivisions: 40,
     gizmoSizePx: 128,
     gizmoMarginPx: 8,
