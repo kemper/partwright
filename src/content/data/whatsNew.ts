@@ -27,6 +27,39 @@ export const WHATS_NEW_INTRO =
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
     range: 'June 21, 2026',
+    headline: 'Partwright 1.2 — the AI paints images onto your model, and a grid that scales to your room',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.2',
+            body: 'A small, backward-compatible feature release — your existing sessions and exported files all keep working, and the running version is shown in the About dialog. This update teaches the in-browser AI to paint real images onto a surface and makes the viewport grid scale with your model.',
+          },
+        ],
+      },
+      {
+        label: 'AI assistant',
+        items: [
+          {
+            title: 'The AI can paint an image onto your model',
+            body: 'The in-browser assistant can now project a raster image or SVG — a logo, label, or decal — straight onto the model surface, instead of approximating it with flat color blobs. Point it at a named view (front, back, left, right, top, bottom) and it finds the surface for you, or name a painted part and the decal centers and sizes itself to fit. Ask for “put this logo on the front” and it just works.',
+          },
+        ],
+      },
+      {
+        label: 'Studio',
+        items: [
+          {
+            title: 'A grid that scales to your model',
+            body: 'The ground grid used to be a fixed patch — too small under a large model and oversized under a small one. It now tracks the size of your model and the studio room, like the floor does, and respects the grid-density setting in Advanced Settings so the cells stay readable at any scale.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'June 21, 2026',
     headline: 'Partwright 1.1 — the Character Creator, session attachments, and directional surface textures',
     groups: [
       {
