@@ -206,6 +206,8 @@ This takes a handful of tool calls and catches wiring mistakes, visual regressio
 
 When you're iterating on a **model snippet** (catalog entries, `examples/`, mechanism prototypes) from the CLI, don't round-trip through the browser for every guess. `npm run model:preview -- <file.js>` runs the snippet against the **real `manifold-js`, `voxel`, or `scad` engine in Node** (via vite SSR — no dev server, no Playwright, ~2 s). **`replicad`/BREP is excluded**: OpenCASCADE won't init under Node SSR — verify BREP-language models in the browser. The tool gives you everything needed to self-correct in one call:
 
+> **Render quality / app-fidelity.** `model:preview`'s PNG is now **smooth-shaded + antialiased + lit** (not the old flat/faceted raster), and the *mesh* is identical to the browser's — so it's the right default for "what does it look like?" When you need the **exact app pixels** (the real Three.js viewport — for QC or the eval judge), use the warm-browser daemon: `node bin/partwright.mjs daemon start` once, then `partwright render --code <file.js> --out x.png` / `partwright iterate <file.js>`. The ~60 s browser+WASM cold-start is paid **once**; after that each render pays only the model build. (Heavy SDF figures still cost 10–70 s to *mesh* in either path — that's the build, not the renderer.) See `docs/headless-cli.md#choosing-a-render-path--fast-vs-app-fidelity`.
+
 ```bash
 npm run model:preview -- .plans/fidgets/spiral-cone.js          # writes <file>.preview-<stamp>.png + prints JSON
 npm run model:preview -- model.js --json                        # stats only, no PNG
