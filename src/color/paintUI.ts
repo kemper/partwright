@@ -289,6 +289,9 @@ function createPaletteSection(): HTMLElement {
       });
       grid.appendChild(swatch);
     });
+    // Keep the custom swatch a truthful preview of the active paint colour
+    // (it changes when a slot is selected, not just on a custom pick).
+    custom.setHex(rgbToHex(getColor()));
   }
 
   function renderBudget(): void {

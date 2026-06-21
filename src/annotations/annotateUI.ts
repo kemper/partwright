@@ -294,6 +294,7 @@ function createPickerPanel(): HTMLElement {
       setPenColor(color);
       setTextColor(color);
       markActiveSwatch(grid, swatch);
+      custom.setHex(rgbToHex(color)); // keep the custom swatch a truthful preview
     });
     grid.appendChild(swatch);
   }

@@ -252,12 +252,9 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
       const row = document.createElement('div');
       row.className = 'flex items-center gap-1.5 py-1 px-1 -mx-1 rounded hover:bg-zinc-700/40 transition-colors';
 
-      // Click-to-edit swatch. The native `<input type="color">` IS the swatch
-      // (styled to look like one), so the OS picker pops up anchored to the
-      // swatch — not at the corner of a separately-sized hidden input, which
-      // was the root of the "picker closes too easily" complaint. `change`
-      // fires once when the picker is committed, so we reconcile the model
-      // mesh just once per pick instead of on every channel drag.
+      // Click-to-edit swatch — opens the shared palette colour picker, which
+      // commits once when the colour is chosen, so we reconcile the model mesh
+      // just once per pick instead of on every channel drag.
       const hex = rgbToHex(r.color);
       const swatchPicker = createColorSwatch({
         initialHex: hex,

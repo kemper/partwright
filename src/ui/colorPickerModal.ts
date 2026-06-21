@@ -48,13 +48,16 @@ let openOverlay: HTMLElement | null = null;
 /** Open the shared palette colour picker. Idempotent per call — opening a new
  *  one closes any picker already showing. */
 export function openColorPicker(opts: ColorPickerOptions): void {
+  // Capture the trigger BEFORE force-closing any open picker — the old one's
+  // close() restores focus to its own origin, which would otherwise overwrite
+  // what we read here.
+  const previouslyFocused = document.activeElement as HTMLElement | null;
+
   // Only one picker at a time; closing the old one fires its onClose.
   if (openOverlay) openOverlay.dispatchEvent(new CustomEvent('picker:force-close'));
 
   let selected = normalizeHex(opts.initialHex);
   let closed = false;
-
-  const previouslyFocused = document.activeElement as HTMLElement | null;
 
   const overlay = document.createElement('div');
   overlay.className = 'fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4';
@@ -205,6 +208,21 @@ export function openColorPicker(opts: ColorPickerOptions): void {
 
   const escHandler = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
   document.addEventListener('keydown', escHandler, true);
+
+  // Keep Tab focus inside the picker while it's open — it's a hand-rolled
+  // overlay (not modalShell), so it must provide its own focus trap.
+  const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  panel.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key !== 'Tab') return;
+    const f = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(el => el.offsetParent !== null || el === document.activeElement);
+    if (f.length === 0) { e.preventDefault(); return; }
+    const first = f[0];
+    const last = f[f.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    const idx = active ? f.indexOf(active) : -1;
+    if (e.shiftKey && (active === first || idx === -1)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (active === last || idx === -1)) { e.preventDefault(); first.focus(); }
+  });
   overlay.addEventListener('picker:force-close', () => close());
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   closeBtn.addEventListener('click', () => close());

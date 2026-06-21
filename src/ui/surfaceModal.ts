@@ -249,8 +249,8 @@ function toColorInputHex(hex: string): string {
 }
 
 /** A colour control that mirrors the paint tools: the shared filament palette as
- *  a swatch grid (click to pick a slot) plus a native picker for an off-palette
- *  colour. Returns the current hex via `get()`. `onChange` fires on every pick.
+ *  a swatch grid (click to pick a slot) plus the shared palette picker for an
+ *  off-palette colour. Returns the current hex via `get()`. `onChange` fires on every pick.
  *  Snapshots the palette at creation — the panel is short-lived, so it doesn't
  *  subscribe to live palette edits the way the persistent paint drawer does. */
 function colorField(initial: string, onChange: () => void) {
