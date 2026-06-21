@@ -81,20 +81,23 @@ export interface BambuPrinterSpec {
 // bundled machine profiles (resources/profiles/BBL/machine, resolving `inherits`):
 // fdm_bbl_3dp_002_common = dual-nozzle (→ H2C base), fdm_bbl_3dp_001_common =
 // single-nozzle (→ P1S base). `model` MUST match Bambu's exact printer_model or
-// Bambu converts the project on open. Only printers whose model + process preset
-// could be verified against shipped BambuStudio profiles are listed — speculative
-// /unreleased models were dropped because a wrong process string makes Bambu
-// reject the project (rc -17). Re-add one only with its verified preset string.
+// Bambu converts the project on open. Note H2S/A2L are SINGLE-nozzle despite their
+// large beds; X2D / H2D Pro are dual.
 export const BAMBU_PRINTERS: BambuPrinterSpec[] = [
   // Dual-nozzle (H2C structural base)
   { id: 'h2c', label: 'Bambu Lab H2C', base: 'h2c', model: 'Bambu Lab H2C', bed: [330, 320], height: 325, process: '0.20mm Standard @BBL H2C' },
   { id: 'h2d', label: 'Bambu Lab H2D', base: 'h2c', model: 'Bambu Lab H2D', bed: [350, 320], height: 325, process: '0.20mm Standard @BBL H2D' },
+  { id: 'h2dpro', label: 'Bambu Lab H2D Pro', base: 'h2c', model: 'Bambu Lab H2D Pro', bed: [350, 320], height: 325, process: '0.20mm Standard @BBL H2DP' },
+  { id: 'x2d', label: 'Bambu Lab X2D', base: 'h2c', model: 'Bambu Lab X2D', bed: [256, 256], height: 261, process: '0.20mm Standard @BBL X2D' },
   // Single-nozzle (P1S structural base)
+  { id: 'h2s', label: 'Bambu Lab H2S', base: 'p1s', model: 'Bambu Lab H2S', bed: [340, 320], height: 340, process: '0.20mm Standard @BBL H2S' },
+  { id: 'a2l', label: 'Bambu Lab A2L', base: 'p1s', model: 'Bambu Lab A2L', bed: [330, 320], height: 325, process: '0.20mm Standard @BBL A2L' },
   { id: 'x1c', label: 'Bambu Lab X1 Carbon', base: 'p1s', model: 'Bambu Lab X1 Carbon', bed: [256, 256], height: 250, process: '0.20mm Standard @BBL X1C' },
   { id: 'x1e', label: 'Bambu Lab X1E', base: 'p1s', model: 'Bambu Lab X1E', bed: [256, 256], height: 250, process: '0.20mm Standard @BBL X1C' },
   { id: 'x1', label: 'Bambu Lab X1', base: 'p1s', model: 'Bambu Lab X1', bed: [256, 256], height: 250, process: '0.20mm Standard @BBL X1C' },
   { id: 'p1s', label: 'Bambu Lab P1S', base: 'p1s', model: 'Bambu Lab P1S', bed: [256, 256], height: 250, process: '0.20mm Standard @BBL X1C' },
   { id: 'p1p', label: 'Bambu Lab P1P', base: 'p1s', model: 'Bambu Lab P1P', bed: [256, 256], height: 250, process: '0.20mm Standard @BBL P1P' },
+  { id: 'p2s', label: 'Bambu Lab P2S', base: 'p1s', model: 'Bambu Lab P2S', bed: [256, 256], height: 256, process: '0.20mm Standard @BBL P2S' },
   { id: 'a1', label: 'Bambu Lab A1', base: 'p1s', model: 'Bambu Lab A1', bed: [256, 256], height: 256, process: '0.20mm Standard @BBL A1' },
   { id: 'a1mini', label: 'Bambu Lab A1 mini', base: 'p1s', model: 'Bambu Lab A1 mini', bed: [180, 180], height: 180, process: '0.20mm Standard @BBL A1M' },
 ];
