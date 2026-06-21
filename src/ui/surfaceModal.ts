@@ -24,6 +24,7 @@ import { buildTriColors } from '../color/regions';
 import type { StampMask, EngraveProjection } from '../surface/modifiers';
 import { engravePlanarFootprint, engraveFreeFootprint } from '../surface/engraveStamp';
 import { listFilaments } from '../color/palette';
+import { createColorSwatch } from './colorPickerModal';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
@@ -268,6 +269,16 @@ function colorField(initial: string, onChange: () => void) {
     }
   };
 
+  // Off-palette custom colour — opens the shared palette picker. Declared before
+  // the quick-pick grid so the grid's click handlers can sync the swatch.
+  const pickerSwatch = createColorSwatch({
+    initialHex: value,
+    title: 'Custom colour',
+    modalTitle: 'Custom colour',
+    className: 'w-6 h-6 shrink-0 rounded cursor-pointer border border-zinc-500 hover:border-white/70 transition-colors',
+    onPick: (hex) => { value = toColorInputHex(hex); pickerSwatch.setHex(value); syncRings(); onChange(); },
+  });
+
   for (const f of listFilaments()) {
     const btn = el('button', 'w-6 h-6 rounded border-2 border-transparent hover:border-white/50 transition-colors');
     btn.type = 'button';
@@ -275,7 +286,7 @@ function colorField(initial: string, onChange: () => void) {
     btn.title = `${f.name} (${f.hex})`;
     btn.addEventListener('click', () => {
       value = toColorInputHex(f.hex);
-      picker.value = value;
+      pickerSwatch.setHex(value);
       syncRings();
       onChange();
     });
@@ -283,14 +294,8 @@ function colorField(initial: string, onChange: () => void) {
     grid.append(btn);
   }
 
-  // Off-palette custom colour. 'change' (not 'input') — re-running the SDF carve
-  // on every drag tick of the native picker would queue a carve per hover.
-  const customRow = el('label', 'flex items-center gap-1.5 cursor-pointer');
-  const picker = el('input', 'w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent');
-  picker.type = 'color';
-  picker.value = value;
-  picker.addEventListener('change', () => { value = picker.value; syncRings(); onChange(); });
-  customRow.append(picker, el('span', 'text-[10px] text-zinc-500', 'Custom colour'));
+  const customRow = el('label', 'flex items-center gap-1.5');
+  customRow.append(pickerSwatch.el, el('span', 'text-[10px] text-zinc-500', 'Custom colour'));
 
   wrap.append(grid, customRow);
   syncRings();

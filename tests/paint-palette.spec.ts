@@ -87,11 +87,18 @@ test.describe('filament palette + slot painting', () => {
     await openEditorWithSlab(page);
 
     // Pick an off-palette ad-hoc colour via the custom picker (pure green).
+    // The custom swatch opens the shared palette picker modal; set its freeform
+    // input and Apply.
+    await page.locator('#paint-picker-panel button[title="Custom color (unslotted)"]').dispatchEvent('click');
+    await page.waitForSelector('[data-testid="color-picker"]');
     await page.evaluate(() => {
-      const input = document.querySelector('#paint-picker-panel input[type="color"][title="Custom color (unslotted)"]') as HTMLInputElement;
-      input.value = '#00ff00';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const ov = document.querySelector('[data-testid="color-picker"]')!;
+      const ci = ov.querySelector('input[data-action="custom-color"]') as HTMLInputElement;
+      ci.value = '#00ff00';
+      ci.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    await page.locator('[data-testid="color-picker"] button:has-text("Apply")').dispatchEvent('click');
+    await page.waitForSelector('[data-testid="color-picker"]', { state: 'detached' });
 
     // Turn on constrain mode via the palette manager (opening it closes Paint).
     await page.locator('#palette-manager-toggle').dispatchEvent('click');
@@ -227,10 +234,16 @@ test.describe('filament palette + slot painting', () => {
     // Paint an in-palette slot colour, then an off-palette custom colour.
     await page.locator('#paint-picker-panel button[title^="Slot 3:"]').dispatchEvent('click');
     await bucketPaintCentre(page);
-    await page.locator('#paint-picker-panel input[title*="Custom color"]').evaluate((el) => {
-      (el as HTMLInputElement).value = '#aa33cc';
-      el.dispatchEvent(new Event('input', { bubbles: true }));
+    await page.locator('#paint-picker-panel button[title*="Custom color"]').dispatchEvent('click');
+    await page.waitForSelector('[data-testid="color-picker"]');
+    await page.evaluate(() => {
+      const ov = document.querySelector('[data-testid="color-picker"]')!;
+      const ci = ov.querySelector('input[data-action="custom-color"]') as HTMLInputElement;
+      ci.value = '#aa33cc';
+      ci.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    await page.locator('[data-testid="color-picker"] button:has-text("Apply")').dispatchEvent('click');
+    await page.waitForSelector('[data-testid="color-picker"]', { state: 'detached' });
     await bucketPaintCentre(page);
 
     // The manager's reconciliation section flags the off-palette colour.

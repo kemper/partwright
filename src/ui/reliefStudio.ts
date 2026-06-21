@@ -19,6 +19,7 @@ import {
 } from '../color/regions';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
+import { createColorSwatch } from './colorPickerModal';
 
 export interface ReliefStudioDeps {
   getLayerHeight(): number;
@@ -258,15 +259,14 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
       // fires once when the picker is committed, so we reconcile the model
       // mesh just once per pick instead of on every channel drag.
       const hex = rgbToHex(r.color);
-      const swatchPicker = document.createElement('input');
-      swatchPicker.type = 'color';
-      swatchPicker.value = hex;
-      swatchPicker.className = 'w-5 h-5 shrink-0 rounded-sm border border-black/30 cursor-pointer bg-transparent p-0 [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded-sm [&::-webkit-color-swatch]:border-0 [&::-moz-color-swatch]:rounded-sm [&::-moz-color-swatch]:border-0';
-      swatchPicker.title = `Click to change colour (${hex})`;
-      swatchPicker.addEventListener('change', () => {
-        updateRegionColor(r.id, hexToRgb(swatchPicker.value));
+      const swatchPicker = createColorSwatch({
+        initialHex: hex,
+        title: `Click to change colour (${hex})`,
+        modalTitle: `Recolour "${r.name}"`,
+        className: 'w-5 h-5 shrink-0 rounded-sm border border-black/30 cursor-pointer',
+        onPick: (picked) => updateRegionColor(r.id, hexToRgb(picked)),
       });
-      row.appendChild(swatchPicker);
+      row.appendChild(swatchPicker.el);
 
       // Click-to-rename: name span swaps to an input on click; commits on
       // blur/Enter and reverts on Escape.

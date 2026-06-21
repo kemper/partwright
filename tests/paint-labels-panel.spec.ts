@@ -90,16 +90,26 @@ test.describe('paint labels panel', () => {
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
 
     const labelList = page.locator('#paint-label-list');
-    const swatch = labelList.locator('[data-label-name="eye"] input[data-action="set-label-color"]');
+    const swatch = labelList.locator('[data-label-name="eye"] button[data-action="set-label-color"]');
     await expect(swatch).toHaveCount(1);
 
-    // Picking a colour on the unpainted "eye" part commits a byLabel region
-    // with that exact colour — no need to select the active colour first.
-    await swatch.evaluate((el) => {
-      const input = el as HTMLInputElement;
-      input.value = '#00ff00';
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    // The swatch opens the shared palette picker; choose a freeform colour and
+    // Apply. Picking on the unpainted "eye" part commits a byLabel region with
+    // that exact colour — no need to select the active colour first.
+    const pickColor = async (hex: string) => {
+      await swatch.dispatchEvent('click');
+      await page.waitForSelector('[data-testid="color-picker"]');
+      await page.evaluate((h) => {
+        const ov = document.querySelector('[data-testid="color-picker"]')!;
+        const ci = ov.querySelector('input[data-action="custom-color"]') as HTMLInputElement;
+        ci.value = h;
+        ci.dispatchEvent(new Event('input', { bubbles: true }));
+      }, hex);
+      await page.locator('[data-testid="color-picker"] button:has-text("Apply")').dispatchEvent('click');
+      await page.waitForSelector('[data-testid="color-picker"]', { state: 'detached' });
+    };
+
+    await pickColor('#00ff00');
 
     let region = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -111,12 +121,7 @@ test.describe('paint labels panel', () => {
 
     // Only one region for the part — re-picking recolours in place rather than
     // stacking a duplicate byLabel region.
-    const swatch2 = labelList.locator('[data-label-name="eye"] input[data-action="set-label-color"]');
-    await swatch2.evaluate((el) => {
-      const input = el as HTMLInputElement;
-      input.value = '#0000ff';
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    await pickColor('#0000ff');
 
     const eyeRegions = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
