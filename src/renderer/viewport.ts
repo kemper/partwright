@@ -17,8 +17,15 @@ const GRID_COLORS = { dark: { major: 0x444444, minor: 0x333333 }, light: { major
 
 function makeGrid(theme: Theme): THREE.GridHelper {
   const c = GRID_COLORS[theme];
-  const g = new THREE.GridHelper(40, 40, c.major, c.minor);
+  // Build the grid at a unit base size and scale it per-model in frameModel so
+  // it spans the studio "room" (tracks the model size) rather than a fixed
+  // 40-unit patch. `gridDivisions` sets the cell count; the base side length is
+  // the divisions count (1 unit per cell at scale 1) so the no-model default is
+  // still a sensible square. `lastGridScale` is re-applied on theme rebuilds.
+  const div = Math.max(2, Math.round(getConfig().renderer.gridDivisions));
+  const g = new THREE.GridHelper(div, div, c.major, c.minor);
   g.rotation.x = Math.PI / 2;
+  g.scale.setScalar(lastGridScale);
   g.visible = false;
   return g;
 }
@@ -115,6 +122,9 @@ let studioFloor: THREE.Mesh | null = null;
 let studioShadowCatcher: THREE.Mesh | null = null;
 let studioKeyLight: THREE.DirectionalLight | null = null;
 let lastFloorZ = 0;
+// Per-model scale applied to the unit-base grid so it spans the studio "room"
+// (re-derived from the model size in frameModel; re-applied on theme rebuilds).
+let lastGridScale = 1;
 // The "Light" toggle: gentle image-based reflections + a mild contact shadow.
 // On by default. The PMREM env is cached (built once, reused across off→on
 // cycles) and skipped entirely on a software rasterizer (studioEnvAllowed),
@@ -156,7 +166,9 @@ function applyStudioEnvironment(): void {
   if (!studioEnvAllowed) return;
   if (!studioEnvTexture) {
     const pmrem = new THREE.PMREMGenerator(renderer);
-    studioEnvTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    const room = new RoomEnvironment();
+    studioEnvTexture = pmrem.fromScene(room, 0.04).texture;
+    room.dispose(); // frees the RoomEnvironment's BoxGeometry + ~9 materials
     pmrem.dispose();
   }
   scene.environment = studioEnvTexture;
@@ -622,9 +634,17 @@ function frameModel(): void {
   // Update model bounds for clip slider
   modelBounds = { min: box.min.z, max: box.max.z };
 
-  // Position grid + studio floor at the bottom of the model.
+  // Position grid + studio floor at the bottom of the model, and size the grid
+  // to the studio "room" so it scales with the model instead of staying a fixed
+  // 40-unit patch (tiny under a large model, oversized under a small one). The
+  // footprint tracks maxDim · gridRoomFactor; dividing by the grid's unit-base
+  // side (its divisions) makes the world footprint independent of the divisions,
+  // which then only set cell density.
   lastFloorZ = box.min.z;
   grid.position.z = box.min.z;
+  const div = Math.max(2, Math.round(getConfig().renderer.gridDivisions));
+  lastGridScale = (maxDim * getConfig().renderer.gridRoomFactor) / div;
+  grid.scale.setScalar(lastGridScale);
 
   // Studio: park the floor under the model + size the shadow to its footprint.
   frameModelShadow();

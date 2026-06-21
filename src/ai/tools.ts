@@ -541,6 +541,27 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'paintImage',
+    description: 'Project a RASTER IMAGE onto the surface as paint — the right tool for a logo, graphic, styled text/wordmark, or any picture-on-a-surface (a shirt graphic, a sticker/decal, a label, face/skin detail). It maps the actual image pixels onto the triangles, so a logo stays a logo and lettering stays legible — unlike the solid-colour region tools (paintNear/paintInBox), which can only flood one flat colour and turn a graphic into a blob. The image background is removed by default so only the subject paints. THE IMAGE: pass `imageRef` (1-based index of a session reference image — call getReferenceImages first to see what the user attached and its index) OR `imageUrl` (a data: or same-origin URL). PLACEMENT, two ways: (1) easiest — pass `view` (front/back/left/right/top/bottom) and it projects flat along that axis onto the surface facing the camera, auto-anchored at the model centre; add `label` to centre it on an api.label region (e.g. the shirt) and, if you omit `size`, to auto-size it to that region; (2) precise — pass explicit `at` (surface point) + `normal` (outward direction there) from probePixel/probeRay. `size` is the decal width in model units. `rotationDeg` twists it around the axis. Returns {ok, name, triangles, avgColor} or {error}. Verify with renderView/renderViews from the projection direction afterwards.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        imageRef: { type: 'number', description: '1-based index of a session reference image to paint (the order getReferenceImages lists them). Use this for an image the user attached.' },
+        imageUrl: { type: 'string', description: 'Alternative to imageRef: a data: URL or same-origin image URL.' },
+        view: { type: 'string', enum: ['front', 'back', 'left', 'right', 'top', 'bottom'], description: 'Project flat along this view axis onto the surface facing it, auto-anchored at the model centre. The simplest placement. front=-Y, back=+Y, right=+X, left=-X, top=+Z, bottom=-Z.' },
+        label: { type: 'string', description: 'Centre the projection on this api.label region (and auto-size to it when `size` is omitted). Combine with `view`, or with `at`+`normal` for explicit control.' },
+        at: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Explicit stamp centre on the surface (world coords), from probePixel/probeRay. Use with `normal` for precise placement instead of `view`.' },
+        normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Explicit outward projection direction at `at`. Pair with `at`.' },
+        size: { type: 'number', description: 'Decal width in model units. Optional when `label` is given (auto-sized to the label footprint).' },
+        rotationDeg: { type: 'number', description: 'Rotate the image around the projection axis, degrees. Default 0.' },
+        detail: { type: 'number', description: 'Triangle rows across the stamp; higher = crisper (default 96). 0 = flat stamp on the existing tessellation.' },
+        removeBackground: { type: 'boolean', description: 'Drop the image background so only the subject paints. Default true.' },
+        name: { type: 'string' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'paintInBox',
     description: 'Paint every triangle whose centroid is inside the axis-aligned box (optionally constrained by a normal cone). One call. Use for "paint the top half / the right rim / everything below z=0". Pass `topOnly: true` to skip side walls and the bottom face — the most common over-paint cause. On fan-topology meshes (cylinder/revolve/linear_extrude surfaces), pass `coverageMode: "fully_inside"` and/or `maxTriangleArea` to avoid long radial triangles bleeding paint outside the box. On BREP-engine solids (replicad language, or a manifold-js session whose return value came through `BREP.toManifold`), OCCT booleans can leave interior intersection-seam triangles inside the bounding volume — the centroid test then catches them and you get patchy paint on a surface that looks solid. Default to `coverageMode: "fully_inside"` on BREP, or use `paintConnected` from a probePixel seed instead.',
     input_schema: {
@@ -1365,7 +1386,7 @@ export const PART_TARGETABLE_TOOLS = new Set<string>([
   'listVersions', 'loadVersion', 'saveVersion', 'forkVersion', 'copyColorsFromVersion',
   'modifyAndTest', 'query', 'findFaces', 'listComponents', 'listLabels', 'getModelColors',
   'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
-  'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox',
+  'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
   'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
   'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
   'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
@@ -1480,7 +1501,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -1946,6 +1967,38 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintNear(input);
     case 'paintStroke':
       return api.paintStroke(input);
+    case 'paintImage': {
+      // Resolve the image source: imageUrl wins; else imageRef indexes the
+      // session reference images (1-based, matching getReferenceImages).
+      let imageUrl = typeof input.imageUrl === 'string' ? input.imageUrl : undefined;
+      if (!imageUrl && input.imageRef != null) {
+        const imgs = typeof api.getImages === 'function' ? api.getImages() : [];
+        // Index the SAME filtered list getReferenceImages numbers (entries with a
+        // usable src), so a 1-based imageRef the model read there resolves here.
+        const list = ((Array.isArray(imgs) ? imgs : []) as Array<{ src?: string }>)
+          .filter(im => typeof im.src === 'string' && im.src.length > 0);
+        const entry = list[Number(input.imageRef) - 1];
+        if (!entry) {
+          return { error: `paintImage: no reference image at index ${input.imageRef}. Call getReferenceImages to list attached images and their indices.` };
+        }
+        imageUrl = entry.src;
+      }
+      if (!imageUrl) {
+        return { error: 'paintImage: provide imageRef (1-based index from getReferenceImages) or imageUrl.' };
+      }
+      return api.paintImage({
+        imageUrl,
+        view: input.view,
+        label: input.label,
+        at: input.at,
+        normal: input.normal,
+        size: input.size,
+        rotationDeg: input.rotationDeg,
+        detail: input.detail,
+        removeBackground: input.removeBackground,
+        name: input.name,
+      });
+    }
     case 'paintInBox':
       return api.paintInBox(input);
     case 'paintInOrientedBox':

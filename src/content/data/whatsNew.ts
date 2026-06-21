@@ -27,6 +27,39 @@ export const WHATS_NEW_INTRO =
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
     range: 'June 21, 2026',
+    headline: 'Partwright 1.2 — the AI paints images onto your model, and a grid that scales to your room',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.2',
+            body: 'A small, backward-compatible feature release — your existing sessions and exported files all keep working, and the running version is shown in the About dialog. This update teaches the in-browser AI to paint real images onto a surface and makes the viewport grid scale with your model.',
+          },
+        ],
+      },
+      {
+        label: 'AI assistant',
+        items: [
+          {
+            title: 'The AI can paint an image onto your model',
+            body: 'The in-browser assistant can now project a raster image or SVG — a logo, label, or decal — straight onto the model surface, instead of approximating it with flat color blobs. Point it at a named view (front, back, left, right, top, bottom) and it finds the surface for you, or name a painted part and the decal centers and sizes itself to fit. Ask for “put this logo on the front” and it just works.',
+          },
+        ],
+      },
+      {
+        label: 'Studio',
+        items: [
+          {
+            title: 'A grid that scales to your model',
+            body: 'The ground grid used to be a fixed patch — too small under a large model and oversized under a small one. It now tracks the size of your model and the studio room, like the floor does, and respects the grid-density setting in Advanced Settings so the cells stay readable at any scale.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'June 21, 2026',
     headline: 'Partwright 1.1 — the Character Creator, session attachments, and directional surface textures',
     groups: [
       {
@@ -58,6 +91,10 @@ export const WHATS_NEW_WEEKS: WeekEntry[] = [
             title: 'Typed session attachments',
             body: 'Reference images are now first-class “attachments” you can label by type and annotate with a description, so a session can carry the photos, sketches, and notes a design was built from. Attachments now survive a page refresh and come through correctly on import.',
           },
+          {
+            title: 'Parts pane on mobile',
+            body: 'The editor’s Parts list is now reachable on phones through the pane toggle, so you can switch between a session’s parts without a desktop-width screen.',
+          },
         ],
       },
       {
@@ -66,6 +103,10 @@ export const WHATS_NEW_WEEKS: WeekEntry[] = [
           {
             title: 'Directional surface textures — api.sdf.tube',
             body: 'A new SDF helper sweeps flutes, rings, or a helix along a path, so you can add grip ribbing, decorative reeding, or a spiral straight in code — the texture follows the tube instead of being stamped flat.',
+          },
+          {
+            title: 'New designs start in millimetres',
+            body: 'New sessions now default to millimetres instead of unitless, so dimensions and exported files line up with real-world print sizes out of the box. You can still switch a session to another unit (or back to unitless) at any time.',
           },
         ],
       },
@@ -80,18 +121,26 @@ export const WHATS_NEW_WEEKS: WeekEntry[] = [
             title: 'Recolor a whole part at once',
             body: 'The paint menu’s Labels list can now set an entire part’s color in one click, instead of repainting region by region.',
           },
+          {
+            title: 'Stamp a reference image with AI — paintImage',
+            body: 'The assistant can place one of your attached images onto the model as a decal from a named view (front, side, top…), so you can ask it to apply a logo or pattern and have it projected onto the surface for you.',
+          },
         ],
       },
       {
         label: 'Studio & publishing',
         items: [
           {
-            title: 'Opt-in studio lighting',
-            body: 'Studio lighting and ground shadow are now an explicit “Light” toggle (off by default) so the viewport starts fast and clean, and you turn on the richer lit look only when you want it.',
+            title: 'Studio lighting',
+            body: 'Studio lighting and a soft ground shadow give the viewport a rich, lit look by default, with an explicit “Light” toggle so you can switch to a fast, flat view whenever you want.',
           },
           {
             title: 'AI-assisted publishing',
             body: 'When you publish a model, the assistant can auto-populate a title, description, and tags for you, so a design is ready to share with a single review pass.',
+          },
+          {
+            title: 'Pick your exact Bambu printer, nozzle, and filament',
+            body: 'Multi-part 3MF export now targets any of 14 Bambu Lab printers — single- and dual-nozzle — with a nozzle-size and filament-type picker, so the exported project opens with the right machine profile and bed instead of a one-size-fits-all default.',
           },
         ],
       },

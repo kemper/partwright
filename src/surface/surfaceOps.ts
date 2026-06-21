@@ -152,6 +152,11 @@ function initWorker(): Worker {
     }
   };
   worker.onerror = (e) => {
+    // The Worker has faulted — tear it down so the next compute respawns a
+    // fresh instance. Reusing a crashed Worker would leave the next
+    // postMessage with no responder and hang the "Applying texture…" UI.
+    worker?.terminate();
+    worker = null;
     if (pending) {
       const call = pending;
       pending = null;

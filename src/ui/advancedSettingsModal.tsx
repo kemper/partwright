@@ -507,17 +507,17 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'interactionRenderScale', v)}
         />
         <Field
-          label="Grid size"
-          unit="units"
-          tooltip="The total side length of the ground-plane grid in model units. If your models are typically 200 units wide, set this to 400 or so to keep the grid visible around them. Takes effect after a page reload."
-          defaultValue={APP_CONFIG_DEFAULTS.renderer.gridSize}
-          value={c.renderer.gridSize}
-          min={4} max={1000} integer
-          onChange={v => set('renderer', 'gridSize', v)}
+          label="Grid room factor"
+          unit="× model"
+          tooltip="How far the ground grid extends, as a multiple of the model's largest dimension. The grid now scales with the model — spanning the studio 'room' around it — instead of being a fixed-size patch, so it stays useful from tiny parts to large models. Higher = a bigger grid around the model. Takes effect on the next render or 'Reset view'."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.gridRoomFactor}
+          value={c.renderer.gridRoomFactor}
+          min={1} max={40} step={0.5}
+          onChange={v => set('renderer', 'gridRoomFactor', v)}
         />
         <Field
           label="Grid divisions"
-          tooltip="The number of cells the grid is divided into. Combined with grid size this sets the cell size: a 40-unit grid with 40 divisions gives 1-unit cells. Takes effect after a page reload."
+          tooltip="The number of cells the grid is divided into across its full width. Since the grid scales to the model, this sets cell density (more divisions = finer cells). Takes effect after a page reload."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.gridDivisions}
           value={c.renderer.gridDivisions}
           min={2} max={200} integer
