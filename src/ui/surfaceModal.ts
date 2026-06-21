@@ -40,7 +40,7 @@ export interface SurfaceApi {
   applyKnurlTexture(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; style?: 'diamond' | 'straight' | 'ribs'; profile?: 'round' | 'pyramid'; sharpness?: number; grainAngleDeg?: number; seed?: number; quality?: number; selectedTriangles?: Set<number>; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiShell(opts?: { amplitude?: number; cellSize?: number; wallWidth?: number; raised?: boolean; jitter?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiLamp(opts?: { cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; jitter?: number; grainAngleDeg?: number; seed?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
-  applyHollow(opts?: { wallThickness?: number; openTop?: boolean; rimHeight?: number; drainHoles?: number; drainRadius?: number; resolution?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyHollow(opts?: { wallThickness?: number; open?: { axis: 'x' | 'y' | 'z'; offset: number; side: 'min' | 'max' }; openTop?: boolean; rimHeight?: number; drainHoles?: number; drainRadius?: number; resolution?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   buildEngraveStamp(spec?: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }): Promise<{ mask: StampMask; width: number; height: number } | { error: string }>;
   engraveModel(opts?: { mask?: StampMask; source?: string; projection?: EngraveProjection; through?: boolean; raised?: boolean; depth?: number; size?: number; color?: string; resolution?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
@@ -963,27 +963,53 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         output: out.get(),
       });
     } else if (active === 'hollow') {
-      const wt = slider('Wall thickness', span * 0.01, span * 0.12, span * 0.025, span * 0.002, n => n.toFixed(3), schedulePreview);
-      const open = checkbox('Open top (vase mode)', false, () => { syncRim(); schedulePreview(); });
-      const rim = slider('Rim depth (open top)', span * 0.01, span * 0.3, span * 0.05, span * 0.002, n => n.toFixed(3), schedulePreview);
+      // Model bbox for the mask plane position slider.
+      const gd = api.getGeometryData() as { boundingBox?: { min?: number[]; max?: number[] } | null };
+      const bbMin = gd?.boundingBox?.min ?? [0, 0, 0];
+      const bbMax = gd?.boundingBox?.max ?? [span, span, span];
+      const axisIndex = { x: 0, y: 1, z: 2 } as const;
+
+      const mode = dropdown<'vase' | 'mask' | 'sealed'>('Mode', [
+        ['vase', 'Open-top vase'],
+        ['mask', 'Cut-plane (mask)'],
+        ['sealed', 'Sealed shell'],
+      ], 'vase', () => { syncMode(); schedulePreview(); });
+      const wt = slider('Wall thickness', span * 0.01, span * 0.12, span * 0.03, span * 0.002, n => n.toFixed(3), schedulePreview);
+      // Vase controls
+      const rim = slider('Rim depth (below top)', span * 0.01, span * 0.3, span * 0.06, span * 0.002, n => n.toFixed(3), schedulePreview);
+      // Mask controls
+      const maskAxis = dropdown<'x' | 'y' | 'z'>('Cut axis', [['x', 'X'], ['y', 'Y'], ['z', 'Z']], 'y', () => { syncMaskRange(); schedulePreview(); });
+      const maskSide = dropdown<'max' | 'min'>('Open side', [['max', '+ side'], ['min', '− side']], 'max', schedulePreview);
+      const maskPos = slider('Cut position', bbMin[1], bbMax[1], (bbMin[1] + bbMax[1]) / 2, (bbMax[1] - bbMin[1]) / 100 || 0.1, n => n.toFixed(2), schedulePreview);
+      // Shared
       const holes = slider('Drain holes', 0, 8, 0, 1, n => String(n), schedulePreview);
       const hr = slider('Drain hole radius', span * 0.005, span * 0.1, span * 0.02, span * 0.002, n => n.toFixed(3), schedulePreview);
       const res = sliderWithEntry('Resolution', 48, 200, 128, 1, 256, schedulePreview);
-      const wtight = checkbox('One connected piece (printable)', true, schedulePreview);
-      // Rim depth only applies with an open top; grey it out otherwise.
-      const syncRim = () => { rim.wrap.style.opacity = open.get() ? '1' : '0.4'; };
-      body.append(wt.wrap, open.wrap, rim.wrap, holes.wrap, hr.wrap, res.wrap, wtight.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'Hollows the model into a thin shell (3D-print "vase mode"), meshing a continuous distance field — smooth curved walls, no voxel stair-stepping (a heavier op; allow a few seconds). "Open top" lops the cap off at Rim depth below the top so the cavity is open. Drain holes bore vertical holes through the base (planters).'));
-      syncRim();
-      currentOpts = () => ({
-        wallThickness: wt.get(),
-        openTop: open.get(),
-        rimHeight: rim.get(),
-        drainHoles: holes.get(),
-        drainRadius: hr.get(),
-        resolution: res.get(),
-        watertight: wtight.get(),
-      });
+
+      // Re-range the mask position slider to the chosen axis's bbox extent.
+      const syncMaskRange = () => {
+        const ai = axisIndex[maskAxis.get()];
+        const lo = bbMin[ai], hi = bbMax[ai];
+        const input = maskPos.wrap.querySelector('input') as HTMLInputElement | null;
+        if (input) { input.min = String(lo); input.max = String(hi); input.step = String((hi - lo) / 100 || 0.1); input.value = String((lo + hi) / 2); input.dispatchEvent(new Event('input')); }
+      };
+      // Show only the controls relevant to the current mode.
+      const syncMode = () => {
+        const m = mode.get();
+        rim.wrap.style.display = m === 'vase' ? '' : 'none';
+        maskAxis.wrap.style.display = maskSide.wrap.style.display = maskPos.wrap.style.display = m === 'mask' ? '' : 'none';
+      };
+
+      body.append(mode.wrap, wt.wrap, rim.wrap, maskAxis.wrap, maskSide.wrap, maskPos.wrap, holes.wrap, hr.wrap, res.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Hollows the model into a thin printable shell, meshed with levelSet (watertight by construction — works on tapered/organic shapes). "Open-top vase" cuts the top off Rim depth below the peak; "Cut-plane (mask)" keeps one side of a plane as an open shell (e.g. a face mask); "Sealed shell" stays closed (lightweighting). Drain holes bore vertical holes through the base (planters). A heavier op — allow several seconds.'));
+      syncMode();
+      currentOpts = () => {
+        const base = { wallThickness: wt.get(), drainHoles: holes.get(), drainRadius: hr.get(), resolution: res.get() };
+        const m = mode.get();
+        if (m === 'vase') return { ...base, openTop: true, rimHeight: rim.get() };
+        if (m === 'mask') return { ...base, open: { axis: maskAxis.get(), offset: maskPos.get(), side: maskSide.get() } };
+        return base; // sealed
+      };
     } else if (active === 'engrave') {
       // Text input + a small "Apply" button (and Enter) to rasterize the stamp —
       // typing no longer auto-renders on every keystroke (it was distracting).

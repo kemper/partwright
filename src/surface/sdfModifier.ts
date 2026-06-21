@@ -108,6 +108,60 @@ export async function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, 
   const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
   if (mesh.numTri === 0) return empty;
 
+  const fld = await buildSignedDistanceField(mesh, opts, ctl);
+  if (!fld) return empty;
+  const { d, fnx, fny, fnz, origin, voxelSize } = fld;
+
+  // Apply the feature's combine over the raw distance field (cheap pass, no
+  // BVH) to get the result SDF, then mesh its iso-0 surface.
+  const field = new Float32Array(d.length);
+  for (let k = 0; k < fnz; k++) {
+    for (let j = 0; j < fny; j++) {
+      for (let i = 0; i < fnx; i++) {
+        const fi = (k * fny + j) * fnx + i;
+        field[fi] = combine({ d: d[fi], x: origin[0] + i * voxelSize, y: origin[1] + j * voxelSize, z: origin[2] + k * voxelSize, voxelSize });
+      }
+    }
+  }
+
+  // Keep the largest face-connected region of inside samples *before* meshing
+  // (drops detached fragments without sealing windows the way growing the iso
+  // level would). Face-connectivity is what fuses on an FDM plate.
+  if (opts.watertight !== false) keepLargestFaceConnected(field, fnx, fny, fnz, 0);
+
+  let m = surfaceNetsField({ field, dims: [fnx, fny, fnz], origin, spacing: voxelSize, iso: 0 });
+  if (opts.keepLargestMeshComponent ?? (opts.watertight !== false)) m = largestMeshComponent(m);
+  // A few light Taubin passes relax residual lattice ripple on the rims without
+  // subdividing (walls are already smooth from the continuous field).
+  m = smoothSurface(m, { iterations: opts.smoothIterations ?? 3, subdivide: false });
+  return m;
+}
+
+/** The raw signed-distance field of a mesh on a padded lattice: `< 0` inside,
+ *  exact within `bandWorld` of the surface, a sign-correct ±large value beyond.
+ *  This is the heavy step (a BVH closest-point query per in-band sample) and is
+ *  shared by every volumetric modifier — the surface-nets path (apply a combine
+ *  then mesh) and the levelSet path (trilinearly sample it inside an SDF). */
+export interface SignedDistanceField {
+  /** Row-major (`i + fnx*(j + fny*k)`) signed distance grid. */
+  d: Float32Array;
+  fnx: number; fny: number; fnz: number;
+  /** World position of sample (0,0,0). */
+  origin: [number, number, number];
+  /** World units per lattice step. */
+  voxelSize: number;
+}
+
+/** Build the {@link SignedDistanceField} for a mesh. Returns null for an empty
+ *  mesh. Async: yields to the event loop every few depth-slices (progress +
+ *  cancel via `ctl`). Throws {@link SdfAbortError} if aborted. */
+export async function buildSignedDistanceField(
+  mesh: MeshData,
+  opts: Pick<SdfModifierOptions, 'resolution' | 'bandWorld' | 'padWorld'>,
+  ctl?: SdfRunControl,
+): Promise<SignedDistanceField | null> {
+  if (mesh.numTri === 0) return null;
+
   const bandWorld = Math.max(1e-4, opts.bandWorld);
   const resolution = Math.max(16, Math.min(MAX_FIELD_RESOLUTION, Math.round(opts.resolution)));
 
@@ -149,7 +203,7 @@ export async function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, 
   const band = markBand(fnx, fny, fnz, pad, surface, at, bandVox);
   const BIG = bandWorld + (bandVox + 2) * voxelSize; // exceeds any in-band magnitude
 
-  const field = new Float32Array(fnx * fny * fnz);
+  const d = new Float32Array(fnx * fny * fnz);
   // Yield roughly every YIELD_SLICES depth-slices so the event loop can paint
   // the progress modal and apply a cancel; small enough to stay responsive,
   // large enough that the setTimeout overhead is negligible next to the sweep.
@@ -168,7 +222,6 @@ export async function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, 
         const wz = origin[2] + k * voxelSize;
         const inside = isSolid(i - pad, j - pad, k - pad);
 
-        let d: number;
         if (band[fi]) {
           queryPt.set(wx, wy, wz);
           bvh.closestPointToPoint(queryPt, hit);
@@ -176,34 +229,22 @@ export async function sdfModifierMesh(mesh: MeshData, opts: SdfModifierOptions, 
           const ox = wx - hit.point.x, oy = wy - hit.point.y, oz = wz - hit.point.z;
           const dot = ox * faceNormals[fIdx * 3] + oy * faceNormals[fIdx * 3 + 1] + oz * faceNormals[fIdx * 3 + 2];
           const outside = Math.abs(dot) > 1e-9 ? dot > 0 : !inside;
-          d = outside ? hit.distance : -hit.distance;
+          d[fi] = outside ? hit.distance : -hit.distance;
         } else {
-          d = inside ? -BIG : BIG;
+          d[fi] = inside ? -BIG : BIG;
         }
-
-        field[fi] = combine({ d, x: wx, y: wy, z: wz, voxelSize });
       }
     }
   }
   bvhGeom.dispose(); // BVH is only consulted in the field sweep above
   ctl?.onProgress?.(1);
 
-  // Keep the largest face-connected region of inside samples *before* meshing
-  // (drops detached fragments without sealing windows the way growing the iso
-  // level would). Face-connectivity is what fuses on an FDM plate.
-  if (opts.watertight !== false) keepLargestFaceConnected(field, fnx, fny, fnz, 0);
-
-  let m = surfaceNetsField({ field, dims: [fnx, fny, fnz], origin, spacing: voxelSize, iso: 0 });
-  if (opts.keepLargestMeshComponent ?? (opts.watertight !== false)) m = largestMeshComponent(m);
-  // A few light Taubin passes relax residual lattice ripple on the rims without
-  // subdividing (walls are already smooth from the continuous field).
-  m = smoothSurface(m, { iterations: opts.smoothIterations ?? 3, subdivide: false });
-  return m;
+  return { d, fnx, fny, fnz, origin, voxelSize };
 }
 
 /** Keep only the largest 6-connected (face-adjacent) region of inside samples
  *  (`field < iso`); push every other inside sample to +∞ so it meshes as empty. */
-function keepLargestFaceConnected(field: Float32Array, nx: number, ny: number, nz: number, iso: number): void {
+export function keepLargestFaceConnected(field: Float32Array, nx: number, ny: number, nz: number, iso: number): void {
   const total = nx * ny * nz;
   const label = new Int32Array(total).fill(-1);
   const inside = (i: number) => field[i] < iso;

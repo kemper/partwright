@@ -519,7 +519,7 @@ export function defaultVoronoiLampOptions(mesh: MeshData): Required<VoronoiLampM
   };
 }
 
-export function defaultHollowOptions(mesh: MeshData): Required<HollowShellOptions> {
+export function defaultHollowOptions(mesh: MeshData): Required<Omit<HollowShellOptions, 'open'>> {
   const d = modelDiagonal(mesh) || 10;
   const wall = d * 0.03;
   return {
@@ -726,16 +726,22 @@ return v;
   };
 }
 
-export async function applyHollow(mesh: MeshData, opts: HollowShellOptions, ctl?: SdfRunControl): Promise<ModifierManifoldResult> {
-  // Hollow / vase mode: mesh a CONTINUOUS signed-distance field (the principle
-  // behind Manifold.levelSet, done pure-JS on the main thread) so the thin wall
-  // follows the true surface sub-voxel — smooth curved walls, no voxel
-  // "corduroy". See hollowShell.ts.
-  const baked = await hollowShellMesh(mesh, opts, ctl);
-  const bits = [
-    `wall ${opts.wallThickness.toFixed(2)}`,
-    opts.openTop ? `open top (rim ${(opts.rimHeight ?? opts.wallThickness * 2).toFixed(2)})` : 'closed',
-  ];
+export async function applyHollow(
+  mesh: MeshData,
+  opts: HollowShellOptions,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  Manifold: any,
+  ctl?: SdfRunControl,
+): Promise<ModifierManifoldResult> {
+  // Hollow / vase mode: mesh the shell's signed-distance field with
+  // Manifold.levelSet (marching tetrahedra — watertight/manifold by
+  // construction), so even a tapered vase comes out one clean printable piece.
+  // See hollowShell.ts.
+  const baked = await hollowShellMesh(mesh, opts, Manifold, ctl);
+  const opening = opts.open
+    ? `open along ${opts.open.side === 'max' ? '+' : '-'}${opts.open.axis.toUpperCase()}`
+    : opts.openTop ? `open top (rim ${(opts.rimHeight ?? opts.wallThickness * 2).toFixed(2)})` : 'closed';
+  const bits = [`wall ${opts.wallThickness.toFixed(2)}`, opening];
   if ((opts.drainHoles ?? 0) > 0) bits.push(`${opts.drainHoles} drain hole${opts.drainHoles === 1 ? '' : 's'}`);
   return {
     kind: 'manifold',
@@ -746,7 +752,7 @@ export async function applyHollow(mesh: MeshData, opts: HollowShellOptions, ctl?
     colorSource: denseColorSource(mesh),
     code: manifoldWrapper([
       `Hollowed (vase mode) from the current model on ${today()} — ${bits.join(', ')}.`,
-      `Smooth (SDF) shell baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+      `Watertight (levelSet) shell baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
     ]),
   };
 }

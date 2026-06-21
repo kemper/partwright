@@ -131,7 +131,7 @@ import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geom
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyHollow, buildEngraveResult, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultHollowOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyHollow, buildEngraveResult, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultHollowOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl, type HollowShellOptions } from './surface/modifiers';
 import { engraveInWorker } from './surface/engraveWorkerClient';
 import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampHost';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, isNoopScale, placementLabel, rotationLabel, mirrorLabel, scaleLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
@@ -9185,18 +9185,22 @@ async function main() {
       return buildEngraveResult(mesh, baked, engraveOpts);
     }
     if (id === 'hollow') {
-      // Vase mode → hollow shell; whole-model only (no region patch).
+      // Vase / mask mode → hollow shell; whole-model only (no region patch).
+      // levelSet meshing needs the engine's Manifold class (main-thread module).
+      const Manifold = getModule()?.Manifold;
+      if (!Manifold) throw new Error('Engine not ready — open a model first.');
       const mesh = meshForModifier(preserveColor);
       const base = defaultHollowOptions(mesh);
       return applyHollow(mesh, {
         wallThickness: (opts?.wallThickness as number) ?? base.wallThickness,
+        open: opts?.open as HollowShellOptions['open'] | undefined,
         openTop: (opts?.openTop as boolean) ?? base.openTop,
         rimHeight: (opts?.rimHeight as number) ?? base.rimHeight,
         drainHoles: (opts?.drainHoles as number) ?? base.drainHoles,
         drainRadius: (opts?.drainRadius as number) ?? base.drainRadius,
         resolution: (opts?.resolution as number) ?? base.resolution,
         watertight: (opts?.watertight as boolean) ?? base.watertight,
-      }, ctl);
+      }, Manifold, ctl);
     }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
@@ -9801,12 +9805,14 @@ async function main() {
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Hollow the current model into a thin shell — 3D-print "vase mode". Bakes a
-     *  smooth manifold-js mesh (a continuous SDF, no engine change). `openTop`
-     *  removes the cap (open-topped vase), `rimHeight` sets how far below the top
-     *  it opens; `drainHoles` bores N vertical holes through the base (planter).
-     *  Saves a new version. Returns `{ ok, label, geometry, warnings? }`. */
+     *  watertight manifold-js mesh via levelSet (no engine change). Open it along
+     *  a plane: `openTop` (vase — removes the cap, `rimHeight` below the top) or
+     *  `open: {axis, offset, side}` (mask — keep one side of any axis-aligned
+     *  plane as an open shell). `drainHoles` bores N vertical holes through the
+     *  base (planter). Saves a new version. Returns `{ ok, label, geometry }`. */
     async applyHollow(opts?: {
       wallThickness?: number;
+      open?: { axis: 'x' | 'y' | 'z'; offset: number; side: 'min' | 'max' };
       openTop?: boolean;
       rimHeight?: number;
       drainHoles?: number;
@@ -15355,7 +15361,7 @@ async function main() {
         'downloadRecentExport': { signature: 'downloadRecentExport(id) -- Re-trigger browser download for an inbox entry', docs: '/ai/file-io.md' },
         'clearRecentExports': { signature: 'clearRecentExports() -- Empty the Recent Exports list', docs: '/ai/file-io.md' },
         // Surface modifiers (full set documented in /ai/textures.md)
-        'applyHollow':     { signature: 'await applyHollow({wallThickness?, openTop?, rimHeight?, drainHoles?, drainRadius?, resolution?, preserveColor?}) -- Hollow the model into a thin shell (3D-print "vase mode"); openTop opens the cap, drainHoles bores holes through the base. Saves a version -> {ok, label, geometry, warnings?}', docs: '/ai/textures.md#applyhollow' },
+        'applyHollow':     { signature: 'await applyHollow({wallThickness?, openTop?, rimHeight?, open?:{axis,offset,side}, drainHoles?, drainRadius?, resolution?, preserveColor?}) -- Hollow into a thin PRINTABLE shell (levelSet, watertight on tapered shapes). openTop = vase; open = keep one side of a plane (mask); drainHoles = planter. Saves a version -> {ok, label, geometry}', docs: '/ai/textures.md#applyhollow' },
         // Color regions
         'paintRegion':     { signature: 'paintRegion({point, normal, color, name?, tolerance?}) -- Paint coplanar face region (flood-fill, edge-bounded). Diagnostic error on failure.', docs: '/ai/colors.md' },
         'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai/colors.md' },

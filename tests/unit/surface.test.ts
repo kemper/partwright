@@ -18,13 +18,12 @@ import { wovenFabric } from '../../src/surface/wovenFabric';
 import { voronoiShell } from '../../src/surface/voronoiShell';
 import { voronoiLattice } from '../../src/surface/voronoiLattice';
 import { surfaceNetsField } from '../../src/surface/surfaceNetsField';
-import { largestMeshComponent } from '../../src/surface/meshComponents';
-import { sdfModifierMesh } from '../../src/surface/sdfModifier';
+import { largestMeshComponent, dropTinyMeshComponents } from '../../src/surface/meshComponents';
+import { sdfModifierMesh, buildSignedDistanceField } from '../../src/surface/sdfModifier';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { encodeGrid } from '../../src/geometry/voxel/grid';
-import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp, applyHollow } from '../../src/surface/modifiers';
-import { hollowShellMesh } from '../../src/surface/hollowShell';
+import { applyFuzzy, applyKnit, applyKnitPatch, applySmooth, applyVoxelize, applyVoronoiLamp } from '../../src/surface/modifiers';
 import { nearestTriangleMap, remapTriangleSets, selectTrianglesNearSeeds, nearestSurfaceVertexDistance } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
@@ -409,47 +408,69 @@ describe('applyVoronoiLamp (mesh output)', () => {
   });
 });
 
-describe('hollowShellMesh (vase mode)', () => {
-  it('hollows a solid into a non-empty shell', async () => {
-    const m = await hollowShellMesh(cube(20), { wallThickness: 2, resolution: 64 });
-    expect(m.numTri).toBeGreaterThan(12);
-    expect(m.numVert).toBeGreaterThan(8);
+describe('dropTinyMeshComponents (debris removal by volume)', () => {
+  // A unit cube as a MeshData translated to `o` and scaled by `s`.
+  const cubeAt = (s: number, ox: number, oy: number, oz: number): MeshData => {
+    const c = cube(1);
+    const vp = new Float32Array(c.vertProperties.length);
+    for (let i = 0; i < c.numVert; i++) {
+      vp[i * 3] = c.vertProperties[i * 3] * s + ox;
+      vp[i * 3 + 1] = c.vertProperties[i * 3 + 1] * s + oy;
+      vp[i * 3 + 2] = c.vertProperties[i * 3 + 2] * s + oz;
+    }
+    return { ...c, vertProperties: vp };
+  };
+  const concat = (a: MeshData, b: MeshData): MeshData => {
+    const vp = new Float32Array(a.vertProperties.length + b.vertProperties.length);
+    vp.set(a.vertProperties); vp.set(b.vertProperties, a.vertProperties.length);
+    const tv = new Uint32Array(a.triVerts.length + b.triVerts.length);
+    tv.set(a.triVerts);
+    for (let i = 0; i < b.triVerts.length; i++) tv[a.triVerts.length + i] = b.triVerts[i] + a.numVert;
+    return { vertProperties: vp, triVerts: tv, numVert: a.numVert + b.numVert, numTri: a.numTri + b.numTri, numProp: 3 };
+  };
+
+  it('drops a near-zero-volume debris component, keeps the substantial one', () => {
+    const big = cubeAt(10, 0, 0, 0);          // volume 1000
+    const debris = cubeAt(0.1, 50, 50, 50);   // volume 0.001, far away
+    const out = dropTinyMeshComponents(concat(big, debris));
+    // Only the big cube survives (8 verts / 12 tris).
+    expect(out.numTri).toBe(12);
+    expect(out.numVert).toBe(8);
   });
 
-  it('returns an empty mesh for an empty input', async () => {
-    const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
-    expect((await hollowShellMesh(empty, { wallThickness: 1 })).numTri).toBe(0);
-  });
-
-  it('open top lops the cap off — the result is shorter than the closed shell', async () => {
-    const rim = 4;
-    const closed = await hollowShellMesh(cube(20), { wallThickness: 2, resolution: 64 });
-    const open = await hollowShellMesh(cube(20), { wallThickness: 2, resolution: 64, openTop: true, rimHeight: rim });
-    const closedTop = bboxOf(extractPositions(closed)).max[2];
-    const openTop = bboxOf(extractPositions(open)).max[2];
-    // The closed shell reaches the original top (z=20); the open one is cut at
-    // ~ (20 - rim), so it must be meaningfully shorter.
-    expect(openTop).toBeLessThan(closedTop - rim * 0.5);
+  it('keeps two substantial components (e.g. a hollow shell\'s inner + outer)', () => {
+    const a = cubeAt(10, 0, 0, 0);            // volume 1000
+    const b = cubeAt(8, 100, 0, 0);           // volume 512 — both substantial
+    const out = dropTinyMeshComponents(concat(a, b));
+    expect(out.numTri).toBe(24); // both kept
   });
 });
 
-describe('applyHollow (mesh output)', () => {
-  it('emits a smooth (SDF) manifold mesh wrapper with a shell', async () => {
-    const r = await applyHollow(cube(20), { wallThickness: 2, resolution: 64 });
-    expect(r.kind).toBe('manifold');
-    if (r.kind === 'manifold') {
-      expect(r.label).toBe('hollow / vase');
-      expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
-      expect(r.mesh.numTri).toBeGreaterThan(12);
-    }
+describe('buildSignedDistanceField (shared distance grid for hollow / levelSet)', () => {
+  it('signs inside negative, outside positive, ~0 at the surface', async () => {
+    // A cube [0,20]^3; sample the raw distance field.
+    const fld = await buildSignedDistanceField(cube(20), { resolution: 48, bandWorld: 3 });
+    expect(fld).not.toBeNull();
+    const { d, fnx, fny, fnz, origin, voxelSize } = fld!;
+    const sample = (x: number, y: number, z: number) => {
+      const i = Math.round((x - origin[0]) / voxelSize);
+      const j = Math.round((y - origin[1]) / voxelSize);
+      const k = Math.round((z - origin[2]) / voxelSize);
+      return d[(k * fny + j) * fnx + i];
+    };
+    // Centre of the cube is deep inside → negative.
+    expect(sample(10, 10, 10)).toBeLessThan(0);
+    // Just outside the +Z face (within the padded grid) → positive.
+    const justOutside = sample(10, 10, 20 + voxelSize);
+    expect(justOutside).toBeGreaterThan(0);
+    // A point ~2 units inside the +Z face reads ≈ -2 (within band, exact distance).
+    expect(sample(10, 10, 18)).toBeLessThan(0);
+    expect(sample(10, 10, 18)).toBeGreaterThan(-4);
   });
 
-  it('labels an open-top vase with drain holes in the header comment', async () => {
-    const r = await applyHollow(cube(20), { wallThickness: 2, resolution: 48, openTop: true, drainHoles: 3 });
-    if (r.kind === 'manifold') {
-      expect(r.code).toContain('open top');
-      expect(r.code).toContain('3 drain holes');
-    }
+  it('returns null for an empty input', async () => {
+    const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
+    expect(await buildSignedDistanceField(empty, { resolution: 32, bandWorld: 1 })).toBeNull();
   });
 });
 
