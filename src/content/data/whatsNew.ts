@@ -140,7 +140,7 @@ export const WHATS_NEW_WEEKS: WeekEntry[] = [
           },
           {
             title: 'Pick your exact Bambu printer, nozzle, and filament',
-            body: 'Multi-part 3MF export now targets any of 14 Bambu Lab printers — single- and dual-nozzle — with a nozzle-size and filament-type picker, so the exported project opens with the right machine profile and bed instead of a one-size-fits-all default.',
+            body: 'Multi-part 3MF export now targets a range of Bambu Lab printers — single- and dual-nozzle — with a nozzle-size and filament-type picker, so the exported project opens with the right machine profile and bed instead of a one-size-fits-all default.',
           },
         ],
       },
