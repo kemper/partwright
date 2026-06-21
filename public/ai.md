@@ -328,12 +328,16 @@ partwright.isRunning()                   // -> boolean (is code executing?)
 partwright.getSpendingMode()             // -> {mode, thinking, renderResolution, renderResolutionPx, verificationAngles, painting, sessionNotes, ...}
 partwright.setSpendingMode('balanced')   // 'cheap' | 'balanced' | 'expensive' (sets thinking, vision, paint, notes, caps at once)
 
-// Images -- attach photos to compare model against (see /ai/reference-images.md)
-partwright.setImages([{src, label?}, ...])  // replace all; src is data URL or http(s) URL; label is an optional caption
-partwright.addImage({src, label?})          // append one; returns {id, src, label?}
+// Attachments -- durable session files: reference photos, models, docs, notes
+//   (survive a chat clear; see /ai/reference-images.md#attachments)
+partwright.setImages([{src, label?}, ...])  // replace image attachments; src is data URL or http(s) URL; label optional
+partwright.addImage({src, label?})          // append one image; returns {id, src, label?}
 partwright.removeImage(id)                  // remove by id; returns true if removed
-partwright.clearImages()
-partwright.getImages()                      // -> [{id, src, label?}, ...]
+partwright.clearImages()                    // clear image attachments (non-image ones kept)
+partwright.getImages()                      // -> [{id, src, label?}, ...] (image-kind only)
+partwright.addAttachment({src, kind?, mediaType?, label?})  // pin ANY file; kind/mediaType inferred when omitted
+partwright.getAttachments()                 // -> [{id, kind, mediaType?, src, label?, addedAt?, source?}, ...]
+partwright.setAttachments([...]) / partwright.removeAttachment(id) / partwright.clearAttachments()
 
 // Color regions (~30 paint methods) — call readDoc("colors") for the full picker decision tree.
 partwright.paintRegion({point, normal, color, name?, tolerance?})  // coplanar flood-fill (flat faces)
@@ -834,9 +838,9 @@ The standard `exportGLB()` / `exportSTL()` / `exportOBJ()` / `export3MF()` metho
 
 ## Reference images & photo-to-model
 
-The user can attach reference photos via `partwright.setImages([...])`; they appear in the Images tab and Gallery. There's also an analyze-and-build workflow that takes a single photo and bootstraps a model from it.
+The user can attach reference photos via `partwright.setImages([...])`; they appear in the Attachments tab and Gallery. Photos are one **kind** of session attachment — the same panel also holds reference models, PDFs, and notes (`getAttachments`/`addAttachment`), all of which persist across a chat clear. There's also an analyze-and-build workflow that takes a single photo and bootstraps a model from it.
 
-**Call `readDoc({name: "reference-images"})`** when the user attaches a photo or asks you to model something from an image — covers `setImages` arguments, label conventions for elevation matching, and the five-step photo-to-model loop (major masses first, verify each elevation, iterate details).
+**Call `readDoc({name: "reference-images"})`** when the user attaches a photo or asks you to model something from an image — covers `setImages`/`getAttachments` arguments, label conventions for elevation matching, the durable-attachments model, and the five-step photo-to-model loop (major masses first, verify each elevation, iterate details).
 
 ## Iteration workflow
 

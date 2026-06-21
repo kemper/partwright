@@ -3,6 +3,7 @@ import { createWhiteMaterial, createBlackWireframeMaterial, createCreaseEdgeMate
 import type { MeshData } from '../geometry/types';
 import { buildOffscreenOverlay, disposeOffscreenOverlay } from './viewportRegistry';
 import { presetIndex } from '../storage/db';
+import type { SessionAttachment, AttachedImage } from '../storage/attachment';
 import { CREASE_ANGLE_DEG, resolveEdgeMode, type EdgeMode } from './edgeMode';
 import { getConfig } from '../config/appConfig';
 export { EDGE_MODES, type EdgeMode } from './edgeMode';
@@ -250,34 +251,38 @@ export function renderCompositeCanvas(meshData: MeshData): HTMLCanvasElement {
   return compositeCanvas;
 }
 
-// === Attached images for elevation comparison ===
+// === Attached session attachments (reference images, models, docs…) ===
 
-export interface AttachedImage {
-  id: string;
-  src: string;
-  /** Optional user-facing caption. Drives ordering via preset matching. */
-  label?: string;
-}
+export type { SessionAttachment, AttachedImage, AttachmentKind } from '../storage/attachment';
 
-let _images: AttachedImage[] = [];
+// In-memory mirror of the active session's attachment list. The session
+// manager seeds it on open and persists mutations back to IndexedDB; the UI
+// reads it synchronously here.
+let _attachments: SessionAttachment[] = [];
 
-export function setImages(images: AttachedImage[]): void {
-  _images = images;
+export function setAttachments(attachments: SessionAttachment[]): void {
+  _attachments = attachments;
   window.dispatchEvent(new Event('images-changed'));
 }
 
-export function clearImages(): void {
-  _images = [];
+export function clearAttachments(): void {
+  _attachments = [];
   window.dispatchEvent(new Event('images-changed'));
 }
 
-export function getImages(): AttachedImage[] {
-  return _images;
+export function getAttachments(): SessionAttachment[] {
+  return _attachments;
+}
+
+/** Image-kind attachments only — what the Gallery strip and the AI's
+ *  `getReferenceImages` tool render. */
+export function getImageAttachments(): SessionAttachment[] {
+  return _attachments.filter(a => a.kind === 'image');
 }
 
 /** Stable sort: preset-matching labels first in preset order, others keep
  *  their insertion order at the end. */
-export function sortImagesByPreset(images: readonly AttachedImage[]): AttachedImage[] {
+export function sortImagesByPreset<T extends AttachedImage>(images: readonly T[]): T[] {
   return images
     .map((item, idx) => ({ item, idx, p: presetIndex(item.label) }))
     .sort((a, b) => {

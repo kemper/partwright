@@ -45,8 +45,7 @@ const INTENTIONALLY_UNDOCUMENTED = new Set([
 // asserted to actually exist (no stale entries), so the list can't rot.
 const UNDOCUMENTED_BACKLOG = new Set([
   'getThumbnailCamera', 'sliceAtZVisual', 'importImageAsRelief', 'importSvgAsRelief',
-  'getReliefSwapGuide', 'setReliefPreviewMode', 'setImages', 'addImage', 'removeImage',
-  'clearImages', 'getImages', 'closeSession', 'deleteSession', 'commitWithColors',
+  'getReliefSwapGuide', 'setReliefPreviewMode', 'closeSession', 'deleteSession', 'commitWithColors',
   'navigateVersion', 'getSessionUrl', 'getSessionState', 'deleteSessionNote',
   'updateSessionNote', 'exportSession', 'importSession', 'clearAllSessions', 'isRunning',
   'getPrinterSettings', 'setPrinterSettings', 'checkPrintability', 'createSessionWithVersions',

@@ -2788,6 +2788,31 @@ function attachImageSource(img: ImageSource): void {
   // Fire-and-forget — IDB write failures shouldn't block the UI; the
   // image is already attached to this turn either way.
   void putAttachment(img).catch(err => console.warn('Recent attachments: write failed', err));
+  // Also pin it to the session's durable attachments, so it survives a chat
+  // clear and the AI can fetch it back via getReferenceImages/getAttachments.
+  captureChatImageAsAttachment(img);
+}
+
+/** Pin an AI-panel image upload onto the current session as a durable,
+ *  chat-sourced attachment. No-op when there's no real session (the global
+ *  chat bucket) or the same image is already attached (dedup by src). */
+function captureChatImageAsAttachment(img: ImageSource): void {
+  if (!state.sessionId || state.sessionId === GLOBAL_CHAT_BUCKET) return;
+  const pw = (window as unknown as {
+    partwright?: {
+      getAttachments?: () => Array<{ src?: string }>;
+      addAttachment?: (a: { src: string; label?: string; kind?: string; mediaType?: string }) => unknown;
+    };
+  }).partwright;
+  if (!pw?.addAttachment || !pw.getAttachments) return;
+  const src = `data:${img.mediaType};base64,${img.data}`;
+  try {
+    const existing = pw.getAttachments();
+    if (Array.isArray(existing) && existing.some(a => a.src === src)) return;
+    pw.addAttachment({ src, label: img.label, kind: 'image', mediaType: img.mediaType });
+  } catch (err) {
+    console.warn('Session attachments: capture failed', err);
+  }
 }
 
 function renderPendingImages(): void {

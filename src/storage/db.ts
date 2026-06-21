@@ -1,11 +1,25 @@
 // IndexedDB storage for sessions and versions
 
+import {
+  type AttachedImage,
+  type SessionAttachment,
+  type AttachmentKind,
+  normalizeAttachment,
+} from './attachment';
+
+export type { AttachedImage, SessionAttachment, AttachmentKind } from './attachment';
+
 export interface Session {
   id: string;
   name: string;
   created: number;
   updated: number;
-  images?: AttachedImage[] | null;
+  /** Typed project attachments (reference photos, spec PDFs, reference models,
+   *  notes…) — the generalization of the old `images` list. Survives an AI
+   *  chat clear and is exported with the session. Legacy `images` /
+   *  `referenceImages` shapes migrate into this field on read
+   *  ({@link migrateSessionImages}). */
+  attachments?: SessionAttachment[] | null;
   /** Modeling language for this session. Missing = 'manifold-js'. */
   language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
   /** Id of the part that is active when the session is (re)opened. Missing =
@@ -53,18 +67,6 @@ export interface Part {
   order: number;
   created: number;
   updated: number;
-}
-
-export interface AttachedImage {
-  id: string;
-  /** data URL or remote URL */
-  src: string;
-  /** User-facing caption. Shown in the Gallery, lightbox, and tooltips.
-   *  May match one of the preset labels (Front, Right, Back, Left, Top,
-   *  Perspective) — those drive ordering of the image strip — or be
-   *  a free-form custom string. Empty string and undefined both mean
-   *  "no caption". */
-  label?: string;
 }
 
 /** Suggested labels offered as quick picks in the UI. Items whose label
@@ -561,67 +563,83 @@ export async function createSession(name?: string, language?: 'manifold-js' | 's
 // stored before the array migration may still be in this form.
 type LegacyImagesObject = Partial<Record<LegacyImageAngle, string>>;
 
+type LegacyImagesShape = LegacyImagesObject | AttachedImage[] | null;
+
 export async function getSession(id: string): Promise<Session | null> {
   const store = await tx('sessions', 'readonly');
-  const raw = await reqToPromise(store.get(id)) as (Session & { referenceImages?: LegacyImagesObject | AttachedImage[] | null }) | null;
+  const raw = await reqToPromise(store.get(id)) as (Session & { images?: LegacyImagesShape; referenceImages?: LegacyImagesShape }) | null;
   return raw ? migrateSessionImages(raw) : null;
 }
 
 export async function listSessions(): Promise<Session[]> {
   const store = await tx('sessions', 'readonly');
-  const sessions = await reqToPromise(store.getAll()) as (Session & { referenceImages?: LegacyImagesObject | AttachedImage[] | null })[];
+  const sessions = await reqToPromise(store.getAll()) as (Session & { images?: LegacyImagesShape; referenceImages?: LegacyImagesShape })[];
   return sessions.map(migrateSessionImages).sort((a, b) => b.updated - a.updated);
 }
 
-// Read-time migration for three legacy shapes:
-//  1. Pre-rename sessions stored data under `referenceImages` instead of `images`.
+// Read-time migration for legacy shapes, collapsing them all into the typed
+// `attachments` array:
+//  1. Pre-rename sessions stored data under `referenceImages`, then `images`.
 //  2. Pre-array sessions stored an object map ({front: 'url', ...}) rather than an array.
 //  3. Pre-unification sessions stored items as {id, angle, src, label?}; we collapse
-//     `angle` into `label` here so callers see a single user-facing field.
-function migrateSessionImages(s: Session & { referenceImages?: LegacyImagesObject | AttachedImage[] | null }): Session {
+//     `angle` into `label`.
+//  4. Pre-attachments sessions stored `{id, src, label}` images with no `kind` —
+//     we normalize each into a typed `kind: 'image'` attachment.
+function migrateSessionImages(s: Session & { images?: LegacyImagesShape; referenceImages?: LegacyImagesShape }): Session {
   // Operate on an untyped view so we can hold both legacy and new shapes during migration.
-  const raw = s as unknown as { images?: unknown; referenceImages?: unknown };
-  if (raw.images == null && raw.referenceImages != null) {
-    raw.images = raw.referenceImages;
-  }
+  const raw = s as unknown as { attachments?: unknown; images?: unknown; referenceImages?: unknown };
+  // Pick the first present source, newest field name first.
+  let src: unknown = raw.attachments ?? raw.images ?? raw.referenceImages ?? null;
+  delete raw.images;
   delete raw.referenceImages;
-  if (raw.images && !Array.isArray(raw.images) && typeof raw.images === 'object') {
-    raw.images = legacyImagesObjectToArray(raw.images as LegacyImagesObject);
+  if (src && !Array.isArray(src) && typeof src === 'object') {
+    src = legacyImagesObjectToArray(src as LegacyImagesObject);
   }
-  if (Array.isArray(raw.images)) {
-    raw.images = (raw.images as Array<Record<string, unknown>>).map(collapseAngleIntoLabel);
+  if (Array.isArray(src)) {
+    raw.attachments = (src as Array<Record<string, unknown>>).map(item =>
+      normalizeAttachment(
+        {
+          id: typeof item.id === 'string' ? item.id : undefined,
+          src: typeof item.src === 'string' ? item.src : '',
+          // Pre-unification rows tagged the angle; fold it into the label.
+          label: collapseAngleIntoLabel(item),
+          kind: typeof item.kind === 'string' ? (item.kind as AttachmentKind) : undefined,
+          mediaType: typeof item.mediaType === 'string' ? item.mediaType : undefined,
+          addedAt: typeof item.addedAt === 'number' ? item.addedAt : undefined,
+          source: item.source === 'chat' || item.source === 'user' ? item.source : undefined,
+        },
+        generateId(),
+      ),
+    );
+  } else {
+    raw.attachments = null;
   }
   return s;
 }
 
-/** Drop the legacy `angle` field, copying it into `label` (capitalized) when
- *  a label isn't already present. After this, `label` is the single source of
- *  truth for how the image is named in the UI. */
-function collapseAngleIntoLabel(item: Record<string, unknown>): AttachedImage {
-  const id = typeof item.id === 'string' ? item.id : generateId();
-  const src = typeof item.src === 'string' ? item.src : '';
+/** Compute the effective label: explicit label wins, else the legacy
+ *  `angle` field capitalized, else empty. */
+function collapseAngleIntoLabel(item: Record<string, unknown>): string {
   const existingLabel = typeof item.label === 'string' ? item.label.trim() : '';
+  if (existingLabel) return existingLabel;
   const angle = typeof item.angle === 'string' ? item.angle : '';
-  const out: AttachedImage = { id, src };
-  const label = existingLabel || (angle ? capitalize(angle) : '');
-  if (label) out.label = label;
-  return out;
+  return angle ? capitalize(angle) : '';
 }
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-export function legacyImagesObjectToArray(obj: LegacyImagesObject): AttachedImage[] {
-  const result: AttachedImage[] = [];
+export function legacyImagesObjectToArray(obj: LegacyImagesObject): SessionAttachment[] {
+  const result: SessionAttachment[] = [];
   for (const angle of LEGACY_ANGLES) {
     const src = obj[angle];
-    if (src) result.push({ id: generateId(), src, label: capitalize(angle) });
+    if (src) result.push(normalizeAttachment({ src, label: capitalize(angle), kind: 'image' }, generateId()));
   }
   return result;
 }
 
-export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference' | 'thumbCamera' | 'workCamera'>>): Promise<void> {
+export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'attachments' | 'language' | 'currentPartId' | 'aiPreference' | 'thumbCamera' | 'workCamera'>>): Promise<void> {
   const store = await tx('sessions', 'readwrite');
   // Read-modify-write inside one transaction: queue the put from the get's
   // callback (awaiting between them risks auto-commit), then await oncomplete.
@@ -630,8 +648,9 @@ export async function updateSession(id: string, updates: Partial<Pick<Session, '
     const session = getReq.result as Session | null;
     if (!session) return;
     Object.assign(session, updates);
-    // Strip legacy field if present so it doesn't shadow the new one on re-read
+    // Strip legacy fields if present so they don't shadow the new one on re-read
     delete (session as { referenceImages?: unknown }).referenceImages;
+    delete (session as { images?: unknown }).images;
     store.put(session);
   };
   await txComplete(store.transaction);

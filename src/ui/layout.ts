@@ -334,8 +334,8 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // needs a separate rail item.
   const tabVersions = createRailItem('Versions', 'Versions', '🕒', false);
   tabVersions.title = 'Saved versions — thumbnails, rename, delete';
-  const tabImages = createRailItem('Images', 'Images', '📷', false);
-  tabImages.title = 'Reference images attached to this session';
+  const tabImages = createRailItem('Images', 'Attachments', '📎', false);
+  tabImages.title = 'Attachments: reference images, models, docs & notes pinned to this session';
   const tabDiff = createRailItem('Diff', 'Diff', '🔀', false);
   tabDiff.title = 'Compare code between two versions';
   const tabNotes = createRailItem('Notes', 'Notes', '📝', false);

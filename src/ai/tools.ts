@@ -327,7 +327,12 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'getReferenceImages',
-    description: 'See the reference images the user attached to this session (the "Images" / reference panel — e.g. photos or alternate-angle views to model from or match). Returns ALL of them as ONE labeled grid image (each tile captioned with its label) plus a text list of the labels. Call this at the START of any task that refers to attached photos/views, and again whenever you need to re-check them — do NOT guess at a subject you have not actually seen. If nothing is attached, it says so.',
+    description: 'See the reference IMAGES the user attached to this session (the "Attachments" panel — e.g. photos or alternate-angle views to model from or match). Returns ALL image attachments as ONE labeled grid image (each tile captioned with its label) plus a text list of the labels. Call this at the START of any task that refers to attached photos/views, and again whenever you need to re-check them — do NOT guess at a subject you have not actually seen. For non-image attachments (reference models, PDFs, notes) use getAttachments. If nothing is attached, it says so.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'getAttachments',
+    description: 'List ALL files the user pinned to this session (the "Attachments" panel): reference images, reference models (STL/STEP/3MF), documents (PDF), and text/notes. Returns a manifest — each entry\'s id, kind (image|model|document|text|other), media type, label, when it was added, and source (user vs captured from a chat upload). Text/notes attachments include their contents inline. These are DURABLE project context: they survive clearing the chat, so use this to recover reference material an earlier conversation was working from. To actually SEE image attachments, call getReferenceImages.',
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -1391,6 +1396,7 @@ const ALWAYS_AVAILABLE = new Set([
   'getMeshSummary',
   'getFeatureCentroids',
   'getReferenceImages',
+  'getAttachments',
   'getSessionContext',
   'listVersions',
   // loadVersion is intentionally NOT here — it's listed in SAVE_GATED so
@@ -1460,7 +1466,7 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
 export const RETRY_SAFE_TOOLS = new Set([
   // Pure reads / queries
   'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary',
-  'getFeatureCentroids', 'getReferenceImages', 'getSessionContext', 'listVersions',
+  'getFeatureCentroids', 'getReferenceImages', 'getAttachments', 'getSessionContext', 'listVersions',
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
@@ -1595,6 +1601,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
     if (name === 'runIsolated') return await executeRunIsolated(api, input);
     if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
     if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
+    if (name === 'getAttachments') return executeGetAttachments(api);
 
     const result = await dispatch(api, name, input);
     if (result === undefined) return { content: '(ok)', isError: false };
@@ -1690,7 +1697,7 @@ async function executeGetReferenceImages(api: PartwrightAPI): Promise<ToolExecRe
     .map(im => ({ src: im.src as string, label: im.label }));
   if (usable.length === 0) {
     return {
-      content: 'No reference images are attached to this session. If the task refers to photos or views, ask the user to attach them in the Images panel (or via the Self-Modeling Studio) — do not invent a subject.',
+      content: 'No reference images are attached to this session. If the task refers to photos or views, ask the user to attach them in the Attachments panel (or via the Self-Modeling Studio) — do not invent a subject. (Non-image attachments, if any, are listed by getAttachments.)',
       isError: false,
     };
   }
@@ -1703,6 +1710,77 @@ async function executeGetReferenceImages(api: PartwrightAPI): Promise<ToolExecRe
   return {
     content: `${usable.length} reference image(s), tiled left-to-right, top-to-bottom in the attached grid:\n${labels}`,
     image: grid,
+    isError: false,
+  };
+}
+
+interface AttachmentEntry {
+  id?: string;
+  kind?: string;
+  mediaType?: string;
+  src?: string;
+  label?: string;
+  addedAt?: number;
+  source?: string;
+}
+
+/** Decode a text attachment's `data:` URL to its string contents, capped so a
+ *  large file can't blow the tool result. Returns null when it isn't decodable
+ *  inline (remote URL, non-text payload). */
+function decodeTextAttachment(src: string | undefined): string | null {
+  if (!src || !src.startsWith('data:')) return null;
+  const comma = src.indexOf(',');
+  if (comma < 0) return null;
+  const meta = src.slice(5, comma);
+  const payload = src.slice(comma + 1);
+  const CAP = 4000;
+  try {
+    let text: string;
+    if (/;base64/i.test(meta)) {
+      const bin = atob(payload);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      text = new TextDecoder().decode(bytes);
+    } else {
+      text = decodeURIComponent(payload);
+    }
+    return text.length > CAP ? `${text.slice(0, CAP)}\n…(truncated, ${text.length} chars total)` : text;
+  } catch {
+    return null;
+  }
+}
+
+function executeGetAttachments(api: PartwrightAPI): ToolExecResult {
+  const raw = typeof api.getAttachments === 'function' ? api.getAttachments() : [];
+  const items = (Array.isArray(raw) ? raw : []) as AttachmentEntry[];
+  if (items.length === 0) {
+    return {
+      content: 'No attachments are pinned to this session. Reference files (images, models, PDFs, notes) added in the Attachments panel — or images uploaded in this chat — would appear here. If the task needs reference material, ask the user to attach it.',
+      isError: false,
+    };
+  }
+  const imageCount = items.filter(a => a.kind === 'image').length;
+  const lines: string[] = [];
+  items.forEach((a, i) => {
+    const when = typeof a.addedAt === 'number' ? new Date(a.addedAt).toISOString().slice(0, 10) : 'date unknown';
+    const parts = [
+      `${i + 1}. [${a.kind ?? 'other'}] ${a.label?.trim() || '(no label)'}`,
+      a.mediaType ? `type=${a.mediaType}` : null,
+      `added ${when}`,
+      a.source ? `via ${a.source}` : null,
+      a.id ? `id=${a.id}` : null,
+    ].filter(Boolean);
+    lines.push(parts.join(' · '));
+    if (a.kind === 'text') {
+      const text = decodeTextAttachment(a.src);
+      if (text) lines.push(`   ---\n${text.split('\n').map(l => `   ${l}`).join('\n')}\n   ---`);
+    }
+  });
+  const hint = imageCount > 0
+    ? `\n\n${imageCount} image attachment(s) above — call getReferenceImages to view them.`
+    : '';
+  return {
+    content: `${items.length} attachment(s) pinned to this session:\n${lines.join('\n')}${hint}`,
     isError: false,
   };
 }
