@@ -25,7 +25,7 @@ cases/<case>/
   model.js      # the figure built with the current library
   rubric.md     # one judged item per `-` bullet
   reference.png # the target look (pinned via --set-reference, or a real photo grid)
-  verdict.json  # (human judge) the filled-in verdict, read back with --record
+  verdict.json  # (human judge) the filled-in verdict, read back on the next run
 ```
 
 `baseline.json` (committed) holds the accepted per-case scores. `results/` is
@@ -36,7 +36,7 @@ gitignored per-run output (candidate render, contact sheet, result.json).
 | Judge | Cost | What it is |
 |---|---|---|
 | `pixel` (default) | **free, offline** | Structural similarity of candidate vs reference tiles. NOT an anatomy judge — a regression sentinel that proves the loop and catches silhouette drift with no API key. |
-| `human` | **free** | Emits the contact sheet + a verdict template; you fill score + per-item critique, re-run with `--record`. The anchor that keeps the cheap judges honest. |
+| `human` | **free** | Emits the contact sheet + a verdict template; you fill score + per-item critique, then re-run to record it. The anchor that keeps the cheap judges honest. |
 | `gemini` | **cheap cloud vision** | The real semantic anatomy judge. Shells out to the `gemini` CLI — which lives on **your machine**, not the remote container — on a quota separate from a Claude Max sub. Returns a part-level checklist + suggested geometry fixes. |
 
 The judge always returns a **part-level checklist with a suggested geometry fix

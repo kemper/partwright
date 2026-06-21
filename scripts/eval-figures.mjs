@@ -33,14 +33,16 @@ const BASELINE_PATH = join(ROOT, 'evals/figures/baseline.json');
 const TILE = 384;
 
 function parseArgs(argv) {
-  const a = { case: null, judge: 'pixel', setReference: false, setBaseline: false, record: false, budget: Infinity, all: false };
+  const a = { case: null, judge: 'pixel', setReference: false, setBaseline: false, budget: Infinity, all: false };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--judge') a.judge = argv[++i];
     else if (t === '--set-reference') a.setReference = true;
     else if (t === '--set-baseline') a.setBaseline = true;
-    else if (t === '--record') a.record = true;
-    else if (t === '--budget') a.budget = Number(argv[++i]);
+    else if (t === '--budget') {
+      a.budget = Number(argv[++i]);
+      if (!Number.isFinite(a.budget) || a.budget < 0) { console.error('--budget needs a non-negative USD number (e.g. --budget 0.05)'); process.exit(2); }
+    }
     else if (t === '--all') a.all = true;
     else if (!t.startsWith('-') && !a.case) a.case = t;
   }
@@ -61,7 +63,8 @@ async function renderCandidate(c) {
   const result = await runPreview(join(c.dir, c.spec.model), { params: {}, lang: c.spec.lang || 'manifold-js' });
   if (!result.ok) throw new Error(`model failed to build: ${result.error}`);
   const r = result.render;
-  const png = await composePng(r.positions, r.triVerts, r.triColors, r.bbox, TILE, c.views).toBuffer();
+  // c.views is null when the case omits `views`; pass undefined so composePng falls back to DEFAULT_VIEWS (null would throw).
+  const png = await composePng(r.positions, r.triVerts, r.triColors, r.bbox, TILE, c.views ?? undefined).toBuffer();
   return { png, stats: result.stats };
 }
 
@@ -85,7 +88,7 @@ async function contactSheet(referencePng, candidatePng, outPath) {
     ? await sharp(referencePng).resize(W, null).toBuffer()
     : await sharp({ create: { width: W, height: W, channels: 3, background: { r: 40, g: 40, b: 46 } } }).png().toBuffer();
   const cand = await sharp(candidatePng).resize(W, null).toBuffer();
-  const h = Math.max((await sharp(ref).metadata()).height, (await sharp(cand).metadata()).height);
+  const h = Math.max((await sharp(ref).metadata()).height || W, (await sharp(cand).metadata()).height || W);
   const sheet = await sharp({ create: { width: W * 2 + GAP, height: h, channels: 3, background: { r: 24, g: 24, b: 28 } } })
     .composite([{ input: ref, left: 0, top: 0 }, { input: cand, left: W + GAP, top: 0 }])
     .png().toBuffer();
@@ -180,7 +183,8 @@ async function main() {
     const c = loadCase(name);
     const rec = await runOne(c, a, spend);
     recs.push(rec);
-    if (rec.regression || rec.gateFails?.length) regressed = true;
+    // --set-reference/--set-baseline are pin operations; don't fail their exit code on the build's gate state.
+    if (!rec.set && (rec.regression || rec.gateFails?.length)) regressed = true;
   }
   printReport(recs, spend, a.budget);
   process.exit(regressed ? 1 : 0);

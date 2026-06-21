@@ -63,7 +63,7 @@ function humanJudge({ verdictPath, rubric }) {
   if (!existsSync(verdictPath)) {
     const tmpl = {
       score: null,
-      note: 'Fill score (0-100) and per-item pass/critique/fix, then re-run with --record.',
+      note: 'Fill score (0-100) and per-item pass/critique/fix, then re-run the same command to record it.',
       perItem: rubric.items.map((item) => ({ item, pass: null, severity: '', critique: '', fix: '' })),
     };
     writeFileSync(verdictPath, JSON.stringify(tmpl, null, 2));
@@ -88,10 +88,12 @@ const GEMINI_OUT_USD_PER_MTOK = Number(process.env.GEMINI_OUT_USD_PER_MTOK || 0.
 function geminiJudge({ contactSheetPath, rubric, model = process.env.GEMINI_MODEL || 'gemini-2.0-flash', geminiPath }) {
   const bin = geminiPath || process.env.GEMINI_PATH || 'gemini';
   const prompt = buildJudgePrompt(rubric);
-  // The Gemini CLI accepts an image path; ask for STRICT JSON back.
+  // Attach the contact-sheet image via the Gemini CLI's `@<path>` file-injection
+  // syntax (not prose) so it's actually loaded into the vision context; ask for
+  // STRICT JSON back. Args are passed as an array → no shell, no injection.
   let out;
   try {
-    out = execFileSync(bin, ['-m', model, '-p', `${prompt}\n\nImage: ${contactSheetPath}`], {
+    out = execFileSync(bin, ['-m', model, '-p', `${prompt}\n\n@${contactSheetPath}`], {
       encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
     });
   } catch (e) {
