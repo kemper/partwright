@@ -69,9 +69,9 @@ const belt = F.ring(beltFrame, {
 
 const gripLen  = r.hand * 2.2;
 const gripR    = r.hand * 0.26;          // chunky grip tube
-const guardW   = r.hand * 3.2;          // cross-guard width — wider for readability
-const guardH   = r.hand * 0.55;         // guard bar half-thickness
-const guardD   = r.hand * 0.65;         // forward depth of guard
+const guardW   = r.hand * 3.8;          // cross-guard width — wide so it reads as a crosspiece
+const guardH   = r.hand * 0.34;         // guard bar half-thickness (Z) — flat bar, not a lump
+const guardD   = r.hand * 0.70;         // forward depth of guard
 const bladeLen = H * 0.58;
 const bladeW   = r.hand * 0.65;         // blade half-width at base (chunky for printing)
 const bladeTip = r.hand * 0.14;         // blade half-width at tip
@@ -88,8 +88,9 @@ const bladeTip_z = guardZ + bladeLen;
 // Grip cylinder
 const grip = sdf.capsule([0, 0, pommelZ], [0, 0, guardZ], gripR);
 
-// Cross-guard: a rounded bar along X, centred at guardZ
-const guard = sdf.roundedBox([guardW, guardD, guardH * 2], guardH * 0.4)
+// Cross-guard: a flat wide bar along X, crisp edges (small rounding), centred at
+// guardZ. Wide + thin so it reads as a perpendicular crosspiece, not a bulge.
+const guard = sdf.roundedBox([guardW, guardD, guardH * 2], guardH * 0.2)
   .translate([0, 0, guardZ]);
 
 // Blade: tapered from base to tip along +Z. Use a box scaled by a taper node.
@@ -109,7 +110,7 @@ const blade = bladeBase.smoothUnion(bladeUpper, bladeT * 0.6)
 const pommel = sdf.sphere(pommelR).translate([0, 0, pommelZ]);
 
 // Full sword local node
-const swordLocal = grip.union(guard).union(blade).smoothUnion(pommel, pommelR * 0.5);
+const swordLocal = grip.union(guard).union(blade).smoothUnion(pommel, pommelR * 0.25);
 
 // Place into the right fist
 const heldSword = F.holdAt(swordLocal, rig.grip.R);
