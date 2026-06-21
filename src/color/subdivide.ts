@@ -114,6 +114,18 @@ const MAX_PASSES = 16;
  *  rather than freeze. */
 const MAX_REFINED_TRIANGLES = 5_000_000;
 
+/** Boundary-clip snap tolerance (fraction of an edge). When the `field = 0`
+ *  contour crosses an edge within this fraction of an endpoint, the crossing is
+ *  snapped exactly onto that vertex instead of spawning a near-coincident new
+ *  one. This kills the "streak" artifact: a contour grazing a triangle corner
+ *  would otherwise emit a razor-thin sliver spanning the whole (possibly coarse,
+ *  un-refined) triangle — most visible where a straight painted edge runs nearly
+ *  parallel to a chain of mesh edges (e.g. the vertical edges down a cone). The
+ *  snap decision is a pure function of the shared edge, so neighbouring triangles
+ *  stay crack-free; the collapsed sliver becomes degenerate and is dropped. At
+ *  1% of an edge the boundary shift is sub-pixel (and zero on a refined rim). */
+const CLIP_SNAP_EPS = 1e-2;
+
 /** Whether the `slab` surface constraint is active for a stroke (mode not
  *  geodesic, a finite depth, and per-sample normals to measure offset against). */
 function slabActive(stroke: BrushStroke): boolean {
@@ -943,16 +955,26 @@ function clipByField(
     const existing = crossIndex.get(k);
     if (existing !== undefined) return existing;
     const fa = fieldAt(a), fb = fieldAt(b);
-    // Crossing parameter, clamped just off the endpoints so a contour grazing a
-    // vertex can't spawn a zero-area sliver.
-    let t = fa / (fa - fb);
-    if (!(t > 1e-6)) t = 1e-6;
-    if (!(t < 1 - 1e-6)) t = 1 - 1e-6;
-    const m = nextV++;
-    crossIndex.set(k, m);
-    for (let p = 0; p < P; p++) {
-      newVertProps.push(vertProperties[a * P + p] + t * (vertProperties[b * P + p] - vertProperties[a * P + p]));
+    const t = fa / (fa - fb);
+    // Snap a crossing that lands within CLIP_SNAP_EPS of an endpoint ONTO that
+    // existing vertex rather than minting a near-coincident one. A contour
+    // grazing a corner (both of a vertex's edges crossing near it) would
+    // otherwise spawn a long razor-thin sliver; snapping collapses it to a
+    // degenerate triangle the emit loop drops. Pure function of the (shared)
+    // edge → neighbours snap identically, so no T-junction / crack. `!(t > …)`
+    // also routes a NaN field ratio to the `a` endpoint.
+    let m: number;
+    if (!(t > CLIP_SNAP_EPS)) {
+      m = a;
+    } else if (!(t < 1 - CLIP_SNAP_EPS)) {
+      m = b;
+    } else {
+      m = nextV++;
+      for (let p = 0; p < P; p++) {
+        newVertProps.push(vertProperties[a * P + p] + t * (vertProperties[b * P + p] - vertProperties[a * P + p]));
+      }
     }
+    crossIndex.set(k, m);
     return m;
   };
 
@@ -961,6 +983,25 @@ function clipByField(
   const emit = (a: number, b: number, c: number, parent: number): void => {
     outTris.push(a, b, c);
     childParent.push(parent);
+  };
+  // Emit a clipped sub-triangle, skipping any that snapping has collapsed to a
+  // line or point (two coincident indices, or three collinear vertices). These
+  // carry zero surface area, so dropping them removes no coverage and can't open
+  // a crack — it just keeps the streak slivers out of the output. The untouched
+  // sibling sub-triangles already tile the parent's real area.
+  // Position of a vertex by index — original verts live in `vertProperties`,
+  // freshly-minted crossings in `newVertProps` (indices ≥ numVert).
+  const posOf = (v: number, axis: number): number =>
+    v < numVert ? vertProperties[v * P + axis] : newVertProps[(v - numVert) * P + axis];
+  const emitClip = (a: number, b: number, c: number, parent: number): void => {
+    if (a === b || b === c || a === c) return;
+    const e1x = posOf(b, 0) - posOf(a, 0), e1y = posOf(b, 1) - posOf(a, 1), e1z = posOf(b, 2) - posOf(a, 2);
+    const e2x = posOf(c, 0) - posOf(a, 0), e2y = posOf(c, 1) - posOf(a, 1), e2z = posOf(c, 2) - posOf(a, 2);
+    const nx = e1y * e2z - e1z * e2y;
+    const ny = e1z * e2x - e1x * e2z;
+    const nz = e1x * e2y - e1y * e2x;
+    if (nx * nx + ny * ny + nz * nz <= 1e-20) return; // collinear → zero area
+    emit(a, b, c, parent);
   };
 
   for (let t = 0; t < numTri; t++) {
@@ -982,9 +1023,9 @@ function clipByField(
     else if (in1 !== in0 && in1 !== in2) { A = v1; B = v2; C = v0; }
     else { A = v2; B = v0; C = v1; }
     const P1 = crossOf(A, B), Q = crossOf(A, C);
-    emit(A, P1, Q, t);
-    emit(P1, B, C, t);
-    emit(P1, C, Q, t);
+    emitClip(A, P1, Q, t);
+    emitClip(P1, B, C, t);
+    emitClip(P1, C, Q, t);
   }
 
   const totalVert = numVert + newVertProps.length / P;

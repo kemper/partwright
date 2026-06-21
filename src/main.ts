@@ -1426,8 +1426,22 @@ function rebuildPaintedGeometry(): void {
  *  `parentToChildren` from the run's labelMap. No-op when no underlay exists. */
 function reresolveModelRegions(mesh: MeshData, adjacency: AdjacencyGraph | null, parentToChildren: Map<number, number[]> | null): void {
   for (const region of getModelRegions()) {
-    const { triangles } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
-    setModelRegionTriangles(region.id, triangles);
+    const d = region.descriptor;
+    // Across an *incremental* subdivision (parentToChildren present), explicit and
+    // byLabel model regions must carry their current triangle set forward via the
+    // parent→children map — exactly like the paint regions above. Re-resolving a
+    // byLabel descriptor here would remap `currentLabelMap` (which indexes the
+    // BASE mesh) through a CURRENT-mesh parent map, so its coverage collapses onto
+    // a shrinking, wrong cluster with each stroke (the api.label underlay then
+    // leaks through wherever paint doesn't cover). On a full rebuild
+    // (parentToChildren === null) currentLabelMap matches the freshly-built mesh,
+    // so re-resolving by descriptor is correct.
+    if (parentToChildren && (d.kind === 'byLabel' || d.kind === 'triangles')) {
+      setModelRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren));
+    } else {
+      const { triangles } = resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren, region.id);
+      setModelRegionTriangles(region.id, triangles);
+    }
   }
 }
 
