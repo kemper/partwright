@@ -415,7 +415,7 @@ partwright.undoLastPaint() / redoLastPaint()                              // sin
 partwright.removeRegion(id) / setRegionVisibility(id, visible)            // per-region edits
 partwright.hideRegion(id) / showRegion(id) / clearColors()
 partwright.replaceColor({from:[r,g,b], to:[r,g,b], tolerance?})           // bulk-recolor matching regions (0..1 colors) -> {replaced}
-await partwright.paintImage({imageUrl, at:[x,y,z], normal:[nx,ny,nz], size, rotationDeg?, detail?, removeBackground?, name?}) // stamp an image onto the surface as a region -> {ok, name, triangles, avgColor}; get at/normal from probeRay; see /ai/colors.md
+await partwright.paintImage({imageUrl, view?:"front"|"back"|"left"|"right"|"top"|"bottom", label?, at?:[x,y,z], normal?:[nx,ny,nz], size?, rotationDeg?, detail?, removeBackground?, name?}) // project a raster image onto the surface as paint (logo/graphic/text/decal) -> {ok, name, triangles, avgColor}; use view (+ optional label) OR explicit at+normal (from probeRay); see /ai/colors.md
 // Filament palette — the print slots (AMS/MMU) regions map onto; see /ai/colors.md
 partwright.getPalette()                                                   // -> {id, name, capacity, constrained, slots:[{id,name,hex,td}]}
 partwright.listPalettes() / setActivePalette(id) / createPalette(name)
