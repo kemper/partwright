@@ -95,10 +95,15 @@ const armorPlate = armorMass.intersect(armorZone);
 // it reads as a breastplate, not an inflated torso. Sits on the front surface.
 const frontY = -(r.chestY + t_cuirass);
 const ridge = sdf.capsule(
-  [0, frontY * 0.94, armorTopZ - r.chestY * 0.35],
-  [0, frontY * 0.94, armorBottomZ + r.chestY * 0.2],
-  r.chestX * 0.16,
+  [0, frontY * 0.90, armorTopZ - r.chestY * 0.30],
+  [0, frontY * 0.90, armorBottomZ + r.chestY * 0.15],
+  r.chestX * 0.20,
 ).intersect(armorZone);
+
+// ── Peascod point — the breastplate's forward point at the waist centre, the
+// silhouette cue that most reads "plate cuirass" rather than "vest". ──────────
+const peascod = sdf.sphere(r.chestX * 0.42)
+  .translate([0, frontY * 0.82, armorBottomZ + r.chestY * 0.05]);
 
 // ── Neckline scoop — expose the shirt collar at the front top ───────────────
 const necklineZ = armorTopZ - r.chestY * 0.12;
@@ -110,21 +115,23 @@ const fauldBand = torsoNode.round(t_cuirass + r.chestX * 0.06)
   .intersect(sdf.box([armorHalfX * 2.4, bigD * 2, r.chestY * 0.5])
     .translate([0, 0, armorBottomZ + r.chestY * 0.1]));
 
-const armorBody = armorPlate.union(ridge).union(fauldBand)
+const armorBody = armorPlate.union(ridge).smoothUnion(peascod, r.chestX * 0.25).union(fauldBand)
   .smoothSubtract(necklineSphere, r.neck * 0.4);
 
 // ── 7. PAULDRONS — layered shoulder lames (distinct caps, not blobs) ─────────
 // Two stacked flattened ellipsoids per shoulder (a big upper lame + a smaller
 // lower lame) read as articulated plate, hard-unioned so the step stays crisp.
-const pR = r.upperArm * 1.15 + shirtThickness;
+const pR = r.upperArm * 1.35 + shirtThickness;
 const pauldron = (cx, cy, cz) => {
-  const top = sdf.ellipsoid(pR * 1.15, pR * 0.9, pR * 0.55).translate([cx, cy, cz]);
-  const low = sdf.ellipsoid(pR * 0.95, pR * 0.78, pR * 0.5)
-    .translate([cx * 1.04, cy, cz - pR * 0.55]);
+  // A bold domed cap over the shoulder + a smaller lame stepping down the arm,
+  // so it reads as distinct articulated plate rather than a soft shoulder.
+  const top = sdf.ellipsoid(pR * 1.25, pR * 1.05, pR * 0.7).translate([cx, cy, cz]);
+  const low = sdf.ellipsoid(pR * 1.0, pR * 0.82, pR * 0.5)
+    .translate([cx * 1.10, cy, cz - pR * 0.7]);
   return top.union(low);
 };
-const pauldronL = pauldron(j.upperArmL[0] * 1.02, j.upperArmL[1], j.upperArmL[2] + r.upperArm * 0.25);
-const pauldronR_ = pauldron(j.upperArmR[0] * 1.02, j.upperArmR[1], j.upperArmR[2] + r.upperArm * 0.25);
+const pauldronL = pauldron(j.upperArmL[0] * 1.06, j.upperArmL[1], j.upperArmL[2] + r.upperArm * 0.45);
+const pauldronR_ = pauldron(j.upperArmR[0] * 1.06, j.upperArmR[1], j.upperArmR[2] + r.upperArm * 0.45);
 
 // Fuse pauldrons in with a small k so the cap-to-plate seam stays defined.
 const armorFull = armorBody
