@@ -10,6 +10,7 @@ import { viewportToolsMount } from '../ui/popoverMenu';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
+import { createColorSwatch } from '../ui/colorPickerModal';
 
 const SWATCHES: string[] = [
   '#ff3b30', '#ff8c42', '#ffd60a', '#34c759', '#5ac8fa',
@@ -371,12 +372,14 @@ function buildColorRow(): HTMLElement {
 
   const customRow = document.createElement('label');
   customRow.className = 'flex items-center gap-2 text-[11px] text-zinc-400';
-  const customInput = document.createElement('input');
-  customInput.type = 'color';
-  customInput.value = '#ffaa00';
-  customInput.className = 'w-6 h-6 rounded border border-zinc-600/60 bg-transparent cursor-pointer';
-  customInput.title = 'Custom color';
-  customInput.addEventListener('input', () => selectColor(customInput.value, null));
+  const custom = createColorSwatch({
+    initialHex: '#ffaa00',
+    title: 'Custom color',
+    modalTitle: 'Custom voxel colour',
+    className: 'w-6 h-6 shrink-0 rounded border border-zinc-600/60 cursor-pointer hover:border-white/70 transition-colors',
+    onPick: (hex) => selectColor(hex, null),
+  });
+  const customInput = custom.el;
   customRow.appendChild(customInput);
   const customLabel = document.createElement('span');
   customLabel.textContent = 'Custom color';

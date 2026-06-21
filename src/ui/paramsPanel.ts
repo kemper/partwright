@@ -10,6 +10,7 @@
 import type { ParamSpec, ParamValue, ParamValues } from '../geometry/params';
 import { openViewportPanel, closeViewportPanel, getActiveViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
+import { createColorSwatch } from './colorPickerModal';
 
 export interface ParamsPanelOptions {
   /** Fired when a single widget changes — main.ts updates the override, re-runs,
@@ -342,12 +343,15 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
     setValue = (v) => { sel.value = String(v); };
   } else if (spec.type === 'color') {
     row.appendChild(labelRow);
-    const color = document.createElement('input');
-    color.type = 'color';
-    color.className = 'w-full h-7 bg-zinc-800 border border-zinc-600 rounded cursor-pointer';
-    color.addEventListener('change', () => onChange(spec.key, color.value));
-    row.appendChild(color);
-    setValue = (v) => { color.value = String(v); };
+    const sw = createColorSwatch({
+      initialHex: '#000000',
+      title: 'Pick a colour',
+      modalTitle: spec.label ?? 'Pick a colour',
+      className: 'w-full h-7 rounded border border-zinc-600 cursor-pointer',
+      onPick: (hex) => onChange(spec.key, hex),
+    });
+    row.appendChild(sw.el);
+    setValue = (v) => { sw.setHex(String(v)); };
   } else {
     // text
     row.appendChild(labelRow);
