@@ -25,6 +25,7 @@
 import type { MeshData } from '../geometry/types';
 import { buildSignedDistanceField, keepLargestFaceConnected, MAX_FIELD_RESOLUTION, type SdfRunControl } from './sdfModifier';
 import { dropTinyMeshComponents } from './meshComponents';
+import { smoothSurface } from './smoothSurface';
 import { extractPositions, bboxOf } from './meshSubdivide';
 
 /** Manifold-3d's class is loosely typed in this codebase. */
@@ -179,7 +180,12 @@ export async function hollowShellMesh(
       numProp: mesh3.numProp ?? 3,
     };
     // Belt-and-suspenders: also drop any mesh-level shards the manifold pass left.
-    return dropTinyMeshComponents(raw);
+    const cleaned = dropTinyMeshComponents(raw);
+    // A few light Taubin passes relax the sliver fringe the marcher beads onto
+    // sharp edges (a cylinder's bottom rim) — the same rim-relax the surface-nets
+    // path ran. `subdivide:false` keeps the triangle budget flat; it barely rounds
+    // the walls (already smooth from the continuous field) but cleans the rim.
+    return smoothSurface(cleaned, { iterations: 3, subdivide: false });
   } finally {
     m?.delete?.();
   }

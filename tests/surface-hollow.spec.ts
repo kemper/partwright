@@ -47,6 +47,9 @@ test.describe('Hollow / vase surface modifier', () => {
     expect(result.stats.componentCount).toBe(2);
     // Hollowing removes the interior, so the shell uses far less material.
     expect(result.stats.volume).toBeLessThan(result.before * 0.6);
+    // The Taubin rim-relax pass clears the degenerate sliver triangles the
+    // marcher beads onto the sharp bottom edge (a 0-length edge = a sliver).
+    expect(result.stats.minEdgeLength).toBeGreaterThan(0);
     expect(result.src).toContain('Manifold.ofMesh(api.imports[0])');
   });
 
