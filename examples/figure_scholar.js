@@ -66,11 +66,12 @@ const hair = F.hair(rig, { style: 'short' }).label('hair');
 // high on the hair top. `sit` fine-tunes the brim height.
 const hat = F.placeOnHead(hatLocal, rig, { sit: 0.30 }).label('hat');
 
-// 6. BELT (Ringed) — conformed to the clothed body so it sits flush (no floating
-// sections), riding over the coat/pants.
-const clothed = sdf.union(skin, coat, pants);
+// 6. BELT (Ringed) — conform to the torso core (+ coat clearance) and OCCLUDE the
+// arms (rig), so the belt wraps the torso and terminates at the arms instead of
+// looping around them.
+const beltCore = sdf.union(F.torso(rig), pants);
 const beltTube = r.waist * 0.14;
-const belt = F.ring(rig.ring.waist, { tube: beltTube, segments: 60, surface: clothed }).label('belt');
+const belt = F.ring(rig.ring.waist, { tube: beltTube, clearance: r.chestX * 0.13, segments: 60, surface: beltCore, rig }).label('belt');
 
 // 7. BASE
 const base = F.base(rig, { radius: H * 0.25 }).label('base');

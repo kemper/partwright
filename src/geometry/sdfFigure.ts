@@ -323,6 +323,9 @@ export interface RingFrame {
   rx: number;
   ry: number;
   hang: Vec3;
+  /** Which body region the ring wraps ('neck' | 'waist') — drives the default
+   *  occluder set for `F.ring(frame, { rig })` (waist → arms, neck → arms+hair). */
+  region: string;
 }
 
 /** A limb segment as a frame — the forearm (elbow→wrist) — for bracers,
@@ -798,16 +801,16 @@ function buildRig(rawOpts: unknown): Rig {
   // analogs of the existing grip/sole/face frames. Spine-transformed (sPt/sDir)
   // so they follow lean/turn like the joints; `hang` stays WORLD-down (gravity).
   // A ringed band sits OUTSIDE the body, so accessories add their own standoff.
-  const ringFrameRaw = (cz: number, rx: number, ry: number): RingFrame => ({
+  const ringFrameRaw = (cz: number, rx: number, ry: number, region: string): RingFrame => ({
     center: sPt([0, 0, cz]),
     axis: sDir([0, 0, 1]), xAxis: sDir([1, 0, 0]), yAxis: sDir([0, 1, 0]),
-    rx, ry, hang: [0, 0, -1],
+    rx, ry, hang: [0, 0, -1], region,
   });
   const ring = {
     // Choker/necklace ring at the base of the neck (roughly circular).
-    neck: ringFrameRaw(shoulderZ + neckLen * 0.35, r.neck, r.neck),
+    neck: ringFrameRaw(shoulderZ + neckLen * 0.35, r.neck, r.neck, 'neck'),
     // Belt/waistband ring at the natural waist (lateral = waist girth, depth = hip).
-    waist: ringFrameRaw(navelZ, r.waist, r.hipsY),
+    waist: ringFrameRaw(navelZ, r.waist, r.hipsY, 'waist'),
   };
   const shoulder = {
     L: sPt([shoulderHalfX, 0, shoulderZ]),
@@ -4388,14 +4391,31 @@ function holdAt(node: Node, grip: unknown, opts?: unknown): Node {
   const point = assertNumberTuple(g.point, 3, 'holdAt(grip.point)') as Vec3;
   let axis = norm3(assertNumberTuple(g.gripAxis, 3, 'holdAt(grip.gripAxis)') as Vec3);
   const o = obj(opts, 'holdAt(opts)');
-  assertNoUnknownKeys(o, ['along', 'flip'], 'holdAt(opts)');
+  assertNoUnknownKeys(o, ['along', 'flip', 'up'], 'holdAt(opts)');
   const along = o.along === undefined ? 'z'
     : assertEnum(o.along, ['x', 'y', 'z'] as const, 'holdAt.along');
   if (o.flip !== undefined && typeof o.flip !== 'boolean') {
     throw new ValidationError('holdAt.flip must be a boolean');
   }
   if (o.flip === true) axis = scale3(axis, -1);
-  // Bring the chosen local axis onto +Z first, then align +Z to the grip axis.
+  const up = o.up === undefined ? 'palm'
+    : assertEnum(o.up, ['palm', 'reach'] as const, 'holdAt.up');
+  // FULL-FRAME bind (default, along 'z'): orient the prop's local +Z to the grip
+  // axis AND its local +Y to a hand direction, so a prop with an asymmetric
+  // cross-section (a sword's edge/guard, a tool's head) is fully oriented to the
+  // hand — not left to roll freely about the grip axis (the "palm-down" failure).
+  // The prop's local +Y maps to the hand's `palmNormal` (default) or `reach`.
+  const palmN = g.palmNormal !== undefined ? norm3(assertNumberTuple(g.palmNormal, 3, 'holdAt(grip.palmNormal)') as Vec3) : null;
+  const reach = g.reach !== undefined ? norm3(assertNumberTuple(g.reach, 3, 'holdAt(grip.reach)') as Vec3) : null;
+  const upTarget = up === 'reach' ? reach : palmN;
+  if (along === 'z' && upTarget) {
+    const z = norm3(axis);
+    const x = norm3(cross3(upTarget, z));   // edge/guard axis
+    const y = norm3(cross3(z, x));           // re-orthogonalized up
+    return node.rotate(eulerFromBasis(x, y, z)).translate(point);
+  }
+  // Legacy single-axis path (no palm normal on the frame, or `along` x/y): align
+  // the chosen local axis to the grip axis; roll about it is unconstrained.
   let n = node;
   if (along === 'x') n = n.rotate([0, -90, 0]);      // local +X → +Z
   else if (along === 'y') n = n.rotate([90, 0, 0]);   // local +Y → +Z
@@ -4445,7 +4465,39 @@ function asRingFrame(v: unknown, name: string): RingFrame {
     rx: assertNumber(o.rx, `${name}.rx`, { min: 0 }) as number,
     ry: assertNumber(o.ry, `${name}.ry`, { min: 0 }) as number,
     hang: norm3(assertNumberTuple(o.hang, 3, `${name}.hang`) as Vec3),
+    region: typeof o.region === 'string' ? o.region : '',
   };
+}
+
+/** Collect the occluder nodes a worn accessory should be carved by, so the
+ *  objects physically IN FRONT of it "win" (it terminates at them / is covered):
+ *  the explicit `opts.occlude` (a node or array) PLUS, when `opts.rig` is given,
+ *  the figure's default occluders for this `region` — the arms (a band wrapping
+ *  the torso/waist terminates at down-arms and re-wraps when they lift) and, for
+ *  a neck ring, the hair (which drapes over a necklace). Subtract these from the
+ *  accessory. */
+function occludersFrom(sdf: SdfApi, o: Record<string, unknown>, region: string): Node[] {
+  const out: Node[] = [];
+  const ex = o.occlude;
+  if (ex !== undefined) {
+    const list = Array.isArray(ex) ? ex : [ex];
+    for (const n of list) {
+      if (!n || typeof (n as Node).bounds !== 'function') throw new ValidationError('occlude must be an SDF node or array of nodes (e.g. F.arms(rig), F.hair(rig)).');
+      out.push(n as Node);
+    }
+  }
+  if (o.rig !== undefined) {
+    const rig = assertRig(o.rig, 'occlude rig');
+    out.push(buildArms(sdf, rig));                    // arms are in front of any body-wrapping band
+    if (region === 'neck') out.push(buildHair(sdf, rig));   // hair drapes over a necklace
+  }
+  return out;
+}
+
+function applyOcclude(band: Node, occluders: Node[]): Node {
+  let b = band;
+  for (const occ of occluders) b = b.subtract(occ);
+  return b;
 }
 
 /** Build a closed elliptical band wrapping a {@link RingFrame} — a necklace,
@@ -4487,10 +4539,11 @@ function marchToSurface(surface: unknown, origin: Vec3, dir: Vec3, maxDist: numb
 function ringBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
   const f = asRingFrame(frame, 'ring(frame)');
   const o = obj(opts, 'ring(opts)');
-  assertNoUnknownKeys(o, ['tube', 'clearance', 'segments', 'drop', 'surface'], 'ring(opts)');
+  assertNoUnknownKeys(o, ['tube', 'clearance', 'segments', 'drop', 'drape', 'surface', 'occlude', 'rig'], 'ring(opts)');
   const tube = num(o.tube, Math.max(f.rx, f.ry) * 0.12, 'ring.tube', 1e-3);
   const clearance = num(o.clearance, 0, 'ring.clearance', 0);
   const drop = num(o.drop, 0, 'ring.drop');
+  const drape = num(o.drape, 0, 'ring.drape', 0);   // dip the FRONT of the loop down the chest (a draping necklace)
   const segments = Math.round(num(o.segments, 48, 'ring.segments', 8, 256));
   const off = clearance + tube;
   const c = add3(f.center, scale3(f.axis, -drop));
@@ -4498,20 +4551,26 @@ function ringBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
   const pts: Vec3[] = [];
   for (let i = 0; i < segments; i++) {
     const t = (i / segments) * Math.PI * 2;
+    // `drape` lowers the FRONT of the loop (−Y side) along the body axis, tapering
+    // to 0 at the back — a necklace that hangs down the chest instead of a flat
+    // choker ring. Front weight peaks where the azimuth faces −Y (sin t < 0).
+    const frontW = Math.max(0, -Math.sin(t));
+    const cz = add3(c, scale3(f.axis, -drape * frontW * frontW));
     // With a `surface`, ray-march from the centre to the REAL surface at this
-    // azimuth so the band sits flush on the (clothed) body; otherwise use the
-    // analytic ellipse.
+    // azimuth so the band sits flush on the (clothed) body; otherwise the ellipse.
     const dir = norm3(add3(scale3(f.xAxis, Math.cos(t)), scale3(f.yAxis, Math.sin(t))));
-    const sd = o.surface !== undefined ? marchToSurface(o.surface, c, dir, maxR) : null;
+    const sd = o.surface !== undefined ? marchToSurface(o.surface, cz, dir, maxR) : null;
     if (sd !== null) {
-      pts.push(add3(c, scale3(dir, sd + clearance + tube)));
+      pts.push(add3(cz, scale3(dir, sd + clearance + tube)));
     } else {
-      pts.push(add3(c, add3(scale3(f.xAxis, (f.rx + off) * Math.cos(t)), scale3(f.yAxis, (f.ry + off) * Math.sin(t)))));
+      pts.push(add3(cz, add3(scale3(f.xAxis, (f.rx + off) * Math.cos(t)), scale3(f.yAxis, (f.ry + off) * Math.sin(t)))));
     }
   }
   let band = sdf.capsule(pts[segments - 1], pts[0], tube);
   for (let i = 0; i < segments - 1; i++) band = band.union(sdf.capsule(pts[i], pts[i + 1], tube));
-  return band;
+  // Layer: carve away the objects in front of / draped over the band (arms,
+  // hair) so it terminates at them and re-wraps when they move — see occludersFrom.
+  return applyOcclude(band, occludersFrom(sdf, o, f.region));
 }
 
 /** A world point ON a {@link RingFrame}'s surface at azimuth `az` degrees (0 =
@@ -4544,7 +4603,7 @@ function strap(sdf: SdfApi, a: unknown, b: unknown, opts?: unknown): Node {
   const pa = asPoint3(a, 'strap(a)');
   const pb = asPoint3(b, 'strap(b)');
   const o = obj(opts, 'strap(opts)');
-  assertNoUnknownKeys(o, ['tube', 'bow', 'segments', 'surface'], 'strap(opts)');
+  assertNoUnknownKeys(o, ['tube', 'bow', 'segments', 'surface', 'occlude', 'rig'], 'strap(opts)');
   const tube = num(o.tube, len3(sub3(pb, pa)) * 0.05, 'strap.tube', 1e-3);
   const bow = num(o.bow, tube * 2, 'strap.bow');
   const segments = Math.round(num(o.segments, 16, 'strap.segments', 2, 128));
@@ -4577,7 +4636,7 @@ function strap(sdf: SdfApi, a: unknown, b: unknown, opts?: unknown): Node {
     const cur = at((i + 1) / segments);
     band = band.union(sdf.capsule(prev = at(i / segments), cur, tube));
   }
-  return band;
+  return applyOcclude(band, occludersFrom(sdf, o, 'strap'));
 }
 
 /** Hang a node from a point so it DANGLES below it — a scabbard off a belt, a

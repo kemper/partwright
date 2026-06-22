@@ -66,13 +66,17 @@ const armor = plate.union(keel).smoothUnion(peascod, r.chestX * 0.25).union(faul
   .smoothUnion(pauldron(j.upperArmR[0] * 1.06, j.upperArmR[1], j.upperArmR[2] + r.upperArm * 0.45), r.upperArm * 0.18)
   .label('armor');
 
-// Clothed-body surface for conforming the belt + scabbard anchor.
+// Clothed-body surface (incl. arms) for the scabbard hip anchor; and a torso
+// CORE (no arms) for the belt so the band conforms to the torso, not the arms.
 const clothed = sdf.union(skin, shirt, pants);
+const beltCore = sdf.union(F.torso(rig), pants);
 
-// 6. BELT (Ringed) — conformed to the clothed body so it sits flush, + buckle.
+// 6. BELT (Ringed) — conform to the torso core (+ shirt clearance) and OCCLUDE
+// the arms (rig), so the belt wraps the torso and terminates at the down-arms
+// instead of ballooning around them.
 const beltTube = r.waist * 0.15;
-const beltBand = F.ring(rig.ring.waist, { tube: beltTube, segments: 64, surface: clothed });
-const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: clothed });
+const beltBand = F.ring(rig.ring.waist, { tube: beltTube, clearance: shirtThick, segments: 64, surface: beltCore, rig });
+const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: beltCore, clearance: shirtThick });
 const buckle = sdf.roundedBox([beltTube * 3, beltTube * 2, beltTube * 2.6], beltTube * 0.28).translate(bucklePt);
 const belt = beltBand.union(buckle).label('belt');
 

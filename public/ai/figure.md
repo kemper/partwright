@@ -470,19 +470,22 @@ larger hair volume — keep it small or grow it toward the hair radius so the ba
 straddles the surface and welds (a tangent band prints as a second component).
 
 **Putting a prop INTO a hand — `F.holdAt(prop, rig.grip.L|R, opts?)`.** `placeAt`
-only positions; `holdAt` also **orients** a prop to the grip and seats it in the
-finger cup. Build the prop centred at the origin with its long axis along local
-`+Z`, and `holdAt` aligns that axis to `gripAxis` and drops the origin on the
-grip `point`:
+only positions; `holdAt` **fully orients** a prop to the grip and seats it in the
+finger cup. Build the prop centred at the origin with its **long axis +Z** and its
+**"up"/edge +Y** (for a sword: blade up +Z, flat facing ±Y, guard along ±X), and
+`holdAt` aligns +Z → `gripAxis` AND +Y → the hand's `palmNormal`, then drops the
+origin on the grip `point`. Binding BOTH axes is what makes the palm actually
+grasp the prop (rather than it rolling to a palm-down/back-of-hand orientation —
+the hand's palm normal is now used, not just the grip axis).
 
 ```js
-// A wand/baton/sword grip, held in the right hand pointing along the fingers:
-const wand = sdf.capsule([0,0,-8],[0,0,8], 0.4);
-const held = F.holdAt(wand, rig.grip.R);        // axis → gripAxis, origin → grip cup
+// A sword: blade +Z, flat ±Y, guard ±X — held in the right fist, palm grasping:
+const held = F.holdAt(sword, rig.grip.R);       // +Z→gripAxis, +Y→palmNormal, origin→cup
 ```
 
-`opts.along` (`'x'|'y'|'z'`, default `'z'`) says which local axis is the prop's
-length; `opts.flip: true` reverses it.
+`opts.up` (`'palm'` default | `'reach'`) picks which hand direction the prop's +Y
+maps to; `opts.flip: true` reverses the axis; `opts.along` (`'x'|'y'|'z'`) selects
+the long axis (non-`z` uses the legacy single-axis align, roll unconstrained).
 
 **Two-handed props — `F.spanGrips(a, b)`.** A guitar, barbell, bow, broom, or
 rifle runs BETWEEN both hands, so a single `holdAt` can't orient it. `spanGrips`
@@ -536,6 +539,24 @@ separately.
 > places (unprintable) or embeds through a dress. **Always pass `surface` for a
 > belt/necklace over clothing.** `F.ringPoint(frame, az, { surface })` conforms
 > the same way, so a buckle or a hung-scabbard anchor sits on the clothed surface.
+
+> **Layering — conform + occlude.** A worn band should sit on its base layer AND
+> be cut by the things physically in front of it, so it doesn't balloon around
+> limbs or jut over hair. Two knobs:
+> - **Conform to the right base surface.** For a belt, pass a TORSO-CORE surface
+>   (`sdf.union(F.torso(rig), pants)`, *no arms*) + `clearance` for the shirt — if
+>   you conform to a surface that includes the arms, the band wraps the arms.
+> - **`occlude`** (a node or array) subtracts the objects in front of / draped
+>   over the band — so it **terminates at them** and re-wraps when they move.
+>   Passing **`rig`** adds the default occluders automatically (arms for any band;
+>   arms+hair for a neck ring). A belt: `F.ring(rig.ring.waist, { surface: core,
+>   clearance, rig })` wraps the torso and stops at the down-arms (full wrap when
+>   raised — no pose special-casing). A necklace: occlude the actual hair so it
+>   drapes over (`occlude: [hair]`). Same `occlude`/`rig` on `F.strap`.
+>
+> **`drape`** dips the FRONT of a ring down the body axis (tapering to 0 at the
+> back) — a necklace that hangs down the chest instead of a flat choker ring:
+> `F.ring(rig.ring.neck, { surface: clothed, drape: r.neck * 1.7, occlude: [hair] })`.
 
 ```js
 const clothed = sdf.union(skin, shirt, pants);

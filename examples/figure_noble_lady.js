@@ -41,25 +41,25 @@ const blush = cheekPatch(eyeL[0] * 0.92).union(cheekPatch(eyeR[0] * 0.92)).label
 // 4. GOWN — a fitted dress.
 const gown = F.clothing.top(rig, { sleeve: 'short', hemZ: H * 0.30, thickness: r.chestX * 0.08 }).label('gown');
 
-// Clothed surface (skin + gown) for conforming the choker.
+// Clothed surface (skin + gown) for conforming the necklace; hair built first so
+// it can OCCLUDE the necklace (drape over it).
 const clothed = sdf.union(skin, gown);
-
-// 5. NECKLACE (Ringed) conformed to the neck + a short pendant (Hung) sitting
-// proud on the upper chest (offset forward so it doesn't embed the gown).
-const neckFrame = rig.ring.neck;
-const neckTube = r.neck * 0.10;
-const necklace = F.ring(neckFrame, { tube: neckTube, drop: r.neck * 0.15, segments: 56, surface: clothed });
-const frontNeck = F.ringPoint(neckFrame, 0, { drop: r.neck * 0.15, surface: clothed });
-const proud = [0, -neckTube * 1.2, 0];   // push the pendant proud of the gown front
-const chainTop = add(frontNeck, proud);
-const gemPt = [chainTop[0], chainTop[1] - neckTube * 0.6, chainTop[2] - r.neck * 0.7];
-const dropChain = sdf.capsule(chainTop, gemPt, neckTube * 0.45);
-const gem = sdf.ellipsoid(neckTube * 2.4, neckTube * 1.3, neckTube * 3.2).translate(gemPt);
-const jewelry = necklace.union(dropChain).union(gem).label('jewelry');
-function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
-
-// 6. HAIR + BASE
 const hair = F.hair(rig, { style: 'long', length: 'long', volume: 1.1 }).label('hair');
+
+// 5. NECKLACE (Ringed) — a chain that DRAPES down the chest (conformed flush to
+// the body, dipping at the front) and is OCCLUDED by the hair that falls over it,
+// + a pendant at the low point.
+const neckFrame = rig.ring.neck;
+const neckTube = r.neck * 0.085;
+const drape = r.neck * 1.7;
+const chain = F.ring(neckFrame, { tube: neckTube, drape, segments: 72, surface: clothed, occlude: [hair] });
+// Pendant at the draped loop's lowest front point (front = −Y), pushed proud.
+const frontPt = F.ringPoint(neckFrame, 0, { surface: clothed });
+const lowPt = [frontPt[0], frontPt[1] - neckTube, frontPt[2] - drape];
+const gem = sdf.ellipsoid(neckTube * 2.6, neckTube * 1.4, neckTube * 3.4).translate([lowPt[0], lowPt[1], lowPt[2] - neckTube * 1.5]);
+const jewelry = chain.union(gem).subtract(hair).label('jewelry');
+
+// 6. BASE
 const base = F.base(rig, { radius: H * 0.24 }).label('base');
 
 // 7. COLOR (label-only — no coordinate mesh painting)

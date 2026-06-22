@@ -139,6 +139,29 @@ describe('ring / strap / hangFrom geometry', () => {
     expect(b.max[2] - b.min[2]).toBeLessThan(2 * tube + 0.2);
   });
 
+  it('ringBand drape dips the front of the loop below the plain ring', () => {
+    const rig = buildRig({ height: 64 });
+    const plain = ringBand(api, rig.ring.neck, { tube: 0.3, segments: 32 });
+    const draped = ringBand(api, rig.ring.neck, { tube: 0.3, segments: 32, drape: 6 });
+    // The draped necklace reaches lower (front dips down the chest).
+    expect(draped.bounds().min[2]).toBeLessThan(plain.bounds().min[2] - 3);
+  });
+
+  it('ringBand occlude carves the band where an occluder covers it', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const tube = 0.4;
+    const full = ringBand(api, w, { tube, segments: 48 });
+    // A big slab across the +X side should remove that side of the band.
+    const slab = api.box([w.rx * 4, w.ry * 4, 4]).translate([w.rx * 2, 0, w.center[2]]);
+    const carved = ringBand(api, w, { tube, segments: 48, occlude: slab });
+    // The band's +X centre-line point is solid in the full ring, carved away in
+    // the occluded one (subtract doesn't shrink analytic bounds — test the field).
+    const px = w.center[0] + w.rx + tube, pz = w.center[2];
+    expect(full.evaluate(px, 0, pz)).toBeLessThan(0);
+    expect(carved.evaluate(px, 0, pz)).toBeGreaterThan(0);
+  });
+
   it('strap spans both anchors', () => {
     const rig = buildRig({ height: 64 });
     const a = rig.shoulder.L;
