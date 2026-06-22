@@ -95,71 +95,94 @@ function buildSittingBody() {
 function buildStandingBody() {
   const lt = bld.legThick;
   const ll = bld.legLength;
-  // Legs: paw sphere center at z = lt (so the sphere bottom touches z=0)
-  //        top of leg attaches at z = lt + ll (= body bottom)
-  // Body center at z = lt + ll + bodyRz
-  const legBottom = lt;                    // paw center z — sphere bottom at z≈0
-  const legTop    = lt + ll;              // where leg meets body undercarriage
-  const bodyBaseZ = legTop + bld.bodyRz;  // body ellipsoid center
 
-  // Four legs: front pair forward (-Y), back pair rearward (+Y)
-  const frontLegX = bld.bodyRx * 0.55;
-  const backLegX  = bld.bodyRx * 0.48;
-  const frontLegY = -bld.bodyRy * 0.55;
-  const backLegY  =  bld.bodyRy * 0.55;
+  // ── Ground plane: paw capsule bottoms reach z ≈ 0 ──
+  // Capsule endpoint at (x, y, pawZ); capsule radius lt → bottom of sphere at pawZ - lt
+  // We want that bottom at z = 0, so:  pawZ = lt
+  const pawZ   = lt;              // capsule foot-center z; sphere bottom at z≈0
+  const legTopZ = pawZ + ll;     // where capsule top meets the body undercarriage
 
-  // Leg capsules: paw center → under-body attachment
-  const legFL = sdf.capsule([ frontLegX, frontLegY, legBottom], [ frontLegX, frontLegY, legTop], lt);
-  const legFR = sdf.capsule([-frontLegX, frontLegY, legBottom], [-frontLegX, frontLegY, legTop], lt);
-  const legBL = sdf.capsule([ backLegX,  backLegY,  legBottom], [ backLegX,  backLegY,  legTop], lt);
-  const legBR = sdf.capsule([-backLegX,  backLegY,  legBottom], [-backLegX,  backLegY,  legTop], lt);
+  // ── Body is a HORIZONTAL barrel — long axis is FRONT-TO-BACK (Y axis) ──
+  // bld.bodyRx = side-to-side half-width; we use a dedicated front-back half-length.
+  // For a quadruped cat the torso front-to-back needs to be ~2× the side width.
+  const bodyRx = bld.bodyRx * 0.75;  // side (X) — narrower than the sitting blob
+  const bodyRY = bld.bodyRx * 1.55;  // front-to-back (Y) — long axis
+  const bodyRz = bld.bodyRz * 0.80;  // height (Z) — slightly flattened barrel
+  const bodyCenterZ = legTopZ + bodyRz;  // body ellipsoid center height
 
-  // Paw pads: slightly flattened sphere at each foot
-  const pawFL = sdf.ellipsoid(lt * 1.3, lt * 1.1, lt * 0.8).translate( frontLegX, frontLegY, legBottom);
-  const pawFR = sdf.ellipsoid(lt * 1.3, lt * 1.1, lt * 0.8).translate(-frontLegX, frontLegY, legBottom);
-  const pawBL = sdf.ellipsoid(lt * 1.2, lt * 1.3, lt * 0.8).translate( backLegX,  backLegY,  legBottom);
-  const pawBR = sdf.ellipsoid(lt * 1.2, lt * 1.3, lt * 0.8).translate(-backLegX,  backLegY,  legBottom);
+  // ── Leg attachment points (under the four corners of the barrel) ──
+  const legX  = bodyRx  * 0.72;   // side offset
+  const legFY = -bodyRY * 0.52;   // front legs: under chest (toward -Y / viewer)
+  const legBY =  bodyRY * 0.52;   // back legs:  under hips  (toward +Y / rear)
 
-  // Torso (horizontal-ish body)
-  const torso    = sdf.ellipsoid(bld.bodyRx, bld.bodyRy, bld.bodyRz).translate(0, 0, bodyBaseZ);
-  const haunches = sdf.ellipsoid(bld.bodyRx * 0.82, bld.bodyRy * 0.90, bld.bodyRz * 0.82)
-    .translate(0, bld.bodyRy * 0.35, bodyBaseZ - 1.2);
+  // Straight vertical leg capsules: foot → body undercarriage
+  const legFL = sdf.capsule([ legX, legFY, pawZ], [ legX, legFY, legTopZ], lt);
+  const legFR = sdf.capsule([-legX, legFY, pawZ], [-legX, legFY, legTopZ], lt);
+  const legBL = sdf.capsule([ legX, legBY, pawZ], [ legX, legBY, legTopZ], lt);
+  const legBR = sdf.capsule([-legX, legBY, pawZ], [-legX, legBY, legTopZ], lt);
 
-  let bodyMass = torso.smoothUnion(haunches, 2.5)
-    .smoothUnion(legFL, 2.0).smoothUnion(legFR, 2.0)
-    .smoothUnion(legBL, 2.0).smoothUnion(legBR, 2.0)
-    .smoothUnion(pawFL, 1.5).smoothUnion(pawFR, 1.5)
-    .smoothUnion(pawBL, 1.5).smoothUnion(pawBR, 1.5);
+  // Paw pads: flattened ellipsoids at each foot
+  const pawFL = sdf.ellipsoid(lt * 1.25, lt * 1.10, lt * 0.75).translate( legX, legFY, pawZ);
+  const pawFR = sdf.ellipsoid(lt * 1.25, lt * 1.10, lt * 0.75).translate(-legX, legFY, pawZ);
+  const pawBL = sdf.ellipsoid(lt * 1.15, lt * 1.25, lt * 0.75).translate( legX, legBY, pawZ);
+  const pawBR = sdf.ellipsoid(lt * 1.15, lt * 1.25, lt * 0.75).translate(-legX, legBY, pawZ);
 
-  // Neck: rise from front-top of torso toward head
-  const neckBaseZ = bodyBaseZ + bld.bodyRz * 0.5;
-  const neckBaseY = -bld.bodyRy * 0.6;
-  const neckTopZ  = neckBaseZ + 3.0;
-  const neckTopY  = neckBaseY - 1.0;
-  const neck = sdf.capsule([0, neckBaseY, neckBaseZ], [0, neckTopY, neckTopZ], 2.5);
-  bodyMass = bodyMass.smoothUnion(neck, 2.5);
+  // ── Horizontal torso (belly slightly lower toward front) ──
+  const torso    = sdf.ellipsoid(bodyRx, bodyRY, bodyRz).translate(0, 0, bodyCenterZ);
+  // Haunches: slightly wider & taller bulge at rear end of barrel
+  const haunchY  = bodyRY * 0.55;
+  const haunches = sdf.ellipsoid(bodyRx * 0.88, bodyRY * 0.55, bodyRz * 0.92)
+    .translate(0, haunchY, bodyCenterZ + bodyRz * 0.08);
+  // Chest: a matching narrower bulge at front
+  const chestY  = -bodyRY * 0.55;
+  const chest   = sdf.ellipsoid(bodyRx * 0.72, bodyRY * 0.45, bodyRz * 0.80)
+    .translate(0, chestY, bodyCenterZ + bodyRz * 0.10);
 
-  // Head: sits above neck, face pointing forward (-Y)
-  const headRx = fc.headRx * bld.headScale;
-  const headRy = fc.headRy * bld.headScale;
-  const headRz = fc.headRz * bld.headScale;
-  const headZ  = neckTopZ + headRz * 0.7;
-  const headY  = neckTopY - 0.5;
-  const headSdf = sdf.ellipsoid(headRx, headRy, headRz).translate(0, headY, headZ);
-  bodyMass = bodyMass.smoothUnion(headSdf, 3.0);
+  let bodyMass = torso
+    .smoothUnion(haunches, 2.8)
+    .smoothUnion(chest,    2.4)
+    .smoothUnion(legFL, 2.2).smoothUnion(legFR, 2.2)
+    .smoothUnion(legBL, 2.2).smoothUnion(legBR, 2.2)
+    .smoothUnion(pawFL, 1.6).smoothUnion(pawFR, 1.6)
+    .smoothUnion(pawBL, 1.6).smoothUnion(pawBR, 1.6);
 
+  // ── Neck: rises from front-chest toward head ──
+  // Neck root at front-top of torso; angled forward and up
+  const neckRootZ = bodyCenterZ + bodyRz * 0.60;
+  const neckRootY = -bodyRY * 0.62;
+  const neckTipZ  = neckRootZ + 3.5;
+  const neckTipY  = neckRootY - 2.0;
+  const neck = sdf.capsule([0, neckRootY, neckRootZ], [0, neckTipY, neckTipZ], 2.6);
+  bodyMass = bodyMass.smoothUnion(neck, 2.8);
+
+  // ── Head: forward of the chest, face pointing toward -Y (front camera = az 270) ──
+  const headRxS = fc.headRx * bld.headScale;
+  const headRyS = fc.headRy * bld.headScale;
+  const headRzS = fc.headRz * bld.headScale;
+  // Position head at neck tip, shifted forward and slightly up
+  const headY  = neckTipY - headRyS * 0.55;
+  const headZ  = neckTipZ + headRzS * 0.30;
+  const headSdf = sdf.ellipsoid(headRxS, headRyS, headRzS).translate(0, headY, headZ);
+  bodyMass = bodyMass.smoothUnion(headSdf, 3.2);
+
+  // Muzzle body bump (same relative offset as sitting)
   const muzzleBodyBump = sdf.ellipsoid(fc.muzzleRx, fc.muzzleRy, fc.muzzleRz)
-    .translate(0, headY + fc.muzzleY - fc.headY, headZ + fc.muzzleZ - fc.headZ);
+    .translate(0, headY + (fc.muzzleY - fc.headY), headZ + (fc.muzzleZ - fc.headZ));
   bodyMass = bodyMass.smoothUnion(muzzleBodyBump, 0.45);
 
   return {
     bodyMass,
     headCenter: [0, headY, headZ],
-    bodyBaseZ, legBottom,
-    frontLegX, frontLegY, backLegX, backLegY,
+    bodyBaseZ: bodyCenterZ,
+    legBottom: pawZ,
+    frontLegX: legX, frontLegY: legFY,
+    backLegX:  legX, backLegY:  legBY,
     headY, headZ,
     headDeltaY: headY - fc.headY,
     headDeltaZ: headZ - fc.headZ,
+    // rear of barrel — tail root
+    rearY: bodyRY * 0.88,
+    rearZ: bodyCenterZ,
   };
 }
 
@@ -269,10 +292,31 @@ let tail;
 if (p.pose === 'sitting') {
   tail = buildTail(5.5, 0, 5.0);
 } else {
-  // Standing: tail sprouts from rump at rear of torso, elevated
-  const bz = bodyResult.bodyBaseZ || 8.0;
-  const by = (bodyResult.backLegY || 2) + 1.0;
-  tail = buildTail(bld.bodyRx * 0.75, by, bz + bld.bodyRz * 0.5);
+  // Standing: tail sprouts from the rump (rear/+Y end of horizontal body),
+  // sweeps further back (+Y) and upward (+Z) — like a cat with tail up.
+  const rY = bodyResult.rearY  || 8.0;
+  const rZ = bodyResult.rearZ  || 10.0;
+  // Build a standing-specific tail: root at rump, arcing upward/backward
+  if (p.tail === 'curl') {
+    // Rises from rump, curls up and slightly forward at the tip
+    const t0 = sdf.capsule([0, rY,       rZ + 0.5], [0, rY + 2.0, rZ + 4.0], 2.0);
+    const t1 = sdf.capsule([0, rY + 2.0, rZ + 4.0], [0, rY + 1.5, rZ + 8.0], 1.8);
+    const t2 = sdf.capsule([0, rY + 1.5, rZ + 8.0], [0, rY - 1.0, rZ + 10.5], 1.5);
+    const t3 = sdf.capsule([0, rY - 1.0, rZ + 10.5],[0, rY - 3.0, rZ + 11.5], 1.3);
+    const t4 = sdf.capsule([0, rY - 3.0, rZ + 11.5],[0, rY - 4.5, rZ + 11.0], 1.1);
+    tail = t0.smoothUnion(t1, 1.6).smoothUnion(t2, 1.4).smoothUnion(t3, 1.2).smoothUnion(t4, 1.1);
+  } else if (p.tail === 'short') {
+    const t0 = sdf.capsule([0, rY, rZ + 0.5], [0, rY + 2.5, rZ + 3.0], 1.9);
+    const t1 = sdf.sphere(1.7).translate(0, rY + 3.0, rZ + 4.5);
+    tail = t0.smoothUnion(t1, 1.2);
+  } else {
+    // fluffy: thicker and fuller arc upward
+    const t0 = sdf.capsule([0, rY,       rZ + 0.5], [0, rY + 2.5, rZ + 4.5], 2.6);
+    const t1 = sdf.capsule([0, rY + 2.5, rZ + 4.5], [0, rY + 2.0, rZ + 8.5], 2.4);
+    const t2 = sdf.capsule([0, rY + 2.0, rZ + 8.5], [0, rY - 0.5, rZ + 11.0], 2.2);
+    const t3 = sdf.sphere(2.0).translate(0, rY - 1.5, rZ + 12.0);
+    tail = t0.smoothUnion(t1, 1.9).smoothUnion(t2, 1.7).smoothUnion(t3, 1.6);
+  }
 }
 bodyMass = bodyMass.smoothUnion(tail, 1.8);
 
