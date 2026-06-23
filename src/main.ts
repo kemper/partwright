@@ -209,6 +209,7 @@ import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontS
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
+import { computePatternColors } from './color/colorPattern';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
@@ -1136,6 +1137,21 @@ function resolveDescriptorTriangles(
       // Re-expand the stored [triIdx,r,g,b,…] entries through the subdivision
       // map (children inherit their parent's projected color).
       return entriesToPerTriColors(descriptor.entries, parentToChildren);
+    case 'pattern': {
+      // Algorithmic colourway: resolve the scope (an api.label region, remapped
+      // through subdivision, or the whole mesh), then assign each triangle one
+      // palette colour from the field (computePatternColors → perTriColors).
+      const label = descriptor.scope?.label;
+      let scope: Set<number>;
+      if (label) {
+        const ids = currentLabelMap?.get(label);
+        scope = ids ? remapTriangleIds(ids, parentToChildren) : new Set<number>();
+      } else {
+        scope = new Set<number>();
+        for (let t = 0; t < mesh.numTri; t++) scope.add(t);
+      }
+      return { triangles: scope, perTriColors: computePatternColors(mesh, scope, descriptor) };
+    }
   }
 }
 

@@ -3,6 +3,7 @@
 import type { MeshData } from '../geometry/types';
 import type { ShapeType } from './boxPaint';
 import type { BrushShape } from './subdivide';
+import type { ColorPatternKind } from './colorPattern';
 
 export interface ColorRegion {
   id: number;
@@ -100,7 +101,15 @@ export type RegionDescriptor =
       imageDataUrl?: string;
       removeBackground?: boolean;
       manualBgColor?: [number, number, number];
-      bgTolerance?: number };
+      bgTolerance?: number }
+  // Algorithmic colour pattern (the colour twin of `api.surface.*` textures):
+  // a field evaluated per-triangle assigns each triangle in `scope` one palette
+  // colour. Resolved by `computePatternColors` (src/color/colorPattern.ts), which
+  // produces a `perTriColors` map. `scope.label` restricts it to an `api.label`
+  // region (e.g. the body) so it never touches eyes/nose; absent ⇒ whole mesh.
+  | { kind: 'pattern'; pattern: ColorPatternKind; colors: [number, number, number][];
+      scope?: { label?: string };
+      scale?: number; axis?: 'x' | 'y' | 'z'; warp?: number; coverage?: number; seed?: number };
 
 export interface SerializedColorRegion {
   id: number;
