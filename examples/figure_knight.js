@@ -12,7 +12,7 @@ const F = sdf.figure;
 const rig = F.rig({
   height: 66, headsTall: 6.2, build: 'average', sex: 'male', muscle: 0.5,
   pose: {
-    armR: { raiseSide: 10, raiseFwd: 58, bend: 68, palm: 'out' },
+    armR: { raiseSide: 12, raiseFwd: 35, bend: 80, thumb: 'in' },
     armL: { raiseSide: 11, raiseFwd: 5, bend: 16 },
     legL: { raiseSide: 7 }, legR: { raiseSide: 9, bend: 6 },
     head: { yaw: -6, pitch: -2 }, spine: { turn: 3 },

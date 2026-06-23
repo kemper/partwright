@@ -92,6 +92,7 @@ function norm3(a: Vec3): Vec3 { const l = len3(a) || 1; return [a[0] / l, a[1] /
 function cross3(a: Vec3, b: Vec3): Vec3 {
   return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
+function dot3(a: Vec3, b: Vec3): number { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 function lerp3(a: Vec3, b: Vec3, t: number): Vec3 {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 }
@@ -148,7 +149,7 @@ function obj(v: unknown, name: string): Record<string, unknown> {
   return (assertObject(v, name, { optional: true }) ?? {}) as Record<string, unknown>;
 }
 
-interface JointPose { raiseSide: number; raiseFwd: number; bend?: number; twist: number; palm?: string }
+interface JointPose { raiseSide: number; raiseFwd: number; bend?: number; twist: number; palm?: string; thumb?: string }
 interface HeadPose { yaw: number; pitch: number; roll: number }
 interface SpinePose { lean: number; turn: number; side: number }
 
@@ -162,7 +163,7 @@ interface ResolvedPose {
 // "Naming policy" in public/ai/figure.md). Limbs: raiseSide (lift sideways),
 // raiseFwd (swing forward/back), bend (elbow/knee flexion), twist (axial roll).
 // Head: yaw / pitch / roll. There are no legacy aliases — these are the names.
-const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist', 'palm'];
+const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist', 'palm', 'thumb'];
 const PALM_DIRS = ['up', 'down', 'forward', 'back', 'in', 'out'] as const;
 const LEG_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const HEAD_FIELDS = ['yaw', 'pitch', 'roll'];
@@ -179,6 +180,7 @@ function parseArm(v: unknown, name: string, defRaiseSide: number): JointPose {
     bend: num(o.bend, 0, `${name}.bend`, 0, 160),
     twist: num(o.twist, 0, `${name}.twist`),
     palm: o.palm === undefined ? undefined : assertEnum(o.palm, PALM_DIRS, `${name}.palm`),
+    thumb: o.thumb === undefined ? undefined : assertEnum(o.thumb, PALM_DIRS, `${name}.thumb`),
   };
 }
 function parseLeg(v: unknown, name: string): JointPose {
@@ -278,6 +280,11 @@ export interface GripFrame {
   gripAxis: Vec3;
   /** Unit forearm / finger-reach direction (the way the fingers point). */
   reach: Vec3;
+  /** Unit direction the THUMB points (it curls over the front of a closed grip,
+   *  ≈ along reach+palmNormal). This is the human-meaningful handle for "how is
+   *  the hand turned" — pose the arm with `thumb:'up'|'in'` so a held prop is
+   *  grasped the way a person grasps a weight, and assert `grip.thumbAxis·up>0`. */
+  thumbAxis: Vec3;
 }
 
 /** The two-anchor analog of {@link GripFrame}: the geometry of the line spanning
@@ -654,20 +661,29 @@ function buildRig(rawOpts: unknown): Rig {
     // by `side` keeps a symmetric `arms:{twist}` lifting both fists the same way.
     if (p.twist) hinge = norm3(rotAxis(hinge, dir, -p.twist * side));
     let foreDir = norm3(rotAxis(dir, hinge, p.bend ?? 0));
-    // `palm` orients the GRIP: a hand bearing a weight rotates its wrist so the
-    // palm supports the object (palm up/in is the natural heavy-hold). We solve
-    // the extra forearm roll about the arm axis so the palm normal (= the grip
-    // cup direction, cross(foreDir, hinge)) points the requested way, instead of
-    // leaving the wrist at an arbitrary pronation. World targets; 'in'/'out' are
-    // toward/away from the body midline.
-    if (p.palm) {
-      const palmN0 = norm3(cross3(foreDir, hinge));
-      const tgt: Vec3 = p.palm === 'up' ? [0, 0, 1] : p.palm === 'down' ? [0, 0, -1]
-        : p.palm === 'forward' ? [0, -1, 0] : p.palm === 'back' ? [0, 1, 0]
-        : p.palm === 'in' ? [-side, 0, 0] : [side, 0, 0];
-      const dt = signedAngleAbout(palmN0, tgt, dir);
+    // `thumb` / `palm` orient the GRIP by solving the forearm ROLL about the arm
+    // axis so the hand is turned the human way a hand bearing weight is — instead
+    // of leaving the wrist at an arbitrary pronation. `thumb` is the preferred,
+    // human-meaningful handle ("we grasp with the thumb up or pointing inward");
+    // `palm` is retained for back-compat. World targets; 'in'/'out' are toward/
+    // away from the body midline. Rolling hinge about `dir` rotates the whole hand
+    // frame rigidly, so the signed-angle solve is exact for the ⊥-dir component.
+    const rollTo = (axis0: Vec3, dirName: string): void => {
+      const tgt: Vec3 = dirName === 'up' ? [0, 0, 1] : dirName === 'down' ? [0, 0, -1]
+        : dirName === 'forward' ? [0, -1, 0] : dirName === 'back' ? [0, 1, 0]
+        : dirName === 'in' ? [-side, 0, 0] : [side, 0, 0];
+      const dt = signedAngleAbout(axis0, tgt, dir);
       hinge = norm3(rotAxis(hinge, dir, dt));
       foreDir = norm3(rotAxis(dir, hinge, p.bend ?? 0));
+    };
+    if (p.thumb) {
+      // Thumb axis (matches gripFrame): curls over the front, ≈ reach+palm+lateral.
+      const palmN0 = norm3(cross3(foreDir, hinge));
+      const splay0 = norm3(sub3(hinge, scale3(foreDir, dot3(hinge, foreDir))));
+      const thumb0 = norm3(add3(add3(scale3(foreDir, 0.84), scale3(palmN0, 0.52)), scale3(splay0, 0.17 * side)));
+      rollTo(thumb0, p.thumb);
+    } else if (p.palm) {
+      rollTo(norm3(cross3(foreDir, hinge)), p.palm);
     }
     const W = add3(E, scale3(foreDir, foreArmLen));
     const handC = add3(W, scale3(foreDir, r.hand * 0.9));
@@ -784,13 +800,22 @@ function buildRig(rawOpts: unknown): Rig {
   // the hand — a held sword welded to the knuckles, not the palm.) All
   // spine-transformed like the joints.
   const GRIP_REACH = 0.72;
-  const gripFrame = (a: { handC: Vec3; foreDir: Vec3; hinge: Vec3 }): GripFrame => {
+  const gripFrame = (a: { handC: Vec3; foreDir: Vec3; hinge: Vec3 }, side: number): GripFrame => {
     const palmN = norm3(cross3(a.foreDir, a.hinge));
+    // Thumb direction: in a closed grip the thumb curls over the FRONT of the
+    // fingers, so it points mostly along reach (foreDir) + palmNormal, with a
+    // small lateral lean toward the thumb side (the radial/splay axis, signed by
+    // `side`). This matches the canonicalHand thumb (≈[0.17·side, 0.52, 0.84] in
+    // the hand's own splay/palm/reach basis) and is the human handle the `thumb`
+    // pose hint targets. Computed BEFORE the spine transform, then carried through.
+    const splay = norm3(sub3(a.hinge, scale3(a.foreDir, dot3(a.hinge, a.foreDir))));
+    const thumbN = norm3(add3(add3(scale3(a.foreDir, 0.84), scale3(palmN, 0.52)), scale3(splay, 0.17 * side)));
     return {
       point: add3(sPt(a.handC), scale3(sDir(palmN), r.hand * GRIP_REACH)),
       palmNormal: sDir(palmN),
       gripAxis: sDir(a.hinge),
       reach: sDir(a.foreDir),
+      thumbAxis: sDir(thumbN),
     };
   };
 
@@ -879,7 +904,7 @@ function buildRig(rawOpts: unknown): Rig {
       footL: lL.footFwd, footR: lR.footFwd,
       headForward: sDir(hf), headUp: sDir(headUp), headLeft: sDir(headLeft),
     },
-    grip: { L: gripFrame(aL), R: gripFrame(aR) },
+    grip: { L: gripFrame(aL, +1), R: gripFrame(aR, -1) },
     sole: { L: makeSoleFrame(lL.A, lL.footFwd, r), R: makeSoleFrame(lR.A, lR.footFwd, r) },
     face: sFace,
     torso: torsoAnchors,
@@ -4772,7 +4797,7 @@ function poseProbe(rig: Rig): {
   for (const k of Object.keys(rig.dir)) dir[k] = round3(rig.dir[k]);
   const grip = (g: GripFrame): GripFrame => ({
     point: round3(g.point), palmNormal: round3(g.palmNormal),
-    gripAxis: round3(g.gripAxis), reach: round3(g.reach),
+    gripAxis: round3(g.gripAxis), reach: round3(g.reach), thumbAxis: round3(g.thumbAxis),
   });
   const grips = { L: grip(rig.grip.L), R: grip(rig.grip.R) };
   const soleR = (s: SoleFrame): SoleFrame => ({

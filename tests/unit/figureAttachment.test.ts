@@ -99,6 +99,30 @@ describe('grip frame — palm side (held props seat in the palm, not the knuckle
   });
 });
 
+describe('grip frame — thumb axis + `thumb` pose hint', () => {
+  it('exposes a thumbAxis that curls over the front of the grip (≈ reach+palm)', () => {
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 30, bend: 40 } } });
+    const g = rig.grip.R;
+    // The thumb is roughly along reach + palmNormal (it folds over the fingers),
+    // so it has a strong positive projection onto their sum and is ⊥-ish to the
+    // grip axis (the held bar).
+    const sum = [g.reach[0] + g.palmNormal[0], g.reach[1] + g.palmNormal[1], g.reach[2] + g.palmNormal[2]];
+    const sl = Math.hypot(...sum) || 1;
+    const proj = (g.thumbAxis[0] * sum[0] + g.thumbAxis[1] * sum[1] + g.thumbAxis[2] * sum[2]) / sl;
+    expect(proj).toBeGreaterThan(0.6);
+    expect(Math.hypot(...g.thumbAxis)).toBeCloseTo(1, 6);
+  });
+
+  it("thumb:'in' turns the wrist so the thumb leans toward the body midline", () => {
+    // Right arm: midline is +X. thumb:'in' should give a +X-leaning thumb; the
+    // opposite target 'out' should flip that lateral lean negative.
+    const inn = buildRig({ height: 64, pose: { armR: { raiseSide: 14, raiseFwd: 35, bend: 80, thumb: 'in' } } });
+    const out = buildRig({ height: 64, pose: { armR: { raiseSide: 14, raiseFwd: 35, bend: 80, thumb: 'out' } } });
+    expect(inn.grip.R.thumbAxis[0]).toBeGreaterThan(0);            // leans inward (+X) for the right hand
+    expect(inn.grip.R.thumbAxis[0]).toBeGreaterThan(out.grip.R.thumbAxis[0]); // 'in' is more +X than 'out'
+  });
+});
+
 describe('ringPoint', () => {
   it('maps azimuth to the right side of the body', () => {
     const rig = buildRig({ height: 64 });

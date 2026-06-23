@@ -487,19 +487,26 @@ const held = F.holdAt(sword, rig.grip.R);       // +Z→gripAxis, +Y→palmNorma
 maps to; `opts.flip: true` reverses the axis; `opts.along` (`'x'|'y'|'z'`) selects
 the long axis (non-`z` uses the legacy single-axis align, roll unconstrained).
 
-> **Aim a held prop by posing the arm + a `palm` hint — don't fight `holdAt`.** A
-> held bar lies along `gripAxis`, which is **⊥ the forearm** (you grip across the
-> palm), so the prop's direction follows the forearm pose, *not* `holdAt`. To point
-> a sword **blade-up**, the forearm must be roughly **horizontal** (a vertical
-> forearm forces the blade horizontal): raise the arm forward and bend the elbow so
-> the hand sits at chest height (e.g. `armR: { raiseSide: 10, raiseFwd: 58, bend: 68 }`).
-> Then set **`palm`** on that arm's pose to roll the wrist so the palm (and thus the
-> blade) faces the way a hand bearing weight would: `'up' | 'down' | 'forward' |
-> 'back' | 'in' | 'out'`. The knight raises a heavy sword with
-> `armR: { raiseSide: 10, raiseFwd: 58, bend: 68, palm: 'out' }`. Probe the result
-> with `F.poseProbe(rig).grips.R.gripAxis` — that vector **is** the blade direction
-> (≈ `[0,0,1]` = straight up). Avoid `bend ≳ 95` at low `raiseFwd`: the wrist-roll
-> solve hits a singularity there and the blade flips.
+> **Aim a held prop by posing the arm + a `thumb` hint — don't fight `holdAt`.**
+> How a hand is turned is set by the arm pose, not by `holdAt`. The human-meaningful
+> handle is the **thumb**: people grasp a weight with the thumb **up or pointing
+> inward**, never thumb-down. Set **`thumb: 'in'`** (recommended) or `'up' | 'down'
+> | 'forward' | 'back' | 'out'` on the arm pose and the wrist roll is solved so the
+> grip's `thumbAxis` points that way. The knight holds his sword with
+> `armR: { raiseSide: 12, raiseFwd: 35, bend: 80, thumb: 'in' }` — thumb toward the
+> body, blade rising up-and-forward.
+>
+> Geometry to keep in mind: a held bar lies along `gripAxis`, which is **⊥ the
+> forearm** (you grip across the palm), and the **thumb is ⊥ the bar** (it curls
+> over the front, ≈ along reach+palm). So "thumb up" and "blade up" are *coupled* —
+> you can't choose both independently for a fist. Pick the thumb direction (the
+> human constraint) and let the blade fall where the forearm pose puts it; raise/
+> bend the arm to aim the blade. Probe with `F.poseProbe(rig).grips.R` —
+> `thumbAxis` is assertable (`thumbAxis·[0,0,1] > 0` ⇒ thumb up) and `gripAxis`
+> **is** the blade direction. (`thumb`/`palm` are mutually exclusive; `palm` —
+> targeting the palm normal — is retained for back-compat but `thumb` is preferred.
+> Note `thumb:'up'` on a low arm can fling it out: the fist thumb physically can't
+> point straight up while gripping, so the solve over-rotates — use `'in'`.)
 
 **Two-handed props — `F.spanGrips(a, b)`.** A guitar, barbell, bow, broom, or
 rifle runs BETWEEN both hands, so a single `holdAt` can't orient it. `spanGrips`
