@@ -17,6 +17,7 @@ import { createKnurlNamespace } from '../knurl';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import type { RegionDescriptor } from '../../color/regions';
+import { COLOR_PATTERN_KINDS, type ColorPatternKind, type PatternScope } from '../../color/colorPattern';
 import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
 import { wasmFaultHint } from '../workerFaults';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
@@ -466,6 +467,88 @@ export const manifoldJsEngine: Engine = {
         if (typeof labelName !== 'string' || labelName.length === 0) throw new Error('api.paint.label: label must be a non-empty string naming an api.label(...) region.');
         const rgb = paintColor(col, 'api.paint.label');
         paintOps.push({ name: `paint·label ${labelName}`, color: rgb, descriptor: { kind: 'byLabel', label: labelName } });
+      },
+      /** Algorithmic colourway — fill a scope with a procedural pattern, the colour
+       *  twin of `api.surface.*` textures. Every triangle in `scope` gets ONE palette
+       *  colour from a field, so the result stays multi-material printable.
+       *  `api.paint.pattern({ pattern, colors, scope, scale, axis, warp, coverage, seed })`
+       *   - pattern: 'stripes' (tabby/tiger/zebra/brindle) | 'spots' (leopard/dalmatian)
+       *              | 'patches' (calico/cow/tortie) | 'gradient' (siamese points)
+       *   - colors:  [base, mark, third?] — hex or [r,g,b]; ≥2 required
+       *   - scope:   'labelName' (e.g. 'body', so it never touches eyes/nose) — omit = whole model */
+      pattern(opts: unknown): void {
+        const o = paintObj(opts, "api.paint.pattern({ pattern, colors, scope?, scale?, axis?, warp?, coverage?, seed?, anchors? })");
+        const { pattern, colors, scope, scale, axis, warp, coverage, seed, anchors, ...rest } = o;
+        paintRejectUnknown('api.paint.pattern', rest);
+        if (typeof pattern !== 'string' || !COLOR_PATTERN_KINDS.includes(pattern as ColorPatternKind)) {
+          throw new Error(`api.paint.pattern pattern: expected one of ${COLOR_PATTERN_KINDS.map(k => `'${k}'`).join(', ')}.`);
+        }
+        if (!Array.isArray(colors) || colors.length < 2) {
+          throw new Error('api.paint.pattern colors: expected an array of at least 2 colors [base, mark, third?].');
+        }
+        const rgbColors = colors.map((c, i) => paintColor(c, `api.paint.pattern colors[${i}]`));
+        let scopeObj: PatternScope | undefined;
+        if (scope !== undefined) {
+          if (typeof scope === 'string') {
+            if (scope.length === 0) throw new Error('api.paint.pattern scope: label name must be non-empty.');
+            scopeObj = { label: scope };
+          } else if (scope && typeof scope === 'object' && !Array.isArray(scope)) {
+            const { label: l, above, below, box, sphere, ...srest } = scope as Record<string, unknown>;
+            paintRejectUnknown('api.paint.pattern scope', srest);
+            const s: PatternScope = {};
+            if (l !== undefined) {
+              if (typeof l !== 'string' || l.length === 0) throw new Error('api.paint.pattern scope.label: must be a non-empty string.');
+              s.label = l;
+            }
+            const parsePlane = (v: unknown, where: string): { axis: 'x' | 'y' | 'z'; at: number } => {
+              const o = paintObj(v, where);
+              const { axis: a, at, ...rest } = o;
+              paintRejectUnknown(where, rest);
+              if (typeof a !== 'string' || !(a in AXIS_NORMAL)) throw new Error(`${where}.axis: expected 'x', 'y' or 'z'.`);
+              return { axis: a as 'x' | 'y' | 'z', at: paintNum(at, `${where}.at`) };
+            };
+            if (above !== undefined) s.above = parsePlane(above, 'api.paint.pattern scope.above');
+            if (below !== undefined) s.below = parsePlane(below, 'api.paint.pattern scope.below');
+            if (box !== undefined) {
+              const o = paintObj(box, 'api.paint.pattern scope.box');
+              const { min, max, ...rest } = o;
+              paintRejectUnknown('api.paint.pattern scope.box', rest);
+              s.box = { min: paintVec3(min, 'api.paint.pattern scope.box.min'), max: paintVec3(max, 'api.paint.pattern scope.box.max') };
+            }
+            if (sphere !== undefined) {
+              const o = paintObj(sphere, 'api.paint.pattern scope.sphere');
+              const { center, radius, ...rest } = o;
+              paintRejectUnknown('api.paint.pattern scope.sphere', rest);
+              const rad = paintNum(radius, 'api.paint.pattern scope.sphere.radius');
+              if (rad <= 0) throw new Error('api.paint.pattern scope.sphere.radius: must be > 0.');
+              s.sphere = { center: paintVec3(center, 'api.paint.pattern scope.sphere.center'), radius: rad };
+            }
+            scopeObj = Object.keys(s).length > 0 ? s : undefined;
+          } else {
+            throw new Error("api.paint.pattern scope: expected a label name string (e.g. 'body') or { label, above, below, box, sphere }.");
+          }
+        }
+        if (axis !== undefined && (typeof axis !== 'string' || !(axis in AXIS_NORMAL))) {
+          throw new Error("api.paint.pattern axis: expected 'x', 'y' or 'z'.");
+        }
+        let anchorPts: [number, number, number][] | undefined;
+        if (anchors !== undefined) {
+          if (!Array.isArray(anchors)) throw new Error('api.paint.pattern anchors: expected an array of [x, y, z] points.');
+          anchorPts = anchors.map((a, i) => paintVec3(a, `api.paint.pattern anchors[${i}]`));
+        }
+        const descriptor: RegionDescriptor = {
+          kind: 'pattern',
+          pattern: pattern as ColorPatternKind,
+          colors: rgbColors,
+          ...(scopeObj ? { scope: scopeObj } : {}),
+          ...(scale !== undefined ? { scale: paintNum(scale, 'api.paint.pattern scale') } : {}),
+          ...(axis !== undefined ? { axis: axis as 'x' | 'y' | 'z' } : {}),
+          ...(warp !== undefined ? { warp: paintNum(warp, 'api.paint.pattern warp') } : {}),
+          ...(coverage !== undefined ? { coverage: paintNum(coverage, 'api.paint.pattern coverage') } : {}),
+          ...(seed !== undefined ? { seed: paintNum(seed, 'api.paint.pattern seed') } : {}),
+          ...(anchorPts ? { anchors: anchorPts } : {}),
+        };
+        paintOps.push({ name: `paint·pattern ${pattern} ${++paintSeq}`, color: rgbColors[0], descriptor });
       },
     };
 

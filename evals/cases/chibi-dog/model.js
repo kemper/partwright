@@ -26,7 +26,7 @@ const p = api.params({
            options: ['snouty', 'round'],
            label: 'Face' },
   pattern: { type: 'select', default: 'solid',
-           options: ['solid', 'tuxedo', 'tan-points'],
+           options: ['solid', 'tuxedo', 'tan-points', 'brindle', 'merle', 'spotted'],
            label: 'Pattern' },
 });
 
@@ -484,7 +484,36 @@ const dog = sdf.union(
 
 const liftZ = p.pose === 'sitting' ? 0.9 : 0.25;
 
-return dog.translate(0, 0, liftZ).build({
+const result = dog.translate(0, 0, liftZ).build({
   edgeLength: 0.45,
   detail: detailRegions,
 });
+
+// ============================================================
+// PROCEDURAL COLORWAYS (flush surface paint — api.paint.pattern, not geometry)
+// Canine counterparts of the cat's procedural colourways: algorithmic colour
+// fields paint each body triangle one palette colour (no raised welt), scoped to
+// 'body' so the face features survive. Coords are POST-lift.
+//  - brindle  stripes  (dark tiger stripes over a fawn coat)
+//  - merle    patches  (mottled dark/base blotches — the Aussie/collie look)
+//  - spotted  spots    (Worley dalmatian/ticking spots)
+// ============================================================
+function applyColorway() {
+  switch (p.pattern) {
+    case 'brindle':
+      api.paint.pattern({ pattern: 'stripes', colors: ['#B5793A', '#3A2A1C'],
+                          scope: 'body', axis: 'z', scale: 4.5, warp: 0.5 });
+      break;
+    case 'merle':
+      api.paint.pattern({ pattern: 'patches', colors: ['#9FA6A0', '#3A3A3C'],
+                          scope: 'body', scale: 4.5, coverage: 0.5 });
+      break;
+    case 'spotted':
+      api.paint.pattern({ pattern: 'spots', colors: ['#F2EEE6', '#2A2422'],
+                          scope: 'body', scale: 4, coverage: 0.32 });
+      break;
+  }
+}
+applyColorway();
+
+return result;
