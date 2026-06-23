@@ -34,6 +34,7 @@ import { makeNoise, type NoiseOptions, type ScalarField } from './noise';
 import { expandLSystem, turtle3d, type LSystemRule } from './lsystem';
 import { createFigureNamespace, type FigureNamespace, type SdfApi } from './sdfFigure';
 import { refineMeshNearRegions, sphereIntersectsBox, type DetailRegion } from './sdfRefine';
+import { compileSdfEval } from './sdfCompile';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ManifoldClass = any;
@@ -182,6 +183,12 @@ interface NodeData {
    *  spaced features (figure fingers) into topological handles the in-place
    *  refine can't undo; this resolves them at the source. */
   fineRegions?: FineHandPiece[];
+  /** Structured parameters for the SDF→JS compiler (`sdfCompile.ts`). Mirrors
+   *  the numeric constants (and, for the subtract family, the hidden `b`
+   *  operand) captured inside `eval`, so the compiler can emit a flat function
+   *  without re-deriving them from the closure. Absent → the node is emitted as
+   *  an opaque-leaf call to `eval`, so geometry is unaffected either way. */
+  cp?: Record<string, unknown>;
 }
 
 let nextId = 1;
@@ -200,6 +207,7 @@ export class SdfNode {
   /** @internal */ readonly _rewrap: ((child: SdfNode) => SdfNode) | undefined;
   /** @internal */ readonly _ctx: BuildContext | undefined;
   /** @internal */ readonly _fineRegions: FineHandPiece[] | undefined;
+  /** @internal Structured params for sdfCompile.ts; see NodeData.cp. */ readonly _cp: Record<string, unknown> | undefined;
 
   constructor(data: NodeData) {
     this.id = `sdf_${nextId++}`;
@@ -211,6 +219,7 @@ export class SdfNode {
     this._rewrap = data.rewrap;
     this.labelName = data.labelName;
     this._fineRegions = data.fineRegions;
+    this._cp = data.cp;
     // Inherit ctx from data, else from the first child that has one.
     // Lets `union(a, b)` keep the engine binding from either operand.
     this._ctx = data.ctx ?? (data.children.find(c => c._ctx !== undefined)?._ctx);
@@ -553,7 +562,10 @@ function buildSdf(
 
   const meshed: ManifoldInstance[] = [];
   for (const region of regions) {
-    const evalFn = region.node._eval;
+    // Flatten the region's distance tree to a single JS function when possible
+    // (~6–11× faster per eval; verified byte-identical, falls back to the
+    // closure on any mismatch). This is the hot callback `levelSet` hammers.
+    const evalFn = compileSdfEval(region.node) ?? region.node._eval;
     // Manifold's levelSet uses the OPPOSITE sign convention from
     // standard SDF: positive=inside, negative=outside. Negate so user
     // code can keep writing distance functions the normal way.
@@ -916,8 +928,8 @@ function findPropagatableLabel(node: SdfNode): string | undefined {
 
 // --- Primitives ---------------------------------------------------------
 
-function leafNode(kind: string, evalFn: EvalFn, bounds: Box): SdfNode {
-  return new SdfNode({ kind, eval: evalFn, bounds, children: [], partitionable: false });
+function leafNode(kind: string, evalFn: EvalFn, bounds: Box, cp?: Record<string, unknown>): SdfNode {
+  return new SdfNode({ kind, eval: evalFn, bounds, children: [], partitionable: false, cp });
 }
 
 /** Sphere centered at the origin. */
@@ -928,6 +940,7 @@ function primSphere(radius: number): SdfNode {
     'sphere',
     (x, y, z) => Math.sqrt(x * x + y * y + z * z) - r,
     { min: [-r, -r, -r], max: [r, r, r] },
+    { r },
   );
 }
 
@@ -959,6 +972,7 @@ function primBox(size: Vec3 | number): SdfNode {
       return outside + inside;
     },
     { min: [-hx, -hy, -hz], max: [hx, hy, hz] },
+    { hx, hy, hz },
   );
 }
 
@@ -1029,6 +1043,7 @@ function primEllipsoid(rx: number, ry: number, rz: number): SdfNode {
       return (k0 * (k0 - 1)) / k1;
     },
     { min: [-ax, -ay, -az], max: [ax, ay, az] },
+    { ax, ay, az, minR },
   );
 }
 
@@ -1052,6 +1067,7 @@ function primCylinder(radius: number, height: number): SdfNode {
       return outside + inside;
     },
     { min: [-r, -r, -hh], max: [r, r, hh] },
+    { r, hh },
   );
 }
 
@@ -1068,6 +1084,7 @@ function primTorus(majorRadius: number, minorRadius: number): SdfNode {
       return Math.sqrt(q * q + z * z) - r;
     },
     { min: [-(R + r), -(R + r), -r], max: [R + r, R + r, r] },
+    { R, r },
   );
 }
 
@@ -1095,6 +1112,7 @@ function primCapsule(a: Vec3, b: Vec3, radius: number): SdfNode {
       min: [Math.min(A[0], B[0]) - r, Math.min(A[1], B[1]) - r, Math.min(A[2], B[2]) - r],
       max: [Math.max(A[0], B[0]) + r, Math.max(A[1], B[1]) + r, Math.max(A[2], B[2]) + r],
     },
+    { a: A, d: [dx, dy, dz], ll, r },
   );
 }
 
@@ -1401,6 +1419,7 @@ function opUnion(a: SdfNode, b: SdfNode): SdfNode {
     bounds: bbUnion(a._bounds, b._bounds),
     children: [a, b],
     partitionable: true,
+    cp: {},
   });
 }
 
@@ -1435,6 +1454,8 @@ function opSubtract(a: SdfNode, b: SdfNode): SdfNode {
     // 'shell') without exposing meaningless B labels.
     children: [a],
     partitionable: false,
+    // `b` is hidden from `children` (above) but the compiler still needs it.
+    cp: { b },
   });
 }
 
@@ -1445,6 +1466,7 @@ function opIntersect(a: SdfNode, b: SdfNode): SdfNode {
     bounds: bbIntersect(a._bounds, b._bounds),
     children: [a, b],
     partitionable: false,
+    cp: {},
   });
 }
 
@@ -1465,6 +1487,7 @@ function opSmoothUnion(a: SdfNode, b: SdfNode, k: number): SdfNode {
     // partitioning destroys the smoothness. Treat as a single piece;
     // the user labels the smooth union as a whole if they want paint.
     partitionable: false,
+    cp: { k },
   });
 }
 
@@ -1489,6 +1512,7 @@ function opSmoothSubtract(a: SdfNode, b: SdfNode, k: number): SdfNode {
     // semantics and avoiding the silent label-drop trap.
     children: [a],
     partitionable: false,
+    cp: { b, k },
   });
 }
 
@@ -1505,6 +1529,7 @@ function opSmoothIntersect(a: SdfNode, b: SdfNode, k: number): SdfNode {
     bounds: bbExpand(bbIntersect(a._bounds, b._bounds), k * 0.5),
     children: [a, b],
     partitionable: false,
+    cp: { k },
   });
 }
 
@@ -1532,6 +1557,7 @@ function opTranslate(child: SdfNode, t: Vec3): SdfNode {
     children: [child],
     partitionable: false,
     rewrap: (c) => opTranslate(c, t),
+    cp: { t },
   });
 }
 
@@ -1564,6 +1590,7 @@ function opRotate(child: SdfNode, r: Vec3): SdfNode {
     children: [child],
     partitionable: false,
     rewrap: (c) => opRotate(c, r),
+    cp: { m: [m00, m01, m02, m10, m11, m12, m20, m21, m22] },
   });
 }
 
@@ -1579,6 +1606,7 @@ function opScale(child: SdfNode, s: number): SdfNode {
     children: [child],
     partitionable: false,
     rewrap: (c) => opScale(c, s),
+    cp: { inv, s },
   });
 }
 
@@ -1599,6 +1627,7 @@ function opMirror(child: SdfNode, axis: 'x' | 'y' | 'z'): SdfNode {
     children: [child],
     partitionable: false,
     rewrap: (c) => opMirror(c, axis),
+    cp: { axis },
   });
 }
 
@@ -1612,6 +1641,7 @@ function opShell(child: SdfNode, thickness: number): SdfNode {
     bounds: bbExpand(child._bounds, half),
     children: [child],
     partitionable: false,
+    cp: { half },
   });
 }
 
@@ -1624,6 +1654,7 @@ function opRound(child: SdfNode, r: number): SdfNode {
     bounds: bbExpand(child._bounds, r),
     children: [child],
     partitionable: false,
+    cp: { r },
   });
 }
 
@@ -1679,7 +1710,7 @@ function opTwist(child: SdfNode, degPerUnit: number, axis: 'x' | 'y' | 'z', cent
     const r = inPlaneSweep(b.min[1], b.max[1], b.min[2], b.max[2]);
     bounds = { min: [b.min[0], cu - r, cv - r], max: [b.max[0], cu + r, cv + r] };
   }
-  return new SdfNode({ kind: 'twist', eval: evalFn, bounds, children: [child], partitionable: false });
+  return new SdfNode({ kind: 'twist', eval: evalFn, bounds, children: [child], partitionable: false, cp: { rate, axis, cu, cv } });
 }
 
 function opBend(child: SdfNode, degPerUnit: number, axis: 'x' | 'y' | 'z'): SdfNode {
@@ -1722,6 +1753,7 @@ function opBend(child: SdfNode, degPerUnit: number, axis: 'x' | 'y' | 'z'): SdfN
     bounds: { min: [-ext, -ext, -ext], max: [ext, ext, ext] },
     children: [child],
     partitionable: false,
+    cp: { rate, axis },
   });
 }
 
@@ -1766,7 +1798,7 @@ function opTaper(child: SdfNode, rate: number, axis: 'x' | 'y' | 'z'): SdfNode {
     min[i] = b.min[i] * smax;
     max[i] = b.max[i] * smax;
   }
-  return new SdfNode({ kind: 'taper', eval: evalFn, bounds: { min, max }, children: [child], partitionable: false });
+  return new SdfNode({ kind: 'taper', eval: evalFn, bounds: { min, max }, children: [child], partitionable: false, cp: { rate, axis } });
 }
 
 function opDisplace(child: SdfNode, amount: number, field: ScalarField): SdfNode {
