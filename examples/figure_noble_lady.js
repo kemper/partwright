@@ -55,7 +55,11 @@ const hair = F.hair(rig, { style: 'long', length: 'long', volume: 1.1 }).label('
 const neckFrame = rig.ring.neck;
 const neckTube = r.neck * 0.06;
 const neckClear = r.neck * 0.04;
-const collar = F.ring(neckFrame, { tube: neckTube, clearance: neckClear, segments: 64, surface: clothed, occlude: [hair] });
+// The collar conforms to the NECK SKIN only (not `clothed`): marching to the full
+// clothed surface let one side reach out to the wide GOWN shoulder and terminate
+// through the dress. Hugging the neck column keeps it tight all the way round, and
+// the hair occludes the back. (The pendant drop below still rides the gown front.)
+const collar = F.ring(neckFrame, { tube: neckTube, clearance: neckClear, segments: 64, surface: skin, occlude: [hair] });
 // Pendant drop: conformed points from the front of the collar down the chest.
 const dropLen = r.neck * 3.0;
 const N = 7;

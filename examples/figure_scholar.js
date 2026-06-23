@@ -66,18 +66,22 @@ const hair = F.hair(rig, { style: 'short' }).label('hair');
 // high on the hair top. `sit` fine-tunes the brim height.
 const hat = F.placeOnHead(hatLocal, rig, { sit: 0.30 }).label('hat');
 
-// 6. BELT (Ringed) — a FLUSH band (F.band), not a round tube: it slices the
-// CLOTHED body (the coat) grown just proud of its surface, so it cinches FLAT
-// over the robe the way a real sash does, and OCCLUDES the arms (rig) so it
-// terminates at them.
+// 6. BELT (Ringed) — a FLUSH band (F.band) that cinches FLAT over the robe. Arm-
+// occlusion is handled by F.layers below (occludeArms = coat thickness), so the
+// belt terminates at the coat SLEEVE instead of painting onto the arms (the
+// regression the old skin-only `rig` occluder couldn't fix — it missed the sleeve).
+const coatThick = r.chestX * 0.13;
 const clothedBody = sdf.union(skin, coat, pants);
 const belt = F.band(rig.ring.waist, {
   surface: clothedBody, thickness: r.waist * 0.10, height: r.chestX * 0.6,
-  clearance: r.chestX * 0.02, rig,
+  clearance: r.chestX * 0.02,
 }).label('belt');
 const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: clothedBody, clearance: r.chestX * 0.02 });
 const buckle = sdf.roundedBox([r.waist * 0.5, r.waist * 0.22, r.chestX * 0.5], r.waist * 0.06).translate(bucklePt);
-const beltWithBuckle = belt.union(buckle.label('belt'));
+// Label the OUTER union (not just the parts): F.layers' occludeArms subtract only
+// propagates a label from a single labeled child, so an unlabeled union-on-top
+// would drop it and the belt would render uncoloured.
+const beltWithBuckle = belt.union(buckle.label('belt')).label('belt');
 
 // 7. BASE
 const base = F.base(rig, { radius: H * 0.25 }).label('base');
@@ -97,5 +101,15 @@ api.paint.label('belt', '#3a2417');
 
 api.paint.label('base', '#54504a');
 
-return sdf.union(skin, eyes, coat, pants, hair, glasses, hat, beltWithBuckle, base)
+// LAYERS — composite body + coat + belt with the belt arm-occluded (terminates at
+// the coat sleeve, never bleeds onto the arms). Props (eyes, hair, glasses, hat,
+// base) plain-unioned on top so they don't carve the garments.
+const body = F.layers(rig, [
+  { node: skin, carve: false, priority: 0 },
+  { node: coat, carve: false, priority: 1 },
+  { node: pants, carve: false, priority: 1 },
+  { node: beltWithBuckle, carve: false, priority: 2, occludeArms: coatThick },
+]);
+
+return sdf.union(body, eyes, hair, glasses, hat, base)
   .build({ edgeLength: 0.38, detail: [...F.faceDetail(rig)] });

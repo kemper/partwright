@@ -112,8 +112,11 @@ const blade = bladeSlab.intersect(bladeWedge).translate([0, 0, guardZ]);
 const pommel = sdf.cylinder(pommelR, pommelR * 0.7).rotate([90, 0, 0]).translate([0, 0, pommelZ]);
 const swordLocal = grip.union(guard).smoothUnion(blade, bladeHalfT * 0.5).smoothUnion(pommel, pommelR * 0.3);
 const heldSword = F.holdAt(swordLocal, rig.grip.R);
-const swordBridge = sdf.capsule(j.handR, rig.grip.R.point, r.hand * 0.5);
-const sword = heldSword.smoothUnion(swordBridge, r.hand * 0.4).label('sword');
+// Bridge the held sword to the fist with a stout capsule (rooted at the hand
+// centre, inside the fine-hand mesh) so the blade fuses as one printable piece —
+// a thin bridge fused in Node but split at the browser bake's edgeLength.
+const swordBridge = sdf.capsule(j.handR, rig.grip.R.point, r.hand * 0.72);
+const sword = heldSword.smoothUnion(swordBridge, r.hand * 0.5).label('sword');
 
 // 8. SCABBARD (Hung) — empty sheath at the left hip, pushed OUT past the thigh
 // and hung near-vertical so it clears the leg/clothes.
@@ -133,7 +136,12 @@ const outDir = [hipPt0[0] - rig.ring.waist.center[0], hipPt0[1] - rig.ring.waist
 const outLen = Math.hypot(outDir[0], outDir[1]) || 1;
 const hipPt = [hipPt0[0] + (outDir[0] / outLen) * r.hand * 1.1, hipPt0[1] + (outDir[1] / outLen) * r.hand * 1.1, hipPt0[2]];
 const hungScab = F.hangFrom(scabLocal, hipPt, { tilt: -10, anchor: 'top' });
-const frog = sdf.capsule(hipPt0, [hipPt[0], hipPt[1], hipPt[2] + collarH * 0.3], scabTube * 0.8);
+// Frog (belt loop) — root it INSIDE the hip (pushed inward from the surface point)
+// and make it a touch thicker so the sheath reliably FUSES to the body as one
+// printable piece. Anchoring exactly on the surface left it a hair short of fusing
+// at the browser's mesh resolution (componentCount 2 — a loose scabbard).
+const innerHip = [hipPt0[0] - (outDir[0] / outLen) * r.hand * 1.2, hipPt0[1] - (outDir[1] / outLen) * r.hand * 1.2, hipPt0[2]];
+const frog = sdf.capsule(innerHip, [hipPt[0], hipPt[1], hipPt[2] + collarH * 0.3], scabTube * 1.05);
 const scabbard = hungScab.union(frog).label('scabbard');
 
 // 9. HAIR + BASE
