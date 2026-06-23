@@ -654,6 +654,30 @@ const body = F.layers(rig, [
 return sdf.union(body, eyes, sword, scabbard, hair, base).build({ /* … */ });
 ```
 
+**Check your work — `F.sharedSolid(a, b, opts?)` (the invariant primitive).** The
+failures above (armor on the arm, necklace through the gown, scabbard through the
+leg) are all *unwanted overlap* you can't see in the source. `F.sharedSolid`
+measures it directly on the SDF **fields** — no closed mesh needed — by sampling
+both over their bbox intersection and counting points inside BOTH. It returns
+`{ overlaps, sharedVolume, point, samples }` (`point` = an example overlap location
+to inspect). **Assert the specific pairs that MUST stay clear** — that's what
+sidesteps the expected-overlap problem (clothing is *supposed* to overlap skin):
+
+```js
+// A worn band/plate must be clear of the arms after occlusion:
+if (F.sharedSolid(belt, F.arms(rig)).overlaps) throw new Error('belt bleeds onto the arm — raise occludeArms');
+if (F.sharedSolid(cuirass, F.arms(rig)).overlaps) throw new Error('cuirass bleeds onto the arm');
+// A necklace must not penetrate the gown (only the hair should cover it):
+const hit = F.sharedSolid(necklace, gown, { tol: 0.5 });
+if (hit.overlaps) console.warn('necklace in gown near', hit.point);
+```
+
+Pair it with the cheap, unambiguous checks for a full invariant battery:
+`runAndSave(..., { maxComponents: 1 })` (one printable piece — catches a loose
+scabbard/sword), `model.bounds().min[2] >= baseTopZ` (nothing below the base), and
+`F.poseProbe(rig).grips.R.thumbAxis[2] > 0` (a held prop gripped thumb-up). Run
+these as assertions while authoring; raise `samples` for thin features.
+
 **A band CROSSING the body — `F.strap(a, b, opts?)`.** A bandolier (shoulder →
 opposite hip), sash, suspender, or backpack strap. `a`/`b` accept grip frames,
 `rig.shoulder.L/R`, sole frames, or raw points (and `F.ringPoint` output). **Pass

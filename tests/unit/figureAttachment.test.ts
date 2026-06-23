@@ -8,7 +8,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT } from '../../src/geometry/sdf';
 import type { SdfApi, Vec3 } from '../../src/geometry/sdfFigure';
 
-const { buildRig, ringBand, buildBand, buildLayers, ringPoint, strap, hangFrom, onFace } = __figureTestables__;
+const { buildRig, ringBand, buildBand, buildLayers, sharedSolid, ringPoint, strap, hangFrom, onFace } = __figureTestables__;
 
 const api: SdfApi = {
   sphere: sdfT.primSphere,
@@ -276,6 +276,36 @@ describe('buildLayers — priority composite + limb occlusion', () => {
     const out = buildLayers(api, rig, [{ node: band, label: 'belt', priority: 1, occludeArms: 0.5 }]);
     expect(typeof out.bounds).toBe('function');
     expect(typeof out.evaluate).toBe('function');
+  });
+});
+
+describe('sharedSolid — invariant overlap check', () => {
+  it('measures the shared-solid volume of two overlapping boxes', () => {
+    const A = api.box([2, 2, 2]);                      // x,y,z ∈ [−1,1]
+    const B = api.box([2, 2, 2]).translate([1, 0, 0]); // x ∈ [0,2]
+    // Overlap region x∈[0,1], y,z∈[−1,1] → volume 1·2·2 = 4.
+    const r = sharedSolid(A, B, { samples: 8000 });
+    expect(r.overlaps).toBe(true);
+    expect(r.sharedVolume).toBeGreaterThan(3.4);
+    expect(r.sharedVolume).toBeLessThan(4.6);
+    expect(r.point).not.toBeNull();
+    expect((r.point as number[])[0]).toBeGreaterThanOrEqual(0); // overlap sits on +X
+  });
+
+  it('reports no overlap for disjoint solids (bboxes do not intersect)', () => {
+    const A = api.box([2, 2, 2]);
+    const B = api.box([2, 2, 2]).translate([5, 0, 0]);
+    const r = sharedSolid(A, B);
+    expect(r.overlaps).toBe(false);
+    expect(r.sharedVolume).toBe(0);
+    expect(r.point).toBeNull();
+  });
+
+  it('tol suppresses a tiny overlap below the tolerance', () => {
+    const A = api.box([2, 2, 2]);
+    const B = api.box([2, 2, 2]).translate([1, 0, 0]); // shared volume ≈ 4
+    expect(sharedSolid(A, B, { tol: 10 }).overlaps).toBe(false);
+    expect(sharedSolid(A, B, { tol: 1 }).overlaps).toBe(true);
   });
 });
 

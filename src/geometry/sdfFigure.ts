@@ -4286,6 +4286,13 @@ export interface FigureNamespace {
    *  arms so a torso band/plate can't bleed onto a limb; `carve:false` protects the
    *  base body + props (and the fine-hands marker) from being trimmed. */
   layers(rig: Rig, entries: object[]): Node;
+  /** Invariant check: estimate how much two SDF solids OVERLAP, by sampling both
+   *  fields over their bbox intersection (no mesh needed). Returns `{ overlaps,
+   *  sharedVolume, point, samples }`. Assert a worn accessory is clear of a limb —
+   *  `F.sharedSolid(belt, F.arms(rig)).overlaps === false` — checking only the
+   *  pairs that MUST stay clear (clothing is meant to overlap skin). `opts`:
+   *  `{ samples, tol }`. */
+  sharedSolid(a: Node, b: Node, opts?: object): { overlaps: boolean; sharedVolume: number; point: Vec3 | null; samples: number };
   /** A world point on a {@link RingFrame} at azimuth `az`° (0 = front, 90 = left,
    *  180 = back, −90 = right) — seat a belt buckle (`az: 0`) or hang a scabbard at
    *  the hip (`az: 80`). `opts.clearance`/`drop` match the band. */
@@ -4751,6 +4758,40 @@ function buildLayers(sdf: SdfApi, rigArg: unknown, entriesArg: unknown): Node {
   return out.reduce((a, b) => a.union(b));
 }
 
+/** Estimate how much two SDF solids OVERLAP in space — the invariant-check
+ *  primitive for "is accessory A clear of part B?". It Monte-Carlo samples a
+ *  deterministic grid over the INTERSECTION of the two bounding boxes and counts
+ *  points inside BOTH fields, so it needs no closed mesh — it works directly on the
+ *  SDF fields (open label patches, posed bodies, anything with `.evaluate`). Returns
+ *  `{ overlaps, sharedVolume, point, samples }` (`point` = an example interior
+ *  overlap point, for debugging). Assert `!F.sharedSolid(belt, F.arms(rig)).overlaps`
+ *  (a worn band clear of the arms) or compare `sharedVolume` to a tolerance. Naming
+ *  the SPECIFIC pair that must stay clear sidesteps the expected-overlap problem —
+ *  clothing is SUPPOSED to overlap skin, so you only check the pairs that must not. */
+function sharedSolid(a: unknown, b: unknown, opts?: unknown): { overlaps: boolean; sharedVolume: number; point: Vec3 | null; samples: number } {
+  const na = a as Node, nb = b as Node;
+  if (!na || typeof na.evaluate !== 'function' || typeof na.bounds !== 'function') throw new ValidationError('sharedSolid(a) must be an SDF node.');
+  if (!nb || typeof nb.evaluate !== 'function' || typeof nb.bounds !== 'function') throw new ValidationError('sharedSolid(b) must be an SDF node.');
+  const o = obj(opts, 'sharedSolid(opts)');
+  assertNoUnknownKeys(o, ['samples', 'tol'], 'sharedSolid(opts)');
+  const samples = Math.round(num(o.samples, 8000, 'sharedSolid.samples', 64, 1_000_000));
+  const tol = num(o.tol, 0, 'sharedSolid.tol', 0);
+  const ba = na.bounds(), bb = nb.bounds();
+  const lo: Vec3 = [Math.max(ba.min[0], bb.min[0]), Math.max(ba.min[1], bb.min[1]), Math.max(ba.min[2], bb.min[2])];
+  const hi: Vec3 = [Math.min(ba.max[0], bb.max[0]), Math.min(ba.max[1], bb.max[1]), Math.min(ba.max[2], bb.max[2])];
+  const dx = hi[0] - lo[0], dy = hi[1] - lo[1], dz = hi[2] - lo[2];
+  if (dx <= 0 || dy <= 0 || dz <= 0) return { overlaps: false, sharedVolume: 0, point: null, samples: 0 };
+  const n = Math.max(2, Math.round(Math.cbrt(samples)));   // grid resolution per axis
+  let both = 0, total = 0; let pt: Vec3 | null = null;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) for (let k = 0; k < n; k++) {
+    const x = lo[0] + ((i + 0.5) / n) * dx, y = lo[1] + ((j + 0.5) / n) * dy, z = lo[2] + ((k + 0.5) / n) * dz;
+    total++;
+    if (na.evaluate(x, y, z) < 0 && nb.evaluate(x, y, z) < 0) { both++; if (!pt) pt = [x, y, z]; }
+  }
+  const sharedVolume = both * ((dx * dy * dz) / total);
+  return { overlaps: sharedVolume > tol, sharedVolume, point: pt, samples: total };
+}
+
 /** A world point ON a {@link RingFrame}'s surface at azimuth `az` degrees (0 =
  *  front/−Y, 90 = figure-left/+X, 180 = back/+Y, −90 = right/−X). `opts.clearance`
  *  pushes it out past clothing (match the band's). Seat a buckle at the front of a
@@ -4933,6 +4974,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     ring: (frame, opts) => ringBand(sdf, frame, opts),
     band: (frame, opts) => buildBand(sdf, frame, opts),
     layers: (rig, entries) => buildLayers(sdf, rig, entries),
+    sharedSolid: (a, b, opts) => sharedSolid(a, b, opts),
     ringPoint: (frame, az, opts) => ringPoint(frame, az, opts),
     strap: (a, b, opts) => strap(sdf, a, b, opts),
     hangFrom: (node, point, opts) => hangFrom(node as Node, point, opts),
@@ -4962,4 +5004,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, buildBand, buildLayers, ringPoint, strap, hangFrom, onFace };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, buildBand, buildLayers, sharedSolid, ringPoint, strap, hangFrom, onFace };
