@@ -518,7 +518,7 @@ export function clearRegionsBySource(source: ColorRegion['source']): void {
  *  `[]` (or run code that declares no colors) to clear the layer. Does NOT
  *  notify — the run path drives a single re-render after setting these. */
 export function setModelColorRegions(
-  decls: ReadonlyArray<{ name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor }>,
+  decls: ReadonlyArray<{ name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor; perTriColors?: Map<number, [number, number, number]> }>,
 ): void {
   modelRegions = decls.map((d, i) => ({
     id: -(i + 1), // negative ids never collide with the positive user-region ids
@@ -529,6 +529,7 @@ export function setModelColorRegions(
     order: i + 1, // order within the model band; the user paint layer sits above
     visible: true,
     triangles: d.triangles,
+    perTriColors: d.perTriColors, // pattern ops carry per-triangle colours
   }));
 }
 
