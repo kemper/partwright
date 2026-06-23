@@ -26,7 +26,7 @@ const p = api.params({
            options: ['snouty', 'round'],
            label: 'Face' },
   pattern: { type: 'select', default: 'solid',
-           options: ['solid', 'tuxedo', 'tan-points', 'brindle'],
+           options: ['solid', 'tuxedo', 'tan-points', 'brindle', 'merle', 'spotted'],
            label: 'Pattern' },
 });
 
@@ -490,40 +490,30 @@ const result = dog.translate(0, 0, liftZ).build({
 });
 
 // ============================================================
-// BRINDLE STRIPES (flush surface paint — api.paint.*, not geometry)
-// The canine counterpart of the cat's tabby: darker tiger-stripe bands
-// painted flush onto the finished mesh (no raised welt). Face features are
-// separate labeled solids painted by the palette and survive — the stripe
-// boxes are bounded away from them. Coords are POST-lift.
+// PROCEDURAL COLORWAYS (flush surface paint — api.paint.pattern, not geometry)
+// Canine counterparts of the cat's procedural colourways: algorithmic colour
+// fields paint each body triangle one palette colour (no raised welt), scoped to
+// 'body' so the face features survive. Coords are POST-lift.
+//  - brindle  stripes  (dark tiger stripes over a fawn coat)
+//  - merle    patches  (mottled dark/base blotches — the Aussie/collie look)
+//  - spotted  spots    (Worley dalmatian/ticking spots)
 // ============================================================
-function applyBrindleStripes() {
-  const STRIPE = '#3A2A1C';   // dark brindle stripe over a tan/fawn coat
-  if (p.pose === 'sitting') {
-    const zLo = 1.0, zHi = 16.0;
-    for (let x = -6; x <= 6; x += 2.4) {
-      api.paint.box({ min: [x - 0.5, -3.0, zLo], max: [x + 0.5, 9.0, zHi], color: STRIPE });
-    }
-    // a few short stripes over the crown (between the ears)
-    api.paint.box({ min: [-1.0, -8, 27], max: [ 1.0, 2, 33], color: STRIPE });
-    api.paint.box({ min: [-3.2, -8, 26], max: [-1.9, 2, 32], color: STRIPE });
-    api.paint.box({ min: [ 1.9, -8, 26], max: [ 3.2, 2, 32], color: STRIPE });
-  } else {
-    const br = bodyResult;
-    const yFront = br.frontLegY - 1.0;
-    const yRear  = br.rearY + 0.5;
-    const zMid   = br.rearZ;              // body ellipsoid center height
-    const zTop   = zMid + 9.0;
-    const n = 5;
-    for (let i = 0; i < n; i++) {
-      const y = yFront + (yRear - yFront) * (i / (n - 1));
-      api.paint.box({ min: [-9, y - 0.5, zMid - 1.0], max: [9, y + 0.5, zTop], color: STRIPE });
-    }
-    const hy = br.headY, hz = br.headZ;
-    api.paint.box({ min: [-1.0, hy - 7, hz + 4], max: [ 1.0, hy + 2, hz + 10], color: STRIPE });
-    api.paint.box({ min: [-3.2, hy - 7, hz + 3], max: [-1.9, hy + 2, hz + 9], color: STRIPE });
-    api.paint.box({ min: [ 1.9, hy - 7, hz + 3], max: [ 3.2, hy + 2, hz + 9], color: STRIPE });
+function applyColorway() {
+  switch (p.pattern) {
+    case 'brindle':
+      api.paint.pattern({ pattern: 'stripes', colors: ['#B5793A', '#3A2A1C'],
+                          scope: 'body', axis: 'z', scale: 4.5, warp: 0.5 });
+      break;
+    case 'merle':
+      api.paint.pattern({ pattern: 'patches', colors: ['#9FA6A0', '#3A3A3C'],
+                          scope: 'body', scale: 4.5, coverage: 0.5 });
+      break;
+    case 'spotted':
+      api.paint.pattern({ pattern: 'spots', colors: ['#F2EEE6', '#2A2422'],
+                          scope: 'body', scale: 4, coverage: 0.32 });
+      break;
   }
 }
-if (p.pattern === 'brindle') applyBrindleStripes();
+applyColorway();
 
 return result;

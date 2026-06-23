@@ -477,8 +477,8 @@ export const manifoldJsEngine: Engine = {
        *   - colors:  [base, mark, third?] — hex or [r,g,b]; ≥2 required
        *   - scope:   'labelName' (e.g. 'body', so it never touches eyes/nose) — omit = whole model */
       pattern(opts: unknown): void {
-        const o = paintObj(opts, "api.paint.pattern({ pattern, colors, scope?, scale?, axis?, warp?, coverage?, seed? })");
-        const { pattern, colors, scope, scale, axis, warp, coverage, seed, ...rest } = o;
+        const o = paintObj(opts, "api.paint.pattern({ pattern, colors, scope?, scale?, axis?, warp?, coverage?, seed?, anchors? })");
+        const { pattern, colors, scope, scale, axis, warp, coverage, seed, anchors, ...rest } = o;
         paintRejectUnknown('api.paint.pattern', rest);
         if (typeof pattern !== 'string' || !COLOR_PATTERN_KINDS.includes(pattern as ColorPatternKind)) {
           throw new Error(`api.paint.pattern pattern: expected one of ${COLOR_PATTERN_KINDS.map(k => `'${k}'`).join(', ')}.`);
@@ -531,6 +531,11 @@ export const manifoldJsEngine: Engine = {
         if (axis !== undefined && (typeof axis !== 'string' || !(axis in AXIS_NORMAL))) {
           throw new Error("api.paint.pattern axis: expected 'x', 'y' or 'z'.");
         }
+        let anchorPts: [number, number, number][] | undefined;
+        if (anchors !== undefined) {
+          if (!Array.isArray(anchors)) throw new Error('api.paint.pattern anchors: expected an array of [x, y, z] points.');
+          anchorPts = anchors.map((a, i) => paintVec3(a, `api.paint.pattern anchors[${i}]`));
+        }
         const descriptor: RegionDescriptor = {
           kind: 'pattern',
           pattern: pattern as ColorPatternKind,
@@ -541,6 +546,7 @@ export const manifoldJsEngine: Engine = {
           ...(warp !== undefined ? { warp: paintNum(warp, 'api.paint.pattern warp') } : {}),
           ...(coverage !== undefined ? { coverage: paintNum(coverage, 'api.paint.pattern coverage') } : {}),
           ...(seed !== undefined ? { seed: paintNum(seed, 'api.paint.pattern seed') } : {}),
+          ...(anchorPts ? { anchors: anchorPts } : {}),
         };
         paintOps.push({ name: `paint·pattern ${pattern} ${++paintSeq}`, color: rgbColors[0], descriptor });
       },

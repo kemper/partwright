@@ -37,6 +37,10 @@ export interface ColorPatternSpec {
   coverage?: number;
   /** Seed for reproducible noise / feature scatter. Default 1. */
   seed?: number;
+  /** `gradient` only: extremity anchor points (ears/paws/tail/face). Triangles
+   *  within `scale` of the nearest anchor get the mark colour — the seam-free way
+   *  to darken a colourpoint's actual extremities (incl. the face mask). */
+  anchors?: [number, number, number][];
 }
 
 export const COLOR_PATTERN_KINDS: ReadonlyArray<ColorPatternKind> = ['stripes', 'spots', 'patches', 'gradient'];
@@ -163,17 +167,35 @@ export function computePatternColors(
       break;
     }
     case 'gradient': {
-      // Points/colourpoint (siamese): mark the extremities — triangles far from the
-      // model centre — with a noise-jittered threshold so the edge isn't a hard ring.
-      const lo = clamp01(spec.coverage ?? 0.58);
+      // Points/colourpoint (siamese): darken the extremities. With `anchors`
+      // (ear/paw/tail/face points the model supplies) it marks triangles within
+      // `scale` of the nearest anchor — so the face mask darkens too, not just the
+      // top/bottom. Without anchors it falls back to distance-from-centre. Both
+      // use a noise-jittered threshold so the edge reads soft, not a hard ring.
       const warp = spec.warp ?? 0.12;
-      const maxR = diag / 2;
       const jitter = makeNoise({ seed, frequency: 4 / diag, octaves: 2 });
-      pick = (c) => {
-        const dx = c[0] - center[0], dy = c[1] - center[1], dz = c[2] - center[2];
-        const d = Math.hypot(dx, dy, dz) / maxR + warp * jitter(c[0], c[1], c[2]);
-        return d > lo ? mark : base;
-      };
+      const anchors = spec.anchors;
+      if (anchors && anchors.length > 0) {
+        const pointR = spec.scale && spec.scale > 0 ? spec.scale : diag / 6;
+        pick = (c) => {
+          let dmin = Infinity;
+          for (let i = 0; i < anchors.length; i++) {
+            const dx = c[0] - anchors[i][0], dy = c[1] - anchors[i][1], dz = c[2] - anchors[i][2];
+            const dd = dx * dx + dy * dy + dz * dz;
+            if (dd < dmin) dmin = dd;
+          }
+          const d = Math.sqrt(dmin) + warp * pointR * jitter(c[0], c[1], c[2]);
+          return d < pointR ? mark : base;
+        };
+      } else {
+        const lo = clamp01(spec.coverage ?? 0.58);
+        const maxR = diag / 2;
+        pick = (c) => {
+          const dx = c[0] - center[0], dy = c[1] - center[1], dz = c[2] - center[2];
+          const d = Math.hypot(dx, dy, dz) / maxR + warp * jitter(c[0], c[1], c[2]);
+          return d > lo ? mark : base;
+        };
+      }
       break;
     }
     default:

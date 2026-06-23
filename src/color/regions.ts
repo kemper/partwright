@@ -109,7 +109,8 @@ export type RegionDescriptor =
   // region (e.g. the body) so it never touches eyes/nose; absent ⇒ whole mesh.
   | { kind: 'pattern'; pattern: ColorPatternKind; colors: [number, number, number][];
       scope?: PatternScope;
-      scale?: number; axis?: 'x' | 'y' | 'z'; warp?: number; coverage?: number; seed?: number };
+      scale?: number; axis?: 'x' | 'y' | 'z'; warp?: number; coverage?: number; seed?: number;
+      anchors?: [number, number, number][] };
 
 export interface SerializedColorRegion {
   id: number;
