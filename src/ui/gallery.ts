@@ -2,7 +2,7 @@
 // plus a read-only strip of attached reference images at the top.
 
 import { listCurrentVersions, loadVersion, getState } from '../storage/sessionManager';
-import { getImages, sortImagesByPreset, type AttachedImage } from '../renderer/multiview';
+import { getImageAttachments, sortImagesByPreset, type SessionAttachment } from '../renderer/multiview';
 import { createVersionTile } from './versionTile';
 
 let galleryEl: HTMLElement | null = null;
@@ -25,7 +25,7 @@ export async function refreshGallery(): Promise<void> {
   if (!galleryEl) return;
 
   const versions = await listCurrentVersions();
-  const images = getImages();
+  const images = getImageAttachments();
   galleryEl.innerHTML = '';
 
   if (images.length > 0) {
@@ -58,7 +58,7 @@ export async function refreshGallery(): Promise<void> {
   galleryEl.appendChild(grid);
 }
 
-function createImagesSection(images: AttachedImage[]): HTMLElement {
+function createImagesSection(images: SessionAttachment[]): HTMLElement {
   const section = document.createElement('div');
   section.className = 'mb-4 pb-4 border-b border-zinc-700';
 

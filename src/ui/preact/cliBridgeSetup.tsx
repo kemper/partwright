@@ -25,10 +25,13 @@
 import type { ComponentChildren } from 'preact';
 import { useSignal } from '@preact/signals';
 
+import { DEFAULT_CUSTOM_BASE_URL } from '../../ai/settings';
 import { Section, Pill, PrimaryButton } from './primitives';
 
-/** CLIProxyAPI's default OpenAI-compatible base URL. */
-const CLI_BRIDGE_ENDPOINT = 'http://localhost:8317/v1';
+/** CLIProxyAPI's default OpenAI-compatible base URL — shared with the Custom
+ *  provider's default so the "Use this endpoint" button and the pre-filled
+ *  Base URL field can never drift. */
+const CLI_BRIDGE_ENDPOINT = DEFAULT_CUSTOM_BASE_URL;
 /** Where CLIProxyAPI serves its status / config-error page. */
 const CLI_BRIDGE_STATUS_URL = 'http://localhost:8317';
 

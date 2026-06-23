@@ -1,0 +1,145 @@
+// Assisted-publish targets — the metadata behind the "Publish to a print site"
+// flow. None of these platforms expose a public *upload* API a static site can
+// call (Printables/MakerWorld/Thangs have none; Thingiverse's needs a server to
+// hold the OAuth client secret), so Partwright can't upload for the user. What
+// it CAN do is one-click-prepare the publish: build the right file + a cover
+// image, copy a title/description/tags block to the clipboard, and open the
+// platform's upload page — turning "publish" into "drop the file, paste, done".
+//
+// This module is intentionally dependency-free (pure data + string helpers) so
+// it unit-tests in the node tier. The DOM flow lives in src/ui/publishModal.ts.
+
+/** Export formats the publish flow can hand to a platform. Mirrors the file
+ *  formats Partwright already builds (see src/export/). `3mf-bambu` is the
+ *  Bambu Studio / OrcaSlicer project flavour MakerWorld prefers (build plate +
+ *  filament bindings), distinct from the generic `3mf`. */
+export type PublishFormat = 'stl' | '3mf' | '3mf-bambu' | 'glb' | 'obj';
+
+export interface PublishTarget {
+  /** Stable id (used by the window.partwright API + tests). */
+  id: 'printables' | 'makerworld' | 'thingiverse' | 'thangs';
+  /** Display name shown on the platform pill + buttons. */
+  label: string;
+  /** The platform's upload/new-model page, opened in a new tab. */
+  uploadUrl: string;
+  /** Accepted formats in preference order; `formats[0]` is the recommended one. */
+  formats: PublishFormat[];
+  /** One-line guidance shown when this platform is selected. */
+  notes: string;
+}
+
+/** The recommended (default) format for a target — its first accepted format. */
+export function recommendedFormat(target: PublishTarget): PublishFormat {
+  return target.formats[0];
+}
+
+export const PUBLISH_TARGETS: PublishTarget[] = [
+  {
+    id: 'printables',
+    // Every platform's direct upload route is auth-gated and unreliable (404s,
+    // 500s, or bounces to login when you're not signed in), so each target opens
+    // a STABLE landing page and the note says where the "Upload" button is.
+    label: 'Printables',
+    uploadUrl: 'https://www.printables.com/',
+    formats: ['3mf', 'stl', 'obj'],
+    notes: "Prusa's community site. Sign in, then use \"Add a print\" (top bar / profile menu). 3MF keeps painted colours; STL is geometry-only.",
+  },
+  {
+    id: 'makerworld',
+    label: 'MakerWorld',
+    uploadUrl: 'https://makerworld.com/en',
+    formats: ['3mf-bambu', '3mf', 'stl'],
+    notes: "Bambu's platform — a Bambu/Orca 3MF earns extra rewards. Sign in, then click \"Upload\" at the top. (It can also import from Printables/Thingiverse.)",
+  },
+  {
+    id: 'thingiverse',
+    label: 'Thingiverse',
+    uploadUrl: 'https://www.thingiverse.com/',
+    formats: ['stl', '3mf', 'obj', 'glb'],
+    notes: "MakerBot's site. Sign in, then \"Create\" → upload. STL is the safest, most widely-supported format here.",
+  },
+  {
+    id: 'thangs',
+    label: 'Thangs',
+    uploadUrl: 'https://thangs.com/',
+    formats: ['stl', '3mf', 'obj', 'glb'],
+    notes: 'Search-first model host. Sign in, then click "Upload" (top-right). Accepts 30+ formats, including STL and 3MF.',
+  },
+];
+
+/** Look up a target by id (e.g. from the window.partwright API argument). */
+export function findPublishTarget(id: string): PublishTarget | undefined {
+  return PUBLISH_TARGETS.find(t => t.id === id);
+}
+
+export interface PublishMetadata {
+  title: string;
+  description: string;
+  /** Free tags; blanks are dropped by the composer. */
+  tags: string[];
+}
+
+/** Normalize a comma/whitespace-separated tag string into a clean tag list. */
+export function parseTags(raw: string): string[] {
+  return raw
+    .split(',')
+    .map(t => t.trim())
+    .filter(t => t.length > 0);
+}
+
+/** A short credit line appended to auto-generated descriptions. */
+export const PUBLISH_CREDIT = 'Designed with Partwright — https://www.partwrightstudio.com';
+
+/** Build a sensible default description from the model title + optional stats. */
+export function buildDefaultDescription(title: string, stats?: {
+  dims?: [number, number, number] | null;
+  units?: string;
+}): string {
+  const lines: string[] = [];
+  if (title.trim()) lines.push(title.trim());
+  if (stats?.dims) {
+    const [x, y, z] = stats.dims.map(d => Math.round(d * 100) / 100);
+    const unit = stats.units && stats.units !== 'unitless' ? ` ${stats.units}` : '';
+    lines.push(`Approx. size: ${x} × ${y} × ${z}${unit}.`);
+  }
+  lines.push('');
+  lines.push(PUBLISH_CREDIT);
+  return lines.join('\n');
+}
+
+/** Parse an AI model's reply into publish metadata. Tolerates ```json fences
+ *  and leading/trailing prose by extracting the first `{...}` span. Throws if
+ *  no usable title or description is found. */
+export function parseAiPublishMetadata(raw: string): PublishMetadata {
+  let s = raw.trim();
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) s = fence[1].trim();
+  if (!s.startsWith('{')) {
+    const start = s.indexOf('{');
+    const end = s.lastIndexOf('}');
+    if (start >= 0 && end > start) s = s.slice(start, end + 1);
+  }
+  const obj = JSON.parse(s) as Record<string, unknown>;
+  const title = typeof obj.title === 'string' ? obj.title.trim() : '';
+  const description = typeof obj.description === 'string' ? obj.description.trim() : '';
+  const tags = Array.isArray(obj.tags)
+    ? obj.tags.filter((t): t is string => typeof t === 'string').map(t => t.trim()).filter(Boolean)
+    : [];
+  if (!title && !description) throw new Error('AI response had no title or description.');
+  return { title, description, tags };
+}
+
+/** Compose the copy-to-clipboard block a user pastes into the upload form. */
+export function composeClipboardText(meta: PublishMetadata): string {
+  const tags = meta.tags.filter(t => t.trim().length > 0);
+  const parts = [
+    `Title: ${meta.title.trim()}`,
+    '',
+    'Description:',
+    meta.description.trim(),
+  ];
+  if (tags.length > 0) {
+    parts.push('', `Tags: ${tags.join(', ')}`);
+  }
+  return parts.join('\n');
+}

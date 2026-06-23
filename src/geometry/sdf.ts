@@ -30,6 +30,10 @@ import {
   assertNoUnknownKeys,
   ValidationError,
 } from '../validation/apiValidation';
+import { makeNoise, type NoiseOptions, type ScalarField } from './noise';
+import { expandLSystem, turtle3d, type LSystemRule } from './lsystem';
+import { createFigureNamespace, type FigureNamespace, type SdfApi } from './sdfFigure';
+import { refineMeshNearRegions, sphereIntersectsBox, type DetailRegion } from './sdfRefine';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ManifoldClass = any;
@@ -44,6 +48,30 @@ type LabelFn = (shape: ManifoldInstance, name: string) => ManifoldInstance;
  *  inherit it from their input node(s). Pure-logic unit tests leave it
  *  undefined — only `.build()` requires it. */
 interface BuildContext { Manifold: ManifoldClass; label: LabelFn }
+
+// --- Fast-preview coarsening -------------------------------------------------
+// SDF builds (figures especially) spend ~all their time in Manifold.levelSet —
+// marching a fine grid plus per-detail-sphere refine passes. For a progressive
+// "show something now, refine in the background" render, the Worker sets a
+// preview scale before a throwaway first pass: `buildSdf` then multiplies the
+// march edgeLength by it and drops every `detail` region. A scale of ~2.5 cuts
+// the cell count ~15× AND skips the fine face/hand passes, so a 20s figure
+// roughs out in a second or two. null = normal (full-quality) build.
+let sdfPreviewScale: number | null = null;
+
+/** Worker-only: set the coarsening factor for the next preview pass, or null to
+ *  build at full quality. Read once at the top of every `buildSdf`. */
+export function setSdfPreviewScale(scale: number | null): void {
+  sdfPreviewScale = scale !== null && Number.isFinite(scale) && scale > 1 ? scale : null;
+}
+
+/** Cheap source heuristic: does this code lower an SDF through `.build()`? Only
+ *  such runs benefit from the coarse-preview pass (they're the slow ones —
+ *  everything else returns a Manifold directly and is already fast). Gates the
+ *  Worker's two-phase render so non-SDF code never pays for a throwaway pass. */
+export function sourceUsesSdfBuild(code: string): boolean {
+  return /\bsdf\b/.test(code) && /\.build\s*\(/.test(code);
+}
 
 export type Vec3 = [number, number, number];
 export interface Box { min: Vec3; max: Vec3 }
@@ -106,6 +134,20 @@ function bbTransformCorners(a: Box, fn: (p: Vec3) => Vec3): Box {
 
 type EvalFn = (x: number, y: number, z: number) => number;
 
+/** One hand of a fine-hands region: the hand in its CANONICAL (axis-aligned)
+ *  frame plus the rigid transform that places it on the wrist. The build meshes
+ *  the canonical node on a tight axis-aligned fine grid — where the inter-finger
+ *  gaps line up with the march grid, so they resolve cleanly at ANY arm pose —
+ *  then `Manifold.rotate(euler).translate(translate)` snaps the mesh onto the
+ *  wrist (the SDF `.rotate` matches `Manifold.rotate`, so the result is
+ *  identical to transforming the SDF first, minus the pose-dependent webbing). */
+export interface FineHandPiece {
+  node: SdfNode;
+  euler: Vec3;
+  translate: Vec3;
+  edgeLength: number;
+}
+
 interface NodeData {
   kind: string;
   eval: EvalFn;
@@ -123,10 +165,23 @@ interface NodeData {
    *  nested labels below it) is meshed as one chunk; nested labels are
    *  ignored because the outer label wins. */
   labelName?: string;
+  /** For single-child wrappers that DISTRIBUTE over union (rigid/similarity
+   *  domain transforms: translate, rotate, scale, mirror): rebuilds the same
+   *  wrapper around a new child. Lets the label partitioner push the
+   *  transform down onto each labelled region instead of silently fusing
+   *  them into one anonymous region. */
+  rewrap?: (child: SdfNode) => SdfNode;
   /** Engine binding for `.build()`. Threaded through chain methods and
    *  ops from the input node(s). Undefined for pure-logic unit-test
-   *  factories — only callers of `.build()` need it. */
+   *  factories — only callers of `.build()` require it. */
   ctx?: BuildContext;
+  /** Marks this node as a FINE-HANDS region (see `opFineHands`): at build
+   *  time it is pulled into its own region and meshed by a per-sphere uniform
+   *  fine march instead of the coarse global march, then hard-unioned. Carries
+   *  the per-feature spheres to march. The coarse march webs thin, closely-
+   *  spaced features (figure fingers) into topological handles the in-place
+   *  refine can't undo; this resolves them at the source. */
+  fineRegions?: FineHandPiece[];
 }
 
 let nextId = 1;
@@ -142,7 +197,9 @@ export class SdfNode {
   /** @internal */ readonly _bounds: Box;
   /** @internal */ readonly _children: readonly SdfNode[];
   /** @internal */ readonly _partitionable: boolean;
+  /** @internal */ readonly _rewrap: ((child: SdfNode) => SdfNode) | undefined;
   /** @internal */ readonly _ctx: BuildContext | undefined;
+  /** @internal */ readonly _fineRegions: FineHandPiece[] | undefined;
 
   constructor(data: NodeData) {
     this.id = `sdf_${nextId++}`;
@@ -151,7 +208,9 @@ export class SdfNode {
     this._bounds = data.bounds;
     this._children = data.children;
     this._partitionable = data.partitionable;
+    this._rewrap = data.rewrap;
     this.labelName = data.labelName;
+    this._fineRegions = data.fineRegions;
     // Inherit ctx from data, else from the first child that has one.
     // Lets `union(a, b)` keep the engine binding from either operand.
     this._ctx = data.ctx ?? (data.children.find(c => c._ctx !== undefined)?._ctx);
@@ -243,6 +302,21 @@ export class SdfNode {
     assertNumber(rate, 'taper(rate)');
     const a = assertEnum(axis, ['x', 'y', 'z'] as const, 'taper(axis)');
     return opTaper(this, rate as number, a);
+  }
+
+  /** Push the surface in and out by a scalar field — the stochastic
+   *  cousin of twist/bend/taper, for organic texture (rock, bark, coral,
+   *  terrain). `amount` is the maximum displacement in world units;
+   *  `field(x, y, z)` should return roughly [-1, 1] (e.g. `api.sdf.noise()`
+   *  or any custom function). Positive field values push the surface
+   *  OUTWARD. Like twist/bend, this perturbs the metric, so the result is
+   *  a Lipschitz approximation — marching tetrahedra still meshes it
+   *  watertight. Mesh at an `edgeLength` finer than the field's smallest
+   *  features or the bumps alias away. */
+  displace(amount: number, field: ScalarField): SdfNode {
+    assertNumber(amount, 'displace(amount)', { min: 0 });
+    assertFunction(field, 'displace(field)');
+    return opDisplace(this, amount as number, field);
   }
 
   // ---- Combinators ----------------------------------------------------
@@ -382,9 +456,27 @@ export interface SdfBuildOptions {
   bounds?: Box;
   level?: number;
   tolerance?: number;
+  /** Localized refinement: after the uniform levelSet march, triangles inside
+   *  each sphere are subdivided to the sphere's (finer) edgeLength and the new
+   *  vertices are re-projected onto the SDF surface. The way to give a
+   *  figurine's face (or any small feature on a big model) fine detail without
+   *  paying for a fine grid everywhere. See /ai/sdf.md#detail-regions. */
+  detail?: DetailRegion[];
 }
 
-const BUILD_FIELDS = ['edgeLength', 'bounds', 'level', 'tolerance'] as const;
+const BUILD_FIELDS = ['edgeLength', 'bounds', 'level', 'tolerance', 'detail'] as const;
+const DETAIL_FIELDS = ['center', 'radius', 'edgeLength'] as const;
+/** Most detail spheres an AI would meaningfully place; guards quadratic
+ *  edge-marking cost from a runaway list. A fully-detailed figure legitimately
+ *  needs ~18 — `F.faceDetail` alone is 14 (eyes/iris/pupil/nose/nostrils/mouth/
+ *  brows/ears/…), plus hands (2) and feet (2) — so the cap sits comfortably
+ *  above that. (Raised 16 → 24 when eyebrows/ears pushed faceDetail past 16 and
+ *  broke lotus_yogi / surfer / tai_chi_master at bake time — see #730.) */
+const MAX_DETAIL_REGIONS = 24;
+/** Per-region triangle cap for the refine pass — same order as the ~500k
+ *  catalog budget. A standalone safety guard against a runaway refine, not the
+ *  advisory budget itself. */
+const REFINE_MAX_TRIANGLES = 400_000;
 
 function assertBuildOpts(opts: unknown): SdfBuildOptions {
   if (opts === undefined) return {};
@@ -399,6 +491,21 @@ function assertBuildOpts(opts: unknown): SdfBuildOptions {
   }
   if (o.level !== undefined) assertNumber(o.level, 'build.level');
   if (o.tolerance !== undefined) assertNumber(o.tolerance, 'build.tolerance', { min: 0 });
+  if (o.detail !== undefined) {
+    if (!Array.isArray(o.detail)) {
+      throw new ValidationError('build.detail: must be an array of { center, radius, edgeLength } spheres.');
+    }
+    if (o.detail.length > MAX_DETAIL_REGIONS) {
+      throw new ValidationError(`build.detail: at most ${MAX_DETAIL_REGIONS} detail regions.`);
+    }
+    for (let i = 0; i < o.detail.length; i++) {
+      const d = assertObject(o.detail[i], `build.detail[${i}]`)!;
+      assertNoUnknownKeys(d, DETAIL_FIELDS, `build.detail[${i}]`);
+      assertNumberTuple(d.center, 3, `build.detail[${i}].center`);
+      assertNumber(d.radius, `build.detail[${i}].radius`, { min: 1e-4 });
+      assertNumber(d.edgeLength, `build.detail[${i}].edgeLength`, { min: 1e-4 });
+    }
+  }
   return o as SdfBuildOptions;
 }
 
@@ -430,9 +537,15 @@ function buildSdf(
       + 'Intersect with a finite shape, or pass an explicit { bounds: { min:[x,y,z], max:[x,y,z] } }.',
     );
   }
-  const edgeLength = opts.edgeLength ?? defaultEdgeLength(bounds);
+  const baseEdgeLength = opts.edgeLength ?? defaultEdgeLength(bounds);
   const level = opts.level ?? 0;
   const tolerance = opts.tolerance;
+  // Fast preview: coarsen the march and skip the fine detail passes. The result
+  // is a throwaway rough mesh shown while the full-quality pass runs (the Worker
+  // clears the scale and re-builds immediately after).
+  const previewScale = sdfPreviewScale;
+  const edgeLength = previewScale !== null ? baseEdgeLength * previewScale : baseEdgeLength;
+  const detail = previewScale !== null ? [] : (opts.detail ?? []);
 
   // Partition the tree into labelled regions. If there are no labels,
   // returns a single anonymous region covering the whole root.
@@ -445,16 +558,53 @@ function buildSdf(
     // standard SDF: positive=inside, negative=outside. Negate so user
     // code can keep writing distance functions the normal way.
     const negated: (p: Vec3) => number = (p) => -evalFn(p[0], p[1], p[2]);
+    // FINE-HANDS region: mesh each hand in its canonical frame on a tight fine
+    // grid and rotate it onto the wrist (see meshFineRegions). The coarse global
+    // march would web the thin, closely-spaced fingers into a topological handle
+    // the in-place refine can't fix — and a rotated SDF webs them pose-dependent
+    // — so the hand is marched fine and axis-aligned at the source. The result
+    // overlaps the coarse body at the wrist, so the final hard-union (below)
+    // merges them as distinct shapes with no seam.
+    if (region.fineRegions !== undefined && region.fineRegions.length > 0) {
+      let m = meshFineRegions(region.fineRegions, level, edgeLength, Manifold);
+      if (m !== null) {
+        if (region.labelName) m = label(m, region.labelName);
+        meshed.push(m);
+      }
+      continue;
+    }
     // Expand bounds slightly so the iso-surface closes cleanly; if the
     // SDF reaches the boundary, marching tetrahedra would emit egg-crate
     // closing faces. A margin of max(edgeLength, 1) is empirical — large
     // enough to fully contain typical primitives' falloff regions.
-    const meshBounds = expandedMeshBounds(region.node._bounds, bounds, edgeLength);
+    const coarseBounds = expandedMeshBounds(region.node._bounds, bounds, edgeLength);
+    // Localized detail. Two paths:
+    // - A SMALL region (an eye, an iris, a pupil, a teeth band) is marched
+    //   DIRECTLY at a fine edgeLength — its bounds are tiny so the fine grid
+    //   is nearly free, and features smaller than the coarse cell would
+    //   otherwise alias away ENTIRELY (an empty mesh, which no refine pass
+    //   can recover).
+    // - Everything else marches coarse, then gets the refine-and-project
+    //   pass near any sphere that touches it.
+    const applicable = detail.filter(d =>
+      d.edgeLength < edgeLength
+      && sphereIntersectsBox(d.center, d.radius, coarseBounds.min, coarseBounds.max));
+    const fineEdge = directFineEdgeLength(region.node._bounds, bounds, applicable, edgeLength);
+    // The fine path shrinks the closing margin to a couple of FINE cells —
+    // the coarse margin's 1-unit floor would dominate a pupil-sized region's
+    // grid with empty cells.
+    const meshBounds = fineEdge !== undefined
+      ? bbExpand(bbIntersect(region.node._bounds, bounds), fineMargin(fineEdge))
+      : coarseBounds;
+    const marchEdge = fineEdge ?? edgeLength;
     let m: ManifoldInstance;
     if (tolerance !== undefined) {
-      m = Manifold.levelSet(negated, meshBounds, edgeLength, level, tolerance);
+      m = Manifold.levelSet(negated, meshBounds, marchEdge, level, tolerance);
     } else {
-      m = Manifold.levelSet(negated, meshBounds, edgeLength, level);
+      m = Manifold.levelSet(negated, meshBounds, marchEdge, level);
+    }
+    if (fineEdge === undefined && applicable.length > 0) {
+      m = refineManifoldNearRegions(m, Manifold, evalFn, applicable, level);
     }
     if (region.labelName) {
       m = label(m, region.labelName);
@@ -470,7 +620,174 @@ function buildSdf(
   // Hard-union the labelled pieces. Smooth blends across labels are lost
   // here by design (see header comment); to preserve them, label the
   // outer expression instead of individual primitives.
-  return Manifold.union(meshed);
+  let result = Manifold.union(meshed);
+  // Boolean unions of regions whose surfaces nearly coincide (a teeth band
+  // against a carved cavity rim, an accessory resting on a face) can shed
+  // zero-volume sliver components. Anything below a couple of march cells in
+  // volume is debris, not geometry — drop it so componentCount reflects the
+  // model, not boolean noise.
+  result = dropSubCellDebris(result, Manifold, edgeLength);
+  return result;
+}
+
+/** Remove decomposed parts whose |volume| is below ~2 coarse march cells.
+ *  Leaves the manifold untouched when there's nothing to drop (the common
+ *  case) or when anything in the cleanup path fails. */
+function dropSubCellDebris(m: ManifoldInstance, Manifold: ManifoldClass, edgeLength: number): ManifoldInstance {
+  const minVol = 2 * edgeLength * edgeLength * edgeLength;
+  try {
+    const parts: ManifoldInstance[] = m.decompose();
+    if (!Array.isArray(parts) || parts.length <= 1) return m;
+    const kept = parts.filter((p) => {
+      try { return Math.abs(p.volume() as number) >= minVol; } catch { return true; }
+    });
+    if (kept.length === parts.length || kept.length === 0) return m;
+    return kept.length === 1 ? kept[0] : Manifold.union(kept);
+  } catch {
+    return m;
+  }
+}
+
+/** Grid-cell budget for marching a small region directly at a detail
+ *  sphere's fine edgeLength. An eye-sized region is a few thousand cells.
+ *  Deliberately modest: a medium region (a hair cap, a hat) that only
+ *  PARTIALLY overlaps the sphere is better served by the coarse-then-refine
+ *  path — fine-marching it whole multiplies its triangle count for no
+ *  visible gain outside the sphere. */
+const DIRECT_FINE_CELL_BUDGET = 250_000;
+
+/** Floor for the auto-scaled fine march — below this the eval cost and
+ *  triangle density stop buying visible quality. */
+const DIRECT_FINE_MIN_EDGE = 0.02;
+
+/** Pick the edgeLength to march a region DIRECTLY at, when a detail sphere
+ *  touches it and the fine grid fits the cell budget. The budget — not
+ *  sphere containment — is the cost gate: a small region (an eye, an iris,
+ *  a pupil, a teeth band) is nearly free at the fine grid, while a sprawling
+ *  region (the welded body) blows the budget and takes the coarse-then-
+ *  refine path instead. The sphere's edgeLength is additionally scaled DOWN
+ *  for very small regions (a pupil is far smaller than a face) so a feature
+ *  a fraction of the sphere's target still resolves — `nodeBounds` (the
+ *  region's own tight bounds) provides the feature scale. Sub-cell features
+ *  would otherwise VANISH from the coarse march entirely (an empty mesh, not
+ *  a coarse one), which no refine pass can recover.
+ *  Returns undefined for the coarse-then-refine path. */
+/** Iso-closing margin for the fine march: a couple of fine cells, floored. */
+function fineMargin(edge: number): number {
+  return Math.max(edge * 2, 0.1);
+}
+
+function directFineEdgeLength(
+  nodeBounds: Box,
+  userBounds: Box,
+  applicable: DetailRegion[],
+  coarseEdge: number,
+): number | undefined {
+  const clipped = bbIntersect(nodeBounds, userBounds);
+  // Smallest positive extent of the region itself (pre-margin).
+  let minExt = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const e = clipped.max[i] - clipped.min[i];
+    if (e > 0 && e < minExt) minExt = e;
+  }
+  let best: number | undefined;
+  for (const d of applicable) {
+    // ≥8 cells across the region's thinnest extent, floored, never coarser
+    // than the sphere's own target.
+    const edge = Math.max(
+      Math.min(d.edgeLength, Number.isFinite(minExt) ? minExt / 8 : d.edgeLength),
+      DIRECT_FINE_MIN_EDGE,
+    );
+    const pad = 2 * fineMargin(edge);
+    const cells =
+      ((clipped.max[0] - clipped.min[0] + pad) / edge) *
+      ((clipped.max[1] - clipped.min[1] + pad) / edge) *
+      ((clipped.max[2] - clipped.min[2] + pad) / edge);
+    // cells <= 0 means the clip box is inverted (region doesn't overlap the
+    // user bounds) — nothing to march there, leave it to the coarse path.
+    if (!Number.isFinite(cells) || cells <= 0 || cells > DIRECT_FINE_CELL_BUDGET) continue;
+    if (best === undefined || edge < best) best = edge;
+  }
+  return best !== undefined && best < coarseEdge ? best : undefined;
+}
+
+/** Run the refine-and-project pass over a freshly-marched Manifold and
+ *  rebuild it. levelSet extracts the surface where the NEGATED field equals
+ *  `level`, i.e. where the standard-sign eval equals -level — that's the iso
+ *  the projection targets. Falls back to the unrefined mesh (with a console
+ *  warning) if Manifold rejects the refined one — refinement is a quality
+ *  pass, never a correctness gate. */
+function refineManifoldNearRegions(
+  m: ManifoldInstance,
+  Manifold: ManifoldClass,
+  evalFn: EvalFn,
+  regions: DetailRegion[],
+  level: number,
+): ManifoldInstance {
+  const mesh = m.getMesh();
+  if (mesh.numProp !== 3) return m; // levelSet output is position-only; anything else is unexpected — skip.
+  const refined = refineMeshNearRegions(
+    mesh.vertProperties as Float32Array,
+    mesh.triVerts as Uint32Array,
+    (x, y, z) => evalFn(x, y, z),
+    regions,
+    { iso: -level, maxTriangles: REFINE_MAX_TRIANGLES },
+  );
+  if (!refined.changed) return m;
+  try {
+    let out = Manifold.ofMesh({
+      numProp: 3,
+      vertProperties: refined.positions,
+      triVerts: refined.triVerts,
+    });
+    // Projection can land two midpoints almost on top of each other; a
+    // simplify pass at a tolerance far below the detail target collapses
+    // those near-degenerate slivers without eating any visible detail.
+    const minTarget = Math.min(...regions.map(r => r.edgeLength));
+    try {
+      const cleaned = out.simplify(minTarget * 0.02);
+      if (cleaned.numTri() >= 4) out = cleaned;
+    } catch { /* keep the unsimplified refined mesh */ }
+    return out;
+  } catch (err) {
+    // Worker context — no errorLog here; the coarse mesh is still correct.
+    console.warn('api.sdf.build({detail}): refined mesh rejected by Manifold, keeping the coarse mesh.', err);
+    return m;
+  }
+}
+
+/** Mesh a fine-hands region: march each hand in its CANONICAL (axis-aligned)
+ *  frame on a tight uniform fine grid, then `rotate(euler).translate(...)` the
+ *  mesh onto its wrist and hard-union the pieces. Marching in canonical space
+ *  is the whole point: the inter-finger gaps run along the grid axes there, so
+ *  they resolve cleanly at ANY arm pose (a rotated SDF would mesh those thin
+ *  gaps diagonally and web them — the pose-dependent garbage), and the canonical
+ *  bbox is tight so a fine grid stays cheap. Returns null if every march was
+ *  empty (so the caller drops the region rather than pushing an empty mesh). */
+function meshFineRegions(
+  pieces: FineHandPiece[],
+  level: number,
+  coarseEdge: number,
+  Manifold: ManifoldClass,
+): ManifoldInstance | null {
+  let acc: ManifoldInstance | null = null;
+  for (const piece of pieces) {
+    const negated: (p: Vec3) => number = (p) => -piece.node._eval(p[0], p[1], p[2]);
+    const bbox = bbExpand(piece.node._bounds, fineMargin(piece.edgeLength));
+    let chunk: ManifoldInstance;
+    try {
+      chunk = Manifold.levelSet(negated, bbox, piece.edgeLength, level);
+      if ((chunk.numTri() as number) === 0) continue;
+      chunk = chunk.rotate(piece.euler).translate(piece.translate);
+    } catch (err) {
+      console.warn('api.sdf.build(): fine-hands march failed for a hand, skipping it.', err);
+      continue;
+    }
+    acc = acc === null ? chunk : acc.add(chunk);
+  }
+  // A fine march of two near-but-separate features can shed a sub-cell sliver
+  // where their grids meet; drop debris below a couple of COARSE cells.
+  return acc === null ? null : dropSubCellDebris(acc, Manifold, coarseEdge);
 }
 
 function expandedMeshBounds(nodeBounds: Box, userBounds: Box, edgeLength: number): Box {
@@ -485,7 +802,33 @@ function expandedMeshBounds(nodeBounds: Box, userBounds: Box, edgeLength: number
 
 // --- Label partitioning -------------------------------------------------
 
-interface Partition { node: SdfNode; labelName?: string }
+interface Partition { node: SdfNode; labelName?: string; fineRegions?: FineHandPiece[] }
+
+/** True if a fine-hands marker (`opFineHands`) sits anywhere in the subtree. */
+function containsFineHands(node: SdfNode): boolean {
+  if (node.kind === 'fineHands') return true;
+  for (const c of node._children) if (containsFineHands(c)) return true;
+  return false;
+}
+
+/** Split a subtree into the fine-hands markers and "the rest" (markers removed),
+ *  walking only the hard-`union` nodes that `weld` produces around the markers.
+ *  The rest's eval therefore EXCLUDES the hands, so the body meshes coarse with
+ *  no fingers to web; each marker becomes its own per-sphere-fine region. */
+function extractFineHands(node: SdfNode): { rest: SdfNode | null; hands: SdfNode[] } {
+  if (node.kind === 'fineHands') return { rest: null, hands: [node] };
+  if (node._partitionable && node.kind === 'union') {
+    let rest: SdfNode | null = null;
+    const hands: SdfNode[] = [];
+    for (const c of node._children) {
+      const r = extractFineHands(c);
+      if (r.rest !== null) rest = rest === null ? r.rest : opUnion(rest, r.rest);
+      hands.push(...r.hands);
+    }
+    return { rest, hands };
+  }
+  return { rest: node, hands: [] };
+}
 
 /** Walk the tree top-down. When we hit a labelled node, that whole
  *  subtree becomes one region (with the label). When we hit a
@@ -495,13 +838,40 @@ interface Partition { node: SdfNode; labelName?: string }
  *  the perspective of its surviving A side) in which case the inner
  *  label propagates up. */
 export function partitionByLabel(root: SdfNode): Partition[] {
-  // If the root itself is labelled, the whole tree is one region.
+  // A fine-hands marker reached directly is its own region (meshed per-sphere).
+  if (root.kind === 'fineHands') {
+    return [{ node: root._children[0], fineRegions: root._fineRegions }];
+  }
+  // If the root itself is labelled, the whole tree is one region — UNLESS the
+  // labelled subtree carries fine-hands markers, in which case split them out
+  // as sibling regions that still paint with this label (hands stay 'skin')
+  // but mesh per-sphere-fine while the rest meshes coarse.
   if (root.labelName !== undefined) {
+    const child = root._children[0];
+    if (child !== undefined && containsFineHands(child)) {
+      const { rest, hands } = extractFineHands(child);
+      const parts: Partition[] = [];
+      if (rest !== null) parts.push({ node: rest, labelName: root.labelName });
+      for (const h of hands) {
+        parts.push({ node: h._children[0], labelName: root.labelName, fineRegions: h._fineRegions });
+      }
+      return parts;
+    }
     return [{ node: root, labelName: root.labelName }];
   }
-  // If the root is a partitionable boolean (union/etc.) AND any
-  // descendant carries a label, walk into the children.
-  if (root._partitionable && hasLabelledDescendant(root)) {
+  // Rigid/similarity transforms distribute over union: partition the child
+  // and re-wrap each region in the same transform. Without this,
+  // `union(a.label('a'), b.label('b')).translate(...)` silently fuses into
+  // one anonymous region and every label paints 0 triangles.
+  if (root._rewrap && root._children.length === 1 && hasLabelledDescendant(root._children[0])) {
+    return partitionByLabel(root._children[0]).map((p) => ({
+      node: root._rewrap!(p.node),
+      labelName: p.labelName,
+    }));
+  }
+  // If the root is a partitionable boolean (union/etc.) AND any descendant
+  // carries a label OR a fine-hands marker, walk into the children.
+  if (root._partitionable && (hasLabelledDescendant(root) || containsFineHands(root))) {
     const parts: Partition[] = [];
     for (const child of root._children) {
       parts.push(...partitionByLabel(child));
@@ -728,6 +1098,167 @@ function primCapsule(a: Vec3, b: Vec3, radius: number): SdfNode {
   );
 }
 
+/** A tube swept along a polyline path, with an optional surface texture
+ *  that FLOWS ALONG the direction of travel. This is the directional-surface
+ *  primitive: longitudinal `flutes`, circumferential `rings`, or wrapping
+ *  `helix` threads are parameterized by (distance along the path, angle
+ *  around it) using a rotation-minimizing frame, so the pattern stays
+ *  continuous through bends — no per-segment phase seams, no separate caps
+ *  to align. The whole tube is ONE connected component by construction.
+ *
+ *  `path` is a Vec3[] of >= 2 points (2 = a straight column; more = it bends
+ *  through them). Texture grooves are carved INWARD from the radius, so they
+ *  can never detach a piece. */
+export type TubeProfile = 'smooth' | 'flutes' | 'rings' | 'helix';
+export interface TubeOptions {
+  /** Surface pattern that flows along the path. Default `'smooth'`. */
+  profile?: TubeProfile;
+  /** Rib count (flutes), ring count over the whole length (rings), or
+   *  thread-start count (helix). Defaults size-relative. */
+  count?: number;
+  /** Helix only: number of full wraps along the entire path. Default 6. */
+  turns?: number;
+  /** Groove depth, carved inward in world units. Default ~9% of radius. */
+  depth?: number;
+  /** End radius as a fraction of the start radius, applied linearly along
+   *  the path (1 = no taper, <1 = taper toward the last point). Default 1. */
+  taper?: number;
+}
+
+const TUBE_OPTION_KEYS = ['profile', 'count', 'turns', 'depth', 'taper'] as const;
+
+/** Tube along a polyline path with a direction-following surface texture. */
+function primTube(path: unknown, radius: unknown, opts: unknown = {}): SdfNode {
+  if (!Array.isArray(path) || path.length < 2) {
+    throw new ValidationError('tube(path): path must be an array of at least 2 points ([x,y,z]).');
+  }
+  const P: Vec3[] = path.map((p, i) => assertNumberTuple(p, 3, `tube(path[${i}])`) as Vec3);
+  const r0 = assertNumber(radius, 'tube(radius)', { min: 1e-6 }) as number;
+  const o = assertObject(opts, 'tube(opts)', { optional: true }) ?? {};
+  assertNoUnknownKeys(o, TUBE_OPTION_KEYS, 'tube(opts)');
+  const profile = (o.profile === undefined
+    ? 'smooth'
+    : assertEnum(o.profile, ['smooth', 'flutes', 'rings', 'helix'] as const, 'tube(opts.profile)')) as TubeProfile;
+  const taper = o.taper === undefined ? 1 : assertNumber(o.taper, 'tube(opts.taper)', { min: 1e-3 }) as number;
+  const depth = o.depth === undefined ? r0 * 0.09 : assertNumber(o.depth, 'tube(opts.depth)', { min: 0 }) as number;
+  const turns = o.turns === undefined ? 6 : assertNumber(o.turns, 'tube(opts.turns)') as number;
+
+  // --- precompute per-segment data + a rotation-minimizing frame (RMF) -----
+  const n = P.length;
+  const segDir: Vec3[] = [];   // unit direction of each segment
+  const segLen: number[] = [];
+  const cum: number[] = [0];   // cumulative arc length at each vertex
+  for (let i = 0; i < n - 1; i++) {
+    const dx = P[i + 1][0] - P[i][0], dy = P[i + 1][1] - P[i][1], dz = P[i + 1][2] - P[i][2];
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-9) throw new ValidationError('tube(path): consecutive points must be distinct.');
+    segDir.push([dx / len, dy / len, dz / len]);
+    segLen.push(len);
+    cum.push(cum[i] + len);
+  }
+  const total = cum[n - 1];
+  // Tangent per vertex (segment dir; last vertex reuses the final segment).
+  const tan: Vec3[] = [];
+  for (let i = 0; i < n; i++) tan.push(segDir[Math.min(i, n - 2)]);
+
+  const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const unit = (a: Vec3): Vec3 => { const m = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / m, a[1] / m, a[2] / m]; };
+
+  // Initial frame vector U[0] perpendicular to the first tangent.
+  const t0 = tan[0];
+  const ref: Vec3 = Math.abs(t0[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+  const U: Vec3[] = [unit(cross(t0, ref))];
+  // Double-reflection RMF (Wang et al. 2008) — minimal twist along the path.
+  for (let i = 0; i < n - 1; i++) {
+    const v1: Vec3 = [P[i + 1][0] - P[i][0], P[i + 1][1] - P[i][1], P[i + 1][2] - P[i][2]];
+    const c1 = dot(v1, v1) || 1e-9;
+    const ui = U[i], ti = tan[i];
+    const fr = 2 * dot(v1, ui) / c1;
+    const rL: Vec3 = [ui[0] - fr * v1[0], ui[1] - fr * v1[1], ui[2] - fr * v1[2]];
+    const ft = 2 * dot(v1, ti) / c1;
+    const tL: Vec3 = [ti[0] - ft * v1[0], ti[1] - ft * v1[1], ti[2] - ft * v1[2]];
+    const v2: Vec3 = [tan[i + 1][0] - tL[0], tan[i + 1][1] - tL[1], tan[i + 1][2] - tL[2]];
+    const c2 = dot(v2, v2);
+    if (c2 < 1e-9) { U.push(unit(rL)); continue; }
+    const fr2 = 2 * dot(v2, rL) / c2;
+    U.push(unit([rL[0] - fr2 * v2[0], rL[1] - fr2 * v2[1], rL[2] - fr2 * v2[2]]));
+  }
+
+  const TWO_PI = Math.PI * 2;
+  const flutes = profile === 'flutes', rings = profile === 'rings';
+  const defaultCount = rings
+    ? Math.max(4, Math.round(total / (r0 * 1.6)))
+    : Math.max(6, Math.round(r0 * 0.9));
+  // Integer count: a fractional helix start-count leaves a longitudinal seam
+  // where atan2 wraps (the phase is not even in theta); flutes/rings are even
+  // in theta so they'd tolerate it, but an integer rib/ring/thread count is
+  // what callers mean anyway.
+  const count = o.count === undefined ? defaultCount : assertNumber(o.count, 'tube(opts.count)', { min: 1, integer: true }) as number;
+
+  const evalFn: EvalFn = (x, y, z) => {
+    // Nearest point over all segments.
+    let best = Infinity, bSeg = 0, bT = 0;
+    let bcx = 0, bcy = 0, bcz = 0;
+    for (let i = 0; i < n - 1; i++) {
+      const A = P[i], d = segDir[i], L = segLen[i];
+      const px = x - A[0], py = y - A[1], pz = z - A[2];
+      let t = px * d[0] + py * d[1] + pz * d[2];   // projection (world units along seg)
+      if (t < 0) t = 0; else if (t > L) t = L;
+      const cx = A[0] + d[0] * t, cy = A[1] + d[1] * t, cz = A[2] + d[2] * t;
+      const ex = x - cx, ey = y - cy, ez = z - cz;
+      const dist2 = ex * ex + ey * ey + ez * ez;
+      if (dist2 < best) { best = dist2; bSeg = i; bT = t / L; bcx = cx; bcy = cy; bcz = cz; }
+    }
+    const dist = Math.sqrt(best);
+    const sNorm = total > 0 ? (cum[bSeg] + bT * segLen[bSeg]) / total : 0;
+    const rad = r0 * (1 + (taper - 1) * sNorm);
+    if (profile === 'smooth' || depth === 0) return dist - rad;
+
+    // Local frame at the nearest point: interpolate tangent + RMF normal.
+    // Kept fully scalar (no per-sample array allocation) — this runs once per
+    // marching-cube sample, matching the allocation-free sibling primitives.
+    const i0 = bSeg, i1 = bSeg + 1, t = bT;
+    let axx = tan[i0][0] + (tan[i1][0] - tan[i0][0]) * t;
+    let axy = tan[i0][1] + (tan[i1][1] - tan[i0][1]) * t;
+    let axz = tan[i0][2] + (tan[i1][2] - tan[i0][2]) * t;
+    const am = Math.hypot(axx, axy, axz) || 1; axx /= am; axy /= am; axz /= am;
+    let ux = U[i0][0] + (U[i1][0] - U[i0][0]) * t;
+    let uy = U[i0][1] + (U[i1][1] - U[i0][1]) * t;
+    let uz = U[i0][2] + (U[i1][2] - U[i0][2]) * t;
+    const ud = ux * axx + uy * axy + uz * axz;   // re-orthogonalize U against axis
+    ux -= ud * axx; uy -= ud * axy; uz -= ud * axz;
+    const um = Math.hypot(ux, uy, uz) || 1; ux /= um; uy /= um; uz /= um;
+    const vx = axy * uz - axz * uy, vy = axz * ux - axx * uz, vz = axx * uy - axy * ux;
+    const wx = x - bcx, wy = y - bcy, wz = z - bcz;
+    const theta = Math.atan2(wx * vx + wy * vy + wz * vz, wx * ux + wy * uy + wz * uz);
+
+    // Groove value g in [0,1]; carved inward so the surface never detaches.
+    let phase: number;
+    if (flutes) phase = count * theta;
+    else if (rings) phase = TWO_PI * count * sNorm;
+    else /* helix */ phase = count * theta + TWO_PI * turns * sNorm;
+    const g = 0.5 - 0.5 * Math.cos(phase);
+    // Clamp the groove against the *local* (tapered) radius so it can never
+    // reach the centerline and slot the tube clean through — which would split
+    // it into separate components / go non-manifold. Keeps ≥10% of the radius
+    // as solid core, honouring the class docstring's "never detach a piece"
+    // guarantee even for depth > rad or a depth held constant down a taper.
+    return dist - rad + Math.min(depth, rad * 0.9) * g;
+  };
+
+  const grow = r0 * Math.max(1, taper) + 1e-3;
+  let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+  for (const p of P) {
+    if (p[0] < mnx) mnx = p[0]; if (p[1] < mny) mny = p[1]; if (p[2] < mnz) mnz = p[2];
+    if (p[0] > mxx) mxx = p[0]; if (p[1] > mxy) mxy = p[1]; if (p[2] > mxz) mxz = p[2];
+  }
+  return leafNode('tube', evalFn, {
+    min: [mnx - grow, mny - grow, mnz - grow],
+    max: [mxx + grow, mxy + grow, mxz + grow],
+  });
+}
+
 const INFINITE_BOUNDS: Box = {
   min: [-Infinity, -Infinity, -Infinity],
   max: [Infinity, Infinity, Infinity],
@@ -873,6 +1404,23 @@ function opUnion(a: SdfNode, b: SdfNode): SdfNode {
   });
 }
 
+/** Tag `node` as a fine-hands region (internal — used by the figure's hands).
+ *  Transparent for eval/bounds (it IS its child geometrically); the build
+ *  partitions it into its own region and meshes it per-sphere at a uniform fine
+ *  grid, then hard-unions it with the coarse body. `regions` are the per-hand
+ *  spheres (centre = wrist, radius contains the hand, edgeLength = fine grid).
+ *  Not partitionable: the hand is one atomic region. */
+function opFineHands(node: SdfNode, regions: FineHandPiece[]): SdfNode {
+  return new SdfNode({
+    kind: 'fineHands',
+    eval: (x, y, z) => node._eval(x, y, z),
+    bounds: node._bounds,
+    children: [node],
+    partitionable: false,
+    fineRegions: regions,
+  });
+}
+
 function opSubtract(a: SdfNode, b: SdfNode): SdfNode {
   return new SdfNode({
     kind: 'subtract',
@@ -983,6 +1531,7 @@ function opTranslate(child: SdfNode, t: Vec3): SdfNode {
     },
     children: [child],
     partitionable: false,
+    rewrap: (c) => opTranslate(c, t),
   });
 }
 
@@ -1014,6 +1563,7 @@ function opRotate(child: SdfNode, r: Vec3): SdfNode {
     ]),
     children: [child],
     partitionable: false,
+    rewrap: (c) => opRotate(c, r),
   });
 }
 
@@ -1028,6 +1578,7 @@ function opScale(child: SdfNode, s: number): SdfNode {
     },
     children: [child],
     partitionable: false,
+    rewrap: (c) => opScale(c, s),
   });
 }
 
@@ -1047,6 +1598,7 @@ function opMirror(child: SdfNode, axis: 'x' | 'y' | 'z'): SdfNode {
     })(),
     children: [child],
     partitionable: false,
+    rewrap: (c) => opMirror(c, axis),
   });
 }
 
@@ -1215,6 +1767,27 @@ function opTaper(child: SdfNode, rate: number, axis: 'x' | 'y' | 'z'): SdfNode {
     max[i] = b.max[i] * smax;
   }
   return new SdfNode({ kind: 'taper', eval: evalFn, bounds: { min, max }, children: [child], partitionable: false });
+}
+
+function opDisplace(child: SdfNode, amount: number, field: ScalarField): SdfNode {
+  // Surface displacement: f(p) - amount * field(p). Subtracting a positive
+  // field value lowers the distance, so the iso-surface moves OUTWARD there
+  // — the intuitive "bump out where the field is high". Guard a user field
+  // returning non-finite so one bad sample can't poison the whole mesh.
+  return new SdfNode({
+    kind: 'displace',
+    eval: (x, y, z) => {
+      const d = child._eval(x, y, z);
+      const f = field(x, y, z);
+      const ff = typeof f === 'number' && Number.isFinite(f) ? f : 0;
+      return d - amount * ff;
+    },
+    // The surface can move out by up to `amount` anywhere — expand the
+    // child's bbox so marching tetrahedra has room to close the bumps.
+    bounds: bbExpand(child._bounds, amount),
+    children: [child],
+    partitionable: false,
+  });
 }
 
 export interface PolarArrayOptions {
@@ -1457,6 +2030,134 @@ function opPolarRepeat(child: SdfNode, count: number, axis: 'x' | 'y' | 'z', rad
   return new SdfNode({ kind: 'polarRepeat', eval: evalFn, bounds, children: [child], partitionable: false });
 }
 
+// --- Noise field --------------------------------------------------------
+
+const NOISE_FIELDS = ['seed', 'frequency', 'octaves', 'lacunarity', 'gain', 'ridged'] as const;
+
+/** Validate `api.sdf.noise(opts)` and return clean NoiseOptions. */
+function assertNoiseOpts(opts: unknown): NoiseOptions {
+  if (opts === undefined) return {};
+  const o = assertObject(opts, 'noise(opts)')!;
+  assertNoUnknownKeys(o, NOISE_FIELDS, 'noise(opts)');
+  const out: NoiseOptions = {};
+  if (o.seed !== undefined) out.seed = assertNumber(o.seed, 'noise(seed)') as number;
+  if (o.frequency !== undefined) out.frequency = assertNumber(o.frequency, 'noise(frequency)', { min: 1e-6 }) as number;
+  if (o.octaves !== undefined) out.octaves = assertNumber(o.octaves, 'noise(octaves)', { min: 1, max: 10, integer: true }) as number;
+  if (o.lacunarity !== undefined) out.lacunarity = assertNumber(o.lacunarity, 'noise(lacunarity)', { min: 1 }) as number;
+  if (o.gain !== undefined) out.gain = assertNumber(o.gain, 'noise(gain)', { min: 0, max: 1 }) as number;
+  if (o.ridged !== undefined) {
+    if (typeof o.ridged !== 'boolean') throw new ValidationError('noise(ridged): must be a boolean.');
+    out.ridged = o.ridged;
+  }
+  return out;
+}
+
+// --- L-system → SDF -----------------------------------------------------
+
+export interface LSystemLeafOptions {
+  /** Symbols in the expanded string that mark a leaf/flower position. */
+  symbols: string[];
+  /** Sphere radius placed at each leaf marker. */
+  radius: number;
+  /** Paint-region label for the leaf cluster (e.g. 'foliage'). */
+  label?: string;
+}
+
+export interface LSystemOptions {
+  axiom: string;
+  rules: Record<string, string | LSystemRule[]>;
+  iterations: number;
+  /** Degrees per turn command. Default 25. */
+  angle?: number;
+  /** Length of one `F` segment. Default 8. */
+  length?: number;
+  /** Starting branch radius. Default 1. */
+  radius?: number;
+  /** Radius multiplier per branch depth (< 1 thins toward tips). Default 0.8. */
+  radiusScale?: number;
+  /** Length multiplier per branch depth (< 1 shortens toward tips). Default 1. */
+  lengthScale?: number;
+  /** Seed for stochastic rules. Default 1. */
+  seed?: number;
+  /** Smooth-union fillet radius welding consecutive branch segments
+   *  (0 = hard union, crisper + cheaper). Default 0. */
+  blend?: number;
+  /** Paint-region label for the branches (e.g. 'wood'). */
+  label?: string;
+  /** Optional foliage: spheres dropped at leaf-marker symbols. */
+  leaf?: LSystemLeafOptions;
+}
+
+const LSYSTEM_FIELDS = [
+  'axiom', 'rules', 'iterations', 'angle', 'length', 'radius',
+  'radiusScale', 'lengthScale', 'seed', 'blend', 'label', 'leaf',
+] as const;
+const LSYSTEM_LEAF_FIELDS = ['symbols', 'radius', 'label'] as const;
+
+/** Validate L-system options, grow the grammar, walk the turtle, and lower
+ *  the resulting segments (and optional leaves) to an SDF node. Branches
+ *  union into one paint region; leaves, if any, into a second. */
+function buildLSystem(opts: unknown): SdfNode {
+  const o = assertObject(opts, 'lsystem(opts)')!;
+  assertNoUnknownKeys(o, LSYSTEM_FIELDS, 'lsystem(opts)');
+  const axiom = assertString(o.axiom, 'lsystem(axiom)')!;
+  const rules = assertObject(o.rules, 'lsystem(rules)')!;
+  const iterations = assertNumber(o.iterations, 'lsystem(iterations)', { min: 0, max: 12, integer: true }) as number;
+  const angle = o.angle === undefined ? 25 : assertNumber(o.angle, 'lsystem(angle)') as number;
+  const length = o.length === undefined ? 8 : assertNumber(o.length, 'lsystem(length)', { min: 1e-3 }) as number;
+  const radius = o.radius === undefined ? 1 : assertNumber(o.radius, 'lsystem(radius)', { min: 1e-3 }) as number;
+  const radiusScale = o.radiusScale === undefined ? 0.8 : assertNumber(o.radiusScale, 'lsystem(radiusScale)', { min: 0.01, max: 1 }) as number;
+  const lengthScale = o.lengthScale === undefined ? 1 : assertNumber(o.lengthScale, 'lsystem(lengthScale)', { min: 0.01, max: 2 }) as number;
+  const seed = o.seed === undefined ? 1 : assertNumber(o.seed, 'lsystem(seed)') as number;
+  const blend = o.blend === undefined ? 0 : assertNumber(o.blend, 'lsystem(blend)', { min: 0 }) as number;
+  const branchLabel = o.label === undefined ? undefined : assertString(o.label, 'lsystem(label)')!;
+
+  let leafOpts: LSystemLeafOptions | undefined;
+  let leafSymbols: string[] = [];
+  if (o.leaf !== undefined) {
+    const lf = assertObject(o.leaf, 'lsystem(leaf)')!;
+    assertNoUnknownKeys(lf, LSYSTEM_LEAF_FIELDS, 'lsystem(leaf)');
+    const symbols = lf.symbols;
+    if (!Array.isArray(symbols) || symbols.length === 0 || !symbols.every(s => typeof s === 'string' && s.length === 1)) {
+      throw new ValidationError('lsystem(leaf.symbols): must be a non-empty array of single-character strings.');
+    }
+    const leafRadius = assertNumber(lf.radius, 'lsystem(leaf.radius)', { min: 1e-3 }) as number;
+    const leafLabel = lf.label === undefined ? undefined : assertString(lf.label, 'lsystem(leaf.label)')!;
+    leafOpts = { symbols: symbols as string[], radius: leafRadius, label: leafLabel };
+    leafSymbols = symbols as string[];
+  }
+
+  const expanded = expandLSystem({ axiom, rules: rules as Record<string, string | LSystemRule[]>, iterations, seed });
+  const { segments, leaves } = turtle3d(expanded, {
+    angle, length, radius, radiusScale, lengthScale, leafSymbols,
+  });
+
+  if (segments.length === 0) {
+    throw new ValidationError('lsystem(): the grammar produced no `F` (draw) commands — check the axiom/rules.');
+  }
+
+  // Union the branch capsules (smooth-welded if blend > 0).
+  let branches: SdfNode | undefined;
+  for (const seg of segments) {
+    const cap = primCapsule(seg.a, seg.b, seg.radius);
+    branches = branches === undefined ? cap
+      : (blend > 0 ? opSmoothUnion(branches, cap, blend) : opUnion(branches, cap));
+  }
+  let result = branchLabel ? branches!.label(branchLabel) : branches!;
+
+  // Optional foliage: a sphere at each leaf marker, unioned into a second region.
+  if (leafOpts && leaves.length > 0) {
+    let foliage: SdfNode | undefined;
+    for (const lv of leaves) {
+      const s = primSphere(leafOpts.radius).translate(lv.p);
+      foliage = foliage === undefined ? s : opUnion(foliage, s);
+    }
+    const foliageNode = leafOpts.label ? foliage!.label(leafOpts.label) : foliage!;
+    result = opUnion(result, foliageNode);
+  }
+  return result;
+}
+
 // --- Public namespace factory ------------------------------------------
 
 export interface SdfNamespace {
@@ -1468,6 +2169,12 @@ export interface SdfNamespace {
   roundedCylinder(radius: number, height: number, edgeRadius: number): SdfNode;
   torus(majorRadius: number, minorRadius: number): SdfNode;
   capsule(a: Vec3, b: Vec3, radius: number): SdfNode;
+  /** A tube swept along a polyline `path` (>= 2 points) with a surface
+   *  texture that flows along the direction of travel — `flutes` (ridges
+   *  along the path), `rings` (across it), or `helix` (threads wrapping it).
+   *  Uses a rotation-minimizing frame so the pattern is continuous through
+   *  bends, and is ONE connected component by construction. */
+  tube(path: Vec3[], radius: number, opts?: TubeOptions): SdfNode;
   gyroid(cellSize: number, thickness: number): SdfNode;
   schwarzP(cellSize: number, thickness: number): SdfNode;
   diamond(cellSize: number, thickness: number): SdfNode;
@@ -1482,9 +2189,23 @@ export interface SdfNamespace {
   smoothIntersect(a: SdfNode, b: SdfNode, k: number): SdfNode;
   subtract(a: SdfNode, b: SdfNode): SdfNode;
   intersect(a: SdfNode, b: SdfNode): SdfNode;
+  /** A reusable, seeded fBm noise field — hand it to `node.displace(amount,
+   *  field)` for organic surface texture. Returns a plain (x,y,z)=>number. */
+  noise(opts?: NoiseOptions): ScalarField;
+  /** Grow an L-system (fractal plant / coral / branching structure) into an
+   *  SDF node of welded capsules, with optional foliage spheres. */
+  lsystem(opts: LSystemOptions): SdfNode;
+  /** Stylized figurine builder — deterministic rig + posable parts (torso,
+   *  arms, legs, head, face, hair, clothing) that snap to named landmarks.
+   *  See /ai/figure.md. The default medium for people/characters/creatures. */
+  figure: FigureNamespace;
   /** Build the SDF tree into a Manifold via Manifold.levelSet, with
    *  optional explicit bounds / edgeLength / level / tolerance. */
   build(node: SdfNode, opts?: SdfBuildOptions): ManifoldInstance;
+  /** @internal Tag a subtree as a fine-hands region — meshed per-sphere at a
+   *  uniform fine grid and hard-unioned (used by the figure's hands so the
+   *  coarse body march never webs the fingers). Not a documented user API. */
+  __fineHands(node: SdfNode, regions: FineHandPiece[]): SdfNode;
 }
 
 /** Construct a fresh SDF namespace for one engine run. Bound to the
@@ -1513,7 +2234,7 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     return val;
   }
 
-  return {
+  const namespace: SdfNamespace = {
     sphere: (radius) => bound(primSphere(radius)),
     ellipsoid: (rx, ry, rz) => bound(primEllipsoid(rx, ry, rz)),
     box: (size) => bound(primBox(size)),
@@ -1522,6 +2243,7 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     roundedCylinder: (radius, height, edgeRadius) => bound(primRoundedCylinder(radius, height, edgeRadius)),
     torus: (R, r) => bound(primTorus(R, r)),
     capsule: (a, b, radius) => bound(primCapsule(a, b, radius)),
+    tube: (path, radius, opts) => bound(primTube(path, radius, opts)),
     gyroid: (cellSize, thickness) => bound(primGyroid(cellSize, thickness)),
     schwarzP: (cellSize, thickness) => bound(primSchwarzP(cellSize, thickness)),
     diamond: (cellSize, thickness) => bound(primDiamond(cellSize, thickness)),
@@ -1541,8 +2263,18 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     smoothIntersect: (a, b, k) => assertSdfNode(a, 'smoothIntersect(a)').smoothIntersect(assertSdfNode(b, 'smoothIntersect(b)'), k),
     subtract: (a, b) => opSubtract(assertSdfNode(a, 'subtract(a)'), assertSdfNode(b, 'subtract(b)')),
     intersect: (a, b) => opIntersect(assertSdfNode(a, 'intersect(a)'), assertSdfNode(b, 'intersect(b)')),
+    noise: (opts) => makeNoise(assertNoiseOpts(opts)),
+    lsystem: (opts) => bound(buildLSystem(opts)),
     build: (node, opts) => assertSdfNode(node, 'build(node)').build(opts ?? {}),
+    __fineHands: (node, regions) => bound(opFineHands(assertSdfNode(node, '__fineHands(node)'), regions)),
+    // Placeholder; replaced below once `namespace` exists (figure builds its
+    // parts from these bound namespace methods).
+    figure: undefined as unknown as FigureNamespace,
   };
+  // The figure layer composes parts from the public namespace, so every node
+  // it returns is already engine-bound. SdfNamespace is structurally a SdfApi.
+  namespace.figure = createFigureNamespace(namespace as unknown as SdfApi);
+  return namespace;
 }
 
 // --- Test hooks ---------------------------------------------------------
@@ -1557,6 +2289,7 @@ export const __testables__ = {
   primRoundedCylinder,
   primTorus,
   primCapsule,
+  primTube,
   primGyroid,
   primSchwarzP,
   primDiamond,
@@ -1566,6 +2299,7 @@ export const __testables__ = {
   primGradedDiamond,
   primGradedLidinoid,
   opUnion,
+  opFineHands,
   opSubtract,
   opIntersect,
   opSmoothUnion,
@@ -1580,6 +2314,9 @@ export const __testables__ = {
   opTwist,
   opBend,
   opTaper,
+  opDisplace,
+  buildLSystem,
+  assertNoiseOpts,
   opPolarArray,
   opRepeat,
   opRepeatN,
@@ -1587,4 +2324,5 @@ export const __testables__ = {
   partitionByLabel,
   defaultEdgeLength,
   expandedMeshBounds,
+  assertBuildOpts,
 };

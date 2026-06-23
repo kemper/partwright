@@ -1,6 +1,6 @@
 // Dovetail rail system — a horizontal wall-mount rail and a curved coat hook
 // that slides on and locks. Rail runs horizontally (X-axis).
-const { Manifold, CrossSection, printFit } = api;
+const { Manifold, CrossSection, fasteners, joints } = api;
 
 const p = api.params({
   railLength:   { type: 'number', default: 120, min: 60,  max: 400, step: 10, unit: 'mm', label: 'Rail length' },
@@ -24,7 +24,7 @@ let plate = Manifold.extrude(plateProfile, railLen)
   .rotate([0, -90, 0])
   .translate([railLen, 0, 0]);
 
-const { tail } = printFit.dovetail({ length: railLen, width: railW, depth: 6, angle: 14, fit: 'normal' });
+const { tail } = joints.dovetail({ length: railLen, width: railW, depth: 6, angle: 14, fit: 'normal' });
 plate = plate.add(tail.translate([0, plateT - 0.5, plateH / 2]));
 
 const endMargin = 15;
@@ -34,7 +34,7 @@ const colZ      = [plateH * 0.15, plateH * 0.85];
 for (let i = 0; i < levels; i++) {
   const x = endMargin + (levels === 1 ? usableLen / 2 : (usableLen * i) / (levels - 1));
   for (const z of colZ) {
-    const hole = printFit.screwHole({ size: p.screwSize, length: plateT, head: 'countersunk', through: true })
+    const hole = fasteners.screwHole({ size: p.screwSize, length: plateT, head: 'countersunk', through: true })
       .rotate([-90, 0, 0])
       .translate([x, plateT, z]);
     plate = plate.subtract(hole);
@@ -53,7 +53,7 @@ const blockProfile = new CrossSection([[
 ]]);
 let hook = Manifold.extrude(blockProfile, hookBlockH);
 
-const { socket } = printFit.dovetail({ length: hookBlockW + 20, width: railW, depth: 6, angle: 14, fit: 'normal' });
+const { socket } = joints.dovetail({ length: hookBlockW + 20, width: railW, depth: 6, angle: 14, fit: 'normal' });
 hook = hook.subtract(socket.translate([-10, 0, hookBlockH / 2]));
 
 // ── Coat hook arm ────────────────────────────────────────────────────────────

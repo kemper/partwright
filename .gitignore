@@ -34,6 +34,9 @@ test-results/
 playwright-report/
 playwright/.cache/
 
+# scripts/snap.mjs temp specs (deleted after each run; ignored as a safety net)
+/tests/_snap-*.spec.ts
+
 # Interstitial planning files
 .plans/
 
@@ -52,5 +55,24 @@ playwright/.cache/
 # test_ prefix.
 /public/catalog/test_*.partwright.json
 
+# Build-time content-hashed catalog thumbnails — emitted by the prerender
+# plugin's buildStart from each entry's stored data-URL thumbnail. Generated,
+# never hand-edited.
+/public/catalog/thumbs/
+# Local bake side-artifact from build-catalog-entry.cjs — the real thumbnail is
+# the data-URL embedded in the entry's .partwright.json, so this PNG is never
+# committed.
+/public/catalog/*.thumb.png
+
 # partwright CLI daemon state (pid/ports, logs, persistent Chromium profile)
 .partwright/
+
+# Serena MCP project metadata/cache
+.serena/
+
+# Local Cloudflare/wrangler emulation cache
+.wrangler/
+
+# Figure-eval per-run output (renders, contact sheets) — keep cases/ + baseline.json
+evals/results/
+evals/cases/*/verdict.json

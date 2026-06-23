@@ -78,6 +78,27 @@ describe('summarizeSessionImport — language resolution', () => {
     expect(summary.languages).toEqual(['manifold-js']);
   });
 
+  it('lists image-kind labels from a 1.16 attachments array, excluding non-image attachments', () => {
+    const summary = summarizeSessionImport(payload({
+      session: {
+        attachments: [
+          { id: 'a', kind: 'image', src: 'data:image/png;base64,AAAA', label: 'Front' },
+          { id: 'b', kind: 'model', src: 'data:model/stl;base64,AAAA', label: 'Reference bracket' },
+          { id: 'c', kind: 'image', src: 'data:image/png;base64,AAAA' },
+        ],
+      } as Partial<ExportedSession['session']>,
+    }));
+    // The model is excluded; the unlabeled image becomes "(unlabeled)".
+    expect(summary.referenceSides).toEqual(['Front', '(unlabeled)']);
+  });
+
+  it('still reads legacy session.images (pre-1.16, no kind) as reference sides', () => {
+    const summary = summarizeSessionImport(payload({
+      session: { images: [{ id: 'a', src: 'x', label: 'Right' }] } as Partial<ExportedSession['session']>,
+    }));
+    expect(summary.referenceSides).toEqual(['Right']);
+  });
+
   it('sanitizes a junk on-disk language, falling through to the session level', () => {
     const summary = summarizeSessionImport(
       payload({ session: { language: 'voxel' }, versions: [version('python')] }),

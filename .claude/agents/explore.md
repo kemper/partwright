@@ -6,7 +6,7 @@ description: >-
   conventions, and cross-file references. Returns conclusions (file:line), not
   file dumps. It locates and explains; it does not edit or audit (use
   work-reviewer for review).
-tools: Read, Grep, Glob, Bash, mcp__typescript__*
+tools: Read, Grep, Glob, Bash, mcp__serena__*
 model: sonnet
 ---
 
@@ -19,11 +19,14 @@ This codebase's hardest questions are **cross-file reference** questions —
 `applyVoxelize`", "does this exported symbol have any importers". String search
 answers those imprecisely. Reach for the most precise tool available:
 
-1. **Symbol-aware first (when available).** If the `typescript` MCP tools
-   (`mcp__typescript__*`) are present, use them for find-references,
-   go-to-definition, hover types, and diagnostics — they query the type graph,
-   so no false positives from string collisions. If the MCP isn't loaded, say
-   so briefly and fall back to the tools below.
+1. **Symbol-aware first (when available).** If the Serena MCP tools
+   (`mcp__serena__*`) are present, use them for reference questions:
+   `find_symbol`, `find_referencing_symbols`, `get_symbols_overview`,
+   `find_declaration`, and `find_implementations` query the real
+   language-server graph, so no false positives from string collisions — and
+   they return compact symbol chunks, not file dumps. If the MCP isn't loaded
+   (e.g. `uv` missing from the environment), say so briefly and fall back to
+   the tools below.
 2. **Structural search.** For "find UI that doesn't match the shared pattern"
    or other shape-based queries, use ast-grep:
    `npx --package @ast-grep/cli ast-grep run -p '<pattern>' -l ts src`

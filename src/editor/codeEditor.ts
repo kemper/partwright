@@ -1,6 +1,7 @@
-import { EditorView } from '@codemirror/view';
-import { EditorState, Compartment, Transaction, type Extension } from '@codemirror/state';
+import { EditorView, keymap } from '@codemirror/view';
+import { EditorState, Compartment, Prec, Transaction, type Extension } from '@codemirror/state';
 import { openSearchPanel } from '@codemirror/search';
+import { acceptCompletion } from '@codemirror/autocomplete';
 import { javascript } from '@codemirror/lang-javascript';
 import { StreamLanguage } from '@codemirror/language';
 import { oneDark } from '@codemirror/theme-one-dark';
@@ -28,17 +29,77 @@ let debounceTimer: number | null = null;
 let idleTimer: number | null = null;
 let activeDiagnostics: Diagnostic[] = [];
 
+/** Teardown for the bottom-scroll stabilizer's listeners; replaced on re-install
+ *  so a re-init never stacks duplicate document-level listeners. */
+let disposeScrollStabilizer: (() => void) | null = null;
+/** Timestamp (performance.now) of the last *deliberate* programmatic editor
+ *  scroll — find-next, reveal-diagnostic. Lets the bottom-scroll stabilizer tell
+ *  an intended navigation from an unsolicited re-measure snap. */
+let scrollIntentAt = -Infinity;
+
+/** Mark that the editor is about to scroll itself on purpose (find / reveal /
+ *  caret nav), so the bottom-scroll stabilizer honors the resulting scroll
+ *  instead of reverting it as a measure snap. Call immediately before dispatching
+ *  the `EditorView.scrollIntoView` effect. */
+function markEditorScrollIntent(): void {
+  scrollIntentAt = performance.now();
+}
+
 let currentLanguage: EditorLanguage = 'manifold-js';
 // Per-tab (with a shared seed for fresh tabs) so toggling auto-format in one
 // window doesn't flip it in another open window.
 let autoFormatEnabled: boolean = readPerTabPref('editor-auto-format') !== 'false';
+// Soft-wrap long lines. Off by default (matches the usual code-editor default of
+// a horizontal scrollbar); persisted per-tab like auto-format.
+let lineWrapEnabled: boolean = readPerTabPref('editor-line-wrap') === 'true';
+// Line-number gutter — on by default; persisted per-tab.
+let lineNumbersEnabled: boolean = readPerTabPref('editor-line-numbers') !== 'false';
+
+/** Clamp a requested font size into the configured [min, max] px bounds,
+ *  rounding to a whole pixel. Falls back to the configured default when the
+ *  input isn't a finite number. */
+function clampFontSize(px: number): number {
+  const { editorFontSizeMin, editorFontSizeMax, editorFontSizeDefault } = getConfig().ui;
+  if (!Number.isFinite(px)) return editorFontSizeDefault;
+  return Math.round(Math.min(editorFontSizeMax, Math.max(editorFontSizeMin, px)));
+}
+
+// Editor font size (px) — per-tab pref seeded from the configured default.
+let fontSizePx: number = clampFontSize(
+  parseInt(readPerTabPref('editor-font-size') ?? '', 10) || getConfig().ui.editorFontSizeDefault,
+);
+
 const languageCompartment = new Compartment();
 const readOnlyCompartment = new Compartment();
 const themeCompartment = new Compartment();
+const lineWrapCompartment = new Compartment();
+const lineNumbersCompartment = new Compartment();
+const fontSizeCompartment = new Compartment();
+
+function fontSizeExt(px: number): Extension {
+  return EditorView.theme({ '&': { fontSize: `${px}px` } });
+}
+
+/** basicSetup already installs the line-number gutter, so "off" hides it with a
+ *  scoped theme rule rather than rebuilding the extension set. The fold/lint
+ *  gutters stay visible. */
+function lineNumbersExt(on: boolean): Extension {
+  // CodeMirror's core gutter style sets `display: flex !important`, so the hide
+  // rule must also be `!important` to win.
+  return on ? [] : EditorView.theme({ '.cm-lineNumbers': { display: 'none !important' } });
+}
 
 function themeExt(theme: Theme): Extension {
   return theme === 'dark' ? oneDark : [];
 }
+
+/** Tab accepts the active autocomplete option. `acceptCompletion` returns false
+ *  when no completion tooltip is open, so Tab falls through to its normal
+ *  indent/insert behavior otherwise. Prec.highest so it wins over the default
+ *  keymaps that basicSetup installs for Tab. */
+const acceptCompletionWithTab: Extension = Prec.highest(
+  keymap.of([{ key: 'Tab', run: acceptCompletion }]),
+);
 
 // Minimal OpenSCAD StreamLanguage — keyword/builtin/comment/string/number coloring.
 const SCAD_KEYWORDS = new Set([
@@ -205,6 +266,104 @@ export interface EditorHooks {
   onBlur?: () => void;
 }
 
+/** Keep the code editor's scroll position from drifting when CodeMirror
+ *  re-measures while the editor is parked at (or near) the very bottom.
+ *
+ *  On a real display, CodeMirror's line-height model never perfectly matches
+ *  Chrome's fractional, device-pixel-rounded line boxes, so over a long
+ *  document the modelled content height drifts from the real DOM height by
+ *  ~a line. Whenever something makes CodeMirror re-measure — a focus change, a
+ *  layout reflow from opening a tool menu/panel, or its own measure loop — it
+ *  reconciles the two and the browser re-clamps `scrollTop` at max-scroll,
+ *  snapping the visible code by a line. It only shows at the bottom (anywhere
+ *  else the offset is preserved exactly) and only on a real display, so it reads
+ *  as a one-line "stutter" when you click around with the editor scrolled down.
+ *
+ *  This installs a persistent stabilizer: when a *programmatic* scroll nudges
+ *  the editor by less than a couple of lines while it's resting near the bottom,
+ *  it reverts to the last user-intended offset before the browser paints, so the
+ *  snap is invisible. It stays out of the way of every genuine scroll — wheel,
+ *  trackpad/momentum, scrollbar drag, touch, and keyboard/typing are all tracked
+ *  as user intent and always honored — as is a deliberate programmatic
+ *  navigation (find / reveal-diagnostic, which call `markEditorScrollIntent`)
+ *  and any large jump. Thresholds are line-height-relative, not magic pixels. */
+function installBottomScrollStabilizer(view: EditorView): void {
+  // Tear down a prior install first. `initEditor` runs once today, but
+  // `editorView` is reassignable (a future re-init / remount), and these
+  // document-level listeners would otherwise stack and orphan the old scroller.
+  disposeScrollStabilizer?.();
+
+  const sc = view.scrollDOM;
+  // The grace window (ms) during which recent user input means a scroll is the
+  // user's own intent and must never be reverted.
+  const inputGraceMs = (): number => getConfig().ui.codeEditorScrollPinMs;
+
+  let intendedTop = sc.scrollTop; // the offset we believe the user wants
+  let lastWheel = -Infinity;
+  let lastKey = -Infinity;
+  let pointerDown = false; // covers scrollbar drag + touch pan
+  let reverting = false;
+
+  const lineH = (): number => view.defaultLineHeight || 18;
+  const userActive = (): boolean => {
+    const now = performance.now();
+    const grace = inputGraceMs();
+    return pointerDown
+      || now - lastWheel < grace
+      || now - lastKey < grace
+      || now - scrollIntentAt < grace; // deliberate programmatic navigation
+  };
+
+  // Track user-driven scroll intent. Capture phase so we see input even when the
+  // editor isn't focused (e.g. dragging the scrollbar).
+  const onWheel = (): void => { lastWheel = performance.now(); };
+  // Keydown is bound to the whole editor (`view.dom`), not just the scroller, so
+  // keystrokes in the search panel (find-next scrolls to the match) count as
+  // intent too — the panel lives outside `.cm-scroller`.
+  const onKey = (): void => { lastKey = performance.now(); };
+  const onPointerDown = (): void => { pointerDown = true; };
+  const onPointerUp = (): void => { pointerDown = false; };
+  const onScroll = (): void => {
+    if (reverting) return;
+    if (getConfig().ui.codeEditorScrollPinMs <= 0) { intendedTop = sc.scrollTop; return; } // disabled
+    const lh = lineH();
+    const maxScroll = sc.scrollHeight - sc.clientHeight;
+    // Anchor "near the bottom" to where the user *wanted* to be (intendedTop),
+    // not the post-snap position — the snap moves us a line off the bottom, so
+    // testing the current offset would miss it right at the boundary.
+    const wasNearBottom = maxScroll - intendedTop <= lh * 2;
+    const delta = sc.scrollTop - intendedTop;
+    // Revert only an unsolicited, small, near-bottom nudge — the measure snap.
+    if (!userActive() && wasNearBottom && delta !== 0 && Math.abs(delta) <= lh * 3) {
+      reverting = true;
+      sc.scrollTop = intendedTop;
+      reverting = false;
+      return;
+    }
+    // Otherwise this is the user's intent (or real navigation): adopt it.
+    intendedTop = sc.scrollTop;
+  };
+
+  sc.addEventListener('wheel', onWheel, { capture: true, passive: true });
+  view.dom.addEventListener('keydown', onKey, true);
+  // Pointer down/up is tracked on the document: a scrollbar drag holds the
+  // pointer down on the scroller without firing wheel/keydown.
+  document.addEventListener('pointerdown', onPointerDown, true);
+  document.addEventListener('pointerup', onPointerUp, true);
+  document.addEventListener('pointercancel', onPointerUp, true);
+  sc.addEventListener('scroll', onScroll, { passive: true });
+
+  disposeScrollStabilizer = (): void => {
+    sc.removeEventListener('wheel', onWheel, true);
+    view.dom.removeEventListener('keydown', onKey, true);
+    document.removeEventListener('pointerdown', onPointerDown, true);
+    document.removeEventListener('pointerup', onPointerUp, true);
+    document.removeEventListener('pointercancel', onPointerUp, true);
+    sc.removeEventListener('scroll', onScroll);
+    disposeScrollStabilizer = null;
+  };
+}
+
 export function initEditor(
   container: HTMLElement,
   initialCode: string,
@@ -216,11 +375,15 @@ export function initEditor(
     doc: initialCode,
     extensions: [
       basicSetup,
+      acceptCompletionWithTab,
       manifoldApiCompletion,
       languageCompartment.of(languageExt(initialLanguage)),
       lintGutter(),
       readOnlyCompartment.of(EditorState.readOnly.of(false)),
       themeCompartment.of(themeExt(getTheme())),
+      lineWrapCompartment.of(lineWrapEnabled ? EditorView.lineWrapping : []),
+      lineNumbersCompartment.of(lineNumbersExt(lineNumbersEnabled)),
+      fontSizeCompartment.of(fontSizeExt(fontSizePx)),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           if (activeDiagnostics.length > 0) {
@@ -241,7 +404,7 @@ export function initEditor(
         blur: () => { hooks.onBlur?.(); return false; },
       }),
       EditorView.theme({
-        '&': { height: '100%', fontSize: '13px' },
+        '&': { height: '100%' },
         '.cm-scroller': { overflow: 'auto' },
         '.cm-content': { fontFamily: 'monospace' },
         '.cm-lint-marker-error': { cursor: 'help' },
@@ -253,6 +416,8 @@ export function initEditor(
     state,
     parent: container,
   });
+
+  installBottomScrollStabilizer(editorView);
 
   onThemeChange((theme) => {
     if (!editorView) return;
@@ -353,6 +518,55 @@ export function setAutoFormat(enabled: boolean): void {
   writePerTabPref('editor-auto-format', enabled ? 'true' : 'false');
 }
 
+export function getLineWrap(): boolean {
+  return lineWrapEnabled;
+}
+
+/** Toggle soft-wrapping of long lines. Reconfigures the live editor's
+ *  line-wrap compartment and persists the choice per-tab. */
+export function setLineWrap(enabled: boolean): void {
+  lineWrapEnabled = enabled;
+  writePerTabPref('editor-line-wrap', enabled ? 'true' : 'false');
+  editorView?.dispatch({
+    effects: lineWrapCompartment.reconfigure(enabled ? EditorView.lineWrapping : []),
+  });
+}
+
+export function getLineNumbers(): boolean {
+  return lineNumbersEnabled;
+}
+
+/** Toggle the line-number gutter. Reconfigures the live editor and persists
+ *  the choice per-tab. */
+export function setLineNumbers(enabled: boolean): void {
+  lineNumbersEnabled = enabled;
+  writePerTabPref('editor-line-numbers', enabled ? 'true' : 'false');
+  editorView?.dispatch({
+    effects: lineNumbersCompartment.reconfigure(lineNumbersExt(enabled)),
+  });
+}
+
+export function getFontSize(): number {
+  return fontSizePx;
+}
+
+/** Configured [min, max] px bounds for the editor font size, so callers can
+ *  disable the −/+ stepper at the edges. */
+export function getFontSizeBounds(): { min: number; max: number } {
+  const { editorFontSizeMin, editorFontSizeMax } = getConfig().ui;
+  return { min: editorFontSizeMin, max: editorFontSizeMax };
+}
+
+/** Set the editor font size (px), clamped to the configured bounds.
+ *  Reconfigures the live editor and persists per-tab. */
+export function setFontSize(px: number): void {
+  fontSizePx = clampFontSize(px);
+  writePerTabPref('editor-font-size', String(fontSizePx));
+  editorView?.dispatch({
+    effects: fontSizeCompartment.reconfigure(fontSizeExt(fontSizePx)),
+  });
+}
+
 export function setEditorDiagnostics(diagnostics: SourceDiagnostic[]): void {
   if (!editorView) return;
   const doc = editorView.state.doc.toString();
@@ -371,6 +585,9 @@ export function clearEditorDiagnostics(): void {
 export function revealFirstDiagnostic(): void {
   if (!editorView || activeDiagnostics.length === 0) return;
   const first = activeDiagnostics[0];
+  // This is a deliberate jump — tell the bottom-scroll stabilizer not to revert
+  // it (e.g. a diagnostic on one of the last lines while parked at the bottom).
+  markEditorScrollIntent();
   editorView.dispatch({
     selection: { anchor: first.from, head: first.to },
     effects: EditorView.scrollIntoView(first.from, { y: 'center' }),
@@ -383,4 +600,13 @@ export function setReadOnly(readOnly: boolean): void {
   editorView.dispatch({
     effects: readOnlyCompartment.reconfigure(EditorState.readOnly.of(readOnly)),
   });
+}
+
+/** Current primary selection as character offsets plus its text. When nothing
+ *  is selected, `from === to` and `text` is empty. Used by the insert palette's
+ *  "wrap selection" operand mode. */
+export function getSelection(): { from: number; to: number; text: string } {
+  if (!editorView) return { from: 0, to: 0, text: '' };
+  const sel = editorView.state.selection.main;
+  return { from: sel.from, to: sel.to, text: editorView.state.sliceDoc(sel.from, sel.to) };
 }

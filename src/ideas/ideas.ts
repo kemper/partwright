@@ -163,7 +163,7 @@ export const IDEAS: Idea[] = [
     category: 'starter',
     emoji: '\u{1F4CF}',
     tags: ['calibration', 'tolerance', 'clearance', 'screw', 'test'],
-    prompt: 'Use api.printFit.clearanceCoupon to make an M3 clearance calibration coupon — a bar of through-holes at increasing clearances, each engraved with its value, so I can print it and find the best fit for my printer.',
+    prompt: 'Use api.fasteners.clearanceCoupon to make an M3 clearance calibration coupon — a bar of through-holes at increasing clearances, each engraved with its value, so I can print it and find the best fit for my printer.',
   },
 
   // ---- Technique showcases (prompt + "learn more") ----
@@ -234,8 +234,8 @@ export const IDEAS: Idea[] = [
     category: 'technique',
     emoji: '\u{1F529}',
     tags: ['print-fit', 'screw', 'insert', 'snap-fit', 'dovetail', 'hardware', 'enclosure'],
-    prompt: 'Use the api.printFit helpers to build a two-part enclosure: a base with M3 heat-set insert bosses in the corners and a lid with matching counterbored screw holes, plus an alignment pin and socket so the halves register. Arrange the two parts side by side.',
-    learnMore: '/ai/print-fit.md',
+    prompt: 'Use the api.fasteners and api.joints helpers to build a two-part enclosure: a base with M3 heat-set insert bosses in the corners and a lid with matching counterbored screw holes, plus an alignment pin and socket so the halves register. Arrange the two parts side by side.',
+    learnMore: '/ai/fasteners.md',
   },
 ];
 

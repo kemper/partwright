@@ -1,18 +1,21 @@
-// Images panel — list, attach, relabel, and remove session images.
-// Each image has a single `label` field (a free-form caption with preset
-// suggestions like Front/Right/Back/Left/Top/Perspective). The label is
-// what shows in the Gallery; presets just make common values one click
-// away rather than always typing.
+// Attachments panel — list, attach, relabel, and remove session attachments.
+// Attachments are durable project files (reference images, reference models,
+// spec PDFs, notes…) pinned to the session — they survive an AI chat clear and
+// are exported with the session. Each carries a `kind`
+// (image|model|document|text|other) plus a free-form `label` caption with
+// preset suggestions like Front/Right/Back/Left/Top/Perspective (mainly useful
+// for reference photos). The label shows in the Gallery for image attachments.
 
-import { getState, type AttachedImage } from '../storage/sessionManager';
+import { getState, type SessionAttachment } from '../storage/sessionManager';
 import { generateId, PRESET_LABELS } from '../storage/db';
-import { getImages, sortImagesByPreset } from '../renderer/multiview';
+import { normalizeAttachment, attachmentKindLabel } from '../storage/attachment';
+import { getAttachments, sortImagesByPreset } from '../renderer/multiview';
 
 const DATALIST_ID = 'image-label-presets';
 
 export interface ImagesViewCallbacks {
-  /** Persist the new images list. The view re-renders after this resolves. */
-  onChange: (images: AttachedImage[]) => Promise<void> | void;
+  /** Persist the new attachment list. The view re-renders after this resolves. */
+  onChange: (attachments: SessionAttachment[]) => Promise<void> | void;
 }
 
 let containerEl: HTMLElement | null = null;
@@ -50,19 +53,19 @@ export function refreshImages(): void {
   if (!state.session) {
     const empty = document.createElement('div');
     empty.className = 'flex items-center justify-center flex-1 text-zinc-500 text-sm';
-    empty.textContent = 'Open a session to attach images.';
+    empty.textContent = 'Open a session to attach files.';
     containerEl.appendChild(empty);
     return;
   }
 
   containerEl.appendChild(createHeader());
 
-  const images = sortImagesByPreset(getImages());
+  const items = sortImagesByPreset(getAttachments());
 
-  if (images.length === 0) {
+  if (items.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'flex items-center justify-center flex-1 text-zinc-500 text-sm mt-8';
-    empty.textContent = 'No images yet. Click "Attach image…" to add one.';
+    empty.textContent = 'No attachments yet. Click "Attach…" to add a reference image, model, or document.';
     containerEl.appendChild(empty);
     return;
   }
@@ -71,8 +74,8 @@ export function refreshImages(): void {
   grid.className = 'grid gap-3 mt-3';
   grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(220px, 1fr))';
 
-  for (const item of images) {
-    grid.appendChild(createImageTile(item, images));
+  for (const item of items) {
+    grid.appendChild(createImageTile(item, items));
   }
 
   containerEl.appendChild(grid);
@@ -87,12 +90,12 @@ function createHeader(): HTMLElement {
 
   const titleText = document.createElement('div');
   titleText.className = 'text-sm font-semibold text-zinc-200';
-  titleText.textContent = 'Reference images';
+  titleText.textContent = 'Attachments';
   title.appendChild(titleText);
 
   const desc = document.createElement('div');
   desc.className = 'text-xs text-zinc-500 leading-relaxed mt-0.5';
-  desc.textContent = 'Photos or renderings the model should match. Each image has a label — pick a preset like "Front" or type your own caption — that shows in the Gallery and orders the image strip.';
+  desc.textContent = 'Reference files pinned to this session — photos to match, reference models, spec sheets, notes. They stay with the session (an AI chat clear won\'t remove them) and the assistant can read them back. Each has a label; presets like "Front" order reference photos in the Gallery.';
   title.appendChild(desc);
 
   header.appendChild(title);
@@ -100,28 +103,59 @@ function createHeader(): HTMLElement {
   const addBtn = document.createElement('button');
   addBtn.id = 'btn-attach-image';
   addBtn.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors';
-  addBtn.textContent = '+ Attach image…';
-  addBtn.addEventListener('click', () => showAttachImageModal(getImages(), persistAndRefresh));
+  addBtn.textContent = '+ Attach…';
+  addBtn.addEventListener('click', () => showAttachImageModal(getAttachments(), persistAndRefresh));
   header.appendChild(addBtn);
 
   return header;
 }
 
-function createImageTile(item: AttachedImage, allImages: AttachedImage[]): HTMLElement {
+/** Emoji icon for a non-image attachment kind, shown on the file-card tile. */
+function kindIcon(kind: SessionAttachment['kind']): string {
+  switch (kind) {
+    case 'model': return '\u{1F9CA}';      // ice cube — stands in for a 3D model
+    case 'document': return '\u{1F4C4}';    // page
+    case 'text': return '\u{1F4DD}';        // memo
+    default: return '\u{1F4CE}';            // paperclip
+  }
+}
+
+function createImageTile(item: SessionAttachment, allImages: SessionAttachment[]): HTMLElement {
   const tile = document.createElement('div');
-  tile.className = 'bg-zinc-800 rounded-lg overflow-hidden flex flex-col';
+  tile.className = 'bg-zinc-800 rounded-lg overflow-hidden flex flex-col relative';
 
-  // Thumbnail
-  const thumbContainer = document.createElement('div');
-  thumbContainer.className = 'aspect-square bg-zinc-900 flex items-center justify-center overflow-hidden cursor-pointer';
-  thumbContainer.title = 'Click to enlarge';
+  // Kind badge (top-right) for quick scanning, esp. with mixed attachment types.
+  const badge = document.createElement('div');
+  badge.className = 'absolute top-1.5 right-1.5 z-10 px-1.5 py-0.5 rounded text-[10px] font-medium bg-black/60 text-zinc-200 pointer-events-none';
+  badge.textContent = attachmentKindLabel(item.kind);
+  tile.appendChild(badge);
 
-  const img = document.createElement('img');
-  img.className = 'w-full h-full object-contain';
-  applyImageSrc(img, item.src);
-  thumbContainer.appendChild(img);
-  thumbContainer.addEventListener('click', () => showLightbox(item.src, item.label || ''));
-  tile.appendChild(thumbContainer);
+  if (item.kind === 'image') {
+    // Thumbnail
+    const thumbContainer = document.createElement('div');
+    thumbContainer.className = 'aspect-square bg-zinc-900 flex items-center justify-center overflow-hidden cursor-pointer';
+    thumbContainer.title = 'Click to enlarge';
+
+    const img = document.createElement('img');
+    img.className = 'w-full h-full object-contain';
+    applyImageSrc(img, item.src);
+    thumbContainer.appendChild(img);
+    thumbContainer.addEventListener('click', () => showLightbox(item.src, item.label || ''));
+    tile.appendChild(thumbContainer);
+  } else {
+    // Non-image: a file card with a type icon + media type.
+    const card = document.createElement('div');
+    card.className = 'aspect-square bg-zinc-900 flex flex-col items-center justify-center gap-1 text-zinc-400';
+    const icon = document.createElement('div');
+    icon.className = 'text-4xl';
+    icon.textContent = kindIcon(item.kind);
+    card.appendChild(icon);
+    const mt = document.createElement('div');
+    mt.className = 'text-[10px] text-zinc-500 px-2 text-center break-all';
+    mt.textContent = item.mediaType || attachmentKindLabel(item.kind);
+    card.appendChild(mt);
+    tile.appendChild(card);
+  }
 
   // Footer: label input (with preset suggestions) and remove button
   const footer = document.createElement('div');
@@ -139,8 +173,9 @@ function createImageTile(item: AttachedImage, allImages: AttachedImage[]): HTMLE
     if (next === current) return;
     const nextList = allImages.map(x => {
       if (x.id !== item.id) return x;
-      const updated: AttachedImage = { id: x.id, src: x.src };
-      if (next) updated.label = next;
+      // Preserve kind/mediaType/addedAt/source; only the label changes.
+      const updated: SessionAttachment = { ...x, label: next };
+      if (!next) delete updated.label;
       return updated;
     });
     await persistAndRefresh(nextList);
@@ -169,10 +204,38 @@ function createImageTile(item: AttachedImage, allImages: AttachedImage[]): HTMLE
   footer.appendChild(removeBtn);
 
   tile.appendChild(footer);
+
+  // Description: a free-form "why this matters" note, distinct from the short
+  // label. This is the durable context the AI reads back via getAttachments.
+  const descInput = document.createElement('textarea');
+  descInput.rows = 2;
+  descInput.placeholder = 'Describe why this matters (optional)…';
+  descInput.value = item.description ?? '';
+  descInput.className = 'mx-3 mb-2 bg-zinc-900 text-zinc-300 text-xs px-2 py-1 rounded border border-zinc-700 outline-none focus:border-blue-500 placeholder-zinc-600 resize-y';
+  const commitDescription = async () => {
+    const next = descInput.value.trim();
+    const current = item.description ?? '';
+    if (next === current) return;
+    const nextList = allImages.map(x => {
+      if (x.id !== item.id) return x;
+      const updated: SessionAttachment = { ...x, description: next };
+      if (!next) delete updated.description;
+      return updated;
+    });
+    await persistAndRefresh(nextList);
+  };
+  descInput.addEventListener('blur', commitDescription);
+  descInput.addEventListener('keydown', (e) => {
+    // Enter commits (Shift+Enter inserts a newline); Escape reverts.
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); descInput.blur(); }
+    if (e.key === 'Escape') { descInput.value = item.description ?? ''; descInput.blur(); }
+  });
+  tile.appendChild(descInput);
+
   return tile;
 }
 
-async function persistAndRefresh(next: AttachedImage[]): Promise<void> {
+async function persistAndRefresh(next: SessionAttachment[]): Promise<void> {
   await cb.onChange(next);
   refreshImages();
 }
@@ -180,8 +243,8 @@ async function persistAndRefresh(next: AttachedImage[]): Promise<void> {
 // === Attach modal (file upload + URL paste) ===
 
 export function showAttachImageModal(
-  current: AttachedImage[],
-  onSave: (next: AttachedImage[]) => Promise<void> | void,
+  current: SessionAttachment[],
+  onSave: (next: SessionAttachment[]) => Promise<void> | void,
 ): void {
   const backdrop = document.createElement('div');
   backdrop.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm';
@@ -191,11 +254,11 @@ export function showAttachImageModal(
 
   const title = document.createElement('h2');
   title.className = 'text-base font-semibold text-zinc-100 mb-2';
-  title.textContent = 'Attach an image';
+  title.textContent = 'Attach a file';
 
   const explanation = document.createElement('p');
   explanation.className = 'text-sm text-zinc-400 mb-4 leading-relaxed';
-  explanation.textContent = 'Add a photo or rendering you want your model to match. Each image is auto-labeled from its filename or URL — rename it from the tile after attaching. The label appears in the Gallery and orders the image strip.';
+  explanation.textContent = 'Pin a reference file to this session — a photo to match, a reference model, a spec sheet, or notes. The type is detected automatically. Each item is auto-labeled from its filename or URL; rename it from the tile after attaching.';
 
   // File upload section
   const fileSection = document.createElement('div');
@@ -207,23 +270,30 @@ export function showAttachImageModal(
 
   const fileHint = document.createElement('div');
   fileHint.className = 'text-xs text-zinc-500 mb-2 leading-relaxed';
-  fileHint.textContent = 'Select one or more images. Filenames containing front/right/back/left/top/perspective auto-set the label to the matching preset; anything else uses "Perspective".';
+  fileHint.textContent = 'Select one or more files (images, STL/STEP/3MF models, PDFs, text). For reference photos, filenames containing front/right/back/left/top/perspective auto-set the matching preset label.';
 
   const fileInput = document.createElement('input');
   fileInput.type = 'file';
-  fileInput.accept = 'image/*';
   fileInput.multiple = true;
   fileInput.className = 'hidden';
   fileInput.addEventListener('change', async () => {
     const files = Array.from(fileInput.files || []);
     if (!files.length) return;
 
-    const additions: AttachedImage[] = [];
+    const additions: SessionAttachment[] = [];
     for (const file of files) {
       const name = file.name.toLowerCase();
       const dataUrl = await readFileAsDataURL(file);
-      const matched = PRESET_LABELS.find(p => name.includes(p.toLowerCase()));
-      additions.push({ id: generateId(), src: dataUrl, label: matched ?? 'Perspective' });
+      const att = normalizeAttachment(
+        { src: dataUrl, label: file.name, mediaType: file.type || undefined, addedAt: Date.now(), source: 'user' },
+        generateId(),
+      );
+      // For reference photos, snap the label to a matching preset angle.
+      if (att.kind === 'image') {
+        const matched = PRESET_LABELS.find(p => name.includes(p.toLowerCase()));
+        att.label = matched ?? 'Perspective';
+      }
+      additions.push(att);
     }
 
     await onSave([...current, ...additions]);
@@ -278,7 +348,10 @@ export function showAttachImageModal(
     try {
       const dataUrl = await fetchImageAsDataURL(url);
       const matched = PRESET_LABELS.find(p => url.toLowerCase().includes(p.toLowerCase()));
-      const item: AttachedImage = { id: generateId(), src: dataUrl, label: matched ?? 'Perspective' };
+      const item = normalizeAttachment(
+        { src: dataUrl, label: matched ?? 'Perspective', kind: 'image', addedAt: Date.now(), source: 'user' },
+        generateId(),
+      );
       await onSave([...current, item]);
       backdrop.remove();
     } catch (err) {

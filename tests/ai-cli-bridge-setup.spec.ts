@@ -27,15 +27,17 @@ test.describe('AI CLI bridge setup', () => {
     await expect(page.getByText('Set an API key (required)')).toBeVisible();
     await expect(page.getByText('Log in with your subscription')).toBeVisible();
 
-    // Footer shows Close, and a disabled "Done & enable" until the endpoint is set.
+    // Footer shows Close, Save, and "Save & activate" — already enabled because
+    // the Base URL ships pre-filled with the bridge default (no typing needed).
     await expect(page.getByRole('button', { name: 'Close' })).toBeVisible();
-    const enableBtn = page.getByRole('button', { name: 'Done & enable Custom endpoint' });
-    await expect(enableBtn).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
+    const enableBtn = page.getByRole('button', { name: 'Save & activate Custom endpoint' });
 
-    // The Base URL starts empty; clicking "Use this endpoint" fills it and,
-    // in turn, enables the footer's "Done & enable".
+    // The Base URL is pre-filled with CLIProxyAPI's default endpoint; clicking
+    // "Use this endpoint" is idempotent and keeps "Save & activate" enabled.
     const baseUrl = page.locator('input[placeholder="http://localhost:8080/v1"]');
-    await expect(baseUrl).toHaveValue('');
+    await expect(baseUrl).toHaveValue('http://localhost:8317/v1');
+    await expect(enableBtn).toBeEnabled();
     await page.getByRole('button', { name: /Use this endpoint/ }).click();
     await expect(baseUrl).toHaveValue('http://localhost:8317/v1');
     await expect(enableBtn).toBeEnabled();

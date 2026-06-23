@@ -2,6 +2,7 @@
 
 **When to reach for this:** the user wants something mesh CSG can't say cleanly. Concretely:
 
+- An **organic figure / creature / body** — a figurine, character, person, animal, or bust. This is the default medium for anything anatomical: capsule limbs blended into ellipsoid masses with `smoothUnion` give continuous, sculpted joins. A `union` of constant-radius spheres and capsules can't — its ceiling is tubes-and-balls. See [Organic figures & creature bodies](#organic-figures--creature-bodies) below.
 - A **smooth fillet** between two shapes that you'd otherwise have to engineer by hand (`smoothUnion`).
 - A **twisted, bent, or tapered** body where you'd otherwise need `.warp(fn)` heroics.
 - A **lattice / gyroid / periodic infill** for 3D printing — geometry that's mathematically defined and infinite by nature.
@@ -43,11 +44,60 @@ api.sdf.cylinder(radius, height)        // Z-aligned, spans [-h/2, h/2]
 api.sdf.roundedCylinder(radius, height, edgeR)  // rounded top/bottom edges — OUTER radius+height preserved
 api.sdf.torus(majorR, minorR)           // ring in XY plane
 api.sdf.capsule([x1,y1,z1], [x2,y2,z2], radius)   // hemisphere-capped rod
+api.sdf.tube(path, radius, opts?)        // capsule swept along a polyline path — see below
 ```
+
+### Directional surface textures — `tube` (flutes / rings / helix that follow the path) {#tube}
+
+**Reach for `tube` whenever a surface texture should flow along a direction of
+travel** — ribs running up a stalk, threads wrapping a bolt, corrugations
+around a bent hose, a spiral up a horn. `path` is a `Vec3[]` of ≥ 2 points (2 =
+a straight column; more = it bends through them, like `Curves` control points).
+The whole tube is **ONE connected component by construction** (no floating
+parts), and the texture is carried by a **rotation-minimizing frame**, so the
+pattern stays continuous *through bends* — no per-segment phase seam, and no
+separate end caps to phase-match (the hemispherical caps are part of the same
+continuous surface).
+
+```js
+const { sdf } = api;
+// Straight fluted column:
+sdf.tube([[0,0,0],[0,0,60]], 8, { profile: 'flutes', count: 16 }).build();
+// A bent arm whose flutes follow the elbow:
+sdf.tube([[0,0,0],[30,0,0],[40,0,12],[40,0,40]], 6, { profile: 'flutes', count: 12 }).build();
+```
+
+`opts`:
+- **`profile`** — `'smooth'` (default), `'flutes'` (ridges ALONG the path),
+  `'rings'` (bands ACROSS it), or `'helix'` (threads WRAPPING it).
+- **`count`** — rib count (flutes), ring count over the whole length (rings),
+  or number of thread-starts (helix). Size-relative default.
+- **`turns`** — *helix only*: full wraps along the entire path (default 6).
+- **`depth`** — groove depth, carved **inward** in world units (default ~9% of
+  radius). Inward-only carving means a groove can never detach a piece.
+- **`taper`** — end radius as a fraction of the start radius, linearly along the
+  path (1 = none, `<1` = taper toward the last point). Great for tips/spikes.
+
+**This is the right tool for ribbed/branching organic shapes — do NOT hand-roll
+it with `warp`/`displace`.** A saguaro cactus is `tube` trunk + `tube` arms,
+`smoothUnion`'d and wrapped in one `.label()`:
+
+```js
+const { sdf } = api;
+const trunk = sdf.tube([[0,0,0],[0,0,150]], 16, { profile: 'flutes', count: 22, depth: 1.4 });
+const arm   = sdf.tube([[0,0,70],[40,0,70],[56,0,86],[56,0,120]], 11,
+                       { profile: 'flutes', count: 15, taper: 0.92 });
+return trunk.smoothUnion(arm, 6).label('cactus').build({ edgeLength: 0.7 });
+```
+
+Mesh fine enough to resolve the grooves (`edgeLength` ≲ groove spacing) or the
+texture aliases — same rule as `.displace()`. Very deep `rings`/`helix` at a
+tight concave bend can shed tiny mesh slivers (`componentCount` > 1); a gentler
+bend radius (more path points) or shallower `depth` clears them.
 
 ### TPMS lattices (all infinite — see "Bounds for unbounded shapes")
 
-Triply-periodic minimal surfaces. All take `(cellSize, thickness)` — `cellSize` is the period in world units, `thickness` is the wall width (0 = a bare zero-thickness surface). They're mathematically infinite, so you **must** intersect with a finite shape or pass explicit `bounds` to `.build()`.
+Triply-periodic minimal surfaces. All take `(cellSize, thickness)` — `cellSize` is the period in world units, `thickness` is a **field threshold** (not a wall width): the mesher keeps regions where `|F(p)| < thickness`, so 0 gives a bare zero-thickness surface and larger values fatten the walls until the lattice closes off entirely. They're mathematically infinite, so you **must** intersect with a finite shape or pass explicit `bounds` to `.build()`.
 
 ```js
 api.sdf.gyroid(cellSize, thickness)     // the famous one — smooth, isotropic
@@ -62,7 +112,14 @@ api.sdf.gradedDiamond (cellSize, (x, y, z) => /* thickness here */)
 api.sdf.gradedLidinoid(cellSize, (x, y, z) => /* thickness here */)
 ```
 
-**Sizing `thickness`:** for a printable shell `thickness ≈ cellSize/6 to cellSize/3` is the sweet spot for gyroid, schwarzP, and diamond — thinner gets fragile/under-resolved, thicker fills in the pores. **Lidinoid is the outlier**: its double-frequency terms create smaller effective features at the same `cellSize`, so push its lower bound up — use `thickness ≈ cellSize/5 to cellSize/3` and drop `edgeLength` a touch (try ~`cellSize/10`) if the surface looks jaggy at the default.
+**Sizing `thickness`:** `thickness` is a field threshold in the TPMS field's natural units (roughly 0–1.5 range) — **the ratio `cellSize/N` is meaningless here and will produce a solid blob for typical `cellSize` values.**
+
+For **gyroid, schwarzP, and diamond**:
+- Open, see-through lattice: `thickness ≈ 0.4–0.7`. Below ~0.3 the shell is too thin to print; above ~0.9 pores begin closing off; **`thickness ≥ 1.1` selects nearly all of space → a solid blob** that passes `isManifold: true` but looks like a plain sphere.
+- Safe starting point: `thickness = 0.5`, `cellSize = 8..15` for print-scale parts.
+- Tie `edgeLength` to `cellSize / 14..16` (not to the wall thickness) so thin walls resolve without a runaway mesh count.
+
+**Lidinoid is the outlier**: its double-frequency terms create smaller effective features, so use `thickness ≈ 0.3–0.5` and try `edgeLength ≈ cellSize / 10`.
 
 **Mixing two lattices:** use **sharp `union`** to butt two regions side-by-side (preserves their labels for paint). `intersect` two infinite TPMS gives their common surface (also infinite — still needs an outer bound).
 
@@ -95,6 +152,50 @@ api.sdf.smoothIntersect(a, b, k)
 
 **Heuristic for `k`:** start at ~10% of the smallest dimension involved in the join. Too small → fillet looks like a sharp seam. Too big → the shapes lose their identity and merge into a blob.
 
+## Organic figures & creature bodies
+
+> **For a HUMANOID figure (person / character / hero / bust), prefer the higher-level `api.sdf.figure` builder — `readDoc("figure")`.** It gives you a deterministic posable rig (named joints, no coordinate guessing) plus part/face/hair/clothing builders that always weld to one component. The hand-built recipe below is the right tool for **animals, creatures, and other organic forms** that the humanoid rig doesn't cover, and for understanding what `figure` does under the hood.
+
+This is the method for **figurines, characters, people, animals, and busts** — any anatomical form. The pattern is always the same: build each body part as a **capsule** (limbs, neck, fingers, tail) or **ellipsoid** (head, torso, hips, muscle masses), then weld them with **`smoothUnion`** so the joins are continuous flesh, not visible balls. Use **`mirrorPair`** for left/right symmetry so you only model one side. Don't reach for a plain `union` of constant-radius spheres and capsules here — that's the "primitive soup" failure mode (every limb a tube, every joint a ball); it validates but never resembles the subject.
+
+```js
+const { sdf } = api;
+
+// Masses — ellipsoids give per-axis proportions a sphere can't.
+const torso = sdf.ellipsoid(6, 4, 9).translate(0, 0, 16);
+const hips  = sdf.ellipsoid(5, 4, 4).translate(0, 0, 8);
+const head  = sdf.sphere(5).translate(0, 0, 28);
+const neck  = sdf.capsule([0, 0, 22], [0, 0, 26], 2);
+
+// Limbs — capsules from joint to joint; mirrorPair makes the matching side.
+const arm = sdf.capsule([5, 0, 20], [10, 0, 6], 2).mirrorPair('x');
+const leg = sdf.capsule([2.5, 0, 8], [3, 0, -14], 3).mirrorPair('x');
+
+// Weld everything with smooth blends so joints read as continuous body.
+const k = 1.5;                                  // ~10% of limb diameter
+const body = torso
+  .smoothUnion(hips, k)
+  .smoothUnion(neck, k)
+  .smoothUnion(head, k)
+  .smoothUnion(arm, k)
+  .smoothUnion(leg, k);
+
+// A flat base keeps it printable (organic figures rarely have a flat foot).
+const foot = sdf.box([14, 10, 2]).translate(0, 0, -15);
+return body.smoothUnion(foot, 1).build({ edgeLength: 0.4 });
+```
+
+Workflow that lands a likeness instead of a blob:
+
+1. **Block the masses first.** Get head : torso : hip : limb proportions right against the reference *before* any detail — `renderView` front and side, fix the silhouette, then move on. Wrong proportions are the #1 reason a figure doesn't resemble its subject.
+2. **`smoothUnion` every join** with `k` ≈ 10% of the thinner part's diameter. Too small reads as a glued-on ball; too big melts the limb into the torso.
+3. **Symmetry via `mirrorPair`**, not two hand-placed copies — it's exact and halves the code.
+4. **Face the front (−Y).** A character's face must point toward −Y (see ai.md coordinate system), so the Front view and the export both show it facing forward.
+5. **Detail last, as small additions** — brow, nose, ears, eye sockets — each `smoothUnion`'d (or `smoothSubtract`'d for sockets) onto the blocked body. Surface texture (scales, fur, bark) is `.displace(amount, sdf.noise(...))`.
+6. **Judge against the reference, not just `isManifold`.** A figure's success criterion is *resemblance*. Compare your render to the photo/description before calling it done; manifold + prints is necessary, not sufficient.
+
+For a hard or unfamiliar subject, spend 3 lines on a proof-of-concept first — one `smoothUnion` of two ellipsoids, rendered — to confirm the method reaches the look before you build the whole figure.
+
 ## Transforms
 
 ```js
@@ -114,9 +215,14 @@ node.round(r)                    // grow by r everywhere, rounding sharp edges
 node.twist(degPerUnit, axis?, center?)  // twist around 'z' (default); center=[u,v] offsets the twist line
 node.bend(degPerUnit, axis?)     // bend perpendicular to 'x' (default)
 node.taper(rate, axis?)          // linearly scale the cross-section along 'z' (default)
+node.displace(amount, field)     // push the surface in/out by a scalar field (organic texture)
 ```
 
 Twist, bend, and taper warp space — the resulting field is a Lipschitz *approximation* of the true SDF, but marching tetrahedra still produces a clean watertight mesh.
+
+**`.displace(amount, field)`** is the *stochastic* warp — the rough-surface counterpart to the smooth twist/bend/taper. It moves the surface in and out by up to `amount` world units along a scalar `field(x,y,z)` (positive pushes OUTWARD). Pass `api.sdf.noise(...)` for organic texture (rock, bark, coral, terrain) or any custom `(x,y,z)=>number` returning roughly `[-1, 1]`. Two rules keep it printable:
+- **Mesh fine enough to resolve the field.** Set `edgeLength` smaller than the noise's smallest feature (~`1/frequency` / `2^octaves`); otherwise the bumps alias into hundreds of speckle components. If `componentCount` explodes, your `edgeLength` is too coarse for the noise frequency, or the amplitude is too high.
+- **Keep `amount` well under the noise wavelength (~`1/frequency`)**, or grooves/peaks pinch off floating islands. For deep, reliable texture, shape the field to one side — e.g. `(x,y,z) => -(n(x,y,z)*0.5 + 0.5)` carves **inward only**, which can never detach a piece, the dependable recipe for textured shells and grooved surfaces.
 
 **`.round(r)` grows the whole shape by `r`.** It's literally `f - r`, which offsets the iso-surface outward by `r` in every direction — so `cylinder(2, 10).round(0.5)` produces a shape with radius 2.5 AND height 11, not "the same cylinder with rounded edges". When you want the rounding WITHOUT the inflation, reach for `sdf.roundedBox` / `sdf.roundedCylinder`, which preserve the outer dimensions for you.
 
@@ -147,6 +253,19 @@ node.repeatN([nx, ny, nz], [px, py, pz], { stagger? })   // finite N-per-axis gr
 
   **Stagger** (`opts.stagger = { along, by, amount? }`) brick-shifts alternating rows: every other cell along `by` gets nudged by `amount * period` along `along`. The classic running-bond brick wall is `repeatN([8, 5, 0], [4, 2, 0], { stagger: { along: 'x', by: 'y' } })` — 5 rows of 8 bricks, every other row offset by half a brick (the default `amount: 0.5`). Honeycomb hex patterns are the same trick with a hex-prism cell. `along` and `by` must be different axes; `amount` is clamped to `[0, 1]`.
 
+## Generative fields & grammars
+
+Two helpers turn procedural recipes into meshable SDF — the algorithmic-design counterpart to placing primitives by hand.
+
+```js
+api.sdf.noise({ seed?, frequency?, octaves?, lacunarity?, gain?, ridged? })  // → (x,y,z)=>number field
+api.sdf.lsystem({ axiom, rules, iterations, angle?, length?, radius?,
+                  radiusScale?, lengthScale?, seed?, blend?, label?, leaf? })  // → SdfNode
+```
+
+- **`noise(opts?)`** returns a seeded fractional-Brownian-motion field in roughly `[-1, 1]` — hand it straight to `node.displace(amount, field)`. `frequency` sets feature size (cycles per unit), `octaves` layers detail, `ridged: true` gives sharp creases (eroded rock, brain coral) instead of smooth hills. Same seed → identical noise, so models are reproducible. The field is a plain function, so you can wrap it: `(x,y,z) => n(x, y, z*0.2)` stretches features vertically (bark grain); `(x,y,z) => -(n(x,y,z)*0.5+0.5)` carves inward only.
+- **`lsystem(opts)`** grows a Lindenmayer system into an SDF skeleton of welded capsules — fractal plants, corals, branching structures. `rules` rewrite the `axiom` string `iterations` times, then a 3D turtle walks it: `F` draws a segment, `+ -` yaw, `& ^` pitch, `\ /` roll, `[ ]` branch, `!` thin. `radiusScale`/`lengthScale` taper toward the tips; `blend` smooth-unions the joints (the SDF fillet, applied along the whole skeleton); `leaf: { symbols, radius, label }` drops foliage spheres as a second paint region. Stochastic productions are supported (`rules: { X: [{ p: 1, to: '...' }, ...] }`). **Cost scales as `segments × grid`** — keep `iterations` modest (≈3–5, a few hundred segments) and `edgeLength` ≥ ~0.6, or builds get slow.
+
 **Ordering: intersect FIRST, then warp.** Domain warps (`twist`, `bend`, `taper`, `repeat`, `polarRepeat`) don't shrink their input's bounds — only spatial booleans do. So `infinite.twist(...)` stays infinite (and `.build()` fails); `infinite.intersect(finiteBox).twist(...)` works because the intersect makes bounds finite before the twist tries to compute its sweep. Same applies to `repeat(...).twist(...)` — clip the lattice first, then warp. (`repeatN` is already finite, so this ordering rule doesn't apply to it.)
 
 ## Building (lowering to a Manifold)
@@ -156,11 +275,36 @@ return node.build();                              // sensible defaults
 return node.build({ edgeLength: 0.25 });          // finer mesh
 return node.build({ bounds: { min: [-30,-30,-30], max: [30,30,30] } });  // override bounds
 return node.build({ edgeLength: 0.5, level: 0, tolerance: 0.05 });
+return node.build({ edgeLength: 0.5, detail: [{ center: [0, 0, 52], radius: 9, edgeLength: 0.15 }] });
 ```
 
 **`edgeLength` controls quality and speed.** Default is ~1/32 of the smallest bbox extent, clamped to `[0.1, 5]`. Halving `edgeLength` quadruples-or-more the triangle count and runtime — bump it down only when you can see facets you don't want.
 
+### Detail regions — fine features on a big model {#detail-regions}
+
+A uniform grid makes small features (a figurine's face, engraved lettering, a
+fine clasp) faceted unless you pay for a fine grid over the *whole* model.
+`detail` refines locally instead: after the march, triangles inside each
+sphere are subdivided down to that sphere's `edgeLength` and the new vertices
+are re-projected onto the exact SDF surface. The mesh stays watertight, labels
+and welds are unaffected, and cost scales with the sphere's surface area only.
+
+```js
+// A 60-tall figure on a 0.5 grid, with the head meshed ~3× finer:
+return body.build({
+  edgeLength: 0.5,
+  detail: [{ center: rig.joints.head, radius: 9, edgeLength: 0.16 }],
+});
+```
+
+- Up to 16 spheres; each only refines (a sphere coarser than the global grid
+  is a no-op). Refinement is capped at ~400k triangles per labelled region.
+- For figures, `api.sdf.figure.faceDetail(rig)` returns ready-made spheres (head + a finer mouth sphere)
+  covering the head — see `/ai/figure.md`.
+
 **`bounds`** is auto-inferred from the primitives in your tree. **Override it explicitly** when you use `gyroid` or `.repeat()` (which are unbounded), or when you intersect with something to cut a finite chunk from an infinite surface.
+
+> **In a `voxel` session, `api.sdf` is also available — but you rasterize it into the grid with `v.sdf(node, opts)` instead of `.build()`** (there's no Manifold engine to lower through). Same expression vocabulary (gyroids, TPMS, smooth blends, twists), blocky colored-voxel output. `.label()` regions map to voxel colors via the `colors` option. See `/ai/voxel.md#sdf--voxel-vsdf`.
 
 ## Painting SDFs — paint-by-label
 
@@ -195,6 +339,7 @@ return sdf.union(sdf.sphere(5).label('a'), sdf.sphere(5).translate(4, 0, 0).labe
 **Label propagation rules:**
 
 - Labels propagate up through **transforms** (`translate`, `rotate`, `scale`, `mirror`), **modifiers** (`shell`, `round`, `twist`, `bend`), and the **A side of both `subtract` and `smoothSubtract`** — so `sphere.label('shell').subtract(hole).translate(0, 0, 5)` and `sphere.label('shell').smoothSubtract(dimple, 0.5)` both paint under `'shell'`. The result of a subtract IS A's surface (with a chunk or a soft bite removed), so A's label is the natural owner.
+- Transforms also work **above a labelled union**: `sdf.union(a.label('a'), b.label('b')).translate(0, 0, -5)` keeps both labels — rigid transforms (`translate`, `rotate`, `scale`, `mirror`) distribute onto each labelled region at partition time. Use this to move/orient a whole labelled assembly in one call.
 - Labels do **NOT** propagate through `smoothUnion`, `smoothIntersect`, or sharp `intersect` — those mix two surfaces and "which label wins" is ambiguous. Wrap the outer expression in `.label()` to paint the whole blend as one region.
 - The B side of a subtract / smoothSubtract (the carving tool) has its labels ignored — the geometry is removed, so there's no surface to paint.
 

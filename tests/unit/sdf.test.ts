@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import {
   SdfNode,
   partitionByLabel,
+  sourceUsesSdfBuild,
   __testables__,
 } from '../../src/geometry/sdf';
 
@@ -23,6 +24,7 @@ const {
   primRoundedCylinder,
   primTorus,
   primCapsule,
+  primTube,
   primGyroid,
   primSchwarzP,
   primDiamond,
@@ -40,6 +42,9 @@ const {
   opRound,
   opTwist,
   opTaper,
+  opDisplace,
+  buildLSystem,
+  assertNoiseOpts,
   opPolarArray,
   opRepeat,
   defaultEdgeLength,
@@ -148,6 +153,51 @@ describe('sdf primitives', () => {
     });
     it('rejects coincident endpoints', () => {
       expect(() => primCapsule([0, 0, 0], [0, 0, 0], 1)).toThrow();
+    });
+  });
+
+  describe('tube', () => {
+    it('a smooth 2-point tube matches the capsule it generalizes', () => {
+      const t = primTube([[0, 0, 0], [10, 0, 0]], 2);
+      expect(t.evaluate(5, 2, 0)).toBeCloseTo(0, APPROX);   // side surface
+      expect(t.evaluate(-2, 0, 0)).toBeCloseTo(0, APPROX);  // A end cap
+      expect(t.evaluate(15, 0, 0)).toBeCloseTo(3, APPROX);  // past B: 5 from B minus r
+    });
+    it('flutes carve INWARD only — the ridge sits at the base radius, grooves cut in', () => {
+      const t = primTube([[0, 0, 0], [0, 0, 20]], 5, { profile: 'flutes', count: 8, depth: 1 });
+      // theta=0 is a ridge (g=0) -> surface at full radius 5.
+      expect(t.evaluate(5, 0, 10)).toBeCloseTo(0, APPROX);
+      // Grooves only REMOVE material, so the surface never exceeds the nominal
+      // radius: every point on the radius-5 cylinder is on-or-outside (f >= 0).
+      for (let a = 0; a < Math.PI * 2; a += 0.3) {
+        const x = 5 * Math.cos(a), y = 5 * Math.sin(a);
+        expect(t.evaluate(x, y, 10)).toBeGreaterThanOrEqual(-1e-9);
+      }
+    });
+    it('bounds enclose the path expanded by the radius', () => {
+      const b = primTube([[0, 0, 0], [0, 0, 30]], 4).bounds();
+      expect(b.min[2]).toBeLessThanOrEqual(-4);
+      expect(b.max[2]).toBeGreaterThanOrEqual(34);
+      expect(b.max[0]).toBeGreaterThanOrEqual(4);
+    });
+    it('rejects too-short paths, coincident points, and unknown options', () => {
+      expect(() => primTube([[0, 0, 0]], 2)).toThrow();
+      expect(() => primTube([[0, 0, 0], [0, 0, 0]], 2)).toThrow();
+      expect(() => primTube([[0, 0, 0], [0, 0, 10]], 2, { profile: 'zigzag' })).toThrow();
+      expect(() => primTube([[0, 0, 0], [0, 0, 10]], 2, { bogus: 1 } as never)).toThrow();
+    });
+    it('rejects a non-integer rib/ring/thread count (would seam at the theta wrap)', () => {
+      expect(() => primTube([[0, 0, 0], [0, 0, 10]], 2, { profile: 'helix', count: 2.5 })).toThrow();
+      expect(() => primTube([[0, 0, 0], [0, 0, 10]], 2, { profile: 'flutes', count: 0 })).toThrow();
+    });
+    it('a deep groove cannot carve through the centerline (stays solid at the axis)', () => {
+      // depth (5) > radius (2): without the clamp the field at the axis would go
+      // positive (a hole bored through), splitting the tube. The clamp keeps the
+      // core solid, so the axis stays well inside the surface.
+      const t = primTube([[0, 0, 0], [0, 0, 20]], 2, { profile: 'flutes', count: 6, depth: 5 });
+      for (let z = 2; z <= 18; z += 4) {
+        expect(t.evaluate(0, 0, z)).toBeLessThan(0);
+      }
     });
   });
 
@@ -455,6 +505,59 @@ describe('sdf label partitioning (paint-by-label)', () => {
     const parts = partitionByLabel(tree);
     expect(parts).toHaveLength(1);
     expect(parts[0].labelName).toBe('eye');
+  });
+
+  it('transform ABOVE a labelled union distributes onto each region', () => {
+    // `union(a.label, b.label).translate(...)` — moving a whole labelled
+    // assembly must not fuse it into one anonymous region (every label
+    // would silently paint 0 triangles). Rigid transforms distribute.
+    const tree = opTranslate(
+      opUnion(primSphere(2).label('a'), primSphere(2).translate([6, 0, 0]).label('b')),
+      [0, 0, -10],
+    );
+    const parts = partitionByLabel(tree);
+    expect(parts).toHaveLength(2);
+    expect(parts.map(p => p.labelName).sort()).toEqual(['a', 'b']);
+    // The re-wrapped regions carry the transform: sphere 'a' (origin,
+    // r=2) must now contain [0,0,-10] and not the origin.
+    const a = parts.find(p => p.labelName === 'a')!.node;
+    expect(a.evaluate(0, 0, -10)).toBeLessThan(0);
+    expect(a.evaluate(0, 0, 0)).toBeGreaterThan(0);
+  });
+
+  it('chained transforms above labelled unions distribute through every layer', () => {
+    const tree = opScale(
+      opTranslate(
+        opUnion(primSphere(2).label('a'), primSphere(2).translate([6, 0, 0]).label('b')),
+        [0, 0, 10],
+      ),
+      2,
+    );
+    const parts = partitionByLabel(tree);
+    expect(parts).toHaveLength(2);
+    const a = parts.find(p => p.labelName === 'a')!.node;
+    // sphere a: translated to z=10 then scaled ×2 → centre [0,0,20], r=4.
+    expect(a.evaluate(0, 0, 20)).toBeLessThan(0);
+    expect(a.evaluate(0, 0, 25)).toBeGreaterThan(0);
+  });
+
+  it('rotate and mirror above labelled unions also distribute', () => {
+    const rot = opRotate(
+      opUnion(primSphere(1).translate([5, 0, 0]).label('a'), primSphere(1).label('b')),
+      [0, 0, 90],
+    );
+    const rParts = partitionByLabel(rot);
+    expect(rParts.map(p => p.labelName).sort()).toEqual(['a', 'b']);
+    const ra = rParts.find(p => p.labelName === 'a')!.node;
+    expect(ra.evaluate(0, 5, 0)).toBeLessThan(0); // rotated +X → +Y
+
+    const mir = opMirror(
+      opUnion(primSphere(1).translate([5, 0, 0]).label('a'), primSphere(1).label('b')),
+      'x',
+    );
+    const mParts = partitionByLabel(mir);
+    const ma = mParts.find(p => p.labelName === 'a')!.node;
+    expect(ma.evaluate(-5, 0, 0)).toBeLessThan(0);
   });
 });
 
@@ -917,5 +1020,137 @@ describe('sdf polarRepeat (domain-warp ring)', () => {
   it('rejects { angle } with a targeted "use polarArray" hint', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => primSphere(1).polarRepeat(6, { angle: 180 } as any)).toThrow(/polarArray/);
+  });
+});
+
+describe('displace', () => {
+  it('adds -amount*field to the underlying distance', () => {
+    const s = primSphere(5);
+    const field = (x: number) => x; // simple, exact
+    const d = opDisplace(s, 2, field);
+    // At (3,0,0): sphere = 3-5 = -2; field = 3; result = -2 - 2*3 = -8.
+    expect(d.evaluate(3, 0, 0)).toBeCloseTo(-8, 10);
+  });
+
+  it('treats a non-finite field sample as 0 (no NaN poisoning)', () => {
+    const s = primSphere(5);
+    const d = opDisplace(s, 3, () => NaN);
+    expect(d.evaluate(5, 0, 0)).toBeCloseTo(0, 10); // surface unchanged
+  });
+
+  it('expands the bounds by amount in every direction', () => {
+    const d = opDisplace(primSphere(5), 4, () => 0);
+    expect(d.bounds().min).toEqual([-9, -9, -9]);
+    expect(d.bounds().max).toEqual([9, 9, 9]);
+  });
+
+  it('rejects a negative amount or a non-function field', () => {
+    expect(() => primSphere(1).displace(-1, () => 0)).toThrow();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => primSphere(1).displace(1, 5 as any)).toThrow();
+  });
+
+  it('propagates a label through the single-child displace wrapper', () => {
+    const node = primSphere(5).label('rock').displace(2, () => 0);
+    const parts = partitionByLabel(node);
+    expect(parts).toHaveLength(1);
+    expect(parts[0].labelName).toBe('rock');
+  });
+});
+
+describe('assertNoiseOpts', () => {
+  it('returns {} for undefined', () => {
+    expect(assertNoiseOpts(undefined)).toEqual({});
+  });
+  it('passes through valid options', () => {
+    expect(assertNoiseOpts({ seed: 3, frequency: 0.5, octaves: 4, ridged: true }))
+      .toEqual({ seed: 3, frequency: 0.5, octaves: 4, ridged: true });
+  });
+  it('rejects an unknown key', () => {
+    expect(() => assertNoiseOpts({ freq: 0.5 })).toThrow();
+  });
+  it('rejects out-of-range octaves and a non-boolean ridged', () => {
+    expect(() => assertNoiseOpts({ octaves: 0 })).toThrow();
+    expect(() => assertNoiseOpts({ octaves: 99 })).toThrow();
+    expect(() => assertNoiseOpts({ ridged: 'yes' })).toThrow();
+  });
+});
+
+describe('buildLSystem', () => {
+  it('builds an SdfNode from a simple straight stem', () => {
+    const node = buildLSystem({ axiom: 'FF', rules: {}, iterations: 0, length: 5, radius: 2 });
+    expect(node).toBeInstanceOf(SdfNode);
+    // Two stacked capsules from (0,0,0) to (0,0,10) → inside the axis is solid.
+    expect(node.evaluate(0, 0, 5)).toBeLessThan(0);
+    expect(node.evaluate(0, 0, 50)).toBeGreaterThan(0); // well above the stem
+  });
+
+  it('labels the branches and the foliage as separate regions', () => {
+    const node = buildLSystem({
+      axiom: 'FL',
+      rules: {},
+      iterations: 0,
+      length: 6,
+      radius: 1.5,
+      label: 'wood',
+      leaf: { symbols: ['L'], radius: 2, label: 'leaves' },
+    });
+    const parts = partitionByLabel(node);
+    const names = parts.map(p => p.labelName).sort();
+    expect(names).toEqual(['leaves', 'wood']);
+  });
+
+  it('rejects a grammar that draws nothing', () => {
+    expect(() => buildLSystem({ axiom: 'X', rules: {}, iterations: 0 })).toThrow(/no .*draw/i);
+  });
+
+  it('rejects unknown option keys and bad leaf symbols', () => {
+    expect(() => buildLSystem({ axiom: 'F', rules: {}, iterations: 0, bogus: 1 } as unknown))
+      .toThrow();
+    expect(() => buildLSystem({
+      axiom: 'F', rules: {}, iterations: 0,
+      leaf: { symbols: ['LL'], radius: 1 },
+    } as unknown)).toThrow();
+  });
+});
+
+describe('sdf build options — detail regions', () => {
+  const { assertBuildOpts } = __testables__;
+
+  it('accepts a valid detail array', () => {
+    expect(() => assertBuildOpts({
+      edgeLength: 0.5,
+      detail: [{ center: [0, 0, 50], radius: 8, edgeLength: 0.15 }],
+    })).not.toThrow();
+  });
+
+  it('rejects a non-array, bad entries, and unknown entry keys', () => {
+    expect(() => assertBuildOpts({ detail: { center: [0, 0, 0], radius: 1, edgeLength: 0.1 } }))
+      .toThrow(/array/);
+    expect(() => assertBuildOpts({ detail: [{ center: [0, 0], radius: 1, edgeLength: 0.1 }] }))
+      .toThrow();
+    expect(() => assertBuildOpts({ detail: [{ center: [0, 0, 0], radius: -1, edgeLength: 0.1 }] }))
+      .toThrow();
+    expect(() => assertBuildOpts({ detail: [{ center: [0, 0, 0], radius: 1, edgeLength: 0.1, falloff: 2 }] }))
+      .toThrow(/falloff/);
+  });
+
+  it('caps the region count', () => {
+    const many = Array.from({ length: 25 }, () => ({ center: [0, 0, 0], radius: 1, edgeLength: 0.1 }));
+    expect(() => assertBuildOpts({ detail: many })).toThrow(/at most/);
+  });
+});
+
+describe('sourceUsesSdfBuild — fast-preview gate', () => {
+  it('matches code that lowers an SDF through .build()', () => {
+    expect(sourceUsesSdfBuild('const { sdf } = api;\nreturn sdf.sphere(10).build({ edgeLength: 0.5 });')).toBe(true);
+    expect(sourceUsesSdfBuild('return api.sdf.figure.rig({}).build({ edgeLength: 0.52 });')).toBe(true);
+    expect(sourceUsesSdfBuild('return foo.build ( { edgeLength: 1 } ); // sdf model')).toBe(true);
+  });
+
+  it('skips plain Manifold code so it never pays for a second pass', () => {
+    expect(sourceUsesSdfBuild('return Manifold.cube([10, 10, 10]);')).toBe(false);
+    expect(sourceUsesSdfBuild('return api.imports[0].build();')).toBe(false); // .build() but no sdf
+    expect(sourceUsesSdfBuild('const { sdf } = api;\nreturn sdf.sphere(10);')).toBe(false); // sdf but no .build()
   });
 });

@@ -6,6 +6,7 @@
 // ImageData); the DOM step that turns a `File` into pixels lives in main.ts.
 
 import { VoxelGrid, encodeGrid, COORD_MIN, COORD_MAX } from '../geometry/voxel/grid';
+import { formatSurfacingCall } from '../geometry/voxel/editCodegen';
 import { preprocessRgb, quantizeColors, detectBackgroundMask, bgMaskFromColor, rgbToLab, nearestPalette } from '../relief/imageToRelief';
 
 /** Minimal shape of the browser `ImageData` we consume (also satisfiable by a
@@ -69,6 +70,12 @@ export interface ImageToVoxelOptions {
    *  `posterizeColors`. Omit / empty / null = keep per-pixel color (or
    *  posterize). Use {@link extractImagePalette} to seed it from the image. */
   palette?: [number, number, number][] | null;
+  /** Modal intent flag: the fixed `palette` above was sourced from the user's
+   *  filament palette ("constrain colours to palette") rather than extracted from
+   *  the image. The conversion itself only reads `palette`; this is persisted so a
+   *  recent-import re-click reopens the modal in constrain mode and re-resolves
+   *  the palette live from the current filament slots. */
+  constrainToPalette?: boolean;
   /** Drop a solid-color background so an opaque photo's subject voxelizes
    *  without its backdrop (the alpha cutoff only catches transparency). */
   removeBackground?: boolean;
@@ -555,10 +562,8 @@ export function generateVoxelImportCode(grid: VoxelGrid, filename: string, opts:
   // smooth-surfaced model that's baked (e.g. via the voxel paint flow) keeps
   // its rounded edges after the next run, instead of silently reverting to
   // hard blocks. The default (blocks) needs no call.
-  const surf = grid.surfacing();
-  const surfaceCall = surf.mode === 'smooth'
-    ? `\nv.smooth({ iterations: ${surf.iterations}, detail: ${surf.detail} });`
-    : '';
+  const call = formatSurfacingCall(grid.surfacing());
+  const surfaceCall = call ? `\nv${call};` : '';
   const header = `// Imported from ${filename} on ${date}\n`;
 
   if (opts.style === 'calls') {

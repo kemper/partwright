@@ -70,6 +70,13 @@ async function executeToolViaMessage(
     const ms = activeToolCallTimeoutMs;
     const timer = setTimeout(() => {
       pendingToolCalls.delete(callId);
+      // Tell the main thread to cancel the in-flight execution. The tool runs
+      // on the main thread (window.partwright → engine Worker); abandoning our
+      // wait here does NOT stop that work, so without this a runaway render
+      // keeps chewing CPU and freezing the page, then resolves into a result
+      // nobody is listening for. cancel_tool terminates the engine Worker so
+      // the execution rejects promptly.
+      self.postMessage({ type: 'cancel_tool', callId, name });
       reject(new Error(`Tool call "${name}" (${callId}) timed out after ${ms / 1000}s`));
     }, ms);
     pendingToolCalls.set(callId, (result) => {
@@ -106,6 +113,12 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── run_turn ───────────────────────────────────────────────────────────
   if (msg.type === 'run_turn') {
+    // Start from an empty queue. The main thread is the source of truth for
+    // queued blocks and re-relays them per turn (via queue_blocks, only while a
+    // turn is in flight). Any blocks left over from a previous turn that ended
+    // without a tool round were never drained; the main thread re-fires them as
+    // this turn's userBlocks, so a stale buffer here would deliver them twice.
+    workerQueuedBlocks.length = 0;
     const input = msg.input as AgentWorkerInput;
     // Seed the Worker's config cache with the user's overrides BEFORE anything
     // reads getConfig() (providers, transient-retry, thinking budgets).

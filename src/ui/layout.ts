@@ -1,9 +1,11 @@
-import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
+import { getMobilePane, onMobilePaneChange, setMobilePane, type MobilePane } from './mobilePane';
+import { appPath } from '../deployment';
 import { showAdvancedSettingsModal } from './advancedSettingsModal';
 import { showAboutModal } from './aboutModal';
 import { loadSettings, saveSettings } from '../ai/settings';
-import { createPopoverGroup } from './popoverMenu';
+import { createPopoverGroup, createMenuSectionHeader, createMenuDivider } from './popoverMenu';
 import { MOD_LABEL, combo } from './shortcutDefs';
+import { getConfig } from '../config/appConfig';
 
 export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
@@ -28,6 +30,11 @@ export interface LayoutElements {
   findReplaceBtn: HTMLButtonElement;
   formatBtn: HTMLButtonElement;
   autoFormatToggle: HTMLButtonElement;
+  lineWrapToggle: HTMLButtonElement;
+  lineNumbersToggle: HTMLButtonElement;
+  fontSizeDecBtn: HTMLButtonElement;
+  fontSizeIncBtn: HTMLButtonElement;
+  fontSizeValueEl: HTMLElement;
   switchTab: (tab: TabName, options?: SwitchTabOptions) => void;
   /** Collapse/expand the parts rail (wired to the rail's own collapse button). */
   togglePartsRail: () => void;
@@ -104,16 +111,120 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
 
   const formatBtn = document.createElement('button');
   formatBtn.id = 'format-btn';
-  formatBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
-  formatBtn.textContent = 'Format';
+  formatBtn.className = 'block w-full text-left px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 transition-colors';
+  formatBtn.textContent = 'Format code now';
   formatBtn.title = 'Format code (Shift+Alt+F)';
-  editorHeader.appendChild(formatBtn);
 
   const autoFormatToggle = document.createElement('button');
   autoFormatToggle.id = 'auto-format-toggle';
-  autoFormatToggle.className = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border';
   autoFormatToggle.title = 'Toggle automatic formatting when code is loaded';
-  editorHeader.appendChild(autoFormatToggle);
+
+  const lineWrapToggle = document.createElement('button');
+  lineWrapToggle.id = 'line-wrap-toggle';
+  lineWrapToggle.title = 'Toggle soft word wrap for long lines';
+
+  const lineNumbersToggle = document.createElement('button');
+  lineNumbersToggle.id = 'line-numbers-toggle';
+  lineNumbersToggle.title = 'Toggle the line-number gutter';
+
+  // Font-size stepper — main.ts wires the −/+ buttons and writes the value label.
+  const fontSizeDecBtn = document.createElement('button');
+  fontSizeDecBtn.id = 'font-size-dec';
+  fontSizeDecBtn.type = 'button';
+  fontSizeDecBtn.textContent = '−'; // minus sign
+  fontSizeDecBtn.title = 'Smaller editor font';
+  fontSizeDecBtn.setAttribute('aria-label', 'Decrease editor font size');
+  fontSizeDecBtn.className = 'w-6 h-6 rounded border border-zinc-600 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 text-sm leading-none flex items-center justify-center';
+
+  const fontSizeValueEl = document.createElement('span');
+  fontSizeValueEl.id = 'font-size-value';
+  fontSizeValueEl.className = 'text-xs text-zinc-300 font-mono tabular-nums w-10 text-center';
+
+  const fontSizeIncBtn = document.createElement('button');
+  fontSizeIncBtn.id = 'font-size-inc';
+  fontSizeIncBtn.type = 'button';
+  fontSizeIncBtn.textContent = '+';
+  fontSizeIncBtn.title = 'Larger editor font';
+  fontSizeIncBtn.setAttribute('aria-label', 'Increase editor font size');
+  fontSizeIncBtn.className = 'w-6 h-6 rounded border border-zinc-600 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 text-sm leading-none flex items-center justify-center';
+
+  // "⚙ Editor settings" popover — collapses Format / Auto-format / Word wrap /
+  // Line numbers / Font size into one menu so the header stays uncluttered.
+  // Self-contained open/close (mirrors the toolbar Import/Export dropdowns); the
+  // inner controls' behavior is wired in main.ts.
+  const settingsWrapper = document.createElement('div');
+  settingsWrapper.className = 'relative shrink-0';
+
+  const editorSettingsBtn = document.createElement('button');
+  editorSettingsBtn.id = 'editor-settings-btn';
+  editorSettingsBtn.type = 'button';
+  editorSettingsBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600 flex items-center gap-1';
+  editorSettingsBtn.title = 'Editor settings — formatting, word wrap, line numbers, font size';
+  editorSettingsBtn.setAttribute('aria-haspopup', 'true');
+  editorSettingsBtn.setAttribute('aria-expanded', 'false');
+  editorSettingsBtn.innerHTML = '<span aria-hidden="true">⚙</span><span>Editor</span><span class="text-[9px] leading-none opacity-70" aria-hidden="true">▾</span>';
+  settingsWrapper.appendChild(editorSettingsBtn);
+
+  const settingsDropdown = document.createElement('div');
+  settingsDropdown.id = 'editor-settings-dropdown';
+  settingsDropdown.className = 'absolute right-0 top-full mt-1 hidden z-30 w-56 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1';
+
+  // Build a label/control row for a toggle.
+  const settingRow = (labelText: string, control: HTMLElement): HTMLElement => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center justify-between gap-2 px-3 py-1.5';
+    const label = document.createElement('span');
+    label.className = 'text-xs text-zinc-300';
+    label.textContent = labelText;
+    row.appendChild(label);
+    row.appendChild(control);
+    return row;
+  };
+
+  settingsDropdown.appendChild(createMenuSectionHeader('Formatting'));
+  settingsDropdown.appendChild(formatBtn);
+  settingsDropdown.appendChild(settingRow('Auto-format on load', autoFormatToggle));
+  settingsDropdown.appendChild(createMenuDivider());
+  settingsDropdown.appendChild(createMenuSectionHeader('View'));
+  settingsDropdown.appendChild(settingRow('Word wrap', lineWrapToggle));
+  settingsDropdown.appendChild(settingRow('Line numbers', lineNumbersToggle));
+
+  const fontRow = document.createElement('div');
+  fontRow.className = 'flex items-center justify-between gap-2 px-3 py-1.5';
+  const fontLabel = document.createElement('span');
+  fontLabel.className = 'text-xs text-zinc-300';
+  fontLabel.textContent = 'Font size';
+  const fontStepper = document.createElement('div');
+  fontStepper.className = 'flex items-center gap-1';
+  fontStepper.appendChild(fontSizeDecBtn);
+  fontStepper.appendChild(fontSizeValueEl);
+  fontStepper.appendChild(fontSizeIncBtn);
+  fontRow.appendChild(fontLabel);
+  fontRow.appendChild(fontStepper);
+  settingsDropdown.appendChild(fontRow);
+
+  settingsWrapper.appendChild(settingsDropdown);
+
+  const isSettingsOpen = (): boolean => !settingsDropdown.classList.contains('hidden');
+  const closeSettings = (): void => {
+    settingsDropdown.classList.add('hidden');
+    editorSettingsBtn.setAttribute('aria-expanded', 'false');
+  };
+  editorSettingsBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    settingsDropdown.classList.toggle('hidden');
+    editorSettingsBtn.setAttribute('aria-expanded', String(isSettingsOpen()));
+  });
+  // Click-outside and Escape dismiss; flipping a setting inside keeps it open
+  // (sticky, like the viewport popover groups) so several can be changed at once.
+  document.addEventListener('click', (e) => {
+    if (isSettingsOpen() && !settingsWrapper.contains(e.target as Node)) closeSettings();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isSettingsOpen()) closeSettings();
+  });
+
+  editorHeader.appendChild(settingsWrapper);
 
   // Status row: an absolutely-positioned flex strip that holds the status text
   // and an inline cancel button. Lives on rightPane so it stays visible even
@@ -223,8 +334,8 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // needs a separate rail item.
   const tabVersions = createRailItem('Versions', 'Versions', '🕒', false);
   tabVersions.title = 'Saved versions — thumbnails, rename, delete';
-  const tabImages = createRailItem('Images', 'Images', '📷', false);
-  tabImages.title = 'Reference images attached to this session';
+  const tabImages = createRailItem('Images', 'Attachments', '📎', false);
+  tabImages.title = 'Attachments: reference images, models, docs & notes pinned to this session';
   const tabDiff = createRailItem('Diff', 'Diff', '🔀', false);
   tabDiff.title = 'Compare code between two versions';
   const tabNotes = createRailItem('Notes', 'Notes', '📝', false);
@@ -400,21 +511,29 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   const mobileEditorBtn = document.createElement('button');
   mobileEditorBtn.textContent = 'Code';
   mobileEditorBtn.title = 'Show code editor';
+  // Parts pane — gives the parts list its own full-width mobile view so it's
+  // reachable from anywhere (the rail isn't a usable left column on a phone).
+  const mobilePartsBtn = document.createElement('button');
+  mobilePartsBtn.textContent = 'Parts';
+  mobilePartsBtn.title = 'Show the parts list';
   const mobileViewportBtn = document.createElement('button');
   mobileViewportBtn.textContent = 'Viewport';
   mobileViewportBtn.title = 'Show 3D viewport';
   mobilePaneToggle.appendChild(mobileEditorBtn);
+  mobilePaneToggle.appendChild(mobilePartsBtn);
   mobilePaneToggle.appendChild(mobileViewportBtn);
 
   // py-3 (not py-2) keeps these mobile-only toggles ≥44px tall — the minimum
   // fingertip target. The toggle strip is `md:hidden`, so desktop never sees it.
   const MOBILE_TOGGLE_ACTIVE = 'flex-1 px-4 py-3 text-sm font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';
   const MOBILE_TOGGLE_INACTIVE = 'flex-1 px-4 py-3 text-sm font-medium text-zinc-500 border-b-2 border-transparent';
-  function syncMobileToggleUI(pane: 'editor' | 'viewport') {
+  function syncMobileToggleUI(pane: MobilePane) {
     mobileEditorBtn.className = pane === 'editor' ? MOBILE_TOGGLE_ACTIVE : MOBILE_TOGGLE_INACTIVE;
+    mobilePartsBtn.className = pane === 'parts' ? MOBILE_TOGGLE_ACTIVE : MOBILE_TOGGLE_INACTIVE;
     mobileViewportBtn.className = pane === 'viewport' ? MOBILE_TOGGLE_ACTIVE : MOBILE_TOGGLE_INACTIVE;
   }
   mobileEditorBtn.addEventListener('click', () => setMobilePane('editor'));
+  mobilePartsBtn.addEventListener('click', () => setMobilePane('parts'));
   mobileViewportBtn.addEventListener('click', () => setMobilePane('viewport'));
 
   // Tracks the most recently activated tab so breakpoint or mobile-pane
@@ -441,20 +560,64 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   expandEditorBtn.title = 'Show the code editor pane';
   rightPane.appendChild(expandEditorBtn);
 
+  // Slide duration (ms) for the code pane, honoring reduced-motion (0 = instant).
+  // Shares the same knob as the AI panel so both side panes feel consistent.
+  function paneSlideMs(): number {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0;
+    return getConfig().ui.paneSlideMs;
+  }
+  // Pending "settle to the final width once the slide finishes" timer.
+  let editorSlideTimer: number | null = null;
+
   function collapseEditor(): void {
     editorCollapsed = true;
-    editorGroup.style.width = '0';
-    editorGroup.style.overflow = 'hidden';
     expandEditorBtn.classList.remove('hidden');
     splitter.classList.add('hidden');
+    if (editorSlideTimer !== null) { clearTimeout(editorSlideTimer); editorSlideTimer = null; }
+    const ms = paneSlideMs();
+    if (ms > 0 && mqDesktop.matches) {
+      // Slide the pane off the left edge: collapse its layout footprint via a
+      // negative margin (so the viewport grows into the gap) while it keeps its
+      // width, so the code doesn't reflow. `body` is overflow-hidden, so the
+      // off-screen pane is clipped. Settle to the canonical width:0 state after.
+      const w = editorGroup.getBoundingClientRect().width;
+      editorGroup.style.overflow = 'hidden';
+      editorGroup.style.transition = `margin-left ${ms}ms ease`;
+      editorGroup.style.marginLeft = `-${w}px`;
+      editorSlideTimer = window.setTimeout(() => {
+        editorGroup.style.transition = '';
+        editorGroup.style.marginLeft = '';
+        editorGroup.style.width = '0';
+        editorSlideTimer = null;
+      }, ms);
+    } else {
+      editorGroup.style.width = '0';
+      editorGroup.style.overflow = 'hidden';
+    }
     window.dispatchEvent(new Event('resize'));
   }
 
   function expandEditor(): void {
     editorCollapsed = false;
-    editorGroup.style.width = '40%';
-    editorGroup.style.overflow = '';
     expandEditorBtn.classList.add('hidden');
+    if (editorSlideTimer !== null) { clearTimeout(editorSlideTimer); editorSlideTimer = null; }
+    editorGroup.style.overflow = '';
+    editorGroup.style.width = '40%';
+    const ms = paneSlideMs();
+    if (ms > 0 && mqDesktop.matches) {
+      // Start from the off-screen-left position without animating, then slide in.
+      const w = editorGroup.getBoundingClientRect().width;
+      editorGroup.style.transition = '';
+      editorGroup.style.marginLeft = `-${w}px`;
+      void editorGroup.offsetWidth; // force reflow so the next change transitions
+      editorGroup.style.transition = `margin-left ${ms}ms ease`;
+      requestAnimationFrame(() => { editorGroup.style.marginLeft = ''; });
+      editorSlideTimer = window.setTimeout(() => {
+        editorGroup.style.transition = '';
+        editorGroup.style.marginLeft = '';
+        editorSlideTimer = null;
+      }, ms);
+    }
     syncPaneVisibility();
     window.dispatchEvent(new Event('resize'));
   }
@@ -518,24 +681,41 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
       // Restore inline width if it was cleared on mobile, but not if collapsed.
       if (!editorCollapsed && !editorGroup.style.width) editorGroup.style.width = '40%';
       editorGroup.classList.toggle('hidden', tabHidesEditor);
+      // The parts rail + code pane are siblings only on mobile; on desktop the
+      // rail lives in the activity rail, so make sure neither was left hidden by
+      // a mobile pane choice when crossing the breakpoint.
+      editorPane.classList.remove('hidden');
       splitter.classList.toggle('hidden', tabHidesEditor || editorCollapsed);
       expandEditorBtn.classList.toggle('hidden', tabHidesEditor || !editorCollapsed);
       rightPane.classList.remove('hidden');
       mobilePaneToggle.classList.add('hidden');
     } else {
       // Mobile: clear inline width so flex sizing controls the editor's height.
+      // Also drop any in-flight desktop slide offset so a breakpoint flip mid-
+      // animation can't leave the stacked pane shifted off-screen.
       editorGroup.style.width = '';
       editorGroup.style.overflow = '';
+      editorGroup.style.marginLeft = '';
+      editorGroup.style.transition = '';
       splitter.classList.add('hidden');
       expandEditorBtn.classList.add('hidden');
+      // The desktop "collapse the rail" chip never applies on mobile — the pane
+      // toggle owns parts visibility here.
+      railExpandBtn.classList.add('hidden');
       if (tabHidesEditor) {
         editorGroup.classList.add('hidden');
+        partsRail.classList.add('hidden');
         rightPane.classList.remove('hidden');
         // No choice to make — hide the toggle on Diff.
         mobilePaneToggle.classList.add('hidden');
       } else {
         const pane = getMobilePane();
-        editorGroup.classList.toggle('hidden', pane !== 'editor');
+        // editorGroup hosts both the code pane and (on mobile) the parts rail,
+        // so it's shown for both the 'editor' and 'parts' panes; within it we
+        // reveal exactly one. 'parts' gives the list the full width.
+        editorGroup.classList.toggle('hidden', pane === 'viewport');
+        editorPane.classList.toggle('hidden', pane === 'parts');
+        partsRail.classList.toggle('hidden', pane !== 'parts');
         rightPane.classList.toggle('hidden', pane !== 'viewport');
         mobilePaneToggle.classList.remove('hidden');
         syncMobileToggleUI(pane);
@@ -564,7 +744,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     // tapped rail item actually surfaces its content.
     if (!mqDesktop.matches) setMobilePane('viewport');
 
-    const basePath = '/editor';
+    const basePath = appPath('/editor');
     const params = new URLSearchParams(window.location.search);
     // Clear every tab-owned param, then set the one this tab owns. Unrelated
     // params (e.g. `session`, `v`) are preserved. `view` is a legacy param
@@ -638,10 +818,13 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // rail is a horizontal strip, so Parts goes back to its column beside the
   // editor. moving a populated element preserves its children + listeners.
   const PARTS_CLASS_DESKTOP = 'flex flex-col flex-1 min-h-0 border-t border-zinc-800 overflow-hidden';
-  const PARTS_CLASS_MOBILE = 'flex flex-col shrink-0 w-36 min-h-0 border-r border-zinc-700 bg-zinc-900/60 overflow-hidden';
+  // On mobile the parts rail is its own full-width pane (selected via the pane
+  // toggle), so it grows to fill the editor group rather than sitting as a
+  // cramped fixed column. Visibility is owned by syncPaneVisibility.
+  const PARTS_CLASS_MOBILE = 'flex flex-col flex-1 min-w-0 min-h-0 bg-zinc-900/60 overflow-hidden';
   function placeParts(): void {
-    if (railCollapsed) return; // hidden either way; reposition when re-shown
     if (mqDesktop.matches) {
+      if (railCollapsed) return; // desktop-only collapse; reposition when re-shown
       partsRail.className = PARTS_CLASS_DESKTOP;
       rail.insertBefore(partsRail, catalogNavBtn);
     } else {
@@ -687,7 +870,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, partsRail, editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
+  return { editorPane, partsRail, editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, lineWrapToggle, lineNumbersToggle, fontSizeDecBtn, fontSizeIncBtn, fontSizeValueEl, switchTab, togglePartsRail, collapseEditor, expandEditor };
 }
 
 // Rail item base — a bottom accent border on mobile (horizontal strip) becomes
@@ -753,6 +936,7 @@ function createClipControls(): HTMLElement {
   // independent flips, and a menu round-trip per toggle was pure friction.
   container.appendChild(makeViewportPill('wireframe-toggle', '△ Edges', 'Show mesh edges'));
   container.appendChild(makeViewportPill('grid-toggle', '▦ Grid', 'Show grid plane'));
+  container.appendChild(makeViewportPill('light-toggle', '☀ Light', 'Studio lighting: reflections + soft shadow (on by default)'));
   // Dimensions defaults on — give it the active blue styling to match its state.
   container.appendChild(makeViewportPill(
     'dimensions-toggle', '⬚ Dims', 'Toggle bounding box dimensions',

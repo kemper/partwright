@@ -52,7 +52,7 @@ test.describe('Auto-continue (finish-tool resume)', () => {
         const url = String(input);
         // Let the system-prompt (/ai.md) and any other fetch pass through;
         // only the Gemini stream is canned.
-        if (!url.includes('generativelanguage.googleapis.com')) {
+        if (new URL(url, location.origin).hostname !== 'generativelanguage.googleapis.com') {
           return origFetch(input as RequestInfo, init);
         }
         n++;
@@ -115,7 +115,7 @@ test.describe('Auto-continue (finish-tool resume)', () => {
       // @ts-expect-error test stub
       window.fetch = async (input: unknown, init?: RequestInit) => {
         const url = String(input);
-        if (!url.includes('generativelanguage.googleapis.com')) return origFetch(input as RequestInfo, init);
+        if (new URL(url, location.origin).hostname !== 'generativelanguage.googleapis.com') return origFetch(input as RequestInfo, init);
         n++;
         bodies.push(String(init?.body ?? ''));
         // Call 1: a truly empty end_turn (no parts). Call 2: finish.
@@ -171,7 +171,7 @@ test.describe('Auto-continue (finish-tool resume)', () => {
       // @ts-expect-error test stub
       window.fetch = async (input: unknown, init?: RequestInit) => {
         const url = String(input);
-        if (!url.includes('generativelanguage.googleapis.com')) return origFetch(input as RequestInfo, init);
+        if (new URL(url, location.origin).hostname !== 'generativelanguage.googleapis.com') return origFetch(input as RequestInfo, init);
         n++;
         // Always a plain text end_turn — the model never calls finish.
         const frame = 'data: {"candidates":[{"content":{"parts":[{"text":"still going"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}';
@@ -194,26 +194,27 @@ test.describe('Auto-continue (finish-tool resume)', () => {
     expect(out.reason).toBe('end_turn'); // not iteration_cap (32) — the ceiling stopped it first
   });
 
-  test('auto-continue is ON by default, and a disable persists across reload', async ({ page }) => {
+  test('auto-continue is OFF by default, and an enable persists across reload', async ({ page }) => {
     await page.goto('/editor');
     await waitForEditorReady(page);
     await openAiPanel(page);
     const pill = page.locator('#ai-panel button:has-text("Auto-continue")');
     await expect(pill).toBeVisible();
-    // Enabled by default (fresh context → default standard preset).
-    await expect(pill).toHaveAttribute('aria-pressed', 'true');
-    expect(await page.evaluate(async () => (await import('/src/ai/settings.ts')).loadSettings().toggles.autoResume)).toBe(true);
-
-    // Disable it.
-    await pill.dispatchEvent('click');
+    // Disabled by default (fresh context → default standard preset) so the
+    // agent waits at end_turn instead of pressing past a clarifying question.
     await expect(pill).toHaveAttribute('aria-pressed', 'false');
+    expect(await page.evaluate(async () => (await import('/src/ai/settings.ts')).loadSettings().toggles.autoResume)).toBe(false);
 
-    // The disable must survive a page refresh (the user's explicit ask).
+    // Enable it.
+    await pill.dispatchEvent('click');
+    await expect(pill).toHaveAttribute('aria-pressed', 'true');
+
+    // The enable must survive a page refresh (the user's explicit opt-in).
     await page.reload();
     await waitForEditorReady(page);
     await openAiPanel(page);
     const pillAfter = page.locator('#ai-panel button:has-text("Auto-continue")');
-    await expect(pillAfter).toHaveAttribute('aria-pressed', 'false');
-    expect(await page.evaluate(async () => (await import('/src/ai/settings.ts')).loadSettings().toggles.autoResume)).toBe(false);
+    await expect(pillAfter).toHaveAttribute('aria-pressed', 'true');
+    expect(await page.evaluate(async () => (await import('/src/ai/settings.ts')).loadSettings().toggles.autoResume)).toBe(true);
   });
 });

@@ -21,7 +21,7 @@
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
-//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema, workerMs }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
 //   { type: 'exportSTEP_result',       callId, blob, error }
@@ -46,6 +46,7 @@ import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport,
 import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
+import { setSdfPreviewScale, sourceUsesSdfBuild } from './sdf';
 import type { Language } from './engines/types';
 import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, isEnhanceExceeded, type SimplifyResult, type EnhanceResult, type EnhanceExceeded } from './simplify';
 import type { MeshData } from './types';
@@ -105,7 +106,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params, companionFiles } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
@@ -113,6 +114,7 @@ self.onmessage = async (event: MessageEvent) => {
       circularSegments?: number;
       params?: Record<string, unknown> | null;
       companionFiles?: Record<string, string>;
+      sdfPreviewScale?: number | null;
     };
     // Worker-side compute timer. Reported back on execute_result so the
     // worker-health panel can separate real evaluation time from the
@@ -188,12 +190,53 @@ self.onmessage = async (event: MessageEvent) => {
           await ensureBrepLoaded();
         }
         // Pre-load Liberation Sans fonts if the code calls api.text / api.textSection,
-        // or uses api.printFit (clearanceCoupon engraves text labels internally).
+        // or uses api.fasteners (clearanceCoupon engraves text labels internally) —
+        // including via its deprecated api.printFit alias, kept for old sessions.
         // Same lazy-load pattern as BREP — fonts are cached after the first run.
-        if (sourceUsesManifoldText(code as string) || /\bapi\.printFit\b/.test(code as string) || /[{,]\s*printFit\s*[,}]/.test(code as string)) {
+        if (sourceUsesManifoldText(code as string) || /\bapi\.(?:fasteners|printFit)\b/.test(code as string) || /[{,]\s*(?:fasteners|printFit)\s*[,}]/.test(code as string)) {
           await preloadTextFonts();
         }
         setActiveImports(runImports);
+        // Progressive render for SDF models (figures): a throwaway coarse pass
+        // first, posted as `execute_preview` so the viewport shows a rough shape
+        // in ~1-2s, then the full-quality pass below. Gated on the source doing
+        // an SDF `.build()` so plain Manifold code never pays for a second pass.
+        // Both runs are synchronous and back-to-back (no await between them), so
+        // no newer execute can interleave; cancellation terminates the Worker.
+        if (typeof sdfPreviewScale === 'number' && sdfPreviewScale > 1 && sourceUsesSdfBuild(code as string)) {
+          try {
+            setSdfPreviewScale(sdfPreviewScale);
+            const preview = manifoldJsEngine.run(code as string, params ?? undefined);
+            if (preview.mesh) {
+              const pm = preview.mesh;
+              const ptransfer: Transferable[] = [pm.vertProperties.buffer, pm.triVerts.buffer];
+              if (pm.mergeFromVert) ptransfer.push(pm.mergeFromVert.buffer);
+              if (pm.mergeToVert)   ptransfer.push(pm.mergeToVert.buffer);
+              if (pm.runIndex)      ptransfer.push(pm.runIndex.buffer);
+              if (pm.runOriginalID) ptransfer.push(pm.runOriginalID.buffer);
+              // Carry the model-declared colour data so the main thread can paint
+              // an estimated colour onto the coarse mesh (api.label colours +
+              // api.paint.* ops). Same serialisation as the full execute_result
+              // below — labelMap is a Map<string,Set>, so flatten to entries.
+              const pLabelMapEntries: [string, number[]][] | null = preview.labelMap
+                ? Array.from(preview.labelMap.entries()).map(([k, v]) => [k, Array.from(v)])
+                : null;
+              const pLabelColorEntries: [string, [number, number, number]][] | null = preview.labelColors
+                ? Array.from(preview.labelColors.entries())
+                : null;
+              const pPaintOps = preview.paintOps ?? null;
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (self as any).postMessage(
+                { type: 'execute_preview', callId, mesh: pm, labelMapEntries: pLabelMapEntries, labelColorEntries: pLabelColorEntries, paintOps: pPaintOps },
+                ptransfer,
+              );
+            }
+            // Free the preview's live Manifold — only the mesh was transferred.
+            const plive = (preview as { manifold?: { delete?: () => void } } | undefined)?.manifold;
+            if (plive && typeof plive.delete === 'function') { try { plive.delete(); } catch { /* freed */ } }
+          } catch { /* preview is best-effort; fall through to the full render */ }
+          finally { setSdfPreviewScale(null); }
+        }
         result = manifoldJsEngine.run(code as string, params ?? undefined);
       }
 
@@ -206,6 +249,11 @@ self.onmessage = async (event: MessageEvent) => {
         ? Array.from(result.labelColors.entries())
         : null;
       const lostLabels = result.lostLabels ?? null;
+      // api.paint.* operations declared in code — already plain serialisable
+      // objects ({ name, color, descriptor }), so they cross as-is.
+      const paintOps = result.paintOps ?? null;
+      // api.surface.* ops — plain serialisable { id, params } objects, cross as-is.
+      const surfaceOps = result.surfaceOps ?? null;
       const paramsSchema = result.paramsSchema ?? null;
       // Heap high-water for manifold-js runs (other engines own separate heaps).
       const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
@@ -227,7 +275,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts },
           transfer,
         );
       } else {
@@ -662,5 +710,6 @@ self.onmessage = async (event: MessageEvent) => {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+    return;
   }
 };

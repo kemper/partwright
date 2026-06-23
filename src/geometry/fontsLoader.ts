@@ -15,7 +15,9 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-const FONTS_PREFIX = '/openscad-libs/fonts';
+import { assetPath } from '../deployment';
+
+const FONTS_PREFIX = assetPath('/openscad-libs/fonts');
 const FONT_MEMFS_DIR = '/usr/share/fonts';
 const FONTCONFIG_FILE_PATH = '/etc/fonts/fonts.conf';
 const FONTS_CONF_XML = `<?xml version="1.0"?>

@@ -125,22 +125,46 @@ test.describe('Catalog page (static)', () => {
     expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBeGreaterThan(10);
   });
 
-  test('a language pill hides that language and keeps the others', async ({ page }) => {
+  test('language pills are unselected by default and select to focus one language', async ({ page }) => {
     await gotoCatalog(page);
 
     const scadPill = page.locator('[data-catalog-pill="scad"]');
-    await expect(scadPill).toHaveAttribute('aria-pressed', 'true');
-    await scadPill.click();
+    // Unselected by default — no language filter, every language shows.
     await expect(scadPill).toHaveAttribute('aria-pressed', 'false');
+    const jsBefore = await page.locator('main a[data-language="manifold-js"]:not(.hidden)').count();
+    expect(jsBefore).toBeGreaterThan(0);
 
-    // All SCAD tiles hidden; JS tiles still shown.
-    await expect(page.locator('main a[data-language="scad"]:not(.hidden)')).toHaveCount(0);
-    expect(await page.locator('main a[data-language="manifold-js"]:not(.hidden)').count()).toBeGreaterThan(0);
-
-    // Toggling back restores SCAD tiles.
+    // Selecting SCAD focuses on it: SCAD tiles show, other languages hide.
     await scadPill.click();
     await expect(scadPill).toHaveAttribute('aria-pressed', 'true');
     expect(await page.locator('main a[data-language="scad"]:not(.hidden)').count()).toBeGreaterThan(0);
+    await expect(page.locator('main a[data-language="manifold-js"]:not(.hidden)')).toHaveCount(0);
+
+    // Unselecting returns to the default — all languages shown again.
+    await scadPill.click();
+    await expect(scadPill).toHaveAttribute('aria-pressed', 'false');
+    expect(await page.locator('main a[data-language="manifold-js"]:not(.hidden)').count()).toBe(jsBefore);
+  });
+
+  test('a theme pill filters to entries tagged with that theme', async ({ page }) => {
+    await gotoCatalog(page);
+
+    const figuresPill = page.locator('[data-catalog-theme="figures"]');
+    await expect(figuresPill).toHaveAttribute('aria-pressed', 'false');
+    await figuresPill.click();
+    await expect(figuresPill).toHaveAttribute('aria-pressed', 'true');
+
+    // Every visible tile carries the figures theme; nothing untagged shows.
+    const visible = page.locator('main a[data-catalog-tile]:not(.hidden)');
+    expect(await visible.count()).toBeGreaterThan(0);
+    for (const themes of await visible.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.themes ?? ''))) {
+      expect(themes.split(/\s+/)).toContain('figures');
+    }
+
+    // Clearing the pill restores the full catalog.
+    await figuresPill.click();
+    await expect(figuresPill).toHaveAttribute('aria-pressed', 'false');
+    expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBeGreaterThan(20);
   });
 
   test('a tile is a link to /editor?catalog= and imports the session on click', async ({ page }) => {
@@ -167,5 +191,27 @@ test.describe('Catalog page (static)', () => {
     await search.fill('zzzznomatchzzzz');
     await expect(page.locator('#catalog-page [data-catalog-empty]')).toBeVisible();
     await expect(page.locator('#catalog-page a[data-catalog-tile]:not(.hidden)')).toHaveCount(0);
+  });
+
+  test('rapid re-navigation to the catalog renders a single pane (no split view)', async ({ page }) => {
+    // Regression: createCatalogPage awaits a manifest fetch before returning, so
+    // the `if (!catalogEl)` guard stayed null across the await. Rapid re-entry
+    // (a double-click, or the popstate a pushState fires) bypassed it and
+    // appended a second/third #catalog-page, stacking duplicate catalog panes.
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.goto('/editor');
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: unknown }).partwright, null, { timeout: 30_000 });
+
+    // Fire several route syncs back-to-back, faster than the manifest fetch
+    // resolves — the same concurrency a rapid double/triple click produces.
+    await page.evaluate(() => {
+      for (let i = 0; i < 4; i++) {
+        window.history.pushState({}, '', '/catalog');
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      }
+    });
+
+    await expect(page.locator('#catalog-page')).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('#catalog-page')).toHaveCount(1);
   });
 });

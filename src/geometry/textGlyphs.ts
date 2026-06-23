@@ -11,6 +11,7 @@
  */
 
 import type { Font } from 'opentype.js';
+import { assetPath } from '../deployment';
 
 type Vec2 = [number, number];
 
@@ -22,7 +23,7 @@ const FONT_FILES: Record<FontVariant, string> = {
   italic: 'LiberationSans-Italic.ttf',
   'bold-italic': 'LiberationSans-BoldItalic.ttf',
 };
-const FONTS_PREFIX = '/openscad-libs/fonts';
+const FONTS_PREFIX = assetPath('/openscad-libs/fonts');
 
 const fontCache = new Map<FontVariant, Font>();
 let loadPromise: Promise<void> | null = null;

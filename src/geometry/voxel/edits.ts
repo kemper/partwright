@@ -7,13 +7,12 @@
 // vitest tier without pulling in the viewport/raycast glue that lives in
 // src/color/voxelPaint.ts.
 
-import type { Vec3 } from './grid';
-import { VoxelGrid, normalizeColor, type ColorInput, COORD_MIN, COORD_MAX } from './grid';
+import { VoxelGrid, normalizeColor, FACE_NEIGHBORS, type Vec3, type ColorInput, COORD_MIN, COORD_MAX } from './grid';
 
-/** The 6 face-neighbor offsets (shared by flood fill and the "add" tool). */
-export const FACE_NEIGHBORS: Vec3[] = [
-  [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
-];
+// `FACE_NEIGHBORS` (the 6 face-neighbour offsets, shared by the flood-fill and
+// "add" tools below) now lives in `grid.ts` as the single source of truth — see
+// its definition there. Re-exported here for back-compat with existing importers.
+export { FACE_NEIGHBORS };
 
 function inRange(x: number, y: number, z: number): boolean {
   return x >= COORD_MIN && x <= COORD_MAX
@@ -101,6 +100,83 @@ export function clearBox(grid: VoxelGrid, a: Vec3, b: Vec3): number {
 export function addTarget(voxel: Vec3, normal: Vec3): Vec3 | null {
   const nx = voxel[0] + normal[0], ny = voxel[1] + normal[1], nz = voxel[2] + normal[2];
   return inRange(nx, ny, nz) ? [nx, ny, nz] : null;
+}
+
+/** The cells an "add block" stamp covers — a `size`=[sx,sy,sz] world-voxel box
+ *  laid against the clicked face. The box is centered on `voxel` in the two
+ *  axes tangent to `normal`, and *anchored* along the normal so its near layer
+ *  sits flush against the clicked face (front-attach) instead of straddling it.
+ *  This is what stops a thick block from poking out the back of a thin tile.
+ *
+ *  `depth` (≥0) sinks the block into the surface along the normal: 0 = entirely
+ *  outside the clicked voxel (the default, front-attach); 1 = its near layer
+ *  overwrites the clicked voxel; `size`-along-normal = fully embedded, ending
+ *  flush at the clicked voxel. Out-of-range cells are dropped.
+ *
+ *  At the default size [1,1,1] with depth 0 this reduces to {@link addTarget} —
+ *  a single voxel one step out from the clicked face. */
+export function addBlockCells(voxel: Vec3, normal: Vec3, size: Vec3, depth = 0): Vec3[] {
+  // Normal axis = the dominant component; the other two are tangent.
+  const ax = Math.abs(normal[0]), ay = Math.abs(normal[1]), az = Math.abs(normal[2]);
+  if (ax === 0 && ay === 0 && az === 0) return [];
+  const a = ax >= ay && ax >= az ? 0 : ay >= az ? 1 : 2;
+  const d = normal[a] >= 0 ? 1 : -1;
+  const t0 = (a + 1) % 3, t1 = (a + 2) % 3;
+  const sa = Math.max(1, Math.floor(size[a]));
+  const s0 = Math.max(1, Math.floor(size[t0]));
+  const s1 = Math.max(1, Math.floor(size[t1]));
+  const e = Math.max(0, Math.floor(depth));
+  // Tangent axes center on the clicked voxel (odd sizes symmetric; even sizes
+  // bias one cell toward +).
+  const base0 = voxel[t0] - Math.floor((s0 - 1) / 2);
+  const base1 = voxel[t1] - Math.floor((s1 - 1) / 2);
+  const cells: Vec3[] = [];
+  for (let k = 0; k < sa; k++) {
+    const an = voxel[a] + d * (1 - e + k); // layer along the normal
+    for (let i = 0; i < s0; i++)
+      for (let j = 0; j < s1; j++) {
+        const cell: Vec3 = [0, 0, 0];
+        cell[a] = an;
+        cell[t0] = base0 + i;
+        cell[t1] = base1 + j;
+        if (inRange(cell[0], cell[1], cell[2])) cells.push(cell);
+      }
+  }
+  return cells;
+}
+
+/** Stamp an "add block" (see {@link addBlockCells}) into the grid, coloring
+ *  every covered cell. Returns the number of cells newly created or recolored.
+ *  Mutates `grid` in place. */
+export function addBlock(grid: VoxelGrid, voxel: Vec3, normal: Vec3, size: Vec3, depth: number, color: ColorInput): number {
+  const rgb = normalizeColor(color, 'addBlock(color)');
+  let changed = 0;
+  for (const [x, y, z] of addBlockCells(voxel, normal, size, depth)) {
+    if (grid.get(x, y, z) !== rgb) { grid.set(x, y, z, rgb); changed++; }
+  }
+  return changed;
+}
+
+/** Extrude the box spanned by corners `a`/`b` along the clicked face `normal`
+ *  by `depth` extra layers, returning the two corners of the extruded box.
+ *  This gives the two-click box tools a thickness perpendicular to a flat
+ *  (coplanar) selection: a box-fill grows a slab *outward* from the surface
+ *  (`into = false`), a box-subtract carves *inward* into the solid
+ *  (`into = true`). `depth = 0` returns `[a, b]` unchanged (legacy behavior). */
+export function extrudeBox(a: Vec3, b: Vec3, normal: Vec3, depth: number, into: boolean): [Vec3, Vec3] {
+  const e = Math.max(0, Math.floor(depth));
+  const ax = Math.abs(normal[0]), ay = Math.abs(normal[1]), az = Math.abs(normal[2]);
+  if (e === 0 || (ax === 0 && ay === 0 && az === 0)) return [[...a] as Vec3, [...b] as Vec3];
+  const axis = ax >= ay && ax >= az ? 0 : ay >= az ? 1 : 2;
+  const d = normal[axis] >= 0 ? 1 : -1;
+  const dir = into ? -d : d; // fill grows outward; subtract digs inward
+  const lo = Math.min(a[axis], b[axis]);
+  const hi = Math.max(a[axis], b[axis]);
+  const c0: Vec3 = [...a] as Vec3;
+  const c1: Vec3 = [...b] as Vec3;
+  c0[axis] = dir > 0 ? lo : lo - e;
+  c1[axis] = dir > 0 ? hi + e : hi;
+  return [c0, c1];
 }
 
 /** Voxel brush footprint shapes — the 3D analogues of the mesh paint brush's

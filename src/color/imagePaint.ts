@@ -250,7 +250,10 @@ export function loadImageDataFromUrl(dataUrl: string): Promise<ImageData> {
       URL.revokeObjectURL(img.src.startsWith('blob:') ? img.src : '');
       resolve(ctx.getImageData(0, 0, canvas.width, canvas.height));
     };
-    img.onerror = () => reject(new Error('Failed to load image'));
+    img.onerror = () => {
+      URL.revokeObjectURL(img.src.startsWith('blob:') ? img.src : '');
+      reject(new Error('Failed to load image'));
+    };
     img.src = dataUrl;
   });
 }

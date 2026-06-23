@@ -15,6 +15,8 @@ export interface BuildInfo {
   repo: string;
   /** True when the build included uncommitted local changes (dev builds only). */
   dirty: boolean;
+  /** Released semantic version (package.json `version`), e.g. "1.0.0", or 'unknown'. */
+  version: string;
 }
 
 // Replaced wholesale by vite's `define`. The typeof guard keeps this module
@@ -25,8 +27,9 @@ const FALLBACK: BuildInfo = {
   commit: 'unknown',
   branch: 'unknown',
   buildTime: 'unknown',
-  repo: 'kemper/mainifold',
+  repo: 'kemper/partwright',
   dirty: false,
+  version: 'unknown',
 };
 
 export const buildInfo: BuildInfo =

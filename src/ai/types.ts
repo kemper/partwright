@@ -105,10 +105,11 @@ export interface ChatToggles {
    *  the `finish` sentinel tool; a turn that ends WITHOUT calling finish is
    *  automatically resumed (a synthetic nudge is appended and the loop runs
    *  again) so the model keeps working — bounded by the iteration + spend caps,
-   *  whichever trips first. ON by default (standard/full presets; off in the
-   *  lean minimal preset); turning it OFF reproduces the normal
-   *  one-stop-per-end_turn behavior and is remembered across reloads.
-   *  Per-session, like the other toggles. */
+   *  whichever trips first. OFF by default — a turn that ends without calling
+   *  finish stops normally (one-stop-per-end_turn), so a clarifying question
+   *  waits for the user instead of being auto-resumed past. Only the explicit
+   *  max-autonomy full preset enables it; turning it ON elsewhere is remembered
+   *  across reloads. Per-session, like the other toggles. */
   autoResume: boolean;
   /** Plan-first mode. When ON, the first turn on each user message asks the
    *  model to produce a written plan (no tool calls) before executing anything.
@@ -145,6 +146,12 @@ export interface ChatToggles {
    *  typed). Lives in toggles (not the key record) so it serializes into
    *  the agent Worker alongside `customBaseUrl`. */
   customModel: string;
+  /** Model ids the custom endpoint advertised the last time the user hit
+   *  "Fetch models" in AI Settings. Cached here (per-tab, like the rest of
+   *  toggles) purely so the AI panel's model picker can offer a real
+   *  dropdown for the custom provider — mirroring how the cloud providers
+   *  expose a `<select>`. Empty until the user fetches. */
+  customModels: string[];
   /** Base URL of the custom OpenAI-compatible endpoint, including any
    *  version path (e.g. `http://localhost:8080/v1`). We append
    *  `/chat/completions` and `/models` to it. Empty string = not configured.

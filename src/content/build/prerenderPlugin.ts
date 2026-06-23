@@ -1,5 +1,5 @@
-// Vite plugin that turns the four content HTML shells (catalog/help/legal/
-// whats-new) into fully pre-rendered static pages: it injects the build-time
+// Vite plugin that turns the five content HTML shells (catalog/help/legal/
+// whats-new/ideas) into fully pre-rendered static pages: it injects the build-time
 // content (nav + page body + footer) into each shell's `<!--PW-CONTENT-->`
 // placeholder. The result is real HTML with real content for crawlers, with
 // no app JavaScript on the page.
@@ -9,7 +9,8 @@
 // behavior wired up by public/_redirects on Cloudflare Pages.
 
 import type { Plugin, Connect } from 'vite';
-import { renderContentBody, CONTENT_PAGES, type ContentPage } from './render';
+import { resolve } from 'node:path';
+import { renderContentBody, prepareCatalogThumbnails, CONTENT_PAGES, type ContentPage } from './render';
 import { contentHeaderHtml } from '../chrome';
 
 const PLACEHOLDER = '<!--PW-CONTENT-->';
@@ -51,6 +52,13 @@ function rewriteMiddleware(): Connect.NextHandleFunction {
 export function prerenderContentPages(): Plugin {
   return {
     name: 'partwright-prerender-content-pages',
+    // Emit each catalog entry's thumbnail as a content-hashed PNG under
+    // public/catalog/thumbs/ before anything renders, so the tiles (built in
+    // transformIndexHtml) can point <img src> straight at the hashed file. Runs
+    // for both the dev server and the production build.
+    buildStart() {
+      prepareCatalogThumbnails(resolve(process.cwd(), 'public'));
+    },
     transformIndexHtml: {
       order: 'pre',
       handler(html, ctx) {

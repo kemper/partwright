@@ -461,6 +461,16 @@ function buildResponsesInput(history: ChatMessage[]): ResponsesInputItem[] {
  *  tool-result — surfaced on a `user` message wedged between items — doesn't
  *  read as a gap. */
 function sanitizeResponsesToolCalls(items: ResponsesInputItem[]): ResponsesInputItem[] {
+  // Mirror the tool_use repair the other way: drop any function_call_output
+  // whose call_id has no function_call (e.g. compaction dropped the call). The
+  // Responses API 400s on an output for a call it can't see.
+  const calls = new Set<string>();
+  for (const it of items) if (it.type === 'function_call') calls.add(it.call_id);
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.type === 'function_call_output' && !calls.has(it.call_id)) items.splice(i, 1);
+  }
+
   const answered = new Set<string>();
   for (const it of items) {
     if (it.type === 'function_call_output') answered.add(it.call_id);
@@ -684,6 +694,13 @@ async function consumeChatStream(
   // the Responses and Gemini paths.
   if (toolCalls.length > 0) stopReason = 'tool_use';
 
+  // Some OpenAI-compatible servers close the stream after content deltas with no
+  // final finish_reason chunk and no tool calls. Without this, stopReason stays
+  // 'unknown' and chatLoop reports a confusing 'other' outcome even though valid
+  // text streamed. Treat streamed-text-then-EOF as a normal end_turn, matching
+  // the Responses ('end_turn' default) and Gemini ('unknown'→'end_turn') paths.
+  if (stopReason === 'unknown' && collectedText.length > 0) stopReason = 'end_turn';
+
   return { text: collectedText, toolCalls, stopReason, usage };
 }
 
@@ -746,6 +763,18 @@ function buildChatMessages(history: ChatMessage[]): OpenAIMessage[] {
  *  positional scan) so an image tool-result — which surfaces the image on a
  *  `user` message wedged between `tool` messages — doesn't read as a gap. */
 function sanitizeChatToolMessages(messages: OpenAIMessage[]): OpenAIMessage[] {
+  // Mirror the tool_calls repair the other way: drop any `tool` message whose
+  // tool_call_id has no assistant tool_calls entry (e.g. compaction dropped the
+  // call). OpenAI 400s on a tool message that responds to a call it can't see.
+  const calls = new Set<string>();
+  for (const m of messages) {
+    if (m.role === 'assistant' && m.tool_calls) for (const tc of m.tool_calls) calls.add(tc.id);
+  }
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === 'tool' && m.tool_call_id && !calls.has(m.tool_call_id)) messages.splice(i, 1);
+  }
+
   const answered = new Set<string>();
   for (const m of messages) {
     if (m.role === 'tool' && m.tool_call_id) answered.add(m.tool_call_id);

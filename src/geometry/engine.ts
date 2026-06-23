@@ -5,7 +5,7 @@ import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { openscadEngine } from './engines/openscad';
 import { replicadEngine } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
-import { getActiveImports } from '../import/importedMesh';
+import { getActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { getCompanionFiles } from '../import/companionFiles';
 import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
@@ -309,7 +309,24 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     const pending = pendingExecutions.get(callId);
     if (!pending?.onPreview) return;
     const mesh = msg.mesh as MeshResult['mesh'];
-    pending.onPreview({ mesh, manifold: null, error: null });
+    // Model-declared colour data, when the engine attached it (manifold-js SDF
+    // preview path). Reconstruct the Map<string,Set> the consumer expects, same
+    // as the execute_result branch below — so the coarse preview can paint its
+    // estimated label/paint colours instead of bare grey.
+    const labelMapEntries = msg.labelMapEntries as [string, number[]][] | null | undefined;
+    const labelColorEntries = msg.labelColorEntries as [string, [number, number, number]][] | null | undefined;
+    pending.onPreview({
+      mesh,
+      manifold: null,
+      error: null,
+      labelMap: labelMapEntries
+        ? new Map(labelMapEntries.map(([k, v]) => [k, new Set(v)]))
+        : undefined,
+      labelColors: labelColorEntries && labelColorEntries.length > 0
+        ? new Map(labelColorEntries)
+        : undefined,
+      paintOps: (msg.paintOps as MeshResult['paintOps']) ?? undefined,
+    });
     return;
   }
 
@@ -350,11 +367,17 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       labelColors: labelColorEntries && labelColorEntries.length > 0
         ? new Map(labelColorEntries)
         : undefined,
+      paintOps: (msg.paintOps as MeshResult['paintOps']) ?? undefined,
+      surfaceOps: (msg.surfaceOps as MeshResult['surfaceOps']) ?? undefined,
       renderOnly: !!msg.renderOnly,
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
       paramsSchema: (msg.paramsSchema as MeshResult['paramsSchema']) ?? undefined,
       engineHeapBytes: msg.engineHeapBytes as number | undefined,
       voxelCount: msg.voxelCount as number | undefined,
+      voxelPieceCount: msg.voxelPieceCount as number | undefined,
+      voxelRes: msg.voxelRes as number | undefined,
+      voxelResMixed: msg.voxelResMixed as boolean | undefined,
+      sdfLabelCounts: msg.sdfLabelCounts as Record<string, number> | undefined,
     };
     pending.resolve(result);
     // A WASM trap (OOM / abort) reported as a *result* leaves the Worker's
@@ -531,6 +554,14 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingSimplifies.delete(callId ?? '');
       pendingEnhances.get(callId)?.reject(err);
       pendingEnhances.delete(callId ?? '');
+    } else {
+      // callId === null: the Worker forwarded an *unhandled* rejection / escaped
+      // WASM panic (engineWorker installs this to keep the main thread from
+      // hanging forever). It isn't tied to one call, and an escaped trap likely
+      // poisoned the WASM instance — so reject every in-flight call and recycle
+      // the Worker rather than silently dropping the error (which would leave
+      // the no-timeout render path's promise unsettled and the UI spinning).
+      recycleEngineWorker(err.message || 'Geometry worker reported an unhandled error');
     }
   }
 }
@@ -543,6 +574,8 @@ export async function executeCodeAsync(
   lang?: Language,
   paramOverrides?: Record<string, unknown>,
   onPreview?: (result: MeshResult) => void,
+  explicitImports?: ImportedMesh[],
+  explicitCompanions?: Record<string, string>,
 ): Promise<MeshResult> {
   const l = pickLang(lang);
 
@@ -553,7 +586,10 @@ export async function executeCodeAsync(
   const callId = `exec-${++callIdCounter}`;
 
   // Include the currently-active imports so user code can access api.imports.
-  const imports = getActiveImports().map(m => ({
+  // A caller may pass an explicit set (offscreen thumbnail backfill) to run a
+  // specific version's code without disturbing — or depending on — the live
+  // active-imports register, which another tab/run may be mutating.
+  const imports = (explicitImports ?? getActiveImports()).map(m => ({
     id:             m.id,
     filename:       m.filename,
     format:         m.format,
@@ -577,8 +613,16 @@ export async function executeCodeAsync(
       onPreview,
       meta: { startedAt: performance.now(), lang: l },
     });
-    const companionFiles = getCompanionFiles();
-    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
+    // Like explicitImports: a caller (offscreen thumbnail backfill) may pass a
+    // specific version's companion files so a SCAD run doesn't pick up the live
+    // (latest) version's includes.
+    const companionFiles = explicitCompanions ?? getCompanionFiles();
+    // Progressive render: when the caller supplies an onPreview consumer and this
+    // is a manifold-js run, tell the Worker the coarse-preview factor so SDF
+    // figures rough out fast. The Worker further gates on the source actually
+    // doing an SDF `.build()`, so non-SDF code never pays for a second pass.
+    const sdfPreviewScale = (onPreview && l === 'manifold-js') ? getConfig().renderer.sdfPreviewScale : undefined;
+    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
   });
 }
 

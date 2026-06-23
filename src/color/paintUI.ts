@@ -26,6 +26,7 @@ import {
   getBrushShape,
   setBrushSmooth,
   isBrushSmooth,
+  onBrushSmoothChange,
   setBrushSmoothDivisor,
   getBrushSmoothDivisor,
   setBrushPaintDepth,
@@ -97,6 +98,7 @@ import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewport
 import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
 import { viewportToolsMount } from '../ui/popoverMenu';
 import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from '../ui/toolPanel';
+import { createColorSwatch } from '../ui/colorPickerModal';
 
 let paintBtn: HTMLButtonElement | null = null;
 let pickerPanel: HTMLElement | null = null;
@@ -241,25 +243,35 @@ function createPaletteSection(): HTMLElement {
   // Custom (ad-hoc, unslotted) colour — hidden when the palette is constrained.
   const customRow = document.createElement('div');
   customRow.className = 'flex items-center gap-1.5';
-  const colorInput = document.createElement('input');
-  colorInput.type = 'color';
-  colorInput.className = 'w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent';
-  colorInput.title = 'Custom color (unslotted)';
-  colorInput.addEventListener('input', () => {
-    const hex = colorInput.value;
-    setColor([
-      parseInt(hex.slice(1, 3), 16) / 255,
-      parseInt(hex.slice(3, 5), 16) / 255,
-      parseInt(hex.slice(5, 7), 16) / 255,
-    ]);
-    renderSwatches(); // drop the active-slot ring — we're now on an ad-hoc colour
+  const custom = createColorSwatch({
+    initialHex: rgbToHex(getColor()),
+    title: 'Custom color (unslotted)',
+    modalTitle: 'Custom paint colour',
+    className: 'w-6 h-6 shrink-0 rounded cursor-pointer border border-zinc-500 hover:border-white/70 transition-colors',
+    onPick: (hex) => {
+      setColor([
+        parseInt(hex.slice(1, 3), 16) / 255,
+        parseInt(hex.slice(3, 5), 16) / 255,
+        parseInt(hex.slice(5, 7), 16) / 255,
+      ]);
+      renderSwatches(); // drop the active-slot ring — we're now on an ad-hoc colour
+    },
   });
+  const colorInput = custom.el;
   const customLabel = document.createElement('span');
   customLabel.className = 'text-[10px] text-zinc-500';
   customLabel.textContent = 'Custom';
   customRow.appendChild(colorInput);
   customRow.appendChild(customLabel);
   wrap.appendChild(customRow);
+
+  // Shown instead of the custom picker when the palette is constrained — makes
+  // the enforcement legible (painting snaps to the nearest slot; see
+  // enforcePaletteConstraint in paintMode).
+  const constrainNote = document.createElement('div');
+  constrainNote.className = 'hidden text-[10px] text-zinc-500 leading-snug';
+  constrainNote.textContent = 'Constrained to palette — painting snaps to the nearest slot.';
+  wrap.appendChild(constrainNote);
 
   function renderSwatches(): void {
     grid.replaceChildren();
@@ -277,6 +289,9 @@ function createPaletteSection(): HTMLElement {
       });
       grid.appendChild(swatch);
     });
+    // Keep the custom swatch a truthful preview of the active paint colour
+    // (it changes when a slot is selected, not just on a custom pick).
+    custom.setHex(rgbToHex(getColor()));
   }
 
   function renderBudget(): void {
@@ -292,7 +307,9 @@ function createPaletteSection(): HTMLElement {
   }
 
   function renderConstrain(): void {
-    customRow.classList.toggle('hidden', isPaletteConstrained());
+    const on = isPaletteConstrained();
+    customRow.classList.toggle('hidden', on);
+    constrainNote.classList.toggle('hidden', !on);
   }
 
   // Don't pre-select a slot: that would override the default paint colour with
@@ -1146,6 +1163,9 @@ function createBrushControls(): HTMLElement {
     smoothHelp.classList.toggle('hidden', !on);
   };
   smoothToggle.addEventListener('click', () => { setBrushSmooth(!isBrushSmooth()); syncSmoothToggle(); });
+  // Keep the toggle in sync when smoothing is changed elsewhere (e.g. the paint
+  // progress modal's "turn off smoothing" action, or the console API).
+  onBrushSmoothChange(syncSmoothToggle);
 
   wrap.appendChild(smoothLabel);
   wrap.appendChild(smoothToggle);
@@ -1656,14 +1676,52 @@ function createLabelRow(label: LabelInfo, alreadyPainted: boolean): HTMLElement 
     );
   });
 
-  const dot = document.createElement('span');
-  dot.className = 'w-3 h-3 rounded-sm shrink-0 border border-zinc-600/60';
-  if (alreadyPainted) {
-    // Show the most recently-applied color for this label so the user can
-    // distinguish "blue eye" from "red eye" at a glance.
-    const last = [...getRegions()].reverse().find(r => r.descriptor.kind === 'byLabel' && r.descriptor.label === label.name);
-    if (last) dot.style.backgroundColor = rgbToCSS(last.color);
-  }
+  // Inline colour swatch — set the colour of this whole part directly, without
+  // first selecting the active paint colour. It doubles as the "already
+  // painted" indicator: when a byLabel region exists for this label the swatch
+  // shows its colour (the most recent one wins in compositing), so the user can
+  // tell a "blue eye" from a "red eye" at a glance. Editing it recolours that
+  // region in place instead of stacking a duplicate; for an unpainted label it
+  // commits a fresh byLabel region (the same descriptor partwright.paintByLabel
+  // emits, so it persists and re-resolves across runs). Defaults to the active
+  // paint colour so the swatch previews "the part will become this".
+  const lastPainted = alreadyPainted
+    ? [...getRegions()].reverse().find(r => r.descriptor.kind === 'byLabel' && r.descriptor.label === label.name) ?? null
+    : null;
+  // The swatch opens the shared palette picker (createColorSwatch stops the
+  // click from bubbling to the row's paint-with-active-colour handler). Picking
+  // a colour recolours this part's existing byLabel region in place, or commits
+  // a fresh one — the same descriptor partwright.paintByLabel emits.
+  const swatch = createColorSwatch({
+    initialHex: rgbToHex(lastPainted ? lastPainted.color : getColor()),
+    title: lastPainted ? `Recolour the whole "${label.name}" part` : `Set the colour of the whole "${label.name}" part`,
+    modalTitle: `Colour for "${label.name}"`,
+    className: 'w-3.5 h-3.5 shrink-0 rounded-sm border border-zinc-500 hover:border-white/60 cursor-pointer',
+    dataAction: 'set-label-color',
+    onPick: (hex) => {
+      if (label.triangles.size === 0) return;
+      const rgb: [number, number, number] = [
+        parseInt(hex.slice(1, 3), 16) / 255,
+        parseInt(hex.slice(3, 5), 16) / 255,
+        parseInt(hex.slice(5, 7), 16) / 255,
+      ];
+      const existing = [...getRegions()].reverse().find(r => r.descriptor.kind === 'byLabel' && r.descriptor.label === label.name);
+      if (existing) {
+        updateRegionColor(existing.id, rgb);
+      } else {
+        addRegion(
+          label.name,
+          rgb,
+          'paintbrush',
+          { kind: 'byLabel', label: label.name },
+          new Set(label.triangles),
+          true,
+          getSlotId() ?? undefined,
+        );
+      }
+    },
+  });
+  const dot = swatch.el;
 
   const nameEl = document.createElement('span');
   nameEl.className = 'text-[11px] truncate flex-1 text-zinc-300';
@@ -1713,26 +1771,24 @@ function updateRegionList(container: HTMLElement): void {
       if (releaseHover) { releaseHover(); releaseHover = null; }
     });
 
-    // Color swatch doubles as an edit affordance: the dot IS the native
-    // <input type="color">, styled to read as a swatch. The OS picker pops up
-    // anchored to the swatch (no hidden offscreen input → no "picker closes
-    // when I move the mouse" surprise). `change` commits a single
-    // updateRegionColor on release, so the mesh reconciler only fires once
-    // per pick instead of on every channel drag.
-    const dot = document.createElement('input');
-    dot.type = 'color';
-    dot.value = rgbToHex(region.color);
-    dot.className = 'w-3.5 h-3.5 shrink-0 rounded-sm border border-zinc-500 hover:border-white/60 cursor-pointer bg-transparent p-0 [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded-sm [&::-webkit-color-swatch]:border-0 [&::-moz-color-swatch]:rounded-sm [&::-moz-color-swatch]:border-0';
-    dot.title = `Click to change colour (${rgbToHex(region.color)})`;
-    if (!region.visible) dot.classList.add('opacity-30');
-    dot.addEventListener('change', () => {
-      const hex = dot.value;
-      const r = parseInt(hex.slice(1, 3), 16) / 255;
-      const g = parseInt(hex.slice(3, 5), 16) / 255;
-      const b = parseInt(hex.slice(5, 7), 16) / 255;
-      updateRegionColor(region.id, [r, g, b]);
+    // Colour swatch doubles as an edit affordance: clicking it opens the shared
+    // palette picker (createColorSwatch stops the click bubbling to the row).
+    // Picking commits a single updateRegionColor, so the mesh reconciler fires
+    // once per pick. The row is rebuilt on regions change, so no setHex needed.
+    const swatch = createColorSwatch({
+      initialHex: rgbToHex(region.color),
+      title: `Click to change colour (${rgbToHex(region.color)})`,
+      modalTitle: `Recolour "${region.name}"`,
+      className: `w-3.5 h-3.5 shrink-0 rounded-sm border border-zinc-500 hover:border-white/60 cursor-pointer${region.visible ? '' : ' opacity-30'}`,
+      onPick: (hex) => {
+        updateRegionColor(region.id, [
+          parseInt(hex.slice(1, 3), 16) / 255,
+          parseInt(hex.slice(3, 5), 16) / 255,
+          parseInt(hex.slice(5, 7), 16) / 255,
+        ]);
+      },
     });
-    dot.addEventListener('click', (e) => e.stopPropagation());
+    const dot = swatch.el;
 
     const label = document.createElement('span');
     label.className = `text-[11px] truncate flex-1 ${region.visible ? 'text-zinc-400' : 'text-zinc-600 line-through'}`;

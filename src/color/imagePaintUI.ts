@@ -37,6 +37,7 @@ import { getCurrentMesh as getPaintMesh } from './paintAccessors';
 import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { viewportToolsMount } from '../ui/popoverMenu';
+import { createColorSwatch } from '../ui/colorPickerModal';
 import { setInitialPanelPosition, attachViewportPanelDrag } from '../ui/viewportPanelDrag';
 import { createToolPanelHeader } from '../ui/toolPanel';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
@@ -353,55 +354,86 @@ function updatePreviewLines(
 
 function executeStamp(hitPoint: [number, number, number], hitNormal: [number, number, number]): void {
   if (!pickedImageData) return;
-
-  const stampOpts: StampImageOptions = {
+  const maxEdge = stampDetail > 0 ? stampSize / stampDetail : 0;
+  runStamp({
+    imageData: pickedImageData,
     hitPoint,
     hitNormal,
     size: stampSize,
     rotationDeg: stampRotation,
-    preprocess: { ...opts.preprocess },
+    smooth: stampSmooth && maxEdge > 0,
+    maxEdge,
     removeBackground: opts.removeBackground,
-    manualBgColor: opts.manualBgColor ? [...opts.manualBgColor] as [number, number, number] : undefined,
+    manualBgColor: opts.manualBgColor,
+    preprocess: opts.preprocess,
+  });
+}
+
+interface StampRun {
+  imageData: ImageData;
+  hitPoint: [number, number, number];
+  hitNormal: [number, number, number];
+  size: number;
+  rotationDeg: number;
+  /** Subdivide the stamp footprint for crisp detail (uses the smooth callback). */
+  smooth: boolean;
+  /** Target triangle edge length when smoothing (stampSize / detail-rows). */
+  maxEdge: number;
+  removeBackground: boolean;
+  manualBgColor?: [number, number, number];
+  preprocess: PreprocessOptions;
+  name?: string;
+}
+
+/** Shared stamp core: compute the per-triangle colours (smooth-subdivided when
+ *  asked, else flat on the current mesh) and commit them as an `imagePaint`
+ *  region. Used by both the click-driven UI (executeStamp) and the programmatic
+ *  `stampImageProgrammatic` API. Returns the committed region summary, or null
+ *  when nothing was painted (empty footprint / no mesh). */
+function runStamp(r: StampRun): { name: string; triangles: number; avgColor: [number, number, number] } | null {
+  const stampOpts: StampImageOptions = {
+    hitPoint: r.hitPoint,
+    hitNormal: r.hitNormal,
+    size: r.size,
+    rotationDeg: r.rotationDeg,
+    preprocess: { ...r.preprocess },
+    removeBackground: r.removeBackground,
+    manualBgColor: r.manualBgColor ? [...r.manualBgColor] as [number, number, number] : undefined,
     bgTolerance: 36 * 36 * 3,
   };
 
   let result: ImagePaintResult;
-
-  // Convert the size-independent Detail level (triangle rows across the stamp)
-  // into an absolute target edge length for the subdivision. Stored on the
-  // descriptor so a reloaded session reproduces the same tessellation regardless
-  // of how the slider is later expressed.
-  const maxEdge = stampDetail > 0 ? stampSize / stampDetail : 0;
-
-  if (stampSmooth && maxEdge > 0 && smoothStampCb) {
+  const useSmooth = r.smooth && r.maxEdge > 0 && !!smoothStampCb;
+  if (useSmooth) {
     // Smooth mode: callback subdivides the stamp footprint to maxEdge (confined
     // to the stamp square), then stamps on the fine mesh — giving crisp detail.
-    const refined = smoothStampCb(pickedImageData, stampOpts, maxEdge);
-    if (!refined || refined.result.entries.length === 0) return;
+    const refined = smoothStampCb!(r.imageData, stampOpts, r.maxEdge);
+    if (!refined || refined.result.entries.length === 0) return null;
     result = refined.result;
   } else {
     const mesh = getPaintMesh();
-    if (!mesh) return;
-    result = stampImageOntoMesh(mesh, pickedImageData, stampOpts);
-    if (result.entries.length === 0) return;
+    if (!mesh) return null;
+    result = stampImageOntoMesh(mesh, r.imageData, stampOpts);
+    if (result.entries.length === 0) return null;
   }
 
   stampCounter++;
+  const name = r.name ?? `Stamp ${stampCounter}`;
   const triangles = new Set(result.perTriColors.keys());
   const commit = () => addRegion(
-    `Stamp ${stampCounter}`,
+    name,
     result.avgColor,
     'imagePaint',
     {
       kind: 'imagePaint',
-      entries: stampSmooth ? [] : result.entries,
+      entries: useSmooth ? [] : result.entries,
       avgColor: result.avgColor,
-      ...(stampSmooth ? {
-        smooth: true, maxEdge,
-        hitPoint, hitNormal, stampSize, rotationDeg: stampRotation,
-        imageDataUrl: compactImageDataUrl(pickedImageData!),
-        removeBackground: opts.removeBackground,
-        ...(opts.manualBgColor ? { manualBgColor: opts.manualBgColor } : {}),
+      ...(useSmooth ? {
+        smooth: true, maxEdge: r.maxEdge,
+        hitPoint: r.hitPoint, hitNormal: r.hitNormal, stampSize: r.size, rotationDeg: r.rotationDeg,
+        imageDataUrl: compactImageDataUrl(r.imageData),
+        removeBackground: r.removeBackground,
+        ...(r.manualBgColor ? { manualBgColor: r.manualBgColor } : {}),
         bgTolerance: 36 * 36 * 3,
       } : {}),
     },
@@ -414,6 +446,51 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
   // so adding the stamp can't trigger a mesh rebuild that drops it or existing paint.
   if (stampCommitHook) stampCommitHook(commit);
   else commit();
+  return { name, triangles: triangles.size, avgColor: result.avgColor };
+}
+
+export interface ProgrammaticStampParams {
+  /** Stamp centre on the surface (world coords). */
+  hitPoint: [number, number, number];
+  /** Outward face direction at the stamp centre. */
+  hitNormal: [number, number, number];
+  /** Stamp diameter in world units. */
+  size: number;
+  rotationDeg?: number;
+  /** Triangle rows across the stamp; >0 subdivides for crisp detail (default
+   *  96, matching the UI). 0 = flat stamp on the existing tessellation. */
+  detail?: number;
+  removeBackground?: boolean;
+  manualBgColor?: [number, number, number];
+  preprocess?: PreprocessOptions;
+  /** Region label; defaults to "Stamp N". */
+  name?: string;
+}
+
+/** Stamp `imageData` onto the current mesh programmatically — the engine behind
+ *  the Image-paint tool, exposed so `window.partwright.paintImage` can drive it
+ *  without a click. Mirrors the UI's executeStamp but takes explicit params
+ *  instead of panel state. Returns the committed region summary or null. */
+export function stampImageProgrammatic(
+  imageData: ImageData,
+  params: ProgrammaticStampParams,
+): { name: string; triangles: number; avgColor: [number, number, number] } | null {
+  const size = params.size;
+  const detail = params.detail ?? 96;
+  const maxEdge = detail > 0 ? size / detail : 0;
+  return runStamp({
+    imageData,
+    hitPoint: params.hitPoint,
+    hitNormal: params.hitNormal,
+    size,
+    rotationDeg: params.rotationDeg ?? 0,
+    smooth: maxEdge > 0,
+    maxEdge,
+    removeBackground: params.removeBackground ?? true,
+    manualBgColor: params.manualBgColor,
+    preprocess: params.preprocess ?? defaultPreprocess(),
+    name: params.name,
+  });
 }
 
 // ─── Panel construction ───────────────────────────────────────────────────────
@@ -572,11 +649,10 @@ function buildImageSection(): HTMLElement {
 
 /** Load a file into ImageData, rendering SVGs at high resolution. */
 async function applyImageFile(file: File): Promise<void> {
+  const objectUrl = URL.createObjectURL(file);
   try {
-    const objectUrl = URL.createObjectURL(file);
     const isSvg = file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
     const raw = await loadImageDataHighRes(objectUrl, isSvg);
-    URL.revokeObjectURL(objectUrl);
     pickedImageData = resizeImageData(raw, STAMP_MAX);
     pickedImageThumb = resizeImageData(raw, THUMB_MAX);
     if (sourceLabel) sourceLabel.textContent = file.name;
@@ -585,6 +661,10 @@ async function applyImageFile(file: File): Promise<void> {
     updateStampMode();
   } catch {
     if (sourceLabel) sourceLabel.textContent = 'Failed to load image';
+  } finally {
+    // Revoke on every path — a decode failure must not leak the blob (it
+    // retains the full file bytes in memory until the page closes).
+    URL.revokeObjectURL(objectUrl);
   }
 }
 
@@ -699,28 +779,28 @@ function buildBackgroundSection(): HTMLElement {
   pickerLabel.className = 'text-[11px] text-zinc-400 shrink-0';
   pickerLabel.textContent = 'Or pick color:';
 
-  const colorInput = document.createElement('input');
-  colorInput.type = 'color';
-  colorInput.value = '#ffffff';
-  colorInput.className = 'w-7 h-7 rounded cursor-pointer border border-zinc-600/40 bg-transparent p-0 [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded [&::-webkit-color-swatch]:border-0';
-  colorInput.title = 'Manually specify the background colour to remove';
+  const colorSwatch = createColorSwatch({
+    initialHex: '#ffffff',
+    title: 'Manually specify the background colour to remove',
+    modalTitle: 'Background colour to remove',
+    className: 'w-7 h-7 shrink-0 rounded cursor-pointer border border-zinc-600/40 hover:border-white/70 transition-colors',
+    onPick: (hex) => {
+      opts.manualBgColor = [
+        parseInt(hex.slice(1, 3), 16),
+        parseInt(hex.slice(3, 5), 16),
+        parseInt(hex.slice(5, 7), 16),
+      ];
+      opts.removeBackground = true;
+      autoCheck.checked = true;
+      renderPreview();
+    },
+  });
+  const colorInput = colorSwatch.el;
 
   const colorClear = document.createElement('button');
   colorClear.className = 'text-[10px] text-zinc-500 hover:text-zinc-200 underline-offset-2 hover:underline transition-colors';
   colorClear.textContent = 'clear';
   colorClear.title = 'Revert to auto background detection';
-
-  colorInput.addEventListener('input', () => {
-    const hex = colorInput.value;
-    opts.manualBgColor = [
-      parseInt(hex.slice(1, 3), 16),
-      parseInt(hex.slice(3, 5), 16),
-      parseInt(hex.slice(5, 7), 16),
-    ];
-    opts.removeBackground = true;
-    autoCheck.checked = true;
-    renderPreview();
-  });
 
   colorClear.addEventListener('click', () => {
     opts.manualBgColor = undefined;

@@ -3,6 +3,7 @@
 // pre-rendered /legal page); this module is the in-app DOM renderer.
 
 import { LEGAL_INTRO, LEGAL_SECTIONS } from '../content/data/legal';
+import { appPath } from '../deployment';
 
 export interface LegalCallbacks {
   onBack: () => void;
@@ -50,7 +51,7 @@ export function createLegalPage(
 
   const footer = document.createElement('div');
   footer.className = 'mt-12 pt-6 border-t border-zinc-800 text-xs text-zinc-600';
-  footer.innerHTML = 'More about how the app works: <a href="/help" class="text-zinc-500 hover:text-zinc-300 transition-colors">/help</a>';
+  footer.innerHTML = `More about how the app works: <a href="${appPath('/help')}" class="text-zinc-500 hover:text-zinc-300 transition-colors">/help</a>`;
   content.appendChild(footer);
 
   page.appendChild(content);

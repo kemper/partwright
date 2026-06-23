@@ -32,43 +32,38 @@ interface CatalogEntry {
   id: string;                   // manifest id (kebab-case)
   name: string;                 // user-facing name
   description: string;          // shows up under the tile
+  /** Optional per-entry thumbnail-camera pin (degrees; azimuth 0=front/−Y,
+   *  90=right/+X, 180=back/+Y; elevation 0=horizon, 90=top — see
+   *  STANDARD_VIEWS in src/renderer/multiview.ts). Defaults to the standard
+   *  iso tile (az 45, el 35 — the +X/−Y corner) when omitted — set this
+   *  instead of baking orientation into the geometry when a model's "hero
+   *  face" doesn't sit on the default corner. */
+  thumbCamera?: { azimuth: number; elevation: number };
+  /** Expected component count for the runAndSave manifold assertion. Defaults
+   *  to 1; set higher for intentionally multi-part models (e.g. a two-part box
+   *  whose base + lid are separate solids). */
+  maxComponents?: number;
 }
 
+// This list is the CURRENT batch to bake — the generator writes a
+// .partwright.json for each and appends any missing manifest entry (existing
+// ids are skipped, so prior batches aren't disturbed). Replace it with the new
+// examples when adding a batch.
 const newEntries: CatalogEntry[] = [
   {
-    exampleFile: 'spiral_staircase.js',
-    catalogFile: 'spiral_staircase.partwright.json',
-    id: 'spiral-staircase',
-    name: 'Spiral Staircase',
-    description: 'A 16-step helical staircase around a central column, topped by a circular platform and balusters. Built with the spiralPattern helper for the steps and railing posts.',
+    exampleFile: 'parametric_enclosure.js',
+    catalogFile: 'parametric_enclosure.partwright.json',
+    id: 'parametric-enclosure',
+    name: 'Project Box / Enclosure',
+    description: 'A fully parametric two-part project box built with api.enclosure — choose a lip-nesting or screw-down lid, then tune size, wall, corner radius, fit, and screw size in the Customizer. The screw lid composes api.fasteners for its tapped corner bosses and countersunk holes.',
+    maxComponents: 2, // base + lid are separate solids across the clearance gap
   },
   {
-    exampleFile: 'geodesic_lantern.js',
-    catalogFile: 'geodesic_lantern.partwright.json',
-    id: 'geodesic-lantern',
-    name: 'Geodesic Lantern',
-    description: 'A faceted dome lantern with two rings of cylindrical window cutouts and a small spire finial. Showcases circularPattern, placeOn, and the expectUnion safety net.',
-  },
-  {
-    exampleFile: 'clock_face.js',
-    catalogFile: 'clock_face.partwright.json',
-    id: 'clock-face',
-    name: 'Wall Clock Face',
-    description: '100mm-diameter clock face with 12 hour markers, 60 minute ticks, and tapered hour + minute hands posed at 10:10. Built with the circularPattern radius shortcut.',
-  },
-  {
-    exampleFile: 'honeycomb_planter.js',
-    catalogFile: 'honeycomb_planter.partwright.json',
-    id: 'honeycomb-planter',
-    name: 'Honeycomb Planter',
-    description: 'A cylindrical planter pot with a staggered honeycomb pattern carved through its wall. Built with nested linearPattern + circularPattern and the expectUnion connectivity check.',
-  },
-  {
-    exampleFile: 'wind_turbine.js',
-    catalogFile: 'wind_turbine.partwright.json',
-    id: 'wind-turbine',
-    name: 'Wind Turbine',
-    description: 'A tapered tower with a nacelle, hub, and 3 swept blades — plus a service ladder up the tower face. Showcases placeOn for the nacelle and circularPattern with a non-Z axis for the rotor.',
+    exampleFile: 'knurled_control_knob.js',
+    catalogFile: 'knurled_control_knob.partwright.json',
+    id: 'knurled-control-knob',
+    name: 'Knurled Control Knob',
+    description: 'A customizable control knob with a functional knurled grip built with api.knurl — switch between a diamond cross-hatch, straight splines, or finger ribs, and mount it on a plain shaft, a D-shaft, or a heat-set threaded insert. Pointer notch optional.',
   },
 ];
 
@@ -94,14 +89,19 @@ test.describe.serial('generate catalog entries', () => {
 
       // Build a session, run the code, export as JSON (with thumbnails so
       // the catalog tiles render the rendered preview, not a placeholder).
-      const payload = await page.evaluate(async ({ code, name }) => {
+      const payload = await page.evaluate(async ({ code, name, thumbCamera, maxComponents }) => {
         const pw = (window as unknown as { partwright: {
           createSession: (n: string) => Promise<unknown>;
           runAndSave: (c: string, label?: string, a?: unknown) => Promise<unknown>;
+          setThumbnailCamera: (c: { azimuth: number; elevation: number }) => Promise<unknown>;
           exportSessionData: (id?: string, opts?: { includeThumbnails?: boolean }) => Promise<{ data?: unknown; error?: string }>;
         } }).partwright;
         await pw.createSession(name);
-        const run = await pw.runAndSave(code, 'v1', { isManifold: true, maxComponents: 1 }) as { passed?: boolean; failures?: string[]; geometry?: { status?: string; error?: string } };
+        // Pin the tile camera BEFORE runAndSave so captureThumbnail() inside it
+        // renders from the entry's chosen angle (and the pin is exported with
+        // the session, so re-renders keep it).
+        if (thumbCamera) await pw.setThumbnailCamera(thumbCamera);
+        const run = await pw.runAndSave(code, 'v1', { isManifold: true, maxComponents }) as { passed?: boolean; failures?: string[]; geometry?: { status?: string; error?: string } };
         if (run.failures && run.failures.length > 0) {
           throw new Error('runAndSave assertions failed: ' + run.failures.join('; '));
         }
@@ -115,7 +115,7 @@ test.describe.serial('generate catalog entries', () => {
         const exported = await pw.exportSessionData(undefined, { includeThumbnails: true });
         if (exported.error) throw new Error('exportSessionData: ' + exported.error);
         return exported.data;
-      }, { code: src, name: entry.name });
+      }, { code: src, name: entry.name, thumbCamera: entry.thumbCamera ?? null, maxComponents: entry.maxComponents ?? 1 });
 
       // Write to public/catalog/<name>.partwright.json — pretty-printed so
       // diffs are readable.

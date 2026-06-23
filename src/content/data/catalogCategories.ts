@@ -12,6 +12,48 @@ export const CATALOG_LANGUAGE_ORDER: CatalogLanguage[] = ['manifold-js', 'scad',
  *  `group`) so a themed collection can span every engine. */
 export type CuratedGroupId = 'fidget-toys' | 'print-fit';
 
+/** Content themes — an orthogonal, language-independent *filter* facet (not a
+ *  section). Assigned per manifest entry via `tags`; an entry can carry several.
+ *  Unlike `group` (which buckets an entry into one section), themes layer on top
+ *  of the engine/curated sections so a user can focus the whole catalog on, say,
+ *  Figures or Vehicles regardless of how each model is built. */
+export type CatalogThemeId =
+  | 'figures'
+  | 'fidgets'
+  | 'mechanical'
+  | 'buildings'
+  | 'vehicles'
+  | 'games'
+  | 'decor';
+
+export interface CatalogThemeDef {
+  id: CatalogThemeId;
+  /** Pill label. */
+  label: string;
+}
+
+/** The theme filter pills, in render order. A pill renders only when at least
+ *  one present entry carries its tag (mirrors the language-pill behavior). */
+export const CATALOG_THEMES: CatalogThemeDef[] = [
+  { id: 'figures', label: 'Figures' },
+  { id: 'fidgets', label: 'Fidgets' },
+  { id: 'mechanical', label: 'Mechanical' },
+  { id: 'buildings', label: 'Buildings' },
+  { id: 'vehicles', label: 'Vehicles' },
+  { id: 'games', label: 'Games' },
+  { id: 'decor', label: 'Home & Decor' },
+];
+
+/** Count how many of `entries` carry each theme tag. Pure; shared by both
+ *  catalog surfaces so their theme pills (and counts) stay identical. */
+export function themeCounts(entries: { tags?: CatalogThemeId[] }[]): Map<CatalogThemeId, number> {
+  const counts = new Map<CatalogThemeId, number>();
+  for (const entry of entries) {
+    for (const tag of entry.tags ?? []) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export interface CatalogManifestEntry {
   /** Stable id used as a slug; also the manifest dedupe key. */
   id: string;
@@ -26,6 +68,10 @@ export interface CatalogManifestEntry {
   /** Optional curated group. When set, the entry is bucketed into this themed,
    *  language-independent section instead of its engine-derived category. */
   group?: CuratedGroupId;
+  /** Optional content themes — an orthogonal filter facet (see CatalogThemeId).
+   *  An entry can carry several (e.g. a jet engine is both mechanical + vehicle).
+   *  Drives the theme filter pills; does not affect which section it lands in. */
+  tags?: CatalogThemeId[];
   /** Whether this model has been physically 3D-printed and verified printable.
    *  Absent/false means "not print-tested yet" (the default for every entry) —
    *  flip to `true` only once a real print exists. Drives the print-tested tile
@@ -85,7 +131,7 @@ export interface CategoryDef {
 
 export const CATEGORIES: CategoryDef[] = [
   { id: 'fidget-toys', title: 'Fidget Toys', blurb: 'Twisty, spinny, squishy desk toys — popular 3D-print fidgets you can print and tweak. Spans every engine.' },
-  { id: 'print-fit', title: 'Hardware-Ready Joinery', blurb: 'Enclosures, brackets, and joints sized to real hardware — M2–M8 screws, heat-set inserts, captive nuts, dovetails, and alignment pins built with the api.printFit helpers.' },
+  { id: 'print-fit', title: 'Hardware-Ready Joinery', blurb: 'Enclosures, brackets, and joints sized to real hardware — M2–M8 screws, heat-set inserts, captive nuts, dovetails, and alignment pins built with the api.fasteners and api.joints helpers.' },
   { id: 'customizable', title: 'Customizable', blurb: 'Tweak these live with sliders and toggles — open the 🎛 Customize panel in the editor, no code changes needed.' },
   { id: 'manifold', title: 'JavaScript Models', blurb: 'Built with the default manifold-3d mesh API — the everyday JS modeling path.' },
   { id: 'sdf', title: 'Implicit Surfaces (SDF)', blurb: 'Signed-distance-field models via the Sdf builder — gyroids, lattices, and organic blends.' },

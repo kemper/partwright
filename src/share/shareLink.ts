@@ -117,19 +117,42 @@ export function isSafeImageDataUrl(s: unknown): s is string {
 // === trim ===
 
 /** Drop the heavy, share-irrelevant parts of an exported session: the
- *  base64-encoded imported-mesh buffers (STL geometry) on each version, and any
- *  bulky mesh array smuggled inside `geometryData` (e.g. raw vertex/triangle
- *  arrays) — while KEEPING the stats (volume/surfaceArea/boundingBox/
- *  componentCount/isManifold) and `colorRegions` that the preview needs. Does
- *  not mutate the input. */
+ *  base64-encoded imported-mesh buffers (STL geometry) and persisted surface
+ *  textures (`api.surface.*` results — the recipient recomputes them on first
+ *  run) on each version, and any bulky mesh array smuggled inside
+ *  `geometryData` (e.g. raw vertex/triangle arrays) — while KEEPING the stats
+ *  (volume/surfaceArea/boundingBox/componentCount/isManifold) and
+ *  `colorRegions` that the preview needs. Does not mutate the input. */
 export function trimForShare(exported: ExportedSession): ExportedSession {
   const versions = Array.isArray(exported.versions) ? exported.versions : [];
   return {
     ...exported,
+    session: trimAttachmentsForShare(exported.session),
     versions: versions.map(v => {
-      const { importedMeshes: _drop, geometryData, ...rest } = v;
+      const { importedMeshes: _dropMeshes, surfaceTexture: _dropTexture, geometryData, ...rest } = v;
       return { ...rest, geometryData: trimGeometryData(geometryData) };
     }),
+  };
+}
+
+/** Drop the bulky inline `src` data-URL payloads from session attachments,
+ *  keeping the lightweight metadata ({id, kind, label, description, …}). Since
+ *  the attachments generalization (schema 1.16), an attachment can be a
+ *  reference photo OR a reference model (STL/STEP/3MF) or PDF encoded as a
+ *  data URL — potentially megabytes each, all of which would otherwise be
+ *  base64'd into the share URL and blow past {@link MAX_DECOMPRESSED_BYTES} on
+ *  decode. External `http(s)` refs are tiny pointers, so they're kept. */
+function trimAttachmentsForShare(session: ExportedSession['session']): ExportedSession['session'] {
+  // `session` can be missing/malformed for an invalid payload (e.g. a hand-built
+  // or corrupt share input) — guard before dereferencing.
+  if (!session || typeof session !== 'object') return session;
+  const attachments = session.attachments;
+  if (!Array.isArray(attachments) || attachments.length === 0) return session;
+  return {
+    ...session,
+    attachments: attachments.map(a =>
+      typeof a.src === 'string' && a.src.startsWith('data:') ? { ...a, src: '' } : a,
+    ),
   };
 }
 

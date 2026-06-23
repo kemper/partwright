@@ -16,11 +16,13 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { assetPath } from '../deployment';
+
 interface Bosl2Manifest {
   files: string[];
 }
 
-const BOSL2_PREFIX = '/openscad-libs/BOSL2';
+const BOSL2_PREFIX = assetPath('/openscad-libs/BOSL2');
 const MEMFS_DIR = '/BOSL2';
 
 let manifestPromise: Promise<Bosl2Manifest> | null = null;

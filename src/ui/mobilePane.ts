@@ -7,7 +7,7 @@
 // "viewport-only" choice should not propagate to a desktop user opening the
 // same link.
 
-export type MobilePane = 'editor' | 'viewport';
+export type MobilePane = 'editor' | 'parts' | 'viewport';
 
 const STORAGE_KEY = 'partwright.mobilePane';
 const listeners = new Set<(pane: MobilePane) => void>();
@@ -17,7 +17,7 @@ let _current: MobilePane = readStored();
 function readStored(): MobilePane {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'editor' || stored === 'viewport') return stored;
+    if (stored === 'editor' || stored === 'parts' || stored === 'viewport') return stored;
   } catch {
     // localStorage may be unavailable (private mode, etc.)
   }

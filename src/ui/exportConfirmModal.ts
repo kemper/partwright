@@ -5,14 +5,22 @@
 // Surfaces up to two warnings in a single modal:
 //   1. Unitless geometry — most slicers assume millimeters, so the printed
 //      part will be the wrong size if the model was authored at another scale.
+//      This block carries an inline units selector so the user can set (or
+//      deliberately leave unset) the unit right here instead of cancelling and
+//      reopening the Export menu; picking a unit clears the warning live.
 //   2. Printability — the geometry is non-manifold (not watertight) and/or
-//      has multiple disconnected components, which many slicers choke on.
+//      has multiple disconnected components, which many slicers choke on, plus
+//      the design-for-print checks from analyzePrintability (bed fit, overhangs,
+//      thin walls, small features, tip-over stability) so the user reads them
+//      here instead of catching a fleeting toast.
 //
 // If neither applies, the caller skips the modal entirely and exports directly.
 
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
-import { formatDimension } from '../geometry/units';
+import { formatDimension, getUnits, setUnits, type UnitSystem } from '../geometry/units';
+import { escapeHtml } from './htmlUtils';
+import type { PrintabilityCheck } from '../geometry/printability';
 
 export interface ExportWarningInfo {
   /** True when the active unit system is 'unitless'. */
@@ -31,22 +39,51 @@ export interface ExportWarningInfo {
   /** True when the chosen format can't carry colour (STL) but the model is
    *  painted, so the colours will be dropped. */
   colorDropped?: boolean;
+  /** True when the model declares `api.surface.*` textures that haven't been
+   *  applied to the current code (the Re-apply pill is up) — the export would
+   *  carry the untextured base mesh. */
+  surfaceStale?: boolean;
+  /** Set when one or more parts have unsaved edits (or were never saved). A
+   *  multi-part export bakes each part's LAST SAVED version, so unsaved work
+   *  (e.g. fresh paint) is silently left out and never-saved parts are skipped
+   *  — the cause of "some parts exported without colour". When present, the
+   *  modal offers a Save action alongside Export anyway. */
+  unsavedParts?: { count: number; names: string[] };
+  /** Design-for-print checks from `analyzePrintability` worth interrupting the
+   *  export for — only `fail` (blocker) and `warn` levels, with the watertight
+   *  `manifold` check excluded (it's already covered by `isManifold` above).
+   *  Surfaced as a list so the user reads them in the modal rather than as a
+   *  fleeting toast. */
+  printabilityChecks?: PrintabilityCheck[];
 }
+
+/** Whether the descriptor carries any actionable printability check. */
+function hasPrintabilityChecks(info: ExportWarningInfo): boolean {
+  return (info.printabilityChecks?.length ?? 0) > 0;
+}
+
+/** The user's choice from the export-confirm modal. `save` means "take me to
+ *  the save flow instead of exporting now". */
+export type ExportConfirmResult = 'export' | 'cancel' | 'save';
 
 /** Whether any warning is worth interrupting the export for. */
 export function hasExportWarning(info: ExportWarningInfo): boolean {
   return info.unitless || !info.isManifold || info.componentCount > 1
-    || info.colorOverBudget != null || info.colorDropped === true;
+    || info.colorOverBudget != null || info.colorDropped === true
+    || info.surfaceStale === true || hasPrintabilityChecks(info)
+    || (info.unsavedParts != null && info.unsavedParts.count > 0);
 }
 
 /**
- * Show the export-confirmation modal. Resolves true if the user proceeds,
- * false if they cancel/dismiss. Callers should check `hasExportWarning` first
- * and only call this when there's something to warn about.
+ * Show the export-confirmation modal. Resolves `'export'` if the user proceeds,
+ * `'cancel'` if they cancel/dismiss, or `'save'` if they choose to save first
+ * (only offered when `info.unsavedParts` is set). Callers should check
+ * `hasExportWarning` first and only call this when there's something to warn
+ * about.
  */
-export function showExportConfirm(info: ExportWarningInfo): Promise<boolean> {
+export function showExportConfirm(info: ExportWarningInfo): Promise<ExportConfirmResult> {
   return new Promise((resolve) => {
-    let result = false;
+    let result: ExportConfirmResult = 'cancel';
     const shell = createModalShell({
       title: `Export ${info.format}?`,
       onClose: () => {
@@ -55,18 +92,83 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<boolean> {
       },
     });
 
+    // When the unit is satisfied (a concrete unit was picked, or it wasn't
+    // unitless to begin with), the export button reads "Export"; while any
+    // warning is still live it reads "Export anyway". `syncUnitsBlock` keeps
+    // both the unit warning copy and the button label in sync as the user
+    // picks a unit right here in the modal.
+    const otherWarning = !info.isManifold || info.componentCount > 1
+      || info.colorOverBudget != null || info.colorDropped === true
+      || info.surfaceStale === true || hasPrintabilityChecks(info);
+    let unitsResolved = !info.unitless;
+
     if (info.unitless) {
       const block = document.createElement('div');
-      block.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
+      const message = document.createElement('div');
       const dims = info.dimensions;
       const dimText = dims
         ? `${formatDimension(dims[0])} × ${formatDimension(dims[1])} × ${formatDimension(dims[2])}`
         : null;
-      block.innerHTML =
-        '<strong>No units set.</strong> Most slicers assume <strong>millimeters</strong>. ' +
-        'If you modeled at another scale, the printed part will be the wrong size. ' +
-        (dimText ? `This model\'s bounding box is <span class="font-mono">${dimText}</span>. ` : '') +
-        'Set units in the Export menu to silence this check.';
+
+      // Inline units control — lets the user fix the warning right here instead
+      // of cancelling, opening the Export menu, and starting over.
+      const controlRow = document.createElement('div');
+      controlRow.className = 'mt-2 flex items-center gap-2';
+      const selectLabel = document.createElement('label');
+      selectLabel.className = 'text-xs font-medium';
+      selectLabel.textContent = 'Set units:';
+      selectLabel.htmlFor = 'export-confirm-units-select';
+      const unitsSelect = document.createElement('select');
+      unitsSelect.id = 'export-confirm-units-select';
+      unitsSelect.className = 'text-xs bg-zinc-900 border border-zinc-600 rounded px-2 py-1 text-zinc-200 focus:outline-none focus:border-blue-500';
+      const UNIT_LABELS: Record<UnitSystem, string> = {
+        unitless: 'Leave unitless',
+        mm: 'Millimeters (mm)',
+        cm: 'Centimeters (cm)',
+        in: 'Inches (in)',
+      };
+      for (const u of ['unitless', 'mm', 'cm', 'in'] as const) {
+        const opt = document.createElement('option');
+        opt.value = u;
+        opt.textContent = UNIT_LABELS[u];
+        unitsSelect.appendChild(opt);
+      }
+      unitsSelect.value = getUnits();
+      selectLabel.appendChild(unitsSelect);
+      controlRow.append(selectLabel);
+
+      // Re-render the warning copy + restyle the block for the current unit.
+      // Dimensions re-format through `formatDimension`, which reflects the unit
+      // we just set, so the bounding box reads in the chosen unit.
+      const syncUnitsBlock = () => {
+        const unit = getUnits();
+        unitsResolved = unit !== 'unitless';
+        const liveDimText = dims
+          ? `${formatDimension(dims[0])} × ${formatDimension(dims[1])} × ${formatDimension(dims[2])}`
+          : null;
+        if (unitsResolved) {
+          block.className = 'rounded border border-emerald-700/50 bg-emerald-900/20 px-3 py-2 text-xs text-emerald-200 leading-snug';
+          message.innerHTML =
+            `<strong>Units set to ${escapeHtml(unit)}.</strong> The exported model will declare this unit. ` +
+            (liveDimText ? `Bounding box: <span class="font-mono">${escapeHtml(liveDimText)}</span>.` : '');
+        } else {
+          block.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
+          message.innerHTML =
+            '<strong>No units set.</strong> Most slicers assume <strong>millimeters</strong>. ' +
+            'If you modeled at another scale, the printed part will be the wrong size. ' +
+            (dimText ? `This model\'s bounding box is <span class="font-mono">${escapeHtml(dimText)}</span>. ` : '') +
+            'Choose a unit below to silence this check.';
+        }
+      };
+
+      unitsSelect.addEventListener('change', () => {
+        setUnits(unitsSelect.value as UnitSystem);
+        syncUnitsBlock();
+        updateExportLabel();
+      });
+
+      block.append(message, controlRow);
+      syncUnitsBlock();
       shell.body.appendChild(block);
     }
 
@@ -78,11 +180,39 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<boolean> {
         lines.push('the geometry is <strong>not manifold</strong> (not watertight)');
       }
       if (info.componentCount > 1) {
-        lines.push(`it has <strong>${info.componentCount} disconnected components</strong>`);
+        lines.push(`it has <strong>${escapeHtml(String(info.componentCount))} disconnected components</strong>`);
       }
       block.innerHTML =
         '<strong>Printability warning:</strong> ' + lines.join(' and ') +
         '. Many slicers may fail or produce a bad print. Consider fixing the model before exporting.';
+      shell.body.appendChild(block);
+    }
+
+    // Design-for-print checks (bed fit, overhangs, thin walls, small features,
+    // stability) — the detail that used to only flash by in a toast. Blockers
+    // (fail) are listed first and in red; advisory warnings follow in amber.
+    const checks = info.printabilityChecks ?? [];
+    if (checks.length > 0) {
+      const fails = checks.filter(c => c.level === 'fail');
+      const warns = checks.filter(c => c.level === 'warn');
+      const hasFail = fails.length > 0;
+      const block = document.createElement('div');
+      block.className = hasFail
+        ? 'rounded border border-red-700/50 bg-red-900/20 px-3 py-2 text-xs text-red-200 leading-snug'
+        : 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
+      const heading = document.createElement('div');
+      heading.innerHTML = hasFail
+        ? '<strong>Printability blockers.</strong> These will likely prevent a clean print:'
+        : '<strong>Printability warnings.</strong> The print may need attention:';
+      const list = document.createElement('ul');
+      list.className = 'mt-1 ml-4 list-disc space-y-0.5';
+      for (const c of [...fails, ...warns]) {
+        const li = document.createElement('li');
+        li.className = c.level === 'fail' ? 'text-red-200' : 'text-amber-200';
+        li.textContent = c.text;
+        list.appendChild(li);
+      }
+      block.append(heading, list);
       shell.body.appendChild(block);
     }
 
@@ -105,20 +235,64 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<boolean> {
       shell.body.appendChild(block);
     }
 
+    if (info.surfaceStale) {
+      const block = document.createElement('div');
+      block.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
+      block.innerHTML =
+        '<strong>Surface textures not applied.</strong> This model declares <span class="font-mono">api.surface.*</span> textures ' +
+        'that haven\'t been computed for the current code — the export would contain the <strong>untextured base mesh</strong>. ' +
+        'Cancel and press <strong>Run</strong> (or the ⟳ Re-apply pill) first to texture it.';
+      shell.body.appendChild(block);
+    }
+
+    if (info.unsavedParts && info.unsavedParts.count > 0) {
+      const { count, names } = info.unsavedParts;
+      const block = document.createElement('div');
+      block.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
+      const list = names.length > 0
+        ? `<span class="font-mono">${names.slice(0, 6).map(escapeHtml).join(', ')}${names.length > 6 ? ', …' : ''}</span>`
+        : '';
+      block.innerHTML =
+        `<strong>${count} part${count === 1 ? '' : 's'} ${count === 1 ? 'isn’t' : 'aren’t'} saved.</strong> ${list ? list + '. ' : ''}` +
+        'A multi-part export bakes each non-current part from its <strong>last saved version</strong>, so unsaved edits (e.g. fresh paint) can be left out and parts that were <strong>never saved are skipped entirely</strong>. ' +
+        'Click <strong>Save…</strong> to save them first, or export anyway.';
+      shell.body.appendChild(block);
+    }
+
     const cancelBtn = document.createElement('button');
     cancelBtn.className = BUTTON_CANCEL;
     cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => { result = false; shell.close(); });
+    cancelBtn.addEventListener('click', () => { result = 'cancel'; shell.close(); });
     shell.footer.appendChild(cancelBtn);
+
+    // Save shortcut — only when there are unsaved parts. Resolves 'save' so the
+    // caller can open the save flow (the multi-part save modal) instead of
+    // exporting stale geometry.
+    if (info.unsavedParts && info.unsavedParts.count > 0) {
+      const saveBtn = document.createElement('button');
+      saveBtn.className = BUTTON_CANCEL;
+      saveBtn.textContent = 'Save…';
+      saveBtn.title = 'Save unsaved parts before exporting';
+      saveBtn.addEventListener('click', () => { result = 'save'; shell.close(); });
+      shell.footer.appendChild(saveBtn);
+    }
 
     const exportBtn = document.createElement('button');
     exportBtn.className = BUTTON_PRIMARY;
-    exportBtn.textContent = `Export anyway`;
-    exportBtn.addEventListener('click', () => { result = true; shell.close(); });
+    exportBtn.addEventListener('click', () => { result = 'export'; shell.close(); });
     shell.footer.appendChild(exportBtn);
 
+    // "Export anyway" while any warning is still live; once every warning is
+    // cleared (e.g. the user picked a unit inline) it relaxes to "Export".
+    function updateExportLabel() {
+      const anyWarning = otherWarning || !unitsResolved
+        || (info.unsavedParts != null && info.unsavedParts.count > 0);
+      exportBtn.textContent = anyWarning ? 'Export anyway' : 'Export';
+    }
+    updateExportLabel();
+
     function onEnter(e: KeyboardEvent) {
-      if (e.key === 'Enter') { e.preventDefault(); result = true; shell.close(); }
+      if (e.key === 'Enter') { e.preventDefault(); result = 'export'; shell.close(); }
     }
     document.addEventListener('keydown', onEnter);
 

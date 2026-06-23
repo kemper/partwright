@@ -94,8 +94,13 @@ test.describe('viewport camera persistence', () => {
 
     // Edit the code for real — replace it via the editor so the debounced
     // auto-run fires through the same runCode path a user hits while typing.
+    // The code pane is shown by default now, so the "▶ Show code" expander is in
+    // the DOM but hidden; only click it when it's actually visible (i.e. the pane
+    // is collapsed), otherwise the click waits on a hidden element until timeout.
     const showCode = page.getByText('Show code', { exact: false });
-    if (await showCode.count()) await showCode.first().click().catch(() => {});
+    if (await showCode.first().isVisible().catch(() => false)) {
+      await showCode.first().click().catch(() => {});
+    }
     const editor = page.locator('.cm-content').first();
     await editor.click();
     await page.keyboard.press('ControlOrMeta+a');
@@ -169,6 +174,44 @@ test.describe('viewport camera persistence', () => {
     const afterBare = await camera(page);
     expect(Math.abs(afterBare.azimuth - 45)).toBeLessThan(5);
     expect(Math.abs(afterBare.elevation - 35)).toBeLessThan(5);
+  });
+
+  // The Customizer (panel slider / setParams) re-renders the same model with a
+  // new parameter, so it must keep the user's angle. SCAD is the tricky engine:
+  // it renders progressively, and that mid-run preview used to auto-frame the
+  // camera back to default *before* the preserve-snapshot ran — so customizing a
+  // parametric SCAD model snapped the view. Now the pose is captured before the
+  // engine runs and the preview skips auto-framing while preserving.
+  test('preserves the camera when customizing a parametric SCAD model', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+
+    const SCAD = ['width = 20; // [10:60]', 'cube([width, width, 10], center=true);'].join('\n');
+    await page.evaluate(async (code) => {
+      const pw = (window as unknown as { partwright: { createSession(n?: string): Promise<unknown>; setActiveLanguage(l: string): Promise<void> } & PW }).partwright;
+      await pw.createSession('scad-camera');
+      await pw.setActiveLanguage('scad'); // first SCAD run lazy-loads the WASM engine
+      await pw.run(code);
+    }, SCAD);
+    await page.waitForTimeout(1500);
+
+    await orbitAndZoom(page);
+    const before = await camera(page);
+    expect(Math.abs(before.azimuth - 45) > 5 || Math.abs(before.elevation - 35) > 5).toBe(true);
+
+    // Drive the Customize panel's Width slider — the exact path the user hits.
+    await page.evaluate(() => {
+      const panel = document.getElementById('params-panel')!;
+      const slider = panel.querySelector('input[type="range"]') as HTMLInputElement;
+      slider.value = '50';
+      slider.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await page.waitForTimeout(2500); // SCAD re-render (two-phase) + settle
+
+    const after = await camera(page);
+    expect(Math.abs(after.azimuth - before.azimuth)).toBeLessThan(2);
+    expect(Math.abs(after.elevation - before.elevation)).toBeLessThan(2);
+    expect(Math.abs(after.distance - before.distance)).toBeLessThan(2);
   });
 
   // The orbited view is persisted per-session and restored on reload, instead of

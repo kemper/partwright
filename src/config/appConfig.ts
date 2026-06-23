@@ -59,6 +59,14 @@ export interface AppConfig {
     charsPerToken: number;
     /** Estimated tokens per image block at standard resolution. */
     imageTokenEstimate: number;
+    /** How many of the most-recent render images (renderView / renderViews /
+     *  runIsolated tool snapshots) to keep in the history sent to the provider.
+     *  Older tool-result images are dropped from the request (their text stats
+     *  stay) so a long modeling session's image tokens don't compound every
+     *  turn — the same reason the CLI uses the model-sculpt subagent. The
+     *  on-screen transcript still shows every image; only the provider request
+     *  is trimmed. Set high to disable trimming. */
+    keepRecentToolImages: number;
     /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
      *  OpenSCAD validation and include-detection. (The render path has no
      *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
@@ -89,9 +97,12 @@ export interface AppConfig {
     maxPixelRatio: number;
     /** Render scale during camera orbit/zoom (0–1, lower = faster interaction). */
     interactionRenderScale: number;
-    /** Ground grid total size in world units. Takes effect on page reload. */
-    gridSize: number;
-    /** Number of grid divisions. Takes effect on page reload. */
+    /** Ground grid footprint as a multiple of the model's largest dimension, so
+     *  the grid scales with the model (spans the studio "room") instead of being
+     *  a fixed-size patch. Re-derived from the model size on each auto-frame. */
+    gridRoomFactor: number;
+    /** Number of grid divisions (cell count across the grid). Takes effect on
+     *  page reload. */
     gridDivisions: number;
     /** Orientation gizmo canvas size in CSS pixels. */
     gizmoSizePx: number;
@@ -103,10 +114,22 @@ export interface AppConfig {
     gizmoSnapDurationSec: number;
     /** OrbitControls damping factor — lower is snappier, higher is smoother. */
     orbitDampingFactor: number;
+    /** Frame rate (fps) that `orbitDampingFactor` is authored against. The orbit
+     *  coast is re-derived from the real frame delta so its decay-per-second
+     *  stays constant regardless of frame rate — otherwise a heavy mesh that
+     *  drops the frame rate makes the same drag "coast" for far longer and the
+     *  model lags behind the cursor (reads as sluggish, slow rotation). At this
+     *  rate the correction is a no-op. */
+    orbitDampingReferenceFps: number;
     /** Zoom-out limit as a multiple of the model's largest dimension. Caps how
      *  far the camera can dolly back (OrbitControls maxDistance) so the model
      *  can't shrink to a speck. Re-derived from the model size on each frame. */
     maxZoomOutFactor: number;
+    /** Default framing tightness: when auto-framing (every fresh render and
+     *  "Reset view"), the camera sits at this multiple of the model's largest
+     *  dimension along each of X/Y/Z, i.e. a view distance of factor·√3·maxDim.
+     *  Higher = more zoomed out / more margin around the model. */
+    defaultFrameFactor: number;
     /** Ambient light intensity in the 3D viewport (0–2 range). */
     ambientLightIntensity: number;
     /** Primary directional light intensity (0–2 range). */
@@ -128,6 +151,18 @@ export interface AppConfig {
      *  prevents a runaway refine from freezing the main thread when the giant
      *  result is committed to the viewport. */
     enhanceMaxTriangles: number;
+    /** Triangle count above which a computed `api.surface.*` texture is NOT
+     *  persisted with the saved version (the version still saves; reopening it
+     *  just recomputes the texture on demand instead of restoring instantly).
+     *  Caps how much IndexedDB space one save can take — a textured mesh costs
+     *  roughly 18 bytes per triangle. */
+    surfaceTexturePersistMaxTriangles: number;
+    /** Fast-preview coarsening factor for SDF models (figures). Before the
+     *  full-quality render, the Worker meshes a throwaway coarse pass at this
+     *  multiple of the model's march `edgeLength` (and skips detail regions) so
+     *  the viewport shows a rough shape in ~1-2s instead of waiting 10-50s.
+     *  Higher = faster/rougher preview; 1 (or below) disables the preview pass. */
+    sdfPreviewScale: number;
   };
   import: {
     /** Vertex-weld tolerance for STL imports (world units). */
@@ -136,6 +171,10 @@ export interface AppConfig {
     voxelDefaultMaxSize: number;
     /** Voxel count above which the import UI shows a performance warning. */
     voxelHeavyThreshold: number;
+    /** Max number of lattice cells `v.sdf()` may sample in one call before it
+     *  refuses (guards against a huge bounds × tiny `res` freezing the engine).
+     *  Past this the call throws and asks for a coarser `res` or tighter bounds. */
+    voxelSdfMaxSamples: number;
     /** Max image resolution (pixels per side) when importing for relief. */
     reliefMaxResolution: number;
     /** Timeout (ms) for fetching a remote file by URL in the import-from-URL flow. */
@@ -152,6 +191,13 @@ export interface AppConfig {
     tooltipDelayMs: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
     codeEditorErrorIdleMs: number;
+    /** Input-grace window (ms) for the code editor's bottom-scroll stabilizer.
+     *  When the editor is parked near the very bottom, a programmatic one-line
+     *  re-measure snap (real Chrome reconciling fractional line heights on a
+     *  focus change / layout reflow) is reverted so the code doesn't stutter —
+     *  unless a real scroll happened within this window (wheel, scrollbar drag,
+     *  touch, keyboard/typing), which is always honored. Set to 0 to disable. */
+    codeEditorScrollPinMs: number;
     /** Debounce delay (ms) after the last companion-file keystroke before the
      *  draft is autosaved, so companion edits survive a reload without writing
      *  to IndexedDB on every keystroke. */
@@ -162,6 +208,10 @@ export interface AppConfig {
     workCameraSaveDebounceMs: number;
     /** Debounce delay (ms) for the surface-modifier live preview. */
     surfacePreviewDebounceMs: number;
+    /** Debounce delay (ms) for the Character Creator's live figure preview.
+     *  An SDF figure rebuild is heavy, so this is longer than the surface one to
+     *  coalesce rapid slider edits into a single rebuild on settle. */
+    characterPreviewDebounceMs: number;
     /** Debounce delay (ms) for the relief import 2D preview. */
     reliefPreviewDebounceMs: number;
     /** Debounce delay (ms) for the relief import 3D preview. */
@@ -196,6 +246,34 @@ export interface AppConfig {
     /** How long each "Did you know?" hint stays before the strip rotates to the
      *  next one (ms). */
     hintRotationMs: number;
+    /** Slide duration (ms) for the docked side panes (the AI panel and the code
+     *  editor pane) opening/closing. Each pane animates its layout footprint so
+     *  the viewport grows/shrinks smoothly instead of snapping. Set to 0 for an
+     *  instant toggle. */
+    paneSlideMs: number;
+    /** Default code-editor font size (px). The live size is a per-tab pref
+     *  (editor-font-size); this seeds a fresh tab and the Reset-to-default. */
+    editorFontSizeDefault: number;
+    /** Smallest code-editor font size (px) the −/+ stepper allows. */
+    editorFontSizeMin: number;
+    /** Largest code-editor font size (px) the −/+ stepper allows. */
+    editorFontSizeMax: number;
+  };
+  geometry: {
+    /** Triangle count above which the live model warns it may be too heavy for
+     *  the catalog budget / slow to slice. Mirrors the headless model:preview
+     *  tri-budget warning so the in-app AI sees the same signal. Advisory only —
+     *  nothing blocks a denser model; raised to 500k because catalog figure
+     *  entries store re-runnable code (not a baked mesh), so a high triangle
+     *  count costs per-open render + slice time, not catalog file size. */
+    triCountWarnBudget: number;
+    /** Shortest mesh edge (world units) below which a fine-detail warning fires
+     *  — features this small are dropped by FDM slicers (sub-extrusion-width).
+     *  Mirrors model:preview's sub-0.4 mm detail warning. */
+    minEdgeLengthWarn: number;
+    /** Bounding-box aspect ratio (longest dim ÷ shortest non-zero dim) above
+     *  which a sliver/thin-model warning fires. Mirrors model:preview. */
+    aspectRatioWarn: number;
   };
 }
 
@@ -208,7 +286,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     slowToolMs: 250,
     diagnosticsRingSize: 50,
     maxAttachments: 20,
-    toolCallTimeoutMs: 60_000,
+    toolCallTimeoutMs: 300_000,
     thinkingBudgetAnthropicLow: 2048,
     thinkingBudgetAnthropicMedium: 8192,
     thinkingBudgetAnthropicHigh: 16384,
@@ -221,6 +299,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxOutputTokensGemini: 32768,
     charsPerToken: 4,
     imageTokenEstimate: 1500,
+    keepRecentToolImages: 3,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,
@@ -234,14 +313,16 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     fov: 50,
     maxPixelRatio: 2,
     interactionRenderScale: 0.6,
-    gridSize: 40,
+    gridRoomFactor: 8,
     gridDivisions: 40,
     gizmoSizePx: 128,
     gizmoMarginPx: 8,
     gizmoHitRadius: 0.4,
     gizmoSnapDurationSec: 0.4,
     orbitDampingFactor: 0.1,
+    orbitDampingReferenceFps: 60,
     maxZoomOutFactor: 12,
+    defaultFrameFactor: 1.5,
     ambientLightIntensity: 0.6,
     primaryLightIntensity: 0.8,
     secondaryLightIntensity: 0.3,
@@ -250,11 +331,14 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     thumbnailTimeoutMs: 4000,
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
+    surfaceTexturePersistMaxTriangles: 1_000_000,
+    sdfPreviewScale: 2.5,
   },
   import: {
     stlWeldTolerance: 1e-5,
     voxelDefaultMaxSize: 64,
     voxelHeavyThreshold: 250_000,
+    voxelSdfMaxSamples: 8_000_000,
     reliefMaxResolution: 512,
     remoteFetchTimeoutMs: 15_000,
     filamentMatchThreshold: 0.18,
@@ -264,9 +348,11 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     toastDurationMs: 2200,
     tooltipDelayMs: 150,
     codeEditorErrorIdleMs: 800,
+    codeEditorScrollPinMs: 250,
     companionDraftDebounceMs: 600,
     workCameraSaveDebounceMs: 500,
     surfacePreviewDebounceMs: 250,
+    characterPreviewDebounceMs: 450,
     reliefPreviewDebounceMs: 120,
     reliefPreview3dDebounceMs: 250,
     progressModalShowDelayMs: 250,
@@ -280,6 +366,15 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     workerPanelRefreshMs: 1000,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
+    paneSlideMs: 280,
+    editorFontSizeDefault: 13,
+    editorFontSizeMin: 9,
+    editorFontSizeMax: 28,
+  },
+  geometry: {
+    triCountWarnBudget: 500_000,
+    minEdgeLengthWarn: 0.4,
+    aspectRatioWarn: 12,
   },
 };
 

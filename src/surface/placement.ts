@@ -35,10 +35,14 @@ export interface PlacementOps {
 }
 
 /** One step in a transform chain. Rotation angles are Euler degrees in
- *  manifold's `.rotate([x,y,z])` convention (X applied first, then Y, then Z). */
+ *  manifold's `.rotate([x,y,z])` convention (X applied first, then Y, then Z).
+ *  A `mirror` reflects across the plane through the origin whose normal is `v`
+ *  (an axis-aligned unit vector), matching manifold's `.mirror(normal)`. */
 export type TransformStep =
   | { kind: 'translate'; v: Vec3 }
-  | { kind: 'rotate'; v: Vec3 };
+  | { kind: 'rotate'; v: Vec3 }
+  | { kind: 'mirror'; v: Vec3 }
+  | { kind: 'scale'; v: Vec3 };
 
 const DEG = Math.PI / 180;
 
@@ -131,12 +135,37 @@ export function rotationFromTo(n: Vec3, d: Vec3): Mat3 {
 export function applySteps(mesh: MeshData, steps: TransformStep[]): MeshData {
   const props = new Float32Array(mesh.vertProperties);
   const np = mesh.numProp;
+  // A reflection inverts triangle orientation; track the parity across all
+  // mirror steps and flip winding once at the end so an even count is a no-op.
+  let flipWinding = false;
   for (const step of steps) {
     if (step.kind === 'translate') {
       const [dx, dy, dz] = step.v;
       for (let i = 0; i < mesh.numVert; i++) {
         props[i * np] += dx; props[i * np + 1] += dy; props[i * np + 2] += dz;
       }
+    } else if (step.kind === 'mirror') {
+      // Reflect across the plane through the origin with unit normal step.v:
+      // p' = p − 2·(p·n)·n. For an axis-aligned normal this negates that coord.
+      const [nx, ny, nz] = step.v;
+      for (let i = 0; i < mesh.numVert; i++) {
+        const o = i * np;
+        const x = props[o], y = props[o + 1], z = props[o + 2];
+        const d = 2 * (x * nx + y * ny + z * nz);
+        props[o] = x - d * nx;
+        props[o + 1] = y - d * ny;
+        props[o + 2] = z - d * nz;
+      }
+      flipWinding = !flipWinding;
+    } else if (step.kind === 'scale') {
+      const [sx, sy, sz] = step.v;
+      for (let i = 0; i < mesh.numVert; i++) {
+        const o = i * np;
+        props[o] *= sx; props[o + 1] *= sy; props[o + 2] *= sz;
+      }
+      // A negative scale on an odd number of axes mirrors the mesh, inverting
+      // winding — track parity so it's flipped back like a mirror step.
+      if (sx * sy * sz < 0) flipWinding = !flipWinding;
     } else {
       const m = eulerToMatrix(step.v[0], step.v[1], step.v[2]);
       for (let i = 0; i < mesh.numVert; i++) {
@@ -148,7 +177,18 @@ export function applySteps(mesh: MeshData, steps: TransformStep[]): MeshData {
       }
     }
   }
-  return { ...mesh, vertProperties: props, triVerts: new Uint32Array(mesh.triVerts) };
+  const triVerts = new Uint32Array(mesh.triVerts);
+  if (flipWinding) {
+    // Swap two corners of every triangle so the mirrored mesh stays
+    // outward-facing (and manifold) instead of inside-out.
+    for (let t = 0; t < mesh.numTri; t++) {
+      const a = t * 3;
+      const tmp = triVerts[a + 1];
+      triVerts[a + 1] = triVerts[a + 2];
+      triVerts[a + 2] = tmp;
+    }
+  }
+  return { ...mesh, vertProperties: props, triVerts };
 }
 
 /** Axis-aligned bounding box of a mesh's vertex positions. */
@@ -205,6 +245,11 @@ export function isNoopRotation(euler: Vec3): boolean {
   return Math.abs(euler[0]) < 1e-2 && Math.abs(euler[1]) < 1e-2 && Math.abs(euler[2]) < 1e-2;
 }
 
+/** Scale is a no-op when every factor is within ~0.0001 of 1 (identity). */
+export function isNoopScale(factors: Vec3): boolean {
+  return Math.abs(factors[0] - 1) < 1e-4 && Math.abs(factors[1] - 1) < 1e-4 && Math.abs(factors[2] - 1) < 1e-4;
+}
+
 /** Wrap a free rotation so it spins the model about its own center rather than
  *  the world origin: translate(-center) → rotate → translate(+center). */
 export function rotateAboutCenterSteps(box: PlacementBox, euler: Vec3): TransformStep[] {
@@ -213,6 +258,19 @@ export function rotateAboutCenterSteps(box: PlacementBox, euler: Vec3): Transfor
   return [
     { kind: 'translate', v: [-c[0], -c[1], -c[2]] },
     { kind: 'rotate', v: euler },
+    { kind: 'translate', v: [c[0], c[1], c[2]] },
+  ];
+}
+
+/** Mirror the model across the plane through its own center perpendicular to the
+ *  given axis, so it flips in place (left↔right etc.) rather than across the
+ *  world origin: translate(−center) → mirror(axis) → translate(+center). */
+export function mirrorAboutCenterSteps(box: PlacementBox, axis: 'x' | 'y' | 'z'): TransformStep[] {
+  const c = boxCenter(box);
+  const normal: Vec3 = axis === 'x' ? [1, 0, 0] : axis === 'y' ? [0, 1, 0] : [0, 0, 1];
+  return [
+    { kind: 'translate', v: [-c[0], -c[1], -c[2]] },
+    { kind: 'mirror', v: normal },
     { kind: 'translate', v: [c[0], c[1], c[2]] },
   ];
 }
@@ -336,8 +394,8 @@ const SENTINEL = '@partwright-placement';
 // the human-readable comment text so repeated transforms extend one wrapper
 // instead of nesting IIFEs.
 const WRAPPER_RE =
-  /^\/\/ @partwright-placement[^\n]*\nreturn \(\(\) => \{\n([\s\S]*)\n\}\)\(\)((?:\.(?:rotate|translate)\(\[[^\]]*\]\))+);\n?$/;
-const CALL_RE = /\.(rotate|translate)\(\[\s*(-?[\d.eE+]+)\s*,\s*(-?[\d.eE+]+)\s*,\s*(-?[\d.eE+]+)\s*\]\)/g;
+  /^\/\/ @partwright-placement[^\n]*\nreturn \(\(\) => \{\n([\s\S]*)\n\}\)\(\)((?:\.(?:rotate|translate|mirror|scale)\(\[[^\]]*\]\))+);\n?$/;
+const CALL_RE = /\.(rotate|translate|mirror|scale)\(\[\s*(-?[\d.eE+]+)\s*,\s*(-?[\d.eE+]+)\s*,\s*(-?[\d.eE+]+)\s*\]\)/g;
 
 function fmt(n: number): string {
   const r = Number(n.toFixed(6));
@@ -347,7 +405,7 @@ function fmt(n: number): string {
 function parseChain(chain: string): TransformStep[] {
   const steps: TransformStep[] = [];
   for (const m of chain.matchAll(CALL_RE)) {
-    steps.push({ kind: m[1] as 'rotate' | 'translate', v: [Number(m[2]), Number(m[3]), Number(m[4])] });
+    steps.push({ kind: m[1] as 'rotate' | 'translate' | 'mirror' | 'scale', v: [Number(m[2]), Number(m[3]), Number(m[4])] });
   }
   return steps;
 }
@@ -366,15 +424,19 @@ function normalizeChain(steps: TransformStep[]): TransformStep[] {
     const last = out[out.length - 1];
     if (s.kind === 'translate' && last && last.kind === 'translate') {
       last.v = [last.v[0] + s.v[0], last.v[1] + s.v[1], last.v[2] + s.v[2]];
+    } else if (s.kind === 'scale' && last && last.kind === 'scale') {
+      // Successive scales about the origin commute and multiply componentwise.
+      last.v = [last.v[0] * s.v[0], last.v[1] * s.v[1], last.v[2] * s.v[2]];
     } else {
       out.push({ kind: s.kind, v: [...s.v] as Vec3 });
     }
   }
-  return out.filter(s =>
-    s.kind === 'translate'
-      ? Math.abs(s.v[0]) > 1e-9 || Math.abs(s.v[1]) > 1e-9 || Math.abs(s.v[2]) > 1e-9
-      : !isNoopRotation(s.v),
-  );
+  return out.filter(s => {
+    if (s.kind === 'translate') return Math.abs(s.v[0]) > 1e-9 || Math.abs(s.v[1]) > 1e-9 || Math.abs(s.v[2]) > 1e-9;
+    if (s.kind === 'rotate') return !isNoopRotation(s.v);
+    if (s.kind === 'scale') return !isNoopScale(s.v);
+    return true; // a mirror is never a no-op
+  });
 }
 
 /** Wrap the user's manifold-js source so the whole returned model is transformed
@@ -414,4 +476,16 @@ export function placementLabel(ops: PlacementOps): string {
 /** Short label for a free rotation, e.g. "rotate (0°, 90°, 0°)". */
 export function rotationLabel(euler: Vec3): string {
   return `rotate (${fmt(euler[0])}°, ${fmt(euler[1])}°, ${fmt(euler[2])}°)`;
+}
+
+/** Short label for a scale, e.g. "scale 2×" (uniform) or "scale (2, 1, 0.5)". */
+export function scaleLabel(factors: Vec3): string {
+  const [sx, sy, sz] = factors;
+  if (Math.abs(sx - sy) < 1e-6 && Math.abs(sy - sz) < 1e-6) return `scale ${fmt(sx)}×`;
+  return `scale (${fmt(sx)}, ${fmt(sy)}, ${fmt(sz)})`;
+}
+
+/** Short label for a mirror, e.g. "mirror X". */
+export function mirrorLabel(axis: 'x' | 'y' | 'z'): string {
+  return `mirror ${axis.toUpperCase()}`;
 }

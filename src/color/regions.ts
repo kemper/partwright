@@ -40,6 +40,10 @@ export type RegionDescriptor =
   // `maxEdge`, giving crisp painted edges that follow the analytic cylinder
   // rather than the coarse base tessellation.
   | { kind: 'cylinder'; center: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number;
+      // World axis the shell runs along — radius measured in the plane normal
+      // to it, the zMin..zMax band along it. Omitted = 'z' (the legacy XY-radius
+      // behaviour), so descriptors saved before axis support round-trip cleanly.
+      axis?: 'x' | 'y' | 'z';
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       // Coverage mode literal — kept as a string union (not an imported type)
       // so this descriptor stays serializable without pulling in main.ts.
@@ -497,19 +501,21 @@ export function clearRegionsBySource(source: ColorRegion['source']): void {
 }
 
 /** Replace the model-declared color underlay. Called once per run with the
- *  colors declared via `api.label(shape, name, { color })`, already resolved to
- *  triangle sets against that run's labelMap. Pass `[]` (or run code that
- *  declares no colors) to clear the layer. Does NOT notify — the run path drives
- *  a single re-render after setting these. */
+ *  colors declared in code, already resolved to triangle sets against that run's
+ *  mesh / labelMap. Two sources feed it: `api.label(shape, name, { color })`
+ *  (byLabel) and `api.paint.*` (box / slab / cylinder / label), each carrying its
+ *  own `descriptor` so paintExplain and re-renders see the true predicate. Pass
+ *  `[]` (or run code that declares no colors) to clear the layer. Does NOT
+ *  notify — the run path drives a single re-render after setting these. */
 export function setModelColorRegions(
-  decls: ReadonlyArray<{ name: string; color: [number, number, number]; triangles: Set<number> }>,
+  decls: ReadonlyArray<{ name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor }>,
 ): void {
   modelRegions = decls.map((d, i) => ({
     id: -(i + 1), // negative ids never collide with the positive user-region ids
     name: d.name,
     color: d.color,
     source: 'model' as const,
-    descriptor: { kind: 'byLabel' as const, label: d.name },
+    descriptor: d.descriptor ?? { kind: 'byLabel' as const, label: d.name },
     order: i + 1, // order within the model band; the user paint layer sits above
     visible: true,
     triangles: d.triangles,
@@ -518,6 +524,16 @@ export function setModelColorRegions(
 
 export function hasModelColorRegions(): boolean {
   return modelRegions.length > 0;
+}
+
+/** Replace a model-region's resolved triangle set in place (negative id). Used
+ *  by the refine path: when a smooth brush stroke subdivides the working mesh,
+ *  the code-declared underlay (`api.label({color})` / `api.paint.*`) must be
+ *  re-resolved against the refined tessellation too, or its triangle indices go
+ *  stale. Does not notify — the caller drives a single re-render. */
+export function setModelRegionTriangles(id: number, triangles: Set<number>): void {
+  const region = modelRegions.find(r => r.id === id);
+  if (region) region.triangles = triangles;
 }
 
 export function getModelRegions(): readonly ColorRegion[] {
@@ -542,14 +558,50 @@ export function clearModelColorRegions(): void {
  *  region re-resolves by matching colors, so it must read the surface color
  *  *underneath* itself — without this, its own freshly-stamped color would mask
  *  the source color it's meant to follow and the flood would collapse to the seed. */
-export function buildTriColors(numTri: number, respectPerRegionVisibility = false, excludeRegionId?: number): Uint8Array | null {
-  if (regions.length === 0 && modelRegions.length === 0) return null;
+export function buildTriColors(numTri: number, respectPerRegionVisibility = false, excludeRegionId?: number, baseColors?: Uint8Array | null): Uint8Array | null {
+  // Model-declared colors are the base layer; the user's manual paint composites
+  // on top and always wins (it's an optional override of the code's colors).
+  return composeTriColors(numTri, [modelRegions, regions], { respectPerRegionVisibility, excludeRegionId, baseColors });
+}
+
+/**
+ * Pure triColors compositor — the engine behind {@link buildTriColors}, exposed
+ * so callers that hold their OWN region lists (e.g. baking a non-active part's
+ * mesh for multi-part export, off the live editor state) can reuse the exact
+ * same stamping rules without touching the module globals.
+ *
+ * `layers` are stamped in order (earlier = lower); within a layer higher
+ * `order` wins. Returns null when every layer is empty and there are no
+ * `baseColors` to seed from.
+ */
+export function composeTriColors(
+  numTri: number,
+  layers: ColorRegion[][],
+  opts: { respectPerRegionVisibility?: boolean; excludeRegionId?: number; baseColors?: Uint8Array | null } = {},
+): Uint8Array | null {
+  const { respectPerRegionVisibility = false, excludeRegionId, baseColors } = opts;
+  const hasBase = !!(baseColors && baseColors.length >= numTri * 3);
+  if (layers.every(l => l.length === 0) && !hasBase) return null;
 
   const buf = new Uint8Array(numTri * 3); // default 0,0,0 — ignored for un-colored tris
   // `painted[t] === 1` once ANY layer colors triangle `t`. Tracked separately
   // from order so a region can legitimately paint pure black (and so the
   // model-color base layer counts as painted even though it sits below paint).
   const painted = new Uint8Array(numTri);
+
+  // Seed from the mesh's own per-triangle colours (e.g. a voxel grid's colours
+  // or an imported coloured model's) so painting a few regions doesn't blank the
+  // rest of the model back to the default shade — the regions composite on top.
+  if (hasBase && baseColors) {
+    buf.set(baseColors.subarray(0, numTri * 3));
+    const basePainted = (baseColors as Uint8Array & { _painted?: Uint8Array })._painted;
+    for (let t = 0; t < numTri; t++) {
+      const seeded = basePainted
+        ? basePainted[t] === 1
+        : (buf[t * 3] !== 0 || buf[t * 3 + 1] !== 0 || buf[t * 3 + 2] !== 0);
+      if (seeded) painted[t] = 1;
+    }
+  }
 
   // Stamp one layer of regions onto buf, higher `order` winning WITHIN the
   // layer. Layers are applied in call order, so a later layer overwrites an
@@ -581,10 +633,7 @@ export function buildTriColors(numTri: number, respectPerRegionVisibility = fals
     }
   };
 
-  // Model-declared colors are the base; the user's manual paint composites on
-  // top and always wins (it's an optional override of the code's colors).
-  stampLayer(modelRegions);
-  stampLayer(regions);
+  for (const layer of layers) stampLayer(layer);
 
   // Store the painted mask on the result for the renderer
   (buf as Uint8Array & { _painted?: Uint8Array })._painted = painted;
@@ -644,7 +693,7 @@ export function serialize(): SerializedColorRegion[] {
 /** Apply triColors to a MeshData, returning a new object (non-destructive).
  *  Use for EXPORTS — all regions are baked in regardless of UI visibility flags. */
 export function applyTriColors(mesh: MeshData): MeshData {
-  const triColors = buildTriColors(mesh.numTri, false);
+  const triColors = buildTriColors(mesh.numTri, false, undefined, mesh.triColors);
   if (!triColors) return mesh;
   return { ...mesh, triColors };
 }
@@ -654,7 +703,7 @@ export function applyTriColors(mesh: MeshData): MeshData {
  *  `visible` flag is false (eye-icon toggles in the region list). */
 export function applyTriColorsIfVisible(mesh: MeshData): MeshData {
   if (!visible) return mesh;
-  const triColors = buildTriColors(mesh.numTri, true);
+  const triColors = buildTriColors(mesh.numTri, true, undefined, mesh.triColors);
   if (!triColors) return mesh;
   return { ...mesh, triColors };
 }

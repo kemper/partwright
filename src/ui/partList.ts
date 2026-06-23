@@ -66,6 +66,12 @@ function render(state: SessionState): void {
     clearSelection();
   }
 
+  // Preserve the list's scroll position across the full rebuild below. The
+  // scrollable `#parts-list` div is recreated from scratch on every render
+  // (e.g. on each save, which calls notify() → render), so without this the
+  // list jumps back to the top whenever a re-render fires while scrolled down.
+  const prevScrollTop = railEl.querySelector('#parts-list')?.scrollTop ?? 0;
+
   railEl.innerHTML = '';
 
   // Header: title + collapse + add.
@@ -84,7 +90,12 @@ function render(state: SessionState): void {
   addBtn.addEventListener('click', () => { if (state.session) void cb.onCreatePart(); });
   header.appendChild(addBtn);
 
+  // Collapsing the rail to reclaim horizontal width is a desktop affordance; on
+  // mobile the parts list is a full-width pane reached via the pane toggle, so
+  // hide the collapse button there (it would otherwise leave the pane empty).
   const collapseBtn = iconBtn('«', 'Hide parts panel'); // «
+  collapseBtn.classList.remove('flex');
+  collapseBtn.classList.add('hidden', 'md:flex');
   collapseBtn.addEventListener('click', () => cb.onToggleCollapse());
   header.appendChild(collapseBtn);
 
@@ -122,6 +133,11 @@ function render(state: SessionState): void {
   if (selected.size > 0) {
     railEl.appendChild(buildActionBar(state));
   }
+
+  // Restore the pre-rebuild scroll position now that the rows exist (clamped by
+  // the browser to the new scrollHeight). Keeps Cmd+S from scrolling the list
+  // to the top when the user had scrolled down through a long part list.
+  if (prevScrollTop > 0) list.scrollTop = prevScrollTop;
 }
 
 function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLElement, currentVersion: Version | null): HTMLElement {

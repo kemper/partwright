@@ -8,11 +8,20 @@
 // Worker without pulling in browser globals.
 
 import { assertNumber, assertNumberTuple, assertObject, assertEnum, assertBoolean, assertArray, assertNoUnknownKeys, ValidationError } from '../../validation/apiValidation';
+import { SdfNode, partitionByLabel } from '../sdf';
+import { getConfig } from '../../config/appConfig';
 
 export type Vec3 = [number, number, number];
 /** A color the sandbox API accepts: `[r,g,b]` 0–255, `'#rgb'`/`'#rrggbb'`, or a
  *  packed `0xRRGGBB` number. Normalized to a 24-bit integer internally. */
 export type ColorInput = Vec3 | string | number;
+
+/** The 6 face-neighbour offsets (±X, ±Y, ±Z). The single source of truth for
+ *  face-connectivity across the voxel modules: `faceComponentCount` below and
+ *  the flood-fill / "add" tools in `edits.ts` both consume it. */
+export const FACE_NEIGHBORS: Vec3[] = [
+  [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+];
 
 // Coordinates are packed into a single JS integer key for fast Map lookups.
 // 11 bits per axis (offset by HALF) gives a usable range of [-1024, 1023] per
@@ -36,6 +45,11 @@ export const COORD_MAX = HALF - 1;  //  1023
 // pathological wide-sparse boxes above it (which also made the O(cellCount)
 // encode loop crawl) fail fast with an actionable message.
 const MAX_GRID_CELLS = 0x7fffffff; // 2^31 - 1
+
+/** Which smoothing algorithm a bare `.smooth()` (no `algorithm` arg) selects.
+ *  `taubin` is the original mesh-relaxation smoother; `surfaceNets` is the
+ *  newer native-resolution smoother. Flip this to change the product default. */
+export const DEFAULT_SMOOTH_ALGORITHM: 'taubin' | 'surfaceNets' = 'surfaceNets';
 
 function assertCoord(v: number, name: string): number {
   const n = assertNumber(v, name, { integer: true, min: COORD_MIN, max: COORD_MAX })!;
@@ -83,6 +97,27 @@ export function colorComponents(rgb: number): Vec3 {
 
 export interface GridBounds { min: Vec3; max: Vec3 }
 
+/** Options for {@link VoxelGrid.sdf} — rasterizing an SDF expression into the
+ *  grid. */
+export interface SdfFillOptions {
+  /** World units per voxel along each axis (default 1). The voxel at integer
+   *  coord `i` samples the field at world `i·res`, so a smaller `res` yields a
+   *  finer (and larger, in voxels) model. */
+  res?: number;
+  /** Fill color when no per-label `colors` map applies (default `#cccccc`). */
+  color?: ColorInput;
+  /** Map of SDF `.label(name)` → color. Cells are colored by the labelled
+   *  region they sit deepest inside (SDF union = min distance). Regions with no
+   *  entry — and unlabelled geometry — fall back to `color`. */
+  colors?: Record<string, ColorInput>;
+  /** Explicit world-space sampling bounds. Required for infinite SDFs (a bare
+   *  gyroid / `.repeat()`); otherwise the node's own bounds are used. */
+  bounds?: { min: Vec3; max: Vec3 };
+  /** Iso level: cells with `f ≤ level` are filled (default 0 = the surface). A
+   *  small positive value dilates the solid; negative erodes it. */
+  level?: number;
+}
+
 /** How a grid is turned into a mesh. `blocks` = hard cube faces (default);
  *  `smooth` = Taubin-rounded edges (optionally over a `detail`× supersampled
  *  grid for finer rounding). Carried on the grid so the mesher/engine can read
@@ -94,8 +129,18 @@ export interface GridBounds { min: Vec3; max: Vec3 }
  *  them to the supersampled mesh when `detail > 1`. */
 export interface Surfacing {
   mode: 'blocks' | 'smooth';
+  /** Smoothing algorithm for `smooth` mode. `taubin` (the original) relaxes the
+   *  block mesh — topology-preserving, honors `detail` supersampling. `surfaceNets`
+   *  builds a genuinely smooth surface from occupancy at native resolution
+   *  (ignores `detail`). Absent on Surfacing objects that predate this field
+   *  (treated as `taubin`). */
+  algorithm?: 'taubin' | 'surfaceNets';
   iterations: number;
   detail: number;
+  /** Rounding amount, 0–1 (default 1). Scales how far each smoothing pass moves
+   *  vertices, so lower = gentler rounding. 0 leaves the mesh un-rounded (the
+   *  smoother is skipped); for a fully hard-faced model use `mode: 'blocks'`. */
+  strength?: number;
   /** Pin the Z of the bottom-most plane so the build-plate face stays flat. */
   flatBottom?: boolean;
   /** Keep the bottom N voxel layers fully blocky (a solid, sharp pedestal). */
@@ -130,9 +175,71 @@ export class VoxelGrid {
   readonly __isVoxelGrid = true as const;
   private cells = new Map<number, number>();
   private _surfacing: Surfacing = { mode: 'blocks', iterations: 2, detail: 1 };
+  /** Distinct `res` values used by `sdf()` calls on this grid — lets stats
+   *  echo a res-aware world-size (`worldBBox = voxel bbox × res`). */
+  private sdfResValues = new Set<number>();
+  /** Per-label voxel fill counts from `sdf({ colors })` calls. Every key the
+   *  caller listed in `colors` appears — INCLUDING zero-fill ones, so a label
+   *  that silently matched nothing (e.g. a smoothUnion-blended sub-body that is
+   *  never the deepest region) is visible instead of just rendering wrong. */
+  private sdfLabelFill: Map<string, number> | null = null;
 
   /** Number of occupied voxels. */
   get size(): number { return this.cells.size; }
+
+  /** The single `res` shared by every `sdf()` call on this grid, or null when
+   *  no `sdf()` ran or calls mixed different res values (no unambiguous scale). */
+  get sdfRes(): number | null {
+    return this.sdfResValues.size === 1 ? [...this.sdfResValues][0] : null;
+  }
+
+  /** True when `sdf()` calls used more than one distinct `res` (world scale is
+   *  ambiguous, so stats skip the worldBBox echo). */
+  get sdfResMixed(): boolean { return this.sdfResValues.size > 1; }
+
+  /** Voxel fill count per label requested via `sdf({ colors })`, or null when
+   *  no labelled sdf fill ran. Zero-count entries are the signal: that label
+   *  colored nothing. */
+  get sdfLabelCounts(): Record<string, number> | null {
+    if (!this.sdfLabelFill) return null;
+    return Object.fromEntries(this.sdfLabelFill);
+  }
+
+  /** Count of **face-connected** voxel pieces (6-neighbour BFS). This is the
+   *  trustworthy "how many separate printable pieces?" measure for voxel
+   *  models — unlike the mesh `componentCount` (from `Manifold.decompose()`),
+   *  which over-counts: an enclosed cavity shows up as a second component, and
+   *  voxels touching only at an edge/corner can split apart. FDM prints fuse
+   *  only across shared faces, so face-connectivity is what determines whether
+   *  the model comes off the bed in one piece. O(occupied voxels). */
+  faceComponentCount(): number {
+    if (this.cells.size === 0) return 0;
+    const visited = new Set<number>();
+    let components = 0;
+    for (const startKey of this.cells.keys()) {
+      if (visited.has(startKey)) continue;
+      components++;
+      const stack = [startKey];
+      visited.add(startKey);
+      while (stack.length) {
+        const key = stack.pop()!;
+        // Inverse of packKey: decode the offset-packed (x,y,z).
+        const z = (key % DIM) - HALF;
+        const y = (Math.floor(key / DIM) % DIM) - HALF;
+        const x = Math.floor(key / (DIM * DIM)) - HALF;
+        for (const [dx, dy, dz] of FACE_NEIGHBORS) {
+          const nx = x + dx, ny = y + dy, nz = z + dz;
+          if (!inRange(nx, ny, nz)) continue;
+          const nKey = packKey(nx, ny, nz);
+          if (this.cells.has(nKey) && !visited.has(nKey)) {
+            visited.add(nKey);
+            stack.push(nKey);
+          }
+        }
+      }
+    }
+    return components;
+  }
 
   /** Set (occupy) a single voxel. */
   set(x: number, y: number, z: number, color: ColorInput): this {
@@ -268,6 +375,116 @@ export class VoxelGrid {
     return this;
   }
 
+  /** Rasterize an SDF expression (`api.sdf.*`) into this grid. The voxel at
+   *  integer coord `(i,j,k)` samples the signed-distance field at world
+   *  `(i·res, j·res, k·res)` and is occupied when `f ≤ level` (inside the
+   *  surface). This bridges the declarative SDF system (gyroids, TPMS lattices,
+   *  smooth blends, twists) into the blocky voxel world — author with
+   *  primitives instead of hand-written loops, then keep the voxel pipeline
+   *  (VOX export, per-cell paint, blocky aesthetic). Additive: it unions into
+   *  whatever is already in the grid, so you can mix `v.sdf(...)` with
+   *  `v.fillBox(...)` etc. Chainable.
+   *
+   *  Color comes from the `colors` map (keyed by SDF `.label(name)`) or a
+   *  single `color`. See {@link SdfFillOptions}. */
+  sdf(node: SdfNode, opts: SdfFillOptions = {}): this {
+    if (!(node instanceof SdfNode)) {
+      throw new ValidationError('v.sdf(node): node must be an SDF expression from api.sdf (e.g. api.sdf.gyroid(8, 1.5)). See /ai/voxel.md#sdf');
+    }
+    const o = assertObject(opts, 'v.sdf(opts)') ?? {};
+    assertNoUnknownKeys(o, ['res', 'color', 'colors', 'bounds', 'level'], 'v.sdf(opts)');
+    const res = o.res === undefined ? 1 : assertNumber(o.res, 'v.sdf(res)', { min: 1e-3 })!;
+    this.sdfResValues.add(res);
+    const level = o.level === undefined ? 0 : assertNumber(o.level, 'v.sdf(level)')!;
+    const defaultColor = normalizeColor((o.color === undefined ? '#cccccc' : o.color) as ColorInput, 'v.sdf(color)');
+
+    // Sampling bounds (world units): explicit, else the node's own bounds.
+    let bMin: Vec3, bMax: Vec3;
+    if (o.bounds !== undefined) {
+      const bb = assertObject(o.bounds, 'v.sdf(bounds)')!;
+      assertNoUnknownKeys(bb, ['min', 'max'], 'v.sdf(bounds)');
+      bMin = assertNumberTuple(bb.min, 3, 'v.sdf(bounds.min)') as Vec3;
+      bMax = assertNumberTuple(bb.max, 3, 'v.sdf(bounds.max)') as Vec3;
+    } else {
+      const nb = node.bounds();
+      bMin = nb.min; bMax = nb.max;
+    }
+    // Infinite SDFs (bare gyroid / `.repeat()`) report non-finite bounds.
+    if (!Number.isFinite(bMin[0] + bMin[1] + bMin[2] + bMax[0] + bMax[1] + bMax[2])) {
+      throw new ValidationError('v.sdf(): this SDF is infinite (e.g. a bare gyroid or .repeat()). Intersect it with a finite shape, or pass an explicit { bounds: { min:[x,y,z], max:[x,y,z] } }. See /ai/voxel.md#sdf');
+    }
+
+    // World bounds → inclusive integer voxel-index ranges (coord i ↔ world i·res).
+    const ix0 = Math.floor(bMin[0] / res), ix1 = Math.ceil(bMax[0] / res);
+    const iy0 = Math.floor(bMin[1] / res), iy1 = Math.ceil(bMax[1] / res);
+    const iz0 = Math.floor(bMin[2] / res), iz1 = Math.ceil(bMax[2] / res);
+    const nx = ix1 - ix0 + 1, ny = iy1 - iy0 + 1, nz = iz1 - iz0 + 1;
+    if (nx <= 0 || ny <= 0 || nz <= 0) return this;
+    const samples = nx * ny * nz;
+    const maxSamples = getConfig().import.voxelSdfMaxSamples;
+    if (samples > maxSamples) {
+      throw new ValidationError(`v.sdf(): sampling ${nx}×${ny}×${nz} = ${samples.toLocaleString()} cells exceeds the ${maxSamples.toLocaleString()} budget. Increase \`res\` (coarser voxels) or pass tighter \`bounds\`. See /ai/voxel.md#sdf`);
+    }
+
+    // Per-label coloring: split the tree at label boundaries and color each
+    // cell by the region it sits deepest inside (min distance = SDF union).
+    const colorMap = o.colors === undefined ? null : assertObject(o.colors, 'v.sdf(colors)')!;
+    if (colorMap) {
+      const regions = partitionByLabel(node);
+      // Track fill-per-label, seeding every requested key at 0 so a label that
+      // never wins a cell (the smoothUnion "deepest region" trap) reports
+      // loudly instead of silently coloring nothing.
+      const fill = this.sdfLabelFill ?? (this.sdfLabelFill = new Map());
+      for (const key of Object.keys(colorMap)) if (!fill.has(key)) fill.set(key, 0);
+      const regionColors = regions.map((r) => {
+        const name = r.labelName;
+        return (name !== undefined && Object.prototype.hasOwnProperty.call(colorMap, name))
+          ? normalizeColor(colorMap[name] as ColorInput, `v.sdf(colors.${name})`)
+          : defaultColor;
+      });
+      const regionCountKeys = regions.map((r) => {
+        const name = r.labelName;
+        return name !== undefined && Object.prototype.hasOwnProperty.call(colorMap, name) ? name : null;
+      });
+      for (let i = ix0; i <= ix1; i++) {
+        if (i < COORD_MIN || i > COORD_MAX) continue;
+        const wx = i * res;
+        for (let j = iy0; j <= iy1; j++) {
+          if (j < COORD_MIN || j > COORD_MAX) continue;
+          const wy = j * res;
+          for (let k = iz0; k <= iz1; k++) {
+            if (k < COORD_MIN || k > COORD_MAX) continue;
+            const wz = k * res;
+            let best = Infinity, bestIdx = -1;
+            for (let ri = 0; ri < regions.length; ri++) {
+              const d = regions[ri].node.evaluate(wx, wy, wz);
+              if (d < best) { best = d; bestIdx = ri; }
+            }
+            if (bestIdx >= 0 && best <= level) {
+              this.cells.set(packKey(i, j, k), regionColors[bestIdx]);
+              const lk = regionCountKeys[bestIdx];
+              if (lk !== null) fill.set(lk, fill.get(lk)! + 1);
+            }
+          }
+        }
+      }
+    } else {
+      for (let i = ix0; i <= ix1; i++) {
+        if (i < COORD_MIN || i > COORD_MAX) continue;
+        const wx = i * res;
+        for (let j = iy0; j <= iy1; j++) {
+          if (j < COORD_MIN || j > COORD_MAX) continue;
+          const wy = j * res;
+          for (let k = iz0; k <= iz1; k++) {
+            if (k < COORD_MIN || k > COORD_MAX) continue;
+            if (node.evaluate(wx, wy, k * res) <= level) this.cells.set(packKey(i, j, k), defaultColor);
+          }
+        }
+      }
+    }
+    return this;
+  }
+
   /** Translate every voxel by an integer offset (rounded). */
   translate(delta: Vec3): this {
     const d = assertNumberTuple(delta, 3, 'translate(delta)');
@@ -374,6 +591,150 @@ export class VoxelGrid {
     return this;
   }
 
+  /** Keep only the largest face-connected component(s), deleting smaller
+   *  islands. The cheap printability fix for grids that mesh into many
+   *  disconnected pieces — most often an SDF lattice (`v.sdf` of a gyroid/TPMS
+   *  intersection) that sheds stray specks: this collapses `componentCount`
+   *  down to (at most) `count`. `count` (default 1) keeps the N biggest by
+   *  voxel volume; everything else is removed. Chainable. */
+  keepLargest(count = 1): this {
+    const n = assertNumber(count, 'keepLargest(count)', { integer: true, min: 1 })!;
+    if (this.cells.size === 0) return this;
+    // Label face-connected components with a BFS over occupied cells.
+    const comp = new Map<number, number>(); // cell key -> component id
+    const sizes: number[] = [];
+    const queue: number[] = [];
+    for (const startKey of this.cells.keys()) {
+      if (comp.has(startKey)) continue;
+      const id = sizes.length;
+      let size = 0;
+      comp.set(startKey, id);
+      queue.length = 0;
+      queue.push(startKey);
+      for (let head = 0; head < queue.length; head++) {
+        const key = queue[head];
+        size++;
+        const z = (key % DIM) - HALF;
+        const y = (Math.floor(key / DIM) % DIM) - HALF;
+        const x = Math.floor(key / (DIM * DIM)) - HALF;
+        const visit = (nx: number, ny: number, nz: number): void => {
+          if (!inRange(nx, ny, nz)) return;
+          const nk = packKey(nx, ny, nz);
+          if (this.cells.has(nk) && !comp.has(nk)) { comp.set(nk, id); queue.push(nk); }
+        };
+        visit(x + 1, y, z); visit(x - 1, y, z);
+        visit(x, y + 1, z); visit(x, y - 1, z);
+        visit(x, y, z + 1); visit(x, y, z - 1);
+      }
+      sizes.push(size);
+    }
+    if (sizes.length <= n) return this; // already ≤ count components
+    // Keep the `n` component ids with the most voxels.
+    const keep = new Set(
+      sizes.map((s, id) => [s, id] as const)
+        .sort((a, b) => b[0] - a[0])
+        .slice(0, n)
+        .map(([, id]) => id),
+    );
+    for (const [key, id] of comp) {
+      if (!keep.has(id)) this.cells.delete(key);
+    }
+    return this;
+  }
+
+  /** Merge all voxels from `other` into this grid. Existing voxels in `this`
+   *  keep their color; only empty positions are filled from `other`. Chainable. */
+  weld(other: VoxelGrid): this {
+    other.forEach((x, y, z, rgb) => {
+      const k = packKey(x, y, z);
+      if (!this.cells.has(k)) this.cells.set(k, rgb);
+    });
+    return this;
+  }
+
+  /** Add the minimum bridging voxels to turn diagonal-only contacts (edge or
+   *  corner adjacency in any axis-plane slice) into face contacts, so the model
+   *  fuses into a single piece on an FDM printer.
+   *
+   *  Algorithm: for each of the three axis-plane families (XY, XZ, YZ), and for
+   *  each occupied voxel A, check its 4 diagonal neighbours in that plane. When
+   *  diagonal neighbour B is occupied but neither of the two shared face-
+   *  neighbours between A and B is occupied, insert one bridging voxel at A's
+   *  first face-neighbour toward B (arbitrary but deterministic). Repeats until
+   *  stable (at most a few iterations). Chainable. */
+  solidifyDiagonals(): this {
+    // Each plane is encoded as two unit direction vectors (da, db).
+    // da = primary axis direction, db = secondary axis direction.
+    // The diagonal offsets are (±da ± db); bridging goes at (±da, 0) first.
+    type PlaneAxes = readonly [dax: number, day: number, daz: number, dbx: number, dby: number, dbz: number];
+    const planes: PlaneAxes[] = [
+      // XY-plane: da=(1,0,0), db=(0,1,0)
+      [1, 0, 0,  0, 1, 0],
+      // XZ-plane: da=(1,0,0), db=(0,0,1)
+      [1, 0, 0,  0, 0, 1],
+      // YZ-plane: da=(0,1,0), db=(0,0,1)
+      [0, 1, 0,  0, 0, 1],
+    ];
+
+    let changed = true;
+    while (changed) {
+      changed = false;
+      // Snapshot current cells so iteration is over a stable set.
+      const snapshot = [...this.cells.entries()];
+
+      const toAdd: Array<[number, number, number, number]> = [];
+
+      for (const [key, rgb] of snapshot) {
+        const az = (key % DIM) - HALF;
+        const ay = (Math.floor(key / DIM) % DIM) - HALF;
+        const ax = Math.floor(key / (DIM * DIM)) - HALF;
+
+        for (const [dax, day, daz, dbx, dby, dbz] of planes) {
+          // 4 diagonal offsets in this plane: (±da ± db)
+          for (const sa of [1, -1] as const) {
+            for (const sb of [1, -1] as const) {
+              const bx = ax + sa * dax + sb * dbx;
+              const by = ay + sa * day + sb * dby;
+              const bz = az + sa * daz + sb * dbz;
+              if (!inRange(bx, by, bz)) continue;
+              if (!this.cells.has(packKey(bx, by, bz))) continue;
+
+              // B is diagonally occupied. Check the two face-neighbours that
+              // bridge A to B: face1 = A + sa*da, face2 = A + sb*db.
+              const f1x = ax + sa * dax;
+              const f1y = ay + sa * day;
+              const f1z = az + sa * daz;
+              const f2x = ax + sb * dbx;
+              const f2y = ay + sb * dby;
+              const f2z = az + sb * dbz;
+
+              const f1exists = inRange(f1x, f1y, f1z) && this.cells.has(packKey(f1x, f1y, f1z));
+              const f2exists = inRange(f2x, f2y, f2z) && this.cells.has(packKey(f2x, f2y, f2z));
+
+              if (!f1exists && !f2exists) {
+                // Neither bridging face is occupied — insert at face1 (the da
+                // direction; arbitrary but deterministic).
+                if (inRange(f1x, f1y, f1z)) {
+                  toAdd.push([f1x, f1y, f1z, rgb]);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      for (const [x, y, z, rgb] of toAdd) {
+        const k = packKey(x, y, z);
+        if (!this.cells.has(k)) {
+          this.cells.set(k, rgb);
+          changed = true;
+        }
+      }
+    }
+
+    return this;
+  }
+
   // ---- Surfacing (how the grid is meshed) -------------------------------
 
   /** Select rounded-edge surfacing. Accepts an iteration count or
@@ -388,8 +749,9 @@ export class VoxelGrid {
    *    - `lockBox` — keep the voxels in `[[x0,y0,z0],[x1,y1,z1]]` (voxel coords)
    *      blocky, for a custom base region.
    *  Chainable. */
-  smooth(opts: number | { iterations?: number; detail?: number; flatBottom?: boolean; baseLayers?: number; lockBox?: [Vec3, Vec3] } = {}): this {
-    let iterations = 2, detail = 1;
+  smooth(opts: number | { iterations?: number; detail?: number; strength?: number; algorithm?: 'taubin' | 'surfaceNets'; flatBottom?: boolean; baseLayers?: number; lockBox?: [Vec3, Vec3] } = {}): this {
+    let iterations = 2, detail = 1, strength = 1;
+    let algorithm: 'taubin' | 'surfaceNets' = DEFAULT_SMOOTH_ALGORITHM;
     let flatBottom: boolean | undefined;
     let baseLayers: number | undefined;
     let lockBox: { min: Vec3; max: Vec3 } | undefined;
@@ -397,14 +759,16 @@ export class VoxelGrid {
       iterations = assertNumber(opts, 'smooth(iterations)', { integer: true, min: 1, max: 8 })!;
     } else {
       const o = assertObject(opts, 'smooth(opts)')!;
-      assertNoUnknownKeys(o, ['iterations', 'detail', 'flatBottom', 'baseLayers', 'lockBox'], 'smooth(opts)');
+      assertNoUnknownKeys(o, ['iterations', 'detail', 'strength', 'algorithm', 'flatBottom', 'baseLayers', 'lockBox'], 'smooth(opts)');
       if (o.iterations !== undefined) iterations = assertNumber(o.iterations, 'smooth.iterations', { integer: true, min: 1, max: 8 })!;
       if (o.detail !== undefined) detail = assertNumber(o.detail, 'smooth.detail', { integer: true, min: 1, max: 4 })!;
+      if (o.strength !== undefined) strength = assertNumber(o.strength, 'smooth.strength', { min: 0, max: 1 })!;
+      if (o.algorithm !== undefined) algorithm = assertEnum(o.algorithm, ['taubin', 'surfaceNets'] as const, 'smooth.algorithm');
       if (o.flatBottom !== undefined) flatBottom = assertBoolean(o.flatBottom, 'smooth.flatBottom')!;
       if (o.baseLayers !== undefined) baseLayers = assertNumber(o.baseLayers, 'smooth.baseLayers', { integer: true, min: 1, max: HALF })!;
       if (o.lockBox !== undefined) lockBox = normalizeLockBox(o.lockBox);
     }
-    this._surfacing = { mode: 'smooth', iterations, detail, flatBottom, baseLayers, lockBox };
+    this._surfacing = { mode: 'smooth', algorithm, iterations, detail, strength, flatBottom, baseLayers, lockBox };
     return this;
   }
 

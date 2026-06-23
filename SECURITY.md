@@ -12,7 +12,7 @@ When you point an AI agent (Claude, GPT, etc.) at a web app, the app becomes an 
 
 ### Why Partwright is safe
 
-**No backend, no network.** The app runs entirely in your browser. There are no servers, no API calls, no telemetry, no analytics. The Content Security Policy enforces `connect-src 'self'` — the app literally cannot make outbound network requests.
+**No backend for your data.** The app runs entirely in your browser — there are no servers storing your work and no accounts. The only first-party telemetry is privacy-first [Cloudflare Web Analytics](https://www.cloudflare.com/web-analytics/): a cookieless beacon that records aggregate page-view counts (no cookies, no fingerprinting, and nothing about the models you make). Beyond that beacon — and any AI provider you explicitly connect, which your browser talks to directly with your own key — the app makes no outbound requests of its own.
 
 **No hidden instructions.** The only AI-facing content is [`/ai.md`](public/ai.md), explicitly linked via `<link rel="ai-instructions">` in index.html. You can read it yourself — it contains only API documentation for the geometry engine. There are no hidden DOM elements, invisible text, data attributes, or encoded payloads containing instructions.
 
@@ -25,7 +25,7 @@ When you point an AI agent (Claude, GPT, etc.) at a web app, the app becomes an 
 | `codemirror` + plugins | Code editor |
 | `tailwindcss` | CSS styling |
 
-There are no network libraries, no analytics SDKs, no ad frameworks.
+There are no network libraries, no bundled analytics SDKs, and no ad frameworks — the only analytics is Cloudflare's edge-injected, cookieless Web Analytics beacon (not an npm dependency).
 
 **Content Security Policy.** The CSP header blocks:
 - Inline scripts (`<script>alert(1)</script>`)

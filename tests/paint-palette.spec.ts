@@ -83,6 +83,55 @@ test.describe('filament palette + slot painting', () => {
     await expect(badge).toBeVisible();
   });
 
+  test('constrain mode snaps an ad-hoc colour to the nearest slot when painting', async ({ page }) => {
+    await openEditorWithSlab(page);
+
+    // Pick an off-palette ad-hoc colour via the custom picker (pure green).
+    // The custom swatch opens the shared palette picker modal; set its freeform
+    // input and Apply.
+    await page.locator('#paint-picker-panel button[title="Custom color (unslotted)"]').dispatchEvent('click');
+    await page.waitForSelector('[data-testid="color-picker"]');
+    await page.evaluate(() => {
+      const ov = document.querySelector('[data-testid="color-picker"]')!;
+      const ci = ov.querySelector('input[data-action="custom-color"]') as HTMLInputElement;
+      ci.value = '#00ff00';
+      ci.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.locator('[data-testid="color-picker"] button:has-text("Apply")').dispatchEvent('click');
+    await page.waitForSelector('[data-testid="color-picker"]', { state: 'detached' });
+
+    // Turn on constrain mode via the palette manager (opening it closes Paint).
+    await page.locator('#palette-manager-toggle').dispatchEvent('click');
+    await page.getByRole('checkbox', { name: /Constrain painting to the palette/ })
+      .evaluate((el: HTMLInputElement) => { el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); });
+    await page.getByRole('button', { name: 'Done' }).dispatchEvent('click');
+
+    // Reopen Paint — activate() re-snaps the held-over ad-hoc colour — and the
+    // constrain note now shows in place of the custom picker.
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('#paint-picker-panel button:has-text("Bucket")').dispatchEvent('click');
+    await expect(page.locator('#paint-picker-panel').getByText(/Constrained to palette/)).toBeVisible();
+
+    await bucketPaintCentre(page);
+
+    const regions = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (window as any).partwright.listRegions();
+    });
+    expect(regions.length).toBe(1);
+    const [r, g, b] = regions[0].color as [number, number, number];
+    // NOT the off-palette green we picked…
+    expect(g > 0.9 && r < 0.1 && b < 0.1).toBe(false);
+    // …it snapped to one of the six default filament slot colours.
+    const slots: number[][] = [
+      [0xf5, 0xf5, 0xf0], [0x18, 0x18, 0x18], [0xc0, 0x25, 0x25],
+      [0xe8, 0xc0, 0x24], [0x24, 0x52, 0xc0], [0x80, 0x80, 0x80],
+    ].map(c => c.map(v => v / 255));
+    const onPalette = slots.some(s => Math.abs(s[0] - r) < 0.02 && Math.abs(s[1] - g) < 0.02 && Math.abs(s[2] - b) < 0.02);
+    expect(onPalette).toBe(true);
+  });
+
   test('the palette manager opens from the viewport and its edits reach the swatches', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('text=Ready', { timeout: 20000 });
@@ -185,10 +234,16 @@ test.describe('filament palette + slot painting', () => {
     // Paint an in-palette slot colour, then an off-palette custom colour.
     await page.locator('#paint-picker-panel button[title^="Slot 3:"]').dispatchEvent('click');
     await bucketPaintCentre(page);
-    await page.locator('#paint-picker-panel input[title*="Custom color"]').evaluate((el) => {
-      (el as HTMLInputElement).value = '#aa33cc';
-      el.dispatchEvent(new Event('input', { bubbles: true }));
+    await page.locator('#paint-picker-panel button[title*="Custom color"]').dispatchEvent('click');
+    await page.waitForSelector('[data-testid="color-picker"]');
+    await page.evaluate(() => {
+      const ov = document.querySelector('[data-testid="color-picker"]')!;
+      const ci = ov.querySelector('input[data-action="custom-color"]') as HTMLInputElement;
+      ci.value = '#aa33cc';
+      ci.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    await page.locator('[data-testid="color-picker"] button:has-text("Apply")').dispatchEvent('click');
+    await page.waitForSelector('[data-testid="color-picker"]', { state: 'detached' });
     await bucketPaintCentre(page);
 
     // The manager's reconciliation section flags the off-palette colour.

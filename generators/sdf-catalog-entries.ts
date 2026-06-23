@@ -24,6 +24,9 @@ interface SdfEntry {
   id: string;             // manifest id (kebab-case)
   name: string;
   description: string;
+  /** Optional per-entry thumbnail-camera pin (degrees; default iso az 45 / el
+   *  35) — see generators/catalog-entries.ts. */
+  thumbCamera?: { azimuth: number; elevation: number };
 }
 
 const newEntries: SdfEntry[] = [
@@ -158,10 +161,11 @@ test.describe.serial('generate sdf catalog entries', () => {
       await page.goto('/editor');
       await waitForEngine(page);
 
-      const payload = await page.evaluate(async ({ code, name, paint }) => {
+      const payload = await page.evaluate(async ({ code, name, paint, thumbCamera }) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const pw = (window as any).partwright;
         await pw.createSession(name);
+        if (thumbCamera) await pw.setThumbnailCamera(thumbCamera);
 
         // 1. Initial save — runs the SDF code, validates, captures base
         // geometryData. Skip the maxComponents:1 assertion (gyroid often
@@ -205,7 +209,7 @@ test.describe.serial('generate sdf catalog entries', () => {
         const exported = await pw.exportSessionData(undefined, { includeThumbnails: true });
         if (exported.error) throw new Error('exportSessionData: ' + exported.error);
         return exported.data;
-      }, { code, name: entry.name, paint });
+      }, { code, name: entry.name, paint, thumbCamera: entry.thumbCamera ?? null });
 
       const outPath = path.join(catalogDir, entry.catalogFile);
       fs.writeFileSync(outPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');

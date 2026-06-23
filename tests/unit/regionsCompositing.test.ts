@@ -87,6 +87,31 @@ describe('model-declared color compositing (buildTriColors)', () => {
     expect(rgbAt(buf, 0)).toEqual(bytes);
   });
 
+  it('seeds unpainted triangles from the base mesh colors (voxel/import underlay)', () => {
+    // A pre-colored mesh (e.g. a voxel grid) passes its own per-triangle colors
+    // as `baseColors`. Painting one triangle must not blank the rest back to the
+    // default shade — they keep the base color and stay marked painted.
+    const base = new Uint8Array([10, 20, 30, 40, 50, 60, 70, 80, 90]); // 3 tris
+    (base as Uint8Array & { _painted?: Uint8Array })._painted = new Uint8Array([1, 1, 1]);
+    addRegion('accent', [0, 0, 1], 'paintbrush', { kind: 'triangles', ids: [1] }, new Set([1]));
+
+    const buf = buildTriColors(3, false, undefined, base)!;
+    expect(rgbAt(buf, 0)).toEqual([10, 20, 30]);  // base color preserved
+    expect(rgbAt(buf, 1)).toEqual([0, 0, 255]);   // user paint wins here
+    expect(rgbAt(buf, 2)).toEqual([70, 80, 90]);  // base color preserved
+    expect(painted(buf)[0]).toBe(1);
+    expect(painted(buf)[1]).toBe(1);
+    expect(painted(buf)[2]).toBe(1); // base-colored, so not the default material
+  });
+
+  it('without base colors, unpainted triangles stay unpainted (plain mesh unchanged)', () => {
+    addRegion('accent', [0, 0, 1], 'paintbrush', { kind: 'triangles', ids: [1] }, new Set([1]));
+    const buf = buildTriColors(3)!; // no baseColors → prior behavior
+    expect(rgbAt(buf, 0)).toEqual([0, 0, 0]);
+    expect(painted(buf)[0]).toBe(0); // untouched → renders default material
+    expect(painted(buf)[1]).toBe(1);
+  });
+
   it('replaces the whole model layer on each set, and clears on []', () => {
     setModelColorRegions([{ name: 'a', color: [1, 0, 0], triangles: new Set([0]) }]);
     setModelColorRegions([{ name: 'b', color: [0, 1, 0], triangles: new Set([1]) }]);

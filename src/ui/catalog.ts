@@ -3,6 +3,7 @@
 // embedded thumbnail (when present) and imports the session on click.
 
 import type { ExportedSession } from '../storage/sessionManager';
+import { assetPath } from '../deployment';
 import { partwrightMarkSvg } from './brand';
 import { languageBadge } from './languageBadge';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
@@ -13,6 +14,8 @@ import {
   deriveCharacteristics as deriveTraits,
   printTestedBadge,
   CATALOG_LANGUAGE_ORDER,
+  CATALOG_THEMES,
+  themeCounts,
   type CategoryId,
   type CategoryDef,
   type CatalogManifestEntry,
@@ -134,7 +137,7 @@ export async function createCatalogPage(
   // shows a placeholder tile rather than blocking the whole page.
   let manifest: CatalogManifest;
   try {
-    const res = await fetch('/catalog/manifest.json', { cache: 'no-cache' });
+    const res = await fetch(assetPath('/catalog/manifest.json'), { cache: 'no-cache' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     manifest = await res.json() as CatalogManifest;
   } catch (e) {
@@ -158,7 +161,7 @@ export async function createCatalogPage(
   const loaded: LoadedEntry[] = await Promise.all(
     manifest.entries.map(async (entry): Promise<LoadedEntry> => {
       try {
-        const res = await fetch(`/catalog/${entry.file}`, { cache: 'no-cache' });
+        const res = await fetch(assetPath(`/catalog/${entry.file}`), { cache: 'no-cache' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const payload = await res.json() as ExportedSession;
         // Latest version is the highest index; pull thumbnail from it.
@@ -241,12 +244,38 @@ function buildControls(loaded: LoadedEntry[]): HTMLElement {
       const pill = document.createElement('button');
       pill.type = 'button';
       pill.dataset.catalogPill = lang;
-      pill.setAttribute('aria-pressed', 'true');
-      pill.className = `px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 ${badge.classes}`;
+      // Unselected by default — an empty selection means "show all languages".
+      pill.setAttribute('aria-pressed', 'false');
+      pill.className = `px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 opacity-60 ${badge.classes}`;
       pill.textContent = `${badge.label} ${langCounts.get(lang) ?? 0}`;
       pillRow.appendChild(pill);
     }
     wrap.appendChild(pillRow);
+  }
+
+  // Theme filter pills — an orthogonal facet over the same tiles. One pill per
+  // theme actually present, in canonical order, with counts. Unselected by
+  // default (empty selection = all themes).
+  const tCounts = themeCounts(loaded.map((entry) => entry.manifest));
+  const presentThemes = CATALOG_THEMES.filter((th) => tCounts.has(th.id));
+  if (presentThemes.length > 0) {
+    const themeRow = document.createElement('div');
+    themeRow.className = 'flex items-center gap-2 flex-wrap';
+    const label = document.createElement('span');
+    label.className = 'text-xs text-zinc-500 mr-1';
+    label.textContent = 'Type:';
+    themeRow.appendChild(label);
+
+    for (const theme of presentThemes) {
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.dataset.catalogTheme = theme.id;
+      pill.setAttribute('aria-pressed', 'false');
+      pill.className = 'px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 border-zinc-600 text-zinc-300 opacity-60';
+      pill.textContent = `${theme.label} ${tCounts.get(theme.id) ?? 0}`;
+      themeRow.appendChild(pill);
+    }
+    wrap.appendChild(themeRow);
   }
 
   return wrap;
@@ -291,8 +320,10 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
 
   // Filter hooks consumed by wireCatalogFilter.
   const language = entryLanguage(loaded);
+  const tags = loaded.manifest.tags ?? [];
   tile.dataset.catalogTile = '';
   tile.dataset.language = language;
+  tile.dataset.themes = tags.join(' ');
   const print = printTestedBadge(loaded.manifest.printTested);
   tile.dataset.search = [
     loaded.manifest.name,
@@ -300,6 +331,7 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
     loaded.manifest.id,
     languageBadge(language).label,
     print.search,
+    ...tags,
   ].join(' ').toLowerCase();
 
   // Thumbnail

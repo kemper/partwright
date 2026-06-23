@@ -7,6 +7,8 @@
 // the path it's given (which is fine — the browser resolves relative URLs
 // against the current origin, and unfurl bots fetch each route fresh).
 
+import { appPath, assetPath } from '../deployment';
+
 export type RouteName = 'landing' | 'editor' | 'help' | 'catalog' | 'ideas' | 'legal' | 'whats-new' | '404';
 
 interface RouteMeta {
@@ -96,8 +98,11 @@ function setLink(rel: string, href: string) {
 export function applyRouteMeta(route: RouteName, overrides?: { title?: string }) {
   const meta = ROUTE_META[route];
   const title = overrides?.title ?? meta.title;
-  const url = absolutize(meta.path);
-  const ogImage = absolutize(meta.ogImage ?? '/og-image.png');
+  // Resolve route + asset paths under the deployment base (`/`, `/vN/`) so the
+  // canonical/OG URLs point at this major's mount, not the origin root. No-op
+  // at base `/`.
+  const url = absolutize(appPath(meta.path));
+  const ogImage = absolutize(assetPath(meta.ogImage ?? '/og-image.png'));
 
   document.title = title;
   setMeta('meta[name="description"]', meta.description);
