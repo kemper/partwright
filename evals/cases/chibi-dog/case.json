@@ -1,0 +1,12 @@
+{
+  "title": "Chibi dog figurine — cute puppy, sitting pose (floppy-eared spaniel)",
+  "model": "model.js",
+  "lang": "manifold-js",
+  "views": [[270, 8], [250, 12], [290, 12], [200, 12], [270, -60]],
+  "rubric": "rubric.md",
+  "gates": {
+    "manifold": true,
+    "maxGenus": 2,
+    "requireLabels": ["eye", "iris", "pupil", "nose"]
+  }
+}

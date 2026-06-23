@@ -59,12 +59,21 @@ function loadCase(name) {
   const rubricMd = readFileSync(join(dir, spec.rubric || 'rubric.md'), 'utf8');
   const items = rubricMd.split('\n').map((l) => l.match(/^\s*[-*]\s+(.*)/)?.[1]).filter(Boolean);
   const { views } = resolveViews(spec.views ? spec.views.map((v) => v.join(',')).join(';') : null, null);
-  return { name, dir, spec, rubric: { items }, views };
+  // Color: a case can declare a `palette` (label→"#rrggbb", or a path to a JSON
+  // file relative to the case dir) so figures with uncolored labels render — and
+  // are judged — in their intended colors. Default sibling: `palette.json`.
+  let palette = null;
+  if (spec.palette && typeof spec.palette === 'object') palette = spec.palette;
+  else {
+    const pPath = join(dir, typeof spec.palette === 'string' ? spec.palette : 'palette.json');
+    if (existsSync(pPath)) { try { palette = JSON.parse(readFileSync(pPath, 'utf8')); } catch { /* ignore */ } }
+  }
+  return { name, dir, spec, rubric: { items }, views, palette };
 }
 
 // Build the model and render the matched-angle tiles into one grid PNG buffer.
 async function renderCandidate(c) {
-  const result = await runPreview(join(c.dir, c.spec.model), { params: {}, lang: c.spec.lang || 'manifold-js' });
+  const result = await runPreview(join(c.dir, c.spec.model), { params: {}, lang: c.spec.lang || 'manifold-js', palette: c.palette ?? undefined });
   if (!result.ok) throw new Error(`model failed to build: ${result.error}`);
   const r = result.render;
   // c.views is null when the case omits `views`; pass undefined so composePng falls back to DEFAULT_VIEWS (null would throw).

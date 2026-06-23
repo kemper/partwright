@@ -2,7 +2,7 @@
 // in/out test and the boundary-conforming clip). Pure geometry — no browser.
 
 import { describe, test, expect } from 'vitest';
-import { strokeSignedDist, sprayCoverage, airbrushDither, strokeFootprintTriangles, buildGeodesicField, deriveSampleNormals, wrapAngleGate, type BrushStroke } from '../../src/color/subdivide';
+import { strokeSignedDist, sprayCoverage, airbrushDither, strokeFootprintTriangles, buildGeodesicField, deriveSampleNormals, wrapAngleGate, buildStrokeMesh, type BrushStroke } from '../../src/color/subdivide';
 import { closestPointOnTriangle } from '../../src/color/adjacency';
 import type { MeshData } from '../../src/geometry/types';
 
@@ -456,5 +456,62 @@ describe('airbrush spray coverage', () => {
   test('coverage is monotonic in strength (the dither superset → non-flaky tests)', () => {
     const lo = stroke({ strength: 0.5 }), hi = stroke({ strength: 0.9 });
     for (const sd of [-10, -6, -3, -1]) expect(sprayCoverage(sd, hi)).toBeGreaterThanOrEqual(sprayCoverage(sd, lo));
+  });
+});
+
+/** Build a flat NxN coarse quad grid in the XY plane (big triangles), centered
+ *  at the origin with cell size `S`. */
+function flatGrid(N: number, S: number): MeshData {
+  const verts: number[] = [], tris: number[] = [];
+  const idx = (i: number, j: number) => i * (N + 1) + j;
+  for (let i = 0; i <= N; i++) for (let j = 0; j <= N; j++) verts.push(j * S - (N * S) / 2, i * S - (N * S) / 2, 0);
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+    const a = idx(i, j), b = idx(i, j + 1), c = idx(i + 1, j), d = idx(i + 1, j + 1);
+    tris.push(a, b, d, a, d, c);
+  }
+  return { vertProperties: new Float32Array(verts), triVerts: new Uint32Array(tris), numVert: verts.length / 3, numTri: tris.length / 3, numProp: 3 };
+}
+
+/** Longest edge and minimum altitude (sliver width) of a triangle. */
+function triShape(m: MeshData, t: number): { longest: number; width: number } {
+  const p = (v: number) => [m.vertProperties[v * 3], m.vertProperties[v * 3 + 1], m.vertProperties[v * 3 + 2]] as const;
+  const A = p(m.triVerts[t * 3]), B = p(m.triVerts[t * 3 + 1]), C = p(m.triVerts[t * 3 + 2]);
+  const sub = (u: readonly number[], v: readonly number[]) => [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+  const len = (u: number[]) => Math.hypot(u[0], u[1], u[2]);
+  const cr = (u: number[], v: number[]) => [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+  const area = 0.5 * len(cr(sub(B, A), sub(C, A)));
+  const longest = Math.max(len(sub(B, A)), len(sub(C, B)), len(sub(A, C)));
+  return { longest, width: longest > 0 ? (2 * area) / longest : 0 };
+}
+
+describe('clipByField — no streak slivers when the boundary grazes a corner', () => {
+  // Regression for the "downward streak" paint artifact: a straight painted edge
+  // running nearly parallel to a chain of coarse mesh edges used to emit a long,
+  // razor-thin sliver spanning each grazed triangle. The snap-to-vertex clip must
+  // not produce any triangle that is both long (a meaningful fraction of a coarse
+  // cell) and razor-thin.
+  test('a square edge grazing a grid column produces no long thin slivers', () => {
+    const mesh = flatGrid(20, 2.0);
+    // Right edge of the square footprint lands at x ≈ 8.001, grazing the grid
+    // column at x = 8 (cells span x ∈ {…, 8, 10, …}).
+    const stroke: BrushStroke = { samples: [[-0.999, 0.0007, 0]], radius: 9.0, shape: 'square', maxEdge: 9.0 / 64 };
+    const { mesh: out } = buildStrokeMesh(mesh, [stroke]);
+
+    let longThinSlivers = 0;
+    for (let t = 0; t < out.numTri; t++) {
+      const { longest, width } = triShape(out, t);
+      // A streak: spans a sizeable fraction of the 2-unit cell yet is hair-thin.
+      if (longest > 0.5 && width < 0.02) longThinSlivers++;
+    }
+    expect(longThinSlivers).toBe(0);
+  });
+
+  test('the painted region is preserved (the clip still covers the footprint)', () => {
+    const mesh = flatGrid(20, 2.0);
+    const stroke: BrushStroke = { samples: [[-0.999, 0.0007, 0]], radius: 9.0, shape: 'square', maxEdge: 9.0 / 64 };
+    const { mesh: out } = buildStrokeMesh(mesh, [stroke]);
+    // Centroids well inside the footprint must still resolve as painted.
+    const painted = strokeFootprintTriangles(out, stroke);
+    expect(painted.size).toBeGreaterThan(0);
   });
 });

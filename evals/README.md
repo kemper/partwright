@@ -32,10 +32,13 @@ npm run eval:models -- --all                      # whole corpus; exits non-zero
 
 ```
 cases/<case>/
-  case.json     # { model, lang, views: [[az,el]…], rubric, gates }
+  case.json     # { model, lang, views: [[az,el]…], rubric, gates, palette? }
   model.js      # the model built (figure / animal / accessory / object)
   rubric.md     # one judged item per `-` bullet
   reference.png # the target look (pinned via --set-reference, or a real photo grid)
+  palette.json  # optional label→"#rrggbb" — colors uncolored-label figures so the
+                # judge sees them in color (case.json `palette` may also point elsewhere
+                # or inline the object). In-code colors (api.paint.*) need no palette.
   verdict.json  # (human judge) the filled-in verdict, read back on the next run
 ```
 
