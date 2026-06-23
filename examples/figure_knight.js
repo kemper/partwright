@@ -79,11 +79,15 @@ const clothed = sdf.union(skin, shirt, pants);
 // CLOTHED body grown just proud of the shirt, so it lies FLAT against the body the
 // way a real belt does. Arm-occlusion is handled by F.layers below (occludeArms),
 // so the belt wraps the torso and terminates at the SLEEVE, not the bare arm.
+// Conform to the TORSO CORE (no arms) + shirt clearance so the band wraps only
+// the torso — conforming to `clothed` (which includes the SLEEVES) built the band
+// out onto the arm, and occludeArms could only carve back a residual.
 const beltClear = shirtThick + r.chestX * 0.02;
+const beltCore = sdf.union(F.torso(rig), pants);
 const beltBand = F.band(rig.ring.waist, {
-  surface: clothed, thickness: r.waist * 0.12, height: r.chestX * 0.62, clearance: beltClear,
+  surface: beltCore, thickness: r.waist * 0.12, height: r.chestX * 0.62, clearance: beltClear,
 });
-const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: clothed, clearance: beltClear });
+const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: beltCore, clearance: beltClear });
 const buckle = sdf.roundedBox([r.waist * 0.5, r.waist * 0.3, r.chestX * 0.52], r.waist * 0.06).translate(bucklePt);
 const belt = beltBand.union(buckle).label('belt');
 
@@ -169,16 +173,17 @@ api.paint.label('base', '#54504a');
 // from the torso plate/belt so neither bleeds onto a limb. The base body is
 // carve:false (never trimmed — and the fine-hands marker must stay un-buried).
 // Standalone props (eyes, sword, scabbard, hair, base) are plain-unioned on top.
-const sleeve = shirtThick + r.chestX * 0.02;
-// shirt/pants are carve:false (the cuirass already offsets OUTWARD from the shirt
-// so it can't poke through — no priority-carve needed, which keeps their partitions
-// cheap to mesh). Only the belt + cuirass pay for arm-occlusion (the bleed fix).
+// occludeArms must dilate the arm PAST each worn layer's outer surface (clothing
+// thickness + that layer's own clearance + thickness), or it only carves the inner
+// part and leaves the outer shell on the sleeve. shirt/pants are carve:false (the
+// cuirass already offsets OUTWARD from the shirt so it can't poke through — no
+// priority-carve, which keeps their partitions cheap to mesh).
 const body = F.layers(rig, [
   { node: skin, carve: false, priority: 0 },
   { node: shirt, carve: false, priority: 1 },
   { node: pants, carve: false, priority: 1 },
-  { node: belt, carve: false, priority: 2, occludeArms: sleeve },
-  { node: cuirass, carve: false, priority: 3, occludeArms: armorGap + shirtThick },
+  { node: belt, carve: false, priority: 2, occludeArms: beltClear + r.waist * 0.12 + r.chestX * 0.04 },
+  { node: cuirass, carve: false, priority: 3, occludeArms: armorGap + shirtThick + r.chestX * 0.05 },
   { node: pauldrons, carve: false, priority: 3 },
 ]);
 

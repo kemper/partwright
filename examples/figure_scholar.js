@@ -66,10 +66,17 @@ const hair = F.hair(rig, { style: 'short' }).label('hair');
 // high on the hair top. `sit` fine-tunes the brim height.
 const hat = F.placeOnHead(hatLocal, rig, { sit: 0.30 }).label('hat');
 
-// 6. BELT (Ringed) — a FLUSH band (F.band) that cinches FLAT over the robe. Arm-
-// occlusion is handled by F.layers below (occludeArms = coat thickness), so the
-// belt terminates at the coat SLEEVE instead of painting onto the arms (the
-// regression the old skin-only `rig` occluder couldn't fix — it missed the sleeve).
+// 6. BELT (Ringed) — a FLUSH band (F.band) that cinches FLAT over the robe.
+// CRITICAL: conform to the TORSO CORE (no arms) + a coat-thickness clearance, so
+// the band wraps only the torso and sits just proud of the coat. Conforming to the
+// full clothed body (which includes the SLEEVES) built the band out onto the arm
+// in the first place, and occludeArms could only carve back a residual — the belt
+// still read as "on the arms". A torso-only surface never reaches the sleeve;
+// occludeArms below is then just insurance.
+// Conform to the COAT surface so the belt is visibly FLUSH on the robe (the coat
+// is loose — a torso-core band sits inside it and disappears). The sleeve wrap that
+// causes is removed by a large enough occludeArms below (it only cuts near the arm
+// capsules, never the front of the belt).
 const coatThick = r.chestX * 0.13;
 const clothedBody = sdf.union(skin, coat, pants);
 const belt = F.band(rig.ring.waist, {
@@ -104,11 +111,15 @@ api.paint.label('base', '#54504a');
 // LAYERS — composite body + coat + belt with the belt arm-occluded (terminates at
 // the coat sleeve, never bleeds onto the arms). Props (eyes, hair, glasses, hat,
 // base) plain-unioned on top so they don't carve the garments.
+// occludeArms must dilate the arm past the belt's OUTER surface — i.e. by the coat
+// thickness PLUS the belt's own clearance + thickness — or it only carves the
+// belt's inner part and leaves the outer shell on the sleeve (the residual that
+// kept the belt reading as "on the arms"). Validated to zero the sleeve overlap.
 const body = F.layers(rig, [
   { node: skin, carve: false, priority: 0 },
   { node: coat, carve: false, priority: 1 },
   { node: pants, carve: false, priority: 1 },
-  { node: beltWithBuckle, carve: false, priority: 2, occludeArms: coatThick },
+  { node: beltWithBuckle, carve: false, priority: 2, occludeArms: coatThick + r.waist * 0.13 + r.chestX * 0.05 },
 ]);
 
 return sdf.union(body, eyes, hair, glasses, hat, base)

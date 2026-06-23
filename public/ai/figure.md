@@ -627,10 +627,22 @@ of `{ node, label?, priority?, carve?, occludeArms?, occlude? }`:
 
 - **priority** (default = array index) — higher WINS contested space.
 - **occludeArms: `<allowance>`** — the arms (cheap capsule chain, DILATED by the
-  clothing allowance) carve this layer, so a torso plate/belt terminates at the
-  **sleeve** and never bleeds onto a limb. This is the fix for armor-on-arm /
-  belt-on-sleeve. **Don't `occludeArms` a piece that legitimately sits on the arm**
-  (a pauldron/shoulder cap) — make it its own entry without it.
+  allowance) carve this layer, so a torso plate/belt terminates at the **sleeve**
+  and never bleeds onto a limb. This is the fix for armor-on-arm / belt-on-sleeve.
+  **The allowance must reach PAST the worn layer's OUTER surface** — i.e. ≈ the
+  clothing thickness it sits over **plus this layer's own `clearance + thickness`.**
+  Set it to just the clothing thickness and the occluder only reaches the sleeve's
+  inner face, carving the band's inner part and **leaving its outer shell on the
+  arm** (the residual that keeps a belt reading as "on the arm" from the side —
+  invisible head-on). Verify with `F.sharedSolid(layer, F.arms(rig).round(clothThick))`
+  (check against the SLEEVE, not the bare arm — the bare arm is inside the sleeve,
+  so it always reads clear). **Don't `occludeArms` a piece that legitimately sits
+  on the arm** (a pauldron/shoulder cap) — make it its own entry without it.
+- **Conform a belt to the garment it sits on, sized by its bagginess.** A *fitted*
+  shirt → conform to the torso core (`F.torso(rig)+pants`) + a clothing clearance.
+  A *loose* coat/robe → conform to the **clothed** surface (so the belt is visibly
+  flush on the robe, not buried inside it) and rely on the large `occludeArms` above
+  to strip the sleeve.
 - **carve** (default true) — trimmed by higher layers. **Set `carve:false` on the
   base body + standalone props** (skin, eyes, a held sword, the base): both so
   they aren't eaten, AND because the **fine-hands marker must not be buried in a
@@ -645,8 +657,9 @@ const sleeve = shirtThick + r.chestX * 0.02;
 const body = F.layers(rig, [
   { node: skin,      carve: false, priority: 0 },        // base — never trimmed
   { node: shirt,     carve: false, priority: 1 },        // the sleeve IS the arm cover
-  { node: belt,      carve: false, priority: 2, occludeArms: sleeve },
-  { node: cuirass,   carve: false, priority: 3, occludeArms: armorGap + shirtThick },
+  // occludeArms reaches PAST each layer's outer surface (clothing + clearance + thickness):
+  { node: belt,      carve: false, priority: 2, occludeArms: sleeve + beltClearance + beltThickness },
+  { node: cuirass,   carve: false, priority: 3, occludeArms: armorGap + shirtThick + margin },
   { node: pauldrons, carve: false, priority: 3 },         // sit ON the arms — NOT occluded
 ]);
 // Standalone props (eyes, a held sword, the base) plain-union OUTSIDE F.layers so
