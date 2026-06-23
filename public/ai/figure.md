@@ -617,6 +617,43 @@ for (let i = 0; i < 7; i++) chain = chain.union(sdf.capsule(pts[i], pts[i + 1], 
 const necklace = chain.subtract(hair).label('jewelry');
 ```
 
+**Composite the garment stack — `F.layers(rig, entries)` (priority + auto limb-occlusion).**
+The recurring failures — armor color bleeding onto an arm, a belt wrapping the
+sleeve, clothing poking through armor — are all *invisible inter-object overlap*:
+each accessory is an independent solid you hand-clear. `F.layers` makes the
+clothing/armor stack a **declared z-order** so each sits flush, terminates at
+limbs, and the right one wins where two collide. Pass the rig then an ordered list
+of `{ node, label?, priority?, carve?, occludeArms?, occlude? }`:
+
+- **priority** (default = array index) — higher WINS contested space.
+- **occludeArms: `<allowance>`** — the arms (cheap capsule chain, DILATED by the
+  clothing allowance) carve this layer, so a torso plate/belt terminates at the
+  **sleeve** and never bleeds onto a limb. This is the fix for armor-on-arm /
+  belt-on-sleeve. **Don't `occludeArms` a piece that legitimately sits on the arm**
+  (a pauldron/shoulder cap) — make it its own entry without it.
+- **carve** (default true) — trimmed by higher layers. **Set `carve:false` on the
+  base body + standalone props** (skin, eyes, a held sword, the base): both so
+  they aren't eaten, AND because the **fine-hands marker must not be buried in a
+  `.subtract`** (it breaks sculpted hands). Also prefer `carve:false` on heavy
+  undergarments the outer shell already offsets past (it keeps meshing fast —
+  every priority-carve adds a boolean to that layer's partition).
+
+```js
+// Build skin/shirt/pants/belt/cuirass/pauldrons, label each, then composite.
+// Split a plate from its shoulder caps so only the plate is arm-occluded:
+const sleeve = shirtThick + r.chestX * 0.02;
+const body = F.layers(rig, [
+  { node: skin,      carve: false, priority: 0 },        // base — never trimmed
+  { node: shirt,     carve: false, priority: 1 },        // the sleeve IS the arm cover
+  { node: belt,      carve: false, priority: 2, occludeArms: sleeve },
+  { node: cuirass,   carve: false, priority: 3, occludeArms: armorGap + shirtThick },
+  { node: pauldrons, carve: false, priority: 3 },         // sit ON the arms — NOT occluded
+]);
+// Standalone props (eyes, a held sword, the base) plain-union OUTSIDE F.layers so
+// they don't carve the garments.
+return sdf.union(body, eyes, sword, scabbard, hair, base).build({ /* … */ });
+```
+
 **A band CROSSING the body — `F.strap(a, b, opts?)`.** A bandolier (shoulder →
 opposite hip), sash, suspender, or backpack strap. `a`/`b` accept grip frames,
 `rig.shoulder.L/R`, sole frames, or raw points (and `F.ringPoint` output). **Pass

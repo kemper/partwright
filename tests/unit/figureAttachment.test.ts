@@ -8,7 +8,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT } from '../../src/geometry/sdf';
 import type { SdfApi, Vec3 } from '../../src/geometry/sdfFigure';
 
-const { buildRig, ringBand, buildBand, ringPoint, strap, hangFrom, onFace } = __figureTestables__;
+const { buildRig, ringBand, buildBand, buildLayers, ringPoint, strap, hangFrom, onFace } = __figureTestables__;
 
 const api: SdfApi = {
   sphere: sdfT.primSphere,
@@ -236,6 +236,46 @@ describe('ring / strap / hangFrom geometry', () => {
     const b = hung.bounds();
     expect(b.max[2]).toBeCloseTo(18, 4);     // top at 20 − 2
     expect(b.min[2]).toBeCloseTo(12, 4);     // 6 tall below it
+  });
+});
+
+describe('buildLayers — priority composite + limb occlusion', () => {
+  it('NO-HOLE: carves a lower layer by the higher layer\'s OCCLUDED solid, not the raw one', () => {
+    const rig = buildRig({ height: 64 });
+    const A = api.box([10, 2, 2]);                       // bar along X, x∈[−5,5]
+    const B = api.box([2, 2, 2]).translate([3, 0, 0]);   // sits inside A at x∈[2,4]
+    const occ = api.box([3, 3, 3]).translate([3, 0, 0]); // fully covers B → B occludes to nothing
+    const out = buildLayers(api, rig, [
+      { node: A, priority: 0, carve: true },
+      { node: B, priority: 1, carve: true, occlude: occ },
+    ]);
+    // B is entirely occluded away, so it must NOT punch a hole in A where it was:
+    // A is carved by B's OCCLUDED (empty) solid, not raw B. (A naive raw-B subtract
+    // would leave (3,0,0) empty since B is gone — the bug this algorithm prevents.)
+    expect(out.evaluate(3, 0, 0)).toBeLessThan(0);
+  });
+
+  it('leaves a carve:false base fully intact', () => {
+    const rig = buildRig({ height: 64 });
+    const base = api.box([6, 6, 6]);
+    const over = api.box([6, 6, 6]).translate([3, 0, 0]); // overlaps base's +X half
+    const out = buildLayers(api, rig, [
+      { node: base, priority: 0, carve: false },          // never trimmed
+      { node: over, priority: 1, carve: true },
+    ]);
+    // The base center is solid, and so is the contested +X region (base not carved).
+    expect(out.evaluate(0, 0, 0)).toBeLessThan(0);
+    expect(out.evaluate(2.4, 0, 0)).toBeLessThan(0);
+  });
+
+  it('occludeArms carves the (dilated) rig arms from a torso layer without throwing', () => {
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 8 }, armL: { raiseSide: 8 } } });
+    const w = rig.ring.waist;
+    // A torso band that would otherwise wrap the arms; occludeArms should trim them.
+    const band = buildBand(api, w, { surface: api.cylinder(w.rx, 40).translate([w.center[0], w.center[1], w.center[2]]), thickness: 0.5, height: 4 });
+    const out = buildLayers(api, rig, [{ node: band, label: 'belt', priority: 1, occludeArms: 0.5 }]);
+    expect(typeof out.bounds).toBe('function');
+    expect(typeof out.evaluate).toBe('function');
   });
 });
 

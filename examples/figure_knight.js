@@ -60,10 +60,15 @@ const pR = r.upperArm * 1.35 + shirtThick + armorGap;
 const pauldron = (cx, cy, cz) =>
   sdf.ellipsoid(pR * 1.25, pR * 1.05, pR * 0.7).translate([cx, cy, cz])
     .union(sdf.ellipsoid(pR * 1.0, pR * 0.82, pR * 0.5).translate([cx * 1.10, cy, cz - pR * 0.7]));
-const armor = plate.union(keel).smoothUnion(peascod, r.chestX * 0.25).union(fauld)
+// Cuirass = the torso shell (arm-occluded by F.layers, so it terminates at the
+// SLEEVE and never bleeds onto the arm beside the torso). Pauldrons = the shoulder
+// caps, which legitimately sit ON the upper arms — a SEPARATE layer that is NOT
+// arm-occluded (otherwise the limb-occlusion would eat them).
+const cuirass = plate.union(keel).smoothUnion(peascod, r.chestX * 0.25).union(fauld)
   .smoothSubtract(neckScoop, r.neck * 0.4)
-  .smoothUnion(pauldron(j.upperArmL[0] * 1.06, j.upperArmL[1], j.upperArmL[2] + r.upperArm * 0.45), r.upperArm * 0.18)
-  .smoothUnion(pauldron(j.upperArmR[0] * 1.06, j.upperArmR[1], j.upperArmR[2] + r.upperArm * 0.45), r.upperArm * 0.18)
+  .label('armor');
+const pauldrons = pauldron(j.upperArmL[0] * 1.06, j.upperArmL[1], j.upperArmL[2] + r.upperArm * 0.45)
+  .union(pauldron(j.upperArmR[0] * 1.06, j.upperArmR[1], j.upperArmR[2] + r.upperArm * 0.45))
   .label('armor');
 
 // Clothed-body surface (skin + shirt + pants) for conforming the belt band and
@@ -72,11 +77,11 @@ const clothed = sdf.union(skin, shirt, pants);
 
 // 6. BELT (Ringed) — a FLUSH band (F.band), not a round tube: it slices the
 // CLOTHED body grown just proud of the shirt, so it lies FLAT against the body the
-// way a real belt does, and OCCLUDES the arms (rig) so it wraps the torso and
-// terminates at the down-arms instead of ballooning around them.
+// way a real belt does. Arm-occlusion is handled by F.layers below (occludeArms),
+// so the belt wraps the torso and terminates at the SLEEVE, not the bare arm.
 const beltClear = shirtThick + r.chestX * 0.02;
 const beltBand = F.band(rig.ring.waist, {
-  surface: clothed, thickness: r.waist * 0.12, height: r.chestX * 0.62, clearance: beltClear, rig,
+  surface: clothed, thickness: r.waist * 0.12, height: r.chestX * 0.62, clearance: beltClear,
 });
 const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: clothed, clearance: beltClear });
 const buckle = sdf.roundedBox([r.waist * 0.5, r.waist * 0.3, r.chestX * 0.52], r.waist * 0.06).translate(bucklePt);
@@ -150,5 +155,24 @@ api.paint.label('sword', '#cfd4da');
 api.paint.label('scabbard', '#5a3a22');
 api.paint.label('base', '#54504a');
 
-return sdf.union(skin, eyes, shirt, pants, armor, belt, sword, scabbard, hair, base)
+// 11. LAYERS — composite the body + garment stack with priority + automatic
+// limb-occlusion (the architecture that kills armor-bleeds-onto-arm). Higher
+// priority wins where two collide; `occludeArms` carves the SLEEVE-dilated arms
+// from the torso plate/belt so neither bleeds onto a limb. The base body is
+// carve:false (never trimmed — and the fine-hands marker must stay un-buried).
+// Standalone props (eyes, sword, scabbard, hair, base) are plain-unioned on top.
+const sleeve = shirtThick + r.chestX * 0.02;
+// shirt/pants are carve:false (the cuirass already offsets OUTWARD from the shirt
+// so it can't poke through — no priority-carve needed, which keeps their partitions
+// cheap to mesh). Only the belt + cuirass pay for arm-occlusion (the bleed fix).
+const body = F.layers(rig, [
+  { node: skin, carve: false, priority: 0 },
+  { node: shirt, carve: false, priority: 1 },
+  { node: pants, carve: false, priority: 1 },
+  { node: belt, carve: false, priority: 2, occludeArms: sleeve },
+  { node: cuirass, carve: false, priority: 3, occludeArms: armorGap + shirtThick },
+  { node: pauldrons, carve: false, priority: 3 },
+]);
+
+return sdf.union(body, eyes, sword, scabbard, hair, base)
   .build({ edgeLength: 0.42, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] });
