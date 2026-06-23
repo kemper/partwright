@@ -41,8 +41,44 @@ export interface ColorPatternSpec {
 
 export const COLOR_PATTERN_KINDS: ReadonlyArray<ColorPatternKind> = ['stripes', 'spots', 'patches', 'gradient'];
 
+/** Where a pattern applies. A `label` restricts it to an `api.label` region; the
+ *  geometric predicates (`above`/`below` a plane, inside a `box`, inside a
+ *  `sphere`) further narrow it by triangle centroid. All provided predicates AND
+ *  together, so `{ label:'body', above:{axis:'z',at:14} }` = the upper body, and
+ *  `{ sphere:{center, radius} }` = a head/paw blob — no relabeling, no SDF seams. */
+export interface PatternScope {
+  label?: string;
+  above?: { axis: 'x' | 'y' | 'z'; at: number };
+  below?: { axis: 'x' | 'y' | 'z'; at: number };
+  box?: { min: [number, number, number]; max: [number, number, number] };
+  sphere?: { center: [number, number, number]; radius: number };
+}
+
 const AXIS_IDX: Record<'x' | 'y' | 'z', number> = { x: 0, y: 1, z: 2 };
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/** Narrow a base triangle set by the scope's geometric predicates (centroid
+ *  test). Returns `base` unchanged when no geometric predicate is set. */
+export function filterScopeTriangles(mesh: MeshData, base: Set<number>, scope?: PatternScope): Set<number> {
+  if (!scope || (!scope.above && !scope.below && !scope.box && !scope.sphere)) return base;
+  const out = new Set<number>();
+  for (const t of base) {
+    const c = getTriangleCentroid(t, mesh);
+    if (scope.above && c[AXIS_IDX[scope.above.axis]] < scope.above.at) continue;
+    if (scope.below && c[AXIS_IDX[scope.below.axis]] > scope.below.at) continue;
+    if (scope.box) {
+      const { min, max } = scope.box;
+      if (c[0] < min[0] || c[0] > max[0] || c[1] < min[1] || c[1] > max[1] || c[2] < min[2] || c[2] > max[2]) continue;
+    }
+    if (scope.sphere) {
+      const { center, radius } = scope.sphere;
+      const dx = c[0] - center[0], dy = c[1] - center[1], dz = c[2] - center[2];
+      if (dx * dx + dy * dy + dz * dz > radius * radius) continue;
+    }
+    out.add(t);
+  }
+  return out;
+}
 
 /** Assign every triangle in `scope` a palette colour from the chosen field.
  *  Returns a `triId → rgb` map (the `perTriColors` substrate). */

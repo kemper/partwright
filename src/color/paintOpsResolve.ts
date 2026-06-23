@@ -16,7 +16,7 @@ import type { RegionDescriptor } from './regions';
 import { findSlabTriangles } from './slabPaint';
 import { findShapeTriangles } from './boxPaint';
 import { findCylinderTriangles } from './cylinderPaint';
-import { computePatternColors } from './colorPattern';
+import { computePatternColors, filterScopeTriangles } from './colorPattern';
 
 export interface ResolvedPaintOp {
   name: string;
@@ -53,12 +53,17 @@ export function resolvePaintDescriptor(
     case 'byLabel':
       return labelMap?.get(descriptor.label) ?? new Set<number>();
     case 'pattern': {
-      // Scope: a label region (so it never touches eyes/nose) or the whole mesh.
+      // Scope: a label region (so it never touches eyes/nose) or the whole mesh,
+      // then narrowed by any geometric predicate (above/below/box/sphere).
       const label = descriptor.scope?.label;
-      if (label) return labelMap?.get(label) ?? new Set<number>();
-      const all = new Set<number>();
-      for (let t = 0; t < mesh.numTri; t++) all.add(t);
-      return all;
+      let base: Set<number>;
+      if (label) {
+        base = labelMap?.get(label) ?? new Set<number>();
+      } else {
+        base = new Set<number>();
+        for (let t = 0; t < mesh.numTri; t++) base.add(t);
+      }
+      return filterScopeTriangles(mesh, base, descriptor.scope);
     }
     default:
       return null;

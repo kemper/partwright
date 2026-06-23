@@ -17,7 +17,7 @@ import { createKnurlNamespace } from '../knurl';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels, consumeBrepToManifoldLabelColors } from '../brepRuntime';
 import { parseLabelColor } from '../../color/labelColor';
 import type { RegionDescriptor } from '../../color/regions';
-import { COLOR_PATTERN_KINDS, type ColorPatternKind } from '../../color/colorPattern';
+import { COLOR_PATTERN_KINDS, type ColorPatternKind, type PatternScope } from '../../color/colorPattern';
 import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
 import { wasmFaultHint } from '../workerFaults';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
@@ -487,18 +487,45 @@ export const manifoldJsEngine: Engine = {
           throw new Error('api.paint.pattern colors: expected an array of at least 2 colors [base, mark, third?].');
         }
         const rgbColors = colors.map((c, i) => paintColor(c, `api.paint.pattern colors[${i}]`));
-        let scopeObj: { label?: string } | undefined;
+        let scopeObj: PatternScope | undefined;
         if (scope !== undefined) {
           if (typeof scope === 'string') {
             if (scope.length === 0) throw new Error('api.paint.pattern scope: label name must be non-empty.');
             scopeObj = { label: scope };
           } else if (scope && typeof scope === 'object' && !Array.isArray(scope)) {
-            const { label: l, ...srest } = scope as { label?: unknown };
-            paintRejectUnknown('api.paint.pattern scope', srest as Record<string, unknown>);
-            if (l !== undefined && (typeof l !== 'string' || l.length === 0)) throw new Error('api.paint.pattern scope.label: must be a non-empty string.');
-            scopeObj = l !== undefined ? { label: l as string } : undefined;
+            const { label: l, above, below, box, sphere, ...srest } = scope as Record<string, unknown>;
+            paintRejectUnknown('api.paint.pattern scope', srest);
+            const s: PatternScope = {};
+            if (l !== undefined) {
+              if (typeof l !== 'string' || l.length === 0) throw new Error('api.paint.pattern scope.label: must be a non-empty string.');
+              s.label = l;
+            }
+            const parsePlane = (v: unknown, where: string): { axis: 'x' | 'y' | 'z'; at: number } => {
+              const o = paintObj(v, where);
+              const { axis: a, at, ...rest } = o;
+              paintRejectUnknown(where, rest);
+              if (typeof a !== 'string' || !(a in AXIS_NORMAL)) throw new Error(`${where}.axis: expected 'x', 'y' or 'z'.`);
+              return { axis: a as 'x' | 'y' | 'z', at: paintNum(at, `${where}.at`) };
+            };
+            if (above !== undefined) s.above = parsePlane(above, 'api.paint.pattern scope.above');
+            if (below !== undefined) s.below = parsePlane(below, 'api.paint.pattern scope.below');
+            if (box !== undefined) {
+              const o = paintObj(box, 'api.paint.pattern scope.box');
+              const { min, max, ...rest } = o;
+              paintRejectUnknown('api.paint.pattern scope.box', rest);
+              s.box = { min: paintVec3(min, 'api.paint.pattern scope.box.min'), max: paintVec3(max, 'api.paint.pattern scope.box.max') };
+            }
+            if (sphere !== undefined) {
+              const o = paintObj(sphere, 'api.paint.pattern scope.sphere');
+              const { center, radius, ...rest } = o;
+              paintRejectUnknown('api.paint.pattern scope.sphere', rest);
+              const rad = paintNum(radius, 'api.paint.pattern scope.sphere.radius');
+              if (rad <= 0) throw new Error('api.paint.pattern scope.sphere.radius: must be > 0.');
+              s.sphere = { center: paintVec3(center, 'api.paint.pattern scope.sphere.center'), radius: rad };
+            }
+            scopeObj = Object.keys(s).length > 0 ? s : undefined;
           } else {
-            throw new Error("api.paint.pattern scope: expected a label name string (e.g. 'body') or { label }.");
+            throw new Error("api.paint.pattern scope: expected a label name string (e.g. 'body') or { label, above, below, box, sphere }.");
           }
         }
         if (axis !== undefined && (typeof axis !== 'string' || !(axis in AXIS_NORMAL))) {

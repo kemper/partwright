@@ -3,7 +3,7 @@
 import type { MeshData } from '../geometry/types';
 import type { ShapeType } from './boxPaint';
 import type { BrushShape } from './subdivide';
-import type { ColorPatternKind } from './colorPattern';
+import type { ColorPatternKind, PatternScope } from './colorPattern';
 
 export interface ColorRegion {
   id: number;
@@ -108,7 +108,7 @@ export type RegionDescriptor =
   // produces a `perTriColors` map. `scope.label` restricts it to an `api.label`
   // region (e.g. the body) so it never touches eyes/nose; absent ⇒ whole mesh.
   | { kind: 'pattern'; pattern: ColorPatternKind; colors: [number, number, number][];
-      scope?: { label?: string };
+      scope?: PatternScope;
       scale?: number; axis?: 'x' | 'y' | 'z'; warp?: number; coverage?: number; seed?: number };
 
 export interface SerializedColorRegion {
