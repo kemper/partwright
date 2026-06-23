@@ -66,12 +66,18 @@ const hair = F.hair(rig, { style: 'short' }).label('hair');
 // high on the hair top. `sit` fine-tunes the brim height.
 const hat = F.placeOnHead(hatLocal, rig, { sit: 0.30 }).label('hat');
 
-// 6. BELT (Ringed) — conform to the torso core (+ coat clearance) and OCCLUDE the
-// arms (rig), so the belt wraps the torso and terminates at the arms instead of
-// looping around them.
-const beltCore = sdf.union(F.torso(rig), pants);
-const beltTube = r.waist * 0.14;
-const belt = F.ring(rig.ring.waist, { tube: beltTube, clearance: r.chestX * 0.13, segments: 60, surface: beltCore, rig }).label('belt');
+// 6. BELT (Ringed) — a FLUSH band (F.band), not a round tube: it slices the
+// CLOTHED body (the coat) grown just proud of its surface, so it cinches FLAT
+// over the robe the way a real sash does, and OCCLUDES the arms (rig) so it
+// terminates at them.
+const clothedBody = sdf.union(skin, coat, pants);
+const belt = F.band(rig.ring.waist, {
+  surface: clothedBody, thickness: r.waist * 0.10, height: r.chestX * 0.6,
+  clearance: r.chestX * 0.02, rig,
+}).label('belt');
+const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: clothedBody, clearance: r.chestX * 0.02 });
+const buckle = sdf.roundedBox([r.waist * 0.5, r.waist * 0.22, r.chestX * 0.5], r.waist * 0.06).translate(bucklePt);
+const beltWithBuckle = belt.union(buckle.label('belt'));
 
 // 7. BASE
 const base = F.base(rig, { radius: H * 0.25 }).label('base');
@@ -91,5 +97,5 @@ api.paint.label('belt', '#3a2417');
 
 api.paint.label('base', '#54504a');
 
-return sdf.union(skin, eyes, coat, pants, hair, glasses, hat, belt, base)
+return sdf.union(skin, eyes, coat, pants, hair, glasses, hat, beltWithBuckle, base)
   .build({ edgeLength: 0.38, detail: [...F.faceDetail(rig)] });

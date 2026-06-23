@@ -12,7 +12,7 @@ const F = sdf.figure;
 const rig = F.rig({
   height: 66, headsTall: 6.2, build: 'average', sex: 'male', muscle: 0.5,
   pose: {
-    armR: { raiseSide: 42, raiseFwd: 18, bend: 34 },
+    armR: { raiseSide: 10, raiseFwd: 58, bend: 68, palm: 'out' },
     armL: { raiseSide: 11, raiseFwd: 5, bend: 16 },
     legL: { raiseSide: 7 }, legR: { raiseSide: 9, bend: 6 },
     head: { yaw: -6, pitch: -2 }, spine: { turn: 3 },
@@ -66,18 +66,20 @@ const armor = plate.union(keel).smoothUnion(peascod, r.chestX * 0.25).union(faul
   .smoothUnion(pauldron(j.upperArmR[0] * 1.06, j.upperArmR[1], j.upperArmR[2] + r.upperArm * 0.45), r.upperArm * 0.18)
   .label('armor');
 
-// Clothed-body surface (incl. arms) for the scabbard hip anchor; and a torso
-// CORE (no arms) for the belt so the band conforms to the torso, not the arms.
+// Clothed-body surface (skin + shirt + pants) for conforming the belt band and
+// the scabbard hip anchor; the band's `rig` occluder carves the arms away.
 const clothed = sdf.union(skin, shirt, pants);
-const beltCore = sdf.union(F.torso(rig), pants);
 
-// 6. BELT (Ringed) — conform to the torso core (+ shirt clearance) and OCCLUDE
-// the arms (rig), so the belt wraps the torso and terminates at the down-arms
-// instead of ballooning around them.
-const beltTube = r.waist * 0.15;
-const beltBand = F.ring(rig.ring.waist, { tube: beltTube, clearance: shirtThick, segments: 64, surface: beltCore, rig });
-const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: beltCore, clearance: shirtThick });
-const buckle = sdf.roundedBox([beltTube * 3, beltTube * 2, beltTube * 2.6], beltTube * 0.28).translate(bucklePt);
+// 6. BELT (Ringed) — a FLUSH band (F.band), not a round tube: it slices the
+// CLOTHED body grown just proud of the shirt, so it lies FLAT against the body the
+// way a real belt does, and OCCLUDES the arms (rig) so it wraps the torso and
+// terminates at the down-arms instead of ballooning around them.
+const beltClear = shirtThick + r.chestX * 0.02;
+const beltBand = F.band(rig.ring.waist, {
+  surface: clothed, thickness: r.waist * 0.12, height: r.chestX * 0.62, clearance: beltClear, rig,
+});
+const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: clothed, clearance: beltClear });
+const buckle = sdf.roundedBox([r.waist * 0.5, r.waist * 0.3, r.chestX * 0.52], r.waist * 0.06).translate(bucklePt);
 const belt = beltBand.union(buckle).label('belt');
 
 // 7. SWORD (Held) — a SHARP tapered blade: flat diamond cross-section narrowing
@@ -110,7 +112,10 @@ const sword = heldSword.smoothUnion(swordBridge, r.hand * 0.4).label('sword');
 
 // 8. SCABBARD (Hung) — empty sheath at the left hip, pushed OUT past the thigh
 // and hung near-vertical so it clears the leg/clothes.
-const scabLen = bladeLen + gripLen * 0.3, scabW = r.hand * 0.95, scabT = r.hand * 0.55, scabTube = r.hand * 0.24;
+// Length kept short enough that the chape clears the base disc (hip sits at
+// z≈34.6 and the figure is 66 tall — a full-blade-length sheath would poke below
+// the ground), hung with a slight backward tilt so the tip rides behind the calf.
+const scabLen = bladeLen * 0.68 + gripLen * 0.3, scabW = r.hand * 0.95, scabT = r.hand * 0.55, scabTube = r.hand * 0.24;
 const collarH = r.hand * 0.85, collarR = scabW * 0.95;
 const scabBody = sdf.roundedBox([scabW * 2, scabT * 2, scabLen * 0.90], scabTube).translate([0, 0, -scabLen * 0.45]);
 const collar = sdf.cylinder(collarR, collarH).translate([0, 0, collarH * 0.5]);
@@ -122,7 +127,7 @@ const hipPt0 = F.ringPoint(rig.ring.waist, 92, { surface: clothed });
 const outDir = [hipPt0[0] - rig.ring.waist.center[0], hipPt0[1] - rig.ring.waist.center[1], 0];
 const outLen = Math.hypot(outDir[0], outDir[1]) || 1;
 const hipPt = [hipPt0[0] + (outDir[0] / outLen) * r.hand * 1.1, hipPt0[1] + (outDir[1] / outLen) * r.hand * 1.1, hipPt0[2]];
-const hungScab = F.hangFrom(scabLocal, hipPt, { tilt: 8, anchor: 'top' });
+const hungScab = F.hangFrom(scabLocal, hipPt, { tilt: -10, anchor: 'top' });
 const frog = sdf.capsule(hipPt0, [hipPt[0], hipPt[1], hipPt[2] + collarH * 0.3], scabTube * 0.8);
 const scabbard = hungScab.union(frog).label('scabbard');
 

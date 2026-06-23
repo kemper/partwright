@@ -487,6 +487,20 @@ const held = F.holdAt(sword, rig.grip.R);       // +Z→gripAxis, +Y→palmNorma
 maps to; `opts.flip: true` reverses the axis; `opts.along` (`'x'|'y'|'z'`) selects
 the long axis (non-`z` uses the legacy single-axis align, roll unconstrained).
 
+> **Aim a held prop by posing the arm + a `palm` hint — don't fight `holdAt`.** A
+> held bar lies along `gripAxis`, which is **⊥ the forearm** (you grip across the
+> palm), so the prop's direction follows the forearm pose, *not* `holdAt`. To point
+> a sword **blade-up**, the forearm must be roughly **horizontal** (a vertical
+> forearm forces the blade horizontal): raise the arm forward and bend the elbow so
+> the hand sits at chest height (e.g. `armR: { raiseSide: 10, raiseFwd: 58, bend: 68 }`).
+> Then set **`palm`** on that arm's pose to roll the wrist so the palm (and thus the
+> blade) faces the way a hand bearing weight would: `'up' | 'down' | 'forward' |
+> 'back' | 'in' | 'out'`. The knight raises a heavy sword with
+> `armR: { raiseSide: 10, raiseFwd: 58, bend: 68, palm: 'out' }`. Probe the result
+> with `F.poseProbe(rig).grips.R.gripAxis` — that vector **is** the blade direction
+> (≈ `[0,0,1]` = straight up). Avoid `bend ≳ 95` at low `raiseFwd`: the wrist-roll
+> solve hits a singularity there and the blade flips.
+
 **Two-handed props — `F.spanGrips(a, b)`.** A guitar, barbell, bow, broom, or
 rifle runs BETWEEN both hands, so a single `holdAt` can't orient it. `spanGrips`
 is the two-anchor frame: pass two grips (or any two points) and it returns the
@@ -555,16 +569,45 @@ separately.
 >   drapes over (`occlude: [hair]`). Same `occlude`/`rig` on `F.strap`.
 >
 > **`drape`** dips the FRONT of a ring down the body axis (tapering to 0 at the
-> back) — a necklace that hangs down the chest instead of a flat choker ring:
-> `F.ring(rig.ring.neck, { surface: clothed, drape: r.neck * 1.7, occlude: [hair] })`.
+> back). For a **draping pendant necklace**, prefer a small neck-hugging `F.ring`
+> (occluded by hair) PLUS a separate pendant drop sampled with `F.ringPoint` (see
+> below) — a big `drape` on the ring itself spreads it across the chest at neckline
+> width (it reads as a collar trim, not a necklace).
+
+**A FLUSH band — `F.band(frame, opts?)` (use this for belts/sashes, NOT `F.ring`).**
+`F.ring` sweeps a round **tube**, which reads as a cord "welded on" the body. A
+belt, waistband, or sash should lie **flat/flush** against the body the way
+clothing lies on skin. `F.band` does exactly that: it's the **clothing mechanism**
+— it offsets the real `surface` outward by `clearance + thickness` and slices that
+solid to a `height`-tall band, so the band is a literal slice of the body surface
+and conforms exactly to the posed, non-circular cross-section (it can never float
+or balloon). `opts`: `{ surface (required), height, thickness, clearance, drop,
+occlude, rig }`. Pass `rig` (and/or `occlude`) to carve the arms so it terminates
+where limbs cross it. Conform to the **outermost layer it sits on** (the coat/shirt
+surface, or the torso core + a `clearance` for the garment thickness).
 
 ```js
 const clothed = sdf.union(skin, shirt, pants);
-const belt = F.ring(rig.ring.waist, { tube: r.waist * 0.16, surface: clothed }).label('belt');
+// FLUSH belt cinching the clothed body, terminating at the arms, with a buckle:
+const belt = F.band(rig.ring.waist, {
+  surface: clothed, thickness: r.waist * 0.11, height: r.chestX * 0.6,
+  clearance: r.chestX * 0.02, rig,
+}).label('belt');
 // Seat a buckle / hang a scabbard with F.ringPoint(frame, azDeg, opts?):
 //   az 0 = front (−Y), 90 = figure-left (+X), 180 = back, −90 = right.
-const fp = F.ringPoint(rig.ring.waist, 0, { surface: clothed });
+const fp = F.ringPoint(rig.ring.waist, 0, { surface: clothed, clearance: r.chestX * 0.02 });
 const buckle = sdf.roundedBox([2.4, 1.2, 2.0], 0.3).translate(fp).label('belt');
+const beltWithBuckle = belt.union(buckle);
+
+// A draping PENDANT necklace: a thin neck-hugging ring + a chain dropped down the
+// chest centreline as CONFORMED points (so it lies flush, never chords through the
+// bust), occluded by hair:
+const collar = F.ring(rig.ring.neck, { tube: r.neck * 0.06, surface: clothed, occlude: [hair] });
+const pts = [];
+for (let i = 0; i <= 7; i++) pts.push(F.ringPoint(rig.ring.neck, 0, { surface: clothed, drop: r.neck * 3 * (i / 7) }));
+let chain = collar;
+for (let i = 0; i < 7; i++) chain = chain.union(sdf.capsule(pts[i], pts[i + 1], r.neck * 0.06));
+const necklace = chain.subtract(hair).label('jewelry');
 ```
 
 **A band CROSSING the body — `F.strap(a, b, opts?)`.** A bandolier (shoulder →

@@ -8,7 +8,7 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT } from '../../src/geometry/sdf';
 import type { SdfApi, Vec3 } from '../../src/geometry/sdfFigure';
 
-const { buildRig, ringBand, ringPoint, strap, hangFrom, onFace } = __figureTestables__;
+const { buildRig, ringBand, buildBand, ringPoint, strap, hangFrom, onFace } = __figureTestables__;
 
 const api: SdfApi = {
   sphere: sdfT.primSphere,
@@ -162,6 +162,39 @@ describe('ring / strap / hangFrom geometry', () => {
     expect(carved.evaluate(px, 0, pz)).toBeGreaterThan(0);
   });
 
+  it('buildBand makes a FLUSH band that hugs the surface and clips to height', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const R = w.rx;
+    // A torso-ish cylinder centred on the waist frame (tall, so it spans the band).
+    const surface = api.cylinder(R, 40).translate([w.center[0], w.center[1], w.center[2]]);
+    const thickness = 0.5, height = 4;
+    const band = buildBand(api, w, { surface, thickness, height });
+    const z = w.center[2];
+    // Flush: a point right AT the body surface (radius R) at band height is INSIDE
+    // the band (the band is a slice of the surface grown outward), while a point
+    // beyond the proud face (R + thickness + margin) is OUTSIDE.
+    expect(band.evaluate(w.center[0] + R, w.center[1], z)).toBeLessThan(0);
+    expect(band.evaluate(w.center[0] + R + thickness + 0.4, w.center[1], z)).toBeGreaterThan(0);
+    // Clipped to a height band: well above the slice is empty even at the surface.
+    expect(band.evaluate(w.center[0] + R, w.center[1], z + height)).toBeGreaterThan(0);
+  });
+
+  it('buildBand occlude carves the band where an occluder covers it', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const R = w.rx;
+    const surface = api.cylinder(R, 40).translate([w.center[0], w.center[1], w.center[2]]);
+    const z = w.center[2];
+    const px = w.center[0] + R;   // a point on the +X surface, inside a plain band
+    const full = buildBand(api, w, { surface, thickness: 0.5, height: 4 });
+    expect(full.evaluate(px, w.center[1], z)).toBeLessThan(0);
+    // A slab across the +X side removes that side of the band.
+    const slab = api.box([R * 4, R * 4, 8]).translate([R * 2, 0, z]);
+    const carved = buildBand(api, w, { surface, thickness: 0.5, height: 4, occlude: slab });
+    expect(carved.evaluate(px, w.center[1], z)).toBeGreaterThan(0);
+  });
+
   it('strap spans both anchors', () => {
     const rig = buildRig({ height: 64 });
     const a = rig.shoulder.L;
@@ -201,6 +234,7 @@ describe('figure namespace wiring', () => {
     const F = createFigureNamespace(api);
     const rig = F.rig({ height: 64 });
     expect(typeof F.ring).toBe('function');
+    expect(typeof F.band).toBe('function');
     expect(typeof F.ringPoint).toBe('function');
     expect(typeof F.strap).toBe('function');
     expect(typeof F.hangFrom).toBe('function');

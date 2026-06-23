@@ -46,18 +46,30 @@ const gown = F.clothing.top(rig, { sleeve: 'short', hemZ: H * 0.30, thickness: r
 const clothed = sdf.union(skin, gown);
 const hair = F.hair(rig, { style: 'long', length: 'long', volume: 1.1 }).label('hair');
 
-// 5. NECKLACE (Ringed) — a chain that DRAPES down the chest (conformed flush to
-// the body, dipping at the front) and is OCCLUDED by the hair that falls over it,
-// + a pendant at the low point.
+// 5. NECKLACE (Ringed + draping pendant) — a thin chain that HUGS the base of the
+// neck (conformed flush to the neck column, so it can't spread across the
+// shoulders) and is OCCLUDED by the hair falling over the nape, plus a PENDANT
+// that drapes straight DOWN the chest centreline to a gem. The drop is sampled as
+// a chain of conformed surface points (not one straight chord) so it lies flush on
+// the chest and never cuts through the bust.
 const neckFrame = rig.ring.neck;
-const neckTube = r.neck * 0.085;
-const drape = r.neck * 1.7;
-const chain = F.ring(neckFrame, { tube: neckTube, drape, segments: 72, surface: clothed, occlude: [hair] });
-// Pendant at the draped loop's lowest front point (front = −Y), pushed proud.
-const frontPt = F.ringPoint(neckFrame, 0, { surface: clothed });
-const lowPt = [frontPt[0], frontPt[1] - neckTube, frontPt[2] - drape];
-const gem = sdf.ellipsoid(neckTube * 2.6, neckTube * 1.4, neckTube * 3.4).translate([lowPt[0], lowPt[1], lowPt[2] - neckTube * 1.5]);
-const jewelry = chain.union(gem).subtract(hair).label('jewelry');
+const neckTube = r.neck * 0.06;
+const neckClear = r.neck * 0.04;
+const collar = F.ring(neckFrame, { tube: neckTube, clearance: neckClear, segments: 64, surface: clothed, occlude: [hair] });
+// Pendant drop: conformed points from the front of the collar down the chest.
+const dropLen = r.neck * 3.0;
+const N = 7;
+const dropPts = [];
+for (let i = 0; i <= N; i++) {
+  dropPts.push(F.ringPoint(neckFrame, 0, { surface: clothed, drop: dropLen * (i / N), clearance: neckClear }));
+}
+let pendant = sdf.capsule(dropPts[0], dropPts[1], neckTube);
+for (let i = 1; i < N; i++) pendant = pendant.union(sdf.capsule(dropPts[i], dropPts[i + 1], neckTube));
+// Gem at the low point, pushed proud of the chest (−Y) so it reads as a hanging stone.
+const lowPt = dropPts[N];
+const gem = sdf.ellipsoid(neckTube * 2.4, neckTube * 1.6, neckTube * 3.2)
+  .translate([lowPt[0], lowPt[1] - neckTube * 1.2, lowPt[2] - neckTube * 1.5]);
+const jewelry = collar.union(pendant).union(gem).subtract(hair).label('jewelry');
 
 // 6. BASE
 const base = F.base(rig, { radius: H * 0.24 }).label('base');

@@ -110,6 +110,20 @@ function rotZ(v: Vec3, deg: number): Vec3 {
   const c = Math.cos(deg * DEG), s = Math.sin(deg * DEG);
   return [v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2]];
 }
+/** Component of `v` perpendicular to unit `axis`. */
+function projPerp(v: Vec3, axis: Vec3): Vec3 {
+  const d = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
+  return [v[0] - axis[0] * d, v[1] - axis[1] * d, v[2] - axis[2] * d];
+}
+/** Signed angle (degrees) to rotate `from` onto `to` about unit `axis`. */
+function signedAngleAbout(from: Vec3, to: Vec3, axis: Vec3): number {
+  const f = norm3(projPerp(from, axis));
+  const t = norm3(projPerp(to, axis));
+  const dot = clamp(f[0] * t[0] + f[1] * t[1] + f[2] * t[2], -1, 1);
+  const c = cross3(f, t);
+  const sign = (c[0] * axis[0] + c[1] * axis[1] + c[2] * axis[2]) >= 0 ? 1 : -1;
+  return (Math.acos(dot) / DEG) * sign;
+}
 /** Rotate vector `v` about unit axis `k` by `deg` (Rodrigues). */
 function rotAxis(v: Vec3, k: Vec3, deg: number): Vec3 {
   const c = Math.cos(deg * DEG), s = Math.sin(deg * DEG);
@@ -134,7 +148,7 @@ function obj(v: unknown, name: string): Record<string, unknown> {
   return (assertObject(v, name, { optional: true }) ?? {}) as Record<string, unknown>;
 }
 
-interface JointPose { raiseSide: number; raiseFwd: number; bend?: number; twist: number }
+interface JointPose { raiseSide: number; raiseFwd: number; bend?: number; twist: number; palm?: string }
 interface HeadPose { yaw: number; pitch: number; roll: number }
 interface SpinePose { lean: number; turn: number; side: number }
 
@@ -148,7 +162,8 @@ interface ResolvedPose {
 // "Naming policy" in public/ai/figure.md). Limbs: raiseSide (lift sideways),
 // raiseFwd (swing forward/back), bend (elbow/knee flexion), twist (axial roll).
 // Head: yaw / pitch / roll. There are no legacy aliases — these are the names.
-const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
+const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist', 'palm'];
+const PALM_DIRS = ['up', 'down', 'forward', 'back', 'in', 'out'] as const;
 const LEG_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const HEAD_FIELDS = ['yaw', 'pitch', 'roll'];
 const SPINE_FIELDS = ['lean', 'turn', 'side'];
@@ -163,6 +178,7 @@ function parseArm(v: unknown, name: string, defRaiseSide: number): JointPose {
     raiseFwd: num(o.raiseFwd, 0, `${name}.raiseFwd`),
     bend: num(o.bend, 0, `${name}.bend`, 0, 160),
     twist: num(o.twist, 0, `${name}.twist`),
+    palm: o.palm === undefined ? undefined : assertEnum(o.palm, PALM_DIRS, `${name}.palm`),
   };
 }
 function parseLeg(v: unknown, name: string): JointPose {
@@ -637,7 +653,22 @@ function buildRig(rawOpts: unknown): Rig {
     // the forward curl so `twist: 90` lifts a side-raised fist UP; multiplying
     // by `side` keeps a symmetric `arms:{twist}` lifting both fists the same way.
     if (p.twist) hinge = norm3(rotAxis(hinge, dir, -p.twist * side));
-    const foreDir = norm3(rotAxis(dir, hinge, p.bend ?? 0));
+    let foreDir = norm3(rotAxis(dir, hinge, p.bend ?? 0));
+    // `palm` orients the GRIP: a hand bearing a weight rotates its wrist so the
+    // palm supports the object (palm up/in is the natural heavy-hold). We solve
+    // the extra forearm roll about the arm axis so the palm normal (= the grip
+    // cup direction, cross(foreDir, hinge)) points the requested way, instead of
+    // leaving the wrist at an arbitrary pronation. World targets; 'in'/'out' are
+    // toward/away from the body midline.
+    if (p.palm) {
+      const palmN0 = norm3(cross3(foreDir, hinge));
+      const tgt: Vec3 = p.palm === 'up' ? [0, 0, 1] : p.palm === 'down' ? [0, 0, -1]
+        : p.palm === 'forward' ? [0, -1, 0] : p.palm === 'back' ? [0, 1, 0]
+        : p.palm === 'in' ? [-side, 0, 0] : [side, 0, 0];
+      const dt = signedAngleAbout(palmN0, tgt, dir);
+      hinge = norm3(rotAxis(hinge, dir, dt));
+      foreDir = norm3(rotAxis(dir, hinge, p.bend ?? 0));
+    }
     const W = add3(E, scale3(foreDir, foreArmLen));
     const handC = add3(W, scale3(foreDir, r.hand * 0.9));
     return { S, E, W, handC, dir, foreDir, hinge };
@@ -4213,6 +4244,15 @@ export interface FigureNamespace {
    *  clearance, segments, drop }`. Raise `clearance` to clear clothing; `drop`
    *  lowers a necklace below the neck. Give the result its own `.label(...)`. */
   ring(frame: RingFrame, opts?: object): Node;
+  /** Build a FLUSH conformal band wrapping a {@link RingFrame} — a belt, waistband,
+   *  collar, or sash that lies FLAT against the body the way clothing lies on skin,
+   *  instead of a round tube welded on top. Requires `surface` (the body/clothed
+   *  node to conform to); it offsets that surface out by `clearance + thickness`
+   *  and slices it to a `height` band, so it follows the real (posed, non-circular)
+   *  cross-section and can never float or balloon. Pass `rig` (and/or `occlude`) to
+   *  carve the arms so it terminates where limbs cross it. `opts`: `{ surface,
+   *  height, thickness, clearance, drop, occlude, rig }`. Give it its own `.label`. */
+  band(frame: RingFrame, opts?: object): Node;
   /** A world point on a {@link RingFrame} at azimuth `az`° (0 = front, 90 = left,
    *  180 = back, −90 = right) — seat a belt buckle (`az: 0`) or hang a scabbard at
    *  the hip (`az: 80`). `opts.clearance`/`drop` match the band. */
@@ -4573,6 +4613,40 @@ function ringBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
   return applyOcclude(band, occludersFrom(sdf, o, f.region));
 }
 
+/** Build a FLUSH conformal band wrapping a {@link RingFrame} — a belt, waistband,
+ *  collar, or sash. Unlike {@link ringBand} (a round tube swept on a curve, which
+ *  reads as "welded on"), this is the CLOTHING mechanism: offset the real body/
+ *  clothed `surface` outward by `clearance + thickness`, then slice that offset
+ *  solid to a `height`-tall band centred on the frame. The band is therefore a
+ *  literal slice of the body surface — it conforms exactly to the posed,
+ *  non-circular cross-section and lies flat/flush, never floating or ballooning.
+ *  Like any worn band it then SUBTRACTS its occluders (the arms via `rig`, plus
+ *  any explicit `occlude`) so it terminates where limbs cross it and re-wraps when
+ *  they move. */
+function buildBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
+  const f = asRingFrame(frame, 'band(frame)');
+  const o = obj(opts, 'band(opts)');
+  assertNoUnknownKeys(o, ['surface', 'height', 'thickness', 'clearance', 'drop', 'occlude', 'rig'], 'band(opts)');
+  const surface = o.surface as Node | undefined;
+  if (!surface || typeof surface.bounds !== 'function') {
+    throw new ValidationError('band requires a `surface` node to conform to (e.g. F.torso(rig), or the clothed body union).');
+  }
+  const reach = Math.max(f.rx, f.ry);
+  const thickness = num(o.thickness, reach * 0.10, 'band.thickness', 1e-3);
+  const clearance = num(o.clearance, 0, 'band.clearance', 0);
+  const height = num(o.height, reach * 0.5, 'band.height', 1e-3);
+  const drop = num(o.drop, 0, 'band.drop');
+  // The band is a height-tall slice of the surface grown just proud of the body.
+  const grown = surface.round(clearance + thickness);
+  const c = add3(f.center, scale3(f.axis, -drop));
+  const big = (reach + clearance + thickness) * 4;
+  const zone = sdf.box([big, big, height]).translate([c[0], c[1], c[2]]);
+  const band = grown.intersect(zone);
+  // Layer: carve the arms (and any explicit occluders) so the band terminates at
+  // limbs that cross it and re-wraps when they move — see occludersFrom.
+  return applyOcclude(band, occludersFrom(sdf, o, f.region));
+}
+
 /** A world point ON a {@link RingFrame}'s surface at azimuth `az` degrees (0 =
  *  front/−Y, 90 = figure-left/+X, 180 = back/+Y, −90 = right/−X). `opts.clearance`
  *  pushes it out past clothing (match the band's). Seat a buckle at the front of a
@@ -4753,6 +4827,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     spanGrips: (a, b) => spanGrips(a, b),
     standOn: (node, sole, opts) => standOn(node as Node, sole, opts),
     ring: (frame, opts) => ringBand(sdf, frame, opts),
+    band: (frame, opts) => buildBand(sdf, frame, opts),
     ringPoint: (frame, az, opts) => ringPoint(frame, az, opts),
     strap: (a, b, opts) => strap(sdf, a, b, opts),
     hangFrom: (node, point, opts) => hangFrom(node as Node, point, opts),
@@ -4782,4 +4857,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, ringPoint, strap, hangFrom, onFace };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, buildBand, ringPoint, strap, hangFrom, onFace };
