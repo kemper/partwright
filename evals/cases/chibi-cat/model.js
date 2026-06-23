@@ -24,7 +24,7 @@ const p = api.params({
            options: ['round', 'pointed'],
            label: 'Face' },
   pattern: { type: 'select', default: 'solid',
-           options: ['solid', 'tuxedo', 'points'],
+           options: ['solid', 'tuxedo', 'points', 'tabby'],
            label: 'Pattern' },
 });
 
@@ -537,7 +537,56 @@ const cat = sdf.union(
 // +0.25 for standing to clear paw sphere bottom (paw centers at z=lt, bottom at z≈lt-lt=0 but sdf smoothUnion bulges slightly below)
 const liftZ = p.pose === 'sitting' ? 0.9 : 0.25;
 
-return cat.translate(0, 0, liftZ).build({
+const result = cat.translate(0, 0, liftZ).build({
   edgeLength: 0.45,
   detail: detailRegions,
 });
+
+// ============================================================
+// TABBY STRIPES (flush surface paint — api.paint.*, not geometry)
+// Stripes are darker brown bands painted onto the finished mesh, so they
+// stay perfectly flush (no raised welt that a proud SDF blob would create).
+// Face features (eye/iris/pupil/nose/muzzle) are separate labeled solids
+// painted by the palette and survive — the stripe boxes are bounded away
+// from / behind them. Coords are POST-lift (the painted mesh is post-translate).
+// ============================================================
+function applyTabbyStripes() {
+  const STRIPE = '#5A3A1F';   // classic warm brown mackerel stripe
+  if (p.pose === 'sitting') {
+    // Vertical mackerel stripes down the flanks/back (thin in X, tall in Z),
+    // bounded to the torso so they wrap the body but not the face.
+    const zLo = 1.0, zHi = 16.0;
+    for (let x = -6; x <= 6; x += 2.4) {
+      api.paint.box({ min: [x - 0.6, -3.0, zLo], max: [x + 0.6, 9.0, zHi], color: STRIPE });
+    }
+    // Forehead "M" — three short stripes between the ears (the tabby signature).
+    api.paint.box({ min: [-1.0, -8, 27], max: [ 1.0, 2, 34], color: STRIPE });
+    api.paint.box({ min: [-3.4, -8, 26], max: [-2.0, 2, 33], color: STRIPE });
+    api.paint.box({ min: [ 2.0, -8, 26], max: [ 3.4, 2, 33], color: STRIPE });
+    // Tail rings (the curl sweeps out to +X around z 2–6).
+    api.paint.box({ min: [2.5, -8, 2.2], max: [9.0, 2, 3.4], color: STRIPE });
+    api.paint.box({ min: [2.5, -8, 4.4], max: [9.0, 2, 5.6], color: STRIPE });
+  } else {
+    // Standing: horizontal barrel — vertical flank stripes run across the back
+    // as thin bands along Y (front→rear), spanning the full width and up over
+    // the spine. Derive the span from the body result.
+    const br = bodyResult;
+    const yFront = br.frontLegY - 1.0;
+    const yRear  = br.rearY + 0.5;
+    const zMid   = br.bodyBaseZ;          // body ellipsoid center height
+    const zTop   = zMid + 9.0;            // over the back
+    const n = 5;
+    for (let i = 0; i < n; i++) {
+      const y = yFront + (yRear - yFront) * (i / (n - 1));
+      api.paint.box({ min: [-9, y - 0.55, zMid - 1.0], max: [9, y + 0.55, zTop], color: STRIPE });
+    }
+    // Forehead "M" over the head.
+    const hy = br.headY, hz = br.headZ;
+    api.paint.box({ min: [-1.0, hy - 7, hz + 4], max: [ 1.0, hy + 2, hz + 11], color: STRIPE });
+    api.paint.box({ min: [-3.4, hy - 7, hz + 3], max: [-2.0, hy + 2, hz + 10], color: STRIPE });
+    api.paint.box({ min: [ 2.0, hy - 7, hz + 3], max: [ 3.4, hy + 2, hz + 10], color: STRIPE });
+  }
+}
+if (p.pattern === 'tabby') applyTabbyStripes();
+
+return result;
