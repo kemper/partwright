@@ -23,6 +23,9 @@ const p = api.params({
   face:  { type: 'select', default: 'round',
            options: ['round', 'pointed'],
            label: 'Face' },
+  pattern: { type: 'select', default: 'solid',
+           options: ['solid', 'tuxedo', 'points'],
+           label: 'Pattern' },
 });
 
 // ============================================================
@@ -454,6 +457,65 @@ const detailRegions = [
 ];
 
 // ============================================================
+// PATTERN MARKINGS (colorway patterns: tuxedo, points)
+// Markings are PROUD labeled blobs blended into the body surface (the muzzle
+// recipe) so the nearest-centroid color remap paints them cleanly flush — an
+// `intersect`'d coincident patch would tie with `body` and salt-and-pepper.
+// `solid` adds none, so the default render is unchanged (baseline-safe).
+// ============================================================
+function markAnchorsFor() {
+  if (p.pose === 'sitting') {
+    return {
+      pawPts: [[2.7, -5.0, 2.3], [-2.7, -5.0, 2.3]],
+      chest: [0, -4.6, 9.2], chestR: [3.3, 4.7, 5.0],
+      faceCenter: [0, fc.muzzleY + 2.7, fc.muzzleZ + 0.6], faceR: [4.3, 2.5, 3.7],
+      tailPts: [[5.2, -2.5, 3.2], [3.0, -6.0, 2.2]],
+      earPts: [ears.innerEarLPos, ears.innerEarRPos],
+    };
+  }
+  const br = bodyResult;
+  return {
+    pawPts: [
+      [br.frontLegX, br.frontLegY, br.legBottom], [-br.frontLegX, br.frontLegY, br.legBottom],
+      [br.backLegX, br.backLegY, br.legBottom], [-br.backLegX, br.backLegY, br.legBottom],
+    ],
+    chest: [0, br.frontLegY - 1.2, br.legBottom + 3.5], chestR: [3.2, 3.0, 4.0],
+    faceCenter: [0, br.headY - 4.6, br.headZ - 1.6], faceR: [4.4, 3.2, 4.0],
+    tailPts: [[0, br.rearY + 0.5, br.rearZ + 6.0]],
+    earPts: [ears.innerEarLPos, ears.innerEarRPos],
+  };
+}
+
+function buildMarkings() {
+  if (p.pattern === 'solid') return [];
+  const a = markAnchorsFor();
+  const out = [];
+  if (p.pattern === 'tuxedo') {
+    // White bib (chest) + white socks (paws)
+    out.push(sdf.ellipsoid(a.chestR[0], a.chestR[1], a.chestR[2])
+      .translate(a.chest[0], a.chest[1], a.chest[2]).label('bib'));
+    for (const [x, y, z] of a.pawPts) {
+      out.push(sdf.ellipsoid(2.7, 2.3, 2.5).translate(x, y, z).label('socks'));
+    }
+  } else if (p.pattern === 'points') {
+    // Siamese-style darker extremities: ears, face mask, paws, tail tip
+    for (const [x, y, z] of a.earPts) {
+      out.push(sdf.ellipsoid(2.4, 1.4, 3.0).translate(x, y, z + 0.5).label('points'));
+    }
+    out.push(sdf.ellipsoid(a.faceR[0], a.faceR[1], a.faceR[2])
+      .translate(a.faceCenter[0], a.faceCenter[1], a.faceCenter[2]).label('points'));
+    for (const [x, y, z] of a.pawPts) {
+      out.push(sdf.ellipsoid(2.5, 2.5, 1.9).translate(x, y, z).label('points'));
+    }
+    for (const [x, y, z] of a.tailPts) {
+      out.push(sdf.ellipsoid(2.2, 2.4, 2.2).translate(x, y, z).label('points'));
+    }
+  }
+  return out;
+}
+const markings = buildMarkings();
+
+// ============================================================
 // ASSEMBLE & LIFT TO z≥0
 // ============================================================
 const cat = sdf.union(
@@ -465,7 +527,8 @@ const cat = sdf.union(
   lidsL, lidsR,
   noseFull,
   mouth,
-  innerEarL, innerEarR
+  innerEarL, innerEarR,
+  ...markings
 );
 
 // Lift to ensure min-z ≈ 0.
