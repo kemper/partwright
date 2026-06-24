@@ -26,6 +26,52 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'June 24, 2026',
+    headline: 'Partwright 1.3 — chibi pets, painted patterns, and ~3× faster figures',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.3',
+            body: 'A small, backward-compatible feature release — existing sessions and exported files all keep working, and the running version is shown in the About dialog. This update adds a parametric chibi cat and chibi dog with colorway presets, a new algorithmic-pattern paint API, and a roughly 3× speed-up on figure rendering.',
+          },
+        ],
+      },
+      {
+        label: 'Catalog',
+        items: [
+          {
+            title: 'Chibi cat & chibi dog — parametric, with colorway presets',
+            body: 'Two new figure catalog entries, built on the same paramsSchema system as the rest of the figure library. Pick a pose, build, and colorway — siamese, calico, tabby and tuxedo points for cats; brindle, dalmatian and more for dogs — and remix any preset by tweaking individual sliders. The cat\'s face also got a polish pass: cream muzzle, ω-shaped mouth, and flatter eyes framed by figure-API eyelids that no longer protrude.',
+          },
+        ],
+      },
+      {
+        label: 'Painting',
+        items: [
+          {
+            title: 'Algorithmic colorway patterns — stripes, spots, patches, gradients',
+            body: 'A new api.paint.pattern(...) call lets model code declare procedural colorways instead of painting them by hand: stripes, spots, patches, and gradients render at runtime, so tabby cats and brindle dogs stay crisp at any zoom. Patterns can be scoped to a label or to a regional predicate (above/below a Z height, inside a sphere, …), and they render live as you edit.',
+          },
+          {
+            title: 'Cleaner paint at edges, smoothed brushes, and concave regions',
+            body: 'Three fixes to the painting pipeline that mostly show up on smoothed and figure-shaped models: smoothed-edge brush strokes no longer leave bright sliver streaks along the seam, api.label underlays now stay covering the mesh across incremental strokes (no more peek-through), and concave-footprint paint regions no longer leave buried triangles unpainted.',
+          },
+        ],
+      },
+      {
+        label: 'Performance',
+        items: [
+          {
+            title: '~3× faster figure rendering',
+            body: 'The figure SDF compiler now flattens distance functions into straight-line JavaScript instead of walking a tree on every sample, cutting figure evaluation time to roughly a third. The Character Creator preview, model bakes, and live edits on figure models all feel noticeably snappier.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'June 21, 2026',
     headline: 'Partwright 1.2 — the AI paints images onto your model, and a grid that scales to your room',
     groups: [
