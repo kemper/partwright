@@ -131,7 +131,7 @@ import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geom
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, buildEngraveResult, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, applyHollow, buildEngraveResult, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultHollowOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl, type HollowShellOptions } from './surface/modifiers';
 import { engraveInWorker } from './surface/engraveWorkerClient';
 import { buildTextStampMask, buildImageStampMask } from './surface/engraveStampHost';
 import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, isNoopScale, placementLabel, rotationLabel, mirrorLabel, scaleLabel, rotateAboutCenterSteps, mirrorAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
@@ -9034,7 +9034,7 @@ async function main() {
   // `quality` (mesh-detail) is threaded into each opts object so the surface
   // panel's detail slider takes effect in both preview and apply.
   async function buildSurfaceModifier(
-    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'hollow' | 'engrave' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
     ctl?: SdfRunControl,
@@ -9215,6 +9215,24 @@ async function main() {
       const baked = await engraveInWorker(mesh, engraveOpts, ctl);
       return buildEngraveResult(mesh, baked, engraveOpts);
     }
+    if (id === 'hollow') {
+      // Vase / mask mode → hollow shell; whole-model only (no region patch).
+      // levelSet meshing needs the engine's Manifold class (main-thread module).
+      const Manifold = getModule()?.Manifold;
+      if (!Manifold) throw new Error('Engine not ready — open a model first.');
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultHollowOptions(mesh);
+      return applyHollow(mesh, {
+        wallThickness: (opts?.wallThickness as number) ?? base.wallThickness,
+        open: opts?.open as HollowShellOptions['open'] | undefined,
+        openTop: (opts?.openTop as boolean) ?? base.openTop,
+        rimHeight: (opts?.rimHeight as number) ?? base.rimHeight,
+        drainHoles: (opts?.drainHoles as number) ?? base.drainHoles,
+        drainRadius: (opts?.drainRadius as number) ?? base.drainRadius,
+        resolution: (opts?.resolution as number) ?? base.resolution,
+        watertight: (opts?.watertight as boolean) ?? base.watertight,
+      }, Manifold, ctl);
+    }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultSmoothOptions();
@@ -9256,7 +9274,7 @@ async function main() {
   // surfaceCarveAbort / surfaceCarveCancel are declared early (near the
   // fast-preview pill setup) so the Cancel handler can be wired before the
   // initial render; this block only assigns them.
-  const SDF_HEAVY = new Set(['engrave', 'voronoiLamp']);
+  const SDF_HEAVY = new Set(['engrave', 'voronoiLamp', 'hollow']);
   async function buildSurfaceModifierProgress(
     id: Parameters<typeof buildSurfaceModifier>[0],
     opts: Record<string, unknown> | undefined,
@@ -9329,7 +9347,7 @@ async function main() {
     /** Non-destructive viewport preview of a surface modifier (no version saved).
      *  Call clearSurfacePreview() / re-run to restore.
      *  id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize'. */
-    async previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): Promise<{ ok: true } | { error: string }> {
+    async previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'hollow' | 'engrave' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): Promise<{ ok: true } | { error: string }> {
       try {
         const scopedOpts = resolvePreviewScope(id, opts);
         previewSurfaceModifier(await buildSurfaceModifierProgress(id, scopedOpts, preserveColor), preserveColor);
@@ -9815,6 +9833,28 @@ async function main() {
           await buildSurfaceModifierProgress('engrave', { ...opts, mask, projection, source }, preserve),
           preserve,
         );
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Hollow the current model into a thin shell — 3D-print "vase mode". Bakes a
+     *  watertight manifold-js mesh via levelSet (no engine change). Open it along
+     *  a plane: `openTop` (vase — removes the cap, `rimHeight` below the top) or
+     *  `open: {axis, offset, side}` (mask — keep one side of any axis-aligned
+     *  plane as an open shell). `drainHoles` bores N vertical holes through the
+     *  base (planter). Saves a new version. Returns `{ ok, label, geometry }`. */
+    async applyHollow(opts?: {
+      wallThickness?: number;
+      open?: { axis: 'x' | 'y' | 'z'; offset: number; side: 'min' | 'max' };
+      openTop?: boolean;
+      rimHeight?: number;
+      drainHoles?: number;
+      drainRadius?: number;
+      resolution?: number;
+      watertight?: boolean;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(await buildSurfaceModifierProgress('hollow', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Smooth/round the current model (Taubin λ/μ); saves a new version. */
@@ -15351,6 +15391,8 @@ async function main() {
         'getRecentExport': { signature: 'await getRecentExport(id) -- Look up bytes by id -> {filename, mimeType, text? | base64, ...}', docs: '/ai/file-io.md' },
         'downloadRecentExport': { signature: 'downloadRecentExport(id) -- Re-trigger browser download for an inbox entry', docs: '/ai/file-io.md' },
         'clearRecentExports': { signature: 'clearRecentExports() -- Empty the Recent Exports list', docs: '/ai/file-io.md' },
+        // Surface modifiers (full set documented in /ai/textures.md)
+        'applyHollow':     { signature: 'await applyHollow({wallThickness?, openTop?, rimHeight?, open?:{axis,offset,side}, drainHoles?, drainRadius?, resolution?, preserveColor?}) -- Hollow into a thin PRINTABLE shell (levelSet, watertight on tapered shapes). openTop = vase; open = keep one side of a plane (mask); drainHoles = planter. Saves a version -> {ok, label, geometry}', docs: '/ai/textures.md#applyhollow' },
         // Color regions
         'paintRegion':     { signature: 'paintRegion({point, normal, color, name?, tolerance?}) -- Paint coplanar face region (flood-fill, edge-bounded). Diagnostic error on failure.', docs: '/ai/colors.md' },
         'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai/colors.md' },

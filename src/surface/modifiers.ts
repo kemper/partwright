@@ -31,12 +31,13 @@ import { scaleMesh } from './scaleMesh';
 import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 import { voronoiLampSdfMesh } from './voronoiLampSdf';
+import { hollowShellMesh, type HollowShellOptions } from './hollowShell';
 import { engraveMesh, engraveFieldResolution, type EngraveSdfOptions } from './engraveSdf';
 import { stampEvaluator, type EngraveProjection } from './engraveStamp';
 import { nearestTriangleMap, nearestSurfaceVertexDistance } from './colorTransfer';
 import { type SdfRunControl } from './sdfModifier';
 
-export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'hollow' | 'engrave' | 'smooth' | 'voxelize';
 
 export interface ModifierManifoldResult {
   kind: 'manifold';
@@ -148,6 +149,7 @@ export { type WovenFabricOptions };
 export { type KnurlTextureOptions };
 export { type VoronoiShellOptions };
 export { type VoronoiLampOptions };
+export { type HollowShellOptions };
 export { type EngraveProjection, type StampMask } from './engraveStamp';
 export { type SdfRunControl, SdfAbortError } from './sdfModifier';
 
@@ -517,6 +519,20 @@ export function defaultVoronoiLampOptions(mesh: MeshData): Required<VoronoiLampM
   };
 }
 
+export function defaultHollowOptions(mesh: MeshData): Required<Omit<HollowShellOptions, 'open'>> {
+  const d = modelDiagonal(mesh) || 10;
+  const wall = d * 0.03;
+  return {
+    wallThickness: wall,
+    openTop: false,
+    rimHeight: wall * 2,
+    drainHoles: 0,
+    drainRadius: d * 0.02,
+    resolution: 128,
+    watertight: true,
+  };
+}
+
 export function applyCable(mesh: MeshData, opts: CableKnitOptions): ModifierManifoldResult {
   const baked = cableKnit(mesh, opts);
   return {
@@ -707,6 +723,37 @@ return v;
     label: smooth ? 'voronoi lamp (smooth voxels)' : 'voronoi lamp (voxels)',
     code,
     previewMesh: meshGrid(grid),
+  };
+}
+
+export async function applyHollow(
+  mesh: MeshData,
+  opts: HollowShellOptions,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  Manifold: any,
+  ctl?: SdfRunControl,
+): Promise<ModifierManifoldResult> {
+  // Hollow / vase mode: mesh the shell's signed-distance field with
+  // Manifold.levelSet (marching tetrahedra — watertight/manifold by
+  // construction), so even a tapered vase comes out one clean printable piece.
+  // See hollowShell.ts.
+  const baked = await hollowShellMesh(mesh, opts, Manifold, ctl);
+  const opening = opts.open
+    ? `open along ${opts.open.side === 'max' ? '+' : '-'}${opts.open.axis.toUpperCase()}`
+    : opts.openTop ? `open top (rim ${(opts.rimHeight ?? opts.wallThickness * 2).toFixed(2)})` : 'closed';
+  const bits = [`wall ${opts.wallThickness.toFixed(2)}`, opening];
+  if ((opts.drainHoles ?? 0) > 0) bits.push(`${opts.drainHoles} drain hole${opts.drainHoles === 1 ? '' : 's'}`);
+  return {
+    kind: 'manifold',
+    label: 'hollow / vase',
+    mesh: baked,
+    // Re-meshed shell carries no colors; transfer them spatially from a dense
+    // version of the painted input (coarse faces would map unreliably).
+    colorSource: denseColorSource(mesh),
+    code: manifoldWrapper([
+      `Hollowed (vase mode) from the current model on ${today()} — ${bits.join(', ')}.`,
+      `Watertight (levelSet) shell baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
   };
 }
 

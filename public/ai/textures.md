@@ -23,7 +23,6 @@ vertices along their normals.
 | `applyWovenFabric` | Plain-weave over/under interlacing | Baskets, woven cloth, twill, burlap |
 | `applyKnurlTexture` | Functional grip relief — diamond / straight / ribs | Knobs, thumbscrews, tool handles, grips |
 | `applyVoronoiShell` | Organic cell-wall ridge network (Voronoi cells) | Lampshades, planters, vases, cracked-mud / dragonfly-wing shells |
-| `applyKnurlTexture` | Machinist grip: diamond cross-hatch pyramids or straight splines | Knobs, handles, tool grips, bottle caps (the `api.knurl` cylinders' texture counterpart) |
 
 Two further mesh operations live in the same panel and share the same
 apply→save→verify workflow:
@@ -33,6 +32,7 @@ apply→save→verify workflow:
 | `smoothModel({ iterations, subdivide, preserveColor })` | Taubin λ/μ smoothing — rounds sharp edges/facets without the shrinkage of a naive Laplacian | Mesh smoothing, not a true fillet; for exact fillets use the replicad (BREP) engine. Returns `{ ok, label, geometry, warnings? }`. |
 | `voxelizeModel({ resolution, smooth, preserveColor })` | Converts the model into the `voxel` engine (colored cubes) and switches the session language to `voxel` | `resolution` = voxels along the longest axis (~32 default). Replaces the code with a `voxels.decode(...)` program — see the `voxel` subdoc. |
 | `applyVoronoiLamp({ cellSize, wallThickness, strutWidth, resolution, jitter, grainAngleDeg, seed, output, smooth })` | Cuts the model into a **true perforated Voronoi shell** (a "Voronoi lamp") — hollow wall with the cell interiors cut through, leaving a see-through strut network. `output:'mesh'` (default) stays manifold-js; `output:'voxel'` switches to the voxel engine. | The cutaway counterpart to the `applyVoronoiShell` relief. See [`applyVoronoiLamp`](#applyvoronoilamp) below. |
+| `applyHollow({ wallThickness, openTop, rimHeight, open, drainHoles, drainRadius, resolution })` | Hollows the model into a thin **printable** shell — 3D-print **"vase mode"**, meshed with `levelSet` (watertight even on tapered/organic shapes). `openTop` = open-top vase; `open:{axis,offset,side}` = keep one side of a plane (a mask); `drainHoles` bores holes through the base (planter). | See [`applyHollow`](#applyhollow) below. |
 | `engraveModel({ text, raised, through, depth, size, color, axis, side, posU, posV, curveAxis, resolution })` | **Stamps text onto the model** — recessed channels (engrave), holes cut clean through the wall (`through:true`, a stencil), or a **raised relief** (`raised:true`, emboss). `color` paints the letters. Lands on a face; `curveAxis` wraps it around a round surface (cup, tower). | Unlike the relief textures (which only displace the skin), this **removes or adds** material. Image stamps are UI-only (need local bytes); the tool handles text. See [`engraveModel`](#engravemodel) below. |
 
 > **Cross-engine note:** every operation here bakes to a mesh. On a SCAD or
@@ -435,6 +435,56 @@ one step.
 **Tips:** with `watertight` on (default) the result is manifold/printable. If
 windows don't open, lower `strutWidth` or raise `cellSize`. Resolution
 auto-raises for thin struts, so you rarely touch it. Verify with `renderViews`.
+
+---
+
+## applyHollow
+
+```
+applyHollow({ wallThickness?, openTop?, rimHeight?,
+              open?: { axis, offset, side }, drainHoles?, drainRadius?, resolution? })
+```
+
+Turns a solid model into a thin **printable hollow shell** — the 3D-printing
+"vase mode". It's meshed with **`Manifold.levelSet`** (marching tetrahedra —
+**watertight/manifold by construction**), so it stays one clean printable piece
+**even on tapered or organic shapes** (a plain surface-nets shell would emit
+non-manifold geometry on a slanted thin wall). Bakes a manifold-js mesh (no
+engine change). A heavier op — allow several seconds.
+
+Start from a **closed solid**. The shell is sealed unless you open it along a
+plane:
+
+- **`openTop`** (vase) — `true` lops the top cap off so the cavity is open. The
+  rim lands at `modelTopZ − rimHeight`. The classic open-topped vase / cup / pot.
+- **`open: { axis, offset, side }`** (mask / general) — keep one side of an
+  axis-aligned plane as an OPEN shell. Cut a face bust at its mid-plane and keep
+  the front → a wearable mask. `side:'max'` removes (opens) the +axis half and
+  keeps the −axis half; `'min'` the reverse. `offset` is the plane position in
+  world units along `axis`. Overrides `openTop`.
+- **`drainHoles`** — bores N small vertical cylinders through the base (planters),
+  bounded to a short band above the floor so a *closed* top is never pierced. One
+  hole centred; several on a ring inside the cavity.
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `wallThickness` | ~3% of diagonal | Shell wall thickness (world units). |
+| `openTop` | `false` | `true` = open-topped vase (cap removed). |
+| `rimHeight` | 2·`wallThickness` | Open-top only: how far below the top the rim is cut. |
+| `open` | — | `{axis:'x'|'y'|'z', offset, side:'min'|'max'}` — open along a plane (mask). Overrides `openTop`. |
+| `drainHoles` | 0 | Vertical drain holes bored through the base (planters). |
+| `drainRadius` | ~3% of base width | Radius of each drain hole (world units). |
+| `resolution` | 128 | Field resolution along the longest axis [16–256]. **Auto-raised** so the wall resolves — you rarely set it. |
+
+**Look guidance** (model diagonal `d`):
+- Plain vase: `openTop:true`, `wallThickness=d*0.03`, `rimHeight=d*0.06`.
+- Planter: `openTop:true`, `drainHoles:5`, `drainRadius=d*0.02`.
+- Mask: `open:{ axis:'y', offset:<mid-Y>, side:'max' }` (pick the axis that faces through the model).
+- Sealed lightweight shell (save material): omit `openTop`/`open`.
+
+**Tips:** an open-top vase or a mask is **one connected piece** (`componentCount`
+1); a sealed shell reports **2** (outer + inner walls) — both are watertight and
+printable. Thicker walls print more robustly. Verify with `renderViews`.
 
 ---
 

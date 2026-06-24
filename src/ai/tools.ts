@@ -1235,6 +1235,47 @@ Plus preserveColor (default true — bake path only; on the code path paint re-r
     },
   },
   {
+    name: 'applyHollow',
+    description: `Hollow the current model into a thin **printable** shell — 3D-print "vase mode". Meshed with **\`Manifold.levelSet\`** (marching tetrahedra → watertight/manifold *by construction*), so it stays one clean printable piece even on tapered or organic shapes. Bakes a manifold-js mesh (no engine change). Saves a new version.
+
+**When to use:** to turn a solid into a lightweight vessel — vase, cup, pot, planter — a wearable mask/shell, or just to save material. Start from a **closed solid**.
+
+**Open it along a plane** (the shell is closed otherwise):
+- **openTop** (vase): \`true\` removes the top cap so the cavity is open. \`rimHeight\` = how far below the peak the rim is cut. The classic vase.
+- **open** (mask / general): \`{ axis, offset, side }\` keeps one side of an axis-aligned plane as an OPEN shell — e.g. cut a face bust at its mid-plane and keep the front as a mask. \`side:'max'\` removes the +axis half (keeps −axis), \`'min'\` the reverse; \`offset\` is the plane position in world units along \`axis\`.
+
+**Other parameters:**
+- wallThickness: shell wall thickness in world units (~3% of diagonal)
+- drainHoles: number of vertical drain holes bored through the base (0 = none; planters). Default 0. drainRadius: ~3% of base width.
+- resolution: field resolution along the longest axis [16–256]. **Auto-raised** so the wall resolves — you rarely set it.
+
+**Return:** { ok, label, geometry }. Verify with renderViews. An open-top vase or a mask is one connected piece (componentCount 1); a sealed shell reports 2 (outer + inner walls). A heavier op — allow several seconds.
+
+**Workflow:** classic vase → \`openTop:true\`, \`rimHeight\` a couple of wall-thicknesses. Planter → add \`drainHoles:3–5\`. Mask → \`open:{axis:'y', offset:<mid>, side:'max'}\` (pick the axis facing through the model). Thicker walls print more robustly.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        wallThickness: { type: 'number', description: 'Shell wall thickness in world units. Default ~3% of diagonal.' },
+        openTop: { type: 'boolean', description: 'Vase mode: remove the top cap so the cavity is open. Default false (sealed shell). Ignored if `open` is set.' },
+        rimHeight: { type: 'number', description: 'Open-top only: how far below the top the rim is cut (world units). Default 2·wallThickness.' },
+        open: {
+          type: 'object',
+          description: 'Mask / general open plane: keep one side of an axis-aligned plane as an open shell. Overrides openTop.',
+          properties: {
+            axis: { type: 'string', enum: ['x', 'y', 'z'], description: 'Plane normal axis.' },
+            offset: { type: 'number', description: 'Plane position along `axis`, world units.' },
+            side: { type: 'string', enum: ['min', 'max'], description: "'max' removes (opens) the +axis half; 'min' the −axis half." },
+          },
+          required: ['axis', 'offset', 'side'],
+        },
+        drainHoles: { type: 'integer', description: 'Number of vertical drain holes bored through the base (planters). Default 0.', minimum: 0, maximum: 16 },
+        drainRadius: { type: 'number', description: 'Radius of each drain hole in world units. Default ~3% of base width.' },
+        resolution: { type: 'integer', description: 'Field resolution along the longest axis [16–256]. Auto-raised for thin walls. Default 128.', minimum: 16, maximum: 256 },
+        preserveColor: { type: 'boolean', description: 'Sample model paint onto the shell. Default true.' },
+      },
+    },
+  },
+  {
     name: 'engraveModel',
     description: `Stamp **text** onto the current model: carve it as recessed channels (engrave), cut holes clean through the wall (cut-through), or — with \`raised: true\` — **EMBOSS it as a raised relief**. Saves a new version.
 
@@ -1500,7 +1541,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'applyHollow', 'engraveModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -2148,6 +2189,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       );
     case 'applyVoronoiLamp':
       return api.applyVoronoiLamp(input);
+    case 'applyHollow':
+      return api.applyHollow(input);
     case 'engraveModel':
       return api.engraveModel(input);
     case 'voxelizeModel':

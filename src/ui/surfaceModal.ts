@@ -27,7 +27,7 @@ import { listFilaments } from '../color/palette';
 import { createColorSwatch } from './colorPickerModal';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
-type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'engrave' | 'smooth' | 'voxelize';
+type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'voronoiLamp' | 'hollow' | 'engrave' | 'smooth' | 'voxelize';
 
 /** The subset of the console API the surface UI needs. */
 export interface SurfaceApi {
@@ -40,6 +40,7 @@ export interface SurfaceApi {
   applyKnurlTexture(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; style?: 'diamond' | 'straight' | 'ribs'; profile?: 'round' | 'pyramid'; sharpness?: number; grainAngleDeg?: number; seed?: number; quality?: number; selectedTriangles?: Set<number>; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiShell(opts?: { amplitude?: number; cellSize?: number; wallWidth?: number; raised?: boolean; jitter?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyVoronoiLamp(opts?: { cellSize?: number; wallThickness?: number; strutWidth?: number; resolution?: number; jitter?: number; grainAngleDeg?: number; seed?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyHollow(opts?: { wallThickness?: number; open?: { axis: 'x' | 'y' | 'z'; offset: number; side: 'min' | 'max' }; openTop?: boolean; rimHeight?: number; drainHoles?: number; drainRadius?: number; resolution?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   buildEngraveStamp(spec?: { text?: string; font?: 'regular' | 'bold' | 'italic' | 'bold-italic'; imageUrl?: string; invert?: boolean }): Promise<{ mask: StampMask; width: number; height: number } | { error: string }>;
   engraveModel(opts?: { mask?: StampMask; source?: string; projection?: EngraveProjection; through?: boolean; raised?: boolean; depth?: number; size?: number; color?: string; resolution?: number; watertight?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
@@ -345,6 +346,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     { id: 'knurl', label: 'Knurl' },
     { id: 'voronoi', label: 'Voronoi (relief)' },
     { id: 'voronoiLamp', label: 'Voronoi lamp' },
+    { id: 'hollow', label: 'Hollow / vase' },
     { id: 'engrave', label: 'Engrave' },
     { id: 'smooth', label: 'Smooth' },
     { id: 'voxelize', label: 'Voxelize' },
@@ -570,7 +572,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   // change engines and engrave is a boolean cut, so they stay bake-only.
   const IN_CODE_IDS = new Set<Tab>(['fuzzy', 'knit', 'cable', 'waffle', 'fur', 'woven', 'knurl', 'voronoi', 'smooth']);
   // Tabs that hide the region picker entirely (always whole-model).
-  const REGIONLESS_TABS = new Set<Tab>(['voxelize', 'voronoiLamp', 'engrave']);
+  const REGIONLESS_TABS = new Set<Tab>(['voxelize', 'voronoiLamp', 'hollow', 'engrave']);
 
   /** Returns the effective selectedTriangles for currentOpts(). */
   function activeSelection(): Set<number> | undefined {
@@ -578,8 +580,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   }
 
   /** Whether Apply/preview should be blocked (region mode, nothing picked yet).
-   *  Tabs that hide the region UI (voxelize/voronoiLamp) are always whole-model,
-   *  so a lingering empty region selection must not dead-lock them. */
+   *  Tabs that hide the region UI (voxelize/voronoiLamp/hollow/engrave) are always
+   *  whole-model, so a lingering empty region selection must not dead-lock them. */
   function regionBlocked(): boolean {
     if (REGIONLESS_TABS.has(active)) return false;
     return regionMode === 'region' && !regionSelection;
@@ -771,7 +773,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     // Switching tabs resets the code-path scope (label sets differ per model,
     // and a point patch is tab-agnostic but clearer to re-pick deliberately).
     setScopeMode('none');
-    regionSection.style.display = (active === 'voxelize' || active === 'voronoiLamp' || active === 'engrave') ? 'none' : '';
+    regionSection.style.display = REGIONLESS_TABS.has(active) ? 'none' : '';
+    updateApplyBtn(); // refresh Apply's gating for the new tab (regionless = never blocked)
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
       const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -959,6 +962,54 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         watertight: wtight.get(),
         output: out.get(),
       });
+    } else if (active === 'hollow') {
+      // Model bbox for the mask plane position slider.
+      const gd = api.getGeometryData() as { boundingBox?: { min?: number[]; max?: number[] } | null };
+      const bbMin = gd?.boundingBox?.min ?? [0, 0, 0];
+      const bbMax = gd?.boundingBox?.max ?? [span, span, span];
+      const axisIndex = { x: 0, y: 1, z: 2 } as const;
+
+      const mode = dropdown<'vase' | 'mask' | 'sealed'>('Mode', [
+        ['vase', 'Open-top vase'],
+        ['mask', 'Cut-plane (mask)'],
+        ['sealed', 'Sealed shell'],
+      ], 'vase', () => { syncMode(); schedulePreview(); });
+      const wt = slider('Wall thickness', span * 0.01, span * 0.12, span * 0.03, span * 0.002, n => n.toFixed(3), schedulePreview);
+      // Vase controls
+      const rim = slider('Rim depth (below top)', span * 0.01, span * 0.3, span * 0.06, span * 0.002, n => n.toFixed(3), schedulePreview);
+      // Mask controls
+      const maskAxis = dropdown<'x' | 'y' | 'z'>('Cut axis', [['x', 'X'], ['y', 'Y'], ['z', 'Z']], 'y', () => { syncMaskRange(); schedulePreview(); });
+      const maskSide = dropdown<'max' | 'min'>('Open side', [['max', '+ side'], ['min', '− side']], 'max', schedulePreview);
+      const maskPos = slider('Cut position', bbMin[1], bbMax[1], (bbMin[1] + bbMax[1]) / 2, (bbMax[1] - bbMin[1]) / 100 || 0.1, n => n.toFixed(2), schedulePreview);
+      // Shared
+      const holes = slider('Drain holes', 0, 8, 0, 1, n => String(n), schedulePreview);
+      const hr = slider('Drain hole radius', span * 0.005, span * 0.1, span * 0.02, span * 0.002, n => n.toFixed(3), schedulePreview);
+      const res = sliderWithEntry('Resolution', 48, 200, 128, 1, 256, schedulePreview);
+
+      // Re-range the mask position slider to the chosen axis's bbox extent.
+      const syncMaskRange = () => {
+        const ai = axisIndex[maskAxis.get()];
+        const lo = bbMin[ai], hi = bbMax[ai];
+        const input = maskPos.wrap.querySelector('input') as HTMLInputElement | null;
+        if (input) { input.min = String(lo); input.max = String(hi); input.step = String((hi - lo) / 100 || 0.1); input.value = String((lo + hi) / 2); input.dispatchEvent(new Event('input')); }
+      };
+      // Show only the controls relevant to the current mode.
+      const syncMode = () => {
+        const m = mode.get();
+        rim.wrap.style.display = m === 'vase' ? '' : 'none';
+        maskAxis.wrap.style.display = maskSide.wrap.style.display = maskPos.wrap.style.display = m === 'mask' ? '' : 'none';
+      };
+
+      body.append(mode.wrap, wt.wrap, rim.wrap, maskAxis.wrap, maskSide.wrap, maskPos.wrap, holes.wrap, hr.wrap, res.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'Hollows the model into a thin printable shell, meshed with levelSet (watertight by construction — works on tapered/organic shapes). "Open-top vase" cuts the top off Rim depth below the peak; "Cut-plane (mask)" keeps one side of a plane as an open shell (e.g. a face mask); "Sealed shell" stays closed (lightweighting). Drain holes bore vertical holes through the base (planters). A heavier op — allow several seconds.'));
+      syncMode();
+      currentOpts = () => {
+        const base = { wallThickness: wt.get(), drainHoles: holes.get(), drainRadius: hr.get(), resolution: res.get() };
+        const m = mode.get();
+        if (m === 'vase') return { ...base, openTop: true, rimHeight: rim.get() };
+        if (m === 'mask') return { ...base, open: { axis: maskAxis.get(), offset: maskPos.get(), side: maskSide.get() } };
+        return base; // sealed
+      };
     } else if (active === 'engrave') {
       // Text input + a small "Apply" button (and Enter) to rasterize the stamp —
       // typing no longer auto-renders on every keystroke (it was distracting).
@@ -1376,6 +1427,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         : active === 'knurl' ? await api.applyKnurlTexture(opts)
         : active === 'voronoi' ? await api.applyVoronoiShell(opts)
         : active === 'voronoiLamp' ? await api.applyVoronoiLamp(opts)
+        : active === 'hollow' ? await api.applyHollow(opts)
         : active === 'engrave' ? await api.engraveModel(opts)
         : active === 'smooth' ? await api.smoothModel(opts)
         : await api.voxelizeModel(opts);
@@ -1418,6 +1470,7 @@ export function initSurfaceUI(api: SurfaceApi): void {
     { id: 'surface-knurl', title: 'Surface: Knurl grip', hint: 'Modifier', keywords: 'knurl knurling grip diamond cross-hatch straight splines ribs knob thumbscrew handle texture', run: () => openSurfaceModal(api, 'knurl') },
     { id: 'surface-voronoi', title: 'Surface: Voronoi texture', hint: 'Modifier', keywords: 'voronoi cell relief organic cracked web ridges struts texture', run: () => openSurfaceModal(api, 'voronoi') },
     { id: 'surface-voronoi-lamp', title: 'Surface: Voronoi lamp (perforated shell)', hint: 'Modifier', keywords: 'voronoi lamp shell lattice perforated cutout holes see-through planter lampshade voxel', run: () => openSurfaceModal(api, 'voronoiLamp') },
+    { id: 'surface-hollow', title: 'Surface: Hollow / vase mode', hint: 'Modifier', keywords: 'hollow vase shell thin wall spiralize open top drain holes planter pot vessel cup', run: () => openSurfaceModal(api, 'hollow') },
     { id: 'surface-engrave', title: 'Surface: Engrave / emboss / cut-through text or image', hint: 'Modifier', keywords: 'engrave emboss carve raised relief cut through text image stencil label logo name plate recess channel color', run: () => openSurfaceModal(api, 'engrave') },
     { id: 'surface-smooth', title: 'Surface: Smooth / round edges', hint: 'Modifier', keywords: 'smooth round fillet taubin low-poly', run: () => openSurfaceModal(api, 'smooth') },
     { id: 'surface-voxelize', title: 'Surface: Voxelize model', hint: 'Modifier', keywords: 'voxel blocky minecraft pixel', run: () => openSurfaceModal(api, 'voxelize') },
