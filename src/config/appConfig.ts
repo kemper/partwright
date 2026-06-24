@@ -163,6 +163,16 @@ export interface AppConfig {
      *  the viewport shows a rough shape in ~1-2s instead of waiting 10-50s.
      *  Higher = faster/rougher preview; 1 (or below) disables the preview pass. */
     sdfPreviewScale: number;
+    /** Compile SDF distance functions to flat JS before marching (`sdfCompile.ts`).
+     *  ~6–11× faster per eval, verified byte-identical against the closure tree
+     *  (a mismatch silently falls back to the closure). Kill-switch only — leave
+     *  on. NOTE: read in the geometry Worker, where overrides aren't visible, so
+     *  toggling this off only affects main-thread eval paths. */
+    sdfCompile: boolean;
+    /** Max nodes emitted into one generated SDF function before splitting into a
+     *  sub-function. Bounds body size so V8 keeps each function optimized (a
+     *  single huge function deopts and runs slower). */
+    sdfCompileChunkNodes: number;
   };
   import: {
     /** Vertex-weld tolerance for STL imports (world units). */
@@ -333,6 +343,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     enhanceMaxTriangles: 5_000_000,
     surfaceTexturePersistMaxTriangles: 1_000_000,
     sdfPreviewScale: 2.5,
+    sdfCompile: true,
+    sdfCompileChunkNodes: 120,
   },
   import: {
     stlWeldTolerance: 1e-5,
