@@ -169,6 +169,21 @@ test.describe('Import: merge + from-URL', () => {
       page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listParts().length),
     ).toBe(2);
 
+    // The merged part's thumbnail is regenerated ASYNCHRONOUSLY after the part
+    // is copied in (an inline capture on the freshly-selected part, plus a
+    // fire-and-forget offscreen backfill). The part-count reaching 2 only
+    // signals the copy finished, NOT that the thumbnail has landed — so poll on
+    // the exported thumbnail itself before asserting, otherwise the export can
+    // race ahead of the backfill and read `undefined`.
+    await expect.poll(async () =>
+      page.evaluate(async () => {
+        const pw = (window as unknown as { partwright: PW }).partwright;
+        const { data } = await pw.exportSessionData(undefined, { includeThumbnails: true });
+        return data.versions.find((v) => (v.part ?? 0) === 1)?.thumbnail ?? null;
+      }),
+      { timeout: 15_000 },
+    ).toBeTruthy();
+
     // Export the host session (with thumbnails) and inspect the two parts'
     // thumbnails. The merged (imported) part is order 1; the host sphere is
     // order 0. `exportSession` omits the `part` field when the order is 0.

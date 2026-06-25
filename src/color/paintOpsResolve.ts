@@ -16,6 +16,7 @@ import type { RegionDescriptor } from './regions';
 import { findSlabTriangles } from './slabPaint';
 import { findShapeTriangles } from './boxPaint';
 import { findCylinderTriangles } from './cylinderPaint';
+import { computePatternColors, filterScopeTriangles } from './colorPattern';
 
 export interface ResolvedPaintOp {
   name: string;
@@ -23,6 +24,10 @@ export interface ResolvedPaintOp {
   /** RGB 0..1, as recorded by `api.paint.*`. */
   color: [number, number, number];
   triangles: Set<number>;
+  /** Per-triangle colours for the `pattern` op (algorithmic colourways) — each
+   *  triangle gets one palette colour from the field. Absent for the single-colour
+   *  box/slab/cylinder/byLabel ops, which paint every triangle `color`. */
+  perTriColors?: Map<number, [number, number, number]>;
 }
 
 /** Resolve one `api.paint.*` descriptor against an un-subdivided engine mesh.
@@ -47,6 +52,19 @@ export function resolvePaintDescriptor(
     }
     case 'byLabel':
       return labelMap?.get(descriptor.label) ?? new Set<number>();
+    case 'pattern': {
+      // Scope: a label region (so it never touches eyes/nose) or the whole mesh,
+      // then narrowed by any geometric predicate (above/below/box/sphere).
+      const label = descriptor.scope?.label;
+      let base: Set<number>;
+      if (label) {
+        base = labelMap?.get(label) ?? new Set<number>();
+      } else {
+        base = new Set<number>();
+        for (let t = 0; t < mesh.numTri; t++) base.add(t);
+      }
+      return filterScopeTriangles(mesh, base, descriptor.scope);
+    }
     default:
       return null;
   }
@@ -64,7 +82,10 @@ export function resolvePaintOps(
     const descriptor = op.descriptor as RegionDescriptor;
     const triangles = resolvePaintDescriptor(descriptor, mesh, labelMap);
     if (triangles === null) continue; // not an api.paint.* kind — shouldn't happen
-    out.push({ name: op.name, kind: descriptor.kind, color: op.color, triangles });
+    const perTriColors = descriptor.kind === 'pattern'
+      ? computePatternColors(mesh, triangles, descriptor)
+      : undefined;
+    out.push({ name: op.name, kind: descriptor.kind, color: op.color, triangles, perTriColors });
   }
   return out;
 }

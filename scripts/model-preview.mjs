@@ -2,17 +2,44 @@
 // model:preview — headless preview of ONE manifold-js model snippet.
 //
 //   npm run model:preview -- <file.js> [--png <out.png>] [--json] [--size N]
-//                              [-p key=value ...]
+//                              [--palette-file p.json] [--no-palette] [-p key=value ...]
 //
 // Runs <file.js> against the REAL manifold-js engine in Node (via vite SSR —
 // no dev server, no browser, ~1-2s), prints a rich JSON stat block to stdout,
 // and writes a 4-view PNG (front / right / top / iso).
 //
+// COLOR: in-code colors (api.paint.* / colored api.label) render by default.
+// Figures that declare UNCOLORED labels (`.label('skin')`) and get their colors
+// from a bake-time palette also render in color when a palette is found —
+// `--palette-file <json>`, else a sibling `<base>.palette.json`, else
+// `public/catalog/palettes/<base-without-figure_>.json`. `--no-palette` disables.
+//
 // This is a thin back-compat wrapper: the implementation now lives in
 // scripts/cli/preview.mjs and is also exposed as `partwright preview`
 // (bin/partwright.mjs). See docs/headless-cli.md.
-import { resolve } from 'node:path';
+import { resolve, dirname, basename, join } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { runPreview, composePng, explainComponents, checkExpectComponents, checkRequireLabels, resolveViews, defaultPreviewPng } from './cli/preview.mjs';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+// Resolve a label→"#rrggbb" palette so figures whose source declares UNCOLORED
+// labels (`.label('skin')`) — colored from a bake-time palette — preview in
+// color by default. Priority: explicit --palette-file → sibling
+// `<base>.palette.json` → `public/catalog/palettes/<base-without-figure_>.json`.
+// Returns the parsed object, or null (render uses in-code colors / neutral).
+function resolvePalette(file, explicit, disabled) {
+  if (disabled) return null;
+  const load = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
+  if (explicit) { const p = load(resolve(explicit)); if (!p) console.error(`[palette] could not read --palette-file ${explicit}`); return p; }
+  const base = basename(file).replace(/\.[^.]+$/, '');
+  const sibling = join(dirname(file), `${base}.palette.json`);
+  if (existsSync(sibling)) return load(sibling);
+  const catalog = join(ROOT, 'public/catalog/palettes', `${base.replace(/^figure_/, '')}.json`);
+  if (existsSync(catalog)) return load(catalog);
+  return null;
+}
 
 function parseArgs(argv) {
   // Per-tile pixel size. Defaults high (768) for quality-control inspection —
@@ -20,7 +47,7 @@ function parseArgs(argv) {
   // are invisible at small sizes. Bump higher (--size 1200+) when scrutinising
   // fine features (faces, eyes, lettering) and crop the PNG natively rather than
   // upscaling a small crop (which only blurs).
-  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null, requireLabels: null };
+  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null, requireLabels: null, paletteFile: null, noPalette: false };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--json') a.json = true;
@@ -32,6 +59,8 @@ function parseArgs(argv) {
     else if (t === '--explain-components') a.explain = true;
     else if (t === '--expect-components') a.expect = argv[++i];
     else if (t === '--require-labels') a.requireLabels = argv[++i];
+    else if (t === '--palette-file') a.paletteFile = argv[++i];
+    else if (t === '--no-palette') a.noPalette = true;
     else if (t === '-p' || t === '--param') { const [k, ...v] = argv[++i].split('='); a.params[k] = coerce(v.join('=')); }
     else if (!a.file && !t.startsWith('-')) a.file = t;
   }
@@ -41,11 +70,12 @@ function coerce(s) { if (s === 'true') return true; if (s === 'false') return fa
 
 async function main() {
   const a = parseArgs(process.argv.slice(2));
-  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view "az,el[;az,el…]"] [--views front,iso,…] [--explain-components] [--expect-components N] [--require-labels a,b,c] [-p k=v]'); process.exit(2); }
+  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view "az,el[;az,el…]"] [--views front,iso,…] [--explain-components] [--expect-components N] [--require-labels a,b,c] [--palette-file p.json] [--no-palette] [-p k=v]'); process.exit(2); }
   const file = resolve(a.file);
   const { views, error: viewErr } = resolveViews(a.view, a.views);
   if (viewErr) { console.error(viewErr); process.exit(2); }
-  const result = await runPreview(file, { params: a.params, lang: a.lang });
+  const palette = resolvePalette(file, a.paletteFile, a.noPalette);
+  const result = await runPreview(file, { params: a.params, lang: a.lang, palette });
 
   if (!result.ok) {
     console.log(JSON.stringify({ ok: false, error: result.error, diagnostics: result.diagnostics }, null, 2));

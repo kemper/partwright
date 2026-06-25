@@ -3,6 +3,7 @@
 import type { MeshData } from '../geometry/types';
 import type { ShapeType } from './boxPaint';
 import type { BrushShape } from './subdivide';
+import type { ColorPatternKind, PatternScope } from './colorPattern';
 
 export interface ColorRegion {
   id: number;
@@ -100,7 +101,16 @@ export type RegionDescriptor =
       imageDataUrl?: string;
       removeBackground?: boolean;
       manualBgColor?: [number, number, number];
-      bgTolerance?: number };
+      bgTolerance?: number }
+  // Algorithmic colour pattern (the colour twin of `api.surface.*` textures):
+  // a field evaluated per-triangle assigns each triangle in `scope` one palette
+  // colour. Resolved by `computePatternColors` (src/color/colorPattern.ts), which
+  // produces a `perTriColors` map. `scope.label` restricts it to an `api.label`
+  // region (e.g. the body) so it never touches eyes/nose; absent ⇒ whole mesh.
+  | { kind: 'pattern'; pattern: ColorPatternKind; colors: [number, number, number][];
+      scope?: PatternScope;
+      scale?: number; axis?: 'x' | 'y' | 'z'; warp?: number; coverage?: number; seed?: number;
+      anchors?: [number, number, number][] };
 
 export interface SerializedColorRegion {
   id: number;
@@ -508,7 +518,7 @@ export function clearRegionsBySource(source: ColorRegion['source']): void {
  *  `[]` (or run code that declares no colors) to clear the layer. Does NOT
  *  notify — the run path drives a single re-render after setting these. */
 export function setModelColorRegions(
-  decls: ReadonlyArray<{ name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor }>,
+  decls: ReadonlyArray<{ name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor; perTriColors?: Map<number, [number, number, number]> }>,
 ): void {
   modelRegions = decls.map((d, i) => ({
     id: -(i + 1), // negative ids never collide with the positive user-region ids
@@ -519,6 +529,7 @@ export function setModelColorRegions(
     order: i + 1, // order within the model band; the user paint layer sits above
     visible: true,
     triangles: d.triangles,
+    perTriColors: d.perTriColors, // pattern ops carry per-triangle colours
   }));
 }
 

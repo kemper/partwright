@@ -111,9 +111,18 @@ function toBox(raw: { min: unknown; max: unknown }) {
  *  through the Phase-2 daemon (`partwright iterate --lang replicad`) instead. */
 const STATELESS_ENGINES: Language[] = ['manifold-js', 'voxel', 'scad'];
 
+/** Parse a "#rrggbb" (or "rrggbb") hex string to a 0..1 RGB triple, or null. */
+function hexToRgb01(hex: string | undefined): [number, number, number] | null {
+  if (!hex) return null;
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
 export async function previewModel(
   code: string,
-  opts: { params?: Record<string, unknown>; maxComponents?: number; lang?: Language } = {},
+  opts: { params?: Record<string, unknown>; maxComponents?: number; lang?: Language; palette?: Record<string, string> } = {},
 ): Promise<PreviewResult> {
   const engine: Language = opts.lang ?? 'manifold-js';
   // manifold-3d is always needed: the kernel for manifold-js runs, and the
@@ -168,10 +177,14 @@ export async function previewModel(
   let triColors: Uint8Array | null = null;
   if (mesh.triColors && mesh.triColors.length >= numTri * 3) {
     triColors = new Uint8Array(mesh.triColors.subarray(0, numTri * 3));
-  } else if (r.labelMap && r.labelColors && r.labelColors.size > 0) {
+  } else if (r.labelMap && r.labelMap.size > 0 && ((r.labelColors && r.labelColors.size > 0) || opts.palette)) {
+    // Color label regions from in-code `labelColors` first, falling back to an
+    // external `palette` (label name → "#rrggbb") for labels with no in-code
+    // color. This is how figures that declare uncolored labels (`.label('skin')`)
+    // and get their colors from a bake-time palette render in color here too.
     triColors = new Uint8Array(numTri * 3).fill(170); // neutral default
     for (const [name, ids] of r.labelMap) {
-      const c = r.labelColors.get(name);
+      const c = r.labelColors?.get(name) ?? hexToRgb01(opts.palette?.[name]);
       if (!c) continue;
       const [cr, cg, cb] = c.map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255));
       for (const id of ids) {
@@ -190,11 +203,16 @@ export async function previewModel(
   if (r.paintOps && r.paintOps.length > 0) {
     const resolved = resolvePaintOps(r.paintOps, mesh, r.labelMap);
     if (!triColors) triColors = new Uint8Array(numTri * 3).fill(170);
+    const to255 = (c: readonly number[]): [number, number, number] =>
+      [Math.round(Math.max(0, Math.min(1, c[0])) * 255), Math.round(Math.max(0, Math.min(1, c[1])) * 255), Math.round(Math.max(0, Math.min(1, c[2])) * 255)];
     for (const op of resolved) {
-      const [cr, cg, cb] = op.color.map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255));
+      const [cr, cg, cb] = to255(op.color);
       for (const id of op.triangles) {
         if (id < 0 || id >= numTri) continue;
-        triColors[id * 3] = cr; triColors[id * 3 + 1] = cg; triColors[id * 3 + 2] = cb;
+        // Pattern ops carry a per-triangle colour; fall back to the flat colour.
+        const pc = op.perTriColors?.get(id);
+        const [r, g, b] = pc ? to255(pc) : [cr, cg, cb];
+        triColors[id * 3] = r; triColors[id * 3 + 1] = g; triColors[id * 3 + 2] = b;
       }
     }
     paintOpStats = resolved.map((op) => ({ name: op.name, kind: op.kind, triangleCount: op.triangles.size }));

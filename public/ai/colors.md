@@ -218,6 +218,65 @@ Like the tools, these resolve **by triangle**, so paint a refined mesh (`refine(
 
 Because the code is the source of truth, these colors are **read-only at runtime**: `getModelColors()` lists them, but `getRegions()`/`listRegions()` stay empty, and `replaceColor` / palette operations / the paint panel's Clear button don't touch them — change a code-declared color by editing the `color` argument and re-running.
 
+### Algorithmic colourways — `api.paint.pattern`
+
+The colour twin of `api.surface.*` textures: instead of one flat region, a
+**procedural field** assigns each triangle in a scope ONE palette colour. Every
+triangle stays a single flat colour, so the result is multi-material printable
+(each colour maps to a filament slot). Use it for animal coats / camo / any
+repeating colour motif — it reads far better than hand-placed `paint.box` bands.
+
+```js
+api.paint.pattern({
+  pattern: 'stripes',                 // 'stripes' | 'spots' | 'patches' | 'gradient'
+  colors:  ['#D6913E', '#5A3A1F'],    // [base, mark, third?] — hex or [r,g,b]; ≥2
+  scope:   'body',                    // an api.label region (so it never touches eyes/nose); omit = whole model
+  axis:    'z',                       // stripes: band direction
+  scale:   5,                         // feature size (stripe period / spot spacing / blotch size)
+  warp:    0.45,                      // 0..1 organic wiggle of stripe lines / edges
+  coverage: 0.5,                      // duty cycle / spot radius / base-coat fraction / threshold
+  seed:    1,                         // reproducible noise
+});
+```
+
+- **`stripes`** — tabby / tiger / zebra / brindle. `sin(axis)` with an fBm
+  domain-warp so the bands wiggle organically and wrap the whole form.
+- **`spots`** — leopard / cheetah / dalmatian. Worley/cellular scatter; a 3rd
+  colour tints the spot core (rosettes).
+- **`patches`** — calico / cow / tortoiseshell. Low-frequency fBm split into 2–3
+  irregular colour zones.
+- **`gradient`** — siamese / colourpoint. Darkens the extremities; pass
+  `anchors: [[x,y,z], …]` (ear/paw/tail/face points) so the field marks triangles
+  within `scale` of the nearest one (the face mask darkens too) — without anchors
+  it falls back to distance-from-centre.
+
+**Regional scoping — different patterns on different parts, seam-free.** The
+`scope` accepts geometric predicates that AND with the label and narrow by
+triangle centroid: `above`/`below` a plane, inside a `box`, inside a `sphere`.
+Multiple `api.paint.pattern` calls composite (later wins), so you can layer them:
+
+```js
+// spotted head + striped body on ONE continuous mesh (no SDF label seam)
+api.paint.pattern({ pattern:'stripes', colors:['#D6913E','#5A3A1F'], scope:'body' });
+api.paint.pattern({ pattern:'spots',   colors:['#E8C07A','#3A241A'],
+                    scope:{ label:'body', sphere:{ center:[0,-1,23], radius:11 } } });
+
+// one pattern above an XY plane, another below
+api.paint.pattern({ pattern:'patches', colors:[...], scope:{ label:'body', above:{ axis:'z', at:16 } } });
+api.paint.pattern({ pattern:'stripes', colors:[...], scope:{ label:'body', below:{ axis:'z', at:16 } } });
+```
+
+> **Why a geometric scope and not separate SDF `.label()` regions?** In an
+> `api.sdf` model, `.label()` partitions the tree and meshes each labelled subtree
+> independently — a smooth blend *across* a label degrades to a hard union, i.e. a
+> visible **seam/pinch at the neck/hips/tail**. Keep the body one fused `label`
+> and target sub-regions by geometric scope instead — same per-region colour, no
+> seam.
+
+Like the other `api.paint.*` ops these resolve **by triangle** (refine for
+crisper field edges) and are validated strictly (unknown keys / bad colour /
+axis throw). manifold-js sandbox only.
+
 SCAD has the same `label()` pattern, but **without** the `{ color }`
 option — a SCAD `label()` is a passthrough wrapper for `paintByLabel`
 only, so color a SCAD model with an explicit `paintByLabel` call. Partwright pre-injects a

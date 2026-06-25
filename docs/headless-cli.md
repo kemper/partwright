@@ -36,6 +36,27 @@ control server. One source of truth (the app), full fidelity, full tool parity,
 and the painful WASM+renderer warm-up is paid **once** and amortized across every
 subsequent call.
 
+### Choosing a render path — fast vs app-fidelity
+
+Both layers can produce a PNG; pick by how exact the pixels need to be:
+
+| Want | Use | What you get |
+|---|---|---|
+| A quick "what does it look like?" with no browser | `npm run model:preview -- <file.js>` (Phase 1) | The Node software rasterizer — now **smooth-shaded (per-vertex normals) + 2× antialiased + key/fill/ambient lit**, so it's close to the app's look at ~2 s. Same *mesh* as the browser (verified: identical triangleCount/genus/componentCount). |
+| **Exact app pixels** (the real Three.js viewport — for QC, the eval judge, anything where shading/material fidelity matters) | `partwright render --code <file.js> --out x.png` or `partwright iterate <file.js>` (Phase 2 daemon) | The real WebGL `renderViews` output — true app fidelity. |
+
+> **The Phase-1 rasterizer is no longer "low quality."** It was upgraded
+> (`scripts/cli/preview.mjs`: `vertexNormals` + SSAA + `shadeLights`) so a flat,
+> faceted, aliased look is no longer the reason to reach for the browser — reach
+> for Phase 2 only when you need *exact* app pixels.
+
+> **Speed reality for heavy figures:** the daemon amortizes the ~60 s browser +
+> WASM cold-start (paid once on `daemon start`), but a complex SDF figure still
+> costs **10–70 s to *build*** (marching-cubes meshing) on *every* render — and
+> that same build cost is paid by `model:preview` too. So the daemon's win is
+> **repeated** renders/iterations (warm-up amortized), not making a single heavy
+> figure cheap. The meshing dominates; the render itself is fast in both layers.
+
 ## CLI surface
 
 ```
