@@ -8,7 +8,8 @@ import { __figureTestables__, createFigureNamespace } from '../../src/geometry/s
 import { __testables__ as sdfT } from '../../src/geometry/sdf';
 import type { SdfApi, Vec3 } from '../../src/geometry/sdfFigure';
 
-const { buildRig, ringBand, buildBand, buildLayers, sharedSolid, ringPoint, strap, hangFrom, onFace } = __figureTestables__;
+const { buildRig, ringBand, buildBand, buildLayers, sharedSolid, ringPoint, strap, hangFrom, onFace,
+  buildTopParts, buildPantsParts, buildArms } = __figureTestables__;
 
 const api: SdfApi = {
   sphere: sdfT.primSphere,
@@ -306,6 +307,64 @@ describe('sharedSolid — invariant overlap check', () => {
     const B = api.box([2, 2, 2]).translate([1, 0, 0]); // shared volume ≈ 4
     expect(sharedSolid(A, B, { tol: 10 }).overlaps).toBe(false);
     expect(sharedSolid(A, B, { tol: 1 }).overlaps).toBe(true);
+  });
+});
+
+describe('garment parts — torso-conformed band clears the arms (root-cause fix)', () => {
+  it('buildTopParts splits the top into all / torso / sleeves', () => {
+    const rig = buildRig({ height: 64 });
+    const sleeved = buildTopParts(api, rig, { sleeve: 'long', thickness: 1 });
+    expect(typeof sleeved.all.evaluate).toBe('function');
+    expect(typeof sleeved.torso.evaluate).toBe('function');
+    expect(sleeved.sleeves).not.toBeNull();              // long sleeves → a sleeves part
+    const bare = buildTopParts(api, rig, { sleeve: 'none', thickness: 1 });
+    expect(bare.sleeves).toBeNull();                      // sleeveless → no sleeves part
+  });
+
+  it('buildPantsParts splits pants into all / hips / legs (briefs has no legs)', () => {
+    const rig = buildRig({ height: 64 });
+    const full = buildPantsParts(api, rig, { leg: 'slim', rise: 'mid' });
+    expect(full.legs).not.toBeNull();
+    const briefs = buildPantsParts(api, rig, { length: 'briefs' });
+    expect(briefs.legs).toBeNull();
+    expect(briefs.all).toBe(briefs.hips);                 // briefs: the whole garment IS the hips
+  });
+
+  it('conforming to the torso panel + `clear` eliminates arm overlap that the full-clothed-body conform produced', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const arms = buildArms(api, rig);
+    const top = buildTopParts(api, rig, { sleeve: 'long', thickness: 1 });
+    const opts = { thickness: 1, height: 5, clearance: 0.5 };
+    // OLD approach: conform to the full worn top (includes the sleeves). The
+    // isotropic round() dilates each sleeve into the band, so the band WRAPS both
+    // sleeves at the waist — the visible "belt on the arms" ring.
+    const wholeOverlap = sharedSolid(buildBand(api, w, { surface: top.all, ...opts }), arms, { samples: 20000 }).sharedVolume;
+    // Conform to the torso panel only: the band no longer wraps the sleeves, so the
+    // overlap drops sharply (it now only GRAZES the arm where the torso flank pokes
+    // laterally — and that residual is INTERNAL, hidden inside the sleeve in render).
+    const torsoOverlap = sharedSolid(buildBand(api, w, { surface: top.torso, ...opts }), arms, { samples: 20000 }).sharedVolume;
+    // The fix the figures actually use: torso conform + `clear: F.arms(rig)`, which
+    // hard-subtracts the EXACT arm — zero overlap, no tuned dilation allowance.
+    const clearedOverlap = sharedSolid(buildBand(api, w, { surface: top.torso, ...opts, clear: arms }), arms, { samples: 20000 }).sharedVolume;
+    expect(wholeOverlap).toBeGreaterThan(50);             // old failure: wraps the sleeves
+    expect(torsoOverlap).toBeLessThan(wholeOverlap * 0.6); // torso conform: no sleeve wrap
+    expect(clearedOverlap).toBe(0);                        // torso + clear: zero, structural
+  });
+
+  it('band.clear hard-subtracts a part as a guarantee', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const R = w.rx;
+    const surface = api.cylinder(R, 40).translate([w.center[0], w.center[1], w.center[2]]);
+    const z = w.center[2];
+    const px = w.center[0] + R;
+    const plain = buildBand(api, w, { surface, thickness: 0.5, height: 4 });
+    expect(plain.evaluate(px, w.center[1], z)).toBeLessThan(0);
+    // A slab across +X passed as `clear` removes that side.
+    const slab = api.box([R * 4, R * 4, 8]).translate([R * 2, 0, z]);
+    const cleared = buildBand(api, w, { surface, thickness: 0.5, height: 4, clear: slab });
+    expect(cleared.evaluate(px, w.center[1], z)).toBeGreaterThan(0);
   });
 });
 

@@ -34,16 +34,22 @@ const skin = F.weld(rig, [
   F.legs(rig), F.feet(rig), face,
 ]).label('skin');
 
-// 4. UNDER-TUNIC + PANTS
+// 4. UNDER-TUNIC + PANTS — built as PARTS so both the cuirass and the belt can
+// offset/conform to the TORSO panel alone (no sleeves) and never reach the arms.
 const shirtThick = r.chestX * 0.12;
-const shirt = F.clothing.top(rig, { sleeve: 'long', thickness: shirtThick }).label('shirt');
-const pants = F.clothing.pants(rig, { leg: 'slim', rise: 'mid' }).label('pants');
+const shirtG = F.garment.top(rig, { sleeve: 'long', thickness: shirtThick });
+const shirt = shirtG.all.label('shirt');
+const pantsG = F.garment.pants(rig, { leg: 'slim', rise: 'mid' });
+const pants = pantsG.all.label('pants');
 
 // 5. CUIRASS (Worn shell) — LAYER over the shirt by offsetting the SHIRT surface
 // (so the shirt can never poke through), then clip to a chest→waist band and add
 // a keel ridge, peascod point, fauld rim, and pauldron caps.
-const armorGap = r.chestX * 0.08;          // the plate's standoff/thickness over the shirt
-const armorMass = shirt.round(armorGap);   // guaranteed OUTSIDE the shirt everywhere
+const armorGap = r.chestX * 0.08;             // the plate's standoff/thickness over the shirt
+// Offset the TORSO panel (not the full shirt — that would dilate the sleeves out
+// and put plate on the arms). The plate is still guaranteed outside the shirt
+// torso everywhere, and structurally can't reach a sleeve.
+const armorMass = shirtG.torso.round(armorGap);
 const topZ = j.upperArmL[2] - r.upperArm * 0.05;
 const botZ = j.spine[2] + r.chestY * 0.10;
 const halfX = r.chestX * 1.02 + shirtThick + armorGap;
@@ -54,7 +60,7 @@ const frontY = -(r.chestY + shirtThick + armorGap);
 const keel = sdf.capsule([0, frontY * 0.92, topZ - r.chestY * 0.30], [0, frontY * 0.92, botZ + r.chestY * 0.15], r.chestX * 0.20).intersect(zone);
 const peascod = sdf.sphere(r.chestX * 0.42).translate([0, frontY * 0.85, botZ + r.chestY * 0.05]);
 const neckScoop = sdf.sphere(r.neck * 1.7).translate([0, frontY * 0.6, topZ - r.chestY * 0.12]);
-const fauld = shirt.round(armorGap + r.chestX * 0.06)
+const fauld = shirtG.torso.round(armorGap + r.chestX * 0.06)
   .intersect(sdf.box([halfX * 2.4, bigD * 2, r.chestY * 0.5]).translate([0, 0, botZ + r.chestY * 0.1]));
 const pR = r.upperArm * 1.35 + shirtThick + armorGap;
 const pauldron = (cx, cy, cz) =>
@@ -71,21 +77,19 @@ const pauldrons = pauldron(j.upperArmL[0] * 1.06, j.upperArmL[1], j.upperArmL[2]
   .union(pauldron(j.upperArmR[0] * 1.06, j.upperArmR[1], j.upperArmR[2] + r.upperArm * 0.45))
   .label('armor');
 
-// Clothed-body surface (skin + shirt + pants) for conforming the belt band and
-// the scabbard hip anchor; the band's `rig` occluder carves the arms away.
+// Clothed-body surface for the scabbard hip anchor only (it marches to the worn
+// surface at the side hip, where no arm is in the way).
 const clothed = sdf.union(skin, shirt, pants);
 
-// 6. BELT (Ringed) — a FLUSH band (F.band), not a round tube: it slices the
-// CLOTHED body grown just proud of the shirt, so it lies FLAT against the body the
-// way a real belt does. Arm-occlusion is handled by F.layers below (occludeArms),
-// so the belt wraps the torso and terminates at the SLEEVE, not the bare arm.
-// Conform to the TORSO CORE (no arms) + shirt clearance so the band wraps only
-// the torso — conforming to `clothed` (which includes the SLEEVES) built the band
-// out onto the arm, and occludeArms could only carve back a residual.
+// 6. BELT (Ringed) — a FLUSH band (F.band) conformed to the garment TORSO panel
+// (shirtG.torso) + pants HIPS, grown just proud of the shirt. Neither panel
+// contains the sleeves, so the band lies flat on the torso and CANNOT be dilated
+// onto the arm — no occludeArms tuning. `clear: F.arms(rig)` is insurance.
 const beltClear = shirtThick + r.chestX * 0.02;
-const beltCore = sdf.union(F.torso(rig), pants);
+const beltCore = sdf.union(shirtG.torso, pantsG.hips);
 const beltBand = F.band(rig.ring.waist, {
   surface: beltCore, thickness: r.waist * 0.12, height: r.chestX * 0.62, clearance: beltClear,
+  clear: F.arms(rig),
 });
 const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: beltCore, clearance: beltClear });
 const buckle = sdf.roundedBox([r.waist * 0.5, r.waist * 0.3, r.chestX * 0.52], r.waist * 0.06).translate(bucklePt);
@@ -167,23 +171,18 @@ api.paint.label('sword', '#cfd4da');
 api.paint.label('scabbard', '#5a3a22');
 api.paint.label('base', '#54504a');
 
-// 11. LAYERS — composite the body + garment stack with priority + automatic
-// limb-occlusion (the architecture that kills armor-bleeds-onto-arm). Higher
-// priority wins where two collide; `occludeArms` carves the SLEEVE-dilated arms
-// from the torso plate/belt so neither bleeds onto a limb. The base body is
-// carve:false (never trimmed — and the fine-hands marker must stay un-buried).
-// Standalone props (eyes, sword, scabbard, hair, base) are plain-unioned on top.
-// occludeArms must dilate the arm PAST each worn layer's outer surface (clothing
-// thickness + that layer's own clearance + thickness), or it only carves the inner
-// part and leaves the outer shell on the sleeve. shirt/pants are carve:false (the
-// cuirass already offsets OUTWARD from the shirt so it can't poke through — no
-// priority-carve, which keeps their partitions cheap to mesh).
+// 11. LAYERS — composite the body + garment stack. The belt and cuirass were both
+// built against the TORSO panel (shirtG.torso / pantsG.hips), so neither reaches
+// the arms — no `occludeArms` tuning anywhere. Higher priority wins where two
+// collide. The base body is carve:false (never trimmed — fine-hands marker stays
+// un-buried); shirt/pants carve:false (the cuirass offsets OUTWARD from the shirt
+// so it can't poke through). Pauldrons legitimately sit ON the upper arms.
 const body = F.layers(rig, [
   { node: skin, carve: false, priority: 0 },
   { node: shirt, carve: false, priority: 1 },
   { node: pants, carve: false, priority: 1 },
-  { node: belt, carve: false, priority: 2, occludeArms: beltClear + r.waist * 0.12 + r.chestX * 0.04 },
-  { node: cuirass, carve: false, priority: 3, occludeArms: armorGap + shirtThick + r.chestX * 0.05 },
+  { node: belt, carve: false, priority: 2 },
+  { node: cuirass, carve: false, priority: 3 },
   { node: pauldrons, carve: false, priority: 3 },
 ]);
 

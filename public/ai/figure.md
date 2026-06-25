@@ -581,35 +581,67 @@ separately.
 > below) — a big `drape` on the ring itself spreads it across the chest at neckline
 > width (it reads as a collar trim, not a necklace).
 
-**A FLUSH band — `F.band(frame, opts?)` (use this for belts/sashes, NOT `F.ring`).**
-`F.ring` sweeps a round **tube**, which reads as a cord "welded on" the body. A
-belt, waistband, or sash should lie **flat/flush** against the body the way
-clothing lies on skin. `F.band` does exactly that: it's the **clothing mechanism**
-— it offsets the real `surface` outward by `clearance + thickness` and slices that
-solid to a `height`-tall band, so the band is a literal slice of the body surface
-and conforms exactly to the posed, non-circular cross-section (it can never float
-or balloon). `opts`: `{ surface (required), height, thickness, clearance, drop,
-occlude, rig }`. Pass `rig` (and/or `occlude`) to carve the arms so it terminates
-where limbs cross it. Conform to the **outermost layer it sits on** (the coat/shirt
-surface, or the torso core + a `clearance` for the garment thickness).
+**Garment PARTS — the structural fix for "belt/armor on the arms" (`F.garment`).**
+This is the #1 recurring failure and it has a **root cause, not a tuning knob**: a
+belt is `surface.round(clearance+thickness)` sliced to a band, and `round()` is
+**isotropic** — it offsets *every* surface in `surface` outward equally. If
+`surface` includes the sleeves (e.g. `union(skin, coat, pants)`), the **sleeves get
+dilated into the band**, so the band literally wraps each arm. No amount of
+subtracting the arms back cleanly fixes a band that was *built* around the sleeves.
+
+**The fix: conform the band to the garment's TORSO panel, which excludes the
+sleeves.** `F.garment.top(rig, opts)` and `F.garment.pants(rig, opts)` return the
+clothing decomposed into parts:
+
+- `F.garment.top(...)` → `{ all, torso, sleeves }` — `all` is identical to
+  `F.clothing.top(...)` (the full worn garment you union + label); `torso` is the
+  torso-only panel (no sleeves); `sleeves` is the sleeve solids (or `null`).
+- `F.garment.pants(...)` → `{ all, hips, legs }` — `hips` is the seat/waistband
+  region only (no leg sleeves).
+
+Conform a belt to `union(top.torso, pants.hips)`: the band's `round()` now follows
+**only the torso silhouette** and can never be dilated onto a sleeve. Add
+`clear: F.arms(rig)` as a hard guarantee — it subtracts the **exact** arm (no tuned
+dilation allowance), zeroing any residual interpenetration. `F.band` opts:
+`{ surface (required), height, thickness, clearance, drop, clear, occlude, rig }`.
 
 ```js
-const clothed = sdf.union(skin, shirt, pants);
-// FLUSH belt cinching the clothed body, terminating at the arms, with a buckle:
+// Build the coat as PARTS — `.all` is the worn garment, `.torso` the conform panel.
+const coatG = F.garment.top(rig, { sleeve: 'long', thickness: r.chestX * 0.13 });
+const coat  = coatG.all.label('coat');
+const pantsG = F.garment.pants(rig, { leg: 'slim', rise: 'mid' });
+const pants  = pantsG.all.label('pants');
+
+// FLUSH belt conformed to the TORSO panel (NOT the sleeves) + a hard arm clear:
+const beltSurface = sdf.union(coatG.torso, pantsG.hips);
 const belt = F.band(rig.ring.waist, {
-  surface: clothed, thickness: r.waist * 0.11, height: r.chestX * 0.6,
-  clearance: r.chestX * 0.02, rig,
+  surface: beltSurface, thickness: r.waist * 0.10, height: r.chestX * 0.6,
+  clearance: r.chestX * 0.02, clear: F.arms(rig),
 }).label('belt');
 // Seat a buckle / hang a scabbard with F.ringPoint(frame, azDeg, opts?):
 //   az 0 = front (−Y), 90 = figure-left (+X), 180 = back, −90 = right.
-const fp = F.ringPoint(rig.ring.waist, 0, { surface: clothed, clearance: r.chestX * 0.02 });
+const fp = F.ringPoint(rig.ring.waist, 0, { surface: beltSurface, clearance: r.chestX * 0.02 });
 const buckle = sdf.roundedBox([2.4, 1.2, 2.0], 0.3).translate(fp).label('belt');
-const beltWithBuckle = belt.union(buckle);
+const beltWithBuckle = belt.union(buckle.label('belt')).label('belt');
+```
 
-// A draping PENDANT necklace: a thin neck-hugging ring + a chain dropped down the
-// chest centreline as CONFORMED points (so it lies flush, never chords through the
-// bust), occluded by hair:
-const collar = F.ring(rig.ring.neck, { tube: r.neck * 0.06, surface: clothed, occlude: [hair] });
+The same principle drives **plate armor**: build the cuirass from `top.torso.round(gap)`
+(NOT `top.all.round(gap)`), so the plate offsets only the torso and never the
+sleeves. A pauldron/shoulder cap that *legitimately* sits on the arm is a separate
+solid built on the arm — leave it as its own piece.
+
+**Accessories conform to NAMED PARTS — `F.parts(rig)`.** The bare body as parts:
+`{ torso, neck, head, arms, hands, legs, feet }`. Conform an accessory to the part
+it wraps and it can't reach a part it shouldn't. A **choker** conforms to the neck
+column alone — `F.ring(rig.ring.neck, { surface: F.neck(rig), occlude: [hair] })` —
+so every azimuth hits the neck at the same tight radius and it can't spread onto the
+shoulders or terminate through the dress (conforming to the whole `skin`/`clothed`
+body lets a side azimuth march out to the trapezius/gown shoulder). The pendant
+*drop* still rides the clothed front (`surface: clothed`):
+
+```js
+const collar = F.ring(rig.ring.neck, { tube: r.neck * 0.06, surface: F.neck(rig), occlude: [hair] });
+const clothed = sdf.union(skin, gown);
 const pts = [];
 for (let i = 0; i <= 7; i++) pts.push(F.ringPoint(rig.ring.neck, 0, { surface: clothed, drop: r.neck * 3 * (i / 7) }));
 let chain = collar;
@@ -617,50 +649,36 @@ for (let i = 0; i < 7; i++) chain = chain.union(sdf.capsule(pts[i], pts[i + 1], 
 const necklace = chain.subtract(hair).label('jewelry');
 ```
 
-**Composite the garment stack — `F.layers(rig, entries)` (priority + auto limb-occlusion).**
-The recurring failures — armor color bleeding onto an arm, a belt wrapping the
-sleeve, clothing poking through armor — are all *invisible inter-object overlap*:
-each accessory is an independent solid you hand-clear. `F.layers` makes the
-clothing/armor stack a **declared z-order** so each sits flush, terminates at
-limbs, and the right one wins where two collide. Pass the rig then an ordered list
-of `{ node, label?, priority?, carve?, occludeArms?, occlude? }`:
+**Composite the garment stack — `F.layers(rig, entries)` (priority z-order).**
+`F.layers` makes the clothing/armor stack a **declared z-order** so each sits flush
+and the higher-priority one wins where two collide. Pass the rig then an ordered
+list of `{ node, label?, priority?, carve?, occludeArms?, occlude? }`:
 
-- **priority** (default = array index) — higher WINS contested space.
-- **occludeArms: `<allowance>`** — the arms (cheap capsule chain, DILATED by the
-  allowance) carve this layer, so a torso plate/belt terminates at the **sleeve**
-  and never bleeds onto a limb. This is the fix for armor-on-arm / belt-on-sleeve.
-  **The allowance must reach PAST the worn layer's OUTER surface** — i.e. ≈ the
-  clothing thickness it sits over **plus this layer's own `clearance + thickness`.**
-  Set it to just the clothing thickness and the occluder only reaches the sleeve's
-  inner face, carving the band's inner part and **leaving its outer shell on the
-  arm** (the residual that keeps a belt reading as "on the arm" from the side —
-  invisible head-on). Verify with `F.sharedSolid(layer, F.arms(rig).round(clothThick))`
-  (check against the SLEEVE, not the bare arm — the bare arm is inside the sleeve,
-  so it always reads clear). **Don't `occludeArms` a piece that legitimately sits
-  on the arm** (a pauldron/shoulder cap) — make it its own entry without it.
-- **Conform a belt to the garment it sits on, sized by its bagginess.** A *fitted*
-  shirt → conform to the torso core (`F.torso(rig)+pants`) + a clothing clearance.
-  A *loose* coat/robe → conform to the **clothed** surface (so the belt is visibly
-  flush on the robe, not buried inside it) and rely on the large `occludeArms` above
-  to strip the sleeve.
+- **priority** (default = array index) — higher WINS contested space (armor over
+  shirt, hair over necklace).
 - **carve** (default true) — trimmed by higher layers. **Set `carve:false` on the
-  base body + standalone props** (skin, eyes, a held sword, the base): both so
-  they aren't eaten, AND because the **fine-hands marker must not be buried in a
+  base body + standalone props** (skin, eyes, a held sword, the base): both so they
+  aren't eaten, AND because the **fine-hands marker must not be buried in a
   `.subtract`** (it breaks sculpted hands). Also prefer `carve:false` on heavy
-  undergarments the outer shell already offsets past (it keeps meshing fast —
-  every priority-carve adds a boolean to that layer's partition).
+  undergarments the outer shell already offsets past (keeps meshing fast).
+- **occlude** (node | array) — extra occluders subtracted from this layer.
+- **occludeArms: `<allowance>`** — *legacy* limb-occlusion (cheap dilated-capsule
+  arms carve the layer). **Prefer the garment-parts approach above** — conform to
+  `top.torso` so the band never reaches the arm in the first place. `occludeArms`
+  remains for cases where you can't rebuild the surface as parts, but it needs the
+  allowance tuned to reach past the layer's outer surface and is the approach that
+  historically left residual shells on the sleeve.
 
 ```js
-// Build skin/shirt/pants/belt/cuirass/pauldrons, label each, then composite.
-// Split a plate from its shoulder caps so only the plate is arm-occluded:
-const sleeve = shirtThick + r.chestX * 0.02;
+// Belt + cuirass were each built against the TORSO panel (+ `clear: F.arms`), so
+// neither reaches the arms — NO occludeArms tuning anywhere.
 const body = F.layers(rig, [
   { node: skin,      carve: false, priority: 0 },        // base — never trimmed
-  { node: shirt,     carve: false, priority: 1 },        // the sleeve IS the arm cover
-  // occludeArms reaches PAST each layer's outer surface (clothing + clearance + thickness):
-  { node: belt,      carve: false, priority: 2, occludeArms: sleeve + beltClearance + beltThickness },
-  { node: cuirass,   carve: false, priority: 3, occludeArms: armorGap + shirtThick + margin },
-  { node: pauldrons, carve: false, priority: 3 },         // sit ON the arms — NOT occluded
+  { node: shirt,     carve: false, priority: 1 },
+  { node: pants,     carve: false, priority: 1 },
+  { node: belt,      carve: false, priority: 2 },        // torso-conformed + cleared
+  { node: cuirass,   carve: false, priority: 3 },        // built from top.torso.round()
+  { node: pauldrons, carve: false, priority: 3 },        // sit ON the arms — own piece
 ]);
 // Standalone props (eyes, a held sword, the base) plain-union OUTSIDE F.layers so
 // they don't carve the garments.
@@ -677,9 +695,9 @@ to inspect). **Assert the specific pairs that MUST stay clear** — that's what
 sidesteps the expected-overlap problem (clothing is *supposed* to overlap skin):
 
 ```js
-// A worn band/plate must be clear of the arms after occlusion:
-if (F.sharedSolid(belt, F.arms(rig)).overlaps) throw new Error('belt bleeds onto the arm — raise occludeArms');
-if (F.sharedSolid(cuirass, F.arms(rig)).overlaps) throw new Error('cuirass bleeds onto the arm');
+// A worn band/plate must be clear of the arms — conform to top.torso + clear:F.arms:
+if (F.sharedSolid(belt, F.arms(rig)).overlaps) throw new Error('belt bleeds onto the arm — conform to top.torso, add clear:F.arms(rig)');
+if (F.sharedSolid(cuirass, F.arms(rig)).overlaps) throw new Error('cuirass bleeds onto the arm — build from top.torso.round(gap)');
 // A necklace must not penetrate the gown (only the hair should cover it):
 const hit = F.sharedSolid(necklace, gown, { tol: 0.5 });
 if (hit.overlaps) console.warn('necklace in gown near', hit.point);
@@ -1142,6 +1160,12 @@ F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
 F.clothing.top(rig, { sleeve, hemZ, thickness })        // sleeve: none|short|long
 //   hemZ below the pelvis turns the top into a robe/dress: a flared skirt
 //   cone is added down to the hem so legs stay covered all round.
+F.garment.top(rig, opts)   → { all, torso, sleeves }    // parted form of clothing.top
+F.garment.pants(rig, opts) → { all, hips, legs }        // parted form of clothing.pants
+//   `all` === the F.clothing.* Node. Conform a belt/sash to union(top.torso,
+//   pants.hips) — the torso-only panels — so the band never reaches the sleeves.
+F.parts(rig) → { torso, neck, head, arms, hands, legs, feet }  // bare body as parts
+//   Conform an accessory to the part it wraps (a choker → surface: F.neck(rig)).
 F.clothing.shoes(rig, { size, thickness, label, sole })  // sole + upper over each foot
 F.clothing.boots(rig, { size, shaftZ, thickness, label, sole })  // + a shaft up the lower leg
 //   Footwear keys off rig.sole.{L,R}, so it tracks leg*.twist turnout like

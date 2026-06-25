@@ -3749,7 +3749,19 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
 
 // --- Clothing (derived from body regions → always fits) -------------------
 
+/** Back-compat facade: the full worn pants as a single Node. New code wanting the
+ *  waistband/hips region separately (to conform a belt without the leg sleeves)
+ *  calls buildPantsParts. */
 function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  return buildPantsParts(sdf, rig, opts).all;
+}
+
+/** Worn pants decomposed into PARTS: `all` (full garment, identical to legacy
+ *  buildPants), `hips` (the seat/waistband region only — the briefs form, with no
+ *  leg sleeves, so a belt conformed to it can't reach down a thigh), and `legs`
+ *  (the leg sleeves, or null for briefs). Pairs with buildTopParts.torso to give a
+ *  belt a torso-only conform surface (`union(top.torso, pants.hips)`). */
+function buildPantsParts(sdf: SdfApi, rig: Rig, opts?: unknown): { all: Node; hips: Node; legs: Node | null } {
   const o = obj(opts, 'pants(opts)');
   assertNoUnknownKeys(o, ['rise', 'leg', 'cuffZ', 'thickness', 'length'], 'pants(opts)');
   const leg = o.leg === undefined ? 'slim' : assertEnum(o.leg, ['slim', 'cargo'] as const, 'pants.leg');
@@ -3838,31 +3850,54 @@ function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // the whole coverage node) is untouched.
   const coverage = body.intersect(zone).smoothIntersect(underWaist, hemK);
 
-  // briefs: seat + gusset + hip pads only — leotard bottoms, swimwear.
+  // HIPS-ONLY part: the seat/waistband region with coverage clipped to the SEAT
+  // zone alone (never the leg zones) — the briefs form. This is the torso-side
+  // conform surface a belt should use (paired with buildTopParts.torso); it ends
+  // at the hip silhouette, so the belt can't be dilated down a thigh.
+  const hipsCoverage = body.intersect(seatZone).smoothIntersect(underWaist, hemK);
+  const hips = seat
+    .smoothUnion(gusset, r.upperLeg * 0.8)
+    .smoothUnion(hipPad(j.upperLegL as Vec3, j.lowerLegL as Vec3), r.upperLeg * 0.8)
+    .smoothUnion(hipPad(j.upperLegR as Vec3, j.lowerLegR as Vec3), r.upperLeg * 0.8)
+    .union(hipsCoverage);
+
+  // briefs: seat + gusset + hip pads only — leotard bottoms, swimwear. The hips
+  // part IS the whole garment here (no leg sleeves).
   if (length === 'briefs') {
-    return seat
-      .smoothUnion(gusset, r.upperLeg * 0.8)
-      .smoothUnion(hipPad(j.upperLegL as Vec3, j.lowerLegL as Vec3), r.upperLeg * 0.8)
-      .smoothUnion(hipPad(j.upperLegR as Vec3, j.lowerLegR as Vec3), r.upperLeg * 0.8)
-      .union(coverage);
+    return { all: hips, hips, legs: null };
   }
   // Seat↔sleeve welds must be at least as soft as the body's hip weld — a
   // flexed hip's skin bulge pokes through a tighter garment weld.
+  const legL = legSleeve(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3);
+  const legR = legSleeve(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3);
   let pants = seat
     .smoothUnion(gusset, r.upperLeg * 0.8)
     .smoothUnion(hipPad(j.upperLegL as Vec3, j.lowerLegL as Vec3), r.upperLeg * 0.8)
     .smoothUnion(hipPad(j.upperLegR as Vec3, j.lowerLegR as Vec3), r.upperLeg * 0.8)
-    .smoothUnion(legSleeve(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3), r.upperLeg * 1.2)
-    .smoothUnion(legSleeve(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3), r.upperLeg * 1.2);
+    .smoothUnion(legL, r.upperLeg * 1.2)
+    .smoothUnion(legR, r.upperLeg * 1.2);
   if (leg === 'cargo') {
     const pkt = (side: number): Node => sdf.roundedBox([r.upperLeg * 0.9, r.upperLeg * 0.4, r.upperLeg * 1.4], r.upperLeg * 0.18)
       .translate([side * (r.upperLeg + t) * 1.15, -r.upperLeg * 0.2, mix(j.lowerLegL[2], j.upperLegL[2], 0.5)]);
     pants = pants.smoothUnion(pkt(+1), r.upperLeg * 0.25).smoothUnion(pkt(-1), r.upperLeg * 0.25);
   }
-  return pants.union(coverage);
+  return { all: pants.union(coverage), hips, legs: sdf.union(legL, legR) };
 }
 
+/** Back-compat facade: the full worn top as a single Node (what every catalog
+ *  figure unions + labels today). New code wanting the torso panel separately
+ *  (to conform a belt/sash that must NOT reach the arms) calls buildTopParts. */
 function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  return buildTopParts(sdf, rig, opts).all;
+}
+
+/** A worn top decomposed into PARTS: `all` (the full garment, identical to the
+ *  legacy buildTop output), `torso` (the torso-only panel — built with no arm
+ *  masses and no sleeve zone, so it never bulges out toward a limb), and
+ *  `sleeves` (the sleeve+yoke solids, or null for a sleeveless top). The split is
+ *  the structural fix for "belt/sash on the arms": conform the band to `torso`
+ *  and its isotropic round() can't dilate a sleeve outward into the band. */
+function buildTopParts(sdf: SdfApi, rig: Rig, opts?: unknown): { all: Node; torso: Node; sleeves: Node | null } {
   const o = obj(opts, 'top(opts)');
   assertNoUnknownKeys(o, ['sleeve', 'hemZ', 'thickness'], 'top(opts)');
   const sleeve = o.sleeve === undefined ? 'short' : assertEnum(o.sleeve, ['none', 'short', 'long'] as const, 'top.sleeve');
@@ -3954,6 +3989,21 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   let garment = shell.smoothUnion(clav, r.neck * 0.9)
     .union(body.intersect(zone).smoothIntersect(hemPlane, hemK))
     .smoothIntersect(hemPlane, hemK);
+
+  // --- TORSO-ONLY conform panel ------------------------------------------------
+  // The same shaped garment built with NO arm masses and NO sleeve zone, so its
+  // surface follows only the torso silhouette. A belt/sash conformed to THIS can
+  // never be dilated out onto a sleeve (the failure that `occludeArms` could only
+  // partly carve back). SDF nodes are lazy expression trees, so rebuilding the
+  // panel here costs nothing until it's actually marched/meshed.
+  let torsoMasses = buildTorso(sdf, rig);
+  if (isDress) torsoMasses = torsoMasses.union(buildLegs(sdf, rig));
+  const torsoZone = sdf.box([big, big, zTop - zBot]).translate([0, 0, (zTop + zBot) / 2]);
+  const torsoPanel = shell.smoothUnion(clav, r.neck * 0.9)
+    .union(torsoMasses.round(t).intersect(torsoZone).smoothIntersect(hemPlane, hemK))
+    .smoothIntersect(hemPlane, hemK);
+
+  let sleeves: Node | null = null;
   if (sleeve !== 'none') {
     // Sleeves FOLLOW the arm chain: a straight shoulder→forearm capsule cuts the
     // corner on a bent elbow and the elbow pokes through, so the long sleeve is
@@ -3976,13 +4026,18 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
         .union(sdf.sphere(rad * 0.95).translate(end));
     };
     const yoke = (S: Vec3): Node => sdf.sphere((r.upperArm + t) * 1.2).translate(S);
+    const slL = sl(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3);
+    const slR = sl(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3);
+    const ykL = yoke(j.upperArmL as Vec3);
+    const ykR = yoke(j.upperArmR as Vec3);
     garment = garment
-      .smoothUnion(sl(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3), r.upperArm * 0.7)
-      .smoothUnion(sl(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3), r.upperArm * 0.7)
-      .smoothUnion(yoke(j.upperArmL as Vec3), r.upperArm * 0.8)
-      .smoothUnion(yoke(j.upperArmR as Vec3), r.upperArm * 0.8);
+      .smoothUnion(slL, r.upperArm * 0.7)
+      .smoothUnion(slR, r.upperArm * 0.7)
+      .smoothUnion(ykL, r.upperArm * 0.8)
+      .smoothUnion(ykR, r.upperArm * 0.8);
+    sleeves = sdf.union(slL, slR, ykL, ykR);
   }
-  return garment;
+  return { all: garment, torso: torsoPanel, sleeves };
 }
 
 // Resolve a coverage level (`top`/`bottom`) that may be a named landmark
@@ -4381,6 +4436,24 @@ export interface FigureNamespace {
      *  the under-garments; `ties:false` drops the waist ties. */
     apron(rig: Rig, opts?: object): Node;
   };
+  /** The clothed garments decomposed into PARTS, so an accessory can conform to a
+   *  region (the torso) WITHOUT the limbs. `top` returns `{ all, torso, sleeves }`
+   *  and `pants` returns `{ all, hips, legs }`; `all` is identical to the matching
+   *  `F.clothing.*` Node. Conform a belt/sash to `union(garment.top(...).torso,
+   *  garment.pants(...).hips)` — the band's isotropic offset then follows only the
+   *  torso silhouette and can NEVER be dilated out onto a sleeve (the root-cause
+   *  fix for "belt on the arms"; no `occludeArms` tuning needed). */
+  garment: {
+    top(rig: Rig, opts?: object): { all: Node; torso: Node; sleeves: Node | null };
+    pants(rig: Rig, opts?: object): { all: Node; hips: Node; legs: Node | null };
+  };
+  /** The bare body as named PARTS — the vocabulary for "this accessory wraps the
+   *  neck and must clear the shoulders". Each is the matching bare-body builder;
+   *  pass the relevant part(s) as an accessory's `surface`/`clear`. (`arms`/`legs`
+   *  are both sides unioned, matching `F.arms`/`F.legs`.) */
+  parts(rig: Rig, opts?: object): {
+    torso: Node; neck: Node; head: Node; arms: Node; hands: Node; legs: Node; feet: Node;
+  };
 }
 
 /** Translate an SDF node so its bounding-box anchor lands at `joint`. Removes
@@ -4666,10 +4739,10 @@ function ringBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
 function buildBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
   const f = asRingFrame(frame, 'band(frame)');
   const o = obj(opts, 'band(opts)');
-  assertNoUnknownKeys(o, ['surface', 'height', 'thickness', 'clearance', 'drop', 'occlude', 'rig'], 'band(opts)');
+  assertNoUnknownKeys(o, ['surface', 'height', 'thickness', 'clearance', 'drop', 'occlude', 'rig', 'clear'], 'band(opts)');
   const surface = o.surface as Node | undefined;
   if (!surface || typeof surface.bounds !== 'function') {
-    throw new ValidationError('band requires a `surface` node to conform to (e.g. F.torso(rig), or the clothed body union).');
+    throw new ValidationError('band requires a `surface` node to conform to (e.g. F.garment.top(rig).torso, or the torso-only clothed union — NOT a surface that includes the arms, or the band will be dilated out onto a sleeve).');
   }
   const reach = Math.max(f.rx, f.ry);
   const thickness = num(o.thickness, reach * 0.10, 'band.thickness', 1e-3);
@@ -4681,7 +4754,17 @@ function buildBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
   const c = add3(f.center, scale3(f.axis, -drop));
   const big = (reach + clearance + thickness) * 4;
   const zone = sdf.box([big, big, height]).translate([c[0], c[1], c[2]]);
-  const band = grown.intersect(zone);
+  let band = grown.intersect(zone);
+  // `clear` (optional): parts the band must never intersect, hard-subtracted as a
+  // GUARANTEE. With a torso-only `surface` this is belt-and-suspenders insurance
+  // (the band already can't reach the arms); pass `clear: F.arms(rig)` to prove it.
+  if (o.clear !== undefined) {
+    const list = Array.isArray(o.clear) ? o.clear : [o.clear];
+    for (const c of list) {
+      if (!c || typeof (c as Node).bounds !== 'function') throw new ValidationError('band.clear must be an SDF node or array of nodes (e.g. F.arms(rig)).');
+      band = band.subtract(c as Node);
+    }
+  }
   // Layer: carve the arms (and any explicit occluders) so the band terminates at
   // limbs that cross it and re-wraps when they move — see occludersFrom.
   return applyOcclude(band, occludersFrom(sdf, o, f.region));
@@ -5000,8 +5083,19 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
       panel: (rig, opts) => buildPanel(sdf, assertRig(rig, 'clothing.panel(rig)'), opts),
       apron: (rig, opts) => buildApron(sdf, assertRig(rig, 'clothing.apron(rig)'), opts),
     },
+    garment: {
+      top: (rig, opts) => buildTopParts(sdf, assertRig(rig, 'garment.top(rig)'), opts),
+      pants: (rig, opts) => buildPantsParts(sdf, assertRig(rig, 'garment.pants(rig)'), opts),
+    },
+    parts: (rig) => {
+      const g = assertRig(rig, 'parts(rig)');
+      return {
+        torso: buildTorso(sdf, g), neck: buildNeck(sdf, g), head: buildHead(sdf, g),
+        arms: buildArms(sdf, g), hands: buildHands(sdf, g), legs: buildLegs(sdf, g), feet: buildFeet(sdf, g),
+      };
+    },
   };
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, buildBand, buildLayers, sharedSolid, ringPoint, strap, hangFrom, onFace };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildPantsParts, buildTop, buildTopParts, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, buildBand, buildLayers, sharedSolid, ringPoint, strap, hangFrom, onFace };

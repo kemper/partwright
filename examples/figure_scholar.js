@@ -29,9 +29,13 @@ const face = F.face.assemble(head, rig, {
 const eyes = F.face.eyes(rig, { radius: r.head * 0.14, lids: 'upper' });
 const skin = F.weld(rig, [F.torso(rig), F.neck(rig), F.arms(rig), F.hands(rig), F.legs(rig), F.feet(rig), face]).label('skin');
 
-// 3. COAT (long) + PANTS
-const coat = F.clothing.top(rig, { sleeve: 'long', hemZ: H * 0.30, thickness: r.chestX * 0.13 }).label('coat');
-const pants = F.clothing.pants(rig, { leg: 'slim', rise: 'mid' }).label('pants');
+// 3. COAT (long) + PANTS — built as PARTS so the belt can conform to the torso
+// panel alone (no sleeves). `.all` is the full worn garment; `.torso`/`.hips` are
+// the torso-only conform surfaces a belt wraps without ever reaching the arms.
+const coatG = F.garment.top(rig, { sleeve: 'long', hemZ: H * 0.30, thickness: r.chestX * 0.13 });
+const coat = coatG.all.label('coat');
+const pantsG = F.garment.pants(rig, { leg: 'slim', rise: 'mid' });
+const pants = pantsG.all.label('pants');
 
 // 4. GLASSES (Perched) — round rims on the eyes, bridge, temples to the ears.
 const ff = F.onFace(rig);
@@ -67,27 +71,22 @@ const hair = F.hair(rig, { style: 'short' }).label('hair');
 const hat = F.placeOnHead(hatLocal, rig, { sit: 0.30 }).label('hat');
 
 // 6. BELT (Ringed) — a FLUSH band (F.band) that cinches FLAT over the robe.
-// CRITICAL: conform to the TORSO CORE (no arms) + a coat-thickness clearance, so
-// the band wraps only the torso and sits just proud of the coat. Conforming to the
-// full clothed body (which includes the SLEEVES) built the band out onto the arm
-// in the first place, and occludeArms could only carve back a residual — the belt
-// still read as "on the arms". A torso-only surface never reaches the sleeve;
-// occludeArms below is then just insurance.
-// Conform to the COAT surface so the belt is visibly FLUSH on the robe (the coat
-// is loose — a torso-core band sits inside it and disappears). The sleeve wrap that
-// causes is removed by a large enough occludeArms below (it only cuts near the arm
-// capsules, never the front of the belt).
-const coatThick = r.chestX * 0.13;
-const clothedBody = sdf.union(skin, coat, pants);
+// ROOT-CAUSE FIX: conform to the garment's TORSO PANEL (coatG.torso) + the pants
+// HIPS panel — neither contains the sleeves/legs, so the band's isotropic offset
+// follows only the torso silhouette and CANNOT be dilated out onto the arm. This
+// replaces the old "conform to the whole clothed body, then subtract a perfectly-
+// sized dilated-arm occluder" approach that failed for three sessions (the arm
+// hugs the body, so torso∪sleeve reads as one fat surface with no separable lobe
+// to carve back). The belt is still flush on the coat because the torso panel and
+// the worn coat share the same surface at the waist. `clear: F.arms(rig)` is
+// belt-and-suspenders insurance, not the mechanism.
+const beltSurface = sdf.union(coatG.torso, pantsG.hips);
 const belt = F.band(rig.ring.waist, {
-  surface: clothedBody, thickness: r.waist * 0.10, height: r.chestX * 0.6,
-  clearance: r.chestX * 0.02,
+  surface: beltSurface, thickness: r.waist * 0.10, height: r.chestX * 0.6,
+  clearance: r.chestX * 0.02, clear: F.arms(rig),
 }).label('belt');
-const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: clothedBody, clearance: r.chestX * 0.02 });
+const bucklePt = F.ringPoint(rig.ring.waist, 0, { surface: beltSurface, clearance: r.chestX * 0.02 });
 const buckle = sdf.roundedBox([r.waist * 0.5, r.waist * 0.22, r.chestX * 0.5], r.waist * 0.06).translate(bucklePt);
-// Label the OUTER union (not just the parts): F.layers' occludeArms subtract only
-// propagates a label from a single labeled child, so an unlabeled union-on-top
-// would drop it and the belt would render uncoloured.
 const beltWithBuckle = belt.union(buckle.label('belt')).label('belt');
 
 // 7. BASE
@@ -108,18 +107,15 @@ api.paint.label('belt', '#3a2417');
 
 api.paint.label('base', '#54504a');
 
-// LAYERS — composite body + coat + belt with the belt arm-occluded (terminates at
-// the coat sleeve, never bleeds onto the arms). Props (eyes, hair, glasses, hat,
-// base) plain-unioned on top so they don't carve the garments.
-// occludeArms must dilate the arm past the belt's OUTER surface — i.e. by the coat
-// thickness PLUS the belt's own clearance + thickness — or it only carves the
-// belt's inner part and leaves the outer shell on the sleeve (the residual that
-// kept the belt reading as "on the arms"). Validated to zero the sleeve overlap.
+// LAYERS — composite body + coat + belt. The belt no longer needs `occludeArms`:
+// it was conformed to the torso panel (coatG.torso + pantsG.hips), so it never
+// reached the arms in the first place — there's nothing to carve back. Props
+// (eyes, hair, glasses, hat, base) plain-unioned on top so they don't carve.
 const body = F.layers(rig, [
   { node: skin, carve: false, priority: 0 },
   { node: coat, carve: false, priority: 1 },
   { node: pants, carve: false, priority: 1 },
-  { node: beltWithBuckle, carve: false, priority: 2, occludeArms: coatThick + r.waist * 0.13 + r.chestX * 0.05 },
+  { node: beltWithBuckle, carve: false, priority: 2 },
 ]);
 
 return sdf.union(body, eyes, hair, glasses, hat, base)
