@@ -630,14 +630,14 @@ The same principle drives **plate armor**: build the cuirass from `top.torso.rou
 sleeves. A pauldron/shoulder cap that *legitimately* sits on the arm is a separate
 solid built on the arm — leave it as its own piece.
 
-**Accessories conform to NAMED PARTS — `F.parts(rig)`.** The bare body as parts:
-`{ torso, neck, head, arms, hands, legs, feet }`. Conform an accessory to the part
-it wraps and it can't reach a part it shouldn't. A **choker** conforms to the neck
-column alone — `F.ring(rig.ring.neck, { surface: F.neck(rig), occlude: [hair] })` —
-so every azimuth hits the neck at the same tight radius and it can't spread onto the
-shoulders or terminate through the dress (conforming to the whole `skin`/`clothed`
-body lets a side azimuth march out to the trapezius/gown shoulder). The pendant
-*drop* still rides the clothed front (`surface: clothed`):
+**Accessories conform to the BODY PART they wrap.** Conform an accessory to the
+single bare-body part it sits on (`F.torso(rig)`, `F.neck(rig)`, `F.arms(rig)`, …,
+all already top-level builders) and it can't reach a part it shouldn't. A **choker**
+conforms to the neck column alone — `F.ring(rig.ring.neck, { surface: F.neck(rig),
+occlude: [hair] })` — so every azimuth hits the neck at the same tight radius and it
+can't spread onto the shoulders or terminate through the dress (conforming to the
+whole `skin`/`clothed` body lets a side azimuth march out to the trapezius/gown
+shoulder). The pendant *drop* still rides the clothed front (`surface: clothed`):
 
 ```js
 const collar = F.ring(rig.ring.neck, { tube: r.neck * 0.06, surface: F.neck(rig), occlude: [hair] });
@@ -1149,8 +1149,7 @@ F.garment.top(rig, opts)   → { all, torso, sleeves }    // parted form of clot
 F.garment.pants(rig, opts) → { all, hips, legs }        // parted form of clothing.pants
 //   `all` === the F.clothing.* Node. Conform a belt/sash to union(top.torso,
 //   pants.hips) — the torso-only panels — so the band never reaches the sleeves.
-F.parts(rig) → { torso, neck, head, arms, hands, legs, feet }  // bare body as parts
-//   Conform an accessory to the part it wraps (a choker → surface: F.neck(rig)).
+//   For a bare-body accessory, conform to the part it wraps (choker → F.neck(rig)).
 F.clothing.shoes(rig, { size, thickness, label, sole })  // sole + upper over each foot
 F.clothing.boots(rig, { size, shaftZ, thickness, label, sole })  // + a shaft up the lower leg
 //   Footwear keys off rig.sole.{L,R}, so it tracks leg*.twist turnout like

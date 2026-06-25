@@ -4439,13 +4439,6 @@ export interface FigureNamespace {
     top(rig: Rig, opts?: object): { all: Node; torso: Node; sleeves: Node | null };
     pants(rig: Rig, opts?: object): { all: Node; hips: Node; legs: Node | null };
   };
-  /** The bare body as named PARTS — the vocabulary for "this accessory wraps the
-   *  neck and must clear the shoulders". Each is the matching bare-body builder;
-   *  pass the relevant part(s) as an accessory's `surface`/`clear`. (`arms`/`legs`
-   *  are both sides unioned, matching `F.arms`/`F.legs`.) */
-  parts(rig: Rig, opts?: object): {
-    torso: Node; neck: Node; head: Node; arms: Node; hands: Node; legs: Node; feet: Node;
-  };
 }
 
 /** Translate an SDF node so its bounding-box anchor lands at `joint`. Removes
@@ -5006,13 +4999,6 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     garment: {
       top: (rig, opts) => buildTopParts(sdf, assertRig(rig, 'garment.top(rig)'), opts),
       pants: (rig, opts) => buildPantsParts(sdf, assertRig(rig, 'garment.pants(rig)'), opts),
-    },
-    parts: (rig) => {
-      const g = assertRig(rig, 'parts(rig)');
-      return {
-        torso: buildTorso(sdf, g), neck: buildNeck(sdf, g), head: buildHead(sdf, g),
-        arms: buildArms(sdf, g), hands: buildHands(sdf, g), legs: buildLegs(sdf, g), feet: buildFeet(sdf, g),
-      };
     },
   };
 }
