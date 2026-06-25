@@ -66,10 +66,9 @@ const pR = r.upperArm * 1.35 + shirtThick + armorGap;
 const pauldron = (cx, cy, cz) =>
   sdf.ellipsoid(pR * 1.25, pR * 1.05, pR * 0.7).translate([cx, cy, cz])
     .union(sdf.ellipsoid(pR * 1.0, pR * 0.82, pR * 0.5).translate([cx * 1.10, cy, cz - pR * 0.7]));
-// Cuirass = the torso shell (arm-occluded by F.layers, so it terminates at the
-// SLEEVE and never bleeds onto the arm beside the torso). Pauldrons = the shoulder
-// caps, which legitimately sit ON the upper arms — a SEPARATE layer that is NOT
-// arm-occluded (otherwise the limb-occlusion would eat them).
+// Cuirass = the torso shell (built from shirtG.torso.round(), so it offsets only
+// the torso and can't reach the arm beside it). Pauldrons = the shoulder caps,
+// which legitimately sit ON the upper arms — a separate piece, plain-unioned.
 const cuirass = plate.union(keel).smoothUnion(peascod, r.chestX * 0.25).union(fauld)
   .smoothSubtract(neckScoop, r.neck * 0.4)
   .label('armor');
@@ -171,20 +170,11 @@ api.paint.label('sword', '#cfd4da');
 api.paint.label('scabbard', '#5a3a22');
 api.paint.label('base', '#54504a');
 
-// 11. LAYERS — composite the body + garment stack. The belt and cuirass were both
-// built against the TORSO panel (shirtG.torso / pantsG.hips), so neither reaches
-// the arms — no `occludeArms` tuning anywhere. Higher priority wins where two
-// collide. The base body is carve:false (never trimmed — fine-hands marker stays
-// un-buried); shirt/pants carve:false (the cuirass offsets OUTWARD from the shirt
-// so it can't poke through). Pauldrons legitimately sit ON the upper arms.
-const body = F.layers(rig, [
-  { node: skin, carve: false, priority: 0 },
-  { node: shirt, carve: false, priority: 1 },
-  { node: pants, carve: false, priority: 1 },
-  { node: belt, carve: false, priority: 2 },
-  { node: cuirass, carve: false, priority: 3 },
-  { node: pauldrons, carve: false, priority: 3 },
-]);
+// 11. COMPOSITE — a plain union. The belt and cuirass were each built against the
+// TORSO panel (shirtG.torso / pantsG.hips), so neither reaches the arms and the
+// cuirass offsets strictly OUTWARD from the shirt — nothing contests space, so no
+// priority-carve or limb-occlusion layer is needed. Pauldrons sit ON the upper arms.
+const body = sdf.union(skin, shirt, pants, belt, cuirass, pauldrons);
 
 return sdf.union(body, eyes, sword, scabbard, hair, base)
   .build({ edgeLength: 0.42, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] });

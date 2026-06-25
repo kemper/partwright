@@ -107,16 +107,10 @@ api.paint.label('belt', '#3a2417');
 
 api.paint.label('base', '#54504a');
 
-// LAYERS — composite body + coat + belt. The belt no longer needs `occludeArms`:
-// it was conformed to the torso panel (coatG.torso + pantsG.hips), so it never
-// reached the arms in the first place — there's nothing to carve back. Props
-// (eyes, hair, glasses, hat, base) plain-unioned on top so they don't carve.
-const body = F.layers(rig, [
-  { node: skin, carve: false, priority: 0 },
-  { node: coat, carve: false, priority: 1 },
-  { node: pants, carve: false, priority: 1 },
-  { node: beltWithBuckle, carve: false, priority: 2 },
-]);
+// COMPOSITE — a plain union. The garments are built as PARTS (coatG.torso +
+// pantsG.hips drive the belt), so nothing bleeds onto a limb and no priority-carve
+// or limb-occlusion layer is needed: skin, coat, pants, belt + the props just union.
+const body = sdf.union(skin, coat, pants, beltWithBuckle);
 
 return sdf.union(body, eyes, hair, glasses, hat, base)
   .build({ edgeLength: 0.38, detail: [...F.faceDetail(rig)] });

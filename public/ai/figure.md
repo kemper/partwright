@@ -649,41 +649,26 @@ for (let i = 0; i < 7; i++) chain = chain.union(sdf.capsule(pts[i], pts[i + 1], 
 const necklace = chain.subtract(hair).label('jewelry');
 ```
 
-**Composite the garment stack — `F.layers(rig, entries)` (priority z-order).**
-`F.layers` makes the clothing/armor stack a **declared z-order** so each sits flush
-and the higher-priority one wins where two collide. Pass the rig then an ordered
-list of `{ node, label?, priority?, carve?, occludeArms?, occlude? }`:
-
-- **priority** (default = array index) — higher WINS contested space (armor over
-  shirt, hair over necklace).
-- **carve** (default true) — trimmed by higher layers. **Set `carve:false` on the
-  base body + standalone props** (skin, eyes, a held sword, the base): both so they
-  aren't eaten, AND because the **fine-hands marker must not be buried in a
-  `.subtract`** (it breaks sculpted hands). Also prefer `carve:false` on heavy
-  undergarments the outer shell already offsets past (keeps meshing fast).
-- **occlude** (node | array) — extra occluders subtracted from this layer.
-- **occludeArms: `<allowance>`** — *legacy* limb-occlusion (cheap dilated-capsule
-  arms carve the layer). **Prefer the garment-parts approach above** — conform to
-  `top.torso` so the band never reaches the arm in the first place. `occludeArms`
-  remains for cases where you can't rebuild the surface as parts, but it needs the
-  allowance tuned to reach past the layer's outer surface and is the approach that
-  historically left residual shells on the sleeve.
+**Composite the stack with a plain `sdf.union`.** Because each garment is built as
+parts (the belt/sash conformed to `top.torso`, the cuirass offset from
+`top.torso.round()`), nothing bleeds onto a limb and no garment contests another's
+space — so you just union the whole stack. There is no special layer/priority
+primitive: the parts approach removed the need for one (the old `F.layers` /
+`occludeArms` limb-occluder is gone — if you find it in an old prompt, replace it
+with parts + `sdf.union`).
 
 ```js
-// Belt + cuirass were each built against the TORSO panel (+ `clear: F.arms`), so
-// neither reaches the arms — NO occludeArms tuning anywhere.
-const body = F.layers(rig, [
-  { node: skin,      carve: false, priority: 0 },        // base — never trimmed
-  { node: shirt,     carve: false, priority: 1 },
-  { node: pants,     carve: false, priority: 1 },
-  { node: belt,      carve: false, priority: 2 },        // torso-conformed + cleared
-  { node: cuirass,   carve: false, priority: 3 },        // built from top.torso.round()
-  { node: pauldrons, carve: false, priority: 3 },        // sit ON the arms — own piece
-]);
-// Standalone props (eyes, a held sword, the base) plain-union OUTSIDE F.layers so
-// they don't carve the garments.
+// Belt + cuirass each built against the TORSO panel (+ `clear: F.arms`), so neither
+// reaches the arms; the cuirass offsets strictly outward from the shirt. Plain union:
+const body = sdf.union(skin, shirt, pants, belt, cuirass, pauldrons);
+// Standalone props (eyes, a held sword, the base) union on top too.
 return sdf.union(body, eyes, sword, scabbard, hair, base).build({ /* … */ });
 ```
+
+> One thing the old layer compositor handled that a plain union does not: the
+> **fine-hands marker must never be buried inside a `.subtract`** (it breaks
+> sculpted hands). With parts there's nothing to subtract the hands by, so a plain
+> union is safe — just don't introduce a `.subtract` that carves the skin/hands.
 
 **Check your work — `F.sharedSolid(a, b, opts?)` (the invariant primitive).** The
 failures above (armor on the arm, necklace through the gown, scabbard through the

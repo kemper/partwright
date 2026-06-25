@@ -4333,14 +4333,6 @@ export interface FigureNamespace {
    *  carve the arms so it terminates where limbs cross it. `opts`: `{ surface,
    *  height, thickness, clearance, drop, occlude, rig }`. Give it its own `.label`. */
   band(frame: RingFrame, opts?: object): Node;
-  /** Composite worn LAYERS with priority + automatic limb-occlusion: the clothing/
-   *  armor/accessory stack as a declared z-order so each sits flush, terminates at
-   *  limbs, and the right one wins where two collide. `entries` (low→high) are
-   *  `{ node, label?, priority?, carve?, occludeArms?, occlude? }`. Higher priority
-   *  WINS contested space; `occludeArms:<allowance>` carves the (sleeve-dilated)
-   *  arms so a torso band/plate can't bleed onto a limb; `carve:false` protects the
-   *  base body + props (and the fine-hands marker) from being trimmed. */
-  layers(rig: Rig, entries: object[]): Node;
   /** Invariant check: estimate how much two SDF solids OVERLAP, by sampling both
    *  fields over their bbox intersection (no mesh needed). Returns `{ overlaps,
    *  sharedVolume, point, samples }`. Assert a worn accessory is clear of a limb —
@@ -4770,77 +4762,6 @@ function buildBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
   return applyOcclude(band, occludersFrom(sdf, o, f.region));
 }
 
-/** Composite worn LAYERS with priority + automatic limb-occlusion — the figure's
- *  clothing/armor/accessory stack as a declared z-order, so each item sits flush,
- *  terminates at limbs, and the right one WINS where two collide, instead of being
- *  an independent solid the author hand-clears (the source of armor-bleeds-onto-arm
- *  and belt-on-sleeve). Pass the rig then an ordered entry list; each entry:
- *    `{ node, label?, priority?, carve?, occludeArms?, occlude? }`
- *  - **priority** (default = array index): higher WINS contested space (armor over
- *    shirt, hair over necklace).
- *  - **carve** (default true): this layer is trimmed by every higher-priority
- *    layer. **Set `carve:false` on the base body and standalone props** (skin,
- *    eyes, a held sword, the base) — both so they're never eaten by clothing AND
- *    because the fine-hands marker must not be buried inside a `.subtract` (that
- *    breaks sculpted hands).
- *  - **occludeArms** (number): the rig arms DILATED by this clothing allowance
- *    carve this layer, so a torso band/plate terminates at the SLEEVE (not the
- *    bare skin arm) and can't bleed onto a limb. Pass 0 for the bare arm.
- *  - **occlude** (node | array): extra occluders subtracted from this layer (e.g.
- *    hair over a necklace).
- *  Carving uses each higher layer's ALREADY-occluded solid, so where a plate was
- *  trimmed off a limb it also can't carve the limb away — no hole at the overlap. */
-function buildLayers(sdf: SdfApi, rigArg: unknown, entriesArg: unknown): Node {
-  const rig = assertRig(rigArg, 'layers(rig)');
-  if (!Array.isArray(entriesArg) || entriesArg.length === 0) {
-    throw new ValidationError('layers expects (rig, entries[]) with at least one entry.');
-  }
-  // Limb occluder: a few CHEAP capsules down each arm (upper/fore/hand), dilated
-  // by `grow` to cover the sleeve. A capsule chain — not buildArms().round() — so
-  // the subtract is Lipschitz and fast (the full anatomical arm tree is deep and
-  // non-Lipschitz: subtracting it both balloons mesh time AND leaves coincident-
-  // surface slivers / splits the plate into extra components).
-  const armCache = new Map<number, Node>();
-  const dilatedArms = (grow: number): Node => {
-    let a = armCache.get(grow);
-    if (a === undefined) {
-      const j = rig.joints, r = rig.r;
-      const cap = (p: string, q: string, rad: number): Node => sdf.capsule(j[p] as Vec3, j[q] as Vec3, rad + grow);
-      a = sdf.union(
-        cap('upperArmL', 'lowerArmL', r.upperArm), cap('lowerArmL', 'wristL', r.lowerArm), cap('wristL', 'handL', r.hand),
-        cap('upperArmR', 'lowerArmR', r.upperArm), cap('lowerArmR', 'wristR', r.lowerArm), cap('wristR', 'handR', r.hand),
-      );
-      armCache.set(grow, a);
-    }
-    return a;
-  };
-  const parsed = entriesArg.map((raw, i) => {
-    const e = obj(raw, `layers[${i}]`);
-    assertNoUnknownKeys(e, ['node', 'label', 'priority', 'carve', 'occludeArms', 'occlude'], `layers[${i}]`);
-    const node = e.node as Node;
-    if (!node || typeof node.bounds !== 'function') throw new ValidationError(`layers[${i}].node must be an SDF node.`);
-    if (e.label !== undefined && typeof e.label !== 'string') throw new ValidationError(`layers[${i}].label must be a string.`);
-    const priority = e.priority === undefined ? i : num(e.priority, i, `layers[${i}].priority`);
-    const carve = e.carve === undefined ? true : e.carve === true;
-    let occluded = node;
-    if (e.occludeArms !== undefined) occluded = occluded.subtract(dilatedArms(num(e.occludeArms, 0, `layers[${i}].occludeArms`, 0)));
-    if (e.occlude !== undefined) {
-      const list = Array.isArray(e.occlude) ? e.occlude : [e.occlude];
-      for (const o of list) {
-        if (!o || typeof (o as Node).bounds !== 'function') throw new ValidationError(`layers[${i}].occlude must be an SDF node or array of nodes.`);
-        occluded = occluded.subtract(o as Node);
-      }
-    }
-    return { occluded, label: e.label as string | undefined, priority, carve };
-  });
-  const out = parsed.map((e) => {
-    let n = e.occluded;
-    if (e.carve) for (const o of parsed) if (o !== e && o.priority > e.priority) n = n.subtract(o.occluded);
-    return e.label !== undefined ? n.label(e.label) : n;
-  });
-  return out.reduce((a, b) => a.union(b));
-}
-
 /** Estimate how much two SDF solids OVERLAP in space — the invariant-check
  *  primitive for "is accessory A clear of part B?". It Monte-Carlo samples a
  *  deterministic grid over the INTERSECTION of the two bounding boxes and counts
@@ -5056,7 +4977,6 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     standOn: (node, sole, opts) => standOn(node as Node, sole, opts),
     ring: (frame, opts) => ringBand(sdf, frame, opts),
     band: (frame, opts) => buildBand(sdf, frame, opts),
-    layers: (rig, entries) => buildLayers(sdf, rig, entries),
     sharedSolid: (a, b, opts) => sharedSolid(a, b, opts),
     ringPoint: (frame, az, opts) => ringPoint(frame, az, opts),
     strap: (a, b, opts) => strap(sdf, a, b, opts),
@@ -5098,4 +5018,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildPantsParts, buildTop, buildTopParts, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, buildBand, buildLayers, sharedSolid, ringPoint, strap, hangFrom, onFace };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildPantsParts, buildTop, buildTopParts, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, buildBand, sharedSolid, ringPoint, strap, hangFrom, onFace };
