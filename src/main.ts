@@ -209,6 +209,7 @@ import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontS
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
+import { computePatternColors, filterScopeTriangles } from './color/colorPattern';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
@@ -1136,6 +1137,22 @@ function resolveDescriptorTriangles(
       // Re-expand the stored [triIdx,r,g,b,…] entries through the subdivision
       // map (children inherit their parent's projected color).
       return entriesToPerTriColors(descriptor.entries, parentToChildren);
+    case 'pattern': {
+      // Algorithmic colourway: resolve the scope (an api.label region, remapped
+      // through subdivision, or the whole mesh), then assign each triangle one
+      // palette colour from the field (computePatternColors → perTriColors).
+      const label = descriptor.scope?.label;
+      let base: Set<number>;
+      if (label) {
+        const ids = currentLabelMap?.get(label);
+        base = ids ? remapTriangleIds(ids, parentToChildren) : new Set<number>();
+      } else {
+        base = new Set<number>();
+        for (let t = 0; t < mesh.numTri; t++) base.add(t);
+      }
+      const scope = filterScopeTriangles(mesh, base, descriptor.scope);
+      return { triangles: scope, perTriColors: computePatternColors(mesh, scope, descriptor) };
+    }
   }
 }
 
@@ -16652,7 +16669,7 @@ async function main() {
       // — passing [] when nothing was declared clears any prior run's layer.
       // This layer never locks the editor and is never serialized; the user's
       // manual paint composites on top of it. See src/color/regions.ts.
-      const modelColorDecls: { name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor }[] = [];
+      const modelColorDecls: { name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor; perTriColors?: Map<number, [number, number, number]> }[] = [];
       if (result.labelColors && currentLabelMap) {
         for (const [name, color] of result.labelColors) {
           const triangles = currentLabelMap.get(name);
@@ -16673,8 +16690,8 @@ async function main() {
           if (!paintAdjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) {
             paintAdjacency = buildAdjacency(mesh);
           }
-          const { triangles } = resolveDescriptorTriangles(d, mesh, paintAdjacency, null);
-          if (triangles.size > 0) modelColorDecls.push({ name: op.name, color: op.color, triangles, descriptor: d });
+          const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, paintAdjacency, null);
+          if (triangles.size > 0) modelColorDecls.push({ name: op.name, color: op.color, triangles, descriptor: d, perTriColors });
         }
       }
       setModelColorRegions(modelColorDecls);

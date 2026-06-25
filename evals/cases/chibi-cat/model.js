@@ -24,7 +24,7 @@ const p = api.params({
            options: ['round', 'pointed'],
            label: 'Face' },
   pattern: { type: 'select', default: 'solid',
-           options: ['solid', 'tuxedo', 'points'],
+           options: ['solid', 'tuxedo', 'points', 'tabby', 'calico', 'spotted', 'siamese'],
            label: 'Pattern' },
 });
 
@@ -537,7 +537,48 @@ const cat = sdf.union(
 // +0.25 for standing to clear paw sphere bottom (paw centers at z=lt, bottom at z≈lt-lt=0 but sdf smoothUnion bulges slightly below)
 const liftZ = p.pose === 'sitting' ? 0.9 : 0.25;
 
-return cat.translate(0, 0, liftZ).build({
+const result = cat.translate(0, 0, liftZ).build({
   edgeLength: 0.45,
   detail: detailRegions,
 });
+
+// ============================================================
+// PROCEDURAL COLORWAYS (flush surface paint — api.paint.pattern, not geometry)
+// Algorithmic colour fields (the colour twin of api.surface.* textures) paint
+// each body triangle one palette colour, so the coat stays perfectly flush (no
+// raised welt). Scoped to the 'body' label so eyes/nose/muzzle (separate labeled
+// solids, palette-coloured) are never touched. Coords are POST-lift.
+//  - tabby   stripes  (warm-brown mackerel + fBm warp)
+//  - calico  patches  (cream / orange / dark-brown blotches)
+//  - spotted spots    (Worley leopard rosettes)
+//  - siamese gradient (dark points on the extremities via ear/paw/tail/face anchors)
+// ============================================================
+function applyColorway() {
+  const a = markAnchorsFor();
+  const lift = (pt) => [pt[0], pt[1], pt[2] + liftZ];
+  switch (p.pattern) {
+    case 'tabby':
+      api.paint.pattern({ pattern: 'stripes', colors: ['#D6913E', '#5A3A1F'],
+                          scope: 'body', axis: 'z', scale: 5, warp: 0.45 });
+      break;
+    case 'calico':
+      api.paint.pattern({ pattern: 'patches', colors: ['#F2EAD6', '#E0892F', '#3A2A22'],
+                          scope: 'body', scale: 5 });
+      break;
+    case 'spotted':
+      api.paint.pattern({ pattern: 'spots', colors: ['#E8C07A', '#5A3A1F'],
+                          scope: 'body', scale: 4, coverage: 0.4 });
+      break;
+    case 'siamese': {
+      const anchors = [
+        ...a.earPts.map(lift), ...a.pawPts.map(lift), ...a.tailPts.map(lift), lift(a.faceCenter),
+      ];
+      api.paint.pattern({ pattern: 'gradient', colors: ['#EDE2CE', '#4A3329'],
+                          scope: 'body', anchors, scale: 5.5, warp: 0.18 });
+      break;
+    }
+  }
+}
+applyColorway();
+
+return result;

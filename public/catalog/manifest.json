@@ -1681,6 +1681,56 @@
       "tags": [
         "figures"
       ]
+    },
+    {
+      "id": "chibi-cat-tabby",
+      "name": "Tabby Cat",
+      "file": "cat_tabby.partwright.json",
+      "language": "manifold-js",
+      "description": "A cute chibi tabby cat with big eyes and procedural mackerel stripes — customizable pose, build, ears, tail, and coat pattern (tabby, calico, spotted, siamese).",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "chibi-cat-calico",
+      "name": "Calico Cat",
+      "file": "cat_calico.partwright.json",
+      "language": "manifold-js",
+      "description": "A chibi calico cat — cream, orange, and dark-brown patches from a procedural colorway. Customizable pose, build, ears, tail, and coat pattern.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "chibi-cat-siamese",
+      "name": "Siamese Cat",
+      "file": "cat_siamese.partwright.json",
+      "language": "manifold-js",
+      "description": "A chibi seal-point siamese cat with blue eyes and dark points on the ears, face mask, paws, and tail. Customizable pose, build, ears, tail, and coat pattern.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "chibi-dog-brindle",
+      "name": "Brindle Pup",
+      "file": "dog_brindle.partwright.json",
+      "language": "manifold-js",
+      "description": "A cute chibi puppy with floppy ears and a procedural brindle (tiger-striped) coat over fawn. Customizable pose, build, ears, tail, and coat pattern (brindle, merle, dalmatian spots).",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "chibi-dog-dalmatian",
+      "name": "Dalmatian Pup",
+      "file": "dog_dalmatian.partwright.json",
+      "language": "manifold-js",
+      "description": "A chibi dalmatian puppy — procedural black spots on a white coat, with amber eyes. Customizable pose, build, ears, tail, and coat pattern.",
+      "tags": [
+        "figures"
+      ]
     }
   ]
 }
