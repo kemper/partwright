@@ -100,6 +100,40 @@ describe('grip frame — palm side (held props seat in the palm, not the knuckle
   });
 });
 
+describe('arm pose `roll` — wrist roll about the gripAxis (sword direction)', () => {
+  it('keeps gripAxis fixed and rotates palmNormal in the plane perpendicular to it', () => {
+    const base = buildRig({ height: 64, pose: { armR: { raiseSide: 5, raiseFwd: 85, bend: 95, thumb: 'in' } } });
+    const flip = buildRig({ height: 64, pose: { armR: { raiseSide: 5, raiseFwd: 85, bend: 95, thumb: 'in', roll: 180 } } });
+    // GripAxis (= sword's long axis under holdAt) MUST be identical: the sword
+    // stays put. This is the structural guarantee `roll` makes that the palm/thumb
+    // knobs do not — they roll about the upper-arm axis and so always tilt gripAxis.
+    const gB = base.grip.R.gripAxis, gF = flip.grip.R.gripAxis;
+    expect(Math.abs(gB[0] - gF[0])).toBeLessThan(1e-6);
+    expect(Math.abs(gB[1] - gF[1])).toBeLessThan(1e-6);
+    expect(Math.abs(gB[2] - gF[2])).toBeLessThan(1e-6);
+    // PalmNormal MUST flip (rotated 180° about gripAxis → negated, since palmN ⊥ gripAxis).
+    const pB = base.grip.R.palmNormal, pF = flip.grip.R.palmNormal;
+    expect(Math.abs(pB[0] + pF[0])).toBeLessThan(1e-6);
+    expect(Math.abs(pB[1] + pF[1])).toBeLessThan(1e-6);
+    expect(Math.abs(pB[2] + pF[2])).toBeLessThan(1e-6);
+    // Reach (forearm direction) also flipped — the wrist swung to the other side
+    // of the sword. This is precisely the move the existing knobs can't make.
+    const rB = base.grip.R.reach, rF = flip.grip.R.reach;
+    expect(Math.abs(rB[0] + rF[0])).toBeLessThan(1e-6);
+    expect(Math.abs(rB[1] + rF[1])).toBeLessThan(1e-6);
+    expect(Math.abs(rB[2] + rF[2])).toBeLessThan(1e-6);
+  });
+
+  it('roll: 0 (and undefined) are identical to the no-roll pose', () => {
+    const base = buildRig({ height: 64, pose: { armR: { raiseSide: 5, raiseFwd: 85, bend: 95, thumb: 'in' } } });
+    const zero = buildRig({ height: 64, pose: { armR: { raiseSide: 5, raiseFwd: 85, bend: 95, thumb: 'in', roll: 0 } } });
+    for (let i = 0; i < 3; i++) {
+      expect(zero.grip.R.point[i]).toBeCloseTo(base.grip.R.point[i], 5);
+      expect(zero.grip.R.palmNormal[i]).toBeCloseTo(base.grip.R.palmNormal[i], 5);
+    }
+  });
+});
+
 describe('grip frame — thumb axis + `thumb` pose hint', () => {
   it('exposes a thumbAxis that curls over the front of the grip (≈ reach+palm)', () => {
     const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 30, bend: 40 } } });

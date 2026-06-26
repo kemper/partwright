@@ -123,7 +123,7 @@ F.rig({
   belly,       // 0..2 abdominal/pregnancy swell (default 0; ~0.5 tummy, ~0.7-1 pregnant). A dress/top drapes over it automatically.
   pose: {      // all optional; neutral standing defaults
     arms, legs, // SYMMETRIC shorthand — seeds BOTH sides at once (see below)
-    armL, armR, // { raiseSide, raiseFwd, bend, twist }   degrees — override per side
+    armL, armR, // { raiseSide, raiseFwd, bend, twist, palm | thumb, roll }   degrees — override per side
     legL, legR, // { raiseSide, raiseFwd, bend, twist }   degrees
     head,       // { yaw, pitch, roll }
     spine,      // { lean, turn, side }
@@ -224,6 +224,7 @@ only accepted names — an unknown key throws (see the Naming policy below).
 | `arm*.raiseFwd` | swing arm forward −Y (+) / back +Y (−) at the shoulder |
 | `arm*.bend` | bend the forearm (0–160) — an anatomical curl: a hanging arm brings the fist forward and up |
 | `arm*.twist` | **roll the elbow-curl plane** about the upper-arm axis. 0 = curl forward (−Y). **For a raised arm, `twist ≈ 90` curls the fist UP** (double-biceps, ballet fifth, victory) — see recipe below. |
+| `arm*.roll` | **wrist roll about the held prop's long axis** (= gripAxis), applied AFTER bend/palm/thumb. The sword/staff/etc. stays put; the hand swings to the OTHER side of it. Use this when you want a 180° flip of the wrist around the grip and the palm/thumb knobs keep moving the rest of the arm. Degrees, ±360. |
 | `leg*.raiseSide` | spread the leg sideways (stance width) |
 | `leg*.raiseFwd` | step the leg forward −Y (+) / back +Y (−) at the hip |
 | `leg*.bend` | bend the shank toward the back +Y (0–150) |
