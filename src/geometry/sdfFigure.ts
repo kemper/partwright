@@ -149,7 +149,7 @@ function obj(v: unknown, name: string): Record<string, unknown> {
   return (assertObject(v, name, { optional: true }) ?? {}) as Record<string, unknown>;
 }
 
-interface JointPose { raiseSide: number; raiseFwd: number; bend?: number; twist: number; palm?: string; thumb?: string; roll?: number }
+interface JointPose { raiseSide: number; raiseFwd: number; bend?: number; twist: number; palm?: string; thumb?: string }
 interface HeadPose { yaw: number; pitch: number; roll: number }
 interface SpinePose { lean: number; turn: number; side: number }
 
@@ -163,7 +163,7 @@ interface ResolvedPose {
 // "Naming policy" in public/ai/figure.md). Limbs: raiseSide (lift sideways),
 // raiseFwd (swing forward/back), bend (elbow/knee flexion), twist (axial roll).
 // Head: yaw / pitch / roll. There are no legacy aliases — these are the names.
-const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist', 'palm', 'thumb', 'roll'];
+const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist', 'palm', 'thumb'];
 const PALM_DIRS = ['up', 'down', 'forward', 'back', 'in', 'out'] as const;
 const LEG_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const HEAD_FIELDS = ['yaw', 'pitch', 'roll'];
@@ -181,7 +181,6 @@ function parseArm(v: unknown, name: string, defRaiseSide: number): JointPose {
     twist: num(o.twist, 0, `${name}.twist`),
     palm: o.palm === undefined ? undefined : assertEnum(o.palm, PALM_DIRS, `${name}.palm`),
     thumb: o.thumb === undefined ? undefined : assertEnum(o.thumb, PALM_DIRS, `${name}.thumb`),
-    roll: o.roll === undefined ? undefined : num(o.roll, 0, `${name}.roll`, -360, 360),
   };
 }
 function parseLeg(v: unknown, name: string): JointPose {
@@ -686,13 +685,6 @@ function buildRig(rawOpts: unknown): Rig {
     } else if (p.palm) {
       rollTo(norm3(cross3(foreDir, hinge)), p.palm);
     }
-    // `roll` is a FINAL wrist roll about the gripAxis (= hinge, the held prop's
-    // long axis), applied AFTER bend / palm / thumb have placed the forearm. It
-    // rotates the FOREARM direction about the gripAxis — sword direction is fixed,
-    // hand swings 180° around the sword to the other side. This is the verb the
-    // palm/thumb knobs can't reach: they roll about the upper-arm axis, which
-    // also moves the forearm AWAY from where you wanted it. `roll` doesn't.
-    if (p.roll) foreDir = norm3(rotAxis(foreDir, hinge, p.roll));
     const W = add3(E, scale3(foreDir, foreArmLen));
     const handC = add3(W, scale3(foreDir, r.hand * 0.9));
     return { S, E, W, handC, dir, foreDir, hinge };
