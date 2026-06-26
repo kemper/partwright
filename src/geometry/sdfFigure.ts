@@ -1409,7 +1409,7 @@ function tapered(sdf: SdfApi, a: Vec3, b: Vec3, ra: number, rb: number, k: numbe
   return thick.smoothUnion(thin, Math.max(k, Math.min(ra, rb) * 1.4));
 }
 
-function buildArms(sdf: SdfApi, rig: Rig): Node {
+function buildArms(sdf: SdfApi, rig: Rig, side?: 'L' | 'R'): Node {
   const j = rig.joints, r = rig.r, d = rig.dir;
   const m = rig.opts.muscle;
   const k = r.lowerArm * 1.3;             // elbow weld — soft, no kink
@@ -1453,9 +1453,14 @@ function buildArms(sdf: SdfApi, rig: Rig): Node {
     }
     return out;
   }
-  const armL = arm(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3, d.upperArmL, d.lowerArmL, d.elbowHingeL);
-  const armR = arm(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3, d.upperArmR, d.lowerArmR, d.elbowHingeR);
-  return armL.union(armR);
+  // `side` selects ONE arm as a conform/clear surface (F.arm); undefined = both
+  // (F.arms), the body-weld input. A single side never includes the other, so a
+  // one-sided accessory (vambrace, bracer) conformed to it can't reach the far arm.
+  const armL = (): Node => arm(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3, d.upperArmL, d.lowerArmL, d.elbowHingeL);
+  const armR = (): Node => arm(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3, d.upperArmR, d.lowerArmR, d.elbowHingeR);
+  if (side === 'L') return armL();
+  if (side === 'R') return armR();
+  return armL().union(armR());
 }
 
 /** Z-Y-X (Rz·Ry·Rx) Euler angles, in degrees, that rotate the canonical axes
@@ -1652,7 +1657,7 @@ function handDetail(_rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: nu
   return [];
 }
 
-function buildLegs(sdf: SdfApi, rig: Rig): Node {
+function buildLegs(sdf: SdfApi, rig: Rig, side?: 'L' | 'R'): Node {
   const j = rig.joints, r = rig.r, d = rig.dir;
   const m = rig.opts.muscle;
   const k = r.lowerLeg * 1.3;               // knee weld — soft, no kink
@@ -1689,8 +1694,14 @@ function buildLegs(sdf: SdfApi, rig: Rig): Node {
   }
   // Glute centre: just behind (+Y) and below the hip joint, between hip and knee start.
   const glutePt = (Hj: Vec3): Vec3 => [Hj[0], r.hipsY * (0.6 + 0.2 * m), mix(Hj[2], j.hips[2], 0.25)];
-  return leg(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3, d.upperLegL, d.lowerLegL, d.kneeHingeL, glutePt(j.upperLegL as Vec3))
-    .union(leg(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3, d.upperLegR, d.lowerLegR, d.kneeHingeR, glutePt(j.upperLegR as Vec3)));
+  // `side` selects ONE leg as a conform/clear surface (F.leg); undefined = both
+  // (F.legs). A one-sided accessory (greave, garter) conformed to it can't reach
+  // the far leg.
+  const legL = (): Node => leg(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3, d.upperLegL, d.lowerLegL, d.kneeHingeL, glutePt(j.upperLegL as Vec3));
+  const legR = (): Node => leg(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3, d.upperLegR, d.lowerLegR, d.kneeHingeR, glutePt(j.upperLegR as Vec3));
+  if (side === 'L') return legL();
+  if (side === 'R') return legR();
+  return legL().union(legR());
 }
 
 /** The sole-plane Z of a foot (centre of the sole capsule), derived from its
@@ -4281,8 +4292,15 @@ export interface FigureNamespace {
   areolaColor(skin: string, factor?: number): string;
   neck(rig: Rig, opts?: object): Node;
   arms(rig: Rig, opts?: object): Node;
+  /** ONE arm (`'L'`/`'R'`) as a conform/clear surface — for a one-sided accessory
+   *  (vambrace, bracer, armband) that must hug that forearm/upper-arm and NOT reach
+   *  the other side. `F.arms` is both (the body-weld input); `F.arm` is one. */
+  arm(rig: Rig, side: 'L' | 'R'): Node;
   hands(rig: Rig, opts?: object): Node;
   legs(rig: Rig, opts?: object): Node;
+  /** ONE leg (`'L'`/`'R'`) as a conform/clear surface — for a one-sided greave,
+   *  garter, or knee pad. `F.legs` is both; `F.leg` is one. */
+  leg(rig: Rig, side: 'L' | 'R'): Node;
   feet(rig: Rig, opts?: object): Node;
   head(rig: Rig, opts?: object): Node;
   base(rig: Rig, opts?: object): Node;
@@ -4955,8 +4973,10 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     areolaColor: (skin, factor) => areolaColor(skin, factor),
     neck: (rig) => buildNeck(sdf, assertRig(rig, 'neck(rig)')),
     arms: (rig) => buildArms(sdf, assertRig(rig, 'arms(rig)')),
+    arm: (rig, side) => buildArms(sdf, assertRig(rig, 'arm(rig)'), assertEnum(side, ['L', 'R'] as const, 'arm(side)')),
     hands: (rig, opts) => buildHands(sdf, assertRig(rig, 'hands(rig)'), opts),
     legs: (rig) => buildLegs(sdf, assertRig(rig, 'legs(rig)')),
+    leg: (rig, side) => buildLegs(sdf, assertRig(rig, 'leg(rig)'), assertEnum(side, ['L', 'R'] as const, 'leg(side)')),
     feet: (rig, opts) => buildFeet(sdf, assertRig(rig, 'feet(rig)'), opts),
     head: (rig, opts) => buildHead(sdf, assertRig(rig, 'head(rig)'), opts),
     base: (rig, opts) => buildBase(sdf, assertRig(rig, 'base(rig)'), opts),

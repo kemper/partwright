@@ -76,6 +76,19 @@ const pauldrons = pauldron(j.upperArmL[0] * 1.06, j.upperArmL[1], j.upperArmL[2]
   .union(pauldron(j.upperArmR[0] * 1.06, j.upperArmR[1], j.upperArmR[2] + r.upperArm * 0.45))
   .label('armor');
 
+// VAMBRACE (Per-side) — a flush forearm guard on the SWORD (right) arm only.
+// Conformed to F.arm(rig, 'R') — the RIGHT arm alone — offset just proud of the
+// sleeve and clipped to a capsule down the forearm bone. Because the conform
+// surface is one side, the guard structurally CANNOT appear on the left arm
+// (the whole point of per-side conform surfaces). The left arm stays bare sleeve.
+const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+// Offset PAST the sleeve (shirtThick) so the guard stands proud as armor, not a
+// recoloured sleeve buried under the shirt.
+const vGap = shirtThick + r.lowerArm * 0.14;
+const foreE = j.lowerArmR, foreW = j.wristR;
+const vZone = sdf.capsule(lerp3(foreE, foreW, 0.10), lerp3(foreE, foreW, 0.96), r.lowerArm * 2.4);
+const vambrace = F.arm(rig, 'R').round(vGap).intersect(vZone).label('armor');
+
 // Clothed-body surface for the scabbard hip anchor only (it marches to the worn
 // surface at the side hip, where no arm is in the way).
 const clothed = sdf.union(skin, shirt, pants);
@@ -174,7 +187,7 @@ api.paint.label('base', '#54504a');
 // TORSO panel (shirtG.torso / pantsG.hips), so neither reaches the arms and the
 // cuirass offsets strictly OUTWARD from the shirt — nothing contests space, so no
 // priority-carve or limb-occlusion layer is needed. Pauldrons sit ON the upper arms.
-const body = sdf.union(skin, shirt, pants, belt, cuirass, pauldrons);
+const body = sdf.union(skin, shirt, pants, belt, cuirass, pauldrons, vambrace);
 
 return sdf.union(body, eyes, sword, scabbard, hair, base)
   .build({ edgeLength: 0.42, detail: [...F.faceDetail(rig), ...F.handDetail(rig)] });

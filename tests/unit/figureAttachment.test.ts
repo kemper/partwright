@@ -9,7 +9,7 @@ import { __testables__ as sdfT } from '../../src/geometry/sdf';
 import type { SdfApi, Vec3 } from '../../src/geometry/sdfFigure';
 
 const { buildRig, ringBand, buildBand, sharedSolid, ringPoint, strap, hangFrom, onFace,
-  buildTopParts, buildPantsParts, buildArms } = __figureTestables__;
+  buildTopParts, buildPantsParts, buildArms, buildLegs } = __figureTestables__;
 
 const api: SdfApi = {
   sphere: sdfT.primSphere,
@@ -237,6 +237,32 @@ describe('ring / strap / hangFrom geometry', () => {
     const b = hung.bounds();
     expect(b.max[2]).toBeCloseTo(18, 4);     // top at 20 − 2
     expect(b.min[2]).toBeCloseTo(12, 4);     // 6 tall below it
+  });
+});
+
+describe('per-side limb conform surfaces (F.arm / F.leg)', () => {
+  it('the two arms are disjoint, and a guard conformed to ONE arm is clear of the other', () => {
+    const rig = buildRig({ height: 64 });
+    const armL = buildArms(api, rig, 'L');
+    const armR = buildArms(api, rig, 'R');
+    // F.arm('L') and F.arm('R') never share solid (each is one side only).
+    expect(sharedSolid(armL, armR, { samples: 16000 }).sharedVolume).toBe(0);
+    // A flush guard conformed to the RIGHT arm (its proud offset shell) overlaps the
+    // right arm but is STRUCTURALLY clear of the left — the per-side guarantee a
+    // vambrace/bracer relies on.
+    const guard = armR.round(0.6);
+    expect(sharedSolid(guard, armR, { samples: 16000 }).sharedVolume).toBeGreaterThan(0);
+    expect(sharedSolid(guard, armL, { samples: 16000 }).sharedVolume).toBe(0);
+  });
+
+  it('F.leg selects one leg (the two legs are disjoint)', () => {
+    const rig = buildRig({ height: 64 });
+    const legL = buildLegs(api, rig, 'L');
+    const legR = buildLegs(api, rig, 'R');
+    expect(sharedSolid(legL, legR, { samples: 16000 }).sharedVolume).toBe(0);
+    // A greave conformed to the LEFT leg is clear of the right.
+    const greave = legL.round(0.6);
+    expect(sharedSolid(greave, legR, { samples: 16000 }).sharedVolume).toBe(0);
   });
 });
 

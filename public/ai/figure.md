@@ -312,8 +312,11 @@ F.torso(rig, { navel })       // chest + belly + pelvis masses (+ bust mound, fr
 F.nipples(rig, { size, nipple })  // flush paintable areolae + tiny nipples — TOP-LEVEL part
 F.neck(rig)
 F.arms(rig)                   // both arms: tapered limbs + deltoid caps
+F.arm(rig, 'L' | 'R')         // ONE arm — conform/clear surface for a one-sided
+                              //   vambrace/bracer/armband (can't reach the far arm)
 F.hands(rig, { grip })        // grip: 'fist' | 'open' | 'relaxed' — sculpted 3-finger+thumb
 F.legs(rig)
+F.leg(rig, 'L' | 'R')         // ONE leg — for a one-sided greave/garter/knee pad
 F.feet(rig, { toes })         // flat, real-foot sole; toes: true adds a sculpted toe row
 F.head(rig, { faceShape, jaw, chin, cheek })  // skull + jaw + cheeks (no features yet)
 F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
@@ -647,6 +650,18 @@ for (let i = 0; i <= 7; i++) pts.push(F.ringPoint(rig.ring.neck, 0, { surface: c
 let chain = collar;
 for (let i = 0; i < 7; i++) chain = chain.union(sdf.capsule(pts[i], pts[i + 1], r.neck * 0.06));
 const necklace = chain.subtract(hair).label('jewelry');
+```
+
+For a **one-sided** accessory use the per-side surface `F.arm(rig, 'R')` /
+`F.leg(rig, 'L')`. A vambrace conformed to the right arm alone is a flush forearm
+shell that *structurally cannot* appear on the left arm — offset the arm proud and
+clip it to the forearm bone:
+
+```js
+const lerp3 = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+const E = j.lowerArmR, W = j.wristR;                       // right forearm bone
+const zone = sdf.capsule(lerp3(E, W, 0.10), lerp3(E, W, 0.96), r.lowerArm * 2.4);
+const vambrace = F.arm(rig, 'R').round(r.lowerArm * 0.16).intersect(zone).label('armor');
 ```
 
 **Composite the stack with a plain `sdf.union`.** Because each garment is built as
