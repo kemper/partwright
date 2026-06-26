@@ -12,7 +12,7 @@ const F = sdf.figure;
 const rig = F.rig({
   height: 66, headsTall: 6.2, build: 'average', sex: 'male', muscle: 0.5,
   pose: {
-    armR: { raiseSide: 12, raiseFwd: 35, bend: 80, thumb: 'in' },
+    armR: { raiseSide: 5, raiseFwd: 85, bend: 95, thumb: 'in' },
     armL: { raiseSide: 11, raiseFwd: 5, bend: 16 },
     legL: { raiseSide: 7 }, legR: { raiseSide: 9, bend: 6 },
     head: { yaw: -6, pitch: -2 }, spine: { turn: 3 },
@@ -133,10 +133,12 @@ const pommel = sdf.cylinder(pommelR, pommelR * 0.7).rotate([90, 0, 0]).translate
 const swordLocal = grip.union(guard).smoothUnion(blade, bladeHalfT * 0.5).smoothUnion(pommel, pommelR * 0.3);
 const heldSword = F.holdAt(swordLocal, rig.grip.R);
 // Bridge the held sword to the fist with a stout capsule (rooted at the hand
-// centre, inside the fine-hand mesh) so the blade fuses as one printable piece —
-// a thin bridge fused in Node but split at the browser bake's edgeLength.
-const swordBridge = sdf.capsule(j.handR, rig.grip.R.point, r.hand * 0.72);
-const sword = heldSword.smoothUnion(swordBridge, r.hand * 0.5).label('sword');
+// centre, inside the fine-hand mesh) so the blade fuses as one printable piece.
+// Keep it SLIM: a fat bridge (≥0.6·hand) reads as a lump growing out of the back
+// of the hand, not a fist closed around the grip. A hair past the grip radius is
+// enough — it hides inside the closed fingers and just guarantees the weld.
+const swordBridge = sdf.capsule(j.handR, rig.grip.R.point, gripR * 1.1);
+const sword = heldSword.smoothUnion(swordBridge, r.hand * 0.3).label('sword');
 
 // 8. SCABBARD (Hung) — empty sheath at the left hip, pushed OUT past the thigh
 // and hung near-vertical so it clears the leg/clothes.
