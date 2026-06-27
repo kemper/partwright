@@ -30,7 +30,7 @@ const eyes = F.face.eyes(rig, { radius: r.head * 0.14, lids: 'upper' });
 
 // 3. SKIN — right hand a fist around the grip
 const skin = F.weld(rig, [
-  F.torso(rig), F.neck(rig), F.arms(rig), F.hands(rig, { grip: 'fist' }),
+  F.torso(rig), F.neck(rig), F.arms(rig), F.hands(rig, { grip: 'clutch' }),
   F.legs(rig), F.feet(rig), face,
 ]).label('skin');
 
@@ -133,12 +133,10 @@ const pommel = sdf.cylinder(pommelR, pommelR * 0.7).rotate([90, 0, 0]).translate
 const swordLocal = grip.union(guard).smoothUnion(blade, bladeHalfT * 0.5).smoothUnion(pommel, pommelR * 0.3);
 const heldSword = F.holdAt(swordLocal, rig.grip.R);
 // Bridge the held sword to the fist with a stout capsule (rooted at the hand
-// centre, inside the fine-hand mesh) so the blade fuses as one printable piece.
-// Keep it SLIM: a fat bridge (≥0.6·hand) reads as a lump growing out of the back
-// of the hand, not a fist closed around the grip. A hair past the grip radius is
-// enough — it hides inside the closed fingers and just guarantees the weld.
-const swordBridge = sdf.capsule(j.handR, rig.grip.R.point, gripR * 1.1);
-const sword = heldSword.smoothUnion(swordBridge, r.hand * 0.3).label('sword');
+// With grip:'clutch', the fingers + palm already wrap the sword's handle
+// (they overlap volumetrically), so no bridge needed — the fist-around-grip
+// overlap fuses the sword to the hand as one printable piece, no lump.
+const sword = heldSword.label('sword');
 
 // 8. SCABBARD (Hung) — empty sheath at the left hip, pushed OUT past the thigh
 // and hung near-vertical so it clears the leg/clothes.
