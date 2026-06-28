@@ -935,7 +935,11 @@ function createClipControls(): HTMLElement {
   // one-click pills (not collapsed into a menu): they're frequent, mutually
   // independent flips, and a menu round-trip per toggle was pure friction.
   container.appendChild(makeViewportPill('wireframe-toggle', '△ Edges', 'Show mesh edges'));
-  container.appendChild(makeViewportPill('grid-toggle', '▦ Grid', 'Show grid plane'));
+  // Grid defaults on — give it the active blue styling to match its state.
+  container.appendChild(makeViewportPill(
+    'grid-toggle', '▦ Grid', 'Hide grid plane',
+    'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/20 backdrop-blur text-blue-400 [@media(hover:hover)]:hover:bg-blue-500/30 transition-colors border border-blue-500/30 text-left',
+  ));
   container.appendChild(makeViewportPill('light-toggle', '☀ Light', 'Studio lighting: reflections + soft shadow (on by default)'));
   // Dimensions defaults on — give it the active blue styling to match its state.
   container.appendChild(makeViewportPill(
