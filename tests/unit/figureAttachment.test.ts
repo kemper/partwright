@@ -124,6 +124,233 @@ describe('grip frame — thumb axis + `thumb` pose hint', () => {
   });
 });
 
+describe('wristRoll — forearm pronation/supination (the real wrist DOF)', () => {
+  // These are ANATOMY assertions, not math invariants. The previous failed
+  // `roll` API satisfied a math invariant (gripAxis bit-identical between
+  // roll:0 and roll:180) but bent the elbow backwards through the wrist —
+  // shipped because the test asserted the wrong thing. The checks below would
+  // have caught it: the wrist position must be unchanged by wristRoll, and the
+  // forearm must continue FORWARD from the elbow (not be reflected through it).
+  const POSE = { raiseSide: 12, raiseFwd: 80, bend: 90 } as const;
+  const dot3 = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+  it('wristRoll leaves the wrist position unchanged', () => {
+    const base = buildRig({ height: 64, pose: { armR: { ...POSE } } });
+    for (const roll of [-90, -45, 30, 90, 180]) {
+      const rolled = buildRig({ height: 64, pose: { armR: { ...POSE, wristRoll: roll } } });
+      // Wrist joint MUST be at the same world point — pronation spins the hand
+      // about the forearm, it does not move the wrist through space.
+      expect(dist(rolled.joints.wristR as Vec3, base.joints.wristR as Vec3))
+        .toBeLessThan(1e-9);
+      // Same for the elbow and shoulder — wristRoll touches the hand frame only.
+      expect(dist(rolled.joints.lowerArmR as Vec3, base.joints.lowerArmR as Vec3))
+        .toBeLessThan(1e-9);
+      expect(dist(rolled.joints.upperArmR as Vec3, base.joints.upperArmR as Vec3))
+        .toBeLessThan(1e-9);
+    }
+  });
+
+  it('wristRoll preserves elbow anatomy (forearm continues forward from upper arm, never reflected)', () => {
+    // The previous failed `roll` reflected the wrist through the elbow, producing
+    // an "impossible bent elbow" — the forearm pointed BACK toward the shoulder.
+    // The invariant: the vector elbow→wrist projected onto the upper-arm direction
+    // must remain consistent (sign-stable) regardless of wristRoll, because the
+    // forearm bone is fixed and the wrist is just spun about it.
+    const base = buildRig({ height: 64, pose: { armR: { ...POSE } } });
+    const upperArmDir: Vec3 = [
+      (base.joints.lowerArmR[0] - base.joints.upperArmR[0]),
+      (base.joints.lowerArmR[1] - base.joints.upperArmR[1]),
+      (base.joints.lowerArmR[2] - base.joints.upperArmR[2]),
+    ];
+    const forearmDirBase: Vec3 = [
+      (base.joints.wristR[0] - base.joints.lowerArmR[0]),
+      (base.joints.wristR[1] - base.joints.lowerArmR[1]),
+      (base.joints.wristR[2] - base.joints.lowerArmR[2]),
+    ];
+    const baseSign = Math.sign(dot3(upperArmDir, forearmDirBase));
+    for (const roll of [-180, -90, 45, 90, 180]) {
+      const rolled = buildRig({ height: 64, pose: { armR: { ...POSE, wristRoll: roll } } });
+      const forearmDir: Vec3 = [
+        (rolled.joints.wristR[0] - rolled.joints.lowerArmR[0]),
+        (rolled.joints.wristR[1] - rolled.joints.lowerArmR[1]),
+        (rolled.joints.wristR[2] - rolled.joints.lowerArmR[2]),
+      ];
+      expect(Math.sign(dot3(upperArmDir, forearmDir))).toBe(baseSign);
+    }
+  });
+
+  it('wristRoll spins palmNormal (and thus the held bar) about the forearm axis', () => {
+    const base = buildRig({ height: 64, pose: { armR: { ...POSE } } });
+    const rolled = buildRig({ height: 64, pose: { armR: { ...POSE, wristRoll: 90 } } });
+    // palmNormal must actually CHANGE (the whole point of the DOF).
+    const palmDot = dot3(base.grip.R.palmNormal, rolled.grip.R.palmNormal);
+    expect(Math.abs(palmDot)).toBeLessThan(0.5);  // not parallel — significantly rotated
+    // gripAxis (the held bar direction) must also change.
+    const gripDot = dot3(base.grip.R.gripAxis, rolled.grip.R.gripAxis);
+    expect(Math.abs(gripDot)).toBeLessThan(0.5);
+    // And the rotation axis must be foreDir (forearm) — palmNormal stays ⊥ foreDir.
+    const foreDir = rolled.dir.lowerArmR as Vec3;
+    expect(Math.abs(dot3(rolled.grip.R.palmNormal, foreDir))).toBeLessThan(1e-6);
+  });
+
+  it('wristRoll defaults to 0 (back-compat — no figure that omits it sees a difference)', () => {
+    const a = buildRig({ height: 64, pose: { armR: { ...POSE } } });
+    const b = buildRig({ height: 64, pose: { armR: { ...POSE, wristRoll: 0 } } });
+    expect(a.grip.R.palmNormal).toEqual(b.grip.R.palmNormal);
+    expect(a.grip.R.gripAxis).toEqual(b.grip.R.gripAxis);
+    expect(a.joints.handR).toEqual(b.joints.handR);
+  });
+
+  it('mirrors symmetrically across the body (wristRoll * side, like twist)', () => {
+    // The same wristRoll value on both arms rolls them MIRROR-symmetrically
+    // (palmNormal x-components flip sign), the same convention as `twist`.
+    const both = buildRig({ height: 64, pose: { arms: { raiseSide: 14, bend: 70, wristRoll: 60 } } });
+    expect(Math.sign(both.grip.L.palmNormal[0]))
+      .toBe(-Math.sign(both.grip.R.palmNormal[0]));
+  });
+});
+
+describe('palmFacing / thumbAxis — aim targets for the wrist-roll DOF', () => {
+  // These are the user-facing aim solvers. They land palmNormal (or thumbAxis)
+  // as close as possible to a world direction, given the arm's foreDir is fixed
+  // by the elbow/shoulder pose. The achievable max is the target's perpendicular
+  // component; assertions use ≥0.9 dot products which require the target be
+  // reachable (the test poses are chosen so the geometry doesn't fight the aim).
+  const dot3 = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+  it("palmFacing:'back' lands the palm pointing toward +Y (knuckles to camera at -Y)", () => {
+    // Right arm straight out to the side (raiseSide=90, bend=0) — forearm
+    // points along -X, so palmNormal can reach ±Y perfectly. The aim solver
+    // picks the wristRoll that lands palmNormal · +Y near 1.
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 90, bend: 0, palmFacing: 'back' } } });
+    expect(dot3(rig.grip.R.palmNormal, [0, 1, 0])).toBeGreaterThan(0.99);
+  });
+
+  it("palmFacing:'forward' lands the palm toward -Y (toward the camera)", () => {
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 90, bend: 0, palmFacing: 'forward' } } });
+    expect(dot3(rig.grip.R.palmNormal, [0, -1, 0])).toBeGreaterThan(0.99);
+  });
+
+  it("aims AS CLOSE AS GEOMETRY ALLOWS when the target isn't perfectly reachable", () => {
+    // Forearm forward (raiseFwd=0, bend=90) → foreDir = -Y. palmNormal lives
+    // in the XZ plane (⊥ foreDir), so +Y is UNREACHABLE: the closest reachable
+    // is the perpendicular component, which is 0. The solver MUST NOT throw —
+    // it lands at the closest reachable point and the AI gets best-effort,
+    // matching the irremovable coupling documented in figure.md.
+    expect(() => buildRig({ height: 64, pose: { armR: { raiseSide: 0, raiseFwd: 0, bend: 90, palmFacing: 'back' } } }))
+      .not.toThrow();
+  });
+
+  it("thumbAxis:'up' aims the thumb toward +Z (vertical-blade grips)", () => {
+    // Arm raised forward+up (raiseFwd=90, bend=90) puts the forearm vertical
+    // (+Z), so the thumb — which sits mostly along reach (= foreDir) — lands
+    // near +Z naturally and the solver refines its perpendicular component
+    // to stay aligned. This IS the standard "sword overhead" grip.
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 0, raiseFwd: 90, bend: 90, thumbAxis: 'up' } } });
+    expect(rig.grip.R.thumbAxis[2]).toBeGreaterThan(0.8);
+  });
+
+  it('accepts an explicit Vec3 target — passes through verbatim', () => {
+    // Diagonal target: with arm out to the side, the YZ plane is fully reachable
+    // so a normalized [0, sqrt(0.5), sqrt(0.5)] target lands exactly.
+    const target: Vec3 = [0, Math.SQRT1_2, Math.SQRT1_2];
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 90, bend: 0, palmFacing: target } } });
+    expect(dot3(rig.grip.R.palmNormal, target)).toBeGreaterThan(0.99);
+  });
+
+  it('rejects setting more than one of wristRoll / palmFacing / thumbAxis', () => {
+    expect(() => buildRig({ height: 64, pose: { armR: { bend: 30, wristRoll: 45, palmFacing: 'back' } } }))
+      .toThrow(/pick at most one of wristRoll \/ palmFacing \/ thumbAxis/);
+    expect(() => buildRig({ height: 64, pose: { armR: { bend: 30, palmFacing: 'back', thumbAxis: 'up' } } }))
+      .toThrow(/pick at most one/);
+  });
+
+  it('leaves the wrist position unchanged (the same anatomy invariant as wristRoll)', () => {
+    const base = buildRig({ height: 64, pose: { armR: { raiseSide: 30, raiseFwd: 20, bend: 60 } } });
+    const aimed = buildRig({ height: 64, pose: { armR: { raiseSide: 30, raiseFwd: 20, bend: 60, palmFacing: 'back' } } });
+    expect(dist(aimed.joints.wristR as Vec3, base.joints.wristR as Vec3)).toBeLessThan(1e-9);
+  });
+});
+
+describe('holds — intent-clear "the bar held in this hand points <direction>"', () => {
+  const dot3 = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+  it('paired with F.grasp on the right hand, holds:up lands the visible bar pointing UP', () => {
+    // `holds: 'up'` knows about the side-dependent F.grasp flip and lands
+    // the gripAxis at the opposite direction so the auto-flipped prop ends
+    // up pointing the requested way. Right hand: gripAxis points -up = down,
+    // F.grasp flips → visible prop axis = +up.
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' } } });
+    // After F.grasp's flip on the right hand, the prop's visible direction
+    // is -gripAxis. So `-gripAxis` should be close to +up.
+    const g = rig.grip.R;
+    const propDir: Vec3 = [-g.gripAxis[0], -g.gripAxis[1], -g.gripAxis[2]];
+    expect(dot3(propDir, [0, 0, 1])).toBeGreaterThan(0.95);
+  });
+
+  it('left hand: no flip needed — gripAxis is the visible direction directly', () => {
+    const rig = buildRig({ height: 64, pose: { armL: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' } } });
+    // Left hand (side=+1): F.grasp does NOT flip, so the visible prop
+    // direction IS gripAxis. holds:'up' should land gripAxis at +up directly.
+    const g = rig.grip.L;
+    expect(dot3(g.gripAxis, [0, 0, 1])).toBeGreaterThan(0.95);
+  });
+
+  it('symmetric on both hands — same `arms: {holds:up}` produces visibly-up bars on each side', () => {
+    const rig = buildRig({ height: 64, pose: { arms: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' } } });
+    // Visible prop dir per side (account for the F.grasp auto-flip):
+    const visibleR: Vec3 = [-rig.grip.R.gripAxis[0], -rig.grip.R.gripAxis[1], -rig.grip.R.gripAxis[2]];
+    const visibleL = rig.grip.L.gripAxis;
+    expect(dot3(visibleR, [0, 0, 1])).toBeGreaterThan(0.95);
+    expect(dot3(visibleL, [0, 0, 1])).toBeGreaterThan(0.95);
+  });
+
+  it('rejects setting more than one of wristRoll / palmFacing / thumbAxis / holds', () => {
+    expect(() => buildRig({ height: 64, pose: { armR: { bend: 30, holds: 'up', wristRoll: 45 } } }))
+      .toThrow(/pick at most one of wristRoll \/ palmFacing \/ thumbAxis \/ holds/);
+  });
+});
+
+describe('grip.point — bar in the finger cup, not at the wrist line', () => {
+  it('bar sits AT LEAST 0.7·r.hand from the wrist joint (out where the fingers actually wrap)', () => {
+    // The old grip.point had no reach-direction offset, so the bar floated
+    // at the wrist line (≈0.4·r.hand from wristR). The new GRIP_FORWARD
+    // offset puts it in the finger cup. Regression guard: distance from
+    // wristR to grip.point ≥ 0.7·r.hand for a realistic bent pose.
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' } } });
+    const w = rig.joints.wristR as Vec3;
+    const p = rig.grip.R.point;
+    const d = Math.hypot(p[0] - w[0], p[1] - w[1], p[2] - w[2]) / rig.r.hand;
+    expect(d).toBeGreaterThan(0.7);
+  });
+});
+
+describe('graspProbe — pre-bake QC for a grasped prop', () => {
+  it('reports the visible prop direction and finger-cup distance for a correct grip', () => {
+    // Canonical AI-correct pose: holds:up + F.grasp on the right hand.
+    // The probe confirms (a) the bar visibly points UP and (b) it's in the
+    // finger cup, not at the wrist line.
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' } } });
+    const q = __figureTestables__.graspProbe(rig, 'R');
+    expect(q.gripDirection[2]).toBeGreaterThan(0.9);          // bar visibly +Z
+    expect(q.barCupDistance).toBeGreaterThan(0.7);            // bar in fingers, not at wrist
+    expect(q.summary).not.toMatch(/BAR AT WRIST/);
+  });
+
+  it('reports a different visible direction when the AI changes `holds`', () => {
+    // Same arm pose, different `holds` intent: probe surfaces the change
+    // pre-render so an AI can assert the result matches what they meant.
+    // Use raiseSide=90 (forearm sideways) so both `up` and `forward` are
+    // geometrically reachable on the right hand.
+    const up = buildRig({ height: 64, pose: { armR: { raiseSide: 90, bend: 0, holds: 'up' } } });
+    const fwd = buildRig({ height: 64, pose: { armR: { raiseSide: 90, bend: 0, holds: 'forward' } } });
+    const qUp = __figureTestables__.graspProbe(up, 'R');
+    const qFwd = __figureTestables__.graspProbe(fwd, 'R');
+    expect(qUp.gripDirection[2]).toBeGreaterThan(0.85);          // visibly +Z
+    expect(qFwd.gripDirection[1]).toBeLessThan(-0.85);            // visibly -Y
+  });
+});
+
 describe('ringPoint', () => {
   it('maps azimuth to the right side of the body', () => {
     const rig = buildRig({ height: 64 });

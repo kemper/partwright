@@ -12,7 +12,11 @@ const F = sdf.figure;
 const rig = F.rig({
   height: 66, headsTall: 6.2, build: 'average', sex: 'male', muscle: 0.5,
   pose: {
-    armR: { raiseSide: 5, raiseFwd: 85, bend: 95, thumb: 'in' },
+    // Sword arm: forearm forward + `holds: 'up'` (the bar in this hand points
+    // UP — i.e. vertical blade). That's the single intent-clear hint; paired
+    // with `F.grasp(sword, rig.grip.R)` below it produces a real sword grip on
+    // the first try — no wristRoll math, no flip flag, no per-figure tuning.
+    armR: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' },
     armL: { raiseSide: 11, raiseFwd: 5, bend: 16 },
     legL: { raiseSide: 7 }, legR: { raiseSide: 9, bend: 6 },
     head: { yaw: -6, pitch: -2 }, spine: { turn: 3 },
@@ -131,11 +135,12 @@ const bladeWedge = sdf.box([bladeHalfW * 2, bladeHalfW * 8, bladeLen])
 const blade = bladeSlab.intersect(bladeWedge).translate([0, 0, guardZ]);
 const pommel = sdf.cylinder(pommelR, pommelR * 0.7).rotate([90, 0, 0]).translate([0, 0, pommelZ]);
 const swordLocal = grip.union(guard).smoothUnion(blade, bladeHalfT * 0.5).smoothUnion(pommel, pommelR * 0.3);
-const heldSword = F.holdAt(swordLocal, rig.grip.R);
-// Bridge the held sword to the fist with a stout capsule (rooted at the hand
-// With grip:'clutch', the fingers + palm already wrap the sword's handle
-// (they overlap volumetrically), so no bridge needed — the fist-around-grip
-// overlap fuses the sword to the hand as one printable piece, no lump.
+// `F.grasp` is the AI-friendly "person holds a thing" helper: it auto-decides
+// whether the prop needs to be flipped end-for-end (so the thumb lands at the
+// prop's +Z end — the GUARD on a sword), and seats the prop in the FINGER CUP
+// (not at the wrist, which was the old defect). No magic numbers per figure —
+// every grasped prop on every figure goes through this and lands correctly.
+const heldSword = F.grasp(swordLocal, rig.grip.R);
 const sword = heldSword.label('sword');
 
 // 8. SCABBARD (Hung) — empty sheath at the left hip, pushed OUT past the thigh

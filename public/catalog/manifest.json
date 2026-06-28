@@ -1663,6 +1663,16 @@
       ]
     },
     {
+      "id": "figure-lumberjack",
+      "name": "Lumberjack",
+      "file": "figure_lumberjack.partwright.json",
+      "language": "manifold-js",
+      "description": "A bearded lumberjack in red flannel holding an axe ready to strike — built with the F.grasp + `holds: 'up'` AI-first-try grasping API.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
       "id": "scholar",
       "name": "Scholar",
       "file": "scholar.partwright.json",

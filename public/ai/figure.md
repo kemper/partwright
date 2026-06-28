@@ -270,9 +270,12 @@ The rig exposes (read-only, for custom parts):
   **`waist`** (the garment-fitting radius at the natural waist — use this, not
   `hipsX`, to size belts/skirts/tutus).
 - `rig.dir.{headForward, headUp, headLeft, upperArmL/R, lowerArmL/R, elbowHingeL/R,
-  upperLegL/R, lowerLegL/R, kneeHingeL/R, footL/R}` — unit directions for orienting
-  parts (`elbowHingeL/R` and `kneeHingeL/R` are the limb bend axes; `footL/R`
-  is the foot heading, yawed by `leg*.twist` turnout).
+  handSplayL/R, upperLegL/R, lowerLegL/R, kneeHingeL/R, footL/R}` — unit directions
+  for orienting parts. `elbowHingeL/R` is the **bone** hinge (used by muscle bellies
+  and the arm builder — doesn't rotate under `wristRoll`). `handSplayL/R` is the
+  **hand** splay axis (= elbow hinge spun by `wristRoll` / `palmFacing` / `thumbAxis`)
+  — what `rig.grip.{L,R}.gripAxis` and the placed hand consume. `kneeHingeL/R`
+  is the knee bend axis; `footL/R` is the foot heading, yawed by `leg*.twist` turnout.
 - `rig.grip.{L,R}` — **a full grip frame per hand, for connecting HELD props**
   (guitar neck, sword, staff, mug). Each has `{ point, palmNormal, gripAxis, reach }`:
   - `point` — the grip **cup** where a held cylinder's axis rests. This is **NOT**
@@ -472,44 +475,124 @@ combine with `embed` to sink into the hair. A skull-sized ring sits *inside* the
 larger hair volume — keep it small or grow it toward the hair radius so the band
 straddles the surface and welds (a tangent band prints as a second component).
 
-**Putting a prop INTO a hand — `F.holdAt(prop, rig.grip.L|R, opts?)`.** `placeAt`
-only positions; `holdAt` **fully orients** a prop to the grip and seats it in the
-finger cup. Build the prop centred at the origin with its **long axis +Z** and its
-**"up"/edge +Y** (for a sword: blade up +Z, flat facing ±Y, guard along ±X), and
-`holdAt` aligns +Z → `gripAxis` AND +Y → the hand's `palmNormal`, then drops the
-origin on the grip `point`. Binding BOTH axes is what makes the palm actually
-grasp the prop (rather than it rolling to a palm-down/back-of-hand orientation —
-the hand's palm normal is now used, not just the grip axis).
+**Person holds a thing — `holds: '<direction>'` on the arm pose + `F.grasp(prop, grip)`.**
+This is the recommended one-line API for any single-handed grasped prop (sword,
+staff, hammer, mug, torch). **Build the prop centred at the origin along its
+local +Z, with the BUSINESS END at +Z** (sword: blade at +Z, pommel at −Z;
+hammer: head at +Z, handle butt at −Z). Then:
+
+```js
+// 1. Arm pose: declare the direction the held thing points in.
+//    `holds: 'up' | 'down' | 'forward' | 'back' | 'in' | 'out' | [x,y,z]`
+const rig = F.rig({ height: 66, pose: {
+  armR: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' },
+}});
+
+// 2. Build the prop centred at origin, long axis +Z, business end at +Z.
+const sword = grip.union(guard).smoothUnion(blade);   // blade at +Z, pommel at −Z
+
+// 3. Seat it. F.grasp auto-flips for the right hand so the blade end lands
+//    at the thumb (no flip flags, no per-figure tuning).
+const held = F.grasp(sword, rig.grip.R);
+```
+
+`F.grasp` puts the bar IN the finger cup, side-aware: thumb at the guard end
+on either hand. The four success criteria (visible blade direction; thumb at
+business end; bar in finger cup; fingers visibly wrap) are met by construction
+when you use this pattern. **`examples/figure_knight.js` is the canonical
+reference** — copy that pattern for any one-handed grasping figure.
+
+> **Asymmetric props (axe, hammer, scythe, scalpel) — which local axis becomes
+> "forward"?** Once you've built the prop along +Z with the business end at
+> +Z, `F.grasp` + `holds: 'up'` on the right hand maps the prop's OTHER local
+> axes like this:
+>
+> | prop local | world (after `F.grasp(prop, rig.grip.R)` with `holds: 'up'`) |
+> |---|---|
+> | `+Z` | `+Z` (up — the bar is vertical, business end at top) |
+> | `+X` | `−Y` (FORWARD — toward the camera at the front of the figure) |
+> | `+Y` | `+X` (figure-LEFT, across the body to the side) |
+>
+> So an axe whose **blade flares forward** needs the flare built along local
+> `+X` (NOT `+Y`). A sword whose **flat edge faces the camera** has its flat
+> normal along local `+X`. The mapping is symmetric on the left hand with
+> sign flips. When unsure, probe before bake:
+> `throw new Error(JSON.stringify({ gripAxis: rig.grip.R.gripAxis, palmNormal: rig.grip.R.palmNormal, reach: rig.grip.R.reach }))`
+> and read the world unit vectors to confirm which way each local axis points.
+> `examples/figure_lumberjack.js` uses this exact mapping for the axe blade.
+
+**QC the grip BEFORE bake — `F.graspProbe(rig, 'R'|'L')`.** Catches grip
+defects without rendering. Returns `{ gripDirection, barCupDistance, summary }`:
+- `gripDirection` — world unit vector the prop's business end points in
+  (after F.grasp's auto-flip). Assert it matches your `holds:` intent.
+- `barCupDistance` — distance from bar to wrist in `r.hand` units. Healthy ≥ 0.7;
+  a low value means the bar is at the wrist line (the old "sword at wrist" defect).
+- `summary` — one-line verdict, ready for `throw new Error(q.summary)`.
+
+```js
+const q = F.graspProbe(rig, 'R');
+if (q.gripDirection[2] < 0.9) throw new Error(q.summary);  // not visibly up
+if (q.barCupDistance   < 0.7) throw new Error(q.summary);  // not in finger cup
+```
+
+**Low-level alternative — `F.holdAt(prop, rig.grip.L|R, opts?)`.** Same as
+`F.grasp` but without the auto-flip and the AI-friendly defaults. Use this when
+you need explicit control: a non-`z` long axis (`opts.along`), a manual flip
+(`opts.flip`), or a prop that legitimately needs the OPPOSITE end at the thumb
+(a torch held head-down, a candle). For ordinary "person holds a thing" reach
+for `F.grasp`. `opts.up` (`'palm'` default | `'reach'`) picks which hand
+direction the prop's +Y maps to; `opts.flip: true` reverses the axis;
+`opts.along` (`'x'|'y'|'z'`) selects the long axis (non-`z` uses the legacy
+single-axis align, roll unconstrained).
 
 ```js
 // A sword: blade +Z, flat ±Y, guard ±X — held in the right fist, palm grasping:
 const held = F.holdAt(sword, rig.grip.R);       // +Z→gripAxis, +Y→palmNormal, origin→cup
 ```
 
-`opts.up` (`'palm'` default | `'reach'`) picks which hand direction the prop's +Y
-maps to; `opts.flip: true` reverses the axis; `opts.along` (`'x'|'y'|'z'`) selects
-the long axis (non-`z` uses the legacy single-axis align, roll unconstrained).
-
-> **Aim a held prop by posing the arm + a `thumb` hint — don't fight `holdAt`.**
-> How a hand is turned is set by the arm pose, not by `holdAt`. The human-meaningful
-> handle is the **thumb**: people grasp a weight with the thumb **up or pointing
-> inward**, never thumb-down. Set **`thumb: 'in'`** (recommended) or `'up' | 'down'
-> | 'forward' | 'back' | 'out'` on the arm pose and the wrist roll is solved so the
-> grip's `thumbAxis` points that way. The knight holds his sword with
-> `armR: { raiseSide: 12, raiseFwd: 35, bend: 80, thumb: 'in' }` — thumb toward the
-> body, blade rising up-and-forward.
+> **Aim a held prop by posing the arm + a hand-orient hint — don't fight `holdAt`.**
+> How a hand is turned is set by the arm pose, not by `holdAt`. There are three
+> entry points for the wrist-roll DOF (forearm pronation/supination), all writing
+> the SAME degree of freedom — **pick one** (parseArm rejects setting more than one):
 >
-> Geometry to keep in mind: a held bar lies along `gripAxis`, which is **⊥ the
-> forearm** (you grip across the palm), and the **thumb is ⊥ the bar** (it curls
-> over the front, ≈ along reach+palm). So "thumb up" and "blade up" are *coupled* —
-> you can't choose both independently for a fist. Pick the thumb direction (the
-> human constraint) and let the blade fall where the forearm pose puts it; raise/
-> bend the arm to aim the blade. Probe with `F.poseProbe(rig).grips.R` —
-> `thumbAxis` is assertable (`thumbAxis·[0,0,1] > 0` ⇒ thumb up) and `gripAxis`
-> **is** the blade direction. (`thumb`/`palm` are mutually exclusive; `palm` —
-> targeting the palm normal — is retained for back-compat but `thumb` is preferred.
-> Note `thumb:'up'` on a low arm can fling it out: the fist thumb physically can't
-> point straight up while gripping, so the solve over-rotates — use `'in'`.)
+> - **`palmFacing`** — the most human-meaningful: "knuckles to camera" / "back of
+>   hand outward" / "palm up". Accepts `'forward' | 'back' | 'in' | 'out' | 'up'
+>   | 'down'` or an explicit `[x,y,z]` world direction. The solver picks the wrist
+>   roll that lands the palm's normal as close as geometry allows to the target.
+>   Use this for "show the back of the hand" / "show the palm" intent.
+> - **`thumbAxis`** — for "thumb up at the top of the grip" / "thumb pointing
+>   forward". Same value vocabulary as `palmFacing`; solves for the thumb axis
+>   instead of the palm normal. The knight uses this implicitly via its pose +
+>   `wristRoll: 90` (vertical-blade default).
+> - **`wristRoll: degrees`** — raw numeric forearm rotation, mirrored by `side`.
+>   Use only when you need precise numeric control (e.g. animating a sequence).
+>
+> Geometry to keep in mind — this coupling is real human anatomy and cannot be
+> wished away: a held bar lies along `gripAxis`, which is **⊥ the forearm** (you
+> grip across the palm). So:
+> - **The forearm direction sets the blade direction.** Vertical blade requires a
+>   horizontal forearm (forward, sideways, or anywhere in between).
+> - **`wristRoll` then spins the hand AROUND the forearm**, independently picking
+>   which side of the hand the camera sees — palm vs back, thumb up vs down.
+> - **These two CAN combine**: vertical blade with knuckles directly to camera
+>   requires the forearm to point to the SIDE (not forward), because cross(foreDir, +Z)
+>   only lands on ±Y when foreDir is in the ±X direction. For a forearm-forward grip,
+>   the camera sees the SIDE of the hand (thumb visible, fingertips wrapping toward
+>   the camera) — that's anatomically correct, not a bug.
+>
+> The knight uses `armR: { raiseSide: 5, raiseFwd: 0, bend: 90, wristRoll: 90 }`
+> — elbow at the side, forearm forward at chest height, sword vertical. To get
+> knuckles directly to camera with a vertical blade, switch to an arm-out-to-side
+> pose: `{ raiseSide: 70, raiseFwd: 0, bend: 5, palmFacing: 'back' }`.
+>
+> Probe with `F.poseProbe(rig).grips.R` — `thumbAxis · [0,0,1] > 0` ⇒ thumb up,
+> `palmNormal · [0,1,0] > 0` ⇒ knuckles toward -Y camera, and `gripAxis` **is**
+> the blade direction.
+>
+> Legacy `thumb` / `palm` keywords are retained and still work, but they solve a
+> different DOF (upper-arm roll) that's anatomically incorrect — `thumb:'up'` on
+> a low forward arm can fling the elbow out because the 1-DOF curve about the
+> upper-arm axis can't reach +Z. Prefer `palmFacing` / `thumbAxis` for new code.
 
 **Two-handed props — `F.spanGrips(a, b)`.** A guitar, barbell, bow, broom, or
 rifle runs BETWEEN both hands, so a single `holdAt` can't orient it. `spanGrips`

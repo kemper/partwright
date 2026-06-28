@@ -2528,10 +2528,14 @@ describe('figure grip frames — connecting held props to the palm', () => {
     }
   });
 
-  it('offsets the grip point off the hand centre toward the palm', () => {
+  it('offsets the grip point into the FINGER CUP — combining reach (dominant) and palmNormal', () => {
     const rig = buildRig({ height: 64 });
     // The cup is NOT the hand centre — that's the whole point (props seated at
-    // the centre pass through the hand). It sits along +palmNormal from handL.
+    // the centre pass through the hand). It sits offset along BOTH +reach
+    // (into where the curled fingers actually wrap, past the knuckles) AND
+    // +palmNormal (just above the palm surface). Reach is the dominant
+    // component — the previous palm-only offset put the bar at the wrist line
+    // ("dagger / sword at wrist" defect); the reach offset fixes it.
     const offL = [
       rig.grip.L.point[0] - rig.joints.handL[0],
       rig.grip.L.point[1] - rig.joints.handL[1],
@@ -2539,8 +2543,13 @@ describe('figure grip frames — connecting held props to the palm', () => {
     ];
     const offLen = unit(offL);
     expect(offLen).toBeGreaterThan(0.2);
-    // The offset points purely along +palmNormal.
-    expect(dot(offL.map((c) => c / offLen), rig.grip.L.palmNormal)).toBeCloseTo(1, 4);
+    const dirHat = offL.map((c) => c / offLen);
+    // Significant reach component (dominant): the bar is OUT in the fingers,
+    // not stuck at the palm/wrist line.
+    expect(dot(dirHat, rig.grip.L.reach)).toBeGreaterThan(0.8);
+    // Positive palmNormal component (smaller): the bar sits ABOVE the palm
+    // surface, where the fingers can wrap around it from both sides.
+    expect(dot(dirHat, rig.grip.L.palmNormal)).toBeGreaterThan(0.15);
   });
 
   it('tracks the pose — raising the arm moves the grip with the hand', () => {

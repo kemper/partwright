@@ -149,7 +149,7 @@ function obj(v: unknown, name: string): Record<string, unknown> {
   return (assertObject(v, name, { optional: true }) ?? {}) as Record<string, unknown>;
 }
 
-interface JointPose { raiseSide: number; raiseFwd: number; bend?: number; twist: number; palm?: string; thumb?: string }
+interface JointPose { raiseSide: number; raiseFwd: number; bend?: number; twist: number; palm?: string; thumb?: string; wristRoll?: number; palmFacing?: string | Vec3; thumbAxis?: string | Vec3; holds?: string | Vec3 }
 interface HeadPose { yaw: number; pitch: number; roll: number }
 interface SpinePose { lean: number; turn: number; side: number }
 
@@ -163,7 +163,7 @@ interface ResolvedPose {
 // "Naming policy" in public/ai/figure.md). Limbs: raiseSide (lift sideways),
 // raiseFwd (swing forward/back), bend (elbow/knee flexion), twist (axial roll).
 // Head: yaw / pitch / roll. There are no legacy aliases — these are the names.
-const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist', 'palm', 'thumb'];
+const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist', 'palm', 'thumb', 'wristRoll', 'palmFacing', 'thumbAxis', 'holds'];
 const PALM_DIRS = ['up', 'down', 'forward', 'back', 'in', 'out'] as const;
 const LEG_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const HEAD_FIELDS = ['yaw', 'pitch', 'roll'];
@@ -174,6 +174,17 @@ const POSE_FIELDS = ['arms', 'legs', 'armL', 'armR', 'legL', 'legR', 'head', 'sp
 function parseArm(v: unknown, name: string, defRaiseSide: number): JointPose {
   const o = obj(v, name);
   assertNoUnknownKeys(o, ARM_FIELDS, name);
+  // The forearm-roll knob has THREE entry points: wristRoll (raw angle),
+  // palmFacing (solve to land palmNormal near a target), thumbAxis (solve to
+  // land thumbAxis near a target). Picking more than one is a contradiction —
+  // each writes the same DOF. Reject with a clear message rather than letting
+  // one silently override the others.
+  const handHints = ['wristRoll', 'palmFacing', 'thumbAxis', 'holds'].filter((k) => o[k] !== undefined);
+  if (handHints.length > 1) {
+    throw new ValidationError(
+      `${name}: pick at most one of wristRoll / palmFacing / thumbAxis / holds — got [${handHints.join(', ')}]. They all set the same wrist-roll DOF; choose the most natural for your case (holds for "this arm grips a bar pointing <direction>" — recommended for AI-authored figures, palmFacing for "back of hand to camera", thumbAxis for "thumb up", wristRoll for explicit numeric control).`,
+    );
+  }
   return {
     raiseSide: num(o.raiseSide, defRaiseSide, `${name}.raiseSide`),
     raiseFwd: num(o.raiseFwd, 0, `${name}.raiseFwd`),
@@ -181,7 +192,19 @@ function parseArm(v: unknown, name: string, defRaiseSide: number): JointPose {
     twist: num(o.twist, 0, `${name}.twist`),
     palm: o.palm === undefined ? undefined : assertEnum(o.palm, PALM_DIRS, `${name}.palm`),
     thumb: o.thumb === undefined ? undefined : assertEnum(o.thumb, PALM_DIRS, `${name}.thumb`),
+    wristRoll: o.wristRoll === undefined ? undefined : num(o.wristRoll, 0, `${name}.wristRoll`, -180, 180),
+    palmFacing: parseAxisHint(o.palmFacing, `${name}.palmFacing`),
+    thumbAxis: parseAxisHint(o.thumbAxis, `${name}.thumbAxis`),
+    holds: parseAxisHint(o.holds, `${name}.holds`),
   };
+}
+/** Accept either a PALM_DIRS keyword or an explicit `[x,y,z]` world direction.
+ *  Used by `palmFacing` and `thumbAxis` so an AI can pass a human-meaningful
+ *  word OR a precise axis it computed. Returns undefined when omitted. */
+function parseAxisHint(v: unknown, name: string): string | Vec3 | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v === 'string') return assertEnum(v, PALM_DIRS, name) as string;
+  return norm3(assertNumberTuple(v, 3, name) as Vec3);
 }
 function parseLeg(v: unknown, name: string): JointPose {
   const o = obj(v, name);
@@ -285,6 +308,12 @@ export interface GripFrame {
    *  the hand turned" — pose the arm with `thumb:'up'|'in'` so a held prop is
    *  grasped the way a person grasps a weight, and assert `grip.thumbAxis·up>0`. */
   thumbAxis: Vec3;
+  /** `+1` for the LEFT hand, `-1` for the RIGHT. `F.grasp` uses this to auto-
+   *  decide whether a prop needs to be flipped end-for-end so the thumb lands
+   *  near the prop's +Z end (its "business end" — guard on a sword, head on
+   *  a hammer). Right hand's canonical thumb sits at the −gripAxis end of the
+   *  bar, so a right-hand sword needs flip. Left hand doesn't. */
+  side: number;
 }
 
 /** The two-anchor analog of {@link GripFrame}: the geometry of the line spanning
@@ -685,9 +714,69 @@ function buildRig(rawOpts: unknown): Rig {
     } else if (p.palm) {
       rollTo(norm3(cross3(foreDir, hinge)), p.palm);
     }
+    // `wristRoll` — forearm pronation/supination. Rotates the hand splay axis
+    // about `foreDir` (the forearm bone) so the palm/back-of-hand spin around
+    // the forearm without moving the wrist or changing the elbow bend. This is
+    // the missing real DOF: in human anatomy the radius bone twists around the
+    // ulna and carries the hand with it; the elbow flexion and wrist POSITION
+    // stay put. (Distinct from the previous `roll` attempt, which rotated
+    // foreDir itself and that reflected the wrist through the elbow — the
+    // "impossible bent elbow" failure mode this knob is built to AVOID.)
+    // `* side` mirrors the sign so a symmetric `arms:{wristRoll}` rolls both
+    // hands the same human way (palm-in/palm-out), consistent with `twist`.
+    //
+    // `palmFacing` and `thumbAxis` are the human-meaningful aim targets that
+    // SOLVE for the wristRoll angle: pick the rotation that lands palmNormal
+    // (or thumbAxis) as close as possible to a world direction. They share the
+    // same DOF as wristRoll — parseArm rejects setting more than one.
+    let wristAngle = (p.wristRoll ?? 0) * side;
+    if (p.palmFacing !== undefined || p.thumbAxis !== undefined || p.holds !== undefined) {
+      const palmN0 = norm3(cross3(foreDir, hinge));
+      const splay0 = norm3(sub3(hinge, scale3(foreDir, dot3(hinge, foreDir))));
+      // Map a PALM_DIRS keyword to a WORLD direction. 'in'/'out' are figure-
+      // relative (toward / away from the midline) and depend on `side`. An
+      // explicit Vec3 is passed through verbatim — the AI's own world axis.
+      const aimToWorld = (aim: string | Vec3): Vec3 => {
+        if (typeof aim !== 'string') return aim;
+        return aim === 'up' ? [0, 0, 1] : aim === 'down' ? [0, 0, -1]
+          : aim === 'forward' ? [0, -1, 0] : aim === 'back' ? [0, 1, 0]
+          : aim === 'in' ? [-side, 0, 0] : [side, 0, 0];
+      };
+      if (p.holds !== undefined) {
+        // `holds` — the AI-natural aim: "the BUSINESS END of the thing held in
+        // this hand points in this direction." Designed to pair with `F.grasp`
+        // (which auto-flips a prop on the right hand so its +Z end lands at the
+        // thumb). For the user's intent to match the rendered result on EITHER
+        // hand, we account for that flip here: the right hand sets gripAxis to
+        // the OPPOSITE direction so the post-flip prop's +Z lands at the
+        // requested target; the left hand sets gripAxis directly. Either way
+        // the AI just writes `holds: 'up'` and the blade points up.
+        const target = aimToWorld(p.holds);
+        const effective: Vec3 = side < 0 ? [-target[0], -target[1], -target[2]] : target;
+        wristAngle = signedAngleAbout(hinge, effective, foreDir);
+      } else if (p.palmFacing !== undefined) {
+        // Land palmNormal onto the perpendicular-to-foreDir component of the
+        // target. The achievable maximum projection is the target's perpendicular
+        // length; an AI asking for an unreachable direction (e.g. palmFacing
+        // parallel to the forearm) gets the closest reachable answer rather
+        // than an error — the geometry coupling is real and explained in the
+        // figure.md callout, this just makes "best effort" the silent default.
+        wristAngle = signedAngleAbout(palmN0, aimToWorld(p.palmFacing), foreDir);
+      } else if (p.thumbAxis !== undefined) {
+        // Thumb has the same canonical formula as gripFrame:
+        //   thumb ≈ 0.84·reach + 0.52·palmN + 0.17·splay
+        // and rotates rigidly under wristRoll. Its perpendicular-to-foreDir
+        // component is (0.52·palmN0 + 0.17·splay0); signedAngleAbout projects
+        // onto that plane, so the small foreDir component (0.84·reach) doesn't
+        // pollute the solve.
+        const thumb0 = norm3(add3(add3(scale3(foreDir, 0.84), scale3(palmN0, 0.52)), scale3(splay0, 0.17 * side)));
+        wristAngle = signedAngleAbout(thumb0, aimToWorld(p.thumbAxis), foreDir);
+      }
+    }
+    const handSplay = wristAngle ? norm3(rotAxis(hinge, foreDir, wristAngle)) : hinge;
     const W = add3(E, scale3(foreDir, foreArmLen));
     const handC = add3(W, scale3(foreDir, r.hand * 0.9));
-    return { S, E, W, handC, dir, foreDir, hinge };
+    return { S, E, W, handC, dir, foreDir, hinge, handSplay };
   }
   const aL = armChain(+1, pose.armL);
   const aR = armChain(-1, pose.armR);
@@ -791,31 +880,52 @@ function buildRig(rawOpts: unknown): Rig {
     chinTip: sPt(face.chinTip),
   } : face;
 
-  // Grip frames: a held cylinder rests in the cup of the curled fingers, offset
-  // from the hand centre toward the palm by GRIP_REACH × r.hand, and lies along
-  // the splay (elbow-hinge) axis. The palm normal MUST match the hand builder's
-  // actual palm: `placedHand` maps the canonical palm (+Y) to `cross(dir, splay)`
-  // = cross(foreDir, hinge), so a held prop seats in the PALM/finger cup. (Using
-  // the opposite sign, cross(hinge, foreDir), put the grip point on the BACK of
-  // the hand — a held sword welded to the knuckles, not the palm.) All
-  // spine-transformed like the joints.
-  const GRIP_REACH = 0.72;
-  const gripFrame = (a: { handC: Vec3; foreDir: Vec3; hinge: Vec3 }, side: number): GripFrame => {
-    const palmN = norm3(cross3(a.foreDir, a.hinge));
+  // Grip frames: a held cylinder rests IN THE FINGER CUP — the cavity formed
+  // when the fingers curl around a bar. NOT at the palm centre (the old
+  // GRIP_REACH-only offset put it at the wrist line, so a held sword floated
+  // between palm and wrist rather than being grasped by the fingers).
+  //
+  // The canonical hand has:
+  //   wrist at reach=-0.34·r.hand, knuckles at reach=+1.2·r.hand
+  //   palm surface at palmN=+thick/2 (≈ +0.20·r.hand for the average hand)
+  //
+  // A bar in the natural finger curl sits at:
+  //   reach: just past the knuckles, where the curled fingers enclose it
+  //   palmN: a hair above the palm surface (the fingers wrap from BOTH sides)
+  //
+  // GRIP_FORWARD and GRIP_LIFT place the bar there. They're the structural
+  // antidote to the "dagger grip / sword floats above wrist" defect — every
+  // figure benefits, no per-figure tuning.
+  const GRIP_FORWARD = 0.95;   // reach offset: into the finger curl, past knuckles
+  const GRIP_LIFT = 0.35;      // palmN offset: just above the palm surface
+  // The grip frame uses the HAND splay axis (post-wristRoll), NOT the bare
+  // elbow hinge: a held bar lies across the PALM, and pronation/supination
+  // (wristRoll) spins the palm about the forearm — so the bar must spin with
+  // it. Muscle bellies still key off the un-rolled elbow hinge (the bones
+  // don't rotate when the wrist pronates).
+  const gripFrame = (a: { handC: Vec3; foreDir: Vec3; handSplay: Vec3 }, side: number): GripFrame => {
+    const palmN = norm3(cross3(a.foreDir, a.handSplay));
     // Thumb direction: in a closed grip the thumb curls over the FRONT of the
     // fingers, so it points mostly along reach (foreDir) + palmNormal, with a
     // small lateral lean toward the thumb side (the radial/splay axis, signed by
     // `side`). This matches the canonicalHand thumb (≈[0.17·side, 0.52, 0.84] in
     // the hand's own splay/palm/reach basis) and is the human handle the `thumb`
     // pose hint targets. Computed BEFORE the spine transform, then carried through.
-    const splay = norm3(sub3(a.hinge, scale3(a.foreDir, dot3(a.hinge, a.foreDir))));
+    const splay = norm3(sub3(a.handSplay, scale3(a.foreDir, dot3(a.handSplay, a.foreDir))));
     const thumbN = norm3(add3(add3(scale3(a.foreDir, 0.84), scale3(palmN, 0.52)), scale3(splay, 0.17 * side)));
     return {
-      point: add3(sPt(a.handC), scale3(sDir(palmN), r.hand * GRIP_REACH)),
+      point: add3(
+        sPt(a.handC),
+        add3(
+          scale3(sDir(a.foreDir), r.hand * GRIP_FORWARD),
+          scale3(sDir(palmN), r.hand * GRIP_LIFT),
+        ),
+      ),
       palmNormal: sDir(palmN),
-      gripAxis: sDir(a.hinge),
+      gripAxis: sDir(a.handSplay),
       reach: sDir(a.foreDir),
       thumbAxis: sDir(thumbN),
+      side,
     };
   };
 
@@ -890,10 +1000,18 @@ function buildRig(rawOpts: unknown): Rig {
     r,
     dir: {
       upperArmL: sDir(aL.dir), lowerArmL: sDir(aL.foreDir), upperArmR: sDir(aR.dir), lowerArmR: sDir(aR.foreDir),
-      // The elbow-hinge axis (post-twist) — ⟂ to the forearm-curl plane. The
-      // hand frame derives from it: fingers splay along the hinge, the palm
-      // faces hinge × lowerArm (the curl direction).
+      // The elbow-hinge axis (post-twist) — ⟂ to the forearm-curl plane. This
+      // is the BONE hinge: muscle bellies (biceps/triceps/forearm flexor) key
+      // off it because the bones don't rotate when the wrist pronates. The
+      // HAND frame uses handSplay (below) instead, which carries the wrist
+      // roll so a held bar spins with the palm.
       elbowHingeL: sDir(aL.hinge), elbowHingeR: sDir(aR.hinge),
+      // The hand splay axis (post-twist, post-thumb/palm/wristRoll) — what
+      // the placed hand and the grip frame derive their orientation from.
+      // Equals elbowHinge when no wristRoll/thumb/palm hint is set; spins about
+      // foreDir when wristRoll is applied. Use this whenever you need the
+      // axis a held bar lies along.
+      handSplayL: sDir(aL.handSplay), handSplayR: sDir(aR.handSplay),
       upperLegL: lL.dir, lowerLegL: lL.shankDir, upperLegR: lR.dir, lowerLegR: lR.shankDir,
       // The knee-hinge axis (post-twist) — ⟂ to the shank-curl plane, the leg
       // analog of elbowHinge. The anterior (quad) / posterior (hamstring/calf)
@@ -1635,8 +1753,8 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // fine grid cheap) and the mesh is rotated onto the wrist and hard-unioned onto
   // the coarse forearm (distinct shapes → clean overlap, no seam).
   const fineEdge = Math.max(rh * 0.04, 0.04);
-  const pL = placedHand(j.handL as Vec3, rig.dir.lowerArmL, rig.dir.elbowHingeL, +1);
-  const pR = placedHand(j.handR as Vec3, rig.dir.lowerArmR, rig.dir.elbowHingeR, -1);
+  const pL = placedHand(j.handL as Vec3, rig.dir.lowerArmL, rig.dir.handSplayL, +1);
+  const pR = placedHand(j.handR as Vec3, rig.dir.lowerArmR, rig.dir.handSplayR, -1);
   const world = (p: { node: Node; euler: Vec3; c: Vec3 }): Node => p.node.rotate(p.euler).translate(p.c);
   const both = world(pL).union(world(pR));
   const pieces: FineRegion[] = [
@@ -4327,6 +4445,12 @@ export interface FigureNamespace {
    *  Aligns the prop's local long axis (`opts.along`, default 'z') to the grip
    *  axis and drops its origin on the grip point. `opts.flip` reverses it. */
   holdAt(node: Node, grip: GripFrame, opts?: object): Node;
+  /** AI-friendly "person holds a thing" — same as `holdAt` but auto-flips on
+   *  the RIGHT hand so the prop's +Z end (built as the "business end") lands
+   *  at the thumb. Build a sword with the BLADE at +Z, a hammer with the HEAD
+   *  at +Z; `F.grasp(prop, rig.grip.R)` is one line and correct on the first
+   *  try. Use this instead of `holdAt` for ordinary one-handed props. */
+  grasp(node: Node, grip: GripFrame, opts?: object): Node;
   /** The line spanning TWO grips (or two points) for a prop held in both hands
    *  — guitar, barbell, bow, broom. Returns the {@link SpanFrame} (endpoints,
    *  unit axis, length, midpoint) so `sdf.capsule(s.a, s.b, r)` is one line. */
@@ -4379,6 +4503,13 @@ export interface FigureNamespace {
    *  directions (rounded) plus a `.text` summary — use instead of hand-rolled
    *  JSON scratch probes when authoring a pose. */
   poseProbe(rig: Rig): { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame }; soles: { L: SoleFrame; R: SoleFrame }; dir: Record<string, Vec3>; text: string };
+  /** QC the grip on a hand BEFORE bake — returns `{ gripDirection,
+   *  thumbAtPositiveEnd, barCupDistance, summary }` so an AI can assert the
+   *  four success criteria of a real grasp (prop axis in intended direction;
+   *  thumb at +Z end of prop; bar in finger cup, not at the wrist; visible
+   *  fingers wrapped). Pair with `F.grasp` + `holds: '<direction>'` and a
+   *  failed assertion always means the pose is wrong, not the prop. */
+  graspProbe(rig: Rig, side: 'L' | 'R'): { gripDirection: Vec3; barCupDistance: number; summary: string };
   /** The face's detail-region spheres (head + finer mouth) for
    *  `build({ detail: F.faceDetail(rig) })`. */
   faceDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
@@ -4576,6 +4707,47 @@ function holdAt(node: Node, grip: unknown, opts?: unknown): Node {
   if (along === 'x') n = n.rotate([0, -90, 0]);      // local +X → +Z
   else if (along === 'y') n = n.rotate([90, 0, 0]);   // local +Y → +Z
   return n.rotate(eulerAlignZ(axis)).translate(point);
+}
+
+/** The AI-friendly "person holds a thing" helper — what `F.holdAt` should have
+ *  been if you only knew the final use-case the first time. Given a prop and a
+ *  hand's grip frame, `F.grasp` produces a CORRECT GRIP on the first try:
+ *
+ *  - The prop sits in the FINGER CUP (`grip.point` is already cup-positioned).
+ *  - The prop is auto-FLIPPED end-for-end on the RIGHT hand so the prop's +Z
+ *    end lands at the thumb (the canonical hand puts the thumb at the
+ *    −gripAxis end of the bar for the right hand, +gripAxis for the left).
+ *    Build a sword with the BLADE at +Z and the pommel at −Z; build a hammer
+ *    with the HEAD at +Z; `F.grasp` puts the thumb at the business end on
+ *    EITHER hand without per-figure flip flags.
+ *
+ *  Use `F.grasp` for ordinary "person holds a thing" cases — sword, staff,
+ *  hammer, mug, torch. Use the low-level `F.holdAt` when you need explicit
+ *  control (an asymmetric two-handed prop, a manual flip, a non-`z` axis).
+ *
+ *  ```js
+ *  const sword = grip.union(guard).union(blade);  // built along +Z, blade at +Z end
+ *  const held = F.grasp(sword, rig.grip.R);        // thumb at guard, blade up. Done.
+ *  ```
+ *
+ *  Opts: same as `holdAt` (`along`, `up`, `flip`). `flip` here OVERRIDES the
+ *  side-based default — pass it only when you genuinely want the other end of
+ *  the prop at the thumb (e.g. a torch you hold pommel-up). */
+function grasp(node: Node, grip: unknown, opts?: unknown): Node {
+  const g = obj(grip, 'grasp(grip)');
+  // Need .side from the grip frame to auto-pick flip. asGripFrame validates
+  // and coerces; if `grip` is a raw [x,y,z] (no side) we can't auto-flip, so
+  // fall through to holdAt with the user-supplied (or undefined) flip.
+  const sideRaw = g.side;
+  const o = obj(opts, 'grasp(opts)');
+  assertNoUnknownKeys(o, ['along', 'flip', 'up'], 'grasp(opts)');
+  // Default flip rule: right hand (side < 0) needs the prop flipped so the
+  // prop's +Z end (the "business end") sits at the thumb. Left hand: no flip.
+  // Explicit opts.flip wins over the default — for the rare prop held "wrong
+  // way up" (a torch with the head down, a candle pommel-up).
+  const autoFlip = typeof sideRaw === 'number' ? sideRaw < 0 : false;
+  const flipFinal = o.flip === undefined ? autoFlip : (o.flip as boolean);
+  return holdAt(node, grip, { ...o, flip: flipFinal });
 }
 
 /** Coerce a grip frame ({@link GripFrame}, uses `.point`) or a raw `[x,y,z]`
@@ -4933,6 +5105,7 @@ function poseProbe(rig: Rig): {
   const grip = (g: GripFrame): GripFrame => ({
     point: round3(g.point), palmNormal: round3(g.palmNormal),
     gripAxis: round3(g.gripAxis), reach: round3(g.reach), thumbAxis: round3(g.thumbAxis),
+    side: g.side,
   });
   const grips = { L: grip(rig.grip.L), R: grip(rig.grip.R) };
   const soleR = (s: SoleFrame): SoleFrame => ({
@@ -4954,6 +5127,55 @@ function poseProbe(rig: Rig): {
     `  R.point [${soles.R.point.join(', ')}]  heading [${soles.R.heading.join(', ')}]  groundZ ${soles.R.groundZ}`,
   ];
   return { height: o.height, headsTall: o.headsTall, build: o.build, sex: o.sex, age: o.age, weight: o.weight, joints, grips, soles, dir, text: lines.join('\n') };
+}
+
+/** Anatomical QC for a grasped prop — answers "is this grip going to look
+ *  right on this hand?" without a render. Returns the three values that
+ *  matter once F.grasp + holds is used:
+ *
+ *   - `gripDirection` — the world unit vector the prop's *visible* axis (its
+ *     +Z end as built) ends up pointing in AFTER F.grasp's side-dependent
+ *     auto-flip. This is what the user sees: a sword's blade direction, a
+ *     hammer's head direction. Assert against the AI's intent
+ *     (`q.gripDirection[2] > 0.9` ⇒ "visibly up").
+ *   - `barCupDistance` — distance from the bar (grip.point) to the wrist
+ *     joint in `r.hand` units. Assert the bar is IN the finger cup, not at
+ *     the wrist line. Healthy: ≥ 0.7. The previous "sword at the wrist" defect
+ *     would have surfaced as a value near 0.4 — this probe catches it pre-render.
+ *   - `summary` — one-line verdict, ready for `throw` / log.
+ *
+ *  The thumb-at-correct-end check is omitted by design: with `F.grasp` the
+ *  auto-flip makes it tautological (always true on either hand). To catch the
+ *  "dagger grip" defect specifically, the structural answer is "use F.grasp,
+ *  not raw F.holdAt" — the figure.md gold-standard example enforces this.
+ *
+ *  Usage in a figure file:
+ *  ```js
+ *  const q = F.graspProbe(rig, 'R');
+ *  if (q.gripDirection[2] < 0.9) throw new Error(q.summary);  // bar not visibly up
+ *  if (q.barCupDistance < 0.7)   throw new Error(q.summary);  // not in finger cup
+ *  ``` */
+function graspProbe(rig: Rig, side: 'L' | 'R'): {
+  gripDirection: Vec3;
+  barCupDistance: number;
+  summary: string;
+} {
+  const g = side === 'L' ? rig.grip.L : rig.grip.R;
+  const wrist = side === 'L' ? rig.joints.wristL : rig.joints.wristR;
+  // F.grasp auto-flips for the RIGHT hand (side<0): the prop's visible +Z
+  // end lands at -gripAxis. So the "visible direction" is -gripAxis on the
+  // right hand, +gripAxis on the left.
+  const flip = g.side < 0;
+  const propDir: Vec3 = flip
+    ? [-g.gripAxis[0], -g.gripAxis[1], -g.gripAxis[2]]
+    : g.gripAxis;
+  const dx = g.point[0] - wrist[0], dy = g.point[1] - wrist[1], dz = g.point[2] - wrist[2];
+  const barCupDistance = Math.sqrt(dx * dx + dy * dy + dz * dz) / rig.r.hand;
+  const propDirRounded = round3(propDir);
+  const summary = `graspProbe(${side}): prop points [${propDirRounded.join(', ')}], `
+    + `barCupDistance=${barCupDistance.toFixed(2)}·r.hand`
+    + (barCupDistance < 0.7 ? ' ← BAR AT WRIST defect (not in the finger cup)' : '');
+  return { gripDirection: propDirRounded, barCupDistance, summary };
 }
 
 function assertRig(rig: unknown, name: string): Rig {
@@ -4986,6 +5208,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     placeAt: (node, joint, opts) => placeAt(node as Node, joint, opts),
     placeOnHead: (node, rig, opts) => placeOnHead(node as Node, assertRig(rig, 'placeOnHead(rig)'), opts),
     holdAt: (node, grip, opts) => holdAt(node as Node, grip, opts),
+    grasp: (node, grip, opts) => grasp(node as Node, grip, opts),
     spanGrips: (a, b) => spanGrips(a, b),
     standOn: (node, sole, opts) => standOn(node as Node, sole, opts),
     ring: (frame, opts) => ringBand(sdf, frame, opts),
@@ -4996,6 +5219,7 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     hangFrom: (node, point, opts) => hangFrom(node as Node, point, opts),
     onFace: (rig) => onFace(assertRig(rig, 'onFace(rig)')),
     poseProbe: (rig) => poseProbe(assertRig(rig, 'poseProbe(rig)')),
+    graspProbe: (rig, side) => graspProbe(assertRig(rig, 'graspProbe(rig)'), assertEnum(side, ['L', 'R'] as const, 'graspProbe(side)')),
     faceDetail: (rig, opts) => faceDetail(assertRig(rig, 'faceDetail(rig)'), opts),
     handDetail: (rig, opts) => handDetail(assertRig(rig, 'handDetail(rig)'), opts),
     footDetail: (rig, opts) => footDetail(assertRig(rig, 'footDetail(rig)'), opts),
@@ -5024,4 +5248,4 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildPantsParts, buildTop, buildTopParts, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, buildBand, sharedSolid, ringPoint, strap, hangFrom, onFace };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildPantsParts, buildTop, buildTopParts, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, buildBand, sharedSolid, ringPoint, strap, hangFrom, onFace, graspProbe };
