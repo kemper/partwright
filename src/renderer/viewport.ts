@@ -26,7 +26,6 @@ function makeGrid(theme: Theme): THREE.GridHelper {
   const g = new THREE.GridHelper(div, div, c.major, c.minor);
   g.rotation.x = Math.PI / 2;
   g.scale.setScalar(lastGridScale);
-  g.visible = false;
   return g;
 }
 
@@ -395,7 +394,7 @@ export function initViewport(container: HTMLElement): {
   studioShadowCatcher.visible = false;
   scene.add(studioShadowCatcher);
 
-  // Grid on XY plane (hidden by default; user-toggleable). Theme-colored.
+  // Grid on XY plane (visible by default; user-toggleable). Theme-colored.
   grid = makeGrid(getTheme());
   scene.add(grid);
 
