@@ -92,6 +92,7 @@ function norm3(a: Vec3): Vec3 { const l = len3(a) || 1; return [a[0] / l, a[1] /
 function cross3(a: Vec3, b: Vec3): Vec3 {
   return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
+function dot3(a: Vec3, b: Vec3): number { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 function lerp3(a: Vec3, b: Vec3, t: number): Vec3 {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 }
@@ -109,6 +110,20 @@ function rotY(v: Vec3, deg: number): Vec3 {
 function rotZ(v: Vec3, deg: number): Vec3 {
   const c = Math.cos(deg * DEG), s = Math.sin(deg * DEG);
   return [v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2]];
+}
+/** Component of `v` perpendicular to unit `axis`. */
+function projPerp(v: Vec3, axis: Vec3): Vec3 {
+  const d = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
+  return [v[0] - axis[0] * d, v[1] - axis[1] * d, v[2] - axis[2] * d];
+}
+/** Signed angle (degrees) to rotate `from` onto `to` about unit `axis`. */
+function signedAngleAbout(from: Vec3, to: Vec3, axis: Vec3): number {
+  const f = norm3(projPerp(from, axis));
+  const t = norm3(projPerp(to, axis));
+  const dot = clamp(f[0] * t[0] + f[1] * t[1] + f[2] * t[2], -1, 1);
+  const c = cross3(f, t);
+  const sign = (c[0] * axis[0] + c[1] * axis[1] + c[2] * axis[2]) >= 0 ? 1 : -1;
+  return (Math.acos(dot) / DEG) * sign;
 }
 /** Rotate vector `v` about unit axis `k` by `deg` (Rodrigues). */
 function rotAxis(v: Vec3, k: Vec3, deg: number): Vec3 {
@@ -134,7 +149,7 @@ function obj(v: unknown, name: string): Record<string, unknown> {
   return (assertObject(v, name, { optional: true }) ?? {}) as Record<string, unknown>;
 }
 
-interface JointPose { raiseSide: number; raiseFwd: number; bend?: number; twist: number }
+interface JointPose { raiseSide: number; raiseFwd: number; bend?: number; twist: number; palm?: string; thumb?: string; wristRoll?: number; palmFacing?: string | Vec3; thumbAxis?: string | Vec3; holds?: string | Vec3 }
 interface HeadPose { yaw: number; pitch: number; roll: number }
 interface SpinePose { lean: number; turn: number; side: number }
 
@@ -148,7 +163,8 @@ interface ResolvedPose {
 // "Naming policy" in public/ai/figure.md). Limbs: raiseSide (lift sideways),
 // raiseFwd (swing forward/back), bend (elbow/knee flexion), twist (axial roll).
 // Head: yaw / pitch / roll. There are no legacy aliases — these are the names.
-const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
+const ARM_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist', 'palm', 'thumb', 'wristRoll', 'palmFacing', 'thumbAxis', 'holds'];
+const PALM_DIRS = ['up', 'down', 'forward', 'back', 'in', 'out'] as const;
 const LEG_FIELDS = ['raiseSide', 'raiseFwd', 'bend', 'twist'];
 const HEAD_FIELDS = ['yaw', 'pitch', 'roll'];
 const SPINE_FIELDS = ['lean', 'turn', 'side'];
@@ -158,12 +174,37 @@ const POSE_FIELDS = ['arms', 'legs', 'armL', 'armR', 'legL', 'legR', 'head', 'sp
 function parseArm(v: unknown, name: string, defRaiseSide: number): JointPose {
   const o = obj(v, name);
   assertNoUnknownKeys(o, ARM_FIELDS, name);
+  // The forearm-roll knob has THREE entry points: wristRoll (raw angle),
+  // palmFacing (solve to land palmNormal near a target), thumbAxis (solve to
+  // land thumbAxis near a target). Picking more than one is a contradiction —
+  // each writes the same DOF. Reject with a clear message rather than letting
+  // one silently override the others.
+  const handHints = ['wristRoll', 'palmFacing', 'thumbAxis', 'holds'].filter((k) => o[k] !== undefined);
+  if (handHints.length > 1) {
+    throw new ValidationError(
+      `${name}: pick at most one of wristRoll / palmFacing / thumbAxis / holds — got [${handHints.join(', ')}]. They all set the same wrist-roll DOF; choose the most natural for your case (holds for "this arm grips a bar pointing <direction>" — recommended for AI-authored figures, palmFacing for "back of hand to camera", thumbAxis for "thumb up", wristRoll for explicit numeric control).`,
+    );
+  }
   return {
     raiseSide: num(o.raiseSide, defRaiseSide, `${name}.raiseSide`),
     raiseFwd: num(o.raiseFwd, 0, `${name}.raiseFwd`),
     bend: num(o.bend, 0, `${name}.bend`, 0, 160),
     twist: num(o.twist, 0, `${name}.twist`),
+    palm: o.palm === undefined ? undefined : assertEnum(o.palm, PALM_DIRS, `${name}.palm`),
+    thumb: o.thumb === undefined ? undefined : assertEnum(o.thumb, PALM_DIRS, `${name}.thumb`),
+    wristRoll: o.wristRoll === undefined ? undefined : num(o.wristRoll, 0, `${name}.wristRoll`, -180, 180),
+    palmFacing: parseAxisHint(o.palmFacing, `${name}.palmFacing`),
+    thumbAxis: parseAxisHint(o.thumbAxis, `${name}.thumbAxis`),
+    holds: parseAxisHint(o.holds, `${name}.holds`),
   };
+}
+/** Accept either a PALM_DIRS keyword or an explicit `[x,y,z]` world direction.
+ *  Used by `palmFacing` and `thumbAxis` so an AI can pass a human-meaningful
+ *  word OR a precise axis it computed. Returns undefined when omitted. */
+function parseAxisHint(v: unknown, name: string): string | Vec3 | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v === 'string') return assertEnum(v, PALM_DIRS, name) as string;
+  return norm3(assertNumberTuple(v, 3, name) as Vec3);
 }
 function parseLeg(v: unknown, name: string): JointPose {
   const o = obj(v, name);
@@ -262,6 +303,17 @@ export interface GripFrame {
   gripAxis: Vec3;
   /** Unit forearm / finger-reach direction (the way the fingers point). */
   reach: Vec3;
+  /** Unit direction the THUMB points (it curls over the front of a closed grip,
+   *  ≈ along reach+palmNormal). This is the human-meaningful handle for "how is
+   *  the hand turned" — pose the arm with `thumb:'up'|'in'` so a held prop is
+   *  grasped the way a person grasps a weight, and assert `grip.thumbAxis·up>0`. */
+  thumbAxis: Vec3;
+  /** `+1` for the LEFT hand, `-1` for the RIGHT. `F.grasp` uses this to auto-
+   *  decide whether a prop needs to be flipped end-for-end so the thumb lands
+   *  near the prop's +Z end (its "business end" — guard on a sword, head on
+   *  a hammer). Right hand's canonical thumb sits at the −gripAxis end of the
+   *  bar, so a right-hand sword needs flip. Left hand doesn't. */
+  side: number;
 }
 
 /** The two-anchor analog of {@link GripFrame}: the geometry of the line spanning
@@ -306,6 +358,36 @@ export interface SoleFrame {
   groundZ: number;
 }
 
+/** A band-wrapping frame: the elliptical body cross-section a *ringed* accessory
+ *  (necklace, collar, choker, belt, waistband) wraps around. `center` sits on the
+ *  body axis; `xAxis`/`yAxis` are the two unit in-plane axes (lateral / depth)
+ *  with `rx`/`ry` the body semi-axes, so the body surface at azimuth θ is
+ *  `center + xAxis·rx·cosθ + yAxis·ry·sinθ`. `axis` is the body's long axis
+ *  through the ring; `hang` is gravity-down (world −Z) for items that DANGLE from
+ *  the ring (a scabbard, pouch, or pendant). Returned as `rig.ring.neck` /
+ *  `rig.ring.waist`. Build a band with `F.ring(frame, …)`, get a point on the
+ *  ring (to seat a buckle or hang a scabbard) with `F.ringPoint(frame, az)`. */
+export interface RingFrame {
+  center: Vec3;
+  axis: Vec3;
+  xAxis: Vec3;
+  yAxis: Vec3;
+  rx: number;
+  ry: number;
+  hang: Vec3;
+  /** Which body region the ring wraps ('neck' | 'waist') — drives the default
+   *  occluder set for `F.ring(frame, { rig })` (waist → arms, neck → arms+hair). */
+  region: string;
+}
+
+/** A limb segment as a frame — the forearm (elbow→wrist) — for bracers,
+ *  vambraces, watches, and arm bands. `a`/`b` are the segment ends, `axis` the
+ *  unit a→b direction, `length` the span, `radius` the limb radius. Returned per
+ *  side as `rig.forearm.L` / `rig.forearm.R`. */
+export interface LimbFrame {
+  a: Vec3; b: Vec3; axis: Vec3; length: number; radius: number;
+}
+
 export interface Rig {
   joints: Record<string, Vec3>;
   /** Canonical radii / half-extents, in world units. */
@@ -321,6 +403,18 @@ export interface Rig {
   face: FaceAnchors;
   /** Front-of-torso surface landmarks (nipples + navel) — see {@link TorsoAnchors}. */
   torso: TorsoAnchors;
+  /** Band-wrap frames for ringed accessories (necklace/collar/choker on `neck`,
+   *  belt/waistband on `waist`) — see {@link RingFrame}. */
+  ring: { neck: RingFrame; waist: RingFrame };
+  /** Per-side shoulder-top (acromion) points for straps, pauldrons, epaulets, and
+   *  cape/cloak attachment. */
+  shoulder: { L: Vec3; R: Vec3 };
+  /** Upper-back surface point + outward (+Y) normal, for backpacks, capes,
+   *  quivers, and a cross-back scabbard. */
+  back: { point: Vec3; normal: Vec3 };
+  /** Per-side forearm segment frames for bracers / vambraces / arm bands — see
+   *  {@link LimbFrame}. */
+  forearm: { L: LimbFrame; R: LimbFrame };
   opts: { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; muscle: number; bust: number; belly: number; pose: ResolvedPose };
 }
 
@@ -595,10 +689,94 @@ function buildRig(rawOpts: unknown): Rig {
     // the forward curl so `twist: 90` lifts a side-raised fist UP; multiplying
     // by `side` keeps a symmetric `arms:{twist}` lifting both fists the same way.
     if (p.twist) hinge = norm3(rotAxis(hinge, dir, -p.twist * side));
-    const foreDir = norm3(rotAxis(dir, hinge, p.bend ?? 0));
+    let foreDir = norm3(rotAxis(dir, hinge, p.bend ?? 0));
+    // `thumb` / `palm` orient the GRIP by solving the forearm ROLL about the arm
+    // axis so the hand is turned the human way a hand bearing weight is — instead
+    // of leaving the wrist at an arbitrary pronation. `thumb` is the preferred,
+    // human-meaningful handle ("we grasp with the thumb up or pointing inward");
+    // `palm` is retained for back-compat. World targets; 'in'/'out' are toward/
+    // away from the body midline. Rolling hinge about `dir` rotates the whole hand
+    // frame rigidly, so the signed-angle solve is exact for the ⊥-dir component.
+    const rollTo = (axis0: Vec3, dirName: string): void => {
+      const tgt: Vec3 = dirName === 'up' ? [0, 0, 1] : dirName === 'down' ? [0, 0, -1]
+        : dirName === 'forward' ? [0, -1, 0] : dirName === 'back' ? [0, 1, 0]
+        : dirName === 'in' ? [-side, 0, 0] : [side, 0, 0];
+      const dt = signedAngleAbout(axis0, tgt, dir);
+      hinge = norm3(rotAxis(hinge, dir, dt));
+      foreDir = norm3(rotAxis(dir, hinge, p.bend ?? 0));
+    };
+    if (p.thumb) {
+      // Thumb axis (matches gripFrame): curls over the front, ≈ reach+palm+lateral.
+      const palmN0 = norm3(cross3(foreDir, hinge));
+      const splay0 = norm3(sub3(hinge, scale3(foreDir, dot3(hinge, foreDir))));
+      const thumb0 = norm3(add3(add3(scale3(foreDir, 0.84), scale3(palmN0, 0.52)), scale3(splay0, 0.17 * side)));
+      rollTo(thumb0, p.thumb);
+    } else if (p.palm) {
+      rollTo(norm3(cross3(foreDir, hinge)), p.palm);
+    }
+    // `wristRoll` — forearm pronation/supination. Rotates the hand splay axis
+    // about `foreDir` (the forearm bone) so the palm/back-of-hand spin around
+    // the forearm without moving the wrist or changing the elbow bend. This is
+    // the missing real DOF: in human anatomy the radius bone twists around the
+    // ulna and carries the hand with it; the elbow flexion and wrist POSITION
+    // stay put. (Distinct from the previous `roll` attempt, which rotated
+    // foreDir itself and that reflected the wrist through the elbow — the
+    // "impossible bent elbow" failure mode this knob is built to AVOID.)
+    // `* side` mirrors the sign so a symmetric `arms:{wristRoll}` rolls both
+    // hands the same human way (palm-in/palm-out), consistent with `twist`.
+    //
+    // `palmFacing` and `thumbAxis` are the human-meaningful aim targets that
+    // SOLVE for the wristRoll angle: pick the rotation that lands palmNormal
+    // (or thumbAxis) as close as possible to a world direction. They share the
+    // same DOF as wristRoll — parseArm rejects setting more than one.
+    let wristAngle = (p.wristRoll ?? 0) * side;
+    if (p.palmFacing !== undefined || p.thumbAxis !== undefined || p.holds !== undefined) {
+      const palmN0 = norm3(cross3(foreDir, hinge));
+      const splay0 = norm3(sub3(hinge, scale3(foreDir, dot3(hinge, foreDir))));
+      // Map a PALM_DIRS keyword to a WORLD direction. 'in'/'out' are figure-
+      // relative (toward / away from the midline) and depend on `side`. An
+      // explicit Vec3 is passed through verbatim — the AI's own world axis.
+      const aimToWorld = (aim: string | Vec3): Vec3 => {
+        if (typeof aim !== 'string') return aim;
+        return aim === 'up' ? [0, 0, 1] : aim === 'down' ? [0, 0, -1]
+          : aim === 'forward' ? [0, -1, 0] : aim === 'back' ? [0, 1, 0]
+          : aim === 'in' ? [-side, 0, 0] : [side, 0, 0];
+      };
+      if (p.holds !== undefined) {
+        // `holds` — the AI-natural aim: "the BUSINESS END of the thing held in
+        // this hand points in this direction." Designed to pair with `F.grasp`
+        // (which auto-flips a prop on the right hand so its +Z end lands at the
+        // thumb). For the user's intent to match the rendered result on EITHER
+        // hand, we account for that flip here: the right hand sets gripAxis to
+        // the OPPOSITE direction so the post-flip prop's +Z lands at the
+        // requested target; the left hand sets gripAxis directly. Either way
+        // the AI just writes `holds: 'up'` and the blade points up.
+        const target = aimToWorld(p.holds);
+        const effective: Vec3 = side < 0 ? [-target[0], -target[1], -target[2]] : target;
+        wristAngle = signedAngleAbout(hinge, effective, foreDir);
+      } else if (p.palmFacing !== undefined) {
+        // Land palmNormal onto the perpendicular-to-foreDir component of the
+        // target. The achievable maximum projection is the target's perpendicular
+        // length; an AI asking for an unreachable direction (e.g. palmFacing
+        // parallel to the forearm) gets the closest reachable answer rather
+        // than an error — the geometry coupling is real and explained in the
+        // figure.md callout, this just makes "best effort" the silent default.
+        wristAngle = signedAngleAbout(palmN0, aimToWorld(p.palmFacing), foreDir);
+      } else if (p.thumbAxis !== undefined) {
+        // Thumb has the same canonical formula as gripFrame:
+        //   thumb ≈ 0.84·reach + 0.52·palmN + 0.17·splay
+        // and rotates rigidly under wristRoll. Its perpendicular-to-foreDir
+        // component is (0.52·palmN0 + 0.17·splay0); signedAngleAbout projects
+        // onto that plane, so the small foreDir component (0.84·reach) doesn't
+        // pollute the solve.
+        const thumb0 = norm3(add3(add3(scale3(foreDir, 0.84), scale3(palmN0, 0.52)), scale3(splay0, 0.17 * side)));
+        wristAngle = signedAngleAbout(thumb0, aimToWorld(p.thumbAxis), foreDir);
+      }
+    }
+    const handSplay = wristAngle ? norm3(rotAxis(hinge, foreDir, wristAngle)) : hinge;
     const W = add3(E, scale3(foreDir, foreArmLen));
     const handC = add3(W, scale3(foreDir, r.hand * 0.9));
-    return { S, E, W, handC, dir, foreDir, hinge };
+    return { S, E, W, handC, dir, foreDir, hinge, handSplay };
   }
   const aL = armChain(+1, pose.armL);
   const aR = armChain(-1, pose.armR);
@@ -702,18 +880,52 @@ function buildRig(rawOpts: unknown): Rig {
     chinTip: sPt(face.chinTip),
   } : face;
 
-  // Grip frames: a held cylinder rests in the cup of the curled fingers, offset
-  // from the hand centre toward the palm by GRIP_REACH × r.hand, and lies along
-  // the splay (elbow-hinge) axis. palmN matches the curl direction the hand
-  // builder uses (cross(hinge, foreDir)). All spine-transformed like the joints.
-  const GRIP_REACH = 0.72;
-  const gripFrame = (a: { handC: Vec3; foreDir: Vec3; hinge: Vec3 }): GripFrame => {
-    const palmN = norm3(cross3(a.hinge, a.foreDir));
+  // Grip frames: a held cylinder rests IN THE FINGER CUP — the cavity formed
+  // when the fingers curl around a bar. NOT at the palm centre (the old
+  // GRIP_REACH-only offset put it at the wrist line, so a held sword floated
+  // between palm and wrist rather than being grasped by the fingers).
+  //
+  // The canonical hand has:
+  //   wrist at reach=-0.34·r.hand, knuckles at reach=+1.2·r.hand
+  //   palm surface at palmN=+thick/2 (≈ +0.20·r.hand for the average hand)
+  //
+  // A bar in the natural finger curl sits at:
+  //   reach: just past the knuckles, where the curled fingers enclose it
+  //   palmN: a hair above the palm surface (the fingers wrap from BOTH sides)
+  //
+  // GRIP_FORWARD and GRIP_LIFT place the bar there. They're the structural
+  // antidote to the "dagger grip / sword floats above wrist" defect — every
+  // figure benefits, no per-figure tuning.
+  const GRIP_FORWARD = 0.95;   // reach offset: into the finger curl, past knuckles
+  const GRIP_LIFT = 0.35;      // palmN offset: just above the palm surface
+  // The grip frame uses the HAND splay axis (post-wristRoll), NOT the bare
+  // elbow hinge: a held bar lies across the PALM, and pronation/supination
+  // (wristRoll) spins the palm about the forearm — so the bar must spin with
+  // it. Muscle bellies still key off the un-rolled elbow hinge (the bones
+  // don't rotate when the wrist pronates).
+  const gripFrame = (a: { handC: Vec3; foreDir: Vec3; handSplay: Vec3 }, side: number): GripFrame => {
+    const palmN = norm3(cross3(a.foreDir, a.handSplay));
+    // Thumb direction: in a closed grip the thumb curls over the FRONT of the
+    // fingers, so it points mostly along reach (foreDir) + palmNormal, with a
+    // small lateral lean toward the thumb side (the radial/splay axis, signed by
+    // `side`). This matches the canonicalHand thumb (≈[0.17·side, 0.52, 0.84] in
+    // the hand's own splay/palm/reach basis) and is the human handle the `thumb`
+    // pose hint targets. Computed BEFORE the spine transform, then carried through.
+    const splay = norm3(sub3(a.handSplay, scale3(a.foreDir, dot3(a.handSplay, a.foreDir))));
+    const thumbN = norm3(add3(add3(scale3(a.foreDir, 0.84), scale3(palmN, 0.52)), scale3(splay, 0.17 * side)));
     return {
-      point: add3(sPt(a.handC), scale3(sDir(palmN), r.hand * GRIP_REACH)),
+      point: add3(
+        sPt(a.handC),
+        add3(
+          scale3(sDir(a.foreDir), r.hand * GRIP_FORWARD),
+          scale3(sDir(palmN), r.hand * GRIP_LIFT),
+        ),
+      ),
       palmNormal: sDir(palmN),
-      gripAxis: sDir(a.hinge),
+      gripAxis: sDir(a.handSplay),
       reach: sDir(a.foreDir),
+      thumbAxis: sDir(thumbN),
+      side,
     };
   };
 
@@ -750,15 +962,56 @@ function buildRig(rawOpts: unknown): Rig {
     navel: ellipsoidFront(tm.belly.c, tm.belly.a, tm.belly.b, tm.belly.cz, 0, navelZ),
   };
 
+  // --- Attachment frames for accessories ---------------------------------
+  // Ring (neck/waist), shoulder, back, and forearm frames — the body-middle
+  // analogs of the existing grip/sole/face frames. Spine-transformed (sPt/sDir)
+  // so they follow lean/turn like the joints; `hang` stays WORLD-down (gravity).
+  // A ringed band sits OUTSIDE the body, so accessories add their own standoff.
+  const ringFrameRaw = (cz: number, rx: number, ry: number, region: string): RingFrame => ({
+    center: sPt([0, 0, cz]),
+    axis: sDir([0, 0, 1]), xAxis: sDir([1, 0, 0]), yAxis: sDir([0, 1, 0]),
+    rx, ry, hang: [0, 0, -1], region,
+  });
+  const ring = {
+    // Choker/necklace ring at the base of the neck (roughly circular).
+    neck: ringFrameRaw(shoulderZ + neckLen * 0.35, r.neck, r.neck, 'neck'),
+    // Belt/waistband ring at the natural waist (lateral = waist girth, depth = hip).
+    waist: ringFrameRaw(navelZ, r.waist, r.hipsY, 'waist'),
+  };
+  const shoulder = {
+    L: sPt([shoulderHalfX, 0, shoulderZ]),
+    R: sPt([-shoulderHalfX, 0, shoulderZ]),
+  };
+  const back = {
+    point: sPt([0, r.chestY * 0.92, mix(chestZ, shoulderZ, 0.5)]),
+    normal: sDir([0, 1, 0]),
+  };
+  const foreFrame = (e: Vec3, w: Vec3): LimbFrame => {
+    const d = sub3(w, e); const L = len3(d);
+    return { a: e, b: w, axis: L > 0 ? scale3(d, 1 / L) : [0, 0, 1], length: L, radius: r.lowerArm };
+  };
+  const forearm = {
+    L: foreFrame(joints.lowerArmL, joints.wristL),
+    R: foreFrame(joints.lowerArmR, joints.wristR),
+  };
+
   return {
     joints,
     r,
     dir: {
       upperArmL: sDir(aL.dir), lowerArmL: sDir(aL.foreDir), upperArmR: sDir(aR.dir), lowerArmR: sDir(aR.foreDir),
-      // The elbow-hinge axis (post-twist) — ⟂ to the forearm-curl plane. The
-      // hand frame derives from it: fingers splay along the hinge, the palm
-      // faces hinge × lowerArm (the curl direction).
+      // The elbow-hinge axis (post-twist) — ⟂ to the forearm-curl plane. This
+      // is the BONE hinge: muscle bellies (biceps/triceps/forearm flexor) key
+      // off it because the bones don't rotate when the wrist pronates. The
+      // HAND frame uses handSplay (below) instead, which carries the wrist
+      // roll so a held bar spins with the palm.
       elbowHingeL: sDir(aL.hinge), elbowHingeR: sDir(aR.hinge),
+      // The hand splay axis (post-twist, post-thumb/palm/wristRoll) — what
+      // the placed hand and the grip frame derive their orientation from.
+      // Equals elbowHinge when no wristRoll/thumb/palm hint is set; spins about
+      // foreDir when wristRoll is applied. Use this whenever you need the
+      // axis a held bar lies along.
+      handSplayL: sDir(aL.handSplay), handSplayR: sDir(aR.handSplay),
       upperLegL: lL.dir, lowerLegL: lL.shankDir, upperLegR: lR.dir, lowerLegR: lR.shankDir,
       // The knee-hinge axis (post-twist) — ⟂ to the shank-curl plane, the leg
       // analog of elbowHinge. The anterior (quad) / posterior (hamstring/calf)
@@ -769,10 +1022,14 @@ function buildRig(rawOpts: unknown): Rig {
       footL: lL.footFwd, footR: lR.footFwd,
       headForward: sDir(hf), headUp: sDir(headUp), headLeft: sDir(headLeft),
     },
-    grip: { L: gripFrame(aL), R: gripFrame(aR) },
+    grip: { L: gripFrame(aL, +1), R: gripFrame(aR, -1) },
     sole: { L: makeSoleFrame(lL.A, lL.footFwd, r), R: makeSoleFrame(lR.A, lR.footFwd, r) },
     face: sFace,
     torso: torsoAnchors,
+    ring,
+    shoulder,
+    back,
+    forearm,
     opts: { height: H, headsTall: N, build, sex, age, weight, muscle, bust, belly, pose },
   };
 }
@@ -1270,7 +1527,7 @@ function tapered(sdf: SdfApi, a: Vec3, b: Vec3, ra: number, rb: number, k: numbe
   return thick.smoothUnion(thin, Math.max(k, Math.min(ra, rb) * 1.4));
 }
 
-function buildArms(sdf: SdfApi, rig: Rig): Node {
+function buildArms(sdf: SdfApi, rig: Rig, side?: 'L' | 'R'): Node {
   const j = rig.joints, r = rig.r, d = rig.dir;
   const m = rig.opts.muscle;
   const k = r.lowerArm * 1.3;             // elbow weld — soft, no kink
@@ -1314,9 +1571,14 @@ function buildArms(sdf: SdfApi, rig: Rig): Node {
     }
     return out;
   }
-  const armL = arm(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3, d.upperArmL, d.lowerArmL, d.elbowHingeL);
-  const armR = arm(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3, d.upperArmR, d.lowerArmR, d.elbowHingeR);
-  return armL.union(armR);
+  // `side` selects ONE arm as a conform/clear surface (F.arm); undefined = both
+  // (F.arms), the body-weld input. A single side never includes the other, so a
+  // one-sided accessory (vambrace, bracer) conformed to it can't reach the far arm.
+  const armL = (): Node => arm(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3, d.upperArmL, d.lowerArmL, d.elbowHingeL);
+  const armR = (): Node => arm(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3, d.upperArmR, d.lowerArmR, d.elbowHingeR);
+  if (side === 'L') return armL();
+  if (side === 'R') return armR();
+  return armL().union(armR());
 }
 
 /** Z-Y-X (Rz·Ry·Rx) Euler angles, in degrees, that rotate the canonical axes
@@ -1491,8 +1753,8 @@ function buildHands(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // fine grid cheap) and the mesh is rotated onto the wrist and hard-unioned onto
   // the coarse forearm (distinct shapes → clean overlap, no seam).
   const fineEdge = Math.max(rh * 0.04, 0.04);
-  const pL = placedHand(j.handL as Vec3, rig.dir.lowerArmL, rig.dir.elbowHingeL, +1);
-  const pR = placedHand(j.handR as Vec3, rig.dir.lowerArmR, rig.dir.elbowHingeR, -1);
+  const pL = placedHand(j.handL as Vec3, rig.dir.lowerArmL, rig.dir.handSplayL, +1);
+  const pR = placedHand(j.handR as Vec3, rig.dir.lowerArmR, rig.dir.handSplayR, -1);
   const world = (p: { node: Node; euler: Vec3; c: Vec3 }): Node => p.node.rotate(p.euler).translate(p.c);
   const both = world(pL).union(world(pR));
   const pieces: FineRegion[] = [
@@ -1513,7 +1775,7 @@ function handDetail(_rig: Rig, opts?: unknown): Array<{ center: Vec3; radius: nu
   return [];
 }
 
-function buildLegs(sdf: SdfApi, rig: Rig): Node {
+function buildLegs(sdf: SdfApi, rig: Rig, side?: 'L' | 'R'): Node {
   const j = rig.joints, r = rig.r, d = rig.dir;
   const m = rig.opts.muscle;
   const k = r.lowerLeg * 1.3;               // knee weld — soft, no kink
@@ -1550,8 +1812,14 @@ function buildLegs(sdf: SdfApi, rig: Rig): Node {
   }
   // Glute centre: just behind (+Y) and below the hip joint, between hip and knee start.
   const glutePt = (Hj: Vec3): Vec3 => [Hj[0], r.hipsY * (0.6 + 0.2 * m), mix(Hj[2], j.hips[2], 0.25)];
-  return leg(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3, d.upperLegL, d.lowerLegL, d.kneeHingeL, glutePt(j.upperLegL as Vec3))
-    .union(leg(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3, d.upperLegR, d.lowerLegR, d.kneeHingeR, glutePt(j.upperLegR as Vec3)));
+  // `side` selects ONE leg as a conform/clear surface (F.leg); undefined = both
+  // (F.legs). A one-sided accessory (greave, garter) conformed to it can't reach
+  // the far leg.
+  const legL = (): Node => leg(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3, d.upperLegL, d.lowerLegL, d.kneeHingeL, glutePt(j.upperLegL as Vec3));
+  const legR = (): Node => leg(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3, d.upperLegR, d.lowerLegR, d.kneeHingeR, glutePt(j.upperLegR as Vec3));
+  if (side === 'L') return legL();
+  if (side === 'R') return legR();
+  return legL().union(legR());
 }
 
 /** The sole-plane Z of a foot (centre of the sole capsule), derived from its
@@ -3610,7 +3878,19 @@ function buildHair(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
 
 // --- Clothing (derived from body regions → always fits) -------------------
 
+/** Back-compat facade: the full worn pants as a single Node. New code wanting the
+ *  waistband/hips region separately (to conform a belt without the leg sleeves)
+ *  calls buildPantsParts. */
 function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  return buildPantsParts(sdf, rig, opts).all;
+}
+
+/** Worn pants decomposed into PARTS: `all` (full garment, identical to legacy
+ *  buildPants), `hips` (the seat/waistband region only — the briefs form, with no
+ *  leg sleeves, so a belt conformed to it can't reach down a thigh), and `legs`
+ *  (the leg sleeves, or null for briefs). Pairs with buildTopParts.torso to give a
+ *  belt a torso-only conform surface (`union(top.torso, pants.hips)`). */
+function buildPantsParts(sdf: SdfApi, rig: Rig, opts?: unknown): { all: Node; hips: Node; legs: Node | null } {
   const o = obj(opts, 'pants(opts)');
   assertNoUnknownKeys(o, ['rise', 'leg', 'cuffZ', 'thickness', 'length'], 'pants(opts)');
   const leg = o.leg === undefined ? 'slim' : assertEnum(o.leg, ['slim', 'cargo'] as const, 'pants.leg');
@@ -3699,31 +3979,54 @@ function buildPants(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   // the whole coverage node) is untouched.
   const coverage = body.intersect(zone).smoothIntersect(underWaist, hemK);
 
-  // briefs: seat + gusset + hip pads only — leotard bottoms, swimwear.
+  // HIPS-ONLY part: the seat/waistband region with coverage clipped to the SEAT
+  // zone alone (never the leg zones) — the briefs form. This is the torso-side
+  // conform surface a belt should use (paired with buildTopParts.torso); it ends
+  // at the hip silhouette, so the belt can't be dilated down a thigh.
+  const hipsCoverage = body.intersect(seatZone).smoothIntersect(underWaist, hemK);
+  const hips = seat
+    .smoothUnion(gusset, r.upperLeg * 0.8)
+    .smoothUnion(hipPad(j.upperLegL as Vec3, j.lowerLegL as Vec3), r.upperLeg * 0.8)
+    .smoothUnion(hipPad(j.upperLegR as Vec3, j.lowerLegR as Vec3), r.upperLeg * 0.8)
+    .union(hipsCoverage);
+
+  // briefs: seat + gusset + hip pads only — leotard bottoms, swimwear. The hips
+  // part IS the whole garment here (no leg sleeves).
   if (length === 'briefs') {
-    return seat
-      .smoothUnion(gusset, r.upperLeg * 0.8)
-      .smoothUnion(hipPad(j.upperLegL as Vec3, j.lowerLegL as Vec3), r.upperLeg * 0.8)
-      .smoothUnion(hipPad(j.upperLegR as Vec3, j.lowerLegR as Vec3), r.upperLeg * 0.8)
-      .union(coverage);
+    return { all: hips, hips, legs: null };
   }
   // Seat↔sleeve welds must be at least as soft as the body's hip weld — a
   // flexed hip's skin bulge pokes through a tighter garment weld.
+  const legL = legSleeve(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3);
+  const legR = legSleeve(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3);
   let pants = seat
     .smoothUnion(gusset, r.upperLeg * 0.8)
     .smoothUnion(hipPad(j.upperLegL as Vec3, j.lowerLegL as Vec3), r.upperLeg * 0.8)
     .smoothUnion(hipPad(j.upperLegR as Vec3, j.lowerLegR as Vec3), r.upperLeg * 0.8)
-    .smoothUnion(legSleeve(j.upperLegL as Vec3, j.lowerLegL as Vec3, j.footL as Vec3), r.upperLeg * 1.2)
-    .smoothUnion(legSleeve(j.upperLegR as Vec3, j.lowerLegR as Vec3, j.footR as Vec3), r.upperLeg * 1.2);
+    .smoothUnion(legL, r.upperLeg * 1.2)
+    .smoothUnion(legR, r.upperLeg * 1.2);
   if (leg === 'cargo') {
     const pkt = (side: number): Node => sdf.roundedBox([r.upperLeg * 0.9, r.upperLeg * 0.4, r.upperLeg * 1.4], r.upperLeg * 0.18)
       .translate([side * (r.upperLeg + t) * 1.15, -r.upperLeg * 0.2, mix(j.lowerLegL[2], j.upperLegL[2], 0.5)]);
     pants = pants.smoothUnion(pkt(+1), r.upperLeg * 0.25).smoothUnion(pkt(-1), r.upperLeg * 0.25);
   }
-  return pants.union(coverage);
+  return { all: pants.union(coverage), hips, legs: sdf.union(legL, legR) };
 }
 
+/** Back-compat facade: the full worn top as a single Node (what every catalog
+ *  figure unions + labels today). New code wanting the torso panel separately
+ *  (to conform a belt/sash that must NOT reach the arms) calls buildTopParts. */
 function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
+  return buildTopParts(sdf, rig, opts).all;
+}
+
+/** A worn top decomposed into PARTS: `all` (the full garment, identical to the
+ *  legacy buildTop output), `torso` (the torso-only panel — built with no arm
+ *  masses and no sleeve zone, so it never bulges out toward a limb), and
+ *  `sleeves` (the sleeve+yoke solids, or null for a sleeveless top). The split is
+ *  the structural fix for "belt/sash on the arms": conform the band to `torso`
+ *  and its isotropic round() can't dilate a sleeve outward into the band. */
+function buildTopParts(sdf: SdfApi, rig: Rig, opts?: unknown): { all: Node; torso: Node; sleeves: Node | null } {
   const o = obj(opts, 'top(opts)');
   assertNoUnknownKeys(o, ['sleeve', 'hemZ', 'thickness'], 'top(opts)');
   const sleeve = o.sleeve === undefined ? 'short' : assertEnum(o.sleeve, ['none', 'short', 'long'] as const, 'top.sleeve');
@@ -3815,6 +4118,21 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
   let garment = shell.smoothUnion(clav, r.neck * 0.9)
     .union(body.intersect(zone).smoothIntersect(hemPlane, hemK))
     .smoothIntersect(hemPlane, hemK);
+
+  // --- TORSO-ONLY conform panel ------------------------------------------------
+  // The same shaped garment built with NO arm masses and NO sleeve zone, so its
+  // surface follows only the torso silhouette. A belt/sash conformed to THIS can
+  // never be dilated out onto a sleeve (the failure that `occludeArms` could only
+  // partly carve back). SDF nodes are lazy expression trees, so rebuilding the
+  // panel here costs nothing until it's actually marched/meshed.
+  let torsoMasses = buildTorso(sdf, rig);
+  if (isDress) torsoMasses = torsoMasses.union(buildLegs(sdf, rig));
+  const torsoZone = sdf.box([big, big, zTop - zBot]).translate([0, 0, (zTop + zBot) / 2]);
+  const torsoPanel = shell.smoothUnion(clav, r.neck * 0.9)
+    .union(torsoMasses.round(t).intersect(torsoZone).smoothIntersect(hemPlane, hemK))
+    .smoothIntersect(hemPlane, hemK);
+
+  let sleeves: Node | null = null;
   if (sleeve !== 'none') {
     // Sleeves FOLLOW the arm chain: a straight shoulder→forearm capsule cuts the
     // corner on a bent elbow and the elbow pokes through, so the long sleeve is
@@ -3837,13 +4155,18 @@ function buildTop(sdf: SdfApi, rig: Rig, opts?: unknown): Node {
         .union(sdf.sphere(rad * 0.95).translate(end));
     };
     const yoke = (S: Vec3): Node => sdf.sphere((r.upperArm + t) * 1.2).translate(S);
+    const slL = sl(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3);
+    const slR = sl(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3);
+    const ykL = yoke(j.upperArmL as Vec3);
+    const ykR = yoke(j.upperArmR as Vec3);
     garment = garment
-      .smoothUnion(sl(j.upperArmL as Vec3, j.lowerArmL as Vec3, j.wristL as Vec3), r.upperArm * 0.7)
-      .smoothUnion(sl(j.upperArmR as Vec3, j.lowerArmR as Vec3, j.wristR as Vec3), r.upperArm * 0.7)
-      .smoothUnion(yoke(j.upperArmL as Vec3), r.upperArm * 0.8)
-      .smoothUnion(yoke(j.upperArmR as Vec3), r.upperArm * 0.8);
+      .smoothUnion(slL, r.upperArm * 0.7)
+      .smoothUnion(slR, r.upperArm * 0.7)
+      .smoothUnion(ykL, r.upperArm * 0.8)
+      .smoothUnion(ykR, r.upperArm * 0.8);
+    sleeves = sdf.union(slL, slR, ykL, ykR);
   }
-  return garment;
+  return { all: garment, torso: torsoPanel, sleeves };
 }
 
 // Resolve a coverage level (`top`/`bottom`) that may be a named landmark
@@ -4087,8 +4410,15 @@ export interface FigureNamespace {
   areolaColor(skin: string, factor?: number): string;
   neck(rig: Rig, opts?: object): Node;
   arms(rig: Rig, opts?: object): Node;
+  /** ONE arm (`'L'`/`'R'`) as a conform/clear surface — for a one-sided accessory
+   *  (vambrace, bracer, armband) that must hug that forearm/upper-arm and NOT reach
+   *  the other side. `F.arms` is both (the body-weld input); `F.arm` is one. */
+  arm(rig: Rig, side: 'L' | 'R'): Node;
   hands(rig: Rig, opts?: object): Node;
   legs(rig: Rig, opts?: object): Node;
+  /** ONE leg (`'L'`/`'R'`) as a conform/clear surface — for a one-sided greave,
+   *  garter, or knee pad. `F.legs` is both; `F.leg` is one. */
+  leg(rig: Rig, side: 'L' | 'R'): Node;
   feet(rig: Rig, opts?: object): Node;
   head(rig: Rig, opts?: object): Node;
   base(rig: Rig, opts?: object): Node;
@@ -4115,6 +4445,12 @@ export interface FigureNamespace {
    *  Aligns the prop's local long axis (`opts.along`, default 'z') to the grip
    *  axis and drops its origin on the grip point. `opts.flip` reverses it. */
   holdAt(node: Node, grip: GripFrame, opts?: object): Node;
+  /** AI-friendly "person holds a thing" — same as `holdAt` but auto-flips on
+   *  the RIGHT hand so the prop's +Z end (built as the "business end") lands
+   *  at the thumb. Build a sword with the BLADE at +Z, a hammer with the HEAD
+   *  at +Z; `F.grasp(prop, rig.grip.R)` is one line and correct on the first
+   *  try. Use this instead of `holdAt` for ordinary one-handed props. */
+  grasp(node: Node, grip: GripFrame, opts?: object): Node;
   /** The line spanning TWO grips (or two points) for a prop held in both hands
    *  — guitar, barbell, bow, broom. Returns the {@link SpanFrame} (endpoints,
    *  unit axis, length, midpoint) so `sdf.capsule(s.a, s.b, r)` is one line. */
@@ -4125,10 +4461,55 @@ export interface FigureNamespace {
    *  (`opts.anchor` ∈ top|center|bottom, default 'top' so the prop hangs below
    *  the foot). Accepts a sole frame or a raw `[x,y,z]` point. */
   standOn(node: Node, sole: SoleFrame | Vec3, opts?: object): Node;
+  /** Build a closed elliptical band wrapping a {@link RingFrame} (`rig.ring.neck`
+   *  / `rig.ring.waist`) — a necklace, collar, choker, or belt. `opts`: `{ tube,
+   *  clearance, segments, drop }`. Raise `clearance` to clear clothing; `drop`
+   *  lowers a necklace below the neck. Give the result its own `.label(...)`. */
+  ring(frame: RingFrame, opts?: object): Node;
+  /** Build a FLUSH conformal band wrapping a {@link RingFrame} — a belt, waistband,
+   *  collar, or sash that lies FLAT against the body the way clothing lies on skin,
+   *  instead of a round tube welded on top. Requires `surface` (the body/clothed
+   *  node to conform to); it offsets that surface out by `clearance + thickness`
+   *  and slices it to a `height` band, so it follows the real (posed, non-circular)
+   *  cross-section and can never float or balloon. Pass `rig` (and/or `occlude`) to
+   *  carve the arms so it terminates where limbs cross it. `opts`: `{ surface,
+   *  height, thickness, clearance, drop, occlude, rig }`. Give it its own `.label`. */
+  band(frame: RingFrame, opts?: object): Node;
+  /** Invariant check: estimate how much two SDF solids OVERLAP, by sampling both
+   *  fields over their bbox intersection (no mesh needed). Returns `{ overlaps,
+   *  sharedVolume, point, samples }`. Assert a worn accessory is clear of a limb —
+   *  `F.sharedSolid(belt, F.arms(rig)).overlaps === false` — checking only the
+   *  pairs that MUST stay clear (clothing is meant to overlap skin). `opts`:
+   *  `{ samples, tol }`. */
+  sharedSolid(a: Node, b: Node, opts?: object): { overlaps: boolean; sharedVolume: number; point: Vec3 | null; samples: number };
+  /** A world point on a {@link RingFrame} at azimuth `az`° (0 = front, 90 = left,
+   *  180 = back, −90 = right) — seat a belt buckle (`az: 0`) or hang a scabbard at
+   *  the hip (`az: 80`). `opts.clearance`/`drop` match the band. */
+  ringPoint(frame: RingFrame, az: number, opts?: object): Vec3;
+  /** A band crossing the body between two anchors — bandolier (shoulder → opposite
+   *  hip), sash, suspender, backpack strap. Bowed forward (−Y) by `opts.bow` so it
+   *  rides over the chest. `opts`: `{ tube, bow, segments }`. Accepts frames or raw
+   *  points (like `spanGrips`). */
+  strap(a: GripFrame | SoleFrame | Vec3, b: GripFrame | SoleFrame | Vec3, opts?: object): Node;
+  /** Hang a node so it dangles below `point` (a scabbard off a belt, a pendant off
+   *  a necklace). Tilts `opts.tilt`° forward, then drops its `anchor` (default
+   *  'top') onto `point` lowered by `opts.drop`. The gravity analog of `holdAt`. */
+  hangFrom(node: Node, point: GripFrame | SoleFrame | Vec3, opts?: object): Node;
+  /** A face frame for items that perch on facial landmarks — eyeglasses, masks,
+   *  eyepatches. Returns `{ eyeL, eyeR, bridge, templeL, templeR, forward, up,
+   *  lateral }`, all tracking head pose. */
+  onFace(rig: Rig): { eyeL: Vec3; eyeR: Vec3; bridge: Vec3; templeL: Vec3; templeR: Vec3; forward: Vec3; up: Vec3; lateral: Vec3 };
   /** Deterministic world-coordinate dump of the rig's joints, grip frames, and
    *  directions (rounded) plus a `.text` summary — use instead of hand-rolled
    *  JSON scratch probes when authoring a pose. */
   poseProbe(rig: Rig): { height: number; headsTall: number; build: string; sex: string; age: number; weight: number; joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame }; soles: { L: SoleFrame; R: SoleFrame }; dir: Record<string, Vec3>; text: string };
+  /** QC the grip on a hand BEFORE bake — returns `{ gripDirection,
+   *  thumbAtPositiveEnd, barCupDistance, summary }` so an AI can assert the
+   *  four success criteria of a real grasp (prop axis in intended direction;
+   *  thumb at +Z end of prop; bar in finger cup, not at the wrist; visible
+   *  fingers wrapped). Pair with `F.grasp` + `holds: '<direction>'` and a
+   *  failed assertion always means the pose is wrong, not the prop. */
+  graspProbe(rig: Rig, side: 'L' | 'R'): { gripDirection: Vec3; barCupDistance: number; summary: string };
   /** The face's detail-region spheres (head + finer mouth) for
    *  `build({ detail: F.faceDetail(rig) })`. */
   faceDetail(rig: Rig, opts?: object): Array<{ center: Vec3; radius: number; edgeLength: number }>;
@@ -4196,6 +4577,17 @@ export interface FigureNamespace {
      *  the under-garments; `ties:false` drops the waist ties. */
     apron(rig: Rig, opts?: object): Node;
   };
+  /** The clothed garments decomposed into PARTS, so an accessory can conform to a
+   *  region (the torso) WITHOUT the limbs. `top` returns `{ all, torso, sleeves }`
+   *  and `pants` returns `{ all, hips, legs }`; `all` is identical to the matching
+   *  `F.clothing.*` Node. Conform a belt/sash to `union(garment.top(...).torso,
+   *  garment.pants(...).hips)` — the band's isotropic offset then follows only the
+   *  torso silhouette and can NEVER be dilated out onto a sleeve (the root-cause
+   *  fix for "belt on the arms"; no `occludeArms` tuning needed). */
+  garment: {
+    top(rig: Rig, opts?: object): { all: Node; torso: Node; sleeves: Node | null };
+    pants(rig: Rig, opts?: object): { all: Node; hips: Node; legs: Node | null };
+  };
 }
 
 /** Translate an SDF node so its bounding-box anchor lands at `joint`. Removes
@@ -4235,31 +4627,34 @@ function standOn(node: Node, sole: unknown, opts?: unknown): Node {
   return node.translate([p[0] - cx, p[1] - cy, p[2] - cz]);
 }
 
-/** Seat headwear (hat, crown, headband, halo) ON TOP of the hair instead of the
- *  bare skull, so it rests on the hairstyle rather than embedding in it — the
- *  headwear analog of the hand `grip` frame. Pass the **hair** node (or any head
- *  node) as `rest`: the accessory's bbox `anchor` (default 'bottom') is moved to
- *  the TOP of that node along +Z, and its X/Y is centred on the head joint.
- *  Without `rest` it falls back to the skull crown joint (`rig.joints.crown`).
- *  `clearance` floats it above the hair; `embed` sinks it in a little so it
- *  welds into one printable piece (a deep embed is what made hand-placed crowns
- *  disappear into the hair). Build the accessory centred on the origin, then
- *  `F.placeOnHead(crown, rig, { rest: hair, embed: 0.2 })`. */
+/** Seat headwear (hat, crown, headband, halo) on the head. **Default (no `rest`):
+ *  the hat sits DOWN around the skull** — its bottom anchor lands at
+ *  `head.z + r.headZ · sit` (`sit` default 0.35 ≈ the brow/temple line), with the
+ *  crown rising to enclose the skull, so a brimmed hat reads worn, not perched
+ *  high. Raise `sit` for a higher perch (tiara/halo), lower/negative to pull it
+ *  down over the ears. `clearance` lifts it, `embed` sinks it further.
+ *  **Legacy: pass `rest`** (the hair node) to instead rest the anchor on the
+ *  hair's TOP (`bounds().max[2]`) — the original behavior, kept for callers tuned
+ *  to it; combine with `embed` to sink into the hair. Build the accessory centred
+ *  on the origin (brim in XY, crown up +Z), then
+ *  `F.placeOnHead(hat, rig)` (or `{ sit }`). Anchor default 'bottom'. */
 function placeOnHead(node: Node, rig: Rig, opts?: unknown): Node {
   const o = obj(opts, 'placeOnHead(opts)');
-  assertNoUnknownKeys(o, ['rest', 'clearance', 'embed', 'anchor'], 'placeOnHead(opts)');
+  assertNoUnknownKeys(o, ['rest', 'clearance', 'embed', 'anchor', 'sit'], 'placeOnHead(opts)');
   const clearance = num(o.clearance, 0, 'placeOnHead.clearance', 0);
   const embed = num(o.embed, 0, 'placeOnHead.embed', 0);
+  const sit = num(o.sit, 0.35, 'placeOnHead.sit');
   const anchor = o.anchor === undefined ? 'bottom'
     : assertEnum(o.anchor, ['center', 'bottom', 'top'] as const, 'placeOnHead.anchor');
   const head = rig.joints.head as Vec3;
-  let restZ = (rig.joints.crown as Vec3)[2];
+  // Default: seat on the head (brim at the brow line, crown encloses the skull).
+  let restZ = head[2] + rig.r.headZ * sit;
   if (o.rest !== undefined) {
     const rn = o.rest as Node;
     if (!rn || typeof rn.bounds !== 'function') {
       throw new ValidationError('placeOnHead.rest must be an SDF node (e.g. the hair) whose top defines the rest height. See /ai/figure.md');
     }
-    restZ = rn.bounds().max[2];
+    restZ = rn.bounds().max[2];   // legacy: rest on the hair top
   }
   return placeAt(node, [head[0], head[1], restZ + clearance - embed], { anchor });
 }
@@ -4283,18 +4678,76 @@ function holdAt(node: Node, grip: unknown, opts?: unknown): Node {
   const point = assertNumberTuple(g.point, 3, 'holdAt(grip.point)') as Vec3;
   let axis = norm3(assertNumberTuple(g.gripAxis, 3, 'holdAt(grip.gripAxis)') as Vec3);
   const o = obj(opts, 'holdAt(opts)');
-  assertNoUnknownKeys(o, ['along', 'flip'], 'holdAt(opts)');
+  assertNoUnknownKeys(o, ['along', 'flip', 'up'], 'holdAt(opts)');
   const along = o.along === undefined ? 'z'
     : assertEnum(o.along, ['x', 'y', 'z'] as const, 'holdAt.along');
   if (o.flip !== undefined && typeof o.flip !== 'boolean') {
     throw new ValidationError('holdAt.flip must be a boolean');
   }
   if (o.flip === true) axis = scale3(axis, -1);
-  // Bring the chosen local axis onto +Z first, then align +Z to the grip axis.
+  const up = o.up === undefined ? 'palm'
+    : assertEnum(o.up, ['palm', 'reach'] as const, 'holdAt.up');
+  // FULL-FRAME bind (default, along 'z'): orient the prop's local +Z to the grip
+  // axis AND its local +Y to a hand direction, so a prop with an asymmetric
+  // cross-section (a sword's edge/guard, a tool's head) is fully oriented to the
+  // hand — not left to roll freely about the grip axis (the "palm-down" failure).
+  // The prop's local +Y maps to the hand's `palmNormal` (default) or `reach`.
+  const palmN = g.palmNormal !== undefined ? norm3(assertNumberTuple(g.palmNormal, 3, 'holdAt(grip.palmNormal)') as Vec3) : null;
+  const reach = g.reach !== undefined ? norm3(assertNumberTuple(g.reach, 3, 'holdAt(grip.reach)') as Vec3) : null;
+  const upTarget = up === 'reach' ? reach : palmN;
+  if (along === 'z' && upTarget) {
+    const z = norm3(axis);
+    const x = norm3(cross3(upTarget, z));   // edge/guard axis
+    const y = norm3(cross3(z, x));           // re-orthogonalized up
+    return node.rotate(eulerFromBasis(x, y, z)).translate(point);
+  }
+  // Legacy single-axis path (no palm normal on the frame, or `along` x/y): align
+  // the chosen local axis to the grip axis; roll about it is unconstrained.
   let n = node;
   if (along === 'x') n = n.rotate([0, -90, 0]);      // local +X → +Z
   else if (along === 'y') n = n.rotate([90, 0, 0]);   // local +Y → +Z
   return n.rotate(eulerAlignZ(axis)).translate(point);
+}
+
+/** The AI-friendly "person holds a thing" helper — what `F.holdAt` should have
+ *  been if you only knew the final use-case the first time. Given a prop and a
+ *  hand's grip frame, `F.grasp` produces a CORRECT GRIP on the first try:
+ *
+ *  - The prop sits in the FINGER CUP (`grip.point` is already cup-positioned).
+ *  - The prop is auto-FLIPPED end-for-end on the RIGHT hand so the prop's +Z
+ *    end lands at the thumb (the canonical hand puts the thumb at the
+ *    −gripAxis end of the bar for the right hand, +gripAxis for the left).
+ *    Build a sword with the BLADE at +Z and the pommel at −Z; build a hammer
+ *    with the HEAD at +Z; `F.grasp` puts the thumb at the business end on
+ *    EITHER hand without per-figure flip flags.
+ *
+ *  Use `F.grasp` for ordinary "person holds a thing" cases — sword, staff,
+ *  hammer, mug, torch. Use the low-level `F.holdAt` when you need explicit
+ *  control (an asymmetric two-handed prop, a manual flip, a non-`z` axis).
+ *
+ *  ```js
+ *  const sword = grip.union(guard).union(blade);  // built along +Z, blade at +Z end
+ *  const held = F.grasp(sword, rig.grip.R);        // thumb at guard, blade up. Done.
+ *  ```
+ *
+ *  Opts: same as `holdAt` (`along`, `up`, `flip`). `flip` here OVERRIDES the
+ *  side-based default — pass it only when you genuinely want the other end of
+ *  the prop at the thumb (e.g. a torch you hold pommel-up). */
+function grasp(node: Node, grip: unknown, opts?: unknown): Node {
+  const g = obj(grip, 'grasp(grip)');
+  // Need .side from the grip frame to auto-pick flip. asGripFrame validates
+  // and coerces; if `grip` is a raw [x,y,z] (no side) we can't auto-flip, so
+  // fall through to holdAt with the user-supplied (or undefined) flip.
+  const sideRaw = g.side;
+  const o = obj(opts, 'grasp(opts)');
+  assertNoUnknownKeys(o, ['along', 'flip', 'up'], 'grasp(opts)');
+  // Default flip rule: right hand (side < 0) needs the prop flipped so the
+  // prop's +Z end (the "business end") sits at the thumb. Left hand: no flip.
+  // Explicit opts.flip wins over the default — for the rare prop held "wrong
+  // way up" (a torch with the head down, a candle pommel-up).
+  const autoFlip = typeof sideRaw === 'number' ? sideRaw < 0 : false;
+  const flipFinal = o.flip === undefined ? autoFlip : (o.flip as boolean);
+  return holdAt(node, grip, { ...o, flip: flipFinal });
 }
 
 /** Coerce a grip frame ({@link GripFrame}, uses `.point`) or a raw `[x,y,z]`
@@ -4329,6 +4782,305 @@ function spanGrips(a: unknown, b: unknown): SpanFrame {
   };
 }
 
+/** Validate + coerce a {@link RingFrame} (`rig.ring.neck` / `rig.ring.waist`). */
+function asRingFrame(v: unknown, name: string): RingFrame {
+  const o = obj(v, name);
+  return {
+    center: assertNumberTuple(o.center, 3, `${name}.center`) as Vec3,
+    axis: norm3(assertNumberTuple(o.axis, 3, `${name}.axis`) as Vec3),
+    xAxis: norm3(assertNumberTuple(o.xAxis, 3, `${name}.xAxis`) as Vec3),
+    yAxis: norm3(assertNumberTuple(o.yAxis, 3, `${name}.yAxis`) as Vec3),
+    rx: assertNumber(o.rx, `${name}.rx`, { min: 0 }) as number,
+    ry: assertNumber(o.ry, `${name}.ry`, { min: 0 }) as number,
+    hang: norm3(assertNumberTuple(o.hang, 3, `${name}.hang`) as Vec3),
+    region: typeof o.region === 'string' ? o.region : '',
+  };
+}
+
+/** Collect the occluder nodes a worn accessory should be carved by, so the
+ *  objects physically IN FRONT of it "win" (it terminates at them / is covered):
+ *  the explicit `opts.occlude` (a node or array) PLUS, when `opts.rig` is given,
+ *  the figure's default occluders for this `region` — the arms (a band wrapping
+ *  the torso/waist terminates at down-arms and re-wraps when they lift) and, for
+ *  a neck ring, the hair (which drapes over a necklace). Subtract these from the
+ *  accessory. */
+function occludersFrom(sdf: SdfApi, o: Record<string, unknown>, region: string): Node[] {
+  const out: Node[] = [];
+  const ex = o.occlude;
+  if (ex !== undefined) {
+    const list = Array.isArray(ex) ? ex : [ex];
+    for (const n of list) {
+      if (!n || typeof (n as Node).bounds !== 'function') throw new ValidationError('occlude must be an SDF node or array of nodes (e.g. F.arms(rig), F.hair(rig)).');
+      out.push(n as Node);
+    }
+  }
+  if (o.rig !== undefined) {
+    const rig = assertRig(o.rig, 'occlude rig');
+    out.push(buildArms(sdf, rig));                    // arms are in front of any body-wrapping band
+    if (region === 'neck') out.push(buildHair(sdf, rig));   // hair drapes over a necklace
+  }
+  return out;
+}
+
+function applyOcclude(band: Node, occluders: Node[]): Node {
+  let b = band;
+  for (const occ of occluders) b = b.subtract(occ);
+  return b;
+}
+
+/** Build a closed elliptical band wrapping a {@link RingFrame} — a necklace,
+ *  collar, choker, or belt. The band rides OUTSIDE the body surface by `clearance`
+ *  (raise it to clear clothing) as a smooth tube of cross-section radius `tube`,
+ *  swept from `segments` capsules around the ellipse so it conforms to the body's
+ *  non-circular cross-section. `drop` lowers the whole band along the body axis (a
+ *  necklace drapes below the neck). Give the result its own `.label(...)` so it
+ *  meshes in its own region (crisp) and paints separately. */
+/** Distance from `origin` along unit `dir` to where `surface` crosses from inside
+ *  (evaluate < 0) to outside — or null if `surface` can't be evaluated or no
+ *  crossing is found within `maxDist`. Used to CONFORM bands/straps to the real
+ *  (clothed) body surface instead of an analytic ellipse, so they sit flush and
+ *  layer over clothing. Coarse march + bisection. */
+function marchToSurface(surface: unknown, origin: Vec3, dir: Vec3, maxDist: number): number | null {
+  const s = surface as { evaluate?: (x: number, y: number, z: number) => number } | undefined;
+  if (!s || typeof s.evaluate !== 'function') return null;
+  const N = 48;
+  let prevD = s.evaluate(origin[0], origin[1], origin[2]);
+  let prevT = 0;
+  for (let i = 1; i <= N; i++) {
+    const t = (i / N) * maxDist;
+    const p = add3(origin, scale3(dir, t));
+    const d = s.evaluate(p[0], p[1], p[2]);
+    if (prevD < 0 && d >= 0) {
+      let lo = prevT, hi = t;
+      for (let b = 0; b < 22; b++) {
+        const m = (lo + hi) / 2;
+        const pm = add3(origin, scale3(dir, m));
+        if ((s.evaluate(pm[0], pm[1], pm[2])) < 0) lo = m; else hi = m;
+      }
+      return (lo + hi) / 2;
+    }
+    prevD = d; prevT = t;
+  }
+  return null;
+}
+
+function ringBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
+  const f = asRingFrame(frame, 'ring(frame)');
+  const o = obj(opts, 'ring(opts)');
+  assertNoUnknownKeys(o, ['tube', 'clearance', 'segments', 'drop', 'drape', 'surface', 'occlude', 'rig'], 'ring(opts)');
+  const tube = num(o.tube, Math.max(f.rx, f.ry) * 0.12, 'ring.tube', 1e-3);
+  const clearance = num(o.clearance, 0, 'ring.clearance', 0);
+  const drop = num(o.drop, 0, 'ring.drop');
+  const drape = num(o.drape, 0, 'ring.drape', 0);   // dip the FRONT of the loop down the chest (a draping necklace)
+  const segments = Math.round(num(o.segments, 48, 'ring.segments', 8, 256));
+  const off = clearance + tube;
+  const c = add3(f.center, scale3(f.axis, -drop));
+  const maxR = Math.max(f.rx, f.ry) * 3;
+  const pts: Vec3[] = [];
+  for (let i = 0; i < segments; i++) {
+    const t = (i / segments) * Math.PI * 2;
+    // `drape` lowers the FRONT of the loop (−Y side) along the body axis, tapering
+    // to 0 at the back — a necklace that hangs down the chest instead of a flat
+    // choker ring. Front weight peaks where the azimuth faces −Y (sin t < 0).
+    const frontW = Math.max(0, -Math.sin(t));
+    const cz = add3(c, scale3(f.axis, -drape * frontW * frontW));
+    // With a `surface`, ray-march from the centre to the REAL surface at this
+    // azimuth so the band sits flush on the (clothed) body; otherwise the ellipse.
+    const dir = norm3(add3(scale3(f.xAxis, Math.cos(t)), scale3(f.yAxis, Math.sin(t))));
+    const sd = o.surface !== undefined ? marchToSurface(o.surface, cz, dir, maxR) : null;
+    if (sd !== null) {
+      pts.push(add3(cz, scale3(dir, sd + clearance + tube)));
+    } else {
+      pts.push(add3(cz, add3(scale3(f.xAxis, (f.rx + off) * Math.cos(t)), scale3(f.yAxis, (f.ry + off) * Math.sin(t)))));
+    }
+  }
+  let band = sdf.capsule(pts[segments - 1], pts[0], tube);
+  for (let i = 0; i < segments - 1; i++) band = band.union(sdf.capsule(pts[i], pts[i + 1], tube));
+  // Layer: carve away the objects in front of / draped over the band (arms,
+  // hair) so it terminates at them and re-wraps when they move — see occludersFrom.
+  return applyOcclude(band, occludersFrom(sdf, o, f.region));
+}
+
+/** Build a FLUSH conformal band wrapping a {@link RingFrame} — a belt, waistband,
+ *  collar, or sash. Unlike {@link ringBand} (a round tube swept on a curve, which
+ *  reads as "welded on"), this is the CLOTHING mechanism: offset the real body/
+ *  clothed `surface` outward by `clearance + thickness`, then slice that offset
+ *  solid to a `height`-tall band centred on the frame. The band is therefore a
+ *  literal slice of the body surface — it conforms exactly to the posed,
+ *  non-circular cross-section and lies flat/flush, never floating or ballooning.
+ *  Like any worn band it then SUBTRACTS its occluders (the arms via `rig`, plus
+ *  any explicit `occlude`) so it terminates where limbs cross it and re-wraps when
+ *  they move. */
+function buildBand(sdf: SdfApi, frame: unknown, opts?: unknown): Node {
+  const f = asRingFrame(frame, 'band(frame)');
+  const o = obj(opts, 'band(opts)');
+  assertNoUnknownKeys(o, ['surface', 'height', 'thickness', 'clearance', 'drop', 'occlude', 'rig', 'clear'], 'band(opts)');
+  const surface = o.surface as Node | undefined;
+  if (!surface || typeof surface.bounds !== 'function') {
+    throw new ValidationError('band requires a `surface` node to conform to (e.g. F.garment.top(rig).torso, or the torso-only clothed union — NOT a surface that includes the arms, or the band will be dilated out onto a sleeve).');
+  }
+  const reach = Math.max(f.rx, f.ry);
+  const thickness = num(o.thickness, reach * 0.10, 'band.thickness', 1e-3);
+  const clearance = num(o.clearance, 0, 'band.clearance', 0);
+  const height = num(o.height, reach * 0.5, 'band.height', 1e-3);
+  const drop = num(o.drop, 0, 'band.drop');
+  // The band is a height-tall slice of the surface grown just proud of the body.
+  const grown = surface.round(clearance + thickness);
+  const c = add3(f.center, scale3(f.axis, -drop));
+  const big = (reach + clearance + thickness) * 4;
+  const zone = sdf.box([big, big, height]).translate([c[0], c[1], c[2]]);
+  let band = grown.intersect(zone);
+  // `clear` (optional): parts the band must never intersect, hard-subtracted as a
+  // GUARANTEE. With a torso-only `surface` this is belt-and-suspenders insurance
+  // (the band already can't reach the arms); pass `clear: F.arms(rig)` to prove it.
+  if (o.clear !== undefined) {
+    const list = Array.isArray(o.clear) ? o.clear : [o.clear];
+    for (const c of list) {
+      if (!c || typeof (c as Node).bounds !== 'function') throw new ValidationError('band.clear must be an SDF node or array of nodes (e.g. F.arms(rig)).');
+      band = band.subtract(c as Node);
+    }
+  }
+  // Layer: carve the arms (and any explicit occluders) so the band terminates at
+  // limbs that cross it and re-wraps when they move — see occludersFrom.
+  return applyOcclude(band, occludersFrom(sdf, o, f.region));
+}
+
+/** Estimate how much two SDF solids OVERLAP in space — the invariant-check
+ *  primitive for "is accessory A clear of part B?". It Monte-Carlo samples a
+ *  deterministic grid over the INTERSECTION of the two bounding boxes and counts
+ *  points inside BOTH fields, so it needs no closed mesh — it works directly on the
+ *  SDF fields (open label patches, posed bodies, anything with `.evaluate`). Returns
+ *  `{ overlaps, sharedVolume, point, samples }` (`point` = an example interior
+ *  overlap point, for debugging). Assert `!F.sharedSolid(belt, F.arms(rig)).overlaps`
+ *  (a worn band clear of the arms) or compare `sharedVolume` to a tolerance. Naming
+ *  the SPECIFIC pair that must stay clear sidesteps the expected-overlap problem —
+ *  clothing is SUPPOSED to overlap skin, so you only check the pairs that must not. */
+function sharedSolid(a: unknown, b: unknown, opts?: unknown): { overlaps: boolean; sharedVolume: number; point: Vec3 | null; samples: number } {
+  const na = a as Node, nb = b as Node;
+  if (!na || typeof na.evaluate !== 'function' || typeof na.bounds !== 'function') throw new ValidationError('sharedSolid(a) must be an SDF node.');
+  if (!nb || typeof nb.evaluate !== 'function' || typeof nb.bounds !== 'function') throw new ValidationError('sharedSolid(b) must be an SDF node.');
+  const o = obj(opts, 'sharedSolid(opts)');
+  assertNoUnknownKeys(o, ['samples', 'tol'], 'sharedSolid(opts)');
+  const samples = Math.round(num(o.samples, 8000, 'sharedSolid.samples', 64, 1_000_000));
+  const tol = num(o.tol, 0, 'sharedSolid.tol', 0);
+  const ba = na.bounds(), bb = nb.bounds();
+  const lo: Vec3 = [Math.max(ba.min[0], bb.min[0]), Math.max(ba.min[1], bb.min[1]), Math.max(ba.min[2], bb.min[2])];
+  const hi: Vec3 = [Math.min(ba.max[0], bb.max[0]), Math.min(ba.max[1], bb.max[1]), Math.min(ba.max[2], bb.max[2])];
+  const dx = hi[0] - lo[0], dy = hi[1] - lo[1], dz = hi[2] - lo[2];
+  if (dx <= 0 || dy <= 0 || dz <= 0) return { overlaps: false, sharedVolume: 0, point: null, samples: 0 };
+  const n = Math.max(2, Math.round(Math.cbrt(samples)));   // grid resolution per axis
+  let both = 0, total = 0; let pt: Vec3 | null = null;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) for (let k = 0; k < n; k++) {
+    const x = lo[0] + ((i + 0.5) / n) * dx, y = lo[1] + ((j + 0.5) / n) * dy, z = lo[2] + ((k + 0.5) / n) * dz;
+    total++;
+    if (na.evaluate(x, y, z) < 0 && nb.evaluate(x, y, z) < 0) { both++; if (!pt) pt = [x, y, z]; }
+  }
+  const sharedVolume = both * ((dx * dy * dz) / total);
+  return { overlaps: sharedVolume > tol, sharedVolume, point: pt, samples: total };
+}
+
+/** A world point ON a {@link RingFrame}'s surface at azimuth `az` degrees (0 =
+ *  front/−Y, 90 = figure-left/+X, 180 = back/+Y, −90 = right/−X). `opts.clearance`
+ *  pushes it out past clothing (match the band's). Seat a buckle at the front of a
+ *  belt (`az: 0`) or hang a scabbard at the left hip (`az: 80`). */
+function ringPoint(frame: unknown, az: unknown, opts?: unknown): Vec3 {
+  const f = asRingFrame(frame, 'ringPoint(frame)');
+  const a = (assertNumber(az, 'ringPoint(az)') as number) * DEG;
+  const o = obj(opts, 'ringPoint(opts)');
+  assertNoUnknownKeys(o, ['clearance', 'drop', 'surface'], 'ringPoint(opts)');
+  const clr = num(o.clearance, 0, 'ringPoint.clearance', 0);
+  const drop = num(o.drop, 0, 'ringPoint.drop');
+  const c = add3(f.center, scale3(f.axis, -drop));
+  // Conform to the real surface at this azimuth when a `surface` is given (so a
+  // buckle/scabbard anchor sits flush over clothing), else the analytic ellipse.
+  const dir = norm3(sub3(scale3(f.xAxis, Math.sin(a)), scale3(f.yAxis, Math.cos(a))));
+  const sd = o.surface !== undefined ? marchToSurface(o.surface, c, dir, Math.max(f.rx, f.ry) * 3) : null;
+  if (sd !== null) return add3(c, scale3(dir, sd + clr));
+  return add3(c, add3(scale3(f.xAxis, (f.rx + clr) * Math.sin(a)), scale3(f.yAxis, -(f.ry + clr) * Math.cos(a))));
+}
+
+/** A band that CROSSES the body between two anchors — a bandolier (shoulder →
+ *  opposite hip), sash, suspender, or backpack strap. Sweeps a tube of radius
+ *  `tube` from `a` to `b`, bowed outward toward the front (−Y) by `bow` through
+ *  the midpoint so it rides OVER the chest instead of cutting a straight chord
+ *  through it. Accepts grip/ring/sole frames or raw `[x,y,z]` points on either
+ *  end (via the same coercion as `spanGrips`). */
+function strap(sdf: SdfApi, a: unknown, b: unknown, opts?: unknown): Node {
+  const pa = asPoint3(a, 'strap(a)');
+  const pb = asPoint3(b, 'strap(b)');
+  const o = obj(opts, 'strap(opts)');
+  assertNoUnknownKeys(o, ['tube', 'bow', 'segments', 'surface', 'occlude', 'rig'], 'strap(opts)');
+  const tube = num(o.tube, len3(sub3(pb, pa)) * 0.05, 'strap.tube', 1e-3);
+  const bow = num(o.bow, tube * 2, 'strap.bow');
+  const segments = Math.round(num(o.segments, 16, 'strap.segments', 2, 128));
+  const maxR = len3(sub3(pb, pa)) + 1;
+  const mid = scale3(add3(pa, pb), 0.5);
+  const ctrl: Vec3 = [mid[0], mid[1] - bow, mid[2]];   // pull the midpoint forward (−Y)
+  const at = (t: number): Vec3 => {
+    const base: Vec3 = [
+      (1 - t) * pa[0] + t * pb[0],
+      (1 - t) * pa[1] + t * pb[1],
+      (1 - t) * pa[2] + t * pb[2],
+    ];
+    // With a `surface`, lay the band ON the body: project each sample FORWARD
+    // (−Y) onto the front surface so the strap hugs the chest instead of bowing
+    // through it / burying under clothing. Falls back to a forward-bowed bezier.
+    if (o.surface !== undefined) {
+      const fd = marchToSurface(o.surface, [base[0], 0, base[2]], [0, -1, 0], maxR);
+      if (fd !== null) return [base[0], -fd - tube, base[2]];
+    }
+    const u = 1 - t;
+    return [
+      u * u * pa[0] + 2 * u * t * ctrl[0] + t * t * pb[0],
+      u * u * pa[1] + 2 * u * t * ctrl[1] + t * t * pb[1],
+      u * u * pa[2] + 2 * u * t * ctrl[2] + t * t * pb[2],
+    ];
+  };
+  let prev = at(0);
+  let band = sdf.capsule(prev, at(1 / segments), tube);
+  for (let i = 1; i < segments; i++) {
+    const cur = at((i + 1) / segments);
+    band = band.union(sdf.capsule(prev = at(i / segments), cur, tube));
+  }
+  return applyOcclude(band, occludersFrom(sdf, o, 'strap'));
+}
+
+/** Hang a node from a point so it DANGLES below it — a scabbard off a belt, a
+ *  pendant off a necklace, a pouch off a hip. Tilts the node `tilt`° forward
+ *  about X first, then drops its `anchor` (default 'top') onto `point` lowered by
+ *  `drop`. The gravity analog of `holdAt`/`standOn`. Accepts a ring/grip/sole
+ *  frame or a raw point (e.g. from `F.ringPoint`). */
+function hangFrom(node: Node, point: unknown, opts?: unknown): Node {
+  const p = asPoint3(point, 'hangFrom(point)');
+  const o = obj(opts, 'hangFrom(opts)');
+  assertNoUnknownKeys(o, ['tilt', 'drop', 'anchor'], 'hangFrom(opts)');
+  const tilt = num(o.tilt, 0, 'hangFrom.tilt', -90, 90);
+  const drop = num(o.drop, 0, 'hangFrom.drop');
+  const anchor = o.anchor === undefined ? 'top'
+    : assertEnum(o.anchor, ['center', 'bottom', 'top'] as const, 'hangFrom.anchor');
+  const n = tilt ? node.rotate([tilt, 0, 0]) : node;
+  return placeAt(n, [p[0], p[1], p[2] - drop], { anchor });
+}
+
+/** A face frame for items that PERCH on facial landmarks — eyeglasses, sunglasses,
+ *  masks, eyepatches, monocles. Returns the two eye centres, the bridge point
+ *  (between the eyes), the two temple points (at the ears), and unit
+ *  `forward`/`up`/`lateral` axes of the face — all tracking head pose. Build a
+ *  lens at `eyeL`/`eyeR`, a bridge between them, and temple arms back to
+ *  `templeL`/`templeR`. */
+function onFace(rig: Rig): {
+  eyeL: Vec3; eyeR: Vec3; bridge: Vec3; templeL: Vec3; templeR: Vec3;
+  forward: Vec3; up: Vec3; lateral: Vec3;
+} {
+  const f = rig.face;
+  const lateral = norm3(sub3(f.earL, f.earR));            // +X (figure-left)
+  const earMid = scale3(add3(f.earL, f.earR), 0.5);
+  const forward = norm3(sub3(f.nose, earMid));            // face-forward (≈ −Y)
+  const up = norm3(cross3(forward, lateral));             // ≈ +Z
+  const bridge = scale3(add3(f.eyeL, f.eyeR), 0.5);
+  return { eyeL: f.eyeL, eyeR: f.eyeR, bridge, templeL: f.earL, templeR: f.earR, forward, up, lateral };
+}
+
 /** Round a Vec3 to `p` decimals for a readable probe dump. */
 function round3(v: Vec3, p = 2): Vec3 {
   const m = 10 ** p;
@@ -4352,7 +5104,8 @@ function poseProbe(rig: Rig): {
   for (const k of Object.keys(rig.dir)) dir[k] = round3(rig.dir[k]);
   const grip = (g: GripFrame): GripFrame => ({
     point: round3(g.point), palmNormal: round3(g.palmNormal),
-    gripAxis: round3(g.gripAxis), reach: round3(g.reach),
+    gripAxis: round3(g.gripAxis), reach: round3(g.reach), thumbAxis: round3(g.thumbAxis),
+    side: g.side,
   });
   const grips = { L: grip(rig.grip.L), R: grip(rig.grip.R) };
   const soleR = (s: SoleFrame): SoleFrame => ({
@@ -4376,6 +5129,55 @@ function poseProbe(rig: Rig): {
   return { height: o.height, headsTall: o.headsTall, build: o.build, sex: o.sex, age: o.age, weight: o.weight, joints, grips, soles, dir, text: lines.join('\n') };
 }
 
+/** Anatomical QC for a grasped prop — answers "is this grip going to look
+ *  right on this hand?" without a render. Returns the three values that
+ *  matter once F.grasp + holds is used:
+ *
+ *   - `gripDirection` — the world unit vector the prop's *visible* axis (its
+ *     +Z end as built) ends up pointing in AFTER F.grasp's side-dependent
+ *     auto-flip. This is what the user sees: a sword's blade direction, a
+ *     hammer's head direction. Assert against the AI's intent
+ *     (`q.gripDirection[2] > 0.9` ⇒ "visibly up").
+ *   - `barCupDistance` — distance from the bar (grip.point) to the wrist
+ *     joint in `r.hand` units. Assert the bar is IN the finger cup, not at
+ *     the wrist line. Healthy: ≥ 0.7. The previous "sword at the wrist" defect
+ *     would have surfaced as a value near 0.4 — this probe catches it pre-render.
+ *   - `summary` — one-line verdict, ready for `throw` / log.
+ *
+ *  The thumb-at-correct-end check is omitted by design: with `F.grasp` the
+ *  auto-flip makes it tautological (always true on either hand). To catch the
+ *  "dagger grip" defect specifically, the structural answer is "use F.grasp,
+ *  not raw F.holdAt" — the figure.md gold-standard example enforces this.
+ *
+ *  Usage in a figure file:
+ *  ```js
+ *  const q = F.graspProbe(rig, 'R');
+ *  if (q.gripDirection[2] < 0.9) throw new Error(q.summary);  // bar not visibly up
+ *  if (q.barCupDistance < 0.7)   throw new Error(q.summary);  // not in finger cup
+ *  ``` */
+function graspProbe(rig: Rig, side: 'L' | 'R'): {
+  gripDirection: Vec3;
+  barCupDistance: number;
+  summary: string;
+} {
+  const g = side === 'L' ? rig.grip.L : rig.grip.R;
+  const wrist = side === 'L' ? rig.joints.wristL : rig.joints.wristR;
+  // F.grasp auto-flips for the RIGHT hand (side<0): the prop's visible +Z
+  // end lands at -gripAxis. So the "visible direction" is -gripAxis on the
+  // right hand, +gripAxis on the left.
+  const flip = g.side < 0;
+  const propDir: Vec3 = flip
+    ? [-g.gripAxis[0], -g.gripAxis[1], -g.gripAxis[2]]
+    : g.gripAxis;
+  const dx = g.point[0] - wrist[0], dy = g.point[1] - wrist[1], dz = g.point[2] - wrist[2];
+  const barCupDistance = Math.sqrt(dx * dx + dy * dy + dz * dz) / rig.r.hand;
+  const propDirRounded = round3(propDir);
+  const summary = `graspProbe(${side}): prop points [${propDirRounded.join(', ')}], `
+    + `barCupDistance=${barCupDistance.toFixed(2)}·r.hand`
+    + (barCupDistance < 0.7 ? ' ← BAR AT WRIST defect (not in the finger cup)' : '');
+  return { gripDirection: propDirRounded, barCupDistance, summary };
+}
+
 function assertRig(rig: unknown, name: string): Rig {
   if (!rig || typeof rig !== 'object' || !('joints' in rig) || !('face' in rig)) {
     throw new ValidationError(`${name} must be a rig from api.sdf.figure.rig(...). See /ai/figure.md`);
@@ -4393,8 +5195,10 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     areolaColor: (skin, factor) => areolaColor(skin, factor),
     neck: (rig) => buildNeck(sdf, assertRig(rig, 'neck(rig)')),
     arms: (rig) => buildArms(sdf, assertRig(rig, 'arms(rig)')),
+    arm: (rig, side) => buildArms(sdf, assertRig(rig, 'arm(rig)'), assertEnum(side, ['L', 'R'] as const, 'arm(side)')),
     hands: (rig, opts) => buildHands(sdf, assertRig(rig, 'hands(rig)'), opts),
     legs: (rig) => buildLegs(sdf, assertRig(rig, 'legs(rig)')),
+    leg: (rig, side) => buildLegs(sdf, assertRig(rig, 'leg(rig)'), assertEnum(side, ['L', 'R'] as const, 'leg(side)')),
     feet: (rig, opts) => buildFeet(sdf, assertRig(rig, 'feet(rig)'), opts),
     head: (rig, opts) => buildHead(sdf, assertRig(rig, 'head(rig)'), opts),
     base: (rig, opts) => buildBase(sdf, assertRig(rig, 'base(rig)'), opts),
@@ -4404,9 +5208,18 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
     placeAt: (node, joint, opts) => placeAt(node as Node, joint, opts),
     placeOnHead: (node, rig, opts) => placeOnHead(node as Node, assertRig(rig, 'placeOnHead(rig)'), opts),
     holdAt: (node, grip, opts) => holdAt(node as Node, grip, opts),
+    grasp: (node, grip, opts) => grasp(node as Node, grip, opts),
     spanGrips: (a, b) => spanGrips(a, b),
     standOn: (node, sole, opts) => standOn(node as Node, sole, opts),
+    ring: (frame, opts) => ringBand(sdf, frame, opts),
+    band: (frame, opts) => buildBand(sdf, frame, opts),
+    sharedSolid: (a, b, opts) => sharedSolid(a, b, opts),
+    ringPoint: (frame, az, opts) => ringPoint(frame, az, opts),
+    strap: (a, b, opts) => strap(sdf, a, b, opts),
+    hangFrom: (node, point, opts) => hangFrom(node as Node, point, opts),
+    onFace: (rig) => onFace(assertRig(rig, 'onFace(rig)')),
     poseProbe: (rig) => poseProbe(assertRig(rig, 'poseProbe(rig)')),
+    graspProbe: (rig, side) => graspProbe(assertRig(rig, 'graspProbe(rig)'), assertEnum(side, ['L', 'R'] as const, 'graspProbe(side)')),
     faceDetail: (rig, opts) => faceDetail(assertRig(rig, 'faceDetail(rig)'), opts),
     handDetail: (rig, opts) => handDetail(assertRig(rig, 'handDetail(rig)'), opts),
     footDetail: (rig, opts) => footDetail(assertRig(rig, 'footDetail(rig)'), opts),
@@ -4427,8 +5240,12 @@ export function createFigureNamespace(sdf: SdfApi): FigureNamespace {
       panel: (rig, opts) => buildPanel(sdf, assertRig(rig, 'clothing.panel(rig)'), opts),
       apron: (rig, opts) => buildApron(sdf, assertRig(rig, 'clothing.apron(rig)'), opts),
     },
+    garment: {
+      top: (rig, opts) => buildTopParts(sdf, assertRig(rig, 'garment.top(rig)'), opts),
+      pants: (rig, opts) => buildPantsParts(sdf, assertRig(rig, 'garment.pants(rig)'), opts),
+    },
   };
 }
 
 /** @internal Exposed for unit tests. */
-export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildTop, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair };
+export const __figureTestables__ = { buildRig, buildTorso, buildArms, buildLegs, buildNipples, torsoMasses, ellipsoidFront, breastMounds, areolaColor, buildMouthPart, buildMouthAccents, buildEyes, buildEars, buildBrows, faceDetail, buildPants, buildPantsParts, buildTop, buildTopParts, buildShoes, buildBoots, buildPanel, buildApron, buildBase, buildFeet, footDetail, standOn, groundRig, buildHands, handDetail, buildHair, ringBand, buildBand, sharedSolid, ringPoint, strap, hangFrom, onFace, graspProbe };

@@ -123,7 +123,7 @@ F.rig({
   belly,       // 0..2 abdominal/pregnancy swell (default 0; ~0.5 tummy, ~0.7-1 pregnant). A dress/top drapes over it automatically.
   pose: {      // all optional; neutral standing defaults
     arms, legs, // SYMMETRIC shorthand — seeds BOTH sides at once (see below)
-    armL, armR, // { raiseSide, raiseFwd, bend, twist }   degrees — override per side
+    armL, armR, // { raiseSide, raiseFwd, bend, twist, palm | thumb }   degrees — override per side
     legL, legR, // { raiseSide, raiseFwd, bend, twist }   degrees
     head,       // { yaw, pitch, roll }
     spine,      // { lean, turn, side }
@@ -270,9 +270,12 @@ The rig exposes (read-only, for custom parts):
   **`waist`** (the garment-fitting radius at the natural waist — use this, not
   `hipsX`, to size belts/skirts/tutus).
 - `rig.dir.{headForward, headUp, headLeft, upperArmL/R, lowerArmL/R, elbowHingeL/R,
-  upperLegL/R, lowerLegL/R, kneeHingeL/R, footL/R}` — unit directions for orienting
-  parts (`elbowHingeL/R` and `kneeHingeL/R` are the limb bend axes; `footL/R`
-  is the foot heading, yawed by `leg*.twist` turnout).
+  handSplayL/R, upperLegL/R, lowerLegL/R, kneeHingeL/R, footL/R}` — unit directions
+  for orienting parts. `elbowHingeL/R` is the **bone** hinge (used by muscle bellies
+  and the arm builder — doesn't rotate under `wristRoll`). `handSplayL/R` is the
+  **hand** splay axis (= elbow hinge spun by `wristRoll` / `palmFacing` / `thumbAxis`)
+  — what `rig.grip.{L,R}.gripAxis` and the placed hand consume. `kneeHingeL/R`
+  is the knee bend axis; `footL/R` is the foot heading, yawed by `leg*.twist` turnout.
 - `rig.grip.{L,R}` — **a full grip frame per hand, for connecting HELD props**
   (guitar neck, sword, staff, mug). Each has `{ point, palmNormal, gripAxis, reach }`:
   - `point` — the grip **cup** where a held cylinder's axis rests. This is **NOT**
@@ -312,8 +315,11 @@ F.torso(rig, { navel })       // chest + belly + pelvis masses (+ bust mound, fr
 F.nipples(rig, { size, nipple })  // flush paintable areolae + tiny nipples — TOP-LEVEL part
 F.neck(rig)
 F.arms(rig)                   // both arms: tapered limbs + deltoid caps
+F.arm(rig, 'L' | 'R')         // ONE arm — conform/clear surface for a one-sided
+                              //   vambrace/bracer/armband (can't reach the far arm)
 F.hands(rig, { grip })        // grip: 'fist' | 'open' | 'relaxed' — sculpted 3-finger+thumb
 F.legs(rig)
+F.leg(rig, 'L' | 'R')         // ONE leg — for a one-sided greave/garter/knee pad
 F.feet(rig, { toes })         // flat, real-foot sole; toes: true adds a sculpted toe row
 F.head(rig, { faceShape, jaw, chin, cheek })  // skull + jaw + cheeks (no features yet)
 F.base(rig, { radius, thickness })   // flat disc under the feet (printability)
@@ -450,41 +456,143 @@ const staffPlaced = F.placeAt(staff, rig.joints.handR);                   // cen
 so they stay one printable piece — a staff floating next to the hand is a
 second component.
 
-**Seating headwear ON the hair — `F.placeOnHead(node, rig, opts?)`.** `placeAt`
-snaps to the *skull* crown joint, so a hat/crown placed there **embeds in the
-hair** (the hair adds volume above the skull). `placeOnHead` is the headwear
-analog of the hand grip frame: pass the **hair** as `opts.rest` and it rests the
-accessory's bbox `anchor` (default `'bottom'`) on the TOP of the hair, centred on
-the head. `clearance` floats it above; `embed` sinks it in a little so it welds
-into one printable piece. Build the accessory **centred on the origin** (ring in
-the z=0 plane, spikes up), then place it:
+**Seating headwear — `F.placeOnHead(node, rig, opts?)`.** Build the accessory
+**centred on the origin** (brim in the z=0 plane, crown up +Z). **Default (no
+`rest`): the hat sits DOWN on the head** — its bottom anchor lands at
+`head.z + r.headZ · sit` (`sit` default 0.35 ≈ the brow/temple line), with the
+crown enclosing the skull, so a brimmed hat reads worn rather than perched high.
+This is the recommended path for hats. Raise `sit` for a higher perch
+(tiara/halo), lower it (or go negative) to pull the hat down over the ears.
 
 ```js
-const hair = F.hair(rig, { style: 'long' }).label('hair');
-// coronet built at the origin; size the ring near the hair radius so it welds
-const crown = F.placeOnHead(coronet, rig, { rest: hair, embed: rig.r.head * 0.4 }).label('crown');
+const hat = F.placeOnHead(hatLocal, rig).label('hat');        // sits on the head
+const tiara = F.placeOnHead(tiaraLocal, rig, { sit: 0.7 }).label('tiara'); // higher
 ```
 
-Without `rest` it falls back to `rig.joints.crown` (the bare skull apex). A ring
-sized to the skull sits *inside* the larger hair volume — keep the ring small
-(a coronet on top) or grow it toward the hair radius so the band straddles the
-hair surface and welds (a band tangent to the surface prints as a second
-component).
+`clearance` lifts it, `embed` sinks it further. **Legacy: pass the hair as
+`opts.rest`** to instead rest the anchor on the hair's TOP (centred on the head);
+combine with `embed` to sink into the hair. A skull-sized ring sits *inside* the
+larger hair volume — keep it small or grow it toward the hair radius so the band
+straddles the surface and welds (a tangent band prints as a second component).
 
-**Putting a prop INTO a hand — `F.holdAt(prop, rig.grip.L|R, opts?)`.** `placeAt`
-only positions; `holdAt` also **orients** a prop to the grip and seats it in the
-finger cup. Build the prop centred at the origin with its long axis along local
-`+Z`, and `holdAt` aligns that axis to `gripAxis` and drops the origin on the
-grip `point`:
+**Person holds a thing — `holds: '<direction>'` on the arm pose + `F.grasp(prop, grip)`.**
+This is the recommended one-line API for any single-handed grasped prop (sword,
+staff, hammer, mug, torch). **Build the prop centred at the origin along its
+local +Z, with the BUSINESS END at +Z** (sword: blade at +Z, pommel at −Z;
+hammer: head at +Z, handle butt at −Z). Then:
 
 ```js
-// A wand/baton/sword grip, held in the right hand pointing along the fingers:
-const wand = sdf.capsule([0,0,-8],[0,0,8], 0.4);
-const held = F.holdAt(wand, rig.grip.R);        // axis → gripAxis, origin → grip cup
+// 1. Arm pose: declare the direction the held thing points in.
+//    `holds: 'up' | 'down' | 'forward' | 'back' | 'in' | 'out' | [x,y,z]`
+const rig = F.rig({ height: 66, pose: {
+  armR: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' },
+}});
+
+// 2. Build the prop centred at origin, long axis +Z, business end at +Z.
+const sword = grip.union(guard).smoothUnion(blade);   // blade at +Z, pommel at −Z
+
+// 3. Seat it. F.grasp auto-flips for the right hand so the blade end lands
+//    at the thumb (no flip flags, no per-figure tuning).
+const held = F.grasp(sword, rig.grip.R);
 ```
 
-`opts.along` (`'x'|'y'|'z'`, default `'z'`) says which local axis is the prop's
-length; `opts.flip: true` reverses it.
+`F.grasp` puts the bar IN the finger cup, side-aware: thumb at the guard end
+on either hand. The four success criteria (visible blade direction; thumb at
+business end; bar in finger cup; fingers visibly wrap) are met by construction
+when you use this pattern. **`examples/figure_knight.js` is the canonical
+reference** — copy that pattern for any one-handed grasping figure.
+
+> **Asymmetric props (axe, hammer, scythe, scalpel) — which local axis becomes
+> "forward"?** Once you've built the prop along +Z with the business end at
+> +Z, `F.grasp` + `holds: 'up'` on the right hand maps the prop's OTHER local
+> axes like this:
+>
+> | prop local | world (after `F.grasp(prop, rig.grip.R)` with `holds: 'up'`) |
+> |---|---|
+> | `+Z` | `+Z` (up — the bar is vertical, business end at top) |
+> | `+X` | `−Y` (FORWARD — toward the camera at the front of the figure) |
+> | `+Y` | `+X` (figure-LEFT, across the body to the side) |
+>
+> So an axe whose **blade flares forward** needs the flare built along local
+> `+X` (NOT `+Y`). A sword whose **flat edge faces the camera** has its flat
+> normal along local `+X`. The mapping is symmetric on the left hand with
+> sign flips. When unsure, probe before bake:
+> `throw new Error(JSON.stringify({ gripAxis: rig.grip.R.gripAxis, palmNormal: rig.grip.R.palmNormal, reach: rig.grip.R.reach }))`
+> and read the world unit vectors to confirm which way each local axis points.
+> `examples/figure_lumberjack.js` uses this exact mapping for the axe blade.
+
+**QC the grip BEFORE bake — `F.graspProbe(rig, 'R'|'L')`.** Catches grip
+defects without rendering. Returns `{ gripDirection, barCupDistance, summary }`:
+- `gripDirection` — world unit vector the prop's business end points in
+  (after F.grasp's auto-flip). Assert it matches your `holds:` intent.
+- `barCupDistance` — distance from bar to wrist in `r.hand` units. Healthy ≥ 0.7;
+  a low value means the bar is at the wrist line (the old "sword at wrist" defect).
+- `summary` — one-line verdict, ready for `throw new Error(q.summary)`.
+
+```js
+const q = F.graspProbe(rig, 'R');
+if (q.gripDirection[2] < 0.9) throw new Error(q.summary);  // not visibly up
+if (q.barCupDistance   < 0.7) throw new Error(q.summary);  // not in finger cup
+```
+
+**Low-level alternative — `F.holdAt(prop, rig.grip.L|R, opts?)`.** Same as
+`F.grasp` but without the auto-flip and the AI-friendly defaults. Use this when
+you need explicit control: a non-`z` long axis (`opts.along`), a manual flip
+(`opts.flip`), or a prop that legitimately needs the OPPOSITE end at the thumb
+(a torch held head-down, a candle). For ordinary "person holds a thing" reach
+for `F.grasp`. `opts.up` (`'palm'` default | `'reach'`) picks which hand
+direction the prop's +Y maps to; `opts.flip: true` reverses the axis;
+`opts.along` (`'x'|'y'|'z'`) selects the long axis (non-`z` uses the legacy
+single-axis align, roll unconstrained).
+
+```js
+// A sword: blade +Z, flat ±Y, guard ±X — held in the right fist, palm grasping:
+const held = F.holdAt(sword, rig.grip.R);       // +Z→gripAxis, +Y→palmNormal, origin→cup
+```
+
+> **Aim a held prop by posing the arm + a hand-orient hint — don't fight `holdAt`.**
+> How a hand is turned is set by the arm pose, not by `holdAt`. There are three
+> entry points for the wrist-roll DOF (forearm pronation/supination), all writing
+> the SAME degree of freedom — **pick one** (parseArm rejects setting more than one):
+>
+> - **`palmFacing`** — the most human-meaningful: "knuckles to camera" / "back of
+>   hand outward" / "palm up". Accepts `'forward' | 'back' | 'in' | 'out' | 'up'
+>   | 'down'` or an explicit `[x,y,z]` world direction. The solver picks the wrist
+>   roll that lands the palm's normal as close as geometry allows to the target.
+>   Use this for "show the back of the hand" / "show the palm" intent.
+> - **`thumbAxis`** — for "thumb up at the top of the grip" / "thumb pointing
+>   forward". Same value vocabulary as `palmFacing`; solves for the thumb axis
+>   instead of the palm normal. The knight uses this implicitly via its pose +
+>   `wristRoll: 90` (vertical-blade default).
+> - **`wristRoll: degrees`** — raw numeric forearm rotation, mirrored by `side`.
+>   Use only when you need precise numeric control (e.g. animating a sequence).
+>
+> Geometry to keep in mind — this coupling is real human anatomy and cannot be
+> wished away: a held bar lies along `gripAxis`, which is **⊥ the forearm** (you
+> grip across the palm). So:
+> - **The forearm direction sets the blade direction.** Vertical blade requires a
+>   horizontal forearm (forward, sideways, or anywhere in between).
+> - **`wristRoll` then spins the hand AROUND the forearm**, independently picking
+>   which side of the hand the camera sees — palm vs back, thumb up vs down.
+> - **These two CAN combine**: vertical blade with knuckles directly to camera
+>   requires the forearm to point to the SIDE (not forward), because cross(foreDir, +Z)
+>   only lands on ±Y when foreDir is in the ±X direction. For a forearm-forward grip,
+>   the camera sees the SIDE of the hand (thumb visible, fingertips wrapping toward
+>   the camera) — that's anatomically correct, not a bug.
+>
+> The knight uses `armR: { raiseSide: 5, raiseFwd: 0, bend: 90, wristRoll: 90 }`
+> — elbow at the side, forearm forward at chest height, sword vertical. To get
+> knuckles directly to camera with a vertical blade, switch to an arm-out-to-side
+> pose: `{ raiseSide: 70, raiseFwd: 0, bend: 5, palmFacing: 'back' }`.
+>
+> Probe with `F.poseProbe(rig).grips.R` — `thumbAxis · [0,0,1] > 0` ⇒ thumb up,
+> `palmNormal · [0,1,0] > 0` ⇒ knuckles toward -Y camera, and `gripAxis` **is**
+> the blade direction.
+>
+> Legacy `thumb` / `palm` keywords are retained and still work, but they solve a
+> different DOF (upper-arm roll) that's anatomically incorrect — `thumb:'up'` on
+> a low forward arm can fling the elbow out because the 1-DOF curve about the
+> upper-arm axis can't reach +Z. Prefer `palmFacing` / `thumbAxis` for new code.
 
 **Two-handed props — `F.spanGrips(a, b)`.** A guitar, barbell, bow, broom, or
 rifle runs BETWEEN both hands, so a single `holdAt` can't orient it. `spanGrips`
@@ -520,6 +628,209 @@ const skates = sdf.union(F.standOn(plat(), rig.sole.L), F.standOn(plat(), rig.so
 out **flat** on the ground plane (they sit flush on `F.base` and print flat) and
 track turnout — you don't hand-roll footwear. `F.base` rises to meet the lower of
 the two `groundZ`, so at least one foot always welds to it (one component).
+
+**Wrapping a band around the body — `F.ring(frame, opts?)`.** A necklace, collar,
+choker, or belt. The rig exposes two band-wrap frames: `rig.ring.neck` and
+`rig.ring.waist` (a {@link RingFrame}: `center`, `axis`, `xAxis`/`yAxis`, the body
+semi-axes `rx`/`ry`, and `hang` = world-down). `F.ring` sweeps a closed elliptical
+tube that conforms to the body's (non-circular) cross-section and rides
+`clearance + tube` OUTSIDE the surface — raise `clearance` to clear clothing.
+`opts`: `{ tube, clearance, segments, drop, surface }` (`drop` lowers a necklace
+below the neck). Give it its own `.label(...)` so it meshes crisply and paints
+separately.
+
+> **Pass `surface` to CONFORM the band to the real (clothed) body** — the node
+> the belt/necklace wraps (e.g. `sdf.union(skin, shirt, pants)`). The band then
+> ray-marches to the actual surface at each azimuth and sits flush ON it, over
+> the clothing — instead of an analytic ellipse that floats off the body in
+> places (unprintable) or embeds through a dress. **Always pass `surface` for a
+> belt/necklace over clothing.** `F.ringPoint(frame, az, { surface })` conforms
+> the same way, so a buckle or a hung-scabbard anchor sits on the clothed surface.
+
+> **Layering — conform + occlude.** A worn band should sit on its base layer AND
+> be cut by the things physically in front of it, so it doesn't balloon around
+> limbs or jut over hair. Two knobs:
+> - **Conform to the right base surface.** For a belt, pass a TORSO-CORE surface
+>   (`sdf.union(F.torso(rig), pants)`, *no arms*) + `clearance` for the shirt — if
+>   you conform to a surface that includes the arms, the band wraps the arms.
+> - **`occlude`** (a node or array) subtracts the objects in front of / draped
+>   over the band — so it **terminates at them** and re-wraps when they move.
+>   Passing **`rig`** adds the default occluders automatically (arms for any band;
+>   arms+hair for a neck ring). A belt: `F.ring(rig.ring.waist, { surface: core,
+>   clearance, rig })` wraps the torso and stops at the down-arms (full wrap when
+>   raised — no pose special-casing). A necklace: occlude the actual hair so it
+>   drapes over (`occlude: [hair]`). Same `occlude`/`rig` on `F.strap`.
+>
+> **`drape`** dips the FRONT of a ring down the body axis (tapering to 0 at the
+> back). For a **draping pendant necklace**, prefer a small neck-hugging `F.ring`
+> (occluded by hair) PLUS a separate pendant drop sampled with `F.ringPoint` (see
+> below) — a big `drape` on the ring itself spreads it across the chest at neckline
+> width (it reads as a collar trim, not a necklace).
+
+**Garment PARTS — the structural fix for "belt/armor on the arms" (`F.garment`).**
+This is the #1 recurring failure and it has a **root cause, not a tuning knob**: a
+belt is `surface.round(clearance+thickness)` sliced to a band, and `round()` is
+**isotropic** — it offsets *every* surface in `surface` outward equally. If
+`surface` includes the sleeves (e.g. `union(skin, coat, pants)`), the **sleeves get
+dilated into the band**, so the band literally wraps each arm. No amount of
+subtracting the arms back cleanly fixes a band that was *built* around the sleeves.
+
+**The fix: conform the band to the garment's TORSO panel, which excludes the
+sleeves.** `F.garment.top(rig, opts)` and `F.garment.pants(rig, opts)` return the
+clothing decomposed into parts:
+
+- `F.garment.top(...)` → `{ all, torso, sleeves }` — `all` is identical to
+  `F.clothing.top(...)` (the full worn garment you union + label); `torso` is the
+  torso-only panel (no sleeves); `sleeves` is the sleeve solids (or `null`).
+- `F.garment.pants(...)` → `{ all, hips, legs }` — `hips` is the seat/waistband
+  region only (no leg sleeves).
+
+Conform a belt to `union(top.torso, pants.hips)`: the band's `round()` now follows
+**only the torso silhouette** and can never be dilated onto a sleeve. Add
+`clear: F.arms(rig)` as a hard guarantee — it subtracts the **exact** arm (no tuned
+dilation allowance), zeroing any residual interpenetration. `F.band` opts:
+`{ surface (required), height, thickness, clearance, drop, clear, occlude, rig }`.
+
+```js
+// Build the coat as PARTS — `.all` is the worn garment, `.torso` the conform panel.
+const coatG = F.garment.top(rig, { sleeve: 'long', thickness: r.chestX * 0.13 });
+const coat  = coatG.all.label('coat');
+const pantsG = F.garment.pants(rig, { leg: 'slim', rise: 'mid' });
+const pants  = pantsG.all.label('pants');
+
+// FLUSH belt conformed to the TORSO panel (NOT the sleeves) + a hard arm clear:
+const beltSurface = sdf.union(coatG.torso, pantsG.hips);
+const belt = F.band(rig.ring.waist, {
+  surface: beltSurface, thickness: r.waist * 0.10, height: r.chestX * 0.6,
+  clearance: r.chestX * 0.02, clear: F.arms(rig),
+}).label('belt');
+// Seat a buckle / hang a scabbard with F.ringPoint(frame, azDeg, opts?):
+//   az 0 = front (−Y), 90 = figure-left (+X), 180 = back, −90 = right.
+const fp = F.ringPoint(rig.ring.waist, 0, { surface: beltSurface, clearance: r.chestX * 0.02 });
+const buckle = sdf.roundedBox([2.4, 1.2, 2.0], 0.3).translate(fp).label('belt');
+const beltWithBuckle = belt.union(buckle.label('belt')).label('belt');
+```
+
+The same principle drives **plate armor**: build the cuirass from `top.torso.round(gap)`
+(NOT `top.all.round(gap)`), so the plate offsets only the torso and never the
+sleeves. A pauldron/shoulder cap that *legitimately* sits on the arm is a separate
+solid built on the arm — leave it as its own piece.
+
+**Accessories conform to the BODY PART they wrap.** Conform an accessory to the
+single bare-body part it sits on (`F.torso(rig)`, `F.neck(rig)`, `F.arms(rig)`, …,
+all already top-level builders) and it can't reach a part it shouldn't. A **choker**
+conforms to the neck column alone — `F.ring(rig.ring.neck, { surface: F.neck(rig),
+occlude: [hair] })` — so every azimuth hits the neck at the same tight radius and it
+can't spread onto the shoulders or terminate through the dress (conforming to the
+whole `skin`/`clothed` body lets a side azimuth march out to the trapezius/gown
+shoulder). The pendant *drop* still rides the clothed front (`surface: clothed`):
+
+```js
+const collar = F.ring(rig.ring.neck, { tube: r.neck * 0.06, surface: F.neck(rig), occlude: [hair] });
+const clothed = sdf.union(skin, gown);
+const pts = [];
+for (let i = 0; i <= 7; i++) pts.push(F.ringPoint(rig.ring.neck, 0, { surface: clothed, drop: r.neck * 3 * (i / 7) }));
+let chain = collar;
+for (let i = 0; i < 7; i++) chain = chain.union(sdf.capsule(pts[i], pts[i + 1], r.neck * 0.06));
+const necklace = chain.subtract(hair).label('jewelry');
+```
+
+For a **one-sided** accessory use the per-side surface `F.arm(rig, 'R')` /
+`F.leg(rig, 'L')`. A vambrace conformed to the right arm alone is a flush forearm
+shell that *structurally cannot* appear on the left arm — offset the arm proud and
+clip it to the forearm bone:
+
+```js
+const lerp3 = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+const E = j.lowerArmR, W = j.wristR;                       // right forearm bone
+const zone = sdf.capsule(lerp3(E, W, 0.10), lerp3(E, W, 0.96), r.lowerArm * 2.4);
+const vambrace = F.arm(rig, 'R').round(r.lowerArm * 0.16).intersect(zone).label('armor');
+```
+
+**Composite the stack with a plain `sdf.union`.** Because each garment is built as
+parts (the belt/sash conformed to `top.torso`, the cuirass offset from
+`top.torso.round()`), nothing bleeds onto a limb and no garment contests another's
+space — so you just union the whole stack. There is no special layer/priority
+primitive: the parts approach removed the need for one (the old `F.layers` /
+`occludeArms` limb-occluder is gone — if you find it in an old prompt, replace it
+with parts + `sdf.union`).
+
+```js
+// Belt + cuirass each built against the TORSO panel (+ `clear: F.arms`), so neither
+// reaches the arms; the cuirass offsets strictly outward from the shirt. Plain union:
+const body = sdf.union(skin, shirt, pants, belt, cuirass, pauldrons);
+// Standalone props (eyes, a held sword, the base) union on top too.
+return sdf.union(body, eyes, sword, scabbard, hair, base).build({ /* … */ });
+```
+
+> One thing the old layer compositor handled that a plain union does not: the
+> **fine-hands marker must never be buried inside a `.subtract`** (it breaks
+> sculpted hands). With parts there's nothing to subtract the hands by, so a plain
+> union is safe — just don't introduce a `.subtract` that carves the skin/hands.
+
+**Check your work — `F.sharedSolid(a, b, opts?)` (the invariant primitive).** The
+failures above (armor on the arm, necklace through the gown, scabbard through the
+leg) are all *unwanted overlap* you can't see in the source. `F.sharedSolid`
+measures it directly on the SDF **fields** — no closed mesh needed — by sampling
+both over their bbox intersection and counting points inside BOTH. It returns
+`{ overlaps, sharedVolume, point, samples }` (`point` = an example overlap location
+to inspect). **Assert the specific pairs that MUST stay clear** — that's what
+sidesteps the expected-overlap problem (clothing is *supposed* to overlap skin):
+
+```js
+// A worn band/plate must be clear of the arms — conform to top.torso + clear:F.arms:
+if (F.sharedSolid(belt, F.arms(rig)).overlaps) throw new Error('belt bleeds onto the arm — conform to top.torso, add clear:F.arms(rig)');
+if (F.sharedSolid(cuirass, F.arms(rig)).overlaps) throw new Error('cuirass bleeds onto the arm — build from top.torso.round(gap)');
+// A necklace must not penetrate the gown (only the hair should cover it):
+const hit = F.sharedSolid(necklace, gown, { tol: 0.5 });
+if (hit.overlaps) console.warn('necklace in gown near', hit.point);
+```
+
+Pair it with the cheap, unambiguous checks for a full invariant battery:
+`runAndSave(..., { maxComponents: 1 })` (one printable piece — catches a loose
+scabbard/sword), `model.bounds().min[2] >= baseTopZ` (nothing below the base), and
+`F.poseProbe(rig).grips.R.thumbAxis[2] > 0` (a held prop gripped thumb-up). Run
+these as assertions while authoring; raise `samples` for thin features.
+
+**A band CROSSING the body — `F.strap(a, b, opts?)`.** A bandolier (shoulder →
+opposite hip), sash, suspender, or backpack strap. `a`/`b` accept grip frames,
+`rig.shoulder.L/R`, sole frames, or raw points (and `F.ringPoint` output). **Pass
+`surface`** to lay the band ON the body — each sample projects forward (−Y) onto
+the real surface, so the strap hugs the chest instead of bowing through it or
+burying under clothing. Without `surface` it falls back to a forward-bowed arc
+(`opts.bow`), which buries on a clothed torso — so prefer `surface`.
+
+```js
+const sash = F.strap(rig.shoulder.L, F.ringPoint(rig.ring.waist, -90), { tube: r.chestX * 0.12, surface: clothed }).label('sash');
+```
+
+**Hanging something from an anchor — `F.hangFrom(node, point, opts?)`.** The
+gravity analog of `holdAt`: a scabbard off a belt, a pendant off a necklace, a
+pouch off a hip. Drops the node's `anchor` (default `top`) onto `point` lowered by
+`opts.drop`, after tilting it `opts.tilt`° forward. Build the item vertical/centred
+on the origin first.
+
+```js
+const hip = F.ringPoint(rig.ring.waist, 75, { clearance: r.chestX * 0.18 }); // left hip
+const sheathed = F.hangFrom(scabbard, hip, { tilt: 15 }).label('scabbard');
+```
+
+**Perching on the face — `F.onFace(rig)`.** Eyeglasses, sunglasses, masks,
+eyepatches. Returns `{ eyeL, eyeR, bridge, templeL, templeR, forward, up, lateral }`
+(all tracking head pose): build a lens ring at `eyeL`/`eyeR` pushed out along
+`forward`, a `bridge` between them, and temple arms back to `templeL`/`templeR`.
+
+> **Thin accessory features (glasses temples, chains, straps, blades) FRAGMENT on
+> the coarse march, and the `detail` REFINE pass FRAYS them** (the same failure as
+> over-refined fingers). Three rules: keep any tube/bar radius ≳ 1.3× your
+> `edgeLength`; route thin arms so they HUG/rest on the body surface (a supported
+> tube survives, a floating diagonal frays); and prefer a finer global
+> `edgeLength` over covering a thin tube with a big refine `detail` sphere.
+> Print-chunky is correct for a figurine. **Fuse every accessory into the figure**
+> (overlap it ≥0.5 units and `union`) so the result stays one printable piece
+> (`componentCount` 1). Other rig frames for accessories: `rig.shoulder.L/R`
+> (pauldrons, epaulets), `rig.back` (`{point, normal}` — backpacks, capes,
+> quivers), `rig.forearm.L/R` (bracers, vambraces).
 
 **Reading a pose — `F.poseProbe(rig)`.** Returns a deterministic, rounded dump
 of every world joint position, both grip frames, both sole frames, and the key
@@ -932,6 +1243,11 @@ F.clothing.pants(rig, { rise, leg, cuffZ, thickness, length })
 F.clothing.top(rig, { sleeve, hemZ, thickness })        // sleeve: none|short|long
 //   hemZ below the pelvis turns the top into a robe/dress: a flared skirt
 //   cone is added down to the hem so legs stay covered all round.
+F.garment.top(rig, opts)   → { all, torso, sleeves }    // parted form of clothing.top
+F.garment.pants(rig, opts) → { all, hips, legs }        // parted form of clothing.pants
+//   `all` === the F.clothing.* Node. Conform a belt/sash to union(top.torso,
+//   pants.hips) — the torso-only panels — so the band never reaches the sleeves.
+//   For a bare-body accessory, conform to the part it wraps (choker → F.neck(rig)).
 F.clothing.shoes(rig, { size, thickness, label, sole })  // sole + upper over each foot
 F.clothing.boots(rig, { size, shaftZ, thickness, label, sole })  // + a shaft up the lower leg
 //   Footwear keys off rig.sole.{L,R}, so it tracks leg*.twist turnout like

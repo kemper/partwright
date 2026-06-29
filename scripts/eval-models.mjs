@@ -32,7 +32,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CASES_DIR = join(ROOT, 'evals/cases');
 const RESULTS_DIR = join(ROOT, 'evals/results');
 const BASELINE_PATH = join(ROOT, 'evals/baseline.json');
-const TILE = 384;
+const TILE = 640;
 
 function parseArgs(argv) {
   const a = { case: null, judge: 'claude', model: null, tolerance: 0, setReference: false, setBaseline: false, budget: Infinity, all: false };
@@ -94,16 +94,23 @@ function checkGates(stats, gates = {}) {
   return fails;
 }
 
-// Contact sheet: [ reference grid | divider | candidate grid ], labeled.
+// Contact sheet: [ reference grid | divider | candidate grid ], side by side at a
+// common height. Both panels are scaled to PANEL_H (not squished to one TILE
+// width) so the candidate keeps enough resolution for the judge to see small
+// accessories — at TILE 384 the candidate was downscaled to ~192px/tile and fine
+// detail (glasses, makeup, a belt buckle) vanished before the judge ever saw it.
+// PANEL_H is chosen so the sheet's long side stays near the vision API's ~1568px
+// downsample ceiling, where extra pixels stop helping.
 async function contactSheet(referencePng, candidatePng, outPath) {
-  const W = TILE, GAP = 16;
+  const GAP = 16, PANEL_H = 1024;
+  const cand = await sharp(candidatePng).resize({ height: PANEL_H }).toBuffer();
   const ref = referencePng
-    ? await sharp(referencePng).resize(W, null).toBuffer()
-    : await sharp({ create: { width: W, height: W, channels: 3, background: { r: 40, g: 40, b: 46 } } }).png().toBuffer();
-  const cand = await sharp(candidatePng).resize(W, null).toBuffer();
-  const h = Math.max((await sharp(ref).metadata()).height || W, (await sharp(cand).metadata()).height || W);
-  const sheet = await sharp({ create: { width: W * 2 + GAP, height: h, channels: 3, background: { r: 24, g: 24, b: 28 } } })
-    .composite([{ input: ref, left: 0, top: 0 }, { input: cand, left: W + GAP, top: 0 }])
+    ? await sharp(referencePng).resize({ height: PANEL_H }).toBuffer()
+    : await sharp({ create: { width: PANEL_H, height: PANEL_H, channels: 3, background: { r: 40, g: 40, b: 46 } } }).png().toBuffer();
+  const cw = (await sharp(cand).metadata()).width || PANEL_H;
+  const rw = (await sharp(ref).metadata()).width || PANEL_H;
+  const sheet = await sharp({ create: { width: rw + GAP + cw, height: PANEL_H, channels: 3, background: { r: 24, g: 24, b: 28 } } })
+    .composite([{ input: ref, left: 0, top: 0 }, { input: cand, left: rw + GAP, top: 0 }])
     .png().toBuffer();
   await sharp(sheet).toFile(outPath);
   return outPath;

@@ -97,7 +97,12 @@ function claudeJudge({ contactSheetPath, rubric, model = process.env.EVAL_JUDGE_
   const prompt = buildJudgePrompt(rubric);
   let out;
   try {
-    out = execFileSync(bin, ['-p', `${prompt}\n\n@${contactSheetPath}`, '--output-format', 'json', '--model', model], {
+    // `--allowedTools Read` pre-approves the file read the `@<path>` image mention
+    // triggers: in some containers the mention prompts for Read permission and the
+    // judge otherwise returns a "please grant permission" string instead of JSON
+    // (and `--dangerously-skip-permissions` is refused under root). Scoped to Read
+    // only, from a tmp cwd, so nothing in the repo is writable by the judge.
+    out = execFileSync(bin, ['-p', `${prompt}\n\n@${contactSheetPath}`, '--output-format', 'json', '--model', model, '--allowedTools', 'Read'], {
       encoding: 'utf8', cwd: tmpdir(), maxBuffer: 16 * 1024 * 1024, timeout: 180000,
     });
   } catch (e) {
