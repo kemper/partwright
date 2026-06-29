@@ -250,6 +250,7 @@ import {
   apiRotateSelection,
 } from './ui/insertPalette';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
+import { meshIslands, trianglesInIsland, islandAtPoint } from './color/meshIslands';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
 import { cylinderRefineRegion, findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
@@ -13201,6 +13202,23 @@ async function main() {
        *  isn't enough. Inspect `largestTriangleArea` from `paintPreview`
        *  to pick a sensible value. */
       maxTriangleArea?: number;
+      /** Smooth the painted edge by subdividing the mesh along the AABB
+       *  faces so the colour boundary follows the analytic box rather than
+       *  the coarse base tessellation. Defaults to `true`. Ignored (and
+       *  silently treated as `false`) when `normalCone` / `topOnly` /
+       *  `coverageMode` / `maxTriangleArea` are set — smoothing is the
+       *  centroid-test code path; those filters live on the unsmoothed
+       *  branch. Pass `smooth: false` to opt back into the raw tessellation
+       *  for the simple case (e.g. when you want byte-identical behaviour
+       *  to the pre-smooth release). */
+      smooth?: boolean;
+      /** Smoothing detail: target boundary edge = model bbox diagonal /
+       *  resolution. Higher = smoother + more triangles. Default 256,
+       *  range 2–1024. Ignored when `maxEdge` is set. */
+      resolution?: number;
+      /** Absolute target boundary edge length (mesh units); overrides
+       *  `resolution`. */
+      maxEdge?: number;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintInBox requires { box, color }' };
@@ -13212,6 +13230,51 @@ async function main() {
       const areaErr = validateMaxTriangleArea(opts.maxTriangleArea);
       if (areaErr) return { error: areaErr };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
+      const smoothErr = validateSmoothParams(opts);
+      if (smoothErr) return { error: smoothErr };
+
+      // Smooth-edge fast path: an AABB with no extra filters is just an
+      // identity-quaternion OBB, and the OBB descriptor already does
+      // boundary-subdivision (paintInOrientedBox / paintSlab / paintInCylinder
+      // all share this machinery). Routing through it makes paintInBox edges
+      // crisp by default — the single biggest paint-quality win for the most-
+      // reached-for AABB selector. The filter path stays on the legacy
+      // centroid-collect branch (smoothing the filter combinatorics isn't worth
+      // the surface-area extension to the 'box' descriptor right now).
+      const hasFilters = cone !== undefined || opts.coverageMode !== undefined || opts.maxTriangleArea !== undefined;
+      const wantsSmooth = opts.smooth !== false && !hasFilters;
+      if (wantsSmooth) {
+        const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
+        if (smooth) {
+          const center: [number, number, number] = [
+            (opts.box.min[0] + opts.box.max[0]) / 2,
+            (opts.box.min[1] + opts.box.max[1]) / 2,
+            (opts.box.min[2] + opts.box.max[2]) / 2,
+          ];
+          const size: [number, number, number] = [
+            opts.box.max[0] - opts.box.min[0],
+            opts.box.max[1] - opts.box.min[1],
+            opts.box.max[2] - opts.box.min[2],
+          ];
+          const obb = { center, size, quaternion: [0, 0, 0, 1] as [number, number, number, number] };
+          const seedTris = findBoxTriangles(currentMeshData, obb);
+          if (seedTris.size === 0) {
+            return { error: `paintInBox: no triangles matched the box. Try widening the box or call findFaces() to see what's around.` };
+          }
+          const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
+          const region = withSyncReconcile(() => addRegion(
+            regionName,
+            opts.color as [number, number, number],
+            'slab',
+            { kind: 'box', center, size, quaternion: obb.quaternion, smooth: true, maxEdge },
+            seedTris,
+          ));
+          scheduleColorRefresh();
+          syncLockState();
+          const stats = currentMeshData ? regionTriangleStats(region.triangles, currentMeshData) : { bbox: null, centroid: null };
+          return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid, smooth: true, maxEdge };
+        }
+      }
 
       const triangles = collectTrianglesByFilter(currentMeshData, opts.box, cone, null, opts.coverageMode, opts.maxTriangleArea);
       if (triangles.size === 0) return { error: `paintInBox: no triangles matched the box${cone ? ' (with the normalCone' + (opts.topOnly ? '/topOnly' : '') + ' filter)' : ''}${opts.coverageMode === 'fully_inside' ? ' (with coverageMode: fully_inside — try widening the box or dropping the mode)' : ''}${opts.maxTriangleArea !== undefined ? ` (with maxTriangleArea: ${opts.maxTriangleArea} — try raising it)` : ''}. Try widening the box, dropping topOnly/normalCone, or call findFaces() to see what passes each filter individually.` };
@@ -14586,6 +14649,57 @@ async function main() {
       }
     },
 
+    /** Paint a single face-connected mesh island by index from
+     *  `listComponents()`. Works on render-only imports (STL multi-part kits
+     *  that can't go through `Manifold.decompose()`) AND on manifold meshes
+     *  — for manifold geometry, the resulting island ids match `listComponents`
+     *  exactly when each component is fully-disconnected from the others.
+     *
+     *  The island is selected by topological connectivity (welded by vertex
+     *  position), so two parts that physically touch at a shared vertex appear
+     *  as one island and will both get painted; print-in-place kits with
+     *  clearance gaps split cleanly. Returns `{id, name, triangles, ...}` or
+     *  `{error}`. Use `paintIslandAt({point, color})` if you have a 3D point
+     *  (e.g. from `probePixel`) instead of an index. */
+    paintIsland(opts: {
+      index: number;
+      color: [number, number, number];
+      name?: string;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintIsland requires { index, color }' };
+      if (!Number.isInteger(opts.index) || opts.index < 0) return { error: 'paintIsland.index must be a non-negative integer (from listComponents)' };
+      if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
+      const { triIslands, islands } = meshIslands(currentMeshData);
+      if (opts.index >= islands.length) {
+        return { error: `paintIsland.index ${opts.index} out of range — listComponents has ${islands.length} island(s).` };
+      }
+      const triangles = trianglesInIsland(triIslands, opts.index);
+      if (triangles.size === 0) return { error: `paintIsland: island ${opts.index} has no triangles (should be impossible — please report).` };
+      return commitPaintFromSet(triangles, opts.color, opts.name ?? `Island ${opts.index}`, 'paintbrush');
+    },
+
+    /** Paint the face-connected mesh island containing the triangle closest to
+     *  `point`. Pair with `probePixel` / `probeRay` to ground island selection
+     *  in a visible point — "click the hat in the iso render, paint *that*
+     *  island red" — without having to enumerate islands first. */
+    paintIslandAt(opts: {
+      point: [number, number, number];
+      color: [number, number, number];
+      name?: string;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintIslandAt requires { point, color }' };
+      if (!Array.isArray(opts.point) || opts.point.length !== 3) return { error: 'point must be [x,y,z]' };
+      for (let i = 0; i < 3; i++) {
+        if (typeof opts.point[i] !== 'number' || !Number.isFinite(opts.point[i])) return { error: 'point components must be finite numbers' };
+      }
+      if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
+      const islandIdx = islandAtPoint(currentMeshData, opts.point as [number, number, number]);
+      if (islandIdx < 0) return { error: 'paintIslandAt: no triangle near point (mesh empty?)' };
+      return partwrightAPI.paintIsland({ index: islandIdx, color: opts.color, name: opts.name ?? `Island ${islandIdx}` });
+    },
+
     /** Token-cheap planning aid for paint workflows: returns just the
      *  centroid + normal + bbox of each coplanar face group, no triangle
      *  IDs. Same as `getMeshSummary({maxTrianglesPerGroup: 0, maxGroups})`
@@ -14603,29 +14717,47 @@ async function main() {
      *  the agent can then call `paintInBox({box: component.boundingBox,
      *  color})` for each, with no coordinate guessing. */
     listComponents() {
-      if (!currentManifold) return { error: 'No geometry loaded — run code first.' };
+      if (currentManifold) {
+        try {
+          const parts = currentManifold.decompose();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const components = parts.map((p: any, i: number) => {
+            const bb = getBoundingBox(p);
+            const vol = (() => { try { return p.volume(); } catch { return 0; } })();
+            const sa = (() => { try { return p.surfaceArea(); } catch { return 0; } })();
+            const centroid: [number, number, number] = bb
+              ? [(bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2]
+              : [0, 0, 0];
+            p.delete();
+            return {
+              index: i,
+              volume: Math.round(vol * 100) / 100,
+              surfaceArea: Math.round(sa * 100) / 100,
+              centroid,
+              boundingBox: bb ?? { min: [0, 0, 0], max: [0, 0, 0] },
+            };
+          });
+          return { count: components.length, components, source: 'manifold' as const };
+        } catch (err) {
+          return { error: `decompose failed: ${err instanceof Error ? err.message : String(err)}` };
+        }
+      }
+      // Render-only fallback (STL imports, non-manifold meshes): face-connected
+      // BFS over the triangle adjacency graph. No volume / surfaceArea (no
+      // closed-solid guarantee), but bbox + triangleCount + centroid land,
+      // which is what `paintIsland({index, color})` needs.
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       try {
-        const parts = currentManifold.decompose();
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const components = parts.map((p: any, i: number) => {
-          const bb = getBoundingBox(p);
-          const vol = (() => { try { return p.volume(); } catch { return 0; } })();
-          const sa = (() => { try { return p.surfaceArea(); } catch { return 0; } })();
-          const centroid: [number, number, number] = bb
-            ? [(bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2]
-            : [0, 0, 0];
-          p.delete();
-          return {
-            index: i,
-            volume: Math.round(vol * 100) / 100,
-            surfaceArea: Math.round(sa * 100) / 100,
-            centroid,
-            boundingBox: bb ?? { min: [0, 0, 0], max: [0, 0, 0] },
-          };
-        });
-        return { count: components.length, components };
+        const { islands } = meshIslands(currentMeshData);
+        const components = islands.map(island => ({
+          index: island.index,
+          triangleCount: island.triangleCount,
+          centroid: island.center,
+          boundingBox: island.bbox,
+        }));
+        return { count: components.length, components, source: 'mesh-island' as const };
       } catch (err) {
-        return { error: `decompose failed: ${err instanceof Error ? err.message : String(err)}` };
+        return { error: `mesh-island BFS failed: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
 
@@ -15379,8 +15511,10 @@ async function main() {
         'removeFilament':  { signature: 'removeFilament(id) -- Remove a slot from the active palette -> {ok} or {error}', docs: '/ai/colors.md' },
         'setPaletteCapacity': { signature: 'setPaletteCapacity(n) -- Set the AMS/MMU slot budget -> {ok, capacity}', docs: '/ai/colors.md' },
         'setPaletteConstrained': { signature: 'setPaletteConstrained(on) -- Constrain paint to palette slots (snap) vs free RGB -> {ok, constrained}', docs: '/ai/colors.md' },
-        'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai/colors.md' },
-        'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai/colors.md' },
+        'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume?, surfaceArea?, triangleCount?}], source} -- Decompose into parts. Uses Manifold.decompose() for built geometry (gives volume/surfaceArea, source: "manifold"); falls back to face-connected BFS for render-only imports / non-manifold meshes (gives triangleCount, source: "mesh-island") — multi-part STL kits now segment without needing Manifold.', docs: '/ai/colors.md' },
+        'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece. Requires a manifold (uses decompose). For render-only imports use paintIsland.', docs: '/ai/colors.md' },
+        'paintIsland':     { signature: 'paintIsland({index, color, name?}) -- Paint a single face-connected mesh island by index from listComponents(). Works on ANY mesh including render-only STL imports — the right tool for painting one part of a multi-part STL kit by its component number. Topological, not spatial — never bleeds across XYZ-overlapping parts.', docs: '/ai/colors.md' },
+        'paintIslandAt':   { signature: 'paintIslandAt({point, color, name?}) -- Paint the face-connected island containing the triangle closest to point. Pair with probePixel/probeRay to ground island selection in a visible point ("the hat in the iso render") without enumerating islands.', docs: '/ai/colors.md' },
         'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai/colors.md' },
         'getModelColors':  { signature: 'getModelColors() -> {count, colors: [{name, color, triangleCount}]} -- Colors declared in code via api.label(shape, name, {color}) or api.paint.*. Render + export automatically; editor stays editable; manual paint overrides.', docs: '/ai/colors.md' },
         'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai/colors.md' },

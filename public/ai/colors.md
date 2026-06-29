@@ -357,6 +357,51 @@ tweaks to the model, and skips the listComponents → paintInBox pair.
 Prefer `paintByLabel` when you control the code (whether manifold-js
 or SCAD); reach for `paintComponent` when you don't.
 
+**Paint by part on multi-part STL imports — `paintIsland`.** A user-
+uploaded multi-part STL (articulated print-in-place kit, separable
+mechanism, harlequin figure) usually imports as a render-only mesh
+(no Manifold), which means `paintComponent` and `Manifold.decompose()`
+both error with "No geometry loaded". The fix: `listComponents()`
+now falls back to face-connected island BFS in that case, and
+`paintIsland({index, color})` paints one island. **This is the right
+primitive whenever an import has multiple parts that overlap in 3D
+space** — a hat sitting over a head, gloves touching pants, puffs
+inside arms. Spatial selectors (`paintInBox`, `paintNear`,
+`paintInCylinder`) catch every triangle that's in the bounding
+volume regardless of which part it belongs to; `paintIsland` selects
+by topology and never bleeds across parts:
+
+```js
+const { count, components, source } = partwright.listComponents();
+// source: 'manifold' (decompose result) or 'mesh-island' (BFS fallback).
+// For a 25-piece articulated kit: count === 25, source === 'mesh-island'.
+// Each entry: {index, triangleCount, boundingBox, centroid}.
+
+// Identify which island is which by bbox/centroid (top-most → hat,
+// largest below it → torso, leftmost arm-like → left arm, etc.).
+// Then paint each part by its island index:
+partwright.paintIsland({ index: 7, color: [0.85, 0.10, 0.10], name: 'hat-left' });
+partwright.paintIsland({ index: 8, color: [0.10, 0.20, 0.85], name: 'hat-right' });
+```
+
+`paintIslandAt({point, color})` is the grounded sibling: pair with
+`probePixel` to "click the part in the iso render" and paint that
+island without enumerating first — handy when an island's index is
+ambiguous but its visible location isn't:
+
+```js
+const hit = await partwright.probePixel({ view: 'iso', u: 0.42, v: 0.31 });
+if (hit?.point) partwright.paintIslandAt({ point: hit.point, color: [1, 0, 0] });
+```
+
+**Limitation:** islands are detected by *welded* vertex adjacency —
+two parts that physically touch at a shared vertex (a hat brim
+resting on a head with no gap) appear as one island and will both
+get painted. Print-in-place kits with proper clearance gaps split
+cleanly, one island per part. When islands fuse together, fall back
+to combining `paintIsland` with `paintInBox`/`paintConnected` to
+carve the touching boundary.
+
 **Avoiding over-paint.** When `paintInBox` / `paintNear` catches side
 walls or the bottom face by mistake, pass `topOnly: true` — restricts
 to upward-facing triangles (axis +Z within 30°). Equivalent to
