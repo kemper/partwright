@@ -1084,6 +1084,10 @@ function assistantTextOf(blocks: ChatBlock[]): string {
     else if (b.type === 'review' && b.text.length > 0) {
       parts.push(`[Review from ${b.provider}/${b.model}]\n${b.text}`);
     }
+    else if (b.type === 'plan' && b.summary.length > 0) {
+      const status = b.approved ? '(approved)' : '(awaiting user approval)';
+      parts.push(`[Plan ${status}]\n${b.summary}`);
+    }
   }
   return parts.join('');
 }

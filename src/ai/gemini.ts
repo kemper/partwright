@@ -439,6 +439,9 @@ function buildGeminiContents(rawHistory: ChatMessage[]): GeminiContent[] {
           // Cross-provider review lands as an assistant turn; surface it on
           // the next turn so the primary model sees the reviewer's feedback.
           parts.push({ text: `[Review from ${b.provider}/${b.model}]\n${b.text}` });
+        } else if (b.type === 'plan' && b.summary.length > 0) {
+          const status = b.approved ? '(approved)' : '(awaiting user approval)';
+          parts.push({ text: `[Plan ${status}]\n${b.summary}` });
         }
       }
       for (const tc of msg.toolCalls ?? []) {
@@ -476,6 +479,7 @@ function buildGeminiContents(rawHistory: ChatMessage[]): GeminiContent[] {
         if (b.type === 'text' && b.text.trim().length > 0) parts.push({ text: b.text });
         else if (b.type === 'image') parts.push({ inlineData: { mimeType: b.source.mediaType, data: b.source.data } });
         else if (b.type === 'review') parts.push({ text: `[Review from ${b.provider}/${b.model}]\n${b.text}` });
+        else if (b.type === 'plan' && b.summary.length > 0) parts.push({ text: `[Plan ${b.approved ? '(approved)' : '(awaiting user approval)'}]\n${b.summary}` });
       }
       if (parts.length > 0) out.push({ role: 'user', parts });
     }

@@ -51,6 +51,14 @@ export interface Session {
    *  default 3/4 framing. Written (debounced) when the user finishes an orbit;
    *  restored on session open. Absent ⇒ auto-frame on open. */
   workCamera?: { position: [number, number, number]; target: [number, number, number] };
+  /** AI-planning pointers (schema 1.18+): mesh-anchored labelled callouts the
+   *  AI agent drops at surface points it thinks correspond to a feature, for
+   *  the user to review/correct before paint. Per-session (not per-version) so
+   *  they survive code edits + paint commits within the same session. Kept
+   *  here as `unknown[]` to preserve db-layer isolation from the annotations
+   *  feature layer — the real shape is `SerializedPointer[]` in
+   *  `src/annotations/pointers.ts`. */
+  pointers?: unknown[];
 }
 
 /** A modeling target within a session. A session holds one or more parts; each
@@ -640,7 +648,7 @@ export function legacyImagesObjectToArray(obj: LegacyImagesObject): SessionAttac
   return result;
 }
 
-export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'attachments' | 'language' | 'currentPartId' | 'aiPreference' | 'thumbCamera' | 'workCamera'>>): Promise<void> {
+export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'attachments' | 'language' | 'currentPartId' | 'aiPreference' | 'thumbCamera' | 'workCamera' | 'pointers'>>): Promise<void> {
   const store = await tx('sessions', 'readwrite');
   // Read-modify-write inside one transaction: queue the put from the get's
   // callback (awaiting between them risks auto-commit), then await oncomplete.

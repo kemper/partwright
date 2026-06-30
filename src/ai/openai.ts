@@ -501,6 +501,9 @@ function buildResponsesUserContent(blocks: ChatBlock[]): ResponsesContentPart[] 
       // Reviews from other providers serialize to text so any model can
       // see them. Tag stays so the receiving model can tell it apart.
       items.push({ type: 'input_text', text: `[Review from ${b.provider}/${b.model}]\n${b.text}` });
+    } else if (b.type === 'plan' && b.summary.length > 0) {
+      const status = b.approved ? '(approved)' : '(awaiting user approval)';
+      items.push({ type: 'input_text', text: `[Plan ${status}]\n${b.summary}` });
     }
   }
   return items.length > 0 ? items : null;
@@ -814,6 +817,11 @@ function buildChatUserContent(blocks: ChatBlock[]): OpenAIMessage['content'] | n
       const reviewText = `[Review from ${b.provider}/${b.model}]\n${b.text}`;
       if (hasImage) items.push({ type: 'text', text: reviewText });
       else plainText += reviewText;
+    } else if (b.type === 'plan' && b.summary.length > 0) {
+      const status = b.approved ? '(approved)' : '(awaiting user approval)';
+      const planText = `[Plan ${status}]\n${b.summary}`;
+      if (hasImage) items.push({ type: 'text', text: planText });
+      else plainText += planText;
     }
   }
   if (!hasImage) return plainText.length > 0 ? plainText : null;
@@ -854,6 +862,12 @@ function collectAssistantText(blocks: ChatBlock[]): string {
       // feedback. Matches the user-side `[Review from .../...] ...` format.
       if (text.length > 0) text += '\n\n';
       text += `[Review from ${b.provider}/${b.model}]\n${b.text}`;
+    } else if (b.type === 'plan' && b.summary.length > 0) {
+      // Plan blocks replay so the model sees its own pointer-set plan back
+      // on the next turn — matches the user-visible `[Plan …]` card.
+      if (text.length > 0) text += '\n\n';
+      const status = b.approved ? '(approved)' : '(awaiting user approval)';
+      text += `[Plan ${status}]\n${b.summary}`;
     }
   }
   return text;

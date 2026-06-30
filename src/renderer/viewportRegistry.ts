@@ -63,19 +63,39 @@ export interface OffscreenOverlayProvider {
   dispose: (group: THREE.Group) => void;
 }
 
-let offscreenOverlayProvider: OffscreenOverlayProvider | null = null;
+const offscreenOverlayProviders: OffscreenOverlayProvider[] = [];
 
 export function registerOffscreenOverlayProvider(provider: OffscreenOverlayProvider): void {
-  offscreenOverlayProvider = provider;
+  offscreenOverlayProviders.push(provider);
 }
 
-/** Build the annotation overlay group for an offscreen scene, or null when no
- *  provider is registered (e.g. before subsystems wire up) or there's nothing
- *  to draw. Callers must pass the result to {@link disposeOffscreenOverlay}. */
+/** Build the combined offscreen overlay group from every registered provider
+ *  (annotations, pointers, …). Returns null when no provider had anything to
+ *  draw. The result is ALWAYS a wrapper carrying the per-provider parts on
+ *  `userData.compositeChildren` so {@link disposeOffscreenOverlay} can route
+ *  each child group back to its own dispose (LineMaterial vs SpriteMaterial
+ *  cleanup differs per provider, so a generic traverse won't do). */
 export function buildOffscreenOverlay(viewSizePx: number): THREE.Group | null {
-  return offscreenOverlayProvider?.build(viewSizePx) ?? null;
+  if (offscreenOverlayProviders.length === 0) return null;
+  const parts: Array<{ provider: OffscreenOverlayProvider; group: THREE.Group }> = [];
+  for (const provider of offscreenOverlayProviders) {
+    const g = provider.build(viewSizePx);
+    if (g) parts.push({ provider, group: g });
+  }
+  if (parts.length === 0) return null;
+  // Use the first provider's group constructor so we don't statically import
+  // THREE here (kept dependency-free for the leaf registry).
+  const composite = new (parts[0].group.constructor as { new (): THREE.Group })();
+  composite.name = 'offscreen-overlay-composite';
+  for (const part of parts) composite.add(part.group);
+  composite.userData.compositeChildren = parts;
+  return composite;
 }
 
 export function disposeOffscreenOverlay(group: THREE.Group): void {
-  offscreenOverlayProvider?.dispose(group);
+  const children = group.userData.compositeChildren as
+    | Array<{ provider: OffscreenOverlayProvider; group: THREE.Group }>
+    | undefined;
+  if (!children) return;
+  for (const part of children) part.provider.dispose(part.group);
 }

@@ -23,6 +23,8 @@ import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
 import { starterChipIdeas } from '../ideas/ideas';
 import { showAiLocalModal } from './aiLocalModal';
+import { openPointerPanel } from './pointerPanel';
+import { getPointers, updatePointer as updatePointerStore } from '../annotations/pointers';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { showCompactConfirmModal } from './aiCompactModal';
 import { showAttachmentModal } from './aiAttachmentModal';
@@ -2179,6 +2181,8 @@ function renderMessage(msg: ChatMessage): HTMLElement {
       if (b.text.trim().length > 0) wrap.appendChild(renderThinkingBox(b.text));
     } else if (b.type === 'review') {
       wrap.appendChild(withCopyButton(renderReviewBubble(b.provider, b.model, b.text), 'assistant', () => b.text));
+    } else if (b.type === 'plan') {
+      wrap.appendChild(renderPlanBubble(b.summary, b.pointerIds, msg.id, b.approved ?? false));
     }
   }
 
@@ -2556,6 +2560,72 @@ function renderImageBubble(source: ImageSource): HTMLElement {
     label.textContent = source.label;
     wrap.appendChild(label);
   }
+  return wrap;
+}
+
+/** Distinct teal-bordered bubble for the AI-planning pointer "plan" block.
+ *  Lists the pointers the AI just dropped (or proposed) with their labels
+ *  and status. Two affordances: "Open in viewport" deeplinks to the
+ *  Pointer panel where the user can drag/tune; "Approve all" flips every
+ *  referenced pointer's status to 'approved' and updates the block.
+ *  Separate from the cross-provider review bubble because the user
+ *  workflows differ — review is a one-shot read, plan is interactive. */
+function renderPlanBubble(summary: string, pointerIds: string[], _msgId: string, approved: boolean): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'max-w-[90%] rounded-lg border border-teal-700/60 bg-teal-900/15 overflow-hidden';
+  const header = document.createElement('div');
+  header.className = 'px-3 py-1 text-[10px] uppercase tracking-wider text-teal-300 bg-teal-900/30 border-b border-teal-800/40 flex items-center gap-1.5';
+  const icon = document.createElement('span'); icon.textContent = '📍';
+  const headerText = document.createElement('span');
+  const live = getPointers();
+  const known = pointerIds.filter(id => live.find(p => p.id === id));
+  headerText.textContent = `Plan · ${known.length} pointer(s) ${approved ? '· approved' : '· awaiting review'}`;
+  header.appendChild(icon);
+  header.appendChild(headerText);
+  wrap.appendChild(header);
+  const body = document.createElement('div');
+  body.className = 'px-3 py-2 text-sm text-zinc-100 whitespace-pre-wrap leading-snug';
+  body.textContent = summary;
+  wrap.appendChild(body);
+
+  if (known.length > 0) {
+    const list = document.createElement('div');
+    list.className = 'px-3 pb-2 text-[11px] text-zinc-400 flex flex-wrap gap-1';
+    for (const id of known) {
+      const p = live.find(x => x.id === id);
+      if (!p) continue;
+      const chip = document.createElement('span');
+      chip.className = 'px-1.5 py-0.5 rounded bg-zinc-800/60 border border-zinc-700/60';
+      chip.textContent = `${p.label}${p.stale || p.orphaned ? ' ⚠' : ''}`;
+      list.appendChild(chip);
+    }
+    wrap.appendChild(list);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'px-3 py-1.5 border-t border-teal-800/40 flex items-center gap-2 bg-teal-900/20';
+  const openBtn = document.createElement('button');
+  openBtn.className = 'text-[11px] px-2 py-0.5 rounded text-teal-200 hover:bg-teal-800/40';
+  openBtn.textContent = 'Open in viewport';
+  openBtn.addEventListener('click', () => openPointerPanel());
+  actions.appendChild(openBtn);
+  if (!approved && known.length > 0) {
+    const approveBtn = document.createElement('button');
+    approveBtn.className = 'text-[11px] px-2 py-0.5 rounded bg-teal-600 text-white hover:bg-teal-500';
+    approveBtn.textContent = `Approve all (${known.length})`;
+    approveBtn.addEventListener('click', () => {
+      for (const id of known) updatePointerStore(id, { status: 'approved' });
+      // The chat re-renders on store change (panel listens via its own paths).
+      // We DON'T mutate the persisted block's `approved` flag here — that
+      // belongs to the AI's next turn writing an updated plan. Visually
+      // flip the bubble immediately for feedback though.
+      approveBtn.textContent = 'Approved';
+      approveBtn.disabled = true;
+      approveBtn.classList.add('opacity-60', 'cursor-not-allowed');
+    });
+    actions.appendChild(approveBtn);
+  }
+  wrap.appendChild(actions);
   return wrap;
 }
 
