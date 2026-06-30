@@ -37,6 +37,11 @@ import type { MeshData } from '../geometry/types';
 
 let overlayGroup: THREE.Group | null = null;
 const liveResolution = new THREE.Vector2(1, 1);
+/** Mesh diagonal cached at the most recent rebuild. The leader-line length and
+ *  label sprite scale are computed from this so a 5-unit cube and a 200-unit
+ *  figure both get callouts proportional to the model rather than a single
+ *  hard-coded magnitude. */
+let modelScale = 50;
 
 // Mesh accessor — main.ts sets this on every successful run so the overlay
 // + preview can use the live triangles without importing from main (avoids
@@ -95,6 +100,11 @@ function rebuildLiveOverlay(): void {
   disposePointerChildren(overlayGroup);
 
   const ctx = meshAccessor();
+  // Re-derive the model scale from the live mesh each rebuild so leader
+  // length and label sprite size track the actual geometry (a re-run that
+  // resizes the model from 5 units to 200 will resize its callouts to match
+  // on the next refresh).
+  if (ctx) modelScale = computeMeshDiagonal(ctx.mesh);
   for (const p of getPointers()) {
     if (p.hidden) continue;
     overlayGroup.add(buildLeaderLine(p, liveResolution));
@@ -248,13 +258,20 @@ function buildLabelSprite(p: PointerAnnotation): THREE.Sprite {
     map: texture,
     transparent: true,
     depthTest: false,
-    sizeAttenuation: false,
+    // sizeAttenuation:true makes the sprite shrink with distance like the rest
+    // of the geometry — so zooming out makes the label smaller proportionally
+    // instead of dominating the frame the way the original screen-space
+    // sizing did.
+    sizeAttenuation: true,
   });
 
   const sprite = new THREE.Sprite(material);
   const off = leaderOffset(p);
   sprite.position.set(off[0], off[1], off[2]);
-  const scaleY = 0.05;
+  // Sprite scale is in world units (because sizeAttenuation:true), so size
+  // it as a fraction of the model diagonal — readable when framed but never
+  // larger than the model itself.
+  const scaleY = modelScale * 0.04;
   const scaleX = scaleY * (cw / ch);
   sprite.scale.set(scaleX, scaleY, 1);
   sprite.center.set(0.5, -0.1);
@@ -264,16 +281,35 @@ function buildLabelSprite(p: PointerAnnotation): THREE.Sprite {
 }
 
 function leaderOffset(p: PointerAnnotation): [number, number, number] {
-  // Push the label a fixed world-space amount along the surface normal.
-  // Magnitude is computed off the model footprint by the panel later if
-  // we want a polish pass; this constant works for catalog-scale meshes
-  // (most live in a ±50 unit cube) and shrinks visually fine on small ones.
-  const k = 3;
+  // Push the label a fraction of the model diagonal along the surface
+  // normal. Scaling with the model means a 5-unit cube gets a short leader
+  // and a 200-unit figure gets a proportional one — instead of one fixed
+  // magnitude that's invisible on the big model and dominates the small one.
+  const k = modelScale * 0.07;
   return [
     p.point[0] + p.normal[0] * k,
     p.point[1] + p.normal[1] * k,
     p.point[2] + p.normal[2] * k,
   ];
+}
+
+/** Mesh diagonal — the same shape-size proxy {@link computeMeshDiagonal}'s
+ *  inline twin in pointers.ts uses. Cheap O(numVert) scan. */
+function computeMeshDiagonal(mesh: MeshData): number {
+  const { vertProperties, numProp, numVert } = mesh;
+  if (numVert === 0) return 50;
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < numVert; i++) {
+    const x = vertProperties[i * numProp];
+    const y = vertProperties[i * numProp + 1];
+    const z = vertProperties[i * numProp + 2];
+    if (x < minX) minX = x; if (y < minY) minY = y; if (z < minZ) minZ = z;
+    if (x > maxX) maxX = x; if (y > maxY) maxY = y; if (z > maxZ) maxZ = z;
+  }
+  const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+  const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  return d > 0 ? d : 50;
 }
 
 function leaderHex(p: PointerAnnotation): number {
