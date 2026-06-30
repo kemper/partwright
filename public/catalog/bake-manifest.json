@@ -465,6 +465,42 @@
         "maxGenus": null,
         "requiredLabels": []
       }
+    },
+    "knight": {
+      "source": "examples/figure_knight.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "armor",
+          "sword",
+          "scabbard",
+          "belt"
+        ]
+      }
+    },
+    "scholar": {
+      "source": "examples/figure_scholar.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "glasses",
+          "hat",
+          "belt"
+        ]
+      }
+    },
+    "noble-lady": {
+      "source": "examples/figure_noble_lady.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "gown",
+          "jewelry"
+        ]
+      }
     }
   }
 }

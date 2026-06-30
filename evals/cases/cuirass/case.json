@@ -1,0 +1,12 @@
+{
+  "title": "Cuirass — breastplate worn over a shirt (Worn conformal shell)",
+  "model": "model.js",
+  "lang": "manifold-js",
+  "views": [[-90, 4], [-50, 12], [0, 4]],
+  "rubric": "rubric.md",
+  "gates": {
+    "manifold": true,
+    "maxGenus": 5,
+    "requireLabels": ["skin", "armor", "shirt"]
+  }
+}

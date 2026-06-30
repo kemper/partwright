@@ -1,0 +1,12 @@
+{
+  "title": "Makeup — blush, lipstick, eyeshadow via in-code paint (Marked / api.paint)",
+  "model": "model.js",
+  "lang": "manifold-js",
+  "views": [[-90, 4], [-50, 12]],
+  "rubric": "rubric.md",
+  "gates": {
+    "manifold": true,
+    "maxGenus": 4,
+    "requireLabels": ["skin", "lips"]
+  }
+}

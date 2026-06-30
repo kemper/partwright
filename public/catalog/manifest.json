@@ -1443,6 +1443,46 @@
       ]
     },
     {
+      "id": "knight",
+      "name": "Knight",
+      "file": "knight.partwright.json",
+      "language": "manifold-js",
+      "description": "A knight in steel plate \u2014 showcases the figure accessory system: a worn cuirass with pauldrons, a belt, a sword held in the fist, and a scabbard hung at the hip.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "figure-lumberjack",
+      "name": "Lumberjack",
+      "file": "figure_lumberjack.partwright.json",
+      "language": "manifold-js",
+      "description": "A bearded lumberjack in red flannel holding an axe ready to strike \u2014 built with the F.grasp + `holds: 'up'` AI-first-try grasping API.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "scholar",
+      "name": "Scholar",
+      "file": "scholar.partwright.json",
+      "language": "manifold-js",
+      "description": "A bespectacled scholar in a long coat \u2014 showcases perched eyeglasses on the face, a wide-brim hat seated on the hair, and a belt at the waist.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
+      "id": "noble-lady",
+      "name": "Noble Lady",
+      "file": "noble_lady.partwright.json",
+      "language": "manifold-js",
+      "description": "A poised noblewoman in a fitted gown \u2014 showcases in-code makeup (blush, lipstick, eyeshadow) and a gold necklace that hugs the neck and drapes a pendant down the chest.",
+      "tags": [
+        "figures"
+      ]
+    },
+    {
       "id": "chibi-cat-tabby",
       "name": "Tabby Cat",
       "file": "cat_tabby.partwright.json",

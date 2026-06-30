@@ -1,0 +1,12 @@
+{
+  "title": "Belt + buckle — band wrapping the waist over pants (Ringed / F.ring)",
+  "model": "model.js",
+  "lang": "manifold-js",
+  "views": [[-90, 4], [-50, 12], [0, 4]],
+  "rubric": "rubric.md",
+  "gates": {
+    "manifold": true,
+    "maxGenus": 6,
+    "requireLabels": ["skin", "belt", "pants"]
+  }
+}
