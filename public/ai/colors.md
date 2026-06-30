@@ -402,6 +402,63 @@ cleanly, one island per part. When islands fuse together, fall back
 to combining `paintIsland` with `paintInBox`/`paintConnected` to
 carve the touching boundary.
 
+**For SCULPTED FEATURES inside a fused mesh — `detectRegions` +
+`paintByCrease`.** When a character's head, body, buttons, eye
+sockets, etc. all welded into one big island, `paintIsland` can
+only colour the whole thing one shade. The sculpted FEATURES on
+that island — the iris ring around each eye, the pupil, the mouth
+crease, the blush dimples, each torso pom-pom, the bangs — are
+all bounded by *crease* edges (sharp angle changes between adjacent
+faces). The crease-watershed segmentation enumerates them, and a
+crease-stop flood paint colours each one cleanly:
+
+```js
+// Find the body island (the giant fused 200k-tri one).
+const { components } = partwright.listComponents();
+const body = components.reduce((a, b) => a.triangleCount > b.triangleCount ? a : b);
+
+// Segment ONLY that island into sculpted-feature regions.
+const { regions } = partwright.detectRegions({
+  withinIsland: body.index,
+  creaseAngleDeg: 20,         // default — good for sculpted features
+  minTriangleCount: 5,        // skip slivers
+});
+// regions: [{id, triangleCount, area, centroid, normal, bbox, neighborIds}, ...]
+// Sorted largest first. The face dome will be the biggest; the eye/mouth/
+// blush features will be smaller. neighborIds tells you what borders what
+// — the iris borders the sclera, the pupil borders the iris, etc.
+
+// Identify visually by rendering + probePixel, then paint each feature.
+const view = await partwright.renderView({ azimuth: 0, elevation: 0, size: 800 });
+const irisHit = await partwright.probePixel({ pixel: [pxX, pxY], view });
+partwright.paintByCrease({
+  seedPoint: irisHit.point,
+  seedNormal: irisHit.normal,
+  creaseAngleDeg: 20,          // raise to 30+ to capture larger neighbours
+  color: [0.85, 0.10, 0.10],
+  name: 'iris_left',
+});
+```
+
+For very tight nested features (pupil inside iris), lower
+`creaseAngleDeg` to 5–10° so the inner crease catches before the
+outer one. `detectRegions({creaseAngleDeg: 10})` exposes more
+fine-grained features; `detectRegions({creaseAngleDeg: 45})` collapses
+back to coarse part-level boundaries (useful for an overview pass
+before zooming in).
+
+> **Decision tree for paint on an imported character STL:**
+> 1. **Each anatomical part is its own mesh-island** (print-in-place kit
+>    with clearance gaps): `listComponents` → `paintIsland` per part.
+> 2. **Multiple parts fused into ONE mesh-island** (head+torso+features
+>    welded together): `listComponents` → `detectRegions({withinIsland})`
+>    → `paintByCrease` per sculpted feature.
+> 3. **Whole-region flat colour, not sculpt-feature** (top half of a vase,
+>    a stripe down the middle): `paintInBox` / `paintSlab` /
+>    `paintInCylinder` (now with smooth edges by default).
+> 4. **Authored geometry** (you wrote the model): `api.label` + `paintByLabel`
+>    — strongest primitive, no probing.
+
 **Avoiding over-paint.** When `paintInBox` / `paintNear` catches side
 walls or the bottom face by mistake, pass `topOnly: true` — restricts
 to upward-facing triangles (axis +Z within 30°). Equivalent to

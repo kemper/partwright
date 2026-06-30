@@ -145,4 +145,39 @@ test.describe('island painting on a multi-part STL', () => {
     expect(flat.smooth).toBeUndefined();
     expect(flat.triangles).toBeGreaterThan(0);
   });
+
+  test('detectRegions returns crease-bounded face groups; paintByCrease colours one', async ({ page }) => {
+    await waitForEngine(page);
+    // A plain cube has 6 faces meeting at 90° creases. detectRegions at the
+    // default 20° threshold should pop out 6 regions (2 triangles each),
+    // each with 4 neighbours (top/bottom/left/right faces of a cube).
+    await page.evaluate(() => {
+      const pw = (window as unknown as { partwright: { run: (code: string) => Promise<unknown> } }).partwright;
+      return pw.run('const { Manifold } = api; return Manifold.cube([20, 20, 20], true);');
+    });
+    await page.waitForTimeout(800);
+
+    const regions = await page.evaluate(() => {
+      const pw = (window as unknown as { partwright: { detectRegions: (opts?: unknown) => unknown } }).partwright;
+      return pw.detectRegions({ creaseAngleDeg: 20, minTriangleCount: 1, includeNeighbors: true });
+    }) as { count: number; creaseAngleDeg: number; source: string; regions: Array<{ id: number; triangleCount: number; neighborIds?: number[]; centroid: [number, number, number]; normal: [number, number, number] }>; error?: string };
+    expect(regions.error).toBeUndefined();
+    expect(regions.source).toBe('whole-mesh');
+    expect(regions.creaseAngleDeg).toBe(20);
+    expect(regions.count).toBe(6);
+    for (const r of regions.regions) {
+      expect(r.triangleCount).toBe(2);
+      expect(r.neighborIds).toHaveLength(4);
+    }
+
+    // paintByCrease seeded at the top of the cube should colour exactly the
+    // top face (2 triangles), stopping at the 90° crease to the side faces.
+    const painted = await page.evaluate(() => {
+      const pw = (window as unknown as { partwright: { paintByCrease: (opts: unknown) => unknown } }).partwright;
+      return pw.paintByCrease({ seedPoint: [0, 0, 10], color: [0.9, 0.1, 0.1], creaseAngleDeg: 20, name: 'top-face' });
+    }) as { id?: number; triangles?: number; creaseAngleDeg?: number; error?: string };
+    expect(painted.error).toBeUndefined();
+    expect(painted.triangles).toBe(2);
+    expect(painted.creaseAngleDeg).toBe(20);
+  });
 });

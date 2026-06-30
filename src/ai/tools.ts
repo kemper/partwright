@@ -233,6 +233,36 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'detectRegions',
+    description: 'Auto-segment the mesh into SCULPTED FEATURE regions by crease (dihedral-angle) watershed. THE enumeration primitive for organic sculpts — the iris ring, pupil, eye outline, mouth crease, blush dimples, each torso pom-pom, bangs/hairline are all sculpted features whose boundaries are crease edges. With the default 20° threshold, the BFS walks freely across the gentle curvature of cheeks and a hat dome but stops cold at a 30°+ crease, so features pop out as distinct regions. Returns regions sorted largest first with {id, triangleCount, area, centroid, normal, bbox, neighborIds?}. Pass `withinIsland: <id>` (from listComponents) to segment ONE mesh-island (a fused body part) so the head\'s eyes/buttons stop being unreachable. Pair with paintByCrease (paint one region) or paintFaces (paint by triangleIds for surgical control). For coarse part-level segmentation, raise creaseAngleDeg to 45°; for fine detail, lower to 10°.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        creaseAngleDeg: { type: 'number', description: 'Dihedral angle threshold in DEGREES — BFS stops where adjacent face bend exceeds this. Default 20 (good for sculpted features). 10 = fine detail, 45 = coarse parts.' },
+        minTriangleCount: { type: 'integer', description: 'Skip regions with fewer than this many triangles. Default 5. Filters out single-triangle slivers.' },
+        maxRegions: { type: 'integer', description: 'Cap returned region count (largest first). Default 64. 0 = unlimited (use sparingly).' },
+        withinIsland: { type: 'integer', description: 'Optional index from listComponents() — segment ONLY this mesh-island, not the whole mesh. The fix for fused body islands (head+torso+buttons welded as one island) — pass the body island id and the eyes/mouth/buttons separate out as their own regions.' },
+        includeNeighbors: { type: 'boolean', description: 'Add neighborIds (regions sharing a crease boundary) to each region. Default true. Useful for "what borders the iris?" queries.' },
+        maxTrianglesPerGroup: { type: 'integer', description: 'Cap triangleIds per region. Default 0 (omit entirely — keeps response small). Set >0 only if you need raw ids for paintFaces.' },
+      },
+    },
+  },
+  {
+    name: 'paintByCrease',
+    description: 'Flood paint from a surface seed, stopping at the next crease edge. THE paint primitive for SCULPTED FEATURES on organic meshes (eyes, mouth, pom-poms). Clean edges by construction — no box guessing, no jaggies. Same math as paintRegion but parameterised in DEGREES (sculpt-natural) with a sculpt-tuned default of 20°. seedNormal optional; if omitted we snap to the nearest triangle and use its normal — forgiving of off-surface points from probePixel rounding. PAIR THIS WITH probePixel: render an iso, click the iris pixel, hand probePixel.point straight to paintByCrease. For very tight features (pupil inside iris) lower creaseAngleDeg to 5–10° so the inner crease catches.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        seedPoint: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[x, y, z] world-space point on the surface (e.g. probePixel.point).' },
+        seedNormal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional surface normal at the seed (e.g. probePixel.normal). Omit to auto-snap to the nearest triangle\'s normal.' },
+        creaseAngleDeg: { type: 'number', description: 'Crease angle in degrees. Default 20. Lower for tighter features (5–10° for pupil inside iris), higher for coarser flood (45°+).' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
+        name: { type: 'string', description: 'Optional region name.' },
+      },
+      required: ['seedPoint', 'color'],
+    },
+  },
+  {
     name: 'listLabels',
     description: 'Return labels registered in the current run via api.label(shape, name) — the cleanest paint primitive on agent-authored geometry, in both manifold-js and SCAD (where labels come from top-level `label("name") <expr>;` wrappers). Each entry: {name, triangleCount, bbox, centroid}. Empty when the code did not call api.label or `label("name")`. Use to confirm labels resolved correctly before paintByLabel; otherwise prefer calling paintByLabel directly to save a round-trip.',
     input_schema: { type: 'object', properties: {} },
@@ -1416,8 +1446,8 @@ export const PART_TARGETABLE_TOOLS = new Set<string>([
   'modifyAndTest', 'query', 'findFaces', 'listComponents', 'listLabels', 'getModelColors',
   'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
-  'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByLabel', 'paintByLabels',
-  'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
+  'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintByLabel', 'paintByLabels',
+  'paintConnected', 'paintInCylinder', 'detectRegions', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
   'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
@@ -1530,7 +1560,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -2046,6 +2076,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintIsland(input);
     case 'paintIslandAt':
       return api.paintIslandAt(input);
+    case 'detectRegions':
+      return api.detectRegions(input);
+    case 'paintByCrease':
+      return api.paintByCrease(input);
     case 'listLabels':
       return api.listLabels();
     case 'getModelColors':

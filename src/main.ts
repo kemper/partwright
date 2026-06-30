@@ -14700,6 +14700,164 @@ async function main() {
       return partwrightAPI.paintIsland({ index: islandIdx, color: opts.color, name: opts.name ?? `Island ${islandIdx}` });
     },
 
+    /** Auto-segment the current mesh by **crease (dihedral-angle) watershed**
+     *  and return a region list. This is the right enumeration primitive for
+     *  ORGANIC SCULPTS — the iris ring, pupil, eye outline, mouth crease,
+     *  blush dimples, each torso pom-pom, the bangs/hairline are all sculpted
+     *  features whose boundaries are crease edges in the mesh. With the
+     *  default `creaseAngleDeg: 20`, the BFS walks freely across the gentle
+     *  curvature of cheeks and a hat dome but stops cold at a 30°+ crease.
+     *
+     *  Output is sorted largest first. With `includeNeighbors: true`, each
+     *  region also reports `neighborIds` — the regions it shares at least
+     *  one crease boundary with (the iris borders the sclera, etc.).
+     *
+     *  For mesh-island contexts (multi-part STL kits with fused body
+     *  islands), pass `withinIsland: <id>` to segment ONLY that island's
+     *  triangles — the body's face/eyes/buttons stop being unreachable. */
+    detectRegions(opts?: {
+      creaseAngleDeg?: number;
+      minTriangleCount?: number;
+      maxRegions?: number;
+      withinIsland?: number;
+      includeNeighbors?: boolean;
+      maxTrianglesPerGroup?: number;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      const o = opts ?? {};
+      const creaseAngleDeg = o.creaseAngleDeg ?? 20;
+      if (typeof creaseAngleDeg !== 'number' || !Number.isFinite(creaseAngleDeg) || creaseAngleDeg <= 0 || creaseAngleDeg >= 180) {
+        return { error: 'creaseAngleDeg must be a finite number in (0, 180). Default 20° — try 10° for fine sculpt features, 45° for coarse part-level segmentation.' };
+      }
+      const minTriangleCount = o.minTriangleCount ?? 5;
+      if (!Number.isInteger(minTriangleCount) || minTriangleCount < 1) {
+        return { error: 'minTriangleCount must be a positive integer (default 5 — filters out single-triangle slivers).' };
+      }
+      const maxRegions = o.maxRegions ?? 64;
+      if (!Number.isInteger(maxRegions) || maxRegions < 0) {
+        return { error: 'maxRegions must be a non-negative integer (0 = unlimited).' };
+      }
+      const maxTrianglesPerGroup = o.maxTrianglesPerGroup ?? 0;
+      if (!Number.isInteger(maxTrianglesPerGroup) || maxTrianglesPerGroup < 0) {
+        return { error: 'maxTrianglesPerGroup must be a non-negative integer (0 = omit triangleIds entirely; the default to keep responses small).' };
+      }
+
+      let restrictTo: Set<number> | undefined;
+      if (o.withinIsland !== undefined) {
+        if (!Number.isInteger(o.withinIsland) || o.withinIsland < 0) return { error: 'withinIsland must be a non-negative integer (an index from listComponents).' };
+        const { triIslands, islands } = meshIslands(currentMeshData);
+        if (o.withinIsland >= islands.length) return { error: `withinIsland ${o.withinIsland} out of range — listComponents has ${islands.length} island(s).` };
+        restrictTo = trianglesInIsland(triIslands, o.withinIsland);
+      }
+
+      // tolerance = cos(crease) — a neighbour at less than the crease bend
+      // passes (dot >= tolerance), past the crease stops.
+      const tolerance = Math.cos(creaseAngleDeg * Math.PI / 180);
+      const summary = computeFaceGroups(currentMeshData, {
+        tolerance,
+        minTriangles: minTriangleCount,
+        maxTrianglesPerGroup,
+        maxGroups: maxRegions,
+        restrictTo,
+        includeNeighborIds: o.includeNeighbors ?? true,
+      });
+
+      return {
+        count: summary.groups.length,
+        creaseAngleDeg,
+        tolerance,
+        source: o.withinIsland !== undefined ? 'island' as const : 'whole-mesh' as const,
+        ...(o.withinIsland !== undefined ? { withinIsland: o.withinIsland } : {}),
+        regions: summary.groups.map(g => ({
+          id: g.id,
+          triangleCount: g.triangleCount,
+          area: g.area,
+          centroid: g.centroid,
+          normal: g.normal,
+          bbox: g.bbox,
+          ...(g.neighborIds ? { neighborIds: g.neighborIds } : {}),
+          ...(g.triangleIds.length > 0 ? { triangleIds: g.triangleIds } : {}),
+        })),
+      };
+    },
+
+    /** Flood paint from a surface seed, stopping at the next crease edge.
+     *  This is the right paint primitive for SCULPTED FEATURES (irises,
+     *  pupils, mouth, blush, buttons, pom-poms) — clean edges by
+     *  construction, no box guessing.
+     *
+     *  Same math as `paintRegion` but parameterised in DEGREES (sculpt-
+     *  natural) instead of cosine tolerance, with a sculpt-tuned default
+     *  of 20°. `seedNormal` is optional; if omitted we snap to the nearest
+     *  triangle and use its normal (the `paintNearestRegion` style). Pair
+     *  with `probePixel`/`probeRay` to ground the seed in a visible point.
+     *
+     *  Returns `{id, name, triangles, ...}` or `{error}`. */
+    paintByCrease(opts: {
+      seedPoint: [number, number, number];
+      seedNormal?: [number, number, number];
+      creaseAngleDeg?: number;
+      color: [number, number, number];
+      name?: string;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintByCrease requires { seedPoint, color }' };
+      const { seedPoint, seedNormal, color, name } = opts;
+      if (!Array.isArray(seedPoint) || seedPoint.length !== 3) return { error: 'seedPoint must be [x,y,z]' };
+      for (let i = 0; i < 3; i++) {
+        if (typeof seedPoint[i] !== 'number' || !Number.isFinite(seedPoint[i])) return { error: 'seedPoint components must be finite numbers' };
+      }
+      if (!Array.isArray(color) || color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
+      const creaseAngleDeg = opts.creaseAngleDeg ?? 20;
+      if (typeof creaseAngleDeg !== 'number' || !Number.isFinite(creaseAngleDeg) || creaseAngleDeg <= 0 || creaseAngleDeg >= 180) {
+        return { error: 'creaseAngleDeg must be a finite number in (0, 180). Default 20° — try 10° for fine sculpt features, 45° for coarse boundaries.' };
+      }
+      const tolerance = Math.cos(creaseAngleDeg * Math.PI / 180);
+      const adjacency = buildAdjacency(currentMeshData);
+
+      // Resolve seed: use supplied normal when present (paintRegion path);
+      // otherwise snap to nearest triangle and adopt its normal (the
+      // paintNearestRegion path). Snapping is forgiving — the probePixel
+      // round-trip can land slightly off-surface in iso views and we
+      // shouldn't punish that.
+      let seedTri = -1;
+      let resolvedPoint: [number, number, number] = seedPoint as [number, number, number];
+      let resolvedNormal: [number, number, number] | null = null;
+      if (Array.isArray(seedNormal) && seedNormal.length === 3 && seedNormal.every(v => typeof v === 'number' && Number.isFinite(v))) {
+        seedTri = resolveSeed(seedPoint as [number, number, number], seedNormal as [number, number, number], currentMeshData, adjacency, tolerance);
+        if (seedTri >= 0) resolvedNormal = seedNormal as [number, number, number];
+      }
+      if (seedTri < 0) {
+        const nearest = findNearestTriangle(seedPoint as [number, number, number], currentMeshData, adjacency);
+        if (nearest.triIndex < 0) return { error: 'paintByCrease: mesh has no triangles.' };
+        seedTri = nearest.triIndex;
+        resolvedPoint = nearest.closest;
+        resolvedNormal = nearest.normal;
+      }
+
+      const triangles = findCoplanarRegion(seedTri, adjacency, tolerance);
+      if (triangles.size === 0) return { error: `paintByCrease: BFS returned no triangles from seed ${seedTri} (should be impossible — please report).` };
+      const regionName = name ?? `Region ${getRegions().length + 1}`;
+      const region = addRegion(
+        regionName,
+        color as [number, number, number],
+        'face-pick',
+        { kind: 'coplanar', seedPoint: resolvedPoint, seedNormal: resolvedNormal ?? [0, 0, 1], normalTolerance: tolerance },
+        triangles,
+      );
+      scheduleColorRefresh();
+      syncLockState();
+      const stats = regionTriangleStats(triangles, currentMeshData);
+      return {
+        id: region.id,
+        name: region.name,
+        triangles: triangles.size,
+        creaseAngleDeg,
+        bbox: stats.bbox,
+        centroid: stats.centroid,
+      };
+    },
+
     /** Token-cheap planning aid for paint workflows: returns just the
      *  centroid + normal + bbox of each coplanar face group, no triangle
      *  IDs. Same as `getMeshSummary({maxTrianglesPerGroup: 0, maxGroups})`
@@ -15515,6 +15673,8 @@ async function main() {
         'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece. Requires a manifold (uses decompose). For render-only imports use paintIsland.', docs: '/ai/colors.md' },
         'paintIsland':     { signature: 'paintIsland({index, color, name?}) -- Paint a single face-connected mesh island by index from listComponents(). Works on ANY mesh including render-only STL imports — the right tool for painting one part of a multi-part STL kit by its component number. Topological, not spatial — never bleeds across XYZ-overlapping parts.', docs: '/ai/colors.md' },
         'paintIslandAt':   { signature: 'paintIslandAt({point, color, name?}) -- Paint the face-connected island containing the triangle closest to point. Pair with probePixel/probeRay to ground island selection in a visible point ("the hat in the iso render") without enumerating islands.', docs: '/ai/colors.md' },
+        'detectRegions':   { signature: 'detectRegions({creaseAngleDeg?=20, minTriangleCount?=5, maxRegions?=64, withinIsland?, includeNeighbors?=true, maxTrianglesPerGroup?=0}) -> {count, regions: [{id, triangleCount, area, centroid, normal, bbox, neighborIds?, triangleIds?}], source} -- Auto-segment by crease (dihedral) watershed. The right enumeration primitive for SCULPTED FEATURES — iris ring, pupil, mouth crease, blush dimples, pom-poms, bangs all separate naturally at the 20° default. Pass withinIsland to segment ONE mesh-island (fused body part) so the face/eyes/buttons stop being unreachable.', docs: '/ai/colors.md' },
+        'paintByCrease':   { signature: 'paintByCrease({seedPoint, seedNormal?, creaseAngleDeg?=20, color, name?}) -- Flood paint from a surface seed, stopping at the next crease edge. The right paint primitive for SCULPTED FEATURES on organic meshes. Clean edges by construction, no box guessing. Pair with probePixel to ground the seed. seedNormal optional (snaps to nearest triangle).', docs: '/ai/colors.md' },
         'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai/colors.md' },
         'getModelColors':  { signature: 'getModelColors() -> {count, colors: [{name, color, triangleCount}]} -- Colors declared in code via api.label(shape, name, {color}) or api.paint.*. Render + export automatically; editor stays editable; manual paint overrides.', docs: '/ai/colors.md' },
         'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai/colors.md' },
