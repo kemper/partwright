@@ -569,6 +569,42 @@
           "jewelry"
         ]
       }
+    },
+    "dummy13-head": {
+      "source": "examples/dummy13_head.js",
+      "gates": { "maxGenus": null, "requiredLabels": [] }
+    },
+    "dummy13-torso": {
+      "source": "examples/dummy13_torso.js",
+      "gates": { "maxGenus": null, "requiredLabels": [] }
+    },
+    "dummy13-hips": {
+      "source": "examples/dummy13_hips.js",
+      "gates": { "maxGenus": null, "requiredLabels": [] }
+    },
+    "dummy13-upper-arms": {
+      "source": "examples/dummy13_upper_arms.js",
+      "gates": { "maxGenus": null, "requiredLabels": [] }
+    },
+    "dummy13-forearms": {
+      "source": "examples/dummy13_forearms.js",
+      "gates": { "maxGenus": null, "requiredLabels": [] }
+    },
+    "dummy13-hands": {
+      "source": "examples/dummy13_hands.js",
+      "gates": { "maxGenus": null, "requiredLabels": [] }
+    },
+    "dummy13-thighs": {
+      "source": "examples/dummy13_thighs.js",
+      "gates": { "maxGenus": null, "requiredLabels": [] }
+    },
+    "dummy13-shins": {
+      "source": "examples/dummy13_shins.js",
+      "gates": { "maxGenus": null, "requiredLabels": [] }
+    },
+    "dummy13-full-skeleton": {
+      "source": "examples/dummy13_full_skeleton.js",
+      "gates": { "maxGenus": null, "requiredLabels": [] }
     }
   }
 }
