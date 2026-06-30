@@ -60,6 +60,12 @@ import {
   loadFromSerialized as loadAnnotations,
   type SerializedAnnotation,
 } from '../annotations/annotations';
+import {
+  serializeAll as serializePointers,
+  loadSerialized as loadPointers,
+  clearAllPointers,
+  type SerializedPointer,
+} from '../annotations/pointers';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
 import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
@@ -182,8 +188,17 @@ import { appPath } from '../deployment';
  *           (`session.attachments[].description`) — a "why this matters" note
  *           distinct from the short `label`/perspective caption. Additive;
  *           older readers ignore it.
+ *  - `1.18` — session-level **AI-planning pointers** (`session.pointers`).
+ *           Mesh-anchored, labelled callouts the AI drops at surface points it
+ *           thinks correspond to a particular feature; the user reviews and
+ *           approves them in the Pointer panel before paint. Stored per
+ *           SESSION (not per-version) because they're a planning artefact
+ *           that the user wants persistent across paint commits and code
+ *           edits — re-resolved against each live mesh via `resolveSeed`.
+ *           Additive; older readers ignore the field. See
+ *           `src/annotations/pointers.ts`.
  */
-export const SCHEMA_VERSION = '1.17';
+export const SCHEMA_VERSION = '1.18';
 
 const CURRENT_MAJOR = 1;
 
@@ -221,7 +236,17 @@ export interface ExportedSession {
   /** Attachments (schema 1.16+) are the array of typed `SessionAttachment`s.
    * Legacy `images` / `referenceImages` (array form or the object map
    * {front, right, ...}) still read as image attachments for older exports. */
-  session: { name: string; created: number; updated: number; attachments?: SessionAttachment[] | null; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number }; workCamera?: { position: [number, number, number]; target: [number, number, number] } };
+  session: { name: string; created: number; updated: number; attachments?: SessionAttachment[] | null; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number }; workCamera?: { position: [number, number, number]; target: [number, number, number] };
+    /**
+     * AI-planning pointers (schema 1.18+). Mesh-anchored, labelled callouts
+     * the AI drops at surface points it believes correspond to a feature; the
+     * user reviews them in the Pointer panel before commit. Per-session, not
+     * per-version. Re-resolved against the live mesh each run via `resolveSeed`.
+     * Absent ⇒ no pointers; older readers ignore the field.
+     * @since 1.18
+     */
+    pointers?: SerializedPointer[];
+  };
   /**
    * The session's parts, ordered by `order`. Present from schema 1.7. Pre-1.7
    * files omit this; on import they collapse into a single default part.
@@ -616,6 +641,9 @@ export async function createSession(name?: string, language?: 'manifold-js' | 's
   // Annotations are per-version; a fresh session starts empty so nothing
   // bleeds in from the previously-active session.
   loadAnnotations([]);
+  // Pointers are per-session; a fresh session also starts empty so the
+  // previous session's review state doesn't bleed into this one.
+  clearAllPointers(true);
   setActiveImports([]);
   setCompanionFiles({});
   updateURL();
@@ -657,9 +685,27 @@ export async function openSession(id: string, versionIndex?: number, partId?: st
   currentState = { session, parts, currentPart: targetPart, currentVersion: version, versionCount: count };
   setActiveImports((version?.importedMeshes ?? []) as ImportedMesh[]);
   setCompanionFiles(version?.companionFiles ?? {});
+  // Seed the in-memory pointer store from the session's saved pointers
+  // (schema 1.18+). Reseeding happens on every openSession so a tab switch
+  // between sessions doesn't leak the other session's pointer set.
+  hydratePointersFromSession(session);
   updateURL();
   notify();
   return version;
+}
+
+/** Replace the in-memory pointer store with the session's persisted set.
+ *  Robust to a malformed entry — anything that doesn't parse as a
+ *  SerializedPointer drops. Triggers the store's own change notification so
+ *  the overlay + panel pick up the load. */
+function hydratePointersFromSession(session: Session): void {
+  const raw = Array.isArray(session.pointers) ? session.pointers : [];
+  const valid: SerializedPointer[] = [];
+  for (const p of raw) {
+    const ok = asPointer(p);
+    if (ok) valid.push(ok);
+  }
+  loadPointers(valid);
 }
 
 /** Return a session's parts, lazily creating a default part for any (legacy or
@@ -681,6 +727,7 @@ export async function closeSession(): Promise<void> {
   }
   currentState = { session: null, parts: [], currentPart: null, currentVersion: null, versionCount: 0 };
   loadAnnotations([]);
+  clearAllPointers(true);
   setActiveImports([]);
   setCompanionFiles({});
   updateURL();
@@ -856,6 +903,66 @@ export async function setSessionWorkCamera(camera: { position: [number, number, 
   await dbUpdateSession(id, { workCamera: next });
   if (currentState.session?.id === id) {
     currentState.session = { ...currentState.session, workCamera: next };
+  }
+}
+
+/** Coerce an untrusted entry into a valid SerializedPointer, or null. The
+ *  shape mirrors the in-memory type; missing optional fields drop, malformed
+ *  required fields reject the whole entry. Used on import (untrusted file
+ *  contents) AND on session open (db row that may pre-date a schema field). */
+function asPointer(v: unknown): SerializedPointer | null {
+  if (!v || typeof v !== 'object') return null;
+  const r = v as Record<string, unknown>;
+  const id = typeof r.id === 'string' && r.id.length > 0 ? r.id : null;
+  const label = typeof r.label === 'string' ? r.label : null;
+  const point = asVec3Obj(r.point);
+  const normal = asVec3Obj(r.normal);
+  if (!id || label === null || !point || !normal) return null;
+  const status: SerializedPointer['status'] =
+    r.status === 'approved' || r.status === 'painted' ? r.status : 'proposed';
+  const authoredBy: SerializedPointer['authoredBy'] =
+    r.authoredBy === 'ai' || r.authoredBy === 'user' ? r.authoredBy : 'user';
+  const createdAt = typeof r.createdAt === 'number' && Number.isFinite(r.createdAt) ? r.createdAt : Date.now();
+  const out: SerializedPointer = { id, label, point, normal, status, authoredBy, createdAt };
+  if (r.hidden === true) out.hidden = true;
+  if (Array.isArray(r.proposedColor) && r.proposedColor.length === 3
+      && r.proposedColor.every(n => typeof n === 'number' && Number.isFinite(n))) {
+    out.proposedColor = [r.proposedColor[0], r.proposedColor[1], r.proposedColor[2]];
+  }
+  if (r.paintHint && typeof r.paintHint === 'object') {
+    const h = r.paintHint as Record<string, unknown>;
+    if (h.kind === 'connected' && typeof h.maxDeviationDeg === 'number' && Number.isFinite(h.maxDeviationDeg)) {
+      out.paintHint = { kind: 'connected', maxDeviationDeg: h.maxDeviationDeg };
+    } else if (h.kind === 'coplanar' && typeof h.normalToleranceDeg === 'number' && Number.isFinite(h.normalToleranceDeg)) {
+      out.paintHint = { kind: 'coplanar', normalToleranceDeg: h.normalToleranceDeg };
+    } else if (h.kind === 'colorFlood' && typeof h.colorTolerance === 'number' && Number.isFinite(h.colorTolerance)) {
+      out.paintHint = { kind: 'colorFlood', colorTolerance: h.colorTolerance };
+    }
+  }
+  return out;
+}
+
+function asVec3Obj(v: unknown): { x: number; y: number; z: number } | null {
+  if (!v || typeof v !== 'object') return null;
+  const r = v as Record<string, unknown>;
+  if (typeof r.x !== 'number' || typeof r.y !== 'number' || typeof r.z !== 'number') return null;
+  if (!Number.isFinite(r.x) || !Number.isFinite(r.y) || !Number.isFinite(r.z)) return null;
+  return { x: r.x, y: r.y, z: r.z };
+}
+
+/** Persist the live pointer-store snapshot to the current session's DB row.
+ *  Called by main.ts on every pointer-store change (debounced) so closing
+ *  the tab can never lose review state — the same write strategy as
+ *  setSessionWorkCamera, just for pointer state instead. No-op when no
+ *  session is open or this tab is a read-only viewer. */
+export async function persistSessionPointers(): Promise<void> {
+  if (!currentState.session) return;
+  if (isViewerTab()) return;
+  const id = currentState.session.id;
+  const pointers = serializePointers();
+  await dbUpdateSession(id, { pointers });
+  if (currentState.session?.id === id) {
+    currentState.session = { ...currentState.session, pointers };
   }
 }
 
@@ -1685,6 +1792,7 @@ export async function clearAllSessions(): Promise<void> {
   await clearAllData();
   currentState = { session: null, parts: [], currentPart: null, currentVersion: null, versionCount: 0 };
   loadAnnotations([]);
+  clearAllPointers(true);
   setActiveImports([]);
   setCompanionFiles({});
   updateURL();
@@ -1905,7 +2013,7 @@ export async function exportSession(
   return {
     partwright: SCHEMA_VERSION,
     ...(stampedAppVersion ? { appVersion: stampedAppVersion } : {}),
-    session: { name: session.name, created: session.created, updated: session.updated, attachments: session.attachments ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}) },
+    session: { name: session.name, created: session.created, updated: session.updated, attachments: session.attachments ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}), ...(Array.isArray(session.pointers) && session.pointers.length > 0 ? { pointers: session.pointers as SerializedPointer[] } : {}) },
     parts: parts.map(p => ({ name: p.name, order: p.order })),
     versions: flat.map(({ v, partOrder }, i) => {
       const colorRegions = opts.includeColorRegions ? extractColorRegions(v.geometryData) : undefined;
@@ -2000,6 +2108,18 @@ export async function importSession(
   // malformed export can't feed a bad pose to setCameraPose on open.
   const workCam = asWorkCamera(data.session.workCamera);
   if (workCam) await dbUpdateSession(session.id, { workCamera: workCam });
+
+  // Restore AI-planning pointers (schema 1.18+). Each entry runs through
+  // `asPointer` first so a malformed export can't poison the live store or
+  // crash a downstream paint commit; bad entries drop silently.
+  if (Array.isArray(data.session.pointers)) {
+    const pointers = data.session.pointers
+      .map(p => asPointer(p))
+      .filter((p): p is SerializedPointer => p !== null);
+    if (pointers.length > 0) {
+      await dbUpdateSession(session.id, { pointers });
+    }
+  }
 
   // Determine the index of the latest exported version. Schema 1.2 stored
   // annotations at the top level; for back-compat we attach them to whichever
@@ -2148,6 +2268,10 @@ export async function importSession(
   currentState = { session: refreshedSession, parts, currentPart, currentVersion: latest, versionCount: count };
   setActiveImports((latest?.importedMeshes ?? []) as ImportedMesh[]);
   setCompanionFiles(latest?.companionFiles ?? {});
+  // Pointers are session-scoped; seed the in-memory store now so the panel
+  // + overlay reflect the imported set immediately (versus annotations,
+  // which the editor's load path re-applies per version).
+  hydratePointersFromSession(refreshedSession);
   updateURL();
   notify();
   publishTabSync({ kind: 'session-meta', sessionId: refreshedSession.id });

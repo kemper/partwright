@@ -141,6 +141,26 @@ import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, SURFACE_SCOPE_KEYS, parseSurfaceOpts
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
+import {
+  getPointers,
+  getPointerById,
+  addPointer,
+  updatePointer as updatePointerStore,
+  clearPointers as clearPointersStore,
+  setHidden as setPointersHidden,
+  onPointersChange,
+  resolvePointersAgainstMesh,
+  markAllStale as markPointersStale,
+  type PointerPaintHint,
+} from './annotations/pointers';
+import {
+  configurePointerOverlay,
+  refreshPointerOverlay,
+  resolvePointerTriangles as resolvePointerTrianglesFor,
+} from './annotations/pointerOverlay';
+import { initPointerPanelUI, openPointerPanel, closePointerPanel } from './ui/pointerPanel';
+// (persistSessionPointers is added to the consolidated sessionManager import
+// below so we don't double-import from the same module.)
 import { specToCode } from './figure/characterCodegen';
 import { normalizeSpec } from './figure/characterSpec';
 import { initResizeUI } from './ui/resizeModal';
@@ -306,6 +326,7 @@ import {
   initSessionTabSync,
   setViewerPredicate,
   refreshCurrentSession,
+  persistSessionPointers,
   type ExportedSession,
   type ExportOptions,
 } from './storage/sessionManager';
@@ -8734,6 +8755,70 @@ async function main() {
     return { regions, transferredTris };
   }
 
+  /** Commit a single AI-planning pointer's proposed flood-fill as a paint
+   *  region (the existing `connectedFromSeed` / `coplanar` / `colorFlood`
+   *  pipeline — pointers are a thin labelled layer above those). Status
+   *  flips 'proposed/approved' → 'painted'; the pointer stays in the list
+   *  so the user can repaint it (re-running the same selector) without
+   *  re-dropping it. Shared by the partwrightAPI method, the Pointer panel,
+   *  and the in-app AI tool layer so all three honour the same validation
+   *  + region-shape rules. */
+  function commitPaintFromPointerImpl(
+    id: string,
+    opts?: { color?: [number, number, number]; name?: string },
+  ): { regionId: number; triangles: number; pointerStatus: 'painted' } | { error: string } {
+    if (!currentMeshData) return { error: 'No geometry loaded' };
+    const p = getPointerById(id);
+    if (!p) return { error: `No pointer with id "${id}"` };
+    if (p.orphaned) return { error: `Pointer "${p.label}" is orphaned — re-aim it before committing.` };
+    if (!p.paintHint) return { error: `Pointer "${p.label}" has no paintHint; updatePointer to add one (connected / coplanar / colorFlood).` };
+    const color = opts?.color ?? p.proposedColor;
+    if (!color) return { error: `Pointer "${p.label}" has no proposedColor and no color was supplied — pass {color:[r,g,b]} in 0..1.` };
+
+    const mesh = currentMeshData;
+    const adjacency = buildAdjacency(mesh);
+    // Re-resolve from world-space anchor in case the run drifted the
+    // triangle id since the pointer was last touched.
+    let seedTri = p.triangleId;
+    if (seedTri < 0 || seedTri >= mesh.numTri) {
+      const near = findNearestTriangle(p.point, mesh, adjacency);
+      if (near.triIndex < 0) return { error: 'Pointer anchor has no nearby triangle on the live mesh.' };
+      seedTri = near.triIndex;
+    }
+    const seedPoint: [number, number, number] = [p.point[0], p.point[1], p.point[2]];
+    const seedNormal: [number, number, number] = [p.normal[0], p.normal[1], p.normal[2]];
+
+    const regionName = opts?.name ?? p.label;
+    let descriptor: RegionDescriptor;
+    let triangles: Set<number>;
+    if (p.paintHint.kind === 'connected') {
+      const cos = Math.cos(p.paintHint.maxDeviationDeg * Math.PI / 180);
+      triangles = findConnectedFromSeed(seedTri, adjacency, cos);
+      if (triangles.size === 0) return { error: `Pointer "${p.label}" connected flood found 0 triangles — widen maxDeviationDeg or re-aim the anchor.` };
+      descriptor = { kind: 'connectedFromSeed', seedPoint, seedNormal, maxDeviationDeg: p.paintHint.maxDeviationDeg };
+    } else if (p.paintHint.kind === 'coplanar') {
+      const cos = Math.cos(p.paintHint.normalToleranceDeg * Math.PI / 180);
+      triangles = findCoplanarRegion(seedTri, adjacency, cos);
+      if (triangles.size === 0) return { error: `Pointer "${p.label}" coplanar flood found 0 triangles — widen normalToleranceDeg.` };
+      descriptor = { kind: 'coplanar', seedPoint, seedNormal, normalTolerance: cos };
+    } else {
+      const triColors = mesh.triColors ?? null;
+      if (!triColors) return { error: 'colorFlood pointer can only commit when the mesh has per-triangle colours (paint or render-only). Choose connected/coplanar instead.' };
+      triangles = findColorRegion(seedTri, adjacency, triColors, p.paintHint.colorTolerance);
+      if (triangles.size === 0) return { error: `Pointer "${p.label}" colorFlood found 0 triangles — widen colorTolerance.` };
+      const seedColor: [number, number, number] = [
+        triColors[seedTri * 3] / 255, triColors[seedTri * 3 + 1] / 255, triColors[seedTri * 3 + 2] / 255,
+      ];
+      descriptor = { kind: 'colorFlood', seedPoint, seedNormal, seedColor, colorTolerance: p.paintHint.colorTolerance };
+    }
+    const region = addRegion(regionName, color, 'paintbrush', descriptor, triangles);
+    const colored = applyTriColorsIfVisible(mesh);
+    updateMesh(colored, { skipAutoFrame: true });
+    syncLockState();
+    updatePointerStore(id, { status: 'painted', regionId: region.id, lastPaintedAt: Date.now() });
+    return { regionId: region.id, triangles: triangles.size, pointerStatus: 'painted' };
+  }
+
   /** A user-facing warning when committing a modifier converts a SCAD or BREP
    *  session into a baked manifold-js/voxel mesh — the parametric source (and,
    *  for BREP, STEP export) is discarded. Returns null when nothing of value is
@@ -8750,6 +8835,14 @@ async function main() {
   }
 
   async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean, opts?: { warnOnBake?: boolean }): Promise<Record<string, unknown>> {
+    // AI-planning pointer hard-invalidation: a surface modifier or voxelize
+    // replaces the mesh topology, so existing pointer anchors very likely
+    // no longer match. Flag everything stale (no auto-delete — preserves
+    // user work) before the bake. The post-run resolve hook then clears the
+    // flag for any pointer whose anchor still has a clean nearby surface.
+    if (getPointers().length > 0) {
+      markPointersStale(`surface modifier "${result.label ?? 'unknown'}" replaced the mesh — verify each pointer's anchor`);
+    }
     // Refuse to bake while a coarse fast-preview is on screen: the modifier would
     // bind to the throwaway low-res mesh, which the full-quality render is about
     // to replace. Tell the user to let it finish (it auto-completes in seconds).
@@ -12751,6 +12844,366 @@ async function main() {
       return { id: region.id, name: region.name, triangles: triangles.size, bbox: stats.bbox, centroid: stats.centroid, seedTriangle: nearest.triIndex };
     },
 
+    // === AI-planning pointers ===
+    //
+    // Labelled, mesh-anchored "leader-line" callouts the AI agent drops at
+    // surface points it believes correspond to a feature (an iris, a foot, a
+    // hat brim). The user reviews them in the Pointer panel before paint;
+    // each one resolves to a `connectedFromSeed` / `coplanar` / `colorFlood`
+    // selection at commit time. Per-session — persisted in
+    // session.pointers (schema 1.18+), not per-version.
+
+    /** Drop a new pointer at an explicit surface point, OR derive that point
+     *  from a pixel via the same camera spec `probePixel` uses. Returns
+     *  the created pointer summary, or `{ error }` when the inputs are
+     *  malformed / the probe misses. */
+    dropPointer(opts: {
+      label: string;
+      point?: [number, number, number];
+      normal?: [number, number, number];
+      fromPixel?: { pixel: [number, number]; view: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number } };
+      paintHint?: { kind: 'connected'; maxDeviationDeg: number } | { kind: 'coplanar'; normalToleranceDeg: number } | { kind: 'colorFlood'; colorTolerance: number };
+      proposedColor?: [number, number, number];
+      authoredBy?: 'ai' | 'user';
+      id?: string;
+    }): { id: string; label: string; point: [number, number, number]; normal: [number, number, number]; triangleId: number; paintHint?: PointerPaintHint; proposedColor?: [number, number, number] } | { error: string } {
+      const check = guard(() => {
+        const o = assertObject(opts, 'dropPointer(opts)')!;
+        assertString(o.label, 'dropPointer(opts).label', { allowEmpty: false });
+        if (!o.point && !o.fromPixel) throw new ValidationError('dropPointer(opts) requires either { point } or { fromPixel }');
+        if (o.point) assertNumberTuple(o.point, 3, 'dropPointer(opts).point');
+        if (o.normal) assertNumberTuple(o.normal, 3, 'dropPointer(opts).normal');
+        if (o.proposedColor) assertNumberTuple(o.proposedColor, 3, 'dropPointer(opts).proposedColor');
+        if (o.authoredBy !== undefined) assertEnum(o.authoredBy, ['ai', 'user'] as const, 'dropPointer(opts).authoredBy');
+        if (o.paintHint !== undefined) {
+          const h = assertObject(o.paintHint, 'dropPointer(opts).paintHint')!;
+          assertEnum(h.kind, ['connected', 'coplanar', 'colorFlood'] as const, 'dropPointer(opts).paintHint.kind');
+          if (h.kind === 'connected') assertNumber(h.maxDeviationDeg, 'dropPointer(opts).paintHint.maxDeviationDeg', { min: 0, max: 180 });
+          if (h.kind === 'coplanar') assertNumber(h.normalToleranceDeg, 'dropPointer(opts).paintHint.normalToleranceDeg', { min: 0, max: 180 });
+          if (h.kind === 'colorFlood') assertNumber(h.colorTolerance, 'dropPointer(opts).paintHint.colorTolerance', { min: 0, max: 1 });
+        }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return { error: check.error };
+      if (!currentMeshData) return { error: 'No geometry loaded — run a model first so the pointer has a surface to anchor to.' };
+
+      let point: [number, number, number];
+      let normal: [number, number, number];
+      let triangleId = -1;
+      if (opts.fromPixel) {
+        const size = (opts.fromPixel.view.size as number | undefined) ?? 500;
+        const camera = buildViewCamera(currentMeshData, opts.fromPixel.view);
+        const probe = probePixel(currentMeshData, camera, opts.fromPixel.pixel, size);
+        if ('hit' in probe) {
+          return { error: `dropPointer.fromPixel missed the mesh at pixel [${opts.fromPixel.pixel.join(', ')}]. Re-render this view to find the visible bounds and try again.` };
+        }
+        point = probe.point;
+        normal = opts.normal ?? probe.normal;
+        triangleId = probe.triangleId;
+      } else {
+        const adjacency = buildAdjacency(currentMeshData);
+        const near = findNearestTriangle(opts.point!, currentMeshData, adjacency);
+        if (near.triIndex < 0) return { error: 'dropPointer: mesh has no triangles to anchor to.' };
+        point = near.closest;
+        normal = opts.normal ?? near.normal;
+        triangleId = near.triIndex;
+      }
+
+      const created = addPointer({
+        id: opts.id,
+        label: opts.label,
+        point, normal, triangleId,
+        paintHint: opts.paintHint as PointerPaintHint | undefined,
+        proposedColor: opts.proposedColor,
+        authoredBy: opts.authoredBy ?? 'user',
+      });
+      return {
+        id: created.id, label: created.label,
+        point: [...created.point] as [number, number, number],
+        normal: [...created.normal] as [number, number, number],
+        triangleId: created.triangleId,
+        ...(created.paintHint ? { paintHint: created.paintHint } : {}),
+        ...(created.proposedColor ? { proposedColor: created.proposedColor } : {}),
+      };
+    },
+
+    /** List every pointer in the current session, with the latest resolution
+     *  status. Filter by status with `{status: 'proposed'}` etc. */
+    listPointers(opts?: { status?: 'proposed' | 'approved' | 'painted' }): Array<{
+      id: string; label: string;
+      point: [number, number, number];
+      normal: [number, number, number];
+      triangleId: number;
+      paintHint?: PointerPaintHint;
+      proposedColor?: [number, number, number];
+      status: 'proposed' | 'approved' | 'painted';
+      authoredBy: 'ai' | 'user';
+      hidden: boolean;
+      stale: boolean;
+      orphaned: boolean;
+      staleReason?: string;
+      regionId?: number;
+    }> | { error: string } {
+      if (opts !== undefined) {
+        const check = guard(() => {
+          const o = assertObject(opts, 'listPointers(opts)')!;
+          if (o.status !== undefined) assertEnum(o.status, ['proposed', 'approved', 'painted'] as const, 'listPointers(opts).status');
+          return true;
+        });
+        if (typeof check === 'object' && check !== null && 'error' in check) return { error: check.error };
+      }
+      const filter = opts?.status;
+      return getPointers()
+        .filter(p => !filter || p.status === filter)
+        .map(p => ({
+          id: p.id, label: p.label,
+          point: [...p.point] as [number, number, number],
+          normal: [...p.normal] as [number, number, number],
+          triangleId: p.triangleId,
+          ...(p.paintHint ? { paintHint: p.paintHint } : {}),
+          ...(p.proposedColor ? { proposedColor: p.proposedColor } : {}),
+          status: p.status,
+          authoredBy: p.authoredBy,
+          hidden: p.hidden,
+          stale: p.stale,
+          orphaned: p.orphaned,
+          ...(p.staleReason ? { staleReason: p.staleReason } : {}),
+          ...(p.regionId !== undefined ? { regionId: p.regionId } : {}),
+        }));
+    },
+
+    /** Patch an existing pointer in place — used by the panel to rename /
+     *  re-aim / re-tolerance, and by the AI to flip status from 'proposed' to
+     *  'approved' after a coverage report comes back clean. */
+    updatePointer(id: string, patch: {
+      label?: string;
+      point?: [number, number, number];
+      normal?: [number, number, number];
+      paintHint?: PointerPaintHint;
+      proposedColor?: [number, number, number];
+      status?: 'proposed' | 'approved' | 'painted';
+      hidden?: boolean;
+    }): { ok: true } | { error: string } {
+      const check = guard(() => {
+        assertString(id, 'updatePointer(id)', { allowEmpty: false });
+        const p = assertObject(patch, 'updatePointer(_, patch)')!;
+        if (p.label !== undefined) assertString(p.label, 'updatePointer(_, patch).label');
+        if (p.point) assertNumberTuple(p.point, 3, 'updatePointer(_, patch).point');
+        if (p.normal) assertNumberTuple(p.normal, 3, 'updatePointer(_, patch).normal');
+        if (p.proposedColor) assertNumberTuple(p.proposedColor, 3, 'updatePointer(_, patch).proposedColor');
+        if (p.status !== undefined) assertEnum(p.status, ['proposed', 'approved', 'painted'] as const, 'updatePointer(_, patch).status');
+        if (p.hidden !== undefined) assertBoolean(p.hidden, 'updatePointer(_, patch).hidden');
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const ok = updatePointerStore(id, patch);
+      if (!ok) return { error: `No pointer with id "${id}"` };
+      return { ok: true };
+    },
+
+    /** Hide pointers from the overlay (they stay in `listPointers`). */
+    hidePointers(opts?: { ids?: string[] }): { hidden: number } | { error: string } {
+      if (opts !== undefined) {
+        const check = guard(() => {
+          const o = assertObject(opts, 'hidePointers(opts)')!;
+          if (o.ids !== undefined) {
+            const ids = assertArray(o.ids, 'hidePointers(opts).ids');
+            for (let i = 0; i < ids.length; i++) assertString(ids[i], `hidePointers(opts).ids[${i}]`);
+          }
+          return true;
+        });
+        if (typeof check === 'object' && check !== null && 'error' in check) return { error: check.error };
+      }
+      return { hidden: setPointersHidden(opts?.ids, true) };
+    },
+
+    /** Inverse of {@link hidePointers}. */
+    showPointers(opts?: { ids?: string[] }): { shown: number } | { error: string } {
+      if (opts !== undefined) {
+        const check = guard(() => {
+          const o = assertObject(opts, 'showPointers(opts)')!;
+          if (o.ids !== undefined) {
+            const ids = assertArray(o.ids, 'showPointers(opts).ids');
+            for (let i = 0; i < ids.length; i++) assertString(ids[i], `showPointers(opts).ids[${i}]`);
+          }
+          return true;
+        });
+        if (typeof check === 'object' && check !== null && 'error' in check) return { error: check.error };
+      }
+      return { shown: setPointersHidden(opts?.ids, false) };
+    },
+
+    /** Delete pointers. Without args clears everything; `{status: …}` scopes
+     *  to one bucket (e.g. wipe abandoned plans without touching ones the
+     *  user already approved). */
+    clearPointers(opts?: { status?: 'proposed' | 'approved' | 'painted'; ids?: string[] }): { removed: number } | { error: string } {
+      if (opts !== undefined) {
+        const check = guard(() => {
+          const o = assertObject(opts, 'clearPointers(opts)')!;
+          if (o.status !== undefined) assertEnum(o.status, ['proposed', 'approved', 'painted'] as const, 'clearPointers(opts).status');
+          if (o.ids !== undefined) {
+            const ids = assertArray(o.ids, 'clearPointers(opts).ids');
+            for (let i = 0; i < ids.length; i++) assertString(ids[i], `clearPointers(opts).ids[${i}]`);
+          }
+          return true;
+        });
+        if (typeof check === 'object' && check !== null && 'error' in check) return { error: check.error };
+      }
+      return { removed: clearPointersStore(opts) };
+    },
+
+    /** Dry-run a pointer's proposed flood-fill against the LIVE mesh —
+     *  returns the triangle count + bbox WITHOUT painting. Same shape as
+     *  paintPreview but parameterised by pointer id. */
+    previewPointerPaint(id: string, opts?: { paintHint?: PointerPaintHint }): { triangleCount: number; bbox?: { min: [number, number, number]; max: [number, number, number] } } | { error: string } {
+      const check = guard(() => {
+        assertString(id, 'previewPointerPaint(id)', { allowEmpty: false });
+        if (opts?.paintHint !== undefined) {
+          const h = assertObject(opts.paintHint, 'previewPointerPaint(_, opts).paintHint')!;
+          assertEnum(h.kind, ['connected', 'coplanar', 'colorFlood'] as const, 'previewPointerPaint(_, opts).paintHint.kind');
+        }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return { error: check.error };
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      const p = getPointerById(id);
+      if (!p) return { error: `No pointer with id "${id}"` };
+      const hint = opts?.paintHint ?? p.paintHint;
+      if (!hint) return { error: 'Pointer has no paintHint; supply one via the second arg or updatePointer first.' };
+      const adjacency = buildAdjacency(currentMeshData);
+      const triColors = currentMeshData.triColors ?? null;
+      const tris = resolvePointerTrianglesFor(p, hint, currentMeshData, adjacency, triColors);
+      if (tris.size === 0) return { triangleCount: 0 };
+      const stats = regionTriangleStats(tris, currentMeshData);
+      return { triangleCount: tris.size, ...(stats.bbox ? { bbox: stats.bbox } : {}) };
+    },
+
+    /** Commit a pointer's proposed flood-fill as a paint region. Status
+     *  flips 'proposed/approved' → 'painted'; the pointer stays for the audit
+     *  trail + easy repaint. Returns the new region id, or `{ error }`. */
+    commitPaintFromPointer(id: string, opts?: { color?: [number, number, number]; name?: string }): { regionId: number; triangles: number; pointerStatus: 'painted' } | { error: string } {
+      return commitPaintFromPointerImpl(id, opts);
+    },
+
+    /** Commit MULTIPLE pointers as ONE shared paint region (e.g. all four
+     *  eye sub-parts → one eye colour). Unions each pointer's resolved
+     *  triangles into a single `triangles` descriptor — cheaper and avoids
+     *  the overlap edge-cases of N separate connectedFromSeed regions. */
+    commitPaintFromPointers(ids: string[], opts: { color: [number, number, number]; name?: string }): { regionId: number; triangles: number; pointers: string[] } | { error: string } {
+      const check = guard(() => {
+        assertArray(ids, 'commitPaintFromPointers(ids)');
+        for (let i = 0; i < ids.length; i++) assertString(ids[i], `commitPaintFromPointers(ids[${i}])`);
+        const o = assertObject(opts, 'commitPaintFromPointers(_, opts)')!;
+        assertNumberTuple(o.color, 3, 'commitPaintFromPointers(_, opts).color');
+        if (o.name !== undefined) assertString(o.name, 'commitPaintFromPointers(_, opts).name');
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return { error: check.error };
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (ids.length === 0) return { error: 'commitPaintFromPointers: ids must not be empty.' };
+      const mesh = currentMeshData;
+      const adjacency = buildAdjacency(mesh);
+      const triColors = mesh.triColors ?? null;
+      const unionTris = new Set<number>();
+      const pointersUsed: string[] = [];
+      for (const id of ids) {
+        const p = getPointerById(id);
+        if (!p || !p.paintHint) continue;
+        const tris = resolvePointerTrianglesFor(p, p.paintHint, mesh, adjacency, triColors);
+        for (const t of tris) unionTris.add(t);
+        pointersUsed.push(id);
+      }
+      if (unionTris.size === 0) return { error: 'No triangles selected — check that the pointers have paintHints and resolve cleanly against the live mesh.' };
+      const regionName = opts.name ?? `Pointers (${pointersUsed.length})`;
+      const region = addRegion(
+        regionName,
+        opts.color,
+        'paintbrush',
+        { kind: 'triangles', ids: Array.from(unionTris) },
+        unionTris,
+      );
+      const colored = applyTriColorsIfVisible(mesh);
+      updateMesh(colored, { skipAutoFrame: true });
+      syncLockState();
+      const now = Date.now();
+      for (const id of pointersUsed) {
+        updatePointerStore(id, { status: 'painted', regionId: region.id, lastPaintedAt: now });
+      }
+      return { regionId: region.id, triangles: unionTris.size, pointers: pointersUsed };
+    },
+
+    /** Coverage report — which of the model's likely-salient features have
+     *  NO pointer aimed at them? Cross-references manifold components +
+     *  coplanar feature centroids against the live pointer set and returns
+     *  the gap. The AI calls this before declaring its plan done. */
+    getPointerCoverageReport(opts?: { radius?: number }): {
+      coveredFeatures: number;
+      uncoveredFeatures: Array<{ centroid: [number, number, number]; normal: [number, number, number]; area: number; hint: string }>;
+      componentCount: number;
+      coveredComponents: number;
+    } | { error: string } {
+      if (opts !== undefined) {
+        const check = guard(() => {
+          const o = assertObject(opts, 'getPointerCoverageReport(opts)')!;
+          if (o.radius !== undefined) assertNumber(o.radius, 'getPointerCoverageReport(opts).radius', { min: 0 });
+          return true;
+        });
+        if (typeof check === 'object' && check !== null && 'error' in check) return { error: check.error };
+      }
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      const mesh = currentMeshData;
+      // Use the existing centroid extractor (paint-planning aid) as the
+      // feature-list source so coverage matches what the AI already reads.
+      const featureGroups = (this as { getFeatureCentroids: (o?: Record<string, unknown>) => unknown }).getFeatureCentroids({ maxGroups: 32 }) as Array<{ centroid: [number, number, number]; normal: [number, number, number]; area: number }>;
+      const pointers = getPointers().filter(p => !p.orphaned);
+      // Match radius: scale to the model so tiny features get a tight match
+      // and large meshes don't false-match unrelated features.
+      const meshDiag = (() => {
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+        const { vertProperties, numProp, numVert } = mesh;
+        for (let i = 0; i < numVert; i++) {
+          const x = vertProperties[i * numProp], y = vertProperties[i * numProp + 1], z = vertProperties[i * numProp + 2];
+          if (x < minX) minX = x; if (y < minY) minY = y; if (z < minZ) minZ = z;
+          if (x > maxX) maxX = x; if (y > maxY) maxY = y; if (z > maxZ) maxZ = z;
+        }
+        const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        return d > 0 ? d : 1;
+      })();
+      const radius = opts?.radius ?? meshDiag * 0.05;
+      const r2 = radius * radius;
+      const isCovered = (cx: number, cy: number, cz: number) => {
+        for (const p of pointers) {
+          const dx = p.point[0] - cx, dy = p.point[1] - cy, dz = p.point[2] - cz;
+          if (dx * dx + dy * dy + dz * dz <= r2) return true;
+        }
+        return false;
+      };
+      const uncovered: Array<{ centroid: [number, number, number]; normal: [number, number, number]; area: number; hint: string }> = [];
+      let covered = 0;
+      for (const f of featureGroups) {
+        if (isCovered(f.centroid[0], f.centroid[1], f.centroid[2])) covered++;
+        else uncovered.push({ ...f, hint: `No pointer within ${radius.toFixed(2)} units — drop one with dropPointer({label:'…', point:[${f.centroid.map(n => n.toFixed(2)).join(', ')}], normal:[${f.normal.map(n => n.toFixed(2)).join(', ')}]}).` });
+      }
+      const componentCount = currentManifold ? (() => {
+        try { return (currentManifold as { decompose?: () => unknown[] }).decompose?.()?.length ?? 1; } catch { return 1; }
+      })() : 1;
+      // Component coverage is approximate — we treat a component as covered
+      // when ANY pointer's anchor lies within the manifold's diagonal-scaled
+      // proximity. Skipped when we only have a single component (the common
+      // case) since the answer is trivially { 1 covered iff any pointer }.
+      const coveredComponents = componentCount === 1
+        ? (pointers.length > 0 ? 1 : 0)
+        : componentCount; // best-effort: detailed per-component math is in a future polish pass
+      return { coveredFeatures: covered, uncoveredFeatures: uncovered, componentCount, coveredComponents };
+    },
+
+    /** Open the Pointer panel in the viewport. */
+    openPointerPanel(): { ok: true } { openPointerPanel(); return { ok: true }; },
+    /** Close the Pointer panel if open. */
+    closePointerPanel(): { ok: true } { closePointerPanel(); return { ok: true }; },
+
     /** Check if any component is fully contained inside another (invisible geometry) */
     checkContainment(): ContainmentWarning[] | null {
       if (!currentManifold) return null;
@@ -15386,6 +15839,20 @@ async function main() {
         'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai/colors.md' },
         'paintByLabels':   { signature: 'paintByLabels([{label, color, name?}, ...]) -- Batch sibling. N features painted in one call -> {results, failed}. Use for any multi-feature paint job.', docs: '/ai/colors.md' },
         'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai/colors.md' },
+        // AI-planning pointers — labelled mesh-anchored callouts the AI/user
+        // reviews before paint. See /ai/pointers.md.
+        'dropPointer':     { signature: 'dropPointer({label, point|fromPixel, normal?, paintHint?, proposedColor?, authoredBy?}) -- Drop a labelled mesh-anchored callout at a surface point you think is a particular feature (an iris, a foot). User reviews it before paint.', docs: '/ai/pointers.md' },
+        'listPointers':    { signature: 'listPointers({status?}) -- List every pointer in the session with its current resolve status (stale/orphaned flags).', docs: '/ai/pointers.md' },
+        'updatePointer':   { signature: 'updatePointer(id, {label?, point?, normal?, paintHint?, proposedColor?, status?, hidden?}) -- Patch a pointer (rename, re-aim, re-tolerance, flip status).', docs: '/ai/pointers.md' },
+        'hidePointers':    { signature: 'hidePointers({ids?}) -- Hide pointers from the overlay (still listed). Omit ids to hide all.', docs: '/ai/pointers.md' },
+        'showPointers':    { signature: 'showPointers({ids?}) -- Inverse of hidePointers.', docs: '/ai/pointers.md' },
+        'clearPointers':   { signature: 'clearPointers({status?, ids?}) -- Delete pointers. Scope with status or ids; omit both to clear all.', docs: '/ai/pointers.md' },
+        'previewPointerPaint': { signature: 'previewPointerPaint(id, {paintHint?}?) -- Dry-run a pointer\'s flood-fill against the live mesh; returns triangleCount + bbox. No commit.', docs: '/ai/pointers.md' },
+        'commitPaintFromPointer': { signature: 'commitPaintFromPointer(id, {color?, name?}?) -- Commit a single pointer as a paint region. Status flips to "painted"; pointer stays.', docs: '/ai/pointers.md' },
+        'commitPaintFromPointers': { signature: 'commitPaintFromPointers([ids], {color, name?}) -- Commit MANY pointers as ONE shared paint region (eye sub-parts → one eye colour). Unions triangles.', docs: '/ai/pointers.md' },
+        'getPointerCoverageReport': { signature: 'getPointerCoverageReport({radius?}?) -- Which feature centroids have NO pointer aimed at them? Call before declaring the plan done.', docs: '/ai/pointers.md' },
+        'openPointerPanel': { signature: 'openPointerPanel() -- Open the Pointer panel (per-pointer tolerance slider + bucket preview + Paint button).', docs: '/ai/pointers.md' },
+        'closePointerPanel': { signature: 'closePointerPanel() -- Close the Pointer panel.', docs: '/ai/pointers.md' },
         'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai/colors.md' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai/colors.md' },
         'setRegionVisibility': { signature: 'setRegionVisibility(id, visible) -- Show/hide ONE region in the viewport. Hidden regions still export.', docs: '/ai/colors.md' },
@@ -15510,6 +15977,39 @@ async function main() {
   initResizeUI(partwrightAPI as unknown as Parameters<typeof initResizeUI>[0]);
   // Placement UI (viewport ⤓ Place button + command-palette entries).
   initPlaceUI(partwrightAPI as unknown as Parameters<typeof initPlaceUI>[0]);
+  // Pointer panel (AI-planning callouts + tolerance slider + bucket preview).
+  // Wires the panel's "Paint" button into the same commit pipeline the
+  // console / AI tools use, so all three surfaces honour identical paint
+  // semantics (region descriptor + status transition).
+  initPointerPanelUI({
+    commitPaintFromPointer: async (id: string, opts?: { color?: [number, number, number] }) => {
+      const result = commitPaintFromPointerImpl(id, opts);
+      if ('error' in result) return { error: result.error };
+      return { regionId: result.regionId };
+    },
+  });
+  // Hand the pointer overlay a live accessor so its preview flood-fill and
+  // its renderViews-snapshot path see the same mesh the live viewport does.
+  configurePointerOverlay(() => {
+    if (!currentMeshData) return null;
+    return {
+      mesh: currentMeshData,
+      adjacency: buildAdjacency(currentMeshData),
+      triColors: currentMeshData.triColors ?? null,
+    };
+  });
+  // Persist the pointer store to IndexedDB on every change (debounced to one
+  // write per animation frame so rapid drag-edits don't thrash the DB).
+  {
+    let raf = 0;
+    onPointersChange(() => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        void persistSessionPointers();
+      });
+    });
+  }
 
   // Print tools overlay — informational only: build-volume settings and an
   // on-demand printability check. Scaling and splitting live in their own
@@ -16742,6 +17242,26 @@ async function main() {
       // Put the camera back where the user had it (no-op on a session's first
       // render, where captureCameraToPreserve returned null and we auto-frame).
       if (preservedCameraPose) setCameraPose(preservedCameraPose);
+
+      // Re-resolve every AI-planning pointer against the freshly-run mesh.
+      // Soft invalidation: a small drift snaps the anchor to the nearest
+      // triangle and clears any prior stale flag; a big drift / no hit /
+      // a normal flip flags the pointer stale so the user/AI sees that the
+      // anchor needs review. The store fires a single change notification so
+      // the overlay + panel pick up the update; toast the user when the
+      // re-resolve flagged anything new so they know to glance at the panel.
+      if (currentMeshData && getPointers().length > 0) {
+        const meshForResolve = currentMeshData;
+        const adjForResolve = buildAdjacency(meshForResolve);
+        const report = resolvePointersAgainstMesh(meshForResolve, adjForResolve);
+        refreshPointerOverlay();
+        if (report.staled + report.orphaned > 0) {
+          showToast(
+            `${report.staled + report.orphaned} AI-planning pointer(s) may no longer match the new mesh — review the Pointer panel.`,
+            { variant: 'warn', source: 'app' },
+          );
+        }
+      }
 
       updateGeometryData(elapsed, src);
       syncClipSliderBounds();

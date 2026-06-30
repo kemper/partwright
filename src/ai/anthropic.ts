@@ -516,6 +516,11 @@ function assistantBlocksToApi(
       // reviewer's feedback in-band — matches the user-side serializer's
       // `[Review from .../...] ...` prefix.
       out.push({ type: 'text', text: `[Review from ${b.provider}/${b.model}]\n${b.text}` });
+    } else if (b.type === 'plan' && b.summary.length > 0) {
+      // AI-planning pointer plan block — replayed so the model sees its own
+      // plan back on the next turn and can act against what the user approved.
+      const status = b.approved ? '(approved)' : '(awaiting user approval)';
+      out.push({ type: 'text', text: `[Plan ${status}]\n${b.summary}` });
     }
   }
   for (const tc of toolCalls) {

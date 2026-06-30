@@ -55,11 +55,19 @@ function renderMessage(msg: ChatMessage): string {
     } else if (block.type === 'thinking') {
       const thinkingText = block.text.trim();
       if (thinkingText) parts.push(`<details>\n<summary>🧠 thinking</summary>\n\n${thinkingText}\n\n</details>`);
-    } else {
+    } else if (block.type === 'review') {
       // Cross-provider review block: render the feedback with its
       // attribution so the transcript captures the second opinion.
       const reviewText = block.text.trim();
       parts.push(`**👁 review — ${block.provider}/${block.model}**${reviewText ? `\n\n${reviewText}` : ''}`);
+    } else {
+      // AI-planning pointer plan block: render the plan summary + pointer
+      // ids so a markdown export captures the round-trip ("here is what I
+      // planned, the user approved / corrected these").
+      const status = block.approved ? '(approved)' : '(awaiting user approval)';
+      const summary = block.summary.trim();
+      const ids = block.pointerIds.length > 0 ? `\n\nPointers: ${block.pointerIds.join(', ')}` : '';
+      parts.push(`**📍 plan ${status}**${summary ? `\n\n${summary}` : ''}${ids}`);
     }
   }
 

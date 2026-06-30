@@ -318,7 +318,17 @@ export type ChatBlock =
    *  Rendered with a distinct bubble in the panel; serialized as plain
    *  prefixed text when sent to any provider on the next turn (none have
    *  a native concept for "feedback from another model"). */
-  | { type: 'review'; provider: Provider; model: string; text: string };
+  | { type: 'review'; provider: Provider; model: string; text: string }
+  /** Structured "plan" block — the AI's pre-paint planning step, listing
+   *  the AI-planning pointers it has dropped (or proposed) and inviting
+   *  the user to approve / correct / re-aim. Rendered as a distinct card
+   *  in the panel with a one-tap "Approve all" affordance and a deeplink
+   *  into the Pointer panel for per-pointer edits. Unlike `'thinking'`
+   *  (display-only), the model SEES its own plan block on the next turn —
+   *  serialized as plain prefixed text so providers without a native
+   *  concept can still consume it. `pointerIds` lets the panel cross-
+   *  reference the live store; `summary` is the human-readable body. */
+  | { type: 'plan'; summary: string; pointerIds: string[]; approved?: boolean };
 
 /** Anthropic extended-thinking blocks captured verbatim for replay during
  *  tool use. Mirrors the SDK's `ThinkingBlock` / `RedactedThinkingBlock`
