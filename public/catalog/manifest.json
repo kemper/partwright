@@ -1531,6 +1531,105 @@
       "tags": [
         "figures"
       ]
+    },
+    {
+      "id": "dummy13-head",
+      "name": "Dummy 13 — Head",
+      "file": "dummy13_head.partwright.json",
+      "language": "manifold-js",
+      "description": "Dummy 13 articulated-figure HEAD (1 of 13 parts). Rounded box head with a friction-finger socket cup underneath that snaps over the torso's neck-ball. Customizable skeleton height and head style (box or sphere). Print orientation as built; sized for a default 135mm-tall figure.",
+      "tags": [
+        "figures",
+        "mechanical"
+      ]
+    },
+    {
+      "id": "dummy13-torso",
+      "name": "Dummy 13 — Upper Torso",
+      "file": "dummy13_torso.partwright.json",
+      "language": "manifold-js",
+      "description": "Dummy 13 articulated-figure UPPER TORSO (1 of 13 parts). Chest box with a waist socket on the bottom, a neck ball on top, and shoulder balls on each side. Snaps onto the hips below and receives the head + arms.",
+      "tags": [
+        "figures",
+        "mechanical"
+      ]
+    },
+    {
+      "id": "dummy13-hips",
+      "name": "Dummy 13 — Hips / Pelvis",
+      "file": "dummy13_hips.partwright.json",
+      "language": "manifold-js",
+      "description": "Dummy 13 articulated-figure HIPS (1 of 13 parts). Pelvis block with a waist ball on top (snaps into the torso) and hip balls on each side (the thighs snap on). Hip joints are the largest in the figure — bear the most pose-holding load.",
+      "tags": [
+        "figures",
+        "mechanical"
+      ]
+    },
+    {
+      "id": "dummy13-upper-arms",
+      "name": "Dummy 13 — Upper Arms (pair)",
+      "file": "dummy13_upper_arms.partwright.json",
+      "language": "manifold-js",
+      "description": "Dummy 13 articulated-figure UPPER ARMS (2 of 13 parts). A symmetric pair — shoulder socket on the bottom (snaps onto torso shoulder-ball), elbow ball on top (forearm snaps on). Print two of these.",
+      "tags": [
+        "figures",
+        "mechanical"
+      ]
+    },
+    {
+      "id": "dummy13-forearms",
+      "name": "Dummy 13 — Forearms (pair)",
+      "file": "dummy13_forearms.partwright.json",
+      "language": "manifold-js",
+      "description": "Dummy 13 articulated-figure FOREARMS (2 of 13 parts). A symmetric pair — elbow socket on the bottom (snaps onto upper-arm elbow-ball), wrist ball on top (hand snaps on).",
+      "tags": [
+        "figures",
+        "mechanical"
+      ]
+    },
+    {
+      "id": "dummy13-hands",
+      "name": "Dummy 13 — Hands (pair)",
+      "file": "dummy13_hands.partwright.json",
+      "language": "manifold-js",
+      "description": "Dummy 13 articulated-figure HANDS (2 of 13 parts). Simple paddle hands with wrist sockets — they snap onto the forearm wrist-balls. Swap for fancier custom hands later (any part with a matching wrist socket fits the rig).",
+      "tags": [
+        "figures",
+        "mechanical"
+      ]
+    },
+    {
+      "id": "dummy13-thighs",
+      "name": "Dummy 13 — Thighs (pair)",
+      "file": "dummy13_thighs.partwright.json",
+      "language": "manifold-js",
+      "description": "Dummy 13 articulated-figure THIGHS (2 of 13 parts). A symmetric pair — hip socket on the bottom (snaps onto pelvis hip-ball), knee ball on top (shin snaps on).",
+      "tags": [
+        "figures",
+        "mechanical"
+      ]
+    },
+    {
+      "id": "dummy13-shins",
+      "name": "Dummy 13 — Shins + Feet (pair)",
+      "file": "dummy13_shins.partwright.json",
+      "language": "manifold-js",
+      "description": "Dummy 13 articulated-figure SHINS + FEET (2 of 13 parts). A symmetric pair — knee socket on top (snaps onto thigh knee-ball) and a flat integrated foot at the bottom that lets the figure stand.",
+      "tags": [
+        "figures",
+        "mechanical"
+      ]
+    },
+    {
+      "id": "dummy13-full-skeleton",
+      "name": "Dummy 13 — Full Skeleton (preview)",
+      "file": "dummy13_full_skeleton.partwright.json",
+      "language": "manifold-js",
+      "description": "Dummy 13 — every part assembled in a standing T-pose for visualization. NOT a single printable piece — open the individual dummy13_* catalog entries (head, torso, hips, upper arms, forearms, hands, thighs, shins) to print the real parts. Use this to preview the final figure's proportions.",
+      "tags": [
+        "figures",
+        "mechanical"
+      ]
     }
   ]
 }

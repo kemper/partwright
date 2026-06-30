@@ -10,6 +10,7 @@ import { createSdfNamespace, SdfNode } from '../sdf';
 import { createGeom2dNamespace } from '../geom2d';
 import { createFastenersNamespace } from '../fasteners';
 import { createJointsNamespace } from '../joints';
+import { createDummy13Namespace } from '../dummy13';
 import { createGearsNamespace } from '../gears';
 import { createThreadsNamespace } from '../threads';
 import { createEnclosureNamespace } from '../enclosure';
@@ -79,6 +80,8 @@ let threadsNamespace: any = null;
 let enclosureNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let knurlNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let dummy13Namespace: any = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getManifoldModule(): any {
@@ -226,6 +229,9 @@ export const manifoldJsEngine: Engine = {
       // standoff bores), so it's built after fastenersNamespace above.
       enclosureNamespace = createEnclosureNamespace(mod, { fasteners: fastenersNamespace });
       knurlNamespace = createKnurlNamespace(mod);
+      // Dummy13 layers on the joints namespace (ballSocket primitive), so it's
+      // constructed after jointsNamespace above.
+      dummy13Namespace = createDummy13Namespace(mod, { joints: jointsNamespace });
       // Publish the fully-built module only after every namespace is ready, so
       // a concurrent caller that sees `manifoldModule` set never observes a
       // half-initialised set of namespaces.
@@ -640,6 +646,7 @@ export const manifoldJsEngine: Engine = {
       threads: threadsNamespace,
       enclosure: enclosureNamespace,
       knurl: knurlNamespace,
+      dummy13: dummy13Namespace,
       // Text helpers — flat aliases so agents can write api.text(...) directly.
       text: curvesNamespace.text,
       textSection: curvesNamespace.textSection,
