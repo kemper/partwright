@@ -1,14 +1,12 @@
-// Dummy 13 — FOREARMS (2 parts: left + right).
+// Dummy 13 — FOREARMS (2 of 28 frame parts).
 //
-// A pair of identical forearm segments. Each has an elbow socket on the
-// bottom (snaps onto the upper-arm elbow-ball) and a wrist ball on top (the
-// hand cup snaps onto this). Mirror-symmetric — left == right.
+// A pair of forearm segments. Sockets on each end: elbow (top — knee/elbow
+// bridge) and wrist (bottom — accepts the hand's wrist ball). ~20mm between
+// socket centres. Compatible with soozafone's Dummy 13 v1.0 (CC-BY 4.0).
 const p = api.params({
-  height: { type: 'number', default: 135, min: 60, max: 240, step: 5, unit: 'mm', label: 'Skeleton height' },
+  ballD: { type: 'number', default: 5.7, min: 4.5, max: 6.0, step: 0.1, unit: 'mm', label: 'Mating ball Ø' },
 });
 
-const forearm = api.dummy13.forearmPart({ spec: { height: p.height } });
-const labelled = api.label(forearm, 'forearm', { color: '#c97b6e' });
-
-const gap = p.height * 0.04;
-return labelled.translate([0, -gap, 0]).add(labelled.translate([0, gap, 0]));
+const part = api.dummy13.forearmPart({ spec: { ballD: p.ballD } });
+const plate = api.dummy13.plateOf(part, 2, 8);
+return api.label(plate, 'forearm', { color: '#3f5878' });

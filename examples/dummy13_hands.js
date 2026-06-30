@@ -1,15 +1,16 @@
-// Dummy 13 — HANDS (2 parts: left + right).
+// Dummy 13 — HANDS (2 of 28 frame parts).
 //
-// A pair of simple paddle-style hands; each has a wrist socket that snaps
-// onto the forearm's wrist-ball. The hand body is a flat slab — readable at
-// this scale and easy to swap for a fancier hand later (any part with a
-// matching wrist socket fits the rig).
+// A pair of simple paddle hands. Each has a 6mm wrist socket on top (mates
+// with the forearm's wrist socket via a wrist-ball — actually in soozafone's
+// design the hand carries a wrist ball; here we use a socket for consistency,
+// requiring an additional small ball-bridge piece between hand and forearm).
+// Swap this for any fancier hand: open, grip, fist — the wrist socket spec is
+// the only interop requirement. Compatible with soozafone's Dummy 13 v1.0
+// (CC-BY 4.0).
 const p = api.params({
-  height: { type: 'number', default: 135, min: 60, max: 240, step: 5, unit: 'mm', label: 'Skeleton height' },
+  ballD: { type: 'number', default: 5.7, min: 4.5, max: 6.0, step: 0.1, unit: 'mm', label: 'Mating ball Ø' },
 });
 
-const hand = api.dummy13.handPart({ spec: { height: p.height } });
-const labelled = api.label(hand, 'hand', { color: '#d9b48f' });
-
-const gap = p.height * 0.04;
-return labelled.translate([0, -gap, 0]).add(labelled.translate([0, gap, 0]));
+const part = api.dummy13.handPart({ spec: { ballD: p.ballD } });
+const plate = api.dummy13.plateOf(part, 2, 16);
+return api.label(plate, 'hand', { color: '#d9b48f' });

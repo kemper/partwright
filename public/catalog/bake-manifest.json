@@ -572,39 +572,122 @@
     },
     "dummy13-head": {
       "source": "examples/dummy13_head.js",
-      "gates": { "maxGenus": null, "requiredLabels": [] }
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
     },
-    "dummy13-torso": {
-      "source": "examples/dummy13_torso.js",
-      "gates": { "maxGenus": null, "requiredLabels": [] }
+    "dummy13-chest": {
+      "source": "examples/dummy13_chest.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "dummy13-abdomen": {
+      "source": "examples/dummy13_abdomen.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "dummy13-waist": {
+      "source": "examples/dummy13_waist.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
     },
     "dummy13-hips": {
       "source": "examples/dummy13_hips.js",
-      "gates": { "maxGenus": null, "requiredLabels": [] }
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "dummy13-neck": {
+      "source": "examples/dummy13_neck.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "dummy13-hip-shoulder-bridges": {
+      "source": "examples/dummy13_hip_shoulder_bridges.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "dummy13-knee-elbow-bridges": {
+      "source": "examples/dummy13_knee_elbow_bridges.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "dummy13-clavicles": {
+      "source": "examples/dummy13_clavicles.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "dummy13-ankles": {
+      "source": "examples/dummy13_ankles.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
     },
     "dummy13-upper-arms": {
       "source": "examples/dummy13_upper_arms.js",
-      "gates": { "maxGenus": null, "requiredLabels": [] }
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
     },
     "dummy13-forearms": {
       "source": "examples/dummy13_forearms.js",
-      "gates": { "maxGenus": null, "requiredLabels": [] }
-    },
-    "dummy13-hands": {
-      "source": "examples/dummy13_hands.js",
-      "gates": { "maxGenus": null, "requiredLabels": [] }
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
     },
     "dummy13-thighs": {
       "source": "examples/dummy13_thighs.js",
-      "gates": { "maxGenus": null, "requiredLabels": [] }
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
     },
     "dummy13-shins": {
       "source": "examples/dummy13_shins.js",
-      "gates": { "maxGenus": null, "requiredLabels": [] }
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "dummy13-hands": {
+      "source": "examples/dummy13_hands.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
+    },
+    "dummy13-feet": {
+      "source": "examples/dummy13_feet.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
     },
     "dummy13-full-skeleton": {
       "source": "examples/dummy13_full_skeleton.js",
-      "gates": { "maxGenus": null, "requiredLabels": [] }
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": []
+      }
     }
   }
 }

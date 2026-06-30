@@ -1,17 +1,18 @@
-// Dummy 13 — FULL ASSEMBLED SKELETON (preview only — print the individual parts).
+// Dummy 13 — FULL ASSEMBLED SKELETON (preview only — print individual parts).
 //
-// One model that snaps every part together in a standing pose so you can
-// preview the whole figure before printing. NOT a single printable piece —
-// it's the assembly-pose visual.
+// One model that snaps every Dummy 13 frame part together in a standing pose,
+// so you can preview the whole figure before printing. NOT a single printable
+// piece — open the other `dummy13_*` catalog entries to print the real parts.
 //
-// To print, open the individual `dummy13_<part>` catalog entries (head, torso,
-// hips, upper_arms, forearms, hands, thighs, shins).
+// Compatible with soozafone's Dummy 13 v1.0 (CC-BY 4.0). The "13" in Dummy 13
+// is a name (from Lucky 13 Toys), not a part count: a complete frame is
+// actually 28 printable parts at the default ~170mm height.
 const p = api.params({
-  height: { type: 'number', default: 135, min: 60, max: 240, step: 5, unit: 'mm', label: 'Skeleton height' },
+  ballD: { type: 'number', default: 5.7, min: 4.5, max: 6.0, step: 0.1, unit: 'mm', label: 'Mating ball Ø' },
 });
 
 return api.label(
-  api.dummy13.fullSkeleton({ spec: { height: p.height } }),
+  api.dummy13.fullSkeleton({ spec: { ballD: p.ballD } }),
   'skeleton',
   { color: '#8896aa' },
 );

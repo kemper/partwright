@@ -1,21 +1,13 @@
-// Dummy 13 — UPPER ARMS (2 parts: left + right).
+// Dummy 13 — UPPER ARMS (2 of 28 frame parts).
 //
-// A pair of identical upper-arm segments printed side by side. Each has a
-// shoulder socket on the bottom (snaps onto the torso shoulder-ball) and an
-// elbow ball on top (the forearm cup snaps onto this).
-//
-// Note: the parts are mirror-symmetric, so left == right at the engine level.
-// You print two of these and use them on either side.
-//
-// Print orientation: as built — cup-down, ball-up. The narrow socket base is
-// stable on the bed; the small elbow sphere self-supports.
+// A pair of upper-arm segments. Each has a 6mm socket on each end: the top
+// (shoulder) socket accepts the hip/shoulder bridge ball; the bottom (elbow)
+// socket accepts the knee/elbow bridge ball. ~16mm between socket centres.
+// Compatible with soozafone's Dummy 13 v1.0 (CC-BY 4.0).
 const p = api.params({
-  height: { type: 'number', default: 135, min: 60, max: 240, step: 5, unit: 'mm', label: 'Skeleton height' },
+  ballD: { type: 'number', default: 5.7, min: 4.5, max: 6.0, step: 0.1, unit: 'mm', label: 'Mating ball Ø' },
 });
 
-const arm = api.dummy13.upperArmPart({ spec: { height: p.height } });
-const labelled = api.label(arm, 'upperArm', { color: '#c97b6e' });
-
-// Lay two side by side along Y so the catalog tile shows the pair.
-const gap = p.height * 0.045;
-return labelled.translate([0, -gap, 0]).add(labelled.translate([0, gap, 0]));
+const part = api.dummy13.upperArmPart({ spec: { ballD: p.ballD } });
+const plate = api.dummy13.plateOf(part, 2, 8);
+return api.label(plate, 'upperArm', { color: '#3f5878' });

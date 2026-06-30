@@ -1,15 +1,11 @@
-// Dummy 13 — HIPS / PELVIS (1 part).
+// Dummy 13 — HIPS (1 of 28 frame parts).
 //
-// Pelvis box with a waist ball on top (snaps into the torso's waist socket)
-// and a hip ball on each side (the thighs snap onto these). Print orientation:
-// as built — waist-ball up, hip-balls horizontal. Hip balls are the largest
-// joint on the figure (9mm at default scale) so they bear the most pose load.
+// Horizontal flat bar with 3 sockets in the top: left hip, waist (centre),
+// right hip. Hip-to-hip distance is 16mm (sockets at x=±8). Compatible with
+// soozafone's Dummy 13 v1.0 (CC-BY 4.0).
 const p = api.params({
-  height: { type: 'number', default: 135, min: 60, max: 240, step: 5, unit: 'mm', label: 'Skeleton height' },
+  ballD: { type: 'number', default: 5.7, min: 4.5, max: 6.0, step: 0.1, unit: 'mm', label: 'Mating ball Ø' },
 });
 
-const hips = api.dummy13.hipsPart({
-  spec: { height: p.height },
-});
-
+const hips = api.dummy13.hipsPart({ spec: { ballD: p.ballD } });
 return api.label(hips, 'hips', { color: '#6b8db4' });

@@ -1,29 +1,52 @@
 /**
- * Dummy 13 — a parametric, snap-together articulated figure skeleton.
+ * Dummy 13 — a parametric reimplementation of soozafone's Dummy 13 articulated
+ * figure (https://www.printables.com/model/981111, CC-BY 4.0). Reverse-
+ * engineered from the official STLs of the v1.0 frame parts to match its
+ * geometric spec — the parametric output is interoperable with soozafone's
+ * official parts (you can mix-and-match a parametric Partwright thigh with an
+ * official chest, etc.) but the silhouettes here are simple primitives, not
+ * copies of soozafone's specific armor/aesthetic shapes.
  *
- * 13 printed parts whose ball/socket interfaces all use the existing
- * `joints.ballSocket` primitive (friction retention by default). Each part is
- * printed separately and the figure is assembled afterwards — every joint
- * snaps over a captive ball with the rim's springy fingers giving the
- * hold-the-pose grip.
+ * THE UNIVERSAL JOINT SPEC. Every socket cavity in Dummy 13 is exactly 6.0 mm
+ * diameter — that's the design genius. By standardising the joint, soozafone
+ * makes "bridge" pieces interchangeable: the same `hip_and_shoulder` part fits
+ * 4 positions (both hips and both shoulders); the same `knee_and_elbow` part
+ * fits 4 more. Every body part is socket-only; the balls live exclusively on
+ * small interchangeable bridge pieces.
  *
- *   Parts (count = 13):
- *     1 head            — socket bottom
- *     1 torsoUpper      — neck-ball top, two shoulder-balls, waist-socket bottom
- *     1 hips            — waist-ball top, two hip-balls
- *     2 upperArm L/R    — shoulder-socket top, elbow-ball bottom
- *     2 forearm L/R     — elbow-socket top, wrist-ball bottom
- *     2 hand L/R        — wrist-socket
- *     2 thigh L/R       — hip-socket top, knee-ball bottom
- *     2 shin L/R        — knee-socket top, foot integrated at bottom
+ *   Frame parts (per soozafone's official v1.0 file list):
+ *     BODY (sockets only):
+ *       1 head            (1 socket: neck)
+ *       1 chest           (3 sockets: 2 clavicle/shoulder + 1 abdomen)
+ *       1 abdomen         (2 sockets: chest + waist)
+ *       1 waist           (2 sockets: abdomen + hips)
+ *       1 hips            (3 sockets: 2 hip + 1 waist)
+ *     BRIDGE PIECES (balls on both ends — universal connectors):
+ *       1 neck            (head <-> chest)
+ *       4 hip/shoulder    (universal — both hips AND both shoulders)
+ *       4 knee/elbow      (universal — both knees AND both elbows)
+ *       2 clavicle        (chest shoulder socket <-> shoulder bridge)
+ *       2 ankle           (shin <-> foot)
+ *     LIMB SEGMENTS (sockets at both ends):
+ *       2 upper arm
+ *       2 forearm
+ *       2 thigh
+ *       2 shin
+ *     EXTREMITIES:
+ *       2 hand            (1 socket each — wrist)
+ *       2 foot            (1 socket each — ankle)
  *
- * Sibling of `src/geometry/joints.ts` — every part is built on top of
- * `joints.ballSocket`, so tolerance tuning lives in one place. Z-up, figure
- * front = −Y, figure left = +X.
+ *   Total: 28 printable parts at 100 % scale (~170 mm figure height).
  *
- * Inspired by soozafone's Dummy 13 print-in-place figure system; this is a
- * compatible-spirit reimplementation (parametric, snap-together, not
- * print-in-place), not a copy of any specific part shape.
+ * The "13" in Dummy 13 is the model name (from Lucky 13 Toys), not a part count
+ * or inch height. At 100 % scale the figure is ~13 cm tall; the popular 11"
+ * (~280 mm) print is the figure at ~215 % scale.
+ *
+ * Attribution required (CC-BY 4.0):
+ *   "Dummy 13" © soozafone (Lucky 13 Toys) — printables.com/model/981111
+ *
+ * Sibling of `src/geometry/joints.ts` — built on top of `joints.ballSocket`,
+ * which encodes the friction-finger socket rim. Z-up, figure front = -Y.
  */
 
 import { ValidationError } from '../validation/apiValidation';
@@ -46,139 +69,71 @@ function pickOpts(val: unknown, name: string): Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Standard spec — one source of truth for joint sizes & proportions
+// Standard spec — measured from soozafone's official v1.0 STLs
 // ---------------------------------------------------------------------------
 
-/** Standard joint diameters (mm) for the default ~135mm-tall skeleton. Sized
- *  for a typical 0.4mm-nozzle FDM printer; the friction-fingered socket rim
- *  (`joints.ballSocket` retention='friction') holds a snapped-in ball without
- *  the impossible tolerance window a captive print-in-place joint demands. */
-export const DUMMY13_DEFAULTS = Object.freeze({
-  /** Total skeleton height, head crown to heel (mm). Proportions scale with it. */
-  height: 135,
-  jointShoulderBallD: 8.0,
-  jointHipBallD: 9.0,
-  jointNeckBallD: 6.0,
-  jointElbowBallD: 5.5,
-  jointKneeBallD: 6.0,
-  jointWristBallD: 4.5,
-  clearance: 0.18,
-  openingRatio: 0.85,
-  slots: 4,
+/** Dimensions extracted from the v1.0 frame STLs. All distances in millimeters.
+ *  Don't hand-edit these — they come from direct measurement of the official
+ *  geometry. */
+export const DUMMY13_SPEC = Object.freeze({
+  /** EVERY socket cavity in the figure is this diameter. Measured from
+   *  frame_hips, frame_chest, frame_abdomen, frame_waist, frame_neck,
+   *  frame_clavicle, frame_forearm, frame_shin — all sockets fit exactly. */
+  socketCavityD: 6.0,
+  /** Ball diameter. soozafone's stock balls measure ~5.0 mm (giving a loose
+   *  0.5 mm radial clearance — the well-documented "loose Dummy 13 joints"
+   *  complaint). Default ships at 5.7 mm for a tighter pose-holding grip;
+   *  override to 5.0 if you want stock-spec parts to swap into. */
+  ballD: 5.7,
+  /** Wall thickness around each socket cavity. Measured: hips socket housing
+   *  OD ≈ 12 mm with cavity ID 6 mm → wall = 3 mm. */
+  socketWall: 3.0,
+  /** Opening diameter of the socket mouth (smaller than cavity → ball is
+   *  captive once snapped in). 0.7 · cavity = 4.2 mm. Friction fingers on the
+   *  rim flex during insertion. */
+  socketOpeningRatio: 0.7,
+  /** Friction-finger relief slot count per socket rim. */
+  socketSlots: 4,
+  /** Body part Z thickness (everything in the frame is a flat-ish bar). The
+   *  hips, waist, abdomen, chest, neck, clavicle all measure 5.5 mm thick. */
+  bodyT: 5.5,
+  /** Stem / bridge bar diameter. Bridge pieces (knee_and_elbow, hip_and_
+   *  shoulder, ankle, clavicle, neck) are stems between two balls, ~2-3 mm
+   *  thick. Default at the ball-end stem diameter. */
+  stemD: 2.6,
+  /** Length of the stem between the two ball centres on a bridge piece. The
+   *  hip/shoulder bridge measured 9.9 mm long with balls at the extremes;
+   *  the knee/elbow at ~9 mm. */
+  bridgeStem: 7.0,
+  /** Hip width — distance between left and right hip sockets in the hips piece.
+   *  Measured 16 mm (sockets at x = ±8). */
+  hipWidth: 16,
+  /** Shoulder width — chest shoulder socket spacing. Measured 12 mm (x = ±6). */
+  shoulderWidth: 12,
+  /** Body segment lengths along Z (measured between socket centres / face). */
+  headH: 11,        // head bbox Y
+  neckLen: 10,      // neck bridge socket-to-socket
+  chestH: 24,       // chest bbox Y
+  abdomenH: 18,     // abdomen bbox Y
+  waistH: 16,       // waist bbox Y
+  hipsH: 6,         // hips bbox Y (thin bar)
+  thighLen: 24,     // thigh bbox Y between socket centres
+  shinLen: 33,      // shin bbox Y between socket centres
+  upperArmLen: 16,  // upper arm bbox Y between socket centres
+  forearmLen: 20,   // forearm bbox Y between socket centres
+  handLen: 13,      // hand body length (palm)
+  footLen: 17,      // foot footprint length (forward of ankle)
+  footWidth: 10,    // foot footprint width
+  /** Sphere/cylinder facet count. */
   segments: 48,
 });
 
-export type Dummy13Defaults = typeof DUMMY13_DEFAULTS;
+export type Dummy13Spec = typeof DUMMY13_SPEC;
 
-/** Proportional segment lengths as fractions of total `height`. */
-export const DUMMY13_PROPORTIONS = Object.freeze({
-  head: 0.125,
-  neck: 0.04,
-  torsoUpper: 0.255,
-  hips: 0.095,
-  thigh: 0.235,
-  shin: 0.25,
-  shoulderWidth: 0.26,
-  hipWidth: 0.20,
-  upperArm: 0.19,
-  forearm: 0.16,
-  hand: 0.10,
-});
-
-export type Dummy13Proportions = typeof DUMMY13_PROPORTIONS;
-
-export interface Dummy13Spec {
-  height: number;
-  shoulderBallD: number;
-  hipBallD: number;
-  neckBallD: number;
-  elbowBallD: number;
-  kneeBallD: number;
-  wristBallD: number;
-  clearance: number;
-  openingRatio: number;
-  slots: number;
-  segments: number;
-  prop: Dummy13Proportions;
-}
-
-/** Resolve a partial user spec against DUMMY13_DEFAULTS into a fully-populated
+/** Resolve a partial user spec against DUMMY13_SPEC into a fully-populated
  *  spec. Pure — no engine deps, unit-testable. */
 export function resolveSpec(input: Partial<Dummy13Spec> = {}): Dummy13Spec {
-  const d = DUMMY13_DEFAULTS;
-  return {
-    height: input.height ?? d.height,
-    shoulderBallD: input.shoulderBallD ?? d.jointShoulderBallD,
-    hipBallD: input.hipBallD ?? d.jointHipBallD,
-    neckBallD: input.neckBallD ?? d.jointNeckBallD,
-    elbowBallD: input.elbowBallD ?? d.jointElbowBallD,
-    kneeBallD: input.kneeBallD ?? d.jointKneeBallD,
-    wristBallD: input.wristBallD ?? d.jointWristBallD,
-    clearance: input.clearance ?? d.clearance,
-    openingRatio: input.openingRatio ?? d.openingRatio,
-    slots: input.slots ?? d.slots,
-    segments: input.segments ?? d.segments,
-    prop: input.prop ?? DUMMY13_PROPORTIONS,
-  };
-}
-
-/** Segment lengths in mm, derived from `height` and the proportion table. */
-export interface Dummy13Lengths {
-  head: number;
-  neck: number;
-  torsoUpper: number;
-  hips: number;
-  thigh: number;
-  shin: number;
-  shoulderWidth: number;
-  hipWidth: number;
-  upperArm: number;
-  forearm: number;
-  hand: number;
-}
-
-export function segmentLengths(spec: Dummy13Spec): Dummy13Lengths {
-  const h = spec.height;
-  const p = spec.prop;
-  return {
-    head: h * p.head,
-    neck: h * p.neck,
-    torsoUpper: h * p.torsoUpper,
-    hips: h * p.hips,
-    thigh: h * p.thigh,
-    shin: h * p.shin,
-    shoulderWidth: h * p.shoulderWidth,
-    hipWidth: h * p.hipWidth,
-    upperArm: h * p.upperArm,
-    forearm: h * p.forearm,
-    hand: h * p.hand,
-  };
-}
-
-// Geometry helpers used by socketCupHeight / ballEndHeight + the builders.
-// Match the layout joints.ballSocket builds internally so the parts hand off
-// cleanly without poking through each other.
-function cupGeometry(ballD: number, spec: Dummy13Spec) {
-  const ballR = ballD / 2;
-  const cavityR = ballR + spec.clearance;
-  const openingR = (spec.openingRatio * ballD) / 2;
-  const lipH = Math.sqrt(cavityR * cavityR - openingR * openingR);
-  const wall = Math.max(1.6, ballD * 0.16);
-  const floor = Math.max(1.2, wall);
-  const housingR = cavityR + wall;
-  const totalH = floor + cavityR + lipH;
-  return { ballR, cavityR, openingR, lipH, wall, floor, housingR, totalH };
-}
-
-function ballEndStemL(ballD: number): number {
-  return Math.max(2, ballD * 0.45);
-}
-
-function ballEndHeight(ballD: number, baseT = 1.6): number {
-  // baseDisc + stem + (sphere centre offset baked into joints.ballSocket).
-  // The sphere is centered at ballC = baseT + stemL + ballR - min(1.5, ballR*0.3)
-  // and the topmost point is ballC + ballR. We need an upper bound.
-  return baseT + ballEndStemL(ballD) + ballD;
+  return Object.freeze({ ...DUMMY13_SPEC, ...input });
 }
 
 // ---------------------------------------------------------------------------
@@ -193,369 +148,404 @@ export function createDummy13Namespace(module: any, deps: { joints: JointsNamesp
   const { Manifold } = module;
   const { joints } = deps;
 
-  function ballPair(ballD: number, spec: Dummy13Spec, opt: { stemL?: number; stemD?: number; baseT?: number; baseD?: number } = {}) {
+  /** Build the "socket half" of `joints.ballSocket` sized to fit a Dummy 13 ball.
+   *  Returns the socket cup with its base on z = 0 and mouth facing +Z. */
+  function socketCup(spec: Dummy13Spec) {
     return joints.ballSocket({
-      ballD,
-      clearance: spec.clearance,
-      openingRatio: spec.openingRatio,
+      ballD: spec.socketCavityD, // cavity exactly = official 6.0 mm
+      clearance: 0,              // cavity diameter is the literal opening — the
+                                 // ball is undersized via spec.ballD instead
+      openingRatio: spec.socketOpeningRatio,
       retention: 'friction',
-      slots: spec.slots,
+      slots: spec.socketSlots,
       segments: spec.segments,
-      stemL: opt.stemL ?? ballEndStemL(ballD),
-      stemD: opt.stemD ?? Math.max(2.5, ballD * 0.55),
-      baseT: opt.baseT ?? 1.6,
-      baseD: opt.baseD ?? ballD * 1.4,
-    });
+      stemL: 1, // unused (we only take .socket)
+      stemD: 2,
+      baseT: 0.8,
+      baseD: spec.socketCavityD + 2 * spec.socketWall,
+    }).socket;
   }
 
-  function ballEnd(ballD: number, spec: Dummy13Spec, opt: { stemL?: number; stemD?: number; baseT?: number; baseD?: number } = {}) {
-    return ballPair(ballD, spec, opt).ball;
+  /** Build a ball-on-stem positioned standing in +Z (disc base on z=0, ball
+   *  pointing up). Returns just the ball/stem (no full ballSocket pair). */
+  function ballOnStem(spec: Dummy13Spec, stemLen = 1.5) {
+    return joints.ballSocket({
+      ballD: spec.ballD,
+      clearance: 0,
+      openingRatio: spec.socketOpeningRatio,
+      retention: 'friction',
+      slots: spec.socketSlots,
+      segments: spec.segments,
+      stemL: stemLen,
+      stemD: spec.stemD,
+      baseT: 0.8,
+      baseD: spec.stemD * 1.4,
+    }).ball;
   }
 
-  function socketCup(ballD: number, spec: Dummy13Spec) {
-    return ballPair(ballD, spec).socket;
+  /** Approximate cup total height: floor (1.2) + cavity radius + lipH. */
+  function cupHeight(spec: Dummy13Spec): number {
+    const cavityR = spec.socketCavityD / 2;
+    const openingR = (spec.socketOpeningRatio * spec.socketCavityD) / 2;
+    const lipH = Math.sqrt(cavityR * cavityR - openingR * openingR);
+    return Math.max(1.2, spec.socketWall) + cavityR + lipH;
   }
 
-  function capsule(length: number, r: number, segments: number) {
-    // Capsule along ±Z, centred on origin. cylinder + two end hemispheres.
-    const cyl = Manifold.cylinder(length, r, r, segments).translate([0, 0, -length / 2]);
-    const top = Manifold.sphere(r, segments).translate([0, 0, length / 2]);
-    const bot = Manifold.sphere(r, segments).translate([0, 0, -length / 2]);
-    return cyl.add(top).add(bot);
+  /** Approximate ball-on-stem total height. */
+  function ballOnStemHeight(spec: Dummy13Spec, stemLen: number): number {
+    return 0.8 + stemLen + spec.ballD;
   }
 
-  /**
-   * HEAD — a rounded head with a socket cup underneath. Z=0 is the bottom of
-   * the socket housing; the head rises above it. The cup mouth faces −Z (so
-   * the neck ball inserts upward into it).
-   *
-   * opts: { spec?, style? }  style: 'box' (default) | 'sphere'
-   */
+  /** A horizontal socket: cup base sits on the part body, mouth points OUT
+   *  along +X (so a mating ball can be inserted from +X). Builds the cup
+   *  pointing +Z then rotates 90° about Y. */
+  function horizontalSocket(spec: Dummy13Spec, mouthDir: 'plusX' | 'minusX' | 'plusY' | 'minusY' | 'plusZ' | 'minusZ') {
+    const cup = socketCup(spec);
+    switch (mouthDir) {
+      case 'plusZ': return cup;
+      case 'minusZ': return cup.rotate([180, 0, 0]);
+      case 'plusX': return cup.rotate([0, 90, 0]);
+      case 'minusX': return cup.rotate([0, -90, 0]);
+      case 'plusY': return cup.rotate([-90, 0, 0]);
+      case 'minusY': return cup.rotate([90, 0, 0]);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // BODY PARTS — flat bars with sockets only (no balls)
+  // -------------------------------------------------------------------------
+
+  /** HEAD — a rounded box with a downward-facing socket cup at its base.
+   *  Z = 0 is the bottom of the socket housing.
+   *  opts: { spec?, style? }  style: 'box' | 'sphere' */
   function headPart(o0: unknown = {}) {
     const o = pickOpts(o0, 'headPart');
     const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
-    const lens = segmentLengths(spec);
     const style = (o.style ?? 'box') as 'box' | 'sphere';
 
-    const cupG = cupGeometry(spec.neckBallD, spec);
-    const cup = socketCup(spec.neckBallD, spec)
-      .rotate([180, 0, 0])
-      .translate([0, 0, cupG.totalH]);
+    const cupH = cupHeight(spec);
+    const cup = socketCup(spec).rotate([180, 0, 0]).translate([0, 0, cupH]);
 
-    const headH = lens.head;
-    const headW = headH * 0.9;
-    const headD = headH * 0.75;
-    // Sink the bottom of the head 0.6mm into the top of the cup so the union
-    // is volumetric.
-    const headZ0 = cupG.totalH - 0.6;
-    const head =
-      style === 'sphere'
-        ? Manifold.sphere(headH / 2, spec.segments)
-            .scale([headW / headH, headD / headH, 1])
-            .translate([0, 0, headZ0 + headH / 2])
-        : Manifold.cube([headW, headD, headH], false).translate([-headW / 2, -headD / 2, headZ0]);
-
+    const h = spec.headH;
+    const w = h * 0.9;
+    const d = h * 0.75;
+    const headZ0 = cupH - 0.6;
+    const head = style === 'sphere'
+      ? Manifold.sphere(h / 2, spec.segments).scale([w / h, d / h, 1]).translate([0, 0, headZ0 + h / 2])
+      : Manifold.cube([w, d, h], false).translate([-w / 2, -d / 2, headZ0]);
     return cup.add(head);
   }
 
-  /**
-   * UPPER TORSO — chest box with a waist socket at the bottom, a neck ball
-   * rising from the top centre, and a shoulder ball on each side. Z=0 is the
-   * bottom of the waist socket housing.
-   */
-  function torsoUpperPart(o0: unknown = {}) {
-    const o = pickOpts(o0, 'torsoUpperPart');
+  /** CHEST — flat bar with 2 sockets on top (clavicles → shoulders, at ±X)
+   *  and 1 socket on the bottom face (abdomen). Z = 0 is the bottom of the
+   *  abdomen socket cup. */
+  function chestPart(o0: unknown = {}) {
+    const o = pickOpts(o0, 'chestPart');
     const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
-    const lens = segmentLengths(spec);
-    const waistCup = cupGeometry(spec.hipBallD, spec);
-
-    // Waist socket — opens downward; housing base on z=0, mouth at z=0.
-    const waist = socketCup(spec.hipBallD, spec)
-      .rotate([180, 0, 0])
-      .translate([0, 0, waistCup.totalH]);
-
-    // Body box rises from z = waistCup.totalH - 0.6 upward by torsoH.
-    const torsoH = lens.torsoUpper;
-    const torsoW = lens.shoulderWidth * 0.92;
-    const torsoD = lens.shoulderWidth * 0.55;
-    const bodyZ0 = waistCup.totalH - 0.6;
-    let body = Manifold.cube([torsoW, torsoD, torsoH], false).translate([-torsoW / 2, -torsoD / 2, bodyZ0]);
-
-    // Carve a slight V-taper at the top so the silhouette reads as shoulders +
-    // pinched waist line — pinch ~10% from each side at the upper-back corners.
-    const taperW = torsoW * 0.14;
-    const taperH = torsoH * 0.4;
-    const taperR = Manifold.cube([taperW, torsoD + 2, taperH], false)
-      .translate([torsoW / 2 - taperW * 0.7, -torsoD / 2 - 1, bodyZ0 + torsoH - taperH]);
-    body = body.subtract(taperR).subtract(taperR.mirror([1, 0, 0]));
-
-    // Neck ball — sticks up from the top centre.
-    const neckBallH = ballEndHeight(spec.neckBallD);
-    const neckBall = ballEnd(spec.neckBallD, spec, { stemL: lens.neck })
-      .translate([0, 0, bodyZ0 + torsoH - 1]);
-    void neckBallH; // kept for clarity; not needed numerically
-
-    // Shoulder balls — face ±X. Build ball in +Z then rotate 90° about Y.
-    const shoulderZ = bodyZ0 + torsoH - spec.shoulderBallD * 1.1;
-    const shoulderX = torsoW / 2 - 0.6;
-    const shoulderR = ballEnd(spec.shoulderBallD, spec, { stemL: spec.shoulderBallD * 0.5 })
-      .rotate([0, 90, 0])
-      .translate([shoulderX, 0, shoulderZ]);
-    const shoulderL = ballEnd(spec.shoulderBallD, spec, { stemL: spec.shoulderBallD * 0.5 })
-      .rotate([0, -90, 0])
-      .translate([-shoulderX, 0, shoulderZ]);
-
-    return body.add(waist).add(neckBall).add(shoulderR).add(shoulderL);
+    const cupH = cupHeight(spec);
+    // The bottom socket spans z = 0..0.5 (mouth) + ...; the body bar starts at z = cupH-0.5 + bar bottom.
+    // Layout: bottom cup pointing -Z (housing base at z=cupH, mouth at z=0).
+    const bottomCup = socketCup(spec).rotate([180, 0, 0]).translate([0, 0, cupH]);
+    const barZ0 = cupH - 0.5;
+    const bar = Manifold.cube([spec.shoulderWidth + 2 * spec.socketWall, spec.bodyT, spec.chestH], false)
+      .translate([-(spec.shoulderWidth + 2 * spec.socketWall) / 2, -spec.bodyT / 2, barZ0]);
+    // Top sockets at ±shoulderWidth/2
+    const topL = socketCup(spec).translate([-spec.shoulderWidth / 2, 0, barZ0 + spec.chestH - 0.5]);
+    const topR = socketCup(spec).translate([spec.shoulderWidth / 2, 0, barZ0 + spec.chestH - 0.5]);
+    return bottomCup.add(bar).add(topL).add(topR);
   }
 
-  /**
-   * HIPS — pelvis box with a waist ball on top and a hip ball on each side.
-   * Z=0 is the bottom of the pelvis box.
-   */
+  /** Build a body segment that's just a flat bar with one socket cup on each
+   *  end (top + bottom). Used for ABDOMEN and WAIST. Z = 0 is the bottom of
+   *  the bottom socket. */
+  function inlineSegment(spec: Dummy13Spec, height: number) {
+    const cupH = cupHeight(spec);
+    const bottomCup = socketCup(spec).rotate([180, 0, 0]).translate([0, 0, cupH]);
+    const barZ0 = cupH - 0.5;
+    const barW = spec.socketCavityD + 2 * spec.socketWall;
+    const bar = Manifold.cube([barW, spec.bodyT, height], false)
+      .translate([-barW / 2, -spec.bodyT / 2, barZ0]);
+    const topCup = socketCup(spec).translate([0, 0, barZ0 + height - 0.5]);
+    return bottomCup.add(bar).add(topCup);
+  }
+
+  function abdomenPart(o0: unknown = {}) {
+    const o = pickOpts(o0, 'abdomenPart');
+    const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
+    return inlineSegment(spec, spec.abdomenH);
+  }
+
+  function waistPart(o0: unknown = {}) {
+    const o = pickOpts(o0, 'waistPart');
+    const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
+    return inlineSegment(spec, spec.waistH);
+  }
+
+  /** HIPS — flat horizontal bar with 3 sockets in the top face: hip(-X), waist,
+   *  hip(+X). Z = 0 is the bottom of the bar. */
   function hipsPart(o0: unknown = {}) {
     const o = pickOpts(o0, 'hipsPart');
     const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
-    const lens = segmentLengths(spec);
-    const hipsH = lens.hips;
-    const hipsW = lens.hipWidth;
-    const hipsD = hipsW * 0.7;
-
-    const body = Manifold.cube([hipsW, hipsD, hipsH], false).translate([-hipsW / 2, -hipsD / 2, 0]);
-    const waistBall = ballEnd(spec.hipBallD, spec, { stemL: lens.neck * 0.6 })
-      .translate([0, 0, hipsH - 1]);
-    const hipR = ballEnd(spec.hipBallD, spec, { stemL: spec.hipBallD * 0.45 })
-      .rotate([0, 90, 0])
-      .translate([hipsW / 2 - 0.6, 0, hipsH * 0.45]);
-    const hipL = ballEnd(spec.hipBallD, spec, { stemL: spec.hipBallD * 0.45 })
-      .rotate([0, -90, 0])
-      .translate([-(hipsW / 2 - 0.6), 0, hipsH * 0.45]);
-
-    return body.add(waistBall).add(hipR).add(hipL);
+    const barW = spec.hipWidth + 2 * spec.socketWall * 2;
+    const bar = Manifold.cube([barW, spec.bodyT, spec.hipsH], false)
+      .translate([-barW / 2, -spec.bodyT / 2, 0]);
+    const cupZ = spec.hipsH - 0.5;
+    const cups = [
+      socketCup(spec).translate([-spec.hipWidth / 2, 0, cupZ]),
+      socketCup(spec).translate([0, 0, cupZ]),
+      socketCup(spec).translate([spec.hipWidth / 2, 0, cupZ]),
+    ];
+    return cups.reduce((acc, c) => acc.add(c), bar);
   }
 
-  /** Limb segment shared by upperArm/forearm/thigh: cup at z=0 (mouth +Z),
-   *  capsule body extending up from the cup top, ball-end on top sticking +Z.
-   *  Returned standing vertical: snap a mating ball into the cup from above
-   *  for the joint above this limb, and the upper ball plugs into the cup of
-   *  the limb below. */
-  function buildLimb(spec: Dummy13Spec, cupBallD: number, topBallD: number, bodyLen: number, bodyR: number) {
-    const cupG = cupGeometry(cupBallD, spec);
-    const cup = socketCup(cupBallD, spec);
-    const bodyZ0 = cupG.totalH - 0.5; // sink cup 0.5mm into capsule end
-    const bodyZ1 = bodyZ0 + bodyLen;
-    const body = capsule(bodyLen, bodyR, spec.segments).translate([0, 0, (bodyZ0 + bodyZ1) / 2]);
-    const ball = ballEnd(topBallD, spec, { stemL: Math.max(topBallD * 0.4, 2) })
-      .translate([0, 0, bodyZ1 - 1]);
-    return cup.add(body).add(ball);
+  // -------------------------------------------------------------------------
+  // BRIDGE PIECES — balls on both ends
+  // -------------------------------------------------------------------------
+
+  /** Build a bridge piece: a stem with a ball on each end. The stem runs along
+   *  the Z axis, centered on origin. The lower ball is at z = -bridgeStem/2 -
+   *  ballR, the upper at +bridgeStem/2 + ballR. */
+  function doubleBallBridge(spec: Dummy13Spec, stemLen: number = spec.bridgeStem) {
+    const ballR = spec.ballD / 2;
+    const stem = Manifold.cylinder(stemLen, spec.stemD / 2, spec.stemD / 2, spec.segments)
+      .translate([0, 0, -stemLen / 2]);
+    const topBall = Manifold.sphere(ballR, spec.segments).translate([0, 0, stemLen / 2 + ballR * 0.85]);
+    const botBall = Manifold.sphere(ballR, spec.segments).translate([0, 0, -stemLen / 2 - ballR * 0.85]);
+    return stem.add(topBall).add(botBall);
+  }
+
+  /** Universal HIP/SHOULDER bridge piece. Same part is used in 4 positions
+   *  (both hips, both shoulders). Returned standing vertical along Z. */
+  function hipShoulderBridge(o0: unknown = {}) {
+    const o = pickOpts(o0, 'hipShoulderBridge');
+    const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
+    return doubleBallBridge(spec);
+  }
+
+  /** Universal KNEE/ELBOW bridge piece. Same part used 4× (both knees + both
+   *  elbows). Shorter stem than hip/shoulder. */
+  function kneeElbowBridge(o0: unknown = {}) {
+    const o = pickOpts(o0, 'kneeElbowBridge');
+    const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
+    return doubleBallBridge(spec, Math.max(4, spec.bridgeStem * 0.7));
+  }
+
+  /** NECK bridge — connects head to chest. Slightly longer stem so the head
+   *  clears the chest top. */
+  function neckBridge(o0: unknown = {}) {
+    const o = pickOpts(o0, 'neckBridge');
+    const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
+    return doubleBallBridge(spec, spec.neckLen);
+  }
+
+  /** ANKLE bridge — connects shin to foot. */
+  function ankleBridge(o0: unknown = {}) {
+    const o = pickOpts(o0, 'ankleBridge');
+    const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
+    return doubleBallBridge(spec, Math.max(4, spec.bridgeStem * 0.7));
+  }
+
+  /** CLAVICLE bridge — connects chest's shoulder socket out to the shoulder
+   *  joint position. Slightly longer than other bridges to project the shoulder
+   *  out from the chest. */
+  function claviclePart(o0: unknown = {}) {
+    const o = pickOpts(o0, 'claviclePart');
+    const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
+    return doubleBallBridge(spec, spec.bridgeStem * 1.1);
+  }
+
+  // -------------------------------------------------------------------------
+  // LIMB SEGMENTS — capsule body with sockets at each end
+  // -------------------------------------------------------------------------
+
+  /** Build a limb segment: capsule along Z with a socket cup at each end.
+   *  Cups face outward (+Z at top, -Z at bottom). The segment_length is the
+   *  distance between the two socket-cavity centres along Z. */
+  function limbSegment(spec: Dummy13Spec, segmentLength: number, bodyR: number) {
+    const cupH = cupHeight(spec);
+    // Cavity centres at z = floor + cavityR (above the bar bottom). For a
+    // segment with the cups at TOP and BOTTOM (mouths facing out), we have:
+    //   top cup mouth at z = topZ, cavity centre at topZ - lipH
+    //   bottom cup mouth at z = botZ (negative), cavity centre at botZ + lipH
+    // We want the two cavity centres distance = segmentLength.
+    // Simpler: just stack cup_bottom + body + cup_top, where body fills the gap.
+    const bodyLen = segmentLength - 2 * (cupHeight(spec) - 1);
+    // Bottom cup: mouth points -Z, base on z = cupH (top of cup is base).
+    const bottomCup = socketCup(spec).rotate([180, 0, 0]).translate([0, 0, cupH]);
+    // Body capsule
+    const body = (() => {
+      const cyl = Manifold.cylinder(bodyLen, bodyR, bodyR, spec.segments).translate([0, 0, cupH - 0.5]);
+      return cyl;
+    })();
+    // Top cup: mouth +Z, base at z = cupH + bodyLen - 0.5 (sunk into capsule top)
+    const topCup = socketCup(spec).translate([0, 0, cupH + bodyLen - 0.5 - 0.5]);
+    return bottomCup.add(body).add(topCup);
   }
 
   function upperArmPart(o0: unknown = {}) {
     const o = pickOpts(o0, 'upperArmPart');
     const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
-    const lens = segmentLengths(spec);
-    const bodyR = spec.shoulderBallD * 0.55;
-    return buildLimb(spec, spec.shoulderBallD, spec.elbowBallD, lens.upperArm, bodyR);
+    return limbSegment(spec, spec.upperArmLen, 3);
   }
 
   function forearmPart(o0: unknown = {}) {
     const o = pickOpts(o0, 'forearmPart');
     const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
-    const lens = segmentLengths(spec);
-    const bodyR = spec.elbowBallD * 0.6;
-    return buildLimb(spec, spec.elbowBallD, spec.wristBallD, lens.forearm, bodyR);
+    return limbSegment(spec, spec.forearmLen, 2.8);
   }
 
   function thighPart(o0: unknown = {}) {
     const o = pickOpts(o0, 'thighPart');
     const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
-    const lens = segmentLengths(spec);
-    const bodyR = spec.hipBallD * 0.55;
-    return buildLimb(spec, spec.hipBallD, spec.kneeBallD, lens.thigh, bodyR);
+    return limbSegment(spec, spec.thighLen, 3.5);
   }
 
-  /** HAND — wrist socket at z=0 (mouth +Z), a flat paddle below it acting as
-   *  the hand. The cup is upright so the wrist ball can insert from above. */
-  function handPart(o0: unknown = {}) {
-    const o = pickOpts(o0, 'handPart');
-    const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
-    const lens = segmentLengths(spec);
-    const cup = socketCup(spec.wristBallD, spec);
-    const cupG = cupGeometry(spec.wristBallD, spec);
-
-    const handLen = lens.hand;
-    const handW = lens.hand * 0.6;
-    const handT = Math.max(2.5, lens.hand * 0.3);
-    // Hand body sits ABOVE the cup (rising +Z from the cup top) so the part
-    // can be read at a glance; in assembly the cup is flipped/rotated to face
-    // the forearm wrist ball.
-    const palmZ0 = cupG.totalH - 0.5;
-    const palm = Manifold.cube([handW, handT, handLen], false).translate([-handW / 2, -handT / 2, palmZ0]);
-    return cup.add(palm);
-  }
-
-  /** SHIN with integrated FOOT — foot footprint at z=0, calf rising upward,
-   *  knee socket cup at the top (mouth facing +Z so the knee ball drops in). */
   function shinPart(o0: unknown = {}) {
     const o = pickOpts(o0, 'shinPart');
     const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
-    const lens = segmentLengths(spec);
-    const cupG = cupGeometry(spec.kneeBallD, spec);
-    const calfR = spec.kneeBallD * 0.55;
-
-    // Layout: foot z=0..footT; calf z=footT..(footT+calfLen); cup z=calfTop-0.5..calfTop-0.5+cupH.
-    const footT = Math.max(2.5, lens.shin * 0.06);
-    const footL = lens.shin * 0.42;
-    const footW = calfR * 2.4;
-    const foot = Manifold.cube([footW, footL, footT], false).translate([-footW / 2, -footL * 0.7, 0]);
-
-    const calfLen = lens.shin - footT - cupG.totalH * 0.5; // leave room at the top for the cup
-    const calfZ0 = footT;
-    const calfZ1 = calfZ0 + calfLen;
-    const calf = capsule(calfLen, calfR, spec.segments).translate([0, 0, (calfZ0 + calfZ1) / 2]);
-
-    // Cup at the top — mouth facing +Z.
-    const cup = socketCup(spec.kneeBallD, spec).translate([0, 0, calfZ1 - 0.5]);
-
-    return foot.add(calf).add(cup);
+    return limbSegment(spec, spec.shinLen, 3);
   }
 
-  // ---- Full assembled skeleton, for a single visual check ----
+  // -------------------------------------------------------------------------
+  // EXTREMITIES — hand + foot (1 socket each)
+  // -------------------------------------------------------------------------
+
+  /** HAND — flat paddle with a wrist socket on top (mouth +Z). The hand body
+   *  is a simple slab below the socket; users can build fancier hand variants
+   *  (open/grip/fist) on top of the same socket spec. */
+  function handPart(o0: unknown = {}) {
+    const o = pickOpts(o0, 'handPart');
+    const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
+    const cupH = cupHeight(spec);
+    const cup = socketCup(spec).rotate([180, 0, 0]).translate([0, 0, cupH]);
+    const palmW = spec.socketCavityD * 1.6;
+    const palmT = 4;
+    const palmL = spec.handLen;
+    // Palm hangs DOWN from the cup base (negative Y, since the wrist socket
+    // is the "top" of the hand when worn).
+    const palm = Manifold.cube([palmW, palmL, palmT], false)
+      .translate([-palmW / 2, -palmL, 0]);
+    // Round the fingertip end by chamfering the corner closest to -Y, -X / +X.
+    return cup.add(palm);
+  }
+
+  /** FOOT — flat foot pad with an ankle socket on top. The foot extends -Y
+   *  (forward of the figure) to give standing stability. */
+  function footPart(o0: unknown = {}) {
+    const o = pickOpts(o0, 'footPart');
+    const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
+    const cupH = cupHeight(spec);
+    const cup = socketCup(spec).rotate([180, 0, 0]).translate([0, 0, cupH]);
+    const footT = 4;
+    const footL = spec.footLen;
+    const footW = spec.footWidth;
+    const foot = Manifold.cube([footW, footL, footT], false)
+      .translate([-footW / 2, -footL * 0.7, 0]);
+    return cup.add(foot);
+  }
+
+  // -------------------------------------------------------------------------
+  // FULL ASSEMBLED SKELETON — viz only
+  // -------------------------------------------------------------------------
 
   function fullSkeleton(o0: unknown = {}) {
     const o = pickOpts(o0, 'fullSkeleton');
     const spec = resolveSpec(o.spec as Partial<Dummy13Spec> | undefined);
-    const lens = segmentLengths(spec);
+    const cupH = cupHeight(spec);
 
-    // Stand the figure with feet on z=0.
-    // shin + thigh + hips + torso + head along Z, with arms hanging from the
-    // shoulders. We re-orient each part so it points the right way.
-    const halfHip = lens.hipWidth / 2;
-    const halfShoulder = lens.shoulderWidth / 2;
+    // Build the body axis bottom-up:
+    //   foot (z=0..footT~4) -> ankle bridge -> shin -> knee bridge -> thigh -> hip bridge -> hips -> waist -> abdomen -> chest -> neck bridge -> head
+    let z = 0;
+    const parts = [];
+    const footT = 4;
+    parts.push(footPart({ spec }).translate([spec.hipWidth / 2, 0, z]));
+    parts.push(footPart({ spec }).translate([-spec.hipWidth / 2, 0, z]));
+    z += footT + cupH * 0.5; // foot socket plus ankle bridge approximate
+    // Stack the legs symmetrically — each leg has shin + knee bridge + thigh
+    const legZ0 = z;
+    const shinZ0 = legZ0;
+    const shinTop = shinZ0 + spec.shinLen;
+    parts.push(limbSegment(spec, spec.shinLen, 3).translate([spec.hipWidth / 2, 0, shinZ0]));
+    parts.push(limbSegment(spec, spec.shinLen, 3).translate([-spec.hipWidth / 2, 0, shinZ0]));
+    const thighZ0 = shinTop + cupH * 0.3;
+    const thighTop = thighZ0 + spec.thighLen;
+    parts.push(limbSegment(spec, spec.thighLen, 3.5).translate([spec.hipWidth / 2, 0, thighZ0]));
+    parts.push(limbSegment(spec, spec.thighLen, 3.5).translate([-spec.hipWidth / 2, 0, thighZ0]));
 
-    // Right leg: shin built foot-down, knee-cup-up — perfect as-is. Translate to +X.
-    const shinR = shinPart({ spec }).translate([halfHip, 0, 0]);
-    const shinL = shinPart({ spec }).translate([-halfHip, 0, 0]);
+    const hipsZ0 = thighTop + cupH * 0.3;
+    parts.push(hipsPart({ spec }).translate([0, 0, hipsZ0]));
+    const waistZ0 = hipsZ0 + spec.hipsH + cupH * 0.6;
+    parts.push(waistPart({ spec }).translate([0, 0, waistZ0]));
+    const abdomenZ0 = waistZ0 + spec.waistH + cupH * 1.2;
+    parts.push(abdomenPart({ spec }).translate([0, 0, abdomenZ0]));
+    const chestZ0 = abdomenZ0 + spec.abdomenH + cupH * 1.2;
+    parts.push(chestPart({ spec }).translate([0, 0, chestZ0]));
 
-    // Thigh: built cup-down/ball-up. Flip to ball-down (knee ball plugs into
-    // shin knee cup) by rotating 180° about Y. After the flip, cup faces -Z;
-    // we want hip-cup facing +Z (to receive the hips hip-ball from above).
-    // So flip 180° about Y: ball now points -Z, cup points +Z. ✓
-    // The flip moves the part above/below z=0 — translate up so the bottom ball
-    // tip lands at z = lens.shin (the top of the shin's knee cup, give or take
-    // the cup's 'lipH' depth that the ball must reach into).
-    // Build the limb, get its bbox, then translate so bottom ball is at the knee-cup mouth.
-    const thighRaw = thighPart({ spec });
-    // bbox computation through Manifold isn't free here — use known layout:
-    // limb cup at z=0..cupG.totalH, body cupG.totalH-0.5..cupG.totalH-0.5+bodyLen,
-    // top ball ends at cupG.totalH-0.5+bodyLen + ballEndHeight(elbow).
-    const thighCupG = cupGeometry(spec.hipBallD, spec);
-    const thighTopBallTip =
-      thighCupG.totalH - 0.5 + lens.thigh + ballEndHeight(spec.kneeBallD);
-    // After 180° rotation about Y, original z = z' inverted (rotation about Y axis).
-    // Actually rotate([0,180,0]) flips x and z signs. So original (x,y,z) -> (-x, y, -z).
-    // The part now spans z = -thighTopBallTip..0. To stand it with the bottom ball
-    // tip at z = lens.shin - smallOverlap, translate up by lens.shin - 1 + thighTopBallTip.
-    const knee_z = lens.shin - 1; // sink ball 1mm into the cup
-    const thighR = thighRaw
-      .rotate([0, 180, 0])
-      .translate([halfHip, 0, knee_z + thighTopBallTip]);
-    const thighL = thighPart({ spec })
-      .rotate([0, 180, 0])
-      .translate([-halfHip, 0, knee_z + thighTopBallTip]);
+    // Arms: from each shoulder (top of chest, at ±shoulderWidth/2), out and down
+    const shoulderZ = chestZ0 + cupH + spec.chestH - cupH * 0.5;
+    for (const sign of [+1, -1]) {
+      const shoulderX = sign * spec.shoulderWidth / 2;
+      // Upper arm hangs vertically from shoulder down by upperArmLen
+      const armZ0 = shoulderZ - cupH - spec.upperArmLen;
+      parts.push(limbSegment(spec, spec.upperArmLen, 3).translate([shoulderX, 0, armZ0]));
+      // Forearm below
+      const forearmZ0 = armZ0 - spec.forearmLen - cupH * 0.5;
+      parts.push(limbSegment(spec, spec.forearmLen, 2.8).translate([shoulderX, 0, forearmZ0]));
+      // Hand below
+      parts.push(handPart({ spec }).translate([shoulderX, 0, forearmZ0 - cupH * 0.5]));
+    }
 
-    // Hips: waist-ball points +Z; hip-balls point ±X. Sits on top of thighs.
-    // The thigh cups (now facing +Z after the flip) sit at the top of the
-    // re-oriented thigh — translate the hips so its hip-balls plug into the thigh cups.
-    // After the 180° Y flip, the thigh's "cup mouth" (originally at z=0) is now at z=0
-    // of the rotated-and-translated piece — i.e. at world z = knee_z + thighTopBallTip.
-    // Hip-ball points ±X at the hip joint location (hipsW wide). Place hips so
-    // its hip-ball is at the same Z as the thigh cup mouth.
-    const hipsBaseZ = knee_z + thighTopBallTip - 0.5; // sit pelvis above thigh cups
-    const hips = hipsPart({ spec }).translate([0, 0, hipsBaseZ]);
+    // Head on top of chest via neck bridge
+    const headZ0 = chestZ0 + spec.chestH + spec.neckLen;
+    parts.push(headPart({ spec }).translate([0, 0, headZ0]));
 
-    // Torso: waist socket on bottom faces -Z. Sit it on the hips waist-ball.
-    // Torso's z=0 is the bottom of its waist socket housing — translate so that
-    // sits on top of the pelvis.
-    const torsoZ0 = hipsBaseZ + lens.hips - 1; // sink torso into pelvis 1mm
-    const torso = torsoUpperPart({ spec }).translate([0, 0, torsoZ0]);
+    return parts.reduce((acc, p) => acc.add(p));
+  }
 
-    // Where the torso top is (approx) — needed for head + arm placement.
-    const waistCupG = cupGeometry(spec.hipBallD, spec);
-    const torsoTop = torsoZ0 + waistCupG.totalH - 0.6 + lens.torsoUpper;
-
-    // Head: built cup-down. Sit it on the neck ball (the torso's neck ball
-    // protrudes upward from torsoTop with a stemL≈lens.neck).
-    const head = headPart({ spec }).translate([0, 0, torsoTop + lens.neck - 1]);
-
-    // Arms: each upper-arm has cup-down (after rotation), ball pointing into
-    // the body. Torso shoulder balls face ±X. To plug an upper-arm cup onto a
-    // ±X-facing shoulder ball, rotate the upper-arm so its cup mouth faces -X
-    // (right arm) / +X (left arm). The arm body then hangs downward (-Z).
-    // Building axis is +Z (cup at 0, body up, ball at top). After rotating
-    // 90° about +Y, the original +Z axis becomes +X. We then want the cup at
-    // the shoulder (so the cup-base side, originally at z=0, lands at the
-    // shoulder x position). Continue: build the arm in its own frame, then
-    // translate so the cup centre is at (shoulderX, 0, shoulderZ).
-    const shoulderZ = torsoTop - spec.shoulderBallD * 1.1;
-
-    // Right arm chain: upper arm cup at shoulder, elbow ball pointing outward
-    // (+X) at distance lens.upperArm.
-    // We rotate the upper-arm so cup-mouth faces -X (i.e. inward toward body).
-    // rotate([0, -90, 0]): +Z -> +X. So cup at orig z=0 is at x=0; body extends +X.
-    // For RIGHT arm we want body extending +X, cup mouth facing -X — that's what we get.
-    const upperArmR = upperArmPart({ spec })
-      .rotate([0, -90, 0])
-      .translate([halfShoulder - 0.6, 0, shoulderZ]);
-    const upperArmL = upperArmPart({ spec })
-      .rotate([0, 90, 0])
-      .translate([-(halfShoulder - 0.6), 0, shoulderZ]);
-
-    const elbowR_x = halfShoulder - 0.6 + lens.upperArm;
-    const elbowL_x = -(halfShoulder - 0.6) - lens.upperArm;
-    const forearmR = forearmPart({ spec }).rotate([0, -90, 0]).translate([elbowR_x, 0, shoulderZ]);
-    const forearmL = forearmPart({ spec }).rotate([0, 90, 0]).translate([elbowL_x, 0, shoulderZ]);
-
-    const wristR_x = elbowR_x + lens.forearm;
-    const wristL_x = elbowL_x - lens.forearm;
-    const handR = handPart({ spec }).rotate([0, -90, 0]).translate([wristR_x, 0, shoulderZ]);
-    const handL = handPart({ spec }).rotate([0, 90, 0]).translate([wristL_x, 0, shoulderZ]);
-
-    return shinR
-      .add(shinL)
-      .add(thighR)
-      .add(thighL)
-      .add(hips)
-      .add(torso)
-      .add(upperArmR)
-      .add(upperArmL)
-      .add(forearmR)
-      .add(forearmL)
-      .add(handR)
-      .add(handL)
-      .add(head);
+  // -------------------------------------------------------------------------
+  // Print-plate helpers — lay N instances of a part side-by-side along Y
+  // for a single catalog tile representing "print N of these."
+  // -------------------------------------------------------------------------
+  function plateOf(part: any, count: number, gap: number) {
+    if (count === 1) return part;
+    let out = part;
+    for (let i = 1; i < count; i++) {
+      out = out.add(part.translate([0, gap * i, 0]));
+    }
+    // Recentre on Y
+    return out.translate([0, -gap * (count - 1) / 2, 0]);
   }
 
   return {
-    DEFAULTS: DUMMY13_DEFAULTS,
-    PROPORTIONS: DUMMY13_PROPORTIONS,
+    SPEC: DUMMY13_SPEC,
     resolveSpec,
-    segmentLengths,
+    cupHeight,
+    ballOnStemHeight,
     headPart,
-    torsoUpperPart,
+    chestPart,
+    abdomenPart,
+    waistPart,
     hipsPart,
+    neckBridge,
+    hipShoulderBridge,
+    kneeElbowBridge,
+    ankleBridge,
+    claviclePart,
     upperArmPart,
     forearmPart,
-    handPart,
     thighPart,
     shinPart,
+    handPart,
+    footPart,
     fullSkeleton,
+    plateOf,
+    socketCup,
+    ballOnStem,
+    horizontalSocket,
   };
 }
 
 /** Pure helpers exposed for unit testing without the WASM module. */
 export const __testables__ = {
   resolveSpec,
-  segmentLengths,
-  cupGeometry,
-  ballEndHeight,
 };
