@@ -182,8 +182,13 @@ import { appPath } from '../deployment';
  *           (`session.attachments[].description`) — a "why this matters" note
  *           distinct from the short `label`/perspective caption. Additive;
  *           older readers ignore it.
+ *  - `1.18` — aborted chat messages carry an optional `abortReason`
+ *           (`'user' | 'watchdog' | 'tab-handoff'`) so the transcript can tell
+ *           a user-initiated Stop, a stall-watchdog timeout, and a cross-tab
+ *           handoff apart. Absent on pre-1.18 records ⇒ rendered as "user".
+ *           Additive; older readers ignore it.
  */
-export const SCHEMA_VERSION = '1.17';
+export const SCHEMA_VERSION = '1.18';
 
 const CURRENT_MAJOR = 1;
 

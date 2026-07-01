@@ -21,7 +21,7 @@ import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, RETRY_SAFE_TOOLS, t
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
-import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
+import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type AbortReason, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
 import { isTransientError } from './transientError';
 import { elideStaleToolImages } from './historyElision';
@@ -181,13 +181,17 @@ export interface RunTurnCallbacks {
   onProgress?: (info: { phase: 'thinking' | 'streaming' | 'tool' | 'idle'; detail?: string }) => void;
   /** Loop ended. `reason` distinguishes a clean end_turn from the
    *  iteration cap, the spend cap, an empty final response, or other
-   *  stop reasons so the UI can surface what actually happened. */
+   *  stop reasons so the UI can surface what actually happened.
+   *  `abortReason` is set only when `reason === 'aborted'` — pulled off
+   *  `signal.reason` so the sticky post-turn banner can tell the user vs the
+   *  watchdog vs a tab-handoff apart. */
   onTurnComplete?: (info: {
     totalCostUsd: number;
     toolCalls: number;
     reason: TurnOutcomeReason;
     detail?: string;
     iterations: number;
+    abortReason?: AbortReason;
   }) => void;
   /** User aborted the turn. Fires after the partial assistant message has
    *  been persisted. Distinct from onError — abort is intentional. */
@@ -466,6 +470,15 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     totalCostUsd += turnCost;
 
     const aborted = result.stopReason === 'aborted' || signal?.aborted === true;
+    // The abort reason travels on `AbortController.abort(reason)` — set by the
+    // panel's stopActiveTurn(). We coerce anything unrecognized to 'user' so a
+    // future caller that fires `abort()` with no reason (or a DOMException,
+    // which the browser supplies as the default reason) still classifies as a
+    // user-initiated stop instead of surfacing an unknown category to the UI.
+    const rawReason = aborted ? signal?.reason : undefined;
+    const abortReason: AbortReason | undefined = aborted
+      ? (rawReason === 'watchdog' || rawReason === 'tab-handoff' ? rawReason : 'user')
+      : undefined;
 
     // Thinking block (if any) renders above the answer, so it leads the
     // block list. It's a display artifact — providers' request builders
@@ -498,7 +511,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       seq: seqStart + 1 + iter * 2,
       durationMs,
       turnElapsedMs: turnApiTimeMs,
-      ...(aborted ? { aborted: true } : {}),
+      ...(aborted ? { aborted: true, ...(abortReason ? { abortReason } : {}) } : {}),
     };
     await putMessages([assistantMsg]);
     workingHistory = [...workingHistory, assistantMsg];
@@ -521,7 +534,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
 
     if (aborted) {
       callbacks.onAborted?.();
-      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'aborted', iterations: iter + 1 });
+      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'aborted', iterations: iter + 1, ...(abortReason ? { abortReason } : {}) });
       return workingHistory;
     }
 
@@ -668,8 +681,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     }
 
     if (signal?.aborted) {
+      const rawReason2 = signal.reason;
+      const abortReason2: AbortReason = rawReason2 === 'watchdog' || rawReason2 === 'tab-handoff' ? rawReason2 : 'user';
       callbacks.onAborted?.();
-      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'aborted', iterations: iter + 1 });
+      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'aborted', iterations: iter + 1, abortReason: abortReason2 });
       return workingHistory;
     }
 
