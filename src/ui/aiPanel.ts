@@ -3312,7 +3312,9 @@ async function sendMessage(): Promise<void> {
       // stays fixed so Reject still removes all planning messages.
       // Refinement: remind the model it is still in plan mode so it doesn't
       // switch to execution mode when it receives the information it asked for.
-      const refinePrefix = '[Plan refinement — revise or extend the plan only, do not call any tools or start building]: ';
+      // Read-only inspection tools are still available; mutating/execution
+      // tools are hidden until approval.
+      const refinePrefix = '[Plan refinement — revise or extend the plan only. Inspect with the read-only tools if useful, but do not mutate the session or start building]: ';
       planBlocks = [];
       if (capturedText.length > 0) planBlocks.push({ type: 'text', text: refinePrefix + capturedText });
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
@@ -3321,7 +3323,8 @@ async function sendMessage(): Promise<void> {
       const planPrefix =
         'Before doing anything, write a concise plan for the following request. '
         + 'Describe your approach, key steps, and any design decisions. '
-        + 'Do NOT call any tools or start building yet — I will approve or reject your plan first.\n\n'
+        + 'You may use the read-only inspection tools (getCode, getSessionContext, listVersions, geometry queries, readDoc, etc.) to ground the plan in the actual session state — but only when it would meaningfully improve the plan; skip inspection on greenfield requests. '
+        + 'Do NOT mutate the session, execute code, or start building yet — I will approve or reject your plan first.\n\n'
         + '---\n\n';
       planBlocks = [];
       if (capturedText.length > 0) planBlocks.push({ type: 'text', text: planPrefix + capturedText });
