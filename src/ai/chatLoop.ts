@@ -585,10 +585,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       // Map stop reason to a UI-friendly outcome so the panel can show
       // "✓ done" vs "⚠ model exited without final text" vs other.
       const hasText = result.text.trim().length > 0;
-      // In plan mode the tool list is empty; if the model still tried to call a
-      // tool it gets malformed_function_call from Anthropic. Any text it generated
-      // before the failed attempt is still valid, so treat it as end_turn rather
-      // than surfacing a confusing "stopped early" banner.
+      // In plan mode the tool list is limited to the pure-read subset; if the
+      // model tried to call a mutating/execution tool (setCode, runCode, paint*,
+      // …) it gets malformed_function_call from Anthropic because that tool
+      // isn't in the turn's schema. Any text it generated before the failed
+      // attempt is still valid, so treat it as end_turn rather than surfacing a
+      // confusing "stopped early" banner.
       const effectiveStopReason = (result.stopReason === 'malformed_function_call' && toggles.planFirst)
         ? 'end_turn'
         : result.stopReason;

@@ -1474,6 +1474,29 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
   'importSvgAsRelief',
 ]);
 
+/** Pure-read tools the model may call during plan mode to ground its plan in
+ *  the current session state (open code, versions, geometry, notes, docs).
+ *  Deliberately excludes anything that mutates the session (setCode,
+ *  modifyAndTest, forkVersion, createPart, importImageAsRelief,
+ *  setActiveLanguage, setPrinterSettings, setReliefPreviewMode) AND anything
+ *  that executes user code (runCode, runAndAssert, runAndExplain, runIsolated)
+ *  — the point of plan mode is to plan, not to build. renderView/renderViews
+ *  are allowed because they only snapshot the current saved geometry (no code
+ *  execution), and they stay gated by the Views vision toggle so the user's
+ *  cost preferences still apply. */
+const PLAN_MODE_TOOLS = new Set([
+  'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary',
+  'getFeatureCentroids', 'getReferenceImages', 'getAttachments', 'getSessionContext', 'listVersions',
+  'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
+  'getModelColors',
+  'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
+  'listParts', 'getCurrentPart', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
+  'getPrinterSettings', 'getReliefSwapGuide',
+  // Idempotent renders of the CURRENT saved geometry — no code execution, no
+  // mutation. Still gated by VIEWS_GATED below so vision-off keeps them out.
+  'renderView', 'renderViews',
+]);
+
 /** Tools that are safe to auto-retry on error: pure reads/queries, idempotent
  *  renders, and runs that don't commit (re-executing reproduces the same
  *  transient state). The chat loop's `autoRetry` re-invokes a failed tool, so
@@ -1517,10 +1540,19 @@ const AUTORESUME_GATED = new Set(['finish']);
 const NOTES_GATED = new Set(['addSessionNote']);
 
 export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
-  // Plan-mode turns are tool-free — the model's only job is to write a plan.
-  // An empty list prevents any tool call, including always-available read
-  // tools that could otherwise be used to set code or query session state.
-  if (toggles.planFirst) return [];
+  // Plan-mode turns expose the pure-read subset (PLAN_MODE_TOOLS) so the model
+  // can ground its plan in the actual session state — the open code, saved
+  // versions, geometry stats, session notes, and docs — instead of guessing.
+  // Mutating tools and code-execution tools stay hidden until the user
+  // approves. renderView/renderViews are still filtered by VIEWS_GATED so a
+  // vision-off session doesn't pay for images during planning either.
+  if (toggles.planFirst) {
+    return ALL_TOOLS.filter(t => {
+      if (!PLAN_MODE_TOOLS.has(t.name)) return false;
+      if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
+      return true;
+    });
+  }
 
   return ALL_TOOLS.filter(t => {
     if (ALWAYS_AVAILABLE.has(t.name)) return true;
