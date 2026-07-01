@@ -32,7 +32,7 @@ import { getState, setSessionAiPreference, refreshCurrentSession } from '../stor
 import { onTabSync, publishTabSync } from '../storage/tabSync';
 import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { activeModel, SPEND_CAP_USD, type AbortReason, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
 import { repairToolHistory, hasOrphanedToolCalls } from '../ai/historyRepair';
 import { cancelCurrentExecution } from '../geometry/engine';
@@ -718,7 +718,7 @@ function applyOwnership(owned: boolean): void {
   // now; the send-disable + sendMessage guard stay as a backstop.
   if (sendBtnRef) sendBtnRef.disabled = !writeOwner;
   // Becoming a viewer mid-turn (another tab took control): stop our run.
-  if (!writeOwner) stopActiveTurn();
+  if (!writeOwner) stopActiveTurn('tab-handoff');
   // Gaining write-ownership of a real session — "Take control" in a new tab —
   // is one of the explicit transitions where state SHOULD carry over from the
   // tab that had it. Re-read the session from IndexedDB first (the previous
@@ -732,12 +732,16 @@ function applyOwnership(owned: boolean): void {
   }
 }
 
-/** Abort any in-flight AI turn — used by the Stop button and when this tab
- *  loses write-ownership (another tab took control). */
-function stopActiveTurn(): void {
+/** Abort any in-flight AI turn — used by the Stop button, when this tab
+ *  loses write-ownership (another tab took control), and by the stall
+ *  watchdog. The `reason` is carried on the AbortSignal so chatLoop can
+ *  persist it on the aborted assistant message as `abortReason`, letting
+ *  the transcript banner tell the three cases apart instead of always
+ *  reading "Stopped by user." */
+function stopActiveTurn(reason: AbortReason): void {
   // Anthropic stops via AbortSignal through the SDK; local (WebLLM) ignores the
   // signal, so interruptLocal() is what halts it mid-token.
-  state.inFlightController?.abort();
+  state.inFlightController?.abort(reason);
   // A tool call (runAndSave / a render) may be executing in the engine Worker
   // right now. The abort signal is only checked BETWEEN tool calls — never
   // mid-render — so without this, an in-flight heavy render keeps running and
@@ -1100,7 +1104,7 @@ function buildDrawer(): void {
   stopBtn.textContent = '⊘ Stop';
   stopBtn.title = 'Stop the model. Partial output is kept so you can redirect. Any queued message stays queued.';
   stopBtn.addEventListener('click', () => {
-    stopActiveTurn();
+    stopActiveTurn('user');
   });
   stopBtnRef = stopBtn;
   inputBtnRow.appendChild(stopBtn);
@@ -2205,13 +2209,30 @@ function renderMessage(msg: ChatMessage): HTMLElement {
   }
 
   if (msg.role === 'assistant' && msg.aborted) {
+    // The three abort surfaces used to render the same "Stopped by user"
+    // banner, so a watchdog timeout or a cross-tab handoff looked like the
+    // user had hit Stop. `abortReason` (absent on legacy records → treated as
+    // 'user') tells them apart. Watchdog gets its own colour (blue) since
+    // it's not a stop at all — the app self-aborted after a silent stream.
+    const reason: AbortReason = msg.abortReason ?? 'user';
     const banner = document.createElement('div');
-    banner.className = 'flex items-center gap-2 text-[10px] text-amber-400';
+    const tone = reason === 'watchdog'
+      ? { text: 'text-blue-300', hover: 'hover:text-blue-100' }
+      : { text: 'text-amber-400', hover: 'hover:text-amber-200' };
+    banner.className = `flex items-center gap-2 text-[10px] ${tone.text}`;
     const label = document.createElement('span');
-    label.textContent = '⊘ Stopped by user.';
+    if (reason === 'watchdog') {
+      label.textContent = `⏱ Timed out — no streamed token for ${Math.round(getStallThresholdMs() / 1000)}s.`;
+      label.title = 'The stall watchdog aborted after several silent seconds. Raise "Request timeout" in AI settings if this happens often with a slow model.';
+    } else if (reason === 'tab-handoff') {
+      label.textContent = '⇄ Stopped — another tab took control of this session.';
+      label.title = 'This browser tab lost the single-writer lock (a different tab took over), so the in-flight run was ended here.';
+    } else {
+      label.textContent = '⊘ Stopped by user.';
+    }
     banner.appendChild(label);
     const discard = document.createElement('button');
-    discard.className = 'underline hover:text-amber-200';
+    discard.className = `underline ${tone.hover}`;
     discard.textContent = 'Discard partial';
     discard.title = 'Delete this aborted message so the next turn starts clean.';
     discard.addEventListener('click', () => { void discardPartial(msg.id); });
@@ -3354,6 +3375,11 @@ interface TurnOutcome {
   reason: TurnOutcomeReason;
   detail?: string;
   iterations: number;
+  /** When `reason === 'aborted'`, whether the user, the stall watchdog, or a
+   *  cross-tab handoff fired the abort. Lets the sticky post-turn banner
+   *  read "timed out" vs "stopped by user" vs "another tab took control"
+   *  instead of the ambiguous "stopped" it used to display for all three. */
+  abortReason?: AbortReason;
 }
 
 function formatTurnOutcome(o: TurnOutcome): string {
@@ -3379,7 +3405,14 @@ function formatTurnOutcome(o: TurnOutcome): string {
     case 'refusal':
       return `⊘ model refused · ${cost} · ${iters}${tools}`;
     case 'aborted':
-      return `⊘ stopped · ${cost} · ${iters}${tools}`;
+      switch (o.abortReason) {
+        case 'watchdog':
+          return `⏱ timed out — no streamed token for ${Math.round(getStallThresholdMs() / 1000)}s · ${cost} · ${iters}${tools}`;
+        case 'tab-handoff':
+          return `⇄ stopped — another tab took control · ${cost} · ${iters}${tools}`;
+        default:
+          return `⊘ stopped by user · ${cost} · ${iters}${tools}`;
+      }
     case 'error':
       return `✗ ${o.detail ?? 'error'} · ${cost} · ${iters}${tools}`;
     default:
@@ -3923,15 +3956,17 @@ function triggerStallRetry(): void {
   const threshSec = Math.round(getStallThresholdMs() / 1000);
   if (progressState.retryCount >= MAX_STALL_RETRIES) {
     setTransientStatus(`Model stalled (no tokens for ${threshSec}s) after ${MAX_STALL_RETRIES} retries — stopping. Increase "Request timeout" in AI settings if using a slow model.`);
-    state.inFlightController?.abort();
-    void interruptLocal();
+    // 'watchdog' rides on the AbortSignal so chatLoop tags the persisted
+    // aborted message with abortReason='watchdog'. The transcript banner then
+    // reads "Timed out — model didn't respond" instead of the misleading
+    // "Stopped by user" this ambiguous label used to render.
+    stopActiveTurn('watchdog');
     return;
   }
   progressState.retryCount++;
   setTransientStatus(`No response for ${threshSec}s — auto-resuming (retry ${progressState.retryCount}/${MAX_STALL_RETRIES})...`);
   stalledByWatchdog = true;
-  state.inFlightController?.abort();
-  void interruptLocal();
+  stopActiveTurn('watchdog');
 }
 
 // === Compaction ===

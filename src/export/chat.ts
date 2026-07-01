@@ -66,7 +66,14 @@ function renderMessage(msg: ChatMessage): string {
   for (const tc of msg.toolCalls ?? []) parts.push(renderToolCall(tc));
   for (const tr of msg.toolResults ?? []) parts.push(renderToolResult(tr));
 
-  if (msg.aborted) parts.push('_[stopped before completing]_');
+  if (msg.aborted) {
+    // Distinguish the three abort surfaces so the exported record matches the
+    // in-app banner. Legacy messages without abortReason are treated as user
+    // stops, matching how the panel renders them for backwards compatibility.
+    if (msg.abortReason === 'watchdog') parts.push("_[timed out — model didn't respond]_");
+    else if (msg.abortReason === 'tab-handoff') parts.push('_[stopped — another tab took control]_');
+    else parts.push('_[stopped before completing]_');
+  }
 
   // A bubble with no visible content (e.g. an assistant turn that only fired
   // tool calls already rendered above) shouldn't print a dangling heading.

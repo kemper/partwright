@@ -219,6 +219,11 @@ export const THINKING_LEVELS: Record<ChatToggles['thinking'], { label: string; p
   high:   { label: 'High', promptLabel: 'high',   hint: 'Deep reasoning for the hardest spatial problems. Costs the most output tokens.' },
 };
 
+/** Why an in-flight assistant turn was aborted. Set on the persisted
+ *  ChatMessage via `abortReason`, and passed as `AbortController.abort(reason)`
+ *  so the streamer's `signal.reason` carries it into chatLoop. */
+export type AbortReason = 'user' | 'watchdog' | 'tab-handoff';
+
 /** Outcome category the agent loop reports back to the UI. Single
  *  source of truth — chatLoop produces these, aiPanel renders them. */
 export type TurnOutcomeReason =
@@ -266,8 +271,19 @@ export interface ChatMessage {
   seq: number;
   /** When the message was synthesized by a compaction summary. */
   compacted?: boolean;
-  /** When the user hit Stop mid-stream and we preserved the partial. */
+  /** True when the turn was aborted mid-stream and we preserved the partial
+   *  (see `abortReason` for who fired it). */
   aborted?: boolean;
+  /** Why the turn was aborted. Absent on legacy records (pre-schema-1.18),
+   *  which the UI treats as `'user'` for backwards compatibility.
+   *  - `'user'` — the human clicked Stop.
+   *  - `'watchdog'` — the stall-timeout watchdog fired after no streamed
+   *    token for `stallTimeoutSec` (default 60 s), exhausted its retries,
+   *    and gave up.
+   *  - `'tab-handoff'` — this tab lost the single-writer lock (another tab
+   *    took control of the same session), so the in-flight run was
+   *    terminated locally. */
+  abortReason?: AbortReason;
   /** Marks a synthetic assistant message representing a turn that errored
    *  out (e.g. the model crashed, a provider 4xx/5xx). Rendered with a red
    *  border so it stands out from a normal reply, and offers a Retry button
