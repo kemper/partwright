@@ -250,7 +250,7 @@ import {
   apiRotateSelection,
 } from './ui/insertPalette';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
-import { meshIslands, trianglesInIsland, islandAtPoint } from './color/meshIslands';
+import { meshIslands, trianglesInIsland, islandAtPoint, subsetMesh } from './color/meshIslands';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
 import { cylinderRefineRegion, findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
@@ -11397,6 +11397,61 @@ async function main() {
       return p ? { id: p.id, name: p.name, order: p.order } : null;
     },
 
+    /** Current session id (or `null` when no session is open). Cheap
+     *  companion to `waitForSessionStable` — agents can capture this before
+     *  a batch of paint calls and re-check after to detect the mid-loop
+     *  session-swap race that swallowed 60+ paint operations in the
+     *  multi-agent Pomni validation. */
+    getSessionId(): string | null {
+      return getState().session?.id ?? null;
+    },
+
+    /** Current version index within the active session (0 if no version is
+     *  loaded). Pair with `getSessionId()` to detect the mid-loop autosave
+     *  race: `const {id, v} = {id: getSessionId(), v: getVersion()};
+     *  paintIsland(...); if (getSessionId() !== id || getVersion() !== v)
+     *  console.warn('session changed under this paint call')`. */
+    getVersion(): number {
+      return getState().currentVersion?.index ?? 0;
+    },
+
+    /** Await session-id stability — resolves once `minMs` (default 800) has
+     *  passed without the session id changing. Fixes the paint-loop-drops
+     *  hazard where an in-flight autosave-triggered navigation retargets
+     *  subsequent paint calls at a stale session. Returns
+     *  `{sessionId, elapsedMs}` on success or `{error}` on timeout / no
+     *  session. Pair with `importMeshData`:
+     *  ```
+     *  await partwright.importMeshData(b64, name);
+     *  await partwright.waitForSessionStable();   // now safe to paint
+     *  partwright.paintIsland(...);
+     *  ```
+     */
+    async waitForSessionStable(opts?: { minMs?: number; timeoutMs?: number }) {
+      const minMs = opts?.minMs ?? 800;
+      const timeoutMs = opts?.timeoutMs ?? 15000;
+      if (!Number.isFinite(minMs) || minMs < 0) return { error: 'minMs must be a non-negative finite number' };
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { error: 'timeoutMs must be a positive finite number' };
+      const start = performance.now();
+      let lastId = getState().session?.id ?? null;
+      let lastChangeAt = start;
+      const step = 50;
+      while (performance.now() - start < timeoutMs) {
+        await new Promise(r => setTimeout(r, step));
+        const now = performance.now();
+        const id = getState().session?.id ?? null;
+        if (id !== lastId) {
+          lastId = id;
+          lastChangeAt = now;
+          continue;
+        }
+        if (id !== null && now - lastChangeAt >= minMs) {
+          return { sessionId: id, elapsedMs: Math.round(now - start) };
+        }
+      }
+      return { error: `waitForSessionStable timed out after ${timeoutMs}ms (last session id: ${lastId ?? 'null'}). Increase timeoutMs or check that a session is open.` };
+    },
+
     /** Create a new, empty part and switch to it. Resets the editor to a starter
      *  snippet; call runAndSave/saveVersion to commit its first version. */
     async createPart(name?: string) {
@@ -14700,6 +14755,59 @@ async function main() {
       return partwrightAPI.paintIsland({ index: islandIdx, color: opts.color, name: opts.name ?? `Island ${islandIdx}` });
     },
 
+    /** Render ONE mesh island as a small standalone thumbnail. This is the
+     *  "vision fix" for the identification problem — when `listComponents`
+     *  returns 61 islands and bbox alone can't tell a left glove from a right
+     *  boot, `renderIsland({index})` lets the agent (or its multimodal model)
+     *  actually LOOK at that island in isolation. Returns a data URL PNG
+     *  framed to just that island's geometry.
+     *
+     *  Cheap: builds a subset MeshData with only the island's triangles and
+     *  runs it through the same offscreen renderer `renderView` uses. The
+     *  auto-framed camera hits ONLY that island — no other islands intrude
+     *  into the frame or shift the framing. Default view is iso (30° elev,
+     *  315° az) at 192px — small enough to include several thumbnails in
+     *  a tool result without blowing token budget.
+     *
+     *  For a full "grid of thumbnails" pass, agents typically loop:
+     *  `listComponents()` → for each i: `renderIsland({index: i})`. */
+    renderIsland(opts: {
+      index: number;
+      view?: { elevation?: number; azimuth?: number; ortho?: boolean };
+      size?: number;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'renderIsland requires { index }' };
+      if (!Number.isInteger(opts.index) || opts.index < 0) return { error: 'renderIsland.index must be a non-negative integer (from listComponents).' };
+      const size = opts.size ?? 192;
+      if (typeof size !== 'number' || !Number.isFinite(size) || size < 32 || size > 2048) {
+        return { error: 'size must be a finite number in [32, 2048].' };
+      }
+      const { triIslands, islands } = meshIslands(currentMeshData);
+      if (opts.index >= islands.length) return { error: `renderIsland.index ${opts.index} out of range — listComponents has ${islands.length} island(s).` };
+      const island = islands[opts.index];
+      const triangleIds = trianglesInIsland(triIslands, opts.index);
+      const subset = subsetMesh(currentMeshData, triangleIds);
+      const view = opts.view ?? {};
+      const dataUrl = renderSingleView(subset, {
+        elevation: view.elevation ?? 30,
+        azimuth: view.azimuth ?? 315,
+        ortho: view.ortho ?? false,
+        size,
+      });
+      return {
+        index: opts.index,
+        triangleCount: island.triangleCount,
+        surfaceArea: island.surfaceArea,
+        principalAxis: island.principalAxis,
+        aspectRatio: island.aspectRatio,
+        bbox: island.bbox,
+        centroid: island.center,
+        size,
+        dataUrl,
+      };
+    },
+
     /** Auto-segment the current mesh by **crease (dihedral-angle) watershed**
      *  and return a region list. This is the right enumeration primitive for
      *  ORGANIC SCULPTS — the iris ring, pupil, eye outline, mouth crease,
@@ -14858,6 +14966,128 @@ async function main() {
       };
     },
 
+    /** Sample a colour region from an attached reference image. This is the
+     *  agent-facing bridge between "the user's photo" and "the right RGB to
+     *  pass to paintByCrease/paintIsland/paintInBox" — no more guessing
+     *  "red" as `[1, 0, 0]` when the reference red is actually `[0.87, 0.12,
+     *  0.18]`. Point at the pixel/rect on the reference where the feature
+     *  lives; the sampler decodes the image, reads that region, and returns
+     *  the RGB in 0..1 (the range every paint tool takes).
+     *
+     *  Identify the image by `id` (from `getImages()`) or omit to sample
+     *  from the FIRST attached image. Rect coordinates are pixels; omit
+     *  `rect` to sample the single pixel at `point` (also px).
+     *
+     *  `mode: 'dominant'` (default) does a coarse HSV bucket of the region
+     *  and returns the modal bucket's mean — robust to a shadow / highlight
+     *  smear that would fool a naive average. `mode: 'mean'` is a plain
+     *  average — right for uniform patches. */
+    async sampleReferenceColor(opts: {
+      id?: string;
+      rect?: { x: number; y: number; w: number; h: number };
+      point?: [number, number];
+      mode?: 'dominant' | 'mean';
+    }) {
+      if (!opts || typeof opts !== 'object') return { error: 'sampleReferenceColor requires { rect } or { point } (and optional { id, mode })' };
+      const images = _getImageAttachments();
+      if (images.length === 0) return { error: 'No reference images attached — call addImage({src}) or use the Attachments panel first.' };
+      const target = opts.id ? images.find(im => im.id === opts.id) : images[0];
+      if (!target) return { error: `sampleReferenceColor: no image with id="${opts.id}" (attached ids: ${images.map(i => i.id).join(', ') || 'none'})` };
+      const mode = opts.mode ?? 'dominant';
+      if (mode !== 'dominant' && mode !== 'mean') return { error: 'mode must be "dominant" or "mean"' };
+      try {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        await new Promise<void>((res, rej) => {
+          img.onload = () => res();
+          img.onerror = () => rej(new Error('image failed to decode'));
+          img.src = target.src;
+        });
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return { error: 'Could not acquire 2D canvas context.' };
+        ctx.drawImage(img, 0, 0);
+        // Resolve rect: explicit rect > point (single px) > full image (fallback).
+        let rx: number, ry: number, rw: number, rh: number;
+        if (opts.rect) {
+          const r = opts.rect;
+          if (!Number.isFinite(r.x) || !Number.isFinite(r.y) || !Number.isFinite(r.w) || !Number.isFinite(r.h)) {
+            return { error: 'rect components must be finite numbers' };
+          }
+          rx = Math.max(0, Math.round(r.x));
+          ry = Math.max(0, Math.round(r.y));
+          rw = Math.min(canvas.width - rx, Math.max(1, Math.round(r.w)));
+          rh = Math.min(canvas.height - ry, Math.max(1, Math.round(r.h)));
+        } else if (opts.point) {
+          if (!Array.isArray(opts.point) || opts.point.length !== 2) return { error: 'point must be [x, y] pixels' };
+          rx = Math.max(0, Math.min(canvas.width - 1, Math.round(opts.point[0])));
+          ry = Math.max(0, Math.min(canvas.height - 1, Math.round(opts.point[1])));
+          rw = 1; rh = 1;
+        } else {
+          rx = 0; ry = 0; rw = canvas.width; rh = canvas.height;
+        }
+        const data = ctx.getImageData(rx, ry, rw, rh).data;
+        const npx = rw * rh;
+        if (mode === 'mean') {
+          let r = 0, g = 0, b = 0;
+          for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; }
+          return {
+            imageId: target.id,
+            color: [r / npx / 255, g / npx / 255, b / npx / 255] as [number, number, number],
+            hex: `#${[r, g, b].map(v => Math.round(v / npx).toString(16).padStart(2, '0')).join('')}`,
+            samplePixels: npx,
+            rect: { x: rx, y: ry, w: rw, h: rh },
+            mode,
+          };
+        }
+        // 'dominant' — bucket pixels into a 6×3×3 HSV grid, pick the modal
+        // bucket, return the mean colour of pixels landing in that bucket.
+        // Beats a plain average when the region has a shadow or highlight
+        // smear (photo of a colour swatch).
+        const buckets = new Map<number, { r: number; g: number; b: number; n: number }>();
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          // Cheap HSV bucket. H in 6 bins, S in 3, V in 3 → 54 buckets.
+          const rn = r / 255, gn = g / 255, bn = b / 255;
+          const mx = Math.max(rn, gn, bn), mn = Math.min(rn, gn, bn);
+          const v = mx;
+          const s = mx > 0 ? (mx - mn) / mx : 0;
+          let h = 0;
+          if (mx !== mn) {
+            const d = mx - mn;
+            if (mx === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0));
+            else if (mx === gn) h = ((bn - rn) / d + 2);
+            else h = ((rn - gn) / d + 4);
+            h /= 6;
+          }
+          const hi = Math.min(5, Math.floor(h * 6));
+          const si = Math.min(2, Math.floor(s * 3));
+          const vi = Math.min(2, Math.floor(v * 3));
+          const key = hi * 9 + si * 3 + vi;
+          const b0 = buckets.get(key);
+          if (b0) { b0.r += r; b0.g += g; b0.b += b; b0.n += 1; }
+          else buckets.set(key, { r, g, b, n: 1 });
+        }
+        let best: { r: number; g: number; b: number; n: number } | null = null;
+        for (const b of buckets.values()) if (!best || b.n > best.n) best = b;
+        if (!best) return { error: 'sampleReferenceColor: no pixels in region (rect out of image bounds?)' };
+        return {
+          imageId: target.id,
+          color: [best.r / best.n / 255, best.g / best.n / 255, best.b / best.n / 255] as [number, number, number],
+          hex: `#${[best.r, best.g, best.b].map(v => Math.round(v / best!.n).toString(16).padStart(2, '0')).join('')}`,
+          samplePixels: best.n,
+          totalPixelsScanned: npx,
+          bucketFraction: best.n / npx,
+          rect: { x: rx, y: ry, w: rw, h: rh },
+          mode,
+        };
+      } catch (err) {
+        return { error: `sampleReferenceColor failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+
     /** Token-cheap planning aid for paint workflows: returns just the
      *  centroid + normal + bbox of each coplanar face group, no triangle
      *  IDs. Same as `getMeshSummary({maxTrianglesPerGroup: 0, maxGroups})`
@@ -14901,19 +15131,31 @@ async function main() {
         }
       }
       // Render-only fallback (STL imports, non-manifold meshes): face-connected
-      // BFS over the triangle adjacency graph. No volume / surfaceArea (no
-      // closed-solid guarantee), but bbox + triangleCount + centroid land,
-      // which is what `paintIsland({index, color})` needs.
+      // BFS over the triangle adjacency graph, enriched with per-island shape
+      // metadata (principalAxis, surfaceArea, normalHistogram) and a top-level
+      // modelUpAxis guess so agents can identify "which way is up" without
+      // guessing.
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       try {
-        const { islands } = meshIslands(currentMeshData);
+        const { islands, meshNormalHistogram, modelUpAxis } = meshIslands(currentMeshData);
         const components = islands.map(island => ({
           index: island.index,
           triangleCount: island.triangleCount,
+          surfaceArea: island.surfaceArea,
           centroid: island.center,
           boundingBox: island.bbox,
+          principalAxis: island.principalAxis,
+          principalExtent: island.principalExtent,
+          aspectRatio: island.aspectRatio,
+          normalHistogram: island.normalHistogram,
         }));
-        return { count: components.length, components, source: 'mesh-island' as const };
+        return {
+          count: components.length,
+          components,
+          source: 'mesh-island' as const,
+          modelUpAxis,
+          meshNormalHistogram,
+        };
       } catch (err) {
         return { error: `mesh-island BFS failed: ${err instanceof Error ? err.message : String(err)}` };
       }
@@ -15675,6 +15917,11 @@ async function main() {
         'paintIslandAt':   { signature: 'paintIslandAt({point, color, name?}) -- Paint the face-connected island containing the triangle closest to point. Pair with probePixel/probeRay to ground island selection in a visible point ("the hat in the iso render") without enumerating islands.', docs: '/ai/colors.md' },
         'detectRegions':   { signature: 'detectRegions({creaseAngleDeg?=20, minTriangleCount?=5, maxRegions?=64, withinIsland?, includeNeighbors?=true, maxTrianglesPerGroup?=0}) -> {count, regions: [{id, triangleCount, area, centroid, normal, bbox, neighborIds?, triangleIds?}], source} -- Auto-segment by crease (dihedral) watershed. The right enumeration primitive for SCULPTED FEATURES — iris ring, pupil, mouth crease, blush dimples, pom-poms, bangs all separate naturally at the 20° default. Pass withinIsland to segment ONE mesh-island (fused body part) so the face/eyes/buttons stop being unreachable.', docs: '/ai/colors.md' },
         'paintByCrease':   { signature: 'paintByCrease({seedPoint, seedNormal?, creaseAngleDeg?=20, color, name?}) -- Flood paint from a surface seed, stopping at the next crease edge. The right paint primitive for SCULPTED FEATURES on organic meshes. Clean edges by construction, no box guessing. Pair with probePixel to ground the seed. seedNormal optional (snaps to nearest triangle).', docs: '/ai/colors.md' },
+        'renderIsland':    { signature: 'renderIsland({index, view?, size?=192}) -> {dataUrl, bbox, centroid, principalAxis, aspectRatio, triangleCount, surfaceArea} -- Render ONE mesh island as a standalone thumbnail. THE vision fix for the identification problem — see which island is the hat vs face vs glove instead of guessing from bbox. Auto-framed to the island; nothing else in frame.', docs: '/ai/colors.md' },
+        'sampleReferenceColor': { signature: 'sampleReferenceColor({id?, rect?, point?, mode?="dominant"}) -> {color: [r,g,b], hex, imageId, ...} -- Sample a colour from an attached reference image. Point at the pixel/rect where the feature lives (Pomni left glove, right shoe, iris outer ring); returns the RGB in 0..1 ready to hand straight to paintByCrease / paintIsland / paintInBox. "dominant" mode buckets HSV to survive photo shadows/highlights; "mean" is a plain average.', docs: '/ai/colors.md' },
+        'waitForSessionStable': { signature: 'waitForSessionStable({minMs?=800, timeoutMs?=15000}) -> {sessionId, elapsedMs} -- Await session-id stability. Fixes the paint-loop DX cliff where autosave-triggered navigation retargets in-flight paint calls at a stale session (2 of 4 v2 agents lost 60+ paints to this). Call right after importMeshData before painting.', docs: '/ai.md' },
+        'getSessionId':    { signature: 'getSessionId() -> string | null -- Current session id. Pair with waitForSessionStable / getVersion to detect the mid-loop session-swap race.', docs: '/ai.md' },
+        'getVersion':      { signature: 'getVersion() -> number -- Current version index within the active session. Capture before a paint batch; re-check after to detect autosave-triggered version bumps.', docs: '/ai.md' },
         'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai/colors.md' },
         'getModelColors':  { signature: 'getModelColors() -> {count, colors: [{name, color, triangleCount}]} -- Colors declared in code via api.label(shape, name, {color}) or api.paint.*. Render + export automatically; editor stays editable; manual paint overrides.', docs: '/ai/colors.md' },
         'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai/colors.md' },

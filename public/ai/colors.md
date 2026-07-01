@@ -459,6 +459,74 @@ before zooming in).
 > 4. **Authored geometry** (you wrote the model): `api.label` + `paintByLabel`
 >    — strongest primitive, no probing.
 
+## Painting an imported STL to match a reference photo — full workflow
+
+This ties everything together. The scenario: the user hands you a
+multi-part character STL and a reference photo, and asks you to paint the
+model to match. The right sequence uses **six tools compounded**:
+
+```js
+// 1) Kick off import — do NOT straight-await on large STLs; the page
+//    navigates mid-await and later paint calls land on stale sessions.
+partwright.importMeshData(base64, 'character.stl', { sessionName: 'foo' });
+// 2) Wait for the post-import session dance to settle before painting.
+const { sessionId } = await partwright.waitForSessionStable({ minMs: 800 });
+
+// 3) listComponents now returns per-island shape metadata AND a top-level
+//    modelUpAxis guess so you don't fall for the "figure lying flat on
+//    the print bed" trap. If the figure's Y bbox is tall and its normals
+//    bunch toward +Y, modelUpAxis will say {axis: 'y', sign: '+'}.
+const { components, modelUpAxis } = partwright.listComponents();
+// modelUpAxis.axis is the figure's up direction (may not be Z!). Use it
+// for anatomical bucketing: top-of-figure = high-along-upAxis.
+
+// 4) Attach the reference photo, then sample the exact colour for each
+//    feature — no more guessing "red" as [1, 0, 0] when the reference
+//    red is [0.87, 0.12, 0.18].
+partwright.setAttachments([{ src: 'data:image/png;base64,...', kind: 'image' }]);
+const hatRed = await partwright.sampleReferenceColor({
+  rect: { x: 210, y: 40, w: 60, h: 40 },   // pixel rect on the reference photo
+  mode: 'dominant',
+});
+// → { color: [0.87, 0.12, 0.18], hex: '#de1e2e', ... }
+
+// 5) When bbox alone won't disambiguate visually-similar islands
+//    (4 boots, 4 cuffs, 6 ball-joint connectors), thumbnail them.
+//    You / your multimodal model looks at the tiles and picks by sight.
+const thumb = partwright.renderIsland({ index: 27, size: 192 });
+// → { dataUrl: 'data:image/png;base64,...', bbox, principalAxis, ... }
+
+// 6) Paint each part with the sampled colour, using the right primitive
+//    for its geometry.
+partwright.paintIsland({ index: 27, color: hatRed.color, name: 'hat-red-lobe' });
+// For features INSIDE a fused island (face, eyes on Pomni's 205k-tri body):
+const { regions } = partwright.detectRegions({
+  withinIsland: bodyIslandIndex,
+  creaseAngleDeg: 20,
+  maxTrianglesPerGroup: 20000,
+});
+const irisColor = await partwright.sampleReferenceColor({ rect: { x: 250, y: 120, w: 30, h: 30 } });
+partwright.paintFaces({ triangleIds: regions[3].triangleIds, color: irisColor.color });
+```
+
+**Why each step matters** (learned from validating this in the multi-agent
+Pomni paint pass):
+
+- `waitForSessionStable` — without it, 2 of 4 v2 agents lost 60+ paint calls
+  to autosave-triggered session swaps mid-loop.
+- `modelUpAxis` in the `listComponents` output — every v1 agent burned 3+
+  iterations recovering from "wrong axis = up" heuristics on models laid
+  flat on the print bed.
+- `renderIsland` — bbox+centroid can't tell 4 near-identical boots apart;
+  a 192px iso PNG can. Vision-in-loop is the missing modality.
+- `sampleReferenceColor` — text descriptions of colour ("red") produce
+  saturated cartoon red; the reference photo red is muted, and the paint
+  looks wrong until you sample it.
+- `detectRegions({withinIsland})` — the only way to reach sculpted features
+  inside a fused mesh-island.
+- Batching paints in one `page.evaluate` (or one AI-tool turn) minimises
+  exposure to mid-loop session changes.
+
 **Avoiding over-paint.** When `paintInBox` / `paintNear` catches side
 walls or the bottom face by mistake, pass `topOnly: true` — restricts
 to upward-facing triangles (axis +Z within 30°). Equivalent to

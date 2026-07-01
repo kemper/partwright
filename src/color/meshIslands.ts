@@ -33,6 +33,28 @@ export interface MeshIsland {
   /** Bbox centre (not the centroid of triangles). Cheap and good enough for
    *  "where is this island in space" — what the AI needs to label parts. */
   center: [number, number, number];
+  /** Sum of triangle areas in this island — a size proxy that isn't fooled by
+   *  fine-tessellation regions (a highly-subdivided flat disc has huge
+   *  triangleCount but small surfaceArea; a coarse but large shell has small
+   *  triangleCount but big surfaceArea). Ranks islands by "visible bulk". */
+  surfaceArea: number;
+  /** Axis of greatest bbox extent — `'x'`/`'y'`/`'z'`. Print-in-place kits
+   *  laid flat still let an agent infer "this is a leg" (long along its
+   *  principal axis) vs "this is a puck" (aspect ratio near 1). */
+  principalAxis: 'x' | 'y' | 'z';
+  /** Length along the principal axis. */
+  principalExtent: number;
+  /** Normalized bbox extents (max = 1) in the order [x, y, z]. `[1, 0.1, 0.1]`
+   *  = stick; `[1, 1, 0.05]` = shell / thin disc; `[1, 1, 1]` = blobby. */
+  aspectRatio: [number, number, number];
+  /** Fraction of the island's surface area facing each ±axis hemisphere.
+   *  Sums to ~1 across the six buckets. Distinguishes "shell whose normals
+   *  point mostly +Y" from "flat disc whose normals bunch on one axis". */
+  normalHistogram: {
+    xPos: number; xNeg: number;
+    yPos: number; yNeg: number;
+    zPos: number; zNeg: number;
+  };
 }
 
 export interface MeshIslandsResult {
@@ -40,6 +62,21 @@ export interface MeshIslandsResult {
   triIslands: Uint32Array;
   /** Per-island metadata. */
   islands: MeshIsland[];
+  /** Whole-mesh axis-hemisphere histogram (area-weighted), aggregated across
+   *  every island. */
+  meshNormalHistogram: {
+    xPos: number; xNeg: number;
+    yPos: number; yNeg: number;
+    zPos: number; zNeg: number;
+  };
+  /** Best-guess "which way is up" for the entire mesh, derived from
+   *  `meshNormalHistogram`: the axis with the largest asymmetry between its
+   *  + and − hemispheres — the reasoning being that a printed figure has more
+   *  top-facing area than bottom-facing area (canopy > underside). Also
+   *  weighted by whole-mesh bbox extents so a flat-on-plate figure (bbox
+   *  tall in Y) prefers Y over Z when the histogram is close. `null` when
+   *  the mesh is empty or all axes are within 5% of each other. */
+  modelUpAxis: { axis: 'x' | 'y' | 'z'; sign: '+' | '-'; confidence: number } | null;
 }
 
 const cache = new WeakMap<MeshData, MeshIslandsResult>();
@@ -65,18 +102,22 @@ export function clearMeshIslandsCache(mesh?: MeshData): void {
 function compute(mesh: MeshData): MeshIslandsResult {
   const { numTri } = mesh;
   const triIslands = new Uint32Array(numTri);
-  if (numTri === 0) return { triIslands, islands: [] };
+  const emptyHistogram = { xPos: 0, xNeg: 0, yPos: 0, yNeg: 0, zPos: 0, zNeg: 0 };
+  if (numTri === 0) return { triIslands, islands: [], meshNormalHistogram: emptyHistogram, modelUpAxis: null };
 
   // Sentinel: 0xFFFFFFFF = unvisited. (Real island ids start at 0 and we
   // won't ever hit 2^32-1 islands.)
   triIslands.fill(0xFFFFFFFF);
 
   const adjacency = buildAdjacency(mesh);
-  const { neighbors } = adjacency;
+  const { neighbors, normals } = adjacency;
   const { triVerts, vertProperties, numProp } = mesh;
 
   const islands: MeshIsland[] = [];
   const stack: number[] = [];
+  const meshHist = { xPos: 0, xNeg: 0, yPos: 0, yNeg: 0, zPos: 0, zNeg: 0 };
+  let meshMinX = Infinity, meshMinY = Infinity, meshMinZ = Infinity;
+  let meshMaxX = -Infinity, meshMaxY = -Infinity, meshMaxZ = -Infinity;
 
   for (let seed = 0; seed < numTri; seed++) {
     if (triIslands[seed] !== 0xFFFFFFFF) continue;
@@ -85,25 +126,50 @@ function compute(mesh: MeshData): MeshIslandsResult {
     stack.push(seed);
 
     let triCount = 0;
+    let surfaceArea = 0;
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    const hist = { xPos: 0, xNeg: 0, yPos: 0, yNeg: 0, zPos: 0, zNeg: 0 };
 
     while (stack.length > 0) {
       const t = stack.pop()!;
       triCount++;
-      // Accumulate bbox from the triangle's three vertices.
-      for (let k = 0; k < 3; k++) {
-        const v = triVerts[t * 3 + k];
-        const x = vertProperties[v * numProp];
-        const y = vertProperties[v * numProp + 1];
-        const z = vertProperties[v * numProp + 2];
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (z < minZ) minZ = z;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-        if (z > maxZ) maxZ = z;
-      }
+      const v0 = triVerts[t * 3];
+      const v1 = triVerts[t * 3 + 1];
+      const v2 = triVerts[t * 3 + 2];
+      const ax = vertProperties[v0 * numProp];
+      const ay = vertProperties[v0 * numProp + 1];
+      const az = vertProperties[v0 * numProp + 2];
+      const bx = vertProperties[v1 * numProp];
+      const by = vertProperties[v1 * numProp + 1];
+      const bz = vertProperties[v1 * numProp + 2];
+      const cx = vertProperties[v2 * numProp];
+      const cy = vertProperties[v2 * numProp + 1];
+      const cz = vertProperties[v2 * numProp + 2];
+      // bbox
+      if (ax < minX) minX = ax; if (bx < minX) minX = bx; if (cx < minX) minX = cx;
+      if (ay < minY) minY = ay; if (by < minY) minY = by; if (cy < minY) minY = cy;
+      if (az < minZ) minZ = az; if (bz < minZ) minZ = bz; if (cz < minZ) minZ = cz;
+      if (ax > maxX) maxX = ax; if (bx > maxX) maxX = bx; if (cx > maxX) maxX = cx;
+      if (ay > maxY) maxY = ay; if (by > maxY) maxY = by; if (cy > maxY) maxY = cy;
+      if (az > maxZ) maxZ = az; if (bz > maxZ) maxZ = bz; if (cz > maxZ) maxZ = cz;
+      // triangle area from |AB × AC| / 2
+      const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+      const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+      const crx = e1y * e2z - e1z * e2y;
+      const cry = e1z * e2x - e1x * e2z;
+      const crz = e1x * e2y - e1y * e2x;
+      const area = 0.5 * Math.sqrt(crx * crx + cry * cry + crz * crz);
+      surfaceArea += area;
+      // area-weighted normal-hemisphere accumulation for this triangle
+      const nx = normals[t * 3], ny = normals[t * 3 + 1], nz = normals[t * 3 + 2];
+      const ax_ = Math.abs(nx), ay_ = Math.abs(ny), az_ = Math.abs(nz);
+      // Bucket into the DOMINANT hemisphere (biggest |axis|) — a normal has
+      // components on all three axes but its geometric identity is the one
+      // it points along most.
+      if (ax_ >= ay_ && ax_ >= az_) { if (nx >= 0) hist.xPos += area; else hist.xNeg += area; }
+      else if (ay_ >= ax_ && ay_ >= az_) { if (ny >= 0) hist.yPos += area; else hist.yNeg += area; }
+      else { if (nz >= 0) hist.zPos += area; else hist.zNeg += area; }
       const ns = neighbors[t];
       for (let i = 0; i < ns.length; i++) {
         const nb = ns[i];
@@ -114,15 +180,81 @@ function compute(mesh: MeshData): MeshIslandsResult {
       }
     }
 
+    // Roll this island into the whole-mesh accumulators.
+    meshHist.xPos += hist.xPos; meshHist.xNeg += hist.xNeg;
+    meshHist.yPos += hist.yPos; meshHist.yNeg += hist.yNeg;
+    meshHist.zPos += hist.zPos; meshHist.zNeg += hist.zNeg;
+    if (minX < meshMinX) meshMinX = minX;
+    if (minY < meshMinY) meshMinY = minY;
+    if (minZ < meshMinZ) meshMinZ = minZ;
+    if (maxX > meshMaxX) meshMaxX = maxX;
+    if (maxY > meshMaxY) meshMaxY = maxY;
+    if (maxZ > meshMaxZ) meshMaxZ = maxZ;
+
+    // Derived per-island metrics: principal axis, aspect ratio, normalised
+    // histogram.
+    const extents: [number, number, number] = [maxX - minX, maxY - minY, maxZ - minZ];
+    const [ex, ey, ez] = extents;
+    let principalAxis: 'x' | 'y' | 'z' = 'x';
+    let principalExtent = ex;
+    if (ey > principalExtent) { principalAxis = 'y'; principalExtent = ey; }
+    if (ez > principalExtent) { principalAxis = 'z'; principalExtent = ez; }
+    const maxExtent = principalExtent > 0 ? principalExtent : 1;
+    const aspectRatio: [number, number, number] = [ex / maxExtent, ey / maxExtent, ez / maxExtent];
+    const histSum = hist.xPos + hist.xNeg + hist.yPos + hist.yNeg + hist.zPos + hist.zNeg;
+    const normHist = histSum > 0
+      ? {
+          xPos: hist.xPos / histSum, xNeg: hist.xNeg / histSum,
+          yPos: hist.yPos / histSum, yNeg: hist.yNeg / histSum,
+          zPos: hist.zPos / histSum, zNeg: hist.zNeg / histSum,
+        }
+      : emptyHistogram;
+
     islands.push({
       index: islandIdx,
       triangleCount: triCount,
       bbox: { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] },
       center: [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2],
+      surfaceArea,
+      principalAxis,
+      principalExtent,
+      aspectRatio,
+      normalHistogram: normHist,
     });
   }
 
-  return { triIslands, islands };
+  // Whole-mesh normalized histogram + up-axis guess.
+  const meshHistSum = meshHist.xPos + meshHist.xNeg + meshHist.yPos + meshHist.yNeg + meshHist.zPos + meshHist.zNeg;
+  const meshHistNorm = meshHistSum > 0
+    ? {
+        xPos: meshHist.xPos / meshHistSum, xNeg: meshHist.xNeg / meshHistSum,
+        yPos: meshHist.yPos / meshHistSum, yNeg: meshHist.yNeg / meshHistSum,
+        zPos: meshHist.zPos / meshHistSum, zNeg: meshHist.zNeg / meshHistSum,
+      }
+    : emptyHistogram;
+  // Asymmetry per axis = |+ - −|. The axis with the biggest asymmetry is
+  // where up-vs-down actually means something (a symmetric axis is a wash).
+  const asymX = Math.abs(meshHistNorm.xPos - meshHistNorm.xNeg);
+  const asymY = Math.abs(meshHistNorm.yPos - meshHistNorm.yNeg);
+  const asymZ = Math.abs(meshHistNorm.zPos - meshHistNorm.zNeg);
+  let upAxis: { axis: 'x' | 'y' | 'z'; sign: '+' | '-'; confidence: number } | null = null;
+  const maxAsym = Math.max(asymX, asymY, asymZ);
+  if (maxAsym > 0.05) {
+    // Weight by bbox extent: a printed-flat figure has a tall Y bbox (head
+    // to toe) so Y is a better "up" candidate than Z (thickness). Doesn't
+    // override the normal-hemisphere signal, just breaks close ties.
+    const bboxExtents = { x: meshMaxX - meshMinX, y: meshMaxY - meshMinY, z: meshMaxZ - meshMinZ };
+    const bboxMax = Math.max(bboxExtents.x, bboxExtents.y, bboxExtents.z) || 1;
+    const scored = [
+      { axis: 'x' as const, sign: (meshHistNorm.xPos > meshHistNorm.xNeg ? '+' : '-') as '+' | '-', score: asymX * (bboxExtents.x / bboxMax) },
+      { axis: 'y' as const, sign: (meshHistNorm.yPos > meshHistNorm.yNeg ? '+' : '-') as '+' | '-', score: asymY * (bboxExtents.y / bboxMax) },
+      { axis: 'z' as const, sign: (meshHistNorm.zPos > meshHistNorm.zNeg ? '+' : '-') as '+' | '-', score: asymZ * (bboxExtents.z / bboxMax) },
+    ];
+    scored.sort((a, b) => b.score - a.score);
+    upAxis = { axis: scored[0].axis, sign: scored[0].sign, confidence: scored[0].score };
+  }
+
+  return { triIslands, islands, meshNormalHistogram: meshHistNorm, modelUpAxis: upAxis };
 }
 
 /** Collect every triangle id belonging to the given island. */
@@ -132,6 +264,37 @@ export function trianglesInIsland(triIslands: Uint32Array, islandIndex: number):
     if (triIslands[t] === islandIndex) out.add(t);
   }
   return out;
+}
+
+/** Build a compact subset MeshData containing only the given triangles.
+ *  Vertex data is remapped so `numVert` matches the referenced set and
+ *  `triVerts` indexes 0..numVert-1. Used by `renderIsland` to hand the
+ *  offscreen renderer just one island's triangles so the auto-framed
+ *  camera hits ONLY that island — no other-island triangles in frame. */
+export function subsetMesh(mesh: MeshData, triangles: Iterable<number>): MeshData {
+  const { triVerts, vertProperties, numProp } = mesh;
+  const oldToNewVert = new Map<number, number>();
+  const newVertProperties: number[] = [];
+  const newTriVerts: number[] = [];
+  for (const t of triangles) {
+    for (let k = 0; k < 3; k++) {
+      const oldV = triVerts[t * 3 + k];
+      let newV = oldToNewVert.get(oldV);
+      if (newV === undefined) {
+        newV = oldToNewVert.size;
+        oldToNewVert.set(oldV, newV);
+        for (let p = 0; p < numProp; p++) newVertProperties.push(vertProperties[oldV * numProp + p]);
+      }
+      newTriVerts.push(newV);
+    }
+  }
+  return {
+    vertProperties: new Float32Array(newVertProperties),
+    triVerts: new Uint32Array(newTriVerts),
+    numProp,
+    numVert: oldToNewVert.size,
+    numTri: newTriVerts.length / 3,
+  } as MeshData;
 }
 
 /** Find the island id that owns the triangle closest to `point` (linear scan

@@ -248,6 +248,69 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'renderIsland',
+    description: 'Render ONE mesh island as a standalone thumbnail. THE vision-in-loop fix for the identification problem — when listComponents returns 61 islands and bbox/centroid alone cannot tell "left glove" from "right boot", renderIsland lets you (and your multimodal model) actually SEE that island. Returns a base64 PNG framed to just the island. Default 192px iso, 30° elevation / 315° azimuth. For a "grid of thumbnails" pass: listComponents() → for each i: renderIsland({index: i}). Cheap enough (~50-100ms per island) to render several per turn.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', description: 'Island index from listComponents() (0-based).' },
+        view: {
+          type: 'object',
+          description: 'Camera override. Default iso: {elevation: 30, azimuth: 315}. Pass ortho: true for a build-plate style top-down.',
+          properties: {
+            elevation: { type: 'number' },
+            azimuth: { type: 'number' },
+            ortho: { type: 'boolean' },
+          },
+        },
+        size: { type: 'integer', description: 'Thumbnail edge length in pixels. Default 192. Range 32–2048.' },
+      },
+      required: ['index'],
+    },
+  },
+  {
+    name: 'sampleReferenceColor',
+    description: 'Sample a colour from an attached reference image. THE bridge between "the photo you\'re trying to match" and "the exact RGB to hand paintByCrease". Point at the pixel/rect on the reference where the feature is (Pomni left glove, iris outer ring, chest button); returns `{color: [r,g,b], hex}` in 0..1 ready to feed straight to any paint tool. "dominant" mode buckets HSV to survive photo shadows/highlights (the right default); "mean" is a plain average — right for a uniform patch. Identify the image via `id` from getImages(); omit to sample from the first attached image.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Image id from getImages(). Omit to use the first attached image.' },
+        rect: {
+          type: 'object',
+          description: 'Pixel rect on the image: {x, y, w, h}. Preferred over a single point — averaging over a patch is more robust.',
+          properties: {
+            x: { type: 'number' }, y: { type: 'number' },
+            w: { type: 'number' }, h: { type: 'number' },
+          },
+          required: ['x', 'y', 'w', 'h'],
+        },
+        point: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[x, y] pixel to sample as a fallback if rect is omitted (samples that single pixel).' },
+        mode: { type: 'string', enum: ['dominant', 'mean'], description: 'dominant (default) buckets HSV then takes the modal bucket mean — survives shadows/highlights. mean is a plain average.' },
+      },
+    },
+  },
+  {
+    name: 'waitForSessionStable',
+    description: 'Await session-id stability — resolves once minMs (default 800ms) has passed without the session id changing. Fixes the DX cliff where importMeshData navigates the page mid-await and later paint calls land in a stale session (2 of 4 v2 Pomni agents lost 60+ paint operations to this). Call it right after importMeshData before starting any paint work. Returns {sessionId, elapsedMs}.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        minMs: { type: 'number', description: 'Stability window in ms. Default 800.' },
+        timeoutMs: { type: 'number', description: 'Overall timeout. Default 15000.' },
+      },
+    },
+  },
+  {
+    name: 'getSessionId',
+    description: 'Current session id (or null). Pair with waitForSessionStable / getVersion to detect the mid-loop session-swap race.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'getVersion',
+    description: 'Current version index within the active session (0 if none). Capture before a paint batch; re-check after to detect autosave-triggered version bumps that could invalidate your assumptions.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'paintByCrease',
     description: 'Flood paint from a surface seed, stopping at the next crease edge. THE paint primitive for SCULPTED FEATURES on organic meshes (eyes, mouth, pom-poms). Clean edges by construction — no box guessing, no jaggies. Same math as paintRegion but parameterised in DEGREES (sculpt-natural) with a sculpt-tuned default of 20°. seedNormal optional; if omitted we snap to the nearest triangle and use its normal — forgiving of off-surface points from probePixel rounding. PAIR THIS WITH probePixel: render an iso, click the iris pixel, hand probePixel.point straight to paintByCrease. For very tight features (pupil inside iris) lower creaseAngleDeg to 5–10° so the inner crease catches.',
     input_schema: {
@@ -1447,7 +1510,7 @@ export const PART_TARGETABLE_TOOLS = new Set<string>([
   'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
   'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintByLabel', 'paintByLabels',
-  'paintConnected', 'paintInCylinder', 'detectRegions', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
+  'paintConnected', 'paintInCylinder', 'detectRegions', 'renderIsland', 'sampleReferenceColor', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
   'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
@@ -1493,6 +1556,11 @@ const ALWAYS_AVAILABLE = new Set([
   'readDoc',
   'findFaces',
   'listComponents',
+  'renderIsland',
+  'sampleReferenceColor',
+  'waitForSessionStable',
+  'getSessionId',
+  'getVersion',
   'listLabels',
   'getModelColors',
   // listRegions is a pure read, not a paint mutation, so it stays always-on
@@ -2080,6 +2148,16 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.detectRegions(input);
     case 'paintByCrease':
       return api.paintByCrease(input);
+    case 'renderIsland':
+      return api.renderIsland(input);
+    case 'sampleReferenceColor':
+      return api.sampleReferenceColor(input);
+    case 'waitForSessionStable':
+      return api.waitForSessionStable(input);
+    case 'getSessionId':
+      return api.getSessionId();
+    case 'getVersion':
+      return api.getVersion();
     case 'listLabels':
       return api.listLabels();
     case 'getModelColors':
