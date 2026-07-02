@@ -42,6 +42,10 @@ export interface MeshIsland {
    *  laid flat still let an agent infer "this is a leg" (long along its
    *  principal axis) vs "this is a puck" (aspect ratio near 1). */
   principalAxis: 'x' | 'y' | 'z';
+  /** Same as `principalAxis` but as a unit 3-vector so callers don't have to
+   *  translate. `'x'` → `[1,0,0]`; `'y'` → `[0,1,0]`; `'z'` → `[0,0,1]`. Also
+   *  the axis stripes/slabs should flow along. */
+  principalAxisVector: [number, number, number];
   /** Length along the principal axis. */
   principalExtent: number;
   /** Normalized bbox extents (max = 1) in the order [x, y, z]. `[1, 0.1, 0.1]`
@@ -201,6 +205,10 @@ function compute(mesh: MeshData): MeshIslandsResult {
     if (ez > principalExtent) { principalAxis = 'z'; principalExtent = ez; }
     const maxExtent = principalExtent > 0 ? principalExtent : 1;
     const aspectRatio: [number, number, number] = [ex / maxExtent, ey / maxExtent, ez / maxExtent];
+    const principalAxisVector: [number, number, number] =
+      principalAxis === 'x' ? [1, 0, 0] :
+      principalAxis === 'y' ? [0, 1, 0] :
+                              [0, 0, 1];
     const histSum = hist.xPos + hist.xNeg + hist.yPos + hist.yNeg + hist.zPos + hist.zNeg;
     const normHist = histSum > 0
       ? {
@@ -217,6 +225,7 @@ function compute(mesh: MeshData): MeshIslandsResult {
       center: [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2],
       surfaceArea,
       principalAxis,
+      principalAxisVector,
       principalExtent,
       aspectRatio,
       normalHistogram: normHist,
@@ -237,14 +246,21 @@ function compute(mesh: MeshData): MeshIslandsResult {
   const asymX = Math.abs(meshHistNorm.xPos - meshHistNorm.xNeg);
   const asymY = Math.abs(meshHistNorm.yPos - meshHistNorm.yNeg);
   const asymZ = Math.abs(meshHistNorm.zPos - meshHistNorm.zNeg);
+  // Up-axis guess: the axis with the biggest ± hemisphere asymmetry, weighted
+  // by bbox extent (a printed-flat figure has a tall Y bbox — head to toe —
+  // so Y is a better "up" candidate than Z, which is thickness). When the
+  // normal histogram is nearly symmetric (an articulated kit whose parts
+  // point every which way — Pomni), we fall back to the tallest bbox axis
+  // and mark confidence low so callers know it's an inference, not a
+  // measurement. Loosened from 0.05 → 0.02 after the v3 Opus pass reported
+  // `null` on the Pomni kit and both agents had to derive the up axis
+  // themselves — bbox alone was already right for their case.
+  const bboxExtents = { x: meshMaxX - meshMinX, y: meshMaxY - meshMinY, z: meshMaxZ - meshMinZ };
+  const bboxMax = Math.max(bboxExtents.x, bboxExtents.y, bboxExtents.z) || 1;
   let upAxis: { axis: 'x' | 'y' | 'z'; sign: '+' | '-'; confidence: number } | null = null;
   const maxAsym = Math.max(asymX, asymY, asymZ);
-  if (maxAsym > 0.05) {
-    // Weight by bbox extent: a printed-flat figure has a tall Y bbox (head
-    // to toe) so Y is a better "up" candidate than Z (thickness). Doesn't
-    // override the normal-hemisphere signal, just breaks close ties.
-    const bboxExtents = { x: meshMaxX - meshMinX, y: meshMaxY - meshMinY, z: meshMaxZ - meshMinZ };
-    const bboxMax = Math.max(bboxExtents.x, bboxExtents.y, bboxExtents.z) || 1;
+  if (maxAsym > 0.02) {
+    // Normal signal is meaningful — trust it (weighted by extent).
     const scored = [
       { axis: 'x' as const, sign: (meshHistNorm.xPos > meshHistNorm.xNeg ? '+' : '-') as '+' | '-', score: asymX * (bboxExtents.x / bboxMax) },
       { axis: 'y' as const, sign: (meshHistNorm.yPos > meshHistNorm.yNeg ? '+' : '-') as '+' | '-', score: asymY * (bboxExtents.y / bboxMax) },
@@ -252,6 +268,17 @@ function compute(mesh: MeshData): MeshIslandsResult {
     ];
     scored.sort((a, b) => b.score - a.score);
     upAxis = { axis: scored[0].axis, sign: scored[0].sign, confidence: scored[0].score };
+  } else if (bboxMax > 0) {
+    // Normals were a wash — fall back to "the mesh is tallest along this
+    // axis." Sign is a guess; confidence flagged low so the caller can
+    // combine with other signals if they care.
+    const bboxScored = [
+      { axis: 'x' as const, extent: bboxExtents.x },
+      { axis: 'y' as const, extent: bboxExtents.y },
+      { axis: 'z' as const, extent: bboxExtents.z },
+    ];
+    bboxScored.sort((a, b) => b.extent - a.extent);
+    upAxis = { axis: bboxScored[0].axis, sign: '+', confidence: bboxScored[0].extent / bboxMax * 0.5 };
   }
 
   return { triIslands, islands, meshNormalHistogram: meshHistNorm, modelUpAxis: upAxis };

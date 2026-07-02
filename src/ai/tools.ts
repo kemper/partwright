@@ -269,6 +269,43 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'renderRegion',
+    description: 'Highlight a triangle set on the mesh in a bright colour and render it. THE identification fix for detectRegions output — when detectRegions({withinIsland: bodyIsland}) returns 60+ regions and area/normal alone can\'t tell "left iris ring" from "upper hat dome", loop the top-N regions and renderRegion each one so you (and your multimodal model) actually SEE which is which. Then paintFaces or paintByCrease the one you meant. Pair with detectRegions({maxTrianglesPerGroup: 20000}) so you have triangleIds to hand it. Non-destructive — renders a temporary highlight, no side effect on persisted regions.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        triangleIds: { type: 'array', items: { type: 'integer' }, description: 'Triangles to highlight — typically from detectRegions().regions[i].triangleIds.' },
+        withinIsland: { type: 'integer', description: 'Optional: frame the camera to just this mesh island (from listComponents) so you\'re not zoomed out on the whole model.' },
+        highlightColor: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1. Defaults to bright yellow.' },
+        view: {
+          type: 'object',
+          description: 'Camera override. Default iso: {elevation: 30, azimuth: 315}.',
+          properties: {
+            elevation: { type: 'number' },
+            azimuth: { type: 'number' },
+            ortho: { type: 'boolean' },
+          },
+        },
+        size: { type: 'integer', description: 'Thumbnail size in pixels. Default 256. Range 32–2048.' },
+      },
+      required: ['triangleIds'],
+    },
+  },
+  {
+    name: 'paintOrientedStripes',
+    description: 'Paint N equally-spaced stripes along an island\'s principal axis. THE fix for striped limbs on organic characters (Pomni sleeves, legs, tails). Both v3 Opus agents independently asked for this after painting Pomni arms/legs as solid colours. Colours flow from low-end to high-end along the axis. Uses the island\'s principalAxis by default (world-axis-aligned); override with `axis` when you need to override the auto choice.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        islandIndex: { type: 'integer', description: 'Island index from listComponents() (0-based).' },
+        colors: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, description: 'Array of [r,g,b] triples. `[red, blue, red, blue]` produces four bands red→blue→red→blue.' },
+        axis: { type: 'string', enum: ['x', 'y', 'z'], description: 'Optional axis override. Default = island principalAxis.' },
+        name: { type: 'string' },
+      },
+      required: ['islandIndex', 'colors'],
+    },
+  },
+  {
     name: 'sampleReferenceColor',
     description: 'Sample a colour from an attached reference image. THE bridge between "the photo you\'re trying to match" and "the exact RGB to hand paintByCrease". Point at the pixel/rect on the reference where the feature is (Pomni left glove, iris outer ring, chest button); returns `{color: [r,g,b], hex}` in 0..1 ready to feed straight to any paint tool. "dominant" mode buckets HSV to survive photo shadows/highlights (the right default); "mean" is a plain average — right for a uniform patch. Identify the image via `id` from getImages(); omit to sample from the first attached image.',
     input_schema: {
@@ -1510,7 +1547,7 @@ export const PART_TARGETABLE_TOOLS = new Set<string>([
   'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
   'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintByLabel', 'paintByLabels',
-  'paintConnected', 'paintInCylinder', 'detectRegions', 'renderIsland', 'sampleReferenceColor', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
+  'paintConnected', 'paintInCylinder', 'detectRegions', 'renderIsland', 'renderRegion', 'paintOrientedStripes', 'sampleReferenceColor', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
   'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
@@ -1557,6 +1594,7 @@ const ALWAYS_AVAILABLE = new Set([
   'findFaces',
   'listComponents',
   'renderIsland',
+  'renderRegion',
   'sampleReferenceColor',
   'waitForSessionStable',
   'getSessionId',
@@ -1628,7 +1666,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintOrientedStripes', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -2150,6 +2188,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintByCrease(input);
     case 'renderIsland':
       return api.renderIsland(input);
+    case 'renderRegion':
+      return api.renderRegion(input);
+    case 'paintOrientedStripes':
+      return api.paintOrientedStripes(input);
     case 'sampleReferenceColor':
       return api.sampleReferenceColor(input);
     case 'waitForSessionStable':

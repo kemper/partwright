@@ -527,6 +527,50 @@ Pomni paint pass):
 - Batching paints in one `page.evaluate` (or one AI-tool turn) minimises
   exposure to mid-loop session changes.
 
+**Identifying the right `detectRegions` output — `renderRegion`.** On a
+fused body island like Pomni's, `detectRegions({withinIsland})` returns
+60+ crease-bounded regions. Area/normal/bbox alone don't reliably surface
+"left iris ring" from "upper hat dome" — both are ~small, ~front-facing
+patches. The fix: **loop the top-N regions and render each one
+highlighted, so you can SEE which is which before painting**:
+
+```js
+const { regions } = partwright.detectRegions({
+  withinIsland: bodyIsland,
+  creaseAngleDeg: 15,
+  maxTrianglesPerGroup: 20000,   // required — hands you the triangleIds
+});
+// Look at the 12 largest sculpted features:
+for (const r of regions.slice(0, 12)) {
+  const { dataUrl } = partwright.renderRegion({
+    triangleIds: r.triangleIds,
+    withinIsland: bodyIsland,      // frame to the body only
+    size: 192,
+  });
+  // Read dataUrl → pick the two that look like iris rings.
+}
+// Then paint the ones you picked:
+partwright.paintFaces({ triangleIds: regions[irisLeftId].triangleIds,
+                        color: irisRed });
+```
+
+**Striped limbs — `paintOrientedStripes`.** For alternating stripes on a
+limb (Pomni sleeves + legs), don't stack `paintInBox` slabs manually —
+the limb's principal axis usually isn't world-aligned and the math is
+tedious. Instead: `paintOrientedStripes({islandIndex, colors})` divides
+the island's principal-axis extent into `colors.length` equal bands and
+paints each band with the corresponding colour. Colours flow from the
+LOW end of the axis to the HIGH end.
+
+```js
+// Alternating red/blue stripes down each of two arm islands:
+partwright.paintOrientedStripes({
+  islandIndex: leftArmIsland,
+  colors: [red, blue, red, blue],   // 4 stripes
+  name: 'left-arm-stripes',
+});
+```
+
 **Avoiding over-paint.** When `paintInBox` / `paintNear` catches side
 walls or the bottom face by mistake, pass `topOnly: true` — restricts
 to upward-facing triangles (axis +Z within 30°). Equivalent to

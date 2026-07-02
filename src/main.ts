@@ -14808,6 +14808,208 @@ async function main() {
       };
     },
 
+    /** Highlight one region-of-triangles on the mesh in a bright colour so an
+     *  agent can SEE which candidate a `detectRegions` output actually is —
+     *  iris vs cheek vs brow — BEFORE committing paint. This is the piece
+     *  that closes the v3 identification gap: `detectRegions({withinIsland})`
+     *  returns 60+ regions on Pomni's fused body island, and area/normal
+     *  alone can't reliably surface "left iris ring" from "upper hat dome".
+     *  With `renderRegion({triangleIds})` the caller loops the top-N regions,
+     *  reads each thumbnail, and picks the two that look like eyes.
+     *
+     *  `triangleIds` can come straight from `detectRegions().regions[i]
+     *  .triangleIds` (pass `maxTrianglesPerGroup > 0`) or from any manual
+     *  set-building. Optional `withinIsland` frames the render to just one
+     *  mesh island so you're not zoomed out on the whole 25-piece kit. */
+    renderRegion(opts: {
+      triangleIds: number[] | Uint32Array;
+      withinIsland?: number;
+      highlightColor?: [number, number, number];
+      view?: { elevation?: number; azimuth?: number; ortho?: boolean };
+      size?: number;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'renderRegion requires { triangleIds }' };
+      const ids = opts.triangleIds;
+      if (!ids || (typeof (ids as unknown as { length?: number }).length !== 'number')) {
+        return { error: 'triangleIds must be an array or Uint32Array of triangle indices.' };
+      }
+      const idsArr = Array.isArray(ids) ? ids : Array.from(ids);
+      if (idsArr.length === 0) return { error: 'triangleIds is empty — nothing to highlight.' };
+      const size = opts.size ?? 256;
+      if (typeof size !== 'number' || !Number.isFinite(size) || size < 32 || size > 2048) {
+        return { error: 'size must be a finite number in [32, 2048].' };
+      }
+      const highlight = opts.highlightColor ?? [1.0, 0.85, 0.05];
+      for (let i = 0; i < 3; i++) {
+        if (typeof highlight[i] !== 'number' || !Number.isFinite(highlight[i]) || highlight[i] < 0 || highlight[i] > 1) {
+          return { error: 'highlightColor must be [r, g, b] with values in 0..1.' };
+        }
+      }
+
+      // Optional focus: subset the mesh to one island for camera framing.
+      // The triangle ids stay in the ORIGINAL mesh's index space, so we
+      // remap them into the subset when narrowing.
+      let workMesh: MeshData = currentMeshData;
+      let idsInWorkMesh = idsArr;
+      if (opts.withinIsland !== undefined) {
+        if (!Number.isInteger(opts.withinIsland) || opts.withinIsland < 0) {
+          return { error: 'withinIsland must be a non-negative integer (an index from listComponents).' };
+        }
+        const { triIslands, islands } = meshIslands(currentMeshData);
+        if (opts.withinIsland >= islands.length) {
+          return { error: `withinIsland ${opts.withinIsland} out of range — listComponents has ${islands.length} island(s).` };
+        }
+        const islandTris = trianglesInIsland(triIslands, opts.withinIsland);
+        // Remember insertion order of subset — that IS the new triangle index.
+        const ordered = [...islandTris];
+        const oldToNew = new Map<number, number>();
+        for (let i = 0; i < ordered.length; i++) oldToNew.set(ordered[i], i);
+        workMesh = subsetMesh(currentMeshData, ordered);
+        idsInWorkMesh = [];
+        for (const t of idsArr) {
+          const newT = oldToNew.get(t);
+          if (newT !== undefined) idsInWorkMesh.push(newT);
+        }
+        if (idsInWorkMesh.length === 0) return { error: 'renderRegion: none of the triangleIds fall within the requested island.' };
+      }
+
+      // Build a temporary tri-color overlay — highlighted triangles glow the
+      // highlight colour; everything else stays (0,0,0), which the renderer
+      // treats as "unpainted" light gray (see meshDataToGeometry's
+      // `isPainted` check). No global state mutated; caller sees no side
+      // effect on the persisted paint regions.
+      const numTri = workMesh.numTri;
+      const triColors = new Uint8Array(numTri * 3);
+      const hr = Math.round(highlight[0] * 255);
+      const hg = Math.round(highlight[1] * 255);
+      const hb = Math.round(highlight[2] * 255);
+      // Guard against zero highlight colour reading as unpainted → keep a
+      // 1-int floor so it clears the `r||g||b` painted check.
+      const rr = Math.max(1, hr);
+      const rg = Math.max(1, hg);
+      const rb = Math.max(1, hb);
+      const highlighted = new Set(idsInWorkMesh);
+      for (const t of highlighted) {
+        if (t < 0 || t >= numTri) continue;
+        triColors[t * 3] = rr;
+        triColors[t * 3 + 1] = rg;
+        triColors[t * 3 + 2] = rb;
+      }
+      const paintedMesh: MeshData = { ...workMesh, triColors };
+
+      const view = opts.view ?? {};
+      const dataUrl = renderSingleView(paintedMesh, {
+        elevation: view.elevation ?? 30,
+        azimuth: view.azimuth ?? 315,
+        ortho: view.ortho ?? false,
+        size,
+      });
+
+      return {
+        triangleCount: idsArr.length,
+        renderedTriangles: highlighted.size,
+        highlightColor: highlight,
+        size,
+        dataUrl,
+      };
+    },
+
+    /** Paint N equally-spaced stripes along an island's principal axis. The
+     *  primitive for STRIPED LIMBS on organic characters — Pomni's sleeves,
+     *  legs, tails, striped-limb creatures — where the stripes should follow
+     *  the limb's own long axis, not the world XYZ. Both v3 Opus agents
+     *  independently asked for this after painting Pomni's arms/legs as
+     *  solid colours instead of stripes.
+     *
+     *  Divides the island's principal-axis extent (from `listComponents()
+     *  .components[i].principalExtent`) into `colors.length` equal bands and
+     *  paints each band with the corresponding colour. Uses the island's
+     *  `principalAxis` (world-axis-aligned) — for arbitrary tilt use
+     *  `paintOrientedSlab` per band with a custom axis.
+     *
+     *  Ordering: bands go from the LOW end of the principal axis to the HIGH
+     *  end. So `colors: [red, blue, red, blue]` on a leg with principalAxis
+     *  y produces red-at-toe / blue / red / blue-at-hip. */
+    paintOrientedStripes(opts: {
+      islandIndex: number;
+      colors: [number, number, number][];
+      name?: string;
+      /** Optional axis override (default = the island's principalAxis).
+       *  One of `'x'` / `'y'` / `'z'`. */
+      axis?: 'x' | 'y' | 'z';
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintOrientedStripes requires { islandIndex, colors }' };
+      if (!Number.isInteger(opts.islandIndex) || opts.islandIndex < 0) return { error: 'islandIndex must be a non-negative integer (from listComponents).' };
+      if (!Array.isArray(opts.colors) || opts.colors.length < 1) return { error: 'colors must be a non-empty array of [r,g,b] triples.' };
+      for (let i = 0; i < opts.colors.length; i++) {
+        const c = opts.colors[i];
+        if (!Array.isArray(c) || c.length !== 3 || !c.every(v => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1)) {
+          return { error: `colors[${i}] must be [r,g,b] in 0..1.` };
+        }
+      }
+      const { triIslands, islands } = meshIslands(currentMeshData);
+      if (opts.islandIndex >= islands.length) return { error: `paintOrientedStripes.islandIndex ${opts.islandIndex} out of range — listComponents has ${islands.length} island(s).` };
+      const island = islands[opts.islandIndex];
+      const axis = opts.axis ?? island.principalAxis;
+      if (axis !== 'x' && axis !== 'y' && axis !== 'z') return { error: "axis must be 'x', 'y', or 'z'." };
+      const axisIdx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
+      const axisMin = island.bbox.min[axisIdx];
+      const axisMax = island.bbox.max[axisIdx];
+      const span = axisMax - axisMin;
+      if (span <= 0) return { error: 'paintOrientedStripes: island has zero extent along the chosen axis.' };
+      const nStripes = opts.colors.length;
+      const bandLength = span / nStripes;
+
+      // Bucket the island's triangles by centroid position along the axis.
+      // We compute centroids on the fly rather than requiring the caller to
+      // supply triangleIds — the island already knows its own membership.
+      const { triVerts, vertProperties, numProp } = currentMeshData;
+      const perStripe: Set<number>[] = Array.from({ length: nStripes }, () => new Set<number>());
+      for (let t = 0; t < triIslands.length; t++) {
+        if (triIslands[t] !== opts.islandIndex) continue;
+        const v0 = triVerts[t * 3];
+        const v1 = triVerts[t * 3 + 1];
+        const v2 = triVerts[t * 3 + 2];
+        const c = (
+          vertProperties[v0 * numProp + axisIdx] +
+          vertProperties[v1 * numProp + axisIdx] +
+          vertProperties[v2 * numProp + axisIdx]
+        ) / 3;
+        let bucket = Math.floor((c - axisMin) / bandLength);
+        if (bucket < 0) bucket = 0;
+        if (bucket >= nStripes) bucket = nStripes - 1;
+        perStripe[bucket].add(t);
+      }
+
+      // Commit each non-empty stripe as its own region so the caller can
+      // remove one without affecting the rest.
+      const results: Array<{ id: number; name: string; triangles: number; color: [number, number, number]; axis: 'x' | 'y' | 'z'; band: number }> = [];
+      const baseName = opts.name ?? `Island ${opts.islandIndex} stripes`;
+      for (let i = 0; i < nStripes; i++) {
+        if (perStripe[i].size === 0) continue;
+        const region = addRegion(
+          `${baseName} ${i + 1}`,
+          opts.colors[i] as [number, number, number],
+          'paintbrush',
+          { kind: 'triangles', ids: [...perStripe[i]] },
+          perStripe[i],
+        );
+        results.push({ id: region.id, name: region.name, triangles: perStripe[i].size, color: opts.colors[i], axis, band: i });
+      }
+      scheduleColorRefresh();
+      syncLockState();
+      return {
+        islandIndex: opts.islandIndex,
+        axis,
+        principalExtent: span,
+        bandLength,
+        stripeCount: nStripes,
+        regions: results,
+      };
+    },
+
     /** Auto-segment the current mesh by **crease (dihedral-angle) watershed**
      *  and return a region list. This is the right enumeration primitive for
      *  ORGANIC SCULPTS — the iris ring, pupil, eye outline, mouth crease,
@@ -15918,6 +16120,8 @@ async function main() {
         'detectRegions':   { signature: 'detectRegions({creaseAngleDeg?=20, minTriangleCount?=5, maxRegions?=64, withinIsland?, includeNeighbors?=true, maxTrianglesPerGroup?=0}) -> {count, regions: [{id, triangleCount, area, centroid, normal, bbox, neighborIds?, triangleIds?}], source} -- Auto-segment by crease (dihedral) watershed. The right enumeration primitive for SCULPTED FEATURES — iris ring, pupil, mouth crease, blush dimples, pom-poms, bangs all separate naturally at the 20° default. Pass withinIsland to segment ONE mesh-island (fused body part) so the face/eyes/buttons stop being unreachable.', docs: '/ai/colors.md' },
         'paintByCrease':   { signature: 'paintByCrease({seedPoint, seedNormal?, creaseAngleDeg?=20, color, name?}) -- Flood paint from a surface seed, stopping at the next crease edge. The right paint primitive for SCULPTED FEATURES on organic meshes. Clean edges by construction, no box guessing. Pair with probePixel to ground the seed. seedNormal optional (snaps to nearest triangle).', docs: '/ai/colors.md' },
         'renderIsland':    { signature: 'renderIsland({index, view?, size?=192}) -> {dataUrl, bbox, centroid, principalAxis, aspectRatio, triangleCount, surfaceArea} -- Render ONE mesh island as a standalone thumbnail. THE vision fix for the identification problem — see which island is the hat vs face vs glove instead of guessing from bbox. Auto-framed to the island; nothing else in frame.', docs: '/ai/colors.md' },
+        'renderRegion':    { signature: 'renderRegion({triangleIds, withinIsland?, highlightColor?, view?, size?=256}) -> {dataUrl, triangleCount, ...} -- Highlight a triangle set on the mesh in a bright colour. THE identification fix for detectRegions output — loop the top-N regions, read each thumbnail, pick the two that look like eyes. Pair with detectRegions({maxTrianglesPerGroup > 0}) so you have the triangleIds to hand it.', docs: '/ai/colors.md' },
+        'paintOrientedStripes': { signature: 'paintOrientedStripes({islandIndex, colors, axis?, name?}) -> {axis, stripeCount, regions: [...]} -- Paint N equally-spaced stripes along the island\'s principal axis (or the axis you override with). THE fix for striped limbs on organic characters. Colours flow from low to high along the axis.', docs: '/ai/colors.md' },
         'sampleReferenceColor': { signature: 'sampleReferenceColor({id?, rect?, point?, mode?="dominant"}) -> {color: [r,g,b], hex, imageId, ...} -- Sample a colour from an attached reference image. Point at the pixel/rect where the feature lives (Pomni left glove, right shoe, iris outer ring); returns the RGB in 0..1 ready to hand straight to paintByCrease / paintIsland / paintInBox. "dominant" mode buckets HSV to survive photo shadows/highlights; "mean" is a plain average.', docs: '/ai/colors.md' },
         'waitForSessionStable': { signature: 'waitForSessionStable({minMs?=800, timeoutMs?=15000}) -> {sessionId, elapsedMs} -- Await session-id stability. Fixes the paint-loop DX cliff where autosave-triggered navigation retargets in-flight paint calls at a stale session (2 of 4 v2 agents lost 60+ paints to this). Call right after importMeshData before painting.', docs: '/ai.md' },
         'getSessionId':    { signature: 'getSessionId() -> string | null -- Current session id. Pair with waitForSessionStable / getVersion to detect the mid-loop session-swap race.', docs: '/ai.md' },
