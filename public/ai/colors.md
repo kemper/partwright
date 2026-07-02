@@ -357,6 +357,220 @@ tweaks to the model, and skips the listComponents → paintInBox pair.
 Prefer `paintByLabel` when you control the code (whether manifold-js
 or SCAD); reach for `paintComponent` when you don't.
 
+**Paint by part on multi-part STL imports — `paintIsland`.** A user-
+uploaded multi-part STL (articulated print-in-place kit, separable
+mechanism, harlequin figure) usually imports as a render-only mesh
+(no Manifold), which means `paintComponent` and `Manifold.decompose()`
+both error with "No geometry loaded". The fix: `listComponents()`
+now falls back to face-connected island BFS in that case, and
+`paintIsland({index, color})` paints one island. **This is the right
+primitive whenever an import has multiple parts that overlap in 3D
+space** — a hat sitting over a head, gloves touching pants, puffs
+inside arms. Spatial selectors (`paintInBox`, `paintNear`,
+`paintInCylinder`) catch every triangle that's in the bounding
+volume regardless of which part it belongs to; `paintIsland` selects
+by topology and never bleeds across parts:
+
+```js
+const { count, components, source } = partwright.listComponents();
+// source: 'manifold' (decompose result) or 'mesh-island' (BFS fallback).
+// For a 25-piece articulated kit: count === 25, source === 'mesh-island'.
+// Each entry: {index, triangleCount, boundingBox, centroid}.
+
+// Identify which island is which by bbox/centroid (top-most → hat,
+// largest below it → torso, leftmost arm-like → left arm, etc.).
+// Then paint each part by its island index:
+partwright.paintIsland({ index: 7, color: [0.85, 0.10, 0.10], name: 'hat-left' });
+partwright.paintIsland({ index: 8, color: [0.10, 0.20, 0.85], name: 'hat-right' });
+```
+
+`paintIslandAt({point, color})` is the grounded sibling: pair with
+`probePixel` to "click the part in the iso render" and paint that
+island without enumerating first — handy when an island's index is
+ambiguous but its visible location isn't:
+
+```js
+const hit = await partwright.probePixel({ view: 'iso', u: 0.42, v: 0.31 });
+if (hit?.point) partwright.paintIslandAt({ point: hit.point, color: [1, 0, 0] });
+```
+
+**Limitation:** islands are detected by *welded* vertex adjacency —
+two parts that physically touch at a shared vertex (a hat brim
+resting on a head with no gap) appear as one island and will both
+get painted. Print-in-place kits with proper clearance gaps split
+cleanly, one island per part. When islands fuse together, fall back
+to combining `paintIsland` with `paintInBox`/`paintConnected` to
+carve the touching boundary.
+
+**For SCULPTED FEATURES inside a fused mesh — `detectRegions` +
+`paintByCrease`.** When a character's head, body, buttons, eye
+sockets, etc. all welded into one big island, `paintIsland` can
+only colour the whole thing one shade. The sculpted FEATURES on
+that island — the iris ring around each eye, the pupil, the mouth
+crease, the blush dimples, each torso pom-pom, the bangs — are
+all bounded by *crease* edges (sharp angle changes between adjacent
+faces). The crease-watershed segmentation enumerates them, and a
+crease-stop flood paint colours each one cleanly:
+
+```js
+// Find the body island (the giant fused 200k-tri one).
+const { components } = partwright.listComponents();
+const body = components.reduce((a, b) => a.triangleCount > b.triangleCount ? a : b);
+
+// Segment ONLY that island into sculpted-feature regions.
+const { regions } = partwright.detectRegions({
+  withinIsland: body.index,
+  creaseAngleDeg: 20,         // default — good for sculpted features
+  minTriangleCount: 5,        // skip slivers
+});
+// regions: [{id, triangleCount, area, centroid, normal, bbox, neighborIds}, ...]
+// Sorted largest first. The face dome will be the biggest; the eye/mouth/
+// blush features will be smaller. neighborIds tells you what borders what
+// — the iris borders the sclera, the pupil borders the iris, etc.
+
+// Identify visually by rendering + probePixel, then paint each feature.
+const view = await partwright.renderView({ azimuth: 0, elevation: 0, size: 800 });
+const irisHit = await partwright.probePixel({ pixel: [pxX, pxY], view });
+partwright.paintByCrease({
+  seedPoint: irisHit.point,
+  seedNormal: irisHit.normal,
+  creaseAngleDeg: 20,          // raise to 30+ to capture larger neighbours
+  color: [0.85, 0.10, 0.10],
+  name: 'iris_left',
+});
+```
+
+For very tight nested features (pupil inside iris), lower
+`creaseAngleDeg` to 5–10° so the inner crease catches before the
+outer one. `detectRegions({creaseAngleDeg: 10})` exposes more
+fine-grained features; `detectRegions({creaseAngleDeg: 45})` collapses
+back to coarse part-level boundaries (useful for an overview pass
+before zooming in).
+
+> **Decision tree for paint on an imported character STL:**
+> 1. **Each anatomical part is its own mesh-island** (print-in-place kit
+>    with clearance gaps): `listComponents` → `paintIsland` per part.
+> 2. **Multiple parts fused into ONE mesh-island** (head+torso+features
+>    welded together): `listComponents` → `detectRegions({withinIsland})`
+>    → `paintByCrease` per sculpted feature.
+> 3. **Whole-region flat colour, not sculpt-feature** (top half of a vase,
+>    a stripe down the middle): `paintInBox` / `paintSlab` /
+>    `paintInCylinder` (now with smooth edges by default).
+> 4. **Authored geometry** (you wrote the model): `api.label` + `paintByLabel`
+>    — strongest primitive, no probing.
+
+## Painting an imported STL to match a reference photo — full workflow
+
+This ties everything together. The scenario: the user hands you a
+multi-part character STL and a reference photo, and asks you to paint the
+model to match. The right sequence uses **six tools compounded**:
+
+```js
+// 1) Kick off import — do NOT straight-await on large STLs; the page
+//    navigates mid-await and later paint calls land on stale sessions.
+partwright.importMeshData(base64, 'character.stl', { sessionName: 'foo' });
+// 2) Wait for the post-import session dance to settle before painting.
+const { sessionId } = await partwright.waitForSessionStable({ minMs: 800 });
+
+// 3) listComponents now returns per-island shape metadata AND a top-level
+//    modelUpAxis guess so you don't fall for the "figure lying flat on
+//    the print bed" trap. If the figure's Y bbox is tall and its normals
+//    bunch toward +Y, modelUpAxis will say {axis: 'y', sign: '+'}.
+const { components, modelUpAxis } = partwright.listComponents();
+// modelUpAxis.axis is the figure's up direction (may not be Z!). Use it
+// for anatomical bucketing: top-of-figure = high-along-upAxis.
+
+// 4) Attach the reference photo, then sample the exact colour for each
+//    feature — no more guessing "red" as [1, 0, 0] when the reference
+//    red is [0.87, 0.12, 0.18].
+partwright.setAttachments([{ src: 'data:image/png;base64,...', kind: 'image' }]);
+const hatRed = await partwright.sampleReferenceColor({
+  rect: { x: 210, y: 40, w: 60, h: 40 },   // pixel rect on the reference photo
+  mode: 'dominant',
+});
+// → { color: [0.87, 0.12, 0.18], hex: '#de1e2e', ... }
+
+// 5) When bbox alone won't disambiguate visually-similar islands
+//    (4 boots, 4 cuffs, 6 ball-joint connectors), thumbnail them.
+//    You / your multimodal model looks at the tiles and picks by sight.
+const thumb = partwright.renderIsland({ index: 27, size: 192 });
+// → { dataUrl: 'data:image/png;base64,...', bbox, principalAxis, ... }
+
+// 6) Paint each part with the sampled colour, using the right primitive
+//    for its geometry.
+partwright.paintIsland({ index: 27, color: hatRed.color, name: 'hat-red-lobe' });
+// For features INSIDE a fused island (face, eyes on Pomni's 205k-tri body):
+const { regions } = partwright.detectRegions({
+  withinIsland: bodyIslandIndex,
+  creaseAngleDeg: 20,
+  maxTrianglesPerGroup: 20000,
+});
+const irisColor = await partwright.sampleReferenceColor({ rect: { x: 250, y: 120, w: 30, h: 30 } });
+partwright.paintFaces({ triangleIds: regions[3].triangleIds, color: irisColor.color });
+```
+
+**Why each step matters** (learned from validating this in the multi-agent
+Pomni paint pass):
+
+- `waitForSessionStable` — without it, 2 of 4 v2 agents lost 60+ paint calls
+  to autosave-triggered session swaps mid-loop.
+- `modelUpAxis` in the `listComponents` output — every v1 agent burned 3+
+  iterations recovering from "wrong axis = up" heuristics on models laid
+  flat on the print bed.
+- `renderIsland` — bbox+centroid can't tell 4 near-identical boots apart;
+  a 192px iso PNG can. Vision-in-loop is the missing modality.
+- `sampleReferenceColor` — text descriptions of colour ("red") produce
+  saturated cartoon red; the reference photo red is muted, and the paint
+  looks wrong until you sample it.
+- `detectRegions({withinIsland})` — the only way to reach sculpted features
+  inside a fused mesh-island.
+- Batching paints in one `page.evaluate` (or one AI-tool turn) minimises
+  exposure to mid-loop session changes.
+
+**Identifying the right `detectRegions` output — `renderRegion`.** On a
+fused body island like Pomni's, `detectRegions({withinIsland})` returns
+60+ crease-bounded regions. Area/normal/bbox alone don't reliably surface
+"left iris ring" from "upper hat dome" — both are ~small, ~front-facing
+patches. The fix: **loop the top-N regions and render each one
+highlighted, so you can SEE which is which before painting**:
+
+```js
+const { regions } = partwright.detectRegions({
+  withinIsland: bodyIsland,
+  creaseAngleDeg: 15,
+  maxTrianglesPerGroup: 20000,   // required — hands you the triangleIds
+});
+// Look at the 12 largest sculpted features:
+for (const r of regions.slice(0, 12)) {
+  const { dataUrl } = partwright.renderRegion({
+    triangleIds: r.triangleIds,
+    withinIsland: bodyIsland,      // frame to the body only
+    size: 192,
+  });
+  // Read dataUrl → pick the two that look like iris rings.
+}
+// Then paint the ones you picked:
+partwright.paintFaces({ triangleIds: regions[irisLeftId].triangleIds,
+                        color: irisRed });
+```
+
+**Striped limbs — `paintOrientedStripes`.** For alternating stripes on a
+limb (Pomni sleeves + legs), don't stack `paintInBox` slabs manually —
+the limb's principal axis usually isn't world-aligned and the math is
+tedious. Instead: `paintOrientedStripes({islandIndex, colors})` divides
+the island's principal-axis extent into `colors.length` equal bands and
+paints each band with the corresponding colour. Colours flow from the
+LOW end of the axis to the HIGH end.
+
+```js
+// Alternating red/blue stripes down each of two arm islands:
+partwright.paintOrientedStripes({
+  islandIndex: leftArmIsland,
+  colors: [red, blue, red, blue],   // 4 stripes
+  name: 'left-arm-stripes',
+});
+```
+
 **Avoiding over-paint.** When `paintInBox` / `paintNear` catches side
 walls or the bottom face by mistake, pass `topOnly: true` — restricts
 to upward-facing triangles (axis +Z within 30°). Equivalent to

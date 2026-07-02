@@ -21,6 +21,9 @@ export interface FaceGroup {
   bbox: { min: [number, number, number]; max: [number, number, number] };
   /** Triangle indices belonging to this group. Capped by `maxTrianglesPerGroup`. */
   triangleIds: number[];
+  /** Ids of groups this group shares a crease boundary with. Present only
+   *  when `includeNeighborIds: true` was passed to `computeFaceGroups`. */
+  neighborIds?: number[];
 }
 
 export interface FaceGroupSummary {
@@ -32,7 +35,8 @@ export interface FaceGroupSummary {
 }
 
 interface FaceGroupOptions {
-  /** Cosine bend tolerance for the BFS that gathers each group. Default 0.9995 (≈1.8°). */
+  /** Cosine bend tolerance for the BFS that gathers each group. Default 0.9995 (≈1.8°).
+   *  Use `~0.94` (cos 20°) for sculpt-feature segmentation (iris ring, mouth crease, etc.). */
   tolerance?: number;
   /** Skip groups smaller than this many triangles. Default 1 (return everything). */
   minTriangles?: number;
@@ -42,6 +46,16 @@ interface FaceGroupOptions {
   /** Maximum number of groups to return (largest by triangle count first).
    *  Default 256 — large enough for typical models. Set 0 for unlimited. */
   maxGroups?: number;
+  /** Optional triangle-id restriction. Only seed triangles in this set are
+   *  considered, and the BFS won't walk into triangles outside it. Use to
+   *  segment a single mesh-island (fused body part) rather than the whole
+   *  mesh — e.g. pass the result of `trianglesInIsland(triIslands, idx)`. */
+  restrictTo?: Set<number>;
+  /** When true, each group gets a `neighborIds: number[]` field listing the
+   *  ids of every group it shares at least one crease boundary with. Computed
+   *  by walking each group's boundary triangles and cross-referencing the
+   *  group assignment of their cross-crease neighbours. ~30 lines, O(triangles). */
+  includeNeighborIds?: boolean;
 }
 
 export function computeFaceGroups(mesh: MeshData, options?: FaceGroupOptions): FaceGroupSummary {
@@ -49,23 +63,62 @@ export function computeFaceGroups(mesh: MeshData, options?: FaceGroupOptions): F
   const minTriangles = Math.max(1, options?.minTriangles ?? 1);
   const maxTrianglesPerGroup = options?.maxTrianglesPerGroup ?? 64;
   const maxGroups = options?.maxGroups ?? 256;
+  const restrictTo = options?.restrictTo;
+  const includeNeighborIds = options?.includeNeighborIds ?? false;
 
   const adjacency = buildAdjacency(mesh);
   const visited = new Uint8Array(mesh.numTri);
+  // Pre-mark every triangle OUTSIDE the restriction set as visited so the
+  // outer-loop seed scan skips them AND the per-triangle resolver below maps
+  // them to NO_GROUP (= no neighbour cross-reference into them).
+  if (restrictTo) {
+    for (let t = 0; t < mesh.numTri; t++) if (!restrictTo.has(t)) visited[t] = 1;
+  }
   const groups: FaceGroup[] = [];
+  const triToGroup = includeNeighborIds ? new Int32Array(mesh.numTri).fill(-1) : null;
 
   for (let seed = 0; seed < mesh.numTri; seed++) {
     if (visited[seed]) continue;
-    const triangles = findCoplanarRegion(seed, adjacency, tolerance);
+    const triangles = restrictTo
+      ? findCoplanarRegionConstrained(seed, adjacency, tolerance, restrictTo)
+      : findCoplanarRegion(seed, adjacency, tolerance);
     for (const t of triangles) visited[t] = 1;
     if (triangles.size < minTriangles) continue;
-    groups.push(buildGroup(groups.length, triangles, mesh, adjacency, maxTrianglesPerGroup));
+    const group = buildGroup(groups.length, triangles, mesh, adjacency, maxTrianglesPerGroup);
+    if (triToGroup) for (const t of triangles) triToGroup[t] = group.id;
+    groups.push(group);
   }
 
   // Largest groups first so an agent that only inspects the top N gets the
   // most structurally significant faces.
   groups.sort((a, b) => b.triangleCount - a.triangleCount);
+  // Rewrite ids to match the post-sort order, then re-key triToGroup so
+  // neighbour lookups still hit the right group.
+  if (triToGroup) {
+    const oldToNew = new Int32Array(groups.length);
+    for (let i = 0; i < groups.length; i++) oldToNew[groups[i].id] = i;
+    for (let t = 0; t < mesh.numTri; t++) {
+      if (triToGroup[t] >= 0) triToGroup[t] = oldToNew[triToGroup[t]];
+    }
+  }
   for (let i = 0; i < groups.length; i++) groups[i].id = i;
+
+  // Cross-crease neighbour graph: for each triangle in group G, any neighbour
+  // belonging to a different group H means G and H share a boundary. Cheap
+  // and exact over the adjacency we already built.
+  if (triToGroup) {
+    const seen: Set<number>[] = groups.map(() => new Set<number>());
+    for (let t = 0; t < mesh.numTri; t++) {
+      const g = triToGroup[t];
+      if (g < 0) continue;
+      const ns = adjacency.neighbors[t];
+      for (let i = 0; i < ns.length; i++) {
+        const h = triToGroup[ns[i]];
+        if (h >= 0 && h !== g) seen[g].add(h);
+      }
+    }
+    for (let i = 0; i < groups.length; i++) groups[i].neighborIds = [...seen[i]].sort((a, b) => a - b);
+  }
 
   const trimmed = maxGroups > 0 ? groups.slice(0, maxGroups) : groups;
 
@@ -74,6 +127,39 @@ export function computeFaceGroups(mesh: MeshData, options?: FaceGroupOptions): F
     totalTriangles: mesh.numTri,
     tolerance,
   };
+}
+
+/** BFS variant of `findCoplanarRegion` that won't walk outside `allowed`. The
+ *  adjacent-pair crease gate is unchanged; the constraint just prunes the
+ *  walk to one island's triangles. */
+function findCoplanarRegionConstrained(
+  seedTri: number,
+  adjacency: AdjacencyGraph,
+  normalTolerance: number,
+  allowed: Set<number>,
+): Set<number> {
+  const { neighbors, normals } = adjacency;
+  const result = new Set<number>();
+  if (!allowed.has(seedTri)) return result;
+  result.add(seedTri);
+  const stack = [seedTri];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    const cnx = normals[current * 3];
+    const cny = normals[current * 3 + 1];
+    const cnz = normals[current * 3 + 2];
+    const adj = neighbors[current];
+    for (let i = 0; i < adj.length; i++) {
+      const nb = adj[i];
+      if (result.has(nb) || !allowed.has(nb)) continue;
+      const dot = cnx * normals[nb * 3] + cny * normals[nb * 3 + 1] + cnz * normals[nb * 3 + 2];
+      if (dot >= normalTolerance) {
+        result.add(nb);
+        stack.push(nb);
+      }
+    }
+  }
+  return result;
 }
 
 function buildGroup(
