@@ -160,7 +160,20 @@ else                  → hybrid: traced silhouette body + probed primitives for
   predicts section half-chords sqrt(r²−y²) at every traced y; if 3+ chords
   match to 0.01mm the whole feature spec transfers verbatim. Budget probes
   only for the genuinely new features. (frame_shin: 6/6 MUST at chamfer
-  0.0003 in ONE authored attempt.)
+  0.0003 in ONE authored attempt; frame_forearm repeated it — 3 probes +
+  1 turn, chamfer 0.0005.) **Dummy 13 limb archetype** (transferred
+  verbatim shin↔forearm): ball r3 at ymin+3 / D-neck r1.5 flat z1.2 /
+  oct(2.5) 5×5 shaft / window slab z 1.0..4.1 from shaft-face −5 / spool
+  r2.5 at ymax−2.5 with r1.0→0.5 dimples. For remaining limb parts, check
+  ball/spool anchor positions from bbox extents first.
+- **5.18a Shortened/lengthened sibling: one plan section replaces a probe
+  campaign**: when the hypothesis is "same part, different shaft length",
+  a single `probe section --axis z --at <mid>` yields every feature
+  y-extent in one trace — diff against the sibling's numbers to find the
+  single shift constant, then verify the sibling's tilted-face chamfer by
+  running the SAME section height on the sibling's own target.stl and
+  checking pointwise equality under the shift. (frame_upper_arm: chamfer
+  0.0017, one authored attempt, zero fit probes.)
 - **5.19 Anti-rotation/clearance flats show as a section bbox-min that
   beats the circle fit**: a band fitting `circle r1.5 rms 0.018` whose
   section bbox z-min sits at 1.2 instead of the circle's 1.0 is a chordal
