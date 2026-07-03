@@ -202,6 +202,24 @@ else                  → hybrid: traced silhouette body + probed primitives for
   just that z-range (0.2mm over the fist's knuckles — 7 extra bands);
   plugs or bridge cuts kept missing the ring or adding a second handle.
   Verify genus headlessly per-shell before spending a turn.
+- **5.19c Probe your own candidate, not just the target**: export the
+  candidate mesh to STL (`runPreview` → write binary STL from
+  `render.positions/triVerts`) and turn probe rays / far-point scans on
+  it. A 2-turn-stuck hausdorff was located in one call. `sliceOverlay.mjs
+  target.stl cand.stl --slices z:…` is the most readable structure check.
+  (knee_elbow)
+- **5.19d Double-sided socket = hourglass revolve**: a joint socket open
+  through BOTH faces reads as counterbore + two 45° entry cones meeting at
+  a narrow waist. Ray-cast r(z) from the cavity center at fine z steps;
+  slopes of exactly 1.0 are design intent (45°), the flat minimum is the
+  waist. (Two-sided cousin of §5.10.)
+- **5.19e Chamfer corner pairs: miter with hull, don't per-edge-subtract**:
+  where two chamfered edges of a concave notch meet, the target keeps a
+  sharp miter. Per-edge wedges extended past the apex carve interior
+  material; the exact cut is {s1<ins}∩{s2<ins}, built as `Manifold.hull`
+  of the dilated notch polygon just below z=0 and the exact polygon at
+  z=leg. (knee_elbow. Also: §5.12 confirmed three MORE times there — test
+  every straight cut near a socket against its center.)
 - **5.20 Test traced walls for arcs about a probed feature center**: a
   DP-traced "flat wall + corner fillet" can really be one large arc
   centered on the socket/feature center — compute each traced boundary
@@ -224,6 +242,13 @@ else                  → hybrid: traced silhouette body + probed primitives for
   **Ball centers sit at z=0 even though bbox-center z=0.25** — an
   asymmetric clip shifts the bbox center off the feature line; probe the
   sphere center, never infer it from bbox center.
+- `revolve()` output rounds coordinates to **float32**: a subtracted
+  revolve whose profile ends exactly on a face plane can land 3e-9 below
+  it, leaving a nanometer-thick cap membrane (zero volume, ~πr² of phantom
+  surface). Signature: hausdorff stuck high with excess volume ≈ 0, zero
+  findings, voxel gates passing. Fix: overshoot subtracted profiles ±0.1
+  past face planes; don't butt a union fill against the same radius the
+  revolve cuts. (knee_elbow)
 - **Per-part vs assembled cuts — classify each cut before ordering ops**:
   a cut that exists only on one member (the strut's chordal flat, above
   the spheres' extent) must be cut on that member BEFORE union; a cut
