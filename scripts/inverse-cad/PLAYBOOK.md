@@ -321,6 +321,28 @@ else                  → hybrid: traced silhouette body + probed primitives for
   spanning members (build-plate clip) is applied to the assembled body
   LAST. Misordering either direction silently refills or over-cuts.
 
+- **5.22 Armor plates are prism-minus-cavity, not shells**: an armor part
+  with volume ≈ half its bbox is a full-silhouette prism along its thin
+  axis with an interior cavity cross-prism cut, not a wrapped thin shell.
+  The band census reads it directly: face-plate bands (large area, holes)
+  near the faces, a stable small-area multi-contour band between (the
+  connecting wings), thin unstable morph bands at the plate inner faces.
+  Model: outline prism − cavity prism between the EXACT measured step
+  planes − per-face features. (armor_inner_chest: 6/6+2/2 at chamfer
+  0.0001 in ONE authored attempt.)
+- **5.23 Ray-grid z-invariance identifies a ruled clearance face**: when
+  band traces "morph" near a face, grid-ray the inner face y(x,z) — if
+  every z-row is identical the surface is a vertical ruled cylinder; two
+  samples give R. The inner face is then max(plane, cylinder) — one
+  cylinder subtraction, no lofts. Beware nearby through-holes eating rays
+  (empty grid cells may be a tunnel, not missing material).
+- **5.24 Groove flare in near-face sections = cylinder with center OUTSIDE
+  the face**: a slot whose half-height grows non-linearly toward a face
+  (linear would be a 45° chamfer) is a circular groove; three (y,h)
+  samples solve (y−y0)²+h²=r² closed-form. The center can sit past the
+  face plane (open snap groove). Subtract a flat-ended cylinder; the face
+  clips it. (armor_inner_chest snap grooves: r=1.048, center 0.5 outside.)
+
 ## 6. Plateau protocol
 
 Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
