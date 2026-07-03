@@ -8,27 +8,27 @@ import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 const PAIRS = [
-  ['frame_hips.stl', 'hips-v2.js'],
-  ['frame_neck.stl', 'neck-v2.js'],
-  ['frame_waist.stl', 'waist-v3.js'],
-  ['frame_abdomen.stl', 'abdomen-v2.js'],
-  ['frame_head.stl', 'head-v2.js'],
-  ['frame_chest.stl', 'chest-v1.js'],
-  ['frame_clavicle_2x.stl', 'clavicle-v2.js'],
-  ['frame_hip_and_shoulder_4x.stl', 'hip_shoulder-v1.js'],
-  ['frame_knee_and_elbow_4x.stl', 'knee_elbow-v1.js'],
-  ['frame_ankle_2x.stl', 'ankle-v1.js'],
-  ['frame_upper_arm_2x.stl', 'upper_arm-v1.js'],
-  ['frame_forearm_2x.stl', 'forearm-v1.js'],
-  ['frame_thigh_2x.stl', 'thigh-v1.js'],
-  ['frame_shin_2x.stl', 'shin-v1.js'],
-  ['adapter_stand.stl', 'adapter_stand-v1.js'],
-  ['hand_fist_left.stl', 'hand_fist_left-v1.js'],
-  ['hand_fist_right.stl', 'hand_fist_right-v1.js'],
-  ['hand_grip_left.stl', 'hand_grip_left-v1.js'],
-  ['hand_grip_right.stl', 'hand_grip_right-v1.js'],
-  ['hand_open_left.stl', 'hand_open_left-v1.js'],
-  ['hand_open_right.stl', 'hand_open_right-v1.js'],
+  ['frame_hips.stl', 'hips-v2-p1.js'],
+  ['frame_neck.stl', 'neck-v2-p1.js'],
+  ['frame_waist.stl', 'waist-v3-p1.js'],
+  ['frame_abdomen.stl', 'abdomen-v2-p1.js'],
+  ['frame_head.stl', 'head-v2-p1.js'],
+  ['frame_chest.stl', 'chest-v2.js'],
+  ['frame_clavicle_2x.stl', 'clavicle-v2-p1.js'],
+  ['frame_hip_and_shoulder_4x.stl', 'hip_shoulder-v9.js'],
+  ['frame_knee_and_elbow_4x.stl', 'knee_elbow-v1-p1.js'],
+  ['frame_ankle_2x.stl', 'ankle-v1-p1.js'],
+  ['frame_upper_arm_2x.stl', 'upper_arm-v7.js'],
+  ['frame_forearm_2x.stl', 'forearm-v1-p1.js'],
+  ['frame_thigh_2x.stl', 'thigh-v4.js'],
+  ['frame_shin_2x.stl', 'shin-v1-p1.js'],
+  ['adapter_stand.stl', 'adapter_stand-v1-p1.js'],
+  ['hand_fist_left.stl', 'hand_fist_left-v1-p1.js'],
+  ['hand_fist_right.stl', 'hand_fist_right-v1-p1.js'],
+  ['hand_grip_left.stl', 'hand_grip_left-v1-p1.js'],
+  ['hand_grip_right.stl', 'hand_grip_right-v1-p1.js'],
+  ['hand_open_left.stl', 'hand_open_left-v1-p1.js'],
+  ['hand_open_right.stl', 'hand_open_right-v1-p1.js'],
 ];
 
 const TARGET_DIR = resolve('.plans/inverse-cad/target-stls');
@@ -38,10 +38,10 @@ for (const [t, c] of PAIRS) {
   const tp = `${TARGET_DIR}/${t}`;
   const cp = `${CAND_DIR}/${c}`;
   if (!existsSync(tp) || !existsSync(cp)) {
-    console.error(`SKIP ${t} — missing target or candidate`);
+    console.error(`SKIP ${t} — missing target or candidate (${cp})`);
     continue;
   }
-  const r = spawnSync('node', ['scripts/inverse-cad/eval.mjs', tp, cp], { encoding: 'utf8' });
+  spawnSync('node', ['scripts/inverse-cad/eval.mjs', tp, cp, '--size', '400', '--views', 'front,right,back,left,top,iso'], { encoding: 'utf8' });
   const metricsPath = `${CAND_DIR}/eval/${t.replace(/\.stl$/, '')}/metrics.json`;
   if (existsSync(metricsPath)) {
     const m = JSON.parse(readFileSync(metricsPath, 'utf8'));
@@ -54,7 +54,6 @@ for (const [t, c] of PAIRS) {
     }
   } else {
     console.log(`FAIL ${t.padEnd(38)} eval crashed`);
-    console.log(r.stderr);
   }
 }
 
