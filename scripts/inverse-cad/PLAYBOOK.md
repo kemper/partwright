@@ -351,9 +351,13 @@ else                  → hybrid: traced silhouette body + probed primitives for
   flat end caps. Topology changes between sections interpolate correctly
   for free (genus exact). Snap sharp ledges by inserting a STRADDLE PAIR
   of sections at ledge±0.005 so the blend zone is 0.01mm, not one pitch.
-  Guard output with `decompose()` + drop sub-1mm³ shells. (armor_waist,
-  hardest bootstrap in the corpus at 9.73: 0/6 → 6/6+2/2 in ONE turn,
-  chamfer 0.005. Also hand_grip demo: 0.028 → 0.0093.)
+  Guard output with `decompose()` + drop sub-1mm³ shells. When adding
+  straddle pairs, DROP uniform sections falling within half a pitch of the
+  ledge so the pair owns the blend zone. (armor_waist, hardest bootstrap
+  at 9.73: 0/6 → 6/6+2/2 in ONE turn, chamfer 0.005; armor_outer_chest —
+  biggest piece, 138 sections, 5 ledges — also ONE turn, chamfer 0.0045;
+  hand_grip demo: 0.028 → 0.0093. Route by §5.22's volume test: ≈50% of
+  bbox → prism-minus-cavity, ≪50% + freeform census → this recipe.)
 - **5.25b Recipe scaling for small shells**: pitch/res scale with the
   part — a 7mm-class shell at pitch 0.1 / levelSet res 0.08 costs seconds
   and lands chamfer 0.003 (armor_neck, 1 turn); keep 0.15/0.15 for 15mm+
@@ -487,6 +491,12 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
   piece, hull-of-exact-corner-points is winding-proof and dodges both the
   bowtie-polygon and extrude/rotate axis-mapping traps entirely. Prefer it
   over `geom.fromPoints(...).extrude(...)` for convex prisms.
+- **Ledge scans: sum |signedArea| per contour, never raw signedArea** —
+  sliceMesh contour orientation is arbitrary near horizontal facets; raw
+  signed-area z-scans show phantom ±100mm² "ledges" (pure sign flips)
+  while real ledges are 3-28mm². Use Σ|signedArea| of outers minus holes;
+  mirror-twin contours with equal-and-opposite areas is the diagnostic
+  signature of orientation noise, not geometry. (armor_outer_chest)
 
 ## 8. Reading the feedback bundle
 
