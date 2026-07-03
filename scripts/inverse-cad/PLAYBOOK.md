@@ -145,7 +145,13 @@ else                  → hybrid: traced silhouette body + probed primitives for
   exact x-negation; if they match, append `solid.mirror([1,0,0])` as the
   LAST op on the sibling's best candidate. `.mirror()` handles triangle
   winding itself — no polygon rewinding — and origin-centered features map
-  to themselves. (hand_grip_right: 6/6 MUST in 2 turns vs 6 from scratch.)
+  to themselves. (hand_grip_right: 6/6 MUST in 2 turns vs 6 from scratch;
+  hand_open_right and hand_fist_right each in ONE turn.)
+- **5.14a Sibling feature subtractions ride the final mirror**: leave ALL
+  the sibling's interior subtractions (debris voids, socket, dimples) in
+  its own coordinates and mirror the assembled solid LAST — the mirror
+  maps every feature, so no per-feature negation is needed and none can be
+  forgotten. (hand_fist_right: zero coordinate edits.)
 - **5.15 Locate hausdorff-max explicitly**: when hausdorff is stuck but
   chamfer is tiny, sample both meshes (`samplePoints` +
   `buildTriBvh`/`closestPointOnMesh`) and print the argmax points WITH
