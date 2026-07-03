@@ -362,7 +362,11 @@ else                  → hybrid: traced silhouette body + probed primitives for
   part — a 7mm-class shell at pitch 0.1 / levelSet res 0.08 costs seconds
   and lands chamfer 0.003 (armor_neck, 1 turn); keep 0.15/0.15 for 15mm+
   parts. The ledge scan is the ONLY per-part measurement when the census
-  reads freeform-on-all-axes with genus matching the bootstrap.
+  reads freeform-on-all-axes with genus matching the bootstrap. Straddle
+  contour BIRTHS too, not just area ledges: a contour-count change at a
+  single fine step (even ΔA 0.3mm²) is a feature starting on a flat plane
+  — print contour count alongside Σ|signedArea| in the scan.
+  (armor_foot: chamfer 0.0019, one turn.)
 - **5.25a Make section-SDF levelSet cheap**: per-polygon bbox lower-bound
   early-reject inside sdf2d (still run parity when the +x ray could
   cross), and memoize per (sectionIndex, quantized x,y) — the levelSet
