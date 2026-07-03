@@ -57,6 +57,14 @@ describe('partitionTriangles — bands', () => {
     const res = partitionTriangles(mesh, [0, 1], { kind: 'bands', axis: [1, 0, 0], count: 2 });
     expect('error' in res).toBe(true);
   });
+
+  it('count: 1 fills the whole scope as one cell (even at zero extent)', () => {
+    const mesh = meshFromTriangles([triAt([0, 0, 0]), triAt([0, 1, 0])]);
+    const res = partitionTriangles(mesh, [0, 1], { kind: 'bands', axis: [1, 0, 0], count: 1 });
+    if ('error' in res) throw new Error(res.error);
+    expect(res.cells).toHaveLength(1);
+    expect(res.cells[0].size).toBe(2);
+  });
 });
 
 describe('partitionTriangles — wedges', () => {

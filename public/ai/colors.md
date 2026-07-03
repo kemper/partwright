@@ -603,6 +603,22 @@ partwright.paintPartition({                        // alternating pupil edge
 // bands (default axis = scope's PCA long direction) = scoped stripes:
 partwright.paintPartition({ within: { island: legIsland },
   by: { kind: 'bands', count: 6 }, colors: [red, blue] });
+// bands count: 1 = "fill this selection with one colour" in one call:
+partwright.paintPartition({ within: { selection: 'left-glove' },
+  by: { kind: 'bands', count: 1 }, colors: [white] });
+
+// ⚠ ORDERING RULE — FIT AND ID-BAKE BEFORE ANY SMOOTHING PAINT. Smooth
+// paints (paintDisc / paintInBox smooth / paintRegionFitted) SUBDIVIDE the
+// mesh, which renumbers triangles EVERYWHERE — silently scrambling any
+// previously-captured triangleIds (detectRegions output, triangleIds-based
+// selections, committed paintPartition cells) and making later
+// fitRegionShape calls on stale ids return garbage. Two safe orderings:
+//   (a) run ALL detectRegions/fitRegionShape identification first, then do
+//       ALL smooth paints, then partitions/paintFaces re-derived fresh; or
+//   (b) paint everything with smooth: false (id-baked, zero subdivision) —
+//       edges are tessellation-following but nothing ever renumbers.
+// Island/shape/byCrease-sourced selections survive re-tessellation
+// (they re-resolve); raw triangleIds do not.
 
 // Raw triangle sets ONLY as a last resort, and ALWAYS defanged when the
 // region reported fanTopologyRisk: true (fan wedges bleed otherwise) —

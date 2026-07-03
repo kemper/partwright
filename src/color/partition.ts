@@ -67,7 +67,12 @@ export function partitionTriangles(
   if (!axis) return { error: 'partition axis must be a non-zero vector.' };
 
   if (spec.kind === 'bands') {
-    if (!Number.isInteger(spec.count) || spec.count < 2 || spec.count > 64) return { error: 'bands.count must be an integer in [2, 64].' };
+    if (!Number.isInteger(spec.count) || spec.count < 1 || spec.count > 64) return { error: 'bands.count must be an integer in [1, 64].' };
+    // count: 1 = "fill the whole scope with one colour" — no axis math
+    // needed (and a zero-extent scope is fine for a single cell).
+    if (spec.count === 1) {
+      return { cells: [new Set(scope)], cellLabels: ['band 0: entire scope'] };
+    }
     // Two passes: projection extents, then bucketing.
     let mn = Infinity, mx = -Infinity;
     const scopeArr = [...scope];
