@@ -73,9 +73,10 @@ function extractApiMembers(src: string): Set<string> {
   const apiStart = src.indexOf('const partwrightAPI = {');
   if (apiStart === -1) throw new Error('Could not find partwrightAPI in main.ts');
 
-  // Scan the WHOLE object (it's ~300 KB and we stop at the `help(` member
-  // anyway); an earlier 80 KB window silently scanned only the first third.
-  const chunk = src.slice(apiStart, apiStart + 400_000);
+  // Scan the WHOLE object — no fixed window. A 400 KB cap silently dropped
+  // the API tail (help, voxelStudio*) when the object grew past it in the
+  // v6 selection-layer round, exactly like the earlier 80 KB cap did.
+  const chunk = src.slice(apiStart);
   const lines = chunk.split('\n');
   const members = new Set<string>();
 

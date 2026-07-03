@@ -535,9 +535,22 @@ const sheet = partwright.renderRegionGrid({
 });
 // Read sheet.dataUrl ONCE — every tile is labelled with its region id.
 
-// 6) Write the island→role table + region→feature table to session notes
-//    BEFORE painting anything:
-partwright.addSessionNote('[DECISION] roles: 0=head 3=torso 7/12=gloves(L/R) …; head regions: 4=L-eye-dome 9=L-iris 13=pupil …');
+// 6) Capture what you identified as NAMED SELECTIONS — the durable anatomy
+//    map. A selection is an uncolored triangle set that scopes paint;
+//    every paint tool takes within: {selection: <name>} and CANNOT bleed
+//    outside it. Build from any selector, then sculpt with set algebra:
+partwright.select({ island: 7, name: 'left-shoulder' });
+partwright.refineSelection({ selection: 'left-shoulder', op: 'subtract',
+  with: { sphere: { center: socketCenter, radius: 6 } } });   // drop the joint socket
+partwright.select({ triangleIds: eyeRegion.triangleIds, name: 'left-eye' });
+partwright.renderRegion({ selection: 'left-shoulder' });       // SEE what you selected
+// listSelections() shows every selection with its build history.
+// NOTE: triangleIds-sourced selections go stale if a later smoothing paint
+// re-tessellates the mesh — prefer island/shape/byCrease sources when you
+// plan to paint with smoothing, or paint triangleIds-scoped features first.
+
+// 7) Also write the role table to session notes so a later turn can pick up:
+partwright.addSessionNote('[DECISION] selections: left-shoulder, left-eye …; roles: 0=head 3=torso 7/12=gloves(L/R) …');
 ```
 
 ### Phase 2 — PAINT (right primitive per feature type)
@@ -567,8 +580,33 @@ partwright.paintMirrored({ regionId: lIrisRegion.id, color: irisBlue, name: 'R i
 // midline. For eyes on a head, pass the head's own mirror plane:
 //   paintMirrored({ regionId, color, plane: { axis: 'x', point: headIsland.centroid } })
 
+// SCOPE EVERY GEOMETRIC PAINT with within — the bleed killer. The selector
+// picks placement; the scope clamps the boundary:
+partwright.paintInBox({ box: hatLobeBox, color: red,
+  within: { island: headIsland } });               // box can't leak onto the plate
+partwright.paintByCrease({ seedPoint: mouthHit.point, color: red,
+  within: { selection: 'mouth-area' } });          // flood CANNOT escape the scope
+// (unscoped floods that swallow >60% of an island return a floodWarning —
+//  undoLastPaint and rescope.)
+
+// PARTITIONS — stripes/wedges/rings inside a scope, one call:
+partwright.paintPartition({                        // radial shoulder stripes
+  within: { selection: 'left-shoulder' },
+  by: { kind: 'wedges', count: 8 },                // default axis = the scope's
+  colors: [red, blue],                             //   mean surface normal
+});
+partwright.paintPartition({                        // alternating pupil edge
+  within: { selection: 'left-pupil' },
+  by: { kind: 'rings', radii: [0.8, 1.1, 1.4] },   // 4 cells: <0.8, …, >1.4
+  colors: [black, red, black, red],
+});
+// bands (default axis = scope's PCA long direction) = scoped stripes:
+partwright.paintPartition({ within: { island: legIsland },
+  by: { kind: 'bands', count: 6 }, colors: [red, blue] });
+
 // Raw triangle sets ONLY as a last resort, and ALWAYS defanged when the
-// region reported fanTopologyRisk: true (fan wedges bleed otherwise):
+// region reported fanTopologyRisk: true (fan wedges bleed otherwise) —
+// or better, scoped: paintFaces({triangleIds, color, within: {selection}}):
 partwright.paintFaces({
   triangleIds: bangs.triangleIds,
   color: black,
@@ -621,6 +659,14 @@ const audit = partwright.auditPaint();
 - `auditPaint` — a yellow drip on the face and a 40%-overwritten bangs
   region shipped unnoticed in the best v4 result; both are mechanically
   detectable. Run the audit, then look.
+- `select` + `within` — every earlier bleed defect (box spillover onto
+  neighbouring parts, flood overrun, fan-tip splatter past a feature) is
+  an instance of "no hard boundary"; a scoped paint cannot produce any of
+  them. Scoping is baked into the persisted region descriptor, so
+  re-resolution after mesh refinement stays bounded too.
+- `paintPartition` — striped shoulders (radial wedges) and patterned pupil
+  edges (concentric rings) were unreachable with unscoped selectors; both
+  are one call against a named selection.
 - Batching paints in one `page.evaluate` (or one AI-tool turn) minimises
   exposure to mid-loop session changes.
 

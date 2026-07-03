@@ -276,7 +276,8 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        triangleIds: { type: 'array', items: { type: 'integer' }, description: 'Triangles to highlight — typically from detectRegions().regions[i].triangleIds.' },
+        triangleIds: { type: 'array', items: { type: 'integer' }, description: 'Triangles to highlight — typically from detectRegions().regions[i].triangleIds. Omit when passing selection.' },
+        selection: { description: 'Render a NAMED SELECTION (name or id from select()) instead of raw triangleIds — the "show me what I selected" call.' },
         withinIsland: { type: 'integer', description: 'Optional: frame the camera to just this mesh island (from listComponents) so you\'re not zoomed out on the whole model.' },
         highlightColor: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1. Defaults to bright yellow.' },
         view: {
@@ -290,7 +291,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         },
         size: { type: 'integer', description: 'Thumbnail size in pixels. Default 256. Range 32–2048.' },
       },
-      required: ['triangleIds'],
+      required: [],
     },
   },
   {
@@ -334,6 +335,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         thickness: { type: 'number', description: 'Slab thickness along the normal. Default = radius. Tighten for shallow features near other geometry; widen (2×radius) to swallow a tall dome.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r,g,b] in 0..1.' },
         name: { type: 'string' },
+        within: { type: 'object', description: 'Optional hard paint scope — the selector is intersected with this island / named selection / existing region, so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['center', 'normal', 'radius', 'color'],
     },
@@ -377,6 +379,51 @@ const ALL_TOOLS: ToolDefinition[] = [
         plane: { type: 'object', description: 'Override the auto-detected plane — IMPORTANT for features on one part: the global kit plane may be a few units off a single island\'s own midline (a head centred at x=130 on a plate whose plane is x=128 would misplace the second eye by 4 units). Pass {axis, point: [islandCenterX, 0, 0]} using the island\'s bbox centre (or the midpoint between the two features you measured).', properties: { axis: { type: 'string', enum: ['x', 'y', 'z'] }, point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 } }, required: ['axis'] },
       },
       required: ['regionId'],
+    },
+  },
+  {
+    name: 'select',
+    description: 'Create a NAMED SELECTION — an uncolored triangle set that scopes paint operations. THE anti-bleed primitive: every paint tool accepts within: {selection: <name>} and intersects its selector with the selection, so paint outside it is impossible by construction. Build one per anatomical part in the IDENTIFY phase (\'head\', \'left-shoulder\') and paint strictly within them. Exactly ONE of: island (from listComponents), triangleIds (from detectRegions), byCrease ({seedPoint, creaseAngleDeg?} crease flood), box ({min, max} AABB), sphere ({center, radius}), shape ({kind?, center, size, quaternion?} oriented box/sphere/cylinder/cone). Selections re-resolve across mesh refinement (except triangleIds-sourced ones) and are runtime-only.',
+    input_schema: {
+      type: 'object',
+      properties: Object.assign({ name: { type: 'string', description: 'Unique name, e.g. left-shoulder. Auto-generated when omitted.' } }, { island: { type: 'integer' }, triangleIds: { type: 'array', items: { type: 'integer' } }, byCrease: { type: 'object', properties: { seedPoint: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, creaseAngleDeg: { type: 'number' } }, required: ['seedPoint'] }, box: { type: 'object', properties: { min: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, max: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 } }, required: ['min', 'max'] }, sphere: { type: 'object', properties: { center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, radius: { type: 'number' } }, required: ['center', 'radius'] }, shape: { type: 'object', properties: { kind: { type: 'string', enum: ['box', 'sphere', 'cylinder', 'cone'] }, center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, size: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, quaternion: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 } }, required: ['center', 'size'] } }),
+    },
+  },
+  {
+    name: 'refineSelection',
+    description: 'Boolean set algebra on a selection: add (union), subtract, or intersect with any selector — e.g. select the shoulder island, subtract the joint-socket sphere, leaving just the shoulder shell. A refinement that would empty the selection is rejected and NOT applied. Returns updated size/bbox/history.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        selection: { description: 'Selection name or id.' },
+        op: { type: 'string', enum: ['add', 'subtract', 'intersect'] },
+        with: { type: 'object', description: 'The selector to combine. Exactly ONE of: island (from listComponents), triangleIds (from detectRegions), byCrease ({seedPoint, creaseAngleDeg?} crease flood), box ({min, max} AABB), sphere ({center, radius}), shape ({kind?, center, size, quaternion?} oriented box/sphere/cylinder/cone).', properties: { island: { type: 'integer' }, triangleIds: { type: 'array', items: { type: 'integer' } }, byCrease: { type: 'object', properties: { seedPoint: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, creaseAngleDeg: { type: 'number' } }, required: ['seedPoint'] }, box: { type: 'object', properties: { min: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, max: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 } }, required: ['min', 'max'] }, sphere: { type: 'object', properties: { center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, radius: { type: 'number' } }, required: ['center', 'radius'] }, shape: { type: 'object', properties: { kind: { type: 'string', enum: ['box', 'sphere', 'cylinder', 'cone'] }, center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, size: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, quaternion: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 } }, required: ['center', 'size'] } } },
+      },
+      required: ['selection', 'op', 'with'],
+    },
+  },
+  {
+    name: 'listSelections',
+    description: 'All named selections with sizes, bboxes, and build history — the durable anatomy map of the IDENTIFY phase.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'removeSelection',
+    description: 'Delete a selection by name or id. Paint regions that were scoped by it are unaffected (their scope was baked at paint time).',
+    input_schema: { type: 'object', properties: { selection: { description: 'Selection name or id.' } }, required: ['selection'] },
+  },
+  {
+    name: 'paintPartition',
+    description: 'Divide a scope into colored cells — the striped-shoulder / patterned-pupil primitive. REQUIRES within (island/selection/region — never paints unscoped). by.kind: \'bands\' = equal slices along an axis (default: the scope\'s PCA long direction — scoped paintOrientedStripes); \'wedges\' = angular sectors around an axis through a center (default axis: the scope\'s mean surface normal, center: its centroid — radial shoulder stripes, pinwheel caps); \'rings\' = concentric annuli at given boundary radii (cells: <r1, r1..r2, …, >rLast — alternating pupil edge colors, bullseyes). colors cycle across cells; each cell commits as its own removable region.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        within: { type: 'object', description: 'REQUIRED scope. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id.' }, region: { type: 'integer' } } },
+        by: { type: 'object', description: '{kind: bands, count, axis?} | {kind: wedges, count, axis?, center?, phaseDeg?} | {kind: rings, radii: [r1, r2…], axis?, center?}. axis: x|y|z or [x,y,z] vector.', properties: { kind: { type: 'string', enum: ['bands', 'wedges', 'rings'] }, count: { type: 'integer' }, radii: { type: 'array', items: { type: 'number' } }, axis: {}, center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, phaseDeg: { type: 'number' } }, required: ['kind'] },
+        colors: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, description: 'Cycled over cells: [red, blue] on 8 wedges alternates red/blue.' },
+        name: { type: 'string' },
+      },
+      required: ['within', 'by', 'colors'],
     },
   },
   {
@@ -428,7 +475,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintByCrease',
-    description: 'Flood paint from a surface seed, stopping at the next crease edge. Right for features bounded by a REAL crease (a paneled machine part, a sharp-rimmed button). ⚠ FLOOD HAZARD on smooth organic sculpts: where the boundary is a gentle slope the flood swallows the ENTIRE island (a 205k-tri head painted one colour — observed in validation). ALWAYS sanity-check the returned `triangles` count against the feature size (an iris is hundreds of tris, not 200k) and undoLastPaint() on overshoot; on smooth meshes prefer fitRegionShape → paintDisc/paintRegionFitted, which cannot flood. Parameterised in DEGREES with a sculpt-tuned default of 20°; seedNormal optional (snaps to the nearest triangle). For very tight features lower creaseAngleDeg to 5–10°.',
+    description: 'Flood paint from a surface seed, stopping at the next crease edge — now scopeable: pass within: {selection|island} and the flood CANNOT leave the scope, which defuses the smooth-mesh flood hazard entirely. Unscoped floods that cover >60% of their island return a floodWarning — undoLastPaint and rescope. Right for features bounded by a REAL crease (a paneled machine part, a sharp-rimmed button). ⚠ FLOOD HAZARD on smooth organic sculpts: where the boundary is a gentle slope the flood swallows the ENTIRE island (a 205k-tri head painted one colour — observed in validation). ALWAYS sanity-check the returned `triangles` count against the feature size (an iris is hundreds of tris, not 200k) and undoLastPaint() on overshoot; on smooth meshes prefer fitRegionShape → paintDisc/paintRegionFitted, which cannot flood. Parameterised in DEGREES with a sculpt-tuned default of 20°; seedNormal optional (snaps to the nearest triangle). For very tight features lower creaseAngleDeg to 5–10°.',
     input_schema: {
       type: 'object',
       properties: {
@@ -437,6 +484,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         creaseAngleDeg: { type: 'number', description: 'Crease angle in degrees. Default 20. Lower for tighter features (5–10° for pupil inside iris), higher for coarser flood (45°+).' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional region name.' },
+        within: { type: 'object', description: 'Optional hard paint scope — intersected with the selector so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['seedPoint', 'color'],
     },
@@ -738,6 +786,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         name: { type: 'string' },
         maxTriangleArea: { type: 'number', description: 'Exclude triangles larger than this area — defuses fan-topology wedges. Use the region\'s medianTriangleArea × ~5.' },
         maxTriangleAspectRatio: { type: 'number', description: 'Exclude sliver/wedge triangles above this aspect ratio (longest edge / altitude; equilateral ≈ 1.15). Try 6.' },
+        within: { type: 'object', description: 'Optional hard paint scope — the selector is intersected with this island / named selection / existing region, so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['triangleIds', 'color'],
     },
@@ -756,6 +805,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this. Use to filter out the long radial triangles that cylinder/revolve produce.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        within: { type: 'object', description: 'Optional hard paint scope — intersected with the selector so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['point', 'radius', 'color'],
     },
@@ -815,6 +865,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         smooth: { type: 'boolean', description: 'Smooth the painted edge by subdividing the mesh near the box faces. Default true; pass false for the raw (blocky) tessellation. Ignored when any filter (normalCone/topOnly/coverageMode/maxTriangleArea) is set.' },
         resolution: { type: 'number', description: 'Smoothing detail: target boundary edge = model bbox diagonal / resolution. Higher = smoother + more triangles. Default 256, range 2–1024.' },
         maxEdge: { type: 'number', description: 'Optional absolute override for the target boundary edge length (mesh units). Takes precedence over resolution.' },
+        within: { type: 'object', description: 'Optional hard paint scope — the selector is intersected with this island / named selection / existing region, so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['box', 'color'],
     },
@@ -841,6 +892,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         smooth: { type: 'boolean', description: 'Smooth the painted edge by subdividing the mesh near the box faces. Default true; pass false for the raw (blocky) tessellation.' },
         resolution: { type: 'number', description: 'Smoothing detail: target boundary edge = model bbox diagonal / resolution. Higher = smoother + more triangles. Default 256, range 2–1024.' },
         maxEdge: { type: 'number', description: 'Optional absolute override for the target boundary edge length (mesh units). Takes precedence over resolution.' },
+        within: { type: 'object', description: 'Optional hard paint scope — the selector is intersected with this island / named selection / existing region, so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['box', 'color'],
     },
@@ -862,6 +914,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         smooth: { type: 'boolean', description: 'Smooth the slab edges by subdividing the mesh along them. Default true; pass false for the raw (blocky) tessellation.' },
         resolution: { type: 'number', description: 'Smoothing detail: target boundary edge = model bbox diagonal / resolution. Higher = smoother + more triangles. Default 256, range 2–1024.' },
         maxEdge: { type: 'number', description: 'Optional absolute override for the target boundary edge length (mesh units). Takes precedence over resolution.' },
+        within: { type: 'object', description: 'Optional hard paint scope — intersected with the selector so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['offset', 'thickness', 'color'],
     },
@@ -1249,6 +1302,7 @@ const ALL_TOOLS: ToolDefinition[] = [
           description: 'centroid (default): centroid inside the shell. fully_inside: all 3 vertices inside. any_vertex_inside: at least 1 vertex inside.',
         },
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this area. Use to avoid fan-bleed on cylinder topology.' },
+        within: { type: 'object', description: 'Optional hard paint scope — intersected with the selector so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['rMin', 'rMax', 'zMin', 'zMax', 'color'],
     },
@@ -1630,7 +1684,7 @@ export const PART_TARGETABLE_TOOLS = new Set<string>([
   'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
   'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintByLabel', 'paintByLabels',
-  'paintConnected', 'paintInCylinder', 'detectRegions', 'renderIsland', 'renderRegion', 'renderRegionGrid', 'paintOrientedStripes', 'paintDisc', 'fitRegionShape', 'paintRegionFitted', 'paintMirrored', 'auditPaint', 'sampleReferenceColor', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
+  'paintConnected', 'paintInCylinder', 'detectRegions', 'renderIsland', 'renderRegion', 'renderRegionGrid', 'paintOrientedStripes', 'paintDisc', 'fitRegionShape', 'paintRegionFitted', 'paintMirrored', 'auditPaint', 'select', 'refineSelection', 'listSelections', 'removeSelection', 'paintPartition', 'sampleReferenceColor', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
   'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
@@ -1681,6 +1735,10 @@ const ALWAYS_AVAILABLE = new Set([
   'renderRegionGrid',
   'fitRegionShape',
   'auditPaint',
+  'select',
+  'refineSelection',
+  'listSelections',
+  'removeSelection',
   'sampleReferenceColor',
   'waitForSessionStable',
   'getSessionId',
@@ -1752,7 +1810,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintOrientedStripes', 'paintDisc', 'paintRegionFitted', 'paintMirrored', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintOrientedStripes', 'paintDisc', 'paintRegionFitted', 'paintMirrored', 'paintPartition', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -2290,6 +2348,16 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintMirrored(input);
     case 'auditPaint':
       return api.auditPaint();
+    case 'select':
+      return api.select(input);
+    case 'refineSelection':
+      return api.refineSelection(input);
+    case 'listSelections':
+      return api.listSelections();
+    case 'removeSelection':
+      return api.removeSelection(input);
+    case 'paintPartition':
+      return api.paintPartition(input);
     case 'sampleReferenceColor':
       return api.sampleReferenceColor(input);
     case 'waitForSessionStable':

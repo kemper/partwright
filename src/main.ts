@@ -250,9 +250,11 @@ import {
   apiRotateSelection,
 } from './ui/insertPalette';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
-import { meshIslands, trianglesInIsland, islandAtPoint, subsetMesh } from './color/meshIslands';
+import { meshIslands, trianglesInIsland, islandAtPoint, subsetMesh, principalDirectionOfTriangles } from './color/meshIslands';
 import { detectSymmetryPlane, mirrorIslandPairs, reflectPoint, reflectVector, mirrorTriangleSet, type SymmetryPlane } from './color/symmetry';
 import { fitRegionShape } from './color/regionFit';
+import { createSelection as createPaintSelection, getSelection as getPaintSelection, listSelections as storeListSelections, removeSelection as storeRemoveSelection, renameSelection as storeRenameSelection, addRefinement, popRefinement, resolveSelection as resolvePaintSelection, type SelectorNode, type RefineOp } from './color/selections';
+import { partitionTriangles, type PartitionSpec } from './color/partition';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
 import { cylinderRefineRegion, findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
@@ -1050,6 +1052,27 @@ function resolveDescriptorTriangles(
   parentToChildren: Map<number, number[]> | null,
   /** Id of the region being resolved, when known. Used by `colorFlood` to read
    *  the surface color *beneath* itself (excluding its own stamp). */
+  selfRegionId?: number,
+): ResolveResult {
+  const result = resolveDescriptorTrianglesUnscoped(descriptor, mesh, adjacency, parentToChildren, selfRegionId);
+  // `within`-scoped paints bake their scope as triangle ids at paint time;
+  // re-resolution intersects the selector with that scope (remapped through
+  // any subdivision) so a scoped paint can never grow past its scope.
+  const scopeIds = (descriptor as { scopeIds?: number[] }).scopeIds;
+  if (scopeIds && scopeIds.length > 0) {
+    const scope = remapTriangleIds(scopeIds, parentToChildren);
+    const kept = new Set<number>();
+    for (const t of result.triangles) if (scope.has(t)) kept.add(t);
+    result.triangles = kept;
+  }
+  return result;
+}
+
+function resolveDescriptorTrianglesUnscoped(
+  descriptor: RegionDescriptor,
+  mesh: MeshData,
+  adjacency: AdjacencyGraph | null,
+  parentToChildren: Map<number, number[]> | null,
   selfRegionId?: number,
 ): ResolveResult {
   switch (descriptor.kind) {
@@ -13079,10 +13102,12 @@ async function main() {
      *  × ~5` as `maxTriangleArea` (or `maxTriangleAspectRatio: 6`) to keep
      *  the paint inside the visual feature. Excluded triangles are counted
      *  in the response so the caller knows how many were defanged. */
-    paintFaces(opts: { triangleIds: number[]; color: [number, number, number]; name?: string; maxTriangleArea?: number; maxTriangleAspectRatio?: number }) {
+    paintFaces(opts: { triangleIds: number[]; color: [number, number, number]; name?: string; maxTriangleArea?: number; maxTriangleAspectRatio?: number; within?: { island?: number; selection?: string | number; region?: number } }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintFaces requires {triangleIds, color}' };
       const { triangleIds, color, name, maxTriangleArea, maxTriangleAspectRatio } = opts;
+      const scope = resolveWithin(opts.within);
+      if (scope !== null && 'error' in scope) return scope;
       if (!Array.isArray(triangleIds) || triangleIds.length === 0) return { error: 'triangleIds must be a non-empty array of integers' };
       if (!Array.isArray(color) || color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
       const areaErr = validateMaxTriangleArea(maxTriangleArea);
@@ -13101,6 +13126,10 @@ async function main() {
       }
 
       let triangles = new Set<number>(ids);
+      if (scope) {
+        triangles = intersectWithScope(triangles, scope);
+        if (triangles.size === 0) return { error: `paintFaces: none of the ${ids.length} triangleIds fall inside ${scope.label}.` };
+      }
       let excludedByFilter = 0;
       if (maxTriangleArea !== undefined || maxTriangleAspectRatio !== undefined) {
         const kept = new Set<number>();
@@ -13131,9 +13160,11 @@ async function main() {
     /** Paint a slab — all faces whose centroid falls inside a planar slab.
      *  `axis` is shorthand for axis-aligned slabs ('x'/'y'/'z'). For oblique
      *  slabs, pass `normal` directly (does not need to be normalized). */
-    paintSlab(opts: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number; color: [number, number, number]; name?: string; coverageMode?: CoverageMode; maxTriangleArea?: number; smooth?: boolean; resolution?: number; maxEdge?: number }) {
+    paintSlab(opts: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number; color: [number, number, number]; name?: string; coverageMode?: CoverageMode; maxTriangleArea?: number; smooth?: boolean; resolution?: number; maxEdge?: number; within?: { island?: number; selection?: string | number; region?: number } }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintSlab requires {axis|normal, offset, thickness, color}' };
+      const scope = resolveWithin(opts.within);
+      if (scope !== null && 'error' in scope) return scope;
       const { axis, normal: rawNormal, offset, thickness, color, name, coverageMode, maxTriangleArea } = opts;
 
       let normal: [number, number, number];
@@ -13163,6 +13194,10 @@ async function main() {
       if (maxTriangleArea !== undefined && triangles.size > 0) {
         triangles = new Set([...triangles].filter(t => triangleArea(t, currentMeshData!) <= maxTriangleArea));
       }
+      if (scope && triangles.size > 0) {
+        triangles = intersectWithScope(triangles, scope);
+        if (triangles.size === 0) return { error: `paintSlab: the slab matched triangles, but none inside ${scope.label}.` };
+      }
       if (triangles.size === 0) return { error: 'No triangles found inside the slab. Dry-run paintPreview({ slab: { axis|normal, offset, thickness } }) to check the offset/thickness against the model bbox first.' };
 
       const regionName = name ?? `Region ${getRegions().length + 1}`;
@@ -13174,7 +13209,7 @@ async function main() {
         regionName,
         color as [number, number, number],
         'slab',
-        { kind: 'slab', normal, offset, thickness, smooth, maxEdge },
+        { kind: 'slab', normal, offset, thickness, smooth, maxEdge, ...(scope ? { scopeIds: scope.scopeIds } : {}) },
         triangles,
       ));
       scheduleColorRefresh();
@@ -13333,9 +13368,15 @@ async function main() {
       /** Absolute target boundary edge length (mesh units); overrides
        *  `resolution`. */
       maxEdge?: number;
+      /** Hard paint scope: the selector is intersected with this island /
+       *  named selection / existing region, so the box cannot bleed onto
+       *  neighbouring parts. Baked into the descriptor for re-resolve. */
+      within?: { island?: number; selection?: string | number; region?: number };
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintInBox requires { box, color }' };
+      const scope = resolveWithin(opts.within);
+      if (scope !== null && 'error' in scope) return scope;
       const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
       const filterErr = validateBoxAndCone(opts.box, cone);
       if (filterErr) return { error: filterErr };
@@ -13371,7 +13412,11 @@ async function main() {
             opts.box.max[2] - opts.box.min[2],
           ];
           const obb = { center, size, quaternion: [0, 0, 0, 1] as [number, number, number, number] };
-          const seedTris = findBoxTriangles(currentMeshData, obb);
+          let seedTris = findBoxTriangles(currentMeshData, obb);
+          if (scope) {
+            seedTris = intersectWithScope(seedTris, scope);
+            if (seedTris.size === 0) return { error: `paintInBox: the box matched triangles, but none inside ${scope.label}.` };
+          }
           if (seedTris.size === 0) {
             return { error: `paintInBox: no triangles matched the box. Try widening the box or call findFaces() to see what's around.` };
           }
@@ -13380,7 +13425,7 @@ async function main() {
             regionName,
             opts.color as [number, number, number],
             'slab',
-            { kind: 'box', center, size, quaternion: obb.quaternion, smooth: true, maxEdge },
+            { kind: 'box', center, size, quaternion: obb.quaternion, smooth: true, maxEdge, ...(scope ? { scopeIds: scope.scopeIds } : {}) },
             seedTris,
           ));
           scheduleColorRefresh();
@@ -13390,7 +13435,11 @@ async function main() {
         }
       }
 
-      const triangles = collectTrianglesByFilter(currentMeshData, opts.box, cone, null, opts.coverageMode, opts.maxTriangleArea);
+      let triangles = collectTrianglesByFilter(currentMeshData, opts.box, cone, null, opts.coverageMode, opts.maxTriangleArea);
+      if (scope && triangles.size > 0) {
+        triangles = intersectWithScope(triangles, scope);
+        if (triangles.size === 0) return { error: `paintInBox: the box matched triangles, but none inside ${scope.label}.` };
+      }
       if (triangles.size === 0) return { error: `paintInBox: no triangles matched the box${cone ? ' (with the normalCone' + (opts.topOnly ? '/topOnly' : '') + ' filter)' : ''}${opts.coverageMode === 'fully_inside' ? ' (with coverageMode: fully_inside — try widening the box or dropping the mode)' : ''}${opts.maxTriangleArea !== undefined ? ` (with maxTriangleArea: ${opts.maxTriangleArea} — try raising it)` : ''}. Try widening the box, dropping topOnly/normalCone, or call findFaces() to see what passes each filter individually.` };
 
       return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
@@ -13441,9 +13490,14 @@ async function main() {
       resolution?: number;
       /** Absolute target boundary edge length (mesh units); overrides `resolution`. */
       maxEdge?: number;
+      /** Hard paint scope (island / named selection / region) — the shape
+       *  cannot bleed outside it. Baked into the descriptor. */
+      within?: { island?: number; selection?: string | number; region?: number };
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintInOrientedBox requires { box, color }' };
+      const scope = resolveWithin(opts.within);
+      if (scope !== null && 'error' in scope) return scope;
       if (!opts.box || typeof opts.box !== 'object') return { error: 'paintInOrientedBox.box must be { center, size, quaternion? }' };
       const { center, size, quaternion } = opts.box;
       if (!Array.isArray(center) || center.length !== 3 || !center.every(Number.isFinite)) return { error: 'paintInOrientedBox.box.center must be [x, y, z] of finite numbers' };
@@ -13463,7 +13517,11 @@ async function main() {
         size: [size[0], size[1], size[2]] as [number, number, number],
         quaternion: q,
       };
-      const triangles = findShapeTriangles(currentMeshData, shape, box);
+      let triangles = findShapeTriangles(currentMeshData, shape, box);
+      if (scope && triangles.size > 0) {
+        triangles = intersectWithScope(triangles, scope);
+        if (triangles.size === 0) return { error: `paintInOrientedBox: the ${shape} matched triangles, but none inside ${scope.label}.` };
+      }
       if (triangles.size === 0) return { error: `paintInOrientedBox: no triangles inside the ${shape}. Try a larger size, recheck the center, or use paintPreview to see what the shape covers.` };
 
       // Persist a re-resolvable shape descriptor (not baked triangle ids) so
@@ -13476,7 +13534,7 @@ async function main() {
         regionName,
         opts.color as [number, number, number],
         'slab',
-        { kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, ...(shape !== 'box' ? { shape } : {}), smooth, maxEdge },
+        { kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, ...(shape !== 'box' ? { shape } : {}), smooth, maxEdge, ...(scope ? { scopeIds: scope.scopeIds } : {}) },
         triangles,
       ));
       scheduleColorRefresh();
@@ -13512,6 +13570,8 @@ async function main() {
       smooth?: boolean;
       resolution?: number;
       maxEdge?: number;
+      /** Hard paint scope (island / named selection / region). */
+      within?: { island?: number; selection?: string | number; region?: number };
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintDisc requires { center, normal, radius, color }' };
@@ -13550,6 +13610,7 @@ async function main() {
         smooth: opts.smooth,
         resolution: opts.resolution,
         maxEdge: opts.maxEdge,
+        within: opts.within,
       });
     },
 
@@ -13578,9 +13639,13 @@ async function main() {
       coverageMode?: CoverageMode;
       /** See paintInBox.maxTriangleArea. */
       maxTriangleArea?: number;
+      /** Hard paint scope (island / named selection / region). */
+      within?: { island?: number; selection?: string | number; region?: number };
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintNear requires { point, radius, color }' };
+      const scope = resolveWithin(opts.within);
+      if (scope !== null && 'error' in scope) return scope;
       if (!Array.isArray(opts.point) || opts.point.length !== 3) return { error: 'point must be [x,y,z]' };
       for (let i = 0; i < 3; i++) {
         if (typeof opts.point[i] !== 'number' || !Number.isFinite(opts.point[i])) return { error: 'point components must be finite numbers' };
@@ -13595,7 +13660,11 @@ async function main() {
       if (areaErr) return { error: areaErr };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
 
-      const triangles = collectTrianglesBySphere(currentMeshData, opts.point as [number, number, number], opts.radius, cone, opts.coverageMode, opts.maxTriangleArea);
+      let triangles = collectTrianglesBySphere(currentMeshData, opts.point as [number, number, number], opts.radius, cone, opts.coverageMode, opts.maxTriangleArea);
+      if (scope && triangles.size > 0) {
+        triangles = intersectWithScope(triangles, scope);
+        if (triangles.size === 0) return { error: `paintNear: triangles matched the sphere, but none inside ${scope.label}.` };
+      }
       if (triangles.size === 0) return { error: `paintNear: no triangles within ${opts.radius} of [${opts.point.join(', ')}]${opts.coverageMode === 'fully_inside' ? ' (with coverageMode: fully_inside)' : ''}${opts.maxTriangleArea !== undefined ? ` (with maxTriangleArea: ${opts.maxTriangleArea})` : ''}. Try a larger radius — call findFaces() with a bigger box first to see what's around.` };
 
       return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
@@ -13623,6 +13692,8 @@ async function main() {
       topOnly?: boolean;
       coverageMode?: CoverageMode;
       maxTriangleArea?: number;
+      /** Hard paint scope (island / named selection / region). */
+      within?: { island?: number; selection?: string | number; region?: number };
       /** Smooth the painted boundary by subdividing the base mesh along the
        *  cylinder wall(s) until boundary triangles fall below `maxEdge`.
        *  Defaults to `true` — the painted edge follows the analytic
@@ -13645,6 +13716,8 @@ async function main() {
       if (opts.zMax <= opts.zMin) return { error: 'paintInCylinder requires zMax > zMin' };
       if (opts.axis !== undefined && opts.axis !== 'x' && opts.axis !== 'y' && opts.axis !== 'z') return { error: "paintInCylinder axis must be 'x', 'y', or 'z'" };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] in 0..1' };
+      const scope = resolveWithin(opts.within);
+      if (scope !== null && 'error' in scope) return scope;
       const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
       const coneErr = validateNormalCone(cone);
       if (coneErr) return { error: coneErr };
@@ -13663,7 +13736,7 @@ async function main() {
       // (see RegionDescriptor 'cylinder' case) will re-collect against the
       // refined mesh — but we still need a non-empty seed set so addRegion
       // doesn't reject the call with "0 triangles".
-      const triangles = collectTrianglesByCylinder(
+      let triangles = collectTrianglesByCylinder(
         currentMeshData,
         center,
         opts.rMin, opts.rMax,
@@ -13673,6 +13746,10 @@ async function main() {
         opts.maxTriangleArea,
         axis,
       );
+      if (scope && triangles.size > 0) {
+        triangles = intersectWithScope(triangles, scope);
+        if (triangles.size === 0) return { error: `paintInCylinder: the shell matched triangles, but none inside ${scope.label}.` };
+      }
       if (triangles.size === 0) {
         return { error: `paintInCylinder: no triangles in cylindrical shell (axis=${axis}, rMin=${opts.rMin}, rMax=${opts.rMax}, band=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or dry-running paintPreview({ cylinder: { rMin, rMax, zMin, zMax } }) to locate the geometry.` };
       }
@@ -13698,6 +13775,7 @@ async function main() {
           ...(opts.maxTriangleArea !== undefined ? { maxTriangleArea: opts.maxTriangleArea } : {}),
           smooth,
           maxEdge,
+          ...(scope ? { scopeIds: scope.scopeIds } : {}),
         },
         triangles,
       ));
@@ -14990,17 +15068,27 @@ async function main() {
      *  set-building. Optional `withinIsland` frames the render to just one
      *  mesh island so you're not zoomed out on the whole 25-piece kit. */
     renderRegion(opts: {
-      triangleIds: number[] | Uint32Array;
+      triangleIds?: number[] | Uint32Array;
+      /** Render a NAMED SELECTION instead of raw ids — the "show me what I
+       *  selected" call. */
+      selection?: string | number;
       withinIsland?: number;
       highlightColor?: [number, number, number];
       view?: { elevation?: number; azimuth?: number; ortho?: boolean };
       size?: number;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
-      if (!opts || typeof opts !== 'object') return { error: 'renderRegion requires { triangleIds }' };
-      const ids = opts.triangleIds;
+      if (!opts || typeof opts !== 'object') return { error: 'renderRegion requires { triangleIds } or { selection }' };
+      let ids = opts.triangleIds;
+      if (ids === undefined && opts.selection !== undefined) {
+        const sel = getPaintSelection(opts.selection);
+        if (!sel) return { error: `renderRegion: no selection ${JSON.stringify(opts.selection)} — listSelections() shows what exists.` };
+        const res = resolvePaintSelection(sel, currentMeshData, resolveSelectorNode2);
+        if (!(res instanceof Set)) return res;
+        ids = [...res];
+      }
       if (!ids || (typeof (ids as unknown as { length?: number }).length !== 'number')) {
-        return { error: 'triangleIds must be an array or Uint32Array of triangle indices.' };
+        return { error: 'triangleIds must be an array or Uint32Array of triangle indices (or pass selection: <name>).' };
       }
       const idsArr = Array.isArray(ids) ? ids : Array.from(ids);
       if (idsArr.length === 0) return { error: 'triangleIds is empty — nothing to highlight.' };
@@ -15365,6 +15453,252 @@ async function main() {
         unpaintedIslands,
         flaggedRegionIds: flagged.map(r => r.id),
         summary: `${allRegions.length} region(s); ${flagged.length} flagged (suspicious stray fragments or >50% overwritten); ${unpaintedIslands.length} island(s) with no paint. Dismiss or fix every flag before declaring the paint job done.`,
+      };
+    },
+
+    /** Create a NAMED SELECTION — an uncolored triangle set that scopes
+     *  paint operations. The core anti-bleed primitive: every paint tool
+     *  takes `within: {selection: <name>}` and intersects its selector with
+     *  the selection, so paint outside it is impossible by construction.
+     *
+     *  Exactly ONE source selector: `island` (from listComponents),
+     *  `triangleIds` (from detectRegions), `byCrease` (crease flood from a
+     *  seed point), `box` (AABB), `sphere`, or `shape` (oriented
+     *  box/sphere/cylinder/cone). Refine afterwards with
+     *  `refineSelection({op: 'add'|'subtract'|'intersect'})` to sculpt the
+     *  exact set — e.g. select the shoulder island, subtract the socket
+     *  sphere, name it 'left-shoulder'.
+     *
+     *  Selections re-resolve automatically when the mesh is refined by a
+     *  smoothing paint (they store the source selector, not baked ids) —
+     *  EXCEPT `triangleIds`-sourced ones, which go stale when the mesh
+     *  re-tessellates; prefer island/shape/crease sources when you'll paint
+     *  with smoothing. Selections are runtime-only (not saved with the
+     *  session) — cheap to recreate, and listSelections() shows the build
+     *  history of each. */
+    select(opts: {
+      island?: number;
+      triangleIds?: number[];
+      byCrease?: { seedPoint: [number, number, number]; creaseAngleDeg?: number };
+      box?: { min: [number, number, number]; max: [number, number, number] };
+      sphere?: { center: [number, number, number]; radius: number };
+      shape?: { kind?: 'box' | 'sphere' | 'cylinder' | 'cone'; center: [number, number, number]; size: [number, number, number]; quaternion?: [number, number, number, number] };
+      name?: string;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'select requires a selector: { island | triangleIds | byCrease | box | sphere | shape, name? }' };
+      const { name, ...node } = opts;
+      if (name !== undefined && (typeof name !== 'string' || name.length === 0 || name.length > 64)) {
+        return { error: 'name must be a non-empty string (max 64 chars).' };
+      }
+      const resolved = resolveSelectorNode(node as SelectorNode);
+      if (typeof resolved === 'string') return { error: `select: ${resolved}` };
+      if (resolved.size === 0) return { error: 'select: the selector matched zero triangles.' };
+      const sel = createPaintSelection(node as SelectorNode, describeSelector(node as SelectorNode), name);
+      if ('error' in sel) return sel;
+      sel.cache = resolved;
+      sel.cacheMesh = currentMeshData;
+      const stats = regionTriangleStats(resolved, currentMeshData);
+      const pca = principalDirectionOfTriangles(currentMeshData, resolved);
+      return {
+        id: sel.id,
+        name: sel.name,
+        triangles: resolved.size,
+        bbox: stats.bbox,
+        centroid: stats.centroid,
+        ...(pca ? { principalAxisVector: pca.axis } : {}),
+        nextStep: `Scope any paint with within: {selection: '${sel.name}'}, partition it with paintPartition, view it with renderRegion({selection: '${sel.name}'}), or refineSelection to sculpt it.`,
+      };
+    },
+
+    /** Refine a selection with boolean set algebra: `add` (union),
+     *  `subtract`, or `intersect` against any selector (same selector kinds
+     *  `select` takes). A refinement that would empty the selection is
+     *  rejected and NOT applied. */
+    refineSelection(opts: {
+      selection: string | number;
+      op: 'add' | 'subtract' | 'intersect';
+      with: {
+        island?: number;
+        triangleIds?: number[];
+        byCrease?: { seedPoint: [number, number, number]; creaseAngleDeg?: number };
+        box?: { min: [number, number, number]; max: [number, number, number] };
+        sphere?: { center: [number, number, number]; radius: number };
+        shape?: { kind?: 'box' | 'sphere' | 'cylinder' | 'cone'; center: [number, number, number]; size: [number, number, number]; quaternion?: [number, number, number, number] };
+      };
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'refineSelection requires { selection, op, with }' };
+      const { selection, op } = opts;
+      if (op !== 'add' && op !== 'subtract' && op !== 'intersect') return { error: "op must be 'add', 'subtract', or 'intersect'." };
+      if (!opts.with || typeof opts.with !== 'object') return { error: 'with must be a selector: { island | triangleIds | byCrease | box | sphere | shape }' };
+      // Validate the refinement selector NOW so a typo doesn't poison the
+      // stored expression.
+      const probe = resolveSelectorNode(opts.with as SelectorNode);
+      if (typeof probe === 'string') return { error: `refineSelection.with: ${probe}` };
+      const sel = addRefinement(selection, op as RefineOp, opts.with as SelectorNode, describeSelector(opts.with as SelectorNode));
+      if ('error' in sel) return sel;
+      const res = resolvePaintSelection(sel, currentMeshData, resolveSelectorNode2);
+      if (!(res instanceof Set)) {
+        // Roll the refinement back — an op that empties the selection is a
+        // mistake, not a state change.
+        popRefinement(selection);
+        return res;
+      }
+      const stats = regionTriangleStats(res, currentMeshData);
+      return { id: sel.id, name: sel.name, triangles: res.size, op, bbox: stats.bbox, centroid: stats.centroid, history: sel.history };
+    },
+
+    /** List all selections with sizes + build history. */
+    listSelections() {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      const mesh = currentMeshData;
+      return {
+        count: storeListSelections().length,
+        selections: storeListSelections().map(sel => {
+          const res = resolvePaintSelection(sel, mesh, resolveSelectorNode2);
+          if (!(res instanceof Set)) return { id: sel.id, name: sel.name, stale: true, error: res.error, history: sel.history };
+          const stats = regionTriangleStats(res, mesh);
+          return { id: sel.id, name: sel.name, triangles: res.size, bbox: stats.bbox, centroid: stats.centroid, history: sel.history };
+        }),
+      };
+    },
+
+    /** Delete a selection (by name or id). Painted regions that were scoped
+     *  by it are unaffected — their scope was baked at paint time. */
+    removeSelection(opts: { selection: string | number }) {
+      if (!opts || typeof opts !== 'object' || opts.selection === undefined) return { error: 'removeSelection requires { selection: name | id }' };
+      const ok = storeRemoveSelection(opts.selection);
+      return ok ? { removed: true } : { error: `No selection ${JSON.stringify(opts.selection)}.` };
+    },
+
+    /** Rename a selection. */
+    renameSelection(opts: { selection: string | number; name: string }) {
+      if (!opts || typeof opts !== 'object' || opts.selection === undefined || typeof opts.name !== 'string' || opts.name.length === 0) {
+        return { error: 'renameSelection requires { selection, name }' };
+      }
+      const res = storeRenameSelection(opts.selection, opts.name);
+      if ('error' in res) return res;
+      return { id: res.id, name: res.name };
+    },
+
+    /** Partition a scope into colored cells — the striped-shoulder /
+     *  patterned-pupil primitive. Divides `within` (an island, selection,
+     *  or region — REQUIRED, this tool never paints unscoped) into cells
+     *  and paints each with `colors[cell % colors.length]`:
+     *
+     *  - `{kind: 'bands', count}` — equal slices along an axis (default:
+     *    the scope's PCA long direction). paintOrientedStripes, scoped.
+     *  - `{kind: 'wedges', count, phaseDeg?}` — angular sectors around an
+     *    axis through a center (default axis: the scope's mean surface
+     *    normal; default center: its area centroid). Radial shoulder
+     *    stripes, pinwheels, beach-ball caps.
+     *  - `{kind: 'rings', radii: [r1, r2, …]}` — concentric annuli around
+     *    the axis (cells: <r1, r1..r2, …, >rLast). Alternating pupil edge
+     *    patterns, concentric eye decorations, bullseyes.
+     *
+     *  Each cell commits as its own region (removable independently). Cell
+     *  boundaries are centroid-bucketed — crisp on densely-tessellated
+     *  sculpts; no subdivision pass yet. */
+    paintPartition(opts: {
+      within: { island?: number; selection?: string | number; region?: number };
+      by: { kind: 'bands'; axis?: 'x' | 'y' | 'z' | [number, number, number]; count: number }
+        | { kind: 'wedges'; axis?: 'x' | 'y' | 'z' | [number, number, number]; center?: [number, number, number]; count: number; phaseDeg?: number }
+        | { kind: 'rings'; axis?: 'x' | 'y' | 'z' | [number, number, number]; center?: [number, number, number]; radii: number[] };
+      colors: [number, number, number][];
+      name?: string;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintPartition requires { within, by, colors }' };
+      const scope = resolveWithin(opts.within);
+      if (scope === null) return { error: 'paintPartition requires within: { island | selection | region } — it never paints unscoped.' };
+      if ('error' in scope) return scope;
+      if (!opts.by || typeof opts.by !== 'object' || !['bands', 'wedges', 'rings'].includes((opts.by as { kind?: string }).kind ?? '')) {
+        return { error: "by.kind must be 'bands', 'wedges', or 'rings'." };
+      }
+      if (!Array.isArray(opts.colors) || opts.colors.length < 1) return { error: 'colors must be a non-empty array of [r,g,b] triples.' };
+      for (let i = 0; i < opts.colors.length; i++) {
+        const c = opts.colors[i];
+        if (!Array.isArray(c) || c.length !== 3 || !c.every(v => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1)) {
+          return { error: `colors[${i}] must be [r,g,b] in 0..1.` };
+        }
+      }
+      const mesh = currentMeshData;
+      const pca = principalDirectionOfTriangles(mesh, scope.triangles);
+      if (!pca) return { error: 'paintPartition: scope has no triangles.' };
+
+      // Resolve the axis: world-axis shorthand, explicit vector, or the
+      // per-kind default (bands: PCA long direction; wedges/rings: the
+      // scope's area-weighted mean surface normal — the "facing" of the
+      // feature, which is what wedge pinwheels and concentric rings rotate
+      // about).
+      const rawAxis = (opts.by as { axis?: 'x' | 'y' | 'z' | [number, number, number] }).axis;
+      let axisVec: [number, number, number];
+      if (rawAxis === undefined) {
+        if (opts.by.kind === 'bands') {
+          axisVec = pca.axis;
+        } else {
+          const adjacency = buildAdjacency(mesh);
+          let nx = 0, ny = 0, nz = 0;
+          for (const t of scope.triangles) {
+            const a = triangleArea(t, mesh);
+            nx += adjacency.normals[t * 3] * a;
+            ny += adjacency.normals[t * 3 + 1] * a;
+            nz += adjacency.normals[t * 3 + 2] * a;
+          }
+          const len = Math.hypot(nx, ny, nz);
+          if (len < 1e-9) return { error: `paintPartition: the scope's mean normal is degenerate (closed surface?) — pass by.axis explicitly.` };
+          axisVec = [nx / len, ny / len, nz / len];
+        }
+      } else if (rawAxis === 'x' || rawAxis === 'y' || rawAxis === 'z') {
+        axisVec = rawAxis === 'x' ? [1, 0, 0] : rawAxis === 'y' ? [0, 1, 0] : [0, 0, 1];
+      } else if (Array.isArray(rawAxis) && rawAxis.length === 3 && rawAxis.every(v => typeof v === 'number' && Number.isFinite(v))) {
+        axisVec = rawAxis as [number, number, number];
+      } else {
+        return { error: "by.axis must be 'x', 'y', 'z', or an [x,y,z] vector." };
+      }
+      const center = (opts.by as { center?: [number, number, number] }).center ?? pca.centroid;
+      if (!Array.isArray(center) || center.length !== 3 || !center.every(v => typeof v === 'number' && Number.isFinite(v))) {
+        return { error: 'by.center must be [x,y,z] of finite numbers.' };
+      }
+
+      let spec: PartitionSpec;
+      if (opts.by.kind === 'bands') {
+        spec = { kind: 'bands', axis: axisVec, count: (opts.by as { count: number }).count };
+      } else if (opts.by.kind === 'wedges') {
+        const w = opts.by as { count: number; phaseDeg?: number };
+        if (w.phaseDeg !== undefined && (typeof w.phaseDeg !== 'number' || !Number.isFinite(w.phaseDeg))) return { error: 'by.phaseDeg must be a finite number.' };
+        spec = { kind: 'wedges', axis: axisVec, center, count: w.count, phaseDeg: w.phaseDeg };
+      } else {
+        spec = { kind: 'rings', axis: axisVec, center, radii: (opts.by as { radii: number[] }).radii };
+      }
+      const part = partitionTriangles(mesh, scope.triangles, spec);
+      if ('error' in part) return { error: `paintPartition: ${part.error}` };
+
+      const baseName = opts.name ?? `${scope.label} ${opts.by.kind}`;
+      const results: Array<{ id: number; name: string; cell: number; triangles: number; color: [number, number, number]; label: string }> = [];
+      for (let i = 0; i < part.cells.length; i++) {
+        if (part.cells[i].size === 0) continue;
+        const color = opts.colors[i % opts.colors.length];
+        const region = addRegion(
+          `${baseName} ${i + 1}`,
+          color as [number, number, number],
+          'paintbrush',
+          { kind: 'triangles', ids: [...part.cells[i]] },
+          part.cells[i],
+        );
+        results.push({ id: region.id, name: region.name, cell: i, triangles: part.cells[i].size, color, label: part.cellLabels[i] });
+      }
+      scheduleColorRefresh();
+      syncLockState();
+      return {
+        within: scope.label,
+        kind: opts.by.kind,
+        axisVector: axisVec,
+        center,
+        cellCount: part.cells.length,
+        paintedCells: results.length,
+        regions: results,
       };
     },
 
@@ -15905,9 +16239,16 @@ async function main() {
       creaseAngleDeg?: number;
       color: [number, number, number];
       name?: string;
+      /** Hard paint scope (island / named selection / region). The flood
+       *  cannot leave it — THE fix for the smooth-mesh flood hazard: scope
+       *  the flood to a selection around the feature and an overshoot
+       *  paints at most the selection. */
+      within?: { island?: number; selection?: string | number; region?: number };
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       if (!opts || typeof opts !== 'object') return { error: 'paintByCrease requires { seedPoint, color }' };
+      const scope = resolveWithin(opts.within);
+      if (scope !== null && 'error' in scope) return scope;
       const { seedPoint, seedNormal, color, name } = opts;
       if (!Array.isArray(seedPoint) || seedPoint.length !== 3) return { error: 'seedPoint must be [x,y,z]' };
       for (let i = 0; i < 3; i++) {
@@ -15941,14 +16282,33 @@ async function main() {
         resolvedNormal = nearest.normal;
       }
 
-      const triangles = findCoplanarRegion(seedTri, adjacency, tolerance);
+      let triangles = findCoplanarRegion(seedTri, adjacency, tolerance);
       if (triangles.size === 0) return { error: `paintByCrease: BFS returned no triangles from seed ${seedTri} (should be impossible — please report).` };
+      if (scope) {
+        triangles = intersectWithScope(triangles, scope);
+        if (triangles.size === 0) return { error: `paintByCrease: the flood matched triangles, but none inside ${scope.label}.` };
+      }
+      // Flood-overrun tripwire: on smooth organic meshes the "boundary" may
+      // be a gentle slope and the flood swallows the whole island. Warn
+      // when the unscoped result covers most of its island so the caller
+      // can undoLastPaint before compounding the mistake.
+      let floodWarning: string | undefined;
+      if (!scope) {
+        const { triIslands } = meshIslands(currentMeshData);
+        const first = triangles.values().next().value as number;
+        const islandIdx = triIslands[first];
+        let islandSize = 0;
+        for (let t = 0; t < triIslands.length; t++) if (triIslands[t] === islandIdx) islandSize++;
+        if (islandSize > 0 && triangles.size > islandSize * 0.6) {
+          floodWarning = `The flood covered ${triangles.size}/${islandSize} triangles of island ${islandIdx} (${Math.round(triangles.size / islandSize * 100)}%) — on a smooth mesh this usually means it escaped the feature. If that wasn't the intent, undoLastPaint() and retry with within: {...} or a lower creaseAngleDeg, or use fitRegionShape → paintDisc.`;
+        }
+      }
       const regionName = name ?? `Region ${getRegions().length + 1}`;
       const region = addRegion(
         regionName,
         color as [number, number, number],
         'face-pick',
-        { kind: 'coplanar', seedPoint: resolvedPoint, seedNormal: resolvedNormal ?? [0, 0, 1], normalTolerance: tolerance },
+        { kind: 'coplanar', seedPoint: resolvedPoint, seedNormal: resolvedNormal ?? [0, 0, 1], normalTolerance: tolerance, ...(scope ? { scopeIds: scope.scopeIds } : {}) },
         triangles,
       );
       scheduleColorRefresh();
@@ -15961,6 +16321,7 @@ async function main() {
         creaseAngleDeg,
         bbox: stats.bbox,
         centroid: stats.centroid,
+        ...(floodWarning ? { floodWarning } : {}),
       };
     },
 
@@ -16953,6 +17314,12 @@ async function main() {
 'fitRegionShape':  { signature: 'fitRegionShape({triangleIds}) -> {best, circle: {center, axis, radius, rms}, sphere?, plane, nextStep} -- Fit an ANALYTIC disc/sphere/plane to a detected region\'s boundary. THE fan-bleed killer: sculpted features are usually clean discs — fit one, then paint it via paintDisc/paintRegionFitted instead of painting the ragged triangle set.', docs: '/ai/colors.md' },
         'paintRegionFitted': { signature: 'paintRegionFitted({triangleIds, color, pad?=1.0, thickness?, name?, force?}) -- One call: fit a disc to the region boundary and paint it with a crisp analytic edge. Refuses when the fit is poor (feature isn\'t disc-like) unless force: true.', docs: '/ai/colors.md' },
         'paintMirrored':   { signature: 'paintMirrored({regionId, color?, name?, plane?}) -- Mirror a painted region across the model\'s bilateral symmetry plane (auto-detected — see listComponents().symmetry). Paint ONE eye, mirror it: position/size match by construction, color can differ (red left iris / blue right iris). Analytic paints reflect exactly; paintFaces sets fall back to per-triangle mirroring.', docs: '/ai/colors.md' },
+'select':          { signature: 'select({island | triangleIds | byCrease | box | sphere | shape, name?}) -> {id, name, triangles, bbox, centroid} -- Create a NAMED SELECTION: an uncolored triangle set that scopes paint. Every paint tool takes within: {selection: name} and CANNOT bleed outside it. Sculpt with refineSelection; view with renderRegion({selection}).', docs: '/ai/colors.md' },
+                'refineSelection': { signature: 'refineSelection({selection, op: add|subtract|intersect, with: <selector>}) -- Boolean set algebra on a selection (e.g. select the shoulder island, subtract the socket sphere). A refinement that would empty the selection is rejected, not applied.', docs: '/ai/colors.md' },
+                'listSelections':  { signature: 'listSelections() -> {count, selections: [{id, name, triangles, bbox, centroid, history}]} -- All selections with their build history.', docs: '/ai/colors.md' },
+                'removeSelection': { signature: 'removeSelection({selection: name|id}) -- Delete a selection. Paints scoped by it are unaffected (scope was baked at paint time).', docs: '/ai/colors.md' },
+                'renameSelection': { signature: 'renameSelection({selection, name}) -- Rename a selection.', docs: '/ai/colors.md' },
+                'paintPartition':  { signature: 'paintPartition({within, by: {kind: bands|wedges|rings, ...}, colors, name?}) -- Divide a scope (island/selection/region — REQUIRED) into cells and colour each: bands = slices along an axis (default: scope PCA), wedges = angular sectors around the scope\'s mean normal (radial shoulder stripes), rings = concentric annuli (alternating pupil edge patterns). Each cell commits as its own region.', docs: '/ai/colors.md' },
                 'paintOrientedStripes': { signature: 'paintOrientedStripes({islandIndex, colors, axis?, name?}) -> {axis, axisVector, stripeCount, regions: [...]} -- Paint N equally-spaced stripes along the island\'s TRUE principal direction (PCA — follows a tilted limb). axis overrides with x|y|z or any [x,y,z] vector. THE fix for striped limbs on organic characters. Colours flow from low to high along the axis.', docs: '/ai/colors.md' },
         'sampleReferenceColor': { signature: 'sampleReferenceColor({id?, rect?, point?, mode?="dominant"}) -> {color: [r,g,b], hex, imageId, ...} -- Sample a colour from an attached reference image. Point at the pixel/rect where the feature lives (Pomni left glove, right shoe, iris outer ring); returns the RGB in 0..1 ready to hand straight to paintByCrease / paintIsland / paintInBox. "dominant" mode buckets HSV to survive photo shadows/highlights; "mean" is a plain average.', docs: '/ai/colors.md' },
         'waitForSessionStable': { signature: 'waitForSessionStable({minMs?=800, timeoutMs?=15000}) -> {sessionId, elapsedMs} -- Await session-id stability. Fixes the paint-loop DX cliff where autosave-triggered navigation retargets in-flight paint calls at a stale session (2 of 4 v2 agents lost 60+ paints to this). Call right after importMeshData before painting.', docs: '/ai.md' },
@@ -17357,6 +17724,124 @@ async function main() {
       return `coverageMode must be one of: ${COVERAGE_MODES.join(', ')}`;
     }
     return null;
+  }
+
+  /** Resolve one selector node (the `select`/`refineSelection.with` shape)
+   *  to a triangle set against the current mesh. Returns an error STRING on
+   *  invalid input so callers can prefix context. */
+  function resolveSelectorNode(node: SelectorNode): Set<number> | string {
+    if (!currentMeshData) return 'no geometry loaded';
+    const mesh = currentMeshData;
+    if (!node || typeof node !== 'object') return 'selector must be an object';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const n = node as any;
+    const keys = ['island', 'triangleIds', 'byCrease', 'box', 'sphere', 'shape'].filter(k => n[k] !== undefined);
+    if (keys.length !== 1) return `selector must have exactly ONE of island / triangleIds / byCrease / box / sphere / shape (got ${keys.length > 0 ? keys.join('+') : 'none'})`;
+    if (n.island !== undefined) {
+      if (!Number.isInteger(n.island) || n.island < 0) return 'island must be a non-negative integer (from listComponents)';
+      const { triIslands, islands } = meshIslands(mesh);
+      if (n.island >= islands.length) return `island ${n.island} out of range — listComponents has ${islands.length} island(s)`;
+      return trianglesInIsland(triIslands, n.island);
+    }
+    if (n.triangleIds !== undefined) {
+      if (!Array.isArray(n.triangleIds) || n.triangleIds.length === 0) return 'triangleIds must be a non-empty array of integers';
+      const out = new Set<number>();
+      for (const t of n.triangleIds) {
+        if (!Number.isInteger(t) || t < 0 || t >= mesh.numTri) return `triangleIds contains invalid index ${t} (expected 0..${mesh.numTri - 1})`;
+        out.add(t);
+      }
+      return out;
+    }
+    if (n.byCrease !== undefined) {
+      const b = n.byCrease;
+      if (!b || !Array.isArray(b.seedPoint) || b.seedPoint.length !== 3 || !b.seedPoint.every((v: unknown) => typeof v === 'number' && Number.isFinite(v))) {
+        return 'byCrease.seedPoint must be [x,y,z] of finite numbers';
+      }
+      const angle = b.creaseAngleDeg ?? 20;
+      if (typeof angle !== 'number' || !Number.isFinite(angle) || angle <= 0 || angle >= 180) return 'byCrease.creaseAngleDeg must be in (0, 180)';
+      const adjacency = buildAdjacency(mesh);
+      const nearest = findNearestTriangle(b.seedPoint as [number, number, number], mesh, adjacency);
+      if (nearest.triIndex < 0) return 'byCrease: mesh has no triangles';
+      return findCoplanarRegion(nearest.triIndex, adjacency, Math.cos(angle * Math.PI / 180));
+    }
+    if (n.box !== undefined) {
+      const err = validateBoxAndCone(n.box, undefined);
+      if (err) return err;
+      return collectTrianglesByFilter(mesh, n.box, undefined, null);
+    }
+    if (n.sphere !== undefined) {
+      const s = n.sphere;
+      if (!s || !Array.isArray(s.center) || s.center.length !== 3 || !s.center.every((v: unknown) => typeof v === 'number' && Number.isFinite(v))) {
+        return 'sphere.center must be [x,y,z] of finite numbers';
+      }
+      if (typeof s.radius !== 'number' || !Number.isFinite(s.radius) || s.radius <= 0) return 'sphere.radius must be a positive finite number';
+      return collectTrianglesBySphere(mesh, s.center as [number, number, number], s.radius, undefined);
+    }
+    const sh = n.shape;
+    if (!sh || typeof sh !== 'object') return 'shape must be { kind?, center, size, quaternion? }';
+    const kind = sh.kind ?? 'box';
+    if (kind !== 'box' && kind !== 'sphere' && kind !== 'cylinder' && kind !== 'cone') return "shape.kind must be 'box', 'sphere', 'cylinder', or 'cone'";
+    if (!Array.isArray(sh.center) || sh.center.length !== 3 || !sh.center.every((v: unknown) => typeof v === 'number' && Number.isFinite(v))) return 'shape.center must be [x,y,z] of finite numbers';
+    if (!Array.isArray(sh.size) || sh.size.length !== 3 || !sh.size.every((v: unknown) => typeof v === 'number' && Number.isFinite(v) && (v as number) > 0)) return 'shape.size must be [sx,sy,sz] of positive finite numbers';
+    const q = sh.quaternion ?? [0, 0, 0, 1];
+    if (!Array.isArray(q) || q.length !== 4 || !q.every((v: unknown) => typeof v === 'number' && Number.isFinite(v))) return 'shape.quaternion must be [x,y,z,w] of finite numbers';
+    return findShapeTriangles(mesh, kind, { center: sh.center, size: sh.size, quaternion: q as [number, number, number, number] });
+  }
+
+  /** Adapter with the exact callback shape `resolveSelection` wants. */
+  function resolveSelectorNode2(node: SelectorNode): Set<number> | string {
+    return resolveSelectorNode(node);
+  }
+
+  /** Short human label for a selector node — selection build history. */
+  function describeSelector(node: SelectorNode): string {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const n = node as any;
+    if (n.island !== undefined) return `island ${n.island}`;
+    if (n.triangleIds !== undefined) return `${n.triangleIds.length} triangleIds`;
+    if (n.byCrease !== undefined) return `crease flood @ [${(n.byCrease.seedPoint as number[]).map((v: number) => v.toFixed(1)).join(', ')}] ≤${n.byCrease.creaseAngleDeg ?? 20}°`;
+    if (n.box !== undefined) return 'aabb box';
+    if (n.sphere !== undefined) return `sphere r=${n.sphere.radius}`;
+    if (n.shape !== undefined) return `oriented ${n.shape.kind ?? 'box'}`;
+    return 'selector';
+  }
+
+  /** Resolve the shared `within` paint-scope option to a triangle set.
+   *  Returns null when no scope was requested, `{error}` on bad input. */
+  function resolveWithin(within: { island?: number; selection?: string | number; region?: number } | undefined):
+    { triangles: Set<number>; label: string; scopeIds: number[] } | { error: string } | null {
+    if (within === undefined) return null;
+    if (!within || typeof within !== 'object') return { error: 'within must be { island } | { selection } | { region }' };
+    const keys = ['island', 'selection', 'region'].filter(k => (within as Record<string, unknown>)[k] !== undefined);
+    if (keys.length !== 1) return { error: `within must have exactly ONE of island / selection / region (got ${keys.length > 0 ? keys.join('+') : 'none'})` };
+    if (!currentMeshData) return { error: 'No geometry loaded' };
+    if (within.island !== undefined) {
+      const res = resolveSelectorNode({ island: within.island });
+      if (typeof res === 'string') return { error: `within.island: ${res}` };
+      return { triangles: res, label: `island ${within.island}`, scopeIds: [...res] };
+    }
+    if (within.selection !== undefined) {
+      if (typeof within.selection !== 'string' && typeof within.selection !== 'number') return { error: 'within.selection must be a selection name or id' };
+      const sel = getPaintSelection(within.selection);
+      if (!sel) return { error: `within.selection: no selection ${JSON.stringify(within.selection)} — listSelections() shows what exists.` };
+      const res = resolvePaintSelection(sel, currentMeshData, resolveSelectorNode2);
+      if (!(res instanceof Set)) return res;
+      return { triangles: res, label: `selection "${sel.name}"`, scopeIds: [...res] };
+    }
+    if (!Number.isInteger(within.region)) return { error: 'within.region must be a region id (integer)' };
+    const region = getRegions().find(r => r.id === within.region);
+    if (!region) return { error: `within.region: no region with id ${within.region} — listRegions() shows what exists.` };
+    const tris = new Set<number>();
+    for (const t of region.triangles) if (t >= 0 && t < currentMeshData.numTri) tris.add(t);
+    return { triangles: tris, label: `region ${region.id} "${region.name}"`, scopeIds: [...tris] };
+  }
+
+  /** Intersect a selector's triangles with a resolved scope; shared by every
+   *  `within`-scoped paint tool. */
+  function intersectWithScope(triangles: Set<number>, scope: { triangles: Set<number>; label: string }): Set<number> {
+    const out = new Set<number>();
+    for (const t of triangles) if (scope.triangles.has(t)) out.add(t);
+    return out;
   }
 
   function validateMaxTriangleArea(area: unknown): string | null {

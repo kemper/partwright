@@ -350,6 +350,50 @@ function dominantEigenvector(
   return [vx, vy, vz];
 }
 
+/** True principal direction of an arbitrary triangle subset — the same
+ *  area-weighted centroid PCA the per-island metadata uses, exposed for
+ *  callers that need the long axis of a SCOPE (a selection, a detected
+ *  region) rather than a whole island. Also returns the area centroid,
+ *  which doubles as the natural partition center. */
+export function principalDirectionOfTriangles(
+  mesh: MeshData,
+  triangles: Iterable<number>,
+): { axis: [number, number, number]; centroid: [number, number, number] } | null {
+  const { triVerts, vertProperties, numProp } = mesh;
+  let mW = 0, mX = 0, mY = 0, mZ = 0;
+  let mXX = 0, mXY = 0, mXZ = 0, mYY = 0, mYZ = 0, mZZ = 0;
+  let mnX = Infinity, mnY = Infinity, mnZ = Infinity, mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity;
+  let any = false;
+  for (const t of triangles) {
+    any = true;
+    const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+    const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
+    const bx = vertProperties[v1 * numProp], by = vertProperties[v1 * numProp + 1], bz = vertProperties[v1 * numProp + 2];
+    const cx = vertProperties[v2 * numProp], cy = vertProperties[v2 * numProp + 1], cz = vertProperties[v2 * numProp + 2];
+    const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+    const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+    const crx = e1y * e2z - e1z * e2y;
+    const cry = e1z * e2x - e1x * e2z;
+    const crz = e1x * e2y - e1y * e2x;
+    const area = 0.5 * Math.sqrt(crx * crx + cry * cry + crz * crz);
+    const tcx = (ax + bx + cx) / 3, tcy = (ay + by + cy) / 3, tcz = (az + bz + cz) / 3;
+    const w = area > 0 ? area : 1e-12;
+    mW += w;
+    mX += w * tcx; mY += w * tcy; mZ += w * tcz;
+    mXX += w * tcx * tcx; mXY += w * tcx * tcy; mXZ += w * tcx * tcz;
+    mYY += w * tcy * tcy; mYZ += w * tcy * tcz; mZZ += w * tcz * tcz;
+    if (tcx < mnX) mnX = tcx; if (tcx > mxX) mxX = tcx;
+    if (tcy < mnY) mnY = tcy; if (tcy > mxY) mxY = tcy;
+    if (tcz < mnZ) mnZ = tcz; if (tcz > mxZ) mxZ = tcz;
+  }
+  if (!any || mW <= 0) return null;
+  const ex = mxX - mnX, ey = mxY - mnY, ez = mxZ - mnZ;
+  const seed: [number, number, number] =
+    ex >= ey && ex >= ez ? [1, 0, 0] : ey >= ez ? [0, 1, 0] : [0, 0, 1];
+  const axis = dominantEigenvector(mW, mX, mY, mZ, mXX, mXY, mXZ, mYY, mYZ, mZZ, seed);
+  return { axis, centroid: [mX / mW, mY / mW, mZ / mW] };
+}
+
 /** Collect every triangle id belonging to the given island. */
 export function trianglesInIsland(triIslands: Uint32Array, islandIndex: number): Set<number> {
   const out = new Set<number>();
