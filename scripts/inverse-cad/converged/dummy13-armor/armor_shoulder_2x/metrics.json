@@ -1,0 +1,188 @@
+{
+  "ok": true,
+  "attempt": 1,
+  "note": "census 1082 planes > tris/2 (972) -> §5.25 stock levelSet step 0.1 dp 0.02 edge 0.1 (banking safety best)",
+  "score": 0.13972,
+  "phase": "done",
+  "distance": {
+    "method": "point-to-triangle-bvh",
+    "samples": 20000,
+    "chamfer": 0.0037,
+    "hausdorff": 0.11797,
+    "rms": 0.01378,
+    "candToTarget": {
+      "mean": 0.00364,
+      "rms": 0.01377,
+      "max": 0.10679,
+      "p50": 0,
+      "p90": 0.00655,
+      "p99": 0.07727,
+      "meanSigned": -0.00265,
+      "excessArea_mm2": 0.03998,
+      "missingArea_mm2": 7.7154
+    },
+    "targetToCand": {
+      "mean": 0.00377,
+      "rms": 0.01379,
+      "max": 0.11797,
+      "p50": 0,
+      "p90": 0.00716,
+      "p99": 0.07395,
+      "meanSigned": 0.00269,
+      "excessArea_mm2": 8.28131,
+      "missingArea_mm2": 0.20166
+    }
+  },
+  "voxel": {
+    "grid": {
+      "res": 0.15,
+      "min": [
+        -4.8,
+        -4.3,
+        -0.3
+      ],
+      "size": [
+        64,
+        58,
+        61
+      ]
+    },
+    "volumeIoU": 0.98266,
+    "excess_mm3": 0.61762,
+    "missing_mm3": 1.94063,
+    "targetVol_mm3": 146.88338,
+    "candVol_mm3": 145.56037,
+    "findings": [
+      {
+        "id": "F1",
+        "sign": "missing",
+        "volume_mm3": 0.53325,
+        "centroid": [
+          -3.29715,
+          1.06108,
+          1.49715
+        ],
+        "bbox": {
+          "min": [
+            -3.75,
+            -1.9,
+            0.9
+          ],
+          "max": [
+            -2.7,
+            3.95,
+            1.95
+          ]
+        },
+        "relCentroid": [
+          0.13365,
+          0.63263,
+          0.17614
+        ],
+        "extent_mm": [
+          1.05,
+          5.85,
+          1.05
+        ],
+        "thickness_mm": 0.15,
+        "classification": "thin-skin",
+        "hint": "target has material here that the candidate lacks (missing feature or cut too deep)"
+      }
+    ],
+    "totalFindings": 1,
+    "discardedVolume_mm3": 0
+  },
+  "gates": {
+    "pass": true,
+    "must": [
+      {
+        "name": "hausdorff P99",
+        "value": 0.0773,
+        "threshold": "<= 0.4mm",
+        "pass": true,
+        "why": "a small feature is missing or badly misplaced"
+      },
+      {
+        "name": "hausdorff max",
+        "value": 0.118,
+        "threshold": "<= 0.8mm",
+        "pass": true,
+        "why": "at least one point of one mesh is far from the other"
+      },
+      {
+        "name": "volume IoU",
+        "value": 0.9827,
+        "threshold": ">= 0.95",
+        "pass": true,
+        "why": "the solids overlap poorly — mass is in the wrong place"
+      },
+      {
+        "name": "worst finding",
+        "value": 0.5333,
+        "threshold": "<= 4mm³",
+        "pass": true,
+        "why": "a localized blob of disagreement (F1: missing 0.5mm³ at rel [0.13, 0.63, 0.18], thin-skin)"
+      },
+      {
+        "name": "topology",
+        "value": "genus 0/0, components 1/1",
+        "threshold": "equal",
+        "pass": true,
+        "why": "missing/extra holes or pieces — the loudest visual defect, nearly invisible to chamfer"
+      },
+      {
+        "name": "volume ratio",
+        "value": 0.9953,
+        "threshold": "1 ± 0.02",
+        "pass": true,
+        "why": "net material error (hidden internal geometry, wrong wall thickness)"
+      }
+    ],
+    "should": [
+      {
+        "name": "chamfer",
+        "value": 0.0037,
+        "threshold": "<= 0.12mm",
+        "pass": true,
+        "why": "overall polish"
+      },
+      {
+        "name": "area ratio",
+        "value": 0.9912,
+        "threshold": "1 ± 0.04",
+        "pass": true,
+        "why": "missing fillets/texture shed area with little volume change"
+      }
+    ],
+    "failed": [],
+    "summary": "6/6 MUST, 2/2 SHOULD"
+  },
+  "candidate": {
+    "componentCount": 1,
+    "genus": 0,
+    "volume": 147.67686,
+    "surfaceArea": 266.50785,
+    "bbox": {
+      "min": [
+        -4.5,
+        -4,
+        0
+      ],
+      "max": [
+        4.5,
+        4,
+        8.5
+      ],
+      "size": [
+        9,
+        8,
+        8.5
+      ],
+      "center": [
+        0,
+        0,
+        4.25
+      ]
+    }
+  }
+}

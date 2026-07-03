@@ -1,0 +1,44 @@
+{
+  "part": "armor_shoulder_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.13972264688432226,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "facet-census (5.26a route: 1082 planes > tris/2) -> stock genLevelSet step 0.1 dp 0.02 edge 0.1: CONVERGED"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 2.0148,
+      "phase": "silhouette",
+      "chamfer": 0.1385,
+      "hausdorff": 1.4914,
+      "volumeIoU": 0.7785,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "census 1082 planes > tris/2 (972) -> §5.25 stock levelSet step 0.1 dp 0.02 edge 0.1 (banking safety best)",
+      "verdict": "improved",
+      "score": 0.1397,
+      "phase": "done",
+      "chamfer": 0.0037,
+      "hausdorff": 0.118,
+      "volumeIoU": 0.9827,
+      "failedMust": []
+    }
+  ]
+}
