@@ -103,6 +103,27 @@ else                  → hybrid: traced silhouette body + probed primitives for
   (0.03–0.05 vs 0.0002 on adapter_stand), no member of that primitive
   class exists — revolve the measured polyline instead of tuning. Landed
   6/6 gates in one turn.
+- **5.10 Socket entry cones**: a spherical socket opening through a face
+  usually carries a conical lead-in at the rim, and it need NOT be 45°.
+  Section every 0.1mm near the face and take min contour-point distance to
+  the socket center: a linear r(z) segment before the sphere takes over =
+  a cone (ankle: r(z)=2.465−0.371z, ~20°). Subtract cone frustums extending
+  past the face and into the sphere on the deep end (safe — sphere is wider
+  there). (frame_ankle, wave 1)
+- **5.11 Staircase chamfers fail the AREA gate, not the distance gates**: a
+  stepped 2D-offset chamfer can pass every MUST (chamfer 0.006) while
+  failing area ratio — a staircase carries √2× the true 45°-face area
+  regardless of step count, so more steps never fixes it. Exact fix without
+  loft: intersect with a cone-frustum/cylinder envelope for arc edges; per
+  straight edge subtract a 45° halfspace wedge prism authored in (s,z)
+  coordinates (s = distance along the outward normal), `extrude(L)`, then
+  `.rotate([90,0,0]).rotate([0,0,atan2(ny,nx)deg]).translate([e1x,e1y,0])`.
+  Limit each wedge's extent so chamfer runouts are respected.
+- **5.12 Check whether traced cut lines pass through a feature center**:
+  fitting the ankle's two mouth-cut lines at two different z showed both
+  pass exactly through the probed socket center — collapsing four line
+  parameters to two angles about a known point. Coincidences like this are
+  design intent; test for them.
 
 ## 6. Plateau protocol
 
@@ -146,6 +167,10 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
 - `cs.revolve(n)` profile convention: X = radius, Y = height, and the
   height axis becomes the solid's **Z**; `rotate([-90,0,0])` remaps to +Y.
   Verify polygon winding with a shoelace check before `geom.fromPoints`.
+- `turn.mjs <partDir> <candidate>` resolves the candidate path from your
+  CWD, not from partDir — a bare filename gives `ENOENT ... copyfile` even
+  when the file exists inside partDir. Pass an absolute or cwd-relative
+  path.
 
 ## 8. Reading the feedback bundle
 
