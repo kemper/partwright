@@ -231,6 +231,21 @@ else                  → hybrid: traced silhouette body + probed primitives for
   of the dilated notch polygon just below z=0 and the exact polygon at
   z=leg. (knee_elbow. Also: §5.12 confirmed three MORE times there — test
   every straight cut near a socket against its center.)
+- **5.19f Mid-height side bosses hide from BOTH band traces and near-face
+  sections**: a boss spanning only |z|<~0.9 shows in exactly one mid slice.
+  Localize with a ray scan x(z) at a suspect y; "circular arc, then
+  exactly-slope-1 line" is a tangent-blended ridge — fit the circle,
+  verify the line is its 45° tangent (intercept = a + R√2), author as a
+  prism of circle ∪ tangent-quad. (frame_waist tabs, fit residual <0.002.)
+- **5.19g Ray-scan an assumed flat face before authoring its halfplane**:
+  a bbox extreme only proves a VERTEX, not a face — frame_waist's
+  "front face" was the meeting point of two cut lines; rays at 0.2mm
+  steps exposed the two slopes in one call.
+- **5.19h Constant-x-over-y ray band + ellipse-fit x(z) = elliptical
+  prism**: a mid-body bulge whose x-extent is constant along the axis but
+  shrinks with |z| faster than any circle is an elliptical-section prism —
+  fit (x/a)²+(z/b)²=1 to 3+ ray samples before reaching for lofts.
+  (frame_abdomen: (3.2, 2.5) ellipse, max dev 0.005.)
 - **5.20 Test traced walls for arcs about a probed feature center**: a
   DP-traced "flat wall + corner fillet" can really be one large arc
   centered on the socket/feature center — compute each traced boundary
@@ -244,11 +259,15 @@ else                  → hybrid: traced silhouette body + probed primitives for
   compare each edge's position to the mid-height outline — only the inset
   edges carry the face chamfer; a uniform-offset chamfer fails on exactly
   the others. (hip_shoulder)
-- **Dummy 13 kit note**: the socket lead-in cone spec repeats across parts
-  (~r(z)=2.47−0.37z, ≈20°, on every open socket face — measured identical
-  on ankle and hip_shoulder) and the socket sphere is r≈2.90; joint BALLS
-  are r=3.000 exactly (thigh, shin, forearm, hips). Probe to confirm, but
-  start there. Hips variant: 3 balls at x=−8/0/+8, z=0, one full-length
+- **Dummy 13 kit note**: the socket GRAMMAR repeats across parts (sphere +
+  ~20° lead-in cones + mouth planes through the center + corner chamfer
+  lines), but **the numbers are per-part, not global**: socket r=2.9075
+  (ankle/hip_shoulder), 2.900 (hands), 2.852 (waist), 2.8488 (abdomen);
+  cone slopes 0.371 / 0.3515 / 0.3525. Joint BALLS are r=3.000 exactly
+  everywhere (thigh, shin, forearm, hips, neck, waist, abdomen). Probe
+  every socket; transfer the grammar, re-measure the radii. Mouth-wedge
+  wall slope 0.668|x| and corner-chamfer line y=±(0.228x−2.980) have
+  matched on hip_shoulder, waist, AND abdomen — design intent. Hips variant: 3 balls at x=−8/0/+8, z=0, one full-length
   X-strut r=1.5 with a chordal flat at z=−1.3, whole part clipped z≥−2.5.
   **Ball centers sit at z=0 even though bbox-center z=0.25** — an
   asymmetric clip shifts the bbox center off the feature line; probe the
@@ -339,6 +358,11 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
 - **Hull-of-two-slabs flares: pin the slab OUTER faces exactly on the
   transition planes** — slabs with thickness inside the interval tilt the
   hull diagonal off 45° (0.1-thick slabs cost ~1mm³ at the corners).
+- **A two-plane wedge/mouth cutter is the INTERSECTION of its two
+  half-space prisms, not the union** — subtracting each half-space
+  separately removes everything below EITHER plane and carves both flanks.
+  Build `cut = prism1.intersect(prism2)`, subtract once. (frame_abdomen:
+  two symmetric 39.7mm³ missing blobs from this.)
 
 ## 8. Reading the feedback bundle
 
