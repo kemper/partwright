@@ -153,6 +153,19 @@ else                  → hybrid: traced silhouette body + probed primitives for
   z-invariance before reaching for spheres. (frame_thigh's knee C-clip:
   a Y-prism XZ profile straight from one raw slice + one subtracted
   vertical cylinder.)
+- **5.18 Sibling-part transfer: verify each borrowed number by chord math
+  before reuse**: when a target is a sibling of a converged part, read the
+  sibling's notes.md FIRST and test each shared feature against the new
+  bootstrap traces analytically — a vertical spool r2.5 grooved to r1.5
+  predicts section half-chords sqrt(r²−y²) at every traced y; if 3+ chords
+  match to 0.01mm the whole feature spec transfers verbatim. Budget probes
+  only for the genuinely new features. (frame_shin: 6/6 MUST at chamfer
+  0.0003 in ONE authored attempt.)
+- **5.19 Anti-rotation/clearance flats show as a section bbox-min that
+  beats the circle fit**: a band fitting `circle r1.5 rms 0.018` whose
+  section bbox z-min sits at 1.2 instead of the circle's 1.0 is a chordal
+  flat — author it IN the profile (circle ∩ halfplane, a D-prism), don't
+  subtract it later. (frame_shin neck)
 
 ## 6. Plateau protocol
 
