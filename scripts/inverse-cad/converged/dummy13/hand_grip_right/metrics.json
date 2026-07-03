@@ -1,36 +1,36 @@
 {
   "ok": true,
-  "attempt": 2,
-  "note": "box debris voids (chi=+2 shells) instead of torus: gate now bridges genus conventions, expects engine genus 0",
-  "score": 0.3388,
+  "attempt": 3,
+  "note": "levelSet SDF interpolation hybrid (smooth+banded fallback for volatile fingertip topology), step 0.2 (issue #884)",
+  "score": 0.20783,
   "phase": "done",
   "distance": {
     "method": "point-to-triangle-bvh",
     "samples": 20000,
-    "chamfer": 0.02824,
-    "hausdorff": 0.28749,
-    "rms": 0.04453,
+    "chamfer": 0.01257,
+    "hausdorff": 0.29149,
+    "rms": 0.02598,
     "candToTarget": {
-      "mean": 0.03271,
-      "rms": 0.04992,
-      "max": 0.26749,
-      "p50": 0.01711,
-      "p90": 0.0927,
-      "p99": 0.14702,
-      "meanSigned": -0.00074,
-      "excessArea_mm2": 86.47958,
-      "missingArea_mm2": 92.98736
+      "mean": 0.01325,
+      "rms": 0.02728,
+      "max": 0.29149,
+      "p50": 0.00347,
+      "p90": 0.04219,
+      "p99": 0.1,
+      "meanSigned": 0.00396,
+      "excessArea_mm2": 35.09358,
+      "missingArea_mm2": 14.26137
     },
     "targetToCand": {
-      "mean": 0.02377,
-      "rms": 0.03838,
-      "max": 0.28749,
-      "p50": 0.01097,
-      "p90": 0.06572,
-      "p99": 0.12,
-      "meanSigned": 0.00148,
-      "excessArea_mm2": 52.57263,
-      "missingArea_mm2": 43.58337
+      "mean": 0.0119,
+      "rms": 0.02461,
+      "max": 0.1439,
+      "p50": 0.00326,
+      "p90": 0.03705,
+      "p99": 0.1,
+      "meanSigned": -0.00283,
+      "excessArea_mm2": 12.52696,
+      "missingArea_mm2": 28.21465
     }
   },
   "voxel": {
@@ -38,7 +38,7 @@
       "res": 0.15,
       "min": [
         -4.825,
-        -2.804,
+        -2.80369,
         -2.8
       ],
       "size": [
@@ -47,84 +47,49 @@
         58
       ]
     },
-    "volumeIoU": 0.95498,
-    "excess_mm3": 6.5475,
-    "missing_mm3": 9.00788,
-    "targetVol_mm3": 338.97825,
-    "candVol_mm3": 336.51788,
+    "volumeIoU": 0.97937,
+    "excess_mm3": 4.99838,
+    "missing_mm3": 2.09587,
+    "targetVol_mm3": 338.93437,
+    "candVol_mm3": 341.83688,
     "findings": [
       {
         "id": "F1",
-        "sign": "missing",
-        "volume_mm3": 0.59737,
+        "sign": "excess",
+        "volume_mm3": 2.106,
         "centroid": [
-          3.61695,
-          1.86083,
-          -1.98517
+          0.78702,
+          5.57732,
+          3.14495
         ],
         "bbox": {
           "min": [
-            1.625,
-            -2.354,
-            -2.35
-          ],
-          "max": [
-            4.475,
-            7.846,
-            0.35
-          ]
-        },
-        "relCentroid": [
-          0.79241,
-          0.33565,
-          0.06425
-        ],
-        "extent_mm": [
-          2.85,
-          10.2,
-          2.7
-        ],
-        "thickness_mm": 0.15,
-        "classification": "thin-skin",
-        "hint": "target has material here that the candidate lacks (missing feature or cut too deep)"
-      },
-      {
-        "id": "F2",
-        "sign": "missing",
-        "volume_mm3": 0.54675,
-        "centroid": [
-          -0.50648,
-          3.73026,
-          3.26019
-        ],
-        "bbox": {
-          "min": [
-            -2.875,
-            2.746,
+            -4.525,
+            3.49631,
             3.05
           ],
           "max": [
-            2.075,
-            4.546,
-            3.35
+            5.525,
+            7.39631,
+            3.5
           ]
         },
         "relCentroid": [
-          0.39109,
-          0.47941,
-          0.7189
+          0.51698,
+          0.62146,
+          0.70452
         ],
         "extent_mm": [
-          4.95,
-          1.8,
-          0.3
+          10.05,
+          3.9,
+          0.45
         ],
         "thickness_mm": 0.15,
         "classification": "thin-skin",
-        "hint": "target has material here that the candidate lacks (missing feature or cut too deep)"
+        "hint": "candidate has material here that the target does not (protrusion too large or missing cut)"
       }
     ],
-    "totalFindings": 2,
+    "totalFindings": 1,
     "discardedVolume_mm3": 0
   },
   "gates": {
@@ -132,31 +97,31 @@
     "must": [
       {
         "name": "hausdorff P99",
-        "value": 0.147,
+        "value": 0.1,
         "threshold": "<= 0.4mm",
         "pass": true,
         "why": "a small feature is missing or badly misplaced"
       },
       {
         "name": "hausdorff max",
-        "value": 0.2875,
+        "value": 0.2915,
         "threshold": "<= 0.8mm",
         "pass": true,
         "why": "at least one point of one mesh is far from the other"
       },
       {
         "name": "volume IoU",
-        "value": 0.955,
+        "value": 0.9794,
         "threshold": ">= 0.95",
         "pass": true,
         "why": "the solids overlap poorly — mass is in the wrong place"
       },
       {
         "name": "worst finding",
-        "value": 0.5974,
+        "value": 2.106,
         "threshold": "<= 4mm³",
         "pass": true,
-        "why": "a localized blob of disagreement (F1: missing 0.6mm³ at rel [0.79, 0.34, 0.06], thin-skin)"
+        "why": "a localized blob of disagreement (F1: excess 2.1mm³ at rel [0.52, 0.62, 0.70], thin-skin)"
       },
       {
         "name": "topology",
@@ -167,7 +132,7 @@
       },
       {
         "name": "volume ratio",
-        "value": 0.9976,
+        "value": 1.0058,
         "threshold": "1 ± 0.02",
         "pass": true,
         "why": "net material error (hidden internal geometry, wrong wall thickness)"
@@ -176,47 +141,47 @@
     "should": [
       {
         "name": "chamfer",
-        "value": 0.0282,
+        "value": 0.0126,
         "threshold": "<= 0.12mm",
         "pass": true,
         "why": "overall polish"
       },
       {
         "name": "area ratio",
-        "value": 1.1568,
+        "value": 1.0161,
         "threshold": "1 ± 0.04",
-        "pass": false,
+        "pass": true,
         "why": "missing fillets/texture shed area with little volume change"
       }
     ],
     "failed": [],
-    "summary": "6/6 MUST, 1/2 SHOULD"
+    "summary": "6/6 MUST, 2/2 SHOULD"
   },
   "candidate": {
     "componentCount": 3,
     "genus": 0,
-    "volume": 339.42712,
-    "surfaceArea": 670.90444,
+    "volume": 342.24914,
+    "surfaceArea": 589.31292,
     "bbox": {
       "min": [
         -4.525,
-        -2.504,
+        -2.49918,
         -2.5
       ],
       "max": [
-        5.737,
-        10.493,
-        5.5125
+        5.7496,
+        10.49795,
+        5.51
       ],
       "size": [
-        10.262,
-        12.997,
-        8.0125
+        10.2746,
+        12.99713,
+        8.01
       ],
       "center": [
-        0.606,
-        3.9945,
-        1.50625
+        0.6123,
+        3.99939,
+        1.505
       ]
     }
   }
