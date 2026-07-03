@@ -386,7 +386,11 @@ else                  → hybrid: traced silhouette body + probed primitives for
   109 planes); a census staying near tris/2 (armor_hip: 3194 → 1851)
   carries curved fans and blends — go straight to §5.25 levelSet and keep
   the census as the structure map (it still names every flat wall, ledge
-  z, and fan family in one call).
+  z, and fan family in one call). **Plane-count beats the §5.22 volume
+  test when they disagree**: armor_head read 50.5% of bbox (plate
+  signature) but its census stayed above tris/2 with chamfered cavity
+  walls — stock genLevelSet converged it in ONE turn anyway. The levelSet
+  recipe subsumes the prism case; when in doubt, trust the census.
 - **5.25c A linear erosion band (tangent-plane family at constant
   n·ŷ=±0.707 with nx²+nz²=0.5) is a section-inset sweep**: sections along
   the band axis equal the full profile inset linearly with distance —
