@@ -91,6 +91,18 @@ else                  → hybrid: traced silhouette body + probed primitives for
   `const p = api.params({ r: { type: 'number', default: 2.9, min: 2.5, max: 3.3 } })`
   and run `optimize.mjs`. It reports per-param sensitivity; a
   `structure-limited` verdict means STOP TUNING and restructure.
+- **5.8 Back-face rays complete a clipped revolve profile**: on a
+  Z-flat-clipped revolved part, band circle fits go freeform/rounded-rect
+  once r exceeds the axis height (the section is clipped). Finish the r(y)
+  trace with `probe ray --from R,<far>,<axisZ> --dir 0,1,0` at increasing
+  R — each hit is a direct (y, r) profile sample. Cleaner than inverting
+  clipped-circle areas. (adapter_stand, wave 1)
+- **5.9 Residuals decide primitive-vs-polyline**: before modeling a
+  neck/waist as cones or a fillet arc, least-squares-fit the candidate
+  primitive to the band r(y) samples. If the fit residual ≫ band rms
+  (0.03–0.05 vs 0.0002 on adapter_stand), no member of that primitive
+  class exists — revolve the measured polyline instead of tuning. Landed
+  6/6 gates in one turn.
 
 ## 6. Plateau protocol
 
@@ -131,6 +143,9 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
 - Voxel/parity + ray tools dedupe coincident hits on shared edges — but if
   you build meshes procedurally in tests, T-junctions still corrupt
   Euler-characteristic genus (matched vertices required).
+- `cs.revolve(n)` profile convention: X = radius, Y = height, and the
+  height axis becomes the solid's **Z**; `rotate([-90,0,0])` remaps to +Y.
+  Verify polygon winding with a shoelace check before `geom.fromPoints`.
 
 ## 8. Reading the feedback bundle
 
