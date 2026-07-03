@@ -343,6 +343,23 @@ else                  → hybrid: traced silhouette body + probed primitives for
   face plane (open snap groove). Subtract a flat-ended cylinder; the face
   clips it. (armor_inner_chest snap grooves: r=1.048, center 0.5 outside.)
 
+- **5.25 Freeform-on-all-axes shells: levelSet-interpolate measured
+  z-sections instead of band-stacking**: when `probe bands` reads freeform
+  on x, y, AND z and the part is a curved shell, skip primitives — slice
+  the target at fine uniform pitch, DP each section, and build
+  `Manifold.levelSet` over a z-linear blend of per-section 2D SDFs with
+  flat end caps. Topology changes between sections interpolate correctly
+  for free (genus exact). Snap sharp ledges by inserting a STRADDLE PAIR
+  of sections at ledge±0.005 so the blend zone is 0.01mm, not one pitch.
+  Guard output with `decompose()` + drop sub-1mm³ shells. (armor_waist,
+  hardest bootstrap in the corpus at 9.73: 0/6 → 6/6+2/2 in ONE turn,
+  chamfer 0.005. Also hand_grip demo: 0.028 → 0.0093.)
+- **5.25a Make section-SDF levelSet cheap**: per-polygon bbox lower-bound
+  early-reject inside sdf2d (still run parity when the +x ray could
+  cross), and memoize per (sectionIndex, quantized x,y) — the levelSet
+  grid re-queries identical xy columns every layer. 20×16×15mm at res
+  0.15 with 115 sections built in ~7s where naive brute force stalls.
+
 ## 6. Plateau protocol
 
 Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
