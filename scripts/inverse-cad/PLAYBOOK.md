@@ -266,6 +266,16 @@ else                  → hybrid: traced silhouette body + probed primitives for
   socket sibling FIRST — one ray per feature confirms; only the
   attachment (stem/tab/rod) is genuinely new. (frame_head: 6/6 at chamfer
   0.003 in 2 authored attempts, from the worst bootstrap in the corpus.)
+- **5.19j Spherical-bodied sockets bend the kit's straight corner-chamfer
+  line into a conoid**: on a socket whose outer body is a sphere
+  (clavicle) rather than a prism block, the corner-cut line appears at z=0
+  but its ruling shifts with z — a ruled surface with straight HORIZONTAL
+  generators (check: per-z ray rows are collinear), provably not a
+  cone/cylinder/revolve. Fit y = C − s(z)·(A − B|x|), s=√(1−(z/Z)²), on a
+  ray-sampled grid; build as hulled per-side z-band slabs (0.25mm pitch →
+  0.004mm sagitta). **Hull convexifies** — hull each side's convex quad
+  separately, never the full-width V-tent polygon. (frame_clavicle:
+  6/6+2/2 in ONE authored attempt.)
 - **5.20 Test traced walls for arcs about a probed feature center**: a
   DP-traced "flat wall + corner fillet" can really be one large arc
   centered on the socket/feature center — compute each traced boundary
@@ -397,6 +407,14 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
 - **Derive ray-probe surface offsets from the hit point's signed plane
   distance, never from `start_offset − hit.dist` arithmetic** — a sign
   slip there "measures" anti-chamfers (material growing near a face).
+- **Grid-search primitive fits: evaluate your hand-derived parameters
+  through the same residual function before trusting the search** — a bad
+  fit rms is not proof the primitive class is wrong until the known-good
+  basin is inside the search ranges. (clavicle: two cone fits returned
+  rms 0.15–0.29 purely because the r0 range excluded the true 1.3.)
+- **Mouth face-chamfer points contaminate corner-strip ray samples**:
+  filter |z|>chamStart hits against the offset chamfer plane, or the fit
+  silently blends two surfaces.
 
 ## 8. Reading the feedback bundle
 
