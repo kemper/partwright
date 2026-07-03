@@ -130,6 +130,15 @@ else                  → hybrid: traced silhouette body + probed primitives for
   wide 0.2mm-thick missing skin. With fine uniform bands + epsilon overlap
   + ledge snapping, even "organic" hands converge (hand_grip: 6/6 MUST,
   chamfer 0.028, in 6 turns — per-finger domes were never needed).
+- **5.13a Hand/organic recipe transfer: only the ledge list is
+  pose-specific**: the converged hand generator (fine 0.4mm Z bands + eps
+  overlap + per-band socket fill + exact sphere subtract + sliver drop)
+  transfers verbatim between hand poses; re-measure ONLY (a) the ledge
+  z-list via a 0.05mm slice-area scan — a true ledge is one giant Δ at a
+  single step; a run of consistent small Δs is dome curvature, do NOT snap
+  to those — and (b) whether debris voids are needed (read target-profile
+  `components` first). (hand_open_left: 6/6 MUST at chamfer 0.024, ONE
+  authored turn. Wrist socket confirmed r=2.900 @ [0,0,0] on a third part.)
 - **5.14 Mirror-variant parts: verify, then flip the sibling's converged
   candidate**: when a target is the mirror of an already-converged part,
   check bbox extents, `splitStl` debris centers, and the socket probe for
@@ -179,6 +188,20 @@ else                  → hybrid: traced silhouette body + probed primitives for
   section bbox z-min sits at 1.2 instead of the circle's 1.0 is a chordal
   flat — author it IN the profile (circle ∩ halfplane, a D-prism), don't
   subtract it later. (frame_shin neck)
+- **5.19a Localize a fabricated genus handle by binary-searching partial
+  band stacks**: when a slice-stack reads one genus high, don't guess from
+  slice hole censuses (transient pocket holes are usually innocent).
+  Build the candidate STL headlessly (`runPreview` → `writeBinaryStl`),
+  confirm per-shell genus via weld+components, then rebuild the stack as
+  bands 0..K and bisect for the K where χ flips. The handle is where an
+  upper slab bridges two contact patches over a void escape path.
+  (hand_fist_left: band 16 of 21.)
+- **5.19b Halve band pitch where contours morph fast instead of
+  plugging**: a staircase handle means the pitch under-samples the contour
+  morph (a saddle completes inside one band). Fix with finer bands over
+  just that z-range (0.2mm over the fist's knuckles — 7 extra bands);
+  plugs or bridge cuts kept missing the ring or adding a second handle.
+  Verify genus headlessly per-shell before spending a turn.
 - **5.20 Test traced walls for arcs about a probed feature center**: a
   DP-traced "flat wall + corner fillet" can really be one large arc
   centered on the socket/feature center — compute each traced boundary
@@ -194,8 +217,18 @@ else                  → hybrid: traced silhouette body + probed primitives for
   the others. (hip_shoulder)
 - **Dummy 13 kit note**: the socket lead-in cone spec repeats across parts
   (~r(z)=2.47−0.37z, ≈20°, on every open socket face — measured identical
-  on ankle and hip_shoulder) and the socket sphere is r≈2.90. Probe to
-  confirm, but start there.
+  on ankle and hip_shoulder) and the socket sphere is r≈2.90; joint BALLS
+  are r=3.000 exactly (thigh, shin, forearm, hips). Probe to confirm, but
+  start there. Hips variant: 3 balls at x=−8/0/+8, z=0, one full-length
+  X-strut r=1.5 with a chordal flat at z=−1.3, whole part clipped z≥−2.5.
+  **Ball centers sit at z=0 even though bbox-center z=0.25** — an
+  asymmetric clip shifts the bbox center off the feature line; probe the
+  sphere center, never infer it from bbox center.
+- **Per-part vs assembled cuts — classify each cut before ordering ops**:
+  a cut that exists only on one member (the strut's chordal flat, above
+  the spheres' extent) must be cut on that member BEFORE union; a cut
+  spanning members (build-plate clip) is applied to the assembled body
+  LAST. Misordering either direction silently refills or over-cuts.
 
 ## 6. Plateau protocol
 
