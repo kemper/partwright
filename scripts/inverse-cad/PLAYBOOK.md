@@ -365,6 +365,30 @@ else                  → hybrid: traced silhouette body + probed primitives for
   grid re-queries identical xy columns every layer. 20×16×15mm at res
   0.15 with 115 sections built in ~7s where naive brute force stalls.
 
+- **5.26 Facet-census decode for low-poly faceted STLs**: when the target
+  has few triangles (≲1k), skip slice tracing — group every triangle by
+  exact (normal, plane-offset) and print per-plane area + bbox, plus the
+  welded vertex list. That one page yields every plane equation exactly
+  (45° features show as ±0.7071 normals), each face's location, and hidden
+  structure (a facet's extent overrunning an expected cut boundary proves
+  the cut carries a chamfered profile). (armor_upper_arm: bootstrap → 6/6
+  in ONE attempt with chamfer 0.000 — bit-exact — and zero probe fits.)
+- **5.27 Convexity test → hull-of-exact-vertices**: if every large facet's
+  half-space contains the whole solid, the outer body is convex — build it
+  as `Manifold.hull(points)` of the exact mesh vertices instead of
+  intersecting 20+ half-spaces. Keep near-duplicate CAD-sliver vertex
+  pairs verbatim; hull resolves them exactly.
+- **5.28 Armor clip-shell recipe**: convex outer body MINUS a union of
+  convex opening prisms. Check which cuts carry the wall chamfer profile:
+  a chamfer facet running PAST an opening boundary means that opening
+  keeps the chamfer planes. The closed ring band between openings is the
+  genus handle — verify genus from where floor+ceiling coexist.
+- **5.29 Read cylinder radius/segments/phase from the tangent-plane fan**:
+  a faceted bore is a fan of coaxial planes at uniform angular steps;
+  segment count = 360/step, circumradius = apothem/cos(π/n), vertex phase
+  = half a step. Author `Manifold.cylinder(h, r, r, n).rotate(phase)` —
+  exact, no fit probe. (armor_upper_arm: 144-gon r=3.100.)
+
 ## 6. Plateau protocol
 
 Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
@@ -459,6 +483,10 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
 - **Mouth face-chamfer points contaminate corner-strip ray samples**:
   filter |z|>chamStart hits against the offset chamfer plane, or the fit
   silently blends two surfaces.
+- `Manifold.hull(points)` accepts raw `[x,y,z]` triples — for any CONVEX
+  piece, hull-of-exact-corner-points is winding-proof and dodges both the
+  bowtie-polygon and extrude/rotate axis-mapping traps entirely. Prefer it
+  over `geom.fromPoints(...).extrude(...)` for convex prisms.
 
 ## 8. Reading the feedback bundle
 
