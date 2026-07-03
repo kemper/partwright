@@ -1,0 +1,44 @@
+{
+  "part": "armor_inner_chest",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.004727295139124068,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "deterministic slice-stack bootstrap (2/6 MUST — staircased Y bands)",
+    "probe-driven primitive composition: full-outline Y-prism minus cavity cross-prism + inner clearance cylinder + slot grooves + face chamfers (CONVERGED)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 1.1032,
+      "phase": "features",
+      "chamfer": 0.064,
+      "hausdorff": 0.5489,
+      "volumeIoU": 0.9138,
+      "failedMust": [
+        "hausdorff P99",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "probe-driven composition: outline Y-prism - cavity cross(|y|<2.5) - inner cyl r3.1 - central 3.2x3.4 tunnel - 4 slot cyls r1.0477@y4.4983 - wall face chamfers x+y=13",
+      "verdict": "improved",
+      "score": 0.0047,
+      "phase": "done",
+      "chamfer": 0.0001,
+      "hausdorff": 0.0066,
+      "volumeIoU": 0.9996,
+      "failedMust": []
+    }
+  ]
+}

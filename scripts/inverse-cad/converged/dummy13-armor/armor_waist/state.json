@@ -1,0 +1,46 @@
+{
+  "part": "armor_waist",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.07046214893240567,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "deterministic bootstrap band-stack (attempt 0: 0/6, freeform on all three axes — abandoned, not polished)",
+    "levelSet SDF interpolation of measured z-sections with ledge-straddling section pairs (attempt 1: converged 6/6+2/2)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 9.7343,
+      "phase": "place",
+      "chamfer": 0.6373,
+      "hausdorff": 7.8627,
+      "volumeIoU": 0.6097,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "restructure: levelSet SDF interpolation of 115 measured z-sections (0.15 pitch + ledge pairs at 1.5/2/3/4/12/12.2), res 0.15 — bootstrap band-stack abandoned",
+      "verdict": "improved",
+      "score": 0.0705,
+      "phase": "done",
+      "chamfer": 0.005,
+      "hausdorff": 0.1315,
+      "volumeIoU": 0.9953,
+      "failedMust": []
+    }
+  ]
+}

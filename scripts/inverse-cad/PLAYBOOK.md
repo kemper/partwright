@@ -455,6 +455,19 @@ else                  → hybrid: traced silhouette body + probed primitives for
   — one pass yields bore size, mouth chamfer line, pocket radius, and
   notch floor profile (as second hits of vertical rays). (armor_thigh)
 
+- **5.34 Census-diff the ± facet pairs before assuming mirror symmetry**:
+  a "2x" part can be non-mirror in one small feature — nominally mirrored
+  planes with different census areas are the tell. (armor_forearm: −x had
+  a flat face where +x had a 45° plan chamfer.)
+- **5.35 Hull-of-exact-vertices needs corners the mesh never welds**: a
+  hull footprint corner interior to a shared planar face has no mesh
+  vertex — check each hull face's extent against census facet bboxes and
+  add the analytic corner point. (armor_forearm)
+- **5.36 Decode faceted spheres from ring radii**: welded verts of a bump
+  form rings about the symmetry axis; two rings solve (center, r)
+  closed-form — center can sit outside the wall (spherical cousin of
+  §5.24). (armor_forearm snap detent: r=1.0000 exact.)
+
 ## 6. Plateau protocol
 
 Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
@@ -565,6 +578,14 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
   face, over-cutting. If both slab thicknesses can't sit outside the
   interval, use an explicit wedge prism of the exact chamfer line instead.
   (armor_thigh, 2mm³/side)
+- **`Manifold.hull(points)` silently convexifies a CONCAVE prism
+  profile** — a wings+walls channel profile lost its concave vertex and
+  the hull edge overcut 12mm³ along the whole length (reads as "missing
+  thin-skin strips along all y"). Convexity-check every profile before
+  hull-of-points; split concave profiles into convex sub-prisms and union.
+  (armor_forearm)
+- `closestPointOnMesh(bvh, x, y, z)` takes scalar coordinates, not a
+  point array — passing `[x,y,z]` returns `dist: Infinity` silently.
 - **Ledge scans: sum |signedArea| per contour, never raw signedArea** —
   sliceMesh contour orientation is arbitrary near horizontal facets; raw
   signed-area z-scans show phantom ±100mm² "ledges" (pure sign flips)
