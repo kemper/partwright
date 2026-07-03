@@ -246,6 +246,15 @@ else                  → hybrid: traced silhouette body + probed primitives for
   shrinks with |z| faster than any circle is an elliptical-section prism —
   fit (x/a)²+(z/b)²=1 to 3+ ray samples before reaching for lofts.
   (frame_abdomen: (3.2, 2.5) ellipse, max dev 0.005.)
+- **5.19i Joint-grammar transfer across socket parts**: frame_head
+  reproduced frame_hip_and_shoulder's ENTIRE joint spec verbatim (mouth
+  walls through center at |slope| 0.6682, corner-cut flat line offset
+  2.906 NOT z-chamfered, leg-0.5 45° chamfers on arc+mouth lines only,
+  rim cones on every open face, outer arc r=4.5 about the socket). When a
+  new part has a ball socket, diff its traces against the converged
+  socket sibling FIRST — one ray per feature confirms; only the
+  attachment (stem/tab/rod) is genuinely new. (frame_head: 6/6 at chamfer
+  0.003 in 2 authored attempts, from the worst bootstrap in the corpus.)
 - **5.20 Test traced walls for arcs about a probed feature center**: a
   DP-traced "flat wall + corner fillet" can really be one large arc
   centered on the socket/feature center — compute each traced boundary
@@ -363,6 +372,14 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
   separately removes everything below EITHER plane and carves both flanks.
   Build `cut = prism1.intersect(prism2)`, subtract once. (frame_abdomen:
   two symmetric 39.7mm³ missing blobs from this.)
+- **A bowtie polygon (mirrored half assembled in the wrong point order)
+  extrudes to degenerate geometry and unions/subtracts as a SILENT
+  no-op** — no error, the feature is just absent. Shoelace-check winding
+  before `geom.fromPoints`, and read "this union added nothing" as a
+  winding bug, not a placement bug. (frame_head: entire stem missing.)
+- **Derive ray-probe surface offsets from the hit point's signed plane
+  distance, never from `start_offset − hit.dist` arithmetic** — a sign
+  slip there "measures" anti-chamfers (material growing near a face).
 
 ## 8. Reading the feedback bundle
 
