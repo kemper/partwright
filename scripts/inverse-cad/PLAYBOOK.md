@@ -130,6 +130,29 @@ else                  → hybrid: traced silhouette body + probed primitives for
   wide 0.2mm-thick missing skin. With fine uniform bands + epsilon overlap
   + ledge snapping, even "organic" hands converge (hand_grip: 6/6 MUST,
   chamfer 0.028, in 6 turns — per-finger domes were never needed).
+- **5.14 Mirror-variant parts: verify, then flip the sibling's converged
+  candidate**: when a target is the mirror of an already-converged part,
+  check bbox extents, `splitStl` debris centers, and the socket probe for
+  exact x-negation; if they match, append `solid.mirror([1,0,0])` as the
+  LAST op on the sibling's best candidate. `.mirror()` handles triangle
+  winding itself — no polygon rewinding — and origin-centered features map
+  to themselves. (hand_grip_right: 6/6 MUST in 2 turns vs 6 from scratch.)
+- **5.15 Locate hausdorff-max explicitly**: when hausdorff is stuck but
+  chamfer is tiny, sample both meshes (`samplePoints` +
+  `buildTriBvh`/`closestPointOnMesh`) and print the argmax points WITH
+  coordinates. Residual distances matching `(depth−r)/√2` is the signature
+  of a flat-floored truncated cone vs your full cone. (frame_thigh)
+- **5.16 Chamfers on tilted faces recede FULL (z−z0) in plan**, not
+  (z−z0)/√2, when the target chamfered perpendicular to the face — and the
+  chamfer plane can clip past the segment boundary into the neighbor.
+  Model by intersecting with a chamfer-profile prism extruded along the
+  face direction (profile in (face-normal-distance, z)). (frame_thigh)
+- **5.17 Prisms-along-different-axes decomposition**: a cavity that looks
+  sculpted may be exactly (vertical plan prism) ∩ (horizontal profile
+  prism) — check z-sections for y-invariance and y-sections for
+  z-invariance before reaching for spheres. (frame_thigh's knee C-clip:
+  a Y-prism XZ profile straight from one raw slice + one subtracted
+  vertical cylinder.)
 
 ## 6. Plateau protocol
 
@@ -189,7 +212,21 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
 - **Multi-component targets: run `splitStl.mjs` (or read target-profile
   components) FIRST.** Tiny (<1mm) junk debris shells inside real STLs are
   common and own both the components gate and the hausdorff-max tail —
-  reproduce them as internal voids at their probed centers.
+  reproduce them as internal voids at their probed centers. Use
+  sphere/box voids (χ=+2 shells) — the topology gate bridges genus
+  conventions (`expectedEngineGenus = 1 − targetComponents +
+  targetGenusPerShell`), so torus-void workarounds are obsolete and fail.
+- `Manifold.cylinder` rejects radius 0 (`must be >= 0.000001`) — for
+  cones-to-a-point use `0.001`, or check whether the target dimple is
+  actually a TRUNCATED cone first (§5.15).
+- **Subtract voids from the ASSEMBLED body, not from a sub-part** —
+  subtracting a dimple/bore from one primitive before unioning it with
+  overlapping material silently refills part of the void. Do feature
+  subtractions last. (frame_thigh: a shaft prism refilled half of each
+  spool dimple → persistent 0.5mm hausdorff.)
+- **Hull-of-two-slabs flares: pin the slab OUTER faces exactly on the
+  transition planes** — slabs with thickness inside the interval tilt the
+  hull diagonal off 45° (0.1-thick slabs cost ~1mm³ at the corners).
 
 ## 8. Reading the feedback bundle
 
