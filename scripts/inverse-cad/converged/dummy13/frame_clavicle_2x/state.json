@@ -1,0 +1,45 @@
+{
+  "part": "frame_clavicle_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.008039200517812288,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "deterministic slice-stack bootstrap (superseded; silhouette-limited)",
+    "probe-driven primitive composition: outer sphere r4.5 + ball r3 + strut r1.5 + cavity sphere r2.9/kit cones + mouth wedge 0.6682 + 45deg leg-0.5 mouth face chamfers + empirical conoid corner cut (CONVERGED, attempt 1)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 2.7093,
+      "phase": "silhouette",
+      "chamfer": 0.2037,
+      "hausdorff": 1.0527,
+      "volumeIoU": 0.7476,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "probe-driven rebuild: outer sphere r4.5 clipped \u00b12.5 + ball r3@(0,7,0) + strut r1.5 + cavity sphere r2.9 & kit cones + mouth wedge 0.6682 w/ 45\u00b0 face chamfers + conoid corner cut (fit rms 0.004)",
+      "verdict": "improved",
+      "score": 0.008,
+      "phase": "done",
+      "chamfer": 0.0009,
+      "hausdorff": 0.048,
+      "volumeIoU": 0.999,
+      "failedMust": []
+    }
+  ]
+}

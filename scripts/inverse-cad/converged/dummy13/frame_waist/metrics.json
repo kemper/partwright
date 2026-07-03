@@ -1,0 +1,152 @@
+{
+  "ok": true,
+  "attempt": 1,
+  "note": "structured rebuild: chamfered disc r4.5 + shoulder block + tangent-circle side tabs + D-neck + ball r3; wedge mouth & corner-chamfer lines through socket center; hourglass socket (sphere 2.852 + 0.3515-slope cones both faces); uniform 0.5 45deg face chamfers",
+  "score": 0.01164,
+  "phase": "done",
+  "distance": {
+    "method": "point-to-triangle-bvh",
+    "samples": 20000,
+    "chamfer": 0.00087,
+    "hausdorff": 0.08925,
+    "rms": 0.00397,
+    "candToTarget": {
+      "mean": 0.00081,
+      "rms": 0.0036,
+      "max": 0.08285,
+      "p50": 0.00025,
+      "p90": 0.00159,
+      "p99": 0.00987,
+      "meanSigned": -0.00063,
+      "excessArea_mm2": 0,
+      "missingArea_mm2": 0.61577
+    },
+    "targetToCand": {
+      "mean": 0.00093,
+      "rms": 0.0043,
+      "max": 0.08925,
+      "p50": 0.00027,
+      "p90": 0.00165,
+      "p99": 0.01223,
+      "meanSigned": 0.00073,
+      "excessArea_mm2": 0.88605,
+      "missingArea_mm2": 0.09631
+    }
+  },
+  "voxel": {
+    "grid": {
+      "res": 0.15,
+      "min": [
+        -4.8,
+        -2.5223,
+        -2.8
+      ],
+      "size": [
+        64,
+        113,
+        41
+      ]
+    },
+    "volumeIoU": 0.99907,
+    "excess_mm3": 0.03375,
+    "missing_mm3": 0.27,
+    "targetVol_mm3": 326.45025,
+    "candVol_mm3": 326.214,
+    "findings": [],
+    "totalFindings": 0,
+    "discardedVolume_mm3": 0
+  },
+  "gates": {
+    "pass": true,
+    "must": [
+      {
+        "name": "hausdorff P99",
+        "value": 0.0122,
+        "threshold": "<= 0.4mm",
+        "pass": true,
+        "why": "a small feature is missing or badly misplaced"
+      },
+      {
+        "name": "hausdorff max",
+        "value": 0.0893,
+        "threshold": "<= 0.8mm",
+        "pass": true,
+        "why": "at least one point of one mesh is far from the other"
+      },
+      {
+        "name": "volume IoU",
+        "value": 0.9991,
+        "threshold": ">= 0.95",
+        "pass": true,
+        "why": "the solids overlap poorly — mass is in the wrong place"
+      },
+      {
+        "name": "worst finding",
+        "value": 0,
+        "threshold": "<= 4mm³",
+        "pass": true,
+        "why": "a localized blob of disagreement"
+      },
+      {
+        "name": "topology",
+        "value": "genus 0/0, components 1/1",
+        "threshold": "equal",
+        "pass": true,
+        "why": "missing/extra holes or pieces — the loudest visual defect, nearly invisible to chamfer"
+      },
+      {
+        "name": "volume ratio",
+        "value": 0.9992,
+        "threshold": "1 ± 0.02",
+        "pass": true,
+        "why": "net material error (hidden internal geometry, wrong wall thickness)"
+      }
+    ],
+    "should": [
+      {
+        "name": "chamfer",
+        "value": 0.0009,
+        "threshold": "<= 0.12mm",
+        "pass": true,
+        "why": "overall polish"
+      },
+      {
+        "name": "area ratio",
+        "value": 0.999,
+        "threshold": "1 ± 0.04",
+        "pass": true,
+        "why": "missing fillets/texture shed area with little volume change"
+      }
+    ],
+    "failed": [],
+    "summary": "6/6 MUST, 2/2 SHOULD"
+  },
+  "candidate": {
+    "componentCount": 1,
+    "genus": 0,
+    "volume": 327.03024,
+    "surfaceArea": 384.85382,
+    "bbox": {
+      "min": [
+        -4.5,
+        -2.2223,
+        -2.5
+      ],
+      "max": [
+        4.5,
+        14,
+        3
+      ],
+      "size": [
+        9,
+        16.2223,
+        5.5
+      ],
+      "center": [
+        0,
+        5.88885,
+        0.25
+      ]
+    }
+  }
+}

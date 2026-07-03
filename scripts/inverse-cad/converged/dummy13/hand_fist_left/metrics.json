@@ -1,0 +1,188 @@
+{
+  "ok": true,
+  "attempt": 3,
+  "note": "halve band pitch above ledge (0.2mm): band16 at 0.4mm bridged a crease escape path between two contact patches fabricating a genus-1 handle; finer bands track the knuckle contour morph (verified genus 0/0/0, 3 shells, headless)",
+  "score": 0.21335,
+  "phase": "done",
+  "distance": {
+    "method": "point-to-triangle-bvh",
+    "samples": 20000,
+    "chamfer": 0.02163,
+    "hausdorff": 0.73869,
+    "rms": 0.03848,
+    "candToTarget": {
+      "mean": 0.0241,
+      "rms": 0.03765,
+      "max": 0.2023,
+      "p50": 0.01325,
+      "p90": 0.06609,
+      "p99": 0.12217,
+      "meanSigned": 0.00054,
+      "excessArea_mm2": 43.22624,
+      "missingArea_mm2": 37.8756
+    },
+    "targetToCand": {
+      "mean": 0.01917,
+      "rms": 0.03929,
+      "max": 0.73869,
+      "p50": 0.01,
+      "p90": 0.04749,
+      "p99": 0.10508,
+      "meanSigned": -0.0024,
+      "excessArea_mm2": 16.78782,
+      "missingArea_mm2": 21.21467
+    }
+  },
+  "voxel": {
+    "grid": {
+      "res": 0.15,
+      "min": [
+        -6.14367,
+        -2.52228,
+        -2.8
+      ],
+      "size": [
+        74,
+        80,
+        57
+      ]
+    },
+    "volumeIoU": 0.97616,
+    "excess_mm3": 4.11412,
+    "missing_mm3": 4.90388,
+    "targetVol_mm3": 374.085,
+    "candVol_mm3": 373.29525,
+    "findings": [
+      {
+        "id": "F1",
+        "sign": "missing",
+        "volume_mm3": 0.57037,
+        "centroid": [
+          -3.60387,
+          2.06071,
+          -1.96701
+        ],
+        "bbox": {
+          "min": [
+            -4.49367,
+            -2.07228,
+            -2.35
+          ],
+          "max": [
+            -1.64367,
+            7.82772,
+            0.2
+          ]
+        },
+        "relCentroid": [
+          0.21602,
+          0.37644,
+          0.06747
+        ],
+        "extent_mm": [
+          2.85,
+          9.9,
+          2.55
+        ],
+        "thickness_mm": 0.15,
+        "classification": "thin-skin",
+        "hint": "target has material here that the candidate lacks (missing feature or cut too deep)"
+      }
+    ],
+    "totalFindings": 1,
+    "discardedVolume_mm3": 0
+  },
+  "gates": {
+    "pass": true,
+    "must": [
+      {
+        "name": "hausdorff P99",
+        "value": 0.1222,
+        "threshold": "<= 0.4mm",
+        "pass": true,
+        "why": "a small feature is missing or badly misplaced"
+      },
+      {
+        "name": "hausdorff max",
+        "value": 0.7387,
+        "threshold": "<= 0.8mm",
+        "pass": true,
+        "why": "at least one point of one mesh is far from the other"
+      },
+      {
+        "name": "volume IoU",
+        "value": 0.9762,
+        "threshold": ">= 0.95",
+        "pass": true,
+        "why": "the solids overlap poorly — mass is in the wrong place"
+      },
+      {
+        "name": "worst finding",
+        "value": 0.5704,
+        "threshold": "<= 4mm³",
+        "pass": true,
+        "why": "a localized blob of disagreement (F1: missing 0.6mm³ at rel [0.22, 0.38, 0.07], thin-skin)"
+      },
+      {
+        "name": "topology",
+        "value": "genus -2/-2, components 3/3",
+        "threshold": "equal",
+        "pass": true,
+        "why": "missing/extra holes or pieces — the loudest visual defect, nearly invisible to chamfer"
+      },
+      {
+        "name": "volume ratio",
+        "value": 1.001,
+        "threshold": "1 ± 0.02",
+        "pass": true,
+        "why": "net material error (hidden internal geometry, wrong wall thickness)"
+      }
+    ],
+    "should": [
+      {
+        "name": "chamfer",
+        "value": 0.0216,
+        "threshold": "<= 0.12mm",
+        "pass": true,
+        "why": "overall polish"
+      },
+      {
+        "name": "area ratio",
+        "value": 1.1583,
+        "threshold": "1 ± 0.04",
+        "pass": false,
+        "why": "missing fillets/texture shed area with little volume change"
+      }
+    ],
+    "failed": [],
+    "summary": "6/6 MUST, 1/2 SHOULD"
+  },
+  "candidate": {
+    "componentCount": 3,
+    "genus": -2,
+    "volume": 375.66017,
+    "surfaceArea": 495.42966,
+    "bbox": {
+      "min": [
+        -5.832,
+        -2.222,
+        -2.5
+      ],
+      "max": [
+        4.525,
+        9.143,
+        5.3995
+      ],
+      "size": [
+        10.357,
+        11.365,
+        7.8995
+      ],
+      "center": [
+        -0.6535,
+        3.4605,
+        1.44975
+      ]
+    }
+  }
+}

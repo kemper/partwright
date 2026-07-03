@@ -1,0 +1,74 @@
+{
+  "part": "hand_fist_left",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 3,
+    "score": 0.21334573541839097,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 1/2 SHOULD"
+  },
+  "strategiesTried": [
+    "coarse-z-slice-stack (bootstrap 5 merged bands): superseded",
+    "fine-z-slice-stack 0.4mm + ledge snap + eps overlap + socket sphere + box voids: 5/6 (genus handle)",
+    "drop sub-0.5mm2 transient hole contours: no genus effect (handle was a band-quantization bridge, not the pockets)",
+    "fine-z-slice-stack with 0.2mm bands above ledge z=2.5: CONVERGED (attempt 3, score 0.2133)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 3.3545,
+      "phase": "topology",
+      "chamfer": 0.2433,
+      "hausdorff": 1.9946,
+      "volumeIoU": 0.7519,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "grip_left recipe transplant: uniform 0.4mm Z slice-stack snapped to ledge z=2.5, 0.01 eps overlap, socket sphere r=2.9@origin fat-slice fill + exact subtraction, sliver cleanup, 2 box debris voids",
+      "verdict": "improved",
+      "score": 0.2538,
+      "phase": "topology",
+      "chamfer": 0.0254,
+      "hausdorff": 0.7387,
+      "volumeIoU": 0.9704,
+      "failedMust": [
+        "topology"
+      ]
+    },
+    {
+      "id": 2,
+      "note": "drop sub-0.5mm2 transient hole contours from band traces: extruded crease pockets fabricated a handle (genus -1 vs -2); omitting them costs ~0.15mm3",
+      "verdict": "regressed",
+      "score": 0.2548,
+      "phase": "topology",
+      "chamfer": 0.0259,
+      "hausdorff": 0.7387,
+      "volumeIoU": 0.9702,
+      "failedMust": [
+        "topology"
+      ]
+    },
+    {
+      "id": 3,
+      "note": "halve band pitch above ledge (0.2mm): band16 at 0.4mm bridged a crease escape path between two contact patches fabricating a genus-1 handle; finer bands track the knuckle contour morph (verified genus 0/0/0, 3 shells, headless)",
+      "verdict": "improved",
+      "score": 0.2133,
+      "phase": "done",
+      "chamfer": 0.0216,
+      "hausdorff": 0.7387,
+      "volumeIoU": 0.9762,
+      "failedMust": []
+    }
+  ]
+}

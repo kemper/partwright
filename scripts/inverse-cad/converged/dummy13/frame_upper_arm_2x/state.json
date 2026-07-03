@@ -1,0 +1,45 @@
+{
+  "part": "frame_upper_arm_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.02717737629994436,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "sibling-transfer-from-frame_thigh_2x (5.18): fork end shifted y-8, spool/window verbatim — CONVERGED attempt 1"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 2.2977,
+      "phase": "topology",
+      "chamfer": 0.1663,
+      "hausdorff": 1.8723,
+      "volumeIoU": 0.7978,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "sibling transfer from frame_thigh_2x: fork end (flare/fork/slot/cavity/channel/diag chamfer) shifted y-8, spool/window/shaft verbatim; every dim chord-verified vs bootstrap + z=2.5/4.75/4.3 sections",
+      "verdict": "improved",
+      "score": 0.0272,
+      "phase": "done",
+      "chamfer": 0.0017,
+      "hausdorff": 0.0869,
+      "volumeIoU": 0.9982,
+      "failedMust": []
+    }
+  ]
+}

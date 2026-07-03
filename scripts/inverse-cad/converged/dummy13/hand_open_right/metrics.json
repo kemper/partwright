@@ -1,0 +1,188 @@
+{
+  "ok": true,
+  "attempt": 1,
+  "note": "mirror shortcut (5.14): hand_open_left converged candidate + .mirror([1,0,0]); bbox/volume/socket verified exact x-negation",
+  "score": 0.28578,
+  "phase": "done",
+  "distance": {
+    "method": "point-to-triangle-bvh",
+    "samples": 20000,
+    "chamfer": 0.02342,
+    "hausdorff": 0.19805,
+    "rms": 0.03799,
+    "candToTarget": {
+      "mean": 0.02825,
+      "rms": 0.04456,
+      "max": 0.19805,
+      "p50": 0.01096,
+      "p90": 0.08166,
+      "p99": 0.13211,
+      "meanSigned": 0.00235,
+      "excessArea_mm2": 84.59217,
+      "missingArea_mm2": 67.64095
+    },
+    "targetToCand": {
+      "mean": 0.01859,
+      "rms": 0.03002,
+      "max": 0.14667,
+      "p50": 0.01,
+      "p90": 0.05495,
+      "p99": 0.0927,
+      "meanSigned": -0.00095,
+      "excessArea_mm2": 32.57978,
+      "missingArea_mm2": 36.69452
+    }
+  },
+  "voxel": {
+    "grid": {
+      "res": 0.15,
+      "min": [
+        -5.189,
+        -2.52228,
+        -2.8
+      ],
+      "size": [
+        100,
+        121,
+        60
+      ]
+    },
+    "volumeIoU": 0.96309,
+    "excess_mm3": 6.9795,
+    "missing_mm3": 6.70275,
+    "targetVol_mm3": 363.69,
+    "candVol_mm3": 363.96675,
+    "findings": [
+      {
+        "id": "F1",
+        "sign": "excess",
+        "volume_mm3": 0.58725,
+        "centroid": [
+          1.64462,
+          9.18031,
+          -0.02586
+        ],
+        "bbox": {
+          "min": [
+            -0.989,
+            6.17772,
+            -0.25
+          ],
+          "max": [
+            3.661,
+            13.67772,
+            0.05
+          ]
+        },
+        "relCentroid": [
+          0.45474,
+          0.65216,
+          0.29793
+        ],
+        "extent_mm": [
+          4.65,
+          7.5,
+          0.3
+        ],
+        "thickness_mm": 0.15,
+        "classification": "thin-skin",
+        "hint": "candidate has material here that the target does not (protrusion too large or missing cut)"
+      }
+    ],
+    "totalFindings": 1,
+    "discardedVolume_mm3": 0
+  },
+  "gates": {
+    "pass": true,
+    "must": [
+      {
+        "name": "hausdorff P99",
+        "value": 0.1321,
+        "threshold": "<= 0.4mm",
+        "pass": true,
+        "why": "a small feature is missing or badly misplaced"
+      },
+      {
+        "name": "hausdorff max",
+        "value": 0.1981,
+        "threshold": "<= 0.8mm",
+        "pass": true,
+        "why": "at least one point of one mesh is far from the other"
+      },
+      {
+        "name": "volume IoU",
+        "value": 0.9631,
+        "threshold": ">= 0.95",
+        "pass": true,
+        "why": "the solids overlap poorly — mass is in the wrong place"
+      },
+      {
+        "name": "worst finding",
+        "value": 0.5872,
+        "threshold": "<= 4mm³",
+        "pass": true,
+        "why": "a localized blob of disagreement (F1: excess 0.6mm³ at rel [0.45, 0.65, 0.30], thin-skin)"
+      },
+      {
+        "name": "topology",
+        "value": "genus 0/0, components 1/1",
+        "threshold": "equal",
+        "pass": true,
+        "why": "missing/extra holes or pieces — the loudest visual defect, nearly invisible to chamfer"
+      },
+      {
+        "name": "volume ratio",
+        "value": 1.003,
+        "threshold": "1 ± 0.02",
+        "pass": true,
+        "why": "net material error (hidden internal geometry, wrong wall thickness)"
+      }
+    ],
+    "should": [
+      {
+        "name": "chamfer",
+        "value": 0.0234,
+        "threshold": "<= 0.12mm",
+        "pass": true,
+        "why": "overall polish"
+      },
+      {
+        "name": "area ratio",
+        "value": 1.1634,
+        "threshold": "1 ± 0.04",
+        "pass": false,
+        "why": "missing fillets/texture shed area with little volume change"
+      }
+    ],
+    "failed": [],
+    "summary": "6/6 MUST, 1/2 SHOULD"
+  },
+  "candidate": {
+    "componentCount": 1,
+    "genus": 0,
+    "volume": 365.17606,
+    "surfaceArea": 655.75322,
+    "bbox": {
+      "min": [
+        -4.889,
+        -2.222,
+        -2.5
+      ],
+      "max": [
+        9.424,
+        15.262,
+        5.8044
+      ],
+      "size": [
+        14.313,
+        17.484,
+        8.3044
+      ],
+      "center": [
+        2.2675,
+        6.52,
+        1.6522
+      ]
+    }
+  }
+}

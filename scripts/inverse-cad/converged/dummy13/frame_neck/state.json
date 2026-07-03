@@ -1,0 +1,45 @@
+{
+  "part": "frame_neck",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.003522998134779769,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "primitive-composition-probed",
+    "bootstrap-slice-stack"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 2.9954,
+      "phase": "place",
+      "chamfer": 0.2647,
+      "hausdorff": 1.0491,
+      "volumeIoU": 0.7507,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "primitive composition: balls r3 @ y0/y10, mid sphere r2.45, neck cyl r1.5 along Y, octagonal shaft prism y3..7, clip z>=-2.5 (all probed)",
+      "verdict": "improved",
+      "score": 0.0035,
+      "phase": "done",
+      "chamfer": 0.0004,
+      "hausdorff": 0.0029,
+      "volumeIoU": 0.9995,
+      "failedMust": []
+    }
+  ]
+}
