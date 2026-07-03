@@ -180,7 +180,12 @@ else                  → hybrid: traced silhouette body + probed primitives for
   verbatim shin↔forearm): ball r3 at ymin+3 / D-neck r1.5 flat z1.2 /
   oct(2.5) 5×5 shaft / window slab z 1.0..4.1 from shaft-face −5 / spool
   r2.5 at ymax−2.5 with r1.0→0.5 dimples. For remaining limb parts, check
-  ball/spool anchor positions from bbox extents first.
+  ball/spool anchor positions from bbox extents first. **Neck variant**
+  (frame_neck, 1 turn, chamfer 0.0004): two balls r=3.000 at y=0/y=10, mid
+  SPHERE r=2.45 at [0,5,0] (not a spool), neck cylinder r=1.5 with NO
+  chordal flat (the limb D-flat does not transfer — ray it), octagonal
+  Y-prism shaft y 3..7, clipped z≥−2.5. Ball-centers-at-z=0 vs
+  bbox-center-0.25 confirmed a second time.
 - **5.18a Shortened/lengthened sibling: one plan section replaces a probe
   campaign**: when the hypothesis is "same part, different shaft length",
   a single `probe section --axis z --at <mid>` yields every feature
