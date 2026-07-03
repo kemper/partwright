@@ -74,11 +74,19 @@ export function evaluateGates(inputs, thresholds = GATE_THRESHOLDS) {
   must.push(gate('worst finding', worst, `<= ${t.worstFinding_mm3}mm³`, worst <= t.worstFinding_mm3, 'a localized blob of disagreement' + worstDesc));
 
   if (targetTopology && candidateStats) {
-    const genusOk = candidateStats.genus === undefined || candidateStats.genus === targetTopology.genus;
+    // Convention bridge: the engine reports genus = 1 − χ_total/2 (treats
+    // all shells as one surface), while the target profile reports the
+    // per-shell sum, genus = components − χ/2. On a single-shell mesh they
+    // agree; on a multi-shell target (internal debris voids are common in
+    // real STLs) they diverge and a FAITHFUL reconstruction would fail.
+    // Convert the target's per-shell genus to the engine convention before
+    // comparing: 1 − χ/2 = 1 − components + genusPerShell.
+    const expectedEngineGenus = 1 - targetTopology.components + targetTopology.genus;
+    const genusOk = candidateStats.genus === undefined || candidateStats.genus === expectedEngineGenus;
     const compOk = candidateStats.componentCount === undefined || candidateStats.componentCount === targetTopology.components;
     must.push(gate(
       'topology',
-      `genus ${candidateStats.genus ?? '?'}/${targetTopology.genus}, components ${candidateStats.componentCount ?? '?'}/${targetTopology.components}`,
+      `genus ${candidateStats.genus ?? '?'}/${expectedEngineGenus}, components ${candidateStats.componentCount ?? '?'}/${targetTopology.components}`,
       'equal',
       genusOk && compOk,
       'missing/extra holes or pieces — the loudest visual defect, nearly invisible to chamfer',

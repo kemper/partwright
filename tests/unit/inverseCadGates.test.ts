@@ -33,6 +33,23 @@ describe('inverse-cad/gates', () => {
     expect(res.failed).toContain('topology');
   });
 
+  it('bridges the genus convention for multi-shell targets', () => {
+    // Target: 1 outer genus-1 shell + 2 internal genus-0 debris shells.
+    // Profile (per-shell sum): components 3, genus 1. Engine convention:
+    // 1 − χ/2 with χ = 2·(3 − 1) = 4 → genus −1. A faithful reconstruction
+    // reports engine genus −1 and MUST pass.
+    const inputs = goodInputs();
+    inputs.targetTopology = { genus: 1, components: 3 };
+    inputs.candidateStats.genus = -1;
+    inputs.candidateStats.componentCount = 3;
+    const res = evaluateGates(inputs);
+    expect(res.failed).not.toContain('topology');
+    // And the single-shell case still behaves: genus 1, 1 component.
+    const single = goodInputs();
+    single.candidateStats.genus = 1;
+    expect(evaluateGates(single).failed).not.toContain('topology');
+  });
+
   it('fails on a large localized finding even when chamfer is tiny', () => {
     const inputs = goodInputs();
     inputs.voxel.findings = [

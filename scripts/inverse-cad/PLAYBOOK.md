@@ -124,6 +124,12 @@ else                  → hybrid: traced silhouette body + probed primitives for
   pass exactly through the probed socket center — collapsing four line
   parameters to two angles about a known point. Coincidences like this are
   design intent; test for them.
+- **5.13 Snap slice-stack band edges to ledges**: scan slice areas for
+  jumps to find horizontal ledges, and snap band boundaries to them — a
+  band straddling a ledge loses a thin sheet that the findings report as a
+  wide 0.2mm-thick missing skin. With fine uniform bands + epsilon overlap
+  + ledge snapping, even "organic" hands converge (hand_grip: 6/6 MUST,
+  chamfer 0.028, in 6 turns — per-finger domes were never needed).
 
 ## 6. Plateau protocol
 
@@ -171,6 +177,19 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
   CWD, not from partDir — a bare filename gives `ENOENT ... copyfile` even
   when the file exists inside partDir. Pass an absolute or cwd-relative
   path.
+- **Stacked band extrusions meeting at an exactly-computed shared plane do
+  NOT weld** — float drift keeps the faces ~1e-16 apart, the union silently
+  decomposes into shells, and genus/components go garbage. Always extrude
+  each band a small epsilon (0.01mm) past its top. (hand_grip, wave 1 —
+  this was v1's "organic parts are hard" in disguise.)
+- `bootstrap.mjs`'s signature-based band merge is too coarse for organic
+  parts — bands flagged STAIRCASED can hide multi-mm dome error. Regenerate
+  with a forced uniform fine slice loop (0.4mm) over `slice.mjs` before
+  concluding a part is "hard".
+- **Multi-component targets: run `splitStl.mjs` (or read target-profile
+  components) FIRST.** Tiny (<1mm) junk debris shells inside real STLs are
+  common and own both the components gate and the hausdorff-max tail —
+  reproduce them as internal voids at their probed centers.
 
 ## 8. Reading the feedback bundle
 
