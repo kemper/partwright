@@ -421,6 +421,19 @@ else                  → hybrid: traced silhouette body + probed primitives for
   = half a step. Author `Manifold.cylinder(h, r, r, n).rotate(phase)` —
   exact, no fit probe. (armor_upper_arm: 144-gon r=3.100.)
 
+- **5.29a Polygonized-curve cavities: copy the welded vertex polygon
+  verbatim**: when the facet census shows a tangent-plane fan whose
+  angular step is irregular (no clean 360/n for §5.29), don't reconstruct
+  segment count + phase — filter the welded vertex list to the fan's
+  carrier wall, sort by height, and hardcode those pairs as the profile
+  polygon. Watch for designed micro-features hiding in the fan: a vertex
+  OFF the fitted circle is a real flare/lead-in face, not polygonization
+  noise — keep its exact endpoints and overshoot the profile by extending
+  VERTICALLY from them, never by moving them. (armor_knee: BIT-EXACT,
+  score 0.0000, one attempt — the second bit-exact part. armor_toe: §5.22
+  ambiguous at 60% but freeform census on two axes → levelSet, 0.0016,
+  one turn — the census breaks the volume-test tie.)
+
 ## 6. Plateau protocol
 
 Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
