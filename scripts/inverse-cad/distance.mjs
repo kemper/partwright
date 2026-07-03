@@ -10,6 +10,12 @@
 
 import { samplePoints, buildKdTree } from './sampleMesh.mjs';
 
+// The exact point-to-triangle-surface method (BVH-backed, no sampling noise
+// floor). `meshDistance` below is kept only for back-compat with existing
+// callers/tests of the point-cloud approximation; new code (eval.mjs) uses
+// this instead.
+export { signedMeshDistance } from './surfaceDistance.mjs';
+
 function nnDistances(pointsA, kdB) {
   const n = pointsA.length / 3;
   const out = new Float64Array(n);

@@ -20,7 +20,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { basename, dirname, extname, resolve, join } from 'node:path';
 import { parseStl } from './stl.mjs';
-import { meshDistance } from './distance.mjs';
+import { signedMeshDistance } from './distance.mjs';
 import { meshInvariants } from './invariants.mjs';
 import { meshToRenderInputs, composeComparison } from './render.mjs';
 import { runPreview, resolveViews } from '../cli/preview.mjs';
@@ -82,7 +82,7 @@ async function main() {
 
   // 4) Candidate mesh in triangle-soup form for distance calc
   const candidate = deindexPreview(preview.render);
-  const distance = meshDistance(target, candidate, { samples: args.samples });
+  const distance = signedMeshDistance(target, candidate, { samples: args.samples });
 
   // 5) Metrics report
   const stats = preview.stats;

@@ -14,7 +14,7 @@ export function makeRng(seed = 1) {
   };
 }
 
-function triAreas(triangles) {
+export function triAreas(triangles) {
   const n = triangles.length / 9;
   const areas = new Float64Array(n);
   let total = 0;
