@@ -463,96 +463,137 @@ before zooming in).
 
 This ties everything together. The scenario: the user hands you a
 multi-part character STL and a reference photo, and asks you to paint the
-model to match. The right sequence uses **six tools compounded**:
+model to match. **Work in three mandatory phases — IDENTIFY everything,
+then PAINT, then AUDIT** — and persist the plan in session notes so a
+later turn (or agent) can pick it up. Interleaving identification with
+painting is the single biggest quality killer observed across five
+validation rounds.
+
+### Phase 1 — IDENTIFY (no paint calls yet)
 
 ```js
 // 1) Kick off import — do NOT straight-await on large STLs; the page
 //    navigates mid-await and later paint calls land on stale sessions.
 partwright.importMeshData(base64, 'character.stl', { sessionName: 'foo' });
-// 2) Wait for the post-import session dance to settle before painting.
+// 2) Wait for the post-import session dance to settle before anything else.
 const { sessionId } = await partwright.waitForSessionStable({ minMs: 800 });
 
-// 3) listComponents now returns per-island shape metadata AND a top-level
-//    modelUpAxis guess so you don't fall for the "figure lying flat on
-//    the print bed" trap. If the figure's Y bbox is tall and its normals
-//    bunch toward +Y, modelUpAxis will say {axis: 'y', sign: '+'}.
-const { components, modelUpAxis } = partwright.listComponents();
-// modelUpAxis.axis is the figure's up direction (may not be Z!). Use it
-// for anatomical bucketing: top-of-figure = high-along-upAxis.
+// 3) listComponents returns per-island shape metadata, a modelUpAxis
+//    guess, AND the bilateral symmetry structure:
+const { components, modelUpAxis, symmetry } = partwright.listComponents();
+// - modelUpAxis.axis is the figure's up direction (may not be Z!).
+// - symmetry is the detected mirror plane (or null).
+// - components[i].mirrorOf is the island's bilateral twin: identify the
+//   LEFT glove and the RIGHT glove is components[i].mirrorOf — free.
+//   Only classify one of each mirrored pair; that halves the work.
+// - components[i].principalAxisVector is the TRUE (PCA) long direction —
+//   follows a tilted limb, unlike the bbox-based principalAxis string.
 
-// 4) Attach the reference photo, then sample the exact colour for each
-//    feature — no more guessing "red" as [1, 0, 0] when the reference
-//    red is [0.87, 0.12, 0.18].
-partwright.setAttachments([{ src: 'data:image/png;base64,...', kind: 'image' }]);
-const hatRed = await partwright.sampleReferenceColor({
-  rect: { x: 210, y: 40, w: 60, h: 40 },   // pixel rect on the reference photo
-  mode: 'dominant',
-});
-// → { color: [0.87, 0.12, 0.18], hex: '#de1e2e', ... }
+// 4) Thumbnail islands you can't classify from metadata (4 boots, 6 ball
+//    joints). renderIsland returns a probeView token — keep it; it makes
+//    the thumbnail CLICKABLE later (see probePixel below).
+const thumb = partwright.renderIsland({ index: 27, size: 256 });
 
-// 5) When bbox alone won't disambiguate visually-similar islands
-//    (4 boots, 4 cuffs, 6 ball-joint connectors), thumbnail them.
-//    You / your multimodal model looks at the tiles and picks by sight.
-const thumb = partwright.renderIsland({ index: 27, size: 192 });
-// → { dataUrl: 'data:image/png;base64,...', bbox, principalAxis, ... }
-
-// 6) Paint each part with the sampled colour, using the right primitive
-//    for its geometry.
-partwright.paintIsland({ index: 27, color: hatRed.color, name: 'hat-red-lobe' });
-// For features INSIDE a fused island (face, eyes on Pomni's 205k-tri body):
+// 5) For features INSIDE a fused island (face/eyes/mouth on a 205k-tri
+//    head): segment with merge ON, then identify ALL candidates in ONE
+//    contact-sheet read — not 20 renderRegion round-trips.
 const { regions } = partwright.detectRegions({
-  withinIsland: bodyIslandIndex,
+  withinIsland: headIsland,
   creaseAngleDeg: 20,
-  maxTrianglesPerGroup: 20000,
+  maxTrianglesPerGroup: 20000,   // required — hands you the triangleIds
+  merge: { angleDeg: 30 },       // reassembles fragmented features (a pupil
+});                              // split across 3-4 shards comes back whole)
+const sheet = partwright.renderRegionGrid({
+  regions: regions.slice(0, 20),   // pass detectRegions output directly
+  withinIsland: headIsland,
+  view: { elevation: 0, azimuth: 0 },   // face-on for a face
 });
-const irisColor = await partwright.sampleReferenceColor({ rect: { x: 250, y: 120, w: 30, h: 30 } });
-partwright.paintFaces({ triangleIds: regions[3].triangleIds, color: irisColor.color });
+// Read sheet.dataUrl ONCE — every tile is labelled with its region id.
+
+// 6) Write the island→role table + region→feature table to session notes
+//    BEFORE painting anything:
+partwright.addSessionNote('[DECISION] roles: 0=head 3=torso 7/12=gloves(L/R) …; head regions: 4=L-eye-dome 9=L-iris 13=pupil …');
 ```
 
-**Why each step matters** (learned from validating this in the multi-agent
-Pomni paint pass):
+### Phase 2 — PAINT (right primitive per feature type)
+
+```js
+// Whole parts: paintIsland — topological, never bleeds.
+partwright.paintIsland({ index: 27, color: hatRed, name: 'hat-red-lobe' });
+
+// SCULPTED DISC FEATURES (eye domes, irises, pupils, blush, buttons,
+// pom-poms) — the killer combo: fit an analytic disc to the detected
+// region and paint THAT, never the raw triangle set:
+const eye = regions.find(r => r.id === leftEyeDomeId);
+partwright.paintRegionFitted({ triangleIds: eye.triangleIds, color: white, name: 'L eye dome', pad: 1.02 });
+// Concentric features: paint LARGEST-FIRST (dome → iris → pupil); later
+// discs composite on top, so you get rings with zero annular geometry.
+// For sub-features you located visually, paintDisc takes center+normal
+// directly (from probePixel or a region's centroid+normal):
+partwright.paintDisc({ center: irisCenter, normal: irisNormal, radius: 2.1, color: irisRed, name: 'L iris' });
+
+// THEN MIRROR the whole eye stack instead of re-deriving the right side:
+partwright.paintMirrored({ regionId: lEyeDomeRegion.id, name: 'R eye dome' });
+partwright.paintMirrored({ regionId: lIrisRegion.id, color: irisBlue, name: 'R iris' });  // color CAN differ
+// Mirrored analytic paints match position+size by construction — no
+// left/right drift, half the identification work.
+
+// Raw triangle sets ONLY as a last resort, and ALWAYS defanged when the
+// region reported fanTopologyRisk: true (fan wedges bleed otherwise):
+partwright.paintFaces({
+  triangleIds: bangs.triangleIds,
+  color: black,
+  maxTriangleArea: bangs.medianTriangleArea * 5,   // excludes the wedges
+});
+
+// CLICK WHAT YOU SEE: probePixel accepts the probeView token from any
+// renderIsland/renderRegion call — no bbox arithmetic ever:
+const hit = partwright.probePixel({ pixel: [96, 80], view: thumb.probeView });
+// hit.point / hit.normal are world-space, hit.triangleId is full-mesh —
+// feed them straight to paintDisc / paintByCrease / paintNear.
+```
+
+**Sampling exact colours:** attach the reference photo, then
+`sampleReferenceColor({rect, mode: 'dominant'})` per feature — text
+descriptions of colour ("red") produce saturated cartoon red; the
+reference red is `[0.87, 0.12, 0.18]`.
+
+### Phase 3 — AUDIT (before declaring done)
+
+```js
+const audit = partwright.auditPaint();
+// audit.flaggedRegionIds  → regions with suspicious stray fragments
+//   (paint far from the main blob = a mis-aimed selector or fan splatter)
+//   or >50% overwritten by later paint (intentional layering is fine —
+//   dismiss those explicitly; investigate the rest).
+// audit.unpaintedIslands  → parts you never painted (the missed 8th cuff).
+// DISMISS OR FIX EVERY FLAG — then render the money shots (face-on head,
+// per-island views) and compare against the reference before reporting.
+```
+
+**Why each step matters** (learned across five multi-agent Pomni passes):
 
 - `waitForSessionStable` — without it, 2 of 4 v2 agents lost 60+ paint calls
   to autosave-triggered session swaps mid-loop.
-- `modelUpAxis` in the `listComponents` output — every v1 agent burned 3+
-  iterations recovering from "wrong axis = up" heuristics on models laid
-  flat on the print bed.
-- `renderIsland` — bbox+centroid can't tell 4 near-identical boots apart;
-  a 192px iso PNG can. Vision-in-loop is the missing modality.
-- `sampleReferenceColor` — text descriptions of colour ("red") produce
-  saturated cartoon red; the reference photo red is muted, and the paint
-  looks wrong until you sample it.
-- `detectRegions({withinIsland})` — the only way to reach sculpted features
-  inside a fused mesh-island.
+- `mirrorOf` + `paintMirrored` — every earlier round painted left/right
+  eyes separately and they drifted in size/position; mirroring makes
+  symmetry structural and halves the identification effort.
+- `renderRegionGrid` — v4 agents discovered "the pupil is 4 sibling
+  regions" only by rendering 20+ thumbnails one at a time; the labelled
+  contact sheet is one read. `merge` makes it one REGION.
+- `paintRegionFitted`/`paintDisc` — triangle-set painting of sculpted
+  features inherits fan-topology wedges and bleeds across the face (the
+  worst recurring defect); the analytic disc fit paints what the sculptor
+  meant, with smooth clipped edges. This formalizes the technique the
+  best-scoring agent invented by hand.
+- `probeView` handshake — earlier agents hand-derived world coordinates
+  from bbox arithmetic (which put a red rectangle over a mouth); probing
+  the island thumbnail you just looked at is exact.
+- `auditPaint` — a yellow drip on the face and a 40%-overwritten bangs
+  region shipped unnoticed in the best v4 result; both are mechanically
+  detectable. Run the audit, then look.
 - Batching paints in one `page.evaluate` (or one AI-tool turn) minimises
   exposure to mid-loop session changes.
-
-**Identifying the right `detectRegions` output — `renderRegion`.** On a
-fused body island like Pomni's, `detectRegions({withinIsland})` returns
-60+ crease-bounded regions. Area/normal/bbox alone don't reliably surface
-"left iris ring" from "upper hat dome" — both are ~small, ~front-facing
-patches. The fix: **loop the top-N regions and render each one
-highlighted, so you can SEE which is which before painting**:
-
-```js
-const { regions } = partwright.detectRegions({
-  withinIsland: bodyIsland,
-  creaseAngleDeg: 15,
-  maxTrianglesPerGroup: 20000,   // required — hands you the triangleIds
-});
-// Look at the 12 largest sculpted features:
-for (const r of regions.slice(0, 12)) {
-  const { dataUrl } = partwright.renderRegion({
-    triangleIds: r.triangleIds,
-    withinIsland: bodyIsland,      // frame to the body only
-    size: 192,
-  });
-  // Read dataUrl → pick the two that look like iris rings.
-}
-// Then paint the ones you picked:
-partwright.paintFaces({ triangleIds: regions[irisLeftId].triangleIds,
-                        color: irisRed });
-```
 
 **Striped limbs — `paintOrientedStripes`.** For alternating stripes on a
 limb (Pomni sleeves + legs), don't stack `paintInBox` slabs manually —

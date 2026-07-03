@@ -189,7 +189,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'listComponents',
-    description: 'List the parts of the current geometry. Returns {count, components: [{index, centroid, boundingBox, ...}], source}. Two paths: (1) "manifold" — uses Manifold.decompose() on built geometry; entries include volume + surfaceArea. (2) "mesh-island" — face-connected BFS over the triangle adjacency graph; entries include triangleCount and works on render-only imports / non-manifold meshes (multi-part STL kits — articulated print-in-place figures, separable mechanism parts — finally segment without needing Manifold). Print-in-place kits with clearance gaps split cleanly into one island per part; parts that physically touch at a shared vertex appear as one island. Pair with paintIsland({index, color}) — topological, never bleeds across XYZ-overlapping parts.',
+    description: 'List the parts of the current geometry. Returns {count, components: [{index, centroid, boundingBox, ...}], source}. Two paths: (1) "manifold" — uses Manifold.decompose() on built geometry; entries include volume + surfaceArea. (2) "mesh-island" — face-connected BFS over the triangle adjacency graph; entries include triangleCount and works on render-only imports / non-manifold meshes (multi-part STL kits — articulated print-in-place figures, separable mechanism parts — finally segment without needing Manifold). Print-in-place kits with clearance gaps split cleanly into one island per part; parts that physically touch at a shared vertex appear as one island. Mesh-island entries also carry shape metadata (principalAxisVector = true PCA long direction, aspectRatio, normalHistogram) and mirrorOf — the island\'s bilateral twin under the top-level `symmetry` plane, so identifying one glove identifies the other for free (paint one, paintMirrored the twin). Pair with paintIsland({index, color}) — topological, never bleeds across XYZ-overlapping parts.',
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -234,7 +234,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'detectRegions',
-    description: 'Auto-segment the mesh into SCULPTED FEATURE regions by crease (dihedral-angle) watershed. THE enumeration primitive for organic sculpts — the iris ring, pupil, eye outline, mouth crease, blush dimples, each torso pom-pom, bangs/hairline are all sculpted features whose boundaries are crease edges. With the default 20° threshold, the BFS walks freely across the gentle curvature of cheeks and a hat dome but stops cold at a 30°+ crease, so features pop out as distinct regions. Returns regions sorted largest first with {id, triangleCount, area, centroid, normal, bbox, neighborIds?}. Pass `withinIsland: <id>` (from listComponents) to segment ONE mesh-island (a fused body part) so the head\'s eyes/buttons stop being unreachable. Pair with paintByCrease (paint one region) or paintFaces (paint by triangleIds for surgical control). For coarse part-level segmentation, raise creaseAngleDeg to 45°; for fine detail, lower to 10°.',
+    description: 'Auto-segment the mesh into SCULPTED FEATURE regions by crease (dihedral-angle) watershed. THE enumeration primitive for organic sculpts — the iris ring, pupil, eye outline, mouth crease, blush dimples, each torso pom-pom, bangs/hairline are all sculpted features whose boundaries are crease edges. With the default 20° threshold, the BFS walks freely across the gentle curvature of cheeks and a hat dome but stops cold at a 30°+ crease, so features pop out as distinct regions. Returns regions sorted largest first with {id, triangleCount, area, centroid, normal, bbox, maxTriangleArea, medianTriangleArea, worstTriangleAspectRatio, fanTopologyRisk, neighborIds?}. fanTopologyRisk: true = giant fan wedges lurk in this region and painting its raw triangleIds WILL bleed — use paintRegionFitted, or paintFaces with maxTriangleArea. Pass `withinIsland: <id>` (from listComponents) to segment ONE mesh-island (a fused body part) so the head\'s eyes/buttons stop being unreachable, and `merge` to reassemble fragmented features. Identify candidates visually with renderRegionGrid, then paint via paintRegionFitted (disc features), paintByCrease (crease-bounded flood), or filtered paintFaces. For coarse part-level segmentation, raise creaseAngleDeg to 45°; for fine detail, lower to 10°.',
     input_schema: {
       type: 'object',
       properties: {
@@ -243,7 +243,8 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxRegions: { type: 'integer', description: 'Cap returned region count (largest first). Default 64. 0 = unlimited (use sparingly).' },
         withinIsland: { type: 'integer', description: 'Optional index from listComponents() — segment ONLY this mesh-island, not the whole mesh. The fix for fused body islands (head+torso+buttons welded as one island) — pass the body island id and the eyes/mouth/buttons separate out as their own regions.' },
         includeNeighbors: { type: 'boolean', description: 'Add neighborIds (regions sharing a crease boundary) to each region. Default true. Useful for "what borders the iris?" queries.' },
-        maxTrianglesPerGroup: { type: 'integer', description: 'Cap triangleIds per region. Default 0 (omit entirely — keeps response small). Set >0 only if you need raw ids for paintFaces.' },
+        maxTrianglesPerGroup: { type: 'integer', description: 'Cap triangleIds per region. Default 0 (omit entirely — keeps response small). Set >0 only if you need raw ids for paintFaces/renderRegionGrid/fitRegionShape.' },
+        merge: { type: 'object', description: 'Opt-in agglomerative merge of watershed fragments so ONE visual feature (a pupil) comes back as ONE region instead of 3-4 shards: neighbouring regions merge when mean normals differ by <= angleDeg (default 30), or a tiny region (area < minArea) with exactly one neighbour folds in.', properties: { angleDeg: { type: 'number' }, minArea: { type: 'number' } } },
       },
     },
   },
@@ -293,17 +294,94 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintOrientedStripes',
-    description: 'Paint N equally-spaced stripes along an island\'s principal axis. THE fix for striped limbs on organic characters (Pomni sleeves, legs, tails). Both v3 Opus agents independently asked for this after painting Pomni arms/legs as solid colours. Colours flow from low-end to high-end along the axis. Uses the island\'s principalAxis by default (world-axis-aligned); override with `axis` when you need to override the auto choice.',
+    description: 'Paint N equally-spaced stripes along an island\'s TRUE principal direction (PCA over triangle centroids — follows a tilted limb, not the nearest world axis). THE fix for striped limbs on organic characters (Pomni sleeves, legs, tails). Colours flow from low-end to high-end along the axis.',
     input_schema: {
       type: 'object',
       properties: {
         islandIndex: { type: 'integer', description: 'Island index from listComponents() (0-based).' },
         colors: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, description: 'Array of [r,g,b] triples. `[red, blue, red, blue]` produces four bands red→blue→red→blue.' },
-        axis: { type: 'string', enum: ['x', 'y', 'z'], description: 'Optional axis override. Default = island principalAxis.' },
+        axis: { description: "Optional axis override: 'x'|'y'|'z' or an [x,y,z] vector. Default = the island's PCA principalAxisVector." },
         name: { type: 'string' },
       },
       required: ['islandIndex', 'colors'],
     },
+  },
+  {
+    name: 'renderRegionGrid',
+    description: 'ONE labelled contact sheet of up to 64 region highlights — the batch version of renderRegion. Pass detectRegions().regions directly (run detectRegions with maxTrianglesPerGroup > 0 first) and identify EVERY candidate feature in a single image read instead of 20 renderRegion round-trips. Each tile is labelled with the region id; a red "(0 tris!)" label means that region has no triangles in frame. Use withinIsland to frame all tiles to one island (computed once, shared).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        regions: { type: 'array', description: 'The detectRegions().regions array (objects with id + triangleIds), or plain arrays of triangle ids. Max 64.', items: {} },
+        withinIsland: { type: 'integer', description: 'Optional island index from listComponents — frames every tile to just that island.' },
+        view: { type: 'object', description: 'Camera for all tiles. Default iso {elevation: 30, azimuth: 315}.', properties: { elevation: { type: 'number' }, azimuth: { type: 'number' }, ortho: { type: 'boolean' } } },
+        size: { type: 'integer', description: 'Per-tile edge length in px. Default 192. Range 64-512.' },
+        cols: { type: 'integer', description: 'Grid columns. Default ~sqrt(n), max 8.' },
+      },
+      required: ['regions'],
+    },
+  },
+  {
+    name: 'paintDisc',
+    description: 'Paint a smooth-edged DISC facing a normal — THE facial-feature primitive (iris, pupil, blush dot, button, pom-pom). No quaternion math: feed it probePixel\'s point+normal, a detectRegions region\'s centroid+normal, or fitRegionShape\'s circle center+axis. Paint concentric features LARGEST-FIRST (eye dome, then iris, then pupil) — later discs composite on top, so rings appear without annular geometry. Edges are analytic (subdivided + clipped), immune to fan-topology bleed.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Disc center [x,y,z] on (or near) the surface.' },
+        normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Disc facing direction (need not be normalized).' },
+        radius: { type: 'number', description: 'Disc radius in mesh units.' },
+        thickness: { type: 'number', description: 'Slab thickness along the normal. Default = radius. Tighten for shallow features near other geometry; widen (2×radius) to swallow a tall dome.' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r,g,b] in 0..1.' },
+        name: { type: 'string' },
+      },
+      required: ['center', 'normal', 'radius', 'color'],
+    },
+  },
+  {
+    name: 'fitRegionShape',
+    description: 'Fit an ANALYTIC disc/sphere/plane to a detected region\'s boundary points. THE fan-bleed killer: a detectRegions region\'s raw triangle set has ragged boundaries and fan wedges, but the sculptor\'s intent was almost always a clean disc (iris, pupil, blush, button). Returns {best, circle: {center, axis, radius, rms}, sphere?, plane, nextStep}. A tight circle fit (rms << radius) → paint via paintDisc/paintRegionFitted; a poor fit → the feature isn\'t a disc, use paintFaces with fan filters instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        triangleIds: { type: 'array', items: { type: 'integer' }, description: 'From detectRegions({maxTrianglesPerGroup > 0}).regions[i].triangleIds.' },
+      },
+      required: ['triangleIds'],
+    },
+  },
+  {
+    name: 'paintRegionFitted',
+    description: 'One call: fit a disc to a detected region\'s boundary and paint it with a crisp analytic edge (fitRegionShape + paintDisc). THE formalization of the winning validation technique — locate the sculpted feature, then paint an analytic shape AT it instead of painting its bleed-prone raw triangle set. Refuses when the boundary isn\'t disc-like (rms > 0.25×radius) unless force: true.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        triangleIds: { type: 'array', items: { type: 'integer' }, description: 'From detectRegions({maxTrianglesPerGroup > 0}).regions[i].triangleIds.' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r,g,b] in 0..1.' },
+        pad: { type: 'number', description: 'Radius multiplier. Default 1.0; 1.05 = 5% overshoot for full coverage.' },
+        thickness: { type: 'number', description: 'Disc slab thickness. Default 2× fitted radius (covers a fully-raised dome).' },
+        name: { type: 'string' },
+        force: { type: 'boolean', description: 'Paint even when the circle fit is poor.' },
+      },
+      required: ['triangleIds', 'color'],
+    },
+  },
+  {
+    name: 'paintMirrored',
+    description: 'Mirror an existing painted region across the model\'s bilateral symmetry plane (auto-detected; see listComponents().symmetry). Paint ONE eye, then mirror it — position and size match by construction, and color can DIFFER (Pomni: red left iris, blue right iris). Analytic paints (paintDisc/paintInBox/paintByCrease/strokes) reflect exactly and stay crisp; raw paintFaces sets fall back to per-triangle mirroring (response.method says which ran). This halves the work AND kills left/right asymmetry on every bilateral character.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        regionId: { type: 'integer', description: 'Source region id (from any paint tool\'s response, or listRegions).' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional different color for the mirrored copy. Default = same as source.' },
+        name: { type: 'string' },
+        plane: { type: 'object', description: 'Override the auto-detected plane.', properties: { axis: { type: 'string', enum: ['x', 'y', 'z'] }, point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 } }, required: ['axis'] },
+      },
+      required: ['regionId'],
+    },
+  },
+  {
+    name: 'auditPaint',
+    description: 'Deterministic whole-scene paint audit — run BEFORE declaring a paint job done, and dismiss or fix every flag. Catches exactly what a final glance misses: stray disconnected paint fragments (a mis-aimed selector or fan-wedge splatter far from the feature — flagged suspicious), regions >50% overwritten by later paint (intentional layering like iris-over-dome is fine; accidental overwrite is not), and islands never painted (the missed 8th cuff). Numbers, not pictures: gate on flaggedRegionIds/unpaintedIslands and only re-render where a flag fires.',
+    input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'sampleReferenceColor',
@@ -436,12 +514,13 @@ const ALL_TOOLS: ToolDefinition[] = [
         pixel: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[x, y] pixel position. (0, 0) is top-left.' },
         view: {
           type: 'object',
-          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          description: 'Camera spec. MUST match the render that produced the image — same elevation, azimuth, ortho, size. For pixels seen in a renderIsland/renderRegion thumbnail, pass that call\'s returned `probeView` object verbatim (it carries `island`, which frames the probe to the island subset; hits come back in world coords with a full-mesh triangleId).',
           properties: {
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
             size: { type: 'integer' },
+            island: { type: 'integer', description: 'Island index the render was framed to (from renderIsland/renderRegion probeView). Omit for whole-mesh renderView images.' },
           },
         },
       },
@@ -649,13 +728,15 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintFaces',
-    description: 'Paint a specific set of triangle ids. Last-resort primitive — prefer paintInBox / paintNear / paintSlab when the intent is "all faces matching a geometric predicate", because they collapse the find+paint pair into one tool call (saves a full round-trip plus the triangleId payload).',
+    description: 'Paint a specific set of triangle ids. Last-resort primitive — prefer paintInBox / paintNear / paintSlab when the intent is "all faces matching a geometric predicate", and paintRegionFitted/paintDisc for sculpted disc features. When painting a detectRegions region whose fanTopologyRisk is true, ALWAYS pass maxTriangleArea (≈ its medianTriangleArea × 5) or maxTriangleAspectRatio: 6 so giant fan wedges don\'t bleed the color across the face.',
     input_schema: {
       type: 'object',
       properties: {
         triangleIds: { type: 'array', items: { type: 'integer' } },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        maxTriangleArea: { type: 'number', description: 'Exclude triangles larger than this area — defuses fan-topology wedges. Use the region\'s medianTriangleArea × ~5.' },
+        maxTriangleAspectRatio: { type: 'number', description: 'Exclude sliver/wedge triangles above this aspect ratio (longest edge / altitude; equilateral ≈ 1.15). Try 6.' },
       },
       required: ['triangleIds', 'color'],
     },
@@ -753,6 +834,7 @@ const ALL_TOOLS: ToolDefinition[] = [
           },
           required: ['center', 'size'],
         },
+        shape: { type: 'string', enum: ['box', 'sphere', 'cylinder', 'cone'], description: 'Interpret the oriented frame as a different solid: sphere (radius = size[0]/2), cylinder (radius = size[0]/2 around local Y, height = size[1] — an oriented DISC when height is thin; see also paintDisc), or cone (apex at local +Y). Default box.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
         smooth: { type: 'boolean', description: 'Smooth the painted edge by subdividing the mesh near the box faces. Default true; pass false for the raw (blocky) tessellation.' },
@@ -1547,7 +1629,7 @@ export const PART_TARGETABLE_TOOLS = new Set<string>([
   'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
   'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintByLabel', 'paintByLabels',
-  'paintConnected', 'paintInCylinder', 'detectRegions', 'renderIsland', 'renderRegion', 'paintOrientedStripes', 'sampleReferenceColor', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
+  'paintConnected', 'paintInCylinder', 'detectRegions', 'renderIsland', 'renderRegion', 'renderRegionGrid', 'paintOrientedStripes', 'paintDisc', 'fitRegionShape', 'paintRegionFitted', 'paintMirrored', 'auditPaint', 'sampleReferenceColor', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
   'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
@@ -1595,6 +1677,9 @@ const ALWAYS_AVAILABLE = new Set([
   'listComponents',
   'renderIsland',
   'renderRegion',
+  'renderRegionGrid',
+  'fitRegionShape',
+  'auditPaint',
   'sampleReferenceColor',
   'waitForSessionStable',
   'getSessionId',
@@ -1666,7 +1751,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintOrientedStripes', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintOrientedStripes', 'paintDisc', 'paintRegionFitted', 'paintMirrored', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -2192,6 +2277,18 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.renderRegion(input);
     case 'paintOrientedStripes':
       return api.paintOrientedStripes(input);
+    case 'renderRegionGrid':
+      return api.renderRegionGrid(input);
+    case 'paintDisc':
+      return api.paintDisc(input);
+    case 'fitRegionShape':
+      return api.fitRegionShape(input);
+    case 'paintRegionFitted':
+      return api.paintRegionFitted(input);
+    case 'paintMirrored':
+      return api.paintMirrored(input);
+    case 'auditPaint':
+      return api.auditPaint();
     case 'sampleReferenceColor':
       return api.sampleReferenceColor(input);
     case 'waitForSessionStable':

@@ -251,6 +251,8 @@ import {
 } from './ui/insertPalette';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { meshIslands, trianglesInIsland, islandAtPoint, subsetMesh } from './color/meshIslands';
+import { detectSymmetryPlane, mirrorIslandPairs, reflectPoint, reflectVector, mirrorTriangleSet, type SymmetryPlane } from './color/symmetry';
+import { fitRegionShape } from './color/regionFit';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
 import { cylinderRefineRegion, findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
@@ -15347,6 +15349,288 @@ async function main() {
       };
     },
 
+    /** Fit an ANALYTIC shape (plane / circle-disc / sphere) to a detected
+     *  region's boundary. This is the fan-bleed killer: a `detectRegions`
+     *  region's raw triangle set has a ragged tessellation-following
+     *  boundary and often giant fan wedges, but the SCULPTOR'S INTENT was
+     *  almost always a clean disc (iris, pupil, blush, button, pom-pom).
+     *  Fit the disc, then paint it via `paintDisc`/`paintRegionFitted` —
+     *  the smooth shape machinery subdivides the wedges and cuts at the
+     *  true circle. `rms` (normalized to the radius) tells you whether the
+     *  feature really is that shape — fall back to paintFaces filters when
+     *  rms is poor (> ~0.15).
+     *
+     *  `triangleIds` from `detectRegions({maxTrianglesPerGroup > 0})`. */
+    fitRegionShape(opts: { triangleIds: number[] | Uint32Array }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'fitRegionShape requires { triangleIds }' };
+      const ids = opts.triangleIds;
+      if (!ids || typeof (ids as unknown as { length?: number }).length !== 'number') {
+        return { error: 'triangleIds must be an array or Uint32Array of triangle indices.' };
+      }
+      const idsArr = Array.isArray(ids) ? ids : Array.from(ids);
+      if (idsArr.length === 0) return { error: 'triangleIds is empty.' };
+      const numTri = currentMeshData.numTri;
+      const set = new Set<number>();
+      for (const t of idsArr) {
+        if (!Number.isInteger(t) || t < 0 || t >= numTri) return { error: `triangleIds contains invalid index ${t} (expected 0..${numTri - 1}).` };
+        set.add(t);
+      }
+      const fit = fitRegionShape(set, currentMeshData);
+      if ('error' in fit) return fit;
+      return {
+        pointCount: fit.pointCount,
+        best: fit.best,
+        plane: fit.plane,
+        circle: fit.circle,
+        sphere: fit.sphere,
+        nextStep: fit.best === 'circle' && fit.circle
+          ? `paintDisc({center: ${JSON.stringify(fit.circle.center.map(v => Math.round(v * 100) / 100))}, normal: ${JSON.stringify(fit.circle.axis.map(v => Math.round(v * 1000) / 1000))}, radius: ${Math.round(fit.circle.radius * 100) / 100}, color}) paints this feature with a clean analytic edge — or call paintRegionFitted({triangleIds, color}) to do fit+paint in one step.`
+          : 'Feature is not disc-like; use paintFaces({triangleIds, maxTriangleArea}) with the fan filters, or paintByCrease from its centroid.',
+      };
+    },
+
+    /** One-call fit + paint: fit a disc to the region's boundary and paint
+     *  it via the smooth oriented-cylinder selector. The formalization of
+     *  the technique that produced the best validation result (locate a
+     *  sculpted feature, paint an analytic shape AT it instead of painting
+     *  its raw triangle set). `pad` scales the fitted radius (default 1.0;
+     *  1.05 = 5% overshoot for full coverage). Refuses when the fit is
+     *  poor (`rms/radius > 0.25`) rather than stamping a wrong circle —
+     *  override with `force: true`. */
+    paintRegionFitted(opts: {
+      triangleIds: number[] | Uint32Array;
+      color: [number, number, number];
+      name?: string;
+      pad?: number;
+      thickness?: number;
+      force?: boolean;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintRegionFitted requires { triangleIds, color }' };
+      if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
+      const pad = opts.pad ?? 1.0;
+      if (typeof pad !== 'number' || !Number.isFinite(pad) || pad <= 0 || pad > 3) return { error: 'pad must be a finite number in (0, 3].' };
+      const fitRes = partwrightAPI.fitRegionShape({ triangleIds: opts.triangleIds });
+      if ('error' in fitRes) return fitRes;
+      const circle = fitRes.circle;
+      if (!circle) return { error: 'paintRegionFitted: no circle fit possible for this region (degenerate boundary). Use paintFaces with maxTriangleArea instead.' };
+      const relRms = circle.radius > 0 ? circle.rms / circle.radius : Infinity;
+      if (relRms > 0.25 && !opts.force) {
+        return { error: `paintRegionFitted: circle fit is poor (rms ${Math.round(relRms * 100) / 100}× radius) — the feature probably isn't a disc. Pass force: true to paint it anyway, or use paintFaces({triangleIds, maxTriangleArea}).` };
+      }
+      const res = partwrightAPI.paintDisc({
+        center: circle.center,
+        normal: circle.axis,
+        radius: circle.radius * pad,
+        // The fitted circle sits at the feature's BASE (the crease), but a
+        // raised dome protrudes up to ~radius above it — a thin disc would
+        // leave the cap unpainted (verified on a hemispherical eye dome).
+        // 2× radius spans base−r..base+r; the inward half points into the
+        // solid, so over-thickness is harmless on closed geometry.
+        thickness: opts.thickness ?? circle.radius * 2,
+        color: opts.color,
+        name: opts.name,
+      });
+      if ('error' in res) return res;
+      return { ...res, fittedRadius: circle.radius, fitRms: circle.rms, pad };
+    },
+
+    /** Mirror an existing painted region across the model's bilateral
+     *  symmetry plane (auto-detected; see `listComponents().symmetry`).
+     *  Paint ONE eye, mirror it — position/size match by construction, and
+     *  `color` can differ (Pomni's red left iris / blue right iris).
+     *
+     *  Analytic descriptors (shape/slab/seed paints) are REFLECTED and
+     *  re-resolved, so the mirrored edge is as crisp as the source's.
+     *  Raw triangle sets (`paintFaces` output) fall back to per-triangle
+     *  centroid mirroring, which inherits the target side's tessellation
+     *  (`method` in the response says which path ran). */
+    paintMirrored(opts: {
+      regionId: number;
+      color?: [number, number, number];
+      name?: string;
+      /** Override the auto-detected plane: an axis-aligned plane through
+       *  `point` (default: the detected symmetry plane). */
+      plane?: { axis: 'x' | 'y' | 'z'; point?: [number, number, number] };
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintMirrored requires { regionId }' };
+      if (!Number.isInteger(opts.regionId)) return { error: 'regionId must be an integer (from the paint response or listRegions).' };
+      const source = getRegions().find(r => r.id === opts.regionId);
+      if (!source) return { error: `paintMirrored: no region with id ${opts.regionId}.` };
+      if (opts.color !== undefined && (!Array.isArray(opts.color) || opts.color.length !== 3)) return { error: 'color must be [r,g,b] with values 0..1' };
+
+      // Resolve the mirror plane.
+      let plane: SymmetryPlane | null = null;
+      if (opts.plane) {
+        const ax = opts.plane.axis;
+        if (ax !== 'x' && ax !== 'y' && ax !== 'z') return { error: "plane.axis must be 'x', 'y', or 'z'." };
+        const p = opts.plane.point;
+        if (p !== undefined && (!Array.isArray(p) || p.length !== 3 || !p.every(Number.isFinite))) return { error: 'plane.point must be [x,y,z] of finite numbers.' };
+        let point: [number, number, number];
+        if (p) {
+          point = p as [number, number, number];
+        } else {
+          const det = detectSymmetryPlane(currentMeshData);
+          if (det && det.axis === ax) point = det.point;
+          else {
+            // Fall back to the mesh bbox centre on that axis.
+            const { islands } = meshIslands(currentMeshData);
+            let mn = Infinity, mx = -Infinity;
+            const ai = ax === 'x' ? 0 : ax === 'y' ? 1 : 2;
+            for (const isl of islands) { if (isl.bbox.min[ai] < mn) mn = isl.bbox.min[ai]; if (isl.bbox.max[ai] > mx) mx = isl.bbox.max[ai]; }
+            point = [0, 0, 0];
+            point[ai] = (mn + mx) / 2;
+          }
+        }
+        const normal: [number, number, number] = ax === 'x' ? [1, 0, 0] : ax === 'y' ? [0, 1, 0] : [0, 0, 1];
+        plane = { axis: ax, point, normal, residual: 0, score: 1 };
+      } else {
+        plane = detectSymmetryPlane(currentMeshData);
+        if (!plane) return { error: 'paintMirrored: no bilateral symmetry plane detected (listComponents().symmetry is null). Pass plane: {axis, point?} explicitly.' };
+      }
+
+      // Reflect the descriptor when the kind supports an exact reflection;
+      // otherwise mirror the resolved triangle set.
+      const d = source.descriptor;
+      let mirroredDescriptor: RegionDescriptor | null = null;
+      switch (d.kind) {
+        case 'coplanar':
+          mirroredDescriptor = { ...d, seedPoint: reflectPoint(d.seedPoint, plane), seedNormal: reflectVector(d.seedNormal, plane) };
+          break;
+        case 'connectedFromSeed': {
+          const rMin = d.clampMin ? reflectPoint(d.clampMin, plane) : undefined;
+          const rMax = d.clampMax ? reflectPoint(d.clampMax, plane) : undefined;
+          mirroredDescriptor = {
+            ...d,
+            seedPoint: reflectPoint(d.seedPoint, plane),
+            seedNormal: reflectVector(d.seedNormal, plane),
+            // Reflection flips one coordinate — re-sort each axis pair so
+            // clampMin stays the min corner.
+            clampMin: rMin && rMax ? [Math.min(rMin[0], rMax[0]), Math.min(rMin[1], rMax[1]), Math.min(rMin[2], rMax[2])] : rMin,
+            clampMax: rMin && rMax ? [Math.max(rMin[0], rMax[0]), Math.max(rMin[1], rMax[1]), Math.max(rMin[2], rMax[2])] : rMax,
+          };
+          break;
+        }
+        case 'slab': {
+          const n2 = reflectVector(d.normal, plane);
+          const pointOnPlane: [number, number, number] = [d.normal[0] * d.offset, d.normal[1] * d.offset, d.normal[2] * d.offset];
+          const p2 = reflectPoint(pointOnPlane, plane);
+          mirroredDescriptor = { ...d, normal: n2, offset: n2[0] * p2[0] + n2[1] * p2[1] + n2[2] * p2[2] };
+          break;
+        }
+        case 'box': {
+          // R' = M·R·M — build the rotation matrix from the quaternion,
+          // conjugate by the axis-aligned reflection, convert back. Exact
+          // for every shape variant (box/sphere/cylinder/cone).
+          const q = d.quaternion;
+          const [qx, qy, qz, qw] = q;
+          // Rotation matrix columns from quaternion.
+          const m = [
+            1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy + qz * qw), 2 * (qx * qz - qy * qw),
+            2 * (qx * qy - qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz + qx * qw),
+            2 * (qx * qz + qy * qw), 2 * (qy * qz - qx * qw), 1 - 2 * (qx * qx + qy * qy),
+          ];
+          const ai = plane.axis === 'x' ? 0 : plane.axis === 'y' ? 1 : 2;
+          // A reflected orientation M·R has det −1 — not a rotation — so we
+          // compose with a LOCAL mirror symmetry S of the shape to get back
+          // to det +1: R' = M·R·S. S = local x-flip is a symmetry of every
+          // shape variant (box |x| test, sphere radial, cylinder/cone
+          // x²+z² radial — none distinguish local x sign). In column-major
+          // storage: M negates world row ai; S negates column 0 (the local
+          // x axis).
+          const mm = m.slice();
+          for (let c = 0; c < 3; c++) mm[c * 3 + ai] = -mm[c * 3 + ai]; // M· : negate world row ai
+          for (let r2 = 0; r2 < 3; r2++) mm[r2] = -mm[r2];              // ·S : negate column 0 (local x)
+          // Matrix → quaternion (Shepperd). mm is column-major [c0 c1 c2].
+          const m00 = mm[0], m10 = mm[1], m20 = mm[2];
+          const m01 = mm[3], m11 = mm[4], m21 = mm[5];
+          const m02 = mm[6], m12 = mm[7], m22 = mm[8];
+          const tr = m00 + m11 + m22;
+          let rq: [number, number, number, number];
+          if (tr > 0) {
+            const s = Math.sqrt(tr + 1) * 2;
+            rq = [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, s / 4];
+          } else if (m00 > m11 && m00 > m22) {
+            const s = Math.sqrt(1 + m00 - m11 - m22) * 2;
+            rq = [s / 4, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s];
+          } else if (m11 > m22) {
+            const s = Math.sqrt(1 + m11 - m00 - m22) * 2;
+            rq = [(m01 + m10) / s, s / 4, (m12 + m21) / s, (m02 - m20) / s];
+          } else {
+            const s = Math.sqrt(1 + m22 - m00 - m11) * 2;
+            rq = [(m02 + m20) / s, (m12 + m21) / s, s / 4, (m10 - m01) / s];
+          }
+          mirroredDescriptor = { ...d, center: reflectPoint(d.center, plane), quaternion: rq };
+          break;
+        }
+        case 'cylinder': {
+          // World-axis shell. Reflecting across a plane parallel to the
+          // shell axis moves the 2D centre; across the perpendicular plane
+          // it flips the z-band.
+          const cylAxis = d.axis ?? 'z';
+          const planeAi = plane.axis === 'x' ? 0 : plane.axis === 'y' ? 1 : 2;
+          const c = plane.point[planeAi];
+          if (plane.axis === cylAxis) {
+            mirroredDescriptor = { ...d, zMin: 2 * c - d.zMax, zMax: 2 * c - d.zMin };
+          } else {
+            // Radial coords follow cyclic order (x→y→z→x): axis z → [x,y];
+            // axis x → [y,z]; axis y → [z,x]. Find which slot the plane
+            // axis occupies and reflect it.
+            const radials: Record<'x' | 'y' | 'z', ['x' | 'y' | 'z', 'x' | 'y' | 'z']> = { z: ['x', 'y'], x: ['y', 'z'], y: ['z', 'x'] };
+            const slot = radials[cylAxis].indexOf(plane.axis);
+            const center2: [number, number] = [d.center[0], d.center[1]];
+            center2[slot] = 2 * c - center2[slot];
+            mirroredDescriptor = { ...d, center: center2, ...(d.normalCone ? { normalCone: { ...d.normalCone, axis: reflectVector(d.normalCone.axis, plane) } } : {}) };
+          }
+          break;
+        }
+        case 'brushStroke':
+          mirroredDescriptor = { ...d, samples: d.samples.map(s => reflectPoint(s, plane)) };
+          break;
+        default:
+          mirroredDescriptor = null; // triangles / byLabel / imagePaint / colorFlood / pattern → set mirroring
+      }
+
+      const color = (opts.color ?? source.color) as [number, number, number];
+      const regionName = opts.name ?? `${source.name} (mirrored)`;
+      if (mirroredDescriptor) {
+        const adjacency = buildAdjacency(currentMeshData);
+        const resolved = resolveDescriptorTriangles(mirroredDescriptor, currentMeshData, adjacency, null);
+        if (resolved.triangles.size === 0) {
+          return { error: 'paintMirrored: the reflected descriptor resolves to zero triangles — the mirror side may be occluded or the plane is off. Check listComponents().symmetry, or pass plane explicitly.' };
+        }
+        const region = withSyncReconcile(() => addRegion(
+          regionName,
+          color,
+          source.source,
+          mirroredDescriptor!,
+          resolved.triangles,
+        ));
+        scheduleColorRefresh();
+        syncLockState();
+        const stats = regionTriangleStats(region.triangles, currentMeshData);
+        return { id: region.id, name: region.name, triangles: region.triangles.size, method: 'descriptor' as const, sourceRegionId: source.id, plane: { axis: plane.axis, point: plane.point }, bbox: stats.bbox, centroid: stats.centroid };
+      }
+      // Fallback: per-triangle centroid mirroring.
+      const mirrored = mirrorTriangleSet(source.triangles, currentMeshData, plane);
+      if (mirrored.triangles.size === 0) {
+        return { error: 'paintMirrored: set mirroring found no target-side triangles (all snaps rejected). The mirror side may be missing or the plane is off.' };
+      }
+      const region = addRegion(regionName, color, 'paintbrush', { kind: 'triangles', ids: [...mirrored.triangles] }, mirrored.triangles);
+      scheduleColorRefresh();
+      syncLockState();
+      const stats = regionTriangleStats(region.triangles, currentMeshData);
+      return {
+        id: region.id, name: region.name, triangles: region.triangles.size,
+        method: 'triangle-set' as const, sourceRegionId: source.id,
+        plane: { axis: plane.axis, point: plane.point },
+        snapped: mirrored.snapped, rejected: mirrored.rejected, meanSnapError: Math.round(mirrored.meanSnapError * 1000) / 1000,
+        bbox: stats.bbox, centroid: stats.centroid,
+      };
+    },
+
     /** Paint N equally-spaced stripes along an island's principal axis. The
      *  primitive for STRIPED LIMBS on organic characters — Pomni's sleeves,
      *  legs, tails, striped-limb creatures — where the stripes should follow
@@ -15492,9 +15776,31 @@ async function main() {
       withinIsland?: number;
       includeNeighbors?: boolean;
       maxTrianglesPerGroup?: number;
+      /** Opt-in agglomerative merge of adjacent watershed fragments: two
+       *  neighbouring regions merge when their mean normals differ by
+       *  ≤ angleDeg (default 30), or when one is tiny (area < minArea) and
+       *  touches exactly one non-tiny neighbour. THE fix for one visual
+       *  feature (a pupil) splitting across 3-4 sibling regions that you'd
+       *  otherwise have to discover and union by hand. */
+      merge?: { angleDeg?: number; minArea?: number } | boolean;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       const o = opts ?? {};
+      let mergeOpt: { angleDeg?: number; minArea?: number } | undefined;
+      if (o.merge !== undefined && o.merge !== false) {
+        if (o.merge === true) mergeOpt = {};
+        else if (typeof o.merge === 'object') {
+          if (o.merge.angleDeg !== undefined && (typeof o.merge.angleDeg !== 'number' || !Number.isFinite(o.merge.angleDeg) || o.merge.angleDeg <= 0 || o.merge.angleDeg >= 180)) {
+            return { error: 'merge.angleDeg must be a finite number in (0, 180).' };
+          }
+          if (o.merge.minArea !== undefined && (typeof o.merge.minArea !== 'number' || !Number.isFinite(o.merge.minArea) || o.merge.minArea < 0)) {
+            return { error: 'merge.minArea must be a non-negative finite number.' };
+          }
+          mergeOpt = o.merge;
+        } else {
+          return { error: 'merge must be true or { angleDeg?, minArea? }.' };
+        }
+      }
       const creaseAngleDeg = o.creaseAngleDeg ?? 20;
       if (typeof creaseAngleDeg !== 'number' || !Number.isFinite(creaseAngleDeg) || creaseAngleDeg <= 0 || creaseAngleDeg >= 180) {
         return { error: 'creaseAngleDeg must be a finite number in (0, 180). Default 20° — try 10° for fine sculpt features, 45° for coarse part-level segmentation.' };
@@ -15530,6 +15836,7 @@ async function main() {
         maxGroups: maxRegions,
         restrictTo,
         includeNeighborIds: o.includeNeighbors ?? true,
+        ...(mergeOpt ? { merge: mergeOpt } : {}),
       });
 
       return {
@@ -15797,7 +16104,22 @@ async function main() {
               boundingBox: bb ?? { min: [0, 0, 0], max: [0, 0, 0] },
             };
           });
-          return { count: components.length, components, source: 'manifold' as const };
+          // Bilateral symmetry plane (from the tessellated mesh) so manifold
+          // models get the same paintMirrored planning signal as STL kits.
+          // No mirrorOf here: decompose ordering differs from island
+          // ordering, so per-component pairing would mislabel.
+          const symPlane = currentMeshData ? detectSymmetryPlane(currentMeshData) : null;
+          return {
+            count: components.length,
+            components,
+            source: 'manifold' as const,
+            symmetry: symPlane ? {
+              axis: symPlane.axis,
+              point: symPlane.point,
+              normal: symPlane.normal,
+              score: Math.round(symPlane.score * 1000) / 1000,
+            } : null,
+          };
         } catch (err) {
           return { error: `decompose failed: ${err instanceof Error ? err.message : String(err)}` };
         }
@@ -15810,6 +16132,13 @@ async function main() {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       try {
         const { islands, meshNormalHistogram, modelUpAxis } = meshIslands(currentMeshData);
+        // Bilateral symmetry: the plane + per-island mirror pairing. On a
+        // character kit this halves the identification work (identify the
+        // left glove → the right glove is components[i].mirrorOf) and feeds
+        // paintMirrored. Cheap relative to the island BFS; null when the
+        // mesh isn't meaningfully symmetric.
+        const symPlane = detectSymmetryPlane(currentMeshData);
+        const mirrorOf = symPlane ? mirrorIslandPairs(currentMeshData, symPlane) : null;
         const components = islands.map(island => ({
           index: island.index,
           triangleCount: island.triangleCount,
@@ -15817,9 +16146,11 @@ async function main() {
           centroid: island.center,
           boundingBox: island.bbox,
           principalAxis: island.principalAxis,
+          principalAxisVector: island.principalAxisVector,
           principalExtent: island.principalExtent,
           aspectRatio: island.aspectRatio,
           normalHistogram: island.normalHistogram,
+          ...(mirrorOf ? { mirrorOf: mirrorOf[island.index] } : {}),
         }));
         return {
           count: components.length,
@@ -15827,6 +16158,12 @@ async function main() {
           source: 'mesh-island' as const,
           modelUpAxis,
           meshNormalHistogram,
+          symmetry: symPlane ? {
+            axis: symPlane.axis,
+            point: symPlane.point,
+            normal: symPlane.normal,
+            score: Math.round(symPlane.score * 1000) / 1000,
+          } : null,
         };
       } catch (err) {
         return { error: `mesh-island BFS failed: ${err instanceof Error ? err.message : String(err)}` };
@@ -16583,18 +16920,21 @@ async function main() {
         'removeFilament':  { signature: 'removeFilament(id) -- Remove a slot from the active palette -> {ok} or {error}', docs: '/ai/colors.md' },
         'setPaletteCapacity': { signature: 'setPaletteCapacity(n) -- Set the AMS/MMU slot budget -> {ok, capacity}', docs: '/ai/colors.md' },
         'setPaletteConstrained': { signature: 'setPaletteConstrained(on) -- Constrain paint to palette slots (snap) vs free RGB -> {ok, constrained}', docs: '/ai/colors.md' },
-        'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume?, surfaceArea?, triangleCount?}], source} -- Decompose into parts. Uses Manifold.decompose() for built geometry (gives volume/surfaceArea, source: "manifold"); falls back to face-connected BFS for render-only imports / non-manifold meshes (gives triangleCount, source: "mesh-island") — multi-part STL kits now segment without needing Manifold.', docs: '/ai/colors.md' },
+        'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume?, surfaceArea?, triangleCount?}], source} -- Decompose into parts. Uses Manifold.decompose() for built geometry (gives volume/surfaceArea, source: "manifold"); falls back to face-connected BFS for render-only imports / non-manifold meshes (source: "mesh-island", plus per-island shape metadata: principalAxisVector (true PCA long direction), aspectRatio, normalHistogram, mirrorOf (the island\'s bilateral twin under the top-level symmetry plane — identify one glove, the other is free), and modelUpAxis) — multi-part STL kits now segment without needing Manifold.', docs: '/ai/colors.md' },
         'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece. Requires a manifold (uses decompose). For render-only imports use paintIsland.', docs: '/ai/colors.md' },
         'paintIsland':     { signature: 'paintIsland({index, color, name?}) -- Paint a single face-connected mesh island by index from listComponents(). Works on ANY mesh including render-only STL imports — the right tool for painting one part of a multi-part STL kit by its component number. Topological, not spatial — never bleeds across XYZ-overlapping parts.', docs: '/ai/colors.md' },
         'paintIslandAt':   { signature: 'paintIslandAt({point, color, name?}) -- Paint the face-connected island containing the triangle closest to point. Pair with probePixel/probeRay to ground island selection in a visible point ("the hat in the iso render") without enumerating islands.', docs: '/ai/colors.md' },
-        'detectRegions':   { signature: 'detectRegions({creaseAngleDeg?=20, minTriangleCount?=5, maxRegions?=64, withinIsland?, includeNeighbors?=true, maxTrianglesPerGroup?=0}) -> {count, regions: [{id, triangleCount, area, centroid, normal, bbox, maxTriangleArea, medianTriangleArea, worstTriangleAspectRatio, fanTopologyRisk, neighborIds?, triangleIds?}], source} -- Auto-segment by crease (dihedral) watershed. The right enumeration primitive for SCULPTED FEATURES — iris ring, pupil, mouth crease, blush dimples, pom-poms, bangs all separate naturally at the 20° default. Pass withinIsland to segment ONE mesh-island (fused body part) so the face/eyes/buttons stop being unreachable.', docs: '/ai/colors.md' },
+        'detectRegions':   { signature: 'detectRegions({creaseAngleDeg?=20, minTriangleCount?=5, maxRegions?=64, withinIsland?, includeNeighbors?=true, maxTrianglesPerGroup?=0, merge?}) -> {count, regions: [{id, triangleCount, area, centroid, normal, bbox, maxTriangleArea, medianTriangleArea, worstTriangleAspectRatio, fanTopologyRisk, neighborIds?, triangleIds?}], source} -- Auto-segment by crease (dihedral) watershed. The right enumeration primitive for SCULPTED FEATURES — iris ring, pupil, mouth crease, blush dimples, pom-poms, bangs all separate naturally at the 20° default. Pass withinIsland to segment ONE mesh-island (fused body part) so the face/eyes/buttons stop being unreachable. merge: true (or {angleDeg?=30, minArea?}) agglomerates watershed fragments so one visual feature (a pupil) comes back as ONE region instead of 3-4 shards.', docs: '/ai/colors.md' },
         'paintByCrease':   { signature: 'paintByCrease({seedPoint, seedNormal?, creaseAngleDeg?=20, color, name?}) -- Flood paint from a surface seed, stopping at the next crease edge. The right paint primitive for SCULPTED FEATURES on organic meshes. Clean edges by construction, no box guessing. Pair with probePixel to ground the seed. seedNormal optional (snaps to nearest triangle).', docs: '/ai/colors.md' },
         'renderIsland':    { signature: 'renderIsland({index, view?, size?=192}) -> {dataUrl, bbox, centroid, principalAxis, aspectRatio, triangleCount, surfaceArea} -- Render ONE mesh island as a standalone thumbnail. THE vision fix for the identification problem — see which island is the hat vs face vs glove instead of guessing from bbox. Auto-framed to the island; nothing else in frame.', docs: '/ai/colors.md' },
         'renderRegion':    { signature: 'renderRegion({triangleIds, withinIsland?, highlightColor?, view?, size?=256}) -> {dataUrl, triangleCount, ...} -- Highlight a triangle set on the mesh in a bright colour. THE identification fix for detectRegions output — loop the top-N regions, read each thumbnail, pick the two that look like eyes. Pair with detectRegions({maxTrianglesPerGroup > 0}) so you have the triangleIds to hand it.', docs: '/ai/colors.md' },
 'renderRegionGrid': { signature: 'renderRegionGrid({regions, withinIsland?, view?, size?=192, cols?}) -> {dataUrl, tiles: [{index, id, renderedTriangles}]} -- ONE labelled contact sheet of up to 64 region highlights (pass detectRegions().regions directly, run with maxTrianglesPerGroup > 0). Identify every candidate feature in ONE image read instead of 20 renderRegion round-trips. Tiles showing \"(0 tris!)\" mean the region has no triangles in the frame.', docs: '/ai/colors.md' },
         'paintDisc':       { signature: 'paintDisc({center, normal, radius, thickness?=radius, color, name?, smooth?}) -- Paint a smooth-edged DISC facing `normal` — THE facial-feature primitive (iris, pupil, blush, buttons). No quaternion math: feed it probePixel\'s point+normal or a detectRegions region\'s centroid+normal. Paint concentric features largest-first; later discs composite on top (dome, then iris, then pupil).', docs: '/ai/colors.md' },
         'auditPaint':      { signature: 'auditPaint() -> {regions: [{id, name, triangles, visibleTriangles, hiddenFraction, fragmentCount, fragments?}], unpaintedIslands, flaggedRegionIds, summary} -- Deterministic whole-scene paint audit: stray disconnected paint fragments (mis-aimed selectors, fan-wedge splatter), regions overwritten by later paint, islands never painted. Run before declaring a paint job done; dismiss or fix every flag.', docs: '/ai/colors.md' },
-        'paintOrientedStripes': { signature: 'paintOrientedStripes({islandIndex, colors, axis?, name?}) -> {axis, axisVector, stripeCount, regions: [...]} -- Paint N equally-spaced stripes along the island\'s TRUE principal direction (PCA — follows a tilted limb). axis overrides with x|y|z or any [x,y,z] vector. THE fix for striped limbs on organic characters. Colours flow from low to high along the axis.', docs: '/ai/colors.md' },
+'fitRegionShape':  { signature: 'fitRegionShape({triangleIds}) -> {best, circle: {center, axis, radius, rms}, sphere?, plane, nextStep} -- Fit an ANALYTIC disc/sphere/plane to a detected region\'s boundary. THE fan-bleed killer: sculpted features are usually clean discs — fit one, then paint it via paintDisc/paintRegionFitted instead of painting the ragged triangle set.', docs: '/ai/colors.md' },
+        'paintRegionFitted': { signature: 'paintRegionFitted({triangleIds, color, pad?=1.0, thickness?, name?, force?}) -- One call: fit a disc to the region boundary and paint it with a crisp analytic edge. Refuses when the fit is poor (feature isn\'t disc-like) unless force: true.', docs: '/ai/colors.md' },
+        'paintMirrored':   { signature: 'paintMirrored({regionId, color?, name?, plane?}) -- Mirror a painted region across the model\'s bilateral symmetry plane (auto-detected — see listComponents().symmetry). Paint ONE eye, mirror it: position/size match by construction, color can differ (red left iris / blue right iris). Analytic paints reflect exactly; paintFaces sets fall back to per-triangle mirroring.', docs: '/ai/colors.md' },
+                'paintOrientedStripes': { signature: 'paintOrientedStripes({islandIndex, colors, axis?, name?}) -> {axis, axisVector, stripeCount, regions: [...]} -- Paint N equally-spaced stripes along the island\'s TRUE principal direction (PCA — follows a tilted limb). axis overrides with x|y|z or any [x,y,z] vector. THE fix for striped limbs on organic characters. Colours flow from low to high along the axis.', docs: '/ai/colors.md' },
         'sampleReferenceColor': { signature: 'sampleReferenceColor({id?, rect?, point?, mode?="dominant"}) -> {color: [r,g,b], hex, imageId, ...} -- Sample a colour from an attached reference image. Point at the pixel/rect where the feature lives (Pomni left glove, right shoe, iris outer ring); returns the RGB in 0..1 ready to hand straight to paintByCrease / paintIsland / paintInBox. "dominant" mode buckets HSV to survive photo shadows/highlights; "mean" is a plain average.', docs: '/ai/colors.md' },
         'waitForSessionStable': { signature: 'waitForSessionStable({minMs?=800, timeoutMs?=15000}) -> {sessionId, elapsedMs} -- Await session-id stability. Fixes the paint-loop DX cliff where autosave-triggered navigation retargets in-flight paint calls at a stale session (2 of 4 v2 agents lost 60+ paints to this). Call right after importMeshData before painting.', docs: '/ai.md' },
         'getSessionId':    { signature: 'getSessionId() -> string | null -- Current session id. Pair with waitForSessionStable / getVersion to detect the mid-loop session-swap race.', docs: '/ai.md' },
