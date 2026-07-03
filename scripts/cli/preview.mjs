@@ -262,11 +262,24 @@ export function checkExpectComponents(stats, expected) {
 // server. Returns the PreviewResult from src/tools/previewModel.ts.
 export async function runPreview(file, { params = {}, lang = 'manifold-js', palette = undefined } = {}) {
   const code = readFileSync(file, 'utf8');
-  const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
+  const session = await createPreviewSession();
   try {
-    const mod = await server.ssrLoadModule('/src/tools/previewModel.ts');
-    return await mod.previewModel(code, { params, lang, palette });
+    return await session.preview(code, { params, lang, palette });
   } finally {
-    await server.close();
+    await session.close();
   }
+}
+
+// Long-lived variant for callers that run MANY previews (the parameter
+// optimizer): boot the Vite SSR server + engine module once, then each
+// preview() pays only the model build (~50-300ms) instead of ~2s of server
+// startup. Caller must close().
+export async function createPreviewSession() {
+  const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
+  const mod = await server.ssrLoadModule('/src/tools/previewModel.ts');
+  return {
+    preview: (code, { params = {}, lang = 'manifold-js', palette = undefined } = {}) =>
+      mod.previewModel(code, { params, lang, palette }),
+    close: () => server.close(),
+  };
 }
