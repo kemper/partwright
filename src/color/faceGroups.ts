@@ -69,6 +69,12 @@ interface FaceGroupOptions {
    *  by walking each group's boundary triangles and cross-referencing the
    *  group assignment of their cross-crease neighbours. ~30 lines, O(triangles). */
   includeNeighborIds?: boolean;
+  /** Opt-in agglomerative merge of adjacent groups after the watershed:
+   *  two neighbouring groups merge when the angle between their area-weighted
+   *  mean normals is <= angleDeg (default 30), OR when one is tiny
+   *  (area < minArea, default 0 = disabled) and touches exactly one
+   *  non-tiny neighbour. Iterates until no merge applies. */
+  merge?: { angleDeg?: number; minArea?: number };
 }
 
 export function computeFaceGroups(mesh: MeshData, options?: FaceGroupOptions): FaceGroupSummary {
@@ -78,6 +84,7 @@ export function computeFaceGroups(mesh: MeshData, options?: FaceGroupOptions): F
   const maxGroups = options?.maxGroups ?? 256;
   const restrictTo = options?.restrictTo;
   const includeNeighborIds = options?.includeNeighborIds ?? false;
+  const mergeOpts = options?.merge;
 
   const adjacency = buildAdjacency(mesh);
   const visited = new Uint8Array(mesh.numTri);
@@ -87,16 +94,32 @@ export function computeFaceGroups(mesh: MeshData, options?: FaceGroupOptions): F
   if (restrictTo) {
     for (let t = 0; t < mesh.numTri; t++) if (!restrictTo.has(t)) visited[t] = 1;
   }
-  const groups: FaceGroup[] = [];
-  const triToGroup = includeNeighborIds ? new Int32Array(mesh.numTri).fill(-1) : null;
 
+  // Raw watershed pass: gather every crease-bounded triangle set, in seed
+  // order. Without a merge pass this is exactly today's behavior — sets
+  // below `minTriangles` are dropped immediately (kept out of `rawGroups`
+  // entirely, byte-identical to the pre-merge implementation). With a merge
+  // pass, sub-threshold sets are kept as merge candidates (a 3-triangle
+  // pupil shard must be mergeable into its sibling fragments) and the
+  // `minTriangles` filter is applied AFTER merging instead.
+  const rawGroups: Set<number>[] = [];
   for (let seed = 0; seed < mesh.numTri; seed++) {
     if (visited[seed]) continue;
     const triangles = restrictTo
       ? findCoplanarRegionConstrained(seed, adjacency, tolerance, restrictTo)
       : findCoplanarRegion(seed, adjacency, tolerance);
     for (const t of triangles) visited[t] = 1;
-    if (triangles.size < minTriangles) continue;
+    if (!mergeOpts && triangles.size < minTriangles) continue;
+    rawGroups.push(triangles);
+  }
+
+  const mergedSets = mergeOpts ? agglomerateRawGroups(rawGroups, mesh, adjacency, mergeOpts) : rawGroups;
+  const survivingSets = mergeOpts ? mergedSets.filter(s => s.size >= minTriangles) : mergedSets;
+
+  const groups: FaceGroup[] = [];
+  const triToGroup = includeNeighborIds ? new Int32Array(mesh.numTri).fill(-1) : null;
+
+  for (const triangles of survivingSets) {
     const group = buildGroup(groups.length, triangles, mesh, adjacency, maxTrianglesPerGroup);
     if (triToGroup) for (const t of triangles) triToGroup[t] = group.id;
     groups.push(group);
@@ -173,6 +196,178 @@ function findCoplanarRegionConstrained(
     }
   }
   return result;
+}
+
+/** Triangle area = 0.5 * |AB x AC|. A small standalone helper (mirrors the
+ *  inline computation in `buildGroup`) used by the merge pass's pre-scan,
+ *  which only needs area + the existing per-triangle normal — not the full
+ *  bbox/centroid/aspect-ratio bookkeeping `buildGroup` does. */
+function triangleArea(mesh: MeshData, t: number): number {
+  const { triVerts, vertProperties, numProp } = mesh;
+  const v0 = triVerts[t * 3];
+  const v1 = triVerts[t * 3 + 1];
+  const v2 = triVerts[t * 3 + 2];
+  const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
+  const bx = vertProperties[v1 * numProp], by = vertProperties[v1 * numProp + 1], bz = vertProperties[v1 * numProp + 2];
+  const cx = vertProperties[v2 * numProp], cy = vertProperties[v2 * numProp + 1], cz = vertProperties[v2 * numProp + 2];
+  const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+  const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+  const crx = e1y * e2z - e1z * e2y;
+  const cry = e1z * e2x - e1x * e2z;
+  const crz = e1x * e2y - e1y * e2x;
+  return 0.5 * Math.sqrt(crx * crx + cry * cry + crz * crz);
+}
+
+/** Agglomerate raw watershed groups back into single regions via union-find.
+ *  Two neighbouring raw groups merge when the angle between their
+ *  area-weighted mean normals is <= `angleDeg`, OR when one is "tiny"
+ *  (area < `minArea`) and touches exactly one non-tiny neighbour. Repeats
+ *  until a full pass makes no merge, capped at `MAX_PASSES` so a pathological
+ *  input can't loop forever.
+ *
+ *  Per-union-find-root normal*area sums are cached and updated incrementally
+ *  on every `union()`, so the angle check is O(1) per candidate pair rather
+ *  than re-walking triangles. The root-level neighbour graph (needed for the
+ *  tiny-group rule) is recomputed once per pass from the fixed raw-group edge
+ *  list mapped through the current `find()` — cheap relative to the raw BFS,
+ *  and correct by the next pass even when a merge earlier in the same pass
+ *  changes a root's neighbour count mid-scan. */
+function agglomerateRawGroups(
+  rawGroups: Set<number>[],
+  mesh: MeshData,
+  adjacency: AdjacencyGraph,
+  mergeOpts: { angleDeg?: number; minArea?: number },
+): Set<number>[] {
+  const n = rawGroups.length;
+  if (n <= 1) return rawGroups;
+
+  const angleDeg = mergeOpts.angleDeg ?? 30;
+  const minArea = mergeOpts.minArea ?? 0;
+  const cosThreshold = Math.cos(angleDeg * Math.PI / 180);
+
+  // Triangle -> raw group index, for deriving the raw-group adjacency graph.
+  const triToRaw = new Int32Array(mesh.numTri).fill(-1);
+  for (let i = 0; i < n; i++) for (const t of rawGroups[i]) triToRaw[t] = i;
+
+  // Raw-group adjacency edge list (deduped, undirected) — the same
+  // cross-crease neighbour logic as the `includeNeighborIds` post-pass, but
+  // computed over raw groups instead of the final ones.
+  const rawEdges: [number, number][] = [];
+  {
+    const seenPairs = new Set<string>();
+    for (let t = 0; t < mesh.numTri; t++) {
+      const g = triToRaw[t];
+      if (g < 0) continue;
+      const ns = adjacency.neighbors[t];
+      for (let k = 0; k < ns.length; k++) {
+        const h = triToRaw[ns[k]];
+        if (h < 0 || h === g) continue;
+        const a = Math.min(g, h), b = Math.max(g, h);
+        const key = `${a},${b}`;
+        if (!seenPairs.has(key)) { seenPairs.add(key); rawEdges.push([a, b]); }
+      }
+    }
+  }
+
+  // Per-raw-group area-weighted normal sums + total area. Union-find merges
+  // accumulate these at the surviving root so the mean normal / area of any
+  // in-progress merged region is always an O(1) read.
+  const sumNx = new Float64Array(n);
+  const sumNy = new Float64Array(n);
+  const sumNz = new Float64Array(n);
+  const sumArea = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    for (const t of rawGroups[i]) {
+      const a = triangleArea(mesh, t);
+      sumNx[i] += adjacency.normals[t * 3] * a;
+      sumNy[i] += adjacency.normals[t * 3 + 1] * a;
+      sumNz[i] += adjacency.normals[t * 3 + 2] * a;
+      sumArea[i] += a;
+    }
+  }
+
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const rank = new Int32Array(n).fill(1);
+
+  function find(x: number): number {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  }
+
+  function union(a: number, b: number): void {
+    let ra = find(a), rb = find(b);
+    if (ra === rb) return;
+    if (rank[ra] < rank[rb]) { const tmp = ra; ra = rb; rb = tmp; }
+    parent[rb] = ra;
+    rank[ra] += rank[rb];
+    sumNx[ra] += sumNx[rb];
+    sumNy[ra] += sumNy[rb];
+    sumNz[ra] += sumNz[rb];
+    sumArea[ra] += sumArea[rb];
+  }
+
+  const MAX_PASSES = 32;
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    // Root-level neighbour sets, snapshotted at the top of this pass — used
+    // by the tiny-group rule to test "touches exactly one neighbour".
+    const neighborsOf = new Map<number, Set<number>>();
+    for (const [a, b] of rawEdges) {
+      const ra = find(a), rb = find(b);
+      if (ra === rb) continue;
+      if (!neighborsOf.has(ra)) neighborsOf.set(ra, new Set());
+      if (!neighborsOf.has(rb)) neighborsOf.set(rb, new Set());
+      neighborsOf.get(ra)!.add(rb);
+      neighborsOf.get(rb)!.add(ra);
+    }
+
+    let mergedAny = false;
+    for (const [a, b] of rawEdges) {
+      const ra = find(a), rb = find(b);
+      if (ra === rb) continue;
+
+      let shouldMerge = false;
+
+      const lenA = Math.hypot(sumNx[ra], sumNy[ra], sumNz[ra]);
+      const lenB = Math.hypot(sumNx[rb], sumNy[rb], sumNz[rb]);
+      if (lenA > 0 && lenB > 0) {
+        const cosAngle = (sumNx[ra] * sumNx[rb] + sumNy[ra] * sumNy[rb] + sumNz[ra] * sumNz[rb]) / (lenA * lenB);
+        if (cosAngle >= cosThreshold) shouldMerge = true;
+      }
+
+      if (!shouldMerge && minArea > 0) {
+        const aTiny = sumArea[ra] < minArea;
+        const bTiny = sumArea[rb] < minArea;
+        const aNeighborCount = neighborsOf.get(ra)?.size ?? 0;
+        const bNeighborCount = neighborsOf.get(rb)?.size ?? 0;
+        if (aTiny && !bTiny && aNeighborCount === 1) shouldMerge = true;
+        else if (bTiny && !aTiny && bNeighborCount === 1) shouldMerge = true;
+      }
+
+      if (shouldMerge) {
+        union(ra, rb);
+        mergedAny = true;
+      }
+    }
+
+    if (!mergedAny) break;
+  }
+
+  // Collect final merged triangle sets, one per surviving union-find root, in
+  // stable order of the root's first-seen raw group index (keeps output
+  // ordering deterministic and matches the raw BFS's seed order).
+  const rootToSet = new Map<number, Set<number>>();
+  const rootOrder: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    let set = rootToSet.get(r);
+    if (!set) { set = new Set<number>(); rootToSet.set(r, set); rootOrder.push(r); }
+    for (const t of rawGroups[i]) set.add(t);
+  }
+  return rootOrder.map(r => rootToSet.get(r)!);
 }
 
 function buildGroup(
