@@ -428,7 +428,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintByCrease',
-    description: 'Flood paint from a surface seed, stopping at the next crease edge. THE paint primitive for SCULPTED FEATURES on organic meshes (eyes, mouth, pom-poms). Clean edges by construction — no box guessing, no jaggies. Same math as paintRegion but parameterised in DEGREES (sculpt-natural) with a sculpt-tuned default of 20°. seedNormal optional; if omitted we snap to the nearest triangle and use its normal — forgiving of off-surface points from probePixel rounding. PAIR THIS WITH probePixel: render an iso, click the iris pixel, hand probePixel.point straight to paintByCrease. For very tight features (pupil inside iris) lower creaseAngleDeg to 5–10° so the inner crease catches.',
+    description: 'Flood paint from a surface seed, stopping at the next crease edge. Right for features bounded by a REAL crease (a paneled machine part, a sharp-rimmed button). ⚠ FLOOD HAZARD on smooth organic sculpts: where the boundary is a gentle slope the flood swallows the ENTIRE island (a 205k-tri head painted one colour — observed in validation). ALWAYS sanity-check the returned `triangles` count against the feature size (an iris is hundreds of tris, not 200k) and undoLastPaint() on overshoot; on smooth meshes prefer fitRegionShape → paintDisc/paintRegionFitted, which cannot flood. Parameterised in DEGREES with a sculpt-tuned default of 20°; seedNormal optional (snaps to the nearest triangle). For very tight features lower creaseAngleDeg to 5–10°.',
     input_schema: {
       type: 'object',
       properties: {

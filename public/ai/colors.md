@@ -447,12 +447,32 @@ fine-grained features; `detectRegions({creaseAngleDeg: 45})` collapses
 back to coarse part-level boundaries (useful for an overview pass
 before zooming in).
 
+> **⚠ `paintByCrease` FLOOD WARNING (smooth organic meshes).** The
+> crease-stop flood only stops where a crease actually exists. On a
+> smoothly-sculpted head the "feature boundary" you see may be a gentle
+> slope, and the flood will swallow the ENTIRE island (a 205k-triangle
+> head painted one colour — observed twice in validation). ALWAYS check
+> the returned `triangles` count against the feature size you expected
+> (an iris is hundreds of triangles, not 200k) and `undoLastPaint()`
+> immediately when it overshoots. On smooth meshes prefer the analytic
+> path: `fitRegionShape` → `paintDisc`/`paintRegionFitted` — those
+> cannot flood.
+>
+> **⚠ `detectRegions` ids are NOT stable across calls.** Ids reflect the
+> current mesh + parameters; re-running after a paint (which may have
+> subdivided the mesh) or with different options renumbers everything.
+> Never replay a recorded id in a later run — re-derive the region by
+> centroid/bbox match, or capture its `triangleIds` at detection time
+> and use those.
+
 > **Decision tree for paint on an imported character STL:**
 > 1. **Each anatomical part is its own mesh-island** (print-in-place kit
 >    with clearance gaps): `listComponents` → `paintIsland` per part.
 > 2. **Multiple parts fused into ONE mesh-island** (head+torso+features
 >    welded together): `listComponents` → `detectRegions({withinIsland})`
->    → `paintByCrease` per sculpted feature.
+>    → `paintRegionFitted` (disc-like features) / filtered `paintFaces`,
+>    with `paintByCrease` only where a real crease bounds the feature
+>    (check the flood warning above).
 > 3. **Whole-region flat colour, not sculpt-feature** (top half of a vase,
 >    a stripe down the middle): `paintInBox` / `paintSlab` /
 >    `paintInCylinder` (now with smooth edges by default).
