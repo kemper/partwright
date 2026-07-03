@@ -14914,6 +14914,12 @@ async function main() {
       index: number;
       view?: { elevation?: number; azimuth?: number; ortho?: boolean };
       size?: number;
+      /** Show the current paint on the island (default true). The composed
+       *  region colors are carried into the subset render, so this is the
+       *  per-feature paint-QC view — "did the iris land where I meant?" —
+       *  without rendering the whole 460k-tri kit and cropping. Pass false
+       *  for the bare-geometry look. */
+      showPaint?: boolean;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       if (!opts || typeof opts !== 'object') return { error: 'renderIsland requires { index }' };
@@ -14925,8 +14931,21 @@ async function main() {
       const { triIslands, islands } = meshIslands(currentMeshData);
       if (opts.index >= islands.length) return { error: `renderIsland.index ${opts.index} out of range — listComponents has ${islands.length} island(s).` };
       const island = islands[opts.index];
-      const triangleIds = trianglesInIsland(triIslands, opts.index);
-      const subset = subsetMesh(currentMeshData, triangleIds);
+      const ordered = [...trianglesInIsland(triIslands, opts.index)];
+      let subset = subsetMesh(currentMeshData, ordered);
+      if (opts.showPaint !== false) {
+        const fullColors = buildTriColors(currentMeshData.numTri);
+        if (fullColors) {
+          const triColors = new Uint8Array(subset.numTri * 3);
+          for (let i = 0; i < ordered.length; i++) {
+            const t = ordered[i];
+            triColors[i * 3] = fullColors[t * 3];
+            triColors[i * 3 + 1] = fullColors[t * 3 + 1];
+            triColors[i * 3 + 2] = fullColors[t * 3 + 2];
+          }
+          subset = { ...subset, triColors };
+        }
+      }
       const view = opts.view ?? {};
       const dataUrl = renderSingleView(subset, {
         elevation: view.elevation ?? 30,
@@ -16926,7 +16945,7 @@ async function main() {
         'paintIslandAt':   { signature: 'paintIslandAt({point, color, name?}) -- Paint the face-connected island containing the triangle closest to point. Pair with probePixel/probeRay to ground island selection in a visible point ("the hat in the iso render") without enumerating islands.', docs: '/ai/colors.md' },
         'detectRegions':   { signature: 'detectRegions({creaseAngleDeg?=20, minTriangleCount?=5, maxRegions?=64, withinIsland?, includeNeighbors?=true, maxTrianglesPerGroup?=0, merge?}) -> {count, regions: [{id, triangleCount, area, centroid, normal, bbox, maxTriangleArea, medianTriangleArea, worstTriangleAspectRatio, fanTopologyRisk, neighborIds?, triangleIds?}], source} -- Auto-segment by crease (dihedral) watershed. The right enumeration primitive for SCULPTED FEATURES — iris ring, pupil, mouth crease, blush dimples, pom-poms, bangs all separate naturally at the 20° default. Pass withinIsland to segment ONE mesh-island (fused body part) so the face/eyes/buttons stop being unreachable. merge: true (or {angleDeg?=30, minArea?}) agglomerates watershed fragments so one visual feature (a pupil) comes back as ONE region instead of 3-4 shards.', docs: '/ai/colors.md' },
         'paintByCrease':   { signature: 'paintByCrease({seedPoint, seedNormal?, creaseAngleDeg?=20, color, name?}) -- Flood paint from a surface seed, stopping at the next crease edge. The right paint primitive for SCULPTED FEATURES on organic meshes. Clean edges by construction, no box guessing. Pair with probePixel to ground the seed. seedNormal optional (snaps to nearest triangle).', docs: '/ai/colors.md' },
-        'renderIsland':    { signature: 'renderIsland({index, view?, size?=192}) -> {dataUrl, bbox, centroid, principalAxis, aspectRatio, triangleCount, surfaceArea} -- Render ONE mesh island as a standalone thumbnail. THE vision fix for the identification problem — see which island is the hat vs face vs glove instead of guessing from bbox. Auto-framed to the island; nothing else in frame.', docs: '/ai/colors.md' },
+        'renderIsland':    { signature: 'renderIsland({index, view?, size?=192, showPaint?=true}) -> {dataUrl, bbox, centroid, principalAxis, aspectRatio, triangleCount, surfaceArea} -- Render ONE mesh island as a standalone thumbnail. THE vision fix for the identification problem — see which island is the hat vs face vs glove instead of guessing from bbox. Auto-framed to the island; nothing else in frame. Shows current paint by default (showPaint: false for bare geometry) — use it to QC each painted feature up close.', docs: '/ai/colors.md' },
         'renderRegion':    { signature: 'renderRegion({triangleIds, withinIsland?, highlightColor?, view?, size?=256}) -> {dataUrl, triangleCount, ...} -- Highlight a triangle set on the mesh in a bright colour. THE identification fix for detectRegions output — loop the top-N regions, read each thumbnail, pick the two that look like eyes. Pair with detectRegions({maxTrianglesPerGroup > 0}) so you have the triangleIds to hand it.', docs: '/ai/colors.md' },
 'renderRegionGrid': { signature: 'renderRegionGrid({regions, withinIsland?, view?, size?=192, cols?}) -> {dataUrl, tiles: [{index, id, renderedTriangles}]} -- ONE labelled contact sheet of up to 64 region highlights (pass detectRegions().regions directly, run with maxTrianglesPerGroup > 0). Identify every candidate feature in ONE image read instead of 20 renderRegion round-trips. Tiles showing \"(0 tris!)\" mean the region has no triangles in the frame.', docs: '/ai/colors.md' },
         'paintDisc':       { signature: 'paintDisc({center, normal, radius, thickness?=radius, color, name?, smooth?}) -- Paint a smooth-edged DISC facing `normal` — THE facial-feature primitive (iris, pupil, blush, buttons). No quaternion math: feed it probePixel\'s point+normal or a detectRegions region\'s centroid+normal. Paint concentric features largest-first; later discs composite on top (dome, then iris, then pupil).', docs: '/ai/colors.md' },

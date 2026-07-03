@@ -493,6 +493,8 @@ const { components, modelUpAxis, symmetry } = partwright.listComponents();
 //    joints). renderIsland returns a probeView token — keep it; it makes
 //    the thumbnail CLICKABLE later (see probePixel below).
 const thumb = partwright.renderIsland({ index: 27, size: 256 });
+//    renderIsland shows CURRENT PAINT by default — after painting, re-render
+//    the island to QC each feature up close (showPaint: false for bare geometry).
 
 // 5) For features INSIDE a fused island (face/eyes/mouth on a 205k-tri
 //    head): segment with merge ON, then identify ALL candidates in ONE
@@ -501,8 +503,11 @@ const { regions } = partwright.detectRegions({
   withinIsland: headIsland,
   creaseAngleDeg: 20,
   maxTrianglesPerGroup: 20000,   // required — hands you the triangleIds
-  merge: { angleDeg: 30 },       // reassembles fragmented features (a pupil
-});                              // split across 3-4 shards comes back whole)
+});
+// If ONE feature came back split across sibling regions, re-run with
+// merge: { angleDeg: 10 } to reassemble it. CAUTION: large angles (30)
+// can chain-merge a whole smooth face into one region — start without
+// merge, add a SMALL angle only when you actually see fragmentation.
 const sheet = partwright.renderRegionGrid({
   regions: regions.slice(0, 20),   // pass detectRegions output directly
   withinIsland: headIsland,
@@ -537,6 +542,10 @@ partwright.paintMirrored({ regionId: lEyeDomeRegion.id, name: 'R eye dome' });
 partwright.paintMirrored({ regionId: lIrisRegion.id, color: irisBlue, name: 'R iris' });  // color CAN differ
 // Mirrored analytic paints match position+size by construction — no
 // left/right drift, half the identification work.
+// MIRRORING FEATURES ON ONE PART: the auto-detected plane is the whole
+// KIT's plane, which can sit a few units off a single island's own
+// midline. For eyes on a head, pass the head's own mirror plane:
+//   paintMirrored({ regionId, color, plane: { axis: 'x', point: headIsland.centroid } })
 
 // Raw triangle sets ONLY as a last resort, and ALWAYS defanged when the
 // region reported fanTopologyRisk: true (fan wedges bleed otherwise):
