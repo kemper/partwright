@@ -194,6 +194,17 @@ else                  → hybrid: traced silhouette body + probed primitives for
   running the SAME section height on the sibling's own target.stl and
   checking pointwise equality under the shift. (frame_upper_arm: chamfer
   0.0017, one authored attempt, zero fit probes.)
+- **5.18b Mixed hub parts are module compositions — diff the bootstrap
+  trace against each converged module's outline constants before
+  probing**: frame_chest's spine and neck blocks reproduced hip_shoulder's
+  outline NUMERICALLY in the raw bootstrap trace (corner-line endpoints,
+  mouth slope 0.6682, arc r4.5), and its struts reproduced hips' r1.5
+  flat-at-z=−1.3 archetype. Testing traced coordinates for equality
+  against sibling constants replaced an entire probe campaign; only the
+  socket radii and genuinely new members needed measurement. (frame_chest:
+  6/6+2/2 at chamfer 0.0067 in ONE authored attempt.) Strut signature: a
+  "wall" whose traced x shifts with z as x = c + sqrt(r²−z²) is a Y-axis
+  cylinder of radius r about z=0.
 - **5.19 Anti-rotation/clearance flats show as a section bbox-min that
   beats the circle fit**: a band fitting `circle r1.5 rms 0.018` whose
   section bbox z-min sits at 1.2 instead of the circle's 1.0 is a chordal
@@ -276,7 +287,13 @@ else                  → hybrid: traced silhouette body + probed primitives for
   everywhere (thigh, shin, forearm, hips, neck, waist, abdomen). Probe
   every socket; transfer the grammar, re-measure the radii. Mouth-wedge
   wall slope 0.668|x| and corner-chamfer line y=±(0.228x−2.980) have
-  matched on hip_shoulder, waist, AND abdomen — design intent. Hips variant: 3 balls at x=−8/0/+8, z=0, one full-length
+  matched on hip_shoulder, waist, abdomen, head, AND chest — design
+  intent. Chest addendum: spine socket r=2.8501 vs neck socket r=2.900
+  exact, with different rim-cone r0 (2.372 vs 2.4709) — even within one
+  part the sockets differ; probe each. Chamfer a rectangular HOLE rim
+  exactly with hull-of-pinned-slabs (hole rect at inner z, offset rect at
+  outer z — the hull diagonal lands exactly on the 45° face; convex
+  outlines only). Hips variant: 3 balls at x=−8/0/+8, z=0, one full-length
   X-strut r=1.5 with a chordal flat at z=−1.3, whole part clipped z≥−2.5.
   **Ball centers sit at z=0 even though bbox-center z=0.25** — an
   asymmetric clip shifts the bbox center off the feature line; probe the
