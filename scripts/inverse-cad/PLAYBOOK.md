@@ -434,6 +434,27 @@ else                  → hybrid: traced silhouette body + probed primitives for
   ambiguous at 60% but freeform census on two axes → levelSet, 0.0016,
   one turn — the census breaks the volume-test tie.)
 
+- **5.30 Armor-sleeve corner cuts ride the moving wall as SHEARED
+  prisms**: a 45° corner cut on a chamfered-rectangle outline with a
+  curved/tilted wall keeps its inner endpoint pinned ON the wall — author
+  each corner as a wedge prism whose (s,z) profile carries the measured
+  wall profile (s=(x±y)/√2); a plane wall gives a sheared plane, an arc
+  wall a sheared-arc ruled surface, both exact. (armor_thigh)
+- **5.31 Joint-end features share ONE pivot axis — fit it once, reuse
+  everywhere**: when one arc fits with rms≈4e-4 at a center, test every
+  other joint-end feature (boss spheres, tab planes at center−r) against
+  the same center before probing independently. (armor_thigh: notch,
+  bosses, and tab top all referenced X@(y=0,z=22).)
+- **5.32 Down-ray topo map decodes a multi-facet top in one call**: grid
+  z(x,y) at 0.1-0.2mm; constant-gradient runs identify each plane, and
+  the level-line direction names the edge family it chamfers. Slopes 1.0
+  vs √2 vs 1/wall-slope distinguish top chamfers, corner miters, and
+  sheared corner surfaces that z-sections can't tell apart. (armor_thigh)
+- **5.33 Shell wall thickness / inner features via paired opposite rays
+  from the cavity centerline**: cast from (0,0,z) outward at fine z steps
+  — one pass yields bore size, mouth chamfer line, pocket radius, and
+  notch floor profile (as second hits of vertical rays). (armor_thigh)
+
 ## 6. Plateau protocol
 
 Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
@@ -532,6 +553,18 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
   piece, hull-of-exact-corner-points is winding-proof and dodges both the
   bowtie-polygon and extrude/rotate axis-mapping traps entirely. Prefer it
   over `geom.fromPoints(...).extrude(...)` for convex prisms.
+- **A ROTATED cutter face meant to be coplanar with an axis-aligned face
+  lands 1e-16 off (cos 90° = 6e-17) and leaves a zero-thickness phantom
+  membrane** — same signature as the revolve/float32 trap (hausdorff
+  stuck, ~30mm² excess skin, zero findings, volume gates passing). Any
+  extrude+rotate cutter must OVERSHOOT coincident planes by 0.2mm;
+  untransformed axis-aligned cubes stay exactly coplanar and are safe.
+  (armor_thigh)
+- **Hull-of-two-slabs chamfers: the diagonal runs to the far slab's OUTER
+  corner** — a slab pinned bottom-at-plane hands the diagonal to its TOP
+  face, over-cutting. If both slab thicknesses can't sit outside the
+  interval, use an explicit wedge prism of the exact chamfer line instead.
+  (armor_thigh, 2mm³/side)
 - **Ledge scans: sum |signedArea| per contour, never raw signedArea** —
   sliceMesh contour orientation is arbitrary near horizontal facets; raw
   signed-area z-scans show phantom ±100mm² "ledges" (pure sign flips)
