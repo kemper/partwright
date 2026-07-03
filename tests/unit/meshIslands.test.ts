@@ -235,3 +235,64 @@ describe('subsetMesh (#872 — renderIsland helper)', () => {
     expect(sub.triVerts.length).toBe(6);
   });
 });
+
+describe('principalAxisVector — true PCA (#881.4)', () => {
+  /** Ribbon of quads along `dir`, `n` segments, width `w` perpendicular to
+   *  dir in the XY plane — a long thin strip whose true principal axis is
+   *  `dir` regardless of world alignment. */
+  function ribbonAlong(dir: [number, number, number], n = 24, w = 0.5): MeshData {
+    const len = Math.hypot(dir[0], dir[1], dir[2]);
+    const d: [number, number, number] = [dir[0] / len, dir[1] / len, dir[2] / len];
+    // Perpendicular in-plane vector (dir is never parallel to Z in these tests).
+    const p: [number, number, number] = [-d[1], d[0], 0];
+    const pl = Math.hypot(p[0], p[1], p[2]) || 1;
+    const perp: [number, number, number] = [p[0] / pl * w, p[1] / pl * w, p[2] / pl * w];
+    const tris: [number, number, number][][] = [];
+    for (let i = 0; i < n; i++) {
+      const a: [number, number, number] = [d[0] * i, d[1] * i, d[2] * i];
+      const b: [number, number, number] = [d[0] * (i + 1), d[1] * (i + 1), d[2] * (i + 1)];
+      const a2: [number, number, number] = [a[0] + perp[0], a[1] + perp[1], a[2] + perp[2]];
+      const b2: [number, number, number] = [b[0] + perp[0], b[1] + perp[1], b[2] + perp[2]];
+      tris.push([a, b, a2], [b, b2, a2]);
+    }
+    return meshFromTriangles(tris);
+  }
+
+  it('matches the world axis for an axis-aligned strip', () => {
+    const mesh = ribbonAlong([1, 0, 0]);
+    const { islands } = meshIslands(mesh);
+    const v = islands[0].principalAxisVector;
+    expect(Math.abs(v[0])).toBeGreaterThan(0.99);
+  });
+
+  it('follows a 45°-tilted limb instead of snapping to a world axis', () => {
+    const mesh = ribbonAlong([1, 1, 0]);
+    const { islands } = meshIslands(mesh);
+    const v = islands[0].principalAxisVector;
+    const s = Math.SQRT1_2;
+    const dot = Math.abs(v[0] * s + v[1] * s);
+    expect(dot).toBeGreaterThan(0.99);
+    // bbox-based principalAxis string would call this x or y — the vector
+    // must NOT be axis-aligned.
+    expect(Math.abs(v[0])).toBeLessThan(0.95);
+    expect(Math.abs(v[1])).toBeLessThan(0.95);
+  });
+
+  it('is unit length with a stable (positive dominant component) sign', () => {
+    const mesh = ribbonAlong([-2, -1, 0]);
+    const { islands } = meshIslands(mesh);
+    const v = islands[0].principalAxisVector;
+    expect(Math.hypot(v[0], v[1], v[2])).toBeCloseTo(1, 6);
+    const dominant = Math.max(Math.abs(v[0]), Math.abs(v[1]), Math.abs(v[2]));
+    const dominantVal = [v[0], v[1], v[2]].find(c => Math.abs(c) === dominant)!;
+    expect(dominantVal).toBeGreaterThan(0);
+  });
+
+  it('falls back to the bbox axis for a degenerate (single-triangle) island', () => {
+    const mesh = meshFromTriangles([[[0, 0, 0], [3, 0, 0], [0, 1, 0]]]);
+    const { islands } = meshIslands(mesh);
+    const v = islands[0].principalAxisVector;
+    // PCA of 1 centroid is degenerate → bbox seed [1,0,0] must come back.
+    expect(Math.hypot(v[0], v[1], v[2])).toBeCloseTo(1, 6);
+  });
+});

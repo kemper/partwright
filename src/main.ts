@@ -12623,25 +12623,58 @@ async function main() {
      *  ``` */
     probePixel(opts: {
       pixel: [number, number];
-      view: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number };
-    }): (PixelHit & { nextStep: string }) | (PixelMiss & { reason: string; hint: string }) | { error: string } | null {
+      view: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; island?: number };
+    }): (PixelHit & { nextStep: string; island?: number }) | (PixelMiss & { reason: string; hint: string }) | { error: string } | null {
       if (!opts || typeof opts !== 'object') return { error: 'probePixel requires { pixel, view }' };
       if (!Array.isArray(opts.pixel) || opts.pixel.length !== 2) return { error: 'probePixel.pixel must be [x, y]' };
       for (const c of opts.pixel) {
         if (typeof c !== 'number' || !Number.isFinite(c)) return { error: 'probePixel.pixel components must be finite numbers' };
       }
       if (!opts.view || typeof opts.view !== 'object') return { error: 'probePixel.view must match the renderView options used to produce the image' };
-      const v = opts.view as { elevation?: unknown; azimuth?: unknown; ortho?: unknown; size?: unknown };
-      assertNoUnknownKeys(v, ['elevation', 'azimuth', 'ortho', 'size'], 'probePixel(opts).view');
+      const v = opts.view as { elevation?: unknown; azimuth?: unknown; ortho?: unknown; size?: unknown; island?: unknown };
+      assertNoUnknownKeys(v, ['elevation', 'azimuth', 'ortho', 'size', 'island'], 'probePixel(opts).view');
       assertNumber(v.elevation, 'probePixel(opts).view.elevation', { optional: true, min: -90, max: 90 });
       assertNumber(v.azimuth, 'probePixel(opts).view.azimuth', { optional: true });
       assertBoolean(v.ortho, 'probePixel(opts).view.ortho', { optional: true });
       assertNumber(v.size, 'probePixel(opts).view.size', { optional: true, min: 1, integer: true });
+      assertNumber(v.island, 'probePixel(opts).view.island', { optional: true, min: 0, integer: true });
       if (!currentMeshData) return null;
       const size = (v.size as number | undefined) ?? 500;
       const [px, py] = opts.pixel;
       if (px < 0 || px >= size || py < 0 || py >= size) {
         return { error: `probePixel.pixel [${px}, ${py}] is outside the ${size}×${size} viewport. Pixel (0,0) is top-left, (${size - 1},${size - 1}) is bottom-right.` };
+      }
+      // Island-framed probing: the see→click→paint loop for renderIsland /
+      // renderRegion({withinIsland}) thumbnails. Those views frame the camera
+      // to ONE island's subset mesh, so probing them against the whole-mesh
+      // camera would land in the wrong place. Pass the `probeView` object
+      // those renders return (it carries `island`) and the same camera is
+      // rebuilt against the same subset; the hit comes back in world
+      // coordinates with the triangle id remapped to the FULL mesh's index
+      // space, so it feeds directly into paintFaces/paintDisc/paintByCrease.
+      if (v.island !== undefined) {
+        const islandIdx = v.island as number;
+        const { triIslands, islands } = meshIslands(currentMeshData);
+        if (islandIdx >= islands.length) {
+          return { error: `probePixel.view.island ${islandIdx} out of range — listComponents has ${islands.length} island(s).` };
+        }
+        const ordered = [...trianglesInIsland(triIslands, islandIdx)];
+        const subset = subsetMesh(currentMeshData, ordered);
+        const subsetCamera = buildViewCamera(subset, { elevation: v.elevation as number | undefined, azimuth: v.azimuth as number | undefined, ortho: v.ortho as boolean | undefined });
+        const subsetResult = probePixel(subset, subsetCamera, [px, py], size);
+        if ('hit' in subsetResult) {
+          const b = subsetResult.modelPixelBounds;
+          const baseHint = b
+            ? `In this ${size}×${size} island view the island occupies pixels x[${b.minX}..${b.maxX}], y[${b.minY}..${b.maxY}] (top-left is [0,0]). Re-aim inside that box and probe again.`
+            : 'The island does not project into this view. Re-render with renderIsland first to see where it sits.';
+          return { ...subsetResult, reason: `Pixel [${px}, ${py}] missed island ${islandIdx} (background).`, hint: baseHint };
+        }
+        return {
+          ...subsetResult,
+          triangleId: ordered[subsetResult.triangleId],
+          island: islandIdx,
+          nextStep: 'This point/normal is in WORLD coordinates and triangleId is in the FULL mesh index space — pass them straight to paintDisc({center: point, normal, radius, color}), paintByCrease({seedPoint: point, color}), or paintNear.',
+        };
       }
       const camera = buildViewCamera(currentMeshData, opts.view);
       const result = probePixel(currentMeshData, camera, [px, py], size);
@@ -13388,10 +13421,18 @@ async function main() {
         size: [number, number, number];
         quaternion?: [number, number, number, number];
       };
+      /** Interpret the oriented frame as a different solid: `'sphere'`
+       *  (radius = size[0]/2, quaternion ignored), `'cylinder'` (radius =
+       *  size[0]/2 around local Y, height = size[1]), or `'cone'` (apex at
+       *  local +Y, base radius size[0]/2). Default `'box'`. This is the
+       *  same selector family the UI's shape tool uses — arbitrary-axis
+       *  discs/domes with the full smooth-edge subdivision. */
+      shape?: 'box' | 'sphere' | 'cylinder' | 'cone';
       color: [number, number, number];
       name?: string;
-      /** Smooth the box's painted edge by subdividing the mesh near its faces.
-       *  On by default — pass `false` to keep the blocky base tessellation. */
+      /** Smooth the shape's painted edge by subdividing the mesh near its
+       *  surface. On by default — pass `false` to keep the blocky base
+       *  tessellation. */
       smooth?: boolean;
       /** Smoothing detail: target boundary edge length = model bbox diagonal /
        *  resolution (2..1024, default 256). Ignored when `maxEdge` is set. */
@@ -13407,6 +13448,10 @@ async function main() {
       if (!Array.isArray(size) || size.length !== 3 || !size.every(v => Number.isFinite(v) && v > 0)) return { error: 'paintInOrientedBox.box.size must be [sx, sy, sz] of positive finite numbers' };
       const q: [number, number, number, number] = quaternion ?? [0, 0, 0, 1];
       if (!Array.isArray(q) || q.length !== 4 || !q.every(Number.isFinite)) return { error: 'paintInOrientedBox.box.quaternion must be [x, y, z, w] of finite numbers (defaults to identity if omitted)' };
+      const shape = opts.shape ?? 'box';
+      if (shape !== 'box' && shape !== 'sphere' && shape !== 'cylinder' && shape !== 'cone') {
+        return { error: "shape must be 'box', 'sphere', 'cylinder', or 'cone'." };
+      }
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r, g, b] with values 0..1' };
       const smoothErr = validateSmoothParams(opts);
       if (smoothErr) return { error: smoothErr };
@@ -13416,26 +13461,94 @@ async function main() {
         size: [size[0], size[1], size[2]] as [number, number, number],
         quaternion: q,
       };
-      const triangles = findBoxTriangles(currentMeshData, box);
-      if (triangles.size === 0) return { error: 'paintInOrientedBox: no triangles inside the box. Try a larger size, recheck the center, or use paintPreview to see what the box covers.' };
+      const triangles = findShapeTriangles(currentMeshData, shape, box);
+      if (triangles.size === 0) return { error: `paintInOrientedBox: no triangles inside the ${shape}. Try a larger size, recheck the center, or use paintPreview to see what the shape covers.` };
 
-      // Persist a re-resolvable box descriptor (not baked triangle ids) so the
-      // edge can be smoothed. Smoothing routes through the async listener; the
-      // agent API wraps addRegion in withSyncReconcile so a populated region
-      // comes back before this call returns (same pattern as paintSlab).
+      // Persist a re-resolvable shape descriptor (not baked triangle ids) so
+      // the edge can be smoothed. Smoothing routes through the async listener;
+      // the agent API wraps addRegion in withSyncReconcile so a populated
+      // region comes back before this call returns (same pattern as paintSlab).
       const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
       const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
       const region = withSyncReconcile(() => addRegion(
         regionName,
         opts.color as [number, number, number],
         'slab',
-        { kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, smooth, maxEdge },
+        { kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, ...(shape !== 'box' ? { shape } : {}), smooth, maxEdge },
         triangles,
       ));
       scheduleColorRefresh();
       syncLockState();
       const stats = regionTriangleStats(region.triangles, currentMeshData);
-      return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid, smooth, maxEdge };
+      return { id: region.id, name: region.name, triangles: region.triangles.size, shape, bbox: stats.bbox, centroid: stats.centroid, smooth, maxEdge };
+    },
+
+    /** Paint a DISC on the surface: all triangles within `radius` of the
+     *  disc axis AND within ±`thickness/2` of the disc plane, with the full
+     *  smooth-edge subdivision. This is the facial-feature primitive —
+     *  iris rings, pupils, blush dots, buttons and pom-poms are discs on a
+     *  dome, and the v4 validation showed clean concentric discs (painted
+     *  largest-first so later discs composite on top) beat any triangle-set
+     *  approach for these.
+     *
+     *  Orientation comes from `normal` — the disc faces that way; no
+     *  quaternion math needed. Get center+normal from `probeRay`/
+     *  `probePixel` or a `detectRegions` region's `centroid`+`normal`.
+     *  `thickness` defaults to `radius` (generous enough to hug a curved
+     *  dome without swallowing what's behind it; tighten for shallow
+     *  features near other geometry).
+     *
+     *  Sugar over `paintInOrientedBox({shape: 'cylinder'})` — same smooth
+     *  machinery, same persisted descriptor. */
+    paintDisc(opts: {
+      center: [number, number, number];
+      normal: [number, number, number];
+      radius: number;
+      thickness?: number;
+      color: [number, number, number];
+      name?: string;
+      smooth?: boolean;
+      resolution?: number;
+      maxEdge?: number;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintDisc requires { center, normal, radius, color }' };
+      const { center, normal, radius } = opts;
+      if (!Array.isArray(center) || center.length !== 3 || !center.every(Number.isFinite)) return { error: 'center must be [x, y, z] of finite numbers' };
+      if (!Array.isArray(normal) || normal.length !== 3 || !normal.every(Number.isFinite)) return { error: 'normal must be [x, y, z] of finite numbers' };
+      const nLen = Math.hypot(normal[0], normal[1], normal[2]);
+      if (nLen === 0) return { error: 'normal must be a non-zero vector' };
+      if (typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0) return { error: 'radius must be a positive finite number' };
+      const thickness = opts.thickness ?? radius;
+      if (typeof thickness !== 'number' || !Number.isFinite(thickness) || thickness <= 0) return { error: 'thickness must be a positive finite number' };
+
+      // Quaternion rotating local +Y (the cylinder axis) onto `normal`:
+      // q = normalize([cross(a,b), 1 + dot(a,b)]) for unit a, b — with the
+      // antiparallel case (normal ≈ −Y) mapped to a 180° turn about X.
+      const ny: [number, number, number] = [normal[0] / nLen, normal[1] / nLen, normal[2] / nLen];
+      const dot = ny[1]; // dot([0,1,0], ny)
+      let quatOut: [number, number, number, number];
+      if (dot < -0.999999) {
+        quatOut = [1, 0, 0, 0];
+      } else {
+        // cross([0,1,0], ny) = [nz, 0, -nx]
+        const qx = ny[2], qy = 0, qz = -ny[0], qw = 1 + dot;
+        const qLen = Math.hypot(qx, qy, qz, qw);
+        quatOut = [qx / qLen, qy / qLen, qz / qLen, qw / qLen];
+      }
+      return partwrightAPI.paintInOrientedBox({
+        box: {
+          center: center as [number, number, number],
+          size: [radius * 2, thickness, radius * 2],
+          quaternion: quatOut,
+        },
+        shape: 'cylinder',
+        color: opts.color,
+        name: opts.name,
+        smooth: opts.smooth,
+        resolution: opts.resolution,
+        maxEdge: opts.maxEdge,
+      });
     },
 
     /** Paint every triangle whose centroid lies within `radius` of `point`.
@@ -14829,6 +14942,16 @@ async function main() {
         centroid: island.center,
         size,
         dataUrl,
+        // Hand this straight to probePixel({pixel, view: probeView}) to
+        // convert a pixel you see in THIS thumbnail into a world point +
+        // full-mesh triangle id — no bbox arithmetic.
+        probeView: {
+          elevation: view.elevation ?? 30,
+          azimuth: view.azimuth ?? 315,
+          ortho: view.ortho ?? false,
+          size,
+          island: opts.index,
+        },
       };
     },
 
@@ -14936,6 +15059,291 @@ async function main() {
         highlightColor: highlight,
         size,
         dataUrl,
+        // Hand this straight to probePixel({pixel, view: probeView}) to turn
+        // a pixel seen in THIS render into a world point + full-mesh
+        // triangle id (island-framed when withinIsland was set).
+        probeView: {
+          elevation: view.elevation ?? 30,
+          azimuth: view.azimuth ?? 315,
+          ortho: view.ortho ?? false,
+          size,
+          ...(opts.withinIsland !== undefined ? { island: opts.withinIsland } : {}),
+        },
+      };
+    },
+
+    /** Contact sheet of region highlights — N `renderRegion`-style tiles
+     *  composited into ONE labelled PNG so the multimodal identify pass
+     *  costs one image read instead of N round-trips. Both v4 validation
+     *  agents discovered feature fragmentation (a pupil split across
+     *  sibling detectRegions entries) only by rendering 20+ thumbnails one
+     *  at a time; this collapses that whole loop.
+     *
+     *  `regions` accepts the `detectRegions().regions` array directly
+     *  (objects with `id` + `triangleIds` — run detectRegions with
+     *  `maxTrianglesPerGroup > 0`), or plain arrays of triangle ids. Each
+     *  tile is labelled with the region's `id` (or its position when ids
+     *  are absent) so the caller can map what they see back to the region
+     *  list. `withinIsland` frames every tile to one island — the subset
+     *  is computed once and shared, so a 20-region sheet on a 205k-tri
+     *  head costs one subset + 20 small renders. */
+    renderRegionGrid(opts: {
+      regions: Array<{ id?: number | string; triangleIds: number[] | Uint32Array } | number[]>;
+      withinIsland?: number;
+      highlightColor?: [number, number, number];
+      view?: { elevation?: number; azimuth?: number; ortho?: boolean };
+      size?: number;
+      cols?: number;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object' || !Array.isArray(opts.regions)) {
+        return { error: 'renderRegionGrid requires { regions: [{id?, triangleIds}] } — pass detectRegions().regions directly (with maxTrianglesPerGroup > 0).' };
+      }
+      if (opts.regions.length === 0) return { error: 'regions is empty — nothing to render.' };
+      if (opts.regions.length > 64) return { error: `renderRegionGrid caps at 64 tiles per call (got ${opts.regions.length}). Slice the region list.` };
+      const tileSize = opts.size ?? 192;
+      if (typeof tileSize !== 'number' || !Number.isFinite(tileSize) || tileSize < 64 || tileSize > 512) {
+        return { error: 'size (per tile) must be a finite number in [64, 512].' };
+      }
+      const highlight = opts.highlightColor ?? [1.0, 0.85, 0.05];
+      for (let i = 0; i < 3; i++) {
+        if (typeof highlight[i] !== 'number' || !Number.isFinite(highlight[i]) || highlight[i] < 0 || highlight[i] > 1) {
+          return { error: 'highlightColor must be [r, g, b] with values in 0..1.' };
+        }
+      }
+      // Normalize the region list to {label, ids} entries.
+      const entries: Array<{ label: string; ids: number[] }> = [];
+      for (let i = 0; i < opts.regions.length; i++) {
+        const r = opts.regions[i];
+        if (Array.isArray(r)) {
+          entries.push({ label: String(i), ids: r });
+        } else if (r && typeof r === 'object' && (Array.isArray((r as { triangleIds?: unknown }).triangleIds) || (r as { triangleIds?: unknown }).triangleIds instanceof Uint32Array)) {
+          const rid = (r as { id?: number | string }).id;
+          const tids = (r as { triangleIds: number[] | Uint32Array }).triangleIds;
+          entries.push({ label: String(rid ?? i), ids: Array.isArray(tids) ? tids : Array.from(tids) });
+        } else {
+          return { error: `regions[${i}] must be a triangle-id array or an object with triangleIds (did detectRegions run with maxTrianglesPerGroup > 0?).` };
+        }
+        if (entries[entries.length - 1].ids.length === 0) return { error: `regions[${i}] has no triangleIds.` };
+      }
+
+      // Optional island focus — computed ONCE and shared across tiles.
+      let workMesh: MeshData = currentMeshData;
+      let remap: Map<number, number> | null = null;
+      if (opts.withinIsland !== undefined) {
+        if (!Number.isInteger(opts.withinIsland) || opts.withinIsland < 0) {
+          return { error: 'withinIsland must be a non-negative integer (an index from listComponents).' };
+        }
+        const { triIslands, islands } = meshIslands(currentMeshData);
+        if (opts.withinIsland >= islands.length) {
+          return { error: `withinIsland ${opts.withinIsland} out of range — listComponents has ${islands.length} island(s).` };
+        }
+        const ordered = [...trianglesInIsland(triIslands, opts.withinIsland)];
+        remap = new Map<number, number>();
+        for (let i = 0; i < ordered.length; i++) remap.set(ordered[i], i);
+        workMesh = subsetMesh(currentMeshData, ordered);
+      }
+
+      const n = entries.length;
+      const cols = opts.cols ?? Math.min(5, Math.ceil(Math.sqrt(n)));
+      if (!Number.isInteger(cols) || cols < 1 || cols > 8) return { error: 'cols must be an integer in [1, 8].' };
+      const rows = Math.ceil(n / cols);
+      const grid = document.createElement('canvas');
+      grid.width = cols * tileSize;
+      grid.height = rows * tileSize;
+      const ctx = grid.getContext('2d')!;
+      ctx.fillStyle = '#dfe3e8';
+      ctx.fillRect(0, 0, grid.width, grid.height);
+
+      const hr = Math.max(1, Math.round(highlight[0] * 255));
+      const hg = Math.max(1, Math.round(highlight[1] * 255));
+      const hb = Math.max(1, Math.round(highlight[2] * 255));
+      const view = opts.view ?? {};
+      const tiles: Array<{ index: number; id: string; renderedTriangles: number }> = [];
+      for (let i = 0; i < n; i++) {
+        const { label, ids } = entries[i];
+        const triColors = new Uint8Array(workMesh.numTri * 3);
+        let rendered = 0;
+        for (const t of ids) {
+          const mapped = remap ? remap.get(t) : t;
+          if (mapped === undefined || mapped < 0 || mapped >= workMesh.numTri) continue;
+          triColors[mapped * 3] = hr;
+          triColors[mapped * 3 + 1] = hg;
+          triColors[mapped * 3 + 2] = hb;
+          rendered++;
+        }
+        const tileCanvas = renderSingleViewCanvas({ ...workMesh, triColors }, {
+          elevation: view.elevation ?? 30,
+          azimuth: view.azimuth ?? 315,
+          ortho: view.ortho ?? false,
+          size: tileSize,
+        });
+        const x = (i % cols) * tileSize;
+        const y = Math.floor(i / cols) * tileSize;
+        ctx.drawImage(tileCanvas, x, y);
+        // Tile border + label (black outline under white fill for legibility
+        // on any render background).
+        ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+        ctx.strokeRect(x + 0.5, y + 0.5, tileSize - 1, tileSize - 1);
+        const fontPx = Math.max(14, Math.round(tileSize / 10));
+        ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
+        ctx.textBaseline = 'top';
+        ctx.lineWidth = Math.max(2, fontPx / 5);
+        ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+        ctx.strokeText(label, x + 6, y + 4);
+        ctx.fillStyle = rendered > 0 ? '#ffffff' : '#ff8080';
+        ctx.fillText(rendered > 0 ? label : `${label} (0 tris!)`, x + 6, y + 4);
+        tiles.push({ index: i, id: label, renderedTriangles: rendered });
+      }
+
+      return {
+        tileCount: n,
+        cols,
+        rows,
+        tileSize,
+        tiles,
+        dataUrl: grid.toDataURL('image/png'),
+      };
+    },
+
+    /** Deterministic whole-scene paint audit — run this BEFORE declaring a
+     *  paint job done. Rendering a final view and eyeballing it misses
+     *  exactly the defects that shipped in every validation round (a
+     *  disconnected yellow drip on the face, bangs 40% overwritten by a
+     *  later op, one of eight cuffs never painted). This reports them as
+     *  numbers the caller must dismiss or fix item by item:
+     *
+     *  - **fragments** per region: connected components of the painted set.
+     *    A region whose paint is 1 big blob + 1 tiny distant blob is a
+     *    stray-paint bug (fan wedge, mis-aimed selector) — `suspicious`
+     *    marks fragments < 10% of the main blob AND farther than 5% of the
+     *    model diagonal from it.
+     *  - **occlusion** per region: how much of it later paint overwrote
+     *    (`hiddenFraction`; compositing is later-order-wins). Intentional
+     *    layering (iris over eye dome) legitimately hides the layer below —
+     *    dismiss those; investigate the rest.
+     *  - **unpaintedIslands**: islands no visible region touches — the
+     *    "missed a part" catch for multi-part kits.
+     *
+     *  Read-only; no state is mutated. */
+    auditPaint() {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      const mesh = currentMeshData;
+      const numTri = mesh.numTri;
+      const allRegions = getRegions();
+      if (allRegions.length === 0) {
+        const { islands: allIslands } = meshIslands(mesh);
+        return {
+          regionCount: 0,
+          regions: [],
+          unpaintedIslands: allIslands.map(i => ({ index: i.index, triangleCount: i.triangleCount, center: i.center, surfaceArea: i.surfaceArea })),
+          summary: 'No paint regions exist. Every island is unpainted.',
+        };
+      }
+      const adjacency = buildAdjacency(mesh);
+      const { islands, triIslands } = meshIslands(mesh);
+      // Model diagonal for distance thresholds.
+      let mnX = Infinity, mnY = Infinity, mnZ = Infinity, mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity;
+      for (const isl of islands) {
+        if (isl.bbox.min[0] < mnX) mnX = isl.bbox.min[0];
+        if (isl.bbox.min[1] < mnY) mnY = isl.bbox.min[1];
+        if (isl.bbox.min[2] < mnZ) mnZ = isl.bbox.min[2];
+        if (isl.bbox.max[0] > mxX) mxX = isl.bbox.max[0];
+        if (isl.bbox.max[1] > mxY) mxY = isl.bbox.max[1];
+        if (isl.bbox.max[2] > mxZ) mxZ = isl.bbox.max[2];
+      }
+      const diag = Math.hypot(mxX - mnX, mxY - mnY, mxZ - mnZ) || 1;
+
+      // Occlusion replay — same later-order-wins rule composeTriColors uses.
+      const winnerOrder = new Float64Array(numTri).fill(-Infinity);
+      const winnerId = new Int32Array(numTri).fill(-1);
+      for (const r of allRegions) {
+        if (!r.visible) continue;
+        for (const t of r.triangles) {
+          if (t < 0 || t >= numTri) continue;
+          if (r.order >= winnerOrder[t]) { winnerOrder[t] = r.order; winnerId[t] = r.id; }
+        }
+      }
+
+      const centroidOf = (t: number): [number, number, number] => {
+        const { triVerts, vertProperties, numProp } = mesh;
+        const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+        return [
+          (vertProperties[v0 * numProp] + vertProperties[v1 * numProp] + vertProperties[v2 * numProp]) / 3,
+          (vertProperties[v0 * numProp + 1] + vertProperties[v1 * numProp + 1] + vertProperties[v2 * numProp + 1]) / 3,
+          (vertProperties[v0 * numProp + 2] + vertProperties[v1 * numProp + 2] + vertProperties[v2 * numProp + 2]) / 3,
+        ];
+      };
+
+      const regionReports = allRegions.map(r => {
+        // Connected components of the painted set (welded adjacency BFS).
+        const inSet = new Set<number>();
+        for (const t of r.triangles) if (t >= 0 && t < numTri) inSet.add(t);
+        const seen = new Set<number>();
+        const components: Array<{ triangleCount: number; centroid: [number, number, number] }> = [];
+        for (const seed of inSet) {
+          if (seen.has(seed)) continue;
+          let count = 0;
+          let sx = 0, sy = 0, sz = 0;
+          const stack = [seed];
+          seen.add(seed);
+          while (stack.length > 0) {
+            const t = stack.pop()!;
+            count++;
+            const c = centroidOf(t);
+            sx += c[0]; sy += c[1]; sz += c[2];
+            const ns = adjacency.neighbors[t];
+            for (let i = 0; i < ns.length; i++) {
+              const nb = ns[i];
+              if (inSet.has(nb) && !seen.has(nb)) { seen.add(nb); stack.push(nb); }
+            }
+          }
+          components.push({ triangleCount: count, centroid: [sx / count, sy / count, sz / count] });
+        }
+        components.sort((a, b) => b.triangleCount - a.triangleCount);
+        const main = components[0];
+        const fragments = components.slice(1, 9).map(f => {
+          const d = main ? Math.hypot(f.centroid[0] - main.centroid[0], f.centroid[1] - main.centroid[1], f.centroid[2] - main.centroid[2]) : 0;
+          return {
+            triangleCount: f.triangleCount,
+            centroid: f.centroid,
+            distanceFromMain: d,
+            suspicious: main ? (f.triangleCount < main.triangleCount * 0.1 && d > diag * 0.05) : false,
+          };
+        });
+        let visibleCount = 0;
+        for (const t of inSet) if (winnerId[t] === r.id) visibleCount++;
+        const hiddenFraction = inSet.size > 0 ? 1 - visibleCount / inSet.size : 0;
+        return {
+          id: r.id,
+          name: r.name,
+          color: r.color,
+          visible: r.visible,
+          triangles: inSet.size,
+          visibleTriangles: visibleCount,
+          hiddenFraction: Math.round(hiddenFraction * 1000) / 1000,
+          fragmentCount: components.length,
+          ...(fragments.length > 0 ? { fragments } : {}),
+          ...(components.length > 9 ? { fragmentsTruncated: components.length - 9 } : {}),
+        };
+      });
+
+      // Islands untouched by any visible paint.
+      const islandPainted = new Uint8Array(islands.length);
+      for (let t = 0; t < numTri; t++) {
+        if (winnerId[t] >= 0) islandPainted[triIslands[t]] = 1;
+      }
+      const unpaintedIslands = islands
+        .filter(i => !islandPainted[i.index])
+        .map(i => ({ index: i.index, triangleCount: i.triangleCount, center: i.center, surfaceArea: i.surfaceArea }));
+
+      const flagged = regionReports.filter(r => (r.fragments ?? []).some(f => f.suspicious) || (r.hiddenFraction > 0.5 && r.visible));
+      return {
+        regionCount: allRegions.length,
+        regions: regionReports,
+        unpaintedIslands,
+        flaggedRegionIds: flagged.map(r => r.id),
+        summary: `${allRegions.length} region(s); ${flagged.length} flagged (suspicious stray fragments or >50% overwritten); ${unpaintedIslands.length} island(s) with no paint. Dismiss or fix every flag before declaring the paint job done.`,
       };
     },
 
@@ -16071,7 +16479,7 @@ async function main() {
         'setSpendingMode': { signature: 'setSpendingMode("cheap"|"balanced"|"expensive") -- Set the AI budget preset', docs: '/ai.md#spending-mode' },
         'analyzeProfile':  { signature: 'analyzeProfile(sampleCount?) -- Z-profile feature summary', docs: '/ai.md#console-api--windowpartwright' },
         'measureAt':       { signature: 'measureAt([x,y]) -- Ray-cast probe at XY -> {hits, thickness, topZ, bottomZ}', docs: '/ai.md#console-api--windowpartwright' },
-        'probePixel':      { signature: 'probePixel({pixel: [x,y], view}) -- Translate a pixel in a rendered view back to a surface hit: {point, normal, distance, triangleId, nextStep}. The view spec must match the renderView call. On a background pixel returns {hit:false, modelPixelBounds, reason, hint} telling you where the model projects so you can re-aim.', docs: '/ai.md#console-api--windowpartwright' },
+        'probePixel':      { signature: 'probePixel({pixel: [x,y], view}) -- Translate a pixel in a rendered view back to a surface hit: {point, normal, distance, triangleId, nextStep}. The view spec must match the renderView call — or pass the `probeView` object returned by renderIsland/renderRegion verbatim (it carries `island`, framing the probe to that island; hits come back in world coords with full-mesh triangleId). On a background pixel returns {hit:false, modelPixelBounds, reason, hint} telling you where the model projects so you can re-aim.', docs: '/ai.md#console-api--windowpartwright' },
         // Viewport controls
         'setGridVisible':       { signature: 'setGridVisible(on?) -- Show/hide grid plane (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isGridVisible':        { signature: 'isGridVisible() -- Whether grid plane is visible', docs: '/ai.md#viewport-controls' },
@@ -16152,8 +16560,8 @@ async function main() {
         'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai/colors.md' },
         'paintNear':       { signature: 'paintNear({point, radius, normalCone?, color, name?}) -- Paint triangles whose centroid is within `radius` of `point`. Predictable, no flood-fill tolerance to tune.', docs: '/ai/colors.md' },
         'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai/colors.md' },
-        'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, color, name?}) -- Paint triangles whose centroid is inside a rotated oriented box. Same selector as the UI Box tool.', docs: '/ai/colors.md' },
-        'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai/colors.md' },
+        'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, shape?, color, name?, smooth?}) -- Paint inside a rotated oriented solid. shape: box (default) | sphere | cylinder (radius=size[0]/2 around local Y, height=size[1]) | cone. Smooth analytic edges. Same selector family as the UI shape tool.', docs: '/ai/colors.md' },
+        'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?, maxTriangleArea?, maxTriangleAspectRatio?}) -- Paint specific triangle indices. The two filters defang fan-topology wedges (giant/sliver triangles whose tips bleed outside the feature) — pass region.medianTriangleArea*5 or maxTriangleAspectRatio: 6 when detectRegions flagged fanTopologyRisk', docs: '/ai/colors.md' },
         'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?}) -- Paint planar slab range', docs: '/ai/colors.md' },
         'paintInCylinder': { signature: 'paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, color, name?}) -- Paint a cylindrical/annular shell (rMin=0 = solid cylinder). axis (x|y|z, default z) picks the shell axis; band runs zMin..zMax along it.', docs: '/ai/colors.md' },
         'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai/colors.md' },
@@ -16179,11 +16587,14 @@ async function main() {
         'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece. Requires a manifold (uses decompose). For render-only imports use paintIsland.', docs: '/ai/colors.md' },
         'paintIsland':     { signature: 'paintIsland({index, color, name?}) -- Paint a single face-connected mesh island by index from listComponents(). Works on ANY mesh including render-only STL imports — the right tool for painting one part of a multi-part STL kit by its component number. Topological, not spatial — never bleeds across XYZ-overlapping parts.', docs: '/ai/colors.md' },
         'paintIslandAt':   { signature: 'paintIslandAt({point, color, name?}) -- Paint the face-connected island containing the triangle closest to point. Pair with probePixel/probeRay to ground island selection in a visible point ("the hat in the iso render") without enumerating islands.', docs: '/ai/colors.md' },
-        'detectRegions':   { signature: 'detectRegions({creaseAngleDeg?=20, minTriangleCount?=5, maxRegions?=64, withinIsland?, includeNeighbors?=true, maxTrianglesPerGroup?=0}) -> {count, regions: [{id, triangleCount, area, centroid, normal, bbox, neighborIds?, triangleIds?}], source} -- Auto-segment by crease (dihedral) watershed. The right enumeration primitive for SCULPTED FEATURES — iris ring, pupil, mouth crease, blush dimples, pom-poms, bangs all separate naturally at the 20° default. Pass withinIsland to segment ONE mesh-island (fused body part) so the face/eyes/buttons stop being unreachable.', docs: '/ai/colors.md' },
+        'detectRegions':   { signature: 'detectRegions({creaseAngleDeg?=20, minTriangleCount?=5, maxRegions?=64, withinIsland?, includeNeighbors?=true, maxTrianglesPerGroup?=0}) -> {count, regions: [{id, triangleCount, area, centroid, normal, bbox, maxTriangleArea, medianTriangleArea, worstTriangleAspectRatio, fanTopologyRisk, neighborIds?, triangleIds?}], source} -- Auto-segment by crease (dihedral) watershed. The right enumeration primitive for SCULPTED FEATURES — iris ring, pupil, mouth crease, blush dimples, pom-poms, bangs all separate naturally at the 20° default. Pass withinIsland to segment ONE mesh-island (fused body part) so the face/eyes/buttons stop being unreachable.', docs: '/ai/colors.md' },
         'paintByCrease':   { signature: 'paintByCrease({seedPoint, seedNormal?, creaseAngleDeg?=20, color, name?}) -- Flood paint from a surface seed, stopping at the next crease edge. The right paint primitive for SCULPTED FEATURES on organic meshes. Clean edges by construction, no box guessing. Pair with probePixel to ground the seed. seedNormal optional (snaps to nearest triangle).', docs: '/ai/colors.md' },
         'renderIsland':    { signature: 'renderIsland({index, view?, size?=192}) -> {dataUrl, bbox, centroid, principalAxis, aspectRatio, triangleCount, surfaceArea} -- Render ONE mesh island as a standalone thumbnail. THE vision fix for the identification problem — see which island is the hat vs face vs glove instead of guessing from bbox. Auto-framed to the island; nothing else in frame.', docs: '/ai/colors.md' },
         'renderRegion':    { signature: 'renderRegion({triangleIds, withinIsland?, highlightColor?, view?, size?=256}) -> {dataUrl, triangleCount, ...} -- Highlight a triangle set on the mesh in a bright colour. THE identification fix for detectRegions output — loop the top-N regions, read each thumbnail, pick the two that look like eyes. Pair with detectRegions({maxTrianglesPerGroup > 0}) so you have the triangleIds to hand it.', docs: '/ai/colors.md' },
-        'paintOrientedStripes': { signature: 'paintOrientedStripes({islandIndex, colors, axis?, name?}) -> {axis, stripeCount, regions: [...]} -- Paint N equally-spaced stripes along the island\'s principal axis (or the axis you override with). THE fix for striped limbs on organic characters. Colours flow from low to high along the axis.', docs: '/ai/colors.md' },
+'renderRegionGrid': { signature: 'renderRegionGrid({regions, withinIsland?, view?, size?=192, cols?}) -> {dataUrl, tiles: [{index, id, renderedTriangles}]} -- ONE labelled contact sheet of up to 64 region highlights (pass detectRegions().regions directly, run with maxTrianglesPerGroup > 0). Identify every candidate feature in ONE image read instead of 20 renderRegion round-trips. Tiles showing \"(0 tris!)\" mean the region has no triangles in the frame.', docs: '/ai/colors.md' },
+        'paintDisc':       { signature: 'paintDisc({center, normal, radius, thickness?=radius, color, name?, smooth?}) -- Paint a smooth-edged DISC facing `normal` — THE facial-feature primitive (iris, pupil, blush, buttons). No quaternion math: feed it probePixel\'s point+normal or a detectRegions region\'s centroid+normal. Paint concentric features largest-first; later discs composite on top (dome, then iris, then pupil).', docs: '/ai/colors.md' },
+        'auditPaint':      { signature: 'auditPaint() -> {regions: [{id, name, triangles, visibleTriangles, hiddenFraction, fragmentCount, fragments?}], unpaintedIslands, flaggedRegionIds, summary} -- Deterministic whole-scene paint audit: stray disconnected paint fragments (mis-aimed selectors, fan-wedge splatter), regions overwritten by later paint, islands never painted. Run before declaring a paint job done; dismiss or fix every flag.', docs: '/ai/colors.md' },
+        'paintOrientedStripes': { signature: 'paintOrientedStripes({islandIndex, colors, axis?, name?}) -> {axis, axisVector, stripeCount, regions: [...]} -- Paint N equally-spaced stripes along the island\'s TRUE principal direction (PCA — follows a tilted limb). axis overrides with x|y|z or any [x,y,z] vector. THE fix for striped limbs on organic characters. Colours flow from low to high along the axis.', docs: '/ai/colors.md' },
         'sampleReferenceColor': { signature: 'sampleReferenceColor({id?, rect?, point?, mode?="dominant"}) -> {color: [r,g,b], hex, imageId, ...} -- Sample a colour from an attached reference image. Point at the pixel/rect where the feature lives (Pomni left glove, right shoe, iris outer ring); returns the RGB in 0..1 ready to hand straight to paintByCrease / paintIsland / paintInBox. "dominant" mode buckets HSV to survive photo shadows/highlights; "mean" is a plain average.', docs: '/ai/colors.md' },
         'waitForSessionStable': { signature: 'waitForSessionStable({minMs?=800, timeoutMs?=15000}) -> {sessionId, elapsedMs} -- Await session-id stability. Fixes the paint-loop DX cliff where autosave-triggered navigation retargets in-flight paint calls at a stale session (2 of 4 v2 agents lost 60+ paints to this). Call right after importMeshData before painting.', docs: '/ai.md' },
         'getSessionId':    { signature: 'getSessionId() -> string | null -- Current session id. Pair with waitForSessionStable / getVersion to detect the mid-loop session-swap race.', docs: '/ai.md' },
