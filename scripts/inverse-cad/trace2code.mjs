@@ -68,7 +68,8 @@ export function contoursToCode(contours, opts = {}) {
   for (let i = 1; i < outers.length; i++) expr += `.add(outer${i})`;
   for (let i = 0; i < holes.length; i++) expr += `.subtract(hole${i})`;
   lines.push(`const profile = ${expr};`);
-  const translate = zBase !== 0 ? `.translate([0, 0, ${zBase}])` : '';
+  const zb = Math.abs(zBase) < 1e-9 ? 0 : +zBase.toFixed(Math.max(decimals, 4));
+  const translate = zb !== 0 ? `.translate([0, 0, ${zb}])` : '';
   lines.push(`return profile.extrude(${depth}, 0, 0, [1, 1])${translate};`);
   return lines.join('\n') + '\n';
 }
