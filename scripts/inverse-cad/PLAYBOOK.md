@@ -354,6 +354,11 @@ else                  → hybrid: traced silhouette body + probed primitives for
   Guard output with `decompose()` + drop sub-1mm³ shells. (armor_waist,
   hardest bootstrap in the corpus at 9.73: 0/6 → 6/6+2/2 in ONE turn,
   chamfer 0.005. Also hand_grip demo: 0.028 → 0.0093.)
+- **5.25b Recipe scaling for small shells**: pitch/res scale with the
+  part — a 7mm-class shell at pitch 0.1 / levelSet res 0.08 costs seconds
+  and lands chamfer 0.003 (armor_neck, 1 turn); keep 0.15/0.15 for 15mm+
+  parts. The ledge scan is the ONLY per-part measurement when the census
+  reads freeform-on-all-axes with genus matching the bootstrap.
 - **5.25a Make section-SDF levelSet cheap**: per-polygon bbox lower-bound
   early-reject inside sdf2d (still run parity when the +x ray could
   cross), and memoize per (sectionIndex, quantized x,y) — the levelSet
