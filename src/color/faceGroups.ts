@@ -21,6 +21,19 @@ export interface FaceGroup {
   bbox: { min: [number, number, number]; max: [number, number, number] };
   /** Triangle indices belonging to this group. Capped by `maxTrianglesPerGroup`. */
   triangleIds: number[];
+  /** Largest single-triangle area in the group. A value much bigger than
+   *  `medianTriangleArea` (say 20×) is the fan-topology signature: long
+   *  radial wedges whose centroids sit inside the feature but whose tips
+   *  span far outside it — painting the raw triangle set will bleed. */
+  maxTriangleArea: number;
+  /** Median triangle area — the "typical" tessellation density, robust to a
+   *  handful of giant wedges. Compare against `maxTriangleArea`. */
+  medianTriangleArea: number;
+  /** Worst (largest) triangle aspect ratio in the group: longest edge over
+   *  the altitude to that edge (`longestEdge² / (2·area)`). An equilateral
+   *  triangle scores ≈1.15; a healthy mesh stays under ~4; radial fan wedges
+   *  and slivers run 10+. */
+  worstTriangleAspectRatio: number;
   /** Ids of groups this group shares a crease boundary with. Present only
    *  when `includeNeighborIds: true` was passed to `computeFaceGroups`. */
   neighborIds?: number[];
@@ -178,6 +191,9 @@ function buildGroup(
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
 
   const ids: number[] = [];
+  const areas: number[] = [];
+  let maxArea = 0;
+  let worstAspect = 0;
 
   for (const t of triangles) {
     if (maxIds === 0 ? false : ids.length < maxIds) ids.push(t);
@@ -211,6 +227,19 @@ function buildGroup(
     const crz = e1x * e2y - e1y * e2x;
     const area = 0.5 * Math.sqrt(crx * crx + cry * cry + crz * crz);
 
+    areas.push(area);
+    if (area > maxArea) maxArea = area;
+    // Aspect ratio = longest edge / altitude-to-it = longestEdge² / (2·area).
+    // Degenerate (zero-area) triangles score Infinity → clamp to a large
+    // finite sentinel so JSON serialisation stays sane.
+    const l1 = e1x * e1x + e1y * e1y + e1z * e1z;
+    const l2 = e2x * e2x + e2y * e2y + e2z * e2z;
+    const e3x = cx2 - bx, e3y = cy2 - by, e3z = cz2 - bz;
+    const l3 = e3x * e3x + e3y * e3y + e3z * e3z;
+    const longestSq = Math.max(l1, l2, l3);
+    const aspect = area > 0 ? longestSq / (2 * area) : 1e6;
+    if (aspect > worstAspect) worstAspect = aspect;
+
     const triCx = (ax + bx + cx2) / 3;
     const triCy = (ay + by + cy2) / 3;
     const triCz = (az + bz + cz2) / 3;
@@ -233,6 +262,13 @@ function buildGroup(
     ? [nx / nLen, ny / nLen, nz / nLen]
     : [0, 0, 0];
 
+  areas.sort((a, b) => a - b);
+  const medianArea = areas.length > 0
+    ? (areas.length % 2 === 1
+        ? areas[(areas.length - 1) / 2]
+        : (areas[areas.length / 2 - 1] + areas[areas.length / 2]) / 2)
+    : 0;
+
   return {
     id,
     normal,
@@ -241,5 +277,8 @@ function buildGroup(
     triangleCount: triangles.size,
     bbox: { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] },
     triangleIds: ids,
+    maxTriangleArea: maxArea,
+    medianTriangleArea: medianArea,
+    worstTriangleAspectRatio: worstAspect,
   };
 }

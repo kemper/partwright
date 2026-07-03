@@ -13035,13 +13035,26 @@ async function main() {
     },
 
     /** Paint a specific set of triangle indices as a single region.
-     *  Useful for paintbrush-style selections produced programmatically. */
-    paintFaces(opts: { triangleIds: number[]; color: [number, number, number]; name?: string }) {
+     *  Useful for paintbrush-style selections produced programmatically.
+     *
+     *  `maxTriangleArea` / `maxTriangleAspectRatio` filter out fan-topology
+     *  wedges BEFORE painting: sculpted domes often tessellate as radial
+     *  fans whose centroids sit inside a `detectRegions` feature but whose
+     *  tips span far outside it. Pass the region's own `medianTriangleArea
+     *  × ~5` as `maxTriangleArea` (or `maxTriangleAspectRatio: 6`) to keep
+     *  the paint inside the visual feature. Excluded triangles are counted
+     *  in the response so the caller knows how many were defanged. */
+    paintFaces(opts: { triangleIds: number[]; color: [number, number, number]; name?: string; maxTriangleArea?: number; maxTriangleAspectRatio?: number }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintFaces requires {triangleIds, color}' };
-      const { triangleIds, color, name } = opts;
+      const { triangleIds, color, name, maxTriangleArea, maxTriangleAspectRatio } = opts;
       if (!Array.isArray(triangleIds) || triangleIds.length === 0) return { error: 'triangleIds must be a non-empty array of integers' };
       if (!Array.isArray(color) || color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
+      const areaErr = validateMaxTriangleArea(maxTriangleArea);
+      if (areaErr) return { error: areaErr };
+      if (maxTriangleAspectRatio !== undefined && (typeof maxTriangleAspectRatio !== 'number' || !Number.isFinite(maxTriangleAspectRatio) || maxTriangleAspectRatio < 1.16)) {
+        return { error: 'maxTriangleAspectRatio must be a finite number >= 1.16 (an equilateral triangle scores ~1.15; try 6 to exclude fan wedges).' };
+      }
 
       const numTri = currentMeshData.numTri;
       const ids: number[] = [];
@@ -13052,7 +13065,18 @@ async function main() {
         ids.push(id);
       }
 
-      const triangles = new Set<number>(ids);
+      let triangles = new Set<number>(ids);
+      let excludedByFilter = 0;
+      if (maxTriangleArea !== undefined || maxTriangleAspectRatio !== undefined) {
+        const kept = new Set<number>();
+        for (const t of triangles) {
+          if (maxTriangleArea !== undefined && triangleArea(t, currentMeshData) > maxTriangleArea) { excludedByFilter++; continue; }
+          if (maxTriangleAspectRatio !== undefined && triangleAspectRatio(t, currentMeshData) > maxTriangleAspectRatio) { excludedByFilter++; continue; }
+          kept.add(t);
+        }
+        if (kept.size === 0) return { error: `paintFaces: the maxTriangleArea/maxTriangleAspectRatio filter excluded all ${triangles.size} triangles. Loosen the threshold (detectRegions reports each region's medianTriangleArea as a reference).` };
+        triangles = kept;
+      }
       const regionName = name ?? `Region ${getRegions().length + 1}`;
       const region = addRegion(
         regionName,
@@ -13066,7 +13090,7 @@ async function main() {
       updateMesh(colored, { skipAutoFrame: true });
       syncLockState();
 
-      return { id: region.id, name: region.name, triangles: triangles.size };
+      return { id: region.id, name: region.name, triangles: triangles.size, ...(excludedByFilter > 0 ? { excludedByFilter } : {}) };
     },
 
     /** Paint a slab — all faces whose centroid falls inside a planar slab.
@@ -14922,22 +14946,24 @@ async function main() {
      *  independently asked for this after painting Pomni's arms/legs as
      *  solid colours instead of stripes.
      *
-     *  Divides the island's principal-axis extent (from `listComponents()
-     *  .components[i].principalExtent`) into `colors.length` equal bands and
-     *  paints each band with the corresponding colour. Uses the island's
-     *  `principalAxis` (world-axis-aligned) — for arbitrary tilt use
-     *  `paintOrientedSlab` per band with a custom axis.
+     *  Divides the island's extent along the stripe axis into `colors.length`
+     *  equal bands and paints each band with the corresponding colour. The
+     *  default axis is the island's TRUE principal direction
+     *  (`principalAxisVector`, PCA over triangle centroids), so stripes flow
+     *  along a tilted limb's own long axis even when it lies diagonally on
+     *  the print plate. Override with `axis: 'x'|'y'|'z'` for a world axis
+     *  or `axis: [x,y,z]` for any direction.
      *
-     *  Ordering: bands go from the LOW end of the principal axis to the HIGH
-     *  end. So `colors: [red, blue, red, blue]` on a leg with principalAxis
-     *  y produces red-at-toe / blue / red / blue-at-hip. */
+     *  Ordering: bands go from the LOW end of the axis to the HIGH end. So
+     *  `colors: [red, blue, red, blue]` on a leg produces four bands
+     *  red→blue→red→blue along the limb. */
     paintOrientedStripes(opts: {
       islandIndex: number;
       colors: [number, number, number][];
       name?: string;
-      /** Optional axis override (default = the island's principalAxis).
-       *  One of `'x'` / `'y'` / `'z'`. */
-      axis?: 'x' | 'y' | 'z';
+      /** Optional axis override (default = the island's PCA
+       *  `principalAxisVector`). `'x'`/`'y'`/`'z'` or any 3-vector. */
+      axis?: 'x' | 'y' | 'z' | [number, number, number];
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       if (!opts || typeof opts !== 'object') return { error: 'paintOrientedStripes requires { islandIndex, colors }' };
@@ -14952,32 +14978,57 @@ async function main() {
       const { triIslands, islands } = meshIslands(currentMeshData);
       if (opts.islandIndex >= islands.length) return { error: `paintOrientedStripes.islandIndex ${opts.islandIndex} out of range — listComponents has ${islands.length} island(s).` };
       const island = islands[opts.islandIndex];
-      const axis = opts.axis ?? island.principalAxis;
-      if (axis !== 'x' && axis !== 'y' && axis !== 'z') return { error: "axis must be 'x', 'y', or 'z'." };
-      const axisIdx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
-      const axisMin = island.bbox.min[axisIdx];
-      const axisMax = island.bbox.max[axisIdx];
-      const span = axisMax - axisMin;
-      if (span <= 0) return { error: 'paintOrientedStripes: island has zero extent along the chosen axis.' };
-      const nStripes = opts.colors.length;
-      const bandLength = span / nStripes;
+      // Resolve the stripe direction: world-axis shorthand, explicit vector,
+      // or (default) the island's PCA principal direction.
+      let axisVec: [number, number, number];
+      let axisLabel: 'x' | 'y' | 'z' | 'principal' | 'custom';
+      const rawAxis = opts.axis;
+      if (rawAxis === undefined) {
+        axisVec = island.principalAxisVector;
+        axisLabel = 'principal';
+      } else if (rawAxis === 'x' || rawAxis === 'y' || rawAxis === 'z') {
+        axisVec = rawAxis === 'x' ? [1, 0, 0] : rawAxis === 'y' ? [0, 1, 0] : [0, 0, 1];
+        axisLabel = rawAxis;
+      } else if (Array.isArray(rawAxis) && rawAxis.length === 3 && rawAxis.every(v => typeof v === 'number' && Number.isFinite(v))) {
+        const len = Math.hypot(rawAxis[0], rawAxis[1], rawAxis[2]);
+        if (len === 0) return { error: 'axis vector must be non-zero.' };
+        axisVec = [rawAxis[0] / len, rawAxis[1] / len, rawAxis[2] / len];
+        axisLabel = 'custom';
+      } else {
+        return { error: "axis must be 'x', 'y', 'z', or a [x,y,z] vector." };
+      }
 
-      // Bucket the island's triangles by centroid position along the axis.
-      // We compute centroids on the fly rather than requiring the caller to
-      // supply triangleIds — the island already knows its own membership.
+      // Bucket the island's triangles by centroid PROJECTION along the axis.
+      // Two passes: min/max of the projection (the banding frame), then the
+      // bucket assignment. We compute centroids on the fly rather than
+      // requiring the caller to supply triangleIds — the island already
+      // knows its own membership.
       const { triVerts, vertProperties, numProp } = currentMeshData;
-      const perStripe: Set<number>[] = Array.from({ length: nStripes }, () => new Set<number>());
-      for (let t = 0; t < triIslands.length; t++) {
-        if (triIslands[t] !== opts.islandIndex) continue;
+      const [axx, axy, axz] = axisVec;
+      const projOfTri = (t: number): number => {
         const v0 = triVerts[t * 3];
         const v1 = triVerts[t * 3 + 1];
         const v2 = triVerts[t * 3 + 2];
-        const c = (
-          vertProperties[v0 * numProp + axisIdx] +
-          vertProperties[v1 * numProp + axisIdx] +
-          vertProperties[v2 * numProp + axisIdx]
-        ) / 3;
-        let bucket = Math.floor((c - axisMin) / bandLength);
+        const cx = (vertProperties[v0 * numProp] + vertProperties[v1 * numProp] + vertProperties[v2 * numProp]) / 3;
+        const cy = (vertProperties[v0 * numProp + 1] + vertProperties[v1 * numProp + 1] + vertProperties[v2 * numProp + 1]) / 3;
+        const cz = (vertProperties[v0 * numProp + 2] + vertProperties[v1 * numProp + 2] + vertProperties[v2 * numProp + 2]) / 3;
+        return cx * axx + cy * axy + cz * axz;
+      };
+      let projMin = Infinity, projMax = -Infinity;
+      for (let t = 0; t < triIslands.length; t++) {
+        if (triIslands[t] !== opts.islandIndex) continue;
+        const p = projOfTri(t);
+        if (p < projMin) projMin = p;
+        if (p > projMax) projMax = p;
+      }
+      const span = projMax - projMin;
+      if (!(span > 0)) return { error: 'paintOrientedStripes: island has zero extent along the chosen axis.' };
+      const nStripes = opts.colors.length;
+      const bandLength = span / nStripes;
+      const perStripe: Set<number>[] = Array.from({ length: nStripes }, () => new Set<number>());
+      for (let t = 0; t < triIslands.length; t++) {
+        if (triIslands[t] !== opts.islandIndex) continue;
+        let bucket = Math.floor((projOfTri(t) - projMin) / bandLength);
         if (bucket < 0) bucket = 0;
         if (bucket >= nStripes) bucket = nStripes - 1;
         perStripe[bucket].add(t);
@@ -14985,7 +15036,7 @@ async function main() {
 
       // Commit each non-empty stripe as its own region so the caller can
       // remove one without affecting the rest.
-      const results: Array<{ id: number; name: string; triangles: number; color: [number, number, number]; axis: 'x' | 'y' | 'z'; band: number }> = [];
+      const results: Array<{ id: number; name: string; triangles: number; color: [number, number, number]; band: number }> = [];
       const baseName = opts.name ?? `Island ${opts.islandIndex} stripes`;
       for (let i = 0; i < nStripes; i++) {
         if (perStripe[i].size === 0) continue;
@@ -14996,13 +15047,14 @@ async function main() {
           { kind: 'triangles', ids: [...perStripe[i]] },
           perStripe[i],
         );
-        results.push({ id: region.id, name: region.name, triangles: perStripe[i].size, color: opts.colors[i], axis, band: i });
+        results.push({ id: region.id, name: region.name, triangles: perStripe[i].size, color: opts.colors[i], band: i });
       }
       scheduleColorRefresh();
       syncLockState();
       return {
         islandIndex: opts.islandIndex,
-        axis,
+        axis: axisLabel,
+        axisVector: axisVec,
         principalExtent: span,
         bandLength,
         stripeCount: nStripes,
@@ -15085,6 +15137,16 @@ async function main() {
           centroid: g.centroid,
           normal: g.normal,
           bbox: g.bbox,
+          maxTriangleArea: g.maxTriangleArea,
+          medianTriangleArea: g.medianTriangleArea,
+          worstTriangleAspectRatio: g.worstTriangleAspectRatio,
+          // Fan-topology flag: giant wedges relative to the typical triangle,
+          // or sliver aspect ratios. Painting this region's raw triangleIds
+          // will bleed past the visual feature — filter with
+          // paintFaces({maxTriangleArea}) or use a shape selector instead.
+          fanTopologyRisk: g.medianTriangleArea > 0 && (
+            g.maxTriangleArea / g.medianTriangleArea > 20 || g.worstTriangleAspectRatio > 8
+          ),
           ...(g.neighborIds ? { neighborIds: g.neighborIds } : {}),
           ...(g.triangleIds.length > 0 ? { triangleIds: g.triangleIds } : {}),
         })),
@@ -16603,6 +16665,28 @@ async function main() {
     const cry = e1z * e2x - e1x * e2z;
     const crz = e1x * e2y - e1y * e2x;
     return 0.5 * Math.sqrt(crx * crx + cry * cry + crz * crz);
+  }
+
+  /** Aspect ratio of one triangle: longest edge over the altitude to that
+   *  edge (`longestEdge² / (2·area)`). Equilateral ≈ 1.15; fan wedges and
+   *  slivers score 10+. Degenerate triangles return a large finite
+   *  sentinel. Mirrors the per-group `worstTriangleAspectRatio` metric in
+   *  `computeFaceGroups` so paintFaces filters agree with detectRegions
+   *  diagnostics. */
+  function triangleAspectRatio(t: number, mesh: MeshData): number {
+    const { triVerts, vertProperties, numProp } = mesh;
+    const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+    const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
+    const bx = vertProperties[v1 * numProp], by = vertProperties[v1 * numProp + 1], bz = vertProperties[v1 * numProp + 2];
+    const cx = vertProperties[v2 * numProp], cy = vertProperties[v2 * numProp + 1], cz = vertProperties[v2 * numProp + 2];
+    const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+    const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+    const e3x = cx - bx, e3y = cy - by, e3z = cz - bz;
+    const l1 = e1x * e1x + e1y * e1y + e1z * e1z;
+    const l2 = e2x * e2x + e2y * e2y + e2z * e2z;
+    const l3 = e3x * e3x + e3y * e3y + e3z * e3z;
+    const area = triangleArea(t, mesh);
+    return area > 0 ? Math.max(l1, l2, l3) / (2 * area) : 1e6;
   }
 
   /** Summarize the area distribution of a triangle set without walking

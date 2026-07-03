@@ -42,9 +42,13 @@ export interface MeshIsland {
    *  laid flat still let an agent infer "this is a leg" (long along its
    *  principal axis) vs "this is a puck" (aspect ratio near 1). */
   principalAxis: 'x' | 'y' | 'z';
-  /** Same as `principalAxis` but as a unit 3-vector so callers don't have to
-   *  translate. `'x'` → `[1,0,0]`; `'y'` → `[0,1,0]`; `'z'` → `[0,0,1]`. Also
-   *  the axis stripes/slabs should flow along. */
+  /** TRUE principal direction of the island — the dominant eigenvector of
+   *  the area-weighted covariance of triangle centroids (power iteration).
+   *  Unlike `principalAxis` (bbox-based, always world-aligned) this follows
+   *  a tilted limb's actual long axis, so stripes/slabs flow along the part
+   *  even when it lies diagonally on the print plate. Unit length; sign
+   *  normalized so the largest-magnitude component is positive. Falls back
+   *  to the bbox axis for degenerate (point-like) islands. */
   principalAxisVector: [number, number, number];
   /** Length along the principal axis. */
   principalExtent: number;
@@ -134,6 +138,10 @@ function compute(mesh: MeshData): MeshIslandsResult {
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
     const hist = { xPos: 0, xNeg: 0, yPos: 0, yNeg: 0, zPos: 0, zNeg: 0 };
+    // Area-weighted first + second moments of triangle centroids — feeds the
+    // PCA covariance for the true principal direction.
+    let mW = 0, mX = 0, mY = 0, mZ = 0;
+    let mXX = 0, mXY = 0, mXZ = 0, mYY = 0, mYZ = 0, mZZ = 0;
 
     while (stack.length > 0) {
       const t = stack.pop()!;
@@ -165,6 +173,13 @@ function compute(mesh: MeshData): MeshIslandsResult {
       const crz = e1x * e2y - e1y * e2x;
       const area = 0.5 * Math.sqrt(crx * crx + cry * cry + crz * crz);
       surfaceArea += area;
+      // centroid moments (area-weighted) for the covariance/PCA pass
+      const tcx = (ax + bx + cx) / 3, tcy = (ay + by + cy) / 3, tcz = (az + bz + cz) / 3;
+      const w = area > 0 ? area : 1e-12;
+      mW += w;
+      mX += w * tcx; mY += w * tcy; mZ += w * tcz;
+      mXX += w * tcx * tcx; mXY += w * tcx * tcy; mXZ += w * tcx * tcz;
+      mYY += w * tcy * tcy; mYZ += w * tcy * tcz; mZZ += w * tcz * tcz;
       // area-weighted normal-hemisphere accumulation for this triangle
       const nx = normals[t * 3], ny = normals[t * 3 + 1], nz = normals[t * 3 + 2];
       const ax_ = Math.abs(nx), ay_ = Math.abs(ny), az_ = Math.abs(nz);
@@ -205,10 +220,17 @@ function compute(mesh: MeshData): MeshIslandsResult {
     if (ez > principalExtent) { principalAxis = 'z'; principalExtent = ez; }
     const maxExtent = principalExtent > 0 ? principalExtent : 1;
     const aspectRatio: [number, number, number] = [ex / maxExtent, ey / maxExtent, ez / maxExtent];
-    const principalAxisVector: [number, number, number] =
+    // True principal direction via PCA over area-weighted triangle centroids.
+    // Covariance from the accumulated moments; dominant eigenvector by power
+    // iteration seeded with the bbox axis (a decent starting guess that also
+    // breaks ties deterministically for symmetric shapes).
+    const bboxAxisVector: [number, number, number] =
       principalAxis === 'x' ? [1, 0, 0] :
       principalAxis === 'y' ? [0, 1, 0] :
                               [0, 0, 1];
+    const principalAxisVector = dominantEigenvector(
+      mW, mX, mY, mZ, mXX, mXY, mXZ, mYY, mYZ, mZZ, bboxAxisVector,
+    );
     const histSum = hist.xPos + hist.xNeg + hist.yPos + hist.yNeg + hist.zPos + hist.zNeg;
     const normHist = histSum > 0
       ? {
@@ -282,6 +304,50 @@ function compute(mesh: MeshData): MeshIslandsResult {
   }
 
   return { triIslands, islands, meshNormalHistogram: meshHistNorm, modelUpAxis: upAxis };
+}
+
+/** Dominant eigenvector of the 3×3 covariance matrix assembled from
+ *  area-weighted centroid moments, via power iteration. `seed` breaks ties
+ *  (symmetric/spherical shapes) and guarantees a deterministic result; it is
+ *  also the fallback when the covariance is degenerate (point-like island).
+ *  Sign is normalized so the largest-magnitude component is positive —
+ *  callers get a stable direction rather than ±v flapping run to run. */
+function dominantEigenvector(
+  w: number,
+  mx: number, my: number, mz: number,
+  mxx: number, mxy: number, mxz: number,
+  myy: number, myz: number, mzz: number,
+  seed: [number, number, number],
+): [number, number, number] {
+  if (w <= 0) return seed;
+  const ux = mx / w, uy = my / w, uz = mz / w;
+  // C = E[ppᵀ] − μμᵀ
+  const cxx = mxx / w - ux * ux;
+  const cxy = mxy / w - ux * uy;
+  const cxz = mxz / w - ux * uz;
+  const cyy = myy / w - uy * uy;
+  const cyz = myz / w - uy * uz;
+  const czz = mzz / w - uz * uz;
+  const trace = cxx + cyy + czz;
+  if (!Number.isFinite(trace) || trace <= 0) return seed;
+
+  let vx = seed[0], vy = seed[1], vz = seed[2];
+  // Nudge off any exact eigen-null start (seed ⊥ dominant direction) so the
+  // iteration can't stall on a zero vector.
+  vx += 1e-6; vy += 2e-6; vz += 3e-6;
+  for (let i = 0; i < 48; i++) {
+    const nx2 = cxx * vx + cxy * vy + cxz * vz;
+    const ny2 = cxy * vx + cyy * vy + cyz * vz;
+    const nz2 = cxz * vx + cyz * vy + czz * vz;
+    const len = Math.hypot(nx2, ny2, nz2);
+    if (len < trace * 1e-12) return seed; // degenerate — bbox fallback
+    vx = nx2 / len; vy = ny2 / len; vz = nz2 / len;
+  }
+  // Stable sign: biggest-|component| positive.
+  const axp = Math.abs(vx), ayp = Math.abs(vy), azp = Math.abs(vz);
+  const flip = (axp >= ayp && axp >= azp) ? (vx < 0) : (ayp >= azp) ? (vy < 0) : (vz < 0);
+  if (flip) { vx = -vx; vy = -vy; vz = -vz; }
+  return [vx, vy, vz];
 }
 
 /** Collect every triangle id belonging to the given island. */
