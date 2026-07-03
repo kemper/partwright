@@ -393,6 +393,14 @@ else                  → hybrid: traced silhouette body + probed primitives for
   a prism along NO axis, so primitive decomposition stalls, but a
   section-interpolating levelSet reproduces it exactly for free.
   (armor_hip: bootstrap 2.15 → 6/6+2/2 in ONE stock genLevelSet turn.)
+- **5.25d Clamp the blended SDF to ±(levelSet edge length/2)**: straddle
+  pairs alone don't place flat INTERIOR ledges exactly — grid samples sit
+  outside the 0.01mm blend zone, so the marching-cubes crossing lerps a
+  deep-inside magnitude against a shallow-outside one and lands 0.02-0.05
+  off the plane (reads as a part-wide thin-skin finding at the ledge z).
+  Saturating the SDF makes both sides symmetric; oblique surfaces lose
+  <0.01. (armor_shin: one-line fix flipped the findings gate to PASS,
+  chamfer 0.0076 → 0.0061; 6/6+2/2 in 2 turns, genus 3 free.)
 - **5.27 Convexity test → hull-of-exact-vertices**: if every large facet's
   half-space contains the whole solid, the outer body is convex — build it
   as `Manifold.hull(points)` of the exact mesh vertices instead of
