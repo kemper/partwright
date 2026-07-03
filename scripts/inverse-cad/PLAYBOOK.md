@@ -381,6 +381,18 @@ else                  → hybrid: traced silhouette body + probed primitives for
   structure (a facet's extent overrunning an expected cut boundary proves
   the cut carries a chamfered profile). (armor_upper_arm: bootstrap → 6/6
   in ONE attempt with chamfer 0.000 — bit-exact — and zero probe fits.)
+- **5.26a Census plane-count is the §5.26-vs-§5.25 discriminator**: a
+  faceted-exact CAD export collapses hard (armor_upper_arm: 520 tris →
+  109 planes); a census staying near tris/2 (armor_hip: 3194 → 1851)
+  carries curved fans and blends — go straight to §5.25 levelSet and keep
+  the census as the structure map (it still names every flat wall, ledge
+  z, and fan family in one call).
+- **5.25c A linear erosion band (tangent-plane family at constant
+  n·ŷ=±0.707 with nx²+nz²=0.5) is a section-inset sweep**: sections along
+  the band axis equal the full profile inset linearly with distance —
+  a prism along NO axis, so primitive decomposition stalls, but a
+  section-interpolating levelSet reproduces it exactly for free.
+  (armor_hip: bootstrap 2.15 → 6/6+2/2 in ONE stock genLevelSet turn.)
 - **5.27 Convexity test → hull-of-exact-vertices**: if every large facet's
   half-space contains the whole solid, the outer body is convex — build it
   as `Manifold.hull(points)` of the exact mesh vertices instead of
