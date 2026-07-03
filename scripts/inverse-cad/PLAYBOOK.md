@@ -166,6 +166,23 @@ else                  → hybrid: traced silhouette body + probed primitives for
   section bbox z-min sits at 1.2 instead of the circle's 1.0 is a chordal
   flat — author it IN the profile (circle ∩ halfplane, a D-prism), don't
   subtract it later. (frame_shin neck)
+- **5.20 Test traced walls for arcs about a probed feature center**: a
+  DP-traced "flat wall + corner fillet" can really be one large arc
+  centered on the socket/feature center — compute each traced boundary
+  point's distance to the probed center before fitting local corner arcs.
+  (hip_shoulder: six ray samples along the apparent wall+fillet all sat at
+  r=4.4996±0.0004 about the socket center.) Corollary: a Kåsa circle fit
+  returning a huge radius with ~0 residual (r≈223, res 0.0001) means the
+  "arc" is a straight chamfer line — model a line, not a fillet.
+- **5.21 Read the chamfered-edge inventory off one near-face section**:
+  don't chamfer the whole outline blindly. Section at z = face+0.05 and
+  compare each edge's position to the mid-height outline — only the inset
+  edges carry the face chamfer; a uniform-offset chamfer fails on exactly
+  the others. (hip_shoulder)
+- **Dummy 13 kit note**: the socket lead-in cone spec repeats across parts
+  (~r(z)=2.47−0.37z, ≈20°, on every open socket face — measured identical
+  on ankle and hip_shoulder) and the socket sphere is r≈2.90. Probe to
+  confirm, but start there.
 
 ## 6. Plateau protocol
 
