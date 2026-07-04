@@ -1543,6 +1543,18 @@
     "articulated",
     "print-in-place"
    ]
+  },
+  {
+   "id": "dummy13-faithful-armor",
+   "name": "Dummy 13 \u2014 Faithful Armor Kit",
+   "file": "dummy13-faithful-armor.partwright.json",
+   "language": "manifold-js",
+   "description": "All 16 armor parts for soozafone's Dummy 13 articulated figure (CC-BY-4.0), reverse-engineered into parametric code \u2014 every part verified against the original STL to mean 0.004mm chamfer, three parts bit-exact. Clips over the frame kit; laid out as a print plate.",
+   "tags": [
+    "toys",
+    "articulated",
+    "armor"
+   ]
   }
  ]
 }
