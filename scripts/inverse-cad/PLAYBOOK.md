@@ -405,6 +405,23 @@ else                  → hybrid: traced silhouette body + probed primitives for
   Saturating the SDF makes both sides symmetric; oblique surfaces lose
   <0.01. (armor_shin: one-line fix flipped the findings gate to PASS,
   chamfer 0.0076 → 0.0061; 6/6+2/2 in 2 turns, genus 3 free.)
+- **5.25e Ledge-exact SDF override**: straddle pairs + the §5.25d clamp
+  still land a flat interior ledge at the *midpoint of the two adjacent
+  grid layers* — the z-blend has no z-gradient at the plane. Within one
+  cell of each measured ledge L, with a = sdf2d(straddle below), b =
+  sdf2d(straddle above): if a>0&&b<0 (material capped at L) use
+  v = z≤L ? min(v_blend, L−z) : max(L−z, v_blend); mirrored for material
+  starting at L (a<0&&b>0). The blended field stays the xy wall metric;
+  the override adds true plane distance in z, so marching cubes lands the
+  plane exactly regardless of grid phase. (benchy: flipped worst-finding
+  FAIL 5.6mm³ → PASS, then 1.9mm³.)
+- **5.25f De-phase the levelSet grid from round-number ledges**: CAD
+  authors put ledges at round z (deck 8.5, sill 20.5), and a default
+  bounds.min like z0 − 0.5 keeps every grid layer exactly in phase with
+  them — a ledge plane coinciding with a layer produces degenerate v=0
+  samples (marching-cubes collars/fills at that z). Check
+  (ledge − zmin)/edge for near-integers and shift bounds so no layer sits
+  within ~0.03 of an event plane. (benchy: grid z de-phased by 0.165.)
 - **5.27 Convexity test → hull-of-exact-vertices**: if every large facet's
   half-space contains the whole solid, the outer body is convex — build it
   as `Manifold.hull(points)` of the exact mesh vertices instead of
@@ -483,6 +500,13 @@ else                  → hybrid: traced silhouette body + probed primitives for
   `node scripts/inverse-cad/voxelGenus.mjs <stl> --res 0.25,0.15` on BOTH
   meshes and compare solids to solids. (dummy13 hand_open target: surface
   genus 0, solid genus 1 — a touching finger loop.)
+- **5.39 Axis-ray grid with zero-hit columns finds through-tunnels in one
+  call**: cast a grid of rays along a suspected tunnel axis; columns whose
+  ray passes clean through (zero surface hits) map the tunnel's cross-
+  section directly — a '.' island inside the '#' wall field. One probe
+  answers position, size, AND whether the hole is truly through (vs a
+  blind bore, which shows a floor hit). (benchy hawsepipe: ~2.5mm y-tunnel
+  at x 23.25, z 20.5, piercing both bulwark walls = 2 handles.)
 
 ## 6. Plateau protocol
 
@@ -608,6 +632,18 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
   while real ledges are 3-28mm². Use Σ|signedArea| of outers minus holes;
   mirror-twin contours with equal-and-opposite areas is the diagnostic
   signature of orientation noise, not geometry. (armor_outer_chest)
+- **genLevelSet's banded fallback erases outers nested inside holes**
+  (depth-3 nesting: hull outer > cockpit hole > cabin outer — common in
+  foreign meshes with courtyards/superstructures): `emitBandedSegment`
+  composes `outers.add(...).subtract(ALL holes)`, so a hole containing a
+  nested outer deletes it (benchy lost the whole cabin base, 195mm³, and
+  gained a fabricated handle). Until the emitter composes by nesting
+  depth, route such parts through the pure SDF blend — even-odd `sdf2d`
+  handles any nesting depth for free. Diagnostic: slice the missing
+  z-range and look for isHole=false contours whose bbox sits inside a
+  hole's bbox. (Self-touching meshes also emit reversed-signed-area
+  outers there; winding-based composition is not robust — even-odd is.)
+  Tracked as a genLevelSet defect issue.
 
 ## 8. Reading the feedback bundle
 
