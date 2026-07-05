@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  fillFromNearestPainted,
   encodeTriangleIdColor,
   decodeTriangleIdPixel,
   buildPaletteSnapper,
@@ -222,6 +223,27 @@ describe('triangleFacing', () => {
     const facing = triangleFacing(mesh, [0, 1], [0, 0, 1]);
     expect(facing[0]).toBeCloseTo(1, 5);
     expect(facing[1]).toBeCloseTo(-1, 5);
+  });
+});
+
+describe('fillFromNearestPainted', () => {
+  it('propagates the nearest painted color across an unpainted strip and leaves unreachable components alone', () => {
+    // Strip t0..t4 (colors 7, -1, -1, -1, 9) plus isolated t5 (-1).
+    const adjacency = new Int32Array([
+      1, -1, -1,
+      0, 2, -1,
+      1, 3, -1,
+      2, 4, -1,
+      3, -1, -1,
+      -1, -1, -1,
+    ]);
+    const colorIndex = new Int32Array([7, -1, -1, -1, 9, -1]);
+    const filled = fillFromNearestPainted({ colorIndex, adjacency });
+    expect(filled.sort()).toEqual([1, 2, 3]);
+    expect(colorIndex[1]).toBe(7); // nearest to t0
+    expect(colorIndex[3]).toBe(9); // nearest to t4
+    expect([7, 9]).toContain(colorIndex[2]); // equidistant — either is fine
+    expect(colorIndex[5]).toBe(-1); // unreachable stays unpainted
   });
 });
 

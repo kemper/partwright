@@ -70,3 +70,17 @@ already-painted triangles it covers and refuses to commit past the
 threshold, telling the caller to regenerate. A completion that repaints
 preserved areas differently is untrustworthy by definition — this turns
 the failure from silently-committed into detected-and-retryable.
+
+**Second follow-up (same session):** validation rounds 4-6 refined the
+guard and completed the pipeline. The guard now measures contradiction
+only against RELIABLE paint (manual paint or direct votes at facing >=
+0.5) — counting grazing/fill paint punished exactly the views meant to
+replace it. Three straight-below rounds proved Gemini's character prior
+(red-left/blue-right) beats painted evidence in every el -90 frame, so
+the protocol drops that view: oblique below-views (el -45) carry enough
+painted anchor to complete correctly, and the new `paintFillRemaining`
+closes the deep occlusions no view covers — multi-source BFS giving each
+unpainted triangle its nearest painted neighbor's color, deterministic
+by construction. Final Pomni-head run: 6 conditioned views (one 92%-flip
+caught by the guard and cured by a retry), 94.1% coverage from images,
+100% after the fill, zero unreachable.

@@ -210,6 +210,41 @@ export function triangleFacing(mesh: MeshData, ordered: readonly number[], camDi
   return facing;
 }
 
+/** Close the last coverage gap geometrically: multi-source BFS from every
+ *  painted triangle over the scope's edge adjacency, assigning each
+ *  unpainted triangle the color of its NEAREST painted neighbor (in hops).
+ *  This is the deterministic finisher for the multi-view projection loop —
+ *  the triangles no ortho view sees well are deep occlusions (crevices,
+ *  hole interiors), and inheriting the surrounding color is visually
+ *  correct by construction for geometry that can't be seen from outside.
+ *  Mutates `colorIndex` (-1 = unpainted) in place; returns filled locals.
+ *  Unreachable triangles (no painted triangle in their adjacency component)
+ *  stay -1. */
+export function fillFromNearestPainted(opts: {
+  colorIndex: Int32Array;
+  adjacency: Int32Array;
+}): number[] {
+  const { colorIndex, adjacency } = opts;
+  const n = colorIndex.length;
+  const queue: number[] = [];
+  for (let t = 0; t < n; t++) {
+    if (colorIndex[t] >= 0) queue.push(t);
+  }
+  const filled: number[] = [];
+  for (let head = 0; head < queue.length; head++) {
+    const t = queue[head];
+    const color = colorIndex[t];
+    for (let e = 0; e < 3; e++) {
+      const nb = adjacency[t * 3 + e];
+      if (nb < 0 || colorIndex[nb] >= 0) continue;
+      colorIndex[nb] = color;
+      filled.push(nb);
+      queue.push(nb);
+    }
+  }
+  return filled;
+}
+
 /** Per-mesh multi-view compositing state: for every GLOBAL triangle, the
  *  facing confidence of the projection that last painted it (0 = never
  *  projection-painted). Keyed by MeshData identity, so re-running the model

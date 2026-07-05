@@ -255,7 +255,7 @@ import { detectSymmetryPlane, mirrorIslandPairs, reflectPoint, reflectVector, mi
 import { fitRegionShape } from './color/regionFit';
 import { createSelection as createPaintSelection, getSelection as getPaintSelection, listSelections as storeListSelections, removeSelection as storeRemoveSelection, renameSelection as storeRenameSelection, addRefinement, popRefinement, resolveSelection as resolvePaintSelection, type SelectorNode, type RefineOp } from './color/selections';
 import { partitionTriangles, type PartitionSpec } from './color/partition';
-import { buildPaletteSnapper, tallyProjectionVotes, buildScopeEdgeAdjacency, fillUnvotedFromNeighbors, triangleFacing, getProjectionConfidence, projectionRegionRegistry, BACKGROUND_VOTE, OFF_IMAGE, WINNER_UNPAINTED, WINNER_NO_PIXELS } from './color/idProjection';
+import { buildPaletteSnapper, tallyProjectionVotes, buildScopeEdgeAdjacency, fillUnvotedFromNeighbors, fillFromNearestPainted, triangleFacing, getProjectionConfidence, projectionRegionRegistry, BACKGROUND_VOTE, OFF_IMAGE, WINNER_UNPAINTED, WINNER_NO_PIXELS } from './color/idProjection';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
 import { cylinderRefineRegion, findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
@@ -15875,6 +15875,7 @@ async function main() {
       // painted overlap and refuse to commit past the threshold — the
       // caller regenerates instead of silently absorbing a bad image.
       const snapshot = buildTriColors(mesh.numTri);
+      const confidenceForGuard = getProjectionConfidence(mesh);
       let overlap = 0, disagree = 0;
       if (snapshot) {
         for (let local = 0; local < ordered.length; local++) {
@@ -15882,6 +15883,13 @@ async function main() {
           if (w < 0 || filledSet.has(local)) continue;
           const globalT = ordered[local];
           if (!isPainted(snapshot, globalT)) continue;
+          // Only RELIABLE existing paint is evidence against the image:
+          // manual paint (no projection confidence) or a prior direct vote
+          // at solid facing. Grazing paint and neighbor-fills (confidence
+          // < 0.5) are the noisiest triangles from earlier views — counting
+          // them punishes exactly the views meant to replace them.
+          const prior = confidenceForGuard[globalT];
+          if (prior > 0 && prior < 0.5) continue;
           overlap++;
           if (snap(snapshot[globalT * 3] / 255, snapshot[globalT * 3 + 1] / 255, snapshot[globalT * 3 + 2] / 255) !== w) disagree++;
         }
@@ -15896,7 +15904,7 @@ async function main() {
 
       // Composite this view over previous projections per `mode`. Filled
       // triangles carry half confidence so a later direct look beats a fill.
-      const confidence = getProjectionConfidence(mesh);
+      const confidence = confidenceForGuard;
       const currentColors = mode === 'fillGaps' ? snapshot : null;
       const perPalette: Set<number>[] = opts.palette.map(() => new Set<number>());
       const accepted = new Set<number>();
@@ -15975,6 +15983,93 @@ async function main() {
         nextStep: coverage < 0.995
           ? `Coverage ${(coverage * 100).toFixed(1)}% of scope. Render the next view with paint shown (renderIsland with showPaint), have the image model COMPLETE the unpainted gray areas matching the existing colors exactly, and project it back with that view's spec (mode 'bestFacing'). Then auditPaint().`
           : 'Coverage complete — auditPaint() and inspect renderViews({showPaint:true}).',
+      };
+    },
+
+    /** EXPERIMENTAL (#885): close the last coverage gap after a multi-view
+     *  projection loop. Every unpainted triangle in scope inherits the color
+     *  of its NEAREST painted neighbor (multi-source BFS over edge
+     *  adjacency). The triangles no ortho view covers are deep occlusions
+     *  (crevices, hole interiors, undersides between surfaces); inheriting
+     *  the surrounding color is visually correct for geometry that cannot
+     *  be seen from outside — and deterministic, so it never hallucinates.
+     *  Run auditPaint() after. */
+    paintFillRemaining(opts: { within: { island?: number; selection?: string | number; region?: number }; namePrefix?: string }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintFillRemaining requires { within }' };
+      const scope = resolveWithin(opts.within);
+      if (scope === null) return { error: 'paintFillRemaining requires within — it never paints unscoped.' };
+      if ('error' in scope) return scope;
+      const mesh = currentMeshData;
+      const snapshot = buildTriColors(mesh.numTri);
+      if (!snapshot) return { error: 'paintFillRemaining: nothing is painted yet — there is no color to inherit.' };
+
+      const ordered = [...scope.triangles];
+      // Distinct existing colors become the inheritance targets.
+      const colorKeys = new Map<number, number>();
+      const colors: [number, number, number][] = [];
+      const colorIndex = new Int32Array(ordered.length).fill(-1);
+      let alreadyPainted = 0;
+      for (let local = 0; local < ordered.length; local++) {
+        const globalT = ordered[local];
+        if (!isPainted(snapshot, globalT)) continue;
+        alreadyPainted++;
+        const key = (snapshot[globalT * 3] << 16) | (snapshot[globalT * 3 + 1] << 8) | snapshot[globalT * 3 + 2];
+        let idx = colorKeys.get(key);
+        if (idx === undefined) {
+          idx = colors.length;
+          colorKeys.set(key, idx);
+          colors.push([snapshot[globalT * 3] / 255, snapshot[globalT * 3 + 1] / 255, snapshot[globalT * 3 + 2] / 255]);
+        }
+        colorIndex[local] = idx;
+      }
+      if (alreadyPainted === 0) return { error: 'paintFillRemaining: nothing inside the scope is painted — there is no color to inherit.' };
+
+      const adjacency = buildScopeEdgeAdjacency(mesh, ordered);
+      const filledLocals = fillFromNearestPainted({ colorIndex, adjacency });
+
+      // Commit per inherited color; register so later projections can
+      // shrink these regions like any other projection paint. Filled
+      // triangles carry token confidence so a future direct view wins.
+      const confidence = getProjectionConfidence(mesh);
+      const registry = projectionRegionRegistry(mesh);
+      const perColor = new Map<number, Set<number>>();
+      for (const local of filledLocals) {
+        const idx = colorIndex[local];
+        let set = perColor.get(idx);
+        if (!set) { set = new Set(); perColor.set(idx, set); }
+        const globalT = ordered[local];
+        set.add(globalT);
+        if (confidence[globalT] === 0) confidence[globalT] = 0.05;
+      }
+      const prefix = opts.namePrefix ?? 'fill';
+      const regions: Array<{ id: number; name: string; color: [number, number, number]; triangles: number }> = [];
+      let seq = 0;
+      for (const [idx, set] of perColor) {
+        seq++;
+        const region = addRegion(
+          `${prefix} ${seq}`,
+          colors[idx],
+          'paintbrush',
+          { kind: 'triangles', ids: [...set] },
+          set,
+        );
+        registry.add(region.id);
+        regions.push({ id: region.id, name: region.name, color: colors[idx], triangles: set.size });
+      }
+      scheduleColorRefresh();
+      syncLockState();
+
+      const unreachable = ordered.reduce((acc, _g, local) => acc + (colorIndex[local] < 0 ? 1 : 0), 0);
+      return {
+        filled: filledLocals.length,
+        alreadyPainted,
+        unreachable,
+        scopeTriangles: scope.triangles.size,
+        regions,
+        nextStep: unreachable > 0
+          ? `${unreachable} triangles are in adjacency components with no painted triangle at all (fully separate surfaces) — paint one seed there and re-run, or leave them.`
+          : 'Scope fully painted — auditPaint() to verify.',
       };
     },
 
@@ -17588,6 +17683,7 @@ async function main() {
         'paintDisc':       { signature: 'paintDisc({center, normal, radius, thickness?=radius, color, name?, smooth?}) -- Paint a smooth-edged DISC facing `normal` — THE facial-feature primitive (iris, pupil, blush, buttons). No quaternion math: feed it probePixel\'s point+normal or a detectRegions region\'s centroid+normal. Paint concentric features largest-first; later discs composite on top (dome, then iris, then pupil).', docs: '/ai/colors.md' },
         'auditPaint':      { signature: 'auditPaint() -> {regions: [{id, name, triangles, visibleTriangles, hiddenFraction, fragmentCount, fragments?}], unpaintedIslands, flaggedRegionIds, summary} -- Deterministic whole-scene paint audit: stray disconnected paint fragments (mis-aimed selectors, fan-wedge splatter), regions overwritten by later paint, islands never painted. Run before declaring a paint job done; dismiss or fix every flag.', docs: '/ai/colors.md' },
 'paintByImageProjection': { signature: 'paintByImageProjection({image, view, within, palette, mode?, minFacing?, namePrefix?}) -> {painted, coverage, skipped, pixels, alignment, regions} -- EXPERIMENTAL (#885): back-project an AI-repainted render onto the mesh as palette-snapped paint regions via a triangle-ID buffer: exact z-buffer occlusion, per-pixel majority voting (no speckle), pinhole fill from agreeing neighbors. Render a view (ortho), have an image model repaint it, hand the repainted data URL back with the SAME view spec. Multi-view loop: render paint-so-far (showPaint), have the model complete the gray areas matching existing colors, project with mode bestFacing (default; better-facing view wins per triangle) or fillGaps (never touches painted triangles) until coverage converges.', docs: '/ai/colors.md' },
+'paintFillRemaining': { signature: 'paintFillRemaining({within, namePrefix?}) -> {filled, unreachable, regions} -- EXPERIMENTAL (#885): finish a multi-view projection by giving every unpainted triangle in scope the color of its nearest painted neighbor (multi-source BFS). Deterministic — the deep occlusions no view covers inherit their surroundings. Run auditPaint() after.', docs: '/ai/colors.md' },
 'fitRegionShape':  { signature: 'fitRegionShape({triangleIds}) -> {best, circle: {center, axis, radius, rms}, sphere?, plane, nextStep} -- Fit an ANALYTIC disc/sphere/plane to a detected region\'s boundary. THE fan-bleed killer: sculpted features are usually clean discs — fit one, then paint it via paintDisc/paintRegionFitted instead of painting the ragged triangle set.', docs: '/ai/colors.md' },
         'paintRegionFitted': { signature: 'paintRegionFitted({triangleIds, color, pad?=1.0, thickness?, name?, force?}) -- One call: fit a disc to the region boundary and paint it with a crisp analytic edge. Refuses when the fit is poor (feature isn\'t disc-like) unless force: true.', docs: '/ai/colors.md' },
         'paintMirrored':   { signature: 'paintMirrored({regionId, color?, name?, plane?}) -- Mirror a painted region across the model\'s bilateral symmetry plane (auto-detected — see listComponents().symmetry). Paint ONE eye, mirror it: position/size match by construction, color can differ (red left iris / blue right iris). Analytic paints reflect exactly; paintFaces sets fall back to per-triangle mirroring.', docs: '/ai/colors.md' },
