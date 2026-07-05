@@ -644,6 +644,19 @@ Plateau = 3 consecutive non-improving attempts while a MUST gate fails.
   hole's bbox. (Self-touching meshes also emit reversed-signed-area
   outers there; winding-based composition is not robust — even-odd is.)
   Tracked as a genLevelSet defect issue.
+- **Never `smoothOut`/`refine*` a levelSet/marching-cubes mesh** — now
+  confirmed twice (dummy13 hands, benchy hull): it amplifies the MC
+  lattice into scribble/wavy noise, blowing hausdorff 10–100×
+  (benchy: 0.16 → 4.34mm). Visual smoothness of a levelSet result is
+  governed by the SIMPLIFY TOLERANCE, not by smoothing passes: benchy's
+  "rough hull" complaint was simplify(0.04) decimation; simplify(0.033)
+  reads as smooth as the original at 1200px while staying in-gate
+  (chamfer 0.012, hausdorff 0.158) and under the 500k tri budget.
+  Pick the loosest tolerance that still LOOKS smooth up close — ~0.03 at
+  60mm part scale — and verify with a high-res crop, not the thumbnail.
+  (Catmull-Rom-resampling the source sections also smooths corner-free
+  hull regions but erodes real corners past the hausdorff gate — needs
+  turning-angle awareness first; tracked as #887.)
 
 ## 8. Reading the feedback bundle
 
