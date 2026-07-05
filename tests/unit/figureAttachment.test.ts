@@ -1,0 +1,612 @@
+// Unit tests for the figure ACCESSORY ATTACHMENT layer added to
+// src/geometry/sdfFigure.ts — the derived rig frames (ring/shoulder/back/
+// forearm) and the placement verbs (ring/ringPoint/strap/hangFrom/onFace).
+// Pure rig math (no WASM): meshing is exercised headlessly via model:preview.
+
+import { describe, it, expect } from 'vitest';
+import { __figureTestables__, createFigureNamespace } from '../../src/geometry/sdfFigure';
+import { __testables__ as sdfT } from '../../src/geometry/sdf';
+import type { SdfApi, Vec3 } from '../../src/geometry/sdfFigure';
+
+const { buildRig, ringBand, buildBand, sharedSolid, ringPoint, strap, hangFrom, onFace,
+  buildTopParts, buildPantsParts, buildArms, buildLegs } = __figureTestables__;
+
+const api: SdfApi = {
+  sphere: sdfT.primSphere,
+  ellipsoid: sdfT.primEllipsoid,
+  box: sdfT.primBox,
+  roundedBox: sdfT.primRoundedBox,
+  cylinder: sdfT.primCylinder,
+  roundedCylinder: sdfT.primRoundedCylinder,
+  capsule: sdfT.primCapsule,
+  union: (...nodes) => nodes.reduce((a, b) => sdfT.opUnion(a, b)),
+  __fineHands: (node, regions) => sdfT.opFineHands(node, regions),
+} as unknown as SdfApi;
+
+const dist = (a: Vec3, b: Vec3): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+describe('rig attachment frames', () => {
+  it('exposes ring/shoulder/back/forearm frames with sane geometry', () => {
+    const rig = buildRig({ height: 64, headsTall: 7 });
+    // Ring frames: positive semi-axes, neck above the waist, world-down hang.
+    expect(rig.ring.neck.rx).toBeGreaterThan(0);
+    expect(rig.ring.waist.rx).toBeGreaterThan(0);
+    expect(rig.ring.neck.center[2]).toBeGreaterThan(rig.ring.waist.center[2]);
+    expect(rig.ring.waist.hang).toEqual([0, 0, -1]);
+    // Neutral pose: axes are the world basis.
+    expect(rig.ring.neck.axis[2]).toBeCloseTo(1, 6);
+    expect(rig.ring.neck.xAxis[0]).toBeCloseTo(1, 6);
+    expect(rig.ring.neck.yAxis[1]).toBeCloseTo(1, 6);
+  });
+
+  it('places shoulders symmetrically (L on +X, R on −X) above the waist', () => {
+    const rig = buildRig({ height: 64 });
+    expect(rig.shoulder.L[0]).toBeGreaterThan(0);
+    expect(rig.shoulder.R[0]).toBeLessThan(0);
+    expect(rig.shoulder.L[0]).toBeCloseTo(-rig.shoulder.R[0], 6);
+    expect(rig.shoulder.L[2]).toBeGreaterThan(rig.ring.waist.center[2]);
+  });
+
+  it('puts the back point behind the body (+Y) with an outward +Y normal', () => {
+    const rig = buildRig({ height: 64 });
+    expect(rig.back.point[1]).toBeGreaterThan(0);
+    expect(rig.back.normal[1]).toBeCloseTo(1, 6);
+  });
+
+  it('builds forearm frames matching the elbow→wrist joints', () => {
+    const rig = buildRig({ height: 64 });
+    expect(rig.forearm.L.a).toEqual(rig.joints.lowerArmL);
+    expect(rig.forearm.L.b).toEqual(rig.joints.wristL);
+    expect(rig.forearm.L.length).toBeCloseTo(dist(rig.joints.lowerArmL as Vec3, rig.joints.wristL as Vec3), 6);
+    expect(Math.hypot(...rig.forearm.L.axis)).toBeCloseTo(1, 6);
+    expect(rig.forearm.L.radius).toBeCloseTo(rig.r.lowerArm, 6);
+  });
+
+  it('carries the frames through a spine lean (they are not the rest pose)', () => {
+    const upright = buildRig({ height: 64 });
+    const leaned = buildRig({ height: 64, pose: { spine: { lean: 30, turn: 0, side: 0 } } });
+    // A forward lean (about the waist) tips the neck ring forward (−Y) vs upright.
+    expect(leaned.ring.neck.center[1]).toBeLessThan(upright.ring.neck.center[1] - 1e-3);
+    // ...and tilts its up-axis away from world-Z.
+    expect(leaned.ring.neck.axis[2]).toBeLessThan(0.999);
+  });
+});
+
+describe('grip frame — palm side (held props seat in the palm, not the knuckles)', () => {
+  it('palmNormal points to the hand palm: cross(foreDir, hinge), not its negative', () => {
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 40, bend: 30 } } });
+    const foreDir = rig.dir.lowerArmR as Vec3;
+    const hinge = rig.dir.elbowHingeR as Vec3;
+    // The hand builder (placedHand) maps the canonical palm (+Y) to cross(dir,
+    // splay) = cross(foreDir, hinge); the grip frame MUST match that sign so a
+    // held prop seats in the finger cup, not on the back of the hand.
+    const cx = [
+      foreDir[1] * hinge[2] - foreDir[2] * hinge[1],
+      foreDir[2] * hinge[0] - foreDir[0] * hinge[2],
+      foreDir[0] * hinge[1] - foreDir[1] * hinge[0],
+    ];
+    const l = Math.hypot(...cx) || 1;
+    const expected: Vec3 = [cx[0] / l, cx[1] / l, cx[2] / l];
+    const dot = rig.grip.R.palmNormal[0] * expected[0] + rig.grip.R.palmNormal[1] * expected[1] + rig.grip.R.palmNormal[2] * expected[2];
+    expect(dot).toBeGreaterThan(0.99); // same direction (not flipped)
+    // The grip point sits toward the palm: offset from the hand centre ALONG palmNormal.
+    const off = [
+      rig.grip.R.point[0] - rig.joints.handR[0],
+      rig.grip.R.point[1] - rig.joints.handR[1],
+      rig.grip.R.point[2] - rig.joints.handR[2],
+    ];
+    const offDot = off[0] * rig.grip.R.palmNormal[0] + off[1] * rig.grip.R.palmNormal[1] + off[2] * rig.grip.R.palmNormal[2];
+    expect(offDot).toBeGreaterThan(0);
+  });
+});
+
+describe('grip frame — thumb axis + `thumb` pose hint', () => {
+  it('exposes a thumbAxis that curls over the front of the grip (≈ reach+palm)', () => {
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 30, bend: 40 } } });
+    const g = rig.grip.R;
+    // The thumb is roughly along reach + palmNormal (it folds over the fingers),
+    // so it has a strong positive projection onto their sum and is ⊥-ish to the
+    // grip axis (the held bar).
+    const sum = [g.reach[0] + g.palmNormal[0], g.reach[1] + g.palmNormal[1], g.reach[2] + g.palmNormal[2]];
+    const sl = Math.hypot(...sum) || 1;
+    const proj = (g.thumbAxis[0] * sum[0] + g.thumbAxis[1] * sum[1] + g.thumbAxis[2] * sum[2]) / sl;
+    expect(proj).toBeGreaterThan(0.6);
+    expect(Math.hypot(...g.thumbAxis)).toBeCloseTo(1, 6);
+  });
+
+  it("thumb:'in' turns the wrist so the thumb leans toward the body midline", () => {
+    // Right arm: midline is +X. thumb:'in' should give a +X-leaning thumb; the
+    // opposite target 'out' should flip that lateral lean negative.
+    const inn = buildRig({ height: 64, pose: { armR: { raiseSide: 14, raiseFwd: 35, bend: 80, thumb: 'in' } } });
+    const out = buildRig({ height: 64, pose: { armR: { raiseSide: 14, raiseFwd: 35, bend: 80, thumb: 'out' } } });
+    expect(inn.grip.R.thumbAxis[0]).toBeGreaterThan(0);            // leans inward (+X) for the right hand
+    expect(inn.grip.R.thumbAxis[0]).toBeGreaterThan(out.grip.R.thumbAxis[0]); // 'in' is more +X than 'out'
+  });
+});
+
+describe('wristRoll — forearm pronation/supination (the real wrist DOF)', () => {
+  // These are ANATOMY assertions, not math invariants. The previous failed
+  // `roll` API satisfied a math invariant (gripAxis bit-identical between
+  // roll:0 and roll:180) but bent the elbow backwards through the wrist —
+  // shipped because the test asserted the wrong thing. The checks below would
+  // have caught it: the wrist position must be unchanged by wristRoll, and the
+  // forearm must continue FORWARD from the elbow (not be reflected through it).
+  const POSE = { raiseSide: 12, raiseFwd: 80, bend: 90 } as const;
+  const dot3 = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+  it('wristRoll leaves the wrist position unchanged', () => {
+    const base = buildRig({ height: 64, pose: { armR: { ...POSE } } });
+    for (const roll of [-90, -45, 30, 90, 180]) {
+      const rolled = buildRig({ height: 64, pose: { armR: { ...POSE, wristRoll: roll } } });
+      // Wrist joint MUST be at the same world point — pronation spins the hand
+      // about the forearm, it does not move the wrist through space.
+      expect(dist(rolled.joints.wristR as Vec3, base.joints.wristR as Vec3))
+        .toBeLessThan(1e-9);
+      // Same for the elbow and shoulder — wristRoll touches the hand frame only.
+      expect(dist(rolled.joints.lowerArmR as Vec3, base.joints.lowerArmR as Vec3))
+        .toBeLessThan(1e-9);
+      expect(dist(rolled.joints.upperArmR as Vec3, base.joints.upperArmR as Vec3))
+        .toBeLessThan(1e-9);
+    }
+  });
+
+  it('wristRoll preserves elbow anatomy (forearm continues forward from upper arm, never reflected)', () => {
+    // The previous failed `roll` reflected the wrist through the elbow, producing
+    // an "impossible bent elbow" — the forearm pointed BACK toward the shoulder.
+    // The invariant: the vector elbow→wrist projected onto the upper-arm direction
+    // must remain consistent (sign-stable) regardless of wristRoll, because the
+    // forearm bone is fixed and the wrist is just spun about it.
+    const base = buildRig({ height: 64, pose: { armR: { ...POSE } } });
+    const upperArmDir: Vec3 = [
+      (base.joints.lowerArmR[0] - base.joints.upperArmR[0]),
+      (base.joints.lowerArmR[1] - base.joints.upperArmR[1]),
+      (base.joints.lowerArmR[2] - base.joints.upperArmR[2]),
+    ];
+    const forearmDirBase: Vec3 = [
+      (base.joints.wristR[0] - base.joints.lowerArmR[0]),
+      (base.joints.wristR[1] - base.joints.lowerArmR[1]),
+      (base.joints.wristR[2] - base.joints.lowerArmR[2]),
+    ];
+    const baseSign = Math.sign(dot3(upperArmDir, forearmDirBase));
+    for (const roll of [-180, -90, 45, 90, 180]) {
+      const rolled = buildRig({ height: 64, pose: { armR: { ...POSE, wristRoll: roll } } });
+      const forearmDir: Vec3 = [
+        (rolled.joints.wristR[0] - rolled.joints.lowerArmR[0]),
+        (rolled.joints.wristR[1] - rolled.joints.lowerArmR[1]),
+        (rolled.joints.wristR[2] - rolled.joints.lowerArmR[2]),
+      ];
+      expect(Math.sign(dot3(upperArmDir, forearmDir))).toBe(baseSign);
+    }
+  });
+
+  it('wristRoll spins palmNormal (and thus the held bar) about the forearm axis', () => {
+    const base = buildRig({ height: 64, pose: { armR: { ...POSE } } });
+    const rolled = buildRig({ height: 64, pose: { armR: { ...POSE, wristRoll: 90 } } });
+    // palmNormal must actually CHANGE (the whole point of the DOF).
+    const palmDot = dot3(base.grip.R.palmNormal, rolled.grip.R.palmNormal);
+    expect(Math.abs(palmDot)).toBeLessThan(0.5);  // not parallel — significantly rotated
+    // gripAxis (the held bar direction) must also change.
+    const gripDot = dot3(base.grip.R.gripAxis, rolled.grip.R.gripAxis);
+    expect(Math.abs(gripDot)).toBeLessThan(0.5);
+    // And the rotation axis must be foreDir (forearm) — palmNormal stays ⊥ foreDir.
+    const foreDir = rolled.dir.lowerArmR as Vec3;
+    expect(Math.abs(dot3(rolled.grip.R.palmNormal, foreDir))).toBeLessThan(1e-6);
+  });
+
+  it('wristRoll defaults to 0 (back-compat — no figure that omits it sees a difference)', () => {
+    const a = buildRig({ height: 64, pose: { armR: { ...POSE } } });
+    const b = buildRig({ height: 64, pose: { armR: { ...POSE, wristRoll: 0 } } });
+    expect(a.grip.R.palmNormal).toEqual(b.grip.R.palmNormal);
+    expect(a.grip.R.gripAxis).toEqual(b.grip.R.gripAxis);
+    expect(a.joints.handR).toEqual(b.joints.handR);
+  });
+
+  it('mirrors symmetrically across the body (wristRoll * side, like twist)', () => {
+    // The same wristRoll value on both arms rolls them MIRROR-symmetrically
+    // (palmNormal x-components flip sign), the same convention as `twist`.
+    const both = buildRig({ height: 64, pose: { arms: { raiseSide: 14, bend: 70, wristRoll: 60 } } });
+    expect(Math.sign(both.grip.L.palmNormal[0]))
+      .toBe(-Math.sign(both.grip.R.palmNormal[0]));
+  });
+});
+
+describe('palmFacing / thumbAxis — aim targets for the wrist-roll DOF', () => {
+  // These are the user-facing aim solvers. They land palmNormal (or thumbAxis)
+  // as close as possible to a world direction, given the arm's foreDir is fixed
+  // by the elbow/shoulder pose. The achievable max is the target's perpendicular
+  // component; assertions use ≥0.9 dot products which require the target be
+  // reachable (the test poses are chosen so the geometry doesn't fight the aim).
+  const dot3 = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+  it("palmFacing:'back' lands the palm pointing toward +Y (knuckles to camera at -Y)", () => {
+    // Right arm straight out to the side (raiseSide=90, bend=0) — forearm
+    // points along -X, so palmNormal can reach ±Y perfectly. The aim solver
+    // picks the wristRoll that lands palmNormal · +Y near 1.
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 90, bend: 0, palmFacing: 'back' } } });
+    expect(dot3(rig.grip.R.palmNormal, [0, 1, 0])).toBeGreaterThan(0.99);
+  });
+
+  it("palmFacing:'forward' lands the palm toward -Y (toward the camera)", () => {
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 90, bend: 0, palmFacing: 'forward' } } });
+    expect(dot3(rig.grip.R.palmNormal, [0, -1, 0])).toBeGreaterThan(0.99);
+  });
+
+  it("aims AS CLOSE AS GEOMETRY ALLOWS when the target isn't perfectly reachable", () => {
+    // Forearm forward (raiseFwd=0, bend=90) → foreDir = -Y. palmNormal lives
+    // in the XZ plane (⊥ foreDir), so +Y is UNREACHABLE: the closest reachable
+    // is the perpendicular component, which is 0. The solver MUST NOT throw —
+    // it lands at the closest reachable point and the AI gets best-effort,
+    // matching the irremovable coupling documented in figure.md.
+    expect(() => buildRig({ height: 64, pose: { armR: { raiseSide: 0, raiseFwd: 0, bend: 90, palmFacing: 'back' } } }))
+      .not.toThrow();
+  });
+
+  it("thumbAxis:'up' aims the thumb toward +Z (vertical-blade grips)", () => {
+    // Arm raised forward+up (raiseFwd=90, bend=90) puts the forearm vertical
+    // (+Z), so the thumb — which sits mostly along reach (= foreDir) — lands
+    // near +Z naturally and the solver refines its perpendicular component
+    // to stay aligned. This IS the standard "sword overhead" grip.
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 0, raiseFwd: 90, bend: 90, thumbAxis: 'up' } } });
+    expect(rig.grip.R.thumbAxis[2]).toBeGreaterThan(0.8);
+  });
+
+  it('accepts an explicit Vec3 target — passes through verbatim', () => {
+    // Diagonal target: with arm out to the side, the YZ plane is fully reachable
+    // so a normalized [0, sqrt(0.5), sqrt(0.5)] target lands exactly.
+    const target: Vec3 = [0, Math.SQRT1_2, Math.SQRT1_2];
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 90, bend: 0, palmFacing: target } } });
+    expect(dot3(rig.grip.R.palmNormal, target)).toBeGreaterThan(0.99);
+  });
+
+  it('rejects setting more than one of wristRoll / palmFacing / thumbAxis', () => {
+    expect(() => buildRig({ height: 64, pose: { armR: { bend: 30, wristRoll: 45, palmFacing: 'back' } } }))
+      .toThrow(/pick at most one of wristRoll \/ palmFacing \/ thumbAxis/);
+    expect(() => buildRig({ height: 64, pose: { armR: { bend: 30, palmFacing: 'back', thumbAxis: 'up' } } }))
+      .toThrow(/pick at most one/);
+  });
+
+  it('leaves the wrist position unchanged (the same anatomy invariant as wristRoll)', () => {
+    const base = buildRig({ height: 64, pose: { armR: { raiseSide: 30, raiseFwd: 20, bend: 60 } } });
+    const aimed = buildRig({ height: 64, pose: { armR: { raiseSide: 30, raiseFwd: 20, bend: 60, palmFacing: 'back' } } });
+    expect(dist(aimed.joints.wristR as Vec3, base.joints.wristR as Vec3)).toBeLessThan(1e-9);
+  });
+});
+
+describe('holds — intent-clear "the bar held in this hand points <direction>"', () => {
+  const dot3 = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+  it('paired with F.grasp on the right hand, holds:up lands the visible bar pointing UP', () => {
+    // `holds: 'up'` knows about the side-dependent F.grasp flip and lands
+    // the gripAxis at the opposite direction so the auto-flipped prop ends
+    // up pointing the requested way. Right hand: gripAxis points -up = down,
+    // F.grasp flips → visible prop axis = +up.
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' } } });
+    // After F.grasp's flip on the right hand, the prop's visible direction
+    // is -gripAxis. So `-gripAxis` should be close to +up.
+    const g = rig.grip.R;
+    const propDir: Vec3 = [-g.gripAxis[0], -g.gripAxis[1], -g.gripAxis[2]];
+    expect(dot3(propDir, [0, 0, 1])).toBeGreaterThan(0.95);
+  });
+
+  it('left hand: no flip needed — gripAxis is the visible direction directly', () => {
+    const rig = buildRig({ height: 64, pose: { armL: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' } } });
+    // Left hand (side=+1): F.grasp does NOT flip, so the visible prop
+    // direction IS gripAxis. holds:'up' should land gripAxis at +up directly.
+    const g = rig.grip.L;
+    expect(dot3(g.gripAxis, [0, 0, 1])).toBeGreaterThan(0.95);
+  });
+
+  it('symmetric on both hands — same `arms: {holds:up}` produces visibly-up bars on each side', () => {
+    const rig = buildRig({ height: 64, pose: { arms: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' } } });
+    // Visible prop dir per side (account for the F.grasp auto-flip):
+    const visibleR: Vec3 = [-rig.grip.R.gripAxis[0], -rig.grip.R.gripAxis[1], -rig.grip.R.gripAxis[2]];
+    const visibleL = rig.grip.L.gripAxis;
+    expect(dot3(visibleR, [0, 0, 1])).toBeGreaterThan(0.95);
+    expect(dot3(visibleL, [0, 0, 1])).toBeGreaterThan(0.95);
+  });
+
+  it('rejects setting more than one of wristRoll / palmFacing / thumbAxis / holds', () => {
+    expect(() => buildRig({ height: 64, pose: { armR: { bend: 30, holds: 'up', wristRoll: 45 } } }))
+      .toThrow(/pick at most one of wristRoll \/ palmFacing \/ thumbAxis \/ holds/);
+  });
+});
+
+describe('grip.point — bar in the finger cup, not at the wrist line', () => {
+  it('bar sits AT LEAST 0.7·r.hand from the wrist joint (out where the fingers actually wrap)', () => {
+    // The old grip.point had no reach-direction offset, so the bar floated
+    // at the wrist line (≈0.4·r.hand from wristR). The new GRIP_FORWARD
+    // offset puts it in the finger cup. Regression guard: distance from
+    // wristR to grip.point ≥ 0.7·r.hand for a realistic bent pose.
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' } } });
+    const w = rig.joints.wristR as Vec3;
+    const p = rig.grip.R.point;
+    const d = Math.hypot(p[0] - w[0], p[1] - w[1], p[2] - w[2]) / rig.r.hand;
+    expect(d).toBeGreaterThan(0.7);
+  });
+});
+
+describe('graspProbe — pre-bake QC for a grasped prop', () => {
+  it('reports the visible prop direction and finger-cup distance for a correct grip', () => {
+    // Canonical AI-correct pose: holds:up + F.grasp on the right hand.
+    // The probe confirms (a) the bar visibly points UP and (b) it's in the
+    // finger cup, not at the wrist line.
+    const rig = buildRig({ height: 64, pose: { armR: { raiseSide: 5, raiseFwd: 0, bend: 90, holds: 'up' } } });
+    const q = __figureTestables__.graspProbe(rig, 'R');
+    expect(q.gripDirection[2]).toBeGreaterThan(0.9);          // bar visibly +Z
+    expect(q.barCupDistance).toBeGreaterThan(0.7);            // bar in fingers, not at wrist
+    expect(q.summary).not.toMatch(/BAR AT WRIST/);
+  });
+
+  it('reports a different visible direction when the AI changes `holds`', () => {
+    // Same arm pose, different `holds` intent: probe surfaces the change
+    // pre-render so an AI can assert the result matches what they meant.
+    // Use raiseSide=90 (forearm sideways) so both `up` and `forward` are
+    // geometrically reachable on the right hand.
+    const up = buildRig({ height: 64, pose: { armR: { raiseSide: 90, bend: 0, holds: 'up' } } });
+    const fwd = buildRig({ height: 64, pose: { armR: { raiseSide: 90, bend: 0, holds: 'forward' } } });
+    const qUp = __figureTestables__.graspProbe(up, 'R');
+    const qFwd = __figureTestables__.graspProbe(fwd, 'R');
+    expect(qUp.gripDirection[2]).toBeGreaterThan(0.85);          // visibly +Z
+    expect(qFwd.gripDirection[1]).toBeLessThan(-0.85);            // visibly -Y
+  });
+});
+
+describe('ringPoint', () => {
+  it('maps azimuth to the right side of the body', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const front = ringPoint(w, 0);
+    const left = ringPoint(w, 90);
+    const right = ringPoint(w, -90);
+    // 0° = front (−Y), in front of the centre.
+    expect(front[1]).toBeLessThan(w.center[1]);
+    // 90° = figure-left (+X); −90° = right (−X).
+    expect(left[0]).toBeGreaterThan(w.center[0]);
+    expect(right[0]).toBeLessThan(w.center[0]);
+    // The left/right points sit ≈ rx out laterally.
+    expect(left[0] - w.center[0]).toBeCloseTo(w.rx, 4);
+  });
+
+  it('clearance pushes the point further out', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const near = ringPoint(w, 90, {});
+    const far = ringPoint(w, 90, { clearance: 5 });
+    expect(far[0] - near[0]).toBeCloseTo(5, 4);
+  });
+});
+
+describe('ring / strap / hangFrom geometry', () => {
+  it('ringBand wraps the body cross-section (bounds ≈ ±(rx+off))', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const tube = 0.4;
+    const band = ringBand(api, w, { tube, clearance: 0, segments: 32 });
+    const b = band.bounds();
+    // The band centre-line rides at rx+clearance+tube, so its inner edge touches
+    // the surface (+clearance) and its outer edge is rx+clearance+2·tube.
+    expect(b.max[0]).toBeCloseTo(w.rx + 2 * tube, 1);
+    expect(b.min[0]).toBeCloseTo(-(w.rx + 2 * tube), 1);
+    // It's a thin band in Z (a wrap, not a tube along the body).
+    expect(b.max[2] - b.min[2]).toBeLessThan(2 * tube + 0.2);
+  });
+
+  it('ringBand drape dips the front of the loop below the plain ring', () => {
+    const rig = buildRig({ height: 64 });
+    const plain = ringBand(api, rig.ring.neck, { tube: 0.3, segments: 32 });
+    const draped = ringBand(api, rig.ring.neck, { tube: 0.3, segments: 32, drape: 6 });
+    // The draped necklace reaches lower (front dips down the chest).
+    expect(draped.bounds().min[2]).toBeLessThan(plain.bounds().min[2] - 3);
+  });
+
+  it('ringBand occlude carves the band where an occluder covers it', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const tube = 0.4;
+    const full = ringBand(api, w, { tube, segments: 48 });
+    // A big slab across the +X side should remove that side of the band.
+    const slab = api.box([w.rx * 4, w.ry * 4, 4]).translate([w.rx * 2, 0, w.center[2]]);
+    const carved = ringBand(api, w, { tube, segments: 48, occlude: slab });
+    // The band's +X centre-line point is solid in the full ring, carved away in
+    // the occluded one (subtract doesn't shrink analytic bounds — test the field).
+    const px = w.center[0] + w.rx + tube, pz = w.center[2];
+    expect(full.evaluate(px, 0, pz)).toBeLessThan(0);
+    expect(carved.evaluate(px, 0, pz)).toBeGreaterThan(0);
+  });
+
+  it('buildBand makes a FLUSH band that hugs the surface and clips to height', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const R = w.rx;
+    // A torso-ish cylinder centred on the waist frame (tall, so it spans the band).
+    const surface = api.cylinder(R, 40).translate([w.center[0], w.center[1], w.center[2]]);
+    const thickness = 0.5, height = 4;
+    const band = buildBand(api, w, { surface, thickness, height });
+    const z = w.center[2];
+    // Flush: a point right AT the body surface (radius R) at band height is INSIDE
+    // the band (the band is a slice of the surface grown outward), while a point
+    // beyond the proud face (R + thickness + margin) is OUTSIDE.
+    expect(band.evaluate(w.center[0] + R, w.center[1], z)).toBeLessThan(0);
+    expect(band.evaluate(w.center[0] + R + thickness + 0.4, w.center[1], z)).toBeGreaterThan(0);
+    // Clipped to a height band: well above the slice is empty even at the surface.
+    expect(band.evaluate(w.center[0] + R, w.center[1], z + height)).toBeGreaterThan(0);
+  });
+
+  it('buildBand occlude carves the band where an occluder covers it', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const R = w.rx;
+    const surface = api.cylinder(R, 40).translate([w.center[0], w.center[1], w.center[2]]);
+    const z = w.center[2];
+    const px = w.center[0] + R;   // a point on the +X surface, inside a plain band
+    const full = buildBand(api, w, { surface, thickness: 0.5, height: 4 });
+    expect(full.evaluate(px, w.center[1], z)).toBeLessThan(0);
+    // A slab across the +X side removes that side of the band.
+    const slab = api.box([R * 4, R * 4, 8]).translate([R * 2, 0, z]);
+    const carved = buildBand(api, w, { surface, thickness: 0.5, height: 4, occlude: slab });
+    expect(carved.evaluate(px, w.center[1], z)).toBeGreaterThan(0);
+  });
+
+  it('strap spans both anchors', () => {
+    const rig = buildRig({ height: 64 });
+    const a = rig.shoulder.L;
+    const bPt = ringPoint(rig.ring.waist, -90); // opposite (right) hip
+    const band = strap(api, a, bPt, { tube: 0.5, bow: 1, segments: 12 });
+    const bb = band.bounds();
+    // Bounds enclose both endpoints (within the tube radius).
+    expect(bb.min[2]).toBeLessThanOrEqual(Math.min(a[2], bPt[2]) + 0.5);
+    expect(bb.max[2]).toBeGreaterThanOrEqual(Math.max(a[2], bPt[2]) - 0.5);
+  });
+
+  it('hangFrom drops a node so its top sits at point − drop', () => {
+    const node = api.box([2, 2, 6]); // centred: z ∈ [−3, 3]
+    const hung = hangFrom(node, [0, 0, 20], { anchor: 'top', drop: 2 });
+    const b = hung.bounds();
+    expect(b.max[2]).toBeCloseTo(18, 4);     // top at 20 − 2
+    expect(b.min[2]).toBeCloseTo(12, 4);     // 6 tall below it
+  });
+});
+
+describe('per-side limb conform surfaces (F.arm / F.leg)', () => {
+  it('the two arms are disjoint, and a guard conformed to ONE arm is clear of the other', () => {
+    const rig = buildRig({ height: 64 });
+    const armL = buildArms(api, rig, 'L');
+    const armR = buildArms(api, rig, 'R');
+    // F.arm('L') and F.arm('R') never share solid (each is one side only).
+    expect(sharedSolid(armL, armR, { samples: 16000 }).sharedVolume).toBe(0);
+    // A flush guard conformed to the RIGHT arm (its proud offset shell) overlaps the
+    // right arm but is STRUCTURALLY clear of the left — the per-side guarantee a
+    // vambrace/bracer relies on.
+    const guard = armR.round(0.6);
+    expect(sharedSolid(guard, armR, { samples: 16000 }).sharedVolume).toBeGreaterThan(0);
+    expect(sharedSolid(guard, armL, { samples: 16000 }).sharedVolume).toBe(0);
+  });
+
+  it('F.leg selects one leg (the two legs are disjoint)', () => {
+    const rig = buildRig({ height: 64 });
+    const legL = buildLegs(api, rig, 'L');
+    const legR = buildLegs(api, rig, 'R');
+    expect(sharedSolid(legL, legR, { samples: 16000 }).sharedVolume).toBe(0);
+    // A greave conformed to the LEFT leg is clear of the right.
+    const greave = legL.round(0.6);
+    expect(sharedSolid(greave, legR, { samples: 16000 }).sharedVolume).toBe(0);
+  });
+});
+
+describe('sharedSolid — invariant overlap check', () => {
+  it('measures the shared-solid volume of two overlapping boxes', () => {
+    const A = api.box([2, 2, 2]);                      // x,y,z ∈ [−1,1]
+    const B = api.box([2, 2, 2]).translate([1, 0, 0]); // x ∈ [0,2]
+    // Overlap region x∈[0,1], y,z∈[−1,1] → volume 1·2·2 = 4.
+    const r = sharedSolid(A, B, { samples: 8000 });
+    expect(r.overlaps).toBe(true);
+    expect(r.sharedVolume).toBeGreaterThan(3.4);
+    expect(r.sharedVolume).toBeLessThan(4.6);
+    expect(r.point).not.toBeNull();
+    expect((r.point as number[])[0]).toBeGreaterThanOrEqual(0); // overlap sits on +X
+  });
+
+  it('reports no overlap for disjoint solids (bboxes do not intersect)', () => {
+    const A = api.box([2, 2, 2]);
+    const B = api.box([2, 2, 2]).translate([5, 0, 0]);
+    const r = sharedSolid(A, B);
+    expect(r.overlaps).toBe(false);
+    expect(r.sharedVolume).toBe(0);
+    expect(r.point).toBeNull();
+  });
+
+  it('tol suppresses a tiny overlap below the tolerance', () => {
+    const A = api.box([2, 2, 2]);
+    const B = api.box([2, 2, 2]).translate([1, 0, 0]); // shared volume ≈ 4
+    expect(sharedSolid(A, B, { tol: 10 }).overlaps).toBe(false);
+    expect(sharedSolid(A, B, { tol: 1 }).overlaps).toBe(true);
+  });
+});
+
+describe('garment parts — torso-conformed band clears the arms (root-cause fix)', () => {
+  it('buildTopParts splits the top into all / torso / sleeves', () => {
+    const rig = buildRig({ height: 64 });
+    const sleeved = buildTopParts(api, rig, { sleeve: 'long', thickness: 1 });
+    expect(typeof sleeved.all.evaluate).toBe('function');
+    expect(typeof sleeved.torso.evaluate).toBe('function');
+    expect(sleeved.sleeves).not.toBeNull();              // long sleeves → a sleeves part
+    const bare = buildTopParts(api, rig, { sleeve: 'none', thickness: 1 });
+    expect(bare.sleeves).toBeNull();                      // sleeveless → no sleeves part
+  });
+
+  it('buildPantsParts splits pants into all / hips / legs (briefs has no legs)', () => {
+    const rig = buildRig({ height: 64 });
+    const full = buildPantsParts(api, rig, { leg: 'slim', rise: 'mid' });
+    expect(full.legs).not.toBeNull();
+    const briefs = buildPantsParts(api, rig, { length: 'briefs' });
+    expect(briefs.legs).toBeNull();
+    expect(briefs.all).toBe(briefs.hips);                 // briefs: the whole garment IS the hips
+  });
+
+  it('conforming to the torso panel + `clear` eliminates arm overlap that the full-clothed-body conform produced', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const arms = buildArms(api, rig);
+    const top = buildTopParts(api, rig, { sleeve: 'long', thickness: 1 });
+    const opts = { thickness: 1, height: 5, clearance: 0.5 };
+    // OLD approach: conform to the full worn top (includes the sleeves). The
+    // isotropic round() dilates each sleeve into the band, so the band WRAPS both
+    // sleeves at the waist — the visible "belt on the arms" ring.
+    const wholeOverlap = sharedSolid(buildBand(api, w, { surface: top.all, ...opts }), arms, { samples: 20000 }).sharedVolume;
+    // Conform to the torso panel only: the band no longer wraps the sleeves, so the
+    // overlap drops sharply (it now only GRAZES the arm where the torso flank pokes
+    // laterally — and that residual is INTERNAL, hidden inside the sleeve in render).
+    const torsoOverlap = sharedSolid(buildBand(api, w, { surface: top.torso, ...opts }), arms, { samples: 20000 }).sharedVolume;
+    // The fix the figures actually use: torso conform + `clear: F.arms(rig)`, which
+    // hard-subtracts the EXACT arm — zero overlap, no tuned dilation allowance.
+    const clearedOverlap = sharedSolid(buildBand(api, w, { surface: top.torso, ...opts, clear: arms }), arms, { samples: 20000 }).sharedVolume;
+    expect(wholeOverlap).toBeGreaterThan(50);             // old failure: wraps the sleeves
+    expect(torsoOverlap).toBeLessThan(wholeOverlap * 0.6); // torso conform: no sleeve wrap
+    expect(clearedOverlap).toBe(0);                        // torso + clear: zero, structural
+  });
+
+  it('band.clear hard-subtracts a part as a guarantee', () => {
+    const rig = buildRig({ height: 64 });
+    const w = rig.ring.waist;
+    const R = w.rx;
+    const surface = api.cylinder(R, 40).translate([w.center[0], w.center[1], w.center[2]]);
+    const z = w.center[2];
+    const px = w.center[0] + R;
+    const plain = buildBand(api, w, { surface, thickness: 0.5, height: 4 });
+    expect(plain.evaluate(px, w.center[1], z)).toBeLessThan(0);
+    // A slab across +X passed as `clear` removes that side.
+    const slab = api.box([R * 4, R * 4, 8]).translate([R * 2, 0, z]);
+    const cleared = buildBand(api, w, { surface, thickness: 0.5, height: 4, clear: slab });
+    expect(cleared.evaluate(px, w.center[1], z)).toBeGreaterThan(0);
+  });
+});
+
+describe('onFace frame', () => {
+  it('returns a right-handed face frame (forward ≈ −Y, up ≈ +Z, lateral ≈ +X)', () => {
+    const rig = buildRig({ height: 64 });
+    const f = onFace(rig);
+    expect(f.forward[1]).toBeLessThan(0);
+    expect(f.up[2]).toBeGreaterThan(0);
+    expect(f.lateral[0]).toBeGreaterThan(0);
+    // Bridge sits between the two eyes.
+    expect(f.bridge[0]).toBeCloseTo((rig.face.eyeL[0] + rig.face.eyeR[0]) / 2, 6);
+    // Temples are the ear anchors.
+    expect(f.templeL).toEqual(rig.face.earL);
+  });
+});
+
+describe('figure namespace wiring', () => {
+  it('exposes the new verbs on the figure namespace', () => {
+    const F = createFigureNamespace(api);
+    const rig = F.rig({ height: 64 });
+    expect(typeof F.ring).toBe('function');
+    expect(typeof F.band).toBe('function');
+    expect(typeof F.ringPoint).toBe('function');
+    expect(typeof F.strap).toBe('function');
+    expect(typeof F.hangFrom).toBe('function');
+    expect(typeof F.onFace).toBe('function');
+    // ring() returns a buildable node; onFace() returns the frame.
+    expect(typeof F.ring(rig.ring.neck, { tube: 0.3 }).bounds).toBe('function');
+    expect(F.onFace(rig).forward.length).toBe(3);
+  });
+});

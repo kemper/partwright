@@ -26,6 +26,65 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'July 5, 2026',
+    headline: 'Partwright 1.4 — figures that hold and wear things, and an AI that looks before it plans',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.4',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working, and the running version is shown in the About dialog. The headline is a full accessory system for the figure API: figures can now hold weapons and tools and wear belts, armor, and jewelry that actually fit. Four new showcase figures join the catalog to prove it out, the ground grid is now on by default, and the AI assistant\'s plan mode can inspect your session before proposing a plan.',
+          },
+        ],
+      },
+      {
+        label: 'Figures',
+        items: [
+          {
+            title: 'Accessories — figures can hold and wear things',
+            body: 'The figure API gained a whole attachment layer: body frames (neck, waist, shoulders, back, forearms) plus placement verbs for bands, straps, hanging pendants, and glasses. Garments and armor conform to the body part they belong on — a belt wraps the waist without bleeding onto the arms, a vambrace hugs the forearm, and a necklace drapes with gravity. It\'s all ordinary model code, so every accessory stays parametric and re-poseable.',
+          },
+          {
+            title: 'One-line grasping that works on the first try',
+            body: 'Writing "a person holding a sword" used to take wrist-roll math and per-figure tuning. Now F.grasp(prop, rig.grip.R) places the prop in the curl of the fingers, auto-flips for either hand, and a holds: \'up\' hint on the arm pose aims the blade — two intent-clear lines and the grip is right. A graspProbe helper lets model code (or the AI) verify the grip before rendering.',
+          },
+        ],
+      },
+      {
+        label: 'Catalog',
+        items: [
+          {
+            title: 'Knight, Scholar, Noble Lady, and Lumberjack',
+            body: 'Four new figure entries built to showcase the accessory system: an armored knight gripping an upright sword (plate cuirass, pauldrons, and vambraces included), a scholar, a noble lady with a jeweled collar and draped pendant, and a flannel-clad lumberjack holding a vertical axe.',
+          },
+          {
+            title: 'A leaner figure shelf',
+            body: 'Twenty-one defective or redundant figures were retired from the catalog, so what remains is the curated, quality-checked set.',
+          },
+        ],
+      },
+      {
+        label: 'AI assistant',
+        items: [
+          {
+            title: 'Plan mode can look before it plans',
+            body: 'With Plan first switched on, the assistant used to draft its plan blind — it had no tools at all until you approved. Planning turns now get read-only access: it can read the current code, session notes, version history, and geometry stats, and render snapshots if vision is enabled, so the plan is grounded in what\'s actually in your session. Anything that mutates — running code, saving versions, painting — stays locked until you approve the plan.',
+          },
+        ],
+      },
+      {
+        label: 'Studio',
+        items: [
+          {
+            title: 'Grid on by default',
+            body: 'The XY ground-plane grid — which scales with your model — is now on in new sessions, so parts read at a glance against a real sense of scale. Toggle it off from the viewport toolbar as before.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'June 24, 2026',
     headline: 'Partwright 1.3 — chibi pets, painted patterns, and ~3× faster figures',
     groups: [

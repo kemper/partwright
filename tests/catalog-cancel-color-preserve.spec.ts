@@ -1,7 +1,7 @@
 // Regression: cancelling the slow initial render of a catalog figure, then
 // saving, must NOT lose the figure's colours.
 //
-// Catalog figures (e.g. the archer) carry their colours as `byLabel` colour
+// Catalog figures (e.g. the superhero) carry their colours as `byLabel` colour
 // regions in the saved version, resolved against the rendered mesh + labelMap.
 // When the user cancels the initial render, that render never produces a mesh,
 // so rehydrateColorRegions (which needs one) is skipped. Previously the colour
@@ -21,8 +21,8 @@ test.describe('catalog figure cancel + save preserves colours', () => {
     test.setTimeout(90_000);
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
 
-    // The archer is a slow SDF figure with 14 byLabel colour regions.
-    await page.goto('/editor?catalog=archer.partwright.json');
+    // The superhero is a slow SDF figure with 14 byLabel colour regions.
+    await page.goto('/editor?catalog=superhero.partwright.json');
 
     const cancelBtn = page.locator('#btn-cancel-inline');
     const status = page.locator('#status-indicator');

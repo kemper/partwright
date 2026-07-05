@@ -15,9 +15,9 @@ test.describe('initial deep-link render cancel', () => {
     test.setTimeout(60_000);
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
 
-    // An SDF figure (archer) — slow enough that the inline Cancel button shows
+    // An SDF figure (superhero) — slow enough that the inline Cancel button shows
     // during the initial render.
-    await page.goto('/editor?catalog=archer.partwright.json');
+    await page.goto('/editor?catalog=superhero.partwright.json');
 
     const cancelBtn = page.locator('#btn-cancel-inline');
     const status = page.locator('#status-indicator');

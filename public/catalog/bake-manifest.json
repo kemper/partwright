@@ -26,39 +26,6 @@
         "requiredLabels": []
       }
     },
-    "bust-elf": {
-      "source": "examples/faces/bust_elf.js",
-      "gates": {
-        "maxGenus": null,
-        "requiredLabels": [
-          "skin",
-          "eyes",
-          "hair"
-        ]
-      }
-    },
-    "bust-listener": {
-      "source": "examples/faces/bust_listener.js",
-      "gates": {
-        "maxGenus": null,
-        "requiredLabels": [
-          "skin",
-          "eyes",
-          "hair"
-        ]
-      }
-    },
-    "bust-pixie": {
-      "source": "examples/faces/bust_pixie.js",
-      "gates": {
-        "maxGenus": null,
-        "requiredLabels": [
-          "skin",
-          "eyes",
-          "hair"
-        ]
-      }
-    },
     "cactus-dock": {
       "source": "examples/cactus_dock.js",
       "gates": {
@@ -99,20 +66,6 @@
     },
     "dna-helix": {
       "source": "examples/dna_helix.js",
-      "gates": {
-        "maxGenus": null,
-        "requiredLabels": []
-      }
-    },
-    "elf-archer": {
-      "source": "examples/figure_elf_archer.js",
-      "gates": {
-        "maxGenus": null,
-        "requiredLabels": []
-      }
-    },
-    "flexing-strongman": {
-      "source": "examples/figure_strongman.js",
       "gates": {
         "maxGenus": null,
         "requiredLabels": []
@@ -285,13 +238,6 @@
         "requiredLabels": []
       }
     },
-    "rock-guitarist": {
-      "source": "examples/figure_rocker.js",
-      "gates": {
-        "maxGenus": null,
-        "requiredLabels": []
-      }
-    },
     "screw-top-jar": {
       "source": "examples/screw_top_jar.js",
       "gates": {
@@ -439,20 +385,6 @@
         "requiredLabels": []
       }
     },
-    "staff-mage": {
-      "source": "examples/figure_staff_mage.js",
-      "gates": {
-        "maxGenus": null,
-        "requiredLabels": []
-      }
-    },
-    "storytime-reader": {
-      "source": "examples/figure_sitting_reader.js",
-      "gates": {
-        "maxGenus": null,
-        "requiredLabels": []
-      }
-    },
     "studio-microphone": {
       "source": "examples/studio_microphone.scad",
       "gates": {
@@ -532,6 +464,42 @@
       "gates": {
         "maxGenus": null,
         "requiredLabels": []
+      }
+    },
+    "knight": {
+      "source": "examples/figure_knight.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "armor",
+          "sword",
+          "scabbard",
+          "belt"
+        ]
+      }
+    },
+    "scholar": {
+      "source": "examples/figure_scholar.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "glasses",
+          "hat",
+          "belt"
+        ]
+      }
+    },
+    "noble-lady": {
+      "source": "examples/figure_noble_lady.js",
+      "gates": {
+        "maxGenus": null,
+        "requiredLabels": [
+          "skin",
+          "gown",
+          "jewelry"
+        ]
       }
     }
   }
