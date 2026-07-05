@@ -1555,6 +1555,18 @@
     "articulated",
     "armor"
    ]
+  },
+  {
+   "id": "benchy-reconstruction",
+   "name": "3DBenchy (Inverse-CAD Reconstruction)",
+   "file": "benchy-reconstruction.partwright.json",
+   "language": "manifold-js",
+   "description": "The classic 3DBenchy print-torture-test boat (\u00a9 Creative Tools, CC BY-ND 4.0), reverse-engineered from its STL into code by the inverse-CAD loop \u2014 verified against the original mesh to 0.014mm mean deviation, 0.18mm worst point, volume IoU 0.995, genus 5 exact. First non-native model the framework converged.",
+   "tags": [
+    "boat",
+    "benchmark",
+    "calibration"
+   ]
   }
  ]
 }
