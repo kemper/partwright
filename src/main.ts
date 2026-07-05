@@ -15055,6 +15055,60 @@ async function main() {
       };
     },
 
+    /** Render a NAMED SELECTION as its own framed image (the selection twin
+     *  of renderIsland): the scope's triangles subset out, the camera frames
+     *  their bbox, and current paint composites in (showPaint, default
+     *  true). This is the paint-so-far render for a projection loop scoped
+     *  by selection — the returned view spec is exactly what
+     *  paintByImageProjection needs back with the repainted image. */
+    renderSelection(opts: {
+      selection: string | number;
+      view?: { elevation?: number; azimuth?: number; ortho?: boolean };
+      size?: number;
+      showPaint?: boolean;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object' || opts.selection === undefined) return { error: 'renderSelection requires { selection }' };
+      const size = opts.size ?? 512;
+      if (typeof size !== 'number' || !Number.isFinite(size) || size < 32 || size > 2048) {
+        return { error: 'size must be a finite number in [32, 2048].' };
+      }
+      const sel = getPaintSelection(opts.selection);
+      if (!sel) return { error: `renderSelection: no selection ${JSON.stringify(opts.selection)} — listSelections() shows what exists.` };
+      const res = resolvePaintSelection(sel, currentMeshData, resolveSelectorNode2);
+      if (!(res instanceof Set)) return res;
+      if (res.size === 0) return { error: 'renderSelection: the selection resolves to 0 triangles on the current mesh.' };
+      const ordered = [...res];
+      let subset = subsetMesh(currentMeshData, ordered);
+      if (opts.showPaint !== false) {
+        const fullColors = buildTriColors(currentMeshData.numTri);
+        if (fullColors) {
+          const triColors = new Uint8Array(subset.numTri * 3);
+          for (let i = 0; i < ordered.length; i++) {
+            const gt = ordered[i];
+            triColors[i * 3] = fullColors[gt * 3];
+            triColors[i * 3 + 1] = fullColors[gt * 3 + 1];
+            triColors[i * 3 + 2] = fullColors[gt * 3 + 2];
+          }
+          subset = { ...subset, triColors };
+        }
+      }
+      const view = opts.view ?? {};
+      const dataUrl = renderSingleView(subset, {
+        elevation: view.elevation ?? 30,
+        azimuth: view.azimuth ?? 315,
+        ortho: view.ortho ?? false,
+        size,
+      });
+      return {
+        selection: sel.name,
+        triangleCount: res.size,
+        size,
+        dataUrl,
+        view: { elevation: view.elevation ?? 30, azimuth: view.azimuth ?? 315, ortho: view.ortho ?? false, size },
+      };
+    },
+
     /** Highlight one region-of-triangles on the mesh in a bright colour so an
      *  agent can SEE which candidate a `detectRegions` output actually is —
      *  iris vs cheek vs brow — BEFORE committing paint. This is the piece
@@ -17772,6 +17826,7 @@ async function main() {
         'auditPaint':      { signature: 'auditPaint() -> {regions: [{id, name, triangles, visibleTriangles, hiddenFraction, fragmentCount, fragments?}], unpaintedIslands, flaggedRegionIds, summary} -- Deterministic whole-scene paint audit: stray disconnected paint fragments (mis-aimed selectors, fan-wedge splatter), regions overwritten by later paint, islands never painted. Run before declaring a paint job done; dismiss or fix every flag.', docs: '/ai/colors.md' },
 'paintByImageProjection': { signature: 'paintByImageProjection({image, view, within, palette, mode?, minFacing?, namePrefix?}) -> {painted, coverage, skipped, pixels, alignment, regions} -- EXPERIMENTAL (#885): back-project an AI-repainted render onto the mesh as palette-snapped paint regions via a triangle-ID buffer: exact z-buffer occlusion, per-pixel majority voting (no speckle), pinhole fill from agreeing neighbors. Render a view (ortho), have an image model repaint it, hand the repainted data URL back with the SAME view spec. Multi-view loop: render paint-so-far (showPaint), have the model complete the gray areas matching existing colors, project with mode bestFacing (default; better-facing view wins per triangle) or fillGaps (never touches painted triangles) until coverage converges.', docs: '/ai/colors.md' },
 'paintFillRemaining': { signature: 'paintFillRemaining({within, namePrefix?}) -> {filled, unreachable, regions} -- EXPERIMENTAL (#885): finish a multi-view projection by giving every unpainted triangle in scope the color of its nearest painted neighbor (multi-source BFS). Deterministic — the deep occlusions no view covers inherit their surroundings. Run auditPaint() after.', docs: '/ai/colors.md' },
+'renderSelection': { signature: 'renderSelection({selection, view?, size?, showPaint?}) -> {dataUrl, view, triangleCount} -- Render a NAMED SELECTION framed on its own bbox with current paint (the selection twin of renderIsland). The returned view spec is exactly what paintByImageProjection needs back with the repainted image.', docs: '/ai/colors.md' },
 'paintDespeckle': { signature: 'paintDespeckle({within, minTriangles?, namePrefix?}) -> {changed, regions} -- EXPERIMENTAL (#885): absorb tiny DISCONNECTED paint fragments (projection assignment noise) into their dominant larger neighbor color. Whole components only, upward only — connected thin features (outline rings, seams) are safe. Default threshold 40 triangles. Run after the projection loop; then auditPaint().', docs: '/ai/colors.md' },
 'fitRegionShape':  { signature: 'fitRegionShape({triangleIds}) -> {best, circle: {center, axis, radius, rms}, sphere?, plane, nextStep} -- Fit an ANALYTIC disc/sphere/plane to a detected region\'s boundary. THE fan-bleed killer: sculpted features are usually clean discs — fit one, then paint it via paintDisc/paintRegionFitted instead of painting the ragged triangle set.', docs: '/ai/colors.md' },
         'paintRegionFitted': { signature: 'paintRegionFitted({triangleIds, color, pad?=1.0, thickness?, name?, force?}) -- One call: fit a disc to the region boundary and paint it with a crisp analytic edge. Refuses when the fit is poor (feature isn\'t disc-like) unless force: true.', docs: '/ai/colors.md' },
