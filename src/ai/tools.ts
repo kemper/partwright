@@ -61,7 +61,7 @@ export const SUBDOC_NAMES_LIST = [
   'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'voxel', 'colors', 'print-safety',
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
-  'visual-verification', 'spending', 'manifold-api',
+  'visual-verification', 'spending', 'manifold-api', 'pointers',
   // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
   // cached prompt requesting it gets the redirect stub instead of an error.
   'print-fit',
@@ -312,6 +312,147 @@ const ALL_TOOLS: ToolDefinition[] = [
         name: { type: 'string' },
       },
       required: ['seed', 'color'],
+    },
+  },
+  {
+    name: 'dropPointer',
+    description: 'PLANNING PHASE — drop a labelled mesh-anchored callout (a "pointer") at a surface point you believe corresponds to a feature ("foot_L", "iris", "button"). The pointer is visible on the model with a leader line + label, persists in the session, and the user can drag/rename/correct it. Then commit paint with commitPaintFromPointer or commitPaintFromPointers. Pass {fromPixel:{pixel,view}} (matching a renderView spec) to drop at a probed pixel, OR {point,normal} for an explicit world coord. Set a paintHint when you have a flood-fill in mind: `connected` (seed-relative angle, best for organic curves like irises), `coplanar` (adjacent-face angle, best for flat panels), or `colorFlood` (magic wand by color, when the mesh already carries paint). Set proposedColor to suggest a paint; the user can override. After dropping pointers, call getPointerCoverageReport to find features you forgot.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        label: { type: 'string', description: 'Short human-readable name for the feature ("foot_L", "iris_R", "hat_brim").' },
+        fromPixel: {
+          type: 'object',
+          description: 'Anchor via the same camera spec probePixel uses. Use this when you identified a feature visually in a renderView.',
+          properties: {
+            pixel: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+            view: {
+              type: 'object',
+              properties: {
+                elevation: { type: 'number' },
+                azimuth: { type: 'number' },
+                ortho: { type: 'boolean' },
+                size: { type: 'integer' },
+              },
+            },
+          },
+          required: ['pixel', 'view'],
+        },
+        point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Explicit world-space anchor [x, y, z]. Use when you already have a probed point (e.g. from probePixel) and want to skip the re-probe.' },
+        normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional surface normal at the anchor. Auto-derived from the nearest triangle when omitted.' },
+        paintHint: {
+          type: 'object',
+          description: 'Flood-fill recipe the user can tweak. Kind: "connected" (seed-relative angle, best for curved features like an iris), "coplanar" (adjacent-face angle, best for a flat panel), or "colorFlood" (magic wand by color, requires existing per-triangle colors).',
+          properties: {
+            kind: { type: 'string', enum: ['connected', 'coplanar', 'colorFlood'] },
+            maxDeviationDeg: { type: 'number', description: 'For kind="connected": max angle in degrees a neighbor may deviate from the seed normal. Default 30. Smaller = tighter patch; larger = follows more curvature.' },
+            normalToleranceDeg: { type: 'number', description: 'For kind="coplanar": max angle in degrees between any two adjacent faces in the patch. Default 5. Stays on a single facet.' },
+            colorTolerance: { type: 'number', description: 'For kind="colorFlood": RGB distance threshold in 0..1. Default 0.05.' },
+          },
+          required: ['kind'],
+        },
+        proposedColor: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Suggested paint colour RGB 0..1. The user can override at commit time.' },
+      },
+      required: ['label'],
+    },
+  },
+  {
+    name: 'listPointers',
+    description: 'List every AI-planning pointer in the current session, with the latest resolution status (stale/orphaned flags get set when the live mesh moved out from under the anchor). Optional `status` filters to "proposed" / "approved" / "painted". A non-zero stale/orphaned count means the user/AI should re-aim or clear those pointers before painting.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['proposed', 'approved', 'painted'] },
+      },
+    },
+  },
+  {
+    name: 'previewPointerPaint',
+    description: 'DRY-RUN: returns the triangle count + bbox that committing this pointer would select against the LIVE mesh, WITHOUT painting. Same idea as paintPreview but parameterised by pointer id. Use this to verify a tolerance choice before committing; an unexpectedly small count means the threshold is too tight, a huge count means it bleeds past the feature.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        paintHint: {
+          type: 'object',
+          description: 'Override the pointer\'s stored paintHint just for this preview (e.g. to scan tolerances). Omit to use the pointer\'s current hint.',
+          properties: {
+            kind: { type: 'string', enum: ['connected', 'coplanar', 'colorFlood'] },
+            maxDeviationDeg: { type: 'number' },
+            normalToleranceDeg: { type: 'number' },
+            colorTolerance: { type: 'number' },
+          },
+          required: ['kind'],
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'commitPaintFromPointer',
+    description: 'Commit a single pointer\'s proposed flood-fill as a paint region — wraps the existing paintConnected / paintCoplanar / colorFlood pipelines, so the result is a normal region with the same descriptor shape (re-resolves on mesh edits, exports, etc). The pointer\'s status flips proposed/approved → painted and it stays in the list for the audit trail (call again to re-paint). Pass an explicit `color` to override the pointer\'s proposedColor.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+        name: { type: 'string', description: 'Region name in the layers list (defaults to the pointer\'s label).' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'commitPaintFromPointers',
+    description: 'Commit MULTIPLE pointers as ONE shared paint region (all four eye sub-parts → one eye colour). Unions each pointer\'s resolved triangles and writes a single `triangles` region descriptor — cheaper than N overlapping connectedFromSeed regions and avoids edge-case double-paint.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' } },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+        name: { type: 'string' },
+      },
+      required: ['ids', 'color'],
+    },
+  },
+  {
+    name: 'hidePointers',
+    description: 'Hide pointers from the viewport overlay (they stay in listPointers so a later showPointers can bring them back). Omit `ids` to hide every pointer — useful when you want a clean view to take a screenshot during planning.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  },
+  {
+    name: 'showPointers',
+    description: 'Inverse of hidePointers. Omit `ids` to show all.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  },
+  {
+    name: 'clearPointers',
+    description: 'Delete pointers. Without args removes EVERY pointer; scope with `{status: "proposed"}` to wipe abandoned plans without touching ones the user already approved, or `{ids: [...]}` for surgical removal.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['proposed', 'approved', 'painted'] },
+        ids: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  },
+  {
+    name: 'getPointerCoverageReport',
+    description: 'COMPLETENESS CHECK — which of the model\'s likely-salient features have NO pointer aimed at them yet? Cross-references coplanar feature groups + manifold components against the current pointer set and returns the gap. Call this RIGHT BEFORE declaring your plan done — the absence of a pointer is exactly the kind of "you forgot the feet" defect this whole pointer workflow is designed to catch.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        radius: { type: 'number', description: 'World-units proximity used to match a pointer to a feature centroid. Default ~5% of the mesh diagonal.' },
+      },
     },
   },
   {
@@ -1465,6 +1606,15 @@ const ALWAYS_AVAILABLE = new Set([
   'importSvgAsRelief',
   'getReliefSwapGuide',
   'setReliefPreviewMode',
+  // AI-planning pointers — read/inspect/visibility are always available;
+  // commits go through PAINT_GATED below so the user's "paint off" toggle
+  // still applies.
+  'dropPointer',
+  'listPointers',
+  'previewPointerPaint',
+  'hidePointers',
+  'showPointers',
+  'getPointerCoverageReport',
 ]);
 
 /** Tools that require explicit user confirmation before executing.
@@ -1516,6 +1666,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
   'listParts', 'getCurrentPart', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'getPrinterSettings', 'getReliefSwapGuide',
+  'listPointers', 'previewPointerPaint', 'getPointerCoverageReport',
   // Idempotent renders (produce a snapshot; no persistent mutation)
   'renderView', 'renderViews', 'runIsolated',
   // Run-without-commit (re-running the same code reproduces the same state)
@@ -1524,7 +1675,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion', 'commitPaintFromPointer', 'commitPaintFromPointers', 'clearPointers']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -2057,6 +2208,26 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.probePixel(input);
     case 'paintConnected':
       return api.paintConnected(input);
+    // AI-planning pointers — thin pass-throughs to the partwrightAPI methods,
+    // which own the validation. See public/ai/pointers.md for the workflow.
+    case 'dropPointer':
+      return api.dropPointer(input);
+    case 'listPointers':
+      return api.listPointers(input);
+    case 'previewPointerPaint':
+      return api.previewPointerPaint(input.id as string, { paintHint: input.paintHint as never });
+    case 'commitPaintFromPointer':
+      return api.commitPaintFromPointer(input.id as string, { color: input.color as never, name: input.name as never });
+    case 'commitPaintFromPointers':
+      return api.commitPaintFromPointers(input.ids as string[], { color: input.color as never, name: input.name as never });
+    case 'hidePointers':
+      return api.hidePointers(input);
+    case 'showPointers':
+      return api.showPointers(input);
+    case 'clearPointers':
+      return api.clearPointers(input);
+    case 'getPointerCoverageReport':
+      return api.getPointerCoverageReport(input);
     case 'getFeatureCentroids':
       return api.getFeatureCentroids(input);
     case 'paintExplain': {

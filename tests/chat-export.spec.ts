@@ -1,6 +1,7 @@
 import { test, expect, type Page } from 'playwright/test';
 import { readFileSync } from 'fs';
 import { openAiPanel, waitForEditorReady } from './helpers/aiPanel';
+import { SCHEMA_VERSION } from '../src/storage/sessionManager';
 
 // Network-free coverage for the chat export feature:
 //   - the standalone "⬇ Chat" button in the AI panel header (Markdown), and
@@ -107,7 +108,10 @@ test.describe('Chat export', () => {
         chat?: { id?: string; sessionId?: string; blocks: { type: string; text?: string }[] }[];
       };
     }, id);
-    expect(exported.partwright).toBe('1.17'); // tracks SCHEMA_VERSION (bumped to 1.17 for attachment descriptions)
+    // Track SCHEMA_VERSION directly so a bump can't desync the assertion — the
+    // exact failure that caught schema 1.18's pointer addition. Per CLAUDE.md
+    // ("Tests that assert `SCHEMA_VERSION`"), import the constant.
+    expect(exported.partwright).toBe(SCHEMA_VERSION);
     // App-version provenance (schema 1.15+): the dev build stamps package.json's semver.
     expect(exported.appVersion).toMatch(/^\d+\.\d+\.\d+$/);
     expect(exported.chat?.length).toBe(3);
