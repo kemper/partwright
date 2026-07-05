@@ -305,8 +305,10 @@ async function main() {
       if (typeof t !== 'string' || !t.startsWith('data:image')) continue;
       try {
         const buf = Buffer.from(t.split(',', 2)[1], 'base64');
-        const small = await sharp(buf).resize(128, 128, { fit: 'inside' }).png().toBuffer();
-        vs[i].thumbnail = 'data:image/png;base64,' + small.toString('base64');
+        // JPEG on white: ~2-4KB per tile vs ~8-12KB PNG — matters at 37 parts.
+        const small = await sharp(buf).resize(128, 128, { fit: 'inside' })
+          .flatten({ background: '#ffffff' }).jpeg({ quality: 80 }).toBuffer();
+        vs[i].thumbnail = 'data:image/jpeg;base64,' + small.toString('base64');
       } catch {
         delete vs[i].thumbnail; // unparseable — better absent than oversized
       }
