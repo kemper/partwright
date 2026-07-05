@@ -107,7 +107,13 @@ test.describe('Chat export', () => {
         chat?: { id?: string; sessionId?: string; blocks: { type: string; text?: string }[] }[];
       };
     }, id);
-    expect(exported.partwright).toBe('1.17'); // tracks SCHEMA_VERSION (bumped to 1.17 for attachment descriptions)
+    // Compare against the LIVE constant (imported in-page) instead of a
+    // hardcoded literal, so a schema bump can't silently break this spec —
+    // exactly the trap the CLAUDE.md migration checklist warns about.
+    const schemaVersion = await page.evaluate(() =>
+      import('/src/storage/sessionManager').then((m) => (m as { SCHEMA_VERSION: string }).SCHEMA_VERSION),
+    );
+    expect(exported.partwright).toBe(schemaVersion);
     // App-version provenance (schema 1.15+): the dev build stamps package.json's semver.
     expect(exported.appVersion).toMatch(/^\d+\.\d+\.\d+$/);
     expect(exported.chat?.length).toBe(3);
