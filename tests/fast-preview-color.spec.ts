@@ -73,7 +73,7 @@ test.describe('fast preview colour estimate', () => {
   test('a painted catalog figure shows its colours on the coarse preview', async ({ page }) => {
     test.setTimeout(90_000);
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
-    await page.goto('/editor?catalog=archer.partwright.json');
+    await page.goto('/editor?catalog=superhero.partwright.json');
 
     const pill = page.getByText('⚡ Fast preview');
     await pill.waitFor({ state: 'visible', timeout: 40_000 });

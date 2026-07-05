@@ -20,9 +20,9 @@ const BASE = process.argv[2] || 'http://localhost:5173';
 const VIEW = { elevation: 30, azimuth: 45, ortho: false, size: 640 }; // standard hero camera
 
 const FILES = [
-  'sprinter_start', 'athlete', 'soccer_striker', 'superhero', 'basketball_dunk',
-  'danseur', 'cheerleader', 'elf_archer', 'gardener', 'pixie_skater',
-  'rock_climber', 'runway_model', 'weightlifter', 'archer',
+  'sprinter_start', 'athlete', 'superhero', 'basketball_dunk',
+  'danseur', 'cheerleader', 'pixie_skater',
+  'rock_climber', 'runway_model',
 ].map((s) => `${s}.partwright.json`);
 
 function findChrome() {

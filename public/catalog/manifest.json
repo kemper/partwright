@@ -1133,26 +1133,6 @@
       ]
     },
     {
-      "id": "toddler-teddy",
-      "name": "Toddler with Teddy",
-      "file": "toddler.partwright.json",
-      "language": "manifold-js",
-      "description": "A chubby, big-headed toddler in a red romper cradling a teddy bear \u2014 the figure rig's young age axis (and a low headsTall) for the adorable baby proportions.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "grandfather-cane",
-      "name": "Grandfather with Cane",
-      "file": "grandpa.partwright.json",
-      "language": "manifold-js",
-      "description": "An older man in a long cardigan leaning on a cane, with a gentle stoop \u2014 the figure rig's old age axis plus a lean build, the cane fused to the base as one printable piece.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
       "id": "yoga-tree-pose",
       "name": "Yoga Tree Pose",
       "file": "yoga.partwright.json",
@@ -1178,26 +1158,6 @@
       "file": "cornrows_runner.partwright.json",
       "language": "manifold-js",
       "description": "A sprinter set at the blocks \u2014 cornrows laid tight to the scalp with carved partings, a round face with a broad nose and full lips, deep skin. Shows the figure rig's face-shape, nose, and hair-texture axes.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "locs-musician",
-      "name": "Locs Musician",
-      "file": "locs_musician.partwright.json",
-      "language": "manifold-js",
-      "description": "A relaxed musician with shoulder-length locs and an easy contrapposto stance \u2014 a long face and narrower nose under the locs, medium-deep skin. Mixes the diversity axes so each figure reads as an individual.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "flexing-strongman",
-      "name": "Flexing Strongman",
-      "file": "flexing_strongman.partwright.json",
-      "language": "manifold-js",
-      "description": "A vintage-circus strongman hitting a double-biceps pose \u2014 stocky build, both fists raised, short trunks and a handlebar mustache.",
       "tags": [
         "figures"
       ]
@@ -1243,16 +1203,6 @@
       ]
     },
     {
-      "id": "storytime-reader",
-      "name": "Storytime Reader",
-      "file": "sitting_reader.partwright.json",
-      "language": "manifold-js",
-      "description": "A child sitting on a stool absorbed in a chunky storybook \u2014 chair-sit pose, bangs, eyes cast down to the page, and sculpted hands cradling the open book.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
       "id": "karate-master",
       "name": "Karate Master",
       "file": "karate.partwright.json",
@@ -1268,26 +1218,6 @@
       "file": "princess.partwright.json",
       "language": "manifold-js",
       "description": "A princess in a floor-length gown giving a royal wave \u2014 gold five-point crown, ponytail, painted lips, a demure sidelong glance, open-fingered hand.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "rock-guitarist",
-      "name": "Rock Guitarist",
-      "file": "rocker.partwright.json",
-      "language": "manifold-js",
-      "description": "A guitarist mid-solo with an electric guitar slung low \u2014 fretting and strumming hands on the instrument, bangs, mouth open singing.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "elf-archer",
-      "name": "Elf Archer",
-      "file": "elf_archer.partwright.json",
-      "language": "manifold-js",
-      "description": "A wood-elf archer holding a longbow upright \u2014 pointed elf ears left fully exposed by hair worn behind them, on a slim ranger build.",
       "tags": [
         "figures"
       ]
@@ -1318,66 +1248,6 @@
       "file": "superhero.partwright.json",
       "language": "manifold-js",
       "description": "A stocky hero launching skyward with one fist punched up \u2014 sweeping cape, chest emblem, gloves and boots over a two-tone suit.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "staff-mage",
-      "name": "Staff Mage",
-      "file": "staff_mage.partwright.json",
-      "language": "manifold-js",
-      "description": "A robed mage raising a quarterstaff in one hand \u2014 the staff seated into the grip with the figure API's holdAt helper so it follows the hand instead of impaling it.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "cross-eyed-bust",
-      "name": "Cross-Eyed Goofball",
-      "file": "cross_eyed_bust.partwright.json",
-      "language": "manifold-js",
-      "description": "A goofy cross-eyed bust \u2014 each eyeball aimed independently at the nose with the figure rig's per-eye gaze (gazeL/gazeR), under a big grin and high comedic brows.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "stargazer-bust",
-      "name": "Stargazer",
-      "file": "stargazer_bust.partwright.json",
-      "language": "manifold-js",
-      "description": "A dreamy bust gazing skyward \u2014 chin lifted and both irises cast up with the eyes' gaze:'up' preset, set off by almond lids and soft lips.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "bust-elf",
-      "name": "Elf Bust",
-      "file": "bust_elf.partwright.json",
-      "language": "manifold-js",
-      "description": "A wood-elf bust \u2014 pointed ears left exposed by long hair worn behind them, with almond iris eyes, a fine nose and calm lips. A clean look at the figure API's pointed ear type on a full face.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "bust-listener",
-      "name": "Listener Bust",
-      "file": "bust_listener.partwright.json",
-      "language": "manifold-js",
-      "description": "An attentive adult bust \u2014 anatomical detailed ears (helix, concha, tragus, lobe) framed by short hair worn behind them, with iris eyes, a broad nose and an easy smile.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "bust-pixie",
-      "name": "Pixie Bust",
-      "file": "bust_pixie.partwright.json",
-      "language": "manifold-js",
-      "description": "A bright young bust \u2014 clean round ears exposed by a cropped pixie worn behind them, with big iris eyes, a button nose and a grin.",
       "tags": [
         "figures"
       ]
@@ -1473,16 +1343,6 @@
       ]
     },
     {
-      "id": "crawling-baby",
-      "name": "Crawling Baby",
-      "file": "crawling_baby.partwright.json",
-      "language": "manifold-js",
-      "description": "A chubby big-headed baby crawling on hands and knees, looking up with a button nose and a happy face \u2014 a chibi-proportioned study (3.6 heads tall) in a diaper with tiny toes.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
       "id": "runway-model",
       "name": "Runway Fashion Model",
       "file": "runway_model.partwright.json",
@@ -1503,41 +1363,11 @@
       ]
     },
     {
-      "id": "olympic-weightlifter",
-      "name": "Olympic Weightlifter",
-      "file": "weightlifter.partwright.json",
-      "language": "manifold-js",
-      "description": "A powerlifter locking a loaded barbell overhead in a wide receiving stance \u2014 heavy muscle, a singlet and lifting shoes, with the barbell spanning both grips as one welded piece.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
       "id": "basketball-dunk",
       "name": "Basketball Dunk",
       "file": "basketball_dunk.partwright.json",
       "language": "manifold-js",
       "description": "A leaping athlete airborne for a dunk, one arm palming the ball overhead and gaze up at the rim \u2014 a tall lean physique in a sleeveless jersey and basketball shoes.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "witch-casting",
-      "name": "Witch Casting a Spell",
-      "file": "witch_casting.partwright.json",
-      "language": "manifold-js",
-      "description": "A hunched old witch casting \u2014 one hand thrown forward, the other gripping a gnarled staff \u2014 with an aquiline nose, pointed chin, hooded eyes, a pointed hat and a flowing robe.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "kneeling-gardener",
-      "name": "Kneeling Gardener",
-      "file": "gardener.partwright.json",
-      "language": "manifold-js",
-      "description": "A gardener kneeling to plant with a trowel, looking down at the soil under a wide sun hat \u2014 bib overalls, boots, and a gentle smile on a round face.",
       "tags": [
         "figures"
       ]
@@ -1553,16 +1383,6 @@
       ]
     },
     {
-      "id": "archer-draw",
-      "name": "Archer Drawing a Bow",
-      "file": "archer.partwright.json",
-      "language": "manifold-js",
-      "description": "An archer at full draw \u2014 lead arm holding a recurve bow, draw hand at the cheek, head sighting down the welded arrow \u2014 in a tunic, leggings and boots.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
       "id": "cheerleader-jump",
       "name": "Cheerleader Jump",
       "file": "cheerleader.partwright.json",
@@ -1573,41 +1393,11 @@
       ]
     },
     {
-      "id": "soccer-striker",
-      "name": "Soccer Striker",
-      "file": "soccer_striker.partwright.json",
-      "language": "manifold-js",
-      "description": "A striker mid-kick, leg swung through a welded ball at the strike foot with gaze down \u2014 a jersey, match shorts and cleats.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "viking-warrior",
-      "name": "Viking Warrior",
-      "file": "viking_warrior.partwright.json",
-      "language": "manifold-js",
-      "description": "A burly viking in a wide battle stance gripping a battle-axe across the body with a fierce glare \u2014 a broad nose, braided hair, a beard, tunic and boots.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
       "id": "surfer",
       "name": "Surfer",
       "file": "surfer.partwright.json",
       "language": "manifold-js",
       "description": "A tanned surfer in a low riding crouch on a surfboard, arms flung wide for balance with a sun-squint and a relaxed grin \u2014 bare-chested in board shorts.",
-      "tags": [
-        "figures"
-      ]
-    },
-    {
-      "id": "chef-presenting",
-      "name": "Chef Presenting a Dish",
-      "file": "chef_presenting.partwright.json",
-      "language": "manifold-js",
-      "description": "A jolly stout chef presenting a domed cloche on one upturned palm, beaming with an open toothy smile under a tall toque \u2014 chef whites and an apron.",
       "tags": [
         "figures"
       ]
@@ -1745,7 +1535,7 @@
     {
       "id": "pomni-articulated-painted",
       "name": "Pomni \u2014 AI-Painted Articulated Kit",
-      "description": "A 25-piece print-in-place articulated Pomni figure kit, surface-painted end-to-end by the generative multi-view projection pipeline (Gemini image completions + triangle-ID back-projection + deterministic gap fill). Imported STL \u2014 heavy entry (~23 MB), downloads on click.",
+      "description": "A 25-piece print-in-place articulated Pomni figure kit, surface-painted end-to-end by the generative multi-view projection pipeline (Gemini image completions + triangle-ID back-projection + deterministic gap fill). Imported STL \u2014 heavy entry (~25 MB), downloads on click.",
       "file": "pomni_articulated.partwright.json",
       "thumbnail": "pomni_articulated.tile.png",
       "language": "manifold-js",
