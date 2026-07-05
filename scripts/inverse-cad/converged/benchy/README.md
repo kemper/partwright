@@ -7,11 +7,12 @@ the first target not designed by the Dummy 13 author, and the first
 watertight-but-self-touching internet mesh (502 non-manifold edges — the
 voxel-solid genus fallback, PLAYBOOK §5.37, was built for it).
 
-`target.stl` is the unmodified original, redistributed verbatim with
-attribution as CC BY-ND 4.0 permits, so the verification below is
-reproducible from a fresh clone. `candidate.js` is the reconstruction
-(levelSet section interpolation, 265 measured z-sections, ledge-exact SDF
-override — zero free parameters, every number measured).
+The original STL is **not** included in this repo (owner's call — only
+the remake ships). To re-verify, download 3DBenchy.stl from
+https://www.3dbenchy.com/ and pass its path in place of `target.stl`
+below. `candidate.js` is the reconstruction (levelSet section
+interpolation, 265 measured z-sections, ledge-exact SDF override — zero
+free parameters, every number measured).
 
 ## Final gates (best = attempt 5 of 6 used; all green)
 
@@ -35,10 +36,10 @@ not assumed.
 ## Reproduce
 
 ```bash
-node scripts/inverse-cad/eval.mjs scripts/inverse-cad/converged/benchy/target.stl \
+node scripts/inverse-cad/eval.mjs /path/to/3DBenchy.stl \
   scripts/inverse-cad/converged/benchy/candidate.js --samples 20000
 ```
 
 Catalog entry: `public/catalog/benchy-reconstruction.partwright.json`
-(the same candidate with a `simplify(0.04)` decimation pass, re-verified
+(the same candidate with a `simplify(0.033)` decimation pass, re-verified
 empirically after decimation).
