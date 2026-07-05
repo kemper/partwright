@@ -35,7 +35,7 @@ import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost,
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
-import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
+import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderTriangleIdPixels, renderSliceSVG, setAttachments as _setAttachments, clearAttachments as _clearAttachments, getAttachments as _getAttachments, getImageAttachments as _getImageAttachments, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type SessionAttachment, type AttachmentKind, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { normalizeAttachment, ATTACHMENT_KINDS } from './storage/attachment';
 import { generateId, getLatestVersion, listVersions, listParts, updateVersionThumbnail } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
@@ -207,7 +207,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, isPainted, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
 import { computePatternColors, filterScopeTriangles } from './color/colorPattern';
 import { setPaintLabels } from './color/labels';
@@ -255,6 +255,7 @@ import { detectSymmetryPlane, mirrorIslandPairs, reflectPoint, reflectVector, mi
 import { fitRegionShape } from './color/regionFit';
 import { createSelection as createPaintSelection, getSelection as getPaintSelection, listSelections as storeListSelections, removeSelection as storeRemoveSelection, renameSelection as storeRenameSelection, addRefinement, popRefinement, resolveSelection as resolvePaintSelection, type SelectorNode, type RefineOp } from './color/selections';
 import { partitionTriangles, type PartitionSpec } from './color/partition';
+import { buildPaletteSnapper, tallyProjectionVotes, buildScopeEdgeAdjacency, fillUnvotedFromNeighbors, triangleFacing, getProjectionConfidence, projectionRegionRegistry, BACKGROUND_VOTE, OFF_IMAGE, WINNER_UNPAINTED, WINNER_NO_PIXELS } from './color/idProjection';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
 import { cylinderRefineRegion, findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
@@ -15706,18 +15707,32 @@ async function main() {
      *  mesh as palette-snapped paint regions. The receiving half of the
      *  generative-coloring pipeline: render a view (renderIsland /
      *  renderView), have an image model repaint it (colors only), then
-     *  hand the repainted image back here with the SAME view spec — every
-     *  camera-facing triangle in scope samples its color from the image,
-     *  snaps to the nearest palette entry, and the result commits as one
-     *  editable region per palette color.
+     *  hand the repainted image back here with the SAME view spec.
      *
-     *  Alignment: image models drift a few pixels/percent — the method
-     *  re-renders the scope itself with the same camera, computes both
-     *  silhouette bboxes, and maps between them, absorbing uniform
-     *  shift/scale. Back-facing and background-sampling triangles stay
-     *  unpainted (run additional views to cover them).
+     *  How pixels become paint: the scope re-renders as a triangle-ID
+     *  buffer (each triangle a unique flat color, no antialiasing) through
+     *  the exact same ortho camera — so every buffer pixel names one
+     *  VISIBLE triangle, with the GPU z-buffer resolving occlusion exactly.
+     *  Each ID pixel samples the repainted image at the aligned position
+     *  and votes its palette-snapped color for its triangle; per-triangle
+     *  plurality wins (majority voting kills single-sample speckle), then
+     *  subpixel pinholes fill from agreeing painted neighbors. The result
+     *  commits as one editable region per palette color.
      *
-     *  Ortho views only (pass ortho: true when rendering). */
+     *  Multi-view compositing (the coverage loop): render the paint-so-far
+     *  (renderIsland with showPaint), have the image model COMPLETE the
+     *  unpainted gray areas matching existing colors exactly, and project
+     *  that back with the new view's spec. mode 'bestFacing' (default)
+     *  repaints a triangle only when the new view faces it better than the
+     *  view that painted it; 'fillGaps' touches only currently-unpainted
+     *  triangles (respects manual paint); 'overwrite' always wins. Earlier
+     *  projection regions shrink as later views take triangles over, so
+     *  every triangle stays in exactly one region. Repeat until `coverage`
+     *  converges, then auditPaint().
+     *
+     *  Alignment: image models drift a few pixels/percent — the ID
+     *  buffer's occupied bbox maps onto the image's non-white bbox,
+     *  absorbing uniform shift/scale. Ortho views only. */
     async paintByImageProjection(opts: {
       image: string;
       view: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; island?: number };
@@ -15726,9 +15741,12 @@ async function main() {
        *  hue for saturated colors and lightness for neutrals, so the image
        *  model's shading doesn't corrupt the mapping. */
       palette: [number, number, number][];
-      /** Minimum dot(triangle normal, camera direction) to paint. Default
-       *  0.15 — grazing and back faces stay unpainted. */
+      /** Triangles more grazing than this dot(normal, camera) never paint —
+       *  their pixels hug the silhouette where the image bleeds background.
+       *  Default 0.15. */
       minFacing?: number;
+      /** Multi-view compositing rule — see the doc comment. Default 'bestFacing'. */
+      mode?: 'bestFacing' | 'fillGaps' | 'overwrite';
       namePrefix?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
@@ -15748,42 +15766,12 @@ async function main() {
       }
       const minFacing = opts.minFacing ?? 0.15;
       if (typeof minFacing !== 'number' || !Number.isFinite(minFacing) || minFacing < 0 || minFacing >= 1) return { error: 'minFacing must be in [0, 1).' };
+      const mode = opts.mode ?? 'bestFacing';
+      if (mode !== 'bestFacing' && mode !== 'fillGaps' && mode !== 'overwrite') return { error: "mode must be 'bestFacing', 'fillGaps', or 'overwrite'." };
       const size = opts.view.size ?? 1024;
       const mesh = currentMeshData;
 
-      // Camera basis — replicates buildViewCamera's ortho framing over the
-      // SCOPE's geometry (renderIsland frames on the island subset, whose
-      // vertex bbox equals the scope bbox for island scopes).
-      const stats = regionTriangleStats(scope.triangles, mesh);
-      const bb = stats.bbox!;
-      const center = [(bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2];
-      const maxDim = Math.max(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]);
-      const halfExtent = maxDim * 0.7;
-      const elevation = ((opts.view.elevation ?? 30) * Math.PI) / 180;
-      const azimuth = ((opts.view.azimuth ?? 315) * Math.PI) / 180;
-      const camDir = [Math.cos(elevation) * Math.sin(azimuth), -Math.cos(elevation) * Math.cos(azimuth), Math.sin(elevation)];
-      const isPolar = Math.abs(Math.sin(elevation)) > 0.999;
-      const up0 = isPolar ? [0, 1, 0] : [0, 0, 1];
-      const rx = up0[1] * camDir[2] - up0[2] * camDir[1];
-      const ry = up0[2] * camDir[0] - up0[0] * camDir[2];
-      const rz = up0[0] * camDir[1] - up0[1] * camDir[0];
-      const rl = Math.hypot(rx, ry, rz) || 1;
-      const right = [rx / rl, ry / rl, rz / rl];
-      const upv = [
-        camDir[1] * right[2] - camDir[2] * right[1],
-        camDir[2] * right[0] - camDir[0] * right[2],
-        camDir[0] * right[1] - camDir[1] * right[0],
-      ];
-      const projectPx = (p: [number, number, number]): [number, number] => {
-        const dx = p[0] - center[0], dy = p[1] - center[1], dz = p[2] - center[2];
-        const nx = (dx * right[0] + dy * right[1] + dz * right[2]) / halfExtent;
-        const ny2 = (dx * upv[0] + dy * upv[1] + dz * upv[2]) / halfExtent;
-        return [((nx + 1) / 2) * size, ((1 - ny2) / 2) * size];
-      };
-
-      // Decode the repainted image AND re-render the scope for silhouette
-      // alignment (image models drift a little; a bbox→bbox map absorbs
-      // uniform shift/scale).
+      // Decode the repainted image.
       const loadPixels = (dataUrl: string): Promise<{ data: Uint8ClampedArray; w: number; h: number }> => new Promise((resolveP, rejectP) => {
         const img = new Image();
         img.onload = () => {
@@ -15802,96 +15790,115 @@ async function main() {
       } catch {
         return { error: 'paintByImageProjection: the image data URL failed to decode.' };
       }
+
+      // Triangle-ID buffer through the same camera the source render used
+      // (buildViewCamera frames on the island subset). 2x the view size so
+      // small triangles still land pixels.
       const ordered = [...scope.triangles];
       const subset = subsetMesh(mesh, ordered);
-      const grayCanvas = renderSingleViewCanvas(subset, { elevation: opts.view.elevation, azimuth: opts.view.azimuth, ortho: true, size });
-      const grayData = grayCanvas.getContext('2d')!.getImageData(0, 0, size, size).data;
-      const silhouette = (data: Uint8ClampedArray, w: number, h: number) => {
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (let y = 0; y < h; y++) {
-          for (let x = 0; x < w; x++) {
-            const i = (y * w + x) * 4;
-            if (data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245) {
-              if (x < minX) minX = x; if (x > maxX) maxX = x;
-              if (y < minY) minY = y; if (y > maxY) maxY = y;
-            }
+      const idSize = Math.min(2048, size * 2);
+      const idBuf = renderTriangleIdPixels(subset, { elevation: opts.view.elevation, azimuth: opts.view.azimuth, size: idSize });
+
+      // Silhouette alignment: ID-buffer occupied bbox -> image non-white bbox.
+      let aMinX = Infinity, aMinY = Infinity, aMaxX = -Infinity, aMaxY = -Infinity;
+      for (let y = 0; y < idBuf.height; y++) {
+        for (let x = 0; x < idBuf.width; x++) {
+          const i = (y * idBuf.width + x) * 4;
+          if (idBuf.data[i] !== 0 || idBuf.data[i + 1] !== 0 || idBuf.data[i + 2] !== 0) {
+            if (x < aMinX) aMinX = x; if (x > aMaxX) aMaxX = x;
+            if (y < aMinY) aMinY = y; if (y > aMaxY) aMaxY = y;
           }
         }
-        return maxX >= minX ? { minX, minY, maxX, maxY } : null;
-      };
-      const silA = silhouette(grayData, size, size);
-      const silB = silhouette(target.data, target.w, target.h);
-      if (!silA || !silB) return { error: 'paintByImageProjection: could not find a silhouette in the render or the image (all-white?).' };
+      }
+      let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
+      for (let y = 0; y < target.h; y++) {
+        for (let x = 0; x < target.w; x++) {
+          const i = (y * target.w + x) * 4;
+          if (target.data[i] < 245 || target.data[i + 1] < 245 || target.data[i + 2] < 245) {
+            if (x < bMinX) bMinX = x; if (x > bMaxX) bMaxX = x;
+            if (y < bMinY) bMinY = y; if (y > bMaxY) bMaxY = y;
+          }
+        }
+      }
+      if (aMaxX < aMinX || bMaxX < bMinX) return { error: 'paintByImageProjection: could not find a silhouette in the render or the image (all-white?).' };
+      const silA = { minX: aMinX, minY: aMinY, maxX: aMaxX, maxY: aMaxY };
+      const silB = { minX: bMinX, minY: bMinY, maxX: bMaxX, maxY: bMaxY };
       const mapX = (x: number) => silB.minX + ((x - silA.minX) * (silB.maxX - silB.minX)) / Math.max(1, silA.maxX - silA.minX);
       const mapY = (y: number) => silB.minY + ((y - silA.minY) * (silB.maxY - silB.minY)) / Math.max(1, silA.maxY - silA.minY);
 
-      // Palette snap in a shading-tolerant space: neutrals (low saturation)
-      // match by lightness; saturated colors match by hue, with
-      // saturation/value as tie-breakers (so the model's shading gradients
-      // don't flip red to black).
-      const toHsv = (r: number, g: number, b: number) => {
-        const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-        const d = mx - mn;
-        let h = 0;
-        if (d > 0) {
-          if (mx === r) h = ((g - b) / d) % 6;
-          else if (mx === g) h = (b - r) / d + 2;
-          else h = (r - g) / d + 4;
-          h *= 60;
-          if (h < 0) h += 360;
-        }
-        return { h, s: mx > 0 ? d / mx : 0, v: mx };
+      // Every ID pixel votes: palette snap, or background (near-white), or
+      // off-image. Per-triangle plurality decides; background outvoting all
+      // palette colors leaves the triangle unpainted (silhouette rim safety).
+      const snap = buildPaletteSnapper(opts.palette);
+      const sample = (x: number, y: number): number => {
+        const tx = Math.round(mapX(x)), ty = Math.round(mapY(y));
+        if (tx < 0 || ty < 0 || tx >= target.w || ty >= target.h) return OFF_IMAGE;
+        const i = (ty * target.w + tx) * 4;
+        const r = target.data[i] / 255, g = target.data[i + 1] / 255, b = target.data[i + 2] / 255;
+        if (r > 0.94 && g > 0.94 && b > 0.94) return BACKGROUND_VOTE;
+        return snap(r, g, b);
       };
-      const paletteHsv = opts.palette.map(c => toHsv(c[0], c[1], c[2]));
-      const snap = (r: number, g: number, b: number): number => {
-        const p = toHsv(r, g, b);
-        let best = 0, bestScore = Infinity;
-        for (let i = 0; i < paletteHsv.length; i++) {
-          const q = paletteHsv[i];
-          let score: number;
-          if (p.s < 0.18 || q.s < 0.18) {
-            // Neutral comparison: lightness dominates; penalize matching a
-            // saturated palette entry to a gray sample and vice versa.
-            score = Math.abs(p.v - q.v) * 2 + Math.abs(p.s - q.s) * 1.5;
-          } else {
-            let dh = Math.abs(p.h - q.h);
-            if (dh > 180) dh = 360 - dh;
-            score = dh / 90 + Math.abs(p.s - q.s) * 0.5 + Math.abs(p.v - q.v) * 0.5;
-          }
-          if (score < bestScore) { bestScore = score; best = i; }
-        }
-        return best;
-      };
+      const tally = tallyProjectionVotes({
+        idData: idBuf.data, idWidth: idBuf.width, idHeight: idBuf.height,
+        triangleCount: ordered.length, paletteCount: opts.palette.length, sample,
+      });
 
-      // Project every camera-facing scope triangle, sample 3×3, snap.
-      const { triVerts, vertProperties, numProp } = mesh;
+      // Facing gates grazing triangles (their pixels hug the silhouette,
+      // where the image bleeds background) and scores view confidence.
+      const elevation = ((opts.view.elevation ?? 30) * Math.PI) / 180;
+      const azimuth = ((opts.view.azimuth ?? 315) * Math.PI) / 180;
+      const camDir: [number, number, number] = [Math.cos(elevation) * Math.sin(azimuth), -Math.cos(elevation) * Math.cos(azimuth), Math.sin(elevation)];
+      const facing = triangleFacing(mesh, ordered, camDir);
+      let grazing = 0;
+      for (let local = 0; local < ordered.length; local++) {
+        if (tally.winner[local] >= 0 && facing[local] < minFacing) { tally.winner[local] = WINNER_UNPAINTED; grazing++; }
+      }
+
+      // Fill pinholes/subpixel slivers from agreeing painted edge-neighbors.
+      const adjacency = buildScopeEdgeAdjacency(mesh, ordered);
+      const filledLocals = fillUnvotedFromNeighbors({ winner: tally.winner, adjacency, facing, minFacing });
+      const filledSet = new Set(filledLocals);
+
+      // Composite this view over previous projections per `mode`. Filled
+      // triangles carry half confidence so a later direct look beats a fill.
+      const confidence = getProjectionConfidence(mesh);
+      const currentColors = mode === 'fillGaps' ? buildTriColors(mesh.numTri) : null;
       const perPalette: Set<number>[] = opts.palette.map(() => new Set<number>());
-      let backfacing = 0, background = 0, offImage = 0;
-      for (const t of scope.triangles) {
-        const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
-        const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
-        const bx = vertProperties[v1 * numProp], by = vertProperties[v1 * numProp + 1], bz = vertProperties[v1 * numProp + 2];
-        const cx3 = vertProperties[v2 * numProp], cy3 = vertProperties[v2 * numProp + 1], cz3 = vertProperties[v2 * numProp + 2];
-        // Face normal (unnormalized cross is fine for the dot sign/scale test after normalize).
-        const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
-        const e2x = cx3 - ax, e2y = cy3 - ay, e2z = cz3 - az;
-        let nx2 = e1y * e2z - e1z * e2y, ny3 = e1z * e2x - e1x * e2z, nz2 = e1x * e2y - e1y * e2x;
-        const nl = Math.hypot(nx2, ny3, nz2) || 1;
-        nx2 /= nl; ny3 /= nl; nz2 /= nl;
-        if (nx2 * camDir[0] + ny3 * camDir[1] + nz2 * camDir[2] < minFacing) { backfacing++; continue; }
-        const [px, py] = projectPx([(ax + bx + cx3) / 3, (ay + by + cy3) / 3, (az + bz + cz3) / 3]);
-        const tx = Math.round(mapX(px)), ty = Math.round(mapY(py));
-        if (tx < 1 || ty < 1 || tx >= target.w - 1 || ty >= target.h - 1) { offImage++; continue; }
-        let sr = 0, sg = 0, sb = 0;
-        for (let oy = -1; oy <= 1; oy++) {
-          for (let ox = -1; ox <= 1; ox++) {
-            const i = ((ty + oy) * target.w + (tx + ox)) * 4;
-            sr += target.data[i]; sg += target.data[i + 1]; sb += target.data[i + 2];
+      const accepted = new Set<number>();
+      let occludedOrSubpixel = 0, imageUnpainted = 0, skippedByMode = 0, overpainted = 0;
+      for (let local = 0; local < ordered.length; local++) {
+        const w = tally.winner[local];
+        if (w === WINNER_NO_PIXELS) { occludedOrSubpixel++; continue; }
+        if (w === WINNER_UNPAINTED) { imageUnpainted++; continue; }
+        const globalT = ordered[local];
+        const conf = filledSet.has(local) ? facing[local] * 0.5 : facing[local];
+        if (mode === 'bestFacing' && confidence[globalT] >= conf) { skippedByMode++; continue; }
+        if (mode === 'fillGaps' && currentColors && isPainted(currentColors, globalT)) { skippedByMode++; continue; }
+        if (confidence[globalT] > 0) overpainted++;
+        confidence[globalT] = conf;
+        perPalette[w].add(globalT);
+        accepted.add(globalT);
+      }
+
+      // Triangles this view took over leave earlier projection regions, so
+      // each triangle stays in exactly one region (audits and exports would
+      // otherwise double-count; rendering alone would be later-wins anyway).
+      const registry = projectionRegionRegistry(mesh);
+      if (accepted.size > 0 && registry.size > 0) {
+        for (const existing of getRegions()) {
+          if (!registry.has(existing.id)) continue;
+          let overlaps = false;
+          for (const t of existing.triangles) { if (accepted.has(t)) { overlaps = true; break; } }
+          if (!overlaps) continue;
+          const remaining = new Set([...existing.triangles].filter(t => !accepted.has(t)));
+          if (remaining.size === 0) {
+            removeRegion(existing.id);
+            registry.delete(existing.id);
+          } else {
+            existing.descriptor = { kind: 'triangles', ids: [...remaining] };
+            setRegionTriangles(existing.id, remaining);
           }
         }
-        sr /= 9 * 255; sg /= 9 * 255; sb /= 9 * 255;
-        if (sr > 0.94 && sg > 0.94 && sb > 0.94) { background++; continue; }
-        perPalette[snap(sr, sg, sb)].add(t);
       }
 
       // Commit one region per palette color that received triangles.
@@ -15907,18 +15914,31 @@ async function main() {
           { kind: 'triangles', ids: [...perPalette[i]] },
           perPalette[i],
         );
+        registry.add(region.id);
         regions.push({ id: region.id, name: region.name, color: opts.palette[i], triangles: perPalette[i].size });
         painted += perPalette[i].size;
       }
       scheduleColorRefresh();
       syncLockState();
+
+      let covered = 0;
+      for (const t of scope.triangles) { if (confidence[t] > 0) covered++; }
+      const coverage = Math.round((covered / Math.max(1, scope.triangles.size)) * 1000) / 1000;
+
       return {
         painted,
+        filled: filledLocals.length,
         scopeTriangles: scope.triangles.size,
-        skipped: { backfacing, background, offImage },
+        coverage,
+        mode,
+        skipped: { occludedOrSubpixel, imageUnpainted, grazing, byMode: skippedByMode },
+        overpainted,
+        pixels: { sampled: tally.sampledPixels, background: tally.backgroundPixels, offImage: tally.offImagePixels },
         alignment: { renderSilhouette: silA, imageSilhouette: silB },
         regions,
-        nextStep: 'Render additional views (side/back), repaint each, and project again to cover the unpainted faces — later projections composite over earlier ones. Then auditPaint().',
+        nextStep: coverage < 0.995
+          ? `Coverage ${(coverage * 100).toFixed(1)}% of scope. Render the next view with paint shown (renderIsland with showPaint), have the image model COMPLETE the unpainted gray areas matching the existing colors exactly, and project it back with that view's spec (mode 'bestFacing'). Then auditPaint().`
+          : 'Coverage complete — auditPaint() and inspect renderViews({showPaint:true}).',
       };
     },
 
@@ -17531,7 +17551,7 @@ async function main() {
 'renderRegionGrid': { signature: 'renderRegionGrid({regions, withinIsland?, view?, size?=192, cols?}) -> {dataUrl, tiles: [{index, id, renderedTriangles}]} -- ONE labelled contact sheet of up to 64 region highlights (pass detectRegions().regions directly, run with maxTrianglesPerGroup > 0). Identify every candidate feature in ONE image read instead of 20 renderRegion round-trips. Tiles showing \"(0 tris!)\" mean the region has no triangles in the frame.', docs: '/ai/colors.md' },
         'paintDisc':       { signature: 'paintDisc({center, normal, radius, thickness?=radius, color, name?, smooth?}) -- Paint a smooth-edged DISC facing `normal` — THE facial-feature primitive (iris, pupil, blush, buttons). No quaternion math: feed it probePixel\'s point+normal or a detectRegions region\'s centroid+normal. Paint concentric features largest-first; later discs composite on top (dome, then iris, then pupil).', docs: '/ai/colors.md' },
         'auditPaint':      { signature: 'auditPaint() -> {regions: [{id, name, triangles, visibleTriangles, hiddenFraction, fragmentCount, fragments?}], unpaintedIslands, flaggedRegionIds, summary} -- Deterministic whole-scene paint audit: stray disconnected paint fragments (mis-aimed selectors, fan-wedge splatter), regions overwritten by later paint, islands never painted. Run before declaring a paint job done; dismiss or fix every flag.', docs: '/ai/colors.md' },
-'paintByImageProjection': { signature: 'paintByImageProjection({image, view, within, palette, minFacing?, namePrefix?}) -> {painted, skipped, alignment, regions} -- EXPERIMENTAL (#885): back-project an AI-repainted render onto the mesh as palette-snapped paint regions. Render a view (ortho), have an image model repaint it, hand the repainted data URL back with the SAME view spec; every camera-facing scoped triangle samples its color and snaps to the print palette. Self-aligns via silhouette bboxes. Run several views to cover all faces.', docs: '/ai/colors.md' },
+'paintByImageProjection': { signature: 'paintByImageProjection({image, view, within, palette, mode?, minFacing?, namePrefix?}) -> {painted, coverage, skipped, pixels, alignment, regions} -- EXPERIMENTAL (#885): back-project an AI-repainted render onto the mesh as palette-snapped paint regions via a triangle-ID buffer: exact z-buffer occlusion, per-pixel majority voting (no speckle), pinhole fill from agreeing neighbors. Render a view (ortho), have an image model repaint it, hand the repainted data URL back with the SAME view spec. Multi-view loop: render paint-so-far (showPaint), have the model complete the gray areas matching existing colors, project with mode bestFacing (default; better-facing view wins per triangle) or fillGaps (never touches painted triangles) until coverage converges.', docs: '/ai/colors.md' },
 'fitRegionShape':  { signature: 'fitRegionShape({triangleIds}) -> {best, circle: {center, axis, radius, rms}, sphere?, plane, nextStep} -- Fit an ANALYTIC disc/sphere/plane to a detected region\'s boundary. THE fan-bleed killer: sculpted features are usually clean discs — fit one, then paint it via paintDisc/paintRegionFitted instead of painting the ragged triangle set.', docs: '/ai/colors.md' },
         'paintRegionFitted': { signature: 'paintRegionFitted({triangleIds, color, pad?=1.0, thickness?, name?, force?}) -- One call: fit a disc to the region boundary and paint it with a crisp analytic edge. Refuses when the fit is poor (feature isn\'t disc-like) unless force: true.', docs: '/ai/colors.md' },
         'paintMirrored':   { signature: 'paintMirrored({regionId, color?, name?, plane?}) -- Mirror a painted region across the model\'s bilateral symmetry plane (auto-detected — see listComponents().symmetry). Paint ONE eye, mirror it: position/size match by construction, color can differ (red left iris / blue right iris). Analytic paints reflect exactly; paintFaces sets fall back to per-triangle mirroring.', docs: '/ai/colors.md' },
