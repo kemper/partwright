@@ -467,6 +467,22 @@ else                  → hybrid: traced silhouette body + probed primitives for
   form rings about the symmetry axis; two rings solve (center, r)
   closed-form — center can sit outside the wall (spherical cousin of
   §5.24). (armor_forearm snap detent: r=1.0000 exact.)
+- **5.37 Foreign meshes: trust the voxel-solid genus, not the mesh χ**:
+  internet STLs are often watertight-but-self-touching (non-manifold edges
+  shared by 4 faces, odd Euler characteristic, fractional "genus").
+  `turn.mjs init` detects this and rewrites `topology.genus` from
+  `voxelGenus.mjs` (ray-parity voxelize → Euler characteristic of the
+  cubical complex, cross-checked at res 0.25 vs 0.15); `meshGenus` keeps
+  the raw value and `genusSource` records the provenance. The voxel-solid
+  genus is what an engine-built candidate will report, so gate against it.
+  (3DBenchy: mesh χ said genus −137.5; solid is genus 5.)
+- **5.38 Mesh-genus vs solid-genus differ when surfaces self-touch**: two
+  features that interpenetrate or touch along a loop add a handle to the
+  *solid* while the immersed *surface* χ stays clean — and vice versa. If
+  your candidate's genus won't match no matter what you cut, run
+  `node scripts/inverse-cad/voxelGenus.mjs <stl> --res 0.25,0.15` on BOTH
+  meshes and compare solids to solids. (dummy13 hand_open target: surface
+  genus 0, solid genus 1 — a touching finger loop.)
 
 ## 6. Plateau protocol
 

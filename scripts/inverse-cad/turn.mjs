@@ -25,6 +25,7 @@ import { signedMeshDistance } from './surfaceDistance.mjs';
 import { voxelDiff } from './voxelDiff.mjs';
 import { evaluateGates, gatesToMarkdown, compositeScore, GATE_THRESHOLDS } from './gates.mjs';
 import { cmdBbox } from './probe.mjs';
+import { voxelGenus } from './voxelGenus.mjs';
 import { meshToRenderInputs, composeComparison } from './render.mjs';
 import { runPreview } from '../cli/preview.mjs';
 
@@ -65,6 +66,23 @@ function init(partDir, targetPath) {
   if (resolve(targetPath) !== resolve(targetDest)) copyFileSync(targetPath, targetDest);
   const mesh = loadMesh(targetDest);
   const profile = cmdBbox(mesh, targetDest);
+  // Foreign meshes are often watertight-but-self-touching (non-manifold
+  // edges), which makes the mesh Euler-characteristic genus fractional or
+  // wrong. Fall back to the voxel-solid topology, which is what the printed
+  // part — and an engine-built candidate — actually has.
+  if (!Number.isInteger(profile.topology.genus) || profile.topology.genus < 0) {
+    const coarse = voxelGenus(mesh, { res: 0.25 });
+    const fine = voxelGenus(mesh, { res: 0.15 });
+    const agreed = coarse.genus === fine.genus && coarse.cavities === fine.cavities;
+    profile.topology.meshGenus = profile.topology.genus;
+    profile.topology.genus = fine.genus;
+    profile.topology.components = fine.solidComponents;
+    profile.topology.cavities = fine.cavities;
+    profile.topology.genusSource = agreed
+      ? 'voxel (res 0.25 & 0.15 agree; mesh chi unreliable)'
+      : `voxel res 0.15 (UNSTABLE: res 0.25 said genus ${coarse.genus}/cav ${coarse.cavities} — verify by hand)`;
+    console.log(`topology: mesh chi unreliable (raw genus ${profile.topology.meshGenus}) — voxel-solid genus ${profile.topology.genus}, cavities ${fine.cavities}${agreed ? '' : ' [UNSTABLE ACROSS RES — VERIFY]'}`);
+  }
   writeFileSync(join(partDir, 'target-profile.json'), JSON.stringify(profile, jsonRound, 2));
   if (!readState(partDir)) {
     writeState(partDir, {
