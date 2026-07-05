@@ -1531,6 +1531,17 @@
       "tags": [
         "figures"
       ]
+    },
+    {
+      "id": "pomni-articulated-painted",
+      "name": "Pomni \u2014 AI-Painted Articulated Kit",
+      "description": "A 25-piece print-in-place articulated Pomni figure kit, surface-painted end-to-end by the generative multi-view projection pipeline (Gemini image completions + triangle-ID back-projection + deterministic gap fill). Imported STL \u2014 heavy entry (~25 MB), downloads on click.",
+      "file": "pomni_articulated.partwright.json",
+      "thumbnail": "pomni_articulated.tile.png",
+      "language": "manifold-js",
+      "tags": [
+        "figures"
+      ]
     }
   ]
 }

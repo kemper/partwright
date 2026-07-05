@@ -426,6 +426,82 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   return canvas;
 }
 
+/** Render the mesh with every triangle in a unique flat ID color and return
+ *  the raw pixels (top-down RGBA, like ImageData). Pixel (x, y) names exactly
+ *  one visible triangle — `decodeTriangleIdPixel` in
+ *  `src/color/idProjection.ts` recovers the LOCAL triangle index — so the
+ *  GPU z-buffer resolves occlusion exactly for image back-projection (#885).
+ *
+ *  Correctness requirements, all deliberate here:
+ *  - Renders into a non-multisampled WebGLRenderTarget, so the shared
+ *    offscreen renderer's antialiasing (which would blend adjacent IDs into
+ *    garbage values) never applies — render targets carry their own sample
+ *    count, and 0 means aliased.
+ *  - The target texture's default NoColorSpace means readRenderTargetPixels
+ *    returns the vertex-color bytes untransformed (the sRGB output transform
+ *    only applies to canvas output), so IDs round-trip exactly.
+ *  - MeshBasicMaterial: no lighting, no tone mapping on flat vertex colors.
+ *  - Camera comes from buildViewCamera, byte-identical to renderSingleView's
+ *    framing for the same meshData + options. */
+export function renderTriangleIdPixels(meshData: MeshData, options: {
+  elevation?: number;
+  azimuth?: number;
+  size?: number;
+}): { data: Uint8Array; width: number; height: number } {
+  const size = options.size ?? 1024;
+  const numTri = meshData.numTri;
+  const { vertProperties, triVerts, numProp } = meshData;
+
+  const positions = new Float32Array(numTri * 9);
+  const colors = new Float32Array(numTri * 9);
+  for (let t = 0; t < numTri; t++) {
+    const id = t + 1; // 0 = background clear color
+    const r = ((id >> 16) & 0xff) / 255;
+    const g = ((id >> 8) & 0xff) / 255;
+    const b = (id & 0xff) / 255;
+    for (let v = 0; v < 3; v++) {
+      const vert = triVerts[t * 3 + v];
+      positions[t * 9 + v * 3] = vertProperties[vert * numProp];
+      positions[t * 9 + v * 3 + 1] = vertProperties[vert * numProp + 1];
+      positions[t * 9 + v * 3 + 2] = vertProperties[vert * numProp + 2];
+      colors[t * 9 + v * 3] = r;
+      colors[t * 9 + v * 3 + 1] = g;
+      colors[t * 9 + v * 3 + 2] = b;
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x000000);
+  const material = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  scene.add(new THREE.Mesh(geometry, material));
+
+  const camera = buildViewCamera(meshData, { elevation: options.elevation, azimuth: options.azimuth, ortho: true });
+  const renderer = getOffscreenRenderer(size);
+  const target = new THREE.WebGLRenderTarget(size, size, { depthBuffer: true, stencilBuffer: false });
+  const prevTarget = renderer.getRenderTarget();
+  renderer.setRenderTarget(target);
+  renderer.render(scene, camera);
+  const raw = new Uint8Array(size * size * 4);
+  renderer.readRenderTargetPixels(target, 0, 0, size, size, raw);
+  renderer.setRenderTarget(prevTarget);
+  target.dispose();
+  material.dispose();
+  geometry.dispose();
+  scene.clear();
+
+  // readRenderTargetPixels returns rows bottom-up; flip to the top-down
+  // convention every image consumer (ImageData, the repainted PNG) uses.
+  const data = new Uint8Array(size * size * 4);
+  const rowBytes = size * 4;
+  for (let y = 0; y < size; y++) {
+    data.set(raw.subarray((size - 1 - y) * rowBytes, (size - y) * rowBytes), y * rowBytes);
+  }
+  return { data, width: size, height: size };
+}
+
 /** Render a single named angle to a PNG data URL. */
 export function renderSingleView(meshData: MeshData, options: {
   elevation?: number;

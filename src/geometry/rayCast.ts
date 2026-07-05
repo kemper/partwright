@@ -238,6 +238,13 @@ export function probePixel(
   pixel: [number, number],
   size: number,
 ): PixelHit | PixelMiss {
+  // Cameras built by buildViewCamera have position/quaternion set but their
+  // matrixWorld is only refreshed by a renderer pass — which never happens on
+  // this probe-only path. Raycaster.setFromCamera and Vector3.project read
+  // matrixWorld/matrixWorldInverse directly, so without this update rays
+  // fire from the right position with a STALE (identity) orientation and
+  // probes systematically miss while renders of the same view look correct.
+  camera.updateMatrixWorld(true);
   const geometry = meshDataToBufferGeometry(meshData);
   const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
   const tempMesh = new THREE.Mesh(geometry, material);

@@ -189,12 +189,12 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'listComponents',
-    description: 'Decompose the current manifold into its boolean-distinct components and return {index, centroid, boundingBox, volume, surfaceArea} for each. Use this for "paint each feature" workflows on unioned models — for a smiley built from head + 2 eyes + mouth, this returns 4 components with bboxes. Prefer paintComponent(index, color) if you intend to paint right after — it skips this query entirely.',
+    description: 'List the parts of the current geometry. Returns {count, components: [{index, centroid, boundingBox, ...}], source}. Two paths: (1) "manifold" — uses Manifold.decompose() on built geometry; entries include volume + surfaceArea. (2) "mesh-island" — face-connected BFS over the triangle adjacency graph; entries include triangleCount and works on render-only imports / non-manifold meshes (multi-part STL kits — articulated print-in-place figures, separable mechanism parts — finally segment without needing Manifold). Print-in-place kits with clearance gaps split cleanly into one island per part; parts that physically touch at a shared vertex appear as one island. Mesh-island entries also carry shape metadata (principalAxisVector = true PCA long direction, aspectRatio, normalHistogram) and mirrorOf — the island\'s bilateral twin under the top-level `symmetry` plane, so identifying one glove identifies the other for free (paint one, paintMirrored the twin). Pair with paintIsland({index, color}) — topological, never bleeds across XYZ-overlapping parts.',
     input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'paintComponent',
-    description: 'Paint a boolean-distinct component (from listComponents) in one call. Equivalent to listComponents → paintInBox(component.boundingBox) but a single round-trip. Use whenever the user wants "paint the Nth piece a color" — eyes, nose, mouth on a unioned smiley, arms of a robot, etc.',
+    description: 'Paint a boolean-distinct component (from listComponents on built geometry) in one call. Equivalent to listComponents → paintInBox(component.boundingBox) but a single round-trip. Use for "paint the Nth piece a color" — eyes, nose, mouth on a unioned smiley, arms of a robot, etc. REQUIRES a manifold — for render-only STL imports use paintIsland instead.',
     input_schema: {
       type: 'object',
       properties: {
@@ -204,6 +204,289 @@ const ALL_TOOLS: ToolDefinition[] = [
         topOnly: { type: 'boolean', description: 'If true, only paint upward-facing triangles (skip side walls + bottom). Same shortcut as paintInBox.topOnly.' },
       },
       required: ['index', 'color'],
+    },
+  },
+  {
+    name: 'paintIsland',
+    description: 'Paint a single face-connected mesh island by index from listComponents(). The right tool for painting one part of a multi-part STL kit (articulated figures, separable mechanism parts) — selects by topological connectivity, NOT XYZ position, so it never bleeds across parts that overlap in 3D space (the failure mode that defeats paintInBox/paintNear/paintInCylinder on tightly-packed prints). Works on ANY mesh including render-only imports; paintComponent requires Manifold but this does not. Use whenever a multi-part import is in play — call listComponents() first to see the island count, then loop one paintIsland call per part. Topological: print-in-place kits with clearance gaps split cleanly; two parts touching at a shared vertex appear as one island.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', description: 'Island index from listComponents() (0-based).' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
+        name: { type: 'string', description: 'Optional region name. Defaults to "Island <index>".' },
+      },
+      required: ['index', 'color'],
+    },
+  },
+  {
+    name: 'paintIslandAt',
+    description: 'Paint the face-connected island containing the triangle closest to `point`. Use this when you have a 3D point on the part you want — e.g. from probePixel after raycasting a pixel in an iso render — and want to paint that whole part without enumerating islands first. The grounded equivalent of paintIsland.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[x, y, z] world-space point on the part you want to paint (from probePixel.point or any other source).' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
+        name: { type: 'string', description: 'Optional region name.' },
+      },
+      required: ['point', 'color'],
+    },
+  },
+  {
+    name: 'detectRegions',
+    description: 'Auto-segment the mesh into SCULPTED FEATURE regions by crease (dihedral-angle) watershed. THE enumeration primitive for organic sculpts — the iris ring, pupil, eye outline, mouth crease, blush dimples, each torso pom-pom, bangs/hairline are all sculpted features whose boundaries are crease edges. With the default 20° threshold, the BFS walks freely across the gentle curvature of cheeks and a hat dome but stops cold at a 30°+ crease, so features pop out as distinct regions. Returns regions sorted largest first with {id, triangleCount, area, centroid, normal, bbox, maxTriangleArea, medianTriangleArea, worstTriangleAspectRatio, fanTopologyRisk, neighborIds?}. fanTopologyRisk: true = giant fan wedges lurk in this region and painting its raw triangleIds WILL bleed — use paintRegionFitted, or paintFaces with maxTriangleArea. Pass `withinIsland: <id>` (from listComponents) to segment ONE mesh-island (a fused body part) so the head\'s eyes/buttons stop being unreachable, and `merge` to reassemble fragmented features. Identify candidates visually with renderRegionGrid, then paint via paintRegionFitted (disc features), paintByCrease (crease-bounded flood), or filtered paintFaces. For coarse part-level segmentation, raise creaseAngleDeg to 45°; for fine detail, lower to 10°.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        creaseAngleDeg: { type: 'number', description: 'Dihedral angle threshold in DEGREES — BFS stops where adjacent face bend exceeds this. Default 20 (good for sculpted features). 10 = fine detail, 45 = coarse parts.' },
+        minTriangleCount: { type: 'integer', description: 'Skip regions with fewer than this many triangles. Default 5. Filters out single-triangle slivers.' },
+        maxRegions: { type: 'integer', description: 'Cap returned region count (largest first). Default 64. 0 = unlimited (use sparingly).' },
+        withinIsland: { type: 'integer', description: 'Optional index from listComponents() — segment ONLY this mesh-island, not the whole mesh. The fix for fused body islands (head+torso+buttons welded as one island) — pass the body island id and the eyes/mouth/buttons separate out as their own regions.' },
+        includeNeighbors: { type: 'boolean', description: 'Add neighborIds (regions sharing a crease boundary) to each region. Default true. Useful for "what borders the iris?" queries.' },
+        maxTrianglesPerGroup: { type: 'integer', description: 'Cap triangleIds per region. Default 0 (omit entirely — keeps response small). Set >0 only if you need raw ids for paintFaces/renderRegionGrid/fitRegionShape.' },
+        merge: { type: 'object', description: 'Opt-in agglomerative merge of watershed fragments so ONE visual feature (a pupil) comes back as ONE region instead of 3-4 shards: neighbouring regions merge when mean normals differ by <= angleDeg (default 30), or a tiny region (area < minArea) with exactly one neighbour folds in. CAUTION on smooth organic heads: angleDeg 30 can chain-merge the whole face into one region — start WITHOUT merge; add it at a small angleDeg (8-15) only when you see one feature fragmented across siblings.', properties: { angleDeg: { type: 'number' }, minArea: { type: 'number' } } },
+      },
+    },
+  },
+  {
+    name: 'renderIsland',
+    description: 'Render ONE mesh island as a standalone thumbnail. THE vision-in-loop fix for the identification problem — when listComponents returns 61 islands and bbox/centroid alone cannot tell "left glove" from "right boot", renderIsland lets you (and your multimodal model) actually SEE that island. Returns a base64 PNG framed to just the island. Default 192px iso, 30° elevation / 315° azimuth. For a "grid of thumbnails" pass: listComponents() → for each i: renderIsland({index: i}). Cheap enough (~50-100ms per island) to render several per turn.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', description: 'Island index from listComponents() (0-based).' },
+        view: {
+          type: 'object',
+          description: 'Camera override. Default iso: {elevation: 30, azimuth: 315}. Pass ortho: true for a build-plate style top-down.',
+          properties: {
+            elevation: { type: 'number' },
+            azimuth: { type: 'number' },
+            ortho: { type: 'boolean' },
+          },
+        },
+        size: { type: 'integer', description: 'Thumbnail edge length in pixels. Default 192. Range 32–2048.' },
+        showPaint: { type: 'boolean', description: 'Show current paint on the island (default true) — the per-feature paint-QC view, no whole-model render + crop needed. false = bare geometry.' },
+      },
+      required: ['index'],
+    },
+  },
+  {
+    name: 'renderRegion',
+    description: 'Highlight a triangle set on the mesh in a bright colour and render it. THE identification fix for detectRegions output — when detectRegions({withinIsland: bodyIsland}) returns 60+ regions and area/normal alone can\'t tell "left iris ring" from "upper hat dome", loop the top-N regions and renderRegion each one so you (and your multimodal model) actually SEE which is which. Then paintFaces or paintByCrease the one you meant. Pair with detectRegions({maxTrianglesPerGroup: 20000}) so you have triangleIds to hand it. Non-destructive — renders a temporary highlight, no side effect on persisted regions.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        triangleIds: { type: 'array', items: { type: 'integer' }, description: 'Triangles to highlight — typically from detectRegions().regions[i].triangleIds. Omit when passing selection.' },
+        selection: { description: 'Render a NAMED SELECTION (name or id from select()) instead of raw triangleIds — the "show me what I selected" call.' },
+        withinIsland: { type: 'integer', description: 'Optional: frame the camera to just this mesh island (from listComponents) so you\'re not zoomed out on the whole model.' },
+        highlightColor: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1. Defaults to bright yellow.' },
+        view: {
+          type: 'object',
+          description: 'Camera override. Default iso: {elevation: 30, azimuth: 315}.',
+          properties: {
+            elevation: { type: 'number' },
+            azimuth: { type: 'number' },
+            ortho: { type: 'boolean' },
+          },
+        },
+        size: { type: 'integer', description: 'Thumbnail size in pixels. Default 256. Range 32–2048.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'paintOrientedStripes',
+    description: 'Paint N equally-spaced stripes along an island\'s TRUE principal direction (PCA over triangle centroids — follows a tilted limb, not the nearest world axis). THE fix for striped limbs on organic characters (Pomni sleeves, legs, tails). Colours flow from low-end to high-end along the axis.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        islandIndex: { type: 'integer', description: 'Island index from listComponents() (0-based).' },
+        colors: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, description: 'Array of [r,g,b] triples. `[red, blue, red, blue]` produces four bands red→blue→red→blue.' },
+        axis: { description: "Optional axis override: 'x'|'y'|'z' or an [x,y,z] vector. Default = the island's PCA principalAxisVector." },
+        name: { type: 'string' },
+      },
+      required: ['islandIndex', 'colors'],
+    },
+  },
+  {
+    name: 'renderRegionGrid',
+    description: 'ONE labelled contact sheet of up to 64 region highlights — the batch version of renderRegion. Pass detectRegions().regions directly (run detectRegions with maxTrianglesPerGroup > 0 first) and identify EVERY candidate feature in a single image read instead of 20 renderRegion round-trips. Each tile is labelled with the region id; a red "(0 tris!)" label means that region has no triangles in frame. Use withinIsland to frame all tiles to one island (computed once, shared).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        regions: { type: 'array', description: 'The detectRegions().regions array (objects with id + triangleIds), or plain arrays of triangle ids. Max 64.', items: {} },
+        withinIsland: { type: 'integer', description: 'Optional island index from listComponents — frames every tile to just that island.' },
+        view: { type: 'object', description: 'Camera for all tiles. Default iso {elevation: 30, azimuth: 315}.', properties: { elevation: { type: 'number' }, azimuth: { type: 'number' }, ortho: { type: 'boolean' } } },
+        size: { type: 'integer', description: 'Per-tile edge length in px. Default 192. Range 64-512.' },
+        cols: { type: 'integer', description: 'Grid columns. Default ~sqrt(n), max 8.' },
+      },
+      required: ['regions'],
+    },
+  },
+  {
+    name: 'paintDisc',
+    description: 'Paint a smooth-edged DISC facing a normal — THE facial-feature primitive (iris, pupil, blush dot, button, pom-pom). No quaternion math: feed it probePixel\'s point+normal, a detectRegions region\'s centroid+normal, or fitRegionShape\'s circle center+axis. Paint concentric features LARGEST-FIRST (eye dome, then iris, then pupil) — later discs composite on top, so rings appear without annular geometry. Edges are analytic (subdivided + clipped), immune to fan-topology bleed.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Disc center [x,y,z] on (or near) the surface.' },
+        normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Disc facing direction (need not be normalized).' },
+        radius: { type: 'number', description: 'Disc radius in mesh units.' },
+        thickness: { type: 'number', description: 'Slab thickness along the normal. Default = radius. Tighten for shallow features near other geometry; widen (2×radius) to swallow a tall dome.' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r,g,b] in 0..1.' },
+        name: { type: 'string' },
+        within: { type: 'object', description: 'Optional hard paint scope — the selector is intersected with this island / named selection / existing region, so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
+      },
+      required: ['center', 'normal', 'radius', 'color'],
+    },
+  },
+  {
+    name: 'fitRegionShape',
+    description: 'Fit an ANALYTIC disc/sphere/plane to a detected region\'s boundary points. THE fan-bleed killer: a detectRegions region\'s raw triangle set has ragged boundaries and fan wedges, but the sculptor\'s intent was almost always a clean disc (iris, pupil, blush, button). Returns {best, circle: {center, axis, radius, rms}, sphere?, plane, nextStep}. A tight circle fit (rms << radius) → paint via paintDisc/paintRegionFitted; a poor fit → the feature isn\'t a disc, use paintFaces with fan filters instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        triangleIds: { type: 'array', items: { type: 'integer' }, description: 'From detectRegions({maxTrianglesPerGroup > 0}).regions[i].triangleIds.' },
+      },
+      required: ['triangleIds'],
+    },
+  },
+  {
+    name: 'paintRegionFitted',
+    description: 'One call: fit a disc to a detected region\'s boundary and paint it with a crisp analytic edge (fitRegionShape + paintDisc). THE formalization of the winning validation technique — locate the sculpted feature, then paint an analytic shape AT it instead of painting its bleed-prone raw triangle set. Refuses when the boundary isn\'t disc-like (rms > 0.25×radius) unless force: true.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        triangleIds: { type: 'array', items: { type: 'integer' }, description: 'From detectRegions({maxTrianglesPerGroup > 0}).regions[i].triangleIds.' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r,g,b] in 0..1.' },
+        pad: { type: 'number', description: 'Radius multiplier. Default 1.0; 1.05 = 5% overshoot for full coverage.' },
+        thickness: { type: 'number', description: 'Disc slab thickness. Default 2× fitted radius (covers a fully-raised dome).' },
+        name: { type: 'string' },
+        force: { type: 'boolean', description: 'Paint even when the circle fit is poor.' },
+      },
+      required: ['triangleIds', 'color'],
+    },
+  },
+  {
+    name: 'paintMirrored',
+    description: 'Mirror an existing painted region across the model\'s bilateral symmetry plane (auto-detected; see listComponents().symmetry). Paint ONE eye, then mirror it — position and size match by construction, and color can DIFFER (Pomni: red left iris, blue right iris). Analytic paints (paintDisc/paintInBox/paintByCrease/strokes) reflect exactly and stay crisp; raw paintFaces sets fall back to per-triangle mirroring (response.method says which ran). This halves the work AND kills left/right asymmetry on every bilateral character.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        regionId: { type: 'integer', description: 'Source region id (from any paint tool\'s response, or listRegions).' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional different color for the mirrored copy. Default = same as source.' },
+        name: { type: 'string' },
+        plane: { type: 'object', description: 'Override the auto-detected plane — IMPORTANT for features on one part: the global kit plane may be a few units off a single island\'s own midline (a head centred at x=130 on a plate whose plane is x=128 would misplace the second eye by 4 units). Pass {axis, point: [islandCenterX, 0, 0]} using the island\'s bbox centre (or the midpoint between the two features you measured).', properties: { axis: { type: 'string', enum: ['x', 'y', 'z'] }, point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 } }, required: ['axis'] },
+      },
+      required: ['regionId'],
+    },
+  },
+  {
+    name: 'select',
+    description: 'Create a NAMED SELECTION — an uncolored triangle set that scopes paint operations. THE anti-bleed primitive: every paint tool accepts within: {selection: <name>} and intersects its selector with the selection, so paint outside it is impossible by construction. Build one per anatomical part in the IDENTIFY phase (\'head\', \'left-shoulder\') and paint strictly within them. Exactly ONE of: island (from listComponents), triangleIds (from detectRegions), byCrease ({seedPoint, creaseAngleDeg?} crease flood), box ({min, max} AABB), sphere ({center, radius}), shape ({kind?, center, size, quaternion?} oriented box/sphere/cylinder/cone). Selections re-resolve across mesh refinement (except triangleIds-sourced ones) and are runtime-only.',
+    input_schema: {
+      type: 'object',
+      properties: Object.assign({ name: { type: 'string', description: 'Unique name, e.g. left-shoulder. Auto-generated when omitted.' } }, { island: { type: 'integer' }, triangleIds: { type: 'array', items: { type: 'integer' } }, byCrease: { type: 'object', properties: { seedPoint: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, creaseAngleDeg: { type: 'number' } }, required: ['seedPoint'] }, box: { type: 'object', properties: { min: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, max: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 } }, required: ['min', 'max'] }, sphere: { type: 'object', properties: { center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, radius: { type: 'number' } }, required: ['center', 'radius'] }, shape: { type: 'object', properties: { kind: { type: 'string', enum: ['box', 'sphere', 'cylinder', 'cone'] }, center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, size: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, quaternion: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 } }, required: ['center', 'size'] } }),
+    },
+  },
+  {
+    name: 'refineSelection',
+    description: 'Boolean set algebra on a selection: add (union), subtract, or intersect with any selector — e.g. select the shoulder island, subtract the joint-socket sphere, leaving just the shoulder shell. A refinement that would empty the selection is rejected and NOT applied. Returns updated size/bbox/history.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        selection: { description: 'Selection name or id.' },
+        op: { type: 'string', enum: ['add', 'subtract', 'intersect'] },
+        with: { type: 'object', description: 'The selector to combine. Exactly ONE of: island (from listComponents), triangleIds (from detectRegions), byCrease ({seedPoint, creaseAngleDeg?} crease flood), box ({min, max} AABB), sphere ({center, radius}), shape ({kind?, center, size, quaternion?} oriented box/sphere/cylinder/cone).', properties: { island: { type: 'integer' }, triangleIds: { type: 'array', items: { type: 'integer' } }, byCrease: { type: 'object', properties: { seedPoint: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, creaseAngleDeg: { type: 'number' } }, required: ['seedPoint'] }, box: { type: 'object', properties: { min: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, max: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 } }, required: ['min', 'max'] }, sphere: { type: 'object', properties: { center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, radius: { type: 'number' } }, required: ['center', 'radius'] }, shape: { type: 'object', properties: { kind: { type: 'string', enum: ['box', 'sphere', 'cylinder', 'cone'] }, center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, size: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, quaternion: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 } }, required: ['center', 'size'] } } },
+      },
+      required: ['selection', 'op', 'with'],
+    },
+  },
+  {
+    name: 'listSelections',
+    description: 'All named selections with sizes, bboxes, and build history — the durable anatomy map of the IDENTIFY phase.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'removeSelection',
+    description: 'Delete a selection by name or id. Paint regions that were scoped by it are unaffected (their scope was baked at paint time).',
+    input_schema: { type: 'object', properties: { selection: { description: 'Selection name or id.' } }, required: ['selection'] },
+  },
+  {
+    name: 'paintPartition',
+    description: 'Divide a scope into colored cells — the striped-shoulder / patterned-pupil primitive. REQUIRES within (island/selection/region — never paints unscoped). by.kind: \'bands\' = equal slices along an axis (default: the scope\'s PCA long direction — scoped paintOrientedStripes); \'wedges\' = angular sectors around an axis through a center (default axis: the scope\'s mean surface normal, center: its centroid — radial shoulder stripes, pinwheel caps); \'rings\' = concentric annuli at given boundary radii (cells: <r1, r1..r2, …, >rLast — alternating pupil edge colors, bullseyes). colors cycle across cells; each cell commits as its own removable region.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        within: { type: 'object', description: 'REQUIRED scope. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id.' }, region: { type: 'integer' } } },
+        by: { type: 'object', description: '{kind: bands, count, axis?} | {kind: wedges, count, axis?, center?, phaseDeg?} | {kind: rings, radii: [r1, r2…], axis?, center?}. axis: x|y|z or [x,y,z] vector.', properties: { kind: { type: 'string', enum: ['bands', 'wedges', 'rings'] }, count: { type: 'integer' }, radii: { type: 'array', items: { type: 'number' } }, axis: {}, center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, phaseDeg: { type: 'number' } }, required: ['kind'] },
+        colors: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, description: 'Cycled over cells: [red, blue] on 8 wedges alternates red/blue.' },
+        name: { type: 'string' },
+      },
+      required: ['within', 'by', 'colors'],
+    },
+  },
+  {
+    name: 'auditPaint',
+    description: 'Deterministic whole-scene paint audit — run BEFORE declaring a paint job done, and dismiss or fix every flag. Catches exactly what a final glance misses: stray disconnected paint fragments (a mis-aimed selector or fan-wedge splatter far from the feature — flagged suspicious), regions >50% overwritten by later paint (intentional layering like iris-over-dome is fine; accidental overwrite is not), and islands never painted (the missed 8th cuff). Numbers, not pictures: gate on flaggedRegionIds/unpaintedIslands and only re-render where a flag fires.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'sampleReferenceColor',
+    description: 'Sample a colour from an attached reference image. THE bridge between "the photo you\'re trying to match" and "the exact RGB to hand paintByCrease". Point at the pixel/rect on the reference where the feature is (Pomni left glove, iris outer ring, chest button); returns `{color: [r,g,b], hex}` in 0..1 ready to feed straight to any paint tool. "dominant" mode buckets HSV to survive photo shadows/highlights (the right default); "mean" is a plain average — right for a uniform patch. Identify the image via `id` from getImages(); omit to sample from the first attached image.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Image id from getImages(). Omit to use the first attached image.' },
+        rect: {
+          type: 'object',
+          description: 'Pixel rect on the image: {x, y, w, h}. Preferred over a single point — averaging over a patch is more robust.',
+          properties: {
+            x: { type: 'number' }, y: { type: 'number' },
+            w: { type: 'number' }, h: { type: 'number' },
+          },
+          required: ['x', 'y', 'w', 'h'],
+        },
+        point: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[x, y] pixel to sample as a fallback if rect is omitted (samples that single pixel).' },
+        mode: { type: 'string', enum: ['dominant', 'mean'], description: 'dominant (default) buckets HSV then takes the modal bucket mean — survives shadows/highlights. mean is a plain average.' },
+      },
+    },
+  },
+  {
+    name: 'waitForSessionStable',
+    description: 'Await session-id stability — resolves once minMs (default 800ms) has passed without the session id changing. Fixes the DX cliff where importMeshData navigates the page mid-await and later paint calls land in a stale session (2 of 4 v2 Pomni agents lost 60+ paint operations to this). Call it right after importMeshData before starting any paint work. Returns {sessionId, elapsedMs}.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        minMs: { type: 'number', description: 'Stability window in ms. Default 800.' },
+        timeoutMs: { type: 'number', description: 'Overall timeout. Default 15000.' },
+      },
+    },
+  },
+  {
+    name: 'getSessionId',
+    description: 'Current session id (or null). Pair with waitForSessionStable / getVersion to detect the mid-loop session-swap race.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'getVersion',
+    description: 'Current version index within the active session (0 if none). Capture before a paint batch; re-check after to detect autosave-triggered version bumps that could invalidate your assumptions.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'paintByCrease',
+    description: 'Flood paint from a surface seed, stopping at the next crease edge — now scopeable: pass within: {selection|island} and the flood CANNOT leave the scope, which defuses the smooth-mesh flood hazard entirely. Unscoped floods that cover >60% of their island return a floodWarning — undoLastPaint and rescope. Right for features bounded by a REAL crease (a paneled machine part, a sharp-rimmed button). ⚠ FLOOD HAZARD on smooth organic sculpts: where the boundary is a gentle slope the flood swallows the ENTIRE island (a 205k-tri head painted one colour — observed in validation). ALWAYS sanity-check the returned `triangles` count against the feature size (an iris is hundreds of tris, not 200k) and undoLastPaint() on overshoot; on smooth meshes prefer fitRegionShape → paintDisc/paintRegionFitted, which cannot flood. Parameterised in DEGREES with a sculpt-tuned default of 20°; seedNormal optional (snaps to the nearest triangle). For very tight features lower creaseAngleDeg to 5–10°.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        seedPoint: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[x, y, z] world-space point on the surface (e.g. probePixel.point).' },
+        seedNormal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional surface normal at the seed (e.g. probePixel.normal). Omit to auto-snap to the nearest triangle\'s normal.' },
+        creaseAngleDeg: { type: 'number', description: 'Crease angle in degrees. Default 20. Lower for tighter features (5–10° for pupil inside iris), higher for coarser flood (45°+).' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
+        name: { type: 'string', description: 'Optional region name.' },
+        within: { type: 'object', description: 'Optional hard paint scope — intersected with the selector so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
+      },
+      required: ['seedPoint', 'color'],
     },
   },
   {
@@ -280,12 +563,13 @@ const ALL_TOOLS: ToolDefinition[] = [
         pixel: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[x, y] pixel position. (0, 0) is top-left.' },
         view: {
           type: 'object',
-          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          description: 'Camera spec. MUST match the render that produced the image — same elevation, azimuth, ortho, size. For pixels seen in a renderIsland/renderRegion thumbnail, pass that call\'s returned `probeView` object verbatim (it carries `island`, which frames the probe to the island subset; hits come back in world coords with a full-mesh triangleId).',
           properties: {
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
             size: { type: 'integer' },
+            island: { type: 'integer', description: 'Island index the render was framed to (from renderIsland/renderRegion probeView). Omit for whole-mesh renderView images.' },
           },
         },
       },
@@ -493,13 +777,16 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintFaces',
-    description: 'Paint a specific set of triangle ids. Last-resort primitive — prefer paintInBox / paintNear / paintSlab when the intent is "all faces matching a geometric predicate", because they collapse the find+paint pair into one tool call (saves a full round-trip plus the triangleId payload).',
+    description: 'Paint a specific set of triangle ids. Last-resort primitive — prefer paintInBox / paintNear / paintSlab when the intent is "all faces matching a geometric predicate", and paintRegionFitted/paintDisc for sculpted disc features. When painting a detectRegions region whose fanTopologyRisk is true, ALWAYS pass maxTriangleArea (≈ its medianTriangleArea × 5) or maxTriangleAspectRatio: 6 so giant fan wedges don\'t bleed the color across the face.',
     input_schema: {
       type: 'object',
       properties: {
         triangleIds: { type: 'array', items: { type: 'integer' } },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        maxTriangleArea: { type: 'number', description: 'Exclude triangles larger than this area — defuses fan-topology wedges. Use the region\'s medianTriangleArea × ~5.' },
+        maxTriangleAspectRatio: { type: 'number', description: 'Exclude sliver/wedge triangles above this aspect ratio (longest edge / altitude; equilateral ≈ 1.15). Try 6.' },
+        within: { type: 'object', description: 'Optional hard paint scope — the selector is intersected with this island / named selection / existing region, so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['triangleIds', 'color'],
     },
@@ -518,6 +805,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this. Use to filter out the long radial triangles that cylinder/revolve produce.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        within: { type: 'object', description: 'Optional hard paint scope — intersected with the selector so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['point', 'radius', 'color'],
     },
@@ -563,17 +851,21 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintInBox',
-    description: 'Paint every triangle whose centroid is inside the axis-aligned box (optionally constrained by a normal cone). One call. Use for "paint the top half / the right rim / everything below z=0". Pass `topOnly: true` to skip side walls and the bottom face — the most common over-paint cause. On fan-topology meshes (cylinder/revolve/linear_extrude surfaces), pass `coverageMode: "fully_inside"` and/or `maxTriangleArea` to avoid long radial triangles bleeding paint outside the box. On BREP-engine solids (replicad language, or a manifold-js session whose return value came through `BREP.toManifold`), OCCT booleans can leave interior intersection-seam triangles inside the bounding volume — the centroid test then catches them and you get patchy paint on a surface that looks solid. Default to `coverageMode: "fully_inside"` on BREP, or use `paintConnected` from a probePixel seed instead.',
+    description: 'Paint every triangle inside the axis-aligned box. One call. Use for "paint the top half / the right rim / everything below z=0". The painted edge is SMOOTHED by default — the mesh is subdivided near the box faces so the colour boundary follows the box, not the coarse tessellation. Pass `smooth: false` for the raw blocky edge, or tune `resolution` / `maxEdge`. Smoothing is automatically skipped (silently) when `normalCone` / `topOnly` / `coverageMode` / `maxTriangleArea` are set — the filter path stays on the legacy centroid-collect branch. Filter options: pass `topOnly: true` to skip side walls and the bottom face — the most common over-paint cause. On fan-topology meshes (cylinder/revolve/linear_extrude surfaces), pass `coverageMode: "fully_inside"` and/or `maxTriangleArea` to avoid long radial triangles bleeding paint outside the box. On BREP-engine solids (replicad language, or a manifold-js session whose return value came through `BREP.toManifold`), OCCT booleans can leave interior intersection-seam triangles inside the bounding volume — default to `coverageMode: "fully_inside"` on BREP, or use `paintConnected` from a probePixel seed instead.',
     input_schema: {
       type: 'object',
       properties: {
         box: { type: 'object', description: '{min: [x,y,z], max: [x,y,z]}' },
-        normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n}.' },
-        topOnly: { type: 'boolean', description: 'Shortcut for normalCone: {axis: [0,0,1], angleDeg: 30}. Common case: paint the top face of a feature without catching its sides.' },
-        coverageMode: { type: 'string', enum: ['centroid', 'fully_inside', 'any_vertex_inside'], description: 'Triangle containment test. Default "centroid". "fully_inside" requires all 3 vertices inside the box — defangs fan-bleed.' },
-        maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this. Use to filter out the long radial triangles that cylinder/revolve produce.' },
+        normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n}. Setting this disables smooth edges.' },
+        topOnly: { type: 'boolean', description: 'Shortcut for normalCone: {axis: [0,0,1], angleDeg: 30}. Common case: paint the top face of a feature without catching its sides. Disables smooth edges.' },
+        coverageMode: { type: 'string', enum: ['centroid', 'fully_inside', 'any_vertex_inside'], description: 'Triangle containment test. Default "centroid". "fully_inside" requires all 3 vertices inside the box — defangs fan-bleed. Disables smooth edges.' },
+        maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this. Use to filter out the long radial triangles that cylinder/revolve produce. Disables smooth edges.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
+        smooth: { type: 'boolean', description: 'Smooth the painted edge by subdividing the mesh near the box faces. Default true; pass false for the raw (blocky) tessellation. Ignored when any filter (normalCone/topOnly/coverageMode/maxTriangleArea) is set.' },
+        resolution: { type: 'number', description: 'Smoothing detail: target boundary edge = model bbox diagonal / resolution. Higher = smoother + more triangles. Default 256, range 2–1024.' },
+        maxEdge: { type: 'number', description: 'Optional absolute override for the target boundary edge length (mesh units). Takes precedence over resolution.' },
+        within: { type: 'object', description: 'Optional hard paint scope — the selector is intersected with this island / named selection / existing region, so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['box', 'color'],
     },
@@ -594,11 +886,13 @@ const ALL_TOOLS: ToolDefinition[] = [
           },
           required: ['center', 'size'],
         },
+        shape: { type: 'string', enum: ['box', 'sphere', 'cylinder', 'cone'], description: 'Interpret the oriented frame as a different solid: sphere (radius = size[0]/2), cylinder (radius = size[0]/2 around local Y, height = size[1] — an oriented DISC when height is thin; see also paintDisc), or cone (apex at local +Y). Default box.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
         smooth: { type: 'boolean', description: 'Smooth the painted edge by subdividing the mesh near the box faces. Default true; pass false for the raw (blocky) tessellation.' },
         resolution: { type: 'number', description: 'Smoothing detail: target boundary edge = model bbox diagonal / resolution. Higher = smoother + more triangles. Default 256, range 2–1024.' },
         maxEdge: { type: 'number', description: 'Optional absolute override for the target boundary edge length (mesh units). Takes precedence over resolution.' },
+        within: { type: 'object', description: 'Optional hard paint scope — the selector is intersected with this island / named selection / existing region, so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['box', 'color'],
     },
@@ -620,6 +914,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         smooth: { type: 'boolean', description: 'Smooth the slab edges by subdividing the mesh along them. Default true; pass false for the raw (blocky) tessellation.' },
         resolution: { type: 'number', description: 'Smoothing detail: target boundary edge = model bbox diagonal / resolution. Higher = smoother + more triangles. Default 256, range 2–1024.' },
         maxEdge: { type: 'number', description: 'Optional absolute override for the target boundary edge length (mesh units). Takes precedence over resolution.' },
+        within: { type: 'object', description: 'Optional hard paint scope — intersected with the selector so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['offset', 'thickness', 'color'],
     },
@@ -1007,6 +1302,7 @@ const ALL_TOOLS: ToolDefinition[] = [
           description: 'centroid (default): centroid inside the shell. fully_inside: all 3 vertices inside. any_vertex_inside: at least 1 vertex inside.',
         },
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this area. Use to avoid fan-bleed on cylinder topology.' },
+        within: { type: 'object', description: 'Optional hard paint scope — intersected with the selector so the paint CANNOT bleed outside it. Exactly one key.', properties: { island: { type: 'integer' }, selection: { description: 'Selection name or id (from select()).' }, region: { type: 'integer' } } },
       },
       required: ['rMin', 'rMax', 'zMin', 'zMax', 'color'],
     },
@@ -1387,8 +1683,8 @@ export const PART_TARGETABLE_TOOLS = new Set<string>([
   'modifyAndTest', 'query', 'findFaces', 'listComponents', 'listLabels', 'getModelColors',
   'listRegions', 'probePixel', 'probeRay', 'paintPreview', 'paintExplain',
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
-  'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
-  'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
+  'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintByLabel', 'paintByLabels',
+  'paintConnected', 'paintInCylinder', 'detectRegions', 'renderIsland', 'renderRegion', 'renderRegionGrid', 'paintOrientedStripes', 'paintDisc', 'fitRegionShape', 'paintRegionFitted', 'paintMirrored', 'auditPaint', 'select', 'refineSelection', 'listSelections', 'removeSelection', 'paintPartition', 'sampleReferenceColor', 'undoLastPaint', 'redoLastPaint', 'removeRegion',
   'clearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
@@ -1434,6 +1730,19 @@ const ALWAYS_AVAILABLE = new Set([
   'readDoc',
   'findFaces',
   'listComponents',
+  'renderIsland',
+  'renderRegion',
+  'renderRegionGrid',
+  'fitRegionShape',
+  'auditPaint',
+  'select',
+  'refineSelection',
+  'listSelections',
+  'removeSelection',
+  'sampleReferenceColor',
+  'waitForSessionStable',
+  'getSessionId',
+  'getVersion',
   'listLabels',
   'getModelColors',
   // listRegions is a pure read, not a paint mutation, so it stays always-on
@@ -1524,7 +1833,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintIsland', 'paintIslandAt', 'paintByCrease', 'paintOrientedStripes', 'paintDisc', 'paintRegionFitted', 'paintMirrored', 'paintPartition', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -2045,6 +2354,50 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.listComponents();
     case 'paintComponent':
       return api.paintComponent(input);
+    case 'paintIsland':
+      return api.paintIsland(input);
+    case 'paintIslandAt':
+      return api.paintIslandAt(input);
+    case 'detectRegions':
+      return api.detectRegions(input);
+    case 'paintByCrease':
+      return api.paintByCrease(input);
+    case 'renderIsland':
+      return api.renderIsland(input);
+    case 'renderRegion':
+      return api.renderRegion(input);
+    case 'paintOrientedStripes':
+      return api.paintOrientedStripes(input);
+    case 'renderRegionGrid':
+      return api.renderRegionGrid(input);
+    case 'paintDisc':
+      return api.paintDisc(input);
+    case 'fitRegionShape':
+      return api.fitRegionShape(input);
+    case 'paintRegionFitted':
+      return api.paintRegionFitted(input);
+    case 'paintMirrored':
+      return api.paintMirrored(input);
+    case 'auditPaint':
+      return api.auditPaint();
+    case 'select':
+      return api.select(input);
+    case 'refineSelection':
+      return api.refineSelection(input);
+    case 'listSelections':
+      return api.listSelections();
+    case 'removeSelection':
+      return api.removeSelection(input);
+    case 'paintPartition':
+      return api.paintPartition(input);
+    case 'sampleReferenceColor':
+      return api.sampleReferenceColor(input);
+    case 'waitForSessionStable':
+      return api.waitForSessionStable(input);
+    case 'getSessionId':
+      return api.getSessionId();
+    case 'getVersion':
+      return api.getVersion();
     case 'listLabels':
       return api.listLabels();
     case 'getModelColors':

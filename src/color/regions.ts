@@ -25,14 +25,19 @@ export interface ColorRegion {
 }
 
 export type RegionDescriptor =
-  | { kind: 'coplanar'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; normalTolerance: number }
+  | { kind: 'coplanar'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; normalTolerance: number; scopeIds?: number[] }
   // Slab / oriented-shape descriptors carry optional smoothing: when `smooth`
   // is set, the mesh is locally subdivided near the region's boundary until
   // boundary triangles fall below `maxEdge`, so the painted edge follows the
   // analytic boundary instead of the coarse base tessellation. Descriptors
   // saved before smoothing existed simply omit both fields (no subdivision).
-  | { kind: 'slab'; normal: [number, number, number]; offset: number; thickness: number; smooth?: boolean; maxEdge?: number }
-  | { kind: 'box'; center: [number, number, number]; size: [number, number, number]; quaternion: [number, number, number, number]; shape?: ShapeType; smooth?: boolean; maxEdge?: number }
+  // `scopeIds` (on the geometric-selector kinds below): optional hard scope
+  // baked at paint time by the `within` option — the resolver intersects the
+  // re-resolved selector with these ids (remapped through subdivision), so a
+  // scoped paint can never grow past its scope on re-resolve. Descriptors
+  // saved before scoping existed simply omit it.
+  | { kind: 'slab'; normal: [number, number, number]; offset: number; thickness: number; smooth?: boolean; maxEdge?: number; scopeIds?: number[] }
+  | { kind: 'box'; center: [number, number, number]; size: [number, number, number]; quaternion: [number, number, number, number]; shape?: ShapeType; smooth?: boolean; maxEdge?: number; scopeIds?: number[] }
   // Cylindrical-shell selector — `rMin === 0` collapses to a solid cylinder,
   // otherwise an annular ring. `topOnly` / `normalCone` / `coverageMode` /
   // `maxTriangleArea` carry over from the original `paintInCylinder` API so
@@ -50,7 +55,7 @@ export type RegionDescriptor =
       // so this descriptor stays serializable without pulling in main.ts.
       coverageMode?: 'centroid' | 'fully_inside' | 'any_vertex_inside';
       maxTriangleArea?: number;
-      smooth?: boolean; maxEdge?: number }
+      smooth?: boolean; maxEdge?: number; scopeIds?: number[] }
   | { kind: 'triangles'; ids: number[] }
   | { kind: 'byLabel'; label: string }
   // Color magic-wand (the bucket tool's Color mode). Stores a stable world-space
@@ -71,7 +76,7 @@ export type RegionDescriptor =
       // (e.g. paint the dome of an e-stop without bleeding into the collar).
       // Persisted so a re-resolve after geometry edit walks the same path;
       // descriptors saved before the clamp existed omit both fields.
-      clampMin?: [number, number, number]; clampMax?: [number, number, number] }
+      clampMin?: [number, number, number]; clampMax?: [number, number, number]; scopeIds?: number[] }
   // Smooth paintbrush stroke: surface samples + brush footprint, plus a target
   // edge length. Resolving it locally refines the mesh under the stroke until
   // boundary triangles are below `maxEdge`, so the painted edge follows the

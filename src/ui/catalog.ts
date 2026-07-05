@@ -7,6 +7,7 @@ import { assetPath } from '../deployment';
 import { partwrightMarkSvg } from './brand';
 import { languageBadge } from './languageBadge';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
+import { showToast } from './toast';
 import { wireCatalogFilter } from '../content/catalogFilter';
 import {
   CATEGORIES,
@@ -39,6 +40,10 @@ export interface CatalogCallbacks {
 interface LoadedEntry {
   manifest: CatalogManifestEntry;
   payload: ExportedSession | null;
+  /** Manifest declares a sidecar thumbnail, so the payload was NOT prefetched
+   *  — it downloads on click. Keeps multi-MB embedded-mesh entries from
+   *  bloating the page load. */
+  lazy?: boolean;
   /** Pulled from the latest version's embedded thumbnail, or null. */
   thumbnailUrl: string | null;
   /** Declares `api.params({...})` in any version's code — drives the
@@ -160,6 +165,12 @@ export async function createCatalogPage(
 
   const loaded: LoadedEntry[] = await Promise.all(
     manifest.entries.map(async (entry): Promise<LoadedEntry> => {
+      // Sidecar thumbnail declared → don't prefetch the payload (it can be
+      // tens of MB for embedded-mesh sessions); it downloads on click.
+      if (entry.thumbnail) {
+        const { hasParams, isSDF } = deriveCharacteristics(entry, null);
+        return { manifest: entry, payload: null, lazy: true, thumbnailUrl: assetPath(`/catalog/${entry.thumbnail}`), hasParams, isSDF, error: null };
+      }
       try {
         const res = await fetch(assetPath(`/catalog/${entry.file}`), { cache: 'no-cache' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -409,12 +420,33 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
   info.appendChild(meta);
   tile.appendChild(info);
 
-  if (loaded.error || !loaded.payload) {
+  if (loaded.error || (!loaded.payload && !loaded.lazy)) {
     tile.disabled = true;
-  } else {
+  } else if (loaded.payload) {
     const payload = loaded.payload;
     tile.addEventListener('click', () => {
       void callbacks.onLoadEntry(loaded.manifest, payload);
+    });
+  } else {
+    // Lazy entry: the payload downloads on click. Disable the tile while the
+    // fetch runs so a slow multi-MB download can't be double-triggered.
+    tile.addEventListener('click', () => {
+      void (async () => {
+        tile.disabled = true;
+        const prevOpacity = tile.style.opacity;
+        tile.style.opacity = '0.6';
+        try {
+          const res = await fetch(assetPath(`/catalog/${loaded.manifest.file}`), { cache: 'no-cache' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const payload = await res.json() as ExportedSession;
+          await callbacks.onLoadEntry(loaded.manifest, payload);
+        } catch (e) {
+          showToast(`Failed to load "${loaded.manifest.name}": ${(e as Error).message}`, { variant: 'warn', source: 'network' });
+        } finally {
+          tile.disabled = false;
+          tile.style.opacity = prevOpacity;
+        }
+      })();
     });
   }
 
