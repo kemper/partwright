@@ -15747,6 +15747,12 @@ async function main() {
       minFacing?: number;
       /** Multi-view compositing rule — see the doc comment. Default 'bestFacing'. */
       mode?: 'bestFacing' | 'fillGaps' | 'overwrite';
+      /** Hallucination guard: if this image's votes contradict the EXISTING
+       *  paint (which the image model was told to preserve) on more than
+       *  this fraction of the already-painted triangles it can see, the
+       *  projection aborts without committing — the completion likely
+       *  flipped sides or restyled. Default 0.35; pass 1 to disable. */
+      maxDisagreement?: number;
       namePrefix?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
@@ -15768,6 +15774,8 @@ async function main() {
       if (typeof minFacing !== 'number' || !Number.isFinite(minFacing) || minFacing < 0 || minFacing >= 1) return { error: 'minFacing must be in [0, 1).' };
       const mode = opts.mode ?? 'bestFacing';
       if (mode !== 'bestFacing' && mode !== 'fillGaps' && mode !== 'overwrite') return { error: "mode must be 'bestFacing', 'fillGaps', or 'overwrite'." };
+      const maxDisagreement = opts.maxDisagreement ?? 0.35;
+      if (typeof maxDisagreement !== 'number' || !Number.isFinite(maxDisagreement) || maxDisagreement <= 0 || maxDisagreement > 1) return { error: 'maxDisagreement must be in (0, 1].' };
       const size = opts.view.size ?? 1024;
       const mesh = currentMeshData;
 
@@ -15859,10 +15867,37 @@ async function main() {
       const filledLocals = fillUnvotedFromNeighbors({ winner: tally.winner, adjacency, facing, minFacing });
       const filledSet = new Set(filledLocals);
 
+      // Hallucination guard: the image model was told to preserve existing
+      // paint, so where its votes CONTRADICT the current colors on
+      // already-painted triangles, the completion has gone off-spec (the
+      // classic case: an underside view mirror-flips the color sides to
+      // match the model's front-view prior). Measure disagreement over the
+      // painted overlap and refuse to commit past the threshold — the
+      // caller regenerates instead of silently absorbing a bad image.
+      const snapshot = buildTriColors(mesh.numTri);
+      let overlap = 0, disagree = 0;
+      if (snapshot) {
+        for (let local = 0; local < ordered.length; local++) {
+          const w = tally.winner[local];
+          if (w < 0 || filledSet.has(local)) continue;
+          const globalT = ordered[local];
+          if (!isPainted(snapshot, globalT)) continue;
+          overlap++;
+          if (snap(snapshot[globalT * 3] / 255, snapshot[globalT * 3 + 1] / 255, snapshot[globalT * 3 + 2] / 255) !== w) disagree++;
+        }
+      }
+      const consistency = { overlap, disagree, fraction: overlap > 0 ? Math.round((disagree / overlap) * 1000) / 1000 : 0 };
+      if (overlap >= 500 && disagree / overlap > maxDisagreement) {
+        return {
+          error: `paintByImageProjection: the image contradicts existing paint on ${(consistency.fraction * 100).toFixed(0)}% of the ${overlap} already-painted triangles it covers (threshold ${(maxDisagreement * 100).toFixed(0)}%). The completion likely flipped sides or restyled painted areas — nothing was committed. Regenerate the image (remind the model to preserve painted areas EXACTLY; on underside views note that left/right appear mirrored), or raise maxDisagreement to force it.`,
+          consistency,
+        };
+      }
+
       // Composite this view over previous projections per `mode`. Filled
       // triangles carry half confidence so a later direct look beats a fill.
       const confidence = getProjectionConfidence(mesh);
-      const currentColors = mode === 'fillGaps' ? buildTriColors(mesh.numTri) : null;
+      const currentColors = mode === 'fillGaps' ? snapshot : null;
       const perPalette: Set<number>[] = opts.palette.map(() => new Set<number>());
       const accepted = new Set<number>();
       let occludedOrSubpixel = 0, imageUnpainted = 0, skippedByMode = 0, overpainted = 0;
@@ -15934,6 +15969,7 @@ async function main() {
         skipped: { occludedOrSubpixel, imageUnpainted, grazing, byMode: skippedByMode },
         overpainted,
         pixels: { sampled: tally.sampledPixels, background: tally.backgroundPixels, offImage: tally.offImagePixels },
+        consistency,
         alignment: { renderSilhouette: silA, imageSilhouette: silB },
         regions,
         nextStep: coverage < 0.995

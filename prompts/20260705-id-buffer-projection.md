@@ -59,3 +59,14 @@ lands solid fills in 818 ms, and the sequential loop (render paint-so-far →
 Gemini completes the gray areas → project back) drives coverage across
 views. The Gemini key stayed in the session scratchpad; a repo-wide
 pattern scan ran clean before commit.
+
+**Follow-up (same session):** loop round 2 exposed the key remaining
+failure mode — the underside completion mirror-flipped the lobe colors
+(the model trusted its front-view prior over the paint it was told to
+preserve; from below, left/right invert). Structural fix, not just a
+prompt fix: a hallucination guard (`maxDisagreement`, default 0.35)
+measures how much the image's votes contradict existing paint on the
+already-painted triangles it covers and refuses to commit past the
+threshold, telling the caller to regenerate. A completion that repaints
+preserved areas differently is untrustworthy by definition — this turns
+the failure from silently-committed into detected-and-retryable.
