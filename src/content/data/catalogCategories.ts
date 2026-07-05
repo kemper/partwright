@@ -77,6 +77,13 @@ export interface CatalogManifestEntry {
    *  flip to `true` only once a real print exists. Drives the print-tested tile
    *  badge so users can tell verified-printable models from unproven ones. */
   printTested?: boolean;
+  /** Optional sidecar thumbnail image (path relative to /catalog/). When set,
+   *  the catalog page renders the tile from this image WITHOUT prefetching the
+   *  entry's .partwright.json — the payload downloads only when the tile is
+   *  clicked. Use for heavy entries (embedded-mesh sessions run tens of MB);
+   *  without it the page fetches every entry file up front just to read its
+   *  embedded thumbnail. */
+  thumbnail?: string;
 }
 
 /** Badge describing whether a catalog entry has been verified print-tested.
