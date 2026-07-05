@@ -255,7 +255,7 @@ import { detectSymmetryPlane, mirrorIslandPairs, reflectPoint, reflectVector, mi
 import { fitRegionShape } from './color/regionFit';
 import { createSelection as createPaintSelection, getSelection as getPaintSelection, listSelections as storeListSelections, removeSelection as storeRemoveSelection, renameSelection as storeRenameSelection, addRefinement, popRefinement, resolveSelection as resolvePaintSelection, type SelectorNode, type RefineOp } from './color/selections';
 import { partitionTriangles, type PartitionSpec } from './color/partition';
-import { buildPaletteSnapper, tallyProjectionVotes, buildScopeEdgeAdjacency, fillUnvotedFromNeighbors, fillFromNearestPainted, triangleFacing, getProjectionConfidence, projectionRegionRegistry, BACKGROUND_VOTE, OFF_IMAGE, WINNER_UNPAINTED, WINNER_NO_PIXELS } from './color/idProjection';
+import { buildPaletteSnapper, tallyProjectionVotes, buildScopeEdgeAdjacency, fillUnvotedFromNeighbors, fillFromNearestPainted, despeckleColors, triangleFacing, getProjectionConfidence, projectionRegionRegistry, BACKGROUND_VOTE, OFF_IMAGE, WINNER_UNPAINTED, WINNER_NO_PIXELS } from './color/idProjection';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
 import { cylinderRefineRegion, findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
@@ -16073,6 +16073,94 @@ async function main() {
       };
     },
 
+    /** EXPERIMENTAL (#885): clean assignment noise after image projection.
+     *  Tiny DISCONNECTED color fragments (scattered islets a few triangles
+     *  wide, left where the source image had outlines, dither, or
+     *  antialiasing) are absorbed into the neighboring color they share the
+     *  most boundary with. Whole components move or nothing moves, and only
+     *  into strictly larger components — connected thin features (outline
+     *  rings, seams, partition stripes) are safe because they attach to
+     *  their large parent region. Deterministic; run it after the
+     *  projection loop + paintFillRemaining, then auditPaint(). */
+    paintDespeckle(opts: { within: { island?: number; selection?: string | number; region?: number }; minTriangles?: number; namePrefix?: string }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintDespeckle requires { within }' };
+      const scope = resolveWithin(opts.within);
+      if (scope === null) return { error: 'paintDespeckle requires within — it never edits unscoped.' };
+      if ('error' in scope) return scope;
+      const minTriangles = opts.minTriangles ?? 40;
+      if (!Number.isInteger(minTriangles) || minTriangles < 2 || minTriangles > 100000) return { error: 'minTriangles must be an integer in [2, 100000].' };
+      const mesh = currentMeshData;
+      const snapshot = buildTriColors(mesh.numTri);
+      if (!snapshot) return { error: 'paintDespeckle: nothing is painted yet.' };
+
+      const ordered = [...scope.triangles];
+      const colorKeys = new Map<number, number>();
+      const colors: [number, number, number][] = [];
+      const colorIndex = new Int32Array(ordered.length).fill(-1);
+      for (let local = 0; local < ordered.length; local++) {
+        const globalT = ordered[local];
+        if (!isPainted(snapshot, globalT)) continue;
+        const key = (snapshot[globalT * 3] << 16) | (snapshot[globalT * 3 + 1] << 8) | snapshot[globalT * 3 + 2];
+        let idx = colorKeys.get(key);
+        if (idx === undefined) {
+          idx = colors.length;
+          colorKeys.set(key, idx);
+          colors.push([snapshot[globalT * 3] / 255, snapshot[globalT * 3 + 1] / 255, snapshot[globalT * 3 + 2] / 255]);
+        }
+        colorIndex[local] = idx;
+      }
+
+      const adjacency = buildScopeEdgeAdjacency(mesh, ordered);
+      const changedLocals = despeckleColors({ colorIndex, adjacency, minTriangles });
+      const changed = new Set(changedLocals);
+      if (changed.size === 0) {
+        return { changed: 0, scopeTriangles: scope.triangles.size, regions: [], nextStep: 'No fragments below the threshold — paint is already clean at this granularity.' };
+      }
+
+      // Reassigned triangles leave every triangle-set region that held them,
+      // then commit as one region per destination color.
+      const changedGlobal = new Set<number>();
+      for (const local of changed) changedGlobal.add(ordered[local]);
+      for (const existing of getRegions()) {
+        if (existing.descriptor.kind !== 'triangles') continue;
+        let overlaps = false;
+        for (const t of existing.triangles) { if (changedGlobal.has(t)) { overlaps = true; break; } }
+        if (!overlaps) continue;
+        const remaining = new Set([...existing.triangles].filter(t => !changedGlobal.has(t)));
+        if (remaining.size === 0) {
+          removeRegion(existing.id);
+        } else {
+          existing.descriptor = { kind: 'triangles', ids: [...remaining] };
+          setRegionTriangles(existing.id, remaining);
+        }
+      }
+      const perColor = new Map<number, Set<number>>();
+      for (const local of changed) {
+        const idx = colorIndex[local];
+        if (idx < 0) continue;
+        let set = perColor.get(idx);
+        if (!set) { set = new Set(); perColor.set(idx, set); }
+        set.add(ordered[local]);
+      }
+      const prefix = opts.namePrefix ?? 'despeckle';
+      const regions: Array<{ id: number; name: string; color: [number, number, number]; triangles: number }> = [];
+      let seq = 0;
+      for (const [idx, set] of perColor) {
+        seq++;
+        const region = addRegion(`${prefix} ${seq}`, colors[idx], 'paintbrush', { kind: 'triangles', ids: [...set] }, set);
+        regions.push({ id: region.id, name: region.name, color: colors[idx], triangles: set.size });
+      }
+      scheduleColorRefresh();
+      syncLockState();
+      return {
+        changed: changedGlobal.size,
+        scopeTriangles: scope.triangles.size,
+        regions,
+        nextStep: 'Render to verify (renderIsland/renderViews with paint), then auditPaint() — fragment counts should drop sharply.',
+      };
+    },
+
     /** Fit an ANALYTIC shape (plane / circle-disc / sphere) to a detected
      *  region's boundary. This is the fan-bleed killer: a `detectRegions`
      *  region's raw triangle set has a ragged tessellation-following
@@ -17684,6 +17772,7 @@ async function main() {
         'auditPaint':      { signature: 'auditPaint() -> {regions: [{id, name, triangles, visibleTriangles, hiddenFraction, fragmentCount, fragments?}], unpaintedIslands, flaggedRegionIds, summary} -- Deterministic whole-scene paint audit: stray disconnected paint fragments (mis-aimed selectors, fan-wedge splatter), regions overwritten by later paint, islands never painted. Run before declaring a paint job done; dismiss or fix every flag.', docs: '/ai/colors.md' },
 'paintByImageProjection': { signature: 'paintByImageProjection({image, view, within, palette, mode?, minFacing?, namePrefix?}) -> {painted, coverage, skipped, pixels, alignment, regions} -- EXPERIMENTAL (#885): back-project an AI-repainted render onto the mesh as palette-snapped paint regions via a triangle-ID buffer: exact z-buffer occlusion, per-pixel majority voting (no speckle), pinhole fill from agreeing neighbors. Render a view (ortho), have an image model repaint it, hand the repainted data URL back with the SAME view spec. Multi-view loop: render paint-so-far (showPaint), have the model complete the gray areas matching existing colors, project with mode bestFacing (default; better-facing view wins per triangle) or fillGaps (never touches painted triangles) until coverage converges.', docs: '/ai/colors.md' },
 'paintFillRemaining': { signature: 'paintFillRemaining({within, namePrefix?}) -> {filled, unreachable, regions} -- EXPERIMENTAL (#885): finish a multi-view projection by giving every unpainted triangle in scope the color of its nearest painted neighbor (multi-source BFS). Deterministic — the deep occlusions no view covers inherit their surroundings. Run auditPaint() after.', docs: '/ai/colors.md' },
+'paintDespeckle': { signature: 'paintDespeckle({within, minTriangles?, namePrefix?}) -> {changed, regions} -- EXPERIMENTAL (#885): absorb tiny DISCONNECTED paint fragments (projection assignment noise) into their dominant larger neighbor color. Whole components only, upward only — connected thin features (outline rings, seams) are safe. Default threshold 40 triangles. Run after the projection loop; then auditPaint().', docs: '/ai/colors.md' },
 'fitRegionShape':  { signature: 'fitRegionShape({triangleIds}) -> {best, circle: {center, axis, radius, rms}, sphere?, plane, nextStep} -- Fit an ANALYTIC disc/sphere/plane to a detected region\'s boundary. THE fan-bleed killer: sculpted features are usually clean discs — fit one, then paint it via paintDisc/paintRegionFitted instead of painting the ragged triangle set.', docs: '/ai/colors.md' },
         'paintRegionFitted': { signature: 'paintRegionFitted({triangleIds, color, pad?=1.0, thickness?, name?, force?}) -- One call: fit a disc to the region boundary and paint it with a crisp analytic edge. Refuses when the fit is poor (feature isn\'t disc-like) unless force: true.', docs: '/ai/colors.md' },
         'paintMirrored':   { signature: 'paintMirrored({regionId, color?, name?, plane?}) -- Mirror a painted region across the model\'s bilateral symmetry plane (auto-detected — see listComponents().symmetry). Paint ONE eye, mirror it: position/size match by construction, color can differ (red left iris / blue right iris). Analytic paints reflect exactly; paintFaces sets fall back to per-triangle mirroring.', docs: '/ai/colors.md' },

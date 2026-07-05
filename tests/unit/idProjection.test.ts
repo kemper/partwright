@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  despeckleColors,
   fillFromNearestPainted,
   encodeTriangleIdColor,
   decodeTriangleIdPixel,
@@ -244,6 +245,59 @@ describe('fillFromNearestPainted', () => {
     expect(colorIndex[3]).toBe(9); // nearest to t4
     expect([7, 9]).toContain(colorIndex[2]); // equidistant — either is fine
     expect(colorIndex[5]).toBe(-1); // unreachable stays unpainted
+  });
+});
+
+describe('despeckleColors', () => {
+  /** Strip adjacency: t_i ↔ t_{i+1}. */
+  function strip(n: number): Int32Array {
+    const adj = new Int32Array(n * 3).fill(-1);
+    for (let i = 0; i < n; i++) {
+      let s = 0;
+      if (i > 0) adj[i * 3 + s++] = i - 1;
+      if (i < n - 1) adj[i * 3 + s++] = i + 1;
+    }
+    return adj;
+  }
+
+  it('absorbs a tiny fragment into its dominant larger neighbor', () => {
+    // 0 0 0 [1] 0 0 0 — the lone 1 is a speck inside color 0.
+    const colorIndex = new Int32Array([0, 0, 0, 1, 0, 0, 0]);
+    const changed = despeckleColors({ colorIndex, adjacency: strip(7), minTriangles: 3 });
+    expect(changed).toEqual([3]);
+    expect(Array.from(colorIndex)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+  });
+
+  it('leaves components at or above the threshold alone (thin deliberate features survive)', () => {
+    // A 3-wide stripe of 1 between 3-wide flanks of 0, threshold 3 → untouched.
+    const colorIndex = new Int32Array([0, 0, 0, 1, 1, 1, 0, 0, 0]);
+    const changed = despeckleColors({ colorIndex, adjacency: strip(9), minTriangles: 3 });
+    expect(changed).toEqual([]);
+    expect(colorIndex[4]).toBe(1);
+  });
+
+  it('never absorbs into an equal-or-smaller component (no churn between small fragments)', () => {
+    // [1 1] [2 2] alone — equal sizes, nobody moves even under the threshold.
+    const colorIndex = new Int32Array([1, 1, 2, 2]);
+    const changed = despeckleColors({ colorIndex, adjacency: strip(4), minTriangles: 5 });
+    expect(changed).toEqual([]);
+    expect(Array.from(colorIndex)).toEqual([1, 1, 2, 2]);
+  });
+
+  it('never absorbs into or moves unpainted (-1) triangles', () => {
+    // [1] surrounded by unpainted → nowhere to go; unpainted stays.
+    const colorIndex = new Int32Array([-1, 1, -1]);
+    const changed = despeckleColors({ colorIndex, adjacency: strip(3), minTriangles: 3 });
+    expect(changed).toEqual([]);
+    expect(Array.from(colorIndex)).toEqual([-1, 1, -1]);
+  });
+
+  it('cascades across rounds when absorption merges components', () => {
+    // 0 0 [1] [2] 0 0 with threshold 2: the 1 and 2 singletons absorb (each
+    // votes toward its larger-boundary neighbor), converging to all 0.
+    const colorIndex = new Int32Array([0, 0, 1, 2, 0, 0]);
+    despeckleColors({ colorIndex, adjacency: strip(6), minTriangles: 2 });
+    expect(Array.from(colorIndex)).toEqual([0, 0, 0, 0, 0, 0]);
   });
 });
 

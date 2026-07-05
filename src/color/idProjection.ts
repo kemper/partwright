@@ -245,6 +245,84 @@ export function fillFromNearestPainted(opts: {
   return filled;
 }
 
+/** Absorb tiny DISCONNECTED color fragments into their dominant surrounding
+ *  color. Image back-projection leaves assignment noise — scattered islets a
+ *  few triangles wide where the source image had outlines, dither, or
+ *  compression artifacts. A connected same-color component smaller than
+ *  `minTriangles` is reassigned to whichever neighboring color shares the
+ *  most boundary edges with it. Only components strictly smaller than the
+ *  threshold move, and only whole components move — connected thin features
+ *  (outline rings, seam lines) are safe because they connect to their large
+ *  parent component. Unpainted (-1) triangles neither move nor absorb.
+ *  Mutates `colorIndex`; returns the changed local indices. */
+export function despeckleColors(opts: {
+  colorIndex: Int32Array;
+  adjacency: Int32Array;
+  minTriangles: number;
+  maxRounds?: number;
+}): number[] {
+  const { colorIndex, adjacency, minTriangles } = opts;
+  const maxRounds = opts.maxRounds ?? 8;
+  const n = colorIndex.length;
+  const changedAll: number[] = [];
+
+  for (let round = 0; round < maxRounds; round++) {
+    const componentOf = new Int32Array(n).fill(-1);
+    const members: number[][] = [];
+    for (let seed = 0; seed < n; seed++) {
+      if (componentOf[seed] >= 0 || colorIndex[seed] < 0) continue;
+      const id = members.length;
+      const queue = [seed];
+      componentOf[seed] = id;
+      const list: number[] = [];
+      for (let head = 0; head < queue.length; head++) {
+        const t = queue[head];
+        list.push(t);
+        for (let e = 0; e < 3; e++) {
+          const nb = adjacency[t * 3 + e];
+          if (nb < 0 || componentOf[nb] >= 0 || colorIndex[nb] !== colorIndex[seed]) continue;
+          componentOf[nb] = id;
+          queue.push(nb);
+        }
+      }
+      members.push(list);
+    }
+
+    const pending: Array<[number[], number]> = [];
+    for (const list of members) {
+      if (list.length >= minTriangles) continue;
+      // Vote by boundary edge count into each neighboring painted COMPONENT,
+      // considering only components strictly larger than this fragment —
+      // small fragments absorbing each other would churn (and can oscillate);
+      // absorbing only upward guarantees termination.
+      const votes = new Map<number, number>();
+      for (const t of list) {
+        for (let e = 0; e < 3; e++) {
+          const nb = adjacency[t * 3 + e];
+          if (nb < 0) continue;
+          const comp = componentOf[nb];
+          if (comp < 0 || comp === componentOf[t]) continue;
+          if (members[comp].length <= list.length) continue;
+          votes.set(comp, (votes.get(comp) ?? 0) + 1);
+        }
+      }
+      let best = -1, bestVotes = 0;
+      for (const [comp, v] of votes) {
+        if (v > bestVotes) { bestVotes = v; best = comp; }
+      }
+      if (best >= 0) pending.push([list, colorIndex[members[best][0]]]);
+    }
+    if (pending.length === 0) break;
+    for (const [list, color] of pending) {
+      for (const t of list) {
+        colorIndex[t] = color;
+        changedAll.push(t);
+      }
+    }
+  }
+  return changedAll;
+}
+
 /** Per-mesh multi-view compositing state: for every GLOBAL triangle, the
  *  facing confidence of the projection that last painted it (0 = never
  *  projection-painted). Keyed by MeshData identity, so re-running the model
