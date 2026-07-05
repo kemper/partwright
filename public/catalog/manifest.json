@@ -1537,7 +1537,7 @@
    "name": "Dummy 13 \u2014 Faithful Frame Kit",
    "file": "dummy13-faithful-kit.partwright.json",
    "language": "manifold-js",
-   "description": "Complete printable frame set for soozafone's Dummy 13 articulated figure (CC-BY-4.0) \u2014 all 33 pieces one figure needs (2x limbs, 4x joint bridges, all three hand styles + adapter stand), reverse-engineered into parametric code and verified against the original STLs to mean 0.006mm chamfer. Laid out as a print plate.",
+   "description": "Complete printable frame set for soozafone's Dummy 13 articulated figure (CC-BY-4.0) \u2014 a part list with all 21 part types and every copy one figure needs (33 pieces: 2x limbs, 4x joint bridges, all three hand styles + adapter stand), reverse-engineered into parametric code and verified against the original STLs to mean 0.006mm chamfer.",
    "tags": [
     "toys",
     "articulated",
@@ -1549,7 +1549,7 @@
    "name": "Dummy 13 \u2014 Faithful Armor Kit",
    "file": "dummy13-faithful-armor.partwright.json",
    "language": "manifold-js",
-   "description": "Complete printable armor set for soozafone's Dummy 13 articulated figure (CC-BY-4.0) \u2014 all 25 pieces one figure needs (2x for paired parts), reverse-engineered into parametric code and verified against the original STLs to mean 0.004mm chamfer, three parts bit-exact. Clips over the frame kit; laid out as a print plate.",
+   "description": "Complete printable armor set for soozafone's Dummy 13 articulated figure (CC-BY-4.0) \u2014 a part list with all 16 armor types and every copy one figure needs (25 pieces, 2x for paired parts), reverse-engineered into parametric code and verified against the original STLs to mean 0.004mm chamfer, three parts bit-exact. Clips over the frame kit.",
    "tags": [
     "toys",
     "articulated",
