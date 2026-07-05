@@ -44,6 +44,7 @@ import {
   type AttachedImage,
   type SessionAttachment,
 } from './db';
+import { composePartsThumbnail } from './compositeThumbnail';
 import { normalizeAttachment } from './attachment';
 import { publishTabSync, onTabSync } from './tabSync';
 import { clearReliefSettings } from '../relief/reliefSettings';
@@ -182,8 +183,16 @@ import { appPath } from '../deployment';
  *           (`session.attachments[].description`) — a "why this matters" note
  *           distinct from the short `label`/perspective caption. Additive;
  *           older readers ignore it.
+ *  - `1.18` — multi-part session composite thumbnail
+ *           (`session.compositeThumbnail`, a data URL). A contact-sheet grid
+ *           of the parts' latest thumbnails, written on export (with
+ *           `includeThumbnails`) when the session has 2+ parts with saved
+ *           thumbnails. **Derived data**: importers ignore it (it regenerates
+ *           on the next export); consumers that only *read* payloads (the
+ *           catalog tile) prefer it over the last version's thumbnail.
+ *           Additive; older readers ignore it.
  */
-export const SCHEMA_VERSION = '1.17';
+export const SCHEMA_VERSION = '1.18';
 
 const CURRENT_MAJOR = 1;
 
@@ -221,7 +230,7 @@ export interface ExportedSession {
   /** Attachments (schema 1.16+) are the array of typed `SessionAttachment`s.
    * Legacy `images` / `referenceImages` (array form or the object map
    * {front, right, ...}) still read as image attachments for older exports. */
-  session: { name: string; created: number; updated: number; attachments?: SessionAttachment[] | null; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number }; workCamera?: { position: [number, number, number]; target: [number, number, number] } };
+  session: { name: string; created: number; updated: number; attachments?: SessionAttachment[] | null; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number }; workCamera?: { position: [number, number, number]; target: [number, number, number] }; compositeThumbnail?: string };
   /**
    * The session's parts, ordered by `order`. Present from schema 1.7. Pre-1.7
    * files omit this; on import they collapse into a single default part.
@@ -1896,6 +1905,12 @@ export async function exportSession(
   const notes = opts.includeNotes ? await dbListNotes(id) : [];
   const chat = opts.includeChat ? await dbListMessages(id) : [];
 
+  // Multi-part sessions also get a composite contact-sheet thumbnail (schema
+  // 1.18) — the session-level identity image the catalog tile prefers.
+  const compositeThumbnail = (opts.includeThumbnails && parts.length > 1)
+    ? await composePartsThumbnail(parts).catch(() => null)
+    : null;
+
   // Thumbnail conversion: read each version's Blob and convert to base64 data URL.
   // Done in parallel since FileReader is async per-blob.
   const thumbnailDataUrls: (string | null)[] = await Promise.all(
@@ -1905,7 +1920,7 @@ export async function exportSession(
   return {
     partwright: SCHEMA_VERSION,
     ...(stampedAppVersion ? { appVersion: stampedAppVersion } : {}),
-    session: { name: session.name, created: session.created, updated: session.updated, attachments: session.attachments ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}) },
+    session: { name: session.name, created: session.created, updated: session.updated, attachments: session.attachments ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}), ...(compositeThumbnail ? { compositeThumbnail } : {}) },
     parts: parts.map(p => ({ name: p.name, order: p.order })),
     versions: flat.map(({ v, partOrder }, i) => {
       const colorRegions = opts.includeColorRegions ? extractColorRegions(v.geometryData) : undefined;

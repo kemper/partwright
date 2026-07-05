@@ -293,12 +293,24 @@ async function main() {
     process.exit(1);
   }
 
-  // Multi-part entries: keep only the LAST version's thumbnail (the catalog
-  // tile). Per-part thumbnails are ~60KB each and regenerate on first run in
-  // the editor — 21 of them pushed the dummy13 kit past the entry size gate.
+  // Multi-part entries: the LAST version keeps its full-size thumbnail (the
+  // catalog tile); every other part's is downscaled to 128px so the parts
+  // overview + part rail have previews on fresh import without blowing the
+  // entry size gate (21 full-size thumbnails = ~1.2MB; 128px = ~5-10KB each).
   if (PARTS && Array.isArray(result.data.versions)) {
+    const sharp = require('sharp');
     const vs = result.data.versions;
-    for (let i = 0; i < vs.length - 1; i++) delete vs[i].thumbnail;
+    for (let i = 0; i < vs.length - 1; i++) {
+      const t = vs[i].thumbnail;
+      if (typeof t !== 'string' || !t.startsWith('data:image')) continue;
+      try {
+        const buf = Buffer.from(t.split(',', 2)[1], 'base64');
+        const small = await sharp(buf).resize(128, 128, { fit: 'inside' }).png().toBuffer();
+        vs[i].thumbnail = 'data:image/png;base64,' + small.toString('base64');
+      } catch {
+        delete vs[i].thumbnail; // unparseable — better absent than oversized
+      }
+    }
   }
 
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
@@ -308,7 +320,8 @@ async function main() {
   // Also dump the embedded thumbnail as a sibling .png for quick eyes-on review.
   try {
     const versions = result.data.versions || [];
-    const thumb = versions.length ? versions[versions.length - 1].thumbnail : null;
+    const thumb = (result.data.session && result.data.session.compositeThumbnail)
+      || (versions.length ? versions[versions.length - 1].thumbnail : null);
     if (thumb && thumb.startsWith('data:image')) {
       const pngPath = OUT.replace(/\.partwright\.json$/, '') + '.thumb.png';
       fs.writeFileSync(pngPath, Buffer.from(thumb.split(',', 2)[1], 'base64'));
