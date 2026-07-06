@@ -988,6 +988,28 @@ export async function updateVersionThumbnail(id: string, thumbnail: Blob | null)
   await txComplete(txn);
 }
 
+/** Overwrite a version's Customizer parameter overrides. Used by the Assembly
+ *  view's shared-parameter Save, which writes the tweaked values back to every
+ *  affected part's latest version. Empty/undefined clears the field. */
+export async function updateVersionParamValues(
+  id: string,
+  paramValues: Record<string, number | boolean | string> | undefined,
+): Promise<void> {
+  const db = await openDB();
+  const txn = db.transaction('versions', 'readwrite');
+  const store = txn.objectStore('versions');
+  const getReq = store.get(id);
+  getReq.onsuccess = () => {
+    const v = getReq.result as Version | null;
+    if (v) {
+      if (paramValues && Object.keys(paramValues).length > 0) v.paramValues = paramValues;
+      else delete v.paramValues;
+      store.put(v);
+    }
+  };
+  await txComplete(txn);
+}
+
 /** Find all versions in a part whose parentVersionId points to the given id.
  *  Used to warn the user before deleting a version that other versions depend on. */
 export async function findVersionChildren(parentId: string, partId: string): Promise<Version[]> {

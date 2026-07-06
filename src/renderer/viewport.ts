@@ -36,6 +36,17 @@ let controls: OrbitControls;
 let meshGroup: THREE.Group;
 let animationId: number;
 
+// === Assembly (multi-part grid) mode ===
+// A dedicated group holding one translated sub-group per part, shown instead of
+// the single-part `meshGroup` while the Assembly view is active. Kept separate
+// so entering/leaving the mode is a cheap visibility swap and the single-part
+// path is never disturbed. Per-part entries remember the mesh's local centre +
+// floor offset so a part can be re-positioned (grid reflow) without rebuilding.
+let assemblyGroup: THREE.Group | null = null;
+let assemblyActive = false;
+interface AssemblyEntry { group: THREE.Group; cx: number; cy: number; minZ: number; }
+const assemblyParts = new Map<string, AssemblyEntry>();
+
 // === WebGL context-loss recovery ===
 // The GPU can drop the WebGL context (driver reset, tab backgrounded too long,
 // OOM). Three.js auto-recompiles its programs on restore, so we must NOT
@@ -415,6 +426,10 @@ export function initViewport(container: HTMLElement): {
   meshGroup = new THREE.Group();
   scene.add(meshGroup);
 
+  assemblyGroup = new THREE.Group();
+  assemblyGroup.visible = false;
+  scene.add(assemblyGroup);
+
   // Apply the initial studio-lighting state (on by default): env reflections
   // (GPU only) + the mild contact shadow. Runs after meshGroup exists so the
   // shadow framing has something to measure.
@@ -681,6 +696,9 @@ function frameModel(): void {
  *  framing applied after a fresh run. Bound to the viewport "Reset view" button
  *  and exposed on the partwright API. */
 export function resetView(): void {
+  // In the multi-part Assembly view the single-part mesh is hidden — frame the
+  // whole grid instead of the (invisible) current model.
+  if (assemblyActive) { frameAssembly(); return; }
   frameModel();
   if (clippingEnabled) updateClipPlaneVisual();
   needsRender = true;
@@ -843,6 +861,197 @@ export function meshGLToBufferGeometry(mesh: MeshData): THREE.BufferGeometry {
   }
 
   return geometry;
+}
+
+// === Assembly (multi-part grid) rendering ===
+// The Assembly view (src/assembly/) drives these to show every part of a session
+// side by side. The orchestration — which parts, building their meshes, grid
+// layout — lives in the feature layer; the viewport just owns the Three.js
+// scene, materials, framing, and disposal (so all GPU-resource lifecycle stays
+// in one place, per the renderer-is-a-low-layer rule).
+
+/** Switch the viewport into Assembly mode: hide the single-part mesh and reveal
+ *  the (initially empty) assembly grid. Idempotent. */
+export function enterAssemblyMode(): void {
+  if (!assemblyGroup) return;
+  assemblyActive = true;
+  meshGroup.visible = false;
+  assemblyGroup.visible = true;
+  needsRender = true;
+}
+
+/** Leave Assembly mode: dispose every part sub-group and restore the single-part
+ *  mesh. Idempotent. */
+export function exitAssemblyMode(): void {
+  clearAssembly();
+  assemblyActive = false;
+  if (assemblyGroup) assemblyGroup.visible = false;
+  meshGroup.visible = true;
+  needsRender = true;
+}
+
+/** Remove and dispose every part currently in the assembly grid. */
+function clearAssembly(): void {
+  for (const id of [...assemblyParts.keys()]) removeAssemblyPart(id);
+}
+
+/** Add or replace one part's mesh in the grid, centring its bounding box on the
+ *  cell centre (cellX, cellY) and resting it on the floor (z = 0). A part with
+ *  the same id is disposed and rebuilt (used when a shared param re-renders it). */
+export function setAssemblyPart(
+  id: string,
+  mesh: MeshData,
+  cellX: number,
+  cellY: number,
+  label?: string,
+): void {
+  if (!assemblyGroup) return;
+  removeAssemblyPart(id);
+
+  const geometry = meshGLToBufferGeometry(mesh);
+  const hasColors = geometry.hasAttribute('color');
+  const solidMat = createStudioMaterial(studioPreset, hasColors);
+  const solidMesh = new THREE.Mesh(geometry, solidMat);
+  solidMesh.castShadow = true;
+
+  const group = new THREE.Group();
+  group.name = `asm:${id}`;
+  group.add(solidMesh);
+
+  geometry.computeBoundingBox();
+  const bb = geometry.boundingBox ?? new THREE.Box3();
+  const cx = (bb.min.x + bb.max.x) / 2;
+  const cy = (bb.min.y + bb.max.y) / 2;
+  const minZ = Number.isFinite(bb.min.z) ? bb.min.z : 0;
+  const maxDim = Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z) || 1;
+
+  if (label) {
+    const sprite = makeLabelSprite(label, maxDim);
+    // Sit the label just in front of and below the part so it doesn't intersect.
+    sprite.position.set(cx, bb.min.y - maxDim * 0.12, minZ);
+    group.add(sprite);
+  }
+
+  assemblyGroup.add(group);
+  assemblyParts.set(id, { group, cx, cy, minZ });
+  positionAssemblyPart(id, cellX, cellY);
+  needsRender = true;
+}
+
+/** Re-position an already-placed part to a new cell centre (grid reflow). No-op
+ *  if the part isn't in the grid. */
+export function moveAssemblyPart(id: string, cellX: number, cellY: number): void {
+  positionAssemblyPart(id, cellX, cellY);
+}
+
+function positionAssemblyPart(id: string, cellX: number, cellY: number): void {
+  const entry = assemblyParts.get(id);
+  if (!entry) return;
+  entry.group.position.set(cellX - entry.cx, cellY - entry.cy, -entry.minZ);
+  needsRender = true;
+}
+
+/** Remove one part from the grid and dispose its GPU resources. */
+function removeAssemblyPart(id: string): void {
+  const entry = assemblyParts.get(id);
+  if (!entry) return;
+  disposeObject3D(entry.group);
+  assemblyGroup?.remove(entry.group);
+  assemblyParts.delete(id);
+  needsRender = true;
+}
+
+/** Frame the camera to the whole assembly grid's combined bounds. No-op when the
+ *  grid is empty. */
+export function frameAssembly(): void {
+  if (!assemblyGroup) return;
+  const box = new THREE.Box3().setFromObject(assemblyGroup);
+  if (box.isEmpty()) return;
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) return;
+
+  lastFloorZ = box.min.z;
+  grid.position.z = box.min.z;
+  const div = Math.max(2, Math.round(getConfig().renderer.gridDivisions));
+  lastGridScale = (maxDim * getConfig().renderer.gridRoomFactor) / div;
+  grid.scale.setScalar(lastGridScale);
+
+  controls.target.copy(center);
+  const frameFactor = getConfig().renderer.defaultFrameFactor;
+  camera.position.set(
+    center.x + maxDim * frameFactor,
+    center.y - maxDim * frameFactor,
+    center.z + maxDim * frameFactor,
+  );
+  camera.near = Math.max(0.05, maxDim * 0.005);
+  camera.far = Math.max(1000, maxDim * 50);
+  camera.updateProjectionMatrix();
+  controls.maxDistance = maxDim * getConfig().renderer.maxZoomOutFactor;
+  controls.update();
+  needsRender = true;
+}
+
+/** Recursively dispose an object's mesh/sprite geometries, materials, and any
+ *  sprite-material map textures. */
+function disposeObject3D(obj: THREE.Object3D): void {
+  obj.traverse((child) => {
+    if (child instanceof THREE.Mesh || child instanceof THREE.Sprite) {
+      const geom = (child as THREE.Mesh).geometry;
+      if (geom) geom.dispose();
+      const mat = (child as THREE.Mesh | THREE.Sprite).material;
+      const mats = Array.isArray(mat) ? mat : [mat];
+      for (const m of mats) {
+        if (!m) continue;
+        const map = (m as THREE.SpriteMaterial).map;
+        if (map) map.dispose();
+        m.dispose();
+      }
+    }
+  });
+}
+
+/** Build a camera-facing text label as a canvas-textured sprite, sized relative
+ *  to `worldSize` (the part's largest dimension) so it reads at any scale. */
+function makeLabelSprite(text: string, worldSize: number): THREE.Sprite {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const fontPx = 48;
+  const pad = 16;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d')!;
+  ctx.font = `600 ${fontPx}px system-ui, sans-serif`;
+  const textW = Math.ceil(ctx.measureText(text).width);
+  canvas.width = (textW + pad * 2) * dpr;
+  canvas.height = (fontPx + pad * 2) * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.font = `600 ${fontPx}px system-ui, sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(24,24,27,0.82)';
+  roundRect(ctx, 0, 0, textW + pad * 2, fontPx + pad * 2, 10);
+  ctx.fill();
+  ctx.fillStyle = '#e4e4e7';
+  ctx.fillText(text, pad, (fontPx + pad * 2) / 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.anisotropy = 4;
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(material);
+  // Scale the sprite so its height is ~18% of the part's size, preserving aspect.
+  const targetH = worldSize * 0.18;
+  const aspect = canvas.width / canvas.height;
+  sprite.scale.set(targetH * aspect, targetH, 1);
+  return sprite;
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
 
 export function getScene(): THREE.Scene {

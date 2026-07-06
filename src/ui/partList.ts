@@ -20,6 +20,8 @@ export interface PartListCallbacks {
   onMergeParts: (ids: string[]) => void | Promise<void>;
   /** Persist a new part order (array of part ids, first = top). */
   onReorderParts: (orderedIds: string[]) => void | Promise<void>;
+  /** Show all parts together in the grid Assembly view. */
+  onViewAllParts: () => void;
   /** Collapse the rail (handled by layout). */
   onToggleCollapse: () => void;
 }
@@ -82,6 +84,15 @@ function render(state: SessionState): void {
   title.className = 'text-[11px] font-semibold uppercase tracking-wide text-zinc-500 flex-1 truncate';
   title.textContent = 'Parts';
   header.appendChild(title);
+
+  // "View all parts" — opens the grid Assembly view. Only meaningful with more
+  // than one part, so it's hidden for single-part sessions.
+  if (state.session && state.parts.length > 1) {
+    const viewAllBtn = iconBtn('▦', 'View all parts together');
+    viewAllBtn.id = 'btn-view-all-parts';
+    viewAllBtn.addEventListener('click', () => cb.onViewAllParts());
+    header.appendChild(viewAllBtn);
+  }
 
   const addBtn = iconBtn('＋', 'Add a new part');
   addBtn.id = 'btn-add-part';

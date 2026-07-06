@@ -173,6 +173,14 @@ export interface AppConfig {
      *  sub-function. Bounds body size so V8 keeps each function optimized (a
      *  single huge function deopts and runs slower). */
     sdfCompileChunkNodes: number;
+    /** Max concurrent geometry Workers the Assembly view spawns to build parts
+     *  in parallel. Each worker boots its own manifold-3d WASM, so this trades
+     *  memory for fill speed; clamped to (hardwareConcurrency − 1) at runtime.
+     *  1 ⇒ builds are serialized (still progressive). */
+    assemblyPoolSize: number;
+    /** Spacing between Assembly-grid cells as a fraction of the largest part's
+     *  footprint (0.25 ⇒ a quarter-cell gutter). */
+    assemblyGridGutter: number;
   };
   import: {
     /** Vertex-weld tolerance for STL imports (world units). */
@@ -345,6 +353,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     sdfPreviewScale: 2.5,
     sdfCompile: true,
     sdfCompileChunkNodes: 120,
+    assemblyPoolSize: 3,
+    assemblyGridGutter: 0.25,
   },
   import: {
     stlWeldTolerance: 1e-5,

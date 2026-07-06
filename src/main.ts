@@ -69,6 +69,7 @@ import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
 import { createPartList } from './ui/partList';
+import { openAssemblyView, closeAssemblyView, isAssemblyViewOpen, getAssemblySnapshot } from './assembly/assemblyView';
 import { createGalleryView, refreshGallery } from './ui/gallery';
 import { createVersionsView, refreshVersions } from './ui/versions';
 import { createImagesView, refreshImages } from './ui/imagesView';
@@ -392,6 +393,54 @@ function buildAttachmentFromInput(input: unknown, ctx: string, source?: 'user' |
 let currentParamSchema: ParamSpec[] | null = null;
 let currentParamValues: Record<string, ParamValue> = {};
 let paramsPanel: ParamsPanelController | null = null;
+
+// === Assembly (multi-part grid) view ===
+// The mount for the assembly parameter panel (the viewport pane) and the toolbar
+// toggle button, both assigned during editor setup. openAssembly/closeAssembly
+// are module-scoped so the console API (partwright.openAssembly) can drive them.
+let assemblyMount: HTMLElement | null = null;
+let assemblyToggleBtn: HTMLButtonElement | null = null;
+
+function syncAssemblyToggle(open: boolean): void {
+  if (!assemblyToggleBtn) return;
+  assemblyToggleBtn.className = open ? TOOL_TOGGLE_ACTIVE : TOOL_TOGGLE_IDLE;
+  // Hidden entirely for single-part sessions where there's nothing to assemble.
+  const { session, parts } = getState();
+  assemblyToggleBtn.classList.toggle('hidden', !(session && parts.length > 1));
+}
+
+async function openAssembly(): Promise<void> {
+  if (isAssemblyViewOpen() || !assemblyMount) return;
+  const st = getState();
+  if (!st.session || st.parts.length < 2) {
+    showToast('Add a second part to view all parts together.', { variant: 'neutral' });
+    return;
+  }
+  syncAssemblyToggle(true);
+  paramsPanel?.close(); // the assembly view has its own shared-parameter panel
+  await openAssemblyView({
+    mount: assemblyMount,
+    isReadOnly: () => isReadOnlyViewer(),
+    // The current part's mesh is already built on the main thread — show it
+    // instantly instead of rebuilding it in the pool.
+    seedMesh: (versionId) => (getState().currentVersion?.id === versionId ? currentMeshData : null),
+    seedSchema: (versionId) => (getState().currentVersion?.id === versionId ? currentParamSchema : null),
+    onClosed: () => {
+      syncAssemblyToggle(false);
+      resetView(); // re-frame the restored single-part model
+    },
+  });
+}
+
+function closeAssembly(): void {
+  if (!isAssemblyViewOpen()) return;
+  closeAssemblyView(); // fires onClosed → syncAssemblyToggle(false) + resetView
+}
+
+function toggleAssembly(): void {
+  if (isAssemblyViewOpen()) closeAssembly();
+  else void openAssembly();
+}
 
 /** Reconcile the Customizer panel + override state with the parameter schema a
  *  model declared on its latest run. Pass `undefined` when the model declared
@@ -5570,6 +5619,7 @@ async function main() {
       if (isReadOnlyViewer()) return;
       await reorderParts(orderedIds);
     },
+    onViewAllParts: () => { void openAssembly(); },
     onToggleCollapse: () => togglePartsRail(),
   });
 
@@ -7111,6 +7161,30 @@ async function main() {
   // Tools menu (see viewportPanelDrag's dockUnderBottom), so the two read as one
   // unit when auto-revealed.
   viewportToolsMount(clipControls).appendChild(customizeBtn);
+
+  // "All parts" toggle — the in-viewport entry point to the grid Assembly view
+  // (the part-list "▦" button is the other). Shown only for multi-part sessions;
+  // reflects and drives the open/closed state. Escape also exits the view.
+  assemblyMount = viewportPane;
+  assemblyToggleBtn = document.createElement('button');
+  assemblyToggleBtn.id = 'assembly-toggle';
+  assemblyToggleBtn.textContent = '▦ All parts';
+  assemblyToggleBtn.title = 'View all parts together in a grid';
+  assemblyToggleBtn.className = `hidden ${TOOL_TOGGLE_IDLE}`;
+  assemblyToggleBtn.addEventListener('click', () => toggleAssembly());
+  viewportToolsMount(clipControls).appendChild(assemblyToggleBtn);
+  // Keep the toggle's visibility in sync with the part count (hidden for
+  // single-part sessions). Also close the view if the session drops to one part.
+  onStateChange((state) => {
+    const multi = !!(state.session && state.parts.length > 1);
+    if (!multi && isAssemblyViewOpen()) { closeAssembly(); return; }
+    if (!isAssemblyViewOpen()) syncAssemblyToggle(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isAssemblyViewOpen() && !document.querySelector('[role="dialog"]')) {
+      closeAssembly();
+    }
+  });
 
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
@@ -9969,6 +10043,29 @@ async function main() {
         geometry,
         params: currentParamSchema ? resolveParamValues(currentParamSchema, currentParamValues) : {},
       };
+    },
+
+    /** Open the Assembly view — show every part of the session laid out in a
+     *  non-overlapping grid, built in parallel. Needs ≥ 2 parts. */
+    async openAssembly() {
+      const st = getState();
+      if (!st.session) return { error: 'No session open.' };
+      if (st.parts.length < 2) return { error: 'The session has only one part — add another to view all parts together.' };
+      await openAssembly();
+      return { status: 'ok', ...getAssemblySnapshot() };
+    },
+
+    /** Close the Assembly view and return to the single-part editor. */
+    closeAssembly() {
+      if (!isAssemblyViewOpen()) return { error: 'The Assembly view is not open.' };
+      closeAssembly();
+      return { status: 'ok' };
+    },
+
+    /** Snapshot of the Assembly view: whether it's open, the parts and their
+     *  placement, and the union of shared parameters. */
+    getAssembly() {
+      return getAssemblySnapshot();
     },
 
     /** Slice current manifold at Z height. Returns cross-section data. */
@@ -15290,6 +15387,10 @@ async function main() {
         'getTheme':             { signature: 'getTheme() -- Current color theme', docs: '/ai.md#viewport-controls' },
         'setAutoRun':           { signature: 'setAutoRun(enabled) -- Enable/disable auto-render on edit', docs: '/ai.md#viewport-controls' },
         'isAutoRunEnabled':     { signature: 'isAutoRunEnabled() -- Whether auto-run is active', docs: '/ai.md#viewport-controls' },
+        // Assembly view (all parts in a grid)
+        'openAssembly':         { signature: 'openAssembly() -- Show every part of the session in a non-overlapping grid, built in parallel (needs ≥2 parts) -> snapshot', docs: '/ai.md#assembly-view' },
+        'closeAssembly':        { signature: 'closeAssembly() -- Close the Assembly view, return to the single part', docs: '/ai.md#assembly-view' },
+        'getAssembly':          { signature: 'getAssembly() -- Assembly snapshot: {open, parts:[{id,name,placed}], sharedParams}', docs: '/ai.md#assembly-view' },
         // Insert & arrange palette (Tinkercad-style direct manipulation)
         'enterArrange':         { signature: 'enterArrange() -- Activate arrange-mode pointer hook (drag to move parts in 3D) -> {ok}', docs: '/ai.md#arrange-mode' },
         'exitArrange':          { signature: 'exitArrange() -- Deactivate arrange mode', docs: '/ai.md#arrange-mode' },
