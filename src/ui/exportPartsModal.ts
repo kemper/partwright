@@ -10,12 +10,16 @@
 
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
+import { buildPartTree } from './partTree';
 
 export interface ExportPartChoice {
   id: string;
   name: string;
   /** Pre-baked preview thumbnail (latest version's). May be null. */
   thumbnail: Blob | null;
+  /** Group name (from `Part.group`); parts sharing one list under a collapsible
+   *  header with a whole-group select/deselect checkbox. Absent ⇒ ungrouped. */
+  group?: string;
 }
 
 /** Optional Bambu/Orca controls (printer + nozzle + filament) shown only there. */
@@ -92,11 +96,18 @@ export function showExportPartsModal(
     list.className = 'flex flex-col gap-1 mt-1';
     shell.body.appendChild(list);
 
+    // The checkboxes ARE the selection state (source of truth for selectedIds).
     const checks: HTMLInputElement[] = [];
+    // Per-group header updaters, run from sync() to reflect their members'
+    // checked state as checked / indeterminate / unchecked.
+    const groupSyncers: (() => void)[] = [];
 
-    for (const part of parts) {
+    /** One selectable part row (a <label> so a click anywhere toggles it). When
+     *  `indented`, it's a group member and hugs the group's left rule. */
+    function buildPartRow(part: ExportPartChoice, indented: boolean): HTMLInputElement {
       const row = document.createElement('label');
-      row.className = 'flex items-center gap-3 py-1.5 px-2 -mx-2 rounded cursor-pointer hover:bg-zinc-700/40';
+      row.className = 'flex items-center gap-3 py-1.5 px-2 -mx-2 rounded cursor-pointer hover:bg-zinc-700/40'
+        + (indented ? ' ml-2' : '');
 
       const cb = document.createElement('input');
       cb.type = 'checkbox';
@@ -136,6 +147,55 @@ export function showExportPartsModal(
 
       row.append(cb, thumb, meta);
       list.appendChild(row);
+      return cb;
+    }
+
+    // Render parts threaded by group: ungrouped parts as flat rows, grouped
+    // parts under a collapsible-style header carrying a whole-group checkbox.
+    for (const node of buildPartTree(parts)) {
+      if (node.kind === 'part') {
+        buildPartRow(node.part, false);
+        continue;
+      }
+
+      // Group header with a tri-state checkbox that selects/deselects the group.
+      // Appended BEFORE its members so buildPartRow's appends land underneath it.
+      const header = document.createElement('label');
+      header.className = 'group flex items-center gap-2 py-1 px-2 -mx-2 mt-1 rounded cursor-pointer hover:bg-zinc-700/30';
+      header.dataset.exportGroup = node.name;
+
+      const gcb = document.createElement('input');
+      gcb.type = 'checkbox';
+      gcb.className = 'w-4 h-4 accent-blue-500 cursor-pointer shrink-0';
+      gcb.setAttribute('aria-label', `Select all parts in ${node.name}`);
+
+      const folder = document.createElement('span');
+      folder.className = 'text-xs leading-none';
+      folder.textContent = '📂';
+
+      const gname = document.createElement('span');
+      gname.className = 'flex-1 min-w-0 truncate text-[11px] font-semibold uppercase tracking-wide text-zinc-300';
+      gname.textContent = node.name;
+
+      const gcount = document.createElement('span');
+      gcount.className = 'shrink-0 text-[10px] text-zinc-500 tabular-nums';
+
+      header.append(gcb, folder, gname, gcount);
+      list.appendChild(header);
+
+      const memberCbs = node.parts.map(p => buildPartRow(p, true));
+
+      gcb.addEventListener('change', () => {
+        for (const c of memberCbs) c.checked = gcb.checked;
+        sync();
+      });
+
+      groupSyncers.push(() => {
+        const on = memberCbs.filter(c => c.checked).length;
+        gcb.checked = on === memberCbs.length;
+        gcb.indeterminate = on > 0 && on < memberCbs.length;
+        gcount.textContent = `${on}/${memberCbs.length}`;
+      });
     }
 
     // ── Bambu printer / nozzle / filament controls (only for the Bambu export) ──
@@ -195,6 +255,7 @@ export function showExportPartsModal(
       exportBtn.classList.toggle('opacity-40', n === 0);
       exportBtn.classList.toggle('cursor-default', n === 0);
       toggleAll.textContent = checks.every(c => c.checked) ? 'Select none' : 'Select all';
+      for (const s of groupSyncers) s();
     }
 
     function confirm() {

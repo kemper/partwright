@@ -4679,7 +4679,7 @@ async function main() {
     const choices: ExportPartChoice[] = [];
     for (const p of parts) {
       const v = await getLatestVersion(p.id);
-      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null });
+      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null, ...(p.group ? { group: p.group } : {}) });
     }
     const selected = await showExportPartsModal(choices, {
       activePartId: activeId,
@@ -4743,7 +4743,7 @@ async function main() {
     const choices: ExportPartChoice[] = [];
     for (const p of parts) {
       const v = await getLatestVersion(p.id);
-      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null });
+      choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null, ...(p.group ? { group: p.group } : {}) });
     }
     const selected = await showExportPartsModal(choices, {
       activePartId: activeId,

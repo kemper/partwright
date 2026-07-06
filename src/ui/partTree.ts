@@ -4,20 +4,25 @@
 
 import type { Part } from '../storage/db';
 
-export interface PartGroupNode {
+/** The minimum any groupable item must expose. Generic so both the part rail
+ *  (real `Part`s) and the export picker (its lighter `ExportPartChoice`) can
+ *  share the same folding logic. */
+export interface Groupable { group?: string }
+
+export interface PartGroupNode<T extends Groupable = Part> {
   kind: 'group';
-  /** The group's display name (the shared `Part.group`). */
+  /** The group's display name (the shared `group`). */
   name: string;
   /** Members, in the order they appeared in the input (i.e. by part `order`). */
-  parts: Part[];
+  parts: T[];
 }
 
-export interface PartLeafNode {
+export interface PartLeafNode<T extends Groupable = Part> {
   kind: 'part';
-  part: Part;
+  part: T;
 }
 
-export type PartTreeNode = PartGroupNode | PartLeafNode;
+export type PartTreeNode<T extends Groupable = Part> = PartGroupNode<T> | PartLeafNode<T>;
 
 /**
  * Fold a flat, order-sorted part list into a threaded tree: ungrouped parts stay
@@ -25,11 +30,11 @@ export type PartTreeNode = PartGroupNode | PartLeafNode;
  * collected under a single group node placed at the position of the group's
  * FIRST member. Non-contiguous members of the same group are pulled together
  * under that one node (so a group is never split into two headers). Input order
- * is assumed to already be ascending by `Part.order`.
+ * is assumed to already be ascending by `order`.
  */
-export function buildPartTree(parts: Part[]): PartTreeNode[] {
-  const result: PartTreeNode[] = [];
-  const groups = new Map<string, PartGroupNode>();
+export function buildPartTree<T extends Groupable>(parts: T[]): PartTreeNode<T>[] {
+  const result: PartTreeNode<T>[] = [];
+  const groups = new Map<string, PartGroupNode<T>>();
   for (const part of parts) {
     const g = part.group?.trim();
     if (!g) {
@@ -48,7 +53,7 @@ export function buildPartTree(parts: Part[]): PartTreeNode[] {
 }
 
 /** The distinct group names present in a part list, in first-appearance order. */
-export function groupNames(parts: Part[]): string[] {
+export function groupNames<T extends Groupable>(parts: T[]): string[] {
   const seen: string[] = [];
   const set = new Set<string>();
   for (const p of parts) {
