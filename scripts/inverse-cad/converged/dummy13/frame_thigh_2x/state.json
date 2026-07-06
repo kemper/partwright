@@ -1,0 +1,106 @@
+{
+  "part": "frame_thigh_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 7,
+    "score": 0.028123861736142064,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "bootstrap slice-stack along Y (attempt 0: staircased bands, genus 0/3 \u2014 superseded)",
+    "measured hybrid restructure (CONVERGED, attempts 2-7): Y-prism chamfered-octagon body (shaft hw2.5 / 45deg flare / fork hw4) + revolved spool end (r2.5, 45deg V-groove to r1.5@z2.5, 0.5 chamfers, truncated-cone dimples r1.0->0.5 depth 0.5 both faces) + window slab cut z1..4.1 y<5 (bridge handle) + traced curved slot through-Z + fork cavity Y-prism y17..19.6 (circle r3.1 c(0,2.5) U rect x2.5 low U rect x2.8 high) minus wall-bump cylinder r2.0@(0,15.45) + channel Y-prism y19.6..22 (circle r1.6 c(0,2.5) U rect x1.5 top) + diagonal chamfer prisms on flare/fork (plan recession = z-4.5)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 1.8718,
+      "phase": "topology",
+      "chamfer": 0.1178,
+      "hausdorff": 1.8718,
+      "volumeIoU": 0.8629,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "measured full restructure: Y-prism body + spool (V-groove+dimples) + slab bridges + traced slot + cavity(r3.1 prism minus r2.0 bump) + channel(r1.6)",
+      "verdict": "render-error",
+      "error": "Manifold.cylinder(radiusLow) must be >= 0.000001, got 0. See /ai.md#argument-validation"
+    },
+    {
+      "id": 2,
+      "note": "measured full restructure: Y-prism body + spool (V-groove+dimples) + slab bridges + traced slot + cavity(r3.1 prism minus r2.0 bump) + channel(r1.6)",
+      "verdict": "improved",
+      "score": 0.1571,
+      "phase": "done",
+      "chamfer": 0.0065,
+      "hausdorff": 0.5,
+      "volumeIoU": 0.9888,
+      "failedMust": []
+    },
+    {
+      "id": 3,
+      "note": "F1: window slab overcut 0.1 into shaft face; back face now exactly y=5.0",
+      "verdict": "improved",
+      "score": 0.1021,
+      "phase": "done",
+      "chamfer": 0.0044,
+      "hausdorff": 0.5,
+      "volumeIoU": 0.9932,
+      "failedMust": []
+    },
+    {
+      "id": 4,
+      "note": "F1/F2: flare hull slabs were 0.1 thick making diagonal steeper than 45deg; pin hull ends outside [14.5,16] so diagonal is exactly 2.5@14.5 -> 4@16",
+      "verdict": "improved",
+      "score": 0.0885,
+      "phase": "done",
+      "chamfer": 0.0035,
+      "hausdorff": 0.5,
+      "volumeIoU": 0.9942,
+      "failedMust": []
+    },
+    {
+      "id": 5,
+      "note": "hausdorff 0.5 both dirs localized at dimples: shaft prism (y>0) refilled half of each dimple because subtraction happened pre-union; subtract dimples from final body",
+      "verdict": "improved",
+      "score": 0.0634,
+      "phase": "done",
+      "chamfer": 0.0022,
+      "hausdorff": 0.4618,
+      "volumeIoU": 0.9955,
+      "failedMust": []
+    },
+    {
+      "id": 6,
+      "note": "dimples are truncated cones r1.0->r0.5 depth 0.5 with flat floor (measured floor at z=0.5; residuals matched (0.5-r)/sqrt2), not full cones to apex",
+      "verdict": "improved",
+      "score": 0.0583,
+      "phase": "done",
+      "chamfer": 0.0019,
+      "hausdorff": 0.1065,
+      "volumeIoU": 0.996,
+      "failedMust": []
+    },
+    {
+      "id": 7,
+      "note": "flare diagonal chamfer: target recedes full (z-4.5) in plan (true perpendicular 45deg chamfer, extends past y=16 at fork corner); intersect flare+fork with diagonal chamfer prisms",
+      "verdict": "improved",
+      "score": 0.0281,
+      "phase": "done",
+      "chamfer": 0.0013,
+      "hausdorff": 0.0859,
+      "volumeIoU": 0.9978,
+      "failedMust": []
+    }
+  ]
+}

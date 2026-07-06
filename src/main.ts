@@ -70,6 +70,7 @@ import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
 import { createPartList } from './ui/partList';
 import { openAssemblyView, closeAssemblyView, isAssemblyViewOpen, getAssemblySnapshot } from './assembly/assemblyView';
+import { openPartsOverview } from './ui/partsOverview';
 import { createGalleryView, refreshGallery } from './ui/gallery';
 import { createVersionsView, refreshVersions } from './ui/versions';
 import { createImagesView, refreshImages } from './ui/imagesView';
@@ -7168,8 +7169,8 @@ async function main() {
   assemblyMount = viewportPane;
   assemblyToggleBtn = document.createElement('button');
   assemblyToggleBtn.id = 'assembly-toggle';
-  assemblyToggleBtn.textContent = '▦ All parts';
-  assemblyToggleBtn.title = 'View all parts together in a grid';
+  assemblyToggleBtn.textContent = '⧉ All parts';
+  assemblyToggleBtn.title = 'View all parts together in a 3D grid (Assembly)';
   assemblyToggleBtn.className = `hidden ${TOOL_TOGGLE_IDLE}`;
   assemblyToggleBtn.addEventListener('click', () => toggleAssembly());
   viewportToolsMount(clipControls).appendChild(assemblyToggleBtn);
@@ -11481,6 +11482,14 @@ async function main() {
     // history. The "current part" determines what every other method (run,
     // save, paint, export, …) acts on.
 
+    /** Open the parts-overview modal (a thumbnail contact-sheet of every
+     *  part; click a tile to switch). Same view as the part rail's grid
+     *  button. Returns { error } when there is no session or no parts. */
+    showPartsOverview() {
+      const opened = openPartsOverview((id) => { void selectPart(id); });
+      return opened ? { ok: true } : { error: 'showPartsOverview: no session with parts is open' };
+    },
+
     /** List the parts in the active session, each flagged with `isCurrent`. */
     listParts() {
       const current = getCurrentPart();
@@ -15337,6 +15346,7 @@ async function main() {
         'getSessionContext': { signature: 'await getSessionContext() -- Get full session context (for resuming)', docs: '/ai.md#resuming-a-session' },
         // Parts (multiple objects per session)
         'listParts':       { signature: 'listParts() -- List parts in the session -> [{id, name, order, isCurrent}]', docs: '/ai.md#console-api--windowpartwright' },
+        'showPartsOverview': { signature: 'showPartsOverview() -- Open the all-parts thumbnail overview modal', docs: '/ai.md#console-api--windowpartwright' },
         'getCurrentPart':  { signature: 'getCurrentPart() -- Active part -> {id, name, order} or null', docs: '/ai.md#console-api--windowpartwright' },
         'createPart':      { signature: 'await createPart(name?) -- New empty part + switch to it -> {id, name, order}', docs: '/ai.md#console-api--windowpartwright' },
         'changePart':      { signature: 'await changePart(name|id|index) -- Switch active part (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },

@@ -1,0 +1,84 @@
+{
+  "part": "armor_thigh_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 4,
+    "score": 0.01803816170751295,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "measured analytic restructure (CONVERGED): planar front wall + R81 arc back wall as X-prisms, corner cuts as 45deg-sheared wedge prisms carrying the wall profiles, tangent scoop (45deg line + R5 arc + exit plane), swing-cylinder notch r4.75 about pivot axis (y0,z22), gap Y-prism with exact flank lines, top facet set, tab on the shared front plane, mouth/pocket, pivot boss spheres r0.996 at (+-3.197,0,22)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 1.0288,
+      "phase": "features",
+      "chamfer": 0.0577,
+      "hausdorff": 1.5167,
+      "volumeIoU": 0.932,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "full measured restructure: plane front wall + R81 arc back wall with sheared corner cuts, tangent scoop (45+R5+exit plane), swing-cylinder notch r4.75 about pivot (0,22), gap prism, top facet set, tab, mouth/pocket, pivot boss spheres",
+      "verdict": "improved",
+      "score": 0.1517,
+      "phase": "done",
+      "chamfer": 0.0042,
+      "hausdorff": 0.3024,
+      "volumeIoU": 0.9947,
+      "failedMust": []
+    },
+    {
+      "id": 2,
+      "note": "mouth chamfer: replace hull-of-slabs (upper diagonal ran to slabB top 8.3, over-cutting) with exact x-bounded 45-deg wedge prisms (4.2,6.2)->(2.6,7.8)",
+      "verdict": "regressed",
+      "score": 1.1074,
+      "phase": "topology",
+      "chamfer": 0.0213,
+      "hausdorff": 1.6,
+      "volumeIoU": 0.9538,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "worst finding",
+        "topology"
+      ]
+    },
+    {
+      "id": 3,
+      "note": "mouth chamfer wedge region was inverted (cut the wall above the line); correct cut region between bore face y=2.6 and the 45-deg line",
+      "verdict": "regressed",
+      "score": 0.2798,
+      "phase": "tune",
+      "chamfer": 0.0067,
+      "hausdorff": 1.1294,
+      "volumeIoU": 0.9984,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max"
+      ]
+    },
+    {
+      "id": 4,
+      "note": "overshoot mouth-chamfer wedge past the bore face (2.6->2.4): rotated wedge face at y=2.6+-1e-16 left a phantom zero-thickness membrane (hausdorff 1.13 with zero findings)",
+      "verdict": "improved",
+      "score": 0.018,
+      "phase": "done",
+      "chamfer": 0.001,
+      "hausdorff": 0.0389,
+      "volumeIoU": 0.9984,
+      "failedMust": []
+    }
+  ]
+}

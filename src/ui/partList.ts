@@ -6,6 +6,8 @@
 import { getState, onStateChange, type SessionState, type Part, type Version } from '../storage/sessionManager';
 import { getLatestVersion } from '../storage/db';
 import { confirmDialog } from './dialogs';
+import { openPartsOverview } from './partsOverview';
+import { registerCommands } from './commandPalette';
 
 export interface PartListCallbacks {
   /** Switch the active part (loads its latest version into the editor). */
@@ -48,6 +50,16 @@ let lastClickedId: string | null = null;
 export function createPartList(container: HTMLElement, callbacks: PartListCallbacks): void {
   railEl = container;
   cb = callbacks;
+  registerCommands([
+    {
+      id: 'parts.overview',
+      title: 'Show all parts (overview)',
+      hint: 'Parts',
+      keywords: 'grid contact sheet preview thumbnails every part',
+      enabled: () => getState().parts.length > 0,
+      run: () => { openPartsOverview((id) => cb.onSelectPart(id)); },
+    },
+  ]);
   render(getState());
   onStateChange((state) => {
     if (dragging) { pendingRender = true; return; }
@@ -85,10 +97,21 @@ function render(state: SessionState): void {
   title.textContent = 'Parts';
   header.appendChild(title);
 
-  // "View all parts" — opens the grid Assembly view. Only meaningful with more
-  // than one part, so it's hidden for single-part sessions.
+  // Overview — a lightweight thumbnail contact-sheet modal of all parts (instant,
+  // no geometry rebuild). Complements the Assembly view below (live 3D grid).
+  const overviewBtn = iconBtn('▦', 'Overview of all parts (thumbnails)');
+  overviewBtn.id = 'btn-parts-overview';
+  overviewBtn.disabled = !state.session;
+  if (!state.session) overviewBtn.classList.add('opacity-30', 'cursor-default');
+  overviewBtn.addEventListener('click', () => {
+    if (state.session) openPartsOverview((id) => cb.onSelectPart(id));
+  });
+  header.appendChild(overviewBtn);
+
+  // "View all parts" — opens the live 3D Assembly grid in the viewport (builds
+  // parts in parallel; shared-parameter panel). Only meaningful with 2+ parts.
   if (state.session && state.parts.length > 1) {
-    const viewAllBtn = iconBtn('▦', 'View all parts together');
+    const viewAllBtn = iconBtn('⧉', 'View all parts together in 3D (Assembly)');
     viewAllBtn.id = 'btn-view-all-parts';
     viewAllBtn.addEventListener('click', () => cb.onViewAllParts());
     header.appendChild(viewAllBtn);

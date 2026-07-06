@@ -386,6 +386,7 @@ await partwright.clearAllSessions()      // Delete all sessions & versions
 // Address a part by its name, its id, or its 0-based index (changePart/
 // renamePart/deletePart all accept any of the three).
 partwright.listParts()                   // -> [{id, name, order, isCurrent}]
+partwright.showPartsOverview()           // Open the all-parts thumbnail overview (contact sheet; click a tile to switch part)
 partwright.getCurrentPart()              // -> {id, name, order} or null
 await partwright.createPart(name?)       // New empty part + switch to it -> {id, name, order}
 await partwright.changePart(name|id|index)   // Switch active part (loads its latest version)

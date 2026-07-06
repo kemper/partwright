@@ -1,0 +1,152 @@
+{
+  "ok": true,
+  "attempt": 1,
+  "note": "freeform shell (prismatic<0.5 all axes, vol 29% bbox) -> levelSet z-section interpolation per 5.25, 138 sections pitch 0.15 + straddle pairs at ledges 2.005/10.005/11.895/15.305/16.005, res 0.15",
+  "score": 0.04955,
+  "phase": "done",
+  "distance": {
+    "method": "point-to-triangle-bvh",
+    "samples": 20000,
+    "chamfer": 0.00452,
+    "hausdorff": 0.11843,
+    "rms": 0.01033,
+    "candToTarget": {
+      "mean": 0.00438,
+      "rms": 0.00999,
+      "max": 0.11843,
+      "p50": 0.00029,
+      "p90": 0.01145,
+      "p99": 0.04536,
+      "meanSigned": -0.00064,
+      "excessArea_mm2": 7.92444,
+      "missingArea_mm2": 4.57493
+    },
+    "targetToCand": {
+      "mean": 0.00466,
+      "rms": 0.01065,
+      "max": 0.11301,
+      "p50": 0.00033,
+      "p90": 0.0122,
+      "p99": 0.04961,
+      "meanSigned": 0.00063,
+      "excessArea_mm2": 6.58589,
+      "missingArea_mm2": 9.22025
+    }
+  },
+  "voxel": {
+    "grid": {
+      "res": 0.15,
+      "min": [
+        -9.3,
+        -7.81023,
+        -0.3
+      ],
+      "size": [
+        124,
+        105,
+        138
+      ]
+    },
+    "volumeIoU": 0.99596,
+    "excess_mm3": 2.68987,
+    "missing_mm3": 3.65512,
+    "targetVol_mm3": 1566.38812,
+    "candVol_mm3": 1565.42287,
+    "findings": [],
+    "totalFindings": 0,
+    "discardedVolume_mm3": 0
+  },
+  "gates": {
+    "pass": true,
+    "must": [
+      {
+        "name": "hausdorff P99",
+        "value": 0.0496,
+        "threshold": "<= 0.4mm",
+        "pass": true,
+        "why": "a small feature is missing or badly misplaced"
+      },
+      {
+        "name": "hausdorff max",
+        "value": 0.1184,
+        "threshold": "<= 0.8mm",
+        "pass": true,
+        "why": "at least one point of one mesh is far from the other"
+      },
+      {
+        "name": "volume IoU",
+        "value": 0.996,
+        "threshold": ">= 0.95",
+        "pass": true,
+        "why": "the solids overlap poorly — mass is in the wrong place"
+      },
+      {
+        "name": "worst finding",
+        "value": 0,
+        "threshold": "<= 4mm³",
+        "pass": true,
+        "why": "a localized blob of disagreement"
+      },
+      {
+        "name": "topology",
+        "value": "genus 2/2, components 1/1",
+        "threshold": "equal",
+        "pass": true,
+        "why": "missing/extra holes or pieces — the loudest visual defect, nearly invisible to chamfer"
+      },
+      {
+        "name": "volume ratio",
+        "value": 0.9994,
+        "threshold": "1 ± 0.02",
+        "pass": true,
+        "why": "net material error (hidden internal geometry, wrong wall thickness)"
+      }
+    ],
+    "should": [
+      {
+        "name": "chamfer",
+        "value": 0.0045,
+        "threshold": "<= 0.12mm",
+        "pass": true,
+        "why": "overall polish"
+      },
+      {
+        "name": "area ratio",
+        "value": 0.9924,
+        "threshold": "1 ± 0.04",
+        "pass": true,
+        "why": "missing fillets/texture shed area with little volume change"
+      }
+    ],
+    "failed": [],
+    "summary": "6/6 MUST, 2/2 SHOULD"
+  },
+  "candidate": {
+    "componentCount": 1,
+    "genus": 2,
+    "volume": 1564.15393,
+    "surfaceArea": 1633.90423,
+    "bbox": {
+      "min": [
+        -9,
+        -7.5038,
+        0
+      ],
+      "max": [
+        9,
+        7.51,
+        20
+      ],
+      "size": [
+        18,
+        15.0138,
+        20
+      ],
+      "center": [
+        0,
+        0.0031,
+        10
+      ]
+    }
+  }
+}

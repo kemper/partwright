@@ -28,6 +28,25 @@ const NAME = arg('name');
 const LANG = arg('lang', 'manifold-js');
 const OUT = arg('out');
 const BASE_URL = arg('base', 'http://localhost:5173');
+// Multi-part mode: --parts-manifest <file.json> bakes ONE session with a part
+// per manifest entry (shown in the editor's part list). The JSON is an array
+// of { name, source, expectComponents? } in display order; the LAST part's
+// thumbnail becomes the catalog tile. Mutually exclusive with --source.
+// expectComponents (optional) gates that part's baked componentCount exactly —
+// the print-correctness check for "this part is N pieces" (e.g. ×2 copies).
+const PARTS_MANIFEST = arg('parts-manifest');
+let PARTS = null;
+if (PARTS_MANIFEST) {
+  if (SOURCE) { console.error('--parts-manifest cannot be combined with --source'); process.exit(2); }
+  try {
+    PARTS = JSON.parse(fs.readFileSync(PARTS_MANIFEST, 'utf8'));
+    if (!Array.isArray(PARTS) || !PARTS.length) throw new Error('manifest must be a non-empty array');
+    for (const p of PARTS) {
+      if (!p.name || !p.source) throw new Error('each part needs {name, source}');
+      p.code = fs.readFileSync(p.source, 'utf8');
+    }
+  } catch (e) { console.error('Bad --parts-manifest: ' + e); process.exit(2); }
+}
 // Optional palette: paints api.label() regions AFTER the run, then re-snapshots
 // the colored viewport (so the catalog thumbnail is colored). Needed for scad &
 // replicad, whose label() carries no baked color. Pass either:
@@ -99,9 +118,9 @@ const THUMB_CAMERA = (Number.isFinite(THUMB_AZ) || Number.isFinite(THUMB_EL))
   ? { ...(Number.isFinite(THUMB_AZ) ? { azimuth: THUMB_AZ } : {}), ...(Number.isFinite(THUMB_EL) ? { elevation: THUMB_EL } : {}) }
   : null;
 
-if (!SOURCE || !NAME || !OUT) {
-  console.error('Required: --source <file> --name <name> --out <file> [--lang manifold-js|scad|replicad|voxel] [--palette JSON | --palette-file FILE | --palette-from-existing ENTRY.json]');
-  console.error('Gates: [--max-genus N] [--require-labels a,b,c]');
+if ((!SOURCE && !PARTS) || !NAME || !OUT) {
+  console.error('Required: (--source <file> | --parts-manifest <file.json>) --name <name> --out <file> [--lang manifold-js|scad|replicad|voxel] [--palette JSON | --palette-file FILE | --palette-from-existing ENTRY.json]');
+  console.error('Gates: [--max-genus N] [--require-labels a,b,c]  (multi-part: per-part expectComponents in the manifest)');
   console.error('Optional env: THUMB_AZIMUTH / THUMB_ELEVATION (degrees) — pin the thumbnail camera.');
   process.exit(2);
 }
@@ -120,7 +139,7 @@ const SANDBOX_CHROME = (() => {
 })();
 
 async function main() {
-  const code = fs.readFileSync(SOURCE, 'utf8');
+  const code = SOURCE ? fs.readFileSync(SOURCE, 'utf8') : null;
 
   const browser = await chromium.launch({
     headless: true,
@@ -147,7 +166,7 @@ async function main() {
       continue;
     }
     try {
-      result = await page.evaluate(async ({ code, lang, name, paintItems, thumbCamera }) => {
+      result = await page.evaluate(async ({ code, parts, lang, name, paintItems, thumbCamera }) => {
         if (window.partwright.getActiveLanguage() !== lang) {
           await window.partwright.setActiveLanguage(lang);
         }
@@ -169,10 +188,33 @@ async function main() {
         if (thumbCamera && window.partwright.setThumbnailCamera) {
           await window.partwright.setThumbnailCamera(thumbCamera);
         }
-        const r = await window.partwright.runAndSave(code, 'v0', {});
-        if (r && r.error) return { error: r.error, where: 'runAndSave' };
-        if (!r || !r.version) return { error: 'no version saved: ' + JSON.stringify(r).slice(0, 500), where: 'runAndSave' };
-        const geo = r.geometry || {};
+        let geo = {};
+        let partStats = null;
+        if (parts) {
+          // Multi-part session: one part-list part per manifest entry. The
+          // session starts with a default part — rename it for the first
+          // entry, createPart for the rest (createPart also switches to it).
+          partStats = [];
+          for (let i = 0; i < parts.length; i++) {
+            if (i === 0) {
+              const rn = await window.partwright.renamePart(0, parts[i].name);
+              if (rn && rn.error) return { error: rn.error, where: 'renamePart ' + parts[i].name };
+            } else {
+              const cp = await window.partwright.createPart(parts[i].name);
+              if (cp && cp.error) return { error: cp.error, where: 'createPart ' + parts[i].name };
+            }
+            const r = await window.partwright.runAndSave(parts[i].code, 'v0', {});
+            if (r && r.error) return { error: r.error, where: 'runAndSave ' + parts[i].name };
+            if (!r || !r.version) return { error: 'no version saved for part ' + parts[i].name, where: 'runAndSave' };
+            geo = r.geometry || {};
+            partStats.push({ name: parts[i].name, componentCount: geo.componentCount, isManifold: geo.isManifold, triangleCount: geo.triangleCount });
+          }
+        } else {
+          const r = await window.partwright.runAndSave(code, 'v0', {});
+          if (r && r.error) return { error: r.error, where: 'runAndSave' };
+          if (!r || !r.version) return { error: 'no version saved: ' + JSON.stringify(r).slice(0, 500), where: 'runAndSave' };
+          geo = r.geometry || {};
+        }
 
         // Label inventory is always collected (the --require-labels gate needs
         // it even for unpainted bakes).
@@ -190,11 +232,11 @@ async function main() {
 
         const data = await window.partwright.exportSession(undefined, { includeThumbnails: true });
         if (data && data.error) return { error: data.error, where: 'export' };
-        return { ok: true, data, labelInfo, paintInfo, stats: {
+        return { ok: true, data, labelInfo, paintInfo, partStats, stats: {
           status: geo.status, isManifold: geo.isManifold, componentCount: geo.componentCount,
           triangleCount: geo.triangleCount, genus: geo.genus, volume: geo.volume,
         } };
-      }, { code, lang: LANG, name: NAME, paintItems: PAINT_ITEMS, thumbCamera: THUMB_CAMERA });
+      }, { code, parts: PARTS && PARTS.map((p) => ({ name: p.name, code: p.code })), lang: LANG, name: NAME, paintItems: PAINT_ITEMS, thumbCamera: THUMB_CAMERA });
       break;
     } catch (e) {
       result = { error: String(e), where: 'eval' };
@@ -210,6 +252,18 @@ async function main() {
 
   // --- Gates: fail BEFORE writing OUT so a regressed bake can't be committed.
   const gateFailures = [];
+  if (PARTS && result.partStats) {
+    for (let i = 0; i < PARTS.length; i++) {
+      const expect = PARTS[i].expectComponents;
+      const got = result.partStats[i] && result.partStats[i].componentCount;
+      if (expect !== undefined && got !== expect) {
+        gateFailures.push(`part '${PARTS[i].name}': expectComponents ${expect}, baked ${got}`);
+      }
+      if (result.partStats[i] && result.partStats[i].isManifold === false) {
+        gateFailures.push(`part '${PARTS[i].name}': not manifold`);
+      }
+    }
+  }
   if (MAX_GENUS !== undefined) {
     const genus = result.stats && result.stats.genus;
     if (!Number.isFinite(genus)) {
@@ -239,6 +293,28 @@ async function main() {
     process.exit(1);
   }
 
+  // Multi-part entries: the LAST version keeps its full-size thumbnail (the
+  // catalog tile); every other part's is downscaled to 128px so the parts
+  // overview + part rail have previews on fresh import without blowing the
+  // entry size gate (21 full-size thumbnails = ~1.2MB; 128px = ~5-10KB each).
+  if (PARTS && Array.isArray(result.data.versions)) {
+    const sharp = require('sharp');
+    const vs = result.data.versions;
+    for (let i = 0; i < vs.length - 1; i++) {
+      const t = vs[i].thumbnail;
+      if (typeof t !== 'string' || !t.startsWith('data:image')) continue;
+      try {
+        const buf = Buffer.from(t.split(',', 2)[1], 'base64');
+        // JPEG on white: ~2-4KB per tile vs ~8-12KB PNG — matters at 37 parts.
+        const small = await sharp(buf).resize(128, 128, { fit: 'inside' })
+          .flatten({ background: '#ffffff' }).jpeg({ quality: 80 }).toBuffer();
+        vs[i].thumbnail = 'data:image/jpeg;base64,' + small.toString('base64');
+      } catch {
+        delete vs[i].thumbnail; // unparseable — better absent than oversized
+      }
+    }
+  }
+
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, JSON.stringify(result.data, null, 2) + '\n');
   const sizeKb = (fs.statSync(OUT).size / 1024).toFixed(0);
@@ -246,7 +322,8 @@ async function main() {
   // Also dump the embedded thumbnail as a sibling .png for quick eyes-on review.
   try {
     const versions = result.data.versions || [];
-    const thumb = versions.length ? versions[versions.length - 1].thumbnail : null;
+    const thumb = (result.data.session && result.data.session.compositeThumbnail)
+      || (versions.length ? versions[versions.length - 1].thumbnail : null);
     if (thumb && thumb.startsWith('data:image')) {
       const pngPath = OUT.replace(/\.partwright\.json$/, '') + '.thumb.png';
       fs.writeFileSync(pngPath, Buffer.from(thumb.split(',', 2)[1], 'base64'));
@@ -257,6 +334,8 @@ async function main() {
   if (result.labelInfo) console.log(`   labels=${JSON.stringify(result.labelInfo)}`);
   if (result.paintInfo && result.paintInfo.failed && result.paintInfo.failed.length)
     console.log(`   PAINT FAILED for: ${JSON.stringify(result.paintInfo.failed)}`);
+  if (result.partStats)
+    console.log(`   parts=${result.partStats.length}: ${result.partStats.map((p) => `${p.name}:${p.componentCount}`).join('  ')}`);
   console.log(`OK ${OUT} (${sizeKb} KB) stats=${JSON.stringify(result.stats)}`);
 }
 

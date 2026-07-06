@@ -1,0 +1,64 @@
+{
+  "part": "frame_head",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 2,
+    "score": 0.042229790227632305,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "slice-stack bootstrap (band extrusions): staircased badly on the spherical socket + chamfers; genus -3 / components 4 from non-welding bands \u2014 abandoned",
+    "structured rebuild via hip_shoulder joint-spec transfer (disc r4.5 about socket + mouth wedge through center + sphere/rim-cones + leg-0.5 chamfers) + traced keyhole stem: CONVERGED"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 4.0186,
+      "phase": "topology",
+      "chamfer": 0.283,
+      "hausdorff": 1.7107,
+      "volumeIoU": 0.5316,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "structured rebuild: hip_shoulder joint spec (disc r4.5, mouth y<=-0.6682|x| through center, sphere r2.898+rim cones, leg-0.5 chamfers on arc+mouth) + traced keyhole stem z0..3 with slot; flats unchamfered",
+      "verdict": "improved",
+      "score": 2.5227,
+      "phase": "place",
+      "chamfer": 0.1428,
+      "hausdorff": 2.9222,
+      "volumeIoU": 0.8799,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 2,
+      "note": "fix stem/slot polygon winding (bowtie + CW reverse made both degenerate); geometry otherwise unchanged",
+      "verdict": "improved",
+      "score": 0.0422,
+      "phase": "done",
+      "chamfer": 0.0031,
+      "hausdorff": 0.122,
+      "volumeIoU": 0.9938,
+      "failedMust": []
+    }
+  ]
+}
