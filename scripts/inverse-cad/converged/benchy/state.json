@@ -1,0 +1,91 @@
+{
+  "part": "benchy",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 5,
+    "score": 0.098440199526213,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "stock genLevelSet (step 0.2/dp 0.02/edge 0.2): banked 2/6 baseline; banded-fallback emitter erases depth-3 nested outers (cabin inside cockpit hole) and genus came out 6/5 \u2014 do not reuse the banded path on this part",
+    "full SDF z-blend of 265 measured sections (genfoot armor recipe) + straddle pairs at 14 measured ledges + 5.25d clamp + ledge-exact z-gradient override + grid de-phase: CONVERGED 6/6+2/2 (edge 0.15, score 0.0984)",
+    "parametric/hybrid superstructure decode: NOT attempted \u2014 225k-tri smooth-shaded mesh, census far above tris/2 territory; levelSet converged with margin so hybrid offered no gate value"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "safety bank: stock genLevelSet step 0.2 / dp 0.02 / edge 0.2 (first foreign mesh; gate genus against voxel-solid 5)",
+      "verdict": "improved",
+      "score": 4.3643,
+      "phase": "topology",
+      "chamfer": 0.0367,
+      "hausdorff": 1.9825,
+      "volumeIoU": 0.9712,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "worst finding",
+        "topology"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "full SDF blend (armor genfoot recipe, even-odd handles cabin-inside-cockpit-hole nesting the banded emitter erased) + straddle pairs at 14 measured ledges + 5.25d clamp; genus 5 verified headlessly",
+      "verdict": "improved",
+      "score": 0.1973,
+      "phase": "features",
+      "chamfer": 0.013,
+      "hausdorff": 0.1615,
+      "volumeIoU": 0.9934,
+      "failedMust": [
+        "worst finding"
+      ]
+    },
+    {
+      "id": 2,
+      "note": "ledge-exact SDF override (true z-gradient min(a,L-z)/min(b,z-L) within one cell of each of 14 ledges) + grid z de-phased 0.165 so no MC layer coincides with a ledge plane",
+      "verdict": "improved",
+      "score": 0.1445,
+      "phase": "done",
+      "chamfer": 0.0096,
+      "hausdorff": 0.1753,
+      "volumeIoU": 0.9948,
+      "failedMust": []
+    },
+    {
+      "id": 3,
+      "note": "wall-exact ledge override: outside the event plane use max(L-z, b) / max(z-L, a) so side walls inside the override band are not pulled in (targets F1 3.9mm3 near-gate)",
+      "verdict": "improved",
+      "score": 0.1317,
+      "phase": "done",
+      "chamfer": 0.0095,
+      "hausdorff": 0.1753,
+      "volumeIoU": 0.9949,
+      "failedMust": []
+    },
+    {
+      "id": 4,
+      "note": "ledge override keeps the ordinary blended field as the wall metric (min/max composite with true plane distance); a/b signs only select the case",
+      "verdict": "improved",
+      "score": 0.1313,
+      "phase": "done",
+      "chamfer": 0.0095,
+      "hausdorff": 0.1795,
+      "volumeIoU": 0.995,
+      "failedMust": []
+    },
+    {
+      "id": 5,
+      "note": "levelSet edge 0.2 -> 0.15 (same sections): remaining findings are MC-lerp resolution-bound skins, not structure",
+      "verdict": "improved",
+      "score": 0.0984,
+      "phase": "done",
+      "chamfer": 0.0082,
+      "hausdorff": 0.1623,
+      "volumeIoU": 0.9957,
+      "failedMust": []
+    }
+  ]
+}

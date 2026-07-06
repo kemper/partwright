@@ -1,0 +1,44 @@
+{
+  "part": "frame_hip_and_shoulder_4x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.08982380334587883,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "deterministic slice-stack bootstrap (attempt 0 \u2014 silhouette-limited)",
+    "probe-driven primitive composition: socket-center-referenced arc outline + sphere+rim-cones cavity + mouth wedge + exact 45deg chamfer cutters (attempt 1 \u2014 CONVERGED 6/6)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 1.3852,
+      "phase": "silhouette",
+      "chamfer": 0.0885,
+      "hausdorff": 0.5949,
+      "volumeIoU": 0.8693,
+      "failedMust": [
+        "hausdorff P99",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "structured rebuild: r4.5-arc outline + chamfer-line corners + sphere r2.9075 + 20deg rim cones + mouth wedge + measured 45deg chamfer cutters + tab/rod/rear-cyl primitives",
+      "verdict": "improved",
+      "score": 0.0898,
+      "phase": "done",
+      "chamfer": 0.0039,
+      "hausdorff": 0.2957,
+      "volumeIoU": 0.9948,
+      "failedMust": []
+    }
+  ]
+}

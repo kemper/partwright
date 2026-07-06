@@ -1,0 +1,45 @@
+{
+  "part": "armor_toe_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.027753133586377092,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "bootstrap z band-stack (abandoned)",
+    "levelSet z-section interpolation (5.25/5.25b) \u2014 CONVERGED"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 2.2522,
+      "phase": "silhouette",
+      "chamfer": 0.1801,
+      "hausdorff": 1.2023,
+      "volumeIoU": 0.7795,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "levelSet SDF interpolation of 39 measured z-sections (5.25b sibling recipe, pitch 0.1 res 0.08, straddle pair at contour birth z=3.0075)",
+      "verdict": "improved",
+      "score": 0.0278,
+      "phase": "done",
+      "chamfer": 0.0016,
+      "hausdorff": 0.0569,
+      "volumeIoU": 0.9968,
+      "failedMust": []
+    }
+  ]
+}

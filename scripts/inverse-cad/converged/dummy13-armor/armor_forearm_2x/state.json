@@ -1,0 +1,82 @@
+{
+  "part": "armor_forearm_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 4,
+    "score": 0.005562664305048484,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "stock-levelSet-recipe (5.25): 6/6 MUST @ 0.156 — safety best, superseded",
+    "facet-census-decode + convex-piece CSG (5.26/5.28): CONVERGED @ 0.0056"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 1.9133,
+      "phase": "silhouette",
+      "chamfer": 0.0701,
+      "hausdorff": 2.0607,
+      "volumeIoU": 0.867,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "stock levelSet recipe (safety best per coordinator)",
+      "verdict": "improved",
+      "score": 0.1558,
+      "phase": "done",
+      "chamfer": 0.01,
+      "hausdorff": 0.1057,
+      "volumeIoU": 0.9817,
+      "failedMust": []
+    },
+    {
+      "id": 2,
+      "note": "exact facet-census CSG decode: octagon tube + bulge hulls + ridge/channel/slot + window w/ rim chamfers + r=1.0 detents",
+      "verdict": "regressed",
+      "score": 0.59,
+      "phase": "features",
+      "chamfer": 0.0159,
+      "hausdorff": 0.4899,
+      "volumeIoU": 0.9572,
+      "failedMust": [
+        "hausdorff P99",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 3,
+      "note": "fix concave wing profiles convexified by hull (TOPA/CHAN/WEDB split into convex prisms) + bulge rear-bottom vertex",
+      "verdict": "improved",
+      "score": 0.0129,
+      "phase": "done",
+      "chamfer": 0.0003,
+      "hausdorff": 0.2455,
+      "volumeIoU": 0.9976,
+      "failedMust": []
+    },
+    {
+      "id": 4,
+      "note": "polish: rear slant below z6.1 (|x|<=2.7), FC2 ramp->vertical split, asymmetric -x bulge front (flat y=-1.5), 8 window-rim corner miters",
+      "verdict": "improved",
+      "score": 0.0056,
+      "phase": "done",
+      "chamfer": 0,
+      "hausdorff": 0.0029,
+      "volumeIoU": 0.9989,
+      "failedMust": []
+    }
+  ]
+}

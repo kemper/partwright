@@ -1,0 +1,46 @@
+{
+  "part": "hand_fist_right",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.20289861787317523,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 1/2 SHOULD"
+  },
+  "strategiesTried": [
+    "coarse-z-slice-stack (bootstrap): superseded",
+    "mirror-of-converged-sibling (5.14: hand_fist_left best + mirror([1,0,0])): CONVERGED"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 3.3719,
+      "phase": "topology",
+      "chamfer": 0.2445,
+      "hausdorff": 1.9979,
+      "volumeIoU": 0.7518,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "5.14 mirror shortcut: left's converged candidate + .mirror([1,0,0]); bbox/socket/debris x-negation all verified by probe",
+      "verdict": "improved",
+      "score": 0.2029,
+      "phase": "done",
+      "chamfer": 0.0217,
+      "hausdorff": 0.6827,
+      "volumeIoU": 0.976,
+      "failedMust": []
+    }
+  ]
+}

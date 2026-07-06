@@ -146,10 +146,13 @@ function trimAttachmentsForShare(session: ExportedSession['session']): ExportedS
   // `session` can be missing/malformed for an invalid payload (e.g. a hand-built
   // or corrupt share input) — guard before dereferencing.
   if (!session || typeof session !== 'object') return session;
-  const attachments = session.attachments;
-  if (!Array.isArray(attachments) || attachments.length === 0) return session;
+  // The composite contact-sheet thumbnail (schema 1.18) is derived data and
+  // ~50-100KB of base64 — never worth share-URL budget.
+  const { compositeThumbnail: _dropComposite, ...trimmedSession } = session;
+  const attachments = trimmedSession.attachments;
+  if (!Array.isArray(attachments) || attachments.length === 0) return trimmedSession;
   return {
-    ...session,
+    ...trimmedSession,
     attachments: attachments.map(a =>
       typeof a.src === 'string' && a.src.startsWith('data:') ? { ...a, src: '' } : a,
     ),

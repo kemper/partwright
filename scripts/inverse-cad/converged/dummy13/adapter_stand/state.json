@@ -1,0 +1,46 @@
+{
+  "part": "adapter_stand",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.0087852933735541,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "bootstrap slice-stack (attempt 0: score 4.23, 0/6 MUST \u2014 staircased bands, wrong topology)",
+    "revolved traced r(y) polyline + probed keyhole loop (attempt 1: CONVERGED, score 0.0088, 8/8 gates)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 4.2303,
+      "phase": "topology",
+      "chamfer": 0.2912,
+      "hausdorff": 2.0052,
+      "volumeIoU": 0.6269,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "restructure: revolved traced r(y) profile (ball r3@-5.5 + measured neck polyline + flange r4) + probed keyhole loop (R1.5/r0.66@y2.1, foot \u00b11.2, slot \u00b10.36, z0..3), ground clip z=0",
+      "verdict": "improved",
+      "score": 0.0088,
+      "phase": "done",
+      "chamfer": 0.0008,
+      "hausdorff": 0.069,
+      "volumeIoU": 0.9991,
+      "failedMust": []
+    }
+  ]
+}

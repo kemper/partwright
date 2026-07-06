@@ -1,0 +1,56 @@
+{
+  "part": "armor_shin_2x",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 2,
+    "score": 0.05948931025541407,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "levelset-z-sections pitch 0.1 + ledge straddles (0.8/6.2/6.5/7.3) + ±0.05 SDF clamp: CONVERGED"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 2.2152,
+      "phase": "silhouette",
+      "chamfer": 0.1124,
+      "hausdorff": 2.7655,
+      "volumeIoU": 0.815,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "levelSet recipe (5.25): 95 z-sections pitch 0.1 + straddle pairs at ledges 0.8/6.2/6.5/7.3, res 0.1",
+      "verdict": "improved",
+      "score": 0.2255,
+      "phase": "features",
+      "chamfer": 0.0076,
+      "hausdorff": 0.1046,
+      "volumeIoU": 0.9831,
+      "failedMust": [
+        "worst finding"
+      ]
+    },
+    {
+      "id": 2,
+      "note": "clamp SDF to ±0.05 band: unclamped z-lerp magnitudes bias flat-ledge crossings low (deck top sat 0.02-0.05 under z=7.3)",
+      "verdict": "improved",
+      "score": 0.0595,
+      "phase": "done",
+      "chamfer": 0.0061,
+      "hausdorff": 0.0984,
+      "volumeIoU": 0.993,
+      "failedMust": []
+    }
+  ]
+}

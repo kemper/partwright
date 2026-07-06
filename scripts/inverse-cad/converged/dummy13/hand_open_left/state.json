@@ -1,0 +1,47 @@
+{
+  "part": "hand_open_left",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.2840115621190986,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 1/2 SHOULD"
+  },
+  "strategiesTried": [
+    "single-x-extrusion (v1): EXHAUSTED, do not retry",
+    "coarse-z-slice-stack bootstrap: superseded",
+    "fine-z-slice-stack (0.4mm) + ledge snap (0.0/2.5/5.25) + 0.01 eps overlap + socket sphere r2.9: CONVERGED (attempt 1, score 0.284)"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap (slice-stack)",
+      "verdict": "improved",
+      "score": 3.5266,
+      "phase": "place",
+      "chamfer": 0.2186,
+      "hausdorff": 2.1942,
+      "volumeIoU": 0.7187,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "topology",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "grip recipe transfer: uniform 0.4mm Z bands, ledge snap at 0.0/2.5/5.25, 0.01 eps overlap, probed socket sphere r2.9@origin",
+      "verdict": "improved",
+      "score": 0.284,
+      "phase": "done",
+      "chamfer": 0.0235,
+      "hausdorff": 0.1981,
+      "volumeIoU": 0.9635,
+      "failedMust": []
+    }
+  ]
+}

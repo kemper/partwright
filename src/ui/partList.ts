@@ -6,6 +6,8 @@
 import { getState, onStateChange, type SessionState, type Part, type Version } from '../storage/sessionManager';
 import { getLatestVersion } from '../storage/db';
 import { confirmDialog } from './dialogs';
+import { openPartsOverview } from './partsOverview';
+import { registerCommands } from './commandPalette';
 
 export interface PartListCallbacks {
   /** Switch the active part (loads its latest version into the editor). */
@@ -46,6 +48,16 @@ let lastClickedId: string | null = null;
 export function createPartList(container: HTMLElement, callbacks: PartListCallbacks): void {
   railEl = container;
   cb = callbacks;
+  registerCommands([
+    {
+      id: 'parts.overview',
+      title: 'Show all parts (overview)',
+      hint: 'Parts',
+      keywords: 'grid contact sheet preview thumbnails every part',
+      enabled: () => getState().parts.length > 0,
+      run: () => { openPartsOverview((id) => cb.onSelectPart(id)); },
+    },
+  ]);
   render(getState());
   onStateChange((state) => {
     if (dragging) { pendingRender = true; return; }
@@ -82,6 +94,15 @@ function render(state: SessionState): void {
   title.className = 'text-[11px] font-semibold uppercase tracking-wide text-zinc-500 flex-1 truncate';
   title.textContent = 'Parts';
   header.appendChild(title);
+
+  const overviewBtn = iconBtn('▦', 'Overview of all parts');
+  overviewBtn.id = 'btn-parts-overview';
+  overviewBtn.disabled = !state.session;
+  if (!state.session) overviewBtn.classList.add('opacity-30', 'cursor-default');
+  overviewBtn.addEventListener('click', () => {
+    if (state.session) openPartsOverview((id) => cb.onSelectPart(id));
+  });
+  header.appendChild(overviewBtn);
 
   const addBtn = iconBtn('＋', 'Add a new part');
   addBtn.id = 'btn-add-part';

@@ -1,0 +1,45 @@
+{
+  "part": "armor_head",
+  "target": "target.stl",
+  "phase": "done",
+  "best": {
+    "attempt": 1,
+    "score": 0.09638906522704993,
+    "failedMust": 0,
+    "gates": "6/6 MUST, 2/2 SHOULD"
+  },
+  "strategiesTried": [
+    "deterministic z-band bootstrap (silhouette only, 1/6)",
+    "5.25 levelSet section-interpolation via stock genLevelSet step 0.1 dp 0.02 edge 0.1 -> CONVERGED 6/6+2/2"
+  ],
+  "attempts": [
+    {
+      "id": 0,
+      "note": "deterministic bootstrap",
+      "verdict": "improved",
+      "score": 3.425,
+      "phase": "silhouette",
+      "chamfer": 0.2173,
+      "hausdorff": 2.8289,
+      "volumeIoU": 0.8603,
+      "failedMust": [
+        "hausdorff P99",
+        "hausdorff max",
+        "volume IoU",
+        "worst finding",
+        "volume ratio"
+      ]
+    },
+    {
+      "id": 1,
+      "note": "census 2278 tris -> 1394 planes (> tris/2, curved fans): 5.26a routes to 5.25 stock genLevelSet step 0.1 dp 0.02 edge 0.1",
+      "verdict": "improved",
+      "score": 0.0964,
+      "phase": "done",
+      "chamfer": 0.0048,
+      "hausdorff": 0.1284,
+      "volumeIoU": 0.9957,
+      "failedMust": []
+    }
+  ]
+}

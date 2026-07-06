@@ -1,0 +1,188 @@
+{
+  "ok": true,
+  "attempt": 2,
+  "note": "levelSet generator, pure banded (--min-stable 1000) since the smooth path is numerically unstable for this shape's dense wrist/palm contour, step 0.1 (issue #884)",
+  "score": 0.21876,
+  "phase": "done",
+  "distance": {
+    "method": "point-to-triangle-bvh",
+    "samples": 20000,
+    "chamfer": 0.01419,
+    "hausdorff": 0.09398,
+    "rms": 0.02233,
+    "candToTarget": {
+      "mean": 0.01602,
+      "rms": 0.02438,
+      "max": 0.09398,
+      "p50": 0.0092,
+      "p90": 0.05,
+      "p99": 0.06925,
+      "meanSigned": 0.01172,
+      "excessArea_mm2": 57.83175,
+      "missingArea_mm2": 0
+    },
+    "targetToCand": {
+      "mean": 0.01236,
+      "rms": 0.02007,
+      "max": 0.08139,
+      "p50": 0.00577,
+      "p90": 0.04149,
+      "p99": 0.05,
+      "meanSigned": -0.00937,
+      "excessArea_mm2": 0,
+      "missingArea_mm2": 32.46704
+    }
+  },
+  "voxel": {
+    "grid": {
+      "res": 0.15,
+      "min": [
+        -5.189,
+        -2.52228,
+        -2.8
+      ],
+      "size": [
+        100,
+        121,
+        60
+      ]
+    },
+    "volumeIoU": 0.97627,
+    "excess_mm3": 7.23937,
+    "missing_mm3": 1.56262,
+    "targetVol_mm3": 363.69,
+    "candVol_mm3": 369.36675,
+    "findings": [
+      {
+        "id": "F1",
+        "sign": "excess",
+        "volume_mm3": 2.565,
+        "centroid": [
+          0.00495,
+          1.37634,
+          2.5177
+        ],
+        "bbox": {
+          "min": [
+            -3.839,
+            -1.77228,
+            2.15
+          ],
+          "max": [
+            3.811,
+            3.77772,
+            2.6
+          ]
+        },
+        "relCentroid": [
+          0.34062,
+          0.20582,
+          0.60422
+        ],
+        "extent_mm": [
+          7.65,
+          5.55,
+          0.45
+        ],
+        "thickness_mm": 0.15,
+        "classification": "thin-skin",
+        "hint": "candidate has material here that the target does not (protrusion too large or missing cut)"
+      }
+    ],
+    "totalFindings": 1,
+    "discardedVolume_mm3": 0
+  },
+  "gates": {
+    "pass": true,
+    "must": [
+      {
+        "name": "hausdorff P99",
+        "value": 0.0692,
+        "threshold": "<= 0.4mm",
+        "pass": true,
+        "why": "a small feature is missing or badly misplaced"
+      },
+      {
+        "name": "hausdorff max",
+        "value": 0.094,
+        "threshold": "<= 0.8mm",
+        "pass": true,
+        "why": "at least one point of one mesh is far from the other"
+      },
+      {
+        "name": "volume IoU",
+        "value": 0.9763,
+        "threshold": ">= 0.95",
+        "pass": true,
+        "why": "the solids overlap poorly — mass is in the wrong place"
+      },
+      {
+        "name": "worst finding",
+        "value": 2.565,
+        "threshold": "<= 4mm³",
+        "pass": true,
+        "why": "a localized blob of disagreement (F1: excess 2.6mm³ at rel [0.34, 0.21, 0.60], thin-skin)"
+      },
+      {
+        "name": "topology",
+        "value": "genus 0/0, components 1/1",
+        "threshold": "equal",
+        "pass": true,
+        "why": "missing/extra holes or pieces — the loudest visual defect, nearly invisible to chamfer"
+      },
+      {
+        "name": "volume ratio",
+        "value": 1.0173,
+        "threshold": "1 ± 0.02",
+        "pass": true,
+        "why": "net material error (hidden internal geometry, wrong wall thickness)"
+      }
+    ],
+    "should": [
+      {
+        "name": "chamfer",
+        "value": 0.0142,
+        "threshold": "<= 0.12mm",
+        "pass": true,
+        "why": "overall polish"
+      },
+      {
+        "name": "area ratio",
+        "value": 1.1875,
+        "threshold": "1 ± 0.04",
+        "pass": false,
+        "why": "missing fillets/texture shed area with little volume change"
+      }
+    ],
+    "failed": [],
+    "summary": "6/6 MUST, 1/2 SHOULD"
+  },
+  "candidate": {
+    "componentCount": 1,
+    "genus": 0,
+    "volume": 370.39649,
+    "surfaceArea": 669.34901,
+    "bbox": {
+      "min": [
+        -4.889,
+        -2.222,
+        -2.5
+      ],
+      "max": [
+        9.463,
+        15.262,
+        5.85
+      ],
+      "size": [
+        14.352,
+        17.484,
+        8.35
+      ],
+      "center": [
+        2.287,
+        6.52,
+        1.675
+      ]
+    }
+  }
+}
