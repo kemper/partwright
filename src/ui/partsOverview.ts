@@ -23,13 +23,20 @@ export function openPartsOverview(
   const state = getState();
   if (!state.session || state.parts.length === 0) return false;
 
-  // Object URLs created for tile images; revoked when the modal closes.
+  // Object URLs created for tile images; revoked when the modal closes. The
+  // `closed` flag covers thumbnails that resolve AFTER a fast close (Escape
+  // before a 37-part kit finishes loading) — those never enter `urls`, so
+  // they must not be created at all once the modal is gone.
   const urls: string[] = [];
+  let closed = false;
   const shell = createModalShell({
     title: `All parts (${state.parts.length})`,
     widthClass: 'max-w-lg sm:max-w-3xl lg:max-w-5xl',
     scrollable: true,
-    onClose: () => { for (const u of urls) URL.revokeObjectURL(u); },
+    onClose: () => {
+      closed = true;
+      for (const u of urls) URL.revokeObjectURL(u);
+    },
   });
 
   const grid = document.createElement('div');
@@ -68,7 +75,7 @@ export function openPartsOverview(
 
     // Fill the thumbnail asynchronously from the part's latest saved version.
     void getLatestVersion(part.id).then((v) => {
-      if (!v?.thumbnail) return;
+      if (closed || !v?.thumbnail) return;
       const url = URL.createObjectURL(v.thumbnail);
       urls.push(url);
       const img = document.createElement('img');
