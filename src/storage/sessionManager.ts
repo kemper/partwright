@@ -23,6 +23,7 @@ import {
   listParts as dbListParts,
   updatePart as dbUpdatePart,
   updatePartOrders as dbUpdatePartOrders,
+  updatePartGroups as dbUpdatePartGroups,
   deletePart as dbDeletePart,
   deleteParts as dbDeleteParts,
   addNote as dbAddNote,
@@ -191,8 +192,12 @@ import { appPath } from '../deployment';
  *           on the next export); consumers that only *read* payloads (the
  *           catalog tile) prefer it over the last version's thumbnail.
  *           Additive; older readers ignore it.
+ *  - `1.19` — parts gain an optional `group` name (`parts[].group`). Parts
+ *           sharing a group are threaded together under a collapsible header in
+ *           the part list. Additive; older readers ignore it (parts import
+ *           ungrouped).
  */
-export const SCHEMA_VERSION = '1.18';
+export const SCHEMA_VERSION = '1.19';
 
 const CURRENT_MAJOR = 1;
 
@@ -234,9 +239,11 @@ export interface ExportedSession {
   /**
    * The session's parts, ordered by `order`. Present from schema 1.7. Pre-1.7
    * files omit this; on import they collapse into a single default part.
+   * `group` (1.19+) threads same-group parts under a collapsible header in the
+   * part list; absent ⇒ ungrouped.
    * @since 1.7
    */
-  parts?: { name: string; order: number }[];
+  parts?: { name: string; order: number; group?: string }[];
   versions: {
     index: number;
     code: string;
@@ -1104,24 +1111,50 @@ export async function deleteParts(partIds: string[]): Promise<DeletePartsResult 
   return { deletedIds: [...deletedSet], newCurrent: null };
 }
 
+/** One entry of a reorder layout: a part id, optionally reassigned to a group.
+ *  A missing `group` leaves the part's existing group untouched (order-only
+ *  reorder); an explicit `null`/`''` clears it (drop into the ungrouped area);
+ *  a string moves the part into that group (drop into a group's region). */
+export type PartLayoutEntry = string | { id: string; group?: string | null };
+
+function layoutId(e: PartLayoutEntry): string { return typeof e === 'string' ? e : e.id; }
+
 /**
- * Persist a new display order for the active session's parts. `orderedIds` is
- * the full list of part ids, first = top. Ids not present are appended in their
- * existing relative order (defensive). No-op without an active session.
+ * Persist a new display order (and optional group reassignment) for the active
+ * session's parts. `layout` is the full list of part ids, first = top — each
+ * either a bare id (order only) or `{ id, group }` (also reassign the group).
+ * Ids not present are appended in their existing relative order (defensive).
+ * No-op without an active session.
  */
-export async function reorderParts(orderedIds: string[]): Promise<void> {
+export async function reorderParts(layout: PartLayoutEntry[]): Promise<void> {
   if (!currentState.session) return;
+  const groupById = new Map<string, string | null | undefined>();
+  for (const e of layout) if (typeof e !== 'string') groupById.set(e.id, e.group);
+
   const byId = new Map(currentState.parts.map(p => [p.id, p]));
   const ordered: Part[] = [];
-  for (const id of orderedIds) {
-    const p = byId.get(id);
-    if (p) { ordered.push(p); byId.delete(id); }
+  for (const e of layout) {
+    const p = byId.get(layoutId(e));
+    if (p) { ordered.push(p); byId.delete(p.id); }
   }
   // Any parts the caller didn't mention keep their relative order at the end.
   for (const p of currentState.parts) if (byId.has(p.id)) ordered.push(p);
 
-  const next = ordered.map((p, i) => ({ ...p, order: i }));
-  await dbUpdatePartOrders(next.map(p => ({ id: p.id, order: p.order })));
+  const applyGroup = (p: Part): Part => {
+    if (!groupById.has(p.id)) return p;
+    const g = groupById.get(p.id);
+    const next = { ...p };
+    if (g && g.trim()) next.group = g.trim();
+    else delete next.group;
+    return next;
+  };
+
+  const next = ordered.map((p, i) => ({ ...applyGroup(p), order: i }));
+  await dbUpdatePartOrders(next.map(p => ({
+    id: p.id,
+    order: p.order,
+    ...(groupById.has(p.id) ? { group: p.group ?? null } : {}),
+  })));
 
   currentState = {
     ...currentState,
@@ -1132,6 +1165,40 @@ export async function reorderParts(orderedIds: string[]): Promise<void> {
   };
   broadcastPartChange();
   updateURL();
+  notify();
+}
+
+/**
+ * Assign (or clear) the group name of one or more parts. `group` of `null`/`''`
+ * ungroups them. Only touches the `group` field — order and version history are
+ * untouched. No-op without an active session or when no id matches.
+ */
+export async function setPartGroup(partIds: string[], group: string | null): Promise<void> {
+  if (!currentState.session) return;
+  const idSet = new Set(partIds);
+  const targets = currentState.parts.filter(p => idSet.has(p.id));
+  if (targets.length === 0) return;
+
+  const clean = group && group.trim() ? group.trim() : null;
+  const now = Date.now();
+  // One transaction for the whole selection so a multi-part group action is
+  // atomic (never leaves half the selection grouped on an interruption).
+  await dbUpdatePartGroups(targets.map(p => p.id), clean);
+
+  const next = currentState.parts.map(p => {
+    if (!idSet.has(p.id)) return p;
+    const updated = { ...p, updated: now };
+    if (clean) updated.group = clean; else delete updated.group;
+    return updated;
+  });
+  currentState = {
+    ...currentState,
+    parts: next,
+    currentPart: currentState.currentPart
+      ? next.find(p => p.id === currentState.currentPart!.id) ?? currentState.currentPart
+      : null,
+  };
+  broadcastPartChange();
   notify();
 }
 
@@ -1921,7 +1988,7 @@ export async function exportSession(
     partwright: SCHEMA_VERSION,
     ...(stampedAppVersion ? { appVersion: stampedAppVersion } : {}),
     session: { name: session.name, created: session.created, updated: session.updated, attachments: session.attachments ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}), ...(session.workCamera ? { workCamera: session.workCamera } : {}), ...(compositeThumbnail ? { compositeThumbnail } : {}) },
-    parts: parts.map(p => ({ name: p.name, order: p.order })),
+    parts: parts.map(p => ({ name: p.name, order: p.order, ...(p.group ? { group: p.group } : {}) })),
     versions: flat.map(({ v, partOrder }, i) => {
       const colorRegions = opts.includeColorRegions ? extractColorRegions(v.geometryData) : undefined;
       const geometryData = opts.includeColorRegions ? v.geometryData : stripColorRegions(v.geometryData);
@@ -2030,7 +2097,7 @@ export async function importSession(
   let firstPartId = '';
   for (let i = 0; i < partDefs.length; i++) {
     const def = partDefs[i];
-    const part = await dbCreatePart(session.id, (def.name && def.name.trim()) || `Part ${i + 1}`, i);
+    const part = await dbCreatePart(session.id, (def.name && def.name.trim()) || `Part ${i + 1}`, i, def.group);
     orderToPartId.set(def.order, part.id);
     if (i === 0) firstPartId = part.id;
   }
@@ -2270,6 +2337,7 @@ export async function importSessionPartsIntoActive(
       sessionId,
       uniquePartName(def.name ?? '', taken, nextOrder),
       nextOrder++,
+      def.group,
     );
     addedParts.push(part);
 

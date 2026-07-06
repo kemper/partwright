@@ -1,5 +1,5 @@
 {
-  "partwright": "1.18",
+  "partwright": "1.19",
   "appVersion": "1.3.0",
   "session": {
     "name": "Dummy 13 — Complete Kit",
@@ -15,151 +15,188 @@
   "parts": [
     {
       "name": "hips",
-      "order": 0
+      "order": 0,
+      "group": "Frame"
     },
     {
       "name": "waist",
-      "order": 1
+      "order": 1,
+      "group": "Frame"
     },
     {
       "name": "abdomen",
-      "order": 2
+      "order": 2,
+      "group": "Frame"
     },
     {
       "name": "chest",
-      "order": 3
+      "order": 3,
+      "group": "Frame"
     },
     {
       "name": "head",
-      "order": 4
+      "order": 4,
+      "group": "Frame"
     },
     {
       "name": "neck",
-      "order": 5
+      "order": 5,
+      "group": "Frame"
     },
     {
       "name": "clavicle x2",
-      "order": 6
+      "order": 6,
+      "group": "Frame"
     },
     {
       "name": "hip/shoulder bridge x4",
-      "order": 7
+      "order": 7,
+      "group": "Frame"
     },
     {
       "name": "knee/elbow bridge x4",
-      "order": 8
+      "order": 8,
+      "group": "Frame"
     },
     {
       "name": "ankle x2",
-      "order": 9
+      "order": 9,
+      "group": "Frame"
     },
     {
       "name": "thigh x2",
-      "order": 10
+      "order": 10,
+      "group": "Frame"
     },
     {
       "name": "shin x2",
-      "order": 11
+      "order": 11,
+      "group": "Frame"
     },
     {
       "name": "upper arm x2",
-      "order": 12
+      "order": 12,
+      "group": "Frame"
     },
     {
       "name": "forearm x2",
-      "order": 13
+      "order": 13,
+      "group": "Frame"
     },
     {
       "name": "fist hand L",
-      "order": 14
+      "order": 14,
+      "group": "Frame"
     },
     {
       "name": "fist hand R",
-      "order": 15
+      "order": 15,
+      "group": "Frame"
     },
     {
       "name": "grip hand L",
-      "order": 16
+      "order": 16,
+      "group": "Frame"
     },
     {
       "name": "grip hand R",
-      "order": 17
+      "order": 17,
+      "group": "Frame"
     },
     {
       "name": "open hand L",
-      "order": 18
+      "order": 18,
+      "group": "Frame"
     },
     {
       "name": "open hand R",
-      "order": 19
+      "order": 19,
+      "group": "Frame"
     },
     {
       "name": "adapter stand",
-      "order": 20
+      "order": 20,
+      "group": "Frame"
     },
     {
       "name": "head armor",
-      "order": 21
+      "order": 21,
+      "group": "Armor"
     },
     {
       "name": "neck armor",
-      "order": 22
+      "order": 22,
+      "group": "Armor"
     },
     {
       "name": "inner chest armor",
-      "order": 23
+      "order": 23,
+      "group": "Armor"
     },
     {
       "name": "abdomen armor",
-      "order": 24
+      "order": 24,
+      "group": "Armor"
     },
     {
       "name": "waist armor",
-      "order": 25
+      "order": 25,
+      "group": "Armor"
     },
     {
       "name": "crotch armor",
-      "order": 26
+      "order": 26,
+      "group": "Armor"
     },
     {
       "name": "shoulder armor x2",
-      "order": 27
+      "order": 27,
+      "group": "Armor"
     },
     {
       "name": "upper arm armor x2",
-      "order": 28
+      "order": 28,
+      "group": "Armor"
     },
     {
       "name": "forearm armor x2",
-      "order": 29
+      "order": 29,
+      "group": "Armor"
     },
     {
       "name": "hip armor x2",
-      "order": 30
+      "order": 30,
+      "group": "Armor"
     },
     {
       "name": "thigh armor x2",
-      "order": 31
+      "order": 31,
+      "group": "Armor"
     },
     {
       "name": "knee armor x2",
-      "order": 32
+      "order": 32,
+      "group": "Armor"
     },
     {
       "name": "shin armor x2",
-      "order": 33
+      "order": 33,
+      "group": "Armor"
     },
     {
       "name": "foot armor x2",
-      "order": 34
+      "order": 34,
+      "group": "Armor"
     },
     {
       "name": "toe armor x2",
-      "order": 35
+      "order": 35,
+      "group": "Armor"
     },
     {
       "name": "outer chest armor",
-      "order": 36
+      "order": 36,
+      "group": "Armor"
     }
   ],
   "versions": [

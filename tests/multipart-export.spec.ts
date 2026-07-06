@@ -174,4 +174,45 @@ test.describe('multi-part OBJ / STL / GLB export', () => {
     // Painted? No — plain cubes → plain .obj. Either way the multi-part OBJ path ran.
     expect(download!.suggestedFilename()).toMatch(/\.(obj|zip)$/);
   });
+
+  test('export part picker lists parts by group and toggles whole groups', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForFunction(
+      () => !!(window as unknown as { partwright?: { setPartGroup?: unknown } }).partwright?.setPartGroup,
+      { timeout: 20_000 },
+    );
+
+    // A 3-part session: one ungrouped part plus a two-member "Armor" group.
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      (await import('/src/geometry/units.ts')).setUnits('mm');
+      await pw.runAndSave('return api.Manifold.cube([10,10,10], true);', 'base');
+      await pw.createPart('Helmet');
+      await pw.runAndSave('return api.Manifold.cube([8,8,8], true);', 'h');
+      await pw.createPart('Greaves');
+      await pw.runAndSave('return api.Manifold.cube([6,6,6], true);', 'g');
+      await pw.setPartGroup(['Helmet', 'Greaves'], 'Armor');
+    });
+    await page.waitForTimeout(1000);
+
+    await page.locator('#btn-export').click();
+    await page.locator('#export-dropdown').getByText('OBJ', { exact: true }).click();
+
+    const modal = page.getByRole('dialog');
+    await expect(modal.getByText(/Export parts to OBJ/i)).toBeVisible({ timeout: 10000 });
+
+    // The Armor group renders as a header with a whole-group checkbox + count.
+    const groupHeader = modal.locator('[data-export-group="Armor"]');
+    await expect(groupHeader).toHaveCount(1);
+    const groupCb = groupHeader.locator('input[type="checkbox"]');
+
+    // Selecting the group checks both members (header count 2/2).
+    await groupCb.check();
+    await expect(groupHeader).toContainText('2/2');
+
+    // Deselecting the group unchecks both members (0/2), and the total drops to
+    // just the one ungrouped part that was preselected as "currently viewing".
+    await groupCb.click();
+    await expect(groupHeader).toContainText('0/2');
+  });
 });

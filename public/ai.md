@@ -385,12 +385,13 @@ await partwright.clearAllSessions()      // Delete all sessions & versions
 // and its lid); save them as separate STLs/parts, or model each in isolation.
 // Address a part by its name, its id, or its 0-based index (changePart/
 // renamePart/deletePart all accept any of the three).
-partwright.listParts()                   // -> [{id, name, order, isCurrent}]
+partwright.listParts()                   // -> [{id, name, order, group?, isCurrent}]
 partwright.showPartsOverview()           // Open the all-parts thumbnail overview (contact sheet; click a tile to switch part)
-partwright.getCurrentPart()              // -> {id, name, order} or null
+partwright.getCurrentPart()              // -> {id, name, order, group?} or null
 await partwright.createPart(name?)       // New empty part + switch to it -> {id, name, order}
 await partwright.changePart(name|id|index)   // Switch active part (loads its latest version)
 await partwright.renamePart(name|id|index, newName)  // Rename a part
+await partwright.setPartGroup(target|target[], group|null)  // Thread parts under a collapsible group header in the part list (null/'' ungroups) -> {grouped, group}
 await partwright.deletePart(name|id|index)   // Delete a part + its versions (refuses the last one)
 
 // Color regions -- tag face regions with a color. Full API in /ai/colors.md.
