@@ -91,6 +91,30 @@ getAssembly()` console methods + `help()` entries + an `#assembly-view` ai.md
 section; pool size and grid gutter are `appConfig` knobs surfaced in the
 Advanced Settings modal (never hardcoded).
 
+### Review follow-ups (work-reviewer pass on the draft PR)
+
+Three should-fix findings, all addressed:
+
+- **Pool init-failure loop** (`enginePool.ts`): a worker that failed `init`
+  respawned unbounded while queued `buildInPool` promises hung forever. Added a
+  respawn budget (`targetPoolSize()*2 + 2`) reset whenever any worker reaches
+  `ready`; once exhausted with no healthy worker, the pool drains (rejects) the
+  queue instead of respawning.
+- **Out-of-order live-preview rebuilds** (`assemblyView.ts`): a slider drag fires
+  many rebuilds of the same part that could resolve out of order and leave a
+  stale mesh. Added a per-part monotonic `buildSeq`; a resolved build is dropped
+  unless it's still the latest dispatched one. Unified the initial-build and
+  rebuild paths into one `buildPart(rec)`.
+- **Stale records when parts change while open** (`assemblyView.ts` + `main.ts`):
+  `saveSharedParams` now skips parts no longer in `getState()` (no dangling
+  version writes), and `main` closes the view when the part-id signature changes
+  (add/delete/reorder), not just when the count drops to one.
+
+Plus nits: fixed the `ai.md` toggle glyph (▦→⧉, ▦ is the separate Overview) and
+a redundant `setSaving` line.
+
+### Original browser verification
+
 Verified in a real browser (Playwright spec → screenshots): a 3-part session
 (Box, Sphere, Cylinder; Box+Sphere share `size`) lays out non-overlapping with
 labels, the union panel shows the correct "affects N parts" counts, and dragging

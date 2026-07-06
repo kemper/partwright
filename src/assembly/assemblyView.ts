@@ -63,6 +63,9 @@ interface PartRecord {
   /** Latest footprint, 0 until built (so pending cells still separate). */
   footprint: PartFootprint;
   placed: boolean;
+  /** Monotonic build token — a slider drag can fire several rebuilds of the same
+   *  part that resolve out of order; only the latest dispatched one is applied. */
+  buildSeq: number;
 }
 
 let open = false;
@@ -138,31 +141,41 @@ export async function openAssemblyView(h: AssemblyHost): Promise<void> {
       schema: [],
       footprint: { id: parts[i].id, width: 0, depth: 0 },
       placed: false,
+      buildSeq: 0,
     });
   }
 
   // Build each part: seed the current part instantly, pool-build the rest.
-  await Promise.all(records.map(async (rec) => {
+  await Promise.all(records.map((rec) => {
     const seeded = host?.seedMesh?.(rec.versionId) ?? null;
     if (seeded) {
+      rec.buildSeq++; // claim the slot so a stale pool build can't override the seed
       onPartBuilt(gen, rec, seeded, host?.seedSchema?.(rec.versionId) ?? undefined);
-      return;
+      return Promise.resolve();
     }
-    try {
-      const res = await buildInPool({
-        code: rec.code, lang: rec.lang, params: rec.values,
-        imports: rec.imports, companionFiles: rec.companionFiles,
-      });
-      if (gen !== generation) return;
-      if (res.mesh) onPartBuilt(gen, rec, res.mesh, res.paramsSchema);
-      else if (res.paramsSchema) rec.schema = res.paramsSchema;
-    } catch {
-      /* build failed or pool disposed — leave the cell empty */
-    }
+    return buildPart(rec);
   }));
   if (gen !== generation) return;
   refreshSharedParams();
   frameAssembly();
+}
+
+/** Build (or rebuild) one part through the pool and place it, dropping the
+ *  result if a newer build of the same part was dispatched or the view closed. */
+async function buildPart(rec: PartRecord): Promise<void> {
+  const gen = generation;
+  const seq = ++rec.buildSeq;
+  try {
+    const res = await buildInPool({
+      code: rec.code, lang: rec.lang, params: rec.values,
+      imports: rec.imports, companionFiles: rec.companionFiles,
+    });
+    if (gen !== generation || rec.buildSeq !== seq) return; // superseded
+    if (res.mesh) onPartBuilt(gen, rec, res.mesh, res.paramsSchema);
+    else if (res.paramsSchema) rec.schema = res.paramsSchema;
+  } catch {
+    /* build failed or pool disposed — leave the previous mesh / empty cell */
+  }
 }
 
 function languageOf(v: Version): Language {
@@ -207,26 +220,12 @@ function refreshSharedParams(): void {
 /** A shared widget changed — apply it to every part that declares the key and
  *  rebuild those parts (live preview). */
 function applySharedChange(key: string, value: ParamValue): void {
-  const gen = generation;
   const affected = records.filter(r => r.schema.some(s => s.key === key));
   for (const rec of affected) {
     rec.values = { ...rec.values, [key]: value };
-    void rebuildPart(gen, rec);
+    void buildPart(rec);
   }
   panel?.setDirty(isDirty());
-}
-
-async function rebuildPart(gen: number, rec: PartRecord): Promise<void> {
-  try {
-    const res = await buildInPool({
-      code: rec.code, lang: rec.lang, params: rec.values,
-      imports: rec.imports, companionFiles: rec.companionFiles,
-    });
-    if (gen !== generation || !res.mesh) return;
-    onPartBuilt(gen, rec, res.mesh, res.paramsSchema);
-  } catch {
-    /* rebuild failed — keep the previous mesh in place */
-  }
 }
 
 function isDirty(): boolean {
@@ -250,9 +249,14 @@ async function saveSharedParams(): Promise<void> {
   }
   panel?.setSaving(true);
   const gen = generation;
+  // Only write to parts that still exist — a part could have been deleted in
+  // another tab while the view was open, and writing its (now-orphaned) version
+  // would be a dangling update.
+  const liveParts = new Set(getState().parts.map(p => p.id));
   let saved = 0;
   try {
     for (const rec of records) {
+      if (!liveParts.has(rec.partId)) continue;
       const base = baseline.get(rec.partId) ?? {};
       const pruned = pruneParamValues(rec.schema, rec.values);
       if (JSON.stringify(pruned) === JSON.stringify(pruneKeys(base, rec.schema))) continue;

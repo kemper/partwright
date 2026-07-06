@@ -554,7 +554,7 @@ return Manifold.cube([p.width, p.width, p.rows * 10], true);
 
 ### Assembly view
 
-A session can hold **multiple parts** (each with its own code, version history, and parameters). The **Assembly view** shows them all at once, laid out in a non-overlapping grid in the interactive viewport — handy for seeing a whole set of components together. Open it from the **▦ button above the part list** or the **"▦ All parts" toggle in the viewport** (both appear only when the session has ≥ 2 parts), or drive it from the console:
+A session can hold **multiple parts** (each with its own code, version history, and parameters). The **Assembly view** shows them all at once, laid out in a non-overlapping grid in the interactive viewport — handy for seeing a whole set of components together. Open it from the **⧉ button above the part list** or the **"⧉ All parts" toggle in the viewport** (both appear only when the session has ≥ 2 parts; the separate ▦ button is the static thumbnail Overview), or drive it from the console:
 
 ```js
 await partwright.openAssembly()   // build every part in parallel, fill the grid progressively

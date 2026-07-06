@@ -401,6 +401,14 @@ let paramsPanel: ParamsPanelController | null = null;
 // are module-scoped so the console API (partwright.openAssembly) can drive them.
 let assemblyMount: HTMLElement | null = null;
 let assemblyToggleBtn: HTMLButtonElement | null = null;
+// The part-id set the Assembly view opened against. If the session's parts
+// change while the view is open (a part added/deleted/reordered in this or
+// another tab), the in-memory grid + shared-param records go stale — so we close
+// the view rather than show/save against a set that no longer matches.
+let assemblyOpenSig: string | null = null;
+function partsSignature(): string {
+  return getState().parts.map(p => p.id).join(',');
+}
 
 function syncAssemblyToggle(open: boolean): void {
   if (!assemblyToggleBtn) return;
@@ -418,6 +426,7 @@ async function openAssembly(): Promise<void> {
     return;
   }
   syncAssemblyToggle(true);
+  assemblyOpenSig = partsSignature();
   paramsPanel?.close(); // the assembly view has its own shared-parameter panel
   await openAssemblyView({
     mount: assemblyMount,
@@ -427,6 +436,7 @@ async function openAssembly(): Promise<void> {
     seedMesh: (versionId) => (getState().currentVersion?.id === versionId ? currentMeshData : null),
     seedSchema: (versionId) => (getState().currentVersion?.id === versionId ? currentParamSchema : null),
     onClosed: () => {
+      assemblyOpenSig = null;
       syncAssemblyToggle(false);
       resetView(); // re-frame the restored single-part model
     },
@@ -7178,7 +7188,12 @@ async function main() {
   // single-part sessions). Also close the view if the session drops to one part.
   onStateChange((state) => {
     const multi = !!(state.session && state.parts.length > 1);
-    if (!multi && isAssemblyViewOpen()) { closeAssembly(); return; }
+    // Close the view if it can no longer be shown (dropped to one part) or if the
+    // set of parts changed out from under it (add/delete/reorder → stale records).
+    if (isAssemblyViewOpen() && (!multi || partsSignature() !== assemblyOpenSig)) {
+      closeAssembly();
+      return;
+    }
     if (!isAssemblyViewOpen()) syncAssemblyToggle(false);
   });
   document.addEventListener('keydown', (e) => {

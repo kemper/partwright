@@ -58,6 +58,12 @@ interface PoolWorker {
 let workers: PoolWorker[] = [];
 const queue: Job[] = [];
 let callCounter = 0;
+// Respawn budget so a worker that keeps failing to boot (e.g. WASM init fault)
+// can't spin an unbounded respawn loop while queued jobs hang forever. Reset to
+// 0 whenever any worker reaches `ready`; once it's exhausted AND no worker is
+// ready, the pool gives up and rejects the queue instead of respawning.
+let respawns = 0;
+function maxRespawns(): number { return targetPoolSize() * 2 + 2; }
 
 /** How many workers to run — config, clamped to available cores and ≥ 1. */
 function targetPoolSize(): number {
@@ -91,8 +97,20 @@ function replaceWorker(dead: PoolWorker): void {
   const idx = workers.indexOf(dead);
   if (idx === -1) return; // already disposed
   try { dead.worker.terminate(); } catch { /* already gone */ }
+  // If we've burned through the respawn budget and no worker is healthy, the
+  // pool can't build anything — reject the queue rather than respawn forever.
+  if (respawns++ >= maxRespawns() && !workers.some(w => w !== dead && w.ready)) {
+    workers.splice(idx, 1);
+    drainQueue(new Error('Assembly build workers failed to initialise'));
+    return;
+  }
   workers[idx] = spawnWorker();
   pump();
+}
+
+/** Reject every queued (not-yet-dispatched) job — used when the pool gives up. */
+function drainQueue(err: Error): void {
+  for (const job of queue.splice(0)) job.reject(err);
 }
 
 function ensureWorkers(): void {
@@ -103,6 +121,7 @@ function ensureWorkers(): void {
 function handleMessage(pw: PoolWorker, msg: Record<string, unknown>): void {
   if (msg.type === 'ready') {
     pw.ready = true;
+    respawns = 0; // a healthy worker resets the give-up budget
     pump();
     return;
   }
@@ -200,4 +219,5 @@ export function disposeEnginePool(): void {
   }
   for (const job of queue.splice(0)) job.reject(err);
   workers = [];
+  respawns = 0;
 }

@@ -109,7 +109,6 @@ export function createAssemblyParamsPanel(opts: AssemblyParamsPanelOptions): Ass
     setSaving(saving: boolean): void {
       saveBtn.disabled = saving;
       saveBtn.textContent = saving ? 'Saving…' : 'Save';
-      if (!saving) saveBtn.textContent = 'Save';
     },
   };
 }
