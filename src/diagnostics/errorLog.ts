@@ -22,6 +22,7 @@ export type ErrorSource =
   | 'export'
   | 'storage'
   | 'network'
+  | 'reconstruct'
   | 'app'
   | 'character'
   | 'uncaught';

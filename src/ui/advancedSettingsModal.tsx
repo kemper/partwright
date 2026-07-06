@@ -759,6 +759,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0.1} max={1} step={0.05}
           onChange={v => set('import', 'filamentConfidenceWarnThreshold', v)}
         />
+        <Field
+          label="Convert-to-code cell budget"
+          unit="cells"
+          hint="levelSet resolution budget for convertToCode at 'standard' quality."
+          tooltip="Converting a mesh import to code rebuilds it as a smooth levelSet whose grid resolution is derived from this sample budget (draft quality = ×0.25, fine = ×4). More cells = a smoother, more faithful remake but a slower build — build time is roughly proportional to this number. 6M ≈ ten seconds on a mid-size model."
+          defaultValue={APP_CONFIG_DEFAULTS.import.reconstructCellBudget}
+          value={c.import.reconstructCellBudget}
+          min={200_000} max={100_000_000} integer
+          onChange={v => set('import', 'reconstructCellBudget', v)}
+        />
+        <Field
+          label="Reconstruction eval samples"
+          unit="points"
+          hint="Surface samples per mesh for convertToCode / evalAgainstImport reports."
+          tooltip="The faithfulness report (chamfer/hausdorff) samples this many points on each surface and measures nearest-neighbor distances. More samples tighten the measurement's noise floor (reported as sampleSpacing) at the cost of a slower report."
+          defaultValue={APP_CONFIG_DEFAULTS.import.reconstructEvalSamples}
+          value={c.import.reconstructEvalSamples}
+          min={500} max={100_000} integer
+          onChange={v => set('import', 'reconstructEvalSamples', v)}
+        />
       </Section>
 
       <Section title="Geometry warnings">

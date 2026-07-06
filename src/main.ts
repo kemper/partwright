@@ -131,6 +131,8 @@ import { greedyMeshGrid } from './geometry/voxel/mesher';
 import { appendVoxelEditsToCode, editOpCount, formatSurfacingCall } from './geometry/voxel/editCodegen';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
+import { toTriangleSoup } from './reconstruct/meshComponents';
+import { generateCodeInWorker, evaluateInWorker } from './reconstruct/reconstructClient';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
 import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applyKnurl, applyKnurlPatch, applyVoronoi, applyVoronoiPatch, applyVoronoiLamp, buildEngraveResult, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultKnurlOptions, defaultVoronoiOptions, defaultVoronoiLampOptions, defaultEngraveOptions, defaultSmoothOptions, modelDiagonal, applyTransform, SdfAbortError, type ModifierResult, type EngraveProjection, type StampMask, type SdfRunControl } from './surface/modifiers';
 import { engraveInWorker } from './surface/engraveWorkerClient';
@@ -5824,6 +5826,7 @@ async function main() {
     // palette is the flat, searchable index of everything (keeps grouping cheap
     // for discoverability). Each fires the existing overlay button by id; click()
     // works even while the button sits inside a collapsed popover.
+    { id: 'convert-to-code', title: 'Convert model to code (reconstruct)', hint: 'Tools', keywords: 'reconstruct reverse engineer mesh stl import smooth remake parametric convert code', run: () => { void partwrightAPI.convertToCode(); }, enabled: () => currentMeshData !== null && getActiveLanguage() === 'manifold-js' },
     { id: 'tool-measure', title: 'Measure distance', hint: 'Inspect', keywords: 'distance ruler dimension length point', run: () => document.getElementById('measure-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-cross-section', title: 'Cross section', hint: 'Inspect', keywords: 'clip plane slice cut section interior', run: () => document.getElementById('clip-toggle')?.click(), enabled: viewportToolEnabled },
     { id: 'tool-paint', title: 'Paint colors', hint: 'Tools', keywords: 'color region brush bucket filament multicolor airbrush', run: () => document.getElementById('paint-toggle')?.click(), enabled: viewportToolEnabled },
@@ -9826,6 +9829,72 @@ async function main() {
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Voxelize the current model into the voxel engine; saves a new version. */
+    /** Convert the current model (typically a fresh STL import) into
+     *  self-contained editable manifold-js code — a smooth section-interpolated
+     *  remake with no dependency on the import — then run it, save a version,
+     *  and measure the remake against the source mesh. quality: 'draft'
+     *  (fastest) | 'standard' | 'fine' (smoothest); step/edge/dpTol override
+     *  the auto-derived resolution (world units, smaller = finer + slower). */
+    async convertToCode(opts?: { quality?: 'draft' | 'standard' | 'fine'; step?: number; edge?: number; dpTol?: number; samples?: number }) {
+      try {
+        if (!currentMeshData) return { error: 'No model loaded — run or import a mesh first' };
+        if (getActiveLanguage() !== 'manifold-js') {
+          // The generated code is manifold-js; converting a SCAD/BREP/voxel
+          // session would silently switch engines. Explicit error > silent bake.
+          return { error: `convertToCode requires a manifold-js session (active language: ${getActiveLanguage()})` };
+        }
+        const q = opts?.quality ?? 'standard';
+        if (!['draft', 'standard', 'fine'].includes(q)) return { error: `convertToCode: quality must be 'draft'|'standard'|'fine' (got ${String(q)})` };
+        for (const k of ['step', 'edge', 'dpTol', 'samples'] as const) {
+          const v = opts?.[k];
+          if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v <= 0)) {
+            return { error: `convertToCode: ${k} must be a positive, finite number (got ${String(v)})` };
+          }
+        }
+        const budget = Math.round(getConfig().import.reconstructCellBudget * (q === 'draft' ? 0.25 : q === 'fine' ? 4 : 1));
+        // Capture the source soup BEFORE the run replaces the model.
+        const source = toTriangleSoup(currentMeshData);
+        showToast('Analyzing sections…', { variant: 'neutral', source: 'reconstruct' });
+        const generated = await generateCodeInWorker(source, {
+          cellBudget: budget,
+          step: opts?.step,
+          edge: opts?.edge,
+          dpTol: opts?.dpTol,
+          sourceName: getActiveImports()[0]?.filename,
+        });
+        const saved = await partwrightAPI.runAndSave(generated.code, `convert to code (${q})`) as { error?: string; version?: unknown; geometry?: unknown };
+        if (saved.error) return { error: `generated code failed to run: ${saved.error}`, stats: generated.stats };
+        if (!currentMeshData) return { error: 'conversion ran but produced no mesh', stats: generated.stats };
+        const metrics = await evaluateInWorker(source, toTriangleSoup(currentMeshData), opts?.samples ?? getConfig().import.reconstructEvalSamples);
+        const fmt = (v: number) => Number(v.toPrecision(3));
+        void partwrightAPI.addSessionNote(
+          `[MEASUREMENT] convertToCode(${q}): chamfer=${fmt(metrics.chamfer)}, p99=${fmt(metrics.candToTarget.p99)}, max=${fmt(metrics.hausdorff)} (sampling noise floor ~${fmt(metrics.sampleSpacing)}); ${generated.stats.components} component(s), ${generated.stats.sections} sections, ${generated.stats.bandedSegments} banded segment(s)`,
+        );
+        for (const w of generated.stats.warnings) showToast(w, { variant: 'warn', source: 'reconstruct' });
+        showToast(`Converted to code — mean deviation ${fmt(metrics.chamfer)}, max ${fmt(metrics.hausdorff)}`, { variant: 'success', source: 'reconstruct' });
+        return { ok: true, stats: generated.stats, metrics, version: saved.version, geometry: saved.geometry };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Measure how close the current model is to imported mesh `index`
+     *  (default 0): chamfer (mean surface deviation) and hausdorff (worst
+     *  point) from matched point-cloud samples of both surfaces. Distances
+     *  below `sampleSpacing` are sampling noise, not real error; raise
+     *  `samples` for a tighter floor (slower). */
+    async evalAgainstImport(index?: number, opts?: { samples?: number }) {
+      try {
+        if (!currentMeshData) return { error: 'No model loaded' };
+        const imports = getActiveImports();
+        if (imports.length === 0) return { error: 'No imported meshes in this session — evalAgainstImport compares the current model against an import' };
+        const i = index ?? 0;
+        if (!Number.isInteger(i) || i < 0 || i >= imports.length) return { error: `evalAgainstImport: index must be an integer in 0..${imports.length - 1} (got ${String(index)})` };
+        const samples = opts?.samples;
+        if (samples !== undefined && (!Number.isInteger(samples) || samples < 100 || samples > 200000)) {
+          return { error: `evalAgainstImport: samples must be an integer in 100..200000 (got ${String(samples)})` };
+        }
+        const metrics = await evaluateInWorker(toTriangleSoup(imports[i]), toTriangleSoup(currentMeshData), samples ?? getConfig().import.reconstructEvalSamples);
+        return { ok: true, importIndex: i, filename: imports[i].filename, ...metrics };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
     async voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }) {
       try {
         const preserve = opts?.preserveColor ?? true;
@@ -15433,6 +15502,8 @@ async function main() {
         'buildEngraveStamp': { signature: 'await buildEngraveStamp({text?, font?, imageUrl?, invert?}) -- Rasterize an ink mask for engraveModel/the Surface panel -> {mask, width, height}', docs: '/ai/textures.md#engravemodel' },
         'smoothModel':     { signature: 'await smoothModel({iterations?, subdivide?, preserveColor?}) -- BAKE a Taubin smoothing pass; saves a new version. In-code alternative: api.surface.smooth', docs: '/ai/textures.md' },
         'voxelizeModel':   { signature: 'await voxelizeModel({resolution?, smooth?, preserveColor?}) -- Convert the mesh to a voxel-language session (engine change — bake only)', docs: '/ai/voxel.md' },
+        'convertToCode':   { signature: "await convertToCode({quality?, step?, edge?, dpTol?, samples?}) -- Rebuild the current model (e.g. an STL import) as smooth, import-free, editable code; saves a version and reports chamfer/hausdorff vs the source", docs: '/ai/reconstruction.md' },
+        'evalAgainstImport': { signature: 'await evalAgainstImport(index?, {samples?}) -- Chamfer/hausdorff report of the current model vs imported mesh index (how faithful is the remake?)', docs: '/ai/reconstruction.md' },
         'setVoxelRounding': { signature: "setVoxelRounding(opts | null) -- Voxel Studio corner rounding: null = hard blocks; {algorithm?: 'taubin'|'surfaceNets', strength?: 0..1, iterations?: 1..8, flatBottom?: bool, baseLayers?: int} = smooth. Requires activateVoxelPaint(). Returns {surfacing} or {error}", docs: '/ai/voxel.md' },
         'getVoxelRounding': { signature: 'getVoxelRounding() -- Read the active grid surfacing -> {surfacing} (null when blocky) or {error}', docs: '/ai/voxel.md' },
         // Transform / placement (mode 'parametric' wraps the code; 'bake' rewrites the mesh; 'auto' picks)
