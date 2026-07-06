@@ -26,6 +26,8 @@ export interface PartListCallbacks {
   onSetPartGroup: (ids: string[], group: string | null) => void | Promise<void>;
   /** Persist a new part layout (order + per-part group reassignment). */
   onReorderParts: (layout: PartLayoutEntry[]) => void | Promise<void>;
+  /** Show all parts together in the grid Assembly view. */
+  onViewAllParts: () => void;
   /** Collapse the rail (handled by layout). */
   onToggleCollapse: () => void;
 }
@@ -115,7 +117,9 @@ function render(state: SessionState): void {
   title.textContent = 'Parts';
   header.appendChild(title);
 
-  const overviewBtn = iconBtn('▦', 'Overview of all parts');
+  // Overview — a lightweight thumbnail contact-sheet modal of all parts (instant,
+  // no geometry rebuild). Complements the Assembly view below (live 3D grid).
+  const overviewBtn = iconBtn('▦', 'Overview of all parts (thumbnails)');
   overviewBtn.id = 'btn-parts-overview';
   overviewBtn.disabled = !state.session;
   if (!state.session) overviewBtn.classList.add('opacity-30', 'cursor-default');
@@ -123,6 +127,15 @@ function render(state: SessionState): void {
     if (state.session) openPartsOverview((id) => cb.onSelectPart(id));
   });
   header.appendChild(overviewBtn);
+
+  // "View all parts" — opens the live 3D Assembly grid in the viewport (builds
+  // parts in parallel; shared-parameter panel). Only meaningful with 2+ parts.
+  if (state.session && state.parts.length > 1) {
+    const viewAllBtn = iconBtn('⧉', 'View all parts together in 3D (Assembly)');
+    viewAllBtn.id = 'btn-view-all-parts';
+    viewAllBtn.addEventListener('click', () => cb.onViewAllParts());
+    header.appendChild(viewAllBtn);
+  }
 
   const addBtn = iconBtn('＋', 'Add a new part');
   addBtn.id = 'btn-add-part';

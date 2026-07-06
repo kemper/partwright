@@ -256,6 +256,11 @@ partwright.getTheme()                // -> 'dark' or 'light'
 partwright.setAutoRun(enabled)       // Enable/disable auto-render on code edit
 partwright.isAutoRunEnabled()        // Whether auto-run is active
 
+// Assembly view (all parts in a grid) -- see #assembly-view
+await partwright.openAssembly()      // Show every part in a non-overlapping grid, built in parallel (needs >=2 parts) -> snapshot
+partwright.closeAssembly()           // Close it, return to the single part
+partwright.getAssembly()             // -> {open, parts:[{id,name,placed}], sharedParams}
+
 // Arrange mode (Tinkercad-style direct manipulation) -- see #arrange-mode
 partwright.enterArrange()                 // Activate the click-to-select / drag-to-move tool -> {ok}
 partwright.exitArrange()                  // Deactivate
@@ -547,6 +552,24 @@ return Manifold.cube([p.width, p.width, p.rows * 10], true);
 **Types:** `number` / `int` (slider; `min`,`max`,`step`,`unit`), `boolean` (toggle), `select` (dropdown; `options` = array of strings or `{value,label}`), `text` (`maxLength`), `color` (hex). Optional `label` and `help` on any. A malformed *schema* throws a clear `api.params: …` error; bad *values* are clamped or fall back to the default, never throwing — so the model always renders. Reading an undeclared key (`p.widht`) throws too, so a typo can't silently become `NaN`.
 
 **Driving it yourself:** `partwright.getParams()` returns `{ schema, values }` so you can see what knobs exist; `partwright.setParams({ width: 50, rows: 3 })` changes values and re-runs (the `getParams`/`setParams` tools do the same). Prefer `setParams` over rewriting code when you only need to change a declared dimension — it's cheaper and keeps the model intact. The chosen values persist with each saved version (so a version re-renders exactly as saved). A `color` param's value (a hex string) drives geometry color by passing it to `api.label(shape, name, { color: p.accent })` (see [Model-declared color](#model-declared-color-self-coloring-models) below) — so a color knob recolors the model live. `text` params are captured but have no geometry sink yet.
+
+### Assembly view
+
+A session can hold **multiple parts** (each with its own code, version history, and parameters). The **Assembly view** shows them all at once, laid out in a non-overlapping grid in the interactive viewport — handy for seeing a whole set of components together. Open it from the **⧉ button above the part list** or the **"⧉ All parts" toggle in the viewport** (both appear only when the session has ≥ 2 parts; the separate ▦ button is the static thumbnail Overview), or drive it from the console:
+
+```js
+await partwright.openAssembly()   // build every part in parallel, fill the grid progressively
+partwright.getAssembly()          // { open, parts:[{id,name,placed}], sharedParams }
+partwright.closeAssembly()        // back to the single-part editor
+```
+
+Each part's mesh is built in a **pool of Workers in parallel**, and the grid fills in progressively as parts finish (the current part appears instantly from its live mesh). Parts rest on a common floor, centred in their cells, with a name label.
+
+The Assembly view is **read-only**: the editing tools and cross-section are hidden while it's open (they act on a single part). **Clicking a part** — in the grid or the part list — leaves the overview and opens that part in the normal single-part editor. `Esc` or the `⧉` toggle also exits.
+
+**Shared parameters.** The panel lists the **union** of every part's `api.params` knobs — one row per name. Each row shows **"affects N parts"** (hover for the part names); numeric ranges are the widest across the sharing parts. Changing a value **live-previews** across every part that declares that key; **Save** writes the tweaked values back to each of those parts' latest versions. `getAssembly().sharedParams` returns the same union (`[{spec, partIds, partNames, value, mixed}]`).
+
+> Note: the Assembly grid renders each part's **base executed mesh** — in-code `api.paint`/label colours from the voxel engine carry through, but brush-painted regions and baked surface textures are not re-applied in the grid preview (they remain intact on the part itself).
 
 ### Model-declared color (self-coloring models)
 

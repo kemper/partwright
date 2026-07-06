@@ -31,7 +31,7 @@ import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel'
 import { viewportToolsMount, openPopoverGroupById } from './ui/popoverMenu';
 import { TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './ui/toolPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, resetView, onOrbitEnd } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, resetView, onOrbitEnd, setOnAssemblyPartClick } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -69,6 +69,7 @@ import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
 import { createPartList } from './ui/partList';
+import { openAssemblyView, closeAssemblyView, isAssemblyViewOpen, getAssemblySnapshot } from './assembly/assemblyView';
 import { openPartsOverview } from './ui/partsOverview';
 import { createGalleryView, refreshGallery } from './ui/gallery';
 import { createVersionsView, refreshVersions } from './ui/versions';
@@ -394,6 +395,74 @@ function buildAttachmentFromInput(input: unknown, ctx: string, source?: 'user' |
 let currentParamSchema: ParamSpec[] | null = null;
 let currentParamValues: Record<string, ParamValue> = {};
 let paramsPanel: ParamsPanelController | null = null;
+
+// === Assembly (multi-part grid) view ===
+// The mount for the assembly parameter panel (the viewport pane) and the toolbar
+// toggle button, both assigned during editor setup. openAssembly/closeAssembly
+// are module-scoped so the console API (partwright.openAssembly) can drive them.
+let assemblyMount: HTMLElement | null = null;
+let assemblyToggleBtn: HTMLButtonElement | null = null;
+// The part-id set the Assembly view opened against. If the session's parts
+// change while the view is open (a part added/deleted/reordered in this or
+// another tab), the in-memory grid + shared-param records go stale — so we close
+// the view rather than show/save against a set that no longer matches.
+let assemblyOpenSig: string | null = null;
+function partsSignature(): string {
+  return getState().parts.map(p => p.id).join(',');
+}
+// Whether cross-section was on when Assembly opened, so we can restore it on exit
+// (the Assembly overview is read-only, so clipping — which acts on the now-hidden
+// single part — is turned off while it's open).
+let assemblyPriorClip = false;
+// Hides/shows the editing chrome (Inspect + Tools popovers) and deactivates any
+// live tool when entering/leaving the read-only Assembly overview. Assigned in
+// editor setup where the tool-close helpers are in scope.
+let applyAssemblyChrome: ((on: boolean) => void) | null = null;
+
+function syncAssemblyToggle(open: boolean): void {
+  if (!assemblyToggleBtn) return;
+  assemblyToggleBtn.className = open ? TOOL_TOGGLE_ACTIVE : TOOL_TOGGLE_IDLE;
+  // Hidden entirely for single-part sessions where there's nothing to assemble.
+  const { session, parts } = getState();
+  assemblyToggleBtn.classList.toggle('hidden', !(session && parts.length > 1));
+}
+
+async function openAssembly(): Promise<void> {
+  if (isAssemblyViewOpen() || !assemblyMount) return;
+  const st = getState();
+  if (!st.session || st.parts.length < 2) {
+    showToast('Add a second part to view all parts together.', { variant: 'neutral' });
+    return;
+  }
+  syncAssemblyToggle(true);
+  assemblyOpenSig = partsSignature();
+  paramsPanel?.close(); // the assembly view has its own shared-parameter panel
+  applyAssemblyChrome?.(true); // read-only overview: hide edit tools + cross-section
+  await openAssemblyView({
+    mount: assemblyMount,
+    isReadOnly: () => isReadOnlyViewer(),
+    // The current part's mesh is already built on the main thread — show it
+    // instantly instead of rebuilding it in the pool.
+    seedMesh: (versionId) => (getState().currentVersion?.id === versionId ? currentMeshData : null),
+    seedSchema: (versionId) => (getState().currentVersion?.id === versionId ? currentParamSchema : null),
+    onClosed: () => {
+      assemblyOpenSig = null;
+      applyAssemblyChrome?.(false); // restore the edit tools + prior cross-section
+      syncAssemblyToggle(false);
+      resetView(); // re-frame the restored single-part model
+    },
+  });
+}
+
+function closeAssembly(): void {
+  if (!isAssemblyViewOpen()) return;
+  closeAssemblyView(); // fires onClosed → syncAssemblyToggle(false) + resetView
+}
+
+function toggleAssembly(): void {
+  if (isAssemblyViewOpen()) closeAssembly();
+  else void openAssembly();
+}
 
 /** Reconcile the Customizer panel + override state with the parameter schema a
  *  model declared on its latest run. Pass `undefined` when the model declared
@@ -5525,7 +5594,12 @@ async function main() {
 
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
-    onSelectPart: (partId: string) => selectPart(partId),
+    onSelectPart: (partId: string) => {
+      // In the Assembly overview, selecting a part leaves the grid and opens that
+      // part in the normal single-part editor.
+      if (isAssemblyViewOpen()) return void (async () => { await selectPart(partId); closeAssembly(); })();
+      return selectPart(partId);
+    },
     onCreatePart: async () => {
       // Structural part edits are leader-only — a read-only viewer must not
       // write to the shared session (mirrors the run/save guard).
@@ -5576,6 +5650,7 @@ async function main() {
       if (isReadOnlyViewer()) return;
       await reorderParts(layout);
     },
+    onViewAllParts: () => { void openAssembly(); },
     onToggleCollapse: () => togglePartsRail(),
   });
 
@@ -7117,6 +7192,61 @@ async function main() {
   // Tools menu (see viewportPanelDrag's dockUnderBottom), so the two read as one
   // unit when auto-revealed.
   viewportToolsMount(clipControls).appendChild(customizeBtn);
+
+  // "All parts" toggle — the in-viewport entry point to the grid Assembly view
+  // (the part-list "⧉" button is the other). Shown only for multi-part sessions;
+  // reflects and drives the open/closed state. Escape also exits the view. It's a
+  // standalone pill on the toolbar (not inside the Tools popover) so it stays
+  // reachable to toggle OFF while the Assembly view hides the Tools popover.
+  assemblyMount = viewportPane;
+  assemblyToggleBtn = document.createElement('button');
+  assemblyToggleBtn.id = 'assembly-toggle';
+  assemblyToggleBtn.textContent = '⧉ All parts';
+  assemblyToggleBtn.title = 'View all parts together in a 3D grid (Assembly)';
+  assemblyToggleBtn.className = `hidden ${TOOL_TOGGLE_IDLE}`;
+  assemblyToggleBtn.addEventListener('click', () => toggleAssembly());
+  clipControls.appendChild(assemblyToggleBtn);
+  // Clicking a part in the grid selects it and drops into the normal editor.
+  setOnAssemblyPartClick((partId) => {
+    void (async () => { await selectPart(partId); closeAssembly(); })();
+  });
+  // The Assembly overview is read-only: hide the Inspect + Tools popovers (every
+  // mutate tool + Measure/Cross-Section lives in them) and turn cross-section off
+  // while it's open, restoring everything on exit. Closes any live tool so
+  // nothing keeps editing the now-hidden single part.
+  applyAssemblyChrome = (on: boolean) => {
+    document.getElementById('viewport-inspect-group')?.classList.toggle('hidden', on);
+    document.getElementById('viewport-tools-group')?.classList.toggle('hidden', on);
+    if (on) {
+      if (isAnnotateOpen()) closeAnnotateMenu();
+      if (isPaintOpen()) closePaintMenu();
+      if (isSimplifyOpen()) closeSimplifyMenu();
+      if (isPrintToolsOpen()) closePrintToolsMenu();
+      closeMeasureIfActive();
+      if (getClipState().enabled) { assemblyPriorClip = true; setClipping(false); syncClipUI(); }
+    } else if (assemblyPriorClip) {
+      assemblyPriorClip = false;
+      setClipping(true);
+      syncClipUI();
+    }
+  };
+  // Keep the toggle's visibility in sync with the part count (hidden for
+  // single-part sessions). Also close the view if the session drops to one part.
+  onStateChange((state) => {
+    const multi = !!(state.session && state.parts.length > 1);
+    // Close the view if it can no longer be shown (dropped to one part) or if the
+    // set of parts changed out from under it (add/delete/reorder → stale records).
+    if (isAssemblyViewOpen() && (!multi || partsSignature() !== assemblyOpenSig)) {
+      closeAssembly();
+      return;
+    }
+    if (!isAssemblyViewOpen()) syncAssemblyToggle(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isAssemblyViewOpen() && !document.querySelector('[role="dialog"]')) {
+      closeAssembly();
+    }
+  });
 
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
@@ -9975,6 +10105,29 @@ async function main() {
         geometry,
         params: currentParamSchema ? resolveParamValues(currentParamSchema, currentParamValues) : {},
       };
+    },
+
+    /** Open the Assembly view — show every part of the session laid out in a
+     *  non-overlapping grid, built in parallel. Needs ≥ 2 parts. */
+    async openAssembly() {
+      const st = getState();
+      if (!st.session) return { error: 'No session open.' };
+      if (st.parts.length < 2) return { error: 'The session has only one part — add another to view all parts together.' };
+      await openAssembly();
+      return { status: 'ok', ...getAssemblySnapshot() };
+    },
+
+    /** Close the Assembly view and return to the single-part editor. */
+    closeAssembly() {
+      if (!isAssemblyViewOpen()) return { error: 'The Assembly view is not open.' };
+      closeAssembly();
+      return { status: 'ok' };
+    },
+
+    /** Snapshot of the Assembly view: whether it's open, the parts and their
+     *  placement, and the union of shared parameters. */
+    getAssembly() {
+      return getAssemblySnapshot();
     },
 
     /** Slice current manifold at Z height. Returns cross-section data. */
@@ -15332,6 +15485,10 @@ async function main() {
         'getTheme':             { signature: 'getTheme() -- Current color theme', docs: '/ai.md#viewport-controls' },
         'setAutoRun':           { signature: 'setAutoRun(enabled) -- Enable/disable auto-render on edit', docs: '/ai.md#viewport-controls' },
         'isAutoRunEnabled':     { signature: 'isAutoRunEnabled() -- Whether auto-run is active', docs: '/ai.md#viewport-controls' },
+        // Assembly view (all parts in a grid)
+        'openAssembly':         { signature: 'openAssembly() -- Show every part of the session in a non-overlapping grid, built in parallel (needs ≥2 parts) -> snapshot', docs: '/ai.md#assembly-view' },
+        'closeAssembly':        { signature: 'closeAssembly() -- Close the Assembly view, return to the single part', docs: '/ai.md#assembly-view' },
+        'getAssembly':          { signature: 'getAssembly() -- Assembly snapshot: {open, parts:[{id,name,placed}], sharedParams}', docs: '/ai.md#assembly-view' },
         // Insert & arrange palette (Tinkercad-style direct manipulation)
         'enterArrange':         { signature: 'enterArrange() -- Activate arrange-mode pointer hook (drag to move parts in 3D) -> {ok}', docs: '/ai.md#arrange-mode' },
         'exitArrange':          { signature: 'exitArrange() -- Deactivate arrange mode', docs: '/ai.md#arrange-mode' },

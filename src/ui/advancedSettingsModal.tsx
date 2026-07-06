@@ -524,6 +524,25 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'gridDivisions', v)}
         />
         <Field
+          label="Assembly build workers"
+          hint="Parts the Assembly (all-parts) view builds in parallel. Clamped to CPU cores − 1."
+          tooltip="The Assembly view meshes every part of a session at once. Each parallel worker boots its own manifold-3d WASM instance, so this trades memory for grid fill speed. 1 serializes the builds (still fills progressively). Clamped at runtime to your CPU core count minus one."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.assemblyPoolSize}
+          value={c.renderer.assemblyPoolSize}
+          min={1} max={16} integer
+          onChange={v => set('renderer', 'assemblyPoolSize', v)}
+        />
+        <Field
+          label="Assembly grid gutter"
+          unit="× cell"
+          hint="Spacing between parts in the Assembly grid, as a fraction of the largest part."
+          tooltip="How much empty space sits between cells in the all-parts grid, as a fraction of the largest part's footprint. 0.25 leaves a quarter-cell gap; 0 packs parts edge to edge."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.assemblyGridGutter}
+          value={c.renderer.assemblyGridGutter}
+          min={0} max={2} step={0.05}
+          onChange={v => set('renderer', 'assemblyGridGutter', v)}
+        />
+        <Field
           label="Ambient light intensity"
           tooltip="The intensity of the omnidirectional ambient light in the viewport. Ambient light illuminates all surfaces equally regardless of normal direction — raising it reduces harsh shadows. Combined with the directional lights, the total scene illumination is ambient + primary + secondary. Takes effect after a page reload."
           defaultValue={APP_CONFIG_DEFAULTS.renderer.ambientLightIntensity}

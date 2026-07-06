@@ -24,6 +24,7 @@ export type ErrorSource =
   | 'network'
   | 'app'
   | 'character'
+  | 'assembly'
   | 'uncaught';
 
 export interface LogEntry {
