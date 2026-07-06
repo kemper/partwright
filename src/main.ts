@@ -283,6 +283,7 @@ import {
   deletePart,
   deleteParts,
   reorderParts,
+  setPartGroup,
   partSaveState,
   currentPartIsDirty,
   getState,
@@ -5567,9 +5568,13 @@ async function main() {
       if (isReadOnlyViewer()) return;
       await mergePartsFlow(partIds);
     },
-    onReorderParts: async (orderedIds: string[]) => {
+    onSetPartGroup: async (partIds: string[], group: string | null) => {
       if (isReadOnlyViewer()) return;
-      await reorderParts(orderedIds);
+      await setPartGroup(partIds, group);
+    },
+    onReorderParts: async (layout) => {
+      if (isReadOnlyViewer()) return;
+      await reorderParts(layout);
     },
     onToggleCollapse: () => togglePartsRail(),
   });
@@ -11393,16 +11398,18 @@ async function main() {
       return opened ? { ok: true } : { error: 'showPartsOverview: no session with parts is open' };
     },
 
-    /** List the parts in the active session, each flagged with `isCurrent`. */
+    /** List the parts in the active session, each flagged with `isCurrent`.
+     *  `group` (present only when the part is in one) threads same-group parts
+     *  under a collapsible header in the part list. */
     listParts() {
       const current = getCurrentPart();
-      return listCurrentParts().map(p => ({ id: p.id, name: p.name, order: p.order, isCurrent: p.id === current?.id }));
+      return listCurrentParts().map(p => ({ id: p.id, name: p.name, order: p.order, ...(p.group ? { group: p.group } : {}), isCurrent: p.id === current?.id }));
     },
 
     /** The active part, or null when no session is open. */
     getCurrentPart() {
       const p = getCurrentPart();
-      return p ? { id: p.id, name: p.name, order: p.order } : null;
+      return p ? { id: p.id, name: p.name, order: p.order, ...(p.group ? { group: p.group } : {}) } : null;
     },
 
     /** Create a new, empty part and switch to it. Resets the editor to a starter
@@ -11442,6 +11449,30 @@ async function main() {
       if ('error' in part) return part;
       await renamePart(part.id, newName);
       return { id: part.id, name: newName };
+    },
+
+    /** Group parts under a shared, collapsible header in the part list (or
+     *  ungroup them). `targets` is a single part (name / id / 0-based index /
+     *  { id } / { name }) or an array of them; `group` is the group name, or
+     *  `null`/`''` to ungroup. Grouping is a display-only threading — it doesn't
+     *  change any part's version history. */
+    async setPartGroup(targets: unknown, group: string | null) {
+      if (!getState().session) {
+        return { error: 'No active session. Call createSession() or openSession(id) first.' };
+      }
+      const check = guard(() => assertString(group, 'setPartGroup(group)', { optional: true, allowEmpty: true }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const list = Array.isArray(targets) ? targets : [targets];
+      if (list.length === 0) return { error: 'setPartGroup(targets): pass at least one part.' };
+      const ids: string[] = [];
+      for (const t of list) {
+        const part = resolvePartTarget(t, 'setPartGroup');
+        if ('error' in part) return part;
+        if (!ids.includes(part.id)) ids.push(part.id);
+      }
+      const clean = group && group.trim() ? group.trim() : null;
+      await setPartGroup(ids, clean);
+      return { grouped: ids.length, group: clean };
     },
 
     /** Delete a part and its versions. Refuses to delete a session's last part.
@@ -15248,12 +15279,13 @@ async function main() {
         'listSessions':    { signature: 'await listSessions() -- List all sessions', docs: '/ai.md#console-api--windowpartwright' },
         'getSessionContext': { signature: 'await getSessionContext() -- Get full session context (for resuming)', docs: '/ai.md#resuming-a-session' },
         // Parts (multiple objects per session)
-        'listParts':       { signature: 'listParts() -- List parts in the session -> [{id, name, order, isCurrent}]', docs: '/ai.md#console-api--windowpartwright' },
+        'listParts':       { signature: 'listParts() -- List parts in the session -> [{id, name, order, group?, isCurrent}]', docs: '/ai.md#console-api--windowpartwright' },
         'showPartsOverview': { signature: 'showPartsOverview() -- Open the all-parts thumbnail overview modal', docs: '/ai.md#console-api--windowpartwright' },
         'getCurrentPart':  { signature: 'getCurrentPart() -- Active part -> {id, name, order} or null', docs: '/ai.md#console-api--windowpartwright' },
         'createPart':      { signature: 'await createPart(name?) -- New empty part + switch to it -> {id, name, order}', docs: '/ai.md#console-api--windowpartwright' },
         'changePart':      { signature: 'await changePart(name|id|index) -- Switch active part (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
         'renamePart':      { signature: 'await renamePart(name|id|index, newName) -- Rename a part', docs: '/ai.md#console-api--windowpartwright' },
+        'setPartGroup':    { signature: 'await setPartGroup(target|target[], group|null) -- Group parts under a collapsible header in the part list (null to ungroup) -> {grouped, group}', docs: '/ai.md#console-api--windowpartwright' },
         'deletePart':      { signature: 'await deletePart(name|id|index) -- Delete a part and its versions', docs: '/ai.md#console-api--windowpartwright' },
         'getShareLink':    { signature: 'await getShareLink() -- Read-only share link for the current version -> {url, encodedBytes} or {error}; the link to hand the user when done', docs: '/ai.md#console-api--windowpartwright' },
         'getGalleryUrl':   { signature: 'getGalleryUrl() -- URL for gallery view (local browser only)', docs: '/ai.md#console-api--windowpartwright' },

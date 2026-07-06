@@ -1,11 +1,13 @@
 // Parts rail — an IDE-style list of the active session's parts. Supports
-// create, select, inline rename, delete, multi-select bulk delete, and
-// pointer-based drag-to-reorder. Renders into the rail container created by
-// layout.ts and re-renders on every session-state change.
+// create, select, inline rename, delete, multi-select bulk delete/merge,
+// grouping (a threaded view with collapsible group headers), and pointer-based
+// drag-to-reorder. Renders into the rail container created by layout.ts and
+// re-renders on every session-state change.
 
-import { getState, onStateChange, type SessionState, type Part, type Version } from '../storage/sessionManager';
+import { getState, onStateChange, type SessionState, type Part, type Version, type PartLayoutEntry } from '../storage/sessionManager';
 import { getLatestVersion } from '../storage/db';
-import { confirmDialog } from './dialogs';
+import { buildPartTree, groupNames, type PartTreeNode } from './partTree';
+import { confirmDialog, promptDialog } from './dialogs';
 import { openPartsOverview } from './partsOverview';
 import { registerCommands } from './commandPalette';
 
@@ -20,8 +22,10 @@ export interface PartListCallbacks {
   onDeleteParts: (ids: string[]) => void | Promise<void>;
   /** Combine the multi-selected parts into one (multi-select merge). */
   onMergeParts: (ids: string[]) => void | Promise<void>;
-  /** Persist a new part order (array of part ids, first = top). */
-  onReorderParts: (orderedIds: string[]) => void | Promise<void>;
+  /** Assign (string) or clear (null) the group of one or more parts. */
+  onSetPartGroup: (ids: string[], group: string | null) => void | Promise<void>;
+  /** Persist a new part layout (order + per-part group reassignment). */
+  onReorderParts: (layout: PartLayoutEntry[]) => void | Promise<void>;
   /** Collapse the rail (handled by layout). */
   onToggleCollapse: () => void;
 }
@@ -44,6 +48,10 @@ const thumbCache = new Map<string, { versionId: string; url: string }>();
 const selected = new Set<string>();
 // Anchor row id for shift-click range selection.
 let lastClickedId: string | null = null;
+// Names of groups the user has collapsed. Purely a per-session view preference
+// (not persisted), so it's cleared when the active session changes.
+const collapsedGroups = new Set<string>();
+let lastSessionId: string | null = null;
 
 export function createPartList(container: HTMLElement, callbacks: PartListCallbacks): void {
   railEl = container;
@@ -68,12 +76,24 @@ export function createPartList(container: HTMLElement, callbacks: PartListCallba
 function render(state: SessionState): void {
   if (!railEl) return;
 
+  // Reset per-session view state (collapse + selection) when the session
+  // changes, so one session's collapsed groups can't hide another's parts.
+  const sid = state.session?.id ?? null;
+  if (sid !== lastSessionId) {
+    lastSessionId = sid;
+    collapsedGroups.clear();
+    clearSelection();
+  }
+
   // Drop any selection that no longer maps to a live part (deleted, or the
   // session was switched/closed) so the action bar can't act on stale ids.
   if (state.session) {
     const live = new Set(state.parts.map(p => p.id));
     for (const id of [...selected]) if (!live.has(id)) selected.delete(id);
     if (lastClickedId && !live.has(lastClickedId)) lastClickedId = null;
+    // Forget collapse state for groups that no longer exist.
+    const liveGroups = new Set(groupNames(state.parts));
+    for (const g of [...collapsedGroups]) if (!liveGroups.has(g)) collapsedGroups.delete(g);
   } else {
     clearSelection();
   }
@@ -138,16 +158,14 @@ function render(state: SessionState): void {
   }
 
   pruneThumbCache(new Set(state.parts.map((p) => p.id)));
-  for (const part of state.parts) {
-    list.appendChild(
-      buildRow(
-        part,
-        part.id === state.currentPart?.id,
-        state.parts.length,
-        list,
-        state.currentVersion,
-      ),
-    );
+
+  const tree = buildPartTree(state.parts);
+  for (const node of tree) {
+    if (node.kind === 'part') {
+      list.appendChild(buildRow(node.part, node.part.id === state.currentPart?.id, state.parts.length, list, state.currentVersion, false));
+    } else {
+      list.appendChild(buildGroupNode(node, state, list));
+    }
   }
 
   // Bulk-action footer — only present while one or more parts are checked.
@@ -161,14 +179,106 @@ function render(state: SessionState): void {
   if (prevScrollTop > 0) list.scrollTop = prevScrollTop;
 }
 
-function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLElement, currentVersion: Version | null): HTMLElement {
+/** A group container: a collapsible header row plus (when expanded) an indented
+ *  body holding the group's member part rows. The container carries
+ *  `data-group` so the drag path can tell which group a drop lands in. */
+function buildGroupNode(node: PartTreeNode & { kind: 'group' }, state: SessionState, list: HTMLElement): HTMLElement {
+  const collapsed = collapsedGroups.has(node.name);
+  const containsCurrent = node.parts.some(p => p.id === state.currentPart?.id);
+
+  const wrap = document.createElement('div');
+  wrap.dataset.group = node.name;
+  wrap.className = 'mb-0.5';
+
+  // --- Header ---
+  const head = document.createElement('div');
+  head.dataset.groupHeader = node.name;
+  head.className = 'group/gh flex items-center gap-1 px-1.5 py-1.5 mx-1 rounded cursor-pointer select-none text-zinc-300 [@media(hover:hover)]:hover:bg-zinc-700/40';
+
+  const chevron = document.createElement('span');
+  chevron.className = 'shrink-0 w-4 text-center text-[10px] text-zinc-500 leading-none';
+  chevron.textContent = collapsed ? '▸' : '▾';
+  head.appendChild(chevron);
+
+  const folder = document.createElement('span');
+  folder.className = 'shrink-0 text-xs leading-none';
+  folder.textContent = collapsed ? '📁' : '📂';
+  head.appendChild(folder);
+
+  const gname = document.createElement('span');
+  gname.className = 'flex-1 min-w-0 truncate text-[11px] font-semibold uppercase tracking-wide';
+  gname.textContent = node.name;
+  gname.title = `${node.name} — ${node.parts.length} part${node.parts.length === 1 ? '' : 's'}`;
+  head.appendChild(gname);
+
+  // Active-part dot so a collapsed group still signals it holds the open part.
+  if (containsCurrent && collapsed) {
+    const dot = document.createElement('span');
+    dot.className = 'shrink-0 w-1.5 h-1.5 rounded-full bg-blue-500';
+    dot.title = 'The active part is in this group';
+    head.appendChild(dot);
+  }
+
+  const count = document.createElement('span');
+  count.className = 'shrink-0 text-[10px] text-zinc-500 tabular-nums px-1';
+  count.textContent = String(node.parts.length);
+  head.appendChild(count);
+
+  // Ungroup the whole group (removes the group from every member).
+  const ungroupBtn = iconBtn('⊘', 'Ungroup — remove this group');
+  ungroupBtn.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/gh:opacity-100 focus:opacity-100';
+  ungroupBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    void cb.onSetPartGroup(node.parts.map(p => p.id), null);
+  });
+  head.appendChild(ungroupBtn);
+
+  head.addEventListener('click', () => {
+    if (collapsed) collapsedGroups.delete(node.name);
+    else collapsedGroups.add(node.name);
+    render(getState());
+  });
+  // Rename the group (retitles every member's `group`).
+  gname.addEventListener('dblclick', (e) => {
+    e.stopPropagation();
+    void renameGroup(node);
+  });
+
+  wrap.appendChild(head);
+
+  // --- Body (member rows) ---
+  if (!collapsed) {
+    const body = document.createElement('div');
+    body.dataset.groupBody = node.name;
+    body.className = 'border-l border-zinc-700/60 ml-2.5';
+    for (const part of node.parts) {
+      body.appendChild(buildRow(part, part.id === state.currentPart?.id, state.parts.length, list, state.currentVersion, true));
+    }
+    wrap.appendChild(body);
+  }
+
+  return wrap;
+}
+
+async function renameGroup(node: PartTreeNode & { kind: 'group' }): Promise<void> {
+  const next = await promptDialog('Rename group', { title: 'Rename group', initialValue: node.name, confirmLabel: 'Rename' });
+  const trimmed = next?.trim();
+  if (!trimmed || trimmed === node.name) return;
+  if (collapsedGroups.delete(node.name)) collapsedGroups.add(trimmed);
+  void cb.onSetPartGroup(node.parts.map(p => p.id), trimmed);
+}
+
+function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLElement, currentVersion: Version | null, inGroup: boolean): HTMLElement {
   const isSelected = selected.has(part.id);
   const row = document.createElement('div');
   row.dataset.partId = part.id;
   row.setAttribute('role', 'button');
   if (isCurrent) row.setAttribute('aria-current', 'true');
   row.className = [
-    'group flex items-center gap-1 px-1.5 py-2.5 mx-1 rounded cursor-pointer select-none',
+    'group flex items-center gap-1 px-1.5 py-2.5 rounded cursor-pointer select-none',
+    // Grouped rows sit inside an indented, border-left body, so they hug the
+    // left; top-level rows get the standard side margin.
+    inGroup ? 'ml-1 mr-1' : 'mx-1',
     isCurrent
       ? 'bg-blue-500/15 text-zinc-100 border-l-2 border-blue-500'
       : isSelected
@@ -212,7 +322,7 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
   // small; the transparent box around it is what grows the touch target.
   grip.className = 'shrink-0 inline-flex items-center justify-center text-zinc-500 [@media(hover:hover)]:group-hover:text-zinc-300 text-sm leading-none cursor-grab touch-none min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:px-1 md:py-1';
   grip.textContent = '⠿'; // ⠿ drag grip
-  grip.title = 'Drag to reorder';
+  grip.title = 'Drag to reorder or to move between groups';
   grip.setAttribute('aria-label', 'Drag to reorder');
   attachDragHandlers(grip, row, list);
   row.appendChild(grip);
@@ -349,11 +459,11 @@ function clearSelection(): void {
   lastClickedId = null;
 }
 
-/** Footer bar shown while parts are checked: count, clear, and bulk delete. */
+/** Footer bar shown while parts are checked: count, clear, group, merge, delete. */
 function buildActionBar(state: SessionState): HTMLElement {
   const bar = document.createElement('div');
   bar.id = 'parts-bulk-actions';
-  bar.className = 'shrink-0 flex items-center gap-1.5 px-2 py-1.5 border-t border-zinc-700/70 bg-zinc-800/70';
+  bar.className = 'shrink-0 flex flex-wrap items-center gap-1.5 px-2 py-1.5 border-t border-zinc-700/70 bg-zinc-800/70';
 
   const count = document.createElement('span');
   count.className = 'flex-1 min-w-0 truncate text-[11px] text-zinc-300';
@@ -366,6 +476,45 @@ function buildActionBar(state: SessionState): HTMLElement {
   clearBtn.title = 'Clear selection';
   clearBtn.addEventListener('click', () => { clearSelection(); render(getState()); });
   bar.appendChild(clearBtn);
+
+  // Group the selection into a (new or existing) named group.
+  const selectedParts = state.parts.filter(p => selected.has(p.id));
+  const groupBtn = document.createElement('button');
+  groupBtn.id = 'btn-group-parts';
+  groupBtn.className = 'shrink-0 px-2 h-7 rounded text-[11px] font-medium text-zinc-100 bg-zinc-600/70 hover:bg-zinc-600 transition-colors';
+  groupBtn.textContent = 'Group…';
+  groupBtn.title = 'Put the selected parts into a group';
+  groupBtn.addEventListener('click', async () => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    // Prefill with the common group when the whole selection already shares one.
+    const groups = new Set(selectedParts.map(p => p.group?.trim() ?? ''));
+    const prefill = groups.size === 1 ? [...groups][0] : '';
+    const name = await promptDialog('Group name', { title: 'Group parts', initialValue: prefill, confirmLabel: 'Group', placeholder: 'e.g. Armor' });
+    const trimmed = name?.trim();
+    if (!trimmed) return;
+    clearSelection();
+    render(getState());
+    void cb.onSetPartGroup(ids, trimmed);
+  });
+  bar.appendChild(groupBtn);
+
+  // Ungroup — offered only when at least one selected part is in a group.
+  if (selectedParts.some(p => p.group?.trim())) {
+    const ungroupBtn = document.createElement('button');
+    ungroupBtn.id = 'btn-ungroup-parts';
+    ungroupBtn.className = 'shrink-0 px-2 h-7 rounded text-[11px] text-zinc-300 hover:text-zinc-100 hover:bg-zinc-700 transition-colors';
+    ungroupBtn.textContent = 'Ungroup';
+    ungroupBtn.title = 'Remove the selected parts from their group';
+    ungroupBtn.addEventListener('click', () => {
+      const ids = [...selected];
+      if (ids.length === 0) return;
+      clearSelection();
+      render(getState());
+      void cb.onSetPartGroup(ids, null);
+    });
+    bar.appendChild(ungroupBtn);
+  }
 
   // Merge needs at least two parts to combine into one.
   if (selected.size >= 2) {
@@ -442,7 +591,7 @@ function beginRename(name: HTMLElement, part: Part): void {
   });
 }
 
-// === Pointer-based drag-to-reorder ===
+// === Pointer-based drag-to-reorder (and drag-between-groups) ===
 
 function attachDragHandlers(grip: HTMLElement, row: HTMLElement, list: HTMLElement): void {
   let indicator: HTMLElement | null = null;
@@ -477,34 +626,53 @@ function attachDragHandlers(grip: HTMLElement, row: HTMLElement, list: HTMLEleme
     dragging = true;
     row.classList.add('opacity-40');
     indicator = document.createElement('div');
+    indicator.dataset.dropIndicator = '';
     indicator.className = 'h-0.5 mx-2 my-0.5 bg-blue-500 rounded pointer-events-none';
   });
 
   grip.addEventListener('pointermove', (e) => {
     if (e.pointerId !== activePointer || !indicator) return;
     const beforeRow = rowAfterY(list, row, e.clientY);
-    if (beforeRow) list.insertBefore(indicator, beforeRow);
+    // Insert the indicator into the SAME container as the row it precedes, so a
+    // drop into a group's indented body reads back as that group.
+    if (beforeRow && beforeRow.parentElement) beforeRow.parentElement.insertBefore(indicator, beforeRow);
     else list.appendChild(indicator);
   });
 
   const finish = (e: PointerEvent) => {
     if (e.pointerId !== activePointer) return;
     const draggedId = row.dataset.partId!;
-    // Build the new order from the indicator's position among the rows.
-    let order: string[] = [];
-    if (indicator && indicator.parentElement === list) {
-      for (const child of Array.from(list.children)) {
-        if (child === indicator) { order.push(draggedId); continue; }
-        const id = (child as HTMLElement).dataset.partId;
-        if (id && id !== draggedId) order.push(id);
+    let layout: PartLayoutEntry[] = [];
+    let newGroup: string | null = null;
+    if (indicator && list.contains(indicator)) {
+      // The group the indicator sits inside (its member body carries data-group);
+      // null when it's at the top level (ungrouped).
+      const groupWrap = indicator.closest('[data-group]') as HTMLElement | null;
+      newGroup = groupWrap?.dataset.group ?? null;
+      // Walk rows + indicator in document order; the dragged part takes the
+      // indicator's slot and its (possibly new) group. Everyone else keeps their
+      // group untouched (bare id).
+      const seq = list.querySelectorAll<HTMLElement>('[data-part-id], [data-drop-indicator]');
+      let placed = false;
+      for (const el of Array.from(seq)) {
+        if (el === indicator) { layout.push({ id: draggedId, group: newGroup }); placed = true; continue; }
+        const id = el.dataset.partId;
+        if (id && id !== draggedId) layout.push(id);
       }
-      if (!order.includes(draggedId)) order.push(draggedId);
+      if (!placed) layout.push({ id: draggedId, group: newGroup });
     }
     try { grip.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
     cleanup();
-    const current = getState().parts.map(p => p.id);
-    if (order.length === current.length && order.some((id, i) => id !== current[i])) {
-      void cb.onReorderParts(order);
+
+    const current = getState().parts;
+    const currentIds = current.map(p => p.id);
+    const newIds = layout.map(le => (typeof le === 'string' ? le : le.id));
+    const draggedPart = current.find(p => p.id === draggedId);
+    const oldGroup = draggedPart?.group?.trim() ?? null;
+    const orderChanged = newIds.length === currentIds.length && newIds.some((id, i) => id !== currentIds[i]);
+    const groupChanged = (newGroup?.trim() ?? null) !== oldGroup;
+    if (layout.length === currentIds.length && (orderChanged || groupChanged)) {
+      void cb.onReorderParts(layout);
     } else {
       render(getState()); // no change — restore opacity/order cleanly
     }
@@ -520,10 +688,13 @@ function attachDragHandlers(grip: HTMLElement, row: HTMLElement, list: HTMLEleme
 }
 
 /** The first part-row whose vertical midpoint is below `y` (i.e. the row the
- *  dragged item should be inserted before), or null to append at the end. */
+ *  dragged item should be inserted before), or null to append at the end.
+ *  Walks every mounted part row (across groups), not just the list's direct
+ *  children, so nested (grouped) rows are valid drop targets too. */
 function rowAfterY(list: HTMLElement, dragged: HTMLElement, y: number): HTMLElement | null {
-  for (const child of Array.from(list.children)) {
-    if (!(child instanceof HTMLElement) || !child.dataset.partId || child === dragged) continue;
+  const rows = list.querySelectorAll<HTMLElement>('[data-part-id]');
+  for (const child of Array.from(rows)) {
+    if (child === dragged) continue;
     const rect = child.getBoundingClientRect();
     if (y < rect.top + rect.height / 2) return child;
   }

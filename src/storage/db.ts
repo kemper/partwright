@@ -65,6 +65,11 @@ export interface Part {
   name: string;
   /** Display order within the session's part list (ascending). */
   order: number;
+  /** Optional group name. Parts sharing a group are threaded together under a
+   *  collapsible group header in the part list. Absent/empty ⇒ ungrouped
+   *  (rendered at the top level). Purely a display grouping — it doesn't affect
+   *  a part's independent version history. @since schema 1.19 */
+  group?: string;
   created: number;
   updated: number;
 }
@@ -704,12 +709,13 @@ export async function deleteSession(id: string): Promise<void> {
 
 // === Parts ===
 
-export async function createPart(sessionId: string, name: string, order: number): Promise<Part> {
+export async function createPart(sessionId: string, name: string, order: number, group?: string): Promise<Part> {
   const part: Part = {
     id: generateId(),
     sessionId,
     name,
     order,
+    ...(group && group.trim() ? { group: group.trim() } : {}),
     created: Date.now(),
     updated: Date.now(),
   };
@@ -726,13 +732,17 @@ export async function listParts(sessionId: string): Promise<Part[]> {
   return parts.sort((a, b) => a.order - b.order);
 }
 
-export async function updatePart(id: string, updates: Partial<Pick<Part, 'name' | 'order' | 'updated'>>): Promise<void> {
+export async function updatePart(id: string, updates: Partial<Pick<Part, 'name' | 'order' | 'group' | 'updated'>>): Promise<void> {
   const store = await tx('parts', 'readwrite');
   const getReq = store.get(id);
   getReq.onsuccess = () => {
     const part = getReq.result as Part | null;
     if (!part) return;
     Object.assign(part, updates);
+    // A blank/absent group means "ungrouped" — drop the field so the record
+    // never carries an empty-string group that would read as a distinct group.
+    if ('group' in updates && !(updates.group && updates.group.trim())) delete part.group;
+    else if (part.group) part.group = part.group.trim();
     store.put(part);
   };
   await txComplete(store.transaction);
@@ -741,16 +751,22 @@ export async function updatePart(id: string, updates: Partial<Pick<Part, 'name' 
 /** Apply a batch of part-order updates in a single transaction so a reorder is
  *  atomic — an interruption can't leave parts with duplicate/partial `order`
  *  values the way N separate transactions could. */
-export async function updatePartOrders(updates: { id: string; order: number }[]): Promise<void> {
+export async function updatePartOrders(updates: { id: string; order: number; group?: string | null }[]): Promise<void> {
   if (updates.length === 0) return;
   const store = await tx('parts', 'readwrite');
   const now = Date.now();
-  for (const { id, order } of updates) {
+  for (const { id, order, group } of updates) {
     const getReq = store.get(id);
     getReq.onsuccess = () => {
       const part = getReq.result as Part | null;
       if (!part) return;
       part.order = order;
+      // `group` present (even null) reassigns membership; absent leaves it as-is
+      // — so an order-only reorder never disturbs existing groups.
+      if (group !== undefined) {
+        if (group && group.trim()) part.group = group.trim();
+        else delete part.group;
+      }
       part.updated = now;
       store.put(part);
     };
