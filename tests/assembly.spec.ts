@@ -53,6 +53,11 @@ test.describe('Assembly view', () => {
     const height = snap.sharedParams.find((p: any) => p.spec.key === 'height');
     expect(height.partIds).toHaveLength(1); // Cylinder only
 
+    // Read-only overview: the editing tool popovers (Tools + Inspect, which hold
+    // paint/surface/measure/cross-section) are hidden while the view is open.
+    await expect(page.locator('#viewport-tools-group')).toHaveClass(/hidden/);
+    await expect(page.locator('#viewport-inspect-group')).toHaveClass(/hidden/);
+
     // A shared edit marks the panel dirty (Save enabled) — live preview committed.
     await page.evaluate(() => {
       const num = document.querySelector('#assembly-params-panel input[type="number"]') as HTMLInputElement;
@@ -61,8 +66,15 @@ test.describe('Assembly view', () => {
     });
     await expect(page.locator('#assembly-params-panel button', { hasText: 'Save' })).toBeEnabled();
 
-    // Closing returns to the single-part editor.
-    await page.evaluate(() => (window as any).partwright.closeAssembly());
+    // Selecting a part from the list exits the overview onto that part, with the
+    // editing tools restored.
+    const sphereId = await page.evaluate(() => (window as any).partwright.listParts().find((p: any) => p.name === 'Sphere').id);
+    // Dismiss the onboarding tour backdrop that can intercept clicks in a fresh profile.
+    await page.evaluate(() => document.querySelectorAll('.tour-backdrop, [class*="tour"]').forEach(e => e.remove()));
+    await page.click(`[data-part-id="${sphereId}"]`);
+    await expect.poll(async () => (await page.evaluate(() => (window as any).partwright.getAssembly())).open).toBe(false);
     await expect(page.locator('#assembly-params-panel')).toHaveCount(0);
+    await expect(page.locator('#viewport-tools-group')).not.toHaveClass(/hidden/);
+    expect(await page.evaluate(() => (window as any).partwright.getCurrentPart()?.name)).toBe('Sphere');
   });
 });

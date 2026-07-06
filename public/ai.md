@@ -564,6 +564,8 @@ partwright.closeAssembly()        // back to the single-part editor
 
 Each part's mesh is built in a **pool of Workers in parallel**, and the grid fills in progressively as parts finish (the current part appears instantly from its live mesh). Parts rest on a common floor, centred in their cells, with a name label.
 
+The Assembly view is **read-only**: the editing tools and cross-section are hidden while it's open (they act on a single part). **Clicking a part** — in the grid or the part list — leaves the overview and opens that part in the normal single-part editor. `Esc` or the `⧉` toggle also exits.
+
 **Shared parameters.** The panel lists the **union** of every part's `api.params` knobs — one row per name. Each row shows **"affects N parts"** (hover for the part names); numeric ranges are the widest across the sharing parts. Changing a value **live-previews** across every part that declares that key; **Save** writes the tweaked values back to each of those parts' latest versions. `getAssembly().sharedParams` returns the same union (`[{spec, partIds, partNames, value, mixed}]`).
 
 > Note: the Assembly grid renders each part's **base executed mesh** — in-code `api.paint`/label colours from the voxel engine carry through, but brush-painted regions and baked surface textures are not re-applied in the grid preview (they remain intact on the part itself).

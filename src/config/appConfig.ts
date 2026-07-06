@@ -354,7 +354,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     sdfCompile: true,
     sdfCompileChunkNodes: 120,
     assemblyPoolSize: 3,
-    assemblyGridGutter: 0.25,
+    assemblyGridGutter: 0.18,
   },
   import: {
     stlWeldTolerance: 1e-5,

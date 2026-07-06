@@ -23,7 +23,7 @@ import { pruneParamValues } from '../geometry/params';
 import type { ImportedMesh } from '../import/importedMesh';
 import { buildInPool, disposeEnginePool } from '../geometry/enginePool';
 import {
-  enterAssemblyMode, exitAssemblyMode, setAssemblyPart, moveAssemblyPart, frameAssembly,
+  enterAssemblyMode, exitAssemblyMode, setAssemblyPart, moveAssemblyPart, frameAssembly, refreshAssemblyBounds,
 } from '../renderer/viewport';
 import { getConfig } from '../config/appConfig';
 import { showToast } from '../ui/toast';
@@ -198,7 +198,11 @@ function onPartBuilt(gen: number, rec: PartRecord, mesh: MeshData, schema: Param
     const c = grid.cells.get(other.partId);
     if (c) moveAssemblyPart(other.partId, c.x, c.y);
   }
+  // Frame once on the first part so the initial view is sensible; after that just
+  // grow the zoom-out bounds as parts arrive (no camera yank), and the final
+  // frameAssembly() in openAssemblyView pulls back to the whole grid.
   if (!framedOnce) { frameAssembly(); framedOnce = true; }
+  else refreshAssemblyBounds();
 }
 
 function layoutGrid() {

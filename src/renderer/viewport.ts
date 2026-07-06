@@ -340,6 +340,21 @@ export function initViewport(container: HTMLElement): {
     }
   }, { capture: true });
 
+  // Assembly-mode part picking: a click (not a drag/orbit) on a part in the grid
+  // selects it. We record the pointer-down position and only treat pointer-up as
+  // a click when it barely moved, so orbiting the grid never triggers a select.
+  let asmDownX = 0, asmDownY = 0, asmDownId = -1;
+  canvas.addEventListener('pointerdown', (event) => {
+    if (!assemblyActive) return;
+    asmDownX = event.clientX; asmDownY = event.clientY; asmDownId = event.pointerId;
+  });
+  canvas.addEventListener('pointerup', (event) => {
+    if (!assemblyActive || event.pointerId !== asmDownId) return;
+    if (Math.hypot(event.clientX - asmDownX, event.clientY - asmDownY) > 5) return; // a drag/orbit
+    const id = pickAssemblyPart(event.clientX, event.clientY);
+    if (id && assemblyClickCb) assemblyClickCb(id);
+  });
+
   // Capture-phase wheel forwarder — re-dispatches wheel events that land on
   // viewport overlays (paint picker panel, toolbar buttons, ...) onto the
   // canvas so OrbitControls' zoom keeps working regardless of cursor location.
@@ -870,6 +885,33 @@ export function meshGLToBufferGeometry(mesh: MeshData): THREE.BufferGeometry {
 // scene, materials, framing, and disposal (so all GPU-resource lifecycle stays
 // in one place, per the renderer-is-a-low-layer rule).
 
+/** Fired when the user clicks a part in the Assembly grid (host opens it). */
+let assemblyClickCb: ((id: string) => void) | null = null;
+export function setOnAssemblyPartClick(fn: (id: string) => void): void {
+  assemblyClickCb = fn;
+}
+
+/** Raycast a screen point against the assembly grid and return the id of the
+ *  part group (`asm:<id>`) hit, or null. */
+function pickAssemblyPart(clientX: number, clientY: number): string | null {
+  if (!assemblyGroup) return null;
+  const rect = renderer.domElement.getBoundingClientRect();
+  ndcForHit.set(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  raycasterForHit.setFromCamera(ndcForHit, camera);
+  const hits = raycasterForHit.intersectObjects(assemblyGroup.children, true);
+  for (const hit of hits) {
+    let o: THREE.Object3D | null = hit.object;
+    while (o) {
+      if (o.name.startsWith('asm:')) return o.name.slice(4);
+      o = o.parent;
+    }
+  }
+  return null;
+}
+
 /** Switch the viewport into Assembly mode: hide the single-part mesh and reveal
  *  the (initially empty) assembly grid. Idempotent. */
 export function enterAssemblyMode(): void {
@@ -961,13 +1003,15 @@ function removeAssemblyPart(id: string): void {
   needsRender = true;
 }
 
-/** Frame the camera to the whole assembly grid's combined bounds. No-op when the
- *  grid is empty. */
-export function frameAssembly(): void {
+/** Update the clip/near/far/grid + zoom-out limit to the grid's *current* bounds
+ *  WITHOUT moving the camera. Called on every part as the grid fills so the user
+ *  can immediately zoom out to whatever has rendered so far (the "can't zoom out
+ *  until it's all rendered" fix), without the camera yanking mid-fill. No-op when
+ *  the grid is empty. */
+export function refreshAssemblyBounds(): void {
   if (!assemblyGroup) return;
   const box = new THREE.Box3().setFromObject(assemblyGroup);
   if (box.isEmpty()) return;
-  const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z);
   if (!Number.isFinite(maxDim) || maxDim <= 0) return;
@@ -978,6 +1022,28 @@ export function frameAssembly(): void {
   lastGridScale = (maxDim * getConfig().renderer.gridRoomFactor) / div;
   grid.scale.setScalar(lastGridScale);
 
+  camera.near = Math.max(0.05, maxDim * 0.005);
+  camera.far = Math.max(1000, maxDim * 50);
+  camera.updateProjectionMatrix();
+  // Extra-generous so the user can always pull back far enough to see the whole
+  // grid even before the final frame settles.
+  controls.maxDistance = maxDim * getConfig().renderer.maxZoomOutFactor * 1.5;
+  controls.update();
+  needsRender = true;
+}
+
+/** Frame the camera to the whole assembly grid's combined bounds (and refresh
+ *  its bounds). No-op when the grid is empty. */
+export function frameAssembly(): void {
+  if (!assemblyGroup) return;
+  const box = new THREE.Box3().setFromObject(assemblyGroup);
+  if (box.isEmpty()) return;
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) return;
+
+  refreshAssemblyBounds();
   controls.target.copy(center);
   const frameFactor = getConfig().renderer.defaultFrameFactor;
   camera.position.set(
@@ -985,10 +1051,6 @@ export function frameAssembly(): void {
     center.y - maxDim * frameFactor,
     center.z + maxDim * frameFactor,
   );
-  camera.near = Math.max(0.05, maxDim * 0.005);
-  camera.far = Math.max(1000, maxDim * 50);
-  camera.updateProjectionMatrix();
-  controls.maxDistance = maxDim * getConfig().renderer.maxZoomOutFactor;
   controls.update();
   needsRender = true;
 }

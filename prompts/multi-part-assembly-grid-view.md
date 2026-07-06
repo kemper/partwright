@@ -113,6 +113,29 @@ Three should-fix findings, all addressed:
 Plus nits: fixed the `ai.md` toggle glyph (▦→⧉, ▦ is the separate Overview) and
 a redundant `setSaving` line.
 
+### UX rework (user feedback round)
+
+The user tried the first cut and asked for it to become a proper read-only
+overview (chose "Direction A" over full multi-part editing, which is tracked as
+a future direction). Changes:
+
+- **Framing/zoom**: split `frameAssembly` into `refreshAssemblyBounds` (grows
+  clip/near/far + zoom-out limit to the current grid as parts arrive, no camera
+  yank) and the full-frame. The grid now frames on the first part, grows its
+  zoom-out limit each subsequent part, and pulls back to the whole grid at the
+  end — fixing "can't zoom out until everything rendered". Gutter tightened.
+- **Read-only chrome**: entering the view hides the `#viewport-inspect-group` +
+  `#viewport-tools-group` popovers (every mutate tool + Measure + Cross-Section)
+  and turns cross-section off (restored on exit); the `⧉ All parts` toggle moved
+  out of the Tools popover to a standalone toolbar pill so it stays reachable.
+- **Click-to-open**: added raycast picking on the grid (`setOnAssemblyPartClick`)
+  — clicking a part in the grid OR the part list closes the overview and opens
+  that part in the normal editor. Fixes the "camera wanders when I select a
+  part" bug.
+
+Verified in-browser: overview shows all parts framed with the tool row gone;
+selecting a part exits to it with tools restored.
+
 ### Original browser verification
 
 Verified in a real browser (Playwright spec → screenshots): a 3-part session
