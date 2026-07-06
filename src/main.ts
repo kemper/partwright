@@ -31,7 +31,7 @@ import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel'
 import { viewportToolsMount, openPopoverGroupById } from './ui/popoverMenu';
 import { TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './ui/toolPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, resetView, onOrbitEnd } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setMeshTexture, hasMeshTexture, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, setStudioLighting, isStudioLighting, onStudioLightingChange, resetView, onOrbitEnd } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -256,6 +256,7 @@ import { fitRegionShape } from './color/regionFit';
 import { createSelection as createPaintSelection, getSelection as getPaintSelection, listSelections as storeListSelections, removeSelection as storeRemoveSelection, renameSelection as storeRenameSelection, addRefinement, popRefinement, resolveSelection as resolvePaintSelection, type SelectorNode, type RefineOp } from './color/selections';
 import { partitionTriangles, type PartitionSpec } from './color/partition';
 import { buildPaletteSnapper, tallyProjectionVotes, buildScopeEdgeAdjacency, fillUnvotedFromNeighbors, fillFromNearestPainted, despeckleColors, triangleFacing, getProjectionConfidence, projectionRegionRegistry, BACKGROUND_VOTE, OFF_IMAGE, WINNER_UNPAINTED, WINNER_NO_PIXELS } from './color/idProjection';
+import { bakeTextureAtlas as bakeAtlasKernel, type BakeViewInput } from './color/textureBake';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
 import { cylinderRefineRegion, findCylinderTriangles, type CylinderAxis } from './color/cylinderPaint';
@@ -16215,6 +16216,119 @@ async function main() {
       };
     },
 
+    /** EXPERIMENTAL (#885): bake AI-painted view images into a PER-PIXEL
+     *  texture atlas — the continuous-color layer on top of palette-region
+     *  paint. Every triangle owns one atlas cell (formula UVs, no unwrap);
+     *  each texel samples the best-facing view whose triangle-ID buffer
+     *  PROVES visibility, in continuous RGB (no palette snap); everything
+     *  unverified falls back to the current palette paint, so an unreliable
+     *  image can never poison correct paint. The result is stored as a
+     *  session attachment (label `texture-atlas:...`) and the viewport
+     *  renders it live; it survives export/import with the session.
+     *  Print paint still comes from the region layer — this is display.
+     *
+     *  Each view = { image, view: {elevation, azimuth}, within?, priority? }
+     *  where `image` is the SAME data URL projected in the paint loop and
+     *  `view`/`within` are the specs its source render used. */
+    async bakeTextureAtlas(opts: {
+      views: Array<{
+        image: string;
+        view: { elevation?: number; azimuth?: number; ortho?: boolean };
+        within?: { island?: number; selection?: string | number; region?: number };
+        priority?: number;
+      }>;
+      atlasSize?: number;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!opts || typeof opts !== 'object' || !Array.isArray(opts.views) || opts.views.length === 0) {
+        return { error: 'bakeTextureAtlas requires { views: [{image, view, within?}] } with at least one view.' };
+      }
+      const atlasSize = opts.atlasSize ?? 8192;
+      if (![2048, 4096, 8192].includes(atlasSize)) return { error: 'atlasSize must be 2048, 4096, or 8192.' };
+      const mesh = currentMeshData;
+      const grid = Math.floor(atlasSize / 8);
+      if (mesh.numTri > grid * grid) return { error: `mesh has ${mesh.numTri} triangles — more than the ${atlasSize} atlas grid holds (${grid * grid}).` };
+
+      const loadPixelsB = (dataUrl: string): Promise<{ data: Uint8ClampedArray; w: number; h: number }> => new Promise((resolveP, rejectP) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth; c.height = img.naturalHeight;
+          const cx2 = c.getContext('2d')!;
+          cx2.drawImage(img, 0, 0);
+          resolveP({ data: cx2.getImageData(0, 0, c.width, c.height).data, w: c.width, h: c.height });
+        };
+        img.onerror = () => rejectP(new Error('image failed to decode'));
+        img.src = dataUrl;
+      });
+
+      const bakeViews: BakeViewInput[] = [];
+      for (let i = 0; i < opts.views.length; i++) {
+        const v = opts.views[i];
+        if (!v || typeof v.image !== 'string' || !v.image.startsWith('data:image/')) return { error: `views[${i}].image must be a data URL.` };
+        if (!v.view || typeof v.view !== 'object') return { error: `views[${i}].view must give the source render's {elevation, azimuth}.` };
+        let scope: number[];
+        if (v.within !== undefined) {
+          const resolved = resolveWithin(v.within);
+          if (resolved === null) return { error: `views[${i}].within did not resolve.` };
+          if ('error' in resolved) return resolved;
+          scope = [...resolved.triangles];
+        } else {
+          scope = Array.from({ length: mesh.numTri }, (_, k) => k);
+        }
+        let image: { data: Uint8ClampedArray; w: number; h: number };
+        try {
+          image = await loadPixelsB(v.image);
+        } catch {
+          return { error: `views[${i}].image failed to decode.` };
+        }
+        bakeViews.push({
+          image,
+          elevation: v.view.elevation ?? 30,
+          azimuth: v.view.azimuth ?? 315,
+          scope,
+          priority: v.priority ?? 1,
+        });
+      }
+
+      const base = buildTriColors(mesh.numTri);
+      const result = bakeAtlasKernel(mesh, bakeViews, { atlasSize, baseTriColors: base ?? null });
+
+      // Persist as a session attachment (WebP — flat regions compress well)
+      // and activate in the viewport. The label carries the decode recipe.
+      const ac = document.createElement('canvas');
+      ac.width = atlasSize; ac.height = atlasSize;
+      ac.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(result.atlas.buffer as ArrayBuffer), atlasSize, atlasSize), 0, 0);
+      const webpUrl = ac.toDataURL('image/webp', 0.9);
+      const label = `texture-atlas:${atlasSize}:${result.grid}:${mesh.numTri}`;
+      for (const a of _getAttachments()) {
+        if (a.label?.startsWith('texture-atlas:')) partwrightAPI.removeAttachment(a.id);
+      }
+      const stored = partwrightAPI.addAttachment({ src: webpUrl, label, kind: 'image' });
+      await activateTextureAtlasFromAttachments();
+      return {
+        stats: result.stats,
+        atlasSize,
+        grid: result.grid,
+        attachmentId: (stored as { id?: string }).id,
+        webpBytes: Math.round((webpUrl.length - 23) * 3 / 4),
+        nextStep: 'The viewport now renders the baked texture (saveVersion + export carry it via the attachment). clearTextureAtlas() reverts to palette paint.',
+      };
+    },
+
+    /** Remove the baked texture layer and revert to palette-region paint. */
+    clearTextureAtlas() {
+      let removed = 0;
+      for (const a of _getAttachments()) {
+        if (a.label?.startsWith('texture-atlas:')) {
+          if (partwrightAPI.removeAttachment(a.id)) removed++;
+        }
+      }
+      setMeshTexture(null);
+      scheduleColorRefresh();
+      return { removed };
+    },
+
     /** Fit an ANALYTIC shape (plane / circle-disc / sphere) to a detected
      *  region's boundary. This is the fan-bleed killer: a `detectRegions`
      *  region's raw triangle set has a ragged tessellation-following
@@ -17827,6 +17941,8 @@ async function main() {
 'paintByImageProjection': { signature: 'paintByImageProjection({image, view, within, palette, mode?, minFacing?, namePrefix?}) -> {painted, coverage, skipped, pixels, alignment, regions} -- EXPERIMENTAL (#885): back-project an AI-repainted render onto the mesh as palette-snapped paint regions via a triangle-ID buffer: exact z-buffer occlusion, per-pixel majority voting (no speckle), pinhole fill from agreeing neighbors. Render a view (ortho), have an image model repaint it, hand the repainted data URL back with the SAME view spec. Multi-view loop: render paint-so-far (showPaint), have the model complete the gray areas matching existing colors, project with mode bestFacing (default; better-facing view wins per triangle) or fillGaps (never touches painted triangles) until coverage converges.', docs: '/ai/colors.md' },
 'paintFillRemaining': { signature: 'paintFillRemaining({within, namePrefix?}) -> {filled, unreachable, regions} -- EXPERIMENTAL (#885): finish a multi-view projection by giving every unpainted triangle in scope the color of its nearest painted neighbor (multi-source BFS). Deterministic — the deep occlusions no view covers inherit their surroundings. Run auditPaint() after.', docs: '/ai/colors.md' },
 'renderSelection': { signature: 'renderSelection({selection, view?, size?, showPaint?}) -> {dataUrl, view, triangleCount} -- Render a NAMED SELECTION framed on its own bbox with current paint (the selection twin of renderIsland). The returned view spec is exactly what paintByImageProjection needs back with the repainted image.', docs: '/ai/colors.md' },
+'bakeTextureAtlas': { signature: 'await bakeTextureAtlas({views: [{image, view, within?, priority?}], atlasSize?}) -> {stats, attachmentId} -- EXPERIMENTAL (#885): bake AI-painted view images into a PER-PIXEL texture atlas rendered live by the viewport. Continuous RGB where a view PROVABLY sees a triangle (ID-buffer visibility); palette paint everywhere else, so bad images cannot poison correct paint. Persists as a texture-atlas: attachment (survives export/import). Display layer only; print paint stays in regions.', docs: '/ai/colors.md' },
+'clearTextureAtlas': { signature: 'clearTextureAtlas() -- Remove the baked texture layer and revert the viewport to palette-region paint.', docs: '/ai/colors.md' },
 'paintDespeckle': { signature: 'paintDespeckle({within, minTriangles?, namePrefix?}) -> {changed, regions} -- EXPERIMENTAL (#885): absorb tiny DISCONNECTED paint fragments (projection assignment noise) into their dominant larger neighbor color. Whole components only, upward only — connected thin features (outline rings, seams) are safe. Default threshold 40 triangles. Run after the projection loop; then auditPaint().', docs: '/ai/colors.md' },
 'fitRegionShape':  { signature: 'fitRegionShape({triangleIds}) -> {best, circle: {center, axis, radius, rms}, sphere?, plane, nextStep} -- Fit an ANALYTIC disc/sphere/plane to a detected region\'s boundary. THE fan-bleed killer: sculpted features are usually clean discs — fit one, then paint it via paintDisc/paintRegionFitted instead of painting the ragged triangle set.', docs: '/ai/colors.md' },
         'paintRegionFitted': { signature: 'paintRegionFitted({triangleIds, color, pad?=1.0, thickness?, name?, force?}) -- One call: fit a disc to the region boundary and paint it with a crisp analytic edge. Refuses when the fit is poor (feature isn\'t disc-like) unless force: true.', docs: '/ai/colors.md' },
@@ -18757,6 +18873,35 @@ async function main() {
    *  next frame boundary. Each sub-renderer is 50-150ms on complex meshes,
    *  so this was a primary source of the "page unresponsive" warning. */
   let paintRefreshPending = false;
+  /** Find a `texture-atlas:` attachment matching the current mesh and load
+   *  it into the viewport (EXPERIMENTAL, #885). Called after bakes and on
+   *  attachment changes (session open/import) — the attachment IS the
+   *  persistence, so a reopened session re-textures automatically. */
+  async function activateTextureAtlasFromAttachments(): Promise<void> {
+    const att = _getAttachments().find(a => a.label?.startsWith('texture-atlas:'));
+    if (!att || !currentMeshData) {
+      if (hasMeshTexture()) { setMeshTexture(null); scheduleColorRefresh(); }
+      return;
+    }
+    const parts = att.label!.split(':');
+    const atlasSize = Number(parts[1]), grid = Number(parts[2]), numTri = Number(parts[3]);
+    if (!Number.isFinite(atlasSize) || !Number.isFinite(grid) || numTri !== currentMeshData.numTri) {
+      if (hasMeshTexture()) { setMeshTexture(null); scheduleColorRefresh(); }
+      return;
+    }
+    await new Promise<void>((resolveP) => {
+      const img = new Image();
+      img.onload = () => {
+        setMeshTexture({ image: img, atlasSize, grid, numTri });
+        scheduleColorRefresh();
+        resolveP();
+      };
+      img.onerror = () => resolveP();
+      img.src = att.src;
+    });
+  }
+  window.addEventListener('images-changed', () => { void activateTextureAtlasFromAttachments(); });
+
   function scheduleColorRefresh(): void {
     if (paintRefreshPending) return;
     paintRefreshPending = true;

@@ -4,6 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import type { MeshData } from '../geometry/types';
 import { createWireframeMaterial } from './materials';
+import { cellUVsForTriangle } from './atlasUV';
 import { studioPresetFor, makeGradientTexture, createStudioMaterial, isSoftwareRenderer, type StudioPreset } from './studioEnv';
 import { initMeasureOverlay } from './measureOverlay';
 import { initOrientationGizmo, renderGizmo, updateGizmo, isGizmoAnimating } from './orientationGizmo';
@@ -502,6 +503,58 @@ export function setOnMeshUpdate(fn: (mesh: MeshData) => void): void {
   onMeshUpdate = fn;
 }
 
+// === Baked texture layer (EXPERIMENTAL, #885) =============================
+// When set, updateMesh renders the solid mesh with this atlas texture over
+// per-triangle-cell UVs (see renderer/atlasUV.ts) instead of vertex colors.
+// numTri guards staleness: the formula UVs are only meaningful for the mesh
+// the atlas was baked against, so a re-run that changes the triangle count
+// silently falls back to the vertex-color path.
+let meshTexture: { texture: THREE.Texture; atlasSize: number; grid: number; numTri: number } | null = null;
+
+export function setMeshTexture(spec: { image: TexImageSource; atlasSize: number; grid: number; numTri: number } | null): void {
+  if (meshTexture) {
+    meshTexture.texture.dispose();
+    meshTexture = null;
+  }
+  if (spec) {
+    const texture = new THREE.Texture(spec.image);
+    texture.flipY = true;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
+    meshTexture = { texture, atlasSize: spec.atlasSize, grid: spec.grid, numTri: spec.numTri };
+  }
+}
+
+export function hasMeshTexture(): boolean {
+  return meshTexture !== null;
+}
+
+/** Unindexed geometry with formula UVs for the baked-texture path. */
+function meshToTexturedGeometry(mesh: MeshData, atlasSize: number, grid: number): THREE.BufferGeometry {
+  const { vertProperties, triVerts, numProp, numTri } = mesh;
+  const positions = new Float32Array(numTri * 9);
+  const uvs = new Float32Array(numTri * 6);
+  for (let t = 0; t < numTri; t++) {
+    const corners = cellUVsForTriangle(t, atlasSize, grid);
+    for (let c = 0; c < 3; c++) {
+      const vert = triVerts[t * 3 + c];
+      positions[t * 9 + c * 3] = vertProperties[vert * numProp];
+      positions[t * 9 + c * 3 + 1] = vertProperties[vert * numProp + 1];
+      positions[t * 9 + c * 3 + 2] = vertProperties[vert * numProp + 2];
+      uvs[t * 6 + c * 2] = corners[c][0];
+      uvs[t * 6 + c * 2 + 1] = corners[c][1];
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 export function clearMesh(): void {
   while (meshGroup.children.length > 0) {
     const child = meshGroup.children[0];
@@ -528,10 +581,17 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
     }
   }
 
-  const geometry = meshGLToBufferGeometry(meshData);
+  const textured = meshTexture !== null && meshTexture.numTri === meshData.numTri;
+  const geometry = textured
+    ? meshToTexturedGeometry(meshData, meshTexture!.atlasSize, meshTexture!.grid)
+    : meshGLToBufferGeometry(meshData);
   const hasColors = geometry.hasAttribute('color');
 
   const solidMat = createStudioMaterial(studioPreset, hasColors);
+  if (textured) {
+    solidMat.map = meshTexture!.texture;
+    solidMat.needsUpdate = true;
+  }
   const wireMat = createWireframeMaterial();
 
   // Apply clipping planes to materials
