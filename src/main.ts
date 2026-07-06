@@ -9845,23 +9845,45 @@ async function main() {
         }
         const q = opts?.quality ?? 'standard';
         if (!['draft', 'standard', 'fine'].includes(q)) return { error: `convertToCode: quality must be 'draft'|'standard'|'fine' (got ${String(q)})` };
-        for (const k of ['step', 'edge', 'dpTol', 'samples'] as const) {
+        for (const k of ['step', 'edge', 'dpTol'] as const) {
           const v = opts?.[k];
           if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v <= 0)) {
             return { error: `convertToCode: ${k} must be a positive, finite number (got ${String(v)})` };
           }
         }
+        if (opts?.samples !== undefined && (!Number.isInteger(opts.samples) || opts.samples < 100 || opts.samples > 200000)) {
+          return { error: `convertToCode: samples must be an integer in 100..200000 (got ${String(opts.samples)})` };
+        }
         const budget = Math.round(getConfig().import.reconstructCellBudget * (q === 'draft' ? 0.25 : q === 'fine' ? 4 : 1));
         // Capture the source soup BEFORE the run replaces the model.
         const source = toTriangleSoup(currentMeshData);
-        showToast('Analyzing sections…', { variant: 'neutral', source: 'reconstruct' });
-        const generated = await generateCodeInWorker(source, {
-          cellBudget: budget,
-          step: opts?.step,
-          edge: opts?.edge,
-          dpTol: opts?.dpTol,
-          sourceName: getActiveImports()[0]?.filename,
-        });
+        // Slicing a large mesh runs for seconds in the Worker — own the shared
+        // inline "Rendering… Xs" + Cancel (same slots as the engrave carve) so
+        // the user gets live feedback and a real interrupt, not a fading toast.
+        surfaceCarveAbort?.abort();              // supersede an in-flight owner
+        const abort = new AbortController();
+        surfaceCarveAbort = abort;
+        surfaceCarveCancel = () => abort.abort();
+        startRunTimer(performance.now());
+        let generated;
+        try {
+          generated = await generateCodeInWorker(source, {
+            cellBudget: budget,
+            step: opts?.step,
+            edge: opts?.edge,
+            dpTol: opts?.dpTol,
+            sourceName: getActiveImports()[0]?.filename,
+          }, { signal: abort.signal });
+        } finally {
+          // Only the current owner may clear the indicator — a superseded call
+          // must not hide the timer the newer one just started.
+          if (surfaceCarveAbort === abort) {
+            stopRunTimer();
+            setStatus(statusBar, 'ready', 'Ready');
+            surfaceCarveAbort = null;
+            surfaceCarveCancel = null;
+          }
+        }
         const saved = await partwrightAPI.runAndSave(generated.code, `convert to code (${q})`) as { error?: string; version?: unknown; geometry?: unknown };
         if (saved.error) return { error: `generated code failed to run: ${saved.error}`, stats: generated.stats };
         if (!currentMeshData) return { error: 'conversion ran but produced no mesh', stats: generated.stats };
