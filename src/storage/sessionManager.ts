@@ -23,6 +23,7 @@ import {
   listParts as dbListParts,
   updatePart as dbUpdatePart,
   updatePartOrders as dbUpdatePartOrders,
+  updatePartGroups as dbUpdatePartGroups,
   deletePart as dbDeletePart,
   deleteParts as dbDeleteParts,
   addNote as dbAddNote,
@@ -1180,9 +1181,9 @@ export async function setPartGroup(partIds: string[], group: string | null): Pro
 
   const clean = group && group.trim() ? group.trim() : null;
   const now = Date.now();
-  for (const p of targets) {
-    await dbUpdatePart(p.id, { group: clean ?? '', updated: now });
-  }
+  // One transaction for the whole selection so a multi-part group action is
+  // atomic (never leaves half the selection grouped on an interruption).
+  await dbUpdatePartGroups(targets.map(p => p.id), clean);
 
   const next = currentState.parts.map(p => {
     if (!idSet.has(p.id)) return p;

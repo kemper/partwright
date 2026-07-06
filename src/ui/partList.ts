@@ -642,36 +642,44 @@ function attachDragHandlers(grip: HTMLElement, row: HTMLElement, list: HTMLEleme
   const finish = (e: PointerEvent) => {
     if (e.pointerId !== activePointer) return;
     const draggedId = row.dataset.partId!;
-    let layout: PartLayoutEntry[] = [];
+    const current = getState().parts;
+    const currentIds = current.map(p => p.id);
+
+    let layout: PartLayoutEntry[] | null = null;
     let newGroup: string | null = null;
     if (indicator && list.contains(indicator)) {
       // The group the indicator sits inside (its member body carries data-group);
       // null when it's at the top level (ungrouped).
       const groupWrap = indicator.closest('[data-group]') as HTMLElement | null;
       newGroup = groupWrap?.dataset.group ?? null;
-      // Walk rows + indicator in document order; the dragged part takes the
-      // indicator's slot and its (possibly new) group. Everyone else keeps their
-      // group untouched (bare id).
-      const seq = list.querySelectorAll<HTMLElement>('[data-part-id], [data-drop-indicator]');
-      let placed = false;
-      for (const el of Array.from(seq)) {
-        if (el === indicator) { layout.push({ id: draggedId, group: newGroup }); placed = true; continue; }
-        const id = el.dataset.partId;
-        if (id && id !== draggedId) layout.push(id);
+
+      // The first mounted part row AFTER the indicator (skipping the dragged
+      // row) is where the dragged part lands "before". Only visible rows are in
+      // the DOM — collapsed groups render no member rows — so we resolve the
+      // drop against the FULL part list rather than requiring every part to be
+      // mounted. This keeps collapsed-group members in the layout (otherwise a
+      // single collapsed group would shorten the layout and no-op every drag).
+      const seq = Array.from(list.querySelectorAll<HTMLElement>('[data-part-id], [data-drop-indicator]'));
+      const idx = seq.indexOf(indicator);
+      let beforeId: string | null = null;
+      for (let i = idx + 1; i < seq.length; i++) {
+        const id = seq[i].dataset.partId;
+        if (id && id !== draggedId) { beforeId = id; break; }
       }
-      if (!placed) layout.push({ id: draggedId, group: newGroup });
+      const without = currentIds.filter(id => id !== draggedId);
+      const at = beforeId ? without.indexOf(beforeId) : without.length;
+      const insertAt = at < 0 ? without.length : at;
+      const newIds = [...without.slice(0, insertAt), draggedId, ...without.slice(insertAt)];
+      layout = newIds.map(id => (id === draggedId ? { id, group: newGroup } : id));
     }
     try { grip.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
     cleanup();
 
-    const current = getState().parts;
-    const currentIds = current.map(p => p.id);
-    const newIds = layout.map(le => (typeof le === 'string' ? le : le.id));
-    const draggedPart = current.find(p => p.id === draggedId);
-    const oldGroup = draggedPart?.group?.trim() ?? null;
-    const orderChanged = newIds.length === currentIds.length && newIds.some((id, i) => id !== currentIds[i]);
+    const newIds = layout ? layout.map(le => (typeof le === 'string' ? le : le.id)) : currentIds;
+    const oldGroup = current.find(p => p.id === draggedId)?.group?.trim() ?? null;
+    const orderChanged = newIds.some((id, i) => id !== currentIds[i]);
     const groupChanged = (newGroup?.trim() ?? null) !== oldGroup;
-    if (layout.length === currentIds.length && (orderChanged || groupChanged)) {
+    if (layout && (orderChanged || groupChanged)) {
       void cb.onReorderParts(layout);
     } else {
       render(getState()); // no change — restore opacity/order cleanly

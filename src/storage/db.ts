@@ -774,6 +774,27 @@ export async function updatePartOrders(updates: { id: string; order: number; gro
   await txComplete(store.transaction);
 }
 
+/** Assign (or clear, when `group` is null/blank) the group of several parts in
+ *  a single transaction, so a multi-part group action either fully commits or
+ *  fully rolls back. No-op for an empty list. */
+export async function updatePartGroups(ids: string[], group: string | null): Promise<void> {
+  if (ids.length === 0) return;
+  const clean = group && group.trim() ? group.trim() : null;
+  const store = await tx('parts', 'readwrite');
+  const now = Date.now();
+  for (const id of ids) {
+    const getReq = store.get(id);
+    getReq.onsuccess = () => {
+      const part = getReq.result as Part | null;
+      if (!part) return;
+      if (clean) part.group = clean; else delete part.group;
+      part.updated = now;
+      store.put(part);
+    };
+  }
+  await txComplete(store.transaction);
+}
+
 export async function deletePart(id: string): Promise<void> {
   await deleteParts([id]);
 }
