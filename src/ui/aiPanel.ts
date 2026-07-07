@@ -34,7 +34,7 @@ import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
-import { repairToolHistory, hasOrphanedToolCalls } from '../ai/historyRepair';
+import { repairToolHistory, hasOrphanedToolCalls, isToolHistoryMismatchError } from '../ai/historyRepair';
 import { cancelCurrentExecution } from '../geometry/engine';
 import { errorLog } from '../diagnostics/errorLog';
 import { showToast } from './toast';
@@ -2263,19 +2263,22 @@ function renderErrorBubble(msg: ChatMessage): HTMLElement {
   const retryBtn = document.createElement('button');
   retryBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
   retryBtn.textContent = '↻ Retry';
-  retryBtn.title = 'Resume the agent from where it failed — all completed work above is kept, nothing is replayed.';
+  retryBtn.title = 'Resume the agent from where it failed — completed work above is kept, and any interrupted tool call is auto-repaired first so the resend can\'t trip the same tool-history 400.';
   retryBtn.addEventListener('click', () => { void retryFailedTurn(msg.id); });
   actions.appendChild(retryBtn);
 
   // When the failure is a wedged tool-history invariant (an orphaned tool_use
-  // with no matching tool_result — the unrecoverable provider 400 that even a
-  // rewind couldn't escape), offer a one-click repair right where the user is
-  // stuck. The button only appears when there's actually something to fix.
-  if (hasOrphanedToolCalls(state.history)) {
+  // with no matching tool_result — the provider 400 that even a rewind couldn't
+  // escape), offer a one-click repair right where the user is stuck. Show it
+  // whenever the persisted history has something to fix OR the error text is a
+  // tool-mismatch 400 (so the manual escape hatch appears for this failure
+  // class even in an edge shape the persisted-history detector misses).
+  const errText = msg.blocks.find(b => b.type === 'text')?.text ?? '';
+  if (hasOrphanedToolCalls(state.history) || isToolHistoryMismatchError(errText)) {
     const repairBtn = document.createElement('button');
     repairBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
     repairBtn.textContent = '🛠 Repair history';
-    repairBtn.title = 'Fix orphaned tool calls left by an interrupted turn so this chat can send again. Nothing is deleted — the incomplete calls are just marked as failed.';
+    repairBtn.title = 'Fix orphaned tool calls left by an interrupted turn so this chat can send again. Nothing is deleted — the incomplete calls are just marked as failed. (Retry now does this automatically too.)';
     repairBtn.addEventListener('click', () => { void repairCurrentChat(); });
     actions.appendChild(repairBtn);
   }
@@ -3464,6 +3467,18 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
   // unavailable), and recording it would erase the real preference instead of
   // letting it snap back. The preference is recorded only on a deliberate model
   // / provider pick (the picker + settings/local modals below).
+
+  // Self-heal a wedged tool-history invariant before every send. An interrupted
+  // turn (Stop, stall watchdog, spend cap, crash, or a mid-turn session switch)
+  // can leave an orphaned assistant tool_use with no matching tool_result
+  // persisted in history; every hosted provider then 400s on that shape on
+  // EVERY subsequent send — including a plain Retry — until the stored messages
+  // themselves are fixed. Repairing here (a no-op on already-clean history)
+  // makes both a normal send and the Retry/Keep-going buttons auto-recover
+  // instead of looping on the same 400. This is the automatic counterpart to
+  // the explicit /repair command and the error-bubble "Repair history" button.
+  await persistToolHistoryRepair();
+
   while (true) {
     attempt++;
     const controller = new AbortController();
