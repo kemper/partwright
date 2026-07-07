@@ -252,10 +252,10 @@ export function showExportPartsModal(
 
       const layoutOpts: { value: BambuPlateLayout; label: string; hint: string }[] = [
         { value: 'separate', label: 'Separate plates', hint: 'One part per build plate.' },
-        { value: 'grid', label: 'Single plate (grid)', hint: 'All selected parts arranged on one plate.' },
+        { value: 'grid', label: 'Packed together', hint: 'All parts packed to fit the plate, spilling onto more plates as needed.' },
       ];
       if (hasGroups) {
-        layoutOpts.push({ value: 'group', label: 'Group per plate', hint: 'Each group on its own plate; ungrouped parts print separately.' });
+        layoutOpts.push({ value: 'group', label: 'Group per plate', hint: 'Each group packed onto its own plate(s); ungrouped parts print separately.' });
       }
       for (const opt of layoutOpts) {
         const row = document.createElement('label');

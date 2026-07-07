@@ -320,6 +320,46 @@ test.describe('multi-part 3MF export', () => {
     expect(out.groupPlates).toBe(3);
   });
 
+  test('packed layout keeps a big-part+small-parts mix within the plate footprint', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForTimeout(3000);
+
+    // The reported bug: one large part + several small ones in a packed layout
+    // ballooned the whole grid off the plate (old uniform-max-pitch grid). With
+    // shelf packing, all parts must sit inside a single plate cell's bed footprint.
+    const out = await page.evaluate(async () => {
+      const { build3MFProject } = await import('/src/export/threemfProject.ts');
+      // A part is a single triangle sized w×d (X width, Y depth).
+      const makePart = (name: string, w: number, d: number) => ({
+        name,
+        mesh: {
+          vertProperties: new Float32Array([0, 0, 0, w, 0, 0, 0, d, 0]),
+          triVerts: new Uint32Array([0, 1, 2]), numVert: 3, numTri: 1, numProp: 3,
+        },
+      });
+      const parts = [
+        makePart('big', 180, 180),
+        makePart('s1', 15, 15), makePart('s2', 15, 15),
+        makePart('s3', 15, 15), makePart('s4', 15, 15),
+      ];
+      // H2C bed is 330×320; packed onto one plate they should all fit.
+      const built = build3MFProject(parts, { bambu: true, plateLayout: 'grid' });
+      const text = await built.blob.arrayBuffer().then(a => new TextDecoder().decode(new Uint8Array(a)));
+      const plates = (text.match(/<plate>/g) ?? []).length;
+      // Item translation is the part CENTRE minus its own centroid; the packed
+      // centres all live within one bed footprint, so the centre X spread must be
+      // well under the plate stride (396 for H2C) — proof they didn't balloon out.
+      const txs = [...text.matchAll(/<item objectid="\d+"[^>]*transform="([^"]+)"/g)]
+        .map(m => Number(m[1].trim().split(/\s+/)[9]));
+      const spanX = Math.max(...txs) - Math.min(...txs);
+      return { plates, spanX, count: txs.length };
+    });
+
+    expect(out.count).toBe(5);
+    expect(out.plates).toBe(1);           // all five packed onto ONE plate
+    expect(out.spanX).toBeLessThan(330);  // centres stay within the H2C bed width (no balloon)
+  });
+
   test('printer selection swaps the base + stamps identity/bed (H2C dual vs P1S single)', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForTimeout(3000);

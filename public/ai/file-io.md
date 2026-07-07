@@ -43,10 +43,10 @@ In Bambu mode you can pick the target machine (these match the export modal's dr
 - **`printer`** — dual-nozzle: `"h2c"` (default), `"h2d"`, `"h2dpro"`, `"x2d"`; single-nozzle: `"h2s"`, `"a2l"`, `"x1c"`, `"x1e"`, `"x1"`, `"p1s"`, `"p1p"`, `"p2s"`, `"a1"`, `"a1mini"`. Sets the printer profile + bed + process so Bambu opens it natively without converting.
 - **`nozzle`** — `"0.2"` | `"0.4"` (default) | `"0.6"` | `"0.8"`.
 - **`filament`** — `"pla"` (default) | `"petg"` | `"abs"` | `"asa"` | `"tpu"` | `"pc"`. One material for all colours; sets the filament type + temps.
-- **`plateLayout`** — how selected parts spread across build plates:
+- **`plateLayout`** — how selected parts spread across build plates. `"grid"` / `"group"` **shelf-pack** parts by their real footprint into the printer's bed, spilling onto extra plates when they don't all fit (so nothing lands off the plate):
   - `"separate"` (default) — **one part per plate**. Best for a handful of parts; unwieldy past ~30.
-  - `"grid"` — **all parts on a single plate**, arranged in a grid. Best for small parts you want to print together in one job.
-  - `"group"` — **each part group on its own plate** (parts sharing a `group`; ungrouped parts print separately). Best for large collections organised into groups.
+  - `"grid"` — **all parts packed together**, filling each plate before starting the next. Best for many small parts you want to print in as few jobs as possible.
+  - `"group"` — **each part group packed onto its own plate(s)** (parts sharing a `group`; ungrouped parts print separately). A group too big for one bed spills onto more plates. Best for large collections organised into groups.
 
 ```js
 // Every part in the session, one per Bambu plate (default H2C / 0.4 / PLA):
