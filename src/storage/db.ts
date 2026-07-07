@@ -205,7 +205,7 @@ const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
 const PARTS_MIGRATION_KEY = 'partwright-migrated-parts';
-const DB_VERSION = 8;
+const DB_VERSION = 9;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -304,6 +304,15 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('exportInbox')) {
         db.createObjectStore('exportInbox', { keyPath: 'id' });
+      }
+      // v9: external backup-sync targets. One row per target id ('local' /
+      // 'drive') holds the connection state — a File System Access directory
+      // handle (structured-clone-able, survives reload) for the local target,
+      // and the Google Drive folder id + per-session file-id map for the Drive
+      // target. Access tokens are NEVER stored here (kept in memory only); this
+      // store is just the durable "which folder are we backing up to" record.
+      if (!db.objectStoreNames.contains('syncTargets')) {
+        db.createObjectStore('syncTargets', { keyPath: 'id' });
       }
     };
     req.onsuccess = () => {
