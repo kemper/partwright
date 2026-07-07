@@ -11,7 +11,7 @@
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import { buildPartTree, groupNames } from './partTree';
-import type { BambuPlateLayout } from '../export/threemfProject';
+import { DEFAULT_PACK_STRATEGY, type BambuPlateLayout, type PackStrategy } from '../export/threemfProject';
 
 export interface ExportPartChoice {
   id: string;
@@ -34,7 +34,7 @@ export interface ExportPartsBambuOptions {
 }
 
 /** Modal result: the chosen part ids plus (for Bambu) the printer/nozzle/filament
- *  and the plate layout. */
+ *  and the plate layout, and (for 3MF) the packing strategy. */
 export interface ExportPartsResult {
   partIds: string[];
   printer?: string;
@@ -42,6 +42,8 @@ export interface ExportPartsResult {
   filament?: string;
   /** Bambu only — how selected parts are distributed across build plates. */
   plateLayout?: BambuPlateLayout;
+  /** 3MF only — how parts sharing a plate / the generic model are arranged. */
+  packStrategy?: PackStrategy;
 }
 
 export interface ExportPartsModalOptions {
@@ -53,6 +55,10 @@ export interface ExportPartsModalOptions {
   description: string;
   /** When present, render the Bambu printer + nozzle dropdowns. */
   bambu?: ExportPartsBambuOptions;
+  /** When true, show the packing-strategy radios in an always-visible options pane
+   *  (the generic 3MF export uses this without the Bambu controls). Implied by
+   *  `bambu`, which always shows packing alongside its printer/plate controls. */
+  packing?: boolean;
 }
 
 /**
@@ -65,6 +71,10 @@ export function showExportPartsModal(
   opts: ExportPartsModalOptions,
 ): Promise<ExportPartsResult | null> {
   const { activePartId, title, description, bambu } = opts;
+  // Any export with an options pane (Bambu controls, or just the 3MF packing
+  // strategy) gets the two-pane layout. Bambu always includes packing.
+  const showPacking = !!bambu || !!opts.packing;
+  const twoPane = showPacking;
   return new Promise((resolve) => {
     let result: ExportPartsResult | null = null;
     // Track object URLs so we can revoke them on teardown (no GPU/blob leak).
@@ -73,10 +83,10 @@ export function showExportPartsModal(
     const shell = createModalShell({
       title,
       scrollable: true,
-      // Bambu exports show an always-visible options pane beside the part list,
-      // so the modal is wider (and side-by-side on desktop). Other formats keep
-      // the default single-column width.
-      ...(bambu ? { widthClass: 'max-w-lg sm:max-w-3xl' } : {}),
+      // Exports with an options pane show it beside the part list, so the modal is
+      // wider (and side-by-side on desktop). Other formats keep the default
+      // single-column width.
+      ...(twoPane ? { widthClass: 'max-w-lg sm:max-w-3xl' } : {}),
       onClose: () => {
         document.removeEventListener('keydown', onEnter);
         for (const url of objectUrls) URL.revokeObjectURL(url);
@@ -89,13 +99,14 @@ export function showExportPartsModal(
     sub.textContent = description;
     shell.body.appendChild(sub);
 
-    // For Bambu, split the body into two panes: the part-list selector on the
-    // left and an always-visible options pane on the right (stacked on mobile,
-    // side-by-side on desktop). Other formats stay single-column. `listParent`
-    // and `optionsParent` point at the right containers for each layout.
+    // When there's an options pane, split the body into two: the part-list
+    // selector on the left and an always-visible options pane on the right
+    // (stacked on mobile, side-by-side on desktop). Other formats stay
+    // single-column. `listParent` and `optionsParent` point at the right
+    // containers for each layout.
     let optionsParent: HTMLElement = shell.body;
     let listParent: HTMLElement = shell.body;
-    if (bambu) {
+    if (twoPane) {
       const panes = document.createElement('div');
       panes.className = 'flex flex-col sm:flex-row gap-4 sm:gap-5 flex-1 min-h-0 mt-1';
       const leftCol = document.createElement('div');
@@ -225,13 +236,57 @@ export function showExportPartsModal(
       });
     }
 
-    // ── Bambu printer / nozzle / filament controls (only for the Bambu export) ──
+    // ── Options pane: Bambu printer settings + plate layout, and (for any 3MF)
+    //    the packing strategy. Rendered into the right-hand pane. ──
     let printerSel: HTMLSelectElement | null = null;
     let nozzleSel: HTMLSelectElement | null = null;
     let filamentSel: HTMLSelectElement | null = null;
     // Selected plate layout (Bambu only). Default: one part per plate.
     let plateLayout: BambuPlateLayout = 'separate';
+    // Selected packing strategy (any 3MF). Default: compact centred grid.
+    let packStrategy: PackStrategy = DEFAULT_PACK_STRATEGY;
     const hasGroups = groupNames(parts).length > 0;
+
+    /** A titled radio group in the options pane; each option carries a one-line hint.
+     *  `divider` draws a top rule + spacing (used to separate sections). Selecting a
+     *  radio invokes `onPick`. */
+    const mkRadioGroup = <T extends string>(
+      name: string, heading: string, current: T,
+      options: { value: T; label: string; hint: string }[],
+      onPick: (v: T) => void,
+      divider: boolean,
+    ) => {
+      const wrap = document.createElement('div');
+      wrap.className = divider ? 'mt-4 pt-3 border-t border-zinc-700' : 'mt-1';
+      const head = document.createElement('div');
+      head.className = 'text-[11px] font-semibold uppercase tracking-wide text-zinc-400 mb-1.5';
+      head.textContent = heading;
+      wrap.appendChild(head);
+      for (const opt of options) {
+        const row = document.createElement('label');
+        row.className = 'flex items-start gap-2 py-1 px-2 -mx-2 rounded cursor-pointer hover:bg-zinc-700/30';
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = name;
+        radio.value = opt.value;
+        radio.checked = opt.value === current;
+        radio.className = 'mt-0.5 w-4 h-4 accent-blue-500 cursor-pointer shrink-0';
+        radio.addEventListener('change', () => { if (radio.checked) onPick(opt.value); });
+        const text = document.createElement('div');
+        text.className = 'flex-1 min-w-0';
+        const lbl = document.createElement('div');
+        lbl.className = 'text-xs text-zinc-200';
+        lbl.textContent = opt.label;
+        const hint = document.createElement('div');
+        hint.className = 'text-[10px] text-zinc-500 leading-snug';
+        hint.textContent = opt.hint;
+        text.append(lbl, hint);
+        row.append(radio, text);
+        wrap.appendChild(row);
+      }
+      optionsParent.appendChild(wrap);
+    };
+
     if (bambu) {
       const mkSelect = (label: string, choices: { value: string; label: string }[], def: string): HTMLSelectElement => {
         const wrap = document.createElement('label');
@@ -260,16 +315,8 @@ export function showExportPartsModal(
       filamentSel = mkSelect('Filament', bambu.filaments.map(f => ({ value: f.id, label: f.label })), bambu.defaultFilament);
 
       // ── Plate layout: how the selected parts spread across build plates ──
-      // Each option is a labelled radio with a one-line hint. The "group per plate"
-      // option only appears when the session actually has groups (else it's a no-op
-      // that behaves like "separate"). Radios drive `plateLayout`.
-      const layoutWrap = document.createElement('div');
-      layoutWrap.className = 'mt-4 pt-3 border-t border-zinc-700';
-      const layoutHead = document.createElement('div');
-      layoutHead.className = 'text-[11px] font-semibold uppercase tracking-wide text-zinc-400 mb-1.5';
-      layoutHead.textContent = 'Plate layout';
-      layoutWrap.appendChild(layoutHead);
-
+      // The "group per plate" option only appears when the session actually has
+      // groups (else it's a no-op that behaves like "separate").
       const layoutOpts: { value: BambuPlateLayout; label: string; hint: string }[] = [
         { value: 'separate', label: 'Separate plates', hint: 'One part per build plate.' },
         { value: 'grid', label: 'Packed together', hint: 'All parts packed to fit the plate, spilling onto more plates as needed.' },
@@ -277,29 +324,18 @@ export function showExportPartsModal(
       if (hasGroups) {
         layoutOpts.push({ value: 'group', label: 'Group per plate', hint: 'Each group packed onto its own plate(s); ungrouped parts print separately.' });
       }
-      for (const opt of layoutOpts) {
-        const row = document.createElement('label');
-        row.className = 'flex items-start gap-2 py-1 px-2 -mx-2 rounded cursor-pointer hover:bg-zinc-700/30';
-        const radio = document.createElement('input');
-        radio.type = 'radio';
-        radio.name = 'bambu-plate-layout';
-        radio.value = opt.value;
-        radio.checked = opt.value === plateLayout;
-        radio.className = 'mt-0.5 w-4 h-4 accent-blue-500 cursor-pointer shrink-0';
-        radio.addEventListener('change', () => { if (radio.checked) plateLayout = opt.value; });
-        const text = document.createElement('div');
-        text.className = 'flex-1 min-w-0';
-        const lbl = document.createElement('div');
-        lbl.className = 'text-xs text-zinc-200';
-        lbl.textContent = opt.label;
-        const hint = document.createElement('div');
-        hint.className = 'text-[10px] text-zinc-500 leading-snug';
-        hint.textContent = opt.hint;
-        text.append(lbl, hint);
-        row.append(radio, text);
-        layoutWrap.appendChild(row);
-      }
-      optionsParent.appendChild(layoutWrap);
+      mkRadioGroup('bambu-plate-layout', 'Plate layout', plateLayout, layoutOpts, v => { plateLayout = v; }, true);
+    }
+
+    // ── Packing: how parts sharing a plate (Bambu) or the single generic model are
+    //    spatially arranged. Shown for any 3MF export (Bambu + generic). ──
+    if (showPacking) {
+      const packOpts: { value: PackStrategy; label: string; hint: string }[] = [
+        { value: 'grid', label: 'Centered grid', hint: bambu ? 'Compact cluster centered on the plate (avoids the non-printable edges).' : 'Compact, roughly-square block centered on the origin.' },
+        { value: 'horizontal', label: 'Horizontal rows', hint: 'Fill left-to-right across the full width.' },
+        { value: 'vertical', label: 'Vertical columns', hint: 'Stack front-to-back down the full depth.' },
+      ];
+      mkRadioGroup('export-pack-strategy', 'Packing', packStrategy, packOpts, v => { packStrategy = v; }, !!bambu);
     }
 
     const cancelBtn = document.createElement('button');
@@ -336,6 +372,7 @@ export function showExportPartsModal(
         nozzle: nozzleSel?.value,
         filament: filamentSel?.value,
         ...(bambu ? { plateLayout } : {}),
+        ...(showPacking ? { packStrategy } : {}),
       };
       shell.close();
     }

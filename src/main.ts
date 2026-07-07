@@ -86,7 +86,7 @@ import { findPublishTarget, type PublishFormat } from './publish/publishTargets'
 import { generatePublishMetadata, isActiveProviderConnected } from './ai/publishMetadata';
 import { export3MF, build3MF } from './export/threemf';
 import { buildZip, type ZipEntry } from './export/zip';
-import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, BAMBU_PLATE_LAYOUTS, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, type BambuPlateLayout } from './export/threemfProject';
+import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy } from './export/threemfProject';
 import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
@@ -4782,6 +4782,9 @@ async function main() {
         filaments: BAMBU_FILAMENT_TYPES.map(f => ({ id: f.id, label: f.label })),
         defaultFilament: DEFAULT_BAMBU_FILAMENT,
       } : undefined,
+      // Generic 3MF gets the packing-strategy pane too (Bambu implies it). Both use
+      // the two-pane layout so the arrangement control is always visible.
+      ...(bambu ? {} : { packing: true }),
     });
     if (!selected || selected.partIds.length === 0) return;
     const selectedIds = selected.partIds;
@@ -4810,7 +4813,7 @@ async function main() {
       const built = build3MFProject(baked, {
         bambu, bedSize: [bed[0], bed[1]],
         printer: selected.printer, nozzle: selected.nozzle, filament: selected.filament,
-        plateLayout: selected.plateLayout,
+        plateLayout: selected.plateLayout, packStrategy: selected.packStrategy,
       });
       downloadBlob(built.blob, built.filename, '3MF');
       const skipped = selectedIds.length - baked.length;
@@ -4959,7 +4962,7 @@ async function main() {
    *  BuiltExport (no download, no base64) so callers can either trigger a
    *  download or return the bytes. `opts.bambu` (default true) → one part per
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     // Validate the Bambu profile selectors at the boundary so a console/AI/MCP
     // caller gets the same constraints the export modal's dropdowns enforce. An
@@ -4977,6 +4980,10 @@ async function main() {
       if (opts.plateLayout !== undefined && !isBambuPlateLayout(opts.plateLayout))
         return { error: `export3MFParts: unknown plateLayout "${opts.plateLayout}". Valid: ${BAMBU_PLATE_LAYOUTS.join(', ')}.` };
     }
+    // packStrategy applies to BOTH modes (the generic grid honours it too), so
+    // validate it regardless of `bambu`.
+    if (opts?.packStrategy !== undefined && !isPackStrategy(opts.packStrategy))
+      return { error: `export3MFParts: unknown packStrategy "${opts.packStrategy}". Valid: ${PACK_STRATEGIES.join(', ')}.` };
     const allParts = getState().parts;
     if (allParts.length === 0) return { error: 'No parts in this session.' };
     let ids = partIds;
@@ -5002,6 +5009,7 @@ async function main() {
         customName: filename, bambu, bedSize: [bed[0], bed[1]],
         printer: opts?.printer, nozzle: opts?.nozzle, filament: opts?.filament,
         plateLayout: opts?.plateLayout as BambuPlateLayout | undefined,
+        packStrategy: opts?.packStrategy as PackStrategy | undefined,
       });
       return { built, parts: baked.length };
     } catch (e) {
@@ -5012,7 +5020,7 @@ async function main() {
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ ok: true; filename: string; parts: number } | { error: string }> {
     assertString(filename, 'export3MFParts(partIds, filename)', { optional: true });
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
@@ -5023,7 +5031,7 @@ async function main() {
   /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
-  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; parts: number } | { error: string }> {
     assertString(filename, 'export3MFPartsData(partIds, filename)', { optional: true });
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
@@ -10331,8 +10339,10 @@ async function main() {
      *  part's latest version is baked WITH its colours. `{ plateLayout }` (Bambu
      *  only) controls plate distribution: `'separate'` (default, one part per
      *  plate), `'grid'` (all parts on one plate), or `'group'` (each part group on
-     *  its own plate). `{ ok, filename, parts }` or `{ error }`. */
-    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string }) {
+     *  its own plate). `{ packStrategy }` (both modes) shapes the arrangement:
+     *  `'grid'` (default, compact centred cluster), `'horizontal'`, or `'vertical'`.
+     *  `{ ok, filename, parts }` or `{ error }`. */
+    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
       return export3MFPartsApi(partIds, filename, opts);
     },
 
@@ -10341,8 +10351,8 @@ async function main() {
      *  `{ error }`) instead of downloading, so an agent/test can read the
      *  exported file back without the browser download path. `{ bambu }` as in
      *  export3MFParts (default true), plus `{ plateLayout }` ('separate' | 'grid' |
-     *  'group'). */
-    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string }) {
+     *  'group') and `{ packStrategy }` ('grid' | 'horizontal' | 'vertical'). */
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string }) {
       return export3MFPartsDataApi(partIds, filename, opts);
     },
 
@@ -15649,8 +15659,8 @@ async function main() {
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
         'publish':         { signature: 'publish(platform?) -- Open the assisted-publish modal for Printables/MakerWorld/Thingiverse/Thangs (no public upload API, so it prepares the file + cover + clipboard details and opens the upload page). platform optionally preselects one site', docs: '/ai/file-io.md' },
-        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?}) -- Bundle parts into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. plateLayout: "separate" (default, one part/plate) | "grid" (all on one plate) | "group" (each part group on its own plate) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
-        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
+        'export3MFParts':  { signature: 'await export3MFParts(partIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Bundle parts into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. plateLayout: "separate" (default, one part/plate) | "grid" (all on one plate) | "group" (each part group on its own plate). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical" -> {ok, filename, parts}', docs: '/ai/file-io.md' },
+        'export3MFPartsData': { signature: 'await export3MFPartsData(partIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?}) -- Same as export3MFParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportOBJParts':  { signature: 'await exportOBJParts(partIds?, filename?) -- Bundle parts into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, parts}', docs: '/ai/file-io.md' },
         'exportOBJPartsData': { signature: 'await exportOBJPartsData(partIds?, filename?) -- Same as exportOBJParts but RETURNS {filename, mimeType, base64, sizeBytes, parts} instead of downloading', docs: '/ai/file-io.md' },
         'exportSTLParts':  { signature: 'await exportSTLParts(partIds?, filename?) -- Bundle parts into a .zip of one .stl per part -> {ok, filename, parts}', docs: '/ai/file-io.md' },

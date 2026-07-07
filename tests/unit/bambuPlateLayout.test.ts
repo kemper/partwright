@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { assignBambuPlates, packPlates, isBambuPlateLayout, BAMBU_PLATE_LAYOUTS } from '../../src/export/threemfProject';
+import { assignBambuPlates, packPlates, isBambuPlateLayout, BAMBU_PLATE_LAYOUTS, isPackStrategy, PACK_STRATEGIES } from '../../src/export/threemfProject';
 
 // Pure plate-distribution logic for the Bambu multi-part export. `assignBambuPlates`
 // turns a per-part group list + a layout mode into a list of plates (each a list of
@@ -117,5 +117,59 @@ describe('packPlates', () => {
 
   test('empty bin yields no plates', () => {
     expect(packPlates([], uniform(10, 10), 200, 200, 10)).toEqual([]);
+  });
+
+  // The packing strategy shapes how parts sharing a plate are arranged. Four equal
+  // 40×40 parts on a 200×200 bed exercise all three: 'grid' clusters into a compact
+  // square (2×2), 'horizontal' fills one full-width row, 'vertical' fills one
+  // full-depth column. Distinct-X / distinct-Y counts pin each shape.
+  describe('packStrategy', () => {
+    const four = [0, 1, 2, 3];
+    const distinct = (vals: number[]) => new Set(vals.map(v => v.toFixed(3))).size;
+
+    test("'grid' (default) clusters into a compact centred square (2 cols × 2 rows)", () => {
+      const [plate] = packPlates(four, uniform(40, 40), 200, 200, 10); // default strategy
+      expect(plate.members).toHaveLength(4);
+      expect(distinct(plate.centers.map(c => c.cx))).toBe(2);
+      expect(distinct(plate.centers.map(c => c.cy))).toBe(2);
+      // Centred: the used 90×90 block (2·40 + 10 gap) sits in the middle of the bed.
+      const cxs = plate.centers.map(c => c.cx);
+      expect(Math.min(...cxs)).toBeGreaterThan(40);
+      expect(Math.max(...cxs)).toBeLessThan(160);
+    });
+
+    test("'horizontal' fills one full-width row (4 distinct X, 1 Y)", () => {
+      const [plate] = packPlates(four, uniform(40, 40), 200, 200, 10, 'horizontal');
+      expect(plate.members).toHaveLength(4);
+      expect(distinct(plate.centers.map(c => c.cx))).toBe(4);
+      expect(distinct(plate.centers.map(c => c.cy))).toBe(1);
+    });
+
+    test("'vertical' fills one full-depth column (1 X, 4 distinct Y)", () => {
+      const [plate] = packPlates(four, uniform(40, 40), 200, 200, 10, 'vertical');
+      expect(plate.members).toHaveLength(4);
+      expect(distinct(plate.centers.map(c => c.cx))).toBe(1);
+      expect(distinct(plate.centers.map(c => c.cy))).toBe(4);
+    });
+
+    test('every strategy keeps all parts on the bed and loses none', () => {
+      for (const strategy of PACK_STRATEGIES) {
+        const plates = packPlates(four, uniform(40, 40), 200, 200, 10, strategy);
+        const all = plates.flatMap(p => p.members).sort();
+        expect(all).toEqual([0, 1, 2, 3]);
+        for (const p of plates) for (const c of p.centers) {
+          expect(c.cx).toBeGreaterThanOrEqual(0); expect(c.cx).toBeLessThanOrEqual(200);
+          expect(c.cy).toBeGreaterThanOrEqual(0); expect(c.cy).toBeLessThanOrEqual(200);
+        }
+      }
+    });
+
+    test('isPackStrategy validates the strategy strings', () => {
+      expect(isPackStrategy('grid')).toBe(true);
+      expect(isPackStrategy('horizontal')).toBe(true);
+      expect(isPackStrategy('vertical')).toBe(true);
+      expect(isPackStrategy('nope')).toBe(false);
+      expect(isPackStrategy('')).toBe(false);
+    });
   });
 });

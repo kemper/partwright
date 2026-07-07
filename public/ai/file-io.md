@@ -34,7 +34,7 @@ Each call also adds the export to the Recent Exports inbox so the user can re-do
 
 ## Multi-part 3MF — bundle several parts into one file
 
-`export3MFParts(partIds?, filename?, { bambu?, printer?, nozzle?, filament?, plateLayout? })` bundles several Session Parts into **one** 3MF. Two modes:
+`export3MFParts(partIds?, filename?, { bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy? })` bundles several Session Parts into **one** 3MF. Two modes:
 
 - **`{ bambu: true }`** (default) — a Bambu Studio / OrcaSlicer **project**: parts distributed across build plates (see `plateLayout`), painted colours bound to filaments (one filament per distinct colour). The console/AI twin of the **"3MF — Bambu/Orca"** menu item.
 - **`{ bambu: false }`** — a **generic** multi-object 3MF: parts grid-arranged (no overlap), opens in any slicer, no Bambu metadata. The console/AI twin of the generic **"3MF"** export in a multi-part session.
@@ -47,6 +47,11 @@ In Bambu mode you can pick the target machine (these match the export modal's dr
   - `"separate"` (default) — **one part per plate**. Best for a handful of parts; unwieldy past ~30.
   - `"grid"` — **all parts packed together**, filling each plate before starting the next. Best for many small parts you want to print in as few jobs as possible.
   - `"group"` — **each part group packed onto its own plate(s)** (parts sharing a `group`; ungrouped parts print separately). A group too big for one bed spills onto more plates. Best for large collections organised into groups.
+
+**`packStrategy`** — how parts that *share* a plate (or the whole generic model) are spatially arranged. Works in **both** modes (Bambu and generic); orthogonal to `plateLayout`:
+- `"grid"` (default) — a compact, roughly-square cluster **centred** on the plate. Keeps parts toward the middle of the bed, away from the far left/right edges that aren't always printable on wide beds like the H2C.
+- `"horizontal"` — fill left→right across the full bed width, wrapping to new rows.
+- `"vertical"` — fill front→back down the full bed depth, wrapping to new columns.
 
 ```js
 // Every part in the session, one per Bambu plate (default H2C / 0.4 / PLA):
@@ -61,6 +66,9 @@ await partwright.export3MFParts(undefined, "tray", { plateLayout: "grid" })
 
 // One plate per group (30-part collection organised into groups):
 await partwright.export3MFParts(undefined, "collection", { plateLayout: "group" })
+
+// All parts on one plate, arranged left→right in horizontal rows:
+await partwright.export3MFParts(undefined, "row", { plateLayout: "grid", packStrategy: "horizontal" })
 
 // Specific parts as a generic multi-object 3MF (ids from listParts()):
 await partwright.export3MFParts(["part_abc", "part_def"], "assembly", { bambu: false })
