@@ -54,6 +54,42 @@ export function themeCounts(entries: { tags?: CatalogThemeId[] }[]): Map<Catalog
   return counts;
 }
 
+/** Print-verification status as a filter facet — an orthogonal toggle over the
+ *  same tiles (like language/theme), so a user can focus the whole catalog on
+ *  models proven with a physical print (or on the ones still unproven). Every
+ *  entry resolves to exactly one status via `printStatusOf`. */
+export type CatalogPrintStatus = 'tested' | 'untested';
+
+export interface CatalogPrintStatusDef {
+  id: CatalogPrintStatus;
+  /** Pill label — mirrors the tile chip wording. */
+  label: string;
+}
+
+/** The print-status filter pills, in render order. A pill renders only when
+ *  both statuses are present (mirrors the language-pill "> 1 present" rule) so
+ *  a fully-untested catalog shows no status facet at all. */
+export const CATALOG_PRINT_STATUSES: CatalogPrintStatusDef[] = [
+  { id: 'tested', label: '✓ Print-tested' },
+  { id: 'untested', label: 'Untested' },
+];
+
+/** The single status bucket an entry falls into (absent/false ⇒ untested). */
+export function printStatusOf(printTested: boolean | undefined): CatalogPrintStatus {
+  return printTested ? 'tested' : 'untested';
+}
+
+/** Count how many of `entries` fall into each print status. Pure; shared by
+ *  both catalog surfaces so their status pills (and counts) stay identical. */
+export function printStatusCounts(entries: { printTested?: boolean }[]): Map<CatalogPrintStatus, number> {
+  const counts = new Map<CatalogPrintStatus, number>();
+  for (const entry of entries) {
+    const id = printStatusOf(entry.printTested);
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export interface CatalogManifestEntry {
   /** Stable id used as a slug; also the manifest dedupe key. */
   id: string;

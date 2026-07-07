@@ -104,6 +104,28 @@ test.describe('Catalog page (static)', () => {
     await search.fill('');
   });
 
+  test('print-status filter pill narrows to tested (or untested) tiles', async ({ page }) => {
+    await gotoCatalog(page);
+
+    const tiles = page.locator('main a[data-catalog-tile]');
+    const tileCount = await tiles.count();
+    const testedCount = await page.locator('main a[data-catalog-tile] span:has-text("Print-tested")').count();
+
+    // The "✓ Print-tested" pill filters the whole catalog down to verified tiles.
+    const testedPill = page.locator('[data-catalog-status="tested"]');
+    await expect(testedPill).toBeVisible();
+    await testedPill.click();
+    const visibleTested = page.locator('main a[data-catalog-tile]:not(.hidden)');
+    await expect(visibleTested).toHaveCount(testedCount);
+    for (const tile of await visibleTested.all()) {
+      await expect(tile).toHaveAttribute('data-status', 'tested');
+    }
+
+    // Clicking it again clears the facet — back to the full catalog.
+    await testedPill.click();
+    await expect(page.locator('main a[data-catalog-tile]:not(.hidden)')).toHaveCount(tileCount);
+  });
+
   test('search narrows tiles, updates section counts, and hides empty sections', async ({ page }) => {
     await gotoCatalog(page);
 

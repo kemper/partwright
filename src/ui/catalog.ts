@@ -13,8 +13,11 @@ import {
   categorizeOf,
   deriveCharacteristics as deriveTraits,
   printTestedBadge,
+  printStatusOf,
+  printStatusCounts,
   CATALOG_LANGUAGE_ORDER,
   CATALOG_THEMES,
+  CATALOG_PRINT_STATUSES,
   themeCounts,
   type CategoryId,
   type CategoryDef,
@@ -279,6 +282,32 @@ function buildControls(loaded: LoadedEntry[]): HTMLElement {
     wrap.appendChild(themeRow);
   }
 
+  // Print-status filter pills — verified-print vs not-yet-tested. Coloured to
+  // match the tile chips (emerald for tested, muted for untested). Rendered only
+  // when both statuses are present, so a fully-untested catalog shows no facet.
+  const sCounts = printStatusCounts(loaded.map((entry) => entry.manifest));
+  const presentStatuses = CATALOG_PRINT_STATUSES.filter((s) => sCounts.has(s.id));
+  if (presentStatuses.length > 1) {
+    const statusRow = document.createElement('div');
+    statusRow.className = 'flex items-center gap-2 flex-wrap';
+    const label = document.createElement('span');
+    label.className = 'text-xs text-zinc-500 mr-1';
+    label.textContent = 'Print status:';
+    statusRow.appendChild(label);
+
+    for (const status of presentStatuses) {
+      const badge = printTestedBadge({ printTested: status.id === 'tested' });
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.dataset.catalogStatus = status.id;
+      pill.setAttribute('aria-pressed', 'false');
+      pill.className = `px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 opacity-60 ${badge.classes}`;
+      pill.textContent = `${status.label} ${sCounts.get(status.id) ?? 0}`;
+      statusRow.appendChild(pill);
+    }
+    wrap.appendChild(statusRow);
+  }
+
   return wrap;
 }
 
@@ -325,6 +354,7 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
   tile.dataset.catalogTile = '';
   tile.dataset.language = language;
   tile.dataset.themes = tags.join(' ');
+  tile.dataset.status = printStatusOf(loaded.manifest.printTested);
   const print = printTestedBadge({
     printTested: loaded.manifest.printTested,
     note: loaded.manifest.printTestedNote,

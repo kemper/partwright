@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { printTestedBadge } from '../../src/content/data/catalogCategories';
+import {
+  printTestedBadge,
+  printStatusOf,
+  printStatusCounts,
+} from '../../src/content/data/catalogCategories';
 
 describe('printTestedBadge', () => {
   it('defaults to "Untested" when no input is given', () => {
@@ -81,5 +85,32 @@ describe('printTestedBadge', () => {
     const badge = printTestedBadge({ printTested: true, latestVersion: 9 });
     expect(badge.stale).toBe(false);
     expect(badge.title).not.toMatch(/version/i);
+  });
+});
+
+describe('printStatusOf', () => {
+  it('maps the flag to one bucket, treating absent/false as untested', () => {
+    expect(printStatusOf(true)).toBe('tested');
+    expect(printStatusOf(false)).toBe('untested');
+    expect(printStatusOf(undefined)).toBe('untested');
+  });
+});
+
+describe('printStatusCounts', () => {
+  it('tallies tested vs untested across entries', () => {
+    const counts = printStatusCounts([
+      { printTested: true },
+      { printTested: true },
+      { printTested: false },
+      {},
+    ]);
+    expect(counts.get('tested')).toBe(2);
+    expect(counts.get('untested')).toBe(2);
+  });
+
+  it('omits a status with no entries (so a fully-untested catalog shows no facet)', () => {
+    const counts = printStatusCounts([{ printTested: false }, {}]);
+    expect(counts.has('tested')).toBe(false);
+    expect(counts.get('untested')).toBe(2);
   });
 });

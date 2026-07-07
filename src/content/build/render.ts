@@ -15,8 +15,11 @@ import {
   categorizeOf,
   deriveCharacteristics,
   printTestedBadge,
+  printStatusOf,
+  printStatusCounts,
   CATALOG_LANGUAGE_ORDER,
   CATALOG_THEMES,
+  CATALOG_PRINT_STATUSES,
   themeCounts,
   type CategoryId,
   type CatalogLanguage,
@@ -284,7 +287,7 @@ function catalogTileHtml(tile: BuiltTile): string {
   const thumbImg = thumbSrc
     ? `<img src="${escAttr(thumbSrc)}" alt="${escAttr(tile.entry.name)}" loading="lazy" decoding="async" class="absolute inset-0 w-full h-full object-contain" />`
     : '';
-  return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-catalog-tile data-language="${escAttr(tile.language)}" data-themes="${escAttr(tags.join(' '))}" data-search="${escAttr(haystack)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
+  return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-catalog-tile data-language="${escAttr(tile.language)}" data-themes="${escAttr(tags.join(' '))}" data-status="${escAttr(printStatusOf(tile.entry.printTested))}" data-search="${escAttr(haystack)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
   <div class="relative w-full aspect-square bg-zinc-900 flex items-center justify-center overflow-hidden">
     <span class="text-3xl text-zinc-700">&#11041;</span>
     ${thumbImg}
@@ -373,10 +376,23 @@ function catalogControlsHtml(tiles: BuiltTile[]): string {
   </div>`
     : '';
 
+  const sCounts = printStatusCounts(tiles.map((t) => t.entry));
+  const presentStatuses = CATALOG_PRINT_STATUSES.filter((s) => sCounts.has(s.id));
+  const statusPills = presentStatuses.length > 1
+    ? `<div class="flex items-center gap-2 flex-wrap">
+    <span class="text-xs text-zinc-500 mr-1">Print status:</span>
+    ${presentStatuses.map((s) => {
+      const badge = printTestedBadge({ printTested: s.id === 'tested' });
+      return `<button type="button" data-catalog-status="${escAttr(s.id)}" aria-pressed="false" class="px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 opacity-60 ${badge.classes}" title="Filter to ${escAttr(s.label)} models">${esc(s.label)} ${sCounts.get(s.id) ?? 0}</button>`;
+    }).join('')}
+  </div>`
+    : '';
+
   return `<div class="mb-8 flex flex-col gap-3">
   <input type="search" data-catalog-search placeholder="Search the catalog…" aria-label="Search the catalog" class="w-full max-w-md bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-zinc-500 transition-colors" />
   ${langPills}
   ${themePills}
+  ${statusPills}
 </div>`;
 }
 
